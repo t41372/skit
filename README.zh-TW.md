@@ -49,6 +49,30 @@ cargo install --git https://github.com/astral-sh/uv uv
 uv --version
 ```
 
+## 中國大陸 — 免 VPN
+
+在防火長城之後,有三處下載可能受阻:PyPI 套件、uv 抓取的 Python 直譯器(python-build-standalone,來自 GitHub),以及 skit 自己的 uv 引導下載。skit 可把這三者都導向國內鏡像——而且**絕不改動你的全域 uv 設定或環境變數**。
+
+- **首次執行**:若偵測到 PyPI/GitHub 連不上,`skit` 會詢問是否開啟鏡像,按 Enter 即可。
+- **隨時**:`skit config` 提供引導式設定(語言 + 鏡像),或直接設定:
+
+```bash
+skit config --mirror tsinghua    # 或 aliyun / ustc
+skit config --show
+skit config --mirror off         # 例如出國時關閉
+```
+
+預設:PyPI → 清華 / 阿里雲 / 中科大;Python 發行版與 uv 二進位 → 南京大學(`mirror.nju.edu.cn`)。鏡像掛掉時,在 `skit config` 選 `custom` 可覆寫任一網址。
+
+**安裝 skit 本身**時(此時還沒有 skit 可設定),請先讓 uv 指向鏡像:
+
+```bash
+export UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+uv tool install skit
+```
+
+已自行設定 `UV_DEFAULT_INDEX` / `UV_PYTHON_INSTALL_MIRROR`(或 `uv.toml`)?skit 會**尊重你的設定**,不會覆寫。
+
 ## 安裝
 
 從 PyPI(發布後):
@@ -88,6 +112,7 @@ skit list                     # 列出所有已登記項目
 skit remove <name>            # 移除一個項目
 skit doctor [--rebuild]       # 自檢 / 從散落的 meta.toml 重建索引
 skit lang zh-TW               # 查看/設定介面語言
+skit config                   # 互動式設定:語言 + 下載鏡像(中國大陸友善)
 ```
 
 ## 開發

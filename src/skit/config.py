@@ -1,0 +1,176 @@
+"""User configuration (config.toml) and mirror settings.
+
+skit keeps its own settings in its config dir (`config.toml`, next to the i18n `language` key) and
+**never** writes to global state (`~/.config/uv/`, the shell). Mirror settings are applied only by
+overlaying environment variables onto the `uv` child processes skit spawns — and only when the user
+hasn't already set the corresponding variable themselves (their explicit env always wins).
+
+Three GFW-facing download vectors are covered:
+- `pypi`           -> `UV_DEFAULT_INDEX`          (PEP 723 script deps resolved by `uv run`)
+- `python_install` -> `UV_PYTHON_INSTALL_MIRROR`  (CPython fetched by uv for a script's requires-python)
+- `uv_binary`      -> skit's own uv bootstrap download (see uvman)
+"""
+
+from __future__ import annotations
+
+import socket
+import tomllib
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
+from typing import Any
+
+from .atomic import atomic_write_toml
+from .paths import config_dir
+
+# NJU mirrors GitHub release assets; uv/skit just swap the github.com download prefix for these.
+_GITHUB_RELEASE = "https://mirror.nju.edu.cn/github-release"
+PYTHON_INSTALL_MIRROR = f"{_GITHUB_RELEASE}/astral-sh/python-build-standalone/"
+UV_BINARY_MIRROR = f"{_GITHUB_RELEASE}/astral-sh/uv"
+
+# PyPI index presets (the part users pick between; the GitHub mirrors above are shared).
+PYPI_PRESETS: dict[str, str] = {
+    "tsinghua": "https://pypi.tuna.tsinghua.edu.cn/simple",
+    "aliyun": "https://mirrors.aliyun.com/pypi/simple",
+    "ustc": "https://pypi.mirrors.ustc.edu.cn/simple",
+}
+
+# uv env vars that REPLACE uv's default index — if the user set one of these (to a non-empty value)
+# they've already chosen their PyPI vector, so skit defers. UV_INDEX / UV_EXTRA_INDEX_URL are
+# deliberately excluded: they're *additive* (they don't replace the default index), so deferring on
+# them would leave the GFW-blocked default index in place.
+_INDEX_ENV = ("UV_DEFAULT_INDEX", "UV_INDEX_URL")
+_PYTHON_MIRROR_ENV = "UV_PYTHON_INSTALL_MIRROR"
+
+
+def _config_path():
+    return config_dir() / "config.toml"
+
+
+def load_config() -> dict[str, Any]:
+    path = _config_path()
+    if not path.is_file():
+        return {}
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+
+
+def save_config(doc: Mapping[str, Any]) -> None:
+    atomic_write_toml(_config_path(), dict(doc))
+
+
+def is_configured() -> bool:
+    """True once the user has been through setup (config.toml exists), so first-run setup runs once."""
+    return _config_path().is_file()
+
+
+def mirror_configured() -> bool:
+    """True once a [mirror] section has been written — the marker that the first-run mirror offer
+    has already happened. Distinct from is_configured(): setting a language also writes config.toml,
+    but must NOT suppress the mirror offer (that's what would happen if the gate keyed on the file's
+    mere existence)."""
+    return "mirror" in load_config()
+
+
+@dataclass(frozen=True)
+class MirrorConfig:
+    enabled: bool = False
+    pypi: str = ""
+    python_install: str = ""
+    uv_binary: str = ""
+
+
+def load_mirror() -> MirrorConfig:
+    section = load_config().get("mirror", {})
+    if not isinstance(section, dict):
+        return MirrorConfig()
+
+    def _url(key: str) -> str:
+        # Type-harden a hand-edited config: only a real string is a URL; anything else (int, bool,
+        # ...) is treated as blank rather than str()-coerced into a bogus value like "123".
+        value = section.get(key, "")
+        return value if isinstance(value, str) else ""
+
+    def _https_url(key: str) -> str:
+        # uv_binary names an executable skit downloads, chmod +x's, and runs, so it MUST be https —
+        # a plain-http mirror would let a MITM swap in a trojaned uv. The wizard rejects non-https
+        # interactively; a hand-edited non-https value is silently blanked here so uv_binary_base()
+        # falls back to the GitHub default (checksum verification in uvman is the further backstop).
+        url = _url(key)
+        return url if url.startswith("https://") else ""
+
+    return MirrorConfig(
+        # Require a genuine bool: a stray `enabled = "false"` would otherwise be truthy and silently
+        # invert the user's intent (bool("false") is True).
+        enabled=section.get("enabled") is True,
+        pypi=_url("pypi"),
+        python_install=_url("python_install"),
+        uv_binary=_https_url("uv_binary"),
+    )
+
+
+def save_mirror(mirror: MirrorConfig) -> None:
+    """Persist the [mirror] section, preserving every other key (e.g. language)."""
+    doc = load_config()
+    doc["mirror"] = {
+        "enabled": mirror.enabled,
+        "pypi": mirror.pypi,
+        "python_install": mirror.python_install,
+        "uv_binary": mirror.uv_binary,
+    }
+    save_config(doc)
+
+
+def preset(name: str) -> MirrorConfig:
+    """Build an enabled MirrorConfig for a PyPI provider, sharing the NJU GitHub-release mirrors."""
+    return MirrorConfig(
+        enabled=True,
+        pypi=PYPI_PRESETS[name],
+        python_install=PYTHON_INSTALL_MIRROR,
+        uv_binary=UV_BINARY_MIRROR,
+    )
+
+
+def disable() -> None:
+    """Turn mirrors off (e.g. travelling abroad) without discarding the saved URLs."""
+    save_mirror(replace(load_mirror(), enabled=False))
+
+
+def mirror_env(base_env: Mapping[str, str]) -> dict[str, str]:
+    """The env overlay to inject into uv child processes.
+
+    Returns only the variables the user has NOT already set themselves (their env wins — the "defer"
+    rule). Empty when mirrors are disabled.
+    """
+    mirror = load_mirror()
+    if not mirror.enabled:
+        return {}
+    overlay: dict[str, str] = {}
+    # Defer on a *truthy* user value only: an empty `UV_INDEX_URL=""` means "unset", so it must not
+    # suppress the mirror (presence-based defer would wrongly leave the blocked default in place).
+    if mirror.pypi and not any(base_env.get(v) for v in _INDEX_ENV):
+        overlay["UV_DEFAULT_INDEX"] = mirror.pypi
+    if mirror.python_install and not base_env.get(_PYTHON_MIRROR_ENV):
+        overlay[_PYTHON_MIRROR_ENV] = mirror.python_install
+    return overlay
+
+
+def uv_binary_base() -> str:
+    """The base URL for skit's own uv-binary bootstrap download, or "" to use the GitHub default."""
+    mirror = load_mirror()
+    return mirror.uv_binary if mirror.enabled else ""
+
+
+def looks_blocked(timeout: float = 2.5) -> bool:
+    """Heuristic for "is this network likely behind the GFW?" — True if PyPI or GitHub can't be
+    reached within `timeout` seconds. Used only to *offer* mirror setup on first run; never decides
+    anything on its own."""
+    for host in ("pypi.org", "github.com"):
+        try:
+            with socket.create_connection((host, 443), timeout=timeout):
+                pass
+        except OSError:
+            return True
+    return False

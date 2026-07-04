@@ -12,13 +12,14 @@ from pathlib import Path
 import typer
 from rich.console import Console
 from rich.markup import escape
-from rich.prompt import Prompt
+from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 from . import (
     __version__,
     analyzer,
     argstate,
+    config,
     i18n,
     launcher,
     metawriter,
@@ -50,6 +51,7 @@ def main(
         console.print(f"skit {__version__}")
         raise typer.Exit()
     if ctx.invoked_subcommand is None:
+        _maybe_first_run_setup()
         from .tui import run_menu
 
         raise typer.Exit(run_menu())
@@ -958,6 +960,169 @@ def lang(
         raise typer.Exit(2)
     effective = i18n.set_language(value)
     console.print(gettext("Language set to %(locale)s") % {"locale": effective})
+
+
+# --- skit config ---
+
+
+def _print_settings() -> None:
+    m = config.load_mirror()
+    if m.enabled:
+        mirror_line = gettext("Mirror: on (%(pypi)s)") % {"pypi": m.pypi}
+    else:
+        mirror_line = gettext("Mirror: off")
+    console.print(gettext("Current settings:"))
+    console.print("  " + gettext("Language: %(locale)s") % {"locale": i18n.current_locale()})
+    console.print("  " + mirror_line)
+
+
+def _prompt_uv_binary(default: str) -> str:
+    """Prompt for the uv-binary mirror URL, insisting on https://.
+
+    That binary is downloaded, chmod +x'd, and executed, so an http:// mirror is a straight
+    MITM -> RCE vector. Re-prompt until the URL is https (the default already is).
+    """
+    while True:
+        value = Prompt.ask(gettext("uv binary mirror URL"), default=default, console=console)
+        if value.startswith("https://"):
+            return value
+        err_console.print(
+            "[red]"
+            + gettext(
+                "The uv binary is downloaded and executed, so its mirror URL must use https:// (got: %(url)s)."
+            )
+            % {"url": value}
+            + "[/red]"
+        )
+
+
+def _mirror_wizard() -> None:
+    m = config.load_mirror()
+    if not m.enabled:
+        default = "off"
+    else:
+        default = next((k for k, v in config.PYPI_PRESETS.items() if v == m.pypi), "custom")
+    choice = Prompt.ask(
+        gettext("Mirror for faster installs in mainland China"),
+        choices=[*config.PYPI_PRESETS, "custom", "off"],
+        default=default,
+        console=console,
+    )
+    if choice == "off":
+        config.disable()
+    elif choice == "custom":
+        config.save_mirror(
+            config.MirrorConfig(
+                enabled=True,
+                pypi=Prompt.ask(
+                    gettext("PyPI index URL"),
+                    default=m.pypi or config.PYPI_PRESETS["tsinghua"],
+                    console=console,
+                ),
+                python_install=Prompt.ask(
+                    gettext("Python-install mirror URL"),
+                    default=m.python_install or config.PYTHON_INSTALL_MIRROR,
+                    console=console,
+                ),
+                uv_binary=_prompt_uv_binary(m.uv_binary or config.UV_BINARY_MIRROR),
+            )
+        )
+    else:
+        config.save_mirror(config.preset(choice))
+
+
+def _language_wizard() -> None:
+    choice = Prompt.ask(
+        gettext("Interface language"),
+        choices=["auto", *i18n.available_locales()],
+        default=i18n.current_locale(),
+        console=console,
+    )
+    i18n.set_language("" if choice == "auto" else choice)
+
+
+def _set_language_arg(value: str) -> None:
+    if value.lower() != "auto" and not i18n.is_supported(value):
+        err_console.print(
+            f"[red]{gettext('Unknown language: %(tag)s. Available: %(locales)s') % {'tag': value, 'locales': ', '.join(i18n.available_locales())}}[/red]"
+        )
+        raise typer.Exit(2)
+    i18n.set_language("" if value.lower() == "auto" else value)
+
+
+def _set_mirror_arg(value: str) -> None:
+    if value == "off":
+        config.disable()
+    elif value in config.PYPI_PRESETS:
+        config.save_mirror(config.preset(value))
+    else:
+        choices = ", ".join([*config.PYPI_PRESETS, "off"])
+        err_console.print(
+            f"[red]{gettext('Unknown mirror: %(name)s. Choose from: %(names)s') % {'name': value, 'names': choices}}[/red]"
+        )
+        raise typer.Exit(2)
+
+
+@app.command("config", help=gettext("Configure skit's language and download mirrors."))
+def config_cmd(
+    show: bool = typer.Option(False, "--show", help=gettext("Show the current settings and exit")),
+    lang: str = typer.Option(
+        None,
+        "--lang",
+        help=gettext('Set the language non-interactively (a tag like zh-CN, or "auto")'),
+    ),
+    mirror: str = typer.Option(
+        None,
+        "--mirror",
+        help=gettext("Set the mirror non-interactively: tsinghua / aliyun / ustc / off"),
+    ),
+) -> None:
+    """Configure skit (language, download mirrors). Run with no options for guided setup; use
+    --lang / --mirror / --show for non-interactive changes."""
+    if show:
+        _print_settings()
+        return
+    if lang is not None or mirror is not None:
+        if lang is not None:
+            _set_language_arg(lang)
+        if mirror is not None:
+            _set_mirror_arg(mirror)
+        _print_settings()
+        return
+    # No flags: the guided wizard needs a real terminal (Prompt.ask would hang or read EOF on a
+    # pipe/CI). Fall back to just showing the settings when stdin/stdout aren't a tty.
+    if not _is_interactive():
+        _print_settings()
+        return
+    _print_settings()
+    _language_wizard()
+    _mirror_wizard()
+    console.print(f"[green]{gettext('Saved.')}[/green]")
+    _print_settings()
+
+
+def _is_interactive() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _maybe_first_run_setup() -> None:
+    """On the first bare `skit` run, offer mirror setup if the network to PyPI/GitHub looks blocked.
+    Interactive TTY only; runs once (writing a [mirror] section marks the offer as done).
+
+    Gated on mirror_configured(), not is_configured(): `skit lang zh-CN` also writes config.toml, and
+    keying on the file's existence would let a language change permanently suppress the mirror offer."""
+    if config.mirror_configured() or not _is_interactive():
+        return
+    if config.looks_blocked():
+        console.print(gettext("Network to PyPI / GitHub looks slow or blocked."))
+        if Confirm.ask(
+            gettext("Configure mirrors for faster installs (mainland China)?"),
+            default=True,
+            console=console,
+        ):
+            _mirror_wizard()
+    if not config.mirror_configured():
+        config.save_mirror(config.load_mirror())  # persist a marker so we don't probe every run
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import shutil
@@ -17,6 +18,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import config
 from .i18n import gettext
 from .models import Entry
 from .paths import private_bin_dir
@@ -167,11 +169,14 @@ def run_entry(
         raise LaunchError(
             gettext("The working directory doesn't exist: %(path)s") % {"path": str(cwd)}
         )
+    # Overlay skit's mirror settings onto uv's environment — a no-op unless the user enabled them,
+    # and never clobbering a variable the user set themselves (see config.mirror_env).
+    env = {**os.environ, **config.mirror_env(os.environ)}
     if isinstance(cmd, str):
         # A command entry is by definition "a shell command the user registered"; shell=True is a
         # feature, not a hole. The template was written by the user via `skit add`, so the trust
         # boundary is the same as the user's own shell history.
-        proc = subprocess.run(cmd, shell=True, cwd=cwd, check=False)  # noqa: S602
+        proc = subprocess.run(cmd, shell=True, cwd=cwd, check=False, env=env)  # noqa: S602
     else:
-        proc = subprocess.run(cmd, cwd=cwd, check=False)  # noqa: S603 — argv from a user entry
+        proc = subprocess.run(cmd, cwd=cwd, check=False, env=env)  # noqa: S603 — argv from a user entry
     return proc.returncode

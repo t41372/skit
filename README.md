@@ -49,6 +49,30 @@ Verify with:
 uv --version
 ```
 
+## Mainland China (中国大陆) — no VPN needed
+
+Behind the Great Firewall, three downloads can stall: PyPI packages, the Python interpreters uv fetches (python-build-standalone, from GitHub), and skit's own uv bootstrap. skit can route all three through domestic mirrors — and it **never edits your global uv config or environment**.
+
+- **First run**: if PyPI/GitHub look unreachable, `skit` offers to turn on mirrors — just press Enter.
+- **Any time**: `skit config` gives a guided setup (language + mirror), or set it directly:
+
+```bash
+skit config --mirror tsinghua    # or: aliyun / ustc
+skit config --show
+skit config --mirror off         # turn off again, e.g. when travelling abroad
+```
+
+Defaults: PyPI → Tsinghua / Aliyun / USTC; Python builds & the uv binary → NJU (`mirror.nju.edu.cn`). Pick `custom` in `skit config` to override any URL if a mirror goes down.
+
+To **install skit itself** behind the GFW (skit isn't there yet to configure), point uv at a mirror first:
+
+```bash
+export UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+uv tool install skit
+```
+
+Already set `UV_DEFAULT_INDEX` / `UV_PYTHON_INSTALL_MIRROR` (or a `uv.toml`) yourself? skit **defers** to your settings and won't override them.
+
 ## Installation
 
 From PyPI (once published):
@@ -88,6 +112,7 @@ skit list                     # List everything registered
 skit remove <name>            # Remove an entry
 skit doctor [--rebuild]       # Self-check / rebuild the index from meta.toml files
 skit lang zh-TW               # Show or set the display language
+skit config                   # Interactive setup: language + download mirrors (China-friendly)
 ```
 
 ## Development

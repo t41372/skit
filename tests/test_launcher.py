@@ -11,6 +11,7 @@ import pytest
 def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SKIT_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("SKIT_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SKIT_CONFIG_DIR", str(tmp_path / "config"))
     return tmp_path
 
 
@@ -205,3 +206,69 @@ def test_run_entry_command_entry(tmp_path, monkeypatch):
     entry = store.add_command(tmpl, name="greet")
     code = launcher.run_entry(entry, invoke_cwd=tmp_path)
     assert code == 0
+
+
+def test_run_entry_injects_mirror_env(py_entry, monkeypatch):
+    from skit import config, launcher
+
+    monkeypatch.delenv("UV_DEFAULT_INDEX", raising=False)
+    monkeypatch.delenv("UV_PYTHON_INSTALL_MIRROR", raising=False)
+    config.save_mirror(config.preset("tsinghua"))
+    seen_env: dict[str, str] = {}
+
+    class _Result:
+        returncode = 0
+
+    def _fake_run(_cmd, **kw):
+        seen_env.update(kw.get("env", {}))
+        return _Result()
+
+    monkeypatch.setattr(launcher, "find_uv", lambda: "/fake/uv")
+    monkeypatch.setattr(launcher.subprocess, "run", _fake_run)
+    launcher.run_entry(py_entry)
+    assert seen_env["UV_DEFAULT_INDEX"] == config.PYPI_PRESETS["tsinghua"]
+    assert seen_env["UV_PYTHON_INSTALL_MIRROR"] == config.PYTHON_INSTALL_MIRROR
+
+
+# ---------- (c) run_entry mirror env: disabled adds nothing; user's env wins end-to-end ----------
+
+
+def _capture_run_env(monkeypatch, py_entry) -> dict[str, str]:
+    """Run run_entry with subprocess.run stubbed and return the env handed to the child."""
+    from skit import launcher
+
+    seen_env: dict[str, str] = {}
+
+    class _Result:
+        returncode = 0
+
+    def _fake_run(_cmd, **kw):
+        seen_env.update(kw.get("env", {}))
+        return _Result()
+
+    monkeypatch.setattr(launcher, "find_uv", lambda: "/fake/uv")
+    monkeypatch.setattr(launcher.subprocess, "run", _fake_run)
+    launcher.run_entry(py_entry)
+    return seen_env
+
+
+def test_run_entry_no_mirror_env_when_disabled(py_entry, monkeypatch):
+    """Mirror disabled (the default): the subprocess env gets no mirror variables injected."""
+    monkeypatch.delenv("UV_DEFAULT_INDEX", raising=False)
+    monkeypatch.delenv("UV_PYTHON_INSTALL_MIRROR", raising=False)
+    seen_env = _capture_run_env(monkeypatch, py_entry)
+    assert "UV_DEFAULT_INDEX" not in seen_env
+    assert "UV_PYTHON_INSTALL_MIRROR" not in seen_env
+
+
+def test_run_entry_keeps_user_index_when_mirror_enabled(py_entry, monkeypatch):
+    """End-to-end defer: with the user's UV_DEFAULT_INDEX already in os.environ, run_entry keeps the
+    user's value (mirror never clobbers it), while injecting the untouched python-install vector."""
+    from skit import config
+
+    config.save_mirror(config.preset("tsinghua"))
+    monkeypatch.setenv("UV_DEFAULT_INDEX", "https://user/own/simple")
+    monkeypatch.delenv("UV_PYTHON_INSTALL_MIRROR", raising=False)
+    seen_env = _capture_run_env(monkeypatch, py_entry)
+    assert seen_env["UV_DEFAULT_INDEX"] == "https://user/own/simple"
+    assert seen_env["UV_PYTHON_INSTALL_MIRROR"] == config.PYTHON_INSTALL_MIRROR

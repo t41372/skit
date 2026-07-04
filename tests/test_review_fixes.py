@@ -439,6 +439,10 @@ def test_ensure_uv_downloaded_success(monkeypatch, tmp_path):
         return exe
 
     monkeypatch.setattr(uvman, "_extract_uv", _fake_extract)
+    # This test exercises the success-path plumbing (progress print -> download/extract -> return),
+    # not integrity checking, and its stubbed download writes no bytes; the SHA256 gate has its own
+    # dedicated coverage in tests/test_uvman.py, so no-op it here.
+    monkeypatch.setattr(uvman, "_verify_checksum", lambda archive, triple: None)
 
     # Patch urlopen + shutil.copyfileobj so no real download or temp-file write occurs
     import shutil as _shutil

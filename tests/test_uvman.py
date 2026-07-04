@@ -6,6 +6,7 @@ version's download URLs are live on all three platforms before committing.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import urllib.request
@@ -26,6 +27,7 @@ TRIPLES = [
     "x86_64-apple-darwin",
     "aarch64-apple-darwin",
     "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
 ]
 
 
@@ -36,6 +38,19 @@ def test_pinned_uv_release_exists(triple: str) -> None:
     req = urllib.request.Request(url, method="HEAD")
     with urllib.request.urlopen(req, timeout=30) as resp:
         assert resp.status == 200
+
+
+@net
+@pytest.mark.parametrize("triple", TRIPLES)
+def test_pinned_sha256_matches_live_sidecar(triple: str) -> None:
+    """A future UV_VERSION bump that forgets to refresh _UV_SHA256 must fail loudly here: every
+    pinned hash must equal the official `.sha256` sidecar for that release archive. Built from the
+    canonical GitHub release base (not download_url) so a configured mirror can't skew the check."""
+    ext = "zip" if "windows" in triple else "tar.gz"
+    sidecar = f"{uvman._UV_RELEASES}/{uvman.UV_VERSION}/uv-{triple}.{ext}.sha256"
+    with urllib.request.urlopen(sidecar, timeout=30) as resp:
+        official = resp.read().decode().split()[0].strip()
+    assert official == uvman._UV_SHA256[triple]
 
 
 # ---- Download consent (_ask_consent), no network ----
@@ -202,3 +217,134 @@ def test_ensure_uv_network_error_wrapped(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr("urllib.request.urlopen", _fail)
     with pytest.raises(uvman.UvDownloadError):
         uvman.ensure_uv_downloaded(quiet=True)
+
+
+def test_download_url_uses_configured_mirror(monkeypatch, tmp_path):
+    monkeypatch.setenv("SKIT_CONFIG_DIR", str(tmp_path))
+    from skit import config
+
+    config.save_mirror(config.preset("tsinghua"))
+    url = uvman.download_url("aarch64-apple-darwin")
+    assert url.startswith(config.UV_BINARY_MIRROR)
+    assert f"{uvman.UV_VERSION}/uv-aarch64-apple-darwin.tar.gz" in url
+
+
+def test_download_url_defaults_to_github_without_mirror(monkeypatch, tmp_path):
+    monkeypatch.setenv("SKIT_CONFIG_DIR", str(tmp_path))
+    url = uvman.download_url("x86_64-unknown-linux-gnu")
+    assert url.startswith("https://github.com/astral-sh/uv/releases/download")
+    assert url.endswith(".tar.gz")
+
+
+def test_download_url_github_when_uv_binary_blank(monkeypatch, tmp_path):
+    """(e) Mirror enabled but uv_binary left blank -> fall back to the GitHub release base."""
+    monkeypatch.setenv("SKIT_CONFIG_DIR", str(tmp_path))
+    from skit import config
+
+    config.save_mirror(config.MirrorConfig(enabled=True, pypi="https://x/simple", uv_binary=""))
+    url = uvman.download_url("aarch64-apple-darwin")
+    assert url.startswith("https://github.com/astral-sh/uv/releases/download")
+    assert f"{uvman.UV_VERSION}/uv-aarch64-apple-darwin.tar.gz" in url
+
+
+# ---- SHA256 pinning + checksum verification (F3, no network) ----------
+
+
+def _fake_urlopen(data: bytes):
+    """A urllib.request.urlopen stand-in that serves fixed bytes (as a BytesIO context manager),
+    so ensure_uv_downloaded's shutil.copyfileobj writes exactly `data` to the archive."""
+
+    def _open(url, timeout=None):  # signature match for urlopen(url, timeout=...)
+        return io.BytesIO(data)
+
+    return _open
+
+
+def test_uv_sha256_covers_every_producible_triple(monkeypatch) -> None:
+    """The pinned table must key on exactly the triples _triple() can emit —
+    {x86_64, aarch64} x {apple-darwin, unknown-linux-gnu, pc-windows-msvc} — so no reachable
+    platform is left without a hash to verify against."""
+    produced: set[str] = set()
+    for machine in ("x86_64", "arm64"):
+        for plat in ("darwin", "win32", "linux"):
+            monkeypatch.setattr("platform.machine", lambda m=machine: m)
+            monkeypatch.setattr("sys.platform", plat)
+            produced.add(uvman._triple())
+    assert len(produced) == 6
+    assert set(uvman._UV_SHA256) == produced
+    # Each pinned value is a 64-char lowercase-hex SHA256 digest.
+    assert all(
+        len(h) == 64 and all(c in "0123456789abcdef" for c in h) for h in uvman._UV_SHA256.values()
+    )
+
+
+def test_checksum_pass_proceeds_to_extraction(monkeypatch, tmp_path) -> None:
+    """When the archive's SHA256 equals the pinned hash, the checksum gate opens and control
+    reaches extraction (stubbed to a sentinel); ensure_uv_downloaded returns the extracted path."""
+    data = b"known-good-uv-archive-bytes"
+    triple = "x86_64-unknown-linux-gnu"
+    monkeypatch.setattr(uvman, "_triple", lambda: triple)
+    monkeypatch.setattr(uvman, "_UV_SHA256", {triple: hashlib.sha256(data).hexdigest()})
+    monkeypatch.setattr("skit.uvman.private_bin_dir", lambda: tmp_path / "bin")
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen(data))
+
+    seen: dict[str, bytes] = {}
+
+    def _fake_extract(archive: Path, dest_dir: Path) -> Path:
+        # Capture the archive bytes now, while the download's TemporaryDirectory still exists,
+        # to prove the verified bytes are exactly what reached extraction.
+        seen["archive_bytes"] = archive.read_bytes()
+        return dest_dir / "uv"
+
+    monkeypatch.setattr(uvman, "_extract_uv", _fake_extract)
+
+    result = uvman.ensure_uv_downloaded(quiet=True)
+    assert seen, "extraction was not reached — the checksum gate did not pass"
+    assert result == str(tmp_path / "bin" / "uv")
+    assert seen["archive_bytes"] == data
+
+
+def test_checksum_mismatch_raises_checksum_error_not_generic(monkeypatch, tmp_path) -> None:
+    """A tampered/corrupt archive (hash != pinned) fails closed with the checksum message — NOT the
+    generic 'Failed to download' wrapper — and extraction is never reached."""
+    data = b"tampered-bytes-from-a-hostile-mirror"
+    pinned = "00" * 32  # a valid-shaped but wrong digest
+    triple = "x86_64-unknown-linux-gnu"
+    monkeypatch.setattr(uvman, "_triple", lambda: triple)
+    monkeypatch.setattr(uvman, "_UV_SHA256", {triple: pinned})
+    monkeypatch.setattr("skit.uvman.private_bin_dir", lambda: tmp_path / "bin")
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen(data))
+
+    extracted = {"called": False}
+    monkeypatch.setattr(uvman, "_extract_uv", lambda *a: extracted.__setitem__("called", True))
+
+    with pytest.raises(uvman.UvDownloadError) as exc_info:
+        uvman.ensure_uv_downloaded(quiet=True)
+
+    msg = str(exc_info.value)
+    assert "checksum" in msg.lower()  # distinguishes it from the generic download failure
+    assert "Failed to download" not in msg
+    assert pinned in msg  # expected digest surfaced
+    assert hashlib.sha256(data).hexdigest() in msg  # actual digest surfaced
+    assert extracted["called"] is False  # a mismatched archive is never extracted
+
+
+def test_checksum_fail_closed_when_triple_unpinned(monkeypatch, tmp_path) -> None:
+    """If the platform triple has no pinned hash, refuse rather than run an unverified binary:
+    raise UvDownloadError (not the generic wrapper) and never extract."""
+    triple = "x86_64-unknown-linux-gnu"
+    monkeypatch.setattr(uvman, "_triple", lambda: triple)
+    monkeypatch.setattr(uvman, "_UV_SHA256", {})  # no pin for anything
+    monkeypatch.setattr("skit.uvman.private_bin_dir", lambda: tmp_path / "bin")
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen(b"whatever"))
+
+    extracted = {"called": False}
+    monkeypatch.setattr(uvman, "_extract_uv", lambda *a: extracted.__setitem__("called", True))
+
+    with pytest.raises(uvman.UvDownloadError) as exc_info:
+        uvman.ensure_uv_downloaded(quiet=True)
+
+    msg = str(exc_info.value)
+    assert triple in msg
+    assert "Failed to download" not in msg
+    assert extracted["called"] is False  # never extract an unverifiable binary
