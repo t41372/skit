@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: skit 0.0.1\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-07-04 10:37-0700\n"
+"POT-Creation-Date: 2026-07-04 10:44-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -66,6 +66,10 @@ msgstr ""
 
 #: src/skit/cli.py:176
 msgid "Which ones should skit manage? (e.g. 1,3 / all / none)"
+msgstr ""
+
+#: src/skit/cli.py:184
+msgid "Add a script, executable, or command to skit."
 msgstr ""
 
 #: src/skit/cli.py:186
@@ -166,6 +170,10 @@ msgstr ""
 msgid "Run it: skit run %(name)s"
 msgstr ""
 
+#: src/skit/cli.py:306
+msgid "List every registered script."
+msgstr ""
+
 #: src/skit/cli.py:308
 msgid "Output as JSON"
 msgstr ""
@@ -185,6 +193,10 @@ msgstr ""
 
 #: src/skit/cli.py:337 src/skit/tui.py:393
 msgid "Description"
+msgstr ""
+
+#: src/skit/cli.py:343
+msgid "Remove a registered script (the original file is left untouched)."
 msgstr ""
 
 #: src/skit/cli.py:345 src/skit/cli.py:457 src/skit/cli.py:555
@@ -215,6 +227,10 @@ msgstr ""
 #: src/skit/cli.py:448 src/skit/cli.py:646
 #, python-format
 msgid "Unknown preset \"%(preset)s\". Available: %(presets)s"
+msgstr ""
+
+#: src/skit/cli.py:455
+msgid "Run a registered script or command in the terminal."
 msgstr ""
 
 #: src/skit/cli.py:459
@@ -260,6 +276,10 @@ msgstr ""
 msgid "Manage named parameter presets for a script."
 msgstr ""
 
+#: src/skit/cli.py:553
+msgid "Save a set of parameter values as a named preset."
+msgstr ""
+
 #: src/skit/cli.py:556 src/skit/cli.py:630
 msgid "Preset name"
 msgstr ""
@@ -279,14 +299,26 @@ msgstr ""
 msgid "Secret values are never stored in presets; skipped: %(names)s"
 msgstr ""
 
+#: src/skit/cli.py:603
+msgid "List a script's saved presets."
+msgstr ""
+
 #: src/skit/cli.py:617
 #, python-format
 msgid "No presets for %(name)s yet. Create one with: skit preset save %(name)s <preset>"
 msgstr ""
 
+#: src/skit/cli.py:627
+msgid "Delete a named preset from a script."
+msgstr ""
+
 #: src/skit/cli.py:640
 #, python-format
 msgid "Preset \"%(preset)s\" deleted from %(name)s."
+msgstr ""
+
+#: src/skit/cli.py:656
+msgid "Show a script's managed parameters and their last-used values."
 msgstr ""
 
 #: src/skit/cli.py:673 src/skit/cli.py:691 src/skit/cli.py:812
@@ -325,6 +357,10 @@ msgstr ""
 
 #: src/skit/cli.py:718 src/skit/tui.py:206 src/skit/tui.py:207
 msgid "yes"
+msgstr ""
+
+#: src/skit/cli.py:738
+msgid "Edit a script's managed parameter definitions."
 msgstr ""
 
 #: src/skit/cli.py:744
@@ -390,6 +426,10 @@ msgstr ""
 msgid "Updated %(name)s. Managed parameters: %(names)s"
 msgstr ""
 
+#: src/skit/cli.py:847
+msgid "View or update a script's dependencies and Python constraint."
+msgstr ""
+
 #: src/skit/cli.py:853
 msgid "New dependency list, comma separated (an empty string clears it)"
 msgstr ""
@@ -412,6 +452,10 @@ msgstr ""
 #: src/skit/cli.py:893
 #, python-format
 msgid "Dependencies of %(name)s updated: %(deps)s"
+msgstr ""
+
+#: src/skit/cli.py:897
+msgid "Check that uv is available and the script store is intact."
 msgstr ""
 
 #: src/skit/cli.py:900
@@ -442,6 +486,10 @@ msgstr ""
 #: src/skit/cli.py:931
 #, python-format
 msgid "%(name)s: reference source file is gone"
+msgstr ""
+
+#: src/skit/cli.py:936
+msgid "Show or set the interface language."
 msgstr ""
 
 #: src/skit/cli.py:940

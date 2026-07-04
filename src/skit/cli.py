@@ -181,7 +181,7 @@ def _onboard_params(text: str, script_name: str, no_input: bool) -> list[metawri
     return [_spec_from_candidate(result.candidates[i]) for i in picked]
 
 
-@app.command()
+@app.command(help=gettext("Add a script, executable, or command to skit."))
 def add(
     path: str = typer.Argument(None, help=gettext("Path to a Python script or executable")),
     name: str = typer.Option(
@@ -303,7 +303,7 @@ def add(
     console.print(f"  {gettext('Run it: skit run %(name)s') % {'name': entry.meta.name}}")
 
 
-@app.command("list")
+@app.command("list", help=gettext("List every registered script."))
 def list_cmd(
     as_json: bool = typer.Option(False, "--json", help=gettext("Output as JSON")),
 ) -> None:
@@ -340,7 +340,7 @@ def list_cmd(
     console.print(table)
 
 
-@app.command()
+@app.command(help=gettext("Remove a registered script (the original file is left untouched)."))
 def remove(
     name: str = typer.Argument(..., help=gettext("Script name or slug")),
     yes: bool = typer.Option(False, "--yes", "-y", help=gettext("Skip confirmation")),
@@ -452,7 +452,7 @@ def _validate_preset(entry: store.Entry, preset: str | None) -> None:
         raise typer.Exit(2)
 
 
-@app.command()
+@app.command(help=gettext("Run a registered script or command in the terminal."))
 def run(
     name: str = typer.Argument(..., help=gettext("Script name or slug")),
     args: list[str] = typer.Argument(
@@ -550,7 +550,7 @@ preset_app = typer.Typer(
 app.add_typer(preset_app, name="preset")
 
 
-@preset_app.command("save")
+@preset_app.command("save", help=gettext("Save a set of parameter values as a named preset."))
 def preset_save(
     name: str = typer.Argument(..., help=gettext("Script name or slug")),
     preset_name: str = typer.Argument(..., help=gettext("Preset name")),
@@ -600,7 +600,7 @@ def preset_save(
     )
 
 
-@preset_app.command("list")
+@preset_app.command("list", help=gettext("List a script's saved presets."))
 def preset_list(
     name: str = typer.Argument(..., help=gettext("Script name or slug")),
 ) -> None:
@@ -624,7 +624,7 @@ def preset_list(
         console.print(f"  [bold]{pname}[/bold]: {pairs}")
 
 
-@preset_app.command("delete")
+@preset_app.command("delete", help=gettext("Delete a named preset from a script."))
 def preset_delete(
     name: str = typer.Argument(..., help=gettext("Script name or slug")),
     preset_name: str = typer.Argument(..., help=gettext("Preset name")),
@@ -653,7 +653,7 @@ def preset_delete(
         raise typer.Exit(1)
 
 
-@app.command()
+@app.command(help=gettext("Show a script's managed parameters and their last-used values."))
 def params(
     name: str = typer.Argument(..., help=gettext("Script name or slug")),
 ) -> None:
@@ -735,7 +735,7 @@ def _parse_prompt_opts(raw: list[str]) -> tuple[dict[str, str], list[str]]:
     return prompts, bad
 
 
-@app.command()
+@app.command(help=gettext("Edit a script's managed parameter definitions."))
 def edit(
     name: str = typer.Argument(..., help=gettext("Script name or slug")),
     resync: bool = typer.Option(
@@ -844,7 +844,7 @@ def edit(
     )
 
 
-@app.command()
+@app.command(help=gettext("View or update a script's dependencies and Python constraint."))
 def deps(
     name: str = typer.Argument(..., help=gettext("Script name or slug")),
     set_deps: str = typer.Option(
@@ -894,7 +894,7 @@ def deps(
     )
 
 
-@app.command()
+@app.command(help=gettext("Check that uv is available and the script store is intact."))
 def doctor(
     rebuild: bool = typer.Option(
         False, "--rebuild", help=gettext("Rebuild the index from each script's meta.toml")
@@ -933,7 +933,7 @@ def doctor(
     raise typer.Exit(0 if uv else 1)
 
 
-@app.command()
+@app.command(help=gettext("Show or set the interface language."))
 def lang(
     value: str = typer.Argument(
         None,
