@@ -1,0 +1,3 @@
+VERBOSE = True
+DRY_RUN = False
+print(VERBOSE, DRY_RUN)

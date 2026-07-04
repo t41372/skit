@@ -1,0 +1,59 @@
+# prek (a Rust rewrite of pre-commit, fully compatible with this config file):
+# `prek install` installs the hook, `prek run -a` runs everything.
+# ruff / ty / zizmor always go through `uv run`; their versions have a single source of
+# truth in pyproject's [dependency-groups].dev — no separate revs pinned here, so the two
+# places can never drift apart.
+default_install_hook_types: [pre-commit, commit-msg]
+minimum_pre_commit_version: "3.5.0"
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: ty
+        name: ty check
+        entry: uv run ty check
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false
+        require_serial: true
+
+      - id: zizmor
+        name: zizmor (GitHub Actions audit)
+        entry: uv run zizmor
+        language: system
+        files: ^\.github/workflows/.*\.ya?ml$
+        require_serial: true
+
+      - id: i18n-compile
+        name: compile i18n catalogs (.po -> .mo)
+        entry: uv run python scripts/i18n.py compile
+        language: system
+        files: ^src/skit/locales/.*\.po$
+        pass_filenames: false
+        require_serial: true

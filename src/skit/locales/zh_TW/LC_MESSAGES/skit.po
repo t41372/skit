@@ -1,0 +1,726 @@
+# Chinese (Traditional, Taiwan) translations for skit.
+# Copyright (C) 2026 ORGANIZATION
+# This file is distributed under the same license as the skit project.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: skit 0.0.1\n"
+"Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
+"POT-Creation-Date: 2026-07-04 10:37-0700\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_TW\n"
+"Language-Team: zh_TW <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: src/skit/cli.py:35
+msgid "skit — a script launcher and parameter manager. Run it without a subcommand to open the main menu."
+msgstr "skit — 腳本啟動器 + 參數管家。不帶子命令執行即進入主選單。"
+
+#: src/skit/cli.py:47
+msgid "Show version"
+msgstr "顯示版本"
+
+#: src/skit/cli.py:72
+#, python-format
+msgid "PEP 723 metadata found: %(deps)s"
+msgstr "偵測到 PEP 723 metadata:%(deps)s"
+
+#: src/skit/cli.py:83
+msgid "Dependencies (comma separated; leave empty for none)"
+msgstr "依賴(逗號分隔,留空表示不需要)"
+
+#: src/skit/cli.py:89
+msgid "Python version (leave empty for automatic)"
+msgstr "Python 版本(留空 = 自動)"
+
+#: src/skit/cli.py:138
+#, python-format
+msgid "This script already parses its own arguments (%(names)s). Pass them straight through instead: skit run %(name)s -- <args>"
+msgstr "這個腳本已自帶參數解析(%(names)s)。直接透傳參數即可:skit run %(name)s -- <args>"
+
+#: src/skit/cli.py:148
+#, python-format
+msgid "Found %(count)s parameter candidate (constants / input() calls):"
+msgid_plural "Found %(count)s parameter candidates (constants / input() calls):"
+msgstr[0] "找到 %(count)s 個候選參數(寫死常量 / input() 呼叫):"
+
+#: src/skit/cli.py:154
+msgid " (secret)"
+msgstr " (secret)"
+
+#: src/skit/cli.py:160
+#, python-format
+msgid "%(num)s. %(name)s (%(type)s) = %(value)s%(secret)s"
+msgstr "%(num)s. %(name)s(%(type)s)= %(value)s%(secret)s"
+
+#: src/skit/cli.py:172
+#, python-format
+msgid "%(num)s. input() #%(ordinal)s: %(prompt)s%(secret)s"
+msgstr "%(num)s. input() 第 %(ordinal)s 個:%(prompt)s%(secret)s"
+
+#: src/skit/cli.py:176
+msgid "Which ones should skit manage? (e.g. 1,3 / all / none)"
+msgstr "哪些交給 skit 管理?(編號如 1,3 / all / none)"
+
+#: src/skit/cli.py:186
+msgid "Path to a Python script or executable"
+msgstr "Python 腳本或可執行檔路徑"
+
+#: src/skit/cli.py:188
+msgid "Name / alias (defaults to the file name)"
+msgstr "名稱 / alias(預設用檔名)"
+
+#: src/skit/cli.py:194
+msgid "Description (defaults to the first line of the docstring)"
+msgstr "描述(預設抓 docstring 首行)"
+
+#: src/skit/cli.py:199
+msgid "Reference mode: link to the original file instead of copying it"
+msgstr "reference 模式:不複製,連結原檔"
+
+#: src/skit/cli.py:201
+msgid "Register as an executable entry"
+msgstr "登記為可執行檔條目"
+
+#: src/skit/cli.py:203
+#, python-brace-format
+msgid "Register a command template, e.g. --cmd 'ffmpeg -i {input}'"
+msgstr "登記命令模板,如 --cmd 'ffmpeg -i {input}'"
+
+#: src/skit/cli.py:208
+msgid "Dependencies, comma separated (skips the interactive question)"
+msgstr "依賴清單,逗號分隔(跳過互動詢問)"
+
+#: src/skit/cli.py:211 src/skit/cli.py:856
+msgid "Python version constraint, e.g. \">=3.11\""
+msgstr "Python 版本約束,如 \">=3.11\""
+
+#: src/skit/cli.py:214
+msgid "Never prompt; accept the detected suggestions"
+msgstr "永不詢問;直接採用偵測到的建議"
+
+#: src/skit/cli.py:221
+msgid "A --cmd entry needs a --name"
+msgstr "--cmd 條目必須指定 --name"
+
+#: src/skit/cli.py:227
+#, python-format
+msgid "Detected parameters: %(names)s (you'll be prompted on each run; your last values are remembered)"
+msgstr "偵測到參數:%(names)s(每次執行時會詢問;會記住上次的值)"
+
+#: src/skit/cli.py:233
+msgid "--exe requires a path"
+msgstr "--exe 需要提供路徑"
+
+#: src/skit/cli.py:239
+msgid "Provide a script path, or use --cmd to register a command template"
+msgstr "請提供腳本路徑,或用 --cmd 登記命令模板"
+
+#: src/skit/cli.py:245
+#, python-format
+msgid "%(file)s isn't a .py file — pass --exe if it's an executable"
+msgstr "%(file)s 不是 .py 檔;若是可執行檔請加 --exe"
+
+#: src/skit/cli.py:260
+#, python-format
+msgid "Dependencies recorded: %(deps)s"
+msgstr "依賴已記錄:%(deps)s"
+
+#: src/skit/cli.py:267
+msgid "Reference mode never touches the original file, so parameter setup was skipped."
+msgstr "reference 模式絕不改動原檔;略過參數設定。"
+
+#: src/skit/cli.py:280
+#, python-format
+msgid "Parameter definitions written to the script's [tool.skit] block: %(names)s"
+msgstr "參數定義已寫入腳本的 [tool.skit] 區塊:%(names)s"
+
+#: src/skit/cli.py:288
+#, python-format
+msgid "Secret parameter values are never saved to disk: %(names)s"
+msgstr "secret 參數的值永不落地:%(names)s"
+
+#: src/skit/cli.py:294
+#, python-format
+msgid "(%(mode)s mode)"
+msgstr "(%(mode)s 模式)"
+
+#: src/skit/cli.py:299
+#, python-format
+msgid "Added: %(name)s"
+msgstr "已加入:%(name)s"
+
+#: src/skit/cli.py:302
+#, python-format
+msgid "Description: %(desc)s"
+msgstr "描述:%(desc)s"
+
+#: src/skit/cli.py:303
+#, python-format
+msgid "Run it: skit run %(name)s"
+msgstr "執行:skit run %(name)s"
+
+#: src/skit/cli.py:308
+msgid "Output as JSON"
+msgstr "以 JSON 輸出"
+
+#: src/skit/cli.py:332
+msgid "No scripts yet. Add one with: skit add <path>"
+msgstr "還沒有任何腳本。用 skit add <path> 加一個。"
+
+#: src/skit/cli.py:335 src/skit/tui.py:393
+msgid "Name"
+msgstr "名稱"
+
+#: src/skit/cli.py:336 src/skit/cli.py:698 src/skit/tui.py:184
+#: src/skit/tui.py:393
+msgid "Kind"
+msgstr "類型"
+
+#: src/skit/cli.py:337 src/skit/tui.py:393
+msgid "Description"
+msgstr "描述"
+
+#: src/skit/cli.py:345 src/skit/cli.py:457 src/skit/cli.py:555
+#: src/skit/cli.py:605 src/skit/cli.py:629 src/skit/cli.py:658
+#: src/skit/cli.py:740 src/skit/cli.py:849
+msgid "Script name or slug"
+msgstr "腳本名稱或 slug"
+
+#: src/skit/cli.py:346
+msgid "Skip confirmation"
+msgstr "跳過確認"
+
+#: src/skit/cli.py:355 src/skit/tui.py:72
+#, python-format
+msgid "Remove \"%(name)s\"?"
+msgstr "確定移除「%(name)s」?"
+
+#: src/skit/cli.py:357
+#, python-format
+msgid "Removed: %(name)s"
+msgstr "已移除:%(name)s"
+
+#: src/skit/cli.py:410 src/skit/tui.py:517
+#, python-format
+msgid "Parameters for %(name)s (press Enter to keep the value shown):"
+msgstr "%(name)s 的參數(按 Enter 沿用顯示的值):"
+
+#: src/skit/cli.py:448 src/skit/cli.py:646
+#, python-format
+msgid "Unknown preset \"%(preset)s\". Available: %(presets)s"
+msgstr "沒有名為「%(preset)s」的 preset。現有:%(presets)s"
+
+#: src/skit/cli.py:459
+msgid "Arguments passed through to the script (after --)"
+msgstr "透傳給腳本的參數(接在 -- 之後)"
+
+#: src/skit/cli.py:462
+msgid "Never prompt; reuse last values and defaults"
+msgstr "永不詢問;沿用上次的值 / 預設值"
+
+#: src/skit/cli.py:468
+msgid "Named preset of parameter values to prefill the form with"
+msgstr "用哪組具名 preset 預填表單"
+
+#: src/skit/cli.py:474
+msgid "Skip the parameter form and injection and run the script as-is (escape hatch)"
+msgstr "跳過參數表單與注入,原樣執行腳本(逃生門)"
+
+#: src/skit/cli.py:491
+msgid "Raw mode: skipping the parameter form and injection."
+msgstr "raw 模式:已跳過參數表單與注入。"
+
+#: src/skit/cli.py:506 src/skit/tui.py:538
+#, python-format
+msgid "Can't inject parameters into %(name)s: targets not found (%(detail)s). The script may have drifted from its [tool.skit] definitions — re-add it or edit the block."
+msgstr "無法把參數注入 %(name)s:找不到目標(%(detail)s)。腳本內容可能已偏離其 [tool.skit] 定義——請重新 add 或編輯該區塊。"
+
+#: src/skit/cli.py:511
+msgid "Values are injected at run time; the stored copy of your script is never modified."
+msgstr "值在執行時注入;倉庫中的腳本副本永不改動。"
+
+#: src/skit/cli.py:522
+#, python-format
+msgid "Reusing your last arguments: %(args)s"
+msgstr "沿用上次的參數:%(args)s"
+
+#: src/skit/cli.py:542
+#, python-format
+msgid "Script exited with code %(code)s"
+msgstr "腳本以 exit code %(code)s 結束"
+
+#: src/skit/cli.py:548
+msgid "Manage named parameter presets for a script."
+msgstr "管理腳本的具名參數 preset。"
+
+#: src/skit/cli.py:556 src/skit/cli.py:630
+msgid "Preset name"
+msgstr "preset 名稱"
+
+#: src/skit/cli.py:570 src/skit/cli.py:585
+#, python-format
+msgid "%(name)s has no managed parameters or placeholders, so there's nothing to save."
+msgstr "%(name)s 沒有受管理的參數或佔位符;沒東西可存 preset。"
+
+#: src/skit/cli.py:580 src/skit/cli.py:599
+#, python-format
+msgid "Preset \"%(preset)s\" saved for %(name)s."
+msgstr "已為 %(name)s 儲存 preset「%(preset)s」。"
+
+#: src/skit/cli.py:593
+#, python-format
+msgid "Secret values are never stored in presets; skipped: %(names)s"
+msgstr "secret 值永不存入 preset;已略過:%(names)s"
+
+#: src/skit/cli.py:617
+#, python-format
+msgid "No presets for %(name)s yet. Create one with: skit preset save %(name)s <preset>"
+msgstr "%(name)s 沒有任何 preset。建立:skit preset save %(name)s <preset>"
+
+#: src/skit/cli.py:640
+#, python-format
+msgid "Preset \"%(preset)s\" deleted from %(name)s."
+msgstr "已從 %(name)s 刪除 preset「%(preset)s」。"
+
+#: src/skit/cli.py:673 src/skit/cli.py:691 src/skit/cli.py:812
+#, python-format
+msgid "%(name)s has no managed parameters. Re-add the script or edit its [tool.skit] block to define some."
+msgstr "%(name)s 沒有受管理的參數。重新 add 或手動編輯其 [tool.skit] 區塊即可定義。"
+
+#: src/skit/cli.py:678
+msgid "Command template placeholders (you'll be asked on each run):"
+msgstr "命令模板佔位符(每次執行時詢問):"
+
+#: src/skit/cli.py:697 src/skit/tui.py:183
+msgid "Parameter"
+msgstr "參數"
+
+#: src/skit/cli.py:699 src/skit/tui.py:185
+msgid "Type"
+msgstr "型別"
+
+#: src/skit/cli.py:700
+msgid "Default"
+msgstr "預設值"
+
+#: src/skit/cli.py:701 src/skit/cli.py:808 src/skit/tui.py:116
+#: src/skit/tui.py:187
+msgid "Secret"
+msgstr "Secret"
+
+#: src/skit/cli.py:702
+msgid "Last value"
+msgstr "上次的值"
+
+#: src/skit/cli.py:705 src/skit/cli.py:709
+msgid "•••"
+msgstr "•••"
+
+#: src/skit/cli.py:718 src/skit/tui.py:206 src/skit/tui.py:207
+msgid "yes"
+msgstr "是"
+
+#: src/skit/cli.py:744
+msgid "Prune definitions that no longer match the script and refresh changed types"
+msgstr "修剪已對不上腳本的定義,並更新型別已變的項"
+
+#: src/skit/cli.py:749
+msgid "Bring a currently detected candidate under management (repeatable)"
+msgstr "把當前偵測到的候選納入管理(可重複)"
+
+#: src/skit/cli.py:752
+msgid "Drop a managed parameter (repeatable)"
+msgstr "移除一個受管理的參數(可重複)"
+
+#: src/skit/cli.py:755
+msgid "Mark a managed parameter as secret (repeatable)"
+msgstr "把某受管理參數標為 secret(可重複)"
+
+#: src/skit/cli.py:760
+msgid "Remove the secret mark from a managed parameter (repeatable)"
+msgstr "取消某受管理參數的 secret 標記(可重複)"
+
+#: src/skit/cli.py:763
+msgid "Set a parameter's form prompt, as NAME=text (repeatable)"
+msgstr "以 NAME=text 設定參數的表單提示(可重複)"
+
+#: src/skit/cli.py:775
+#, python-format
+msgid "%(name)s isn't a Python script; only Python entries have managed parameters."
+msgstr "%(name)s 不是 Python 腳本;只有 Python 條目有受管理的參數。"
+
+#: src/skit/cli.py:782
+#, python-format
+msgid "%(name)s is in reference mode, and skit never writes the original file. Edit the [tool.skit] block in the source directly."
+msgstr "%(name)s 是 reference 模式;skit 絕不寫原檔。請直接改原檔的 [tool.skit] 區塊。"
+
+#: src/skit/cli.py:788
+#, python-format
+msgid "%(name)s has no stored copy to edit."
+msgstr "%(name)s 沒有可編輯的副本。"
+
+#: src/skit/cli.py:797
+#, python-format
+msgid "Ignored a malformed --prompt value: %(item)s (expected NAME=text)."
+msgstr "已忽略格式錯誤的 --prompt 值:%(item)s(應為 NAME=text)。"
+
+#: src/skit/cli.py:805
+#, python-format
+msgid "Managed parameters for %(name)s:"
+msgstr "%(name)s 受管理的參數:"
+
+#: src/skit/cli.py:817
+#, python-format
+msgid "Detected but not yet managed: %(names)s (use --add to manage them)"
+msgstr "偵測到但未納管:%(names)s(用 --add 納入管理)"
+
+#: src/skit/cli.py:822
+msgid "Use --resync, --add, --remove, --secret/--no-secret, or --prompt NAME=text to make changes."
+msgstr "用 --resync、--add、--remove、--secret/--no-secret 或 --prompt NAME=text 來編輯。"
+
+#: src/skit/cli.py:843
+#, python-format
+msgid "Updated %(name)s. Managed parameters: %(names)s"
+msgstr "已更新 %(name)s。受管理的參數:%(names)s"
+
+#: src/skit/cli.py:853
+msgid "New dependency list, comma separated (an empty string clears it)"
+msgstr "新依賴清單,逗號分隔(空字串清空)"
+
+#: src/skit/cli.py:868
+#, python-format
+msgid "%(name)s is not a Python script entry."
+msgstr "%(name)s 不是 Python 腳本條目。"
+
+#: src/skit/cli.py:874
+#, python-format
+msgid "Dependencies of %(name)s: %(deps)s"
+msgstr "%(name)s 的依賴:%(deps)s"
+
+#: src/skit/cli.py:879
+#, python-format
+msgid "Python constraint: %(python)s"
+msgstr "Python 版本約束:%(python)s"
+
+#: src/skit/cli.py:893
+#, python-format
+msgid "Dependencies of %(name)s updated: %(deps)s"
+msgstr "%(name)s 的依賴已更新:%(deps)s"
+
+#: src/skit/cli.py:900
+msgid "Rebuild the index from each script's meta.toml"
+msgstr "從各腳本的 meta.toml 重建索引"
+
+#: src/skit/cli.py:909
+#, python-format
+msgid "uv: %(path)s"
+msgstr "uv:%(path)s"
+
+#: src/skit/cli.py:912
+msgid "uv: not found. Install it from https://docs.astral.sh/uv/getting-started/installation/"
+msgstr "uv:未找到。安裝方式:https://docs.astral.sh/uv/getting-started/installation/"
+
+#: src/skit/cli.py:917
+#, python-format
+msgid "Index rebuilt: %(count)s entry"
+msgid_plural "Index rebuilt: %(count)s entries"
+msgstr[0] "索引已重建:%(count)s 條"
+
+#: src/skit/cli.py:923
+#, python-format
+msgid "Registered scripts: %(count)s"
+msgstr "已登記腳本:%(count)s 條"
+
+#: src/skit/cli.py:931
+#, python-format
+msgid "%(name)s: reference source file is gone"
+msgstr "%(name)s:reference 原檔已消失"
+
+#: src/skit/cli.py:940
+msgid "A language tag such as en / zh-TW / zh-CN, or \"auto\" to clear the override"
+msgstr "語言標籤,如 en / zh-TW / zh-CN;填 \"auto\" 清除覆寫"
+
+#: src/skit/cli.py:946 src/skit/cli.py:952
+#, python-format
+msgid "Active language: %(locale)s"
+msgstr "目前語言:%(locale)s"
+
+#: src/skit/cli.py:947
+#, python-format
+msgid "Available: %(locales)s"
+msgstr "可用語言:%(locales)s"
+
+#: src/skit/cli.py:951
+msgid "Language override cleared — back to auto-detection."
+msgstr "已清除語言覆寫,恢復自動偵測。"
+
+#: src/skit/cli.py:956
+#, python-format
+msgid "Unknown language: %(tag)s. Available: %(locales)s"
+msgstr "未知語言:%(tag)s。可用語言:%(locales)s"
+
+#: src/skit/cli.py:960
+#, python-format
+msgid "Language set to %(locale)s"
+msgstr "語言已設為 %(locale)s"
+
+#: src/skit/launcher.py:55
+msgid "uv not found. Install it (https://docs.astral.sh/uv/) or run skit doctor for guidance."
+msgstr "找不到 uv。請先安裝 uv(https://docs.astral.sh/uv/),或執行 skit doctor 取得安裝指引。"
+
+#: src/skit/launcher.py:76
+#, python-format
+msgid "The script file doesn't exist: %(path)s"
+msgstr "腳本檔案不存在:%(path)s"
+
+#: src/skit/launcher.py:94
+#, python-format
+msgid "The executable doesn't exist: %(path)s"
+msgstr "可執行檔不存在:%(path)s"
+
+#: src/skit/launcher.py:105
+#, python-format
+msgid "Missing parameter values: %(names)s"
+msgstr "缺少參數值:%(names)s"
+
+#: src/skit/launcher.py:149
+#, python-format
+msgid "Unknown entry kind: %(kind)s"
+msgstr "未知條目類型:%(kind)s"
+
+#: src/skit/launcher.py:168
+#, python-format
+msgid "The working directory doesn't exist: %(path)s"
+msgstr "workdir 不存在:%(path)s"
+
+#: src/skit/reconcile.py:61
+#, python-format
+msgid "The parameter definitions for %(name)s have drifted from the script:"
+msgstr "%(name)s 的參數定義與腳本內容已漂移:"
+
+#: src/skit/reconcile.py:66
+#, python-format
+msgid "%(name)s: injection target no longer exists (dropped from this run's form)"
+msgstr "%(name)s:找不到注入目標(已從本次表單剔除)"
+
+#: src/skit/reconcile.py:73
+#, python-format
+msgid "%(name)s: type changed from %(old)s to %(new)s in the source (still injected — double-check the value)"
+msgstr "%(name)s:原始碼中的型別已從 %(old)s 變為 %(new)s(仍會注入,請確認值)"
+
+#: src/skit/reconcile.py:79
+msgid "To refresh the definitions, re-run `skit add` or edit the [tool.skit] block."
+msgstr "要更新定義,請重新執行 `skit add` 或手改 [tool.skit] 區塊。"
+
+#: src/skit/reconcile.py:93
+#, python-format
+msgid "%(name)s isn't a managed parameter; skipped."
+msgstr "%(name)s 不是受管理的參數;已略過。"
+
+#: src/skit/reconcile.py:94
+#, python-format
+msgid "Dropped %(name)s: it no longer exists in the script."
+msgstr "已剔除 %(name)s:腳本中已找不到。"
+
+#: src/skit/reconcile.py:95
+#, python-format
+msgid "%(name)s is already managed; skipped."
+msgstr "%(name)s 已在管理中;已略過。"
+
+#: src/skit/reconcile.py:97
+#, python-format
+msgid "%(name)s isn't a detectable parameter in the current script; skipped."
+msgstr "%(name)s 在當前腳本中偵測不到;已略過。"
+
+#: src/skit/store.py:100 src/skit/store.py:131
+#, python-format
+msgid "File not found: %(path)s"
+msgstr "找不到檔案:%(path)s"
+
+#: src/skit/store.py:158
+msgid "Command template must not be empty"
+msgstr "命令模板不可為空"
+
+#: src/skit/store.py:178
+#, python-format
+msgid "The name %(name)s is already taken (use --name to pick another)"
+msgstr "名稱已存在:%(name)s(可用 --name 指定其他名字)"
+
+#: src/skit/store.py:220
+#, python-format
+msgid "Script not found: %(name)s"
+msgstr "找不到腳本:%(name)s"
+
+#: src/skit/store.py:278
+#, python-format
+msgid "%(slug)s: meta.toml is missing; skipped"
+msgstr "%(slug)s:缺 meta.toml,已略過"
+
+#: src/skit/store.py:283
+#, python-format
+msgid "%(slug)s: meta.toml is corrupt (%(error)s); skipped"
+msgstr "%(slug)s:meta.toml 損毀(%(error)s),已略過"
+
+#: src/skit/store.py:289
+#, python-format
+msgid "%(slug)s: the referenced source file is gone: %(path)s"
+msgstr "%(slug)s:reference 原檔已消失:%(path)s"
+
+#: src/skit/tui.py:61
+msgid "Confirm"
+msgstr "確定"
+
+#: src/skit/tui.py:62 src/skit/tui.py:120
+msgid "Cancel"
+msgstr "取消"
+
+#: src/skit/tui.py:73
+msgid "[b]y[/b] confirm  /  [b]n[/b] cancel"
+msgstr "[b]y[/b] 確定  /  [b]n[/b] 取消"
+
+#: src/skit/tui.py:115
+msgid "Manage"
+msgstr "納管"
+
+#: src/skit/tui.py:117 src/skit/tui.py:188
+msgid "Prompt"
+msgstr "提示"
+
+#: src/skit/tui.py:118
+msgid "Resync"
+msgstr "對賬"
+
+#: src/skit/tui.py:119
+msgid "Save"
+msgstr "儲存"
+
+#: src/skit/tui.py:135
+#, python-format
+msgid "Parameters for %(name)s"
+msgstr "%(name)s 的參數"
+
+#: src/skit/tui.py:137 src/skit/tui.py:275
+msgid "resync: off"
+msgstr "對賬:關"
+
+#: src/skit/tui.py:141
+msgid "[b]space[/b] manage  [b]s[/b] secret  [b]p[/b] prompt  [b]r[/b] resync  [b]ctrl+s[/b] save  [b]esc[/b] cancel"
+msgstr "[b]space[/b] 納管  [b]s[/b] secret  [b]p[/b] 提示  [b]r[/b] 對賬  [b]ctrl+s[/b] 儲存  [b]esc[/b] 取消"
+
+#: src/skit/tui.py:186
+msgid "Managed"
+msgstr "納管"
+
+#: src/skit/tui.py:193
+msgid "No parameter candidates were detected in this script."
+msgstr "這個腳本偵測不到任何參數候選。"
+
+#: src/skit/tui.py:241
+#, python-format
+msgid "Form prompt for %(name)s (Enter to apply, Esc to cancel)"
+msgstr "%(name)s 的表單提示(Enter 套用,Esc 取消)"
+
+#: src/skit/tui.py:272
+msgid "resync: on — definitions that no longer match the script will be pruned when you save"
+msgstr "對賬:開 — 儲存時會剔除已對不上腳本的定義"
+
+#: src/skit/tui.py:299
+#, python-format
+msgid "Updated %(name)s. Managed: %(names)s"
+msgstr "已更新 %(name)s。受管理的參數:%(names)s"
+
+#: src/skit/tui.py:350 src/skit/tui.py:351
+msgid "Quit"
+msgstr "離開"
+
+#: src/skit/tui.py:352
+msgid "Remove"
+msgstr "刪除"
+
+#: src/skit/tui.py:355
+msgid "Params"
+msgstr "參數"
+
+#: src/skit/tui.py:356
+msgid "Run"
+msgstr "執行"
+
+#: src/skit/tui.py:376
+msgid "Press Ctrl+C again to quit"
+msgstr "再按一次 Ctrl+C 離開"
+
+#: src/skit/tui.py:382
+msgid "Type to search… (Enter to run, Ctrl+C twice to quit, Del to remove)"
+msgstr "打字搜尋…(Enter 執行,Ctrl+C 按兩次離開,Del 刪除)"
+
+#: src/skit/tui.py:413
+msgid "No scripts yet. Quit and add one with: skit add <path>"
+msgstr "還沒有任何腳本。離開後用 skit add <path> 加一個。"
+
+#: src/skit/tui.py:417
+#, python-format
+msgid "%(shown)s/%(total)s script"
+msgid_plural "%(shown)s/%(total)s scripts"
+msgstr[0] "%(shown)s/%(total)s 個腳本"
+
+#: src/skit/tui.py:459
+#, python-format
+msgid "── Running %(name)s ──"
+msgstr "── 執行 %(name)s ──"
+
+#: src/skit/tui.py:476
+#, python-format
+msgid "Error: %(error)s"
+msgstr "錯誤:%(error)s"
+
+#: src/skit/tui.py:482
+#, python-format
+msgid "── Finished (exit code %(code)s) — press Enter to return ──"
+msgstr "── 結束(exit code %(code)s),按 Enter 返回選單 ──"
+
+#: src/skit/tui.py:557
+#, python-format
+msgid "%(name)s: only Python copy-mode entries have editable parameter definitions."
+msgstr "%(name)s:只有 copy 模式的 Python 條目可以編輯參數定義。"
+
+#: src/skit/uvman.py:51
+#, python-format
+msgid "skit needs Astral's uv to run Python scripts, but it wasn't found on this system. Download uv %(version)s into skit's private directory (%(path)s)? This won't touch your PATH or global environment. [Y/n]"
+msgstr "skit 需要 Astral uv 才能執行 Python 腳本,但系統上找不到。要下載 uv %(version)s 到 skit 的私有目錄(%(path)s)嗎?不會動到你的 PATH 或全局環境。[Y/n]"
+
+#: src/skit/uvman.py:75
+#, python-format
+msgid "Unsupported platform: %(platform)s"
+msgstr "不支援的平台:%(platform)s"
+
+#: src/skit/uvman.py:106
+#, python-format
+msgid "No uv binary found inside the archive: %(path)s"
+msgstr "壓縮包內找不到 uv 執行檔:%(path)s"
+
+#: src/skit/uvman.py:124
+msgid "Download declined. Install uv yourself (https://docs.astral.sh/uv/getting-started/installation/) and skit will pick it up automatically."
+msgstr "已取消下載。你可以自行安裝 uv(https://docs.astral.sh/uv/getting-started/installation/),skit 會自動偵測並使用。"
+
+#: src/skit/uvman.py:131
+#, python-format
+msgid "First run — downloading uv %(version)s…"
+msgstr "首次執行:正在下載 uv %(version)s…"
+
+#: src/skit/uvman.py:147
+#, python-format
+msgid "Failed to download uv: %(error)s"
+msgstr "uv 下載失敗:%(error)s"
+
+#: src/skit/uvman.py:151
+#, python-format
+msgid "uv installed at: %(path)s"
+msgstr "uv 已安裝:%(path)s"
+

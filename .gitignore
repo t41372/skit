@@ -1,0 +1,26 @@
+
+reference
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Test / coverage artifacts
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+mutants/
+.mutmut-cache
+
+# Environment variables
+.env*.local
+
+# OS
+.DS_Store

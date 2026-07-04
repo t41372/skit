@@ -1,0 +1,3 @@
+OFFSET = -3
+FACTOR = +2.5
+print(OFFSET * FACTOR)

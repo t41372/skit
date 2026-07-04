@@ -1,0 +1,136 @@
+# Contributing to skit
+
+Thanks for helping out! This document explains the development workflow and the quality gates every change must pass.
+
+## Hard requirement: uv
+
+skit development is **driven entirely by [uv](https://docs.astral.sh/uv/)**. Manually assembled `pip` / `venv` environments are not supported. Every command goes through `uv run`, and uv owns the creation and syncing of the isolated environment.
+
+Install uv (pick one):
+
+```bash
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows (PowerShell)
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# If you already have Homebrew / pipx / cargo
+brew install uv        # or
+pipx install uv        # or
+cargo install --git https://github.com/astral-sh/uv uv
+```
+
+Verify:
+
+```bash
+uv --version
+```
+
+## Getting started
+
+```bash
+git clone https://github.com/user/skit
+cd skit
+
+# Create and sync the environment with dev dependencies (.venv is managed by uv)
+uv sync --dev
+
+# Run skit locally
+uv run skit --help
+```
+
+## Quality gates
+
+Every item below is a hard CI gate — all of them must be green before a merge. Please run the full set locally before opening a PR.
+
+| Purpose | Command | Notes |
+|---|---|---|
+| Lint | `uv run ruff check` | Rule set lives in `pyproject.toml` (bugbear, bandit, pylint, and more) |
+| Formatting | `uv run ruff format` | Run before submitting; CI verifies with `ruff format --check` |
+| Types | `uv run ty check` | ty in its strictest mode (`[tool.ty.rules] all = "error"`) |
+| Tests | `uv run pytest -q` | Runs across Linux/macOS/Windows × Python 3.12 / 3.13 |
+| Coverage | `uv run pytest --cov` | **Floor is 100%** (`fail_under = 100`); anything less fails |
+| Mutation testing | `uv run mutmut run` | Surviving mutants fail CI |
+| Workflow audit | `uv run zizmor .github/workflows` | Security scan for GitHub Actions |
+| i18n in sync | `uv run python scripts/i18n.py compile` | Committed `.mo` must match the `.po` sources (CI checks `git diff`) |
+
+Run the whole suite in one go (recommended before every PR):
+
+```bash
+uv run ruff format --check && \
+uv run ruff check && \
+uv run ty check && \
+uv run pytest --cov && \
+uv run mutmut run
+```
+
+## Pre-commit hooks (prek)
+
+This project uses [prek](https://github.com/j178/prek) — a faster, Rust-based, pre-commit-compatible runner — for pre-commit checks. Configuration lives in `.pre-commit-config.yaml`.
+
+```bash
+# Install the git hook (runs automatically on every commit afterwards)
+uvx prek install
+
+# Run against all files manually
+uvx prek run --all-files
+```
+
+The hooks cover ruff (lint + format), ty, a zizmor audit of `.github/workflows`, and recompiling the i18n catalogs (`.po` → `.mo`) whenever a `.po` changes.
+
+## Testing rules (important)
+
+- **The 100% coverage floor is real, and padding is not accepted.** Never use `# pragma: no cover` to hide reachable branches, and never write hollow "import-only, assert-nothing" tests to game the number. Every test must make a meaningful assertion about observable behavior.
+- **Coverage only counts when it survives mutation testing.** Coverage proves "this line executed"; mutation testing proves "this line's logic is actually pinned down by an assertion". When adding code, make sure your assertions kill the mutants mutmut generates.
+- `# pragma: no cover` is allowed only for genuinely unreachable or defensive branches, with an inline comment explaining why.
+- Secret-related behavior must have a "never touches disk" test (see the existing `argstate` tests).
+
+## Translations (i18n)
+
+User-facing strings use **GNU gettext with source-string message ids**: the English text passed to
+`gettext("…")` / `ngettext("…", "…", n)` in the source *is* the message id. The runtime uses only the
+stdlib `gettext` module (no third-party runtime dependency); [Babel](https://babel.pocoo.org/) is a
+dev-only tool for extraction and compilation. Catalogs live in
+`src/skit/locales/<locale>/LC_MESSAGES/skit.{po,mo}`; both the `.po` sources and the compiled `.mo`
+are committed (the `.mo` is what ships in the wheel and what the tests load).
+
+All workflows go through `scripts/i18n.py`:
+
+```bash
+# Changed or added a UI string? Refresh the template, sync it into every locale, then compile.
+uv run python scripts/i18n.py extract     # source strings  -> locales/skit.pot
+uv run python scripts/i18n.py update      # skit.pot         -> each locale's .po (new msgids appear untranslated)
+# …translate the new/changed msgids in each src/skit/locales/*/LC_MESSAGES/skit.po…
+uv run python scripts/i18n.py compile     # .po -> .mo  (also run by the pre-commit hook)
+
+# Add a whole new language (e.g. Japanese, French):
+uv run python scripts/i18n.py add ja      # scaffolds locales/ja/LC_MESSAGES/skit.po from the template
+```
+
+English needs no catalog — an untranslated msgid falls back to the source text. Because the id *is*
+the English, editing an English string changes its id, so `update` will (correctly) flag the
+translations as needing review. Keep the committed `.mo` in sync (`compile`) or CI will fail.
+
+> Note: command-level `--help` text (e.g. `skit add --help`) is **not** localized yet — it still comes
+> from the English function docstrings. Wiring command help through gettext is a good first
+> translation contribution.
+
+## Adding dependencies
+
+```bash
+uv add <package>            # runtime dependency
+uv add --dev <package>      # dev dependency (goes into [dependency-groups] dev)
+```
+
+Never edit `uv.lock` by hand; let uv maintain it and commit it together with your change.
+
+## Commits and PRs
+
+- Write commit messages in the imperative mood, focused on a single change.
+- In your PR, explain the motivation and the approach, and confirm every gate above is green.
+- When touching `.github/workflows/**`, run `zizmor` locally, and always pin third-party actions to a **commit SHA** (with the version tag noted in a comment beside it).
+
+## License
+
+By submitting a contribution you agree to release it under the project's [MIT License](LICENSE).
