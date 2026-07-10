@@ -147,6 +147,12 @@ ignore = [
 ]
 "scripts/i18n.py" = [
     "S603",    # dev-only maintainer tool: fixed-arg subprocess to pybabel
+    "PLR0911", # subcommand dispatcher returns once per command
+]
+"scripts/i18n_coverage.py" = [
+    "S603",    # dev-only maintainer tool: fixed-arg subprocess to pybabel extract
+    "PLR0912", # the sink-dispatch scan is inherently branchy
+    "PERF401", # explicit append loops read clearer than comprehensions in the AST walk
 ]
 "tests/**" = [
     "S101",    # assert is the point of tests

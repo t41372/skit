@@ -9,6 +9,7 @@ Usage (through uv, so Babel is on hand):
   uv run python scripts/i18n.py update         # merge the .pot into every locale's .po
   uv run python scripts/i18n.py compile        # compile .po -> .mo (run after editing any .po)
   uv run python scripts/i18n.py add <locale>   # scaffold a new locale, e.g. `add ja` or `add fr`
+  uv run python scripts/i18n.py coverage       # gate: .pot fresh, every locale 100%, nothing unwrapped
 
 Adding UI strings:   extract -> update -> translate the new msgids in each .po -> compile
 Adding a language:   add <locale> -> translate -> compile
@@ -82,6 +83,10 @@ def main(argv: list[str]) -> int:
         return compile_()
     if cmd == "add" and rest:
         return add(rest[0])
+    if cmd == "coverage":
+        from i18n_coverage import main as coverage_main
+
+        return coverage_main()
     print(__doc__)
     return 2
 

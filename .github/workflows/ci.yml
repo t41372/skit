@@ -42,6 +42,8 @@ jobs:
           uv run python scripts/i18n.py compile
           git diff --exit-code -- '*.mo' \
             || { echo '::error::.mo out of sync with .po — run: uv run python scripts/i18n.py compile'; exit 1; }
+      - name: i18n coverage (fresh .pot · every locale 100% · nothing unwrapped)
+        run: uv run python scripts/i18n_coverage.py
 
   test:
     name: pytest (${{ matrix.os }}, py${{ matrix.python }})

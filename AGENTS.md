@@ -20,6 +20,7 @@ uv run ruff check                   # lint (rule set in pyproject.toml)
 uv run ruff format                  # format (CI checks with --check)
 uv run ty check                     # type check, strictest mode (all = "error")
 uv run mutmut run                   # mutation testing (surviving mutants fail CI)
+uv run python scripts/i18n_coverage.py   # i18n coverage gate (also enforced by test_i18n.py)
 uv run zizmor .github/workflows     # GitHub Actions security audit
 uv run python scripts/serve_preview.py   # TUI web preview via textual-serve (localhost:8000)
 ```
@@ -29,6 +30,36 @@ Full pre-PR gate (all are hard CI gates):
 ```bash
 uv run ruff format --check && uv run ruff check && uv run ty check && uv run pytest --cov && uv run mutmut run
 ```
+
+## i18n (every user-visible string is translated)
+
+skit ships English (the identity — msgids ARE the English source, so English needs no
+catalog) plus Traditional and Simplified Chinese. The rule: **every user-facing string goes
+through `i18n.gettext()` / `ngettext()`**, translated at the call site (never at module level —
+a module-level `gettext()` freezes whichever locale was active at import; see the render-time
+pattern throughout `tui*.py`). New/changed UI strings: `scripts/i18n.py extract` → `update` →
+translate the new msgids in each `.po` → `compile`. Watch for pybabel fuzzy-matching a new
+msgid to an unrelated old translation — remove the `#, fuzzy` marker and correct it, or the
+completeness gate fails.
+
+Coverage is a hard, **before-commit** gate — you can't eyeball it (an unwrapped string shows
+English in every locale, invisible when you test in just one). `scripts/i18n_coverage.py`
+(mirrored by `tests/test_i18n.py`) enforces four things, and CI fails on any:
+1. **Freshness** — the committed `skit.pot` matches every `gettext()` in the source (nothing
+   wrapped-but-unextracted, nothing stale).
+2. **Completeness** — every shipped locale has a non-empty, non-fuzzy msgstr for every msgid
+   (100% required, not mere parity of msgid presence).
+3. **No unwrapped UI literals** — an AST scan of UI sinks (Static/Label/RadioButton/Checkbox/
+   Option first arg, `.notify`/`.print`/`Prompt.ask`, `help=`/`placeholder=`/`title=`,
+   `*border_title` assignments) finds no bare string literal that skipped gettext. Intentional
+   non-prose literals (example paths/commands in placeholders) live in that script's reviewed
+   `_ALLOWED` set — add to it only for genuinely universal, untranslatable text.
+4. **No dynamic `gettext()`** — `gettext()`/`ngettext()` must be called on a *string literal*,
+   never on a variable or dict lookup (`gettext(LABELS[kind])`). Babel only extracts literals,
+   so a dynamic message never becomes a msgid — it escapes checks 1–2 entirely and silently
+   ships English in every locale (the exact bug that made the form's type labels and the
+   library's kind labels revert). i18n.py's own wrappers forward a variable to the translations
+   object via attribute calls (`_translations.gettext(msg)`), which the bare-name scan ignores.
 
 ## Accepted mutation trade-off
 

@@ -76,6 +76,84 @@ class TestCatalogParity:
             f"(run scripts/i18n.py extract): {sorted(missing)}"
         )
 
+    @pytest.mark.parametrize("locale", TRANSLATED)
+    def test_locale_is_fully_translated(self, locale: str):
+        """Parity only proves a locale CONTAINS every msgid; it can still contain them with an
+        empty or fuzzy msgstr, which ships as the English source. This is the completeness gate:
+        every msgid in every shipped locale must carry a non-empty, non-fuzzy translation. (The
+        .po content is not mutated under mutmut, so reading the imported copy is safe.)"""
+        with (LOCALES_DIR / locale / "LC_MESSAGES" / "skit.po").open("rb") as f:
+            catalog = read_po(f)
+        untranslated: list[str] = []
+        fuzzy: list[str] = []
+        for m in catalog:
+            if not m.id:
+                continue  # the header entry
+            strings = m.string if isinstance(m.string, tuple) else (m.string,)
+            key = m.id if isinstance(m.id, str) else m.id[0]
+            if not all(strings):
+                untranslated.append(key)
+            elif m.fuzzy:
+                fuzzy.append(key)
+        assert not untranslated, f"{locale} has untranslated msgids: {sorted(untranslated)}"
+        assert not fuzzy, f"{locale} has fuzzy (unreviewed) msgids: {sorted(fuzzy)}"
+
+    def test_no_unwrapped_ui_strings(self):
+        """The gate for "all text goes through i18n": every user-facing string literal in a UI
+        sink (Static/Label/RadioButton/Checkbox/Option, .notify/.print/Prompt.ask, help=/
+        placeholder=/title=, *border_title assignments) must be wrapped in gettext(). A bare
+        literal ships the same English in every locale and is invisible when you test in one
+        language — exactly the gap eyeballing misses. Anchored on the real repo tree (the scan
+        reads .py bodies, which mutmut mutates, so hop out of any mutants/ copy)."""
+        import importlib.util
+
+        root = Path(__file__).resolve().parent.parent
+        if "mutants" in root.parts:
+            root = Path(*root.parts[: root.parts.index("mutants")])
+        spec = importlib.util.spec_from_file_location(
+            "i18n_coverage", root / "scripts" / "i18n_coverage.py"
+        )
+        assert spec is not None
+        assert spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        problems = mod.scan_unwrapped(root / "src" / "skit")
+        assert not problems, "UI strings not routed through gettext:\n" + "\n".join(problems)
+
+    def test_no_dynamic_gettext(self, tmp_path):
+        """The check that would have caught the form/library label regression: gettext()/
+        ngettext() called on a variable or dict lookup (not a string literal) is invisible to
+        Babel's extractor, so the message never enters the catalog and silently ships English
+        in every locale — a gap the freshness and completeness checks can't see. Assert the
+        real tree is clean AND that the detector actually fires on the exact bug pattern."""
+        import importlib.util
+
+        root = Path(__file__).resolve().parent.parent
+        if "mutants" in root.parts:
+            root = Path(*root.parts[: root.parts.index("mutants")])
+        spec = importlib.util.spec_from_file_location(
+            "i18n_coverage", root / "scripts" / "i18n_coverage.py"
+        )
+        assert spec is not None
+        assert spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        problems = mod.scan_dynamic_gettext(root / "src" / "skit")
+        assert not problems, "gettext() called on non-literals:\n" + "\n".join(problems)
+
+        # The detector must fire on the exact bug class it exists to catch: a dict of labels
+        # fed to gettext(kind) rather than gettext("literal") at each call site.
+        bad = tmp_path / "bad.py"
+        bad.write_text(
+            "from skit.i18n import gettext\n"
+            "_LABELS = {'x': 'whole number'}\n"
+            "def f(k):\n"
+            "    return gettext(_LABELS[k])\n",
+            encoding="utf-8",
+        )
+        assert mod.scan_dynamic_gettext(tmp_path), "detector missed a gettext(dict[k]) call"
+
 
 class TestNegotiation:
     def test_exact_match(self):

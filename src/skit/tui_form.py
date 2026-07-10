@@ -37,10 +37,21 @@ if TYPE_CHECKING:
 # The submit result: (raw field values, extra passthrough args) or None on cancel.
 FormResult = tuple[dict[str, str], list[str]] | None
 
-# msgids, translated at render time (module-level gettext would freeze the locale).
-_TYPE_NAMES = {"int": "whole number", "float": "number", "str": "text", "bool": "on/off"}
-
 _EXTRA_KEY = "__extra_args__"
+
+
+def _type_label(kind: str) -> str:
+    """The dim type hint next to a field label, translated at render time. The msgids MUST be
+    gettext() string literals here, not a dict of labels fed to gettext(kind): a dict lookup is
+    invisible to Babel's extractor, so the strings never reach the catalog and silently fall
+    back to English in every locale. (That is the exact bug scripts/i18n_coverage.py's
+    dynamic-gettext check now guards against.)"""
+    return {
+        "int": gettext("whole number"),
+        "float": gettext("number"),
+        "str": gettext("text"),
+        "bool": gettext("on/off"),
+    }.get(kind, kind)
 
 
 def _degraded_notice(reason: str) -> str:
@@ -102,8 +113,8 @@ class FieldRow(Vertical):
         pieces = [escape(f.label)]
         if f.required:
             pieces.append(f"[$accent]{gettext('required')}[/]")
-        if f.kind in _TYPE_NAMES and f.kind != "str":
-            pieces.append(f"[dim]{gettext(_TYPE_NAMES[f.kind])}[/dim]")
+        if f.kind in ("int", "float", "bool"):
+            pieces.append(f"[dim]{_type_label(f.kind)}[/dim]")
         if f.secret:
             pieces.append(f"[dim]🔒 {gettext('never saved to disk')}[/dim]")
         if self.insertable:

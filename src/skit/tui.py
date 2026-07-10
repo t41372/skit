@@ -39,18 +39,19 @@ from .models import Entry
 from .theme import CLAUDE_THEME
 from .tui_form import FormResult, RunFormScreen
 
-# msgids, translated at render time — a module-level gettext() would freeze whichever
-# locale happened to be active at first import.
-_KIND_BADGES = {
-    "python": ("⬡", "Python"),
-    "exe": ("▶", "Program"),
-    "command": ("$", "Command"),
-}
+# Glyphs are locale-independent; the labels are translated at render time in _kind_badge.
+# The labels must be gettext() literals there (not values fed to gettext(kind)) or Babel
+# can't extract them — see scripts/i18n_coverage.py's dynamic-gettext check.
+_KIND_GLYPHS = {"python": "⬡", "exe": "▶", "command": "$"}
 
 
 def _kind_badge(kind: str) -> tuple[str, str]:
-    glyph, label = _KIND_BADGES.get(kind, ("?", kind))
-    return glyph, gettext(label)
+    label = {
+        "python": gettext("Python"),
+        "exe": gettext("Program"),
+        "command": gettext("Command"),
+    }.get(kind, kind)
+    return _KIND_GLYPHS.get(kind, "?"), label
 
 
 def _fuzzy_match(query: str, text: str) -> bool:
