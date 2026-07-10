@@ -30,7 +30,7 @@ uv --version
 ## Getting started
 
 ```bash
-git clone https://github.com/user/skit
+git clone https://github.com/t41372/skit
 cd skit
 
 # Create and sync the environment with dev dependencies (.venv is managed by uv)
@@ -54,6 +54,7 @@ Every item below is a hard CI gate — all of them must be green before a merge.
 | Mutation testing | `uv run mutmut run` | Surviving mutants fail CI |
 | Workflow audit | `uv run zizmor .github/workflows` | Security scan for GitHub Actions |
 | i18n in sync | `uv run python scripts/i18n.py compile` | Committed `.mo` must match the `.po` sources (CI checks `git diff`) |
+| i18n coverage | `uv run python scripts/i18n_coverage.py` | Fresh `.pot`, 100% non-fuzzy translations, no unwrapped UI literals, no dynamic `gettext()` (mirrored by `tests/test_i18n.py`) |
 
 Run the whole suite in one go (recommended before every PR):
 
@@ -112,9 +113,47 @@ English needs no catalog — an untranslated msgid falls back to the source text
 the English, editing an English string changes its id, so `update` will (correctly) flag the
 translations as needing review. Keep the committed `.mo` in sync (`compile`) or CI will fail.
 
-> Note: command-level `--help` text (e.g. `skit add --help`) is **not** localized yet — it still comes
-> from the English function docstrings. Wiring command help through gettext is a good first
-> translation contribution.
+## Demo assets (README videos & screenshots)
+
+The README's demo videos (`docs/demo-*.mp4`) and its four-screen TUI screenshot grid
+(`docs/assets/tui-*-{en,zh}.png`) are never recorded by hand — a scripted, hermetic
+[VHS](https://github.com/charmbracelet/vhs) pipeline renders them, so they can be regenerated
+identically whenever the UI changes:
+
+```bash
+bash scripts/record_demo.sh          # everything: 2 videos + 8 screenshots
+bash scripts/record_demo.sh videos   # docs/demo-en.mp4, docs/demo-zh.mp4
+bash scripts/record_demo.sh shots    # docs/assets/tui-{library,form,add,settings}-{en,zh}.png
+```
+
+The only host requirement is Docker (or OrbStack). vhs / ttyd / ffmpeg live inside the image
+and never touch your machine.
+
+How the pieces fit:
+
+- **`docs/demo/Dockerfile`** — the recording environment: the official VHS image, plus uv,
+  skit installed from your working tree, `bat`, `fonts-noto-cjk` (real Han glyphs for the zh
+  renders), and a colored prompt (`docs/demo/demo.bashrc`).
+- **`docs/demo/demo.tape`** (the video) and **`docs/demo/shots.tape`** (the screenshots) —
+  the VHS keystroke choreography. Each tape is written once and drives every locale.
+- **`docs/demo/scripts/{en,zh}/`** — the dummy scripts being demoed, one set per language
+  (their docstrings and `--help` text are what skit's forms display, so they are localized
+  too). `scripts/record_demo.sh` runs each tape once per locale, with `SKIT_LANG` set and that
+  language's scripts mounted at `/demo`.
+- Tapes and demo scripts are **mounted, not baked** — edit them and re-run, no rebuild.
+  Only a change to skit's own source triggers an image rebuild (skit is baked in with
+  `uv tool install`), and the script rebuilds automatically anyway.
+
+Tips when editing tapes:
+
+- Expect a short tune loop — render, eyeball, adjust `Sleep` values and `Tab` counts. That's
+  normal VHS workflow.
+- Type only ASCII in the *shell* scenes: non-ASCII keystrokes garble on the way through ttyd.
+  Typing into skit's own TUI inputs is fine.
+- VHS has no `End`/`Home` and no mouse. Clear a prefilled field with `Right N` + `Backspace N`;
+  mouse interaction can't be recorded at all (a separately captured clip is the only option).
+- Showing a new screen? Add a `Screenshot "/out/shot-<name>.png"` line to `shots.tape` and the
+  matching rename in `record_demo.sh`, then reference it from both READMEs.
 
 ## Adding dependencies
 
