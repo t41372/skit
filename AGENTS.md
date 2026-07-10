@@ -1,14 +1,80 @@
 # AGENTS.md
 
-This file provides guidance when working with code in this repository.
+Direction for working in this repository. Anything not covered here follows ordinary,
+widely-adopted engineering best practice — this file records only what is specific to skit,
+so that technical decisions can account for the project's global goals.
 
 ## What skit is
 
-A script launcher and parameter manager. Users collect scattered Python scripts / executables / command templates into one place, then run them from a TUI menu or CLI. The differentiator (Layer 2): skit statically analyzes a Python script at add time to find hard-coded constants and `input()` calls, and at run time injects form values into a temporary copy — **the user's source is never edited**.
+A script launcher and parameter manager. Users collect scattered Python scripts, executables,
+and command templates into one library, then run them from a TUI menu or the CLI. skit reads
+however a script takes input — hard-coded constants and `input()` calls (via AST), or an
+argparse/click/typer command line (read statically) — and turns it into a form to fill in.
+Values are delivered without changing the source: injected into a temporary copy, or passed as
+flags at run time. Two trust promises are absolute and surfaced in the UI itself: **the user's
+source file is never edited**, and **secret parameters never touch disk**.
+
+The full interface spec and its decided trade-offs live in `docs/ux-redesign.md`.
+
+## Core design principles
+
+**1. Everything is i18n.** Every user-visible string ships translated — English is the
+identity locale (msgids *are* the English source), zh_TW and zh_CN ship at 100%. Two
+constraints follow from how gettext/Babel actually work: translate **at render time** (a
+module-level `gettext()` freezes whichever locale was active at import) and **on string
+literals only** (Babel extracts literals — `gettext(LABELS[kind])` never becomes a msgid and
+silently ships English everywhere). `scripts/i18n_coverage.py` (mirrored by `tests/test_i18n.py`)
+closes each escape route: stale `.pot`, missing or fuzzy translations, unwrapped UI literals,
+dynamic gettext arguments.
+
+**2. Full mouse AND full keyboard interactivity.** Every TUI action must be operable by mouse
+alone and by keyboard alone. Footer chips are buttons (`tui_footer.chip()`): the visible key
+hint *is* the click target, and every modal's key hints use the same chips — the mouse always
+has a path. The keyboard side is enforced policy: every key a footer advertises must have a
+positive pilot test.
+
+**3. Zero memorization** The user should be able to do everything without
+remembering a single line of CLI, hotkeys, or arguments, even if they wrote the script
+themselves. The interface should be ergonomic, convenient, and intuitive, following HCI
+principles. What this means in practice:
+
+- Any script becomes a form, no matter how it takes input — injection into a temp copy is
+  just one delivery mechanism among several.
+- Recognition over recall: assume most users never press `?`. Every action stays permanently
+  visible (two-line footer); nothing may be discoverable only through the help overlay.
+- Transparency, not concealment: before running, skit prints the exact command or injection
+  it assembled. "No memorizing" means the user doesn't *have* to know — not that skit hides
+  it. Users passively learn their scripts' usage.
+- Honesty over cleverness: whatever skit can't statically understand degrades to a labeled
+  free-text field plus an "extra arguments" escape hatch, and says so. UI copy may never
+  sound more confident than the deterministic rule behind it.
+- Copy must read for someone who doesn't know the jargon — the script may be AI-written and
+  its owner may not know the syntax it uses. Chinese UI terms follow the wording table in
+  `docs/ux-redesign.md`.
+- State is always carried by glyph + text together, never by color alone.
+
+**4. AI-agent & automation friendly.** This is where skit is heading (the next milestone —
+not fully AI-native yet; build toward it). Premise: most scripts today are written by AI,
+which favors argparse + PEP 723, so static CLI reading is the mainstream case, not an edge.
+Every TUI capability is also a CLI command, with `--json` output, docker-convention exit codes
+(`run` passes the script's exit code through untouched; skit errors are 125/126/127),
+`--no-input`, `--dry-run`, and dynamic completion. The non-interactive contract is absolute:
+in a pipe, in CI, or under `--no-input`, never guess, never prompt, never silently assemble a
+broken command. When choosing between designs, prefer the one an agent can drive
+deterministically.
+
+**5. Verification is absolute.** 100% test coverage floor, ruff, ty (strictest mode), mutation
+testing with mutmut (zero surviving mutants), and the i18n coverage gate are all hard CI
+gates. The gates — not review, not eyeballing — are the definition of done: a surviving mutant
+is a regression no test would catch, and an unwrapped string shows English in *every* locale,
+so testing in one locale proves nothing. Never weaken a gate to pass it. Suppressions are
+earned: `# pragma: no mutate` requires a genuinely equivalent mutant, a pinning test, and an
+entry in [docs/mutation-ledger.md](docs/mutation-ledger.md).
 
 ## Commands
 
-Everything goes through `uv` — there is no supported non-uv workflow. `.venv` is managed by uv.
+Everything goes through `uv` — there is no supported non-uv workflow, and skit itself runs
+scripts via `uv run --script` (PEP 723).
 
 ```bash
 uv sync --dev                       # create/sync the dev environment
@@ -25,58 +91,24 @@ uv run zizmor .github/workflows     # GitHub Actions security audit
 uv run python scripts/serve_preview.py   # TUI web preview via textual-serve (localhost:8000)
 ```
 
-Full pre-PR gate (all are hard CI gates):
+Full pre-PR gate (run before declaring any change done):
 
 ```bash
 uv run ruff format --check && uv run ruff check && uv run ty check && uv run pytest --cov && uv run mutmut run
 ```
 
-## i18n (every user-visible string is translated)
+## i18n workflow
 
-skit ships English (the identity — msgids ARE the English source, so English needs no
-catalog) plus Traditional and Simplified Chinese. The rule: **every user-facing string goes
-through `i18n.gettext()` / `ngettext()`**, translated at the call site (never at module level —
-a module-level `gettext()` freezes whichever locale was active at import; see the render-time
-pattern throughout `tui*.py`). New/changed UI strings: `scripts/i18n.py extract` → `update` →
-translate the new msgids in each `.po` → `compile`. Watch for pybabel fuzzy-matching a new
-msgid to an unrelated old translation — remove the `#, fuzzy` marker and correct it, or the
-completeness gate fails.
+New or changed UI strings: `scripts/i18n.py extract` → `update` → translate the new msgids in
+each `.po` → `compile`. Watch for pybabel fuzzy-matching a new msgid to an unrelated old
+translation — correct the msgstr and remove the `#, fuzzy` marker, or the completeness gate
+fails.
 
-Coverage is a hard, **before-commit** gate — you can't eyeball it (an unwrapped string shows
-English in every locale, invisible when you test in just one). `scripts/i18n_coverage.py`
-(mirrored by `tests/test_i18n.py`) enforces four things, and CI fails on any:
-1. **Freshness** — the committed `skit.pot` matches every `gettext()` in the source (nothing
-   wrapped-but-unextracted, nothing stale).
-2. **Completeness** — every shipped locale has a non-empty, non-fuzzy msgstr for every msgid
-   (100% required, not mere parity of msgid presence).
-3. **No unwrapped UI literals** — an AST scan of UI sinks (Static/Label/RadioButton/Checkbox/
-   Option first arg, `.notify`/`.print`/`Prompt.ask`, `help=`/`placeholder=`/`title=`,
-   `*border_title` assignments) finds no bare string literal that skipped gettext. Intentional
-   non-prose literals (example paths/commands in placeholders) live in that script's reviewed
-   `_ALLOWED` set — add to it only for genuinely universal, untranslatable text.
-4. **No dynamic `gettext()`** — `gettext()`/`ngettext()` must be called on a *string literal*,
-   never on a variable or dict lookup (`gettext(LABELS[kind])`). Babel only extracts literals,
-   so a dynamic message never becomes a msgid — it escapes checks 1–2 entirely and silently
-   ships English in every locale (the exact bug that made the form's type labels and the
-   library's kind labels revert). i18n.py's own wrappers forward a variable to the translations
-   object via attribute calls (`_translations.gettext(msg)`), which the bare-name scan ignores.
+## Demo assets
 
-## Accepted mutation trade-off
-
-`# pragma: no mutate` suppresses *all* mutants on that line, not just the targeted one. Three literal-initializer sites accept this: `src/skit/tui.py` `_fuzzy_match`'s `pos = 0`, `src/skit/i18n.py` `_pseudoize`'s `last = 0`, `src/skit/shim.py` `_preamble_line_index`'s `i = 0` — each trades away the arithmetic (`0→1`) mutant to suppress the equivalent (`0→None`) one. The behaviors stay directly protected by named tests (`tests/test_tui_cov.py::test_fuzzy_match_subsequence`, `tests/test_residual_mut.py::test_pseudoize_transforms_full_text_including_first_char`, `tests/test_shim.py::test_preamble_inserted_at_end_for_no_docstring_no_future`); only mutation-meta-verification of those tests is lost.
-
-A second, mechanical category is pragma'd for genuinely equivalent mutants — the behavior is still covered by named tests, only mutation-meta-verification is lost:
-
-- **I/O kwargs**: `read_text(encoding="utf-8", errors="replace")` / `write_text(..., encoding="utf-8")` (`"utf-8"`/`"UTF-8"` are aliases; `errors=` never fires on ASCII content). Covered behaviorally by `tests/test_cli_mut.py::test_plan_for_entry_tolerates_invalid_utf8_bytes` and the various read-back assertions.
-- **Filesystem-case paths**: `entry.dir / "script.py"` (`"SCRIPT.PY"` resolves to the same file on macOS's case-insensitive FS, so the mutant is a false survivor locally). Path correctness is asserted where it matters (e.g. `test_editor.py::test_edit_opens_copy_source`).
-- **rich Table styling** (`_show_params`) and the interactive `add` temp-file's cosmetic `tempfile.mkstemp` prefix: no effect on the captured (no-ANSI) text.
-- **Env-var defaults / `subprocess.run(check=False)`** (`src/skit/editor.py`) and the `config.load_editor` dict default: all falsy-equivalent, guarded downstream. The killable parts (posix split, platform default, exact error message) are still asserted in `tests/test_editor.py`.
-- **`pep723.split_requirements`'s `quote = ""` sentinel** (init + reset): `""`/`None` are falsy-equivalent — the variable is only read via truthiness, and `ch == quote` can never fire while it's falsy. Quote handling itself is behaviorally pinned by `tests/test_pep723_split.py::test_double_quoted_marker_comma_stays_joined` / `test_single_quoted_marker_comma_stays_joined`.
-- **`flows.assemble`'s `raw = values.get(f.key, "")`**: a missing key means "unset", and `""`/`None` are falsy-equivalent everywhere downstream (`_final_value` / `_resolve_secret` only read `raw` via truthiness), so the default is an equivalent mutant. The killable side — a missing field must NOT inject a sentinel — stays covered by `tests/test_flows.py::test_assemble_degraded_empty_omitted_filled_passed`.
-- **`flows._type_error`'s `_coerce(value, f.kind, f.key)`**: `f.key` feeds only `ShimValueError.param_name`, which this call discards (the returned message is rebuilt from `f.label`), so `f.key → None` is equivalent. The killable value/kind coercion is still pinned by `tests/test_flows.py::test_type_error_messages_exact`.
-
-- **`argspec._read_typer_param`'s `has_positional_default=False`** (the Annotated call site): `False`/`None` are falsy-equivalent in every branch of `_apply_typer_meta` (both pick `call.args` for decls and skip the positional-default read). The killable `True` variant — which would misread an Annotated Option's first flag declaration as a value default — is behaviorally pinned by `tests/test_argspec_click_typer.py::test_annotated_option_positional_decl_is_a_flag_not_a_default`.
-
-`src/skit/tokens.py` `expand`'s scanner-index arithmetic (`i += 1` / `i += 2`) shows up as **timeout** (not survived): every such mutant pins or rewinds the index and infinite-loops on the first multi-character input, which mutmut detects by deadline. Caught-by-timeout is a legitimate kill; no pragma, no action needed.
-
-Not our code, left as-is: `src/skit/uvman.py` `ensure_uv_downloaded`'s `sys.platform == "win32"` exe-name check shows up as **suspicious** (not survived) on non-Windows runs — a pre-existing item, unrelated to the launcher/params work.
+The README's demo videos (`docs/demo-*.mp4`) and screenshot grid (`docs/assets/tui-*.png`)
+are generated by a scripted, hermetic pipeline — never hand-recorded. If you change any
+user-visible UI copy or add a language, the existing assets go stale: regenerate them with
+`bash scripts/record_demo.sh` (needs Docker) and reference the new per-locale files from all
+three READMEs. Full pipeline docs — tapes, adding a screen, adding a locale — live in
+CONTRIBUTING.md under "Demo assets".

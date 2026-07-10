@@ -10,7 +10,7 @@
 
 **深度審查＋修復波（2026-07-09）**：獨立 Fable agent 全庫審查產出 15 CONFIRMED＋2 PLAUSIBLE bug、9 架構建議、15 規格偏差——**17 個 bug 全數修復**，要點：C2 隔離補洞（`uv run --script` 對無 block 腳本不隔離，`--no-project` 改為無條件）；焦點模型重構（見 §1）；命令模板 placeholder 補 required＋C3（機密遮罩＋落盤剔除＋回溯清除）；argstate「清空」語義（None=不動、空=清除，快照取代合併）；CLI argv 不二次展開（`assemble(expand_extra=False)`）、`--raw` 真 raw；透明行/dry-run 遮罩機密（`masked_args`）；TUI launch 失敗不記幽靈執行、r 路徑印核對結果、整 parser 降級仍開表單（誠實聲明＋逃生欄）；加入面板重掃保留用戶輸入、共用類型推斷；settings Esc 髒檢查＋s 深連結落地；相同 prompt 的 input() multiset 匹配（漂移永不收斂 bug）；取消表單退出碼 130。
 
-**mutation 戰役完成**：`tokens`/`argspec`/`flows` 零倖存（獨立 Opus agent 打底 57→0，click/typer 新碼再 132→0；5 條 tokens 掃描位移變異為 timeout＝無限迴圈被偵測捕獲，已記入 AGENTS.md 分類）。
+**mutation 戰役完成**：`tokens`/`argspec`/`flows` 零倖存（獨立 Opus agent 打底 57→0，click/typer 新碼再 132→0；5 條 tokens 掃描位移變異為 timeout＝無限迴圈被偵測捕獲，已記入 docs/mutation-ledger.md 分類）。
 
 **A1 已落地（2026-07-09）**：`flows.execute(entry, plan, asm, *, emit)` + `flows.transparency_lines` + `RunOutcome` 收攏投遞管線（inject→透明行→run_entry→清理→分類），cli.run 與 tui._execute 現在都只是薄殼（prompt/suspend/exit-code 映射/status 各自處理，投遞完全共用）。順帶抹平一個殘留裝飾差異（`k = v` vs `k = 'v'`），並把 TUI 的 ShimError 訊息升級到與 CLI 一致的 resync 指引。targeted mutmut 新函式零倖存。
 
@@ -280,4 +280,4 @@ skit（裸命令）
 - 每個 `--help` 帶 1–2 行實例（epilog）；尊重 `NO_COLOR`（rich 原生支援）。
 - 值內不發明語法：清單一律可重複旗標，不用逗號拼接。
 
-> **🐛 逗號劈裂 bug——✅ 已修（2026-07-09）**：`deps --set`／`add --deps`／互動依賴問答曾用 `split(",")` 劈依賴清單，PEP 508 含逗號的版本約束（`"requests>=2,<3"`）會被劈成兩個壞項。現由 `pep723.split_requirements()` 處理（括號/引號/接續運算子感知），三個呼叫點全換；測試 `tests/test_pep723_split.py`（targeted mutmut 零倖存，兩個 falsy-equivalent 哨兵照慣例 pragma 並記入 AGENTS.md）。
+> **🐛 逗號劈裂 bug——✅ 已修（2026-07-09）**：`deps --set`／`add --deps`／互動依賴問答曾用 `split(",")` 劈依賴清單，PEP 508 含逗號的版本約束（`"requests>=2,<3"`）會被劈成兩個壞項。現由 `pep723.split_requirements()` 處理（括號/引號/接續運算子感知），三個呼叫點全換；測試 `tests/test_pep723_split.py`（targeted mutmut 零倖存，兩個 falsy-equivalent 哨兵照慣例 pragma 並記入 docs/mutation-ledger.md）。
