@@ -1,11 +1,14 @@
-"""`skit config` command, the interactive wizard helpers, and the first-run mirror probe.
+"""`skit config` (git-config grammar: bare = list, KEY = read, KEY VALUE = write),
+the first-run mirror offer, and the mirror wizard it still uses.
 
-Non-interactive paths go through CliRunner; interactive branches (Prompt/Confirm, tty) are exercised
-by calling the module functions directly with stubs — the same convention as test_cli.py.
+Non-interactive paths go through CliRunner; interactive branches (Prompt/Confirm, tty)
+are exercised by calling the module functions directly with stubs — the same convention
+as test_cli.py.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -28,9 +31,7 @@ def isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 def _prompts(monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> list[dict[str, object]]:
-    """Stub Prompt.ask with canned answers, CAPTURING the default/choices of each call so tests can
-    assert the wizard's computed defaults (not just its writes). Returns the capture list, appended
-    to in call order."""
+    """Stub Prompt.ask with canned answers, CAPTURING the default/choices of each call."""
     it = iter(answers)
     captured: list[dict[str, object]] = []
 
@@ -42,71 +43,154 @@ def _prompts(monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> list[dict[s
     return captured
 
 
-# --- `skit config` non-interactive (flags) ---
+# --- bare `skit config`: list everything ---
 
 
-def test_show_reports_off_by_default() -> None:
-    result = runner.invoke(cli.app, ["config", "--show"])
+def test_bare_config_lists_all_keys() -> None:
+    result = runner.invoke(cli.app, ["config"])
     assert result.exit_code == 0
-    assert "off" in result.output.lower()
+    for key in ("lang", "editor", "mirror", "form"):
+        assert key in result.output
+    assert "off" in result.output  # mirror default
+    assert "tui" in result.output  # form default
 
 
-@pytest.mark.parametrize("name", list(config.PYPI_PRESETS))
-def test_set_mirror_preset(name: str) -> None:
-    result = runner.invoke(cli.app, ["config", "--mirror", name])
+def test_bare_config_json() -> None:
+    result = runner.invoke(cli.app, ["config", "--json"])
     assert result.exit_code == 0
-    assert config.load_mirror().pypi == config.PYPI_PRESETS[name]
+    doc = json.loads(result.output)
+    assert set(doc) == {"lang", "editor", "mirror", "form"}
+    assert doc["mirror"] == "off"
+    assert doc["form"] == "tui"
 
 
-def test_set_mirror_off() -> None:
-    runner.invoke(cli.app, ["config", "--mirror", "tsinghua"])
-    result = runner.invoke(cli.app, ["config", "--mirror", "off"])
-    assert result.exit_code == 0
-    assert not config.load_mirror().enabled
-
-
-def test_unknown_mirror_exits_2() -> None:
-    result = runner.invoke(cli.app, ["config", "--mirror", "nope"])
+def test_unknown_key_exits_2() -> None:
+    result = runner.invoke(cli.app, ["config", "theme"])
     assert result.exit_code == 2
 
 
-def test_set_lang_and_both_flags() -> None:
-    result = runner.invoke(cli.app, ["config", "--lang", "zh-CN", "--mirror", "aliyun"])
+# --- lang ---
+
+
+def test_set_lang_writes_language_key() -> None:
+    result = runner.invoke(cli.app, ["config", "lang", "zh-CN"])
     assert result.exit_code == 0
     assert config.load_config()["language"] == "zh-CN"
-    assert config.load_mirror().pypi == config.PYPI_PRESETS["aliyun"]
+
+
+def test_read_lang_shows_override() -> None:
+    runner.invoke(cli.app, ["config", "lang", "zh-CN"])
+    result = runner.invoke(cli.app, ["config", "lang"])
+    assert result.exit_code == 0
+    assert "zh-CN" in result.output
 
 
 def test_lang_auto_clears() -> None:
-    runner.invoke(cli.app, ["config", "--lang", "zh-CN"])
-    result = runner.invoke(cli.app, ["config", "--lang", "auto"])
+    runner.invoke(cli.app, ["config", "lang", "zh-CN"])
+    result = runner.invoke(cli.app, ["config", "lang", "auto"])
     assert result.exit_code == 0
     assert "language" not in config.load_config()
 
 
 def test_unknown_lang_exits_2() -> None:
-    result = runner.invoke(cli.app, ["config", "--lang", "xx-YY"])
+    result = runner.invoke(cli.app, ["config", "lang", "xx-YY"])
     assert result.exit_code == 2
 
 
-# --- interactive wizard helpers ---
+# --- mirror ---
 
 
-def test_language_wizard_sets_language(monkeypatch: pytest.MonkeyPatch) -> None:
-    before = i18n.current_locale()  # "en" per the isolated fixture
-    captured = _prompts(monkeypatch, ["zh-CN"])
-    cli._language_wizard()
+@pytest.mark.parametrize("name", list(config.PYPI_PRESETS))
+def test_set_mirror_preset(name: str) -> None:
+    result = runner.invoke(cli.app, ["config", "mirror", name])
+    assert result.exit_code == 0
+    assert config.load_mirror().pypi == config.PYPI_PRESETS[name]
+
+
+def test_set_mirror_off() -> None:
+    runner.invoke(cli.app, ["config", "mirror", "tsinghua"])
+    result = runner.invoke(cli.app, ["config", "mirror", "off"])
+    assert result.exit_code == 0
+    assert not config.load_mirror().enabled
+
+
+def test_unknown_mirror_exits_2() -> None:
+    result = runner.invoke(cli.app, ["config", "mirror", "nope"])
+    assert result.exit_code == 2
+
+
+# --- editor ---
+
+
+def test_set_editor() -> None:
+    result = runner.invoke(cli.app, ["config", "editor", "code --wait"])
+    assert result.exit_code == 0
+    assert config.load_editor() == "code --wait"
+    assert "code --wait" in result.output  # confirmation echoes the new value
+
+
+def test_clear_editor_with_empty_value() -> None:
+    runner.invoke(cli.app, ["config", "editor", "nano"])
+    result = runner.invoke(cli.app, ["config", "editor", ""])
+    assert result.exit_code == 0
+    assert config.load_editor() == ""
+
+
+def test_read_editor_default_line() -> None:
+    result = runner.invoke(cli.app, ["config", "editor"])
+    assert result.exit_code == 0
+    assert "$VISUAL / $EDITOR" in result.output
+
+
+# --- form ---
+
+
+def test_form_defaults_to_tui() -> None:
+    result = runner.invoke(cli.app, ["config", "form"])
+    assert result.exit_code == 0
+    assert "tui" in result.output
+
+
+def test_set_form_plain_and_back() -> None:
+    result = runner.invoke(cli.app, ["config", "form", "plain"])
+    assert result.exit_code == 0
+    assert config.load_form() == "plain"
+    runner.invoke(cli.app, ["config", "form", "tui"])
+    assert config.load_form() == "tui"
+
+
+def test_unknown_form_style_exits_2() -> None:
+    result = runner.invoke(cli.app, ["config", "form", "fancy"])
+    assert result.exit_code == 2
+
+
+# --- writes preserve the other sections ---
+
+
+def test_mirror_write_preserves_language() -> None:
+    runner.invoke(cli.app, ["config", "lang", "zh-CN"])
+    result = runner.invoke(cli.app, ["config", "mirror", "off"])
+    assert result.exit_code == 0
     assert config.load_config()["language"] == "zh-CN"
-    # F4: the wizard offers the (pre-change) current locale as the default.
-    assert captured[0]["default"] == before == "en"
-    assert captured[0]["choices"] == ["auto", *i18n.available_locales()]
 
 
-def test_language_wizard_auto(monkeypatch: pytest.MonkeyPatch) -> None:
-    config.save_config({"language": "zh-CN"})
-    _prompts(monkeypatch, ["auto"])
-    cli._language_wizard()
-    assert "language" not in config.load_config()
+def test_lang_clear_preserves_mirror() -> None:
+    runner.invoke(cli.app, ["config", "mirror", "tsinghua"])
+    result = runner.invoke(cli.app, ["config", "lang", "auto"])
+    assert result.exit_code == 0
+    assert config.load_mirror().pypi == config.PYPI_PRESETS["tsinghua"]
+
+
+def test_form_write_preserves_mirror_and_language() -> None:
+    runner.invoke(cli.app, ["config", "lang", "zh-CN"])
+    runner.invoke(cli.app, ["config", "mirror", "tsinghua"])
+    runner.invoke(cli.app, ["config", "form", "plain"])
+    assert config.load_config()["language"] == "zh-CN"
+    assert config.load_mirror().enabled
+    assert config.load_form() == "plain"
+
+
+# --- the mirror wizard (first-run only now) ---
 
 
 def test_mirror_wizard_preset(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -116,7 +200,6 @@ def test_mirror_wizard_preset(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_mirror_wizard_default_off_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    # F4: no saved mirror (disabled) -> the computed default is "off".
     captured = _prompts(monkeypatch, ["off"])
     cli._mirror_wizard()
     assert captured[0]["default"] == "off"
@@ -126,16 +209,14 @@ def test_mirror_wizard_default_off_when_disabled(monkeypatch: pytest.MonkeyPatch
 def test_mirror_wizard_default_is_preset_when_enabled_preset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config.save_mirror(config.preset("tsinghua"))  # enabled + preset -> default is that preset key
+    config.save_mirror(config.preset("tsinghua"))
     captured = _prompts(monkeypatch, ["off"])
     cli._mirror_wizard()
-    # F4: the computed default reflects the saved preset (renamed from the old, misleading name).
     assert captured[0]["default"] == "tsinghua"
-    assert not config.load_mirror().enabled  # answering "off" still disables
+    assert not config.load_mirror().enabled
 
 
 def test_mirror_wizard_default_custom_when_non_preset(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Enabled with a URL that matches no preset -> the computed default is "custom".
     config.save_mirror(config.MirrorConfig(enabled=True, pypi="https://old/simple"))
     captured = _prompts(monkeypatch, ["off"])
     cli._mirror_wizard()
@@ -143,9 +224,7 @@ def test_mirror_wizard_default_custom_when_non_preset(monkeypatch: pytest.Monkey
 
 
 def test_mirror_wizard_custom(monkeypatch: pytest.MonkeyPatch) -> None:
-    config.save_mirror(
-        config.MirrorConfig(enabled=True, pypi="https://old/simple")
-    )  # -> "custom" default
+    config.save_mirror(config.MirrorConfig(enabled=True, pypi="https://old/simple"))
     captured = _prompts(
         monkeypatch, ["custom", "https://my/pypi", "https://my/py", "https://my/uv"]
     )
@@ -161,58 +240,15 @@ def test_mirror_wizard_custom(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_mirror_wizard_custom_rejects_non_https_uv_binary(monkeypatch: pytest.MonkeyPatch) -> None:
-    """F6: an http:// uv-binary URL is rejected and re-prompted until it's https:// (that binary is
-    downloaded and executed, so http would be a MITM->RCE vector)."""
+    """An http:// uv-binary URL is rejected and re-prompted until it's https:// (that binary
+    is downloaded and executed, so http would be a MITM->RCE vector)."""
     config.save_mirror(config.MirrorConfig(enabled=True, pypi="https://old/simple"))
-    # choice, pypi, python_install, uv_binary(http -> rejected), uv_binary(https -> accepted)
     _prompts(
         monkeypatch,
         ["custom", "https://my/pypi", "https://my/py", "http://evil/uv", "https://good/uv"],
     )
     cli._mirror_wizard()
     assert config.load_mirror().uv_binary == "https://good/uv"
-
-
-def test_full_wizard_no_flags(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
-    _prompts(monkeypatch, ["auto", "tsinghua"])
-    result = runner.invoke(cli.app, ["config"])
-    assert result.exit_code == 0
-    assert config.load_mirror().pypi == config.PYPI_PRESETS["tsinghua"]
-
-
-def test_config_no_flags_non_interactive_prints_settings(monkeypatch: pytest.MonkeyPatch) -> None:
-    """F10: with no flags and no tty, config falls back to printing settings — it must NOT run the
-    Rich wizard (which would hang or read EOF on a pipe/CI)."""
-    monkeypatch.setattr(cli, "_is_interactive", lambda: False)
-
-    def _boom(*_a: object, **_k: object) -> str:
-        raise AssertionError("the wizard must not run when non-interactive")
-
-    monkeypatch.setattr(cli.Prompt, "ask", _boom)
-    result = runner.invoke(cli.app, ["config"])
-    assert result.exit_code == 0
-    assert "off" in result.output.lower()  # settings were printed
-    assert not config.mirror_configured()  # nothing was written
-
-
-# --- (g) `skit config` flag writes preserve the other section ---
-
-
-def test_mirror_off_preserves_language() -> None:
-    runner.invoke(cli.app, ["config", "--lang", "zh-CN"])
-    result = runner.invoke(cli.app, ["config", "--mirror", "off"])
-    assert result.exit_code == 0
-    assert config.load_config()["language"] == "zh-CN"  # language survives the mirror write
-
-
-def test_lang_auto_preserves_mirror() -> None:
-    runner.invoke(cli.app, ["config", "--mirror", "tsinghua"])
-    result = runner.invoke(cli.app, ["config", "--lang", "auto"])
-    assert result.exit_code == 0
-    assert (
-        config.load_mirror().pypi == config.PYPI_PRESETS["tsinghua"]
-    )  # [mirror] survives lang clear
 
 
 # --- first-run probe ---
@@ -234,7 +270,7 @@ def test_first_run_declined_still_marks_done(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(cli.Confirm, "ask", lambda *_a, **_k: False)
     cli._maybe_first_run_setup()
     assert not config.load_mirror().enabled
-    assert config.is_configured()  # marker written so we don't probe again
+    assert config.is_configured()
 
 
 def test_first_run_not_blocked_marks_done(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -250,12 +286,12 @@ def test_first_run_skipped_when_not_interactive(monkeypatch: pytest.MonkeyPatch)
     probed: list[int] = []
     monkeypatch.setattr(config, "looks_blocked", lambda: probed.append(1) or True)
     cli._maybe_first_run_setup()
-    assert not probed  # never probed the network
+    assert not probed
     assert not config.is_configured()
 
 
 def test_first_run_skipped_when_already_configured(monkeypatch: pytest.MonkeyPatch) -> None:
-    config.disable()  # writes a [mirror] section -> mirror configured
+    config.disable()
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     probed: list[int] = []
     monkeypatch.setattr(config, "looks_blocked", lambda: probed.append(1) or True)
@@ -266,14 +302,14 @@ def test_first_run_skipped_when_already_configured(monkeypatch: pytest.MonkeyPat
 def test_first_run_still_offered_after_language_only_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F2: `skit lang zh-CN` writes config.toml (a language key) but NO [mirror] section, so the
-    first-run mirror offer must still fire — the gate keys on mirror_configured(), not the file."""
-    i18n.set_language("zh-CN")  # writes config.toml with only a language key
-    assert config.is_configured()  # the file exists...
-    assert not config.mirror_configured()  # ...but there's no [mirror] section yet
+    """`skit config lang zh-CN` writes config.toml (a language key) but NO [mirror] section,
+    so the first-run mirror offer must still fire."""
+    i18n.set_language("zh-CN")
+    assert config.is_configured()
+    assert not config.mirror_configured()
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     monkeypatch.setattr(config, "looks_blocked", lambda: True)
     monkeypatch.setattr(cli.Confirm, "ask", lambda *_a, **_k: True)
     _prompts(monkeypatch, ["tsinghua"])
     cli._maybe_first_run_setup()
-    assert config.load_mirror().pypi == config.PYPI_PRESETS["tsinghua"]  # offer fired, mirror set
+    assert config.load_mirror().pypi == config.PYPI_PRESETS["tsinghua"]

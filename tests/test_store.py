@@ -145,9 +145,10 @@ def test_syntax_error_script_still_addable(tmp_path: Path):
 # ---------- add_python: file not found ----------
 
 
-def test_add_python_missing_file_raises(tmp_path: Path):
+def test_add_python_missing_file_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from skit import store
 
+    monkeypatch.setenv("SKIT_LANG", "en")
     with pytest.raises(store.StoreError, match="not found"):
         store.add_python(tmp_path / "ghost.py")
 
@@ -234,3 +235,45 @@ def test_resolve_not_found_raises(tmp_path: Path):
 
     with pytest.raises(store.NotFoundError):
         store.resolve("nonexistent")
+
+
+# ---------------------------------------------------------------------------
+# disk-usage helpers (public store API; shared by `doctor` and the TUI health check)
+# ---------------------------------------------------------------------------
+
+
+def test_dir_size_sums_only_files_recursively(tmp_path):
+    from skit import store
+
+    root = tmp_path / "lib"
+    (root / "a").mkdir(parents=True)
+    (root / "a" / "one.txt").write_bytes(b"x" * 100)
+    (root / "two.txt").write_bytes(b"y" * 50)
+    (root / "empty-dir").mkdir()  # directories themselves contribute nothing
+    assert store.dir_size(root) == 150
+
+
+def test_dir_size_missing_dir_is_zero(tmp_path):
+    from skit import store
+
+    assert store.dir_size(tmp_path / "nope") == 0
+
+
+def test_dir_size_on_a_file_is_zero(tmp_path):
+    from skit import store
+
+    f = tmp_path / "f.txt"
+    f.write_bytes(b"data")
+    assert store.dir_size(f) == 0  # not a directory
+
+
+def test_human_size_units_and_thresholds():
+    from skit import store
+
+    assert store.human_size(0) == "0 B"
+    assert store.human_size(512) == "512 B"  # bytes stay integer, no decimal
+    assert store.human_size(1024) == "1.0 KB"  # exactly at the boundary rolls up
+    assert store.human_size(1536) == "1.5 KB"
+    assert store.human_size(1024 * 1024) == "1.0 MB"
+    assert store.human_size(3 * 1024 * 1024 * 1024) == "3.0 GB"
+    assert store.human_size(5 * 1024**4) == "5120.0 GB"  # never rolls past GB

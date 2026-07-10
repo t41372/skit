@@ -105,7 +105,7 @@ def _read_back(entry) -> list[ParamSpec]:
 
 def test_cli_resync_prunes_and_persists(entry):
     runner = CliRunner()
-    result = runner.invoke(cli.app, ["edit", entry.meta.name, "--resync"])
+    result = runner.invoke(cli.app, ["params", entry.meta.name, "--resync"])
     assert result.exit_code == 0, result.output
     names = [s.name for s in _read_back(entry)]
     assert "GONE" not in names
@@ -115,7 +115,7 @@ def test_cli_resync_prunes_and_persists(entry):
 def test_cli_secret_and_prompt_persist(entry):
     runner = CliRunner()
     result = runner.invoke(
-        cli.app, ["edit", entry.meta.name, "--secret", "CITY", "--prompt", "CITY=Where? "]
+        cli.app, ["params", entry.meta.name, "--secret", "CITY", "--prompt", "CITY=Where? "]
     )
     assert result.exit_code == 0, result.output
     by_name = {s.name: s for s in _read_back(entry)}
@@ -123,34 +123,40 @@ def test_cli_secret_and_prompt_persist(entry):
     assert by_name["CITY"].prompt == "Where? "
 
 
-def test_cli_status_view_no_ops(entry):
+def test_cli_params_view_no_ops(entry):
     runner = CliRunner()
-    result = runner.invoke(cli.app, ["edit", entry.meta.name])
+    result = runner.invoke(cli.app, ["params", entry.meta.name])
     assert result.exit_code == 0, result.output
     assert "CITY" in result.output
-    # Status view must not modify any definitions
+    # The read view must not modify any definitions
     assert len(_read_back(entry)) == 3
 
 
 def test_cli_bad_prompt_is_warned_not_fatal(entry):
     runner = CliRunner()
-    result = runner.invoke(cli.app, ["edit", entry.meta.name, "--prompt", "no-equals-sign"])
+    result = runner.invoke(cli.app, ["params", entry.meta.name, "--prompt", "no-equals-sign"])
     assert result.exit_code == 0, result.output
 
 
-def test_cli_edit_reference_refused(tmp_path):
+def test_cli_params_edit_reference_refused(tmp_path):
     script = tmp_path / "ref.py"
     script.write_text(SCRIPT, encoding="utf-8")
     ent = store.add_python(script, mode="reference")
     runner = CliRunner()
-    result = runner.invoke(cli.app, ["edit", ent.meta.name, "--resync"])
+    result = runner.invoke(cli.app, ["params", ent.meta.name, "--resync"])
     assert result.exit_code == 1
     # The original file must never be modified
     assert script.read_text(encoding="utf-8") == SCRIPT
 
 
-def test_cli_edit_command_entry_refused():
+def test_cli_edit_command_entry_has_no_source(monkeypatch):
+    # `skit edit` on a non-Python entry must refuse before ever launching an editor.
+    monkeypatch.setattr(cli.editor, "open_in_editor", lambda *a, **k: _no_editor())
     ent = store.add_command("echo {x}", name="ec")
     runner = CliRunner()
     result = runner.invoke(cli.app, ["edit", ent.meta.name])
     assert result.exit_code == 1
+
+
+def _no_editor():
+    raise AssertionError("editor must not be launched")

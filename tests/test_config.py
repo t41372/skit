@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from skit import config
+from skit import atomic, config
 
 
 @pytest.fixture(autouse=True)
@@ -162,6 +162,65 @@ def test_preset_uv_binary_stays_https() -> None:
 def test_load_config_tolerates_corrupt_toml(cfg_dir: Path) -> None:
     (cfg_dir / "config.toml").write_text("this is = = not [valid toml", encoding="utf-8")
     assert config.load_config() == {}
+
+
+# --- corrupt config.toml must never be silently wiped by the next read-modify-write save ---
+
+
+def test_save_editor_backs_up_corrupt_config_instead_of_wiping_it(
+    cfg_dir: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    corrupt = 'language = "zh-CN"\n[mirror]\nenabled = true\npypi = "https://tsinghua"\nthis is = = not valid toml'
+    (cfg_dir / "config.toml").write_text(corrupt, encoding="utf-8")
+    config.save_editor("vim")
+    # The just-requested change still takes effect...
+    assert config.load_editor() == "vim"
+    # ...but the corrupt original is preserved verbatim in a backup rather than vanishing.
+    backup = cfg_dir / "config.toml.bak"
+    assert backup.is_file()
+    assert backup.read_text(encoding="utf-8") == corrupt
+    # ...and the user is told on stderr, so the data loss isn't silent.
+    err = capsys.readouterr().err
+    assert "config.toml" in err
+    assert "config.toml.bak" in err
+
+
+def test_save_mirror_backs_up_corrupt_config_instead_of_wiping_it(cfg_dir: Path) -> None:
+    corrupt = 'language = "zh-CN"\nthis is = = not valid toml'
+    (cfg_dir / "config.toml").write_text(corrupt, encoding="utf-8")
+    config.save_mirror(config.preset("aliyun"))
+    assert config.load_mirror().pypi == config.PYPI_PRESETS["aliyun"]
+    backup = cfg_dir / "config.toml.bak"
+    assert backup.is_file()
+    assert backup.read_text(encoding="utf-8") == corrupt
+
+
+def test_save_editor_warns_when_corrupt_config_cannot_even_be_backed_up(
+    cfg_dir: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Double failure (corrupt file + backup itself fails, e.g. a read-only config dir): the save
+    # must still not crash, and must still tell the user on stderr that data may be lost.
+    (cfg_dir / "config.toml").write_text("this is = = not valid toml", encoding="utf-8")
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(atomic.shutil, "copy2", boom)
+    config.save_editor("vim")
+    assert config.load_editor() == "vim"
+    assert not (cfg_dir / "config.toml.bak").exists()
+    err = capsys.readouterr().err
+    assert "config.toml" in err
+
+
+def test_save_editor_still_preserves_other_keys_when_config_is_valid(cfg_dir: Path) -> None:
+    # Sanity: the fix must not regress the ordinary (non-corrupt) preserve-other-keys path.
+    config.save_config({"language": "zh-CN"})
+    config.save_editor("code --wait")
+    doc = config.load_config()
+    assert doc["language"] == "zh-CN"
+    assert doc["editor"] == "code --wait"
+    assert not (cfg_dir / "config.toml.bak").exists()
 
 
 def test_looks_blocked_true_when_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -32,6 +33,11 @@ def _pybabel(*args: str) -> int:
     ).returncode
 
 
+def _project_version() -> str:
+    with (ROOT / "pyproject.toml").open("rb") as f:
+        return tomllib.load(f)["project"]["version"]
+
+
 def extract() -> int:
     return _pybabel(
         "extract",
@@ -40,7 +46,7 @@ def extract() -> int:
         "--project",
         "skit",
         "--version",
-        "0.0.1",
+        _project_version(),
         "--sort-by-file",
         "--no-wrap",
         "-o",
@@ -58,7 +64,9 @@ def compile_() -> int:
 
 
 def add(locale: str) -> int:
-    return _pybabel("init", "-i", str(POT), "-d", str(LOCALES), "-D", DOMAIN, "-l", locale)
+    return _pybabel(
+        "init", "-i", str(POT), "-d", str(LOCALES), "-D", DOMAIN, "-l", locale, "--no-wrap"
+    )
 
 
 def main(argv: list[str]) -> int:

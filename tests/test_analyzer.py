@@ -88,3 +88,157 @@ def test_syntax_error_returns_empty():
     result = analyzer.analyze("def broken(:\n")
     assert result.syntax_error is True
     assert result.candidates == []
+
+
+# ---------- duplicate top-level const names (corrupted/wrong injected run) ----------
+
+
+def test_duplicate_top_level_const_is_deduped_to_one_candidate():
+    # A name bound twice at module top level (e.g. from hand-editing) must yield exactly one
+    # candidate, not two: two same-named ParamSpecs made the shim compute and apply the same
+    # replacement span twice (see shim.inject), corrupting the injected source.
+    src = "CITY = 'a'\nCITY = 'b'\nprint(CITY)\n"
+    result = analyzer.analyze(src)
+    names = [c.name for c in result.candidates]
+    assert names.count("CITY") == 1
+
+
+def test_duplicate_top_level_const_keeps_last_occurrence_value():
+    # Module top-level execution is sequential, so by the time the script finishes running, CITY
+    # holds 'b' (the second assignment), not 'a'. The kept candidate's type/default must reflect
+    # that runtime-effective value, or the onboarding form default and the injected type would
+    # disagree with what the script actually does when left unmanaged.
+    src = "N = 1\nN = 2\nprint(N)\n"
+    result = analyzer.analyze(src)
+    (cand,) = [c for c in result.candidates if c.name == "N"]
+    assert cand.default == 2
+    assert cand.type == "int"
+
+
+def test_duplicate_top_level_const_keeps_first_occurrence_position():
+    # Display/onboarding order should still read top-to-bottom like the source: the de-duplicated
+    # candidate keeps the *first* occurrence's slot even though its value comes from the last one.
+    src = "X = 1\nY = 5\nX = 2\n"
+    result = analyzer.analyze(src)
+    names = [c.name for c in result.candidates]
+    assert names.index("X") < names.index("Y")
+
+
+def test_duplicate_top_level_const_mixed_ann_assign():
+    src = "X: int = 1\nX = 2\n"
+    result = analyzer.analyze(src)
+    names = [c.name for c in result.candidates]
+    assert names.count("X") == 1
+    (cand,) = result.candidates
+    assert cand.default == 2
+
+
+def test_duplicate_const_injection_no_longer_corrupts_source():
+    # End-to-end regression for the finding: a valid script with a duplicate top-level const used
+    # to become unparseable (str case) or silently run with the wrong value (int case) once
+    # injected. With a single deduped candidate/spec, shim replaces every same-named occurrence
+    # exactly once and the result stays valid and correct.
+    from skit import shim
+    from skit.metawriter import ParamSpec
+
+    src = "CITY = 'a'\nCITY = 'b'\nprint(CITY)\n"
+    result = analyzer.analyze(src)
+    (cand,) = result.candidates
+    spec = ParamSpec(name=cand.name, kind=cand.kind, type=cand.type, default=cand.default)
+    injected = shim.inject(src, [spec], {"CITY": "Paris"})
+    assert injected == "CITY = 'Paris'\nCITY = 'Paris'\nprint(CITY)\n"
+    import ast
+
+    ast.parse(injected)  # must still be valid Python (used to raise SyntaxError)
+
+
+# ---------- _match_inputs: prompt-keyed input matching (3a) ----------
+
+
+def test_match_inputs_prompt_survives_position_shift():
+    # A source edit inserted a new input() call before the stored one, shifting its bare position
+    # from 0 to 1 -- but the prompt text is unchanged, so it must still resolve correctly, and not
+    # be flagged (ambiguous=False): this is exactly the "no silent rebind" case working as intended.
+    stored = [(0, "Password: ")]
+    current = [(0, "Username: "), (1, "Password: ")]
+    bindings = analyzer._match_inputs(stored, current)
+    assert bindings == {0: (1, False)}
+
+
+def test_match_inputs_falls_back_to_position_when_no_prompt_recorded():
+    # Legacy/dynamic-prompt entries (prompt="") have no stronger signal than position, and that's
+    # not a NEW risk introduced by 3a, so it must resolve silently (ambiguous=False), same as
+    # pre-3a behaviour.
+    stored = [(0, "")]
+    current = [(0, "Anything: ")]
+    assert analyzer._match_inputs(stored, current) == {0: (0, False)}
+
+
+def test_match_inputs_flags_ambiguous_when_prompt_renamed_but_position_still_exists():
+    # The stored prompt no longer appears anywhere in the current source (renamed), but a call
+    # still exists at the stored position: fall back to position, but flag it -- the caller must
+    # surface a warning rather than silently trusting it (this is the rebind risk 3a exists to
+    # catch).
+    stored = [(0, "Old prompt: ")]
+    current = [(0, "New prompt: ")]
+    bindings = analyzer._match_inputs(stored, current)
+    assert bindings == {0: (0, True)}
+
+
+def test_match_inputs_flags_ambiguous_when_two_call_sites_share_a_prompt():
+    # Two distinct call sites with the identical literal prompt text can't be told apart by prompt
+    # alone; falling back to position is still flagged as ambiguous rather than silently trusted.
+    stored = [(0, "Value: ")]
+    current = [(0, "Value: "), (1, "Value: ")]
+    bindings = analyzer._match_inputs(stored, current)
+    assert bindings == {0: (0, True)}
+
+
+def test_match_inputs_missing_when_neither_prompt_nor_position_resolves():
+    stored = [(2, "Gone: ")]
+    current = [(0, "Other: ")]
+    assert analyzer._match_inputs(stored, current) == {}
+
+
+# ---------- _match_inputs: duplicate STORED prompts must never map two-to-one (regression) ----------
+
+
+def test_match_inputs_duplicate_stored_prompts_never_double_bind_on_delete():
+    # Two stored specs shared the identical literal prompt (a retry pattern: two input("Go? ")
+    # calls, both managed). The user deletes one of the two calls, leaving a single current call
+    # site with that prompt. The first-listed stored entry wins the exact match; the second must
+    # NOT also resolve to that same current order (that would corrupt the injected copy) -- its
+    # bare position (1) no longer exists either, so it must come back missing entirely.
+    stored = [(0, "Go? "), (1, "Go? ")]
+    current = [(0, "Go? ")]
+    bindings = analyzer._match_inputs(stored, current)
+    assert bindings == {0: (0, False)}
+    # Explicit invariant: no two stored keys ever resolve to the same current order.
+    resolved = [current_order for current_order, _ in bindings.values()]
+    assert len(resolved) == len(set(resolved))
+
+
+def test_match_inputs_duplicate_stored_prompts_edit_one_flags_rebind_for_loser():
+    # Same duplicate-prompt setup, but this time the call at position 1 still exists -- its prompt
+    # was just edited to something else. The losing stored entry can't get an exact match (its
+    # prompt's one candidate was already claimed by the winner), so it falls back to bare position
+    # 1, which now holds a *different* question -- that must be flagged ambiguous (rebind), never
+    # silently trusted and never double-bound onto position 0.
+    stored = [(0, "Go? "), (1, "Go? ")]
+    current = [(0, "Go? "), (1, "Different: ")]
+    bindings = analyzer._match_inputs(stored, current)
+    assert bindings == {0: (0, False), 1: (1, True)}
+    resolved = [current_order for current_order, _ in bindings.values()]
+    assert len(resolved) == len(set(resolved))
+
+
+def test_match_inputs_triple_duplicate_stored_prompts_only_one_winner():
+    # Three stored specs share one prompt; only one current call site remains. Exactly one stored
+    # entry may claim it; the other two must come back missing (their bare positions 1 and 2 don't
+    # exist in the current source either) -- never sharing the winner's current order.
+    stored = [(0, "Go? "), (1, "Go? "), (2, "Go? ")]
+    current = [(0, "Go? ")]
+    bindings = analyzer._match_inputs(stored, current)
+    assert bindings == {0: (0, False)}
+    resolved = [current_order for current_order, _ in bindings.values()]
+    assert len(resolved) == len(set(resolved))

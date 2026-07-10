@@ -1,0 +1,83 @@
+"""Shared test fixtures.
+
+Tests must be hermetic: they must never read from or write to the developer's real
+skit config/data/state directories (e.g. ~/Library/Application Support/skit on macOS).
+src/skit/paths.py resolves each directory from SKIT_CONFIG_DIR / SKIT_DATA_DIR /
+SKIT_STATE_DIR (falling back to platformdirs, i.e. the real user directories, when
+unset), read live on every call. Without isolation, a test that doesn't explicitly
+monkeypatch these env vars will silently fall through to the real config — this is
+exactly what happened with a real ~/.../skit/config.toml containing `language =
+"zh-TW"`, which made tests/test_i18n.py::test_lang_env and
+tests/test_review_fixes.py::test_detect_locale_locale_module_error fail (and, in an
+earlier run, caused a first-run locale auto-detect to write to that real file).
+
+This autouse fixture points all three env vars at a per-test tmp_path subdirectory
+before every test runs, so the real user directories are never touched regardless of
+whether a given test's own fixtures also set them. Per-file/per-test monkeypatching
+of these vars still works fine on top of this (monkeypatch composes; the last set
+wins) — this is additive, not a replacement for it.
+
+Second layer (mutation-escape hardening): mutation testing (`uv run mutmut run`)
+mutates src/skit/paths.py itself — e.g. corrupting the "SKIT_DATA_DIR" string literal
+used in os.environ.get(). When that happens, the SKIT_* lookup above silently misses
+and paths.py falls through to its platformdirs-based default, which resolves against
+the real ~/Library/Application Support/skit (macOS) or ~/.local/share (Linux). The
+mutant still gets killed by an assertion elsewhere, but by then the test has already
+written ghost files into the developer's real registry — this actually happened once,
+clobbering a real registry entry with pytest tmp-path junk. Env-var isolation alone is
+structurally insufficient when the isolation-implementing code is the thing being
+mutated. So this fixture also redirects the fallback layer: platformdirs on macOS
+resolves user_data_dir/user_state_dir/user_config_dir via HOME (empirically verified:
+overriding HOME repoints all three under "<HOME>/Library/Application Support"), and on
+Linux via XDG_DATA_HOME/XDG_STATE_HOME/XDG_CONFIG_HOME (falling back to HOME-relative
+defaults otherwise). Redirecting HOME plus the XDG_* vars means that even if every
+SKIT_* lookup in paths.py were deleted or broken by a mutant, platformdirs would still
+resolve inside tmp_path, never the real user directories.
+
+Corollary for humans and agents: never run the real `uv run skit` CLI for manual
+testing/debugging without first pointing SKIT_CONFIG_DIR/SKIT_DATA_DIR/SKIT_STATE_DIR
+(or HOME) at a scratch directory — that was the other source of real-directory
+pollution, independent of the test suite.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from skit import i18n
+
+
+@pytest.fixture(autouse=True)
+def _isolate_skit_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SKIT_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("SKIT_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SKIT_STATE_DIR", str(tmp_path / "state"))
+
+    # Defense in depth: also redirect the platformdirs fallback layer itself, in case
+    # a mutant breaks the SKIT_* lookups above (see module docstring).
+    fake_home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+
+    # Hermetic locale: default every test to English so exact-message assertions never depend on
+    # the developer's / CI host's LC_ALL/LANG (a zh host locale otherwise translates launcher and
+    # i18n messages and breaks those assertions). Tests that exercise a specific locale override
+    # this with their own monkeypatch.setenv("SKIT_LANG", ...) / delenv (same monkeypatch instance,
+    # last-set wins), and the _reset_i18n fixture below clears the cached catalog so the override
+    # takes effect. This replaces the fragile per-test/per-file SKIT_LANG pinning.
+    monkeypatch.setenv("SKIT_LANG", "en")
+
+
+@pytest.fixture(autouse=True)
+def _reset_i18n() -> None:
+    # The i18n catalog is a lazy module-level singleton: import-time gettext() calls
+    # (e.g. tui.py BINDINGS during collection) would otherwise lock the process to the
+    # machine's locale before any test fixture runs, making English-string assertions
+    # order-dependent. Reset so each test lazily re-inits from its own isolated env.
+    i18n._translations = None
+    i18n._active = i18n.DEFAULT_LOCALE
+    i18n._pseudo = False

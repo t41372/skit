@@ -1,11 +1,27 @@
-"""CLI entry point (Typer). Running `skit` with no subcommand opens the TUI main menu.
+"""CLI entry point (Typer), v2 surface per docs/ux-redesign.md §8.
 
-Every user-visible string goes through i18n.gettext()/ngettext(). Help strings are resolved at import time,
-so i18n is lazily initialized when this module is imported (see i18n.py for the detection chain).
+Running `skit` with no subcommand opens the TUI workbench. The commands here are the
+automation/SSH/muscle-memory shortcuts; every interactive flow goes through the shared
+form layer (flows) so CLI and TUI behave identically.
+
+Command-surface contracts:
+- Exit codes (docker convention): `run` passes the script's exit code through PURE;
+  skit's own failures are 125, a target that exists but isn't executable is 126, a
+  missing target/name is 127, usage errors are 2. Other commands: 0/1/2.
+- Every output has a --json twin where output exists.
+- Lists are repeatable flags (--dep), never comma-joined (PEP 508 specifiers contain
+  commas).
+- Non-interactive contract: on a pipe/CI/--no-input, never prompt, never guess, never
+  silently assemble a broken command.
+
+Every user-visible string goes through i18n.gettext()/ngettext(). Help strings resolve at
+import time, so i18n initializes lazily on module import (see i18n.py).
 """
 
 from __future__ import annotations
 
+import json
+import os
 import sys
 from pathlib import Path
 
@@ -13,19 +29,21 @@ import typer
 from rich.console import Console
 from rich.markup import escape
 from rich.prompt import Confirm, Prompt
-from rich.table import Table
 
 from . import (
     __version__,
     analyzer,
     argstate,
     config,
+    editor,
+    flows,
     i18n,
     launcher,
     metawriter,
+    models,
     pep723,
+    promptform,
     reconcile,
-    shim,
     store,
 )
 from .i18n import gettext, ngettext
@@ -40,6 +58,58 @@ app = typer.Typer(
 )
 console = Console()
 err_console = Console(stderr=True)
+
+# Exit-code contract for `skit run` (docker convention; the script's own code passes
+# through untouched, so these must stay out of the 0-124 range scripts commonly use).
+EXIT_USAGE = 2
+EXIT_SKIT = 125
+EXIT_NOT_EXECUTABLE = 126
+EXIT_NOT_FOUND = 127
+EXIT_CANCELLED = 130  # user cancelled the form (128+SIGINT convention) — not a skit failure
+
+# Rich closing tags are case-insensitive, so a mutated-case variant is behaviorally identical.
+_DIM_CLOSE = "[/dim]"  # pragma: no mutate
+_RED_CLOSE = "[/red]"  # pragma: no mutate
+
+
+def _fail(message: str, code: int) -> typer.Exit:
+    err_console.print(f"[red]{escape(message)}[/red]")
+    return typer.Exit(code)
+
+
+def _is_interactive() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+# --------------------------------------------------------------------------
+# dynamic completion (north star: nothing to memorize — not even your own names)
+# --------------------------------------------------------------------------
+
+
+def _complete_script(incomplete: str) -> list[str]:
+    try:
+        entries = store.list_entries()
+    except Exception:  # completion must never crash the shell
+        return []
+    out = {e.meta.name for e in entries} | {e.slug for e in entries}
+    return sorted(c for c in out if c.startswith(incomplete))
+
+
+def _complete_preset(ctx: typer.Context, incomplete: str) -> list[str]:
+    name = ctx.params.get("name")
+    if not name:
+        return []
+    try:
+        entry = store.resolve(name)
+        presets = argstate.load_state(entry.slug)["presets"]
+    except Exception:  # completion must never crash the shell
+        return []
+    return sorted(p for p in presets if p.startswith(incomplete))
+
+
+_SCRIPT_ARG = typer.Argument(
+    ..., help=gettext("Script name or slug"), autocompletion=_complete_script
+)
 
 
 @app.callback(invoke_without_command=True)
@@ -57,92 +127,177 @@ def main(
         raise typer.Exit(run_menu())
 
 
+# --------------------------------------------------------------------------
+# add
+# --------------------------------------------------------------------------
+
+
 def _resolve_python_metadata(
-    text: str, deps_opt: str | None, python_opt: str | None, no_input: bool
+    text: str, deps_opt: list[str] | None, python_opt: str | None, no_input: bool
 ) -> tuple[list[str], str]:
     """Decide the (dependencies, requires_python) to fill in.
 
     - Script already has a PEP 723 block: don't ask, don't fill (the block is the source of truth).
-    - Explicit --deps / --python: use them directly, no prompting.
+    - Explicit --dep / --python: use them directly, no prompting.
     - Interactive: only ask when the AST reveals likely third-party imports; ask nothing when
       there are no dependencies at all.
     """
     if pep723.has_block(text):
         meta = pep723.parse_block(text) or {}
-        deps = meta.get("dependencies", [])
+        deps = meta.get("dependencies")
         if deps:
-            console.print(gettext("PEP 723 metadata found: %(deps)s") % {"deps": ", ".join(deps)})
+            console.print(
+                gettext("The script declares its own dependencies (PEP 723): %(deps)s")
+                % {"deps": ", ".join(escape(d) for d in deps)}
+            )
         return [], ""
     if deps_opt is not None or python_opt is not None:
-        deps = [d.strip() for d in (deps_opt or "").split(",") if d.strip()]
-        return deps, python_opt or ""
+        return list(deps_opt or []), python_opt or ""
     suggested = pep723.suggest_dependencies(text)
     if not suggested:
         return [], ""  # No dependencies: nothing to ask
     if no_input or not sys.stdin.isatty():
         return suggested, ""  # Non-interactive: accept the suggestions as-is
     answer = Prompt.ask(
-        gettext("Dependencies (comma separated; leave empty for none)"),
+        gettext("Dependencies to install (Enter to accept, edit the list, or '-' for none)"),
         default=", ".join(suggested),
         console=console,
     )
-    deps = [d.strip() for d in answer.split(",") if d.strip()]
+    if answer.strip().lower() in ("-", "none"):
+        deps_list: list[str] = []
+    else:
+        deps_list = pep723.split_requirements(answer)
     py = Prompt.ask(
         gettext("Python version (leave empty for automatic)"), default="", console=console
     )
-    return deps, py.strip()
+    return deps_list, py.strip()
 
 
-def _spec_from_candidate(c: analyzer.Candidate) -> metawriter.ParamSpec:
-    return metawriter.ParamSpec(
-        name=c.name,
-        kind=c.kind,
-        type=c.type,
-        default=c.default,
-        prompt=c.prompt,
-        order=c.order,
-        secret=c.secret,
-    )
+def _prompt_identity(
+    p: Path, text: str, name: str | None, description: str | None, no_input: bool
+) -> tuple[str | None, str | None]:
+    """Interactive name + description prompts for `add`. `None` means "let the store derive it"."""
+    if no_input or not sys.stdin.isatty():
+        return name, description
+    if name is None:
+        name = Prompt.ask(gettext("Name in skit"), default=p.stem, console=console).strip() or None
+    if description is None:
+        description = Prompt.ask(
+            gettext("Description (optional)"),
+            default=store.suggest_description(text),
+            console=console,
+        ).strip()
+    return name, description
+
+
+def _require_py_file(resolved: Path) -> None:
+    if not resolved.is_file():
+        raise store.StoreError(gettext("File not found: %(path)s") % {"path": str(resolved)})
 
 
 def _parse_selection(answer: str, count: int) -> list[int]:
-    """Parse an onboarding selection: 'all' / 'none' (or empty) / '1,3,5'.
-
-    Invalid numbers are ignored.
-    """
+    """Parse an onboarding selection: 'all' / 'none' (or empty) / '1,3,5'."""
     answer = answer.strip().lower()
-    if answer in ("none", ""):
-        return []
     if answer == "all":
         return list(range(count))
     picked: list[int] = []
     for raw_part in answer.split(","):
         part = raw_part.strip()
-        if part.isdigit() and 1 <= int(part) <= count and (int(part) - 1) not in picked:
+        # isdecimal() is the predicate whose truth guarantees int() succeeds (isdigit()
+        # also accepts superscripts/circled digits that int() rejects).
+        if part.isdecimal() and 1 <= int(part) <= count and (int(part) - 1) not in picked:
             picked.append(int(part) - 1)
     return picked
 
 
-def _onboard_params(text: str, script_name: str, no_input: bool) -> list[metawriter.ParamSpec]:
-    """Parameter onboarding at add time (A4: which constant counts as a parameter is a UX call,
-    so let the user choose).
+def _default_selection(candidates: list[analyzer.Candidate]) -> str:
+    """Signal-driven default (UX spec §0): clean candidates in, demoted candidates out."""
+    clean = [i for i, c in enumerate(candidates, start=1) if not c.demoted]
+    if len(clean) == len(candidates):
+        return "all"
+    if not clean:
+        return "none"
+    return ",".join(str(i) for i in clean)
 
-    - If argparse/click/typer is detected: suggest the L1 pass-through + preset flow instead of
-      injection-based management.
-    - Non-interactive (--no-input / no tty): don't guess, don't select, return empty (honesty
-      beats being clever).
-    """
-    result = analyzer.analyze(text)
-    if result.uses_cli_framework:
+
+def _print_candidate(i: int, c: analyzer.Candidate) -> None:
+    mark = gettext(" (secret)") if c.secret else ""
+    if c.kind == "const":
+        console.print(
+            "  "
+            + gettext("%(num)s. %(name)s (%(type)s) = %(value)s%(secret)s")
+            % {
+                "num": i,
+                "name": escape(c.name),
+                "type": c.type,
+                "value": escape(repr(c.default)),
+                "secret": mark,
+            }
+        )
+    else:
+        console.print(
+            "  "
+            + gettext("%(num)s. input() #%(ordinal)s: %(prompt)s%(secret)s")
+            % {"num": i, "ordinal": c.order + 1, "prompt": escape(repr(c.prompt)), "secret": mark}
+        )
+    if c.demoted:
+        console.print(
+            f"     [yellow]{gettext('⚠ looks like a loop accumulator — probably not a parameter')}[/yellow]"
+        )
+
+
+def _print_add_hints(result: analyzer.Analysis, script_name: str) -> None:
+    """The honest, rule-backed hints (UX spec §0): argv passthrough, extractable filenames."""
+    if result.uses_argv:
         console.print(
             "[dim]"
             + gettext(
-                "This script already parses its own arguments (%(names)s). Pass them straight through instead: skit run %(name)s -- <args>"
+                "This script reads command-line arguments; the run form has an extra-arguments field for them."
             )
-            % {"names": ", ".join(result.frameworks), "name": script_name}
-            + "[/dim]"
+            + _DIM_CLOSE
         )
+    if result.filename_literals:
+        names = ", ".join(escape(repr(s)) for s in result.filename_literals)
+        console.print(
+            "[dim]"
+            + gettext(
+                "💡 %(names)s are written directly inside the code, so skit can't turn them into form fields. To manage one, first give it a name at the top of the script, e.g. OUTPUT = '…' (skit edit %(script)s)."
+            )
+            % {"names": names, "script": escape(script_name)}
+            + _DIM_CLOSE
+        )
+
+
+def _onboard_params(text: str, script_name: str, no_input: bool) -> list[metawriter.ParamSpec]:
+    """Parameter onboarding at add time (A4: which constant counts as a parameter is a UX call).
+
+    - argparse detected: nothing to manage — the run form is read statically from the
+      script's own argument declarations (the unified form model).
+    - Non-interactive: don't guess, don't select, return empty (honesty beats clever).
+    """
+    result = analyzer.analyze(text)
+    if result.uses_cli_framework:
+        from . import argspec
+
+        spec = argspec.read_cli(text)
+        if spec is not None and spec.ok and spec.fields:
+            console.print(
+                gettext(
+                    "✓ skit read this script's own arguments (%(count)s fields). Running it opens a form — nothing to memorize."
+                )
+                % {"count": len(spec.fields)}
+            )
+        else:
+            console.print(
+                "[dim]"
+                + gettext(
+                    "This script parses its own arguments (%(names)s); skit couldn't model them statically, so the run form offers a passthrough-arguments field."
+                )
+                % {"names": ", ".join(result.frameworks)}
+                + _DIM_CLOSE
+            )
         return []
+    _print_add_hints(result, script_name)
     if not result.candidates or no_input or not sys.stdin.isatty():
         return []
     console.print(
@@ -153,39 +308,145 @@ def _onboard_params(text: str, script_name: str, no_input: bool) -> list[metawri
         )
         % {"count": len(result.candidates)}
     )
-    secret_mark = gettext(" (secret)")
     for i, c in enumerate(result.candidates, start=1):
-        mark = secret_mark if c.secret else ""
-        if c.kind == "const":
-            console.print(
-                "  "
-                + gettext("%(num)s. %(name)s (%(type)s) = %(value)s%(secret)s")
-                % {
-                    "num": i,
-                    "name": c.name,
-                    "type": c.type,
-                    "value": repr(c.default),
-                    "secret": mark,
-                }
-            )
-        else:
-            console.print(
-                "  "
-                + gettext("%(num)s. input() #%(ordinal)s: %(prompt)s%(secret)s")
-                % {"num": i, "ordinal": c.order + 1, "prompt": repr(c.prompt), "secret": mark}
-            )
+        _print_candidate(i, c)
     answer = Prompt.ask(
         gettext("Which ones should skit manage? (e.g. 1,3 / all / none)"),
-        default="all",
+        default=_default_selection(result.candidates),
         console=console,
     )
     picked = _parse_selection(answer, len(result.candidates))
-    return [_spec_from_candidate(result.candidates[i]) for i in picked]
+    return [metawriter.ParamSpec.from_candidate(result.candidates[i]) for i in picked]
 
 
-@app.command(help=gettext("Add a script, executable, or command to skit."))
+# A brand-new script starts from just a shebang; if the editor is closed with nothing more
+# than this (or empty), we treat it as "cancelled" and add nothing.
+_STARTER_SCRIPT = "#!/usr/bin/env python3\n"
+
+
+def _onboard_python(
+    p: Path,
+    text: str,
+    *,
+    name: str | None,
+    description: str | None = None,
+    ref: bool = False,
+    deps_opt: list[str] | None = None,
+    python_opt: str | None = None,
+    no_input: bool = False,
+) -> tuple[store.Entry, list[str], list[str], list[str]]:
+    """Shared add/create pipeline: identity -> dependencies -> store add -> parameter
+    onboarding. Returns (entry, deps, managed_names, secret_names) for the summary."""
+    name, description = _prompt_identity(p, text, name, description, no_input)
+    final_deps, final_py = _resolve_python_metadata(text, deps_opt, python_opt, no_input)
+    entry = store.add_python(
+        p,
+        name=name,
+        mode="reference" if ref else "copy",
+        description=description,
+        dependencies=final_deps or None,
+        requires_python=final_py,
+    )
+    managed: list[str] = []
+    secrets: list[str] = []
+    if entry.meta.mode == "reference":
+        console.print(
+            f"[dim]{gettext('Reference mode never touches the original file, so parameter setup was skipped.')}[/dim]"
+        )
+    else:
+        params_specs = _onboard_params(text, entry.meta.name, no_input)
+        if params_specs:
+            copy_path = entry.dir / "script.py"  # pragma: no mutate — fs-case
+            current = copy_path.read_text(encoding="utf-8")  # pragma: no mutate — utf-8 equivalence
+            new_text = metawriter.write_params(current, params_specs)
+            copy_path.write_text(new_text, encoding="utf-8")  # pragma: no mutate
+            managed = [s.name for s in params_specs]
+            secrets = [s.name for s in params_specs if s.secret]
+    return entry, final_deps, managed, secrets
+
+
+def _create_python_in_editor(name: str | None) -> None:
+    """Write a starter script to a temp file, open the user's editor, then ingest whatever
+    they saved."""
+    import tempfile
+
+    if not _is_interactive():
+        err_console.print(
+            f"[red]{gettext('Writing a new script in an editor needs an interactive terminal.')}[/red]"
+        )
+        raise typer.Exit(EXIT_USAGE)
+    if not name:
+        name = Prompt.ask(gettext("Name in skit"), console=console).strip()
+        if not name:
+            err_console.print(f"[red]{gettext('A name is required.')}[/red]")
+            raise typer.Exit(EXIT_USAGE)
+    fd, tmp_name = tempfile.mkstemp(suffix=".py", prefix="skit-new-")  # pragma: no mutate
+    os.close(fd)
+    tmp = Path(tmp_name)
+    tmp.write_text(_STARTER_SCRIPT, encoding="utf-8")  # pragma: no mutate
+    try:
+        console.print(f"[dim]{gettext('Opening your editor…')}[/dim]")
+        editor.open_in_editor(tmp)
+        text = tmp.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate — utf-8 equiv
+        if text.strip() in ("", _STARTER_SCRIPT.strip()):
+            console.print(gettext("Nothing was written, so no script was added."))
+            return
+        entry, deps, managed, secrets = _onboard_python(tmp, text, name=name)
+    except (editor.EditorError, store.StoreError) as exc:
+        raise _fail(str(exc), 1) from exc
+    finally:
+        tmp.unlink(missing_ok=True)  # pragma: no mutate — the temp file always exists here
+    _print_add_summary(entry, deps, managed, secrets)
+
+
+def _add_from_stdin(name: str | None, description: str | None) -> None:
+    """`skit add -`: ingest a script from stdin (e.g. `pbpaste | skit add - -n clip`).
+    stdin is the script, so there is nobody to prompt: the non-interactive contract
+    applies, and a name is required up front."""
+    import tempfile
+
+    if not name:
+        err_console.print(
+            f"[red]{gettext('Reading the script from stdin needs an explicit --name.')}[/red]"
+        )
+        raise typer.Exit(EXIT_USAGE)
+    text = sys.stdin.read()
+    if not text.strip():
+        err_console.print(
+            f"[red]{gettext('Nothing arrived on stdin, so there is nothing to add.')}[/red]"
+        )
+        raise typer.Exit(1)
+    fd, tmp_name = tempfile.mkstemp(suffix=".py", prefix="skit-stdin-")  # pragma: no mutate
+    os.close(fd)
+    tmp = Path(tmp_name)
+    tmp.write_text(text, encoding="utf-8")  # pragma: no mutate
+    try:
+        entry, deps, managed, secrets = _onboard_python(
+            tmp, text, name=name, description=description, no_input=True
+        )
+    except store.StoreError as exc:
+        raise _fail(str(exc), 1) from exc
+    finally:
+        tmp.unlink(missing_ok=True)  # pragma: no mutate
+    _print_add_summary(entry, deps, managed, secrets)
+
+
+def _infer_add_kind(resolved: Path, exe_flag: bool) -> str:
+    """Type inference (v2) — delegated to store.infer_kind so the CLI and the TUI add
+    panel share one rule and can't drift apart."""
+    return store.infer_kind(resolved, force_exe=exe_flag)
+
+
+@app.command(
+    help=gettext("Add a script, executable, or command to skit."),
+    epilog=gettext(
+        "Examples:  skit add tools/resize.py  ·  skit add --cmd 'ffmpeg -i {input}' -n convert  ·  pbpaste | skit add - -n clip"
+    ),
+)
 def add(
-    path: str = typer.Argument(None, help=gettext("Path to a Python script or executable")),
+    path: str = typer.Argument(
+        None, help=gettext("Path to a script or executable, or '-' to read a script from stdin")
+    ),
     name: str = typer.Option(
         None, "--name", "-n", help=gettext("Name / alias (defaults to the file name)")
     ),
@@ -195,19 +456,26 @@ def add(
         "-d",
         help=gettext("Description (defaults to the first line of the docstring)"),
     ),
+    edit_new: bool = typer.Option(
+        False, "--edit", "-e", help=gettext("Write a brand-new script in your editor, then add it")
+    ),
     ref: bool = typer.Option(
         False,
         "--ref",
         help=gettext("Reference mode: link to the original file instead of copying it"),
     ),
-    exe: bool = typer.Option(False, "--exe", help=gettext("Register as an executable entry")),
+    exe: bool = typer.Option(
+        False,
+        "--exe",
+        help=gettext("Force the executable kind (normally inferred from the file itself)"),
+    ),
     cmd: str = typer.Option(
         None, "--cmd", help=gettext("Register a command template, e.g. --cmd 'ffmpeg -i {input}'")
     ),
-    deps: str = typer.Option(
+    dep: list[str] = typer.Option(
         None,
-        "--deps",
-        help=gettext("Dependencies, comma separated (skips the interactive question)"),
+        "--dep",
+        help=gettext("A dependency (repeat for more; skips the interactive question)"),
     ),
     python: str = typer.Option(
         None, "--python", help=gettext('Python version constraint, e.g. ">=3.11"')
@@ -217,92 +485,106 @@ def add(
     ),
 ) -> None:
     """Add a script / executable / command to skit."""
+    if edit_new:
+        if path:
+            err_console.print(
+                f"[red]{gettext('Use --edit to write a new script, or pass a path to add an existing one — not both.')}[/red]"
+            )
+            raise typer.Exit(EXIT_USAGE)
+        _create_python_in_editor(name)
+        return
+    if path == "-":
+        _add_from_stdin(name, description)
+        return
+    summary_deps: list[str] = []
+    summary_managed: list[str] = []
+    summary_secrets: list[str] = []
     try:
         if cmd is not None:
             if not name:
                 err_console.print(f"[red]{gettext('A --cmd entry needs a --name')}[/red]")
-                raise typer.Exit(2)
+                raise typer.Exit(EXIT_USAGE)
             entry = store.add_command(cmd, name=name, description=description or "")
             if entry.meta.params:
                 console.print(
                     gettext(
-                        "Detected parameters: %(names)s (you'll be prompted on each run; your last values are remembered)"
+                        "Detected parameters: %(names)s (the run form asks for them; your last values are remembered)"
                     )
-                    % {"names": ", ".join(entry.meta.params)}
+                    % {"names": ", ".join(escape(p) for p in entry.meta.params)}
                 )
-        elif exe:
-            if not path:
-                err_console.print(f"[red]{gettext('--exe requires a path')}[/red]")
-                raise typer.Exit(2)
-            entry = store.add_exe(Path(path), name=name, description=description or "")
         else:
             if not path:
                 err_console.print(
                     f"[red]{gettext('Provide a script path, or use --cmd to register a command template')}[/red]"
                 )
-                raise typer.Exit(2)
-            p = Path(path)
-            if p.suffix.lower() != ".py":
+                raise typer.Exit(EXIT_USAGE)
+            resolved = Path(path).expanduser().resolve()
+            kind = _infer_add_kind(resolved, exe)
+            if kind == "exe":
+                entry = store.add_exe(Path(path), name=name, description=description or "")
+            elif kind == "unknown":
                 err_console.print(
-                    f"[yellow]{gettext("%(file)s isn't a .py file — pass --exe if it's an executable") % {'file': p.name}}[/yellow]"
+                    f"[red]{gettext("%(file)s isn't a .py file or an executable — pass --exe for a program, or --cmd for a command template.") % {'file': escape(resolved.name)}}[/red]"
                 )
-                raise typer.Exit(2)
-            text = p.expanduser().resolve().read_text(encoding="utf-8", errors="replace")
-            final_deps, final_py = _resolve_python_metadata(text, deps, python, no_input)
-            entry = store.add_python(
-                p,
-                name=name,
-                mode="reference" if ref else "copy",
-                description=description,
-                dependencies=final_deps or None,
-                requires_python=final_py,
-            )
-            if final_deps:
-                console.print(
-                    gettext("Dependencies recorded: %(deps)s") % {"deps": ", ".join(final_deps)}
-                )
-            # Layer 2 onboarding: detect candidate parameters, then write the chosen definitions
-            # into the copy's [tool.skit]. A5: comments only; A7: reference mode never writes the
-            # original file — so don't ask, just skip and say so.
-            if entry.meta.mode == "reference":
-                console.print(
-                    f"[dim]{gettext('Reference mode never touches the original file, so parameter setup was skipped.')}[/dim]"
-                )
+                raise typer.Exit(EXIT_USAGE)
             else:
-                params_specs = _onboard_params(text, entry.meta.name, no_input)
-                if params_specs:
-                    copy_path = entry.dir / "script.py"
-                    current = copy_path.read_text(encoding="utf-8")
-                    copy_path.write_text(
-                        metawriter.write_params(current, params_specs), encoding="utf-8"
-                    )
-                    console.print(
-                        "[green]"
-                        + gettext(
-                            "Parameter definitions written to the script's [tool.skit] block: %(names)s"
-                        )
-                        % {"names": ", ".join(s.name for s in params_specs)}
-                        + "[/green]"
-                    )
-                    secrets = [s.name for s in params_specs if s.secret]
-                    if secrets:
-                        console.print(
-                            f"[dim]{gettext('Secret parameter values are never saved to disk: %(names)s') % {'names': ', '.join(secrets)}}[/dim]"
-                        )
+                _require_py_file(resolved)
+                try:
+                    text = resolved.read_text(encoding="utf-8", errors="replace")
+                except OSError as exc:
+                    raise store.StoreError(
+                        gettext("Can't read %(path)s: %(error)s")
+                        % {"path": str(resolved), "error": exc.strerror or str(exc)}
+                    ) from exc
+                entry, summary_deps, summary_managed, summary_secrets = _onboard_python(
+                    Path(path),
+                    text,
+                    name=name,
+                    description=description,
+                    ref=ref,
+                    deps_opt=dep,
+                    python_opt=python,
+                    no_input=no_input,
+                )
     except store.StoreError as exc:
-        err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1) from exc
+        raise _fail(str(exc), 1) from exc
+    _print_add_summary(entry, summary_deps, summary_managed, summary_secrets)
+
+
+def _print_add_summary(
+    entry: store.Entry, deps: list[str], managed: list[str], secrets: list[str]
+) -> None:
+    """One consolidated block after a successful add."""
     mode_note = (
         gettext("(%(mode)s mode)") % {"mode": entry.meta.mode}
         if entry.meta.kind == "python"
         else ""
     )
     console.print(
-        f"[green]{gettext('Added: %(name)s') % {'name': entry.meta.name}}[/green] {mode_note}"
+        f"[green]{gettext('Added: %(name)s') % {'name': escape(entry.meta.name)}}[/green] {mode_note}"
     )
     if entry.meta.description:
-        console.print(f"  {gettext('Description: %(desc)s') % {'desc': entry.meta.description}}")
-    console.print(f"  {gettext('Run it: skit run %(name)s') % {'name': entry.meta.name}}")
+        console.print(
+            f"  {gettext('Description: %(desc)s') % {'desc': escape(entry.meta.description)}}"
+        )
+    if deps:
+        console.print(
+            f"  {gettext('Dependencies: %(deps)s') % {'deps': ', '.join(escape(d) for d in deps)}}"
+        )
+    if managed:
+        console.print(
+            f"  {gettext('Managed parameters: %(names)s') % {'names': ', '.join(escape(n) for n in managed)}}"
+        )
+    console.print(f"  {gettext('Run it: skit run %(name)s') % {'name': escape(entry.meta.name)}}")
+    if secrets:
+        console.print(
+            f"[dim]{gettext('Secret parameter values are never saved to disk: %(names)s') % {'names': ', '.join(escape(n) for n in secrets)}}[/dim]"
+        )
+
+
+# --------------------------------------------------------------------------
+# list / remove / edit
+# --------------------------------------------------------------------------
 
 
 @app.command("list", help=gettext("List every registered script."))
@@ -312,132 +594,134 @@ def list_cmd(
     """List every registered script."""
     entries = store.list_entries()
     if as_json:
-        import json
-
-        console.print_json(
-            json.dumps(
-                [
-                    {
-                        "name": e.meta.name,
-                        "slug": e.slug,
-                        "kind": e.meta.kind,
-                        "mode": e.meta.mode,
-                        "description": e.meta.description,
-                    }
-                    for e in entries
-                ],
-                ensure_ascii=False,
+        rows = []
+        for e in entries:
+            last = argstate.load_state(e.slug)["last_run"]
+            rows.append(
+                {
+                    "name": e.meta.name,
+                    "slug": e.slug,
+                    "kind": e.meta.kind,
+                    "mode": e.meta.mode,
+                    "description": e.meta.description,
+                    "missing": launcher.target_missing(e),
+                    "last_run_at": last.get("at"),
+                    "last_exit": last.get("exit"),
+                }
             )
-        )
+        console.print_json(json.dumps(rows, ensure_ascii=False))
         return
     if not entries:
         console.print(gettext("No scripts yet. Add one with: skit add <path>"))
         return
+    from rich.table import Table
+
     table = Table(show_header=True, header_style="bold")
     table.add_column(gettext("Name"))
     table.add_column(gettext("Kind"))
     table.add_column(gettext("Description"))
     for e in entries:
-        table.add_row(e.meta.name, e.meta.kind, e.meta.description or "—")
+        table.add_row(escape(e.meta.name), e.meta.kind, _list_description(e))
     console.print(table)
+
+
+def _list_description(e: store.Entry) -> str:
+    desc = escape(e.meta.description) if e.meta.description else "—"
+    marker = launcher.missing_marker(e)
+    if marker is None:
+        return desc
+    marker = f"[dim]{escape(marker)}[/dim]"
+    return marker if desc == "—" else f"{desc}  {marker}"
 
 
 @app.command(help=gettext("Remove a registered script (the original file is left untouched)."))
 def remove(
-    name: str = typer.Argument(..., help=gettext("Script name or slug")),
+    name: str = _SCRIPT_ARG,
     yes: bool = typer.Option(False, "--yes", "-y", help=gettext("Skip confirmation")),
 ) -> None:
     """Remove a script (copy mode deletes the copy in the store; the original is untouched)."""
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
-        err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1) from exc
+        raise _fail(str(exc), 1) from exc
     if not yes:
-        typer.confirm(gettext('Remove "%(name)s"?') % {"name": entry.meta.name}, abort=True)
-    removed = store.remove(name)
-    console.print(f"[green]{gettext('Removed: %(name)s') % {'name': removed}}[/green]")
-
-
-def _entry_param_specs(entry: store.Entry) -> list[metawriter.ParamSpec]:
-    """The [tool.skit] parameter definitions for a python entry (other kinds return empty)."""
-    if entry.meta.kind != "python" or not entry.script_path.exists():
-        return []
-    return metawriter.read_params(entry.script_path.read_text(encoding="utf-8", errors="replace"))
-
-
-def _collect_command_values(
-    entry: store.Entry, no_input: bool, preset: str | None
-) -> dict[str, str]:
-    """Fill placeholder values for a command entry.
-
-    Default resolution: preset > last-used value. Interactive mode confirms each one;
-    non-interactive reuses the recorded values as-is.
-    """
-    params = entry.meta.params or []
-    if not params:
-        return {}
-    state = argstate.load_state(entry.slug)
-    defaults = dict(state["values"])
-    if preset:
-        defaults.update(state["presets"].get(preset, {}))
-    values: dict[str, str] = {}
-    interactive = not no_input and sys.stdin.isatty()
-    for p in params:
-        default = defaults.get(p, "")
-        if interactive:
-            values[p] = Prompt.ask(f"  {p}", default=default or None, console=console) or ""
-        elif default:
-            # Non-interactive: only carry recorded values; leave missing ones for the launcher to
-            # report via launch-err-missing-values — never silently assemble a broken command.
-            values[p] = default
-    return values
-
-
-def _collect_param_form(
-    entry: store.Entry,
-    specs: list[metawriter.ParamSpec],
-    no_input: bool,
-    preset: str | None,
-) -> dict[str, str]:
-    """Pre-run parameter form (CLI version).
-
-    Resolution order: this run's input > preset > last-used > the definition's default.
-    """
-    prefill = argstate.resolve_defaults(specs, entry.slug, preset)
-    interactive = not no_input and sys.stdin.isatty()
-    if not interactive:
-        return prefill
-    console.print(
-        gettext("Parameters for %(name)s (press Enter to keep the value shown):")
-        % {"name": entry.meta.name}
-    )
-    values: dict[str, str] = {}
-    for s in specs:
-        label = s.prompt or s.name
-        default = prefill.get(s.name)
-        if s.secret:
-            answer = Prompt.ask(f"  {label}", password=True, console=console)
-            values[s.name] = answer if answer else (default or "")
+        if entry.meta.kind == "command":
+            question = gettext('Remove "%(name)s"?') % {"name": entry.meta.name}
         else:
-            values[s.name] = Prompt.ask(f"  {label}", default=default, console=console) or ""
-    return values
+            question = gettext('Remove "%(name)s"? Your original file will not be deleted.') % {
+                "name": entry.meta.name
+            }
+        typer.confirm(question, abort=True)
+    removed = store.remove(name)
+    console.print(f"[green]{gettext('Removed: %(name)s') % {'name': escape(removed)}}[/green]")
 
 
-def _reconciled_specs(
-    entry: store.Entry, specs: list[metawriter.ParamSpec], text: str
-) -> list[metawriter.ParamSpec]:
-    """Pre-run reconciliation: warn on drift (old/new comparison), drop missing definitions from
-    this form (injecting them would just throw the value into a black hole); changed ones only
-    warn but are still injected.
-    """
-    report = reconcile.reconcile(text, specs)
-    if report.has_drift:
-        for line in reconcile.drift_lines(report, entry.meta.name):
-            # The copy contains literal brackets like [tool.skit]; escape them so rich doesn't
-            # swallow them as markup.
-            err_console.print(f"[yellow]{escape(line)}[/yellow]")
-    return report.usable
+def _offer_create_in_editor(name: str) -> None:
+    """`skit edit <unknown>`: offer to create a brand-new script under that name."""
+    if not _is_interactive():
+        err_console.print(
+            f"[red]{gettext('No script named %(name)s.') % {'name': escape(name)}}[/red]"
+        )
+        raise typer.Exit(1)
+    if not Confirm.ask(
+        gettext('No script named "%(name)s". Create it now?') % {"name": escape(name)},
+        default=True,
+        console=console,
+    ):
+        raise typer.Exit(0)  # pragma: no mutate — Exit(0)/Exit(None) both mean a clean exit
+    _create_python_in_editor(name)
+
+
+@app.command(
+    help=gettext("Open a script's source in your editor (offers to create it if the name is new)."),
+    epilog=gettext("Example:  skit edit resize"),
+)
+def edit(name: str = _SCRIPT_ARG) -> None:
+    """Open a registered script's source in your editor."""
+    try:
+        entry = store.resolve(name)
+    except store.NotFoundError:
+        _offer_create_in_editor(name)
+        return
+    if entry.meta.kind != "python":
+        raise _fail(
+            gettext("%(name)s isn't a Python script, so it has no source to edit.")
+            % {"name": entry.meta.name},
+            1,
+        )
+    if entry.meta.mode == "reference":
+        source = Path(entry.meta.source)
+        if not source.exists():
+            raise _fail(
+                gettext("%(name)s: the referenced source file is gone: %(path)s")
+                % {"name": entry.meta.name, "path": str(source)},
+                1,
+            )
+        console.print(
+            f"[dim]{gettext('Editing the original file (reference mode): %(path)s') % {'path': escape(str(source))}}[/dim]"
+        )
+        target = source
+    else:
+        target = entry.dir / "script.py"
+        if not target.exists():
+            raise _fail(
+                gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}, 1
+            )
+    try:
+        editor.open_in_editor(target)
+    except editor.EditorError as exc:
+        raise _fail(str(exc), 1) from exc
+    console.print(
+        f"[green]{gettext('Saved %(name)s.') % {'name': escape(entry.meta.name)}}[/green]"
+    )
+    console.print(
+        f"[dim]{gettext('skit reconciles parameter drift at run time; review managed parameters with: skit params %(name)s') % {'name': escape(entry.meta.name)}}[/dim]"
+    )
+
+
+# --------------------------------------------------------------------------
+# run
+# --------------------------------------------------------------------------
 
 
 def _validate_preset(entry: store.Entry, preset: str | None) -> None:
@@ -448,15 +732,63 @@ def _validate_preset(entry: store.Entry, preset: str | None) -> None:
         err_console.print(
             "[red]"
             + gettext('Unknown preset "%(preset)s". Available: %(presets)s')
-            % {"preset": preset, "presets": ", ".join(sorted(presets)) or "—"}
-            + "[/red]"
+            % {
+                "preset": escape(preset),
+                "presets": ", ".join(escape(p) for p in sorted(presets)) or "—",
+            }
+            + _RED_CLOSE
         )
-        raise typer.Exit(2)
+        raise typer.Exit(EXIT_USAGE)
 
 
-@app.command(help=gettext("Run a registered script or command in the terminal."))
+def _print_drift(plan: flows.FormPlan) -> None:
+    for line in plan.drift_lines:
+        err_console.print(f"[yellow]{escape(line)}[/yellow]")
+
+
+def _collect_values(
+    entry: store.Entry, plan: flows.FormPlan, prefill: dict[str, str], *, plain: bool
+) -> dict[str, str]:
+    """Interactive collection through the configured renderer. The inline mini-form is
+    the default; "plain" (--plain / form=plain / TERM=dumb) is the line-prompt fallback."""
+    style = "plain" if plain or os.environ.get("TERM") == "dumb" else config.load_form()
+    if style == "tui":
+        import importlib
+
+        try:  # the inline renderer ships with the TUI layer; degrade to plain without it
+            inlineform = importlib.import_module("skit.inlineform")
+        except ImportError:  # pragma: no cover — transitional
+            inlineform = None
+        if inlineform is not None:
+            values = inlineform.collect(entry, plan, prefill)
+            if values is None:
+                raise typer.Exit(EXIT_CANCELLED)  # cancelling is not a skit failure
+            return values
+    console.print(
+        gettext("Parameters for %(name)s (press Enter to keep the value shown):")
+        % {"name": escape(entry.meta.name)}
+    )
+    return promptform.collect(plan, prefill, console=console)
+
+
+# How a flows.RunOutcome failure maps to skit's exit-code contract (docker convention).
+_FAILURE_EXIT = {
+    flows.FAIL_BAD_VALUE: EXIT_SKIT,
+    flows.FAIL_DRIFT: EXIT_SKIT,
+    flows.FAIL_LAUNCH: EXIT_SKIT,
+    flows.FAIL_NOT_EXECUTABLE: EXIT_NOT_EXECUTABLE,
+    flows.FAIL_MISSING: EXIT_NOT_FOUND,
+}
+
+
+@app.command(
+    help=gettext("Run a registered script or command in the terminal."),
+    epilog=gettext(
+        "Examples:  skit run stitch  ·  skit run stitch -p web -- extra.png  ·  skit run stitch --dry-run"
+    ),
+)
 def run(
-    name: str = typer.Argument(..., help=gettext("Script name or slug")),
+    name: str = _SCRIPT_ARG,
     args: list[str] = typer.Argument(
         None, help=gettext("Arguments passed through to the script (after --)")
     ),
@@ -468,6 +800,13 @@ def run(
         "--preset",
         "-p",
         help=gettext("Named preset of parameter values to prefill the form with"),
+        autocompletion=_complete_preset,
+    ),
+    save_preset: str = typer.Option(
+        None, "--save-preset", help=gettext("Save this run's values as a named preset")
+    ),
+    plain: bool = typer.Option(
+        False, "--plain", help=gettext("Line-by-line prompts instead of the inline form")
     ),
     raw: bool = typer.Option(
         False,
@@ -476,75 +815,94 @@ def run(
             "Skip the parameter form and injection and run the script as-is (escape hatch)"
         ),
     ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help=gettext(
+            "Print the exact command that would run (tokens and globs expanded), then exit"
+        ),
+    ),
 ) -> None:
-    """Run a script (straight through the terminal)."""
-    injected_path = None
+    """Run a script (straight through the terminal). skit's own failures exit 125/126/127;
+    the script's exit code passes through untouched."""
     try:
         entry = store.resolve(name)
-        _validate_preset(entry, preset)
-        extra = list(args or [])
-        # --raw escape hatch: skip the parameter form and injection, run the script as-is (a way
-        # out if the injection engine ever misbehaves). This only affects the form/injection for
-        # python entries; command entries still fill placeholders (that isn't injection).
-        specs = [] if raw else _entry_param_specs(entry)
-        text = ""
-        if raw:
+    except store.NotFoundError as exc:
+        raise _fail(str(exc), EXIT_NOT_FOUND) from exc
+    _validate_preset(entry, preset)
+    if raw and entry.meta.kind == "python":
+        console.print(
+            f"[dim]{gettext('Raw mode: skipping the parameter form and injection.')}[/dim]"
+        )
+        plan = flows.FormPlan(source="none")
+    else:
+        plan = flows.plan_for_entry(entry)
+    _print_drift(plan)
+    if plan.degraded_reason:
+        console.print(
+            f"[dim]{gettext("skit could not model this script's own arguments; pass them after -- instead.")}[/dim]"
+        )
+    prefilled = flows.prefill(plan, entry.slug, preset)
+    extra = list(args or [])
+    # Both ends must be a terminal: `skit run x | tee log` has a tty stdin but would
+    # pump the inline form's ANSI straight into the pipe.
+    interactive = not no_input and _is_interactive()
+    if interactive and plan.fields:
+        values = _collect_values(entry, plan, prefilled, plain=plain)
+    else:
+        values = prefilled
+        errors = flows.validate(plan, values)
+        # Passthrough args are the legitimate manual escape (skit run x -- <args>):
+        # when the user supplies them, the script's own parser is in charge and an
+        # unfilled required *field* is not a hole to refuse over.
+        if errors and not extra:
+            for msg in errors.values():
+                err_console.print(f"[red]{escape(msg)}[/red]")
+            raise typer.Exit(EXIT_SKIT)
+    if not extra and entry.meta.kind in ("python", "exe"):
+        last_extra = argstate.load_state(entry.slug)["extra_args"]
+        if last_extra:
+            extra = last_extra
             console.print(
-                f"[dim]{gettext('Raw mode: skipping the parameter form and injection.')}[/dim]"
+                f"[dim]{gettext('Reusing your last arguments: %(args)s') % {'args': ' '.join(escape(a) for a in extra)}}[/dim]"
             )
-        if specs:
-            # Reconcile the definitions against the script's current content (drop missing,
-            # warn on changed) before showing the form.
-            text = entry.script_path.read_text(encoding="utf-8", errors="replace")
-            specs = _reconciled_specs(entry, specs, text)
-        if specs:
-            values = _collect_param_form(entry, specs, no_input, preset)
-            # shim injection: the copy is never modified (A5); the injected artifact is a temp
-            # file in the same directory.
-            try:
-                injected = shim.inject(text, specs, values)
-            except shim.ShimError as exc:
-                err_console.print(
-                    f"[red]{gettext("Can't inject parameters into %(name)s: targets not found (%(detail)s). The script may have drifted from its [tool.skit] definitions — re-add it or edit the block.") % {'name': entry.meta.name, 'detail': str(exc)}}[/red]"
-                )
-                raise typer.Exit(1) from exc
-            injected_path = shim.write_injected(entry.dir, injected)
-            console.print(
-                f"[dim]{gettext('Values are injected at run time; the stored copy of your script is never modified.')}[/dim]"
-            )
-        else:
-            values = _collect_command_values(entry, no_input, preset)
-        # python/exe: when no args are given, reuse the last ones (tell the user;
-        # any new args override).
-        if not extra and entry.meta.kind in ("python", "exe"):
-            last_extra = argstate.load_last(entry.slug)["extra_args"]
-            if last_extra:
-                extra = last_extra
-                console.print(
-                    f"[dim]{gettext('Reusing your last arguments: %(args)s') % {'args': ' '.join(extra)}}[/dim]"
-                )
-        code = launcher.run_entry(entry, extra, values=values, script_override=injected_path)
-    except (store.StoreError, launcher.LaunchError) as exc:
-        err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1) from exc
-    finally:
-        if injected_path is not None and injected_path.exists():
-            injected_path.unlink(missing_ok=True)
-    # Once the command assembles successfully, remember this run's input (used as next run's
-    # default); secret values are structurally stripped (C3).
-    secret_names = {s.name for s in specs if s.secret}
-    argstate.save_last(
-        entry.slug,
-        values=values or None,
-        extra_args=extra or None,
-        secret_names=secret_names,
+    try:
+        asm = flows.assemble(plan, values, extra, cwd=Path.cwd(), expand_extra=False)
+    except flows.FormError as exc:
+        raise _fail(str(exc), EXIT_SKIT) from exc
+    if save_preset:
+        argstate.save_preset(
+            entry.slug,
+            save_preset,
+            {k: v for k, v in values.items() if v},
+            secret_names=plan.secret_names,
+        )
+        console.print(
+            f"[green]{gettext('Preset "%(preset)s" saved for %(name)s.') % {'preset': escape(save_preset), 'name': escape(entry.meta.name)}}[/green]"
+        )
+    if dry_run:
+        # No temp copy is written for a dry run, so the command line shows the original
+        # script path — the shape, not a doomed-to-be-deleted temp file.
+        for line in flows.transparency_lines(entry, asm, None):
+            console.print(f"[dim]{escape(line)}[/dim]")
+        raise typer.Exit(0)
+    outcome = flows.execute(
+        entry, plan, asm, emit=lambda line: console.print(f"[dim]{escape(line)}[/dim]")
     )
+    code = outcome.code
+    if code is None:
+        raise _fail(outcome.message, _FAILURE_EXIT[outcome.failure])
+    flows.save_after_run(entry.slug, plan, values, extra, code, at=models.now_iso())
     if code != 0:
         err_console.print(
             f"[yellow]{gettext('Script exited with code %(code)s') % {'code': code}}[/yellow]"
         )
     raise typer.Exit(code)
 
+
+# --------------------------------------------------------------------------
+# preset
+# --------------------------------------------------------------------------
 
 preset_app = typer.Typer(
     help=gettext("Manage named parameter presets for a script."), no_args_is_help=True
@@ -554,204 +912,239 @@ app.add_typer(preset_app, name="preset")
 
 @preset_app.command("save", help=gettext("Save a set of parameter values as a named preset."))
 def preset_save(
-    name: str = typer.Argument(..., help=gettext("Script name or slug")),
+    name: str = _SCRIPT_ARG,
     preset_name: str = typer.Argument(..., help=gettext("Preset name")),
+    from_last: bool = typer.Option(
+        False,
+        "--from-last",
+        help=gettext("Save the last run's values without asking (automation-friendly)"),
+    ),
 ) -> None:
-    """Interactively fill a set of values and save them as a named preset (secret values are never
-    persisted, C3)."""
+    """Save a named preset: interactively, or straight from the last run with --from-last.
+    Secret values are never persisted (C3)."""
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
-        err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1) from exc
-    specs = _entry_param_specs(entry)
-    if entry.meta.kind == "command":
-        placeholders = entry.meta.params or []
-        if not placeholders:
-            err_console.print(
-                f"[red]{gettext("%(name)s has no managed parameters or placeholders, so there's nothing to save.") % {'name': entry.meta.name}}[/red]"
+        raise _fail(str(exc), 1) from exc
+    plan = flows.plan_for_entry(entry)
+    if not plan.fields:
+        raise _fail(
+            gettext("%(name)s has no form fields, so there's nothing to save.")
+            % {"name": entry.meta.name},
+            1,
+        )
+    if from_last:
+        last = argstate.load_state(entry.slug)["values"]
+        keys = {f.key for f in plan.fields}
+        values = {k: v for k, v in last.items() if k in keys}
+        if not values:
+            raise _fail(
+                gettext("%(name)s has no remembered values yet — run it once first.")
+                % {"name": entry.meta.name},
+                1,
             )
-            raise typer.Exit(1)
-        values: dict[str, str] = {}
-        state = argstate.load_state(entry.slug)
-        for p in placeholders:
-            default = state["values"].get(p, "")
-            values[p] = Prompt.ask(f"  {p}", default=default or None, console=console) or ""
-        argstate.save_preset(entry.slug, preset_name, values)
-        console.print(
-            f"[green]{gettext('Preset "%(preset)s" saved for %(name)s.') % {'preset': preset_name, 'name': entry.meta.name}}[/green]"
-        )
-        return
-    if not specs:
-        err_console.print(
-            f"[red]{gettext("%(name)s has no managed parameters or placeholders, so there's nothing to save.") % {'name': entry.meta.name}}[/red]"
-        )
-        raise typer.Exit(1)
-    values = _collect_param_form(entry, specs, no_input=False, preset=None)
-    secret_names = {s.name for s in specs if s.secret}
-    if secret_names & values.keys():
+    elif sys.stdin.isatty():
+        values = promptform.collect(plan, flows.prefill(plan, entry.slug), console=console)
+    else:
+        # Non-interactive contract: don't prompt — save what the prefill already knows.
+        values = flows.prefill(plan, entry.slug)
+    secret_overlap = plan.secret_names & values.keys()
+    if secret_overlap:
         console.print(
             "[dim]"
             + gettext("Secret values are never stored in presets; skipped: %(names)s")
-            % {"names": ", ".join(sorted(secret_names & values.keys()))}
-            + "[/dim]"
+            % {"names": ", ".join(escape(n) for n in sorted(secret_overlap))}
+            + _DIM_CLOSE
         )
-    argstate.save_preset(entry.slug, preset_name, values, secret_names=secret_names)
+    argstate.save_preset(entry.slug, preset_name, values, secret_names=plan.secret_names)
     console.print(
-        f"[green]{gettext('Preset "%(preset)s" saved for %(name)s.') % {'preset': preset_name, 'name': entry.meta.name}}[/green]"
+        f"[green]{gettext('Preset "%(preset)s" saved for %(name)s.') % {'preset': escape(preset_name), 'name': escape(entry.meta.name)}}[/green]"
     )
 
 
 @preset_app.command("list", help=gettext("List a script's saved presets."))
 def preset_list(
-    name: str = typer.Argument(..., help=gettext("Script name or slug")),
+    name: str = _SCRIPT_ARG,
+    as_json: bool = typer.Option(False, "--json", help=gettext("Output as JSON")),
 ) -> None:
     """List a script's named presets."""
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
-        err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1) from exc
+        raise _fail(str(exc), 1) from exc
     presets = argstate.load_state(entry.slug)["presets"]
+    if as_json:
+        console.print_json(json.dumps(presets, ensure_ascii=False))
+        return
     if not presets:
         console.print(
             gettext(
-                "No presets for %(name)s yet. Create one with: skit preset save %(name)s <preset>"
+                "No presets for %(name)s yet. Create one with: skit run %(name)s --save-preset <preset>"
             )
-            % {"name": entry.meta.name}
+            % {"name": escape(entry.meta.name)}
         )
         return
     for pname, vals in sorted(presets.items()):
-        pairs = ", ".join(f"{k}={v}" for k, v in vals.items())
-        console.print(f"  [bold]{pname}[/bold]: {pairs}")
+        pairs = ", ".join(f"{escape(k)}={escape(v)}" for k, v in vals.items())
+        console.print(f"  [bold]{escape(pname)}[/bold]: {pairs}")
 
 
 @preset_app.command("delete", help=gettext("Delete a named preset from a script."))
 def preset_delete(
-    name: str = typer.Argument(..., help=gettext("Script name or slug")),
+    name: str = _SCRIPT_ARG,
     preset_name: str = typer.Argument(..., help=gettext("Preset name")),
 ) -> None:
     """Delete a named preset."""
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
-        err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1) from exc
+        raise _fail(str(exc), 1) from exc
     if argstate.delete_preset(entry.slug, preset_name):
         console.print(
             gettext('Preset "%(preset)s" deleted from %(name)s.')
-            % {"preset": preset_name, "name": entry.meta.name}
+            % {"preset": escape(preset_name), "name": escape(entry.meta.name)}
         )
     else:
         err_console.print(
             "[red]"
             + gettext('Unknown preset "%(preset)s". Available: %(presets)s')
             % {
-                "preset": preset_name,
-                "presets": ", ".join(sorted(argstate.load_state(entry.slug)["presets"])) or "—",
+                "preset": escape(preset_name),
+                "presets": ", ".join(
+                    escape(p) for p in sorted(argstate.load_state(entry.slug)["presets"])
+                )
+                or "—",
             }
-            + "[/red]"
+            + _RED_CLOSE
         )
         raise typer.Exit(1)
 
 
-@app.command(help=gettext("Show a script's managed parameters and their last-used values."))
-def params(
-    name: str = typer.Argument(..., help=gettext("Script name or slug")),
-) -> None:
-    """Show a script's managed parameters (definitions travel with the file, values live in central
-    state; secret values are never shown or persisted)."""
-    try:
-        entry = store.resolve(name)
-    except store.NotFoundError as exc:
-        err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1) from exc
-    last = argstate.load_last(entry.slug)["values"]
+# --------------------------------------------------------------------------
+# params
+# --------------------------------------------------------------------------
+
+
+def _secret_cell(s: metawriter.ParamSpec) -> str:
+    """The Secret column: "—", "yes", or "yes ← $ENVVAR" when an env source is set."""
+    if not s.secret:
+        return "—"
+    if s.env_source:
+        return gettext("yes") + f" ← ${escape(s.env_source)}"
+    return gettext("yes")
+
+
+def _show_params(entry: store.Entry, as_json: bool) -> None:
+    """Read view: managed parameters + last values + detected-but-unmanaged candidates."""
+    last = argstate.load_state(entry.slug)["values"]
+    specs: list[metawriter.ParamSpec] = []
+    text = ""
+    if entry.meta.kind == "python" and entry.script_path.exists():
+        text = entry.script_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
+        specs = metawriter.read_params(text)
+    unmanaged: list[str] = []
+    if entry.meta.kind == "python" and entry.meta.mode == "copy" and text:
+        report = reconcile.reconcile(text, specs)
+        unmanaged = [c.name for c in report.new]
+    if as_json:
+        payload = {
+            "params": [s.to_dict() for s in specs],
+            "unmanaged": unmanaged,
+            "placeholders": entry.meta.params or [],
+        }
+        console.print_json(json.dumps(payload, ensure_ascii=False))
+        return
     if entry.meta.kind == "command":
         placeholders = entry.meta.params or []
         if not placeholders:
             console.print(
+                escape(gettext("%(name)s has no managed parameters.") % {"name": entry.meta.name})
+            )
+            return
+        console.print(gettext("Command template placeholders (the run form asks for them):"))
+        for p in placeholders:
+            shown = last.get(p, "—")
+            console.print(f"  {escape(p)} = {escape(shown)}")
+        return
+    if not specs:
+        console.print(
+            escape(
                 gettext(
-                    "%(name)s has no managed parameters. Re-add the script or edit its [tool.skit] block to define some."
+                    "%(name)s has no managed parameters. Use --manage to bring a detected candidate under management."
                 )
                 % {"name": entry.meta.name}
             )
-            return
-        console.print(gettext("Command template placeholders (you'll be asked on each run):"))
-        for p in placeholders:
-            shown = last.get(p, "—")
-            console.print(f"  {p} = {shown}")
-        return
-    specs: list[metawriter.ParamSpec] = []
-    if entry.meta.kind == "python" and entry.script_path.exists():
-        specs = metawriter.read_params(
-            entry.script_path.read_text(encoding="utf-8", errors="replace")
         )
-    if not specs:
-        console.print(
-            gettext(
-                "%(name)s has no managed parameters. Re-add the script or edit its [tool.skit] block to define some."
+    else:
+        from rich.table import Table
+
+        table = Table(show_header=True, header_style="bold")  # pragma: no mutate — cosmetic
+        table.add_column(gettext("Parameter"))
+        table.add_column(gettext("Kind"))
+        table.add_column(gettext("Type"))
+        table.add_column(gettext("Default"))
+        table.add_column(gettext("Secret"))
+        table.add_column(gettext("Last value"))
+        for s in specs:
+            if s.secret:
+                last_shown = gettext("•••") if s.name in last else "—"
+            else:
+                last_shown = last.get(s.name, "—")
+            default_shown = (
+                gettext("•••")
+                if s.secret and s.default is not None
+                else ("—" if s.default is None else str(s.default))
             )
-            % {"name": entry.meta.name}
+            table.add_row(
+                escape(s.name),
+                escape(s.kind),
+                escape(s.type),
+                escape(default_shown),
+                _secret_cell(s),
+                escape(str(last_shown)),
+            )
+        console.print(table)
+    if unmanaged:
+        console.print(
+            gettext("Detected but not yet managed: %(names)s (use --manage to manage them)")
+            % {"names": ", ".join(escape(n) for n in unmanaged)}
         )
-        return
-    table = Table(show_header=True, header_style="bold")
-    table.add_column(gettext("Parameter"))
-    table.add_column(gettext("Kind"))
-    table.add_column(gettext("Type"))
-    table.add_column(gettext("Default"))
-    table.add_column(gettext("Secret"))
-    table.add_column(gettext("Last value"))
-    for s in specs:
-        if s.secret:
-            last_shown = gettext("•••") if s.name in last else "—"
-        else:
-            last_shown = last.get(s.name, "—")
-        default_shown = (
-            gettext("•••")
-            if s.secret and s.default is not None
-            else ("—" if s.default is None else str(s.default))
-        )
-        table.add_row(
-            s.name,
-            s.kind,
-            s.type,
-            default_shown,
-            gettext("yes") if s.secret else "—",
-            str(last_shown),
-        )
-    console.print(table)
 
 
-def _parse_prompt_opts(raw: list[str]) -> tuple[dict[str, str], list[str]]:
-    """Parse --prompt NAME=text into a dict; malformed entries are collected as warnings."""
-    prompts: dict[str, str] = {}
+def _parse_kv_opts(raw: list[str], flag: str) -> tuple[dict[str, str], list[str]]:
+    """Parse NAME=value pairs; malformed entries are collected for a warning."""
+    pairs: dict[str, str] = {}
     bad: list[str] = []
     for item in raw:
         if "=" in item:
-            name, _, text = item.partition("=")
-            if name.strip():
-                prompts[name.strip()] = text
+            key, _, value = item.partition("=")
+            if key.strip():
+                pairs[key.strip()] = value
                 continue
-        bad.append(item)
-    return prompts, bad
+        bad.append(f"{flag}: {item}")
+    return pairs, bad
 
 
-@app.command(help=gettext("Edit a script's managed parameter definitions."))
-def edit(
-    name: str = typer.Argument(..., help=gettext("Script name or slug")),
+@app.command(
+    help=gettext("Show or edit a script's managed parameters."),
+    epilog=gettext(
+        "Examples:  skit params resize --manage WIDTH  ·  skit params api --secret KEY --env-source KEY=OPENAI_API_KEY"
+    ),
+)
+def params(
+    name: str = _SCRIPT_ARG,
     resync: bool = typer.Option(
         False,
         "--resync",
         help=gettext("Prune definitions that no longer match the script and refresh changed types"),
     ),
-    add: list[str] = typer.Option(
+    manage: list[str] = typer.Option(
         None,
-        "--add",
+        "--manage",
         help=gettext("Bring a currently detected candidate under management (repeatable)"),
     ),
-    remove: list[str] = typer.Option(
-        None, "--remove", help=gettext("Drop a managed parameter (repeatable)")
+    unmanage: list[str] = typer.Option(
+        None, "--unmanage", help=gettext("Drop a managed parameter (repeatable)")
     ),
     secret: list[str] = typer.Option(
         None, "--secret", help=gettext("Mark a managed parameter as secret (repeatable)")
@@ -764,136 +1157,234 @@ def edit(
     prompt: list[str] = typer.Option(
         None, "--prompt", help=gettext("Set a parameter's form prompt, as NAME=text (repeatable)")
     ),
+    env_source: list[str] = typer.Option(
+        None,
+        "--env-source",
+        help=gettext(
+            "Read a secret parameter from an environment variable at run time, as NAME=ENVVAR (empty ENVVAR clears it; repeatable)"
+        ),
+    ),
+    as_json: bool = typer.Option(False, "--json", help=gettext("Output the read view as JSON")),
 ) -> None:
-    """Edit a script's managed parameter definitions (rewrites the copy's [tool.skit] directly, so
-    you never have to hand-edit TOML)."""
+    """Show a script's managed parameters, or edit their definitions when any change flag
+    is given. Definitions travel with the file; values live in central state; secret
+    values are never shown or persisted."""
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
-        err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1) from exc
+        raise _fail(str(exc), 1) from exc
+    prompts, bad_prompts = _parse_kv_opts(prompt or [], "--prompt")
+    env_sources, bad_env = _parse_kv_opts(env_source or [], "--env-source")
+    if (
+        resync
+        or manage
+        or unmanage
+        or secret
+        or no_secret
+        or prompts
+        or env_sources
+        or bad_prompts
+        or bad_env
+    ):
+        _edit_params(
+            entry,
+            resync=resync,
+            manage=manage or [],
+            unmanage=unmanage or [],
+            secret=secret or [],
+            no_secret=no_secret or [],
+            prompts=prompts,
+            env_sources=env_sources,
+            malformed=bad_prompts + bad_env,
+        )
+    else:
+        _show_params(entry, as_json)
+
+
+def _apply_env_sources(specs: list[metawriter.ParamSpec], env_sources: dict[str, str]) -> list[str]:
+    """Set/clear env_source on secret specs; returns warnings for unusable requests."""
+    warnings: list[str] = []
+    by_name = {s.name: s for s in specs}
+    for pname, envvar in env_sources.items():
+        spec = by_name.get(pname)
+        if spec is None:
+            warnings.append(
+                gettext("%(name)s isn't a managed parameter; --env-source skipped.")
+                % {"name": pname}
+            )
+            continue
+        if not spec.secret:
+            warnings.append(
+                gettext(
+                    "%(name)s isn't secret; --env-source only applies to secret parameters (mark it with --secret first)."
+                )
+                % {"name": pname}
+            )
+            continue
+        spec.env_source = envvar.strip()
+    return warnings
+
+
+def _edit_params(
+    entry: store.Entry,
+    *,
+    resync: bool,
+    manage: list[str],
+    unmanage: list[str],
+    secret: list[str],
+    no_secret: list[str],
+    prompts: dict[str, str],
+    env_sources: dict[str, str],
+    malformed: list[str],
+) -> None:
+    """Apply parameter-definition changes to a copy-mode Python entry (rewrites [tool.skit])."""
     if entry.meta.kind != "python":
-        err_console.print(
-            f"[red]{gettext("%(name)s isn't a Python script; only Python entries have managed parameters.") % {'name': entry.meta.name}}[/red]"
+        raise _fail(
+            gettext("%(name)s isn't a Python script; only Python entries have managed parameters.")
+            % {"name": entry.meta.name},
+            1,
         )
-        raise typer.Exit(1)
     if entry.meta.mode == "reference":
-        # A7: in reference mode the definitions live with the original file, and skit never
-        # writes the original.
-        err_console.print(
-            f"[red]{gettext('%(name)s is in reference mode, and skit never writes the original file. Edit the [tool.skit] block in the source directly.') % {'name': entry.meta.name}}[/red]"
-        )
-        raise typer.Exit(1)
-    copy_path = entry.dir / "script.py"
-    if not copy_path.exists():
-        err_console.print(
-            f"[red]{gettext('%(name)s has no stored copy to edit.') % {'name': entry.meta.name}}[/red]"
-        )
-        raise typer.Exit(1)
-    text = copy_path.read_text(encoding="utf-8", errors="replace")
-    current = metawriter.read_params(text)
-
-    prompts, bad_prompts = _parse_prompt_opts(prompt or [])
-    for item in bad_prompts:
-        err_console.print(
-            f"[yellow]{escape(gettext('Ignored a malformed --prompt value: %(item)s (expected NAME=text).') % {'item': item})}[/yellow]"
-        )
-
-    # No operation requested: show the current state (managed params + not-yet-managed candidates)
-    # and hint at the available flags.
-    no_ops = not (resync or add or remove or secret or no_secret or prompts)
-    if no_ops:
-        report = reconcile.reconcile(text, current)
-        console.print(gettext("Managed parameters for %(name)s:") % {"name": entry.meta.name})
-        if current:
-            for s in current:
-                mark = f" [{gettext('Secret').lower()}]" if s.secret else ""
-                console.print(f"  {s.name} ({s.kind}:{s.type}){escape(mark)}")
-        else:
-            console.print(
-                f"  {gettext('%(name)s has no managed parameters. Re-add the script or edit its [tool.skit] block to define some.') % {'name': entry.meta.name}}"
-            )
-        if report.new:
-            names = ", ".join(c.name for c in report.new)
-            console.print(
-                gettext("Detected but not yet managed: %(names)s (use --add to manage them)")
-                % {"names": names}
-            )
-        console.print(
+        raise _fail(
             gettext(
-                "Use --resync, --add, --remove, --secret/--no-secret, or --prompt NAME=text to make changes."
+                "%(name)s is in reference mode, and skit never writes the original file. "
+                "Edit the [tool.skit] block in the source directly."
             )
+            % {"name": entry.meta.name},
+            1,
         )
-        raise typer.Exit(0)
-
+    copy_path = entry.dir / "script.py"  # pragma: no mutate — fs-case
+    if not copy_path.exists():
+        raise _fail(gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}, 1)
+    text = copy_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
+    current = metawriter.read_params(text)
+    for item in malformed:
+        err_console.print(
+            f"[yellow]{escape(gettext('Ignored a malformed value: %(item)s (expected NAME=text).') % {'item': item})}[/yellow]"
+        )
     result = reconcile.edit_specs(
         text,
         current,
         resync=resync,
-        add=add or [],
-        remove=remove or [],
-        secret=secret or [],
-        no_secret=no_secret or [],
+        add=manage,
+        remove=unmanage,
+        secret=secret,
+        no_secret=no_secret,
         prompts=prompts,
     )
     for w in result.warnings:
         err_console.print(f"[yellow]{escape(reconcile.render_warning(w))}[/yellow]")
-
-    copy_path.write_text(metawriter.write_params(text, result.specs), encoding="utf-8")
-    remaining = ", ".join(s.name for s in result.specs) or "—"
+    for w in _apply_env_sources(result.specs, env_sources):
+        err_console.print(f"[yellow]{escape(w)}[/yellow]")
+    new_text = metawriter.write_params(text, result.specs)
+    copy_path.write_text(new_text, encoding="utf-8")  # pragma: no mutate — utf-8 equivalence
+    secret_now = {s.name for s in result.specs if s.secret}
+    purged = argstate.purge_secret(entry.slug, secret_now)
+    if purged:
+        console.print(
+            "[dim]"
+            + gettext(
+                "Removed previously stored plaintext value(s) for now-secret parameter(s): %(names)s"
+            )
+            % {"names": ", ".join(escape(n) for n in sorted(purged))}
+            + _DIM_CLOSE
+        )
+    remaining = ", ".join(escape(s.name) for s in result.specs) or "—"
     console.print(
-        f"[green]{gettext('Updated %(name)s. Managed parameters: %(names)s') % {'name': entry.meta.name, 'names': remaining}}[/green]"
+        f"[green]{gettext('Updated %(name)s. Managed parameters: %(names)s') % {'name': escape(entry.meta.name), 'names': remaining}}[/green]"
     )
 
 
-@app.command(help=gettext("View or update a script's dependencies and Python constraint."))
-def deps(
-    name: str = typer.Argument(..., help=gettext("Script name or slug")),
-    set_deps: str = typer.Option(
-        None,
-        "--set",
-        help=gettext("New dependency list, comma separated (an empty string clears it)"),
+# --------------------------------------------------------------------------
+# deps
+# --------------------------------------------------------------------------
+
+
+@app.command(
+    help=gettext("View or update a script's dependencies and Python constraint."),
+    epilog=gettext(
+        'Examples:  skit deps tool --dep "requests>=2,<3" --dep rich  ·  skit deps tool --clear'
     ),
+)
+def deps(
+    name: str = _SCRIPT_ARG,
+    dep: list[str] = typer.Option(
+        None, "--dep", help=gettext("A dependency (repeat for more; replaces the whole list)")
+    ),
+    clear: bool = typer.Option(False, "--clear", help=gettext("Remove every dependency")),
     python: str = typer.Option(
         None, "--python", help=gettext('Python version constraint, e.g. ">=3.11"')
     ),
+    as_json: bool = typer.Option(False, "--json", help=gettext("Output as JSON")),
 ) -> None:
-    """View or update a script's recorded dependencies (copy mode syncs the PEP 723 block;
-    reference mode only touches meta)."""
+    """View or update a script's recorded dependencies."""
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
-        err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1) from exc
+        raise _fail(str(exc), 1) from exc
     if entry.meta.kind != "python":
-        err_console.print(
-            f"[red]{gettext('%(name)s is not a Python script entry.') % {'name': entry.meta.name}}[/red]"
+        raise _fail(
+            gettext("%(name)s is not a Python script entry.") % {"name": entry.meta.name}, 1
         )
-        raise typer.Exit(1)
-    if set_deps is None and python is None:
+    if dep and clear:
+        err_console.print(
+            f"[red]{gettext('Use --dep to set the list or --clear to empty it — not both.')}[/red]"
+        )
+        raise typer.Exit(EXIT_USAGE)
+    if dep is None and not clear and python is None:
         current = entry.meta.dependencies or []
+        if as_json:
+            console.print_json(
+                json.dumps(
+                    {"dependencies": current, "requires_python": entry.meta.requires_python},
+                    ensure_ascii=False,
+                )
+            )
+            return
         console.print(
             gettext("Dependencies of %(name)s: %(deps)s")
-            % {"name": entry.meta.name, "deps": ", ".join(current) or "—"}
+            % {
+                "name": escape(entry.meta.name),
+                "deps": ", ".join(escape(d) for d in current) or "—",
+            }
         )
         if entry.meta.requires_python:
             console.print(
-                gettext("Python constraint: %(python)s") % {"python": entry.meta.requires_python}
+                gettext("Python constraint: %(python)s")
+                % {"python": escape(entry.meta.requires_python)}
             )
         return
-    new_deps = (
-        [d.strip() for d in set_deps.split(",") if d.strip()]
-        if set_deps is not None
-        else list(entry.meta.dependencies or [])
-    )
+    if clear:
+        new_deps: list[str] = []
+    elif dep is not None:
+        new_deps = list(dep)
+    else:
+        new_deps = list(entry.meta.dependencies or [])
     try:
         entry = store.update_dependencies(entry.slug, new_deps, requires_python=python)
     except store.StoreError as exc:
-        err_console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1) from exc
+        raise _fail(str(exc), 1) from exc
     console.print(
-        f"[green]{gettext('Dependencies of %(name)s updated: %(deps)s') % {'name': entry.meta.name, 'deps': ', '.join(new_deps) or '—'}}[/green]"
+        f"[green]{gettext('Dependencies of %(name)s updated: %(deps)s') % {'name': escape(entry.meta.name), 'deps': ', '.join(escape(d) for d in new_deps) or '—'}}[/green]"
     )
+
+
+# --------------------------------------------------------------------------
+# doctor
+# --------------------------------------------------------------------------
+
+
+def _drifted_entries(entries: list[store.Entry]) -> list[str]:
+    """The health check is the one place that batch-reconciles the whole library."""
+    out: list[str] = []
+    for e in entries:
+        if e.meta.kind != "python" or not e.script_path.exists():
+            continue
+        text = e.script_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
+        specs = metawriter.read_params(text)
+        if specs and reconcile.reconcile(text, specs).has_drift:
+            out.append(e.meta.name)
+    return out
 
 
 @app.command(help=gettext("Check that uv is available and the script store is intact."))
@@ -901,87 +1392,165 @@ def doctor(
     rebuild: bool = typer.Option(
         False, "--rebuild", help=gettext("Rebuild the index from each script's meta.toml")
     ),
+    as_json: bool = typer.Option(False, "--json", help=gettext("Output as JSON")),
 ) -> None:
-    """Environment self-check: whether uv is available and the store is intact.
+    """Environment self-check (the CLI face of the TUI health-check screen)."""
+    from .paths import scripts_dir
 
-    Pass --rebuild to regenerate the index from disk.
-    """
     uv = launcher.find_uv()
-    if uv:
-        console.print(f"[green]{gettext('uv: %(path)s') % {'path': uv}}[/green]")
-    else:
-        console.print(
-            f"[red]{gettext('uv: not found. Install it from https://docs.astral.sh/uv/getting-started/installation/')}[/red]"
-        )
     if rebuild:
         count, problems = store.doctor_rebuild()
         console.print(
             f"[green]{ngettext('Index rebuilt: %(count)s entry', 'Index rebuilt: %(count)s entries', count) % {'count': count}}[/green]"
         )
         for p in problems:
-            console.print(f"  [yellow]{p}[/yellow]")
-    else:
-        entries = store.list_entries()
-        console.print(gettext("Registered scripts: %(count)s") % {"count": len(entries)})
-        missing = [
-            e.meta.name
-            for e in entries
-            if e.meta.mode == "reference" and e.meta.source and not Path(e.meta.source).exists()
-        ]
-        for m in missing:
-            console.print(
-                f"  [yellow]{gettext('%(name)s: reference source file is gone') % {'name': m}}[/yellow]"
+            console.print(f"  [yellow]{escape(p)}[/yellow]")
+    entries = store.list_entries()
+    missing = [e.meta.name for e in entries if launcher.target_missing(e)]
+    drifted = _drifted_entries(entries)
+    mirror = config.load_mirror()
+    location = scripts_dir()
+    size = store.dir_size(location)
+    if as_json:
+        console.print_json(
+            json.dumps(
+                {
+                    "uv": uv,
+                    "entries": len(entries),
+                    "missing": missing,
+                    "drift": drifted,
+                    "mirror": mirror.pypi if mirror.enabled else "off",
+                    "location": str(location),
+                    "size_bytes": size,
+                },
+                ensure_ascii=False,
             )
+        )
+        raise typer.Exit(0 if uv else 1)
+    if uv:
+        console.print(f"[green]✓ {gettext('uv: %(path)s') % {'path': escape(uv)}}[/green]")
+    else:
+        console.print(
+            f"[red]✗ {gettext('uv: not found. Install it from https://docs.astral.sh/uv/getting-started/installation/')}[/red]"
+        )
+    console.print(
+        "✓ "
+        + ngettext("%(count)s script registered", "%(count)s scripts registered", len(entries))
+        % {"count": len(entries)}
+    )
+    for m in missing:
+        console.print(
+            f"  [yellow]⚠ {gettext('%(name)s: the launch target is gone from disk') % {'name': escape(m)}}[/yellow]"
+        )
+    for d in drifted:
+        console.print(
+            f"  [yellow]⚠ {gettext('%(name)s: form definitions are out of sync — run: skit params %(name)s --resync') % {'name': escape(d)}}[/yellow]"
+        )
+    if mirror.enabled:
+        console.print("✓ " + gettext("Mirror: on (%(pypi)s)") % {"pypi": escape(mirror.pypi)})
+    else:
+        console.print("✓ " + gettext("Mirror: off"))
+    console.print(
+        gettext("Library: %(path)s (%(count)s · %(size)s)")
+        % {"path": escape(str(location)), "count": len(entries), "size": store.human_size(size)}
+    )
     raise typer.Exit(0 if uv else 1)
 
 
-@app.command(help=gettext("Show or set the interface language."))
-def lang(
+# --------------------------------------------------------------------------
+# config (git-config grammar: bare = list, KEY = read, KEY VALUE = write)
+# --------------------------------------------------------------------------
+
+_CONFIG_KEYS = ("lang", "editor", "mirror", "form")
+
+
+def _config_value(key: str) -> str:
+    if key == "lang":
+        override = config.load_config().get("language", "")
+        if isinstance(override, str) and override:
+            return override
+        return gettext("auto (%(locale)s)") % {"locale": i18n.current_locale()}
+    if key == "editor":
+        return config.load_editor() or gettext("default ($VISUAL / $EDITOR)")
+    if key == "mirror":
+        m = config.load_mirror()
+        return m.pypi if m.enabled else "off"
+    return config.load_form()  # "form" — _CONFIG_KEYS guards the key set
+
+
+def _config_set(key: str, value: str) -> None:
+    if key == "lang":
+        if value.lower() != "auto" and not i18n.is_supported(value):
+            err_console.print(
+                f"[red]{gettext('Unknown language: %(tag)s. Available: %(locales)s') % {'tag': escape(value), 'locales': ', '.join(i18n.available_locales())}}[/red]"
+            )
+            raise typer.Exit(EXIT_USAGE)
+        i18n.set_language("" if value.lower() == "auto" else value)
+    elif key == "editor":
+        config.save_editor(value)
+    elif key == "mirror":
+        if value == "off":
+            config.disable()
+        elif value in config.PYPI_PRESETS:
+            config.save_mirror(config.preset(value))
+        else:
+            choices = ", ".join([*config.PYPI_PRESETS, "off"])
+            err_console.print(
+                f"[red]{gettext('Unknown mirror: %(name)s. Choose from: %(names)s') % {'name': escape(value), 'names': choices}}[/red]"
+            )
+            raise typer.Exit(EXIT_USAGE)
+    else:  # form
+        if value not in config.FORM_STYLES:
+            err_console.print(
+                f"[red]{gettext('Unknown form style: %(value)s. Choose from: tui, plain') % {'value': escape(value)}}[/red]"
+            )
+            raise typer.Exit(EXIT_USAGE)
+        config.save_form(value)
+
+
+@app.command(
+    "config",
+    help=gettext("Read or set skit's settings (language, editor, mirror, form style)."),
+    epilog=gettext("Examples:  skit config  ·  skit config lang zh-TW  ·  skit config form plain"),
+)
+def config_cmd(
+    key: str = typer.Argument(None, help=gettext("Setting name: lang / editor / mirror / form")),
     value: str = typer.Argument(
-        None,
-        help=gettext('A language tag such as en / zh-TW / zh-CN, or "auto" to clear the override'),
+        None, help=gettext('New value (omit to read; lang also accepts "auto")')
     ),
+    as_json: bool = typer.Option(False, "--json", help=gettext("Output as JSON")),
 ) -> None:
-    """Show or set the interface language."""
-    locales = i18n.available_locales()
-    if value is None:
-        console.print(gettext("Active language: %(locale)s") % {"locale": i18n.current_locale()})
-        console.print(gettext("Available: %(locales)s") % {"locales": ", ".join(locales)})
+    """git-config grammar: bare `skit config` lists everything; `config KEY` reads one;
+    `config KEY VALUE` writes one. The guided experience lives in the TUI (press ,)."""
+    if key is None:
+        if as_json:
+            console.print_json(
+                json.dumps({k: _config_value(k) for k in _CONFIG_KEYS}, ensure_ascii=False)
+            )
+            return
+        for k in _CONFIG_KEYS:
+            console.print(f"  {k:<8}{escape(_config_value(k))}")
         return
-    if value.lower() == "auto":
-        i18n.set_language("")
-        console.print(gettext("Language override cleared — back to auto-detection."))
-        console.print(gettext("Active language: %(locale)s") % {"locale": i18n.current_locale()})
-        return
-    if not i18n.is_supported(value):
+    if key not in _CONFIG_KEYS:
         err_console.print(
-            f"[red]{gettext('Unknown language: %(tag)s. Available: %(locales)s') % {'tag': value, 'locales': ', '.join(locales)}}[/red]"
+            f"[red]{gettext('Unknown setting: %(key)s. Available: %(keys)s') % {'key': escape(key), 'keys': ', '.join(_CONFIG_KEYS)}}[/red]"
         )
-        raise typer.Exit(2)
-    effective = i18n.set_language(value)
-    console.print(gettext("Language set to %(locale)s") % {"locale": effective})
+        raise typer.Exit(EXIT_USAGE)
+    if value is None:
+        console.print(escape(_config_value(key)))
+        return
+    _config_set(key, value)
+    console.print(f"[green]{key} = {escape(_config_value(key))}[/green]")
 
 
-# --- skit config ---
-
-
-def _print_settings() -> None:
-    m = config.load_mirror()
-    if m.enabled:
-        mirror_line = gettext("Mirror: on (%(pypi)s)") % {"pypi": m.pypi}
-    else:
-        mirror_line = gettext("Mirror: off")
-    console.print(gettext("Current settings:"))
-    console.print("  " + gettext("Language: %(locale)s") % {"locale": i18n.current_locale()})
-    console.print("  " + mirror_line)
+# --------------------------------------------------------------------------
+# first run (mirror offer for blocked networks; interactive TTY only)
+# --------------------------------------------------------------------------
 
 
 def _prompt_uv_binary(default: str) -> str:
-    """Prompt for the uv-binary mirror URL, insisting on https://.
-
-    That binary is downloaded, chmod +x'd, and executed, so an http:// mirror is a straight
-    MITM -> RCE vector. Re-prompt until the URL is https (the default already is).
-    """
+    """Prompt for the uv-binary mirror URL, insisting on https:// (the binary is
+    downloaded, chmod +x'd, and executed — an http:// mirror is a MITM->RCE vector)."""
     while True:
         value = Prompt.ask(gettext("uv binary mirror URL"), default=default, console=console)
         if value.startswith("https://"):
@@ -991,8 +1560,8 @@ def _prompt_uv_binary(default: str) -> str:
             + gettext(
                 "The uv binary is downloaded and executed, so its mirror URL must use https:// (got: %(url)s)."
             )
-            % {"url": value}
-            + "[/red]"
+            % {"url": escape(value)}
+            + _RED_CLOSE
         )
 
 
@@ -1031,86 +1600,9 @@ def _mirror_wizard() -> None:
         config.save_mirror(config.preset(choice))
 
 
-def _language_wizard() -> None:
-    choice = Prompt.ask(
-        gettext("Interface language"),
-        choices=["auto", *i18n.available_locales()],
-        default=i18n.current_locale(),
-        console=console,
-    )
-    i18n.set_language("" if choice == "auto" else choice)
-
-
-def _set_language_arg(value: str) -> None:
-    if value.lower() != "auto" and not i18n.is_supported(value):
-        err_console.print(
-            f"[red]{gettext('Unknown language: %(tag)s. Available: %(locales)s') % {'tag': value, 'locales': ', '.join(i18n.available_locales())}}[/red]"
-        )
-        raise typer.Exit(2)
-    i18n.set_language("" if value.lower() == "auto" else value)
-
-
-def _set_mirror_arg(value: str) -> None:
-    if value == "off":
-        config.disable()
-    elif value in config.PYPI_PRESETS:
-        config.save_mirror(config.preset(value))
-    else:
-        choices = ", ".join([*config.PYPI_PRESETS, "off"])
-        err_console.print(
-            f"[red]{gettext('Unknown mirror: %(name)s. Choose from: %(names)s') % {'name': value, 'names': choices}}[/red]"
-        )
-        raise typer.Exit(2)
-
-
-@app.command("config", help=gettext("Configure skit's language and download mirrors."))
-def config_cmd(
-    show: bool = typer.Option(False, "--show", help=gettext("Show the current settings and exit")),
-    lang: str = typer.Option(
-        None,
-        "--lang",
-        help=gettext('Set the language non-interactively (a tag like zh-CN, or "auto")'),
-    ),
-    mirror: str = typer.Option(
-        None,
-        "--mirror",
-        help=gettext("Set the mirror non-interactively: tsinghua / aliyun / ustc / off"),
-    ),
-) -> None:
-    """Configure skit (language, download mirrors). Run with no options for guided setup; use
-    --lang / --mirror / --show for non-interactive changes."""
-    if show:
-        _print_settings()
-        return
-    if lang is not None or mirror is not None:
-        if lang is not None:
-            _set_language_arg(lang)
-        if mirror is not None:
-            _set_mirror_arg(mirror)
-        _print_settings()
-        return
-    # No flags: the guided wizard needs a real terminal (Prompt.ask would hang or read EOF on a
-    # pipe/CI). Fall back to just showing the settings when stdin/stdout aren't a tty.
-    if not _is_interactive():
-        _print_settings()
-        return
-    _print_settings()
-    _language_wizard()
-    _mirror_wizard()
-    console.print(f"[green]{gettext('Saved.')}[/green]")
-    _print_settings()
-
-
-def _is_interactive() -> bool:
-    return sys.stdin.isatty() and sys.stdout.isatty()
-
-
 def _maybe_first_run_setup() -> None:
-    """On the first bare `skit` run, offer mirror setup if the network to PyPI/GitHub looks blocked.
-    Interactive TTY only; runs once (writing a [mirror] section marks the offer as done).
-
-    Gated on mirror_configured(), not is_configured(): `skit lang zh-CN` also writes config.toml, and
-    keying on the file's existence would let a language change permanently suppress the mirror offer."""
+    """On the first bare `skit` run, offer mirror setup if the network to PyPI/GitHub looks
+    blocked. Interactive TTY only; runs once (a [mirror] section marks the offer as done)."""
     if config.mirror_configured() or not _is_interactive():
         return
     if config.looks_blocked():

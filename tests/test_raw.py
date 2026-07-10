@@ -52,9 +52,22 @@ def test_raw_skips_form_and_injection(monkeypatch, entry_with_params):
 
 
 def test_default_run_injects(monkeypatch, entry_with_params):
+    # A managed value exists (remembered from a "previous run"), so the default path
+    # injects it into a temp copy. With no value at all there is nothing to inject and
+    # the stored copy runs directly — that case is test_no_values_runs_copy_directly.
+    from skit import argstate
+
+    argstate.save_last(entry_with_params.slug, values={"CITY": "Kaohsiung"})
     result, captured = _run(monkeypatch, [entry_with_params.meta.name, "--no-input"])
     assert result.exit_code == 0, result.output
-    assert captured["script_override"] is not None  # parameter definitions exist → injection used
+    assert captured["script_override"] is not None
+
+
+def test_no_values_runs_copy_directly(monkeypatch, entry_with_params):
+    # No default, no last value: nothing to inject; the copy runs as written.
+    result, captured = _run(monkeypatch, [entry_with_params.meta.name, "--no-input"])
+    assert result.exit_code == 0, result.output
+    assert captured["script_override"] is None
 
 
 def test_raw_does_not_leave_injected_artifact(monkeypatch, entry_with_params):

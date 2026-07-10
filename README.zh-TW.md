@@ -1,7 +1,7 @@
-# skit
+![skit — 你雜亂腳本的集中啟動器](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/banner.png)
 
-[![CI](https://github.com/user/skit/actions/workflows/ci.yml/badge.svg)](https://github.com/user/skit/actions/workflows/ci.yml)
-[![Coverage: 100%](https://img.shields.io/badge/coverage-100%25-brightgreen)](https://github.com/user/skit/actions/workflows/ci.yml)
+[![CI](https://github.com/user/skit/actions/workflows/ci.yml/badge.svg)](https://github.com/t41372/skit/actions/workflows/ci.yml)
+[![Coverage: 100%](https://img.shields.io/badge/coverage-100%25-brightgreen)](https://github.com/t41372/skit/actions/workflows/ci.yml)
 [![Mutation tested: mutmut](https://img.shields.io/badge/mutation%20tested-mutmut-blue)](https://github.com/boxed/mutmut)
 [![PyPI](https://img.shields.io/pypi/v/skit)](https://pypi.org/project/skit/)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
@@ -16,10 +16,10 @@ Skit 是一個腳本啟動器 + 參數管家。如果你寫了一堆散落各處
 ## 它做什麼
 
 - **收納腳本**:`skit add` 把 Python 腳本、可執行檔、命令模板收進一個地方。copy 模式原檔逐字保存;reference 模式絕不碰原檔。
-- **參數變表格**:add 時靜態分析(AST)偵測寫死的常量與 `input()` 呼叫,勾選納管後,每次 run 前跳出表單填值——不改你的原始碼語義,靠注入引擎在執行時替換。
+- **任何腳本都變表格**:skit 讀懂你的腳本怎麼吃輸入——寫死的常量與 `input()` 呼叫(AST 偵測),或 `argparse` / `click` / `typer` 命令列(靜態讀取)——全都變成一張表單填值。你再也不用背旗標、不用開編輯器改常量。值的送法不動你的原始碼:注入到臨時副本,或執行時當旗標傳入。
 - **記住上次的值**:last-used 自動保存;`preset` 存具名參數組;secret 參數結構性不落盤。
 - **免管環境**:經 `uv run --script` 執行,PEP 723 聲明依賴;uv 缺失時自動下載私有副本(見下方)。
-- **TUI + CLI 雙介面**:無參數進 Textual 選單(模糊搜尋、Enter 執行、`ctrl+e` 編輯參數);CLI 全功能等價。
+- **TUI 為主、CLI 供自動化**:無參數進 Textual 工作檯(模糊搜尋、Enter 執行、`p` 腳本設定、`e` 編輯腳本、`Del` 移除);每個動作也都是 CLI 命令,支援 `--json` 輸出與明確退出碼。
 - **i18n 一等公民**:en / zh-TW / zh-CN,GNU gettext 目錄(零執行期依賴,用標準庫 `gettext`),缺譯逐條回退原文。
 
 ## 前置需求:uv(硬需求)
@@ -54,15 +54,15 @@ uv --version
 在防火長城之後,有三處下載可能受阻:PyPI 套件、uv 抓取的 Python 直譯器(python-build-standalone,來自 GitHub),以及 skit 自己的 uv 引導下載。skit 可把這三者都導向國內鏡像——而且**絕不改動你的全域 uv 設定或環境變數**。
 
 - **首次執行**:若偵測到 PyPI/GitHub 連不上,`skit` 會詢問是否開啟鏡像,按 Enter 即可。
-- **隨時**:`skit config` 提供引導式設定(語言 + 鏡像),或直接設定:
+- **隨時**:執行 `skit config` 查看所有設定,或直接設定鏡像:
 
 ```bash
-skit config --mirror tsinghua    # 或 aliyun / ustc
-skit config --show
-skit config --mirror off         # 例如出國時關閉
+skit config mirror tsinghua      # 或 aliyun / ustc
+skit config                      # 顯示所有設定(語言、編輯器、鏡像、表單樣式)
+skit config mirror off           # 例如出國時關閉
 ```
 
-預設:PyPI → 清華 / 阿里雲 / 中科大;Python 發行版與 uv 二進位 → 南京大學(`mirror.nju.edu.cn`)。鏡像掛掉時,在 `skit config` 選 `custom` 可覆寫任一網址。
+預設:PyPI → 清華 / 阿里雲 / 中科大;Python 發行版與 uv 二進位 → 南京大學(`mirror.nju.edu.cn`)。鏡像掛掉時,用 `skit config mirror custom` 並設定各網址可覆寫。
 
 **安裝 skit 本身**時(此時還沒有 skit 可設定),請先讓 uv 指向鏡像:
 
@@ -96,23 +96,27 @@ uvx --from git+https://github.com/user/skit skit --help
 ## 用法
 
 ```bash
-skit                          # TUI 主選單:搜尋、Enter 執行、ctrl+e 編輯參數、Del 刪除
-skit add my_script.py         # 加入腳本(copy 模式;偵測依賴與參數候選,互動勾選)
+skit                          # TUI 工作檯:搜尋、Enter 執行、p 腳本設定、e 編輯腳本、Del 移除
+skit add my_script.py         # 加入腳本(copy 模式;偵測依賴與參數)
 skit add my_script.py --ref   # reference 模式:不複製,連結原檔
 skit add tool.exe --exe       # 登記可執行檔
-skit add --cmd "ffmpeg -i {input}" --name conv   # 登記命令模板(佔位符變表單)
+skit add --cmd "ffmpeg -i {input}" -n conv   # 登記命令模板(佔位符變表單)
+skit add --edit -n scratch    # 在編輯器裡寫一支全新腳本,再加入
 skit run my_script            # 執行;run 前跳參數表單
-skit run my_script --preset fast   # 用具名參數組
+skit run my_script -p fast    # 用具名參數組(-p / --preset)
+skit run my_script --save-preset fast   # 執行,並把這次的值存成參數組
+skit run my_script --dry-run  # 印出實際會跑的命令(token/glob 已展開),然後結束
 skit run my_script --raw      # 逃生門:跳過表單與注入,原樣直跑
-skit params my_script         # 查看參數定義 + 上次的值
-skit edit my_script --resync  # 對賬:腳本改了之後同步參數定義
-skit preset save my_script fast    # 保存具名參數組
-skit deps my_script --set requests,rich   # 查看/更新依賴
+skit params my_script         # 查看納管參數 + 上次的值
+skit params my_script --manage WIDTH --secret API_KEY   # 納管偵測到的常量 / 標記機密
+skit params my_script --resync   # 對賬:腳本改了之後同步參數定義
+skit preset save my_script fast    # 保存具名參數組(NAME PRESET_NAME)
+skit deps my_script --dep "requests>=2,<3" --dep rich   # 查看/更新依賴
+skit edit my_script           # 在編輯器裡開啟腳本原始碼
 skit list                     # 列出所有已登記項目
-skit remove <name>            # 移除一個項目
+skit remove <name>            # 移除一個項目(原檔不動)
 skit doctor [--rebuild]       # 自檢 / 從散落的 meta.toml 重建索引
-skit lang zh-TW               # 查看/設定介面語言
-skit config                   # 互動式設定:語言 + 下載鏡像(中國大陸友善)
+skit config                   # 顯示所有設定;例如 skit config lang zh-TW · skit config mirror tsinghua
 ```
 
 ## 開發

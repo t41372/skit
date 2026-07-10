@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
+authors = [{ name = "Yi-Ting Chiu", email = "mytim710@gmail.com" }]
 keywords = ["script", "launcher", "uv", "tui", "pep723", "script-manager"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -31,11 +32,8 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/user/skit"
-Issues = "https://github.com/user/skit/issues"
-
-[project.optional-dependencies]
-serve = ["textual-serve>=1.1,<2"]
+Repository = "https://github.com/t41372/skit"
+Issues = "https://github.com/t41372/skit/issues"
 
 [project.scripts]
 skit = "skit.cli:app"
@@ -56,6 +54,12 @@ dev = [
 [build-system]
 requires = ["uv_build>=0.11,<0.12"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+# Catalog sources (.po/.pot) are maintainer-only inputs to `scripts/i18n.py compile`; the
+# runtime (src/skit/i18n.py) loads only compiled .mo via stdlib gettext. Keep sources in the
+# sdist for maintainers/rebuilds, drop them from the wheel that end users install.
+wheel-exclude = ["**/*.po", "**/*.pot"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -122,6 +126,12 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "src/skit/tui.py" = [
+    "RUF012",  # Textual BINDINGS/CSS class attributes are the framework's documented pattern
+]
+"src/skit/tui_*.py" = [
+    "RUF012",  # Textual BINDINGS/CSS class attributes are the framework's documented pattern
+]
+"src/skit/inlineform.py" = [
     "RUF012",  # Textual BINDINGS/CSS class attributes are the framework's documented pattern
 ]
 "src/skit/i18n.py" = [

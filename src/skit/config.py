@@ -14,12 +14,14 @@ Three GFW-facing download vectors are covered:
 from __future__ import annotations
 
 import socket
+import sys
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
-from .atomic import atomic_write_toml
+from .atomic import atomic_write_toml, load_toml_recoverable
+from .i18n import gettext
 from .paths import config_dir
 
 # NJU mirrors GitHub release assets; uv/skit just swap the github.com download prefix for these.
@@ -61,6 +63,45 @@ def save_config(doc: Mapping[str, Any]) -> None:
     atomic_write_toml(_config_path(), dict(doc))
 
 
+def _load_config_for_save() -> dict[str, Any]:
+    """Like load_config(), but for the read-modify-write savers (save_editor / save_mirror).
+
+    load_config() treats a present-but-corrupt config.toml the same as an absent one (returns {}),
+    which is fine for read-only callers. But a saver that started from that {} would then overwrite
+    the file with just the one key it just set — silently destroying every other saved setting with
+    no trace, contradicting the "preserving every other key" docstring promise. So here: if the file
+    exists but fails to parse, back it up first (config.toml.bak) and warn on stderr, so the save can
+    still proceed but nothing is lost without a trace.
+
+    The backup mechanics (is-file / try-parse / copy2-on-failure) live in atomic.load_toml_recoverable
+    so i18n.set_language's own read-modify-write can share them: i18n can't import this module (config
+    already imports gettext from i18n, so the reverse would be an import cycle), but both safely
+    import the neutral atomic module.
+    """
+    path = _config_path()
+    recovery = load_toml_recoverable(path)
+    if recovery.corrupt:
+        if recovery.backup_path is not None:
+            print(
+                gettext(
+                    "%(path)s is corrupt and could not be parsed. It has been backed up to "
+                    "%(backup)s before this change; recover any lost settings from that file."
+                )
+                % {"path": str(path), "backup": str(recovery.backup_path)},
+                file=sys.stderr,
+            )
+        else:
+            print(
+                gettext(
+                    "%(path)s is corrupt and could not be parsed, and it could not be backed up "
+                    "either; the settings it contained will be lost when this change is saved."
+                )
+                % {"path": str(path)},
+                file=sys.stderr,
+            )
+    return recovery.doc
+
+
 def is_configured() -> bool:
     """True once the user has been through setup (config.toml exists), so first-run setup runs once."""
     return _config_path().is_file()
@@ -74,6 +115,40 @@ def mirror_configured() -> bool:
     return "mirror" in load_config()
 
 
+def load_editor() -> str:
+    """The user's configured editor command (config.toml `editor`), or "" when unset. editor.py
+    falls back to $VISUAL / $EDITOR / a platform default when this is empty."""
+    value = load_config().get("editor", "")  # pragma: no mutate — default guarded by isinstance
+    return value if isinstance(value, str) else ""
+
+
+def save_editor(command: str) -> None:
+    """Persist (or clear, when empty) the editor command, preserving every other key."""
+    doc = _load_config_for_save()
+    if command.strip():
+        doc["editor"] = command.strip()
+    else:
+        doc.pop("editor", None)
+    save_config(doc)
+
+
+FORM_STYLES = ("tui", "plain")
+
+
+def load_form() -> str:
+    """Interactive-form style: "tui" (inline mini-form, the default) or "plain" (line
+    prompts). Governs every interactive flow (run form, add panel), not just run."""
+    value = load_config().get("form", "")  # pragma: no mutate — normalized below
+    return value if value in FORM_STYLES else "tui"
+
+
+def save_form(style: str) -> None:
+    """Persist the form style, preserving every other key."""
+    doc = _load_config_for_save()
+    doc["form"] = style
+    save_config(doc)
+
+
 @dataclass(frozen=True)
 class MirrorConfig:
     enabled: bool = False
@@ -83,14 +158,18 @@ class MirrorConfig:
 
 
 def load_mirror() -> MirrorConfig:
-    section = load_config().get("mirror", {})
+    section = load_config().get(
+        "mirror", {}
+    )  # pragma: no mutate — isinstance check below normalizes any default
     if not isinstance(section, dict):
         return MirrorConfig()
 
     def _url(key: str) -> str:
         # Type-harden a hand-edited config: only a real string is a URL; anything else (int, bool,
         # ...) is treated as blank rather than str()-coerced into a bogus value like "123".
-        value = section.get(key, "")
+        value = section.get(
+            key, ""
+        )  # pragma: no mutate — isinstance check below normalizes any default
         return value if isinstance(value, str) else ""
 
     def _https_url(key: str) -> str:
@@ -113,7 +192,7 @@ def load_mirror() -> MirrorConfig:
 
 def save_mirror(mirror: MirrorConfig) -> None:
     """Persist the [mirror] section, preserving every other key (e.g. language)."""
-    doc = load_config()
+    doc = _load_config_for_save()
     doc["mirror"] = {
         "enabled": mirror.enabled,
         "pypi": mirror.pypi,

@@ -6,9 +6,13 @@ definitions are a snapshot from add time, so the two drift apart. The reconcile 
 same set analyzer/shim uses (A2):
 
 - const: matched against analyzer's const candidates by **variable name**.
-- input: matched against analyzer's input candidates by **call order** (B1).
+- input: matched against analyzer's input candidates by **prompt text** first, falling back to
+  **call order** (B1) only when the prompt can't disambiguate -- a dynamic/absent prompt, or the
+  prompt no longer uniquely identifies a call site (3a, `analyzer._match_inputs`). A positional
+  fallback that had a prompt to check and didn't get an exact match is a `rebind`: still injectable,
+  but flagged, since silently trusting position again is exactly the bug 3a fixes.
 
-It produces four categories:
+It produces five categories:
 
 - ok: the definition still matches, proceed to the form as usual.
 - missing: the definition has no target (variable deleted/renamed, fewer inputs). Injecting these
@@ -16,6 +20,9 @@ It produces four categories:
   warn (old/new comparison).
 - changed: the const matched, but its type in the source changed (e.g. 3 -> "3"). Still injectable,
   but the value domain may be off, so just warn.
+- rebind: an input matched only by falling back to bare position after its prompt failed to
+  uniquely resolve (3a). Still injectable (usable), but warned -- a source edit may have silently
+  reshuffled which question this value now answers.
 - new: candidates present in the script but not in the definitions. Note: during onboarding the user
   may deliberately select only some, so new is not drift (has_drift excludes it) and is not raised
   to nag the user at run time; it's reference info for views like `skit params`.
@@ -28,7 +35,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
-from .analyzer import Candidate, analyze
+from .analyzer import Candidate, _match_inputs, analyze
 from .metawriter import ParamSpec
 
 
@@ -37,19 +44,22 @@ class Report:
     ok: list[ParamSpec] = field(default_factory=list)
     missing: list[ParamSpec] = field(default_factory=list)
     changed: list[tuple[ParamSpec, Candidate]] = field(default_factory=list)
+    rebind: list[tuple[ParamSpec, Candidate]] = field(default_factory=list)
     new: list[Candidate] = field(default_factory=list)
     syntax_error: bool = False
 
     @property
     def has_drift(self) -> bool:
-        """Drift on the definition side (missing/changed). new is info, not drift (see module
-        docstring)."""
-        return bool(self.missing or self.changed)
+        """Drift on the definition side (missing/changed/rebind). new is info, not drift (see
+        module docstring)."""
+        return bool(self.missing or self.changed or self.rebind)
 
     @property
     def usable(self) -> list[ParamSpec]:
-        """Definitions still safe to inject (ok + changed; changed is only a type warning)."""
-        return self.ok + [spec for spec, _ in self.changed]
+        """Definitions still safe to inject (ok + changed + rebind; changed is only a type
+        warning, rebind is only a positional-fallback warning -- both still inject, just flagged,
+        per 3a: no silent drop, no silent wrong-value swap either)."""
+        return self.ok + [spec for spec, _ in self.changed] + [spec for spec, _ in self.rebind]
 
 
 def drift_lines(report: Report, name: str) -> list[str]:
@@ -75,6 +85,16 @@ def drift_lines(report: Report, name: str) -> list[str]:
         % {"name": spec.name, "old": spec.type, "new": cand.type}
         for spec, cand in report.changed
     )
+    lines.extend(
+        "  "
+        + gettext(
+            "%(name)s: its prompt no longer matches a unique input() call; falling back to "
+            "position (still injected — double-check this lands on the right question, "
+            "especially if it's a secret)"
+        )
+        % {"name": spec.name}
+        for spec, cand in report.rebind
+    )
     lines.append(
         gettext("To refresh the definitions, re-run `skit add` or edit the [tool.skit] block.")
     )
@@ -96,19 +116,15 @@ def render_warning(warning: str) -> str:
         "not-a-candidate": gettext(
             "%(name)s isn't a detectable parameter in the current script; skipped."
         ),
+        "resync-skipped": gettext(
+            "Could not parse the script (syntax error); resync skipped. "
+            "Parameter definitions are unchanged."
+        ),
+        "resync-rebound": gettext(
+            "%(name)s: re-anchored to its current position after its prompt stopped matching "
+            "uniquely; double-check the prompt/secret assignment is still correct."
+        ),
     }[code] % {"name": name}
-
-
-def _spec_from_candidate(c: Candidate) -> ParamSpec:
-    return ParamSpec(
-        name=c.name,
-        kind=c.kind,
-        type=c.type,
-        default=c.default,
-        prompt=c.prompt,
-        order=c.order,
-        secret=c.secret,
-    )
 
 
 @dataclass
@@ -143,7 +159,13 @@ def edit_specs(
     # Shallow-copy each spec: this function claims to be pure and must never mutate the caller's
     # objects (resync changes type, tweaks change secret/prompt).
     by_name: dict[str, ParamSpec] = {s.name: replace(s) for s in specs}
-    order: list[str] = [s.name for s in specs]  # keep original order; new ones appended at the end
+    # Derive order from by_name's own (deduped) keys rather than re-deriving it from `specs`
+    # directly: a corrupted/legacy definition set can contain duplicate names (analyzer used to be
+    # able to emit two same-named const candidates; onboarding then wrote both), and order must
+    # never contain a name absent from by_name, or `[by_name[n] for n in order]` below raises
+    # KeyError once one of the two occurrences is removed (dict preserves first-occurrence
+    # insertion order, so this only changes anything when specs already has duplicate names).
+    order: list[str] = list(by_name)  # keep original order; new ones appended at the end
 
     # 1) resync: prune missing and update changed types per the current script (keeping custom
     #    secret/prompt/default).
@@ -176,8 +198,19 @@ def _apply_resync(
     warnings: list[str],
 ) -> None:
     report = reconcile(text, specs)
+    if report.syntax_error:
+        # reconcile() can't tell "genuinely gone" from "the script doesn't parse right now" on its
+        # own: with a syntax error, analyze() finds no candidates at all, so reconcile() marks
+        # every spec missing (nothing can possibly match) even though nothing has actually changed.
+        # Treating that as real drift here would prune the whole managed set, and write_params
+        # drops the entire [tool.skit] block once params is empty -- a transient parse error (e.g.
+        # mid-edit) would silently destroy the user's managed-parameter definitions. Leave
+        # by_name/order untouched and tell the user resync didn't run instead.
+        warnings.append("resync-skipped")
+        return
     missing_names = {s.name for s in report.missing}
     changed_types = {spec.name: cand.type for spec, cand in report.changed}
+    rebind_targets = {spec.name: cand for spec, cand in report.rebind}
     for name in list(order):
         if name in missing_names:
             warnings.append(f"resync-dropped:{name}")
@@ -185,6 +218,14 @@ def _apply_resync(
             order.remove(name)
         elif name in changed_types:
             by_name[name].type = changed_types[name]
+        elif name in rebind_targets:
+            # The prompt no longer uniquely resolves; re-anchor to whichever call site position
+            # currently supplied it, so the *next* run's plain reconcile() (no --resync) sees an
+            # exact prompt match again instead of re-deriving the same fallback every time.
+            cand = rebind_targets[name]
+            warnings.append(f"resync-rebound:{name}")
+            by_name[name].order = cand.order
+            by_name[name].prompt = cand.prompt
 
 
 def _apply_add(
@@ -199,7 +240,7 @@ def _apply_add(
         if name in by_name:
             warnings.append(f"already-managed:{name}")
         elif name in candidates:
-            by_name[name] = _spec_from_candidate(candidates[name])
+            by_name[name] = ParamSpec.from_candidate(candidates[name])
             order.append(name)
         else:
             warnings.append(f"not-a-candidate:{name}")
@@ -221,6 +262,7 @@ def _apply_tweaks(
     for name in no_secret:
         if name in by_name:
             by_name[name].secret = False
+            by_name[name].env_source = ""  # an env source only means anything on a secret
         else:
             warnings.append(f"not-managed:{name}")
     for name, prompt in prompts.items():
@@ -239,6 +281,9 @@ def reconcile(text: str, specs: list[ParamSpec]) -> Report:
 
     consts = {c.name: c for c in analysis.candidates if c.kind == "const"}
     inputs = {c.order: c for c in analysis.candidates if c.kind == "input"}
+    stored_inputs = [(s.order, s.prompt) for s in specs if s.kind == "input"]
+    current_inputs = [(c.order, c.prompt) for c in analysis.candidates if c.kind == "input"]
+    input_bindings = _match_inputs(stored_inputs, current_inputs)
 
     report = Report()
     covered_consts: set[str] = set()
@@ -246,11 +291,16 @@ def reconcile(text: str, specs: list[ParamSpec]) -> Report:
 
     for spec in specs:
         if spec.kind == "input":
-            cand = inputs.get(spec.order)
-            if cand is None:
+            binding = input_bindings.get(spec.order)
+            if binding is None:
                 report.missing.append(spec)
+                continue
+            resolved_order, ambiguous = binding
+            cand = inputs[resolved_order]
+            covered_inputs.add(resolved_order)
+            if ambiguous:
+                report.rebind.append((spec, cand))
             else:
-                covered_inputs.add(spec.order)
                 report.ok.append(spec)
             continue
         cand = consts.get(spec.name)

@@ -10,11 +10,22 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from .i18n import gettext
+
 SCHEMA_VERSION = 1
 
 Kind = Literal["python", "exe", "command"]
 Mode = Literal["copy", "reference"]
 Workdir = str  # "origin" | "store" | "invoke" | absolute path
+
+
+class ScriptMetaError(ValueError):
+    """meta.toml parsed as valid TOML but is missing a key ScriptMeta requires.
+
+    Distinguished from a bare KeyError so store.py's corruption handling (which already treats
+    malformed/unreadable meta.toml as "corrupt, skip and let doctor --rebuild report it") can catch
+    this alongside tomllib.TOMLDecodeError instead of a crash escaping list/resolve/doctor.
+    """
 
 
 @dataclass
@@ -61,6 +72,27 @@ class ScriptMeta:
 
     @classmethod
     def from_toml_dict(cls, d: dict[str, Any]) -> ScriptMeta:
+        """Validate at the model boundary: a meta.toml can be well-formed TOML yet structurally
+        invalid (missing keys, or a scalar where a list is required). Every such case must raise
+        ScriptMetaError — never a raw KeyError/TypeError — so store.py's corruption handling
+        (_META_CORRUPTION) can catch it uniformly instead of it crashing list/resolve/doctor."""
+        missing = [key for key in ("name", "kind") if key not in d]
+        if missing:
+            raise ScriptMetaError(
+                gettext("meta.toml is missing required key(s): %(keys)s")
+                % {"keys": ", ".join(missing)}
+            )
+        invalid = [key for key in ("name", "kind") if not isinstance(d[key], str)]
+        invalid += [
+            key
+            for key in ("dependencies", "params")
+            if d.get(key) is not None and not isinstance(d[key], list)
+        ]
+        if invalid:
+            raise ScriptMetaError(
+                gettext("meta.toml has invalid type for key(s): %(keys)s")
+                % {"keys": ", ".join(invalid)}
+            )
         return cls(
             name=d["name"],
             kind=d["kind"],
@@ -110,13 +142,13 @@ def now_iso() -> str:
 
 def slugify(name: str) -> str:
     out: list[str] = []
-    prev_dash = False
+    prev_dash = False  # pragma: no mutate — falsy-equivalent init; `and out` guard hides it while out is empty
     for ch in name.strip().lower():
         if ch.isalnum():
             out.append(ch)
-            prev_dash = False
+            prev_dash = False  # pragma: no mutate — falsy-equivalent; only read via truthiness
         elif not prev_dash and out:
             out.append("-")
             prev_dash = True
-    slug = "".join(out).strip("-")
+    slug = "".join(out).strip("-")  # pragma: no mutate — text already lowercased
     return slug or "script"

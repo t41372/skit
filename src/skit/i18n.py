@@ -10,7 +10,9 @@ Design notes:
 - Locale negotiation chain: SKIT_LANG > config.toml [language] > LC_ALL > LC_MESSAGES > LANG > system
   locale > en. Each candidate expands into a fallback chain (zh-TW -> zh-Hant alias -> zh -> en),
   wired into gettext via its language list so a missing translation falls back entry by entry and
-  always ends at the English source.
+  always ends at the English source. The macrolanguage step is script-aware (_zh_family): a
+  Traditional tag's bare-"zh" fallback resolves back to zh-TW, not zh-CN, so a msgid missing from
+  zh_TW.mo surfaces in English rather than in Simplified glyphs — and symmetrically for Simplified.
 - Pseudo-locale (x-pseudo): an ⟦bracket + stretch⟧ transform over English, used to visually catch
   hard-coded / untranslated strings and truncation. Placeholders (%(name)s) are preserved so
   %-substitution at the call site still works.
@@ -22,11 +24,11 @@ from __future__ import annotations
 import gettext as _gt
 import os
 import re
+import sys
 import tomllib
 from pathlib import Path
-from typing import Any
 
-from .atomic import atomic_write_toml
+from .atomic import atomic_write_toml, load_toml_recoverable
 from .paths import config_dir
 
 _LOCALES_DIR = Path(__file__).parent / "locales"
@@ -45,6 +47,21 @@ _ALIASES = {
     "zh-mo": "zh-TW",
 }
 
+# Script/region hints that identify which shipped Chinese locale a "zh-*" tag belongs to. Used by
+# _zh_family() to make the bare-macrolanguage fallback step ("zh" on its own, reached by truncating
+# e.g. zh-TW down to zh) resolve within the same script family instead of always defaulting to
+# Simplified.
+#
+# Split into script vs. region tiers because they must be checked in that order: BCP-47 treats the
+# script subtag as more specific than the region subtag, so a tag carrying both must let script
+# decide when they disagree (zh-Hans-TW is Simplified despite the Traditional-associated "TW"
+# region; zh-Hant-CN is Traditional despite the Simplified-associated "CN" region). Region hints
+# are only consulted when the tag has no script subtag at all.
+_HANT_SCRIPT = {"hant"}
+_HANS_SCRIPT = {"hans"}
+_HANT_REGION_HINTS = {"hk", "mo", "tw"}
+_HANS_REGION_HINTS = {"cn", "sg", "my"}
+
 _translations: _gt.NullTranslations | None = None
 _active: str = DEFAULT_LOCALE
 _pseudo: bool = False
@@ -60,14 +77,15 @@ def available_locales() -> list[str]:
     found = {DEFAULT_LOCALE}
     if _LOCALES_DIR.is_dir():
         for p in _LOCALES_DIR.iterdir():
-            if (p / "LC_MESSAGES" / f"{_DOMAIN}.mo").is_file():
+            if (p / "LC_MESSAGES" / f"{_DOMAIN}.mo").is_file():  # pragma: no mutate — fs-case
                 found.add(p.name.replace("_", "-"))
     return sorted(found)
 
 
 def _normalize(tag: str) -> str:
     """'zh_TW.UTF-8' -> 'zh-TW'; normalizes casing."""
-    tag = tag.split(".", maxsplit=1)[0].split("@", maxsplit=1)[0].replace("_", "-").strip()
+    tag = tag.split(".", maxsplit=1)[0].split("@", maxsplit=1)[0]  # pragma: no mutate
+    tag = tag.replace("_", "-").strip()
     if not tag:
         return ""
     parts = tag.split("-")
@@ -82,14 +100,57 @@ def _normalize(tag: str) -> str:
     return "-".join(out)
 
 
+def _zh_family(tag: str) -> str | None:
+    """Which shipped Chinese locale a "zh-*" tag's script/region hints point to: "zh-TW"
+    (Traditional) or "zh-CN" (Simplified). None if tag isn't zh-rooted, or is the bare "zh"
+    macrolanguage itself with no script/region qualifier at all (that case is left to the plain
+    _ALIASES lookup, which defaults it to zh-CN — the conventional "zh" == Simplified reading).
+
+    Script subtag is authoritative over region when a tag carries both and they disagree (BCP-47
+    treats script as the more specific signal): zh-Hant-CN is Traditional despite the "CN" region,
+    and zh-Hans-TW is Simplified despite the "TW" region. Region hints are only consulted when no
+    script subtag is present.
+
+    Used by _expand_chain so that truncating a qualified tag (zh-TW, zh-HK, zh-Hant, zh-Hans, ...)
+    down to the bare macrolanguage subtag "zh" resolves within the *same* script family, rather
+    than unconditionally injecting zh-CN into a Traditional tag's fallback chain — which would
+    surface Simplified glyphs for any msgid untranslated in zh_TW.mo, instead of falling through to
+    the English source as the module docstring's negotiation chain intends.
+    """
+    parts = [p.lower() for p in tag.split("-")]
+    if parts[0] != "zh" or len(parts) == 1:
+        return None
+    rest = parts[1:]
+    if any(p in _HANT_SCRIPT for p in rest):
+        return "zh-TW"
+    if any(p in _HANS_SCRIPT for p in rest):
+        return "zh-CN"
+    if any(p in _HANT_REGION_HINTS for p in rest):
+        return "zh-TW"
+    if any(p in _HANS_REGION_HINTS for p in rest):
+        return "zh-CN"
+    return None
+
+
 def _expand_chain(tag: str) -> list[str]:
     """Expand a single tag into a fallback chain: zh-Hant-TW -> [zh-Hant-TW, zh-Hant, zh] + alias
-    resolution."""
+    resolution.
+
+    Script-aware: when truncation reaches the bare macrolanguage subtag "zh" for a tag that carried
+    a script/region hint (zh-TW, zh-HK, zh-Hant, zh-Hans, zh-CN, ...), that step's alias resolves
+    within the same script family (see _zh_family) instead of unconditionally defaulting to zh-CN —
+    otherwise every Traditional tag's chain would gain a Simplified candidate ahead of en. A
+    genuinely bare "zh" request (no hint at all) still defaults to zh-CN via _ALIASES.
+    """
+    family = _zh_family(tag)
     chain: list[str] = []
     parts = tag.split("-")
     while parts:
         cand = "-".join(parts)
-        alias = _ALIASES.get(cand.lower(), cand)
+        if family is not None and cand.lower() == "zh":
+            alias = family
+        else:
+            alias = _ALIASES.get(cand.lower(), cand)
         for c in (cand, alias):
             if c not in chain:
                 chain.append(c)
@@ -98,7 +159,7 @@ def _expand_chain(tag: str) -> list[str]:
 
 
 def _config_language() -> str:
-    path = config_dir() / "config.toml"
+    path = config_dir() / "config.toml"  # pragma: no mutate — fs-case-dependent
     if not path.is_file():
         return ""
     try:
@@ -108,17 +169,21 @@ def _config_language() -> str:
         return ""
 
 
+def _env(name: str) -> str:
+    return os.environ.get(name, "")  # pragma: no mutate — default only matters via truthiness
+
+
 def detect_locale() -> str:
     """Return the raw tag the user requested (un-negotiated).
 
     An empty string means no preference was found.
     """
     for source in (
-        os.environ.get("SKIT_LANG", ""),
+        _env("SKIT_LANG"),
         _config_language(),
-        os.environ.get("LC_ALL", ""),
-        os.environ.get("LC_MESSAGES", ""),
-        os.environ.get("LANG", ""),
+        _env("LC_ALL"),
+        _env("LC_MESSAGES"),
+        _env("LANG"),
     ):
         tag = _normalize(source) if source and source.lower() != "c" else ""
         if tag:
@@ -190,7 +255,7 @@ def _pseudoize(text: str) -> str:
     """en -> pseudo: bracket markers + vowel transforms (~30% inflation), leaving %(...)s
     placeholders untouched so call-site %-substitution still resolves."""
     parts: list[str] = []
-    last = 0
+    last = 0  # pragma: no mutate — text[None:x] == text[0:x]
     for m in _PLACEHOLDER.finditer(text):
         parts.append(text[last : m.start()].translate(_PSEUDO_TABLE))
         parts.append(m.group())
@@ -221,15 +286,36 @@ def ngettext(singular: str, plural: str, n: int) -> str:
 
 def set_language(tag: str) -> str:
     """Write config.toml and take effect immediately. Returns the effective locale. An empty tag
-    clears the setting (back to auto-detection)."""
-    path = config_dir() / "config.toml"
-    doc: dict[str, Any] = {}
-    if path.is_file():
-        try:
-            with open(path, "rb") as f:
-                doc = tomllib.load(f)
-        except (OSError, tomllib.TOMLDecodeError):
-            doc = {}
+    clears the setting (back to auto-detection).
+
+    Uses atomic.load_toml_recoverable() for the read step, so a present-but-corrupt config.toml is
+    backed up to config.toml.bak (and the user warned on stderr) instead of being silently wiped —
+    matching config.save_editor()/save_mirror(). This module can't import config.py for the same
+    recovery helper those use (config.py imports gettext from here, so the reverse would cycle);
+    the neutral atomic module is what both safely share.
+    """
+    path = config_dir() / "config.toml"  # pragma: no mutate — fs-case-dependent
+    recovery = load_toml_recoverable(path)
+    doc = recovery.doc
+    if recovery.corrupt:
+        if recovery.backup_path is not None:
+            print(
+                gettext(
+                    "%(path)s is corrupt and could not be parsed. It has been backed up to "
+                    "%(backup)s before this change; recover any lost settings from that file."
+                )
+                % {"path": str(path), "backup": str(recovery.backup_path)},
+                file=sys.stderr,
+            )
+        else:
+            print(
+                gettext(
+                    "%(path)s is corrupt and could not be parsed, and it could not be backed up "
+                    "either; the settings it contained will be lost when this change is saved."
+                )
+                % {"path": str(path)},
+                file=sys.stderr,
+            )
     if tag:
         doc["language"] = _normalize(tag)
     else:

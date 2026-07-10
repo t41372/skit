@@ -29,14 +29,20 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from . import pep723
+
+if TYPE_CHECKING:
+    from .analyzer import Candidate
 
 SCT_SCHEMA = 1
 
 _BLOCK_RE = re.compile(
-    r"(?m)^# /// script\s*$\n(?P<body>(?:^#(?:| .*)$\n)*?)^# ///\s*$\n?",
+    # See the identical comment on pep723._BLOCK_RE: the closer's trailing whitespace is restricted
+    # to horizontal whitespace so a greedy `\s*$` can't cross a line boundary and swallow blank lines
+    # that follow the block, deleting them on rewrite.
+    r"(?m)^# /// script\s*$\n(?P<body>(?:^#(?:| .*)$\n)*?)^# ///[^\S\n]*$\n?",
 )
 
 
@@ -51,6 +57,26 @@ class ParamSpec:
     prompt: str = ""
     order: int = -1
     secret: bool = False
+    # Secret-value source: the name of an environment variable to read at run time instead of
+    # asking on every run. Stores WHERE to find the value, never the value itself — the reason
+    # this may live in a plain-text file at all (C3: values never land on disk; a variable
+    # *name* is not a secret).
+    env_source: str = ""
+
+    @classmethod
+    def from_candidate(cls, c: Candidate) -> ParamSpec:
+        """Build a managed-parameter spec from an analyzer.Candidate (the two are
+        field-aligned by design — A2). The one place this conversion lives, so the CLI,
+        TUI add panel, TUI settings, and reconcile can't drift on which fields carry over."""
+        return cls(
+            name=c.name,
+            kind=c.kind,
+            type=c.type,
+            default=c.default,
+            prompt=c.prompt,
+            order=c.order,
+            secret=c.secret,
+        )
 
     def to_dict(self) -> dict[str, str | int | float | bool]:
         d: dict[str, str | int | float | bool] = {
@@ -66,18 +92,28 @@ class ParamSpec:
             d["order"] = self.order
         if self.secret:
             d["secret"] = True
+        if self.env_source:
+            d["env_source"] = self.env_source
         return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ParamSpec:
+        # read_params is contracted to be total: a hand-edited `order` can be any valid TOML scalar
+        # (e.g. a non-numeric string), so an uncoercible value must fall back to "no explicit order"
+        # rather than raising and crashing every caller (TUI load, `skit params`/`run`/`edit`).
+        try:
+            order = int(d.get("order", -1))
+        except (TypeError, ValueError):
+            order = -1
         return cls(
             name=str(d.get("name", "")),
             kind=str(d.get("kind", "const")),
             type=str(d.get("type", "str")),
             default=d.get("default"),
             prompt=str(d.get("prompt", "")),
-            order=int(d.get("order", -1)),
+            order=order,
             secret=bool(d.get("secret", False)),
+            env_source=str(d.get("env_source", "")),
         )
 
 
@@ -92,8 +128,17 @@ def _toml_str(value: str) -> str:
     to parse, and all definitions are lost."""
     out = value.replace("\\", "\\\\").replace('"', '\\"')
     out = out.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
-    # A TOML basic string forbids unescaped U+0000..U+001F and U+007F.
-    out = "".join(f"\\u{ord(ch):04X}" if ch < " " or ch == "\x7f" else ch for ch in out)
+
+    # A TOML basic string forbids unescaped U+0000..U+001F and U+007F; escape those.
+    # ALSO escape U+0085/U+2028/U+2029: TOML permits them literally, but _commentify splits
+    # the rewritten block with str.splitlines(), which breaks on those three too — an
+    # unescaped one would shred the comment body and drop every managed param definition.
+    def _escape(ch: str) -> str:
+        if ch < " " or ch in ("\x7f", "\x85", "\u2028", "\u2029"):  # pragma: no mutate
+            return f"\\u{ord(ch):04X}"
+        return ch
+
+    out = "".join(_escape(ch) for ch in out)
     return '"' + out + '"'
 
 
@@ -120,14 +165,21 @@ def _commentify(toml_text: str) -> list[str]:
     return [("# " + ln).rstrip() for ln in toml_text.splitlines()]
 
 
+def _strip_comment_prefix(line: str) -> str:
+    if line.startswith("# "):  # pragma: no mutate — prefix length is unobservable, re-stripped next
+        return line[2:]
+    if line.startswith("#"):
+        return line[1:]
+    return line
+
+
 def _strip_skit_section(body_lines: list[str]) -> list[str]:
     """Remove any existing [tool.skit] section (and its [[tool.skit.params]]) from the block body,
     keeping the rest."""
     out: list[str] = []
-    skipping = False
+    skipping = False  # pragma: no mutate — only read via truthiness (`if not skipping`)
     for line in body_lines:
-        stripped = line[2:] if line.startswith("# ") else line[1:] if line.startswith("#") else line
-        stripped = stripped.strip()
+        stripped = _strip_comment_prefix(line).strip()
         if stripped.startswith("["):
             in_skit = stripped.startswith("[tool.skit]") or stripped.startswith("[[tool.skit.")
             skipping = in_skit
@@ -137,6 +189,30 @@ def _strip_skit_section(body_lines: list[str]) -> list[str]:
     while out and out[-1].strip() in ("#", ""):
         out.pop()
     return out
+
+
+def _drop_synthetic_separator(base: str, original: str) -> str:
+    """Undo inject_block()'s optional blank-line separator when write_params() is about to fill the
+    freshly-created block with params in the same operation.
+
+    inject_block() inserts a blank line between the closer and the following code purely for
+    readability when it is used on its own (e.g. `skit deps` adding a bare dependencies-only
+    block). But when write_params() creates the block itself (this is the "no block yet, non-empty
+    params" path), that blank line would be the ONLY thing ever added outside the
+    "# /// … # ///" block — breaking the comment-only-edits contract (A5) and the golden-corpus
+    byte-fidelity invariant. Detected structurally (not by re-deriving inject_block's shebang/coding
+    insertion logic): strip exactly one blank line, and only when it truly is synthetic (i.e.
+    `original`'s own content did not already start with a blank line at that point — inject_block
+    itself skips the separator in that case, to avoid a double blank line).
+    """
+    block_only = pep723.build_block([])
+    idx = base.index(block_only)
+    prefix = base[:idx]
+    rest = base[idx + len(block_only) :]
+    suffix = original[len(prefix) :]
+    if rest == "\n" + suffix:
+        return prefix + block_only + suffix
+    return base
 
 
 def write_params(text: str, params: list[ParamSpec]) -> str:
@@ -151,10 +227,13 @@ def write_params(text: str, params: list[ParamSpec]) -> str:
     if m is None:
         if not params:
             return text
-        base = pep723.inject_block(text, [])  # create a block with empty dependencies
+        base = pep723.inject_block(
+            text, []
+        )  # pragma: no mutate — build_block only checks truthiness of dependencies
         # inject_block has inserted the block; recurse once through the "block exists" path.
         if _BLOCK_RE.search(base) is None:  # pragma: no cover — inject_block guarantees a block
             raise RuntimeError("inject_block failed to create a PEP 723 block")
+        base = _drop_synthetic_separator(base, text)
         return write_params(base, params)
     body_lines = m.group("body").splitlines()
     kept = _strip_skit_section(body_lines)
@@ -175,6 +254,14 @@ def read_params(text: str) -> list[ParamSpec]:
     meta = pep723.parse_block(text)
     if not meta:
         return []
-    skit = meta.get("tool", {}).get("skit", {})
-    raw = skit.get("params", [])
+    # All valid TOML, all defended: `tool`, `tool.skit`, and `tool.skit.params` could each be a
+    # scalar (e.g. `tool = 5`) rather than the table/array shape this module writes. read_params is
+    # contracted to be total ("empty list if no block/section/parse"), so a malformed shape must
+    # fall back to [] rather than raising AttributeError/TypeError out of the `.get` chain or the
+    # iteration below.
+    tool = meta.get("tool")
+    skit = tool.get("skit") if isinstance(tool, dict) else None
+    raw = skit.get("params") if isinstance(skit, dict) else None
+    if not isinstance(raw, list):
+        return []
     return [ParamSpec.from_dict(d) for d in raw if isinstance(d, dict) and d.get("name")]
