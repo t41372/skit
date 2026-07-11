@@ -32,6 +32,9 @@ Show
 # 1 — A plain script whose parameters are argparse FLAGS, not hard-coded constants.
 Type "bat my_script_1.py" Enter
 Sleep 3s
+# Its flags have landed; wipe the listing so the two `skit add` flows below present on a
+# clean prompt instead of stacking under 20 lines of source.
+Type "clear" Enter
 
 # 2 — skit reads the script's OWN command line: three flags become three form fields.
 Type "skit add my_script_1.py" Enter
@@ -52,6 +55,10 @@ Enter
 Sleep 2.6s
 
 # 4 — The library: four scripts of different kinds (○ Python · $ Command · ▶ Program).
+#     Clear the add-flow chatter first: skit runs scripts by suspending back to THIS
+#     terminal (tui.py suspend()), so a clean slate here is what keeps every run below —
+#     and the final quit — from surfacing the piled-up `bat` + `skit add` scrollback.
+Type "clear" Enter
 Type "skit" Enter
 Sleep 3s
 
@@ -97,7 +104,25 @@ Enter
 Sleep 4s
 Enter
 
-# 7 — Back in the library; quit.
+# 7 — The constants skit detected became managed settings. my_script_2 is still filtered
+#     and selected (from scene 6), so `p` opens ITS settings. The panel runs past one
+#     screen — Basics · Storage · managed params · presets · deps — so scroll it top-to-
+#     bottom and back. On open the VerticalScroll body holds focus, so PageUp/PageDown
+#     scroll the panel itself (Input never eats those keys); ~one page per press.
 Sleep 1s
+Type "p"
+Sleep 2s
+PageDown
+Sleep 1s
+PageDown
+Sleep 1.6s
+PageUp
+Sleep 1s
+PageUp
+Sleep 1.6s
+Escape
+Sleep 1s
+
+# 8 — Back in the library; quit.
 Escape
 Sleep 1.5s
