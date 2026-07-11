@@ -176,3 +176,6 @@ ignore = [
 [tool.mutmut]
 paths_to_mutate = ["src/skit/"]
 tests_dir = ["tests/"]
+# The skill-sync test (tests/test_agent_skill.py) compares the repo-root skill against
+# the packaged copy; mutmut's mutants/ tree only carries src/ + tests/ by default.
+also_copy = ["skills/"]

@@ -52,7 +52,9 @@ def skill_text() -> str:
     """The bundled SKILL.md, read from the installed package (single source: the repo's
     skills/skit/SKILL.md is a test-enforced byte-identical copy of this file)."""
     res = resources.files("skit").joinpath("skills", SKILL_DIR_NAME, SKILL_FILE_NAME)
-    return res.read_text(encoding="utf-8")
+    # I/O kwarg mutants ("utf-8"→"UTF-8"/None) are equivalent aliases here; content is
+    # pinned by test_skill_text_is_the_bundled_skill (see docs/mutation-ledger.md).
+    return res.read_text(encoding="utf-8")  # pragma: no mutate
 
 
 def named_target(name: str, *, project: bool, home: Path, cwd: Path) -> Target | None:
@@ -89,5 +91,7 @@ def install_into(skills_dir: Path) -> Path:
     dest = skills_dir / SKILL_DIR_NAME
     dest.mkdir(parents=True, exist_ok=True)
     out = dest / SKILL_FILE_NAME
-    out.write_text(skill_text(), encoding="utf-8")
+    # Same I/O kwarg equivalence; written content is pinned byte-for-byte by
+    # test_install_into_writes_and_upgrades (see docs/mutation-ledger.md).
+    out.write_text(skill_text(), encoding="utf-8")  # pragma: no mutate
     return out

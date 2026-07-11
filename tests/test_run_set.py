@@ -157,36 +157,116 @@ def test_set_token_values_expand_at_assembly(run_entry_spy):
 # --------------------------------------------------------------------------
 
 
-def test_set_malformed_exits_2(tmp_path, run_entry_spy):
+def test_set_malformed_exits_2_with_exact_message(tmp_path, run_entry_spy):
     _inject_entry(tmp_path)
     for bad in ("NOVALUE", "=v"):
         result = runner.invoke(cli.app, ["run", "trip", "--set", bad, "--no-input"])
         assert result.exit_code == 2, result.output
+        # Line-exact: XX-wrapped msgid mutants still contain the substring, and the
+        # `and`→`or` parse-guard mutant reroutes these through unknown-name (also 2).
+        assert f"Malformed --set (expected NAME=VALUE): {bad}" in result.output.splitlines()
+        assert "Unknown parameter" not in result.output
+    # Both bad items in one invocation: pins the ", " join between them.
+    result = runner.invoke(
+        cli.app, ["run", "trip", "--set", "NOVALUE", "--set", "=v", "--no-input"]
+    )
+    assert result.exit_code == 2, result.output
+    assert "Malformed --set (expected NAME=VALUE): NOVALUE, =v" in result.output.splitlines()
     assert "entry" not in run_entry_spy
+
+
+def test_set_value_may_contain_equals_signs(tmp_path, run_entry_spy):
+    entry = _inject_entry(tmp_path)
+    result = runner.invoke(cli.app, ["run", "trip", "--set", "CITY=a=b", "--no-input"])
+    assert result.exit_code == 0, result.output
+    # partition, not rpartition: the FIRST '=' splits, the rest belongs to the value.
+    assert argstate.load_state(entry.slug)["values"]["CITY"] == "a=b"
+
+
+def test_set_key_is_stripped(tmp_path, run_entry_spy):
+    entry = _inject_entry(tmp_path)
+    result = runner.invoke(cli.app, ["run", "trip", "--set", " CITY =Kaohsiung", "--no-input"])
+    assert result.exit_code == 0, result.output
+    assert argstate.load_state(entry.slug)["values"]["CITY"] == "Kaohsiung"
 
 
 def test_set_unknown_name_exits_2_and_lists_valid(tmp_path, run_entry_spy):
     _inject_entry(tmp_path)
-    result = runner.invoke(cli.app, ["run", "trip", "--set", "NOPE=1", "--no-input"])
+    result = runner.invoke(
+        cli.app, ["run", "trip", "--set", "NOPE=1", "--set", "ALSO=2", "--no-input"]
+    )
     assert result.exit_code == 2
-    assert "NOPE" in result.output
-    assert "CITY" in result.output
-    assert "TIMES" in result.output
+    # Line-exact, with two unknown names so their ", " join is exercised too.
+    assert (
+        "Unknown parameter for --set: ALSO, NOPE. This script's parameters: CITY, TIMES"
+        in result.output.splitlines()
+    )
     assert "entry" not in run_entry_spy
 
 
-def test_set_with_raw_has_no_fields_exits_2(tmp_path, run_entry_spy):
+def test_set_on_entry_without_fields_lists_a_dash(tmp_path, run_entry_spy):
+    exe = tmp_path / "tool"
+    exe.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    exe.chmod(0o755)
+    result = runner.invoke(cli.app, ["add", "--exe", str(exe), "--name", "tool", "--no-input"])
+    assert result.exit_code == 0, result.output
+    result = runner.invoke(cli.app, ["run", "tool", "--set", "X=1", "--no-input"])
+    assert result.exit_code == 2
+    assert (
+        "Unknown parameter for --set: X. This script's parameters: —" in result.output.splitlines()
+    )
+    assert "entry" not in run_entry_spy
+
+
+def test_set_with_raw_is_a_usage_conflict(tmp_path, run_entry_spy):
     _inject_entry(tmp_path)
     result = runner.invoke(cli.app, ["run", "trip", "--raw", "--set", "CITY=x", "--no-input"])
-    assert result.exit_code == 2  # --raw skips the form: there is nothing to set
+    assert result.exit_code == 2
+    # Not the misleading "unknown parameter" — CITY exists; --raw is the conflict.
+    assert "--raw skips the parameter form, so --set has no field to target." in result.output
     assert "entry" not in run_entry_spy
+
+
+def test_raw_never_replays_last_extra_args(tmp_path, run_entry_spy):
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="j")
+    result = runner.invoke(cli.app, ["run", "j", "--no-input", "--", "--verbose", "x.png"])
+    assert result.exit_code == 0, result.output
+    assert run_entry_spy["extra"] == ["--verbose", "x.png"]
+    # --raw promises "as-is": the previous run's arguments must NOT come back.
+    result = runner.invoke(cli.app, ["run", "j", "--raw", "--no-input"])
+    assert result.exit_code == 0, result.output
+    assert run_entry_spy["extra"] == []
+    # The escape hatch leaves no fingerprints (beyond the run stamp): a plain run
+    # afterwards still reuses the remembered args.
+    assert argstate.load_state(entry.slug)["last_run"]["exit"] == 0
+    result = runner.invoke(cli.app, ["run", "j", "--no-input"])
+    assert result.exit_code == 0, result.output
+    assert run_entry_spy["extra"] == ["--verbose", "x.png"]
 
 
 def test_set_bad_typed_value_exits_125(tmp_path, run_entry_spy):
     _inject_entry(tmp_path)
     result = runner.invoke(cli.app, ["run", "trip", "--set", "TIMES=abc", "--no-input"])
     assert result.exit_code == 125
-    assert "TIMES" in result.output
+    # The FORM validation message — were --set validation skipped, the shim would
+    # still fail with 125 but with its own "isn't a valid" wording.
+    assert "TIMES needs a whole number — you typed 'abc'." in result.output.splitlines()
+    assert "entry" not in run_entry_spy
+
+
+def test_set_bad_value_fails_before_the_form_opens(tmp_path, run_entry_spy, monkeypatch):
+    # Upfront --set validation is only observable interactively: the non-interactive
+    # path re-validates anyway, but the form must never open on an invalid --set.
+    _inject_entry(tmp_path)
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+
+    def explode(*a, **k):  # pragma: no cover — being called IS the failure
+        raise AssertionError("the form must not open for an invalid --set value")
+
+    monkeypatch.setattr(cli, "_collect_values", explode)
+    result = runner.invoke(cli.app, ["run", "trip", "--set", "TIMES=abc"])
+    assert result.exit_code == 125
+    assert "TIMES needs a whole number — you typed 'abc'." in result.output.splitlines()
     assert "entry" not in run_entry_spy
 
 

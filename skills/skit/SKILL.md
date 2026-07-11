@@ -24,8 +24,10 @@ PEP 723). The library is *the user's curated space*: treat it like their dotfile
 3. **Before a script's first run, `--dry-run` it** and show the user the exact command.
 4. **Never add, remove, or overwrite library entries without asking the user first.**
    Propose `skit add` when you've written something reusable; don't add it silently.
-5. **Always pass `--no-input` in automation.** It guarantees skit never blocks on a
-   prompt; if information is missing, skit fails fast with a named error instead.
+5. **Pass `--no-input` on every `skit run` and `skit add`** — the only two commands
+   that can prompt. It guarantees skit never blocks; if information is missing, skit
+   fails fast with a named error instead. The read commands (`list`, `show`, `params`,
+   …) never prompt and don't take the flag.
 
 ## Discover scripts
 
@@ -61,9 +63,10 @@ skit run <name> --raw --no-input                    # escape hatch: no form, no 
   also expand globs.
 - Unset fields fall back to: preset > last-used value > the script's own default.
   A required field with no value fails fast (exit 125) rather than prompting.
-- **Reuse warning:** with no `--` args given, a python/exe run silently reuses the
-  *last run's* extra args. Pass your own `--` args (or `--raw`) when you need a
-  clean slate; `--dry-run` shows exactly what would happen.
+- **Reuse warning:** with no `--` args given, a python/exe run reuses the *last run's*
+  extra args (it says so on stderr). Pass your own `--` args, or use `--raw` (which
+  never replays old arguments), when you need a clean slate; `--dry-run` shows exactly
+  what would happen.
 - Secrets: prefer wiring them to environment variables (see below) over `--set`.
   Secret values never persist to disk and are masked as ••• in dry-run output.
 

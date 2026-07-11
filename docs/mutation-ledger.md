@@ -58,6 +58,13 @@ one:
   behaviorally pinned by
   `tests/test_argspec_click_typer.py::test_annotated_option_positional_decl_is_a_flag_not_a_default`.
 
+- **Agent-skill I/O kwargs** (`src/skit/agentskill.py`): `skill_text()`'s
+  `read_text(encoding="utf-8")` and `install_into()`'s `write_text(..., encoding="utf-8")` are
+  pragma'd I/O-kwarg sites (the same `"utf-8"`/`"UTF-8"`/locale-default alias equivalence as
+  above — and the SKILL.md content is non-ASCII, so the behavior that matters is pinned
+  byte-for-byte by `tests/test_agent_install.py::test_skill_text_is_the_bundled_skill` and
+  `::test_install_into_writes_and_upgrades`).
+
 ## Known non-issues (no pragma, no action needed)
 
 - `src/skit/tokens.py` `expand`'s scanner-index arithmetic (`i += 1` / `i += 2`) shows up as
@@ -67,3 +74,8 @@ one:
 - `src/skit/uvman.py` `ensure_uv_downloaded`'s `sys.platform == "win32"` exe-name check shows
   up as **suspicious** (not survived) on non-Windows runs — not our code, a pre-existing item
   left as-is.
+- `src/skit/agentskill.py` `skill_text()`'s resource lookup line: `resources.files(None)` is a
+  genuine cross-platform equivalent (an anchor of `None` resolves to the calling module's own
+  package, i.e. `skit`), and `joinpath("SKILLS", …)` is the macOS case-insensitive-FS false
+  survivor already described for `entry.dir / "script.py"` — killed on CI's Linux runner.
+  Behavior stays pinned by `tests/test_agent_install.py::test_skill_text_is_the_bundled_skill`.

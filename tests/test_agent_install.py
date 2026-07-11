@@ -69,10 +69,12 @@ def test_named_target_user_and_project_scopes(tmp_path):
     home, cwd = tmp_path / "h", tmp_path / "c"
     claude = agentskill.named_target("claude", project=False, home=home, cwd=cwd)
     assert claude is not None
+    assert claude.name == "claude"
     assert claude.scope == "user"
     assert claude.skills_dir == home / ".claude" / "skills"
     codex = agentskill.named_target("codex", project=True, home=home, cwd=cwd)
     assert codex is not None
+    assert codex.name == "codex"
     assert codex.scope == "project"
     assert codex.skills_dir == cwd / ".codex" / "skills"
 
@@ -82,6 +84,7 @@ def test_named_target_agents_is_always_project_scoped(tmp_path):
     for project in (False, True):
         t = agentskill.named_target("agents", project=project, home=home, cwd=cwd)
         assert t is not None
+        assert t.name == "agents"
         assert t.scope == "project"
         assert t.skills_dir == cwd / ".agents" / "skills"
 
@@ -108,12 +111,34 @@ def test_install_into_writes_and_upgrades(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_cli_install_to_explicit_dir(tmp_path):
+def test_cli_install_to_explicit_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli.console, "_width", 400)  # keep the long path on one line
     dest = tmp_path / "anywhere"
     result = runner.invoke(cli.app, ["agent", "install", "--to", str(dest)])
     assert result.exit_code == 0, result.output
     assert (dest / "skit" / "SKILL.md").read_text(encoding="utf-8") == agentskill.skill_text()
-    assert "SKILL.md" in result.output
+    assert (
+        f"Installed the skit Agent Skill: {dest / 'skit' / 'SKILL.md'}"
+        in result.output.splitlines()
+    )
+
+
+def test_cli_install_to_a_file_fails_cleanly(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli.err_console, "_width", 400)
+    blocker = tmp_path / "afile"
+    blocker.write_text("not a directory", encoding="utf-8")
+    result = runner.invoke(cli.app, ["agent", "install", "--to", str(blocker)])
+    assert result.exit_code == 1
+    assert any(
+        line.startswith("Could not write the skill there: ") for line in result.output.splitlines()
+    )
+    assert "Traceback" not in result.output
+
+
+def test_cli_install_to_with_project_is_a_conflict(tmp_path):
+    result = runner.invoke(cli.app, ["agent", "install", "--to", str(tmp_path / "x"), "--project"])
+    assert result.exit_code == 2
+    assert not (tmp_path / "x").exists()
 
 
 def test_cli_install_to_expands_tilde(fake_home):
@@ -184,4 +209,52 @@ def test_cli_bare_interactive_backing_out_writes_nothing(fake_home, fake_cwd, mo
     monkeypatch.setattr(cli.Confirm, "ask", staticmethod(lambda *a, **k: False))
     result = runner.invoke(cli.app, ["agent", "install"])
     assert result.exit_code == 0, result.output
+    assert "Cancelled — nothing was written." in result.output
     assert not (fake_home / ".claude" / "skills").exists()
+
+
+def test_agent_pick_target_renders_the_menu_exactly(monkeypatch):
+    # Short synthetic paths so nothing wraps: the menu text is part of the contract
+    # a mouse-less user reads, so it is pinned exactly (mutation-hardening).
+    targets = [
+        agentskill.Target(name="claude", scope="user", base=Path("/tmp/h/.claude")),
+        agentskill.Target(name="agents", scope="project", base=Path("/tmp/p/.agents")),
+    ]
+    seen: dict[str, object] = {}
+
+    def fake_prompt(question, *, choices, default, console):
+        assert console is cli.console  # the picker must talk through skit's console
+        seen["prompt"] = question
+        seen["choices"] = choices
+        seen["default"] = default
+        return "2"
+
+    def fake_confirm(question, *, default, console):
+        assert console is cli.console
+        seen["confirm"] = question
+        seen["confirm_default"] = default
+        return True
+
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(fake_prompt))
+    monkeypatch.setattr(cli.Confirm, "ask", staticmethod(fake_confirm))
+    with cli.console.capture() as cap:
+        picked = cli._agent_pick_target(targets)
+    assert picked is targets[1]  # the numbered choice maps 1-based onto the list
+    assert cap.get() == (
+        "Agent directories on this machine:\n"
+        "  1. claude (user)  →  /tmp/h/.claude/skills\n"
+        "  2. agents (project)  →  /tmp/p/.agents/skills\n"
+    )
+    assert seen["prompt"] == "Install where?"
+    assert seen["choices"] == ["1", "2"]
+    assert seen["default"] == "1"
+    assert seen["confirm"] == "Write the skill into /tmp/p/.agents/skills?"
+    assert seen["confirm_default"] is True
+
+
+def test_agent_pick_target_backing_out_returns_none(monkeypatch):
+    targets = [agentskill.Target(name="claude", scope="user", base=Path("/tmp/h/.claude"))]
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: "1"))
+    monkeypatch.setattr(cli.Confirm, "ask", staticmethod(lambda *a, **k: False))
+    with cli.console.capture():
+        assert cli._agent_pick_target(targets) is None

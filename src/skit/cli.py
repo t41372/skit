@@ -1066,6 +1066,11 @@ def run(
         console.print(
             f"[dim]{gettext("skit could not model this script's own arguments; pass them after -- instead.")}[/dim]"
         )
+    if raw and set_opts:
+        err_console.print(
+            f"[red]{gettext('--raw skips the parameter form, so --set has no field to target.')}[/red]"
+        )
+        raise typer.Exit(EXIT_USAGE)
     prefilled = flows.prefill(plan, entry.slug, preset)
     overrides = _parse_set_opts(plan, set_opts or [])
     prefilled.update(overrides)
@@ -1089,7 +1094,9 @@ def run(
             for msg in errors.values():
                 err_console.print(f"[red]{escape(msg)}[/red]")
             raise typer.Exit(EXIT_SKIT)
-    if not extra and entry.meta.kind in ("python", "exe"):
+    # --raw promises "run the script as-is": replaying a previous run's arguments would
+    # betray exactly the clean slate it exists to provide (and the Agent Skill documents).
+    if not extra and not raw and entry.meta.kind in ("python", "exe"):
         last_extra = argstate.load_state(entry.slug)["extra_args"]
         if last_extra:
             extra = last_extra
@@ -1122,7 +1129,13 @@ def run(
     code = outcome.code
     if code is None:
         raise _fail(outcome.message, _FAILURE_EXIT[outcome.failure])
-    flows.save_after_run(entry.slug, plan, values, extra, code, at=models.now_iso())
+    if raw:
+        # The escape hatch leaves no fingerprints: it consulted no form memory, so it
+        # must not rewrite it either (values/extra args survive for the next real run).
+        # The run stamp still lands — Library sorting and `r` treat it as a run.
+        argstate.record_run(entry.slug, code, at=models.now_iso())
+    else:
+        flows.save_after_run(entry.slug, plan, values, extra, code, at=models.now_iso())
     if code != 0:
         err_console.print(
             f"[yellow]{gettext('Script exited with code %(code)s') % {'code': code}}[/yellow]"
@@ -1611,7 +1624,13 @@ app.add_typer(agent_app, name="agent")
 
 
 def _agent_install_confirmed(skills_dir: Path) -> None:
-    written = agentskill.install_into(skills_dir)
+    try:
+        written = agentskill.install_into(skills_dir)
+    except OSError as exc:
+        # e.g. --to points at an existing file: a clean one-liner, not a traceback.
+        raise _fail(
+            gettext("Could not write the skill there: %(error)s") % {"error": exc}, 1
+        ) from exc
     console.print(
         f"[green]{gettext('Installed the skit Agent Skill: %(path)s') % {'path': escape(str(written))}}[/green]"
     )
@@ -1669,8 +1688,10 @@ def agent_install(
     """Teach the user's AI agents to use skit. An explicit TARGET or --to is consent by
     itself; bare `skit agent install` detects agent directories and asks (principle #6:
     skit never touches another tool's directory uninvited)."""
-    if to is not None and target:
-        err_console.print(f"[red]{gettext('Use a named target or --to — not both.')}[/red]")
+    if to is not None and (target or project):
+        err_console.print(
+            f"[red]{gettext('Use a named target (with optional --project) or --to — not both.')}[/red]"
+        )
         raise typer.Exit(EXIT_USAGE)
     if to is not None:
         _agent_install_confirmed(to.expanduser())

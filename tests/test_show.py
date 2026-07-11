@@ -351,7 +351,11 @@ def test_show_human_degraded_parser_notice(tmp_path):
     store.add_python(_py(tmp_path, text), name="multi")
     result = runner.invoke(cli.app, ["show", "multi"])
     assert result.exit_code == 0, result.output
-    assert "pass them after --" in result.output
+    # Line-exact: an XX-wrapped msgid mutant still contains the substring.
+    assert (
+        "skit could not model this script's own arguments; pass them after -- instead."
+        in result.output.splitlines()
+    )
 
 
 def test_show_human_missing_marker(tmp_path):
@@ -360,7 +364,9 @@ def test_show_human_missing_marker(tmp_path):
     p.unlink()
     result = runner.invoke(cli.app, ["show", "gone"])
     assert result.exit_code == 0, result.output
-    assert "missing" in result.output
+    # The glyph-prefixed marker, not a bare "missing" — pytest's tmp dir is named
+    # after this test, so the *source path* printed above already contains "missing".
+    assert "⚠ missing:" in result.output
 
 
 def test_show_not_found_exits_1():
