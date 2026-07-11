@@ -19,6 +19,10 @@
 
 [▶ 觀看示範](https://github.com/t41372/skit/raw/main/docs/demo-zh.mp4)
 
+![只用滑鼠操作 skit——畫面上每個控制項都是可點擊的目標](https://raw.githubusercontent.com/t41372/skit/main/docs/demo-mouse.gif)
+
+*完全滑鼠可操作性——畫面上每個按鍵提示，也都是可點的按鈕。*
+
 | ![腳本庫](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-library-zh.png) | ![執行表單](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-form-zh.png) |
 |:--:|:--:|
 | **腳本庫**——每個動作都在畫面上，滑鼠鍵盤皆可 | **執行表單**——從腳本自己的參數生成 |
@@ -67,6 +71,37 @@ uv tool install skit
 uv tool install git+https://github.com/t41372/skit          # 最新開發版
 uvx --from git+https://github.com/t41372/skit skit --help   # 或是什麼都不裝，直接試
 ```
+
+## 解除安裝
+
+```bash
+uv tool uninstall skit
+```
+
+這會移除 skit 本身與它在 `PATH` 上的捷徑。你的腳本庫與設定存在套件**之外**，所以刻意會留著——重裝一次，一切照舊。想連這些也一併清掉，就刪掉 skit 自己的目錄：
+
+| 作業系統 | 目錄 |
+| --- | --- |
+| **macOS** | `~/Library/Application Support/skit` |
+| **Linux** | `~/.local/share/skit` · `~/.local/state/skit` · `~/.config/skit` |
+| **Windows** | `%LOCALAPPDATA%\skit` |
+
+這些目錄裝著你的腳本庫、設定、參數組合與上次的值——以及，若 skit 曾自行下載過 uv，那份私有的 `uv` 執行檔（在 `…/skit/bin`，會跟著一起刪掉）。
+
+```bash
+# macOS
+rm -rf ~/Library/Application\ Support/skit
+
+# Linux——你若設過 XDG_DATA_HOME / XDG_STATE_HOME / XDG_CONFIG_HOME，會依你的設定
+rm -rf ~/.local/share/skit ~/.local/state/skit ~/.config/skit
+```
+
+```powershell
+# Windows（PowerShell）
+Remove-Item -Recurse -Force $env:LOCALAPPDATA\skit
+```
+
+不確定在哪？`skit doctor` 會印出實際的腳本庫路徑（也會尊重 `SKIT_DATA_DIR` / `SKIT_STATE_DIR` / `SKIT_CONFIG_DIR` 這幾個覆寫變數）。這就是 skit 擁有的全部——它從不動你的 `PATH`、shell 或全域 uv 設定，所以沒別的要善後。uv 的下載快取，以及 uv 抓下來的 Python 版本，是跟你整套 uv 環境共用的，不歸 skit 刪；你若沒在別處用 uv、又想把空間拿回來，`uv cache clean` 可以清掉快取。
 
 ## 用法
 
@@ -117,7 +152,7 @@ skit config mirror tsinghua   # 或：aliyun / ustc / custom / off
 
 ## 為什麼會有 skit
 
-skit 源自 [linux.do 上的一則求助帖](https://linux.do/t/topic/2512255)：腳本散落在各個資料夾、每個資料夾一個 .venv；每次要跑，不是開編輯器改寫死的參數，就是重新輸入記不住的命令列參數。發帖人甚至自己寫過一個啟動器——後來漸漸棄用，因為每支腳本的參數都得手動設定，太累。skit 拆掉的就是這個陷阱：參數從來不用手動設定——skit 直接從腳本裡讀出來。
+skit 源自 [linux.do 上的一個帖子](https://linux.do/t/topic/2512255)
 
 ## 開發
 

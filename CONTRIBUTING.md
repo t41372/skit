@@ -151,9 +151,37 @@ Tips when editing tapes:
 - Type only ASCII in the *shell* scenes: non-ASCII keystrokes garble on the way through ttyd.
   Typing into skit's own TUI inputs is fine.
 - VHS has no `End`/`Home` and no mouse. Clear a prefilled field with `Right N` + `Backspace N`;
-  mouse interaction can't be recorded at all (a separately captured clip is the only option).
+  mouse interaction can't be recorded at all — a separately captured clip is the only option
+  (see *The mouse-operability GIF* below).
 - Showing a new screen? Add a `Screenshot "/out/shot-<name>.png"` line to `shots.tape` and the
   matching rename in `record_demo.sh`, then reference it from both READMEs.
+
+### The mouse-operability GIF (`docs/demo-mouse.gif`)
+
+One demo asset is **not** pipeline-generated: `docs/demo-mouse.gif`, the short clip under the
+hero video that shows skit driven by mouse alone (design principle #2). VHS drives no mouse, so
+this is hand-captured — the one exception to the "never hand-recorded" rule. It's a single
+shared clip (English UI, reused verbatim in all three READMEs, not per-locale), and
+`record_demo.sh` never touches it, so it goes stale silently if the UI it shows changes.
+
+To regenerate it: screen-record yourself driving skit with the mouse (any tool — the current
+clip is a macOS QuickTime recording), then trim, speed up, and optimize into a small
+autoplaying GIF. The current one is source `16→37s`, sped `1.5×` to ~14s, 15fps, 1000px wide,
+1.3MB:
+
+```bash
+SRC="your-recording.mov"    # macOS recording filenames carry a U+202F (narrow no-break
+                            # space) before AM/PM — glob the path, don't type it by hand
+common="setpts=PTS/1.5,fps=15,scale=1000:-1:flags=lanczos"
+ffmpeg -y -ss 16 -t 21 -i "$SRC" -vf "${common},palettegen=stats_mode=diff" pal.png
+ffmpeg -y -ss 16 -t 21 -i "$SRC" -i pal.png \
+  -lavfi "${common} [x]; [x][1:v] paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle" \
+  docs/demo-mouse.gif
+```
+
+Keep it short and mouse-motion-focused (light on readable UI text) so it stays useful across
+locales and doesn't obviously stale when copy changes. A full-length GIF is a trap — 64s came
+out at ≈18MB; trim hard, and prefer speeding the clip up over shipping raw minutes.
 
 ## Adding dependencies
 

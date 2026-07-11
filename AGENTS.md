@@ -77,3 +77,9 @@ user-visible UI copy or add a language, the existing assets go stale: regenerate
 `bash scripts/record_demo.sh` (needs Docker) and reference the new per-locale files from all
 three READMEs. Full pipeline docs — tapes, adding a screen, adding a locale — live in
 CONTRIBUTING.md under "Demo assets".
+
+**One deliberate exception:** `docs/demo-mouse.gif` — the short mouse-operability clip below
+the hero video in all three READMEs — is hand-recorded, because VHS drives no mouse. It's a
+single shared clip (not per-locale) that the pipeline cannot regenerate, so it goes stale
+silently if the UI it shows changes; re-record and re-trim it by hand (recipe in
+CONTRIBUTING.md).

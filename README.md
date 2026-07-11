@@ -21,6 +21,10 @@ skit stores your Python scripts in one place and makes them painless to launch.
 
 [▶ Watch the demo](https://github.com/t41372/skit/raw/main/docs/demo-en.mp4)
 
+![Driving skit with the mouse alone — every control on screen is a click target](https://raw.githubusercontent.com/t41372/skit/main/docs/demo-mouse.gif)
+
+*Fully mouse operable — every key hint on screen is also a button.*
+
 | ![The library menu](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-library-en.png) | ![The run form](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-form-en.png) |
 |:--:|:--:|
 | **The library** — every action on screen, mouse or keyboard | **The run form** — generated from the script's own parameters |
@@ -68,6 +72,37 @@ Or install the latest dev version from the main branch.
 uv tool install git+https://github.com/t41372/skit          # latest development version
 uvx --from git+https://github.com/t41372/skit skit --help   # try it without installing
 ```
+
+## Uninstall
+
+```bash
+uv tool uninstall skit
+```
+
+That removes skit and its `PATH` shim. Your library and settings live **outside** the package, so they survive on purpose — reinstall and you're right back where you left off. To erase those too, delete skit's own directories:
+
+| OS | Directories |
+| --- | --- |
+| **macOS** | `~/Library/Application Support/skit` |
+| **Linux** | `~/.local/share/skit` · `~/.local/state/skit` · `~/.config/skit` |
+| **Windows** | `%LOCALAPPDATA%\skit` |
+
+They hold your script library, config, presets, and last-used values — plus, if skit ever bootstrapped its own uv, the private `uv` binary (in `…/skit/bin`, deleted along with the rest).
+
+```bash
+# macOS
+rm -rf ~/Library/Application\ Support/skit
+
+# Linux — honors XDG_DATA_HOME / XDG_STATE_HOME / XDG_CONFIG_HOME if you've set them
+rm -rf ~/.local/share/skit ~/.local/state/skit ~/.config/skit
+```
+
+```powershell
+# Windows (PowerShell)
+Remove-Item -Recurse -Force $env:LOCALAPPDATA\skit
+```
+
+Not sure where yours landed? `skit doctor` prints the resolved library path (and respects any `SKIT_DATA_DIR` / `SKIT_STATE_DIR` / `SKIT_CONFIG_DIR` overrides). That's everything skit owns — it never writes to your `PATH`, shell, or global uv config, so nothing else needs undoing. The uv download cache and any Python builds uv fetched are shared with the rest of your uv setup, not skit's to remove; if you don't use uv elsewhere and want the space back, `uv cache clean` clears the cache.
 
 ## Usage
 
@@ -118,7 +153,7 @@ Defaults: PyPI via Tsinghua / Aliyun / USTC; Python builds and the uv binary via
 
 ## Why skit exists
 
-skit began as an answer to [a linux.do forum thread](https://linux.do/t/topic/2512255) (in Chinese): scripts scattered across folders, each with its own venv, and every run meaning either editing a hard-coded value in the source or retyping CLI args. The asker had even built their own launcher — and abandoned it, because hand-configuring each script's parameters was too much upkeep. That's the trap skit removes: parameters are never configured by hand — skit reads them from the script.
+skit began as an answer to [a linux.do forum thread](https://linux.do/t/topic/2512255) (in Chinese).
 
 ## Development
 

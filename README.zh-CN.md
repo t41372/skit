@@ -19,6 +19,10 @@
 
 [▶ 观看演示](https://github.com/t41372/skit/raw/main/docs/demo-zh.mp4)
 
+![只用鼠标操作 skit——画面上每个控件都是可点击的目标](https://raw.githubusercontent.com/t41372/skit/main/docs/demo-mouse.gif)
+
+*完全鼠标可操作性——画面上每个按键提示，也都是可点的按钮。*
+
 | ![脚本库](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-library-zh.png) | ![执行表单](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-form-zh.png) |
 |:--:|:--:|
 | **脚本库**——每个动作都在画面上，鼠标键盘皆可 | **执行表单**——从脚本自己的参数生成 |
@@ -66,6 +70,37 @@ uv tool install skit
 uv tool install git+https://github.com/t41372/skit          # 最新开发版
 uvx --from git+https://github.com/t41372/skit skit --help   # 或是什么都不装，直接试
 ```
+
+## 卸载
+
+```bash
+uv tool uninstall skit
+```
+
+这会移除 skit 本身与它在 `PATH` 上的快捷方式。你的脚本库与设置存在包**之外**，所以会刻意保留——重装一次，一切照旧。想连这些也一并清掉，就删掉 skit 自己的目录：
+
+| 操作系统 | 目录 |
+| --- | --- |
+| **macOS** | `~/Library/Application Support/skit` |
+| **Linux** | `~/.local/share/skit` · `~/.local/state/skit` · `~/.config/skit` |
+| **Windows** | `%LOCALAPPDATA%\skit` |
+
+这些目录装着你的脚本库、设置、参数组合与上次的值——以及，若 skit 曾自行下载过 uv，那份私有的 `uv` 可执行文件（在 `…/skit/bin`，会跟着一起删掉）。
+
+```bash
+# macOS
+rm -rf ~/Library/Application\ Support/skit
+
+# Linux——你若设过 XDG_DATA_HOME / XDG_STATE_HOME / XDG_CONFIG_HOME，会按你的设置
+rm -rf ~/.local/share/skit ~/.local/state/skit ~/.config/skit
+```
+
+```powershell
+# Windows（PowerShell）
+Remove-Item -Recurse -Force $env:LOCALAPPDATA\skit
+```
+
+不确定在哪？`skit doctor` 会打印出实际的脚本库路径（也会尊重 `SKIT_DATA_DIR` / `SKIT_STATE_DIR` / `SKIT_CONFIG_DIR` 这几个覆写变量）。这就是 skit 拥有的全部——它从不动你的 `PATH`、shell 或全局 uv 配置，所以没别的要善后。uv 的下载缓存，以及 uv 拉取的 Python 版本，是跟你整套 uv 环境共用的，不归 skit 删；你若没在别处用 uv、又想把空间拿回来，`uv cache clean` 可以清掉缓存。
 
 ## 用法
 
@@ -116,7 +151,7 @@ skit config mirror tsinghua   # 或：aliyun / ustc / custom / off
 
 ## 为什么会有 skit
 
-skit 源自 [linux.do 上的一个求助帖](https://linux.do/t/topic/2512255)：脚本散落在各个文件夹、每个文件夹一个 .venv；每次要跑，“要么打开编辑器，硬编码改参数；要么走 CLI，输入参数”。楼主甚至自己写过一个启动器——后来渐渐弃用，因为每个脚本的参数都得手动配置，太麻烦。skit 拆掉的就是这个陷阱：参数从来不用手动配置——skit 直接从脚本里读出来。
+skit 源自 [linux.do 上的一个帖子](https://linux.do/t/topic/2512255)
 
 ## 开发
 
