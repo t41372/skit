@@ -18,7 +18,9 @@ def _expand(text: str, env: dict[str, str] | None = None) -> str:
 
 
 def test_cwd_token():
-    assert _expand("{cwd}/out.png") == "/work/dir/out.png"
+    # {cwd} expands to str(cwd), which is platform-native (backslashes on Windows) — so pin the
+    # expectation to str(CWD), not a hardcoded POSIX prefix.
+    assert _expand("{cwd}/out.png") == f"{CWD}/out.png"
 
 
 def test_today_token():
@@ -45,7 +47,7 @@ def test_env_token_missing_raises_with_names():
 
 
 def test_multiple_tokens_in_one_value():
-    assert _expand("{cwd}/out_{today}_{now}.png") == "/work/dir/out_2026-07-09_14-30-05.png"
+    assert _expand("{cwd}/out_{today}_{now}.png") == f"{CWD}/out_2026-07-09_14-30-05.png"
 
 
 def test_unknown_braces_pass_through():
@@ -60,7 +62,8 @@ def test_double_brace_escapes():
 
 
 def test_tilde_expansion_only_at_start(monkeypatch):
-    monkeypatch.setenv("HOME", "/home/u")
+    monkeypatch.setenv("HOME", "/home/u")  # POSIX home
+    monkeypatch.setenv("USERPROFILE", "/home/u")  # Windows home (os.path.expanduser reads this)
     assert _expand("~/x.txt") == "/home/u/x.txt"
     assert _expand("~") == "/home/u"
     assert _expand("a~b") == "a~b"  # not a home reference; untouched
@@ -68,6 +71,7 @@ def test_tilde_expansion_only_at_start(monkeypatch):
 
 def test_tilde_then_tokens_compose(monkeypatch):
     monkeypatch.setenv("HOME", "/home/u")
+    monkeypatch.setenv("USERPROFILE", "/home/u")
     assert _expand("~/out_{today}.png") == "/home/u/out_2026-07-09.png"
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -237,7 +238,9 @@ def test_assemble_glob_expands_multiple_fields_against_cwd(tmp_path):
     asm = flows.assemble(
         plan, {**_values_ok(), "inputs": "shots/*.png"}, [], cwd=tmp_path, env={}, now=NOW
     )
-    assert asm.args[:2] == ["shots/1.png", "shots/2.png"]  # sorted, re-expanded fresh
+    # glob returns platform-native separators (backslashes on Windows); build the expectation
+    # with os.path.join so it matches on every OS.
+    assert asm.args[:2] == [os.path.join("shots", "1.png"), os.path.join("shots", "2.png")]
 
 
 def test_assemble_glob_without_match_keeps_literal(tmp_path):
@@ -551,7 +554,9 @@ def test_expand_glob_piece_supports_recursive_doublestar(tmp_path):
     nested = tmp_path / "deep" / "deeper"
     nested.mkdir(parents=True)
     (nested / "x.txt").touch()
-    assert flows._expand_glob_piece("**/x.txt", tmp_path) == ["deep/deeper/x.txt"]
+    assert flows._expand_glob_piece("**/x.txt", tmp_path) == [
+        os.path.join("deep", "deeper", "x.txt")
+    ]
 
 
 def test_assemble_tolerates_a_bool_field_missing_from_values(tmp_path):

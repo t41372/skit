@@ -9,12 +9,18 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import sys
 import urllib.request
 from pathlib import Path
 
 import pytest
 
 from skit import uvman
+
+# The installed binary's name is platform-native: `_extract_uv`/`ensure_uv_downloaded` look for
+# (and stage) `uv.exe` on Windows, `uv` elsewhere. Tests that build real archives and assert on the
+# staged path must mirror that, or they'd hunt for `uv` inside a Windows install and find nothing.
+EXE = "uv.exe" if sys.platform == "win32" else "uv"
 
 net = pytest.mark.skipif(
     not os.environ.get("SKIT_NET_TESTS"),
@@ -266,7 +272,7 @@ def test_ensure_uv_already_exists(monkeypatch, tmp_path) -> None:
     """If the binary is already present, skip download and return the path immediately."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
-    exe = bin_dir / "uv"
+    exe = bin_dir / EXE
     exe.touch()
     monkeypatch.setattr("skit.uvman.private_bin_dir", lambda: bin_dir)
 
@@ -382,13 +388,13 @@ def test_checksum_pass_proceeds_to_extraction(monkeypatch, tmp_path) -> None:
         # Capture the archive bytes now, while the download's TemporaryDirectory still exists,
         # to prove the verified bytes are exactly what reached extraction.
         seen["archive_bytes"] = archive.read_bytes()
-        return dest_dir / "uv"
+        return dest_dir / EXE
 
     monkeypatch.setattr(uvman, "_extract_uv", _fake_extract)
 
     result = uvman.ensure_uv_downloaded(quiet=True)
     assert seen, "extraction was not reached — the checksum gate did not pass"
-    assert result == str(tmp_path / "bin" / "uv")
+    assert result == str(tmp_path / "bin" / EXE)
     assert seen["archive_bytes"] == data
 
 
@@ -419,7 +425,7 @@ def test_checksum_mismatch_raises_checksum_error_not_generic(monkeypatch, tmp_pa
 
 
 def _tar_gz_with_uv(
-    tmp_path: Path, exe_name: str = "uv", content: bytes = b"genuine-uv-bytes"
+    tmp_path: Path, exe_name: str = EXE, content: bytes = b"genuine-uv-bytes"
 ) -> Path:
     """Build a real tar.gz archive (named uniquely per call) containing a single executable member
     called `exe_name`, for tests that exercise the real _extract_uv extraction/copy pipeline."""
@@ -453,7 +459,7 @@ def test_extract_uv_failed_copy_leaves_no_partial_binary(monkeypatch, tmp_path) 
     with pytest.raises(OSError, match="simulated disk-full"):
         uvman._extract_uv(archive, dest_dir)
 
-    assert not (dest_dir / "uv").exists()
+    assert not (dest_dir / EXE).exists()
     assert list(dest_dir.iterdir()) == []  # the staged tmp file was cleaned up — nothing poisoned
 
 
@@ -468,11 +474,11 @@ def test_extract_uv_self_heals_after_interrupted_install(monkeypatch, tmp_path) 
     )
     with pytest.raises(OSError, match="boom"):
         uvman._extract_uv(archive, dest_dir)
-    assert not (dest_dir / "uv").exists()
+    assert not (dest_dir / EXE).exists()
 
     monkeypatch.undo()  # restore the real shutil.copy2
     dest = uvman._extract_uv(archive, dest_dir)
-    assert dest == dest_dir / "uv"
+    assert dest == dest_dir / EXE
     assert dest.read_bytes() == b"the-real-uv-binary"
 
 
@@ -505,7 +511,7 @@ def test_extract_uv_fsyncs_staged_file_before_replace(monkeypatch, tmp_path) -> 
 
     dest = uvman._extract_uv(archive, dest_dir)
 
-    assert dest == dest_dir / "uv"
+    assert dest == dest_dir / EXE
     assert dest.read_bytes() == b"genuine-uv-bytes"
     assert "fsync" in calls
     assert "replace" in calls
@@ -529,7 +535,7 @@ def test_extract_uv_dir_fsync_failure_is_swallowed(monkeypatch, tmp_path) -> Non
     monkeypatch.setattr(uvman, "_fsync_path", _selective)
 
     dest = uvman._extract_uv(archive, dest_dir)
-    assert dest == dest_dir / "uv"
+    assert dest == dest_dir / EXE
     assert dest.read_bytes() == b"genuine-uv-bytes"
 
 
@@ -549,7 +555,7 @@ def test_extract_uv_staged_fsync_failure_triggers_existing_cleanup(monkeypatch, 
     with pytest.raises(OSError, match="simulated: fsync EIO"):
         uvman._extract_uv(archive, dest_dir)
 
-    assert not (dest_dir / "uv").exists()
+    assert not (dest_dir / EXE).exists()
     assert list(dest_dir.iterdir()) == []  # the staged tmp file was still cleaned up
 
 
@@ -605,14 +611,14 @@ def test_ensure_uv_downloaded_atomic_install_self_heals(monkeypatch, tmp_path) -
 
     with pytest.raises(uvman.UvDownloadError):
         uvman.ensure_uv_downloaded(quiet=True)
-    assert not (bin_dir / "uv").exists()
+    assert not (bin_dir / EXE).exists()
     assert calls["n"] == 1
 
     # Second attempt (network re-mocked the same way): the corrupt-cache bug would have short
     # circuited here via dest.exists(); the fix means dest is absent, so this re-downloads.
     result = uvman.ensure_uv_downloaded(quiet=True)
-    assert result == str(bin_dir / "uv")
-    assert (bin_dir / "uv").read_bytes() == b"end-to-end-uv-bytes"
+    assert result == str(bin_dir / EXE)
+    assert (bin_dir / EXE).read_bytes() == b"end-to-end-uv-bytes"
     assert calls["n"] == 2
 
 

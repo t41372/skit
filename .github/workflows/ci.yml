@@ -13,6 +13,12 @@ concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# skit is a UTF-8 TUI. Force Python UTF-8 mode everywhere so that captured stdout under pytest —
+# cp1252 on the Windows runner, which can't encode the box-drawing/arrow frames the run view
+# prints — encodes as UTF-8. Harmless on Linux/macOS (already UTF-8); no effect on real consoles.
+env:
+  PYTHONUTF8: "1"
+
 jobs:
   quality:
     name: lint + type check
@@ -90,6 +96,17 @@ jobs:
       # fail_under = 100 is configured in pyproject; anything below exits non-zero.
       - name: Run tests with coverage
         run: uv run pytest --cov --cov-report=term-missing --cov-report=xml
+      # Upload to Codecov even when the 100% gate above fails (!cancelled()), so the dashboard/badge
+      # still track the trend; the pytest fail_under gate — not Codecov — is what blocks a merge, so
+      # a Codecov outage must never fail CI (fail_ci_if_error: false). Needs a CODECOV_TOKEN secret
+      # (repo → Settings → Secrets → Actions); a public repo also falls back to tokenless upload.
+      - name: Upload coverage to Codecov
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          files: ./coverage.xml
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
 
   mutation:
     name: mutation testing (mutmut)

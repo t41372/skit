@@ -1,7 +1,7 @@
 ![skit — 脚本启动器 + 参数管家](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/banner.png)
 
 [![CI](https://github.com/t41372/skit/actions/workflows/ci.yml/badge.svg)](https://github.com/t41372/skit/actions/workflows/ci.yml)
-[![Coverage: 100%](https://img.shields.io/badge/coverage-100%25-brightgreen)](https://github.com/t41372/skit/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/t41372/skit/branch/main/graph/badge.svg)](https://codecov.io/gh/t41372/skit)
 [![Mutation tested: mutmut](https://img.shields.io/badge/mutation%20tested-mutmut-blue)](https://github.com/boxed/mutmut)
 [![PyPI](https://img.shields.io/pypi/v/skit)](https://pypi.org/project/skit/)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)

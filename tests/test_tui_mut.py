@@ -631,7 +631,12 @@ async def test_insert_token_menu_inserts_at_cursor(tmp_path, quiet_run):
         menu = app.screen.query_one(OptionList)
         menu.highlighted = 2
         menu.action_select()
-        await pilot.pause()
+        # select -> modal dismiss -> insert-callback spans several event-loop turns; pump until the
+        # token lands rather than betting one pause is enough (same flake class as the env picker).
+        for _ in range(50):
+            await pilot.pause()
+            if box.value == "x_{today}":
+                break
         assert box.value == "x_{today}"
 
 
@@ -661,8 +666,13 @@ async def test_insert_token_env_picker_filters_and_inserts(tmp_path, quiet_run, 
         assert env_list.option_count == 1
         env_list.highlighted = 0
         env_list.action_select()
-        await pilot.pause()
         row = next(r for r in screen.query(FieldRow) if r.field.key == "output")
+        # select -> modal dismiss -> insert-callback spans several event-loop turns; pump until the
+        # token lands rather than betting one pause is enough (it flaked on the Windows py3.13 runner).
+        for _ in range(50):
+            await pilot.pause()
+            if row.query_one(Input).value:
+                break
         assert row.query_one(Input).value == "{env:SKIT_PICK_ME}"
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -277,3 +278,83 @@ def test_human_size_units_and_thresholds():
     assert store.human_size(1024 * 1024) == "1.0 MB"
     assert store.human_size(3 * 1024 * 1024 * 1024) == "3.0 GB"
     assert store.human_size(5 * 1024**4) == "5120.0 GB"  # never rolls past GB
+
+
+# ---- infer_kind: platform-correct executable detection --------------------------------------
+
+
+def test_infer_kind_python_and_forced_exe(tmp_path: Path):
+    from skit import store
+
+    py = tmp_path / "a.py"
+    py.write_text("print(1)\n", encoding="utf-8")
+    assert store.infer_kind(py) == "python"
+    # A .PY suffix is still python regardless of case; --exe forces exe even for a .py file.
+    assert store.infer_kind(tmp_path / "B.PY") == "python"
+    assert store.infer_kind(py, force_exe=True) == "exe"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX execute-bit semantics — os.access(X_OK) is always True on Windows, so the real "
+    "os.access branch can't be exercised there (monkeypatching sys.platform doesn't change it).",
+)
+def test_infer_kind_posix_uses_execute_bit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """On POSIX, an executable file is one with the execute bit set; a plain file is 'unknown'."""
+    from skit import store
+
+    monkeypatch.setattr("sys.platform", "linux")
+    prog = tmp_path / "prog"
+    prog.write_text("#!/bin/sh\n", encoding="utf-8")
+    assert store.infer_kind(prog) == "unknown"  # no +x yet
+    prog.chmod(prog.stat().st_mode | 0o755)
+    assert store.infer_kind(prog) == "exe"
+
+
+def test_infer_kind_windows_uses_pathext_not_execute_bit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """On Windows there is no execute bit (os.access(X_OK) is True for every file), so a runnable
+    file is identified by its extension being in PATHEXT — a plain .txt must stay 'unknown'."""
+    from skit import store
+
+    monkeypatch.setattr("sys.platform", "win32")
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    exe = tmp_path / "tool.exe"
+    exe.write_bytes(b"MZ")
+    txt = tmp_path / "notes.txt"
+    txt.write_text("hi", encoding="utf-8")
+    assert store.infer_kind(exe) == "exe"  # .EXE is in PATHEXT
+    assert store.infer_kind(tmp_path / "run.BAT") == "unknown"  # not a file (missing) → unknown
+    (tmp_path / "run.BAT").write_text("echo", encoding="utf-8")
+    assert store.infer_kind(tmp_path / "run.BAT") == "exe"  # case-insensitive PATHEXT match
+    assert store.infer_kind(txt) == "unknown"  # .txt is NOT in PATHEXT — the whole point
+
+
+def test_infer_kind_windows_reads_pathext_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The runnable set comes from PATHEXT itself, not a hardcoded list: a custom PATHEXT makes an
+    otherwise-unknown extension runnable, and drops .exe when PATHEXT omits it."""
+    from skit import store
+
+    monkeypatch.setattr("sys.platform", "win32")
+    monkeypatch.setenv("PATHEXT", ".PY1;.FOO")
+    foo = tmp_path / "thing.foo"
+    foo.write_text("x", encoding="utf-8")
+    exe = tmp_path / "thing.exe"
+    exe.write_bytes(b"MZ")
+    assert store.infer_kind(foo) == "exe"  # honoured from the custom PATHEXT
+    assert store.infer_kind(exe) == "unknown"  # .exe dropped because PATHEXT no longer lists it
+
+
+def test_infer_kind_windows_falls_back_to_default_pathext(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """With PATHEXT unset (or empty), fall back to the built-in default so common programs still
+    register as executables."""
+    from skit import store
+
+    monkeypatch.setattr("sys.platform", "win32")
+    monkeypatch.delenv("PATHEXT", raising=False)
+    bat = tmp_path / "go.bat"
+    bat.write_text("echo hi", encoding="utf-8")
+    assert store.infer_kind(bat) == "exe"  # .BAT is in the default fallback set

@@ -201,8 +201,10 @@ def test_run_entry_missing_workdir_raises(py_entry, monkeypatch):
 
     monkeypatch.setattr(launcher, "find_uv", lambda: "/fake/uv")
     py_entry.meta.workdir = "/nonexistent/path/that/does/not/exist"
-    with pytest.raises(launcher.LaunchError, match="/nonexistent/path"):
+    # The message renders the path natively (backslashes on Windows), so match on str(Path(...)).
+    with pytest.raises(launcher.LaunchError) as exc_info:
         launcher.run_entry(py_entry)
+    assert str(Path("/nonexistent/path/that/does/not/exist")) in str(exc_info.value)
 
 
 # ---------- run_entry: shell command execution ----------
@@ -368,8 +370,9 @@ def test_preflight_raises_for_missing_workdir(py_entry):
     from skit import launcher
 
     py_entry.meta.workdir = "/nonexistent/path/that/does/not/exist"
-    with pytest.raises(launcher.LaunchError, match="/nonexistent/path"):
+    with pytest.raises(launcher.LaunchError) as exc_info:
         launcher.preflight(py_entry)
+    assert str(Path("/nonexistent/path/that/does/not/exist")) in str(exc_info.value)
 
 
 def test_preflight_does_not_invoke_uv(py_entry, monkeypatch):

@@ -19,6 +19,7 @@ normal test run.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,13 @@ import pytest
 from skit import paths
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="platformdirs resolves the Windows user dirs via the OS API (SHGetKnownFolderPath), which "
+    "env-var redirection (HOME/XDG/LOCALAPPDATA) can't override — so the fallback can't be pinned into "
+    "tmp_path there. This env-fallback isolation is POSIX-only; the mutmut-escape incident it guards "
+    "against runs on the POSIX CI runner anyway (mutmut isn't run on the Windows matrix).",
+)
 def test_platformdirs_fallback_stays_isolated_when_skit_env_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

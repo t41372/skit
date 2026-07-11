@@ -474,7 +474,7 @@ def test_run_entry_missing_workdir_message_names_the_path(tmp_path: Path) -> Non
     with pytest.raises(launcher.LaunchError) as exc_info:
         launcher.run_entry(entry, invoke_cwd=tmp_path)
     assert str(exc_info.value) == (
-        "The working directory doesn't exist: /nonexistent/skit-test-path"
+        "The working directory doesn't exist: " + str(Path("/nonexistent/skit-test-path"))
     )
 
 
@@ -545,9 +545,10 @@ def test_consent_prompt_exact_text_on_stderr(
     assert uvman._ask_consent(Path("/pb")) is False
     cap = capsys.readouterr()
     assert cap.out == ""
+    # The prompt interpolates str(dest_dir), which renders natively (backslash on Windows).
     assert cap.err == (
         "skit needs Astral's uv to run Python scripts, but it wasn't found on this system."
-        f" Download uv {uvman.UV_VERSION} into skit's private directory (/pb)?"
+        f" Download uv {uvman.UV_VERSION} into skit's private directory ({Path('/pb')})?"
         " This won't touch your PATH or global environment. [Y/n] "
     )
 

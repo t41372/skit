@@ -386,9 +386,7 @@ def _read_typer(tree: ast.Module) -> ArgSpec | None:
     # len(aligned) == len(args) by construction: pad + positional defaults covers
     # args.args, and kw_defaults is exactly one entry per kwonly arg (None when absent).
     for i, arg in enumerate(args):
-        f = _read_typer_param(arg, aligned[i], order=i)
-        if f is not None:
-            fields.append(f)
+        fields.append(_read_typer_param(arg, aligned[i], order=i))
     return ArgSpec(fields=fields)
 
 
@@ -420,7 +418,7 @@ def _annotated_parts(annotation: ast.expr | None) -> tuple[ast.expr | None, ast.
     return base, meta
 
 
-def _read_typer_param(arg: ast.arg, default: ast.expr | None, order: int) -> ArgField | None:
+def _read_typer_param(arg: ast.arg, default: ast.expr | None, order: int) -> ArgField:
     name = arg.arg
     annotation, annotated_meta = _annotated_parts(arg.annotation)
     looked_up = _ANNOTATION_KINDS.get(annotation.id) if isinstance(annotation, ast.Name) else None
@@ -495,7 +493,7 @@ def _apply_typer_signature_default(f: ArgField, default: ast.expr | None) -> Non
         f.degraded = True
 
 
-def _typer_finish_bool(f: ArgField) -> ArgField | None:
+def _typer_finish_bool(f: ArgField) -> ArgField:
     """typer bools become --x/--no-x pairs; only the default-False case assembles as a
     plain store_true flag. Default-True (or required) would need the --no-x spelling —
     degrade rather than emit a flag that means the opposite."""

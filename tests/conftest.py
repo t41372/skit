@@ -59,6 +59,9 @@ def _isolate_skit_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # a mutant breaks the SKIT_* lookups above (see module docstring).
     fake_home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(fake_home))
+    # HOME governs the home dir on POSIX; Windows reads USERPROFILE (os.path.expanduser / Path.home
+    # consult it first), so redirect both or the fallback layer escapes to the real home on Windows.
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "xdg-data"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))

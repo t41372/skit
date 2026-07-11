@@ -42,7 +42,9 @@ def test_placeholder_value_with_double_braces_round_trips():
     cmd = launcher.build_command(entry, values={"q": "{{ .name }}"})
     assert isinstance(cmd, str)
     # The old two-pass implementation collapsed this to "run --q { .name }" (single braces).
-    assert cmd == "run --q " + shlex.quote("{{ .name }}")
+    # Quote with the same platform-aware helper the product uses (shlex on POSIX, list2cmdline on
+    # Windows) rather than hardcoding shlex.quote, which would diverge on Windows.
+    assert cmd == "run --q " + launcher._quote_for_shell("{{ .name }}")
 
 
 def test_placeholder_value_with_double_braces_inside_quoted_template_slot():

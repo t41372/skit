@@ -758,8 +758,8 @@ def _collect_values(
         try:  # the inline renderer ships with the TUI layer; degrade to plain without it
             inlineform = importlib.import_module("skit.inlineform")
         except ImportError:  # pragma: no cover — transitional
-            inlineform = None
-        if inlineform is not None:
+            pass
+        else:
             values = inlineform.collect(entry, plan, prefill)
             if values is None:
                 raise typer.Exit(EXIT_CANCELLED)  # cancelling is not a skit failure

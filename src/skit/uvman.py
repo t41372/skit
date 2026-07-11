@@ -140,11 +140,18 @@ def _fsync_path(path: Path) -> None:
     """Fsync `path` (a file or a directory) so its data — or, for a directory, the rename/link
     entries within it — is durable on stable storage, not just sitting in the page cache.
 
-    Opened O_RDONLY: directories can never be opened for writing on POSIX, and fsync() flushes the
-    underlying inode's dirty pages regardless of which fd was used to request it, so a read-only
-    fd works equally well for the staged file (already fully written and closed by shutil.copy2).
+    Flag choice is platform-split: on POSIX, fsync() flushes the inode's dirty pages regardless of
+    the fd's access mode, and directories can never be opened for writing, so O_RDONLY works for
+    both the staged file and (only on POSIX) the directory fsync. On Windows, os.fsync maps to the
+    CRT `_commit`, which requires a *writable* fd — a read-only handle fails with EBADF — and the
+    directory fsync isn't attempted there anyway (os.open can't open a directory), so this is only
+    ever called on the staged file, which we can safely open O_RDWR.
     """
-    fd = os.open(path, os.O_RDONLY)
+    # The Windows arm can't be exercised on the POSIX mutation runner: there O_RDONLY and O_RDWR are
+    # equivalent for fsync, and a flipped condition only opens the dir fd O_RDWR (EISDIR, swallowed
+    # by the caller's contextlib.suppress) — so no mutant is observable. Hence: no mutate.
+    flags = os.O_RDWR if sys.platform == "win32" else os.O_RDONLY  # pragma: no mutate
+    fd = os.open(path, flags)
     try:
         os.fsync(fd)
     finally:
