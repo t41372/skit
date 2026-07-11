@@ -126,10 +126,25 @@ skit                    # 打开菜单，选脚本，填表单，跑
 ```bash
 skit run my_script -p fast    # 用已存的组合执行
 skit run my_script --dry-run  # 打印实际会跑的命令，不真的执行
+skit run my_script --set width=800 --no-input   # 直接指定参数值，从不询问
+skit show my_script --json    # 一个脚本的完整参数结构，机器可读
 skit params my_script         # 查看纳管参数与上次的值
 skit list --json              # 机器可读的脚本清单
 skit config                   # 设置：语言、编辑器、镜像、表单样式
 skit --help                   # 其余一切
+```
+
+## 给你的 AI agent 用
+
+skit 是给人类和 AI agent 共用的脚本仓库：同一个库——你用表单，agent 用确定性的
+CLI。官方 [Agent Skill](https://agentskills.io) 让兼容的 agent（Claude Code、Codex、
+Cursor、Gemini CLI 等）先查你的库再动手写新的一次性脚本、直接查看并运行库里现成的
+脚本，并在征得你同意后把它写出的实用脚本收进库里——不再随 session 结束而消失。
+
+```bash
+skit agent install            # 从机器上检测到的 agent 目录里挑一个
+skit agent install claude     # 或直接指名：claude / codex / agents（--project 只装进这个 repo）
+npx skills add t41372/skit    # 或通过 skills.sh 安装到 70+ 种 agent
 ```
 
 ## 语言

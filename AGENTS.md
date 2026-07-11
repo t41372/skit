@@ -9,6 +9,9 @@ then run them from skit's TUI menu or the CLI. Read README.md for more info.
 
 **1. Everything is i18n.** Every user-visible string ships translated — English is the
 original locale (msgids *are* the English source), all supported languages ship at 100%.
+The one deliberate exemption: machine-facing surfaces — `--json` keys and the bundled
+Agent Skill (`skills/skit/SKILL.md`) — are English-only contracts, not UI copy, and stay
+outside the i18n gate.
 
 **2. Full mouse AND full keyboard interactivity.** Every TUI action must be operable by mouse
 alone and by keyboard alone. Footer chips are buttons (`tui_footer.chip()`): the visible key
@@ -68,6 +71,17 @@ New or changed UI strings: `scripts/i18n.py extract` → `update` → translate 
 each `.po` → `compile`. Watch for pybabel fuzzy-matching a new msgid to an unrelated old
 translation — correct the msgstr and remove the `#, fuzzy` marker, or the completeness gate
 fails.
+
+## Agent Skill
+
+skit ships an official Agent Skill ([agentskills.io](https://agentskills.io) format) that
+teaches AI agents to drive the library through the CLI. Source of truth:
+`skills/skit/SKILL.md` (the copy `npx skills add t41372/skit` discovers). After editing it,
+sync the packaged copy — `cp skills/skit/SKILL.md src/skit/skills/skit/SKILL.md` — which is
+what ships in the wheel and what `skit agent install` writes. `tests/test_agent_skill.py`
+enforces the sync byte-for-byte, validates the frontmatter against the spec, and resolves
+every `skit …` invocation the skill teaches against the real command tree — renaming a
+command or flag fails that test until the skill is updated too.
 
 ## Demo assets
 

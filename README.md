@@ -128,10 +128,27 @@ The rest of the CLI exists for automation and AI agents — every TUI action, sc
 ```bash
 skit run my_script -p fast    # run with a saved preset
 skit run my_script --dry-run  # print the exact command, don't run it
+skit run my_script --set width=800 --no-input   # set values explicitly, never prompt
+skit show my_script --json    # one script's full parameter schema, machine-readable
 skit params my_script         # show managed parameters and last-used values
 skit list --json              # machine-readable listing
 skit config                   # settings: language, editor, mirror, form style
 skit --help                   # everything else
+```
+
+## Works with your AI agent
+
+skit is a script repository for humans *and* AI agents: one library — you get the
+forms, agents get a deterministic CLI. The official [Agent Skill](https://agentskills.io)
+teaches compatible agents (Claude Code, Codex, Cursor, Gemini CLI, and many more) to
+check your library before writing yet another one-off script, to inspect and run what's
+already there, and to offer to save the useful scripts they write — so they outlive the
+session that created them.
+
+```bash
+skit agent install            # pick one of the agent directories found on your machine
+skit agent install claude     # or name it: claude / codex / agents (--project for this repo only)
+npx skills add t41372/skit    # or install through skills.sh into 70+ agents
 ```
 
 ## Languages
