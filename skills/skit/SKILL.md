@@ -1,6 +1,6 @@
 ---
 name: skit
-description: Run, inspect, and manage scripts in the user's skit library — their personal collection of Python scripts, shell one-liners, and executables, each with a typed parameter form, saved presets, and isolated dependencies. Use when the user asks to run/list/add their scripts, mentions skit or "my script", or before writing a new one-off Python script (the library may already have one that does the job).
+description: Run, inspect, and manage scripts in the user's skit library — their personal hub, manager, and launcher of Python scripts, shell one-liners, and executables, each with a typed parameter form, saved presets, and isolated dependencies. Use when the user asks to run/list/add their scripts, mentions skit or "my script", or before writing a new one-off Python script (the library may already have one that does the job).
 license: MIT
 compatibility: Requires the skit CLI on PATH (install with `uv tool install skit-cli`)
 ---
@@ -26,9 +26,8 @@ PEP 723). The library is *the user's curated space*: treat it like their dotfile
    Propose `skit add` when you've written something reusable; don't add it silently.
 5. **Pass `--no-input` on every `skit run` and `skit add`.** It guarantees those never
    block on a prompt; if information is missing, skit fails fast with a named error
-   instead. Destructive commands confirm instead of taking `--no-input` — pass their
-   explicit flag (`skit remove <name> -y`). The read commands (`list`, `show`,
-   `params`, …) never prompt and don't take the flag.
+   instead. `skit remove` confirms instead of taking `--no-input` — pass `-y`. The
+   read commands (`list`, `show`, `params`, …) never prompt and don't take the flag.
 
 ## Discover scripts
 

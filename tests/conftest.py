@@ -85,8 +85,8 @@ def _isolate_skit_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Hermetic color, second layer: the import-time scrub above already cleaned the
     # process env; this keeps any subprocess a test spawns clean too, even if a test
     # setenv'd something exotic in between.
-    monkeypatch.delenv("FORCE_COLOR", raising=False)
-    monkeypatch.delenv("NO_COLOR", raising=False)
+    for var in ("FORCE_COLOR", "NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE"):
+        monkeypatch.delenv(var, raising=False)
 
 
 @pytest.fixture(autouse=True)

@@ -266,6 +266,10 @@ def test_raw_never_replays_last_extra_args(tmp_path, run_entry_spy):
     result = runner.invoke(cli.app, ["run", "j", "--no-input"])
     assert result.exit_code == 0, result.output
     assert run_entry_spy["extra"] == ["--verbose", "x.png"]
+    # Positive stream pin: the reuse notice is skit chrome and belongs on stderr
+    # (SKILL.md documents "it says so on stderr"); the script's stdout stays clean.
+    assert "Reusing your last arguments" in result.stderr
+    assert "Reusing your last arguments" not in result.stdout
 
 
 def test_set_bad_typed_value_exits_125(tmp_path, run_entry_spy):

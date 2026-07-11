@@ -1054,6 +1054,14 @@ def run(
     except store.NotFoundError as exc:
         raise _fail(str(exc), EXIT_NOT_FOUND) from exc
     _validate_preset(entry, preset)
+    # Form-shaped flags contradict "as-is": refusing beats silently dropping a preset
+    # (or persisting an empty one) the way a bare warning-less run would. Checked before
+    # any raw-mode chatter so the refusal is the whole story.
+    if raw and (set_opts or preset or save_preset):
+        err_console.print(
+            f"[red]{gettext('--raw runs the script as-is; --set, --preset, and --save-preset do not apply.')}[/red]"
+        )
+        raise typer.Exit(EXIT_USAGE)
     if raw and entry.meta.kind == "python":
         console.print(
             f"[dim]{gettext('Raw mode: skipping the parameter form and injection.')}[/dim]"
@@ -1066,13 +1074,6 @@ def run(
         console.print(
             f"[dim]{gettext("skit could not model this script's own arguments; pass them after -- instead.")}[/dim]"
         )
-    # Form-shaped flags contradict "as-is": refusing beats silently dropping a preset
-    # (or persisting an empty one) the way a bare warning-less run would.
-    if raw and (set_opts or preset or save_preset):
-        err_console.print(
-            f"[red]{gettext('--raw runs the script as-is; --set, --preset, and --save-preset do not apply.')}[/red]"
-        )
-        raise typer.Exit(EXIT_USAGE)
     prefilled = flows.prefill(plan, entry.slug, preset)
     overrides = _parse_set_opts(plan, set_opts or [])
     prefilled.update(overrides)
