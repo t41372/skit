@@ -13,7 +13,9 @@ Focus model: the TABLE owns the keyboard by default, so every advertised single-
 key actually fires; `/` (or a click) enters the search box, where letters type as text
 and Esc returns to the table. Type-to-search-with-permanent-focus was abandoned after
 review: an always-focused Input consumes printable keys, which silently killed every
-single-letter action the footer advertised.
+single-letter action the footer advertised. For the same reason the footer follows the
+focus: while the search box holds the keyboard, the letter chips would be dead buttons,
+so both key rows swap to the input-mode hints (Enter run · Esc back to list).
 """
 
 from __future__ import annotations
@@ -30,7 +32,7 @@ from textual import events, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.widgets import DataTable, Input, Label, Static
 
 from . import argstate, editor, flows, launcher, models, store, theme, tui_footer
@@ -181,6 +183,16 @@ class HelpScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
+class _LibraryScreen(Screen[None]):
+    """The default screen, carrying the Library's boot-focus rule: the TABLE, not the
+    search box ("*" would pick the search Input — the first focusable — and letters
+    typed at launch would silently become a filter). Scoped HERE and not as
+    MenuApp.AUTO_FOCUS on purpose: the app-level value is the fallback for EVERY
+    pushed screen, and the run form / add flow rely on "*" to focus their first field."""
+
+    AUTO_FOCUS = "#entry-table"
+
+
 class MenuApp(App[int]):
     """The Library. Exit code 0 on a clean quit."""
 
@@ -247,6 +259,10 @@ class MenuApp(App[int]):
         self._detail_manual: bool | None = None  # None = auto by width; else the user's Tab choice
 
     @override
+    def get_default_screen(self) -> Screen[None]:
+        return _LibraryScreen(id="_default")
+
+    @override
     def get_css_variables(self) -> dict[str, str]:
         # The first stylesheet parse runs before on_mount activates the theme; without
         # the $skit-box-* merge that parse dies on an unresolved variable.
@@ -263,6 +279,7 @@ class MenuApp(App[int]):
         # The table owns the keyboard: that's what makes the advertised single-letter
         # keys real. `/` moves into the search box.
         table.focus()
+        self.watch(self.screen, "focused", self._refresh_footer_on_focus_move, init=False)
 
     @override
     def compose(self) -> ComposeResult:
@@ -328,6 +345,19 @@ class MenuApp(App[int]):
         )
 
     def _refresh_footer(self) -> None:
+        keys_local = self.query_one("#keys-local", Static)
+        keys_global = self.query_one("#keys-global", Static)
+        if self.focused is self.query_one("#search", Input):
+            # In the search box, letters are text: every single-letter chip would be a
+            # dead button. Advertise only what still works while typing.
+            keys_local.update(
+                tui_footer.bar(
+                    tui_footer.chip("app.run", "Enter", gettext("Run")),
+                    tui_footer.chip("app.leave_search", "Esc", gettext("Back to list")),
+                )
+            )
+            keys_global.update("")
+            return
         entry = self._selected()
         local: list[str] = []
         if entry is not None:
@@ -345,8 +375,8 @@ class MenuApp(App[int]):
             tui_footer.chip("app.health", "D", gettext("Health check")),
             tui_footer.chip("app.help", "?", gettext("Help")),
         ]
-        self.query_one("#keys-local", Static).update(tui_footer.bar(*local))
-        self.query_one("#keys-global", Static).update(tui_footer.bar(*globals_row))
+        keys_local.update(tui_footer.bar(*local))
+        keys_global.update(tui_footer.bar(*globals_row))
 
     def _has_drift(self, entry: Entry) -> bool:
         """Drift is the expensive check (read + reconcile): lazy, per-selection, mtime-cached."""
@@ -493,6 +523,7 @@ class MenuApp(App[int]):
         "health",
         "help",
         "focus_search",
+        "leave_search",
         "toggle_detail",
     )
 
@@ -502,8 +533,19 @@ class MenuApp(App[int]):
         screen's own widgets must not trigger surprise actions underneath it."""
         return not (action in self._LIBRARY_ACTIONS and len(self.screen_stack) > 1)
 
+    def _refresh_footer_on_focus_move(self) -> None:
+        # The footer's advertised keys depend on who owns the keyboard (search box vs
+        # table). Watching the screen's `focused` reactive (wired in on_mount) follows
+        # every hand-off at the source — no bubbled focus event to miss.
+        self._refresh_footer()
+
     def action_focus_search(self) -> None:
         self.query_one("#search", Input).focus()
+
+    def action_leave_search(self) -> None:
+        """Click target of the search-mode footer chip — hand the keyboard back to the
+        table. (The Esc key reaches the same place via back_or_quit.)"""
+        self.query_one(DataTable).focus()
 
     def action_back_or_quit(self) -> None:
         """Esc in the search box returns to the table; Esc on the table quits."""

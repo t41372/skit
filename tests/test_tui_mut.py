@@ -10,7 +10,7 @@ from __future__ import annotations
 import contextlib
 
 import pytest
-from textual.widgets import Checkbox, Input, Static
+from textual.widgets import Checkbox, DataTable, Input, Static
 
 from skit import argstate, flows, launcher, metawriter, store, tui
 from skit.metawriter import ParamSpec
@@ -439,6 +439,58 @@ async def test_library_footer_chips_fire_on_click(tmp_path):
         assert app.screen.__class__.__name__ == "HealthScreen"
 
 
+async def test_search_focus_swaps_footer_to_input_mode_and_esc_restores_it(tmp_path):
+    """While the search box owns the keyboard every single-letter chip is a lie — the
+    letters just type text. The footer must swap both key rows for the input-mode hints
+    (Enter run · Esc back to list) and restore the full rows when Esc hands the
+    keyboard back to the table (and Esc must leave search, not quit the app)."""
+    store.add_python(_py(tmp_path, "print(1)\n"), name="a")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "Add script" in str(app.query_one("#keys-global", Static).render())
+        app.action_focus_search()
+        await pilot.pause()
+        local = str(app.query_one("#keys-local", Static).render())
+        assert "Back to list" in local
+        assert "Run" in local
+        assert "Script settings" not in local  # the letter chips are gone
+        assert str(app.query_one("#keys-global", Static).render()) == ""
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.focused is app.query_one(DataTable)
+        assert app.return_value is None  # Esc left the search box; it did NOT quit
+        assert "Add script" in str(app.query_one("#keys-global", Static).render())
+
+
+async def test_search_mode_esc_chip_returns_to_table_on_click(tmp_path):
+    """Mouse path while typing: clicking the Esc chip hands focus back to the table —
+    it must never fall through to the table-mode Esc meaning (quit)."""
+    store.add_python(_py(tmp_path, "print(1)\n"), name="a")
+    app = tui.MenuApp()
+    async with app.run_test(size=(130, 30)) as pilot:
+        app.action_focus_search()
+        await pilot.pause()
+        await _click_label(pilot, "#keys-local", "Back to list")
+        assert app.focused is app.query_one(DataTable)
+        assert app.return_value is None  # still running
+        assert "Add script" in str(app.query_one("#keys-global", Static).render())
+
+
+async def test_enter_in_search_runs_the_highlighted_match(tmp_path, quiet_run):
+    """The search-mode footer advertises "Enter Run": Enter with the caret in the
+    search box runs the highlighted match and returns focus to the table."""
+    store.add_python(_py(tmp_path, "print(1)\n"), name="a")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.action_focus_search()
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert "values" in quiet_run  # the highlighted script ran
+        assert app.focused is app.query_one(DataTable)
+
+
 async def test_pushed_screen_footer_chips_fire_on_click(tmp_path, quiet_run):
     """A pushed screen's footer chips resolve to that SCREEN's own actions (screen.*
     namespace): clicking Cancel dismisses the run form and launches nothing."""
@@ -493,6 +545,7 @@ def test_every_footer_chip_targets_an_existing_action():
             "add",
             "presets",
             "focus_search",
+            "leave_search",
             "preferences",
             "health",
             "help",
