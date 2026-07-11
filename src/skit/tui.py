@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import override
@@ -35,7 +36,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import DataTable, Input, Label, Static
 
-from . import argstate, editor, flows, launcher, models, store, theme, tui_footer
+from . import argstate, config, editor, flows, launcher, models, store, theme, tui_footer
 from .i18n import gettext, ngettext
 from .models import Entry
 from .theme import CLAUDE_THEME
@@ -183,6 +184,21 @@ class HelpScreen(ModalScreen[None]):
         self.dismiss(None)
 
 
+@dataclass(frozen=True)
+class PendingRun:
+    """A run the Library hands back to run_menu (after_run=exit): the script starts
+    only after the app has fully left the alternate screen. Executing under suspend()
+    and exiting right after would resume the TUI just to tear it down — a visible
+    full-screen flash between the script's output and the shell prompt."""
+
+    entry: Entry
+    plan: flows.FormPlan
+    asm: flows.Assembly
+    values: dict[str, str]
+    extra: list[str]
+    show_drift: bool
+
+
 class _LibraryScreen(Screen[None]):
     """The default screen, carrying the Library's boot-focus rule: the TABLE, not the
     search box ("*" would pick the search Input — the first focusable — and letters
@@ -193,8 +209,9 @@ class _LibraryScreen(Screen[None]):
     AUTO_FOCUS = "#entry-table"
 
 
-class MenuApp(App[int]):
-    """The Library. Exit code 0 on a clean quit."""
+class MenuApp(App[int | PendingRun]):
+    """The Library. Exits with a clean-quit code (0), a run's exit code, or — in
+    exit-after-run mode — a PendingRun for run_menu to execute after teardown."""
 
     TITLE = "skit · " + gettext("Library")
     ENABLE_COMMAND_PALETTE = False
@@ -632,6 +649,12 @@ class MenuApp(App[int]):
         except flows.FormError as exc:
             self._refresh_status(gettext("Error: %(error)s") % {"error": escape(str(exc))})
             return
+        if config.load_after_run() == "exit":
+            # A launcher hands the terminal back: quit the TUI FIRST, run after
+            # (_finish_run). Running under suspend() and exiting would repaint the
+            # whole app for one frame on resume — a visible flash.
+            self.exit(PendingRun(entry, plan, asm, dict(values), list(extra), show_drift))
+            return
         with self.suspend():
             print(f"\n── {gettext('Run %(name)s') % {'name': entry.meta.name}} ──\n", flush=True)
             if show_drift:
@@ -810,7 +833,37 @@ class MenuApp(App[int]):
         self.query_one(DataTable).refresh()
 
 
+def _finish_run(pending: PendingRun) -> int:
+    """The exit-mode tail of a run, on the plain terminal after the TUI is gone."""
+    print(
+        f"\n── {gettext('Run %(name)s') % {'name': pending.entry.meta.name}} ──\n",
+        flush=True,
+    )
+    if pending.show_drift:
+        for line in pending.plan.drift_lines:
+            print(line, flush=True)
+    outcome = flows.execute(
+        pending.entry, pending.plan, pending.asm, emit=lambda line: print(line, flush=True)
+    )
+    if outcome.code is None:
+        # Nothing ran: no phantom history, and the process exit code follows the same
+        # docker convention as `skit run`.
+        print(gettext("Error: %(error)s") % {"error": outcome.message}, flush=True)
+        return flows.FAILURE_EXIT_CODES.get(outcome.failure, 125)
+    flows.save_after_run(
+        pending.entry.slug,
+        pending.plan,
+        pending.values,
+        list(pending.extra),
+        outcome.code,
+        at=models.now_iso(),
+    )
+    return outcome.code
+
+
 def run_menu() -> int:
     app = MenuApp()
     result = app.run()
+    if isinstance(result, PendingRun):
+        return _finish_run(result)
     return result if isinstance(result, int) else 0

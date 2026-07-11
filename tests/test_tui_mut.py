@@ -12,7 +12,7 @@ import contextlib
 import pytest
 from textual.widgets import Checkbox, DataTable, Input, Static
 
-from skit import argstate, flows, launcher, metawriter, store, tui
+from skit import argstate, config, flows, launcher, metawriter, store, tui
 from skit.metawriter import ParamSpec
 from skit.tui_form import FieldRow, RunFormScreen
 
@@ -38,7 +38,12 @@ def _noop_suspend():
 
 @pytest.fixture
 def quiet_run(monkeypatch):
-    """Neutralize the terminal-ownership pieces of _execute; capture the launch."""
+    """Neutralize the terminal-ownership pieces of _execute; capture the launch.
+
+    Also pins after_run=stay: these tests exercise the workbench loop (run, land back
+    in the Library, assert its state), while the out-of-box default is "exit". The
+    exit default has its own dedicated tests."""
+    config.save_after_run("stay")
     calls: dict[str, object] = {}
 
     def fake_run(entry, extra_args=None, *, values=None, invoke_cwd=None, script_override=None):
@@ -767,7 +772,74 @@ async def test_insert_link_shown_only_on_insertable_fields(tmp_path, quiet_run):
 # ---------------------------------------------------------------------------
 
 
+async def test_default_after_run_exits_the_tui_before_running(tmp_path, quiet_run):
+    """Out of the box skit is a LAUNCHER: Enter hands a PendingRun back and the app
+    exits — the script must NOT start while the TUI still owns the terminal (running
+    under suspend and exiting right after repainted the app for a frame: the flash).
+    (quiet_run pins stay for the workbench tests, so flip back to the default here.)"""
+    config.save_after_run("exit")
+    store.add_python(_py(tmp_path, "print(1)\n"), name="a")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_run()
+        pending = app.return_value
+        assert isinstance(pending, tui.PendingRun)
+        assert pending.entry.meta.name == "a"
+    assert "values" not in quiet_run  # nothing ran inside the TUI
+
+
+def test_finish_run_executes_records_and_passes_the_code_through(tmp_path, quiet_run, monkeypatch):
+    """run_menu's exit-mode tail: the pending script runs on the plain terminal, the
+    drift banner still prints (rerun skips the form where it normally lives), the run
+    is recorded (r-rerun next launch), and the script's code becomes skit's."""
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="a")
+    plan = flows.plan_for_entry(entry)
+    plan.drift_lines = ["the script changed"]
+    asm = flows.assemble(plan, {}, [], cwd=tmp_path)
+    quiet_run["code"] = 7
+    printed: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
+    pending = tui.PendingRun(entry, plan, asm, {}, [], show_drift=True)
+    monkeypatch.setattr(tui.MenuApp, "run", lambda self: pending)
+    assert tui.run_menu() == 7
+    assert "values" in quiet_run
+    assert argstate.load_state(entry.slug)["last_run"]
+    assert "the script changed" in printed  # the drift banner survives the exit path
+
+
+def test_finish_run_launch_failure_uses_docker_codes_and_records_nothing(tmp_path, monkeypatch):
+    """A launch that never starts after teardown: docker-convention exit code (127 for
+    a missing target — same table as `skit run`), an error line, no phantom history."""
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="ghost")
+    plan = flows.plan_for_entry(entry)
+    asm = flows.assemble(plan, {}, [], cwd=tmp_path)
+    entry.script_path.unlink()
+    printed: list[str] = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
+    monkeypatch.setattr(
+        tui.MenuApp, "run", lambda self: tui.PendingRun(entry, plan, asm, {}, [], False)
+    )
+    assert tui.run_menu() == 127
+    assert argstate.load_state(entry.slug)["last_run"] == {}
+    assert any("Error" in line for line in printed)
+
+
+async def test_after_run_stay_returns_to_the_library(tmp_path, quiet_run):
+    """The workbench opt-in: after_run=stay keeps skit open after a run — the status
+    line reports the outcome and the app is still running."""
+    store.add_python(_py(tmp_path, "print(1)\n"), name="a")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_run()
+        await pilot.pause()
+        assert app.return_value is None  # still open
+        assert "✓ finished" in str(app.query_one("#status", Static).render())
+
+
 async def test_launch_failure_records_no_phantom_run(tmp_path, monkeypatch):
+    config.save_after_run("stay")  # the in-TUI failure banner is the stay-mode path
     entry = store.add_python(_py(tmp_path, "print(1)\n"), name="ghosty")
     entry.script_path.unlink()  # the target is gone: the run can never start
 
@@ -784,6 +856,7 @@ async def test_launch_failure_records_no_phantom_run(tmp_path, monkeypatch):
         assert argstate.load_state(entry.slug)["last_run"] == {}  # nothing ran, nothing recorded
         status = str(app.query_one("#status").render())
         assert "couldn't launch" in status
+        assert app.return_value is None  # a failed launch never quits the workbench
 
 
 async def test_rerun_path_prints_drift_lines(tmp_path, quiet_run, monkeypatch):

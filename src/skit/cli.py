@@ -772,13 +772,8 @@ def _collect_values(
 
 
 # How a flows.RunOutcome failure maps to skit's exit-code contract (docker convention).
-_FAILURE_EXIT = {
-    flows.FAIL_BAD_VALUE: EXIT_SKIT,
-    flows.FAIL_DRIFT: EXIT_SKIT,
-    flows.FAIL_LAUNCH: EXIT_SKIT,
-    flows.FAIL_NOT_EXECUTABLE: EXIT_NOT_EXECUTABLE,
-    flows.FAIL_MISSING: EXIT_NOT_FOUND,
-}
+# The numbers live in flows so the TUI's exit-after-run path shares them.
+_FAILURE_EXIT = flows.FAILURE_EXIT_CODES
 
 
 @app.command(
@@ -1461,7 +1456,7 @@ def doctor(
 # config (git-config grammar: bare = list, KEY = read, KEY VALUE = write)
 # --------------------------------------------------------------------------
 
-_CONFIG_KEYS = ("lang", "editor", "mirror", "form")
+_CONFIG_KEYS = ("lang", "editor", "mirror", "form", "after_run")
 
 
 def _config_value(key: str) -> str:
@@ -1475,7 +1470,9 @@ def _config_value(key: str) -> str:
     if key == "mirror":
         m = config.load_mirror()
         return m.pypi if m.enabled else "off"
-    return config.load_form()  # "form" — _CONFIG_KEYS guards the key set
+    if key == "form":
+        return config.load_form()
+    return config.load_after_run()  # "after_run" — _CONFIG_KEYS guards the key set
 
 
 def _config_set(key: str, value: str) -> None:
@@ -1499,22 +1496,33 @@ def _config_set(key: str, value: str) -> None:
                 f"[red]{gettext('Unknown mirror: %(name)s. Choose from: %(names)s') % {'name': escape(value), 'names': choices}}[/red]"
             )
             raise typer.Exit(EXIT_USAGE)
-    else:  # form
+    elif key == "form":
         if value not in config.FORM_STYLES:
             err_console.print(
                 f"[red]{gettext('Unknown form style: %(value)s. Choose from: tui, plain') % {'value': escape(value)}}[/red]"
             )
             raise typer.Exit(EXIT_USAGE)
         config.save_form(value)
+    else:  # after_run
+        if value not in config.AFTER_RUN_MODES:
+            err_console.print(
+                f"[red]{gettext('Unknown after-run behavior: %(value)s. Choose from: exit, stay') % {'value': escape(value)}}[/red]"
+            )
+            raise typer.Exit(EXIT_USAGE)
+        config.save_after_run(value)
 
 
 @app.command(
     "config",
-    help=gettext("Read or set skit's settings (language, editor, mirror, form style)."),
-    epilog=gettext("Examples:  skit config  ·  skit config lang zh-TW  ·  skit config form plain"),
+    help=gettext("Read or set skit's settings (language, editor, mirror, form style, after-run)."),
+    epilog=gettext(
+        "Examples:  skit config  ·  skit config lang zh-TW  ·  skit config after_run stay"
+    ),
 )
 def config_cmd(
-    key: str = typer.Argument(None, help=gettext("Setting name: lang / editor / mirror / form")),
+    key: str = typer.Argument(
+        None, help=gettext("Setting name: lang / editor / mirror / form / after_run")
+    ),
     value: str = typer.Argument(
         None, help=gettext('New value (omit to read; lang also accepts "auto")')
     ),

@@ -14,7 +14,7 @@ import contextlib
 import pytest
 from textual.widgets import Checkbox, DataTable, Input, Static
 
-from skit import argstate, flows, launcher, metawriter, store, tui
+from skit import argstate, config, flows, launcher, metawriter, store, tui
 from skit.metawriter import ParamSpec
 from skit.tui_form import (
     EnvPickerModal,
@@ -47,7 +47,11 @@ def _noop_suspend():
 
 @pytest.fixture
 def quiet_run(monkeypatch):
-    """Neutralize the terminal-ownership pieces of _execute; capture the launch."""
+    """Neutralize the terminal-ownership pieces of _execute; capture the launch.
+
+    Pins after_run=stay (the workbench loop these tests assert on); the "exit"
+    default has dedicated tests in test_tui_mut.py."""
+    config.save_after_run("stay")
     calls: dict[str, object] = {}
 
     def fake_run(entry, extra_args=None, *, values=None, invoke_cwd=None, script_override=None):

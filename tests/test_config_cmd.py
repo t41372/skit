@@ -49,7 +49,7 @@ def _prompts(monkeypatch: pytest.MonkeyPatch, answers: list[str]) -> list[dict[s
 def test_bare_config_lists_all_keys() -> None:
     result = runner.invoke(cli.app, ["config"])
     assert result.exit_code == 0
-    for key in ("lang", "editor", "mirror", "form"):
+    for key in ("lang", "editor", "mirror", "form", "after_run"):
         assert key in result.output
     assert "off" in result.output  # mirror default
     assert "tui" in result.output  # form default
@@ -59,9 +59,10 @@ def test_bare_config_json() -> None:
     result = runner.invoke(cli.app, ["config", "--json"])
     assert result.exit_code == 0
     doc = json.loads(result.output)
-    assert set(doc) == {"lang", "editor", "mirror", "form"}
+    assert set(doc) == {"lang", "editor", "mirror", "form", "after_run"}
     assert doc["mirror"] == "off"
     assert doc["form"] == "tui"
+    assert doc["after_run"] == "exit"  # the launcher default
 
 
 def test_unknown_key_exits_2() -> None:
@@ -162,6 +163,35 @@ def test_set_form_plain_and_back() -> None:
 def test_unknown_form_style_exits_2() -> None:
     result = runner.invoke(cli.app, ["config", "form", "fancy"])
     assert result.exit_code == 2
+
+
+# --- after_run ---
+
+
+def test_read_after_run_default() -> None:
+    result = runner.invoke(cli.app, ["config", "after_run"])
+    assert result.exit_code == 0
+    assert "exit" in result.output  # the launcher default
+
+
+def test_set_after_run_stay_and_back() -> None:
+    result = runner.invoke(cli.app, ["config", "after_run", "stay"])
+    assert result.exit_code == 0
+    assert config.load_after_run() == "stay"
+    runner.invoke(cli.app, ["config", "after_run", "exit"])
+    assert config.load_after_run() == "exit"
+
+
+def test_unknown_after_run_exits_2() -> None:
+    result = runner.invoke(cli.app, ["config", "after_run", "loop"])
+    assert result.exit_code == 2
+
+
+def test_after_run_garbage_in_config_file_normalizes_to_exit() -> None:
+    doc = config.load_config()
+    doc["after_run"] = "never"
+    config.save_config(doc)
+    assert config.load_after_run() == "exit"
 
 
 # --- writes preserve the other sections ---

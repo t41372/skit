@@ -2,8 +2,10 @@
 
 Every setting shows what is ACTUALLY in effect right now (the most common question a
 settings screen gets is "what happens if I leave this empty"). Language is a dropdown
-(the locale list will grow); the form style governs every interactive flow; the custom
-mirror enforces https for the uv binary inline (downloaded-and-executed ⇒ MITM→RCE).
+(the locale list will grow); the form style governs the CLI's parameter prompts; the
+after-run choice decides whether skit quits like a launcher or loops like a workbench;
+the custom mirror enforces https for the uv binary inline (downloaded-and-executed ⇒
+MITM→RCE).
 """
 
 from __future__ import annotations
@@ -88,6 +90,16 @@ class PreferencesScreen(Screen[bool]):
                     gettext("Line-by-line prompts — plainest, best over slow terminals"),
                     value=config.load_form() == "plain",
                 )
+            yield Static(gettext("After a run (from this menu)"), classes="section")
+            with RadioSet(id="pf-after"):
+                yield RadioButton(
+                    gettext("Quit skit — leave the script's output in the terminal"),
+                    value=config.load_after_run() == "exit",
+                )
+                yield RadioButton(
+                    gettext("Return to the Library"),
+                    value=config.load_after_run() == "stay",
+                )
 
             yield Static(
                 gettext("Download mirror (mainland-China acceleration)"), classes="section"
@@ -145,6 +157,8 @@ class PreferencesScreen(Screen[bool]):
         config.save_editor(self.query_one("#pf-editor", Input).value)
         form_index = self.query_one("#pf-form", RadioSet).pressed_index
         config.save_form("plain" if form_index == 1 else "tui")
+        after_index = self.query_one("#pf-after", RadioSet).pressed_index
+        config.save_after_run("stay" if after_index == 1 else "exit")
         choice = self._mirror_choice()
         if choice == "off":
             config.disable()

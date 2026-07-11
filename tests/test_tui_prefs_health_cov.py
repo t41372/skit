@@ -146,11 +146,13 @@ async def test_prefs_save_off_persists_editor_form_and_disables_mirror(tmp_path)
         assert isinstance(screen, PreferencesScreen)
         screen.query_one("#pf-editor", Input).value = "micro"
         list(screen.query_one("#pf-form", RadioSet).query(RadioButton))[1].value = True  # plain
+        list(screen.query_one("#pf-after", RadioSet).query(RadioButton))[1].value = True  # stay
         await pilot.pause()
         screen.action_save()
         await pilot.pause()
     assert config.load_editor() == "micro"
     assert config.load_form() == "plain"
+    assert config.load_after_run() == "stay"
     assert config.load_mirror().enabled is False
     assert config.load_config().get("language") is None  # "auto" clears the key
     assert results == [True]

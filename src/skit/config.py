@@ -137,7 +137,9 @@ FORM_STYLES = ("tui", "plain")
 
 def load_form() -> str:
     """Interactive-form style: "tui" (inline mini-form, the default) or "plain" (line
-    prompts). Governs every interactive flow (run form, add panel), not just run."""
+    prompts). Consumed by the CLI's parameter collection (`skit run` without values);
+    the TUI workbench always uses its own full form screen, and `skit add`'s
+    name/description questions are plain prompts regardless."""
     value = load_config().get("form", "")  # pragma: no mutate — normalized below
     return value if value in FORM_STYLES else "tui"
 
@@ -146,6 +148,24 @@ def save_form(style: str) -> None:
     """Persist the form style, preserving every other key."""
     doc = _load_config_for_save()
     doc["form"] = style
+    save_config(doc)
+
+
+AFTER_RUN_MODES = ("exit", "stay")
+
+
+def load_after_run() -> str:
+    """What the TUI does when a launched script finishes: "exit" (the default — skit is
+    a launcher, so it quits and passes the script's exit code through) or "stay"
+    (banner + Enter returns to the Library, the workbench loop)."""
+    value = load_config().get("after_run", "")  # pragma: no mutate — normalized below
+    return value if value in AFTER_RUN_MODES else "exit"
+
+
+def save_after_run(mode: str) -> None:
+    """Persist the after-run behavior, preserving every other key."""
+    doc = _load_config_for_save()
+    doc["after_run"] = mode
     save_config(doc)
 
 

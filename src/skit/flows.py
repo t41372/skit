@@ -485,6 +485,18 @@ FAIL_MISSING = "missing"  # the launch target is gone from disk
 FAIL_NOT_EXECUTABLE = "not_executable"  # an exe exists but isn't +x
 FAIL_LAUNCH = "launch"  # any other launch failure
 
+# Docker-convention process exit codes when the launch itself failed (the script's own
+# exit code passes through untouched whenever it did run): skit failures are 125, an
+# existing-but-unexecutable target 126, a missing target 127. Shared by `skit run` and
+# the TUI's exit-after-run path so the contract can't fork.
+FAILURE_EXIT_CODES = {
+    FAIL_BAD_VALUE: 125,
+    FAIL_DRIFT: 125,
+    FAIL_LAUNCH: 125,
+    FAIL_NOT_EXECUTABLE: 126,
+    FAIL_MISSING: 127,
+}
+
 
 @dataclass
 class RunOutcome:
