@@ -15,19 +15,7 @@
 
 **AI 寫腳本，skit 管腳本。**
 
-<video src="https://github.com/t41372/skit/raw/main/docs/assets/demo-zh.mp4" controls></video>
-
-[▶ 觀看示範](https://github.com/t41372/skit/raw/main/docs/assets/demo-zh.mp4)
-
-![只用滑鼠操作 skit——畫面上每個控制項都是可點擊的目標](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/demo-mouse.gif)
-
-*完全滑鼠可操作性——畫面上每個按鍵提示，也都是可點的按鈕。*
-
-| ![腳本庫](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-library-zh.png) | ![執行表單](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-form-zh.png) |
-|:--:|:--:|
-| **腳本庫**——每個動作都在畫面上，滑鼠鍵盤皆可 | **執行表單**——從腳本自己的參數生成 |
-| ![加入腳本](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-zh.png) | ![腳本設定](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-zh.png) |
-| **加入腳本**——靜態偵測參數，勾選即納管 | **腳本設定**——參數、機密、組合、依賴 |
+<video src="https://github.com/user-attachments/assets/bd4f78ba-0a1f-4b73-b02e-bc1dc1d11c4c" controls></video>
 
 ## 它做什麼
 
@@ -48,6 +36,16 @@
 
 不需要為腳本做任何準備——不用重構，沒有設定檔要維護。AI 上週寫的腳本，和你去年寫完就忘的那支，啟動起來一模一樣。
 
+| ![腳本庫](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-library-zh.png) | ![執行表單](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-form-zh.png) |
+|:--:|:--:|
+| **腳本庫**——每個動作都在畫面上，滑鼠鍵盤皆可 | **執行表單**——從腳本自己的參數生成 |
+| ![加入腳本](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-zh.png) | ![腳本設定](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-zh.png) |
+| **加入腳本**——靜態偵測參數，勾選即納管 | **腳本設定**——參數、機密、組合、依賴 |
+
+<p align="center">
+  <img width="480" alt="只用滑鼠操作 skit——畫面上每個控制項都是可點擊的目標" src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/demo-mouse.gif"><br>
+  <em>完全滑鼠可操作性——畫面上每個按鍵提示，也都是可點的按鈕。</em>
+</p>
 
 ## 安裝
 

@@ -17,19 +17,7 @@ skit stores your Python scripts in one place and makes them painless to launch.
 
 **AI writes the scripts. skit gives them a home.**
 
-<video src="https://github.com/t41372/skit/raw/main/docs/assets/demo-en.mp4" controls></video>
-
-[▶ Watch the demo](https://github.com/t41372/skit/raw/main/docs/assets/demo-en.mp4)
-
-![Driving skit with the mouse alone — every control on screen is a click target](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/demo-mouse.gif)
-
-*Fully mouse operable — every key hint on screen is also a button.*
-
-| ![The library menu](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-library-en.png) | ![The run form](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-form-en.png) |
-|:--:|:--:|
-| **The library** — every action on screen, mouse or keyboard | **The run form** — generated from the script's own parameters |
-| ![Adding a script](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-en.png) | ![Script settings](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-en.png) |
-| **Adding a script** — parameters detected statically, tick to manage | **Script settings** — parameters, secrets, presets, dependencies |
+<video src="https://github.com/user-attachments/assets/65c9eed8-d6fa-4a16-836c-7017eb08bb9c" controls></video>
 
 ## What it does
 
@@ -48,6 +36,17 @@ skit stores your Python scripts in one place and makes them painless to launch.
 | CLI flags you forget ten minutes later, `input()` prompts, hard-coded constants meant to be edited by hand | Static analysis extracts them all into an interactive form — no code changes. Last-used values come prefilled; favorites save as presets. |
 
 Nothing to set up per script — no refactoring, no config to maintain. The script an AI wrote last week and the one you barely remember from last year launch the same way.
+
+| ![The library menu](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-library-en.png) | ![The run form](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-form-en.png) |
+|:--:|:--:|
+| **The library** — every action on screen, mouse or keyboard | **The run form** — generated from the script's own parameters |
+| ![Adding a script](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-en.png) | ![Script settings](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-en.png) |
+| **Adding a script** — parameters detected statically, tick to manage | **Script settings** — parameters, secrets, presets, dependencies |
+
+<p align="center">
+  <img width="480" alt="Driving skit with the mouse alone — every control on screen is a click target" src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/demo-mouse.gif"><br>
+  <em>Fully mouse operable — every key hint on screen is also a button.</em>
+</p>
 
 ## Install
 

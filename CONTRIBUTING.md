@@ -156,6 +156,19 @@ Tips when editing tapes:
 - Showing a new screen? Add a `Screenshot "/out/shot-<name>.png"` line to `shots.tape` and the
   matching rename in `record_demo.sh`, then reference it from both READMEs.
 
+### Inline video playback on GitHub
+
+The `<video>` tags in the READMEs point at **GitHub attachment URLs**
+(`github.com/user-attachments/assets/…`), not the repo files. GitHub serves repo-hosted mp4s
+as `application/octet-stream` with `nosniff`, so a raw `docs/assets/*.mp4` URL only downloads —
+it never plays inline. The mp4s themselves stay pipeline-generated in `docs/assets/`; the
+attachment URL is only how they get embedded. To refresh after regenerating a video: drag the
+new `docs/assets/demo-{en,zh}.mp4` into any issue/PR comment box, copy the
+`user-attachments/assets/…` URL GitHub produces, and swap it into that locale's `<video src>`
+(en → README.md, zh → README.zh-TW.md + README.zh-CN.md). The `▶ Watch the demo` link under
+each video still points at the repo file, as a fallback for renderers that strip `<video>`
+(e.g. PyPI).
+
 ### The mouse-operability GIF (`docs/assets/demo-mouse.gif`)
 
 One demo asset is **not** pipeline-generated: `docs/assets/demo-mouse.gif`, the short clip under the

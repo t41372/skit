@@ -15,19 +15,7 @@
 
 **AI 写脚本，skit 管脚本。**
 
-<video src="https://github.com/t41372/skit/raw/main/docs/assets/demo-zh.mp4" controls></video>
-
-[▶ 观看演示](https://github.com/t41372/skit/raw/main/docs/assets/demo-zh.mp4)
-
-![只用鼠标操作 skit——画面上每个控件都是可点击的目标](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/demo-mouse.gif)
-
-*完全鼠标可操作性——画面上每个按键提示，也都是可点的按钮。*
-
-| ![脚本库](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-library-zh.png) | ![执行表单](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-form-zh.png) |
-|:--:|:--:|
-| **脚本库**——每个动作都在画面上，鼠标键盘皆可 | **执行表单**——从脚本自己的参数生成 |
-| ![加入脚本](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-zh.png) | ![脚本设置](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-zh.png) |
-| **加入脚本**——静态检测参数，勾选即纳管 | **脚本设置**——参数、机密、组合、依赖 |
+<video src="https://github.com/user-attachments/assets/bd4f78ba-0a1f-4b73-b02e-bc1dc1d11c4c" controls></video>
 
 ## 它做什么
 
@@ -47,6 +35,17 @@
 | 命令行参数转头就忘、`input()` 一项项问、常量写死在源码里，改个值都得开编辑器 | 静态分析把参数统统读出来，变成一张交互表单——源码一行不动。上次的值自动带回；常用的存成组合（preset） |
 
 不需要为脚本做任何准备——不用重构，没有配置要维护。AI 上周写的脚本，和你去年写完就忘的那个，启动起来一模一样。
+
+| ![脚本库](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-library-zh.png) | ![执行表单](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-form-zh.png) |
+|:--:|:--:|
+| **脚本库**——每个动作都在画面上，鼠标键盘皆可 | **执行表单**——从脚本自己的参数生成 |
+| ![加入脚本](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-zh.png) | ![脚本设置](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-zh.png) |
+| **加入脚本**——静态检测参数，勾选即纳管 | **脚本设置**——参数、机密、组合、依赖 |
+
+<p align="center">
+  <img width="480" alt="只用鼠标操作 skit——画面上每个控件都是可点击的目标" src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/demo-mouse.gif"><br>
+  <em>完全鼠标可操作性——画面上每个按键提示，也都是可点的按钮。</em>
+</p>
 
 ## 安装
 
