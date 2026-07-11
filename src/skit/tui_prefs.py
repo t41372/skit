@@ -90,6 +90,14 @@ class PreferencesScreen(Screen[bool]):
                     gettext("Line-by-line prompts — plainest, best over slow terminals"),
                     value=config.load_form() == "plain",
                 )
+            yield Static(
+                gettext(
+                    "Used by terminal runs: `skit run` parameter prompts and the "
+                    "`skit add` review panel."
+                ),
+                classes="hint",
+            )
+
             yield Static(gettext("After a run (from this menu)"), classes="section")
             with RadioSet(id="pf-after"):
                 yield RadioButton(

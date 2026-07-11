@@ -12,10 +12,10 @@ import contextlib
 import os
 
 import pytest
-from textual.widgets import Checkbox, Input, Static
+from textual.widgets import Checkbox, Input, RadioSet, Static
 
 from skit import editor, metawriter, store, tui
-from skit.tui_add import AddReviewScreen, AddSourceScreen
+from skit.tui_add import AddReviewApp, AddReviewScreen, AddSourceScreen
 
 
 @pytest.fixture(autouse=True)
@@ -474,3 +474,58 @@ async def test_space_on_a_non_checkbox_focus_is_a_noop(tmp_path):
         screen.action_toggle_candidate()  # focus is the Input, not a Checkbox
         await pilot.pause()
         assert cb.value == before  # unchanged
+
+
+# ---------------------------------------------------------------------------
+# AddReviewApp: the CLI face of the panel (`skit add x.py` in a terminal)
+# ---------------------------------------------------------------------------
+
+
+async def test_add_review_app_prefills_from_flags_and_accepts(tmp_path):
+    """`skit add`'s flags land in the panel prefilled (still editable); accepting
+    commits the entry — deps AND --python written as PEP 723 — and exits with the
+    slug. (--python used to be silently dropped by the panel.)"""
+    p = _py(tmp_path, 'CITY = "x"\nprint(CITY)\n')
+    app = AddReviewApp(
+        p, name="flagged", description="from flags", deps=["rich>=13"], requires_python=">=3.11"
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, AddReviewScreen)
+        assert screen.query_one("#rv-name", Input).value == "flagged"
+        assert screen.query_one("#rv-desc", Input).value == "from flags"
+        assert screen.query_one("#rv-deps", Input).value == "rich>=13"
+        screen.action_accept()
+        await pilot.pause()
+    entry = store.resolve("flagged")
+    assert app.return_value == entry.slug
+    assert entry.meta.description == "from flags"
+    copy_text = (entry.dir / "script.py").read_text(encoding="utf-8")
+    assert "rich>=13" in copy_text
+    assert ">=3.11" in copy_text
+
+
+async def test_add_review_app_ref_prefill_and_cancel_leaves_store_untouched(tmp_path):
+    """--ref preselects the link radio; cancelling exits None and adds nothing."""
+    p = _py(tmp_path, "print(1)\n")
+    app = AddReviewApp(p, reference=True)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, AddReviewScreen)
+        assert screen.query_one("#rv-mode", RadioSet).pressed_index == 1
+        screen.action_cancel()
+        await pilot.pause()
+    assert app.return_value is None
+    assert store.list_entries() == []
+
+
+def test_run_add_review_returns_the_apps_result(tmp_path, monkeypatch):
+    """The blocking CLI entry: builds the app around the panel and hands back run()'s
+    slug verbatim (run() itself needs a terminal — the app is pilot-tested above)."""
+    from skit import tui_add
+
+    p = _py(tmp_path, "print(1)\n")
+    monkeypatch.setattr(tui_add.AddReviewApp, "run", lambda self: "slug-sentinel")
+    assert tui_add.run_add_review(p, name="n") == "slug-sentinel"

@@ -136,10 +136,10 @@ FORM_STYLES = ("tui", "plain")
 
 
 def load_form() -> str:
-    """Interactive-form style: "tui" (inline mini-form, the default) or "plain" (line
-    prompts). Consumed by the CLI's parameter collection (`skit run` without values);
-    the TUI workbench always uses its own full form screen, and `skit add`'s
-    name/description questions are plain prompts regardless."""
+    """Interactive-form style: "tui" (inline mini-form / review panel, the default) or
+    "plain" (line prompts). Consumed by the CLI's interactive flows — `skit run`
+    parameter collection and `skit add`'s review panel; the TUI workbench always uses
+    its own full screens."""
     value = load_config().get("form", "")  # pragma: no mutate — normalized below
     return value if value in FORM_STYLES else "tui"
 

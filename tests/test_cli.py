@@ -20,7 +20,18 @@ import pytest
 from rich.markup import escape
 from typer.testing import CliRunner
 
-from skit import analyzer, argstate, cli, flows, launcher, metawriter, promptform, shim, store
+from skit import (
+    analyzer,
+    argstate,
+    cli,
+    config,
+    flows,
+    launcher,
+    metawriter,
+    promptform,
+    shim,
+    store,
+)
 from skit.metawriter import ParamSpec
 from skit.paths import values_dir
 
@@ -80,6 +91,64 @@ def test_add_python_copy(tmp_path):
     result = runner.invoke(cli.app, ["add", str(p), "--name", "hi"])
     assert result.exit_code == 0, result.output
     assert store.resolve("hi").meta.mode == "copy"
+
+
+def test_add_interactive_tui_form_opens_review_panel(tmp_path, monkeypatch):
+    """In a real terminal with form=tui, `skit add x.py` hosts the SAME review panel
+    the TUI's `a` opens; the flags ride along as prefills and the panel's slug feeds
+    the printed summary. (Lazy import — patch the attribute on skit.tui_add.)"""
+    p = _py(tmp_path, "print(1)\n")
+    seen: dict[str, object] = {}
+
+    def fake_panel(path, **kwargs):
+        seen["path"] = path
+        seen.update(kwargs)
+        return store.add_python(path, name="panelled").slug
+
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr("skit.tui_add.run_add_review", fake_panel)
+    result = runner.invoke(cli.app, ["add", str(p), "--name", "hint", "--ref"])
+    assert result.exit_code == 0, result.output
+    assert seen["name"] == "hint"
+    assert seen["reference"] is True
+    assert "panelled" in result.output  # the summary reflects the panel's entry
+
+
+def test_add_interactive_panel_cancel_exits_130(tmp_path, monkeypatch):
+    """Esc in the panel = the form-cancel contract: exit 130, nothing added."""
+    p = _py(tmp_path, "print(1)\n")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr("skit.tui_add.run_add_review", lambda path, **kw: None)
+    result = runner.invoke(cli.app, ["add", str(p)])
+    assert result.exit_code == 130
+    assert "Cancelled" in result.output
+    assert store.list_entries() == []
+
+
+def test_add_interactive_plain_form_keeps_line_prompts(tmp_path, monkeypatch):
+    """form=plain opts out of the panel — the line-prompt path runs instead."""
+    p = _py(tmp_path, "print(1)\n")
+    config.save_form("plain")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    hit = {}
+    monkeypatch.setattr("skit.tui_add.run_add_review", lambda *a, **kw: hit.setdefault("panel", 1))
+    result = runner.invoke(cli.app, ["add", str(p), "--name", "plainly"])
+    assert result.exit_code == 0, result.output
+    assert "panel" not in hit
+    assert store.resolve("plainly").meta.mode == "copy"
+
+
+def test_add_term_dumb_keeps_line_prompts(tmp_path, monkeypatch):
+    """TERM=dumb can't host a Textual panel — same opt-out as the run form."""
+    p = _py(tmp_path, "print(1)\n")
+    monkeypatch.setenv("TERM", "dumb")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    hit = {}
+    monkeypatch.setattr("skit.tui_add.run_add_review", lambda *a, **kw: hit.setdefault("panel", 1))
+    result = runner.invoke(cli.app, ["add", str(p), "--name", "dumbly"])
+    assert result.exit_code == 0, result.output
+    assert "panel" not in hit
+    assert store.resolve("dumbly").meta.mode == "copy"
 
 
 def test_add_python_reference_skips_onboarding(tmp_path):

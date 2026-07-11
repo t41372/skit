@@ -536,16 +536,40 @@ def add(
                         gettext("Can't read %(path)s: %(error)s")
                         % {"path": str(resolved), "error": exc.strerror or str(exc)}
                     ) from exc
-                entry, summary_deps, summary_managed, summary_secrets = _onboard_python(
-                    Path(path),
-                    text,
-                    name=name,
-                    description=description,
-                    ref=ref,
-                    deps_opt=dep,
-                    python_opt=python,
-                    no_input=no_input,
-                )
+                # Interactive + mini-form style: host the SAME review panel the TUI's
+                # `a` opens (flags prefill it). Pipes/CI/--no-input/form=plain keep the
+                # line-prompt path — the non-interactive contract is untouched.
+                if (
+                    not no_input
+                    and _is_interactive()
+                    and os.environ.get("TERM") != "dumb"
+                    and config.load_form() == "tui"
+                ):
+                    from .tui_add import run_add_review
+
+                    slug = run_add_review(
+                        Path(path),
+                        name=name,
+                        description=description,
+                        reference=ref,
+                        deps=dep,
+                        requires_python=python or "",
+                    )
+                    if slug is None:
+                        console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
+                        raise typer.Exit(EXIT_CANCELLED)
+                    entry = store.resolve(slug)
+                else:
+                    entry, summary_deps, summary_managed, summary_secrets = _onboard_python(
+                        Path(path),
+                        text,
+                        name=name,
+                        description=description,
+                        ref=ref,
+                        deps_opt=dep,
+                        python_opt=python,
+                        no_input=no_input,
+                    )
     except store.StoreError as exc:
         raise _fail(str(exc), 1) from exc
     _print_add_summary(entry, summary_deps, summary_managed, summary_secrets)

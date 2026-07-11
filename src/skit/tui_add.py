@@ -4,6 +4,10 @@ The review panel is one always-editable surface — no wizard sequence to march 
 Enter accepts everything as reviewed. Detection honesty rules render here: signal-
 driven checkbox defaults, the accumulator warning, filename-literal hints, and the
 "the script declares its own dependencies" read-only variant.
+
+The panel has two faces: pushed from the Library (`a`), and hosted alone by
+`AddReviewApp` when a terminal `skit add x.py` runs interactively — same screen, so
+the CLI and the TUI can never drift apart.
 """
 
 from __future__ import annotations
@@ -13,13 +17,13 @@ from typing import override
 
 from rich.markup import escape
 from textual import on
-from textual.app import ComposeResult
+from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Checkbox, Input, RadioButton, RadioSet, Static
 
-from . import analyzer, argspec, editor, metawriter, pep723, store, tui_footer
+from . import analyzer, argspec, editor, metawriter, pep723, store, theme, tui_footer
 from .i18n import gettext
 
 
@@ -156,14 +160,34 @@ class AddReviewScreen(Screen[str | None]):
     AddReviewScreen #review-keys { dock: bottom; height: 1; color: $text-muted; padding: 0 1; }
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        reference: bool = False,
+        deps: list[str] | None = None,
+        requires_python: str = "",
+    ) -> None:
+        """The keyword arguments prefill the panel (the CLI face passes `skit add`'s
+        flags through them); everything stays editable on screen."""
         super().__init__()
         self._path: Path = path
         self._text: str = path.read_text(encoding="utf-8", errors="replace")
         self._analysis: analyzer.Analysis = analyzer.analyze(self._text)
+        self._requires_python = requires_python
         # Survives the edit→rescan recompose: the rescan refreshes DETECTION, it must
         # never throw away what the user already typed into the panel.
         self._overrides: dict[str, str] = {}
+        if name:
+            self._overrides["name"] = name
+        if description:
+            self._overrides["desc"] = description
+        if reference:
+            self._overrides["mode"] = "1"
+        if deps:
+            self._overrides["deps"] = ", ".join(deps)
 
     def on_mount(self) -> None:
         self.query_one("#review-body").border_title = gettext("Add %(name)s") % {
@@ -334,6 +358,7 @@ class AddReviewScreen(Screen[str | None]):
                 mode="reference" if reference else "copy",
                 description=desc,
                 dependencies=deps or None,
+                requires_python=self._requires_python,
             )
         except store.StoreError as exc:
             self.notify(str(exc), severity="error")
@@ -359,3 +384,61 @@ class AddReviewScreen(Screen[str | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+class AddReviewApp(App[str | None]):
+    """`skit add x.py` in an interactive terminal: the SAME review panel the TUI's
+    `a` opens, hosted alone. Exits with the new entry's slug, or None on cancel."""
+
+    ENABLE_COMMAND_PALETTE = False
+
+    def __init__(
+        self,
+        path: Path,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        reference: bool = False,
+        deps: list[str] | None = None,
+        requires_python: str = "",
+    ) -> None:
+        super().__init__()
+        self._screen = AddReviewScreen(
+            path,
+            name=name,
+            description=description,
+            reference=reference,
+            deps=deps,
+            requires_python=requires_python,
+        )
+
+    @override
+    def get_css_variables(self) -> dict[str, str]:
+        # Same bootstrap as the Library app: the first stylesheet parse runs before
+        # on_mount activates the theme and would die on $skit-box-*.
+        return {**super().get_css_variables(), **theme.BOX_VARIABLES}
+
+    def on_mount(self) -> None:
+        self.register_theme(theme.CLAUDE_THEME)
+        self.theme = "skit-claude"
+        self.push_screen(self._screen, self.exit)
+
+
+def run_add_review(
+    path: Path,
+    *,
+    name: str | None = None,
+    description: str | None = None,
+    reference: bool = False,
+    deps: list[str] | None = None,
+    requires_python: str = "",
+) -> str | None:
+    """Blocking CLI entry to the review panel. Returns the new slug, or None."""
+    return AddReviewApp(
+        path,
+        name=name,
+        description=description,
+        reference=reference,
+        deps=deps,
+        requires_python=requires_python,
+    ).run()
