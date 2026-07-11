@@ -10,9 +10,15 @@ from skit.metawriter import ParamSpec
 
 
 def spec(
-    name: str, *, kind: str = "const", type: str = "str", order: int = -1, secret: bool = False
+    name: str,
+    *,
+    kind: str = "const",
+    type: str = "str",
+    order: int = -1,
+    secret: bool = False,
+    prompt: str = "",
 ) -> ParamSpec:
-    return ParamSpec(name=name, kind=kind, type=type, order=order, secret=secret)
+    return ParamSpec(name=name, kind=kind, type=type, order=order, secret=secret, prompt=prompt)
 
 
 SCRIPT = '''"""Docstring stays."""
@@ -68,9 +74,9 @@ def _run_injected(source: str, stdin: str = "") -> str:
 
 def test_input_queue_by_order():
     out = shim.inject(SCRIPT, [spec("input-1", kind="input", order=0)], {"input-1": "Alice"})
-    # Phase 3: input() calls are not rewritten in-place; instead a single-line intercept queue
-    # preamble is inserted.
-    assert "input(" in out
+    # 3a: the managed call site itself is rewritten (input(...) -> _skit_i[K](...)) and a
+    # single-line preamble defines the one-shot per-call-site overrides.
+    assert 'who = _skit_i[0]("Your name: ")' in out
     assert "# skit:shim" in out
     stdout = _run_injected(out)
     assert "Alice Taipei 3" in stdout
@@ -151,6 +157,29 @@ def test_bad_type_coercion_raises():
         shim.inject(SCRIPT, [spec("RETRIES", type="int")], {"RETRIES": "not-a-number"})
 
 
+def test_bad_type_coercion_raises_the_value_subclass_not_plain_shim_error():
+    # A bad value is a distinct failure mode from a missing/drifted target: the target (RETRIES)
+    # WAS found; only the supplied value doesn't fit its declared int type. Callers (the CLI) need
+    # to tell the two apart to avoid misdiagnosing a bad input as source drift, so this must raise
+    # the ShimValueError subclass specifically, carrying the value/type/param for the caller's
+    # message -- not just the generic base ShimError raised for a genuinely missing target.
+    with pytest.raises(shim.ShimValueError) as exc_info:
+        shim.inject(SCRIPT, [spec("RETRIES", type="int")], {"RETRIES": "not-a-number"})
+    exc = exc_info.value
+    assert isinstance(exc, shim.ShimError)  # still a ShimError: existing `except ShimError` holds
+    assert exc.value == "not-a-number"
+    assert exc.type_name == "int"
+    assert exc.param_name == "RETRIES"
+
+
+def test_drifted_target_raises_plain_shim_error_not_value_subclass():
+    # The converse: a genuinely missing target must NOT be reported as ShimValueError (that would
+    # wrongly suggest to a caller that the value, not the target, was the problem).
+    with pytest.raises(shim.ShimError) as exc_info:
+        shim.inject(SCRIPT, [spec("GONE")], {"GONE": "x"})
+    assert not isinstance(exc_info.value, shim.ShimValueError)
+
+
 def test_multiline_value_span():
     # Parenthesised literal: the AST span covers the literal only; the parens are preserved
     # (semantically equivalent).
@@ -188,6 +217,65 @@ def test_input_order_beyond_calls_is_drift():
         shim.inject(src, [spec("input-1", kind="input", order=5)], {"input-1": "x"})
 
 
+# ---------- inject: duplicate-prompt specs must never double-bind onto one call site (regression) ----------
+
+
+def test_inject_two_identical_prompts_one_deleted_raises_cleanly_never_corrupts():
+    # Regression: input-1 and input-2 both stored prompt "Go? "; the first of the two input()
+    # calls was deleted, leaving one current call site with that prompt. Pre-fix, both specs
+    # exact-matched onto that single call site and inject() spliced two replacements over the
+    # same `input` callee span, producing corrupt source like `x = _skit_i[0]_i[0]("Go? ")` that
+    # fails compile(). The surplus spec must now be reported as drift (ShimError), and the output
+    # must never contain a doubled callee.
+    src = 'first = input("Go? ")\nsecond = input("Go? ")\nprint(first, second)\n'
+    edited = src.replace('first = input("Go? ")\n', "")  # delete the first call
+    specs = [
+        spec("input-1", kind="input", order=0, prompt="Go? "),
+        spec("input-2", kind="input", order=1, prompt="Go? "),
+    ]
+    with pytest.raises(shim.ShimError):
+        shim.inject(edited, specs, {"input-1": "AAA", "input-2": "BBB"})
+
+
+def test_inject_duplicate_prompt_winner_only_still_injects_and_compiles():
+    # The healthy end of the same scenario: once reconcile has dropped the surplus spec (as it now
+    # correctly does, see test_reconcile), injecting only the surviving spec must still work
+    # normally and produce compilable output with a single, non-doubled callee.
+    src = 'first = input("Go? ")\nsecond = input("Go? ")\nprint(first, second)\n'
+    edited = src.replace('first = input("Go? ")\n', "")
+    out = shim.inject(
+        edited, [spec("input-1", kind="input", order=0, prompt="Go? ")], {"input-1": "AAA"}
+    )
+    assert "_skit_i[0]_i[0]" not in out
+    compile(out, "<test>", "exec")
+
+
+def test_inject_specs_sharing_the_same_order_never_double_bind():
+    # Defense-in-depth at the shim layer itself: two ParamSpec entries that carry the identical
+    # `order` (e.g. a hand-edited or otherwise corrupted [tool.skit] block) look up the exact same
+    # _match_inputs binding and would both try to queue a replacement over the same input() callee
+    # span. inject() must refuse to emit the second, overlapping replacement -- reporting drift via
+    # ShimError instead of corrupting the temp copy.
+    src = 'x = input("Go? ")\nprint(x)\n'
+    specs = [
+        spec("input-1", kind="input", order=0, prompt="Go? "),
+        spec("input-2", kind="input", order=0, prompt="Go? "),
+    ]
+    with pytest.raises(shim.ShimError):
+        shim.inject(src, specs, {"input-1": "AAA", "input-2": "BBB"})
+
+
+def test_inject_triple_duplicate_specs_same_order_never_double_bind():
+    src = 'x = input("Go? ")\nprint(x)\n'
+    specs = [
+        spec("input-1", kind="input", order=0, prompt="Go? "),
+        spec("input-2", kind="input", order=0, prompt="Go? "),
+        spec("input-3", kind="input", order=0, prompt="Go? "),
+    ]
+    with pytest.raises(shim.ShimError):
+        shim.inject(src, specs, {"input-1": "AAA", "input-2": "BBB", "input-3": "CCC"})
+
+
 # ---------- _insert_preamble: empty body inserts at end ----------
 
 
@@ -215,12 +303,114 @@ def test_multiline_span_replacement():
     compile(out, "<test>", "exec")
 
 
+# ---------- _physical_lines: AST-line-boundary characters str.splitlines() over-splits on ----------
+
+
+def test_physical_lines_matches_splitlines_on_ordinary_text():
+    """On text with only real newlines, _physical_lines must agree with str.splitlines(keepends=
+    True) exactly (empty input, no trailing newline, and a trailing newline all round-trip)."""
+    for text in ("", "a", "a\nb", "a\nb\n", "a\r\nb\rc\n"):
+        assert shim._physical_lines(text) == text.splitlines(keepends=True)
+
+
+def test_const_injection_survives_form_feed_between_targets():
+    """A form-feed page break (e.g. an Emacs section marker) sits on its own physical line as far
+    as str.splitlines() is concerned, but the tokenizer/AST do NOT count it as a line break — so
+    indexing lines[lineno - 1] from splitlines() output lands on the wrong physical line entirely.
+    Reproduces the corruption: PORT's replacement used to land one physical line early (the form
+    feed's own splitlines() "line"), producing `\\x0c\\n9090PORT = 8080` and a SyntaxError."""
+    src = 'HOST = "localhost"\n\x0c\nPORT = 8080\nprint(HOST, PORT)\n'
+    out = shim.inject(src, [spec("PORT", type="int")], {"PORT": "9090"})
+    assert out == 'HOST = "localhost"\n\x0c\nPORT = 9090\nprint(HOST, PORT)\n'
+    compile(out, "<test>", "exec")  # used to raise SyntaxError before the fix
+
+
+def test_const_injection_survives_u2028_inside_earlier_string_literal():
+    """U+2028 (LINE SEPARATOR) is an ordinary character inside a Python string literal -- it does
+    not end the string, and the tokenizer does not treat it as a line break. str.splitlines(),
+    however, always treats it as one, so a line count computed that way silently disagrees with the
+    AST from the very next statement onward."""
+    src = 'MSG = "hi\u2028there"\nPORT = 8080\nprint(MSG, PORT)\n'
+    out = shim.inject(src, [spec("PORT", type="int")], {"PORT": "9090"})
+    assert out == 'MSG = "hi\u2028there"\nPORT = 9090\nprint(MSG, PORT)\n'
+    compile(out, "<test>", "exec")
+
+
+def test_preamble_insertion_survives_form_feed_inside_docstring():
+    """Reproduces the silent-failure half of the finding: a form feed embedded inside the module
+    docstring makes str.splitlines() split the docstring into two entries, so the *_insert_preamble*
+    index (computed from the true, 1-entry-per-docstring AST line count) lands one entry early --
+    squarely inside the docstring's text. The result still compiles (it's still valid Python), but
+    input() is never actually overridden, and the queued value is silently dropped with no error at
+    all -- the worst kind of failure this fix exists to prevent."""
+    src = '"""line one\x0cline two"""\nname = input("who: ")\nprint(name)\n'
+    out = shim.inject(src, [spec("input-1", kind="input", order=0)], {"input-1": "Bob"})
+    # The docstring must be left intact as a single statement (the preamble must NOT have landed
+    # inside it): it must still be the true first line, unsplit, before any skit-injected text.
+    assert out.startswith('"""line one\x0cline two"""\n')
+    assert "# skit:shim" in out
+    compile(out, "<test>", "exec")
+    assert "Bob" in _run_injected(out)  # the value actually reaches the script, not stdin
+
+
+# ---------- 3a: input values are bound to their prompt/call site, not runtime call order ----------
+
+
+def test_input_value_follows_prompt_despite_runtime_call_order_diverging_from_source_order():
+    """Reproduces the major finding at shim.py:233: a function's input() is defined ABOVE a
+    top-level input() in source order, but only invoked (at runtime) AFTER it runs. The old design
+    queued/consumed values by a single global runtime counter keyed to *source* order, so the
+    top-level call (which actually runs first) stole the function's queued value and vice versa --
+    silently swapping a secret into the wrong variable. Binding by call site (not a shared counter)
+    must keep each value with its own question regardless of execution order."""
+    src = (
+        "def get_password():\n"
+        '    return input("Password: ")\n'
+        "\n"
+        'username = input("Username: ")\n'
+        "password = get_password()\n"
+        "print(username, password)\n"
+    )
+    specs = [
+        spec("input-1", kind="input", order=0, secret=True),  # "Password: ", defined first
+        spec("input-2", kind="input", order=1),  # "Username: ", defined second, RUNS first
+    ]
+    out = shim.inject(src, specs, {"input-1": "SUPERSECRET", "input-2": "alice"})
+    stdout = _run_injected(out)
+    assert "alice SUPERSECRET" in stdout  # username=alice, password=SUPERSECRET — not swapped
+    assert "SUPERSECRET" not in stdout.replace("alice SUPERSECRET", "")  # only echoed as ***
+    assert "Password: ***" in stdout
+    assert "Username: alice" in stdout
+
+
+def test_input_value_follows_prompt_after_an_earlier_input_is_deleted():
+    """Reproduces the reconcile/shim "positional key is unstable under source edits" gap: a stored
+    definition for the SECOND question ("Password: ", order=1, secret) must keep landing on the
+    Password prompt even after the user deletes the FIRST input() call from the source, which shifts
+    every remaining call's bare position down by one. Prompt-based matching (3a) resolves this
+    without needing the caller to re-add anything."""
+    original_order = 1  # as recorded when both input() calls existed
+    edited_src = 'password = input("Password: ")\nprint("got", password)\n'  # first input() deleted
+    stored_specs = [
+        spec("input-2", kind="input", order=original_order, secret=True, prompt="Password: ")
+    ]
+    out = shim.inject(edited_src, stored_specs, {"input-2": "hunter2"})
+    stdout = _run_injected(out)
+    assert "got hunter2" in stdout
+    assert "Password: ***" in stdout  # still masked as a secret, still the right prompt
+
+
 # ---------- write_injected: exception during write cleans up the temp file ----------
 
 
 def test_write_injected_cleanup_on_error(tmp_path, monkeypatch):
     """If the write fails, the temp file must be deleted (no orphan files)."""
     import os
+    import tempfile
+
+    # 3b moved the primary write target to the OS temp directory; redirect it to tmp_path so the
+    # glob below still observes exactly what write_injected did (hermetic, no real /tmp writes).
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
 
     def bad_fdopen(fd, *a, **kw):
         os.close(fd)
@@ -232,3 +422,76 @@ def test_write_injected_cleanup_on_error(tmp_path, monkeypatch):
     # No .injected-*.py file should remain
     leftovers = list(tmp_path.glob(".injected-*.py"))
     assert leftovers == []
+
+
+# ---------- write_injected: fd leak when os.chmod raises before fdopen (nit fix) ----------
+
+
+def test_write_injected_closes_fd_when_chmod_raises(tmp_path, monkeypatch):
+    """If os.chmod raises before the fd is handed to fdopen, the fd must still be closed --
+    otherwise it leaks for the life of the process (repeated runs would accumulate leaked fds)."""
+    import os
+    import tempfile
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    captured: dict[str, int] = {}
+    real_mkstemp = tempfile.mkstemp
+
+    def spy_mkstemp(*a, **kw):
+        fd, path = real_mkstemp(*a, **kw)
+        captured["fd"] = fd
+        return fd, path
+
+    monkeypatch.setattr(tempfile, "mkstemp", spy_mkstemp)
+
+    def bad_chmod(path, mode):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(os, "chmod", bad_chmod)
+
+    with pytest.raises(OSError, match="permission denied"):
+        shim.write_injected(tmp_path, "print(1)\n")
+
+    # If write_injected leaked the fd, this close would succeed; a real close-on-error means the
+    # fd is already invalid, so closing it again must fail with EBADF.
+    with pytest.raises(OSError, match="Bad file descriptor"):
+        os.close(captured["fd"])
+    assert list(tmp_path.glob(".injected-*.py")) == []
+
+
+# ---------- write_injected: 3b — the temp file no longer lives in the persistent store ----------
+
+
+def test_write_injected_lands_outside_entry_dir(tmp_path):
+    """The injected copy (which may contain plaintext secret values) must land in the OS temp
+    directory, not next to the persistent script store: a SIGKILL/OOM/power-loss before the
+    caller's `finally: unlink()` runs must never leave a plaintext-secret file sitting forever in
+    entry_dir, since nothing skit owns ever sweeps it (unlike the OS's own temp directory)."""
+    path = shim.write_injected(tmp_path, "print(1)\n")
+    try:
+        assert path.parent != tmp_path
+        assert not (tmp_path / path.name).exists()
+        assert path.name.startswith(".injected-")
+        assert path.read_text(encoding="utf-8") == "print(1)\n"
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_write_injected_falls_back_to_entry_dir_if_os_temp_unavailable(tmp_path, monkeypatch):
+    """entry_dir is kept as a defense-in-depth fallback: if the OS temp directory can't be used
+    (e.g. TMPDIR misconfigured), the run must still succeed rather than fail outright."""
+    import tempfile
+
+    real_mkstemp = tempfile.mkstemp
+
+    def flaky_mkstemp(*args, **kwargs):
+        if "dir" not in kwargs:
+            raise OSError("no system temp directory available")
+        return real_mkstemp(*args, **kwargs)
+
+    monkeypatch.setattr(tempfile, "mkstemp", flaky_mkstemp)
+    path = shim.write_injected(tmp_path, "print(1)\n")
+    try:
+        assert path.parent == tmp_path
+    finally:
+        path.unlink(missing_ok=True)

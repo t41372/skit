@@ -4,31 +4,24 @@
 - File shape: [values] (last-used), extra_args, [presets.<name>] (named presets).
 - **C3 is enforced structurally here**: every write entry point requires secret_names, and any key
   in that list is stripped before it hits disk, so a secret value can never appear in a state file
-  (there are tests for this).
-- The value resolution order (PLAN §4.2) is implemented by resolve_defaults():
-  preset > last-used > definition default.
-  ("This run's form input" has the highest priority; it happens in the presentation layer and does
-  not pass through this module.)
+  (there are tests for this). This holds for *new* writes; it says nothing about a value that was
+  written while the parameter was still public. purge_secret() retroactively scrubs that plaintext
+  once a parameter transitions to secret, and save_last() also drops any now-secret key left over
+  from before, even on calls that carry no new value for it — so nothing written while a parameter
+  was public can outlive it becoming secret.
+- Value resolution (this run's input > preset > last-used > definition default) lives in
+  flows.prefill; this module only stores and strips.
 """
 
 from __future__ import annotations
 
 import contextlib
 import tomllib
-from collections.abc import Iterable, Sequence
-from typing import Any, Protocol
+from collections.abc import Iterable
+from typing import Any
 
 from .atomic import atomic_write_toml
 from .paths import values_dir
-
-
-class HasNameDefault(Protocol):
-    """The minimal interface resolve_defaults needs (metawriter.ParamSpec satisfies it)."""
-
-    @property
-    def name(self) -> str: ...
-    @property
-    def default(self) -> str | int | float | bool | None: ...
 
 
 def _load_doc(slug: str) -> dict[str, Any]:
@@ -53,19 +46,17 @@ def _strip_secrets(values: dict[str, str], secret_names: Iterable[str]) -> dict[
 
 
 def load_state(slug: str) -> dict[str, Any]:
-    """Return {"values": {…}, "extra_args": […], "presets": {name: {…}}}."""
+    """Return {"values": {…}, "extra_args": […], "presets": {name: {…}}, "last_run": {…}}.
+
+    last_run is {"at": ISO-8601 str, "exit": int} after the first recorded run, else {}.
+    """
     doc = _load_doc(slug)
     return {
         "values": dict(doc.get("values", {})),
         "extra_args": list(doc.get("extra_args", [])),
         "presets": {k: dict(v) for k, v in doc.get("presets", {}).items()},
+        "last_run": dict(doc.get("last_run", {})),
     }
-
-
-def load_last(slug: str) -> dict[str, Any]:
-    """Compatibility API: return only the last-used portion."""
-    state = load_state(slug)
-    return {"values": state["values"], "extra_args": state["extra_args"]}
 
 
 def save_last(
@@ -75,12 +66,24 @@ def save_last(
     extra_args: list[str] | None = None,
     secret_names: Iterable[str] = (),
 ) -> None:
-    """Remember last-used (read-modify-write, keeping presets). Secret keys are stripped (C3)."""
+    """Remember last-used (read-modify-write, keeping presets). Secret keys are stripped (C3).
+
+    None means "no new data — leave the stored value alone"; an EMPTY dict/list means
+    "the user cleared it" and erases the stored value. (Folding those two into one falsy
+    check made cleared extra args resurrect forever: the form saved nothing, the next
+    run re-read the old value, reused it, and wrote it back.)
+
+    Even on a call that carries no new values, any name in secret_names is dropped from
+    the previously-stored values — a value saved while a parameter was public must not
+    survive on disk after it becomes secret.
+    """
     doc = _load_doc(slug)
-    clean = _strip_secrets(values or {}, secret_names)
-    if clean:
-        doc["values"] = clean
-    if extra_args:
+    banned = set(secret_names)
+    if values is not None:
+        doc["values"] = _strip_secrets(values, banned)
+    elif banned:
+        doc["values"] = _strip_secrets(doc.get("values", {}), banned)
+    if extra_args is not None:
         doc["extra_args"] = extra_args
     _save_doc(slug, doc)
 
@@ -111,26 +114,50 @@ def delete_preset(slug: str, preset: str) -> bool:
     return True
 
 
-def resolve_defaults(
-    specs: Sequence[HasNameDefault], slug: str, preset: str | None = None
-) -> dict[str, str]:
-    """Compute the pre-filled value for each parameter in the run form:
-    preset > last-used > definition default.
+def purge_secret(slug: str, names: Iterable[str]) -> set[str]:
+    """Retroactively scrub plaintext for parameters that have just become secret.
 
-    specs are metawriter.ParamSpec (or any object with name/default attributes).
-    Returns a str-valued map; parameters with no source at all are absent from the map.
-    A non-existent preset is treated as no preset (the caller should validate and error first).
+    C3 (see module docstring) only stops *new* writes; a value stored while a parameter was still
+    public stays on disk until something removes it. Call this once, at the moment a parameter
+    transitions to secret, to purge that name from last-used [values] and from every
+    [presets.*] entry for this slug.
+
+    Returns the subset of names that actually had a stored value removed (from either [values] or
+    any preset), so callers can tell the user what was cleaned up. Passing an empty names is a
+    no-op that touches nothing on disk.
     """
-    state = load_state(slug)
-    names = {spec.name for spec in specs}
-    out: dict[str, str] = {}
-    for spec in specs:
-        if spec.default is not None:
-            out[spec.name] = str(spec.default)
-    out.update({k: v for k, v in state["values"].items() if k in names})
-    if preset:
-        out.update({k: v for k, v in state["presets"].get(preset, {}).items() if k in names})
-    return out
+    banned = set(names)
+    if not banned:
+        return set()
+    doc = _load_doc(slug)
+    removed: set[str] = set()
+
+    values = dict(doc.get("values", {}))
+    removed |= banned & values.keys()
+    doc["values"] = _strip_secrets(values, banned)
+
+    presets = dict(doc.get("presets", {}))
+    new_presets: dict[str, dict[str, str]] = {}
+    for name, preset_values in presets.items():
+        removed |= banned & preset_values.keys()
+        cleaned = _strip_secrets(preset_values, banned)
+        # Drop a preset that held only the now-secret param, mirroring delete_preset — an empty
+        # [presets.<name>] table would otherwise linger and still validate for `run --preset`.
+        if cleaned:
+            new_presets[name] = cleaned
+    doc["presets"] = new_presets
+
+    _save_doc(slug, doc)
+    return removed
+
+
+def record_run(slug: str, exit_code: int, *, at: str) -> None:
+    """Remember when the entry last ran and how it exited (Library sort order, detail pane,
+    and the r-rerun context key all read this). Stored as a table — a bare `last_exit = 0`
+    top-level key would be dropped by _save_doc's empty-section pruning (0 is falsy)."""
+    doc = _load_doc(slug)
+    doc["last_run"] = {"at": at, "exit": exit_code}
+    _save_doc(slug, doc)
 
 
 def forget(slug: str) -> None:

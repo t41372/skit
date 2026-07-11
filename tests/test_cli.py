@@ -11,13 +11,18 @@
 
 from __future__ import annotations
 
+import dataclasses
+import os
+import sys
 from pathlib import Path
 
 import pytest
+from rich.markup import escape
 from typer.testing import CliRunner
 
-from skit import analyzer, argstate, cli, launcher, metawriter, shim, store
+from skit import analyzer, argstate, cli, flows, launcher, metawriter, promptform, shim, store
 from skit.metawriter import ParamSpec
+from skit.paths import values_dir
 
 runner = CliRunner()
 
@@ -122,7 +127,8 @@ def test_add_cmd_with_params(tmp_path):
 def test_add_with_explicit_deps_records(tmp_path):
     p = _py(tmp_path, "import requests\nprint(requests)\n")
     result = runner.invoke(
-        cli.app, ["add", str(p), "--name", "r", "--deps", "requests, rich", "--no-input"]
+        cli.app,
+        ["add", str(p), "--name", "r", "--dep", "requests", "--dep", "rich", "--no-input"],
     )
     assert result.exit_code == 0, result.output
 
@@ -132,6 +138,43 @@ def test_add_name_conflict_errors(tmp_path):
     runner.invoke(cli.app, ["add", str(p), "--name", "dup"])
     result = runner.invoke(cli.app, ["add", str(p), "--name", "dup"])
     assert result.exit_code == 1
+
+
+def test_add_missing_path_clean_error_not_traceback(tmp_path):
+    # Regression: the read used to happen inside a try that only caught store.StoreError, so a
+    # missing path's FileNotFoundError escaped as a bare traceback instead of a clean message.
+    missing = tmp_path / "typo" / "path.py"
+    result = runner.invoke(cli.app, ["add", str(missing)])
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "File not found" in result.output
+
+
+def test_add_directory_path_clean_error_not_traceback(tmp_path):
+    # A directory raises IsADirectoryError from read_text; must be reported the same clean way
+    # as a missing file, not crash with a traceback.
+    d = tmp_path / "adir.py"
+    d.mkdir()
+    result = runner.invoke(cli.app, ["add", str(d)])
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "File not found" in result.output
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root bypasses file perms")
+def test_add_unreadable_file_clean_error_not_traceback(tmp_path):
+    # An existing-but-unreadable file raises PermissionError from read_text; also must be reported
+    # cleanly (a distinct message from "File not found", since the path does exist).
+    p = _py(tmp_path, "print(1)\n")
+    p.chmod(0o000)
+    try:
+        result = runner.invoke(cli.app, ["add", str(p)])
+    finally:
+        p.chmod(0o644)  # restore so tmp_path cleanup can remove it
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "Can't read" in result.output
 
 
 def test_add_onboards_params_non_interactive_skips(tmp_path):
@@ -165,6 +208,98 @@ def test_list_json(tmp_path):
     result = runner.invoke(cli.app, ["list", "--json"])
     assert result.exit_code == 0
     assert '"slug"' in result.output
+
+
+def test_list_table_marks_missing_target(tmp_path):
+    p = _py(tmp_path, "print(1)\n")
+    entry = store.add_python(p, name="gone")
+    entry.script_path.unlink()
+    result = runner.invoke(cli.app, ["list"])
+    assert result.exit_code == 0
+    assert "missing" in result.output  # the path itself may be truncated by Rich's column width
+
+
+def test_list_table_does_not_mark_healthy_or_command_entries(tmp_path):
+    store.add_python(_py(tmp_path, "print(1)\n"), name="healthy")
+    store.add_command("echo hi", name="cmdok")
+    result = runner.invoke(cli.app, ["list"])
+    assert result.exit_code == 0
+    assert "missing" not in result.output
+
+
+def test_list_json_missing_field(tmp_path):
+    p = _py(tmp_path, "print(1)\n")
+    entry = store.add_python(p, name="gone")
+    entry.script_path.unlink()
+    result = runner.invoke(cli.app, ["list", "--json"])
+    assert result.exit_code == 0
+    assert '"missing": true' in result.output
+
+
+def test_list_description_exact_marker_when_no_description(tmp_path):
+    """No description: the cell is exactly the dim marker — never a stray "—" prefix.
+    (Direct unit test: Rich's table truncates long paths, so the rendered output can't
+    be asserted exactly.)"""
+    p = _py(tmp_path, "print(1)\n")
+    entry = store.add_python(p, name="gone")
+    entry.script_path.unlink()
+    assert cli._list_description(entry) == f"[dim]⚠ missing: {entry.script_path}[/dim]"
+
+
+def test_list_description_appends_marker_after_description(tmp_path):
+    p = _py(tmp_path, '"""My job."""\nprint(1)\n')
+    entry = store.add_python(p, name="gone2", description="My job.")
+    entry.script_path.unlink()
+    assert cli._list_description(entry) == f"My job.  [dim]⚠ missing: {entry.script_path}[/dim]"
+
+
+def test_list_description_healthy_and_command_entries_untouched(tmp_path):
+    healthy = store.add_python(_py(tmp_path, '"""Fine."""\nprint(1)\n'), description="Fine.")
+    assert cli._list_description(healthy) == "Fine."
+    bare = store.add_command("echo hi", name="cmdbare", description="")
+    assert cli._list_description(bare) == "—"
+
+
+def test_list_description_escapes_markup_in_description():
+    """A description containing rich markup renders as literal text, never interpreted (would
+    otherwise let a hostile description inject color/style into the list table)."""
+    entry = store.add_command("echo hi", name="mkup", description="[red]DANGER[/red]")
+    assert cli._list_description(entry) == r"\[red]DANGER\[/red]"
+
+
+def test_list_description_escapes_markup_in_missing_path(tmp_path):
+    """A script path containing literal rich markup (e.g. a hostile directory name) renders
+    escaped in the missing-target marker, matching the description-escaping behavior above."""
+    exe = tmp_path / "[red]boom[bold]" / "tool"
+    exe.parent.mkdir()
+    exe.touch()
+    entry = store.add_exe(exe, name="mkup-path")
+    exe.unlink()
+    assert cli._list_description(entry) == f"[dim]{escape(f'⚠ missing: {exe}')}[/dim]"
+
+
+def test_list_table_renders_markup_literally_end_to_end(tmp_path):
+    """End-to-end: both a markup-bearing description and a markup-bearing missing path render as
+    literal text in the actual `skit list` table output — no color/style is applied, proving Rich
+    never interprets the injected markup as formatting."""
+    exe = tmp_path / "[red]boom[bold]" / "tool"
+    exe.parent.mkdir()
+    exe.touch()
+    store.add_exe(exe, name="mkup-path", description="[blue]hi[/blue]")
+    exe.unlink()
+    result = runner.invoke(cli.app, ["list"])
+    assert result.exit_code == 0
+    assert "[blue]hi[/blue]" in result.output
+    assert "missing" in result.output  # the path itself may be truncated by Rich's column width
+
+
+def test_list_table_name_column_escapes_markup(tmp_path):
+    """A NAME containing rich markup (settable via --name) must render literally in the Name
+    column too — not just the Description column."""
+    store.add_command("echo hi", name="[blue]hi[/blue]")
+    result = runner.invoke(cli.app, ["list"])
+    assert result.exit_code == 0
+    assert "[blue]hi[/blue]" in result.output
 
 
 # --------------------------------------------------------------------------
@@ -216,16 +351,40 @@ def test_run_python_with_params_injects(tmp_path, run_entry_spy):
     text = metawriter.write_params(
         'CITY = "Taipei"\nprint(CITY)\n', [ParamSpec(name="CITY", kind="const", type="str")]
     )
-    store.add_python(_py(tmp_path, text), name="j")
+    entry = store.add_python(_py(tmp_path, text), name="j")
+    argstate.save_last(entry.slug, values={"CITY": "Kaohsiung"})
     result = runner.invoke(cli.app, ["run", "j", "--no-input"])
     assert result.exit_code == 0, result.output
-    # Has parameter definitions → an injected artifact path is passed to the launcher
+    # A managed value exists → an injected artifact path is passed to the launcher
     assert run_entry_spy["override"] is not None
 
 
-def test_run_not_found():
+ARGPARSE_REQUIRED = (
+    "import argparse\nap = argparse.ArgumentParser()\n"
+    "ap.add_argument('-o', '--output', required=True)\nap.parse_args()\n"
+)
+
+
+def test_run_extra_args_bypass_required_field_validation(tmp_path, run_entry_spy):
+    # Passthrough args are the legitimate manual escape (skit run x -- <args>): when the
+    # user supplies them, the script's own parser is in charge and an unfilled required
+    # FIELD must not block the run.
+    store.add_python(_py(tmp_path, ARGPARSE_REQUIRED), name="ar")
+    result = runner.invoke(cli.app, ["run", "ar", "--no-input", "--", "-o", "x.png"])
+    assert result.exit_code == 0, result.output
+    assert run_entry_spy["extra"] == ["-o", "x.png"]
+
+
+def test_run_required_field_missing_without_extra_args_exits_125(tmp_path, run_entry_spy):
+    store.add_python(_py(tmp_path, ARGPARSE_REQUIRED), name="ar2")
+    result = runner.invoke(cli.app, ["run", "ar2", "--no-input"])
+    assert result.exit_code == 125
+    assert "output" in result.output
+
+
+def test_run_not_found_exits_127():
     result = runner.invoke(cli.app, ["run", "ghost"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127  # docker convention: target not found
 
 
 def test_run_raw_skips_form(tmp_path, run_entry_spy):
@@ -266,14 +425,32 @@ def test_run_shim_error(tmp_path, run_entry_spy, monkeypatch):
     text = metawriter.write_params(
         'CITY = "Taipei"\nprint(CITY)\n', [ParamSpec(name="CITY", kind="const", type="str")]
     )
-    store.add_python(_py(tmp_path, text), name="j")
+    entry = store.add_python(_py(tmp_path, text), name="j")
+    argstate.save_last(entry.slug, values={"CITY": "Kaohsiung"})
 
     def boom(*a, **k):
         raise shim.ShimError("nope")
 
     monkeypatch.setattr(shim, "inject", boom)
     result = runner.invoke(cli.app, ["run", "j", "--no-input"])
-    assert result.exit_code == 1
+    assert result.exit_code == 125  # skit-side failure, not the script's own exit code
+
+
+def test_run_bad_typed_value_caught_at_validation(tmp_path, run_entry_spy):
+    # A value that can't coerce to its param's declared type (RETRIES is int) is a bad
+    # input, not drift — v2 catches it at form validation, before shim ever runs, and
+    # maps it to the skit-side exit code.
+    text = metawriter.write_params(
+        "RETRIES = 3\nprint(RETRIES)\n", [ParamSpec(name="RETRIES", kind="const", type="int")]
+    )
+    entry = store.add_python(_py(tmp_path, text), name="j")
+    argstate.save_last(entry.slug, values={"RETRIES": "not-a-number"})
+    result = runner.invoke(cli.app, ["run", "j", "--no-input"])
+    assert result.exit_code == 125
+    assert "not-a-number" in result.output
+    assert "whole number" in result.output
+    # The generic drift/re-add wording must NOT appear for a value failure.
+    assert "resync" not in result.output.lower()
 
 
 def test_run_launch_error(tmp_path, monkeypatch):
@@ -284,7 +461,7 @@ def test_run_launch_error(tmp_path, monkeypatch):
 
     monkeypatch.setattr(launcher, "run_entry", boom)
     result = runner.invoke(cli.app, ["run", "j", "--no-input"])
-    assert result.exit_code == 1
+    assert result.exit_code == 125
 
 
 def test_run_command_entry_collects_values(tmp_path, run_entry_spy):
@@ -354,10 +531,12 @@ def test_preset_save_command_no_params(tmp_path):
     assert result.exit_code == 1
 
 
-def test_preset_save_command_with_params(tmp_path):
+def test_preset_save_command_with_params(tmp_path, tty, monkeypatch):
+    # Direct call: CliRunner swaps sys.stdin wholesale, so the interactive gate can't be
+    # exercised through invoke() — the tty fixture + a direct call is the honest path.
     ent = store.add_command("echo {msg}", name="e")
-    result = runner.invoke(cli.app, ["preset", "save", "e", "prod"], input="hello\n")
-    assert result.exit_code == 0, result.output
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: "hello")
+    cli.preset_save("e", "prod", from_last=False)
     assert argstate.load_state(ent.slug)["presets"]["prod"] == {"msg": "hello"}
 
 
@@ -404,6 +583,69 @@ def test_params_python_table_with_secret(tmp_path):
 
 
 # --------------------------------------------------------------------------
+# params --secret: marking a parameter secret must purge its already-persisted plaintext
+# ("secrets aren't fully secret" — marking secret protects the future, not the past)
+# --------------------------------------------------------------------------
+
+
+def test_params_secret_purges_stored_last_value_and_presets(tmp_path):
+    text = metawriter.write_params(
+        'API_KEY = "x"\nprint(API_KEY)\n',
+        [ParamSpec(name="API_KEY", kind="const", type="str", default="x")],
+    )
+    ent = store.add_python(_py(tmp_path, text), name="a")
+    # Recorded while API_KEY was still a public parameter.
+    argstate.save_last(ent.slug, values={"API_KEY": "plaintext-secret-123"})
+    argstate.save_preset(ent.slug, "prod", {"API_KEY": "plaintext-secret-123"})
+    result = runner.invoke(cli.app, ["params", "a", "--secret", "API_KEY"])
+    assert result.exit_code == 0, result.output
+    assert "plaintext-secret-123" not in result.output
+    # Rich may line-wrap the long message at terminal width; collapse whitespace before matching.
+    normalized_output = " ".join(result.output.split())
+    expected_msg = (
+        "Removed previously stored plaintext value(s) for now-secret parameter(s): API_KEY"
+    )
+    assert expected_msg in normalized_output
+    state = argstate.load_state(ent.slug)
+    assert "API_KEY" not in state["values"]
+    # 'prod' held only API_KEY, so purging it leaves the preset empty and it is dropped entirely.
+    assert "prod" not in state["presets"]
+    # Scan the raw state file bytes: the plaintext must not merely be hidden from load_state, it
+    # must not be on disk at all.
+    for p in values_dir().glob("*.toml"):
+        assert "plaintext-secret-123" not in p.read_text(encoding="utf-8")
+
+
+def test_params_secret_does_not_purge_other_still_public_params(tmp_path):
+    text = metawriter.write_params(
+        "API_KEY = 'x'\nCITY = 'y'\nprint(API_KEY, CITY)\n",
+        [
+            ParamSpec(name="API_KEY", kind="const", type="str"),
+            ParamSpec(name="CITY", kind="const", type="str"),
+        ],
+    )
+    ent = store.add_python(_py(tmp_path, text), name="a")
+    argstate.save_last(ent.slug, values={"API_KEY": "secretval", "CITY": "Taipei"})
+    result = runner.invoke(cli.app, ["params", "a", "--secret", "API_KEY"])
+    assert result.exit_code == 0, result.output
+    state = argstate.load_state(ent.slug)
+    assert "API_KEY" not in state["values"]
+    assert state["values"]["CITY"] == "Taipei"  # untouched: CITY was never marked secret
+
+
+def test_params_edit_without_stored_value_prints_no_purge_message(tmp_path):
+    # Nothing was ever stored for CITY, so marking it secret has nothing to purge — the purge
+    # message must not appear (regression: kills an unconditional-print mutant).
+    text = metawriter.write_params(
+        'CITY = "x"\nprint(CITY)\n', [ParamSpec(name="CITY", kind="const", type="str")]
+    )
+    store.add_python(_py(tmp_path, text), name="a")
+    result = runner.invoke(cli.app, ["params", "a", "--secret", "CITY"])
+    assert result.exit_code == 0, result.output
+    assert "Removed previously stored plaintext" not in result.output
+
+
+# --------------------------------------------------------------------------
 # deps
 # --------------------------------------------------------------------------
 
@@ -427,14 +669,16 @@ def test_deps_not_python(tmp_path):
 
 def test_deps_set(tmp_path):
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
-    result = runner.invoke(cli.app, ["deps", "a", "--set", "requests, rich", "--python", ">=3.11"])
+    result = runner.invoke(
+        cli.app, ["deps", "a", "--dep", "requests", "--dep", "rich", "--python", ">=3.11"]
+    )
     assert result.exit_code == 0, result.output
     assert store.resolve("a").meta.dependencies == ["requests", "rich"]
 
 
 def test_deps_view_with_requires_python(tmp_path):
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
-    runner.invoke(cli.app, ["deps", "a", "--set", "requests", "--python", ">=3.12"])
+    runner.invoke(cli.app, ["deps", "a", "--dep", "requests", "--python", ">=3.12"])
     result = runner.invoke(cli.app, ["deps", "a"])
     assert result.exit_code == 0
     assert "3.12" in result.output
@@ -479,26 +723,6 @@ def test_doctor_reports_missing_reference(monkeypatch, tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_lang_show():
-    result = runner.invoke(cli.app, ["lang"])
-    assert result.exit_code == 0
-
-
-def test_lang_set_valid():
-    result = runner.invoke(cli.app, ["lang", "zh-TW"])
-    assert result.exit_code == 0
-
-
-def test_lang_auto():
-    result = runner.invoke(cli.app, ["lang", "auto"])
-    assert result.exit_code == 0
-
-
-def test_lang_unknown():
-    result = runner.invoke(cli.app, ["lang", "xx-YY"])
-    assert result.exit_code == 2
-
-
 # --------------------------------------------------------------------------
 # Interactive helpers: called directly + stubbed (CliRunner cannot reliably inject a tty)
 # --------------------------------------------------------------------------
@@ -517,10 +741,22 @@ def test_parse_selection_variants():
     assert cli._parse_selection("1,1,9,x", 3) == [0]  # dedup + out-of-range / non-numeric ignored
 
 
-def test_parse_prompt_opts():
-    prompts, bad = cli._parse_prompt_opts(["A=hello", "B=", "no-eq", "=novalue"])
-    assert prompts == {"A": "hello", "B": ""}
-    assert bad == ["no-eq", "=novalue"]
+def test_parse_selection_ignores_non_ascii_digit_like_chars():
+    # Regression: str.isdigit() is True for '²' (superscript two) and '①' (circled one), but
+    # int() rejects both -- the old `part.isdigit() and int(part)` guard let the ValueError
+    # escape uncaught, crashing onboarding instead of ignoring the invalid part as documented.
+    assert cli._parse_selection("1,²,3", 5) == [0, 2]
+    assert cli._parse_selection("①", 5) == []
+    # Non-ASCII characters that ARE genuine decimal digits (e.g. Arabic-indic) must still work,
+    # since int() parses them fine -- the fix must not narrow to ASCII-only.
+    arabic_indic_one = "\N{ARABIC-INDIC DIGIT ONE}"
+    assert cli._parse_selection(arabic_indic_one, 5) == [0]
+
+
+def test_parse_kv_opts():
+    pairs, bad = cli._parse_kv_opts(["A=hello", "B=", "no-eq", "=novalue"], "--prompt")
+    assert pairs == {"A": "hello", "B": ""}
+    assert bad == ["--prompt: no-eq", "--prompt: =novalue"]
 
 
 def test_resolve_metadata_existing_block_not_asked():
@@ -531,7 +767,7 @@ def test_resolve_metadata_existing_block_not_asked():
 
 
 def test_resolve_metadata_explicit_opts():
-    deps, py = cli._resolve_python_metadata("print(1)\n", "requests, rich", ">=3.11", False)
+    deps, py = cli._resolve_python_metadata("print(1)\n", ["requests", "rich"], ">=3.11", False)
     assert deps == ["requests", "rich"]
     assert py == ">=3.11"
 
@@ -559,6 +795,64 @@ def test_resolve_metadata_interactive(monkeypatch, tty):
     assert py == ">=3.12"
 
 
+def test_resolve_metadata_interactive_dash_clears_deps(monkeypatch, tty):
+    # "-" (or "none") at the deps prompt means "install nothing", overriding the suggested default.
+    answers = iter(["-", ""])
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: next(answers))
+    deps, py = cli._resolve_python_metadata(
+        "import requests\nprint(requests)\n", None, None, no_input=False
+    )
+    assert deps == []
+    assert py == ""
+
+
+def test_resolve_metadata_interactive_none_word_clears_deps(monkeypatch, tty):
+    answers = iter(["None", ""])
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: next(answers))
+    deps, _py = cli._resolve_python_metadata(
+        "import requests\nprint(requests)\n", None, None, no_input=False
+    )
+    assert deps == []
+
+
+def test_prompt_identity_non_interactive_passes_through(tmp_path):
+    p = tmp_path / "s.py"
+    name, desc = cli._prompt_identity(p, "print(1)\n", None, None, no_input=True)
+    assert name is None
+    assert desc is None
+
+
+def test_prompt_identity_prompts_name_and_description(monkeypatch, tty, tmp_path):
+    p = tmp_path / "image_stitch.py"
+    answers = iter(["stitch", "Stack images vertically"])
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: next(answers))
+    name, desc = cli._prompt_identity(p, '"""doc first line."""\n', None, None, no_input=False)
+    assert name == "stitch"
+    assert desc == "Stack images vertically"
+
+
+def test_prompt_identity_explicit_values_skip_prompts(monkeypatch, tty, tmp_path):
+    # Both already supplied via flags: Prompt.ask must never be called.
+    def _boom(*_a, **_k):
+        raise AssertionError("should not prompt when name and description are given")
+
+    monkeypatch.setattr(cli.Prompt, "ask", _boom)
+    name, desc = cli._prompt_identity(
+        tmp_path / "s.py", "print(1)\n", "given", "a desc", no_input=False
+    )
+    assert (name, desc) == ("given", "a desc")
+
+
+def test_prompt_identity_blank_name_falls_back_to_stem(monkeypatch, tty, tmp_path):
+    # An all-whitespace name answer collapses to None so the store derives the stem.
+    p = tmp_path / "worker.py"
+    answers = iter(["   ", ""])
+    monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: next(answers))
+    name, desc = cli._prompt_identity(p, "print(1)\n", None, None, no_input=False)
+    assert name is None
+    assert desc == ""
+
+
 def test_onboard_params_framework_detected(monkeypatch, tty):
     text = "import argparse\np = argparse.ArgumentParser()\n"
     specs = cli._onboard_params(text, "cli-tool", no_input=False)
@@ -582,29 +876,30 @@ def test_onboard_params_interactive_selection(monkeypatch, tty):
     assert any(s.name == "CITY" for s in specs)
 
 
-def test_spec_from_candidate_roundtrip():
+def test_paramspec_from_candidate_roundtrip():
     result = analyzer.analyze('CITY = "Taipei"\nprint(CITY)\n')
-    spec = cli._spec_from_candidate(result.candidates[0])
+    spec = metawriter.ParamSpec.from_candidate(result.candidates[0])
     assert spec.name == "CITY"
 
 
-def test_collect_command_values_interactive(monkeypatch, tty, tmp_path):
+def test_command_placeholders_collect_interactively(monkeypatch, tty, tmp_path):
     ent = store.add_command("echo {msg}", name="e")
+    plan = flows.plan_for_entry(ent)
     monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: "typed")
-    values = cli._collect_command_values(ent, no_input=False, preset=None)
+    values = promptform.collect(plan, {}, console=cli.console)
     assert values == {"msg": "typed"}
 
 
-def test_collect_command_values_non_interactive_uses_last(tmp_path):
+def test_command_placeholders_prefill_from_last(tmp_path):
     ent = store.add_command("echo {msg}", name="e")
     argstate.save_last(ent.slug, values={"msg": "remembered"})
-    values = cli._collect_command_values(ent, no_input=True, preset=None)
-    assert values == {"msg": "remembered"}
+    plan = flows.plan_for_entry(ent)
+    assert flows.prefill(plan, ent.slug) == {"msg": "remembered"}
 
 
-def test_collect_command_values_no_params(tmp_path):
+def test_command_without_placeholders_has_no_fields(tmp_path):
     ent = store.add_command("echo hi", name="e")
-    assert cli._collect_command_values(ent, no_input=True, preset=None) == {}
+    assert flows.plan_for_entry(ent).fields == []
 
 
 def test_collect_param_form_interactive_secret(monkeypatch, tty, tmp_path):
@@ -613,14 +908,330 @@ def test_collect_param_form_interactive_secret(monkeypatch, tty, tmp_path):
         [ParamSpec(name="API", kind="const", type="str", secret=True)],
     )
     ent = store.add_python(_py(tmp_path, text), name="a")
-    specs = [ParamSpec(name="API", kind="const", type="str", secret=True)]
+    plan = flows.plan_for_entry(ent)
     monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: "secretval")
-    values = cli._collect_param_form(ent, specs, no_input=False, preset=None)
+    values = promptform.collect(plan, flows.prefill(plan, ent.slug), console=cli.console)
     assert values == {"API": "secretval"}
 
 
-def test_collect_param_form_non_interactive_returns_prefill(tmp_path):
+def test_param_form_prefill_uses_definition_default(tmp_path):
+    text = metawriter.write_params(
+        'CITY = "Osaka"\nprint(CITY)\n',
+        [ParamSpec(name="CITY", kind="const", type="str", default="Osaka")],
+    )
+    ent = store.add_python(_py(tmp_path, text), name="a")
+    plan = flows.plan_for_entry(ent)
+    assert flows.prefill(plan, ent.slug) == {"CITY": "Osaka"}
+
+
+# --------------------------------------------------------------------------
+# Markup escaping: every remaining render site that carries user-controlled data
+# (entry names, param names/values/prompts, presets, deps, file paths, error messages) must
+# never let rich markup embedded in that data be interpreted instead of shown literally.
+# --------------------------------------------------------------------------
+
+
+def test_add_summary_escapes_markup_in_name_and_description(tmp_path):
+    store.add_command("echo hi", name="[blue]hi[/blue]")
+    result = runner.invoke(
+        cli.app,
+        ["add", "--cmd", "echo {x}", "--name", "[red]evil[/red]", "--description", "[b]d[/b]"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "[red]evil[/red]" in result.output
+    assert "[b]d[/b]" in result.output
+
+
+def test_add_deps_summary_escapes_markup(tmp_path):
+    result = runner.invoke(
+        cli.app,
+        ["add", str(_py(tmp_path, "print(1)\n")), "--dep", "[red]pkg[/red]", "--no-input"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "[red]pkg[/red]" in result.output
+
+
+def test_add_not_py_file_warning_escapes_markup_in_filename(tmp_path):
+    p = tmp_path / "[red]evil[bold].txt"
+    p.write_text("hi", encoding="utf-8")
+    result = runner.invoke(cli.app, ["add", str(p)])
+    assert result.exit_code == 2
+    assert "[red]evil[bold].txt" in result.output
+
+
+def test_remove_escapes_markup_in_name():
+    store.add_command("echo hi", name="[blue]hi[/blue]")
+    result = runner.invoke(cli.app, ["remove", "[blue]hi[/blue]", "--yes"])
+    assert result.exit_code == 0
+    assert "[blue]hi[/blue]" in result.output
+
+
+def test_not_found_error_escapes_markup_in_argument():
+    """store.NotFoundError embeds the raw name_or_slug the user typed; a markup-bearing CLI
+    argument must render literally in the error, not be interpreted."""
+    result = runner.invoke(cli.app, ["deps", "[red]ghost[/red]"])
+    assert result.exit_code == 1
+    assert "[red]ghost[/red]" in result.output
+
+
+def test_params_table_escapes_markup_in_name_and_default(tmp_path):
+    """A managed parameter's name/default can carry markup when the script's [tool.skit] block was
+    hand-edited (names there aren't constrained to valid identifiers) — it must render literally
+    in the `skit params` table."""
+    text = metawriter.write_params(
+        "print(1)\n",
+        [ParamSpec(name="[red]NAME[/red]", kind="const", type="str", default="[blue]hi[/blue]")],
+    )
+    store.add_python(_py(tmp_path, text), name="a")
+    result = runner.invoke(cli.app, ["params", "a"])
+    assert result.exit_code == 0, result.output
+    assert "[red]NAME[/red]" in result.output
+    assert "[blue]hi[/blue]" in result.output
+
+
+def test_params_command_placeholder_line_escapes_markup(tmp_path):
+    ent = store.add_command("echo {msg}", name="e")
+    argstate.save_last(ent.slug, values={"msg": "[green]hello[/green]"})
+    result = runner.invoke(cli.app, ["params", "e"])
+    assert result.exit_code == 0
+    assert "[green]hello[/green]" in result.output
+
+
+def test_params_candidates_line_escapes_markup_in_name(tmp_path, monkeypatch):
+    """The "Detected but not yet managed" line interpolates candidate names raw; even though
+    analyzer-derived names are normally valid identifiers, this is defense in depth against any
+    future candidate source that isn't so constrained."""
+    hostile = analyzer.Candidate(kind="const", name="[red]NEW[/red]", type="str", default="x")
+    monkeypatch.setattr(
+        cli.reconcile, "analyze", lambda text: analyzer.Analysis(candidates=[hostile])
+    )
+    store.add_python(_py(tmp_path, "print(1)\n"), name="a")
+    result = runner.invoke(cli.app, ["params", "a"])
+    assert result.exit_code == 0, result.output
+    assert "[red]NEW[/red]" in result.output
+
+
+def test_preset_list_escapes_markup_in_name_and_values(tmp_path):
     ent = store.add_python(_py(tmp_path, "print(1)\n"), name="a")
-    specs = [ParamSpec(name="CITY", kind="const", type="str", default="Osaka")]
-    values = cli._collect_param_form(ent, specs, no_input=True, preset=None)
-    assert values == {"CITY": "Osaka"}
+    argstate.save_preset(ent.slug, "[blue]prod[/blue]", {"CITY": "[red]Taipei[/red]"})
+    result = runner.invoke(cli.app, ["preset", "list", "a"])
+    assert result.exit_code == 0
+    assert "[blue]prod[/blue]" in result.output
+    assert "[red]Taipei[/red]" in result.output
+
+
+def test_preset_save_command_escapes_markup_in_preset_name_and_entry_name(tmp_path):
+    store.add_command("echo {msg}", name="[blue]e[/blue]")
+    result = runner.invoke(
+        cli.app, ["preset", "save", "[blue]e[/blue]", "[green]p[/green]"], input="hi\n"
+    )
+    assert result.exit_code == 0, result.output
+    assert "[green]p[/green]" in result.output
+    assert "[blue]e[/blue]" in result.output
+
+
+def test_preset_delete_unknown_escapes_markup_in_preset_name():
+    store.add_command("echo hi", name="a")
+    result = runner.invoke(cli.app, ["preset", "delete", "a", "[red]nope[/red]"])
+    assert result.exit_code == 1
+    assert "[red]nope[/red]" in result.output
+
+
+def test_validate_preset_unknown_escapes_markup(tmp_path):
+    store.add_command("echo hi", name="a")
+    result = runner.invoke(cli.app, ["run", "a", "--preset", "[red]nope[/red]"])
+    assert result.exit_code == 2
+    assert "[red]nope[/red]" in result.output
+
+
+def test_deps_view_escapes_markup(tmp_path):
+    store.add_python(_py(tmp_path, "print(1)\n"), name="a")
+    runner.invoke(cli.app, ["deps", "a", "--dep", "[red]pkg[/red]", "--python", "[b]>=3[/b]"])
+    result = runner.invoke(cli.app, ["deps", "a"])
+    assert result.exit_code == 0
+    assert "[red]pkg[/red]" in result.output
+    assert "[b]>=3[/b]" in result.output
+
+
+def test_deps_set_summary_escapes_markup(tmp_path):
+    store.add_python(_py(tmp_path, "print(1)\n"), name="a")
+    result = runner.invoke(cli.app, ["deps", "a", "--dep", "[red]pkg[/red]"])
+    assert result.exit_code == 0
+    assert "[red]pkg[/red]" in result.output
+
+
+def test_doctor_rebuild_problem_line_escapes_markup(monkeypatch, tmp_path):
+    monkeypatch.setattr(launcher, "find_uv", lambda: "/usr/bin/uv")
+    monkeypatch.setattr(store, "doctor_rebuild", lambda: (0, ["[red]broken[/red]"]))
+    result = runner.invoke(cli.app, ["doctor", "--rebuild"])
+    assert result.exit_code == 0
+    assert "[red]broken[/red]" in result.output
+
+
+def test_doctor_missing_reference_escapes_markup_in_name(tmp_path):
+    exe = tmp_path / "tool"
+    exe.touch()
+    store.add_exe(exe, name="[red]gone[/red]")
+    exe.unlink()
+    result = runner.invoke(cli.app, ["doctor"])
+    assert "[red]gone[/red]" in result.output
+
+
+def test_doctor_uv_path_escapes_markup(monkeypatch):
+    monkeypatch.setattr(launcher, "find_uv", lambda: "/usr/[red]bin[/red]/uv")
+    result = runner.invoke(cli.app, ["doctor"])
+    assert result.exit_code == 0
+    assert "[red]bin[/red]" in result.output
+
+
+def test_config_set_unknown_language_escapes_markup():
+    result = runner.invoke(cli.app, ["config", "lang", "[red]xx-YY[/red]"])
+    assert result.exit_code == 2
+    assert "[red]xx-YY[/red]" in result.output
+
+
+def test_config_set_unknown_mirror_escapes_markup():
+    result = runner.invoke(cli.app, ["config", "mirror", "[red]nope[/red]"])
+    assert result.exit_code == 2
+    assert "[red]nope[/red]" in result.output
+
+
+def test_edit_reports_escape_markup_in_name(tmp_path, monkeypatch):
+    store.add_python(_py(tmp_path, "print(1)\n"), name="[blue]a[/blue]")
+    monkeypatch.setattr(cli.editor, "open_in_editor", lambda p: None)
+    result = runner.invoke(cli.app, ["edit", "[blue]a[/blue]"])
+    assert result.exit_code == 0, result.output
+    assert "[blue]a[/blue]" in result.output
+
+
+def test_edit_reference_mode_escapes_markup_in_name_and_path(tmp_path, monkeypatch):
+    script = tmp_path / "[red]weird[bold]" / "job.py"
+    script.parent.mkdir()
+    script.write_text("print(1)\n", encoding="utf-8")
+    store.add_python(script, mode="reference", name="refjob")
+    monkeypatch.setattr(cli.editor, "open_in_editor", lambda p: None)
+    result = runner.invoke(cli.app, ["edit", "refjob"])
+    assert result.exit_code == 0, result.output
+    assert "[red]weird[bold]" in result.output
+
+
+def test_edit_missing_reference_source_escapes_markup_in_path(tmp_path):
+    script = tmp_path / "[red]weird[bold]" / "job.py"
+    script.parent.mkdir()
+    script.write_text("print(1)\n", encoding="utf-8")
+    store.add_python(script, mode="reference", name="refjob")
+    script.unlink()
+    result = runner.invoke(cli.app, ["edit", "refjob"])
+    assert result.exit_code == 1
+    assert "[red]weird[bold]" in result.output
+
+
+def test_edit_params_updated_summary_escapes_markup_in_name(tmp_path):
+    text = metawriter.write_params(
+        "X = 1\nprint(X)\n", [ParamSpec(name="X", kind="const", type="int", default=1)]
+    )
+    store.add_python(_py(tmp_path, text), name="[blue]a[/blue]")
+    result = runner.invoke(cli.app, ["params", "[blue]a[/blue]", "--resync"])
+    assert result.exit_code == 0, result.output
+    assert "[blue]a[/blue]" in result.output
+
+
+def test_edit_params_malformed_prompt_escapes_markup(tmp_path):
+    text = metawriter.write_params(
+        "X = 1\nprint(X)\n", [ParamSpec(name="X", kind="const", type="int", default=1)]
+    )
+    store.add_python(_py(tmp_path, text), name="a")
+    result = runner.invoke(cli.app, ["params", "a", "--prompt", "[red]bad[/red]"])
+    assert result.exit_code == 0, result.output
+    assert "[red]bad[/red]" in result.output
+
+
+def test_run_reusing_last_arguments_escapes_markup(tmp_path, run_entry_spy):
+    ent = store.add_python(_py(tmp_path, "print(1)\n"), name="j")
+    argstate.save_last(ent.slug, extra_args=["[red]arg[/red]"])
+    result = runner.invoke(cli.app, ["run", "j", "--no-input"])
+    assert result.exit_code == 0, result.output
+    assert "[red]arg[/red]" in result.output
+
+
+def test_collect_command_values_prompt_escapes_markup_in_placeholder_name(monkeypatch, tty):
+    """The prompt TEXT (not just its default) is parsed as Rich markup by Prompt.ask, so a
+    placeholder name must be escaped there too — checked directly since placeholder names are
+    normally identifier-constrained and can't carry markup through the CLI."""
+    ent = store.add_command("echo {msg}", name="e")
+    ent = dataclasses.replace(ent, meta=dataclasses.replace(ent.meta, params=["[red]msg[/red]"]))
+    captured: dict[str, str] = {}
+
+    def fake_ask(prompt, **k):
+        captured["prompt"] = prompt
+        return "x"
+
+    monkeypatch.setattr(cli.Prompt, "ask", fake_ask)
+    promptform.collect(flows.plan_for_entry(ent), {}, console=cli.console)
+    assert captured["prompt"] == r"  \[red]msg\[/red]"
+
+
+def test_collect_param_form_prompt_escapes_markup_in_param_prompt_text(monkeypatch, tty, tmp_path):
+    """Same as above for the Python-entry param form: `s.prompt` comes from `--prompt NAME=text`
+    and can freely carry markup."""
+    text = metawriter.write_params(
+        'CITY = "x"\nprint(CITY)\n',
+        [ParamSpec(name="CITY", kind="const", type="str", prompt="[red]Where[/red]?")],
+    )
+    ent = store.add_python(_py(tmp_path, text), name="a")
+    captured: dict[str, str] = {}
+
+    def fake_ask(prompt, **k):
+        captured["prompt"] = prompt
+        return "x"
+
+    monkeypatch.setattr(cli.Prompt, "ask", fake_ask)
+    promptform.collect(flows.plan_for_entry(ent), {}, console=cli.console)
+    assert captured["prompt"] == r"  \[red]Where\[/red]?"
+
+
+def test_preset_save_prompt_escapes_markup_in_placeholder_name(monkeypatch, tty):
+    ent = store.add_command("echo {msg}", name="e")
+    hostile = dataclasses.replace(
+        ent, meta=dataclasses.replace(ent.meta, params=["[red]msg[/red]"])
+    )
+    monkeypatch.setattr(cli.store, "resolve", lambda name: hostile)
+    captured: dict[str, str] = {}
+
+    def fake_ask(prompt, **k):
+        captured["prompt"] = prompt
+        return "x"
+
+    monkeypatch.setattr(cli.Prompt, "ask", fake_ask)
+    cli.preset_save("e", "p", from_last=False)
+    assert captured["prompt"] == r"  \[red]msg\[/red]"
+
+
+def test_run_raw_passes_argv_genuinely_raw(tmp_path, run_entry_spy):
+    # --raw is the escape hatch: no token pass, no glob pass — even weird argv survives.
+    (tmp_path / "match.txt").touch()
+    store.add_python(_py(tmp_path, "print(1)\n"), name="rawr")
+    result = runner.invoke(
+        cli.app, ["run", "rawr", "--raw", "--no-input", "--", "{env:UNSET}", "*.txt"]
+    )
+    assert result.exit_code == 0, result.output
+    assert run_entry_spy["extra"] == ["{env:UNSET}", "*.txt"]
+
+
+def test_run_cli_argv_not_reexpanded(tmp_path, run_entry_spy, monkeypatch):
+    # `-- '*.txt'` already survived the user's shell (they quoted it on purpose);
+    # skit must not glob/token it a second time — run() must call assemble with
+    # expand_extra=False. (No chdir: it breaks mutmut's stats collection.)
+    captured: dict[str, object] = {}
+    orig = flows.assemble
+
+    def spy(plan, values, extra, **kw):
+        captured.update(kw)
+        return orig(plan, values, extra, **kw)
+
+    monkeypatch.setattr(cli.flows, "assemble", spy)
+    store.add_python(_py(tmp_path, "print(1)\n"), name="noglob")
+    result = runner.invoke(cli.app, ["run", "noglob", "--no-input", "--", "*.txt"])
+    assert result.exit_code == 0, result.output
+    assert captured["expand_extra"] is False
+    assert run_entry_spy["extra"] == ["*.txt"]

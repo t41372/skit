@@ -1019,11 +1019,6 @@ dependencies = [
     { name = "typer" },
 ]
 
-[package.optional-dependencies]
-serve = [
-    { name = "textual-serve" },
-]
-
 [package.dev-dependencies]
 dev = [
     { name = "babel" },
@@ -1042,11 +1037,9 @@ requires-dist = [
     { name = "platformdirs", specifier = ">=4.10,<5" },
     { name = "rich", specifier = ">=15,<16" },
     { name = "textual", specifier = ">=8.2,<9" },
-    { name = "textual-serve", marker = "extra == 'serve'", specifier = ">=1.1,<2" },
     { name = "tomli-w", specifier = ">=1.2,<2" },
     { name = "typer", specifier = ">=0.26,<1" },
 ]
-provides-extras = ["serve"]
 
 [package.metadata.requires-dev]
 dev = [

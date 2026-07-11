@@ -1,53 +1,64 @@
-"""TUI main menu (Textual).
+"""The TUI workbench (Textual): skit's home surface.
 
-- Type to fuzzy-search; Up/Down or mouse to navigate; Enter to run (suspend + terminal pass-through,
-  C6); Del to remove with confirmation.
-- Quit: press Ctrl+C twice (the standard way); Esc and Ctrl+Q also work.
-- Presentation only; all logic goes through the headless store/launcher API.
+Library screen: search + list + detail pane, two-row footer
+with every action always visible (design assumption: most TUI users never press ?),
+recency sort, contextual r-rerun, lazy drift check on selection. Presentation only —
+all logic goes through the headless store/flows/launcher layers.
+
+Keys: Enter run · r rerun (after a first run) · p script settings · e edit script ·
+Del remove · a add script · s presets · , preferences · D health check · / search ·
+double Ctrl+C / Esc quit.
+
+Focus model: the TABLE owns the keyboard by default, so every advertised single-letter
+key actually fires; `/` (or a click) enters the search box, where letters type as text
+and Esc returns to the table. Type-to-search-with-permanent-focus was abandoned after
+review: an always-focused Input consumes printable keys, which silently killed every
+single-letter action the footer advertised.
 """
 
 from __future__ import annotations
 
 import contextlib
 import time
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, override
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import override
 
+from rich.markup import escape
+from rich.text import Text
 from textual import events, on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import DataTable, Footer, Input, Label, Static
+from textual.widgets import DataTable, Input, Label, Static
 
-from . import argstate, launcher, metawriter, reconcile, shim, store
+from . import argstate, editor, flows, launcher, models, store, theme, tui_footer
 from .i18n import gettext, ngettext
 from .models import Entry
+from .theme import CLAUDE_THEME
+from .tui_form import FormResult, RunFormScreen
 
-if TYPE_CHECKING:
-    from pathlib import Path
+# Glyphs are locale-independent; the labels are translated at render time in _kind_badge.
+# The labels must be gettext() literals there (not values fed to gettext(kind)) or Babel
+# can't extract them — see scripts/i18n_coverage.py's dynamic-gettext check.
+_KIND_GLYPHS = {"python": "⬡", "exe": "▶", "command": "$"}
 
-    from .metawriter import ParamSpec
 
-
-def _collect_command_params(entry: Entry, values: dict[str, str]) -> None:
-    """Fill placeholders for a command entry, using the last-used value as the default."""
-    last = argstate.load_last(entry.slug)["values"]
-    for p in entry.meta.params or []:
-        default = last.get(p, "")
-        hint = f" [{default}]" if default else ""
-        try:
-            answer = input(f"  {p}{hint}: ").strip()
-        except EOFError:
-            answer = ""
-        values[p] = answer or default
+def _kind_badge(kind: str) -> tuple[str, str]:
+    label = {
+        "python": gettext("Python"),
+        "exe": gettext("Program"),
+        "command": gettext("Command"),
+    }.get(kind, kind)
+    return _KIND_GLYPHS.get(kind, "?"), label
 
 
 def _fuzzy_match(query: str, text: str) -> bool:
     """Subsequence fuzzy match (case-insensitive)."""
     q = query.lower()
     haystack = text.lower()
-    pos = 0
+    pos = 0  # pragma: no mutate — find(ch, None) == find(ch, 0)
     for ch in q:
         pos = haystack.find(ch, pos)
         if pos == -1:
@@ -56,23 +67,69 @@ def _fuzzy_match(query: str, text: str) -> bool:
     return True
 
 
-class ConfirmRemove(ModalScreen[bool]):
-    BINDINGS = [
-        Binding("y", "confirm", gettext("Confirm")),
-        Binding("n,escape", "cancel", gettext("Cancel")),
-    ]
+def _activity_key(entry: Entry) -> str:
+    """Recency sort key: last run or added time, whichever is newer (a fresh add must
+    surface even though it has never run)."""
+    last = argstate.load_state(entry.slug)["last_run"]
+    return max(str(last.get("at", "")), entry.meta.added_at or "")
 
-    def __init__(self, name: str) -> None:
+
+def _relative_time(iso: str) -> str:
+    try:
+        then = datetime.fromisoformat(iso)
+    except ValueError:
+        return iso
+    delta = datetime.now(UTC) - then
+    seconds = int(delta.total_seconds())
+    if seconds < 90:
+        return gettext("just now")
+    if seconds < 5400:
+        return gettext("%(minutes)s min ago") % {"minutes": seconds // 60}
+    if seconds < 129600:
+        return gettext("%(hours)s h ago") % {"hours": seconds // 3600}
+    return gettext("%(days)s d ago") % {"days": seconds // 86400}
+
+
+class ConfirmRemove(ModalScreen[bool]):
+    """Removal modal: verb keys, and the reassurance that carries the A5 promise."""
+
+    BINDINGS = [
+        Binding("y", "confirm", gettext("Remove")),
+        Binding("escape,n", "cancel", gettext("Keep")),
+    ]
+    DEFAULT_CSS = """
+    ConfirmRemove { align: center middle; }
+    #confirm-box {
+        border: round $skit-box-maroon; padding: 1 2; width: auto; height: auto;
+        background: $background;
+    }
+    /* In an auto-width box a 1fr Static collapses to zero columns — every modal child
+       must hug its content for the box to measure anything at all. */
+    #confirm-box Static { width: auto; }
+    #confirm-box > Static:last-of-type { margin: 1 0 0 0; }
+    """
+
+    def __init__(self, entry: Entry) -> None:
         super().__init__()
-        self._name = name
+        self._entry: Entry = entry
 
     @override
     def compose(self) -> ComposeResult:
-        yield Vertical(
-            Label(gettext('Remove "%(name)s"?') % {"name": self._name}),
-            Static(gettext("[b]y[/b] confirm  /  [b]n[/b] cancel"), markup=True),
-            id="confirm-box",
+        lines = [Label(gettext('Remove "%(name)s"?') % {"name": escape(self._entry.meta.name)})]
+        if self._entry.meta.kind != "command":
+            lines.append(Static(f"[dim]{gettext('Your original file will not be deleted.')}[/dim]"))
+        # The verb line IS the button row: y/Esc stay advertised, and each chip is
+        # clickable — modals must not be the one place that suddenly demands keys.
+        lines.append(
+            Static(
+                tui_footer.bar(
+                    tui_footer.chip("screen.confirm", "y", gettext("Remove")),
+                    tui_footer.chip("screen.cancel", "Esc", gettext("Keep")),
+                ),
+                markup=True,
+            )
         )
+        yield Vertical(*lines, id="confirm-box")
 
     def action_confirm(self) -> None:
         self.dismiss(True)
@@ -81,321 +138,147 @@ class ConfirmRemove(ModalScreen[bool]):
         self.dismiss(False)
 
 
-@dataclass
-class _EditRow:
-    """One row in the edit screen (a managed definition or an unmanaged candidate).
+class HelpScreen(ModalScreen[None]):
+    """? overlay. Everything here is ALSO in the footer — this is a reminder, never the
+    only path to a feature (discoverability assumption in the UX spec)."""
 
-    The ``orig_*`` fields capture the state when the screen opened so that save
-    can compute the minimal set of edit_specs operations and avoid spurious
-    not-managed warnings.
+    BINDINGS = [Binding("escape,question_mark", "dismiss_help", gettext("Close"))]
+    DEFAULT_CSS = """
+    HelpScreen { align: center middle; }
+    #help-box { border: round $accent; padding: 1 2; width: auto; height: auto;
+                background: $background; }
+    /* Same zero-width trap as the confirm box: 1fr Statics inside an auto box measure
+       as nothing, which rendered the ? overlay as a tiny empty square. */
+    #help-box Static { width: auto; }
+    #help-box > Static:last-of-type { margin: 1 0 0 0; }
     """
-
-    name: str
-    kind: str
-    type: str
-    managed: bool
-    secret: bool
-    prompt: str
-    orig_managed: bool
-    orig_secret: bool
-    orig_prompt: str
-
-
-class EditParams(ModalScreen[str | None]):
-    """Parameter definition editor (TUI counterpart of ``skit edit``).
-
-    Presentation and state collection only; all rules go through the
-    reconcile.edit_specs pure function (the same path as the CLI). On save,
-    the full operation set is applied in one shot and written back to the
-    copy's [tool.skit]. dismiss value: result message (success) or None
-    (cancelled).
-    """
-
-    BINDINGS = [
-        Binding("space", "toggle_managed", gettext("Manage")),
-        Binding("s", "toggle_secret", gettext("Secret")),
-        Binding("p", "edit_prompt", gettext("Prompt")),
-        Binding("r", "toggle_resync", gettext("Resync")),
-        Binding("ctrl+s", "save", gettext("Save")),
-        Binding("escape", "cancel", gettext("Cancel")),
-    ]
-
-    def __init__(self, entry: Entry) -> None:
-        super().__init__()
-        self._entry = entry
-        self._text = (entry.dir / "script.py").read_text(encoding="utf-8", errors="replace")
-        self._original = metawriter.read_params(self._text)
-        self._rows: list[_EditRow] = []
-        self._resync = False
 
     @override
     def compose(self) -> ComposeResult:
-        table = DataTable(cursor_type="row", zebra_stripes=True)
+        rows = [
+            ("Enter", gettext("Run")),
+            ("r", gettext("Rerun with last values")),
+            ("p", gettext("Script settings")),
+            ("s", gettext("Presets")),
+            ("e", gettext("Edit script")),
+            ("Del", gettext("Remove")),
+            ("a", gettext("Add script")),
+            (",", gettext("Preferences")),
+            ("D", gettext("Health check")),
+            ("Ctrl+C Ctrl+C / Esc", gettext("Quit")),
+        ]
+        body = "\n".join(f"[$accent]{k:>16}[/]  {escape(v)}" for k, v in rows)
         yield Vertical(
-            Label(gettext("Parameters for %(name)s") % {"name": self._entry.meta.name}),
-            table,
-            Static(gettext("resync: off"), id="edit-resync"),
-            Input(id="prompt-input"),
+            Static(body, markup=True),
             Static(
-                gettext(
-                    "[b]space[/b] manage  [b]s[/b] secret  [b]p[/b] prompt  [b]r[/b] resync  [b]ctrl+s[/b] save  [b]esc[/b] cancel"
-                ),
+                tui_footer.bar(tui_footer.chip("screen.dismiss_help", "Esc", gettext("Close"))),
                 markup=True,
-                id="edit-hint",
             ),
-            id="edit-box",
+            id="help-box",
         )
 
-    def on_mount(self) -> None:
-        # Managed definitions come first (original order), followed by
-        # unmanaged candidates (reconcile's "new" set).
-        report = reconcile.reconcile(self._text, self._original)
-        for s in self._original:
-            self._rows.append(
-                _EditRow(
-                    name=s.name,
-                    kind=s.kind,
-                    type=s.type,
-                    managed=True,
-                    secret=s.secret,
-                    prompt=s.prompt or "",
-                    orig_managed=True,
-                    orig_secret=s.secret,
-                    orig_prompt=s.prompt or "",
-                )
-            )
-        for c in report.new:
-            self._rows.append(
-                _EditRow(
-                    name=c.name,
-                    kind=c.kind,
-                    type=c.type,
-                    managed=False,
-                    secret=c.secret,
-                    prompt=c.prompt or "",
-                    orig_managed=False,
-                    orig_secret=c.secret,
-                    orig_prompt=c.prompt or "",
-                )
-            )
-        table = self.query_one(DataTable)
-        table.add_columns(
-            gettext("Parameter"),
-            gettext("Kind"),
-            gettext("Type"),
-            gettext("Managed"),
-            gettext("Secret"),
-            gettext("Prompt"),
-        )
-        self._refresh_table()
-        if not self._rows:
-            self.query_one("#edit-resync", Static).update(
-                gettext("No parameter candidates were detected in this script.")
-            )
-        table.focus()
-
-    def _refresh_table(self) -> None:
-        table = self.query_one(DataTable)
-        cursor = table.cursor_row
-        table.clear()
-        for r in self._rows:
-            table.add_row(
-                r.name,
-                r.kind,
-                r.type,
-                gettext("yes") if r.managed else "—",
-                gettext("yes") if r.secret else "—",
-                r.prompt or "—",
-                key=r.name,
-            )
-        if self._rows and cursor is not None:
-            table.move_cursor(row=min(cursor, len(self._rows) - 1))
-
-    def _selected_row(self) -> _EditRow | None:
-        table = self.query_one(DataTable)
-        if not self._rows or table.cursor_row is None:
-            return None
-        if 0 <= table.cursor_row < len(self._rows):
-            return self._rows[table.cursor_row]
-        return None
-
-    def action_toggle_managed(self) -> None:
-        row = self._selected_row()
-        if row is None:
-            return
-        row.managed = not row.managed
-        self._refresh_table()
-
-    def action_toggle_secret(self) -> None:
-        row = self._selected_row()
-        if row is None or not row.managed:
-            return
-        row.secret = not row.secret
-        self._refresh_table()
-
-    def action_edit_prompt(self) -> None:
-        row = self._selected_row()
-        if row is None or not row.managed:
-            return
-        box = self.query_one("#prompt-input", Input)
-        box.placeholder = gettext("Form prompt for %(name)s (Enter to apply, Esc to cancel)") % {
-            "name": row.name
-        }
-        box.value = row.prompt
-        box.display = True
-        box.focus()
-
-    def submit_prompt_if_open(self) -> None:
-        """Apply the value from the prompt input box.
-
-        Enter is captured by MenuApp's priority binding and forwarded here
-        because Input.Submitted doesn't fire for Enter in that context.
-        """
-        box = self.query_one("#prompt-input", Input)
-        if not box.display:
-            return
-        row = self._selected_row()
-        if row is not None and row.managed:
-            row.prompt = box.value
-        self._hide_prompt_input()
-        self._refresh_table()
-
-    def _hide_prompt_input(self) -> None:
-        box = self.query_one("#prompt-input", Input)
-        box.display = False
-        self.query_one(DataTable).focus()
-
-    def action_toggle_resync(self) -> None:
-        self._resync = not self._resync
-        self.query_one("#edit-resync", Static).update(
-            gettext(
-                "resync: on — definitions that no longer match the script will be pruned when you save"
-            )
-            if self._resync
-            else gettext("resync: off")
-        )
-
-    def action_save(self) -> None:
-        # Only send the delta relative to when the screen opened to minimise
-        # warning noise; all rules are delegated to edit_specs.
-        add = [r.name for r in self._rows if r.managed and not r.orig_managed]
-        remove = [r.name for r in self._rows if r.orig_managed and not r.managed]
-        secret = [r.name for r in self._rows if r.managed and r.secret and not r.orig_secret]
-        no_secret = [r.name for r in self._rows if r.managed and not r.secret and r.orig_secret]
-        prompts = {r.name: r.prompt for r in self._rows if r.managed and r.prompt != r.orig_prompt}
-        result = reconcile.edit_specs(
-            self._text,
-            self._original,
-            resync=self._resync,
-            add=add,
-            remove=remove,
-            secret=secret,
-            no_secret=no_secret,
-            prompts=prompts,
-        )
-        copy_path = self._entry.dir / "script.py"
-        copy_path.write_text(metawriter.write_params(self._text, result.specs), encoding="utf-8")
-        remaining = ", ".join(s.name for s in result.specs) or "—"
-        message = gettext("Updated %(name)s. Managed: %(names)s") % {
-            "name": self._entry.meta.name,
-            "names": remaining,
-        }
-        for w in result.warnings:
-            message += "  " + reconcile.render_warning(w)
-        self.dismiss(message)
-
-    def action_cancel(self) -> None:
-        # When the prompt input box is open, Esc only closes it, not the whole screen.
-        box = self.query_one("#prompt-input", Input)
-        if box.display:
-            self._hide_prompt_input()
-            return
+    def action_dismiss_help(self) -> None:
         self.dismiss(None)
 
 
 class MenuApp(App[int]):
-    """Main menu. Exit code: 0 for a clean quit; shows the script's exit code after a run."""
+    """The Library. Exit code 0 on a clean quit."""
 
-    TITLE = "skit"
-    CSS = """
+    TITLE = "skit · " + gettext("Library")
+    ENABLE_COMMAND_PALETTE = False
+    CSS = (
+        theme.CHROME_CSS
+        + """
     #search { dock: top; }
-    #status { dock: bottom; height: 1; color: $text-muted; padding: 0 1; }
-    DataTable { height: 1fr; }
-    #confirm-box {
-        align: center middle;
-        background: $surface;
-        border: round $primary;
-        padding: 1 2;
-        width: auto;
-        height: auto;
-    }
-    ConfirmRemove { align: center middle; }
-    EditParams { align: center middle; }
-    #edit-box {
-        background: $surface;
-        border: round $primary;
-        padding: 1 2;
-        width: 90%;
-        height: 80%;
-    }
-    #edit-box DataTable { height: 1fr; }
-    #edit-resync { height: 1; color: $text-muted; }
-    #prompt-input { display: none; }
-    #edit-hint { height: 1; color: $text-muted; }
+    #main { height: 1fr; }
+    /* btop grammar: each panel is a rounded box with its own muted border tint and its
+       title ON the border (list green, detail indigo — the cpu/net pairing). */
+    #entry-table { width: 3fr; border: round $skit-box-green; border-title-color: ansi_bright_white; }
+    #detail { width: 2fr; border: round $skit-box-indigo; border-title-color: ansi_bright_white;
+              padding: 0 1; }
+    /* One docked container holds the whole footer. Docking each row separately makes
+       every dock:bottom widget land on the SAME bottom line (dock does not stack), so
+       the two key rows end up hidden behind the status line — the footer looks empty.
+       Stacking them inside a single auto-height docked Vertical is what actually shows
+       all three rows. */
+    #footer { dock: bottom; height: auto; }
+    #status { height: 1; color: $text-muted; padding: 0 1; }
+    #keys-local { height: 1; padding: 0 1; }
+    #keys-global { height: 1; padding: 0 1; }
     """
+    )
     BINDINGS = [
-        # Double Ctrl+C is the standard quit gesture (like many REPLs). priority: it must fire
-        # even while the search Input has focus, and it shadows Textual's built-in ctrl+c
-        # system binding (help_quit), which would otherwise just point at ctrl+q.
         Binding("ctrl+c", "ctrl_c_quit", gettext("Quit"), priority=True),
-        Binding("escape", "quit", gettext("Quit"), show=False),
-        Binding("delete", "remove", gettext("Remove")),
-        # priority: the search Input has a built-in Emacs ctrl+e (move to end of line); we
-        # must claim it first so our "edit" action wins.
-        Binding("ctrl+e", "edit", gettext("Params"), priority=True),
-        Binding("enter", "run", gettext("Run"), priority=True),
+        Binding("escape", "back_or_quit", gettext("Quit"), show=False),
+        # "delete" is forward-delete (fn+Delete on a Mac); the key most users press to
+        # delete — the big ⌫ above Return — sends backspace, which Textual names
+        # "backspace". Bind both so the footer's advertised "Del" actually fires. This is
+        # safe next to the search box: a focused Input owns backspace for its own
+        # delete-left (closer in the focus chain than this non-priority app binding), so
+        # backspace only reaches "remove" when the table has focus.
+        Binding("delete,backspace", "remove", gettext("Remove")),
+        Binding("ctrl+e", "edit", gettext("Edit script")),
+        Binding("e", "edit", gettext("Edit script"), show=False),
+        Binding("enter", "run", gettext("Run")),
+        Binding("r", "rerun", gettext("Rerun"), show=False),
+        Binding("p", "settings", gettext("Script settings"), show=False),
+        Binding("s", "presets", gettext("Presets"), show=False),
+        Binding("a", "add", gettext("Add script"), show=False),
+        Binding("comma", "preferences", gettext("Preferences"), show=False),
+        Binding("D", "health", gettext("Health check"), show=False),
+        Binding("question_mark", "help", gettext("Help"), show=False),
+        Binding("slash", "focus_search", gettext("Search"), show=False),
+        # priority: Textual's built-in Tab focus-nav would otherwise win. The Library's
+        # focus model moves with / (search) and Esc (back to the table), not Tab, so Tab is
+        # free to mean "toggle the detail pane" as the spec asks.
+        Binding("tab", "toggle_detail", gettext("Detail pane"), show=False, priority=True),
     ]
-
-    # Seconds within which a second Ctrl+C press counts as "quit".
     CTRL_C_WINDOW = 2.0
+    # Below this terminal width the detail pane auto-collapses to give the list the whole
+    # row (spec §1); Tab pins it open/closed regardless.
+    MIN_DETAIL_WIDTH = 80
 
     def __init__(self) -> None:
         super().__init__()
         self._entries: list[Entry] = []
         self._visible: list[Entry] = []
         self._ctrl_c_at: float = 0.0
+        self._drift_cache: dict[str, tuple[float, bool]] = {}  # slug -> (mtime, has_drift)
+        self._detail_manual: bool | None = None  # None = auto by width; else the user's Tab choice
 
-    def action_ctrl_c_quit(self) -> None:
-        """First Ctrl+C shows a hint; a second press within the window quits."""
-        now = time.monotonic()
-        if now - self._ctrl_c_at <= self.CTRL_C_WINDOW:
-            self.exit(0)
-            return
-        self._ctrl_c_at = now
-        # notify() renders above modal screens too, unlike the docked #status bar.
-        self.notify(gettext("Press Ctrl+C again to quit"), timeout=self.CTRL_C_WINDOW)
+    @override
+    def get_css_variables(self) -> dict[str, str]:
+        # The first stylesheet parse runs before on_mount activates the theme; without
+        # the $skit-box-* merge that parse dies on an unresolved variable.
+        return {**super().get_css_variables(), **theme.BOX_VARIABLES}
+
+    def on_mount(self) -> None:
+        self.register_theme(CLAUDE_THEME)
+        self.theme = "skit-claude"
+        table = self.query_one(DataTable)
+        table.add_columns(gettext("Name"), gettext("Kind"), " ")
+        table.border_title = gettext("Scripts")
+        self.query_one("#detail").border_title = gettext("Detail pane")
+        self._reload()
+        # The table owns the keyboard: that's what makes the advertised single-letter
+        # keys real. `/` moves into the search box.
+        table.focus()
 
     @override
     def compose(self) -> ComposeResult:
-        yield Input(
-            placeholder=gettext(
-                "Type to search… (Enter to run, Ctrl+C twice to quit, Del to remove)"
-            ),
-            id="search",
-        )
-        table = DataTable(cursor_type="row", zebra_stripes=True)
-        yield table
-        yield Static("", id="status")
-        yield Footer()
+        yield Input(placeholder=gettext("/ to search names and descriptions…"), id="search")
+        with Horizontal(id="main"):
+            yield DataTable(cursor_type="row", zebra_stripes=False, id="entry-table")
+            yield VerticalScroll(Static("", id="detail-body", markup=True), id="detail")
+        with Vertical(id="footer"):
+            yield Static("", id="keys-local", markup=True)
+            yield Static("", id="keys-global", markup=True)
+            yield Static("", id="status")
 
-    def on_mount(self) -> None:
-        table = self.query_one(DataTable)
-        table.add_columns(gettext("Name"), gettext("Kind"), gettext("Description"))
-        self._reload()
-        self.query_one("#search", Input).focus()
+    # ------------------------------------------------------------------ data
 
     def _reload(self) -> None:
-        self._entries = store.list_entries()
+        self._entries = sorted(store.list_entries(), key=_activity_key, reverse=True)
         self._apply_filter(self.query_one("#search", Input).value)
 
     def _apply_filter(self, query: str) -> None:
@@ -407,166 +290,383 @@ class MenuApp(App[int]):
             if not query or _fuzzy_match(query, f"{e.meta.name} {e.meta.description}")
         ]
         for e in self._visible:
-            table.add_row(e.meta.name, e.meta.kind, e.meta.description or "—", key=e.slug)
-        status = self.query_one("#status", Static)
-        if not self._entries:
-            status.update(gettext("No scripts yet. Quit and add one with: skit add <path>"))
-        else:
-            status.update(
-                ngettext(
-                    "%(shown)s/%(total)s script", "%(shown)s/%(total)s scripts", len(self._entries)
-                )
-                % {"shown": len(self._visible), "total": len(self._entries)}
-            )
+            glyph, kind_label = _kind_badge(e.meta.kind)
+            if e.meta.kind == "python" and e.meta.mode == "reference":
+                # reference: links the original, never copied (spec §1). kind-gated:
+                # command templates also carry mode="reference" in their meta, but there
+                # is no linked file to point an arrow at.
+                kind_label = f"{kind_label} ↗"
+            health = "⚠" if launcher.target_missing(e) else ""
+            table.add_row(escape(e.meta.name), f"{glyph} {kind_label}", health, key=e.slug)
+        self._refresh_status()
+        self._refresh_detail()
+        self._refresh_footer()
 
     def _selected(self) -> Entry | None:
         table = self.query_one(DataTable)
-        if not self._visible or table.cursor_row is None:
+        if not self._visible:
             return None
-        if 0 <= table.cursor_row < len(self._visible):
+        if 0 <= table.cursor_row < len(self._visible):  # pragma: no mutate — self-clamps cursor
             return self._visible[table.cursor_row]
-        return None
+        return None  # pragma: no cover — Textual clamps cursor_coordinate
+
+    # ---------------------------------------------------------------- render
+
+    def _refresh_status(self, message: str = "") -> None:
+        status = self.query_one("#status", Static)
+        if message:
+            status.update(message)
+            return
+        if not self._entries:
+            status.update(gettext("Your scripts will appear here."))
+            return
+        status.update(
+            ngettext(
+                "%(shown)s/%(total)s script", "%(shown)s/%(total)s scripts", len(self._entries)
+            )
+            % {"shown": len(self._visible), "total": len(self._entries)}
+        )
+
+    def _refresh_footer(self) -> None:
+        entry = self._selected()
+        local: list[str] = []
+        if entry is not None:
+            local.append(tui_footer.chip("app.run", "Enter", gettext("Run")))
+            if argstate.load_state(entry.slug)["last_run"]:
+                local.append(tui_footer.chip("app.rerun", "r", gettext("Rerun")))
+            local.append(tui_footer.chip("app.settings", "p", gettext("Script settings")))
+            local.append(tui_footer.chip("app.edit", "e", gettext("Edit script")))
+            local.append(tui_footer.chip("app.remove", "Del", gettext("Remove")))
+        globals_row = [
+            tui_footer.chip("app.add", "a", gettext("Add script")),
+            tui_footer.chip("app.presets", "s", gettext("Presets")),
+            tui_footer.chip("app.focus_search", "/", gettext("Search")),
+            tui_footer.chip("app.preferences", ",", gettext("Preferences")),
+            tui_footer.chip("app.health", "D", gettext("Health check")),
+            tui_footer.chip("app.help", "?", gettext("Help")),
+        ]
+        self.query_one("#keys-local", Static).update(tui_footer.bar(*local))
+        self.query_one("#keys-global", Static).update(tui_footer.bar(*globals_row))
+
+    def _has_drift(self, entry: Entry) -> bool:
+        """Drift is the expensive check (read + reconcile): lazy, per-selection, mtime-cached."""
+        if entry.meta.kind != "python" or not entry.script_path.exists():
+            return False
+        mtime = entry.script_path.stat().st_mtime
+        cached = self._drift_cache.get(entry.slug)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+        plan = flows.plan_for_entry(entry)
+        drift = bool(plan.drift_lines)
+        self._drift_cache[entry.slug] = (mtime, drift)
+        return drift
+
+    def _refresh_detail(self) -> None:
+        body = self.query_one("#detail-body", Static)
+        entry = self._selected()
+        if entry is None:
+            if not self._entries:
+                body.update(
+                    "\n".join(
+                        (
+                            f"[bold]{gettext('Your scripts will appear here.')}[/bold]",
+                            "",
+                            gettext("Press a to add the first one,"),
+                            gettext("or run: skit add <path> in a terminal."),
+                        )
+                    )
+                )
+            else:
+                body.update("")
+            return
+        body.update("\n".join(self._detail_lines(entry)))
+
+    def _detail_lines(self, entry: Entry) -> list[str]:
+        glyph, kind_label = _kind_badge(entry.meta.kind)
+        lines = [f"[bold $accent]{escape(entry.meta.name)}[/]", f"{glyph} {kind_label}"]
+        if entry.meta.kind == "python":
+            if entry.meta.mode == "copy":
+                lines.append(
+                    f"[dim]✓ {gettext('The copy is kept by skit; your original file is never modified.')}[/dim]"
+                )
+            else:
+                lines.append(
+                    f"[dim]↗ {gettext('Linked to the original: %(path)s') % {'path': escape(entry.meta.source)}}[/dim]"
+                )
+        if entry.meta.kind == "command":
+            lines.append(f"[dim]{escape(entry.meta.template)}[/dim]")
+        lines.append("")
+        lines.append(
+            escape(entry.meta.description)
+            if entry.meta.description
+            else f"[dim]{gettext('(no description — add one in Script settings)')}[/dim]"
+        )
+        lines.append("")
+        lines.extend(self._detail_state_lines(entry))
+        return lines
+
+    def _detail_state_lines(self, entry: Entry) -> list[str]:
+        lines: list[str] = []
+        state = argstate.load_state(entry.slug)
+        plan = flows.plan_for_entry(entry)
+        if plan.fields:
+            shown: list[str] = []
+            for f in plan.fields[:6]:
+                if f.secret:
+                    shown.append(f"{escape(f.key)}=•••🔒")
+                else:
+                    value = state["values"].get(f.key, f.default)
+                    shown.append(f"{escape(f.key)}={escape(value)}" if value else escape(f.key))
+            more = "" if len(plan.fields) <= 6 else " …"
+            lines.append(gettext("Parameters  %(summary)s") % {"summary": "  ".join(shown) + more})
+        if state["presets"]:
+            lines.append(
+                gettext("Presets  %(names)s")
+                % {"names": " · ".join(escape(p) for p in sorted(state["presets"]))}
+            )
+        if entry.meta.dependencies:
+            lines.append(
+                gettext("Depends on  %(deps)s")
+                % {"deps": ", ".join(escape(d) for d in entry.meta.dependencies)}
+            )
+        last = state["last_run"]
+        if last:
+            outcome = (
+                f"[green]✓ {gettext('finished')}[/green]"
+                if last.get("exit") == 0
+                else f"[yellow]✗ {gettext('failed (code %(code)s)') % {'code': last.get('exit')}}[/yellow]"
+            )
+            lines.append(
+                gettext("Last run  %(when)s · %(outcome)s")
+                % {"when": _relative_time(str(last.get("at", ""))), "outcome": outcome}
+            )
+        else:
+            lines.append(f"[dim]{gettext('Not run yet')}[/dim]")
+        marker = launcher.missing_marker(entry)
+        if marker:
+            lines.append(f"[yellow]{escape(marker)}[/yellow]")
+        elif self._has_drift(entry):
+            lines.append(
+                f"[yellow]⚠ {gettext('The script changed — skit checks the form against it before every run.')}[/yellow]"
+            )
+        return lines
+
+    # ---------------------------------------------------------------- events
 
     @on(Input.Changed, "#search")
     def _on_search(self, event: Input.Changed) -> None:
         self._apply_filter(event.value)
+
+    @on(Input.Submitted, "#search")
+    def _on_search_submitted(self, event: Input.Submitted) -> None:
+        # Enter in the search box runs the top match (and returns focus to the table,
+        # so the follow-up keys — r, p, e — work immediately).
+        self.query_one(DataTable).focus()
+        self.action_run()
+
+    @on(DataTable.RowHighlighted)
+    def _on_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        self._refresh_detail()
+        self._refresh_footer()
 
     @on(DataTable.RowSelected)
     def _on_row_selected(self, event: DataTable.RowSelected) -> None:
         self.action_run()
 
     def on_key(self, event: events.Key) -> None:
-        # When the search box has focus, forward Up/Down to the table.
-        if event.key in ("up", "down") and self.focused is self.query_one("#search", Input):
+        # While searching, Up/Down still drive the table (browse results as you type).
+        search = self.query_one("#search", Input)
+        if event.key in ("up", "down") and self.focused is search:
             table = self.query_one(DataTable)
             table.action_cursor_up() if event.key == "up" else table.action_cursor_down()
             event.stop()
 
+    _LIBRARY_ACTIONS = (
+        "run",
+        "remove",
+        "edit",
+        "rerun",
+        "settings",
+        "presets",
+        "add",
+        "preferences",
+        "health",
+        "help",
+        "focus_search",
+        "toggle_detail",
+    )
+
+    @override
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Library keys act only on the Library: keys that bubble out of a pushed
+        screen's own widgets must not trigger surprise actions underneath it."""
+        return not (action in self._LIBRARY_ACTIONS and len(self.screen_stack) > 1)
+
+    def action_focus_search(self) -> None:
+        self.query_one("#search", Input).focus()
+
+    def action_back_or_quit(self) -> None:
+        """Esc in the search box returns to the table; Esc on the table quits."""
+        search = self.query_one("#search", Input)
+        if self.focused is search:
+            self.query_one(DataTable).focus()
+            return
+        self.exit(0)
+
+    def action_ctrl_c_quit(self) -> None:
+        now = time.monotonic()
+        if now - self._ctrl_c_at <= self.CTRL_C_WINDOW:
+            self.exit(0)
+            return
+        self._ctrl_c_at = now
+        self.notify(gettext("Press Ctrl+C again to quit"), timeout=self.CTRL_C_WINDOW)
+
+    # ------------------------------------------------------------------- run
+
     def action_run(self) -> None:
-        # Enter is a priority binding; when any modal is open it fires here first.
-        # EditParams needs Enter for its prompt input box — forward it there.
-        # For any other modal, ignore it entirely.
         if len(self.screen_stack) > 1:
-            screen = self.screen
-            if isinstance(screen, EditParams):
-                screen.submit_prompt_if_open()
             return
         entry = self._selected()
         if entry is None:
             return
-        with self.suspend():
-            print(
-                f"\n{gettext('── Running %(name)s ──') % {'name': entry.meta.name}}\n", flush=True
-            )
-            injected_path = None
-            try:
-                values: dict[str, str] = {}
-                secret_names: set[str] = set()
-                specs, text = self._load_specs(entry)
-                if specs:
-                    injected_path, secret_names = self._collect_python_params(
-                        entry, specs, text, values
-                    )
-                elif entry.meta.params:
-                    _collect_command_params(entry, values)
-                code = launcher.run_entry(entry, values=values, script_override=injected_path)
-                if values:
-                    argstate.save_last(entry.slug, values=values, secret_names=secret_names)
-            except launcher.LaunchError as exc:
-                print(gettext("Error: %(error)s") % {"error": str(exc)})
-                code = 1
-            finally:
-                if injected_path is not None and injected_path.exists():
-                    injected_path.unlink(missing_ok=True)
-            print(
-                f"\n{gettext('── Finished (exit code %(code)s) — press Enter to return ──') % {'code': code}}",
-                flush=True,
-            )
-            with contextlib.suppress(EOFError):
-                input()
-        self._reload()
+        try:
+            launcher.preflight(entry)
+        except launcher.LaunchError as exc:
+            self._refresh_status(gettext("Error: %(error)s") % {"error": escape(str(exc))})
+            return
+        plan = flows.plan_for_entry(entry)
+        if not plan.fields and not plan.degraded_reason:
+            self._execute(entry, plan, {}, argstate.load_state(entry.slug)["extra_args"])
+            return
+        prefill = flows.prefill(plan, entry.slug)
 
-    def _load_specs(self, entry: Entry) -> tuple[list[ParamSpec], str]:
-        """Read the script and reconcile (same as CLI): drop missing, warn on changed."""
-        specs: list[ParamSpec] = []
-        text = ""
-        if entry.meta.kind == "python" and entry.script_path.exists():
-            text = entry.script_path.read_text(encoding="utf-8", errors="replace")
-            specs = metawriter.read_params(text)
-        if specs:
-            report = reconcile.reconcile(text, specs)
-            if report.has_drift:
-                for line in reconcile.drift_lines(report, entry.meta.name):
-                    print(line, flush=True)
-            specs = report.usable
-        return specs, text
+        def _submitted(result: FormResult) -> None:
+            if result is None:
+                return
+            values, extra = result
+            self._execute(entry, plan, values, extra, show_drift=False)
 
-    def _collect_python_params(
+        self.push_screen(RunFormScreen(entry, plan, prefill), _submitted)
+
+    def action_rerun(self) -> None:
+        """r: skip the form, rerun with the last values — but never skip the checks."""
+        entry = self._selected()
+        if entry is None:
+            return
+        if not argstate.load_state(entry.slug)["last_run"]:
+            self._refresh_status(
+                gettext("%(name)s hasn't run yet — press Enter to fill the form first.")
+                % {"name": escape(entry.meta.name)}
+            )
+            return
+        try:
+            launcher.preflight(entry)
+        except launcher.LaunchError as exc:
+            self._refresh_status(gettext("Error: %(error)s") % {"error": escape(str(exc))})
+            return
+        plan = flows.plan_for_entry(entry)
+        prefill = flows.prefill(plan, entry.slug)
+        if flows.validate(plan, prefill):
+            # The last values no longer satisfy the form (e.g. a new required field):
+            # fall back to the form rather than assembling a broken command.
+            self.action_run()
+            return
+        self._execute(entry, plan, prefill, argstate.load_state(entry.slug)["extra_args"])
+
+    def _execute(
         self,
         entry: Entry,
-        specs: list[ParamSpec],
-        text: str,
+        plan: flows.FormPlan,
         values: dict[str, str],
-    ) -> tuple[Path, set[str]]:
-        """Layer 2 form (plain input/getpass while suspended; secrets are not echoed or saved)."""
-        import getpass
+        extra: list[str],
+        *,
+        show_drift: bool = True,
+    ) -> None:
+        """Suspend, deliver (inject/flags/template), pass the terminal through, record.
 
-        secret_names = {s.name for s in specs if s.secret}
-        prefill = argstate.resolve_defaults(specs, entry.slug)
-        print(
-            gettext("Parameters for %(name)s (press Enter to keep the value shown):")
-            % {"name": entry.meta.name},
-            flush=True,
-        )
-        for s in specs:
-            label = s.prompt or s.name
-            default = prefill.get(s.name, "")
-            try:
-                if s.secret:
-                    answer = getpass.getpass(f"  {label}: ")
-                else:
-                    hint = f" [{default}]" if default else ""
-                    answer = input(f"  {label}{hint}: ").strip()
-            except EOFError:
-                answer = ""
-            values[s.name] = answer or default
+        show_drift=False when the form was just shown (its banner already said it)."""
         try:
-            injected = shim.inject(text, specs, values)
-        except shim.ShimError as exc:
-            raise launcher.LaunchError(
-                gettext(
-                    "Can't inject parameters into %(name)s: targets not found (%(detail)s). The script may have drifted from its [tool.skit] definitions — re-add it or edit the block."
-                )
-                % {"name": entry.meta.name, "detail": str(exc)}
-            ) from exc
-        return shim.write_injected(entry.dir, injected), secret_names
+            asm = flows.assemble(plan, values, list(extra), cwd=Path.cwd())
+        except flows.FormError as exc:
+            self._refresh_status(gettext("Error: %(error)s") % {"error": escape(str(exc))})
+            return
+        with self.suspend():
+            print(f"\n── {gettext('Run %(name)s') % {'name': entry.meta.name}} ──\n", flush=True)
+            if show_drift:
+                for line in plan.drift_lines:
+                    print(line, flush=True)
+            # The shared delivery pipeline: inject, transparency, run, cleanup. The TUI
+            # just prints what it emits (bare, inside the suspend) and shows a banner.
+            outcome = flows.execute(entry, plan, asm, emit=lambda line: print(line, flush=True))
+            if outcome.code is None:
+                print(gettext("Error: %(error)s") % {"error": outcome.message}, flush=True)
+            print(f"\n{self._run_banner(outcome)}", flush=True)
+            with contextlib.suppress(EOFError):
+                input()
+        code = outcome.code
+        if code is None:
+            # The script never ran: recording it would light up r-rerun and stamp a
+            # "last run" that never happened.
+            self._reload()
+            self._refresh_status(
+                gettext("Last: %(name)s ✗ couldn't launch") % {"name": escape(entry.meta.name)}
+            )
+            return
+        flows.save_after_run(entry.slug, plan, values, list(extra), code, at=models.now_iso())
+        self._reload()
+        status = (
+            gettext("Last: %(name)s ✓ finished")
+            if code == 0
+            else gettext("Last: %(name)s ✗ failed (code %(code)s)")
+        )
+        self._refresh_status(status % {"name": escape(entry.meta.name), "code": code})
+
+    @staticmethod
+    def _run_banner(outcome: flows.RunOutcome) -> str:
+        if outcome.code == 0:
+            return gettext("✓ finished — press Enter to return")
+        if outcome.launched:
+            return gettext("✗ failed (code %(code)s) — press Enter to return") % {
+                "code": outcome.code
+            }
+        return gettext("✗ couldn't launch — press Enter to return")
+
+    # --------------------------------------------------------------- actions
 
     def action_edit(self) -> None:
-        # ctrl+e is also a priority binding; don't open a second modal if one is already up.
         if len(self.screen_stack) > 1:
             return
         entry = self._selected()
         if entry is None:
             return
-        status = self.query_one("#status", Static)
-        copy_path = entry.dir / "script.py"
-        # Same guards as CLI `skit edit`: only python + copy-mode copies are editable (A7).
-        if entry.meta.kind != "python" or entry.meta.mode == "reference" or not copy_path.exists():
-            status.update(
-                gettext(
-                    "%(name)s: only Python copy-mode entries have editable parameter definitions."
-                )
-                % {"name": entry.meta.name}
+        target = self._editable_source(entry)
+        if target is None or not target.exists():
+            self._refresh_status(
+                gettext("%(name)s: no editable script source (only Python scripts have one).")
+                % {"name": escape(entry.meta.name)}
             )
             return
+        with self.suspend():
+            try:
+                editor.open_in_editor(target)
+            except editor.EditorError as exc:
+                print(str(exc), flush=True)
+                with contextlib.suppress(EOFError):
+                    input(gettext("Press Enter to return"))
+        self._drift_cache.pop(entry.slug, None)
+        self._reload()
+        self._refresh_status(gettext("Edited %(name)s.") % {"name": escape(entry.meta.name)})
 
-        def _done(message: str | None) -> None:
-            if message:
-                status.update(message)
-
-        self.push_screen(EditParams(entry), _done)
+    def _editable_source(self, entry: Entry) -> Path | None:
+        if entry.meta.kind != "python":
+            return None
+        if entry.meta.mode == "reference":
+            return Path(entry.meta.source)
+        return entry.dir / "script.py"
 
     def action_remove(self) -> None:
+        if len(self.screen_stack) > 1:
+            return
         entry = self._selected()
         if entry is None:
             return
@@ -576,7 +676,96 @@ class MenuApp(App[int]):
                 store.remove(entry.slug)
                 self._reload()
 
-        self.push_screen(ConfirmRemove(entry.meta.name), _done)
+        self.push_screen(ConfirmRemove(entry), _done)
+
+    def action_add(self) -> None:
+        from .tui_add import AddSourceScreen
+
+        def _added(slug: str | None) -> None:
+            self._reload()
+            if slug:
+                self._select_slug(slug)
+                self._refresh_status(gettext("✓ added"))
+
+        self.push_screen(AddSourceScreen(), _added)
+
+    def action_settings(self, section: str = "") -> None:
+        entry = self._selected()
+        if entry is None:
+            return
+        from .tui_settings import ScriptSettingsScreen
+
+        def _closed(_changed: bool | None) -> None:
+            self._drift_cache.pop(entry.slug, None)
+            self._reload()
+
+        self.push_screen(ScriptSettingsScreen(entry, initial_section=section), _closed)
+
+    def action_presets(self) -> None:
+        self.action_settings(section="presets")
+
+    def action_preferences(self) -> None:
+        from .tui_prefs import PreferencesScreen
+
+        def _applied(_result: object) -> None:
+            self._retranslate_chrome()  # a language change must hit the chrome, not just rows
+            self._reload()
+
+        self.push_screen(PreferencesScreen(), _applied)
+
+    def action_health(self) -> None:
+        from .tui_health import HealthScreen
+
+        def _jump(slug: str | None) -> None:
+            self._reload()
+            if slug:
+                self._select_slug(slug)
+
+        self.push_screen(HealthScreen(), _jump)
+
+    def action_help(self) -> None:
+        self.push_screen(HelpScreen())
+
+    def _select_slug(self, slug: str) -> None:
+        for i, e in enumerate(self._visible):
+            if e.slug == slug:
+                self.query_one(DataTable).move_cursor(row=i)
+                break
+        self._refresh_detail()
+        self._refresh_footer()
+
+    # ------------------------------------------------------------- detail pane
+
+    def on_resize(self, event: events.Resize) -> None:
+        """Narrow terminals give the whole row to the list (spec §1). Auto-collapse only
+        while the user hasn't pinned the pane with Tab."""
+        if self._detail_manual is None:
+            self._set_detail_visible(event.size.width >= self.MIN_DETAIL_WIDTH)
+
+    def action_toggle_detail(self) -> None:
+        """Tab: show/hide the detail pane and pin that choice against auto-collapse."""
+        self._detail_manual = not self.query_one("#detail").display
+        self._set_detail_visible(self._detail_manual)
+
+    def _set_detail_visible(self, visible: bool) -> None:
+        self.query_one("#detail").display = visible
+
+    # ------------------------------------------------------------- language
+
+    def _retranslate_chrome(self) -> None:
+        """Re-translate the static chrome that compose/on_mount set once, so a language
+        change in Preferences applies on the spot (spec §6) rather than only to the rows
+        _reload rebuilds: the window title, the search placeholder, the column headers."""
+        self.title = "skit · " + gettext("Library")
+        self.query_one("#search", Input).placeholder = gettext(
+            "/ to search names and descriptions…"
+        )
+        headers = [gettext("Name"), gettext("Kind"), " "]
+        for column, label in zip(self.query_one(DataTable).ordered_columns, headers, strict=False):
+            column.label = Text(label)
+        self.query_one(DataTable).border_title = gettext("Scripts")
+        self.query_one("#detail").border_title = gettext("Detail pane")
+        self.query_one(DataTable).refresh()
 
 
 def run_menu() -> int:

@@ -1,0 +1,361 @@
+"""Add flow in the TUI: source step → single review panel.
+
+The review panel is one always-editable surface — no wizard sequence to march through;
+Enter accepts everything as reviewed. Detection honesty rules render here: signal-
+driven checkbox defaults, the accumulator warning, filename-literal hints, and the
+"the script declares its own dependencies" read-only variant.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import override
+
+from rich.markup import escape
+from textual import on
+from textual.app import ComposeResult
+from textual.binding import Binding
+from textual.containers import Vertical, VerticalScroll
+from textual.screen import Screen
+from textual.widgets import Checkbox, Input, RadioButton, RadioSet, Static
+
+from . import analyzer, argspec, editor, metawriter, pep723, store, tui_footer
+from .i18n import gettext
+
+
+class AddSourceScreen(Screen[str | None]):
+    """Step 1: where does the script come from? Returns the new entry's slug, or None."""
+
+    BINDINGS = [Binding("escape", "cancel", gettext("Cancel"))]
+    DEFAULT_CSS = """
+    /* The border lives on the body, not the Screen: a bordered Screen offsets its
+       coordinate space and bottom-docked footer clicks land "outside" it. */
+    AddSourceScreen #add-body {
+        padding: 1;
+        border: round $skit-box-olive;
+        border-title-color: ansi_bright_white;
+        border-title-style: bold;
+    }
+    AddSourceScreen .hint { color: $text-muted; }
+    AddSourceScreen #add-keys { dock: bottom; height: 1; padding: 0 1; }
+    """
+
+    def on_mount(self) -> None:
+        self.query_one("#add-body").border_title = gettext("Add a script")
+
+    @override
+    def compose(self) -> ComposeResult:
+        with Vertical(id="add-body"):
+            yield Static(gettext("Path to a script or executable:"))
+            yield Input(placeholder="~/scripts/tool.py", id="add-path")
+            yield Static("", id="add-error", markup=True)
+            yield Static(
+                gettext("…or register a command template below (e.g. ffmpeg -i {input}):"),
+                classes="hint",
+            )
+            yield Input(placeholder="ffmpeg -i {input} {output}", id="add-template")
+            yield Input(placeholder=gettext("Name for the command"), id="add-template-name")
+        yield Static(
+            tui_footer.bar(
+                tui_footer.chip("screen.continue_add", "Enter", gettext("Continue")),
+                tui_footer.chip("screen.cancel", "Esc", gettext("Cancel")),
+            ),
+            id="add-keys",
+            markup=True,
+        )
+
+    @on(Input.Submitted, "#add-path")
+    def _path_given(self, event: Input.Submitted) -> None:
+        self._submit_path()
+
+    def _submit_path(self) -> None:
+        raw = self.query_one("#add-path", Input).value.strip()
+        if not raw:
+            return
+        path = Path(raw).expanduser()
+        error = self.query_one("#add-error", Static)
+        if not path.is_file():
+            error.update(
+                f"[red]{gettext('File not found: %(path)s') % {'path': escape(str(path))}}[/red]"
+            )
+            return
+        if path.suffix.lower() != ".py":
+            from .store import infer_kind
+
+            if infer_kind(path) != "exe":
+                error.update(
+                    f"[red]{gettext("%(file)s isn't a .py file or an executable — pass --exe for a program, or --cmd for a command template.") % {'file': escape(path.name)}}[/red]"
+                )
+                return
+            # Executables skip the review panel: there is nothing to detect inside them.
+            try:
+                entry = store.add_exe(path)
+            except store.StoreError as exc:
+                error.update(f"[red]{escape(str(exc))}[/red]")
+                return
+            self.dismiss(entry.slug)
+            return
+
+        def _reviewed(slug: str | None) -> None:
+            if slug is not None:
+                self.dismiss(slug)
+
+        self.app.push_screen(AddReviewScreen(path), _reviewed)
+
+    @on(Input.Submitted, "#add-template")
+    @on(Input.Submitted, "#add-template-name")
+    def _template_given(self, event: Input.Submitted) -> None:
+        self._submit_template()
+
+    def _submit_template(self) -> None:
+        template = self.query_one("#add-template", Input).value.strip()
+        name = self.query_one("#add-template-name", Input).value.strip()
+        error = self.query_one("#add-error", Static)
+        if not template:
+            return
+        if not name:
+            error.update(f"[red]{gettext('A name is required.')}[/red]")
+            return
+        try:
+            entry = store.add_command(template, name=name)
+        except store.StoreError as exc:
+            error.update(f"[red]{escape(str(exc))}[/red]")
+            return
+        self.dismiss(entry.slug)
+
+    def action_continue_add(self) -> None:
+        """Footer/Enter twin: submit whichever field the user filled — the script path
+        takes precedence, else the command template."""
+        if self.query_one("#add-path", Input).value.strip():
+            self._submit_path()
+        else:
+            self._submit_template()
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class AddReviewScreen(Screen[str | None]):
+    """Step 2: the review panel — everything prefilled, Enter is the only required act."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", gettext("Cancel")),
+        Binding("ctrl+e", "edit_source", gettext("Edit script"), priority=True),
+        Binding("ctrl+a", "accept", gettext("Add"), priority=True),
+    ]
+    DEFAULT_CSS = """
+    AddReviewScreen #review-body {
+        padding: 0 1;
+        border: round $skit-box-olive;
+        border-title-color: ansi_bright_white;
+        border-title-style: bold;
+    }
+    AddReviewScreen .section { color: $accent; margin: 1 0 0 0; }
+    AddReviewScreen .hint { color: $text-muted; }
+    AddReviewScreen .warn { color: $warning; }
+    AddReviewScreen #review-keys { dock: bottom; height: 1; color: $text-muted; padding: 0 1; }
+    """
+
+    def __init__(self, path: Path) -> None:
+        super().__init__()
+        self._path: Path = path
+        self._text: str = path.read_text(encoding="utf-8", errors="replace")
+        self._analysis: analyzer.Analysis = analyzer.analyze(self._text)
+        # Survives the edit→rescan recompose: the rescan refreshes DETECTION, it must
+        # never throw away what the user already typed into the panel.
+        self._overrides: dict[str, str] = {}
+
+    def on_mount(self) -> None:
+        self.query_one("#review-body").border_title = gettext("Add %(name)s") % {
+            "name": escape(self._path.name)
+        }
+
+    @override
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="review-body"):
+            yield Static(gettext("Name"), classes="section")
+            yield Input(value=self._overrides.get("name", self._path.stem), id="rv-name")
+            yield Static(gettext("Description"), classes="section")
+            yield Input(
+                value=self._overrides.get("desc", store.suggest_description(self._text)),
+                placeholder=gettext("(the script has no docstring — you can write one line)"),
+                id="rv-desc",
+            )
+            yield Static(gettext("Storage"), classes="section")
+            # "1" == the reference button. Default to copy on first compose (no override);
+            # after an edit→rescan, restore whichever the user had picked.
+            reference = self._overrides.get("mode") == "1"
+            with RadioSet(id="rv-mode"):
+                yield RadioButton(
+                    gettext("Keep a copy — skit stores it; your original file is never modified"),
+                    value=not reference,
+                )
+                yield RadioButton(
+                    gettext(
+                        "Link the original — edits take effect immediately, but skit won't write "
+                        "to the file, so parameter definitions are yours to maintain"
+                    ),
+                    value=reference,
+                )
+            yield from self._compose_deps()
+            yield from self._compose_params()
+        yield Static(
+            tui_footer.bar(
+                tui_footer.chip("screen.accept", "Ctrl+A", gettext("Add")),
+                tui_footer.chip("screen.toggle_candidate", "Space", gettext("Toggle")),
+                tui_footer.chip("screen.edit_source", "Ctrl+E", gettext("Edit script")),
+                tui_footer.chip("screen.cancel", "Esc", gettext("Cancel")),
+            ),
+            id="review-keys",
+            markup=True,
+        )
+
+    def action_toggle_candidate(self) -> None:
+        """Footer/Space twin: flip the focused candidate checkbox (each checkbox is also
+        directly clickable). Named to avoid shadowing DOMNode.action_toggle, the built-in
+        reactive-attribute toggle that takes an argument."""
+        if isinstance(self.focused, Checkbox):
+            self.focused.toggle()
+
+    def _compose_deps(self) -> ComposeResult:
+        yield Static(gettext("Dependencies"), classes="section")
+        if pep723.has_block(self._text):
+            meta = pep723.parse_block(self._text) or {}
+            deps = meta.get("dependencies") or []
+            python = meta.get("requires-python", "")
+            yield Static(gettext("The script declares its own dependencies (PEP 723):"))
+            if python:
+                yield Static(
+                    "· " + gettext("needs Python %(python)s") % {"python": escape(str(python))}
+                )
+            for d in deps:
+                yield Static("· " + gettext("installs %(dep)s") % {"dep": escape(str(d))})
+            if not deps and not python:
+                yield Static(f"[dim]{gettext('(none declared)')}[/dim]", markup=True)
+        else:
+            suggested = ", ".join(pep723.suggest_dependencies(self._text))
+            yield Input(
+                value=self._overrides.get("deps", suggested),
+                placeholder=gettext("comma separated, e.g. requests>=2,<3, rich"),
+                id="rv-deps",
+            )
+            yield Static(
+                gettext("detected from the script's imports — edit freely"), classes="hint"
+            )
+
+    def _compose_params(self) -> ComposeResult:
+        yield Static(gettext("Parameters"), classes="section")
+        spec = argspec.read_cli(self._text)
+        if self._analysis.uses_cli_framework:
+            if spec is not None and spec.ok and spec.fields:
+                yield Static(
+                    gettext(
+                        "✓ skit read this script's own arguments (%(count)s fields). Running it "
+                        "opens a form — nothing to memorize."
+                    )
+                    % {"count": len(spec.fields)}
+                )
+            else:
+                yield Static(
+                    gettext(
+                        "This script parses its own arguments (%(names)s); skit couldn't model "
+                        "them statically, so the run form offers a passthrough-arguments field."
+                    )
+                    % {"names": ", ".join(self._analysis.frameworks)},
+                    classes="hint",
+                )
+            return
+        if self._analysis.candidates:
+            yield Static(gettext("Tick the ones the run form should ask for:"), classes="hint")
+        for i, c in enumerate(self._analysis.candidates):
+            label = (
+                f"{c.name}  ({c.type} = {c.default!r})"
+                if c.kind == "const"
+                else gettext("input() #%(n)s: %(prompt)s")
+                % {"n": c.order + 1, "prompt": repr(c.prompt)}
+            )
+            yield Checkbox(escape(label), value=not c.demoted, id=f"rv-cand-{i}")
+            if c.demoted:
+                yield Static(
+                    "  ⚠ " + gettext("looks like a loop accumulator — probably not a parameter"),
+                    classes="warn",
+                )
+        if self._analysis.filename_literals:
+            names = ", ".join(repr(s) for s in self._analysis.filename_literals)
+            yield Static(
+                "💡 "
+                + gettext(
+                    "%(names)s are written directly inside the code, so skit can't turn them "
+                    "into form fields. To manage one, first give it a name at the top of the "
+                    "script, e.g. OUTPUT = '…' (Ctrl+E edits it now)."
+                )
+                % {"names": escape(names)},
+                classes="hint",
+            )
+        if self._analysis.uses_argv:
+            yield Static(
+                "ℹ "  # noqa: RUF001 — intended info glyph, completing the 💡 tip / ⚠ warning set
+                + gettext(
+                    "This script reads command-line arguments; the run form has an "
+                    "extra-arguments field for them."
+                ),
+                classes="hint",
+            )
+
+    def action_edit_source(self) -> None:
+        """Ctrl+E: open the USER'S original file in their editor, then rescan on return
+        (the edit→return→rescan loop; A5 is not involved — it's their file, their editor)."""
+        self._overrides["name"] = self.query_one("#rv-name", Input).value
+        self._overrides["desc"] = self.query_one("#rv-desc", Input).value
+        self._overrides["mode"] = str(self.query_one("#rv-mode", RadioSet).pressed_index)
+        deps_box = self.query("#rv-deps")
+        if deps_box:
+            self._overrides["deps"] = deps_box.first(Input).value
+        with self.app.suspend():
+            try:
+                editor.open_in_editor(self._path)
+            except editor.EditorError as exc:
+                print(str(exc), flush=True)
+        self._text = self._path.read_text(encoding="utf-8", errors="replace")
+        self._analysis = analyzer.analyze(self._text)
+        self.refresh(recompose=True)
+
+    def action_accept(self) -> None:
+        name = self.query_one("#rv-name", Input).value.strip() or None
+        desc = self.query_one("#rv-desc", Input).value.strip()
+        reference = self.query_one("#rv-mode", RadioSet).pressed_index == 1
+        deps: list[str] = []
+        if not pep723.has_block(self._text):
+            deps = pep723.split_requirements(self.query_one("#rv-deps", Input).value)
+        try:
+            entry = store.add_python(
+                self._path,
+                name=name,
+                mode="reference" if reference else "copy",
+                description=desc,
+                dependencies=deps or None,
+            )
+        except store.StoreError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        # The candidate checkboxes exist only when _compose_params rendered them, i.e. for
+        # a copy of a NON-cli-framework script. A script that both parses its own arguments
+        # AND defines a module-level constant / input() yields uses_cli_framework=True with a
+        # non-empty candidates list; _compose_params returns before the checkbox loop in that
+        # case, so querying #rv-cand-{i} here would raise NoMatches and crash after the entry
+        # was already committed. Gate the collection on the same condition that mounts them.
+        if entry.meta.mode == "copy" and not self._analysis.uses_cli_framework:
+            picked = [
+                self._analysis.candidates[i]
+                for i in range(len(self._analysis.candidates))
+                if self.query_one(f"#rv-cand-{i}", Checkbox).value
+            ]
+            if picked:
+                specs = [metawriter.ParamSpec.from_candidate(c) for c in picked]
+                copy_path = entry.dir / "script.py"
+                current = copy_path.read_text(encoding="utf-8")
+                copy_path.write_text(metawriter.write_params(current, specs), encoding="utf-8")
+        self.dismiss(entry.slug)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)

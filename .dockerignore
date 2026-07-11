@@ -1,0 +1,8 @@
+# Keep the demo build context small — only packaging inputs + docs/demo are needed.
+.git
+.venv
+.mutmut-cache
+htmlcov
+**/__pycache__
+docs/assets
+tests

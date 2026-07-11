@@ -55,6 +55,25 @@ def test_suggest_syntax_error_returns_empty():
     assert pep723.suggest_dependencies("def broken(:\n") == []
 
 
+def test_suggest_dependencies_maps_import_name_to_pypi_package():
+    # The failure the mapping fixes: `from PIL import Image` must suggest the installable `Pillow`,
+    # not the import name `PIL` (which uv can't resolve).
+    assert pep723.suggest_dependencies("from PIL import Image\n") == ["Pillow"]
+    assert pep723.suggest_dependencies("import cv2\n") == ["opencv-python"]
+    assert pep723.suggest_dependencies("import yaml\n") == ["PyYAML"]
+
+
+def test_suggest_dependencies_dedupes_after_mapping():
+    # Two imports that collapse onto the same distribution must appear once.
+    src = "from Crypto.Cipher import AES\nimport Crypto.Hash\n"
+    assert pep723.suggest_dependencies(src) == ["pycryptodome"]
+
+
+def test_suggest_dependencies_unmapped_name_unchanged():
+    # Names not in the table pass through verbatim (we only rewrite the ones we're sure about).
+    assert pep723.suggest_dependencies("import requests\n") == ["requests"]
+
+
 def test_inject_block_roundtrip():
     src = "#!/usr/bin/env python3\nimport requests\n"
     out = pep723.inject_block(src, ["requests"], ">=3.10")
@@ -126,7 +145,7 @@ def test_build_command_reference_deps(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(launcher, "find_uv", lambda: "/fake/uv")
     cmd = launcher.build_command(entry)
-    assert cmd[:3] == ["/fake/uv", "run", "--python"]
+    assert cmd[:4] == ["/fake/uv", "run", "--no-project", "--python"]
     assert ">=3.11" in cmd
     assert cmd.count("--with") == 2
     assert "--script" in cmd
@@ -161,13 +180,13 @@ def test_command_missing_values_raises():
 
 
 def test_argstate_roundtrip_and_forget():
-    assert argstate.load_last("nope") == {"values": {}, "extra_args": []}
+    assert argstate.load_state("nope")["values"] == {}
     argstate.save_last("s1", values={"x": "1"}, extra_args=["--fast"])
-    got = argstate.load_last("s1")
+    got = argstate.load_state("s1")
     assert got["values"] == {"x": "1"}
     assert got["extra_args"] == ["--fast"]
     argstate.forget("s1")
-    assert argstate.load_last("s1") == {"values": {}, "extra_args": []}
+    assert argstate.load_state("s1")["values"] == {}
     argstate.forget("s1")  # idempotent
 
 
@@ -177,7 +196,7 @@ def test_remove_clears_argstate(tmp_path):
     entry = store.add_python(script)
     argstate.save_last(entry.slug, extra_args=["--x"])
     store.remove(entry.meta.name)
-    assert argstate.load_last(entry.slug) == {"values": {}, "extra_args": []}
+    assert argstate.load_state(entry.slug)["values"] == {}
 
 
 # ---------- uvman (no network) ----------

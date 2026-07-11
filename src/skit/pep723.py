@@ -17,8 +17,48 @@ import tomllib
 from typing import Any
 
 _BLOCK_RE = re.compile(
-    r"(?m)^# /// script\s*$\n(?P<body>(?:^#(?:| .*)$\n)*?)^# ///\s*$\n?",
+    # The closer's trailing whitespace is restricted to horizontal whitespace ([^\S\n], i.e. space /
+    # tab / \r for CRLF) so it cannot cross a line boundary and swallow blank lines that follow the
+    # block — `\s*$` would otherwise match greedily across newlines and absorb them into the block,
+    # deleting them on rewrite (metawriter/pep723 both rebuild the text from m.end()).
+    r"(?m)^# /// script\s*$\n(?P<body>(?:^#(?:| .*)$\n)*?)^# ///[^\S\n]*$\n?",
 )
+
+# Import name -> PyPI distribution name, for the common cases where they differ. Without this an
+# `import PIL` becomes a `PIL` dependency, which uv can't resolve (the package is `Pillow`). Curated
+# and stdlib-only (a static dict, no network / importlib.metadata probing): we only rewrite names we
+# are sure about and leave everything else untouched.
+_IMPORT_TO_PACKAGE = {
+    "PIL": "Pillow",
+    "cv2": "opencv-python",
+    "yaml": "PyYAML",
+    "bs4": "beautifulsoup4",
+    "sklearn": "scikit-learn",
+    "skimage": "scikit-image",
+    "dotenv": "python-dotenv",
+    "dateutil": "python-dateutil",
+    "serial": "pyserial",
+    "jwt": "PyJWT",
+    "docx": "python-docx",
+    "pptx": "python-pptx",
+    "fitz": "PyMuPDF",
+    "OpenSSL": "pyOpenSSL",
+    "Crypto": "pycryptodome",
+    "Cryptodome": "pycryptodomex",
+    "git": "GitPython",
+    "attr": "attrs",
+    "slugify": "python-slugify",
+    "usb": "pyusb",
+    "win32com": "pywin32",
+    "win32api": "pywin32",
+}
+
+
+def _strip_comment_prefix(line: str) -> str:
+    """_BLOCK_RE guarantees "#" or "# ..." lines; both branches agree on a bare "#"."""
+    if line.startswith("# "):  # pragma: no mutate — TOML tolerates the extra leading space
+        return line[2:]
+    return line[1:]  # pragma: no mutate — only reached on a bare "#"; [1:] == [2:] == ""
 
 
 def parse_block(text: str) -> dict[str, Any] | None:
@@ -26,9 +66,7 @@ def parse_block(text: str) -> dict[str, Any] | None:
     m = _BLOCK_RE.search(text)
     if not m:
         return None
-    lines = [
-        line[2:] if line.startswith("# ") else line[1:] for line in m.group("body").splitlines()
-    ]
+    lines = [_strip_comment_prefix(line) for line in m.group("body").splitlines()]
     try:
         return tomllib.loads("\n".join(lines))
     except tomllib.TOMLDecodeError:
@@ -56,22 +94,135 @@ def suggest_dependencies(text: str) -> list[str]:
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
             found.add(node.module.split(".")[0])
     stdlib = sys.stdlib_module_names
-    return sorted(m for m in found if m not in stdlib and not m.startswith("_"))
+    third_party = (m for m in found if m not in stdlib and not m.startswith("_"))
+    # Map known import names to their real PyPI distribution names, then dedupe again in case two
+    # imports collapse to the same package (e.g. `Crypto` and its submodules -> pycryptodome).
+    return sorted({_IMPORT_TO_PACKAGE.get(m, m) for m in third_party})
+
+
+def _next_nonspace(text: str, pos: int) -> str:
+    """The first non-whitespace character at or after pos, or "" when none is left."""
+    for ch in text[pos:]:
+        if not ch.isspace():
+            return ch
+    return ""
+
+
+def split_requirements(text: str) -> list[str]:
+    """Split a comma-separated requirement list without shredding PEP 508 internals.
+
+    A single requirement may itself contain commas — in a version-specifier list
+    (``requests>=2,<3``), an extras bracket (``pkg[security,socks]``), a parenthesized
+    specifier (``foo (>=1.0,<2.0)``), or a quoted marker value
+    (``x; sys_platform in "linux,darwin"``). A naive ``split(",")`` turns
+    ``requests>=2,<3`` into the two bogus items ``requests>=2`` and ``<3``.
+
+    A comma separates two requirements only when it sits outside brackets/quotes AND
+    what follows starts a new requirement: PEP 508 names begin with a letter or digit,
+    while a continued specifier clause always begins with an operator (``<`` ``>``
+    ``=`` ``!`` ``~``). A trailing comma (nothing follows) also terminates. Known
+    limitation: a direct-URL reference whose URL itself contains a comma is not
+    supported (rare enough that guessing would be worse).
+    """
+    parts: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    quote = ""  # pragma: no mutate — falsy-equivalent sentinel (""/None): only read via truthiness
+    for i, ch in enumerate(text):
+        if quote:
+            buf.append(ch)
+            if ch == quote:
+                quote = ""  # pragma: no mutate — falsy-equivalent sentinel, as above
+            continue
+        if ch in ('"', "'"):
+            quote = ch
+        elif ch in "([":
+            depth += 1
+        elif ch in ")]":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            nxt = _next_nonspace(text, i + 1)
+            if not nxt or nxt.isalnum():
+                parts.append("".join(buf))
+                buf = []
+                continue
+        buf.append(ch)
+    parts.append("".join(buf))
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _toml_str(value: str) -> str:
+    r"""A TOML basic string for the PEP 723 comment block. A raw double quote or backslash
+    would terminate/mangle the string — a PEP 508 marker like `; python_version >= "3.8"`
+    carries embedded quotes — and any newline-class character would break out of the single
+    comment line the block is built from, so the rewritten block fails to re-parse and the
+    dependency list is silently lost. (Kept local: metawriter imports pep723, so pep723 must
+    not import back for the shared _toml_str.)"""
+    out = value.replace("\\", "\\\\").replace('"', '\\"')
+    out = out.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+
+    def _escape(ch: str) -> str:
+        if ch < " " or ch in ("\x7f", "\x85", "\u2028", "\u2029"):  # pragma: no mutate
+            return f"\\u{ord(ch):04X}"
+        return ch
+
+    return '"' + "".join(_escape(ch) for ch in out) + '"'
 
 
 def build_block(dependencies: list[str], requires_python: str = "") -> str:
     """Generate the PEP 723 block text (including the trailing newline)."""
     lines = ["# /// script"]
     if requires_python:
-        lines.append(f'# requires-python = "{requires_python}"')
+        lines.append(f"# requires-python = {_toml_str(requires_python)}")
     if dependencies:
         lines.append("# dependencies = [")
-        lines.extend(f'#     "{dep}",' for dep in dependencies)
+        lines.extend(f"#     {_toml_str(dep)}," for dep in dependencies)
         lines.append("# ]")
     else:
         lines.append("# dependencies = []")
     lines.append("# ///")
     return "\n".join(lines) + "\n"
+
+
+def _structural_bracket_delta(s: str) -> int:
+    """Net count of structural `[` minus `]` in a line of TOML content (already stripped of its
+    leading PEP 723 `#`/`# ` comment marker).
+
+    A naive `s.count("[") - s.count("]")` over the raw text is wrong whenever a bracket lives
+    inside a TOML string value (e.g. a dependency string `"foo]bar"`) or inside an inline `#`
+    comment (e.g. `# pin later [`) — those brackets are data/prose, not array syntax, and must
+    not perturb the array-nesting depth used to find the real closing `]`.
+
+    This walks the line char-by-char, tracking whether we are inside a quoted string (TOML basic
+    `"..."` strings, where `\\` escapes the next char, or literal `'...'` strings, which have no
+    escapes) and stops counting entirely once an unquoted `#` starts an inline comment. Only
+    brackets seen outside a string and outside a comment are counted, which is exactly what makes
+    them structural TOML array syntax.
+    """
+    delta = 0
+    quote: str | None = None
+    i = 0
+    n = len(s)
+    while i < n:
+        ch = s[i]
+        if quote:
+            if quote == '"' and ch == "\\":
+                i += 2  # pragma: no mutate — skip the escaped char; only reachable via `"` strings
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+        elif ch == "#":
+            break  # rest of the line is an inline TOML comment; nothing after this is structural
+        elif ch == "[":
+            delta += 1
+        elif ch == "]":
+            delta -= 1
+        i += 1
+    return delta
 
 
 def set_dependencies(text: str, dependencies: list[str], requires_python: str = "") -> str:
@@ -82,35 +233,43 @@ def set_dependencies(text: str, dependencies: list[str], requires_python: str = 
         return inject_block(text, dependencies, requires_python)
     body_lines = m.group("body").splitlines()
     kept: list[str] = []
-    in_deps_array = False
+    in_deps_array = False  # pragma: no mutate — only read via truthiness (`if in_deps_array`)
+    depth = 0
     for line in body_lines:
-        stripped = line[2:] if line.startswith("# ") else line[1:]
+        stripped = _strip_comment_prefix(line)
         if in_deps_array:
-            if stripped.strip() == "]":
-                in_deps_array = False
+            # Track bracket nesting depth rather than requiring the closer to be alone on its line:
+            # a hand-edited array may close on the same line as the last element (`"requests"]`) or
+            # carry a trailing comment (`] # pin`). Only structural brackets count, so
+            # `"pkg[extra]"` requirement strings, a stray `]` inside a string (`"foo]bar"`), and a
+            # comment containing a bracket (`# pin later [`) can't desync the depth.
+            depth += _structural_bracket_delta(stripped)
+            if depth <= 0:
+                in_deps_array = False  # pragma: no mutate — only read via truthiness
             continue
         s = stripped.strip()
         if s.startswith("requires-python"):
             continue
         if s.startswith("dependencies"):
             # Multi-line array detection: `[` opened but not closed on the same line
-            # (including a `[  # comment` trailing-comment form).
-            if "[" in s and "]" not in s:
+            # (including a `[  # comment` trailing-comment form). Structural-only counting here
+            # too, for the same reasons as the in-array depth tracking above.
+            net = _structural_bracket_delta(s)
+            if net > 0:
                 in_deps_array = True
+                depth = net
             continue
         kept.append(line)
     new_head: list[str] = []
     if requires_python:
-        new_head.append(f'# requires-python = "{requires_python}"')
+        new_head.append(f"# requires-python = {_toml_str(requires_python)}")
     if dependencies:
         new_head.append("# dependencies = [")
-        new_head.extend(f'#     "{dep}",' for dep in dependencies)
+        new_head.extend(f"#     {_toml_str(dep)}," for dep in dependencies)
         new_head.append("# ]")
     else:
         new_head.append("# dependencies = []")
-    new_body = "\n".join(new_head + kept)
-    if new_body:
-        new_body += "\n"
+    new_body = "\n".join(new_head + kept) + "\n"
     new_block = "# /// script\n" + new_body + "# ///\n"
     return text[: m.start()] + new_block + text[m.end() :]
 

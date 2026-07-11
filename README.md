@@ -1,7 +1,7 @@
-# skit
+![skit — script launcher and parameter manager](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/banner.png)
 
-[![CI](https://github.com/user/skit/actions/workflows/ci.yml/badge.svg)](https://github.com/user/skit/actions/workflows/ci.yml)
-[![Coverage: 100%](https://img.shields.io/badge/coverage-100%25-brightgreen)](https://github.com/user/skit/actions/workflows/ci.yml)
+[![CI](https://github.com/t41372/skit/actions/workflows/ci.yml/badge.svg)](https://github.com/t41372/skit/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/t41372/skit/branch/main/graph/badge.svg)](https://codecov.io/gh/t41372/skit)
 [![Mutation tested: mutmut](https://img.shields.io/badge/mutation%20tested-mutmut-blue)](https://github.com/boxed/mutmut)
 [![PyPI](https://img.shields.io/pypi/v/skit)](https://pypi.org/project/skit/)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
@@ -9,115 +9,120 @@
 [![Types: ty](https://img.shields.io/badge/types-ty-261230.svg)](https://github.com/astral-sh/ty)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
-**English** | [中文](./README.zh-TW.md)
+**English** | [繁體中文](./README.zh-TW.md) | [简体中文](./README.zh-CN.md)
 
-Skit is a script launcher and parameter manager. If you have Python scripts scattered everywhere with parameters hard-coded in the source, skit means you never again open an editor to tweak a constant, memorize CLI flags, or babysit virtualenvs — open the menu, pick a script, fill in a form, run.
+**skit is a launcher and a home for your Python scripts.**
+
+skit stores your Python scripts in one place and makes them painless to launch.
+
+**AI writes the scripts. skit gives them a home.**
+
+<video src="https://github.com/t41372/skit/raw/main/docs/demo-en.mp4" controls></video>
+
+[▶ Watch the demo](https://github.com/t41372/skit/raw/main/docs/demo-en.mp4)
+
+| ![The library menu](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-library-en.png) | ![The run form](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-form-en.png) |
+|:--:|:--:|
+| **The library** — every action on screen, mouse or keyboard | **The run form** — generated from the script's own parameters |
+| ![Adding a script](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-en.png) | ![Script settings](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-en.png) |
+| **Adding a script** — parameters detected statically, tick to manage | **Script settings** — parameters, secrets, presets, dependencies |
 
 ## What it does
 
-- **One home for your scripts.** `skit add` collects Python scripts, executables, and command templates into a single place. Copy mode preserves your original file byte-for-byte; reference mode never touches it.
-- **Parameters become a form.** At add time, skit statically analyzes your script (via AST) to detect hard-coded constants and `input()` calls. Check the ones you want managed, and every run starts with a form to fill in — your source semantics are untouched; an injection engine swaps values in at run time.
-- **It remembers.** Last-used values are saved automatically. `preset` stores named parameter sets. Secret parameters are structurally prevented from ever touching disk.
-- **No environment management.** Scripts run through `uv run --script` with dependencies declared via PEP 723. If uv is missing, skit downloads a private copy for itself (see below).
-- **TUI and CLI, equal citizens.** Run with no arguments to get a Textual menu (fuzzy search, Enter to run, `ctrl+e` to edit parameters); everything is also available as CLI commands.
-- **i18n built in.** English, Traditional Chinese, and Simplified Chinese via GNU gettext catalogs — zero runtime dependencies (stdlib `gettext`), with per-message fallback to the source text.
+- **One home for your scripts.** `skit add` collects scattered scripts into a searchable library — keep a copy in the library, or reference the original file.
+- **Parameters without the pain.** Flags, `input()` calls, and the constants you tick become form fields (choices → pickers, booleans → checkboxes, types enforced).
+- **It remembers.** Last-used values come back automatically; save favorites as named presets. Parameters marked secret never touch disk. Tokens like `{cwd}` and `{today}` keep presets portable.
+- **No environment mess.** skit declares each script's dependencies in the script itself (PEP 723) and runs it through uv in an isolated, cached environment — no venvs to manage, nothing installed globally.
+- **Mouse or keyboard.** Plain `skit` opens the full TUI; every key hint on screen is also a clickable button.
+- **Automation-ready.** Every TUI action is also a CLI command with `--json` output and meaningful exit codes — for shell scripts, CI, and AI agents.
+- **Speaks your language.** English, 繁體中文, and 简体中文, with more to come. See [Languages](#languages).
 
-## Requirements: uv (hard requirement)
+| Problem | What skit does |
+| --- | --- |
+| Scripts scattered all over the place | One central menu, with search |
+| Scripts with weird external dependencies | An isolated environment per script — dependencies declared in the file (PEP 723), resolved by uv |
+| CLI flags you forget ten minutes later, `input()` prompts, hard-coded constants meant to be edited by hand | Static analysis extracts them all into an interactive form — no code changes. Last-used values come prefilled; favorites save as presets. |
 
-skit is built on [uv](https://docs.astral.sh/uv/) and does not work without it. uv provides the isolated, reproducible script execution (PEP 723) that makes skit possible.
+Nothing to set up per script — no refactoring, no config to maintain. The script an AI wrote last week and the one you barely remember from last year launch the same way.
 
-**You don't strictly have to preinstall it**: if skit can't find uv on your system, it will ask for consent and download a pinned uv binary into skit's own private directory. That copy never touches your `PATH` or global environment.
+## Install
 
-That said, a system-wide uv is the smoothest experience. Install it with one of:
-
-```bash
-# macOS / Linux
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Windows (PowerShell)
-powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
-
-# Homebrew / pipx / cargo
-brew install uv
-pipx install uv
-cargo install --git https://github.com/astral-sh/uv uv
-```
-
-Verify with:
+skit is built on [uv](https://docs.astral.sh/uv/) (tested against 0.11.26). Don't have it? skit asks first, then downloads a pinned uv into its own private directory — your `PATH` and global environment stay untouched. A system-wide [install](https://docs.astral.sh/uv/getting-started/installation/) is still preferred.
 
 ```bash
-uv --version
-```
-
-## Mainland China (中国大陆) — no VPN needed
-
-Behind the Great Firewall, three downloads can stall: PyPI packages, the Python interpreters uv fetches (python-build-standalone, from GitHub), and skit's own uv bootstrap. skit can route all three through domestic mirrors — and it **never edits your global uv config or environment**.
-
-- **First run**: if PyPI/GitHub look unreachable, `skit` offers to turn on mirrors — just press Enter.
-- **Any time**: `skit config` gives a guided setup (language + mirror), or set it directly:
-
-```bash
-skit config --mirror tsinghua    # or: aliyun / ustc
-skit config --show
-skit config --mirror off         # turn off again, e.g. when travelling abroad
-```
-
-Defaults: PyPI → Tsinghua / Aliyun / USTC; Python builds & the uv binary → NJU (`mirror.nju.edu.cn`). Pick `custom` in `skit config` to override any URL if a mirror goes down.
-
-To **install skit itself** behind the GFW (skit isn't there yet to configure), point uv at a mirror first:
-
-```bash
-export UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+# Install skit with uv tool from PyPI
 uv tool install skit
 ```
 
-Already set `UV_DEFAULT_INDEX` / `UV_PYTHON_INSTALL_MIRROR` (or a `uv.toml`) yourself? skit **defers** to your settings and won't override them.
 
-## Installation
+> **In mainland China?** Set the mirror by hand for this one command (details in [Mainland China (中国大陆)](#mainland-china-中国大陆)):
+>
+> ```bash
+> export UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+> uv tool install skit
+> ```
 
-From PyPI (once published):
-
-```bash
-uv tool install skit
-```
-
-Straight from git (works today, before the first PyPI release):
+Or install the latest dev version from the main branch.
 
 ```bash
-uv tool install git+https://github.com/user/skit
-```
-
-Or run it without installing anything:
-
-```bash
-uvx --from git+https://github.com/user/skit skit --help
+uv tool install git+https://github.com/t41372/skit          # latest development version
+uvx --from git+https://github.com/t41372/skit skit --help   # try it without installing
 ```
 
 ## Usage
 
+Two commands are the whole interface:
+
 ```bash
-skit                          # TUI main menu: search, Enter to run, ctrl+e to edit params, Del to remove
-skit add my_script.py         # Add a script (copy mode; detects dependencies and parameter candidates)
-skit add my_script.py --ref   # Reference mode: link to the original file instead of copying
-skit add tool.exe --exe       # Register an executable
-skit add --cmd "ffmpeg -i {input}" --name conv   # Register a command template (placeholders become a form)
-skit run my_script            # Run; a parameter form appears first
-skit run my_script --preset fast   # Run with a named preset
-skit run my_script --raw      # Escape hatch: skip the form and injection, run as-is
-skit params my_script         # Show parameter definitions and last-used values
-skit edit my_script --resync  # Reconcile: sync definitions after the script changed
-skit preset save my_script fast    # Save a named preset
-skit deps my_script --set requests,rich   # View / update dependencies
-skit list                     # List everything registered
-skit remove <name>            # Remove an entry
-skit doctor [--rebuild]       # Self-check / rebuild the index from meta.toml files
-skit lang zh-TW               # Show or set the display language
-skit config                   # Interactive setup: language + download mirrors (China-friendly)
+skit add my_script.py   # add a script
+skit                    # open the menu, pick it, fill in the form, run
 ```
+
+Everything else happens inside the TUI — on screen, mouse or keyboard, nothing to memorize.
+
+The rest of the CLI exists for automation and AI agents — every TUI action, scriptable:
+
+```bash
+skit run my_script -p fast    # run with a saved preset
+skit run my_script --dry-run  # print the exact command, don't run it
+skit params my_script         # show managed parameters and last-used values
+skit list --json              # machine-readable listing
+skit config                   # settings: language, editor, mirror, form style
+skit --help                   # everything else
+```
+
+## Languages
+
+| Language | Status |
+| --- | --- |
+| English | ✅ 100%, human-reviewed |
+| 繁體中文 (zh-TW) | ✅ 100%, human-reviewed |
+| 简体中文 (zh-CN) | ✅ 100%, human-reviewed |
+
+skit follows your system language; switch it in the TUI preferences (for automation: `skit config lang zh-TW`, or `SKIT_LANG=zh-CN skit` for one run).
+
+## Mainland China (中国大陆)
+
+Three downloads tend to fail in mainland China: PyPI packages, the Python builds uv fetches from GitHub, and skit's own uv bootstrap. skit can route all three through domestic mirrors.
+
+Mirror settings live inside skit only: your global uv config is never touched, and existing mirror settings (`UV_DEFAULT_INDEX`, `uv.toml`, …) are respected.
+
+- **First run**: if PyPI/GitHub look unreachable, skit offers to turn mirrors on — just press Enter.
+- **Any time**: TUI Preferences → mirror, or:
+
+```bash
+skit config mirror tsinghua   # or: aliyun / ustc / custom / off
+```
+
+Defaults: PyPI via Tsinghua / Aliyun / USTC; Python builds and the uv binary via NJU. Pick `custom` to swap any URL.
+
+## Why skit exists
+
+skit began as an answer to [a linux.do forum thread](https://linux.do/t/topic/2512255) (in Chinese): scripts scattered across folders, each with its own venv, and every run meaning either editing a hard-coded value in the source or retyping CLI args. The asker had even built their own launcher — and abandoned it, because hand-configuring each script's parameters was too much upkeep. That's the trap skit removes: parameters are never configured by hand — skit reads them from the script.
 
 ## Development
 
-Development is driven entirely by uv — see [CONTRIBUTING.md](./CONTRIBUTING.md) for the full workflow and quality gates (ruff, ty strict, pytest with a 100% coverage floor, mutation testing with mutmut, zizmor-audited workflows).
+Development runs entirely on uv — see [CONTRIBUTING.md](./CONTRIBUTING.md) for the full workflow and quality gates (ruff, ty strict, 100% test coverage, mutation testing with mutmut, zizmor-audited workflows).
 
 ```bash
 uv sync --dev
