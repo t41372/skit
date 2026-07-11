@@ -23,7 +23,7 @@ from rich.markup import escape
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Checkbox, Input, Label, OptionList, RadioButton, RadioSet, Static
 from textual.widgets.option_list import Option
@@ -391,7 +391,11 @@ class RunFormScreen(Screen[FormResult]):
         Binding("enter", "submit", gettext("Run"), priority=True, show=False),
         Binding("ctrl+r", "submit", gettext("Run"), priority=True),
         Binding("ctrl+t", "insert_token", gettext("Insert value")),
+        *tui_footer.FIELD_NAV_BINDINGS,
     ]
+    # Boot straight into the first control (not the body scroll container, which the
+    # app-wide "*" would pick): the form should be typeable the moment it opens.
+    AUTO_FOCUS = "Input, Checkbox, RadioSet"
     DEFAULT_CSS = """
     RunFormScreen { background: $background; }
     /* btop grammar: the form is one rounded panel with the "Run <name>" title ON the
@@ -475,7 +479,7 @@ class RunFormScreen(Screen[FormResult]):
                         gettext("none yet — fill the form and press Ctrl+S to save one"),
                         id="preset-empty",
                     )
-            with VerticalScroll(id="form-body"):
+            with tui_footer.FormBody(id="form-body"):
                 for f in self._plan.fields:
                     yield FieldRow(f, self._prefill.get(f.key, ""))
                 if self._include_extra:
@@ -496,6 +500,7 @@ class RunFormScreen(Screen[FormResult]):
                 tui_footer.chip("screen.insert_token", "Ctrl+T", gettext("Insert value")),
                 tui_footer.chip("screen.save_preset", "Ctrl+S", gettext("Save as preset")),
                 tui_footer.chip("screen.cancel", "Esc", gettext("Cancel")),
+                tui_footer.nav_chip(),
             ),
             id="form-keys",
             markup=True,

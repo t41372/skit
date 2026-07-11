@@ -17,7 +17,6 @@ from rich.markup import escape
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Input, RadioButton, RadioSet, Select, Static
 
@@ -31,7 +30,10 @@ class PreferencesScreen(Screen[bool]):
     BINDINGS = [
         Binding("escape", "close", gettext("Back")),
         Binding("ctrl+a", "save", gettext("Save"), priority=True),
+        *tui_footer.FIELD_NAV_BINDINGS,
     ]
+    # Boot on the language dropdown, not the "*" pick (the body scroll container).
+    AUTO_FOCUS = "Select, Input"
     DEFAULT_CSS = """
     PreferencesScreen #pf-body {
         padding: 0 1;
@@ -53,7 +55,7 @@ class PreferencesScreen(Screen[bool]):
 
     @override
     def compose(self) -> ComposeResult:
-        with VerticalScroll(id="pf-body"):
+        with tui_footer.FormBody(id="pf-body"):
             yield Static(gettext("Interface language"), classes="section")
             current = config.load_config().get("language", "")
             options = [(gettext("Automatic (follow the system)"), "auto")]
@@ -140,6 +142,7 @@ class PreferencesScreen(Screen[bool]):
             tui_footer.bar(
                 tui_footer.chip("screen.save", "Ctrl+A", gettext("Save")),
                 tui_footer.chip("screen.close", "Esc", gettext("Back")),
+                tui_footer.nav_chip(),
             ),
             id="pf-keys",
             markup=True,

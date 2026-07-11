@@ -116,7 +116,10 @@ class ScriptSettingsScreen(Screen[bool]):
         Binding("escape", "close", gettext("Back")),
         Binding("ctrl+a", "save", gettext("Save"), priority=True),
         Binding("ctrl+r", "resync", gettext("Resync"), priority=True),
+        *tui_footer.FIELD_NAV_BINDINGS,
     ]
+    # Boot on the name field, not the "*" pick (the body scroll container).
+    AUTO_FOCUS = "Input, Checkbox"
     DEFAULT_CSS = """
     ScriptSettingsScreen #st-body {
         padding: 0 1;
@@ -148,7 +151,7 @@ class ScriptSettingsScreen(Screen[bool]):
 
     @override
     def compose(self) -> ComposeResult:
-        with VerticalScroll(id="st-body"):
+        with tui_footer.FormBody(id="st-body"):
             yield Static(gettext("Basics"), classes="section")
             yield Input(value=self._entry.meta.name, id="st-name")
             yield Static(
@@ -169,6 +172,7 @@ class ScriptSettingsScreen(Screen[bool]):
                 tui_footer.chip("screen.save", "Ctrl+A", gettext("Save")),
                 tui_footer.chip("screen.resync", "Ctrl+R", gettext("Resync")),
                 tui_footer.chip("screen.close", "Esc", gettext("Back")),
+                tui_footer.nav_chip(),
             ),
             id="st-keys",
             markup=True,

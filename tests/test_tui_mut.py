@@ -444,6 +444,30 @@ async def test_library_footer_chips_fire_on_click(tmp_path):
         assert app.screen.__class__.__name__ == "HealthScreen"
 
 
+async def test_boot_focus_is_the_table_but_pushed_screens_focus_their_first_field(tmp_path):
+    """Two focus rules that must not bleed into each other: the Library boots on the
+    TABLE (search would swallow the advertised letter keys), while pushed screens keep
+    the app-wide AUTO_FOCUS "*" so their first field owns the keyboard immediately.
+    Regression: an app-level AUTO_FOCUS override once left the run form with NOTHING
+    focused — the demo tape's keystrokes landed one field off."""
+    _argparse_entry(tmp_path)
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(app.focused, DataTable)  # library: the table owns the keys
+        app.action_run()
+        await pilot.pause()
+        assert isinstance(app.screen, RunFormScreen)
+        # The form boots typeable: its AUTO_FOCUS lands on the first control, never
+        # the body scroll. NOTHING focused is the regression this test pins against.
+        assert isinstance(app.focused, Input)
+        await pilot.press("escape")
+        await pilot.pause()
+        app.action_add()
+        await pilot.pause()
+        assert isinstance(app.focused, Input)  # add flow: the path box, ready to type
+
+
 async def test_search_focus_swaps_footer_to_input_mode_and_esc_restores_it(tmp_path):
     """While the search box owns the keyboard every single-letter chip is a lie — the
     letters just type text. The footer must swap both key rows for the input-mode hints

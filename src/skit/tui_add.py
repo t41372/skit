@@ -19,7 +19,7 @@ from rich.markup import escape
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import Checkbox, Input, RadioButton, RadioSet, Static
 
@@ -30,7 +30,10 @@ from .i18n import gettext
 class AddSourceScreen(Screen[str | None]):
     """Step 1: where does the script come from? Returns the new entry's slug, or None."""
 
-    BINDINGS = [Binding("escape", "cancel", gettext("Cancel"))]
+    BINDINGS = [
+        Binding("escape", "cancel", gettext("Cancel")),
+        *tui_footer.FIELD_NAV_BINDINGS,
+    ]
     DEFAULT_CSS = """
     /* The border lives on the body, not the Screen: a bordered Screen offsets its
        coordinate space and bottom-docked footer clicks land "outside" it. */
@@ -63,6 +66,7 @@ class AddSourceScreen(Screen[str | None]):
             tui_footer.bar(
                 tui_footer.chip("screen.continue_add", "Enter", gettext("Continue")),
                 tui_footer.chip("screen.cancel", "Esc", gettext("Cancel")),
+                tui_footer.nav_chip(),
             ),
             id="add-keys",
             markup=True,
@@ -146,7 +150,11 @@ class AddReviewScreen(Screen[str | None]):
         Binding("escape", "cancel", gettext("Cancel")),
         Binding("ctrl+e", "edit_source", gettext("Edit script"), priority=True),
         Binding("ctrl+a", "accept", gettext("Add"), priority=True),
+        *tui_footer.FIELD_NAV_BINDINGS,
     ]
+    # Boot on the name field, not the "*" pick (the body scroll container): the panel
+    # should be typeable the moment it opens.
+    AUTO_FOCUS = "Input"
     DEFAULT_CSS = """
     AddReviewScreen #review-body {
         padding: 0 1;
@@ -196,7 +204,7 @@ class AddReviewScreen(Screen[str | None]):
 
     @override
     def compose(self) -> ComposeResult:
-        with VerticalScroll(id="review-body"):
+        with tui_footer.FormBody(id="review-body"):
             yield Static(gettext("Name"), classes="section")
             yield Input(value=self._overrides.get("name", self._path.stem), id="rv-name")
             yield Static(gettext("Description"), classes="section")
@@ -229,6 +237,7 @@ class AddReviewScreen(Screen[str | None]):
                 tui_footer.chip("screen.toggle_candidate", "Space", gettext("Toggle")),
                 tui_footer.chip("screen.edit_source", "Ctrl+E", gettext("Edit script")),
                 tui_footer.chip("screen.cancel", "Esc", gettext("Cancel")),
+                tui_footer.nav_chip(),
             ),
             id="review-keys",
             markup=True,
