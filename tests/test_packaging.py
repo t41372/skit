@@ -19,7 +19,7 @@ PYPROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 def test_no_dead_optional_dependencies() -> None:
     # scripts/serve_preview.py (the only textual-serve consumer) is dev-only and not shipped
     # in the wheel; textual-serve belongs solely to [dependency-groups].dev. A public extra
-    # here would let a user `pip install skit[serve]` into installing a dependency that no
+    # here would let a user `pip install skit-cli[serve]` into installing a dependency that no
     # shipped code imports.
     assert "optional-dependencies" not in PYPROJECT["project"]
 

@@ -3,7 +3,7 @@
 [![CI](https://github.com/t41372/skit/actions/workflows/ci.yml/badge.svg)](https://github.com/t41372/skit/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/t41372/skit/branch/main/graph/badge.svg)](https://codecov.io/gh/t41372/skit)
 [![Mutation tested: mutmut](https://img.shields.io/badge/mutation%20tested-mutmut-blue)](https://github.com/boxed/mutmut)
-[![PyPI](https://img.shields.io/pypi/v/skit)](https://pypi.org/project/skit/)
+[![PyPI](https://img.shields.io/pypi/v/skit-cli)](https://pypi.org/project/skit-cli/)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Types: ty](https://img.shields.io/badge/types-ty-261230.svg)](https://github.com/astral-sh/ty)
@@ -52,15 +52,15 @@
 skit 建立在 [uv](https://docs.astral.sh/uv/) 之上（以 0.11.26 版測試）。還沒裝 uv？skit 會先徵求你同意，再把釘定版本的 uv 下載到自己的私有目錄——不碰你的 `PATH`，也不碰全域環境。當然，參考[官方文檔](https://docs.astral.sh/uv/getting-started/installation/) 安裝 uv 會更好。
 
 ```bash
-# 用 uv tool 從 PyPI 安裝 skit
-uv tool install skit
+# 用 uv tool 從 PyPI 安裝 skit（套件名是 skit-cli，裝好的指令是 skit）
+uv tool install skit-cli
 ```
 
 > **人在中國大陸？**這一步 skit 還沒裝上、沒法替你設定，請手動讓 uv 指向鏡像（詳見[中國大陸](#中國大陸)）：
 >
 > ```bash
 > export UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
-> uv tool install skit
+> uv tool install skit-cli
 > ```
 
 或者，從 main 分支直接安裝開發版本
@@ -73,7 +73,7 @@ uvx --from git+https://github.com/t41372/skit skit --help   # 或是什麼都不
 ## 解除安裝
 
 ```bash
-uv tool uninstall skit
+uv tool uninstall skit-cli
 ```
 
 這會移除 skit 本身與它在 `PATH` 上的捷徑。你的腳本庫與設定存在套件**之外**，所以刻意會留著——重裝一次，一切照舊。想連這些也一併清掉，就刪掉 skit 自己的目錄：

@@ -1,5 +1,7 @@
 [project]
-name = "skit"
+# Distribution name only ("skit" is admin-prohibited on PyPI); the import package,
+# CLI command, and config dirs all stay "skit".
+name = "skit-cli"
 version = "0.0.1"
 description = "Script launcher and parameter manager: pick a script, fill in a form, run — no more opening an IDE just to tweak constants."
 readme = "README.md"
@@ -21,7 +23,7 @@ classifiers = [
     "Topic :: Software Development :: Build Tools",
     "Topic :: Utilities",
 ]
-# Upper caps let a lockfile-less `uv tool install skit` refuse a future breaking major
+# Upper caps let a lockfile-less `uv tool install skit-cli` refuse a future breaking major
 # (or minor, for pre-1.0 deps). Reproducible dev/CI installs are hash-pinned by uv.lock.
 dependencies = [
     "typer>=0.26,<1",
@@ -56,6 +58,9 @@ requires = ["uv_build>=0.11,<0.12"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
+# The distribution is skit-cli but the import package stays src/skit; without this the
+# backend would look for src/skit_cli.
+module-name = "skit"
 # Catalog sources (.po/.pot) are maintainer-only inputs to `scripts/i18n.py compile`; the
 # runtime (src/skit/i18n.py) loads only compiled .mo via stdlib gettext. Keep sources in the
 # sdist for maintainers/rebuilds, drop them from the wheel that end users install.

@@ -3,7 +3,7 @@
 [![CI](https://github.com/t41372/skit/actions/workflows/ci.yml/badge.svg)](https://github.com/t41372/skit/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/t41372/skit/branch/main/graph/badge.svg)](https://codecov.io/gh/t41372/skit)
 [![Mutation tested: mutmut](https://img.shields.io/badge/mutation%20tested-mutmut-blue)](https://github.com/boxed/mutmut)
-[![PyPI](https://img.shields.io/pypi/v/skit)](https://pypi.org/project/skit/)
+[![PyPI](https://img.shields.io/pypi/v/skit-cli)](https://pypi.org/project/skit-cli/)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Types: ty](https://img.shields.io/badge/types-ty-261230.svg)](https://github.com/astral-sh/ty)
@@ -53,8 +53,8 @@ Nothing to set up per script — no refactoring, no config to maintain. The scri
 skit is built on [uv](https://docs.astral.sh/uv/) (tested against 0.11.26). Don't have it? skit asks first, then downloads a pinned uv into its own private directory — your `PATH` and global environment stay untouched. A system-wide [install](https://docs.astral.sh/uv/getting-started/installation/) is still preferred.
 
 ```bash
-# Install skit with uv tool from PyPI
-uv tool install skit
+# Install skit with uv tool from PyPI (the package is named skit-cli; the command is skit)
+uv tool install skit-cli
 ```
 
 
@@ -62,7 +62,7 @@ uv tool install skit
 >
 > ```bash
 > export UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
-> uv tool install skit
+> uv tool install skit-cli
 > ```
 
 Or install the latest dev version from the main branch.
@@ -75,7 +75,7 @@ uvx --from git+https://github.com/t41372/skit skit --help   # try it without ins
 ## Uninstall
 
 ```bash
-uv tool uninstall skit
+uv tool uninstall skit-cli
 ```
 
 That removes skit and its `PATH` shim. Your library and settings live **outside** the package, so they survive on purpose — reinstall and you're right back where you left off. To erase those too, delete skit's own directories:
