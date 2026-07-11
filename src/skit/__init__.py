@@ -1,6 +1,7 @@
 """skit — a launcher and parameter manager for your scripts."""
 
 import os
+from importlib.metadata import PackageNotFoundError, version
 
 # Textual ≥ 8.2.7 enables the kitty keyboard protocol's "report all keys" mode, which
 # iTerm2 (3.6.x) implements in a way that fights the macOS IME: candidate-selection
@@ -11,4 +12,9 @@ import os
 # override (=0 re-enables) winning.
 os.environ.setdefault("TEXTUAL_DISABLE_KITTY_KEY", "1")
 
-__version__ = "0.0.2.dev0"
+# pyproject.toml is the single source of the version; installed distributions carry it
+# as metadata (a wheel doesn't ship pyproject.toml), so read it from there.
+try:
+    __version__ = version("skit-cli")
+except PackageNotFoundError:  # a bare checkout on sys.path, no installed dist
+    __version__ = "0.0.0+unknown"

@@ -30,3 +30,31 @@ def test_wheel_excludes_catalog_sources() -> None:
     excludes = PYPROJECT["tool"]["uv"]["build-backend"]["wheel-exclude"]
     assert any(pattern.endswith("*.po") for pattern in excludes)
     assert any(pattern.endswith("*.pot") for pattern in excludes)
+
+
+def test_version_is_single_sourced_from_the_distribution() -> None:
+    """skit.__version__ mirrors the installed skit-cli metadata, which in turn comes
+    from pyproject.toml at build time — one source, no drift (the old hand-synced
+    literal in __init__.py once shipped a release with mismatched versions)."""
+    from importlib.metadata import version
+
+    import skit
+
+    assert skit.__version__ == version("skit-cli")
+
+
+def test_version_falls_back_when_no_distribution_is_installed(monkeypatch) -> None:
+    """A bare checkout without an installed dist still imports (and says so)."""
+    import importlib
+    import importlib.metadata
+
+    import skit
+
+    def missing(_name: str) -> str:
+        raise importlib.metadata.PackageNotFoundError
+
+    monkeypatch.setattr(importlib.metadata, "version", missing)
+    importlib.reload(skit)
+    assert skit.__version__ == "0.0.0+unknown"
+    monkeypatch.undo()
+    importlib.reload(skit)  # restore the real version for the rest of the suite
