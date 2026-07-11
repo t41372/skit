@@ -1066,9 +1066,11 @@ def run(
         console.print(
             f"[dim]{gettext("skit could not model this script's own arguments; pass them after -- instead.")}[/dim]"
         )
-    if raw and set_opts:
+    # Form-shaped flags contradict "as-is": refusing beats silently dropping a preset
+    # (or persisting an empty one) the way a bare warning-less run would.
+    if raw and (set_opts or preset or save_preset):
         err_console.print(
-            f"[red]{gettext('--raw skips the parameter form, so --set has no field to target.')}[/red]"
+            f"[red]{gettext('--raw runs the script as-is; --set, --preset, and --save-preset do not apply.')}[/red]"
         )
         raise typer.Exit(EXIT_USAGE)
     prefilled = flows.prefill(plan, entry.slug, preset)
@@ -1100,7 +1102,9 @@ def run(
         last_extra = argstate.load_state(entry.slug)["extra_args"]
         if last_extra:
             extra = last_extra
-            console.print(
+            # stderr, like the drift banner: skit chrome must not pollute the script's
+            # own stdout, and agents watch stderr for skit-side signals (SKILL.md).
+            err_console.print(
                 f"[dim]{gettext('Reusing your last arguments: %(args)s') % {'args': ' '.join(escape(a) for a in extra)}}[/dim]"
             )
     try:
@@ -1624,8 +1628,11 @@ app.add_typer(agent_app, name="agent")
 
 
 def _agent_install_confirmed(skills_dir: Path) -> None:
+    # Read the bundled skill BEFORE the write-error wrap: a broken installation (skill
+    # missing from the package) must fail loudly, not as "could not write there".
+    text = agentskill.skill_text()
     try:
-        written = agentskill.install_into(skills_dir)
+        written = agentskill.install_into(skills_dir, text)
     except OSError as exc:
         # e.g. --to points at an existing file: a clean one-liner, not a traceback.
         raise _fail(

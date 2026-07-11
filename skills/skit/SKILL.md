@@ -24,10 +24,11 @@ PEP 723). The library is *the user's curated space*: treat it like their dotfile
 3. **Before a script's first run, `--dry-run` it** and show the user the exact command.
 4. **Never add, remove, or overwrite library entries without asking the user first.**
    Propose `skit add` when you've written something reusable; don't add it silently.
-5. **Pass `--no-input` on every `skit run` and `skit add`** — the only two commands
-   that can prompt. It guarantees skit never blocks; if information is missing, skit
-   fails fast with a named error instead. The read commands (`list`, `show`, `params`,
-   …) never prompt and don't take the flag.
+5. **Pass `--no-input` on every `skit run` and `skit add`.** It guarantees those never
+   block on a prompt; if information is missing, skit fails fast with a named error
+   instead. Destructive commands confirm instead of taking `--no-input` — pass their
+   explicit flag (`skit remove <name> -y`). The read commands (`list`, `show`,
+   `params`, …) never prompt and don't take the flag.
 
 ## Discover scripts
 
@@ -53,7 +54,7 @@ skit run <name> --set width=1200 --set fmt=png --no-input
 skit run <name> -p <preset> --no-input              # a saved preset
 skit run <name> --no-input -- --verbose input.txt   # raw args to the script's own parser
 skit run <name> --set width=800 --dry-run --no-input  # print the command, run nothing
-skit run <name> --raw --no-input                    # escape hatch: no form, no injection
+skit run <name> --raw --no-input                    # escape hatch: as-is, no form flags (--set/-p refused)
 ```
 
 - `--set NAME=VALUE` works for every field kind (flags, injected constants, template

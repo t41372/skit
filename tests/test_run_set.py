@@ -218,12 +218,36 @@ def test_set_on_entry_without_fields_lists_a_dash(tmp_path, run_entry_spy):
     assert "entry" not in run_entry_spy
 
 
+RAW_CONFLICT = "--raw runs the script as-is; --set, --preset, and --save-preset do not apply."
+
+
 def test_set_with_raw_is_a_usage_conflict(tmp_path, run_entry_spy):
     _inject_entry(tmp_path)
     result = runner.invoke(cli.app, ["run", "trip", "--raw", "--set", "CITY=x", "--no-input"])
     assert result.exit_code == 2
     # Not the misleading "unknown parameter" — CITY exists; --raw is the conflict.
-    assert "--raw skips the parameter form, so --set has no field to target." in result.output
+    assert RAW_CONFLICT in result.output.splitlines()
+    assert "entry" not in run_entry_spy
+
+
+def test_preset_with_raw_is_a_usage_conflict(tmp_path, run_entry_spy):
+    entry = _inject_entry(tmp_path)
+    argstate.save_preset(entry.slug, "loud", {"CITY": "Tainan"})
+    result = runner.invoke(cli.app, ["run", "trip", "--raw", "-p", "loud", "--no-input"])
+    assert result.exit_code == 2  # refusing beats silently dropping the preset's values
+    assert RAW_CONFLICT in result.output.splitlines()
+    assert "entry" not in run_entry_spy
+
+
+def test_save_preset_with_raw_is_a_usage_conflict(tmp_path, run_entry_spy):
+    entry = _inject_entry(tmp_path)
+    result = runner.invoke(
+        cli.app, ["run", "trip", "--raw", "--save-preset", "ghost", "--no-input"]
+    )
+    assert result.exit_code == 2
+    assert RAW_CONFLICT in result.output.splitlines()
+    # The old silent path persisted an EMPTY preset that later validated for -p ghost.
+    assert argstate.load_state(entry.slug)["presets"] == {}
     assert "entry" not in run_entry_spy
 
 

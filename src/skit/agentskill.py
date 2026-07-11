@@ -85,13 +85,15 @@ def detect_targets(*, home: Path, cwd: Path) -> list[Target]:
     return found
 
 
-def install_into(skills_dir: Path) -> Path:
-    """Write the bundled skill as `<skills_dir>/skit/SKILL.md` (idempotent: rewriting
-    is how an upgrade lands). Returns the written file's path."""
+def install_into(skills_dir: Path, text: str) -> Path:
+    """Write `text` as `<skills_dir>/skit/SKILL.md` (idempotent: rewriting is how an
+    upgrade lands). Returns the written file's path. Deliberately write-only — the
+    caller resolves the bundled copy via skill_text() first, so a broken installation
+    fails loudly there instead of masquerading as a destination write error here."""
     dest = skills_dir / SKILL_DIR_NAME
     dest.mkdir(parents=True, exist_ok=True)
     out = dest / SKILL_FILE_NAME
     # Same I/O kwarg equivalence; written content is pinned byte-for-byte by
     # test_install_into_writes_and_upgrades (see docs/mutation-ledger.md).
-    out.write_text(skill_text(), encoding="utf-8")  # pragma: no mutate
+    out.write_text(text, encoding="utf-8")  # pragma: no mutate
     return out

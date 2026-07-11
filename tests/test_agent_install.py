@@ -97,11 +97,11 @@ def test_named_target_unknown_is_none(tmp_path):
 
 def test_install_into_writes_and_upgrades(tmp_path):
     skills_dir = tmp_path / "skills"
-    out = agentskill.install_into(skills_dir)
+    out = agentskill.install_into(skills_dir, agentskill.skill_text())
     assert out == skills_dir / "skit" / "SKILL.md"
     assert out.read_text(encoding="utf-8") == agentskill.skill_text()
     out.write_text("stale", encoding="utf-8")
-    again = agentskill.install_into(skills_dir)
+    again = agentskill.install_into(skills_dir, agentskill.skill_text())
     assert again == out
     assert out.read_text(encoding="utf-8") == agentskill.skill_text()  # reinstall = upgrade
 
@@ -121,6 +121,21 @@ def test_cli_install_to_explicit_dir(tmp_path, monkeypatch):
         f"Installed the skit Agent Skill: {dest / 'skit' / 'SKILL.md'}"
         in result.output.splitlines()
     )
+
+
+def test_cli_install_broken_package_fails_loudly(tmp_path, monkeypatch):
+    """A bundled skill missing from the package is a packaging bug: it must surface
+    loudly, not be soft-reported as a destination problem (the OSError wrap around
+    install_into is for write errors only — skill_text resolves before it)."""
+
+    def broken() -> str:
+        raise FileNotFoundError("SKILL.md missing from the wheel")
+
+    monkeypatch.setattr(agentskill, "skill_text", broken)
+    result = runner.invoke(cli.app, ["agent", "install", "--to", str(tmp_path / "d")])
+    assert result.exit_code != 0
+    assert "Could not write the skill there" not in result.output
+    assert isinstance(result.exception, FileNotFoundError)
 
 
 def test_cli_install_to_a_file_fails_cleanly(tmp_path, monkeypatch):
@@ -240,15 +255,16 @@ def test_agent_pick_target_renders_the_menu_exactly(monkeypatch):
     with cli.console.capture() as cap:
         picked = cli._agent_pick_target(targets)
     assert picked is targets[1]  # the numbered choice maps 1-based onto the list
+    # Paths rendered via the Target objects so the pin also holds on Windows separators.
     assert cap.get() == (
         "Agent directories on this machine:\n"
-        "  1. claude (user)  →  /tmp/h/.claude/skills\n"
-        "  2. agents (project)  →  /tmp/p/.agents/skills\n"
+        f"  1. claude (user)  →  {targets[0].skills_dir}\n"
+        f"  2. agents (project)  →  {targets[1].skills_dir}\n"
     )
     assert seen["prompt"] == "Install where?"
     assert seen["choices"] == ["1", "2"]
     assert seen["default"] == "1"
-    assert seen["confirm"] == "Write the skill into /tmp/p/.agents/skills?"
+    assert seen["confirm"] == f"Write the skill into {targets[1].skills_dir}?"
     assert seen["confirm_default"] is True
 
 
