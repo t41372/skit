@@ -1,6 +1,6 @@
 """The skit Textual theme: btop-flavored, terminal-native.
 
-Design contract (docs/ux-redesign.md):
+Design contract:
 - The canvas stays `ansi_default` (the user's terminal background — transparency and
   all — shows through, like btop with theme_background off), but everything skit draws
   ON that canvas uses a controlled btop-style palette: rounded panel borders in muted

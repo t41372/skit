@@ -1,6 +1,6 @@
-![skit — 你雜亂腳本的集中啟動器](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/banner.png)
+![skit — 腳本啟動器 + 參數管家](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/banner.png)
 
-[![CI](https://github.com/user/skit/actions/workflows/ci.yml/badge.svg)](https://github.com/t41372/skit/actions/workflows/ci.yml)
+[![CI](https://github.com/t41372/skit/actions/workflows/ci.yml/badge.svg)](https://github.com/t41372/skit/actions/workflows/ci.yml)
 [![Coverage: 100%](https://img.shields.io/badge/coverage-100%25-brightgreen)](https://github.com/t41372/skit/actions/workflows/ci.yml)
 [![Mutation tested: mutmut](https://img.shields.io/badge/mutation%20tested-mutmut-blue)](https://github.com/boxed/mutmut)
 [![PyPI](https://img.shields.io/pypi/v/skit)](https://pypi.org/project/skit/)
@@ -9,124 +9,124 @@
 [![Types: ty](https://img.shields.io/badge/types-ty-261230.svg)](https://github.com/astral-sh/ty)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
-[English](./README.md) | **中文**
+[English](./README.md) | **繁體中文** | [简体中文](./README.zh-CN.md)
 
-Skit 是一個腳本啟動器 + 參數管家。如果你寫了一堆散落各處、參數寫死在原始碼裡的 Python 腳本,skit 讓你不再需要開編輯器改參數、不再需要記 CLI 旗標、不再需要管 venv——打開選單,選腳本,填表格,跑。
+**skit 是 Python 腳本的啟動器，也是它們的集中收納處。**
+
+**AI 寫腳本，skit 管腳本。**
+
+<video src="https://github.com/t41372/skit/raw/main/docs/demo-zh.mp4" controls></video>
+
+[▶ 觀看示範](https://github.com/t41372/skit/raw/main/docs/demo-zh.mp4)
+
+| ![腳本庫](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-library-zh.png) | ![執行表單](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-form-zh.png) |
+|:--:|:--:|
+| **腳本庫**——每個動作都在畫面上，滑鼠鍵盤皆可 | **執行表單**——從腳本自己的參數生成 |
+| ![加入腳本](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-zh.png) | ![腳本設定](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-zh.png) |
+| **加入腳本**——靜態偵測參數，勾選即納管 | **腳本設定**——參數、機密、組合、依賴 |
 
 ## 它做什麼
 
-- **收納腳本**:`skit add` 把 Python 腳本、可執行檔、命令模板收進一個地方。copy 模式原檔逐字保存;reference 模式絕不碰原檔。
-- **任何腳本都變表格**:skit 讀懂你的腳本怎麼吃輸入——寫死的常量與 `input()` 呼叫(AST 偵測),或 `argparse` / `click` / `typer` 命令列(靜態讀取)——全都變成一張表單填值。你再也不用背旗標、不用開編輯器改常量。值的送法不動你的原始碼:注入到臨時副本,或執行時當旗標傳入。
-- **記住上次的值**:last-used 自動保存;`preset` 存具名參數組;secret 參數結構性不落盤。
-- **免管環境**:經 `uv run --script` 執行,PEP 723 聲明依賴;uv 缺失時自動下載私有副本(見下方)。
-- **TUI 為主、CLI 供自動化**:無參數進 Textual 工作檯(模糊搜尋、Enter 執行、`p` 腳本設定、`e` 編輯腳本、`Del` 移除);每個動作也都是 CLI 命令,支援 `--json` 輸出與明確退出碼。
-- **i18n 一等公民**:en / zh-TW / zh-CN,GNU gettext 目錄(零執行期依賴,用標準庫 `gettext`),缺譯逐條回退原文。
+- **收納腳本**。`skit add` 把散落各處的腳本收進同一個可搜尋的腳本庫——複製一份收進庫裡，或用連結模式直接指向原檔。
+- **參數不再折磨人**。旗標、`input()`、你勾選納管的常數，全部變成表單欄位（choices 變選擇器、布林變勾選框、型別自動把關）。
+- **它會記住**。上次填的值自動帶回；常用的一組存成具名組合。標記為機密的參數永不落盤。`{cwd}`、`{today}` 這類值 token 讓同一個組合跨機器、跨目錄通用。
+- **環境零污染**。skit 把每支腳本的依賴用標準 PEP 723 語法聲明在腳本開頭，執行時由 uv 在隔離、有快取的環境裡解析——你不用管 venv，也不會往全域裝任何東西。
+- **滑鼠鍵盤皆可**。直接執行 `skit` 就是完整 TUI；畫面上每個按鍵提示同時也是一顆可點的按鈕。
+- **天生適合自動化**。每個 TUI 動作都有對應的 CLI 命令，帶 `--json` 輸出與明確退出碼——shell 腳本、CI、AI agent 都好接。
+- **多語言支持**。English、繁體中文、简体中文，更多語言在路上。見[語言](#語言)。
 
-## 前置需求:uv(硬需求)
 
-skit 建立在 [uv](https://docs.astral.sh/uv/) 之上,沒有 uv 就無法運作。uv 提供了讓 skit 成立的隔離、可重現的腳本執行環境(PEP 723)。
+| 痛點 | skit 的解法 |
+| --- | --- |
+| 腳本東一支西一支，散落在各個資料夾 | 全部收進同一個選單，附搜尋 |
+| 腳本帶著一堆奇怪的第三方依賴 | 每支腳本一個隔離環境——依賴以 PEP 723 聲明在腳本開頭，由 uv 解析 |
+| 命令列旗標轉頭就忘、`input()` 一項項問、常數寫死在原始碼裡，改個值都得開編輯器 | 靜態分析把參數通通讀出來，變成一張互動表單——原始碼一行不動。上次的值自動帶回；常用的存成組合（preset） |
 
-**你不一定要事先安裝**:如果 skit 在系統上找不到 uv,會先徵求你的同意,然後把一份釘定版本的 uv binary 下載到 skit 自己的私有目錄。這份副本不會碰你的 `PATH` 或全域環境。
+不需要為腳本做任何準備——不用重構，沒有設定檔要維護。AI 上週寫的腳本，和你去年寫完就忘的那支，啟動起來一模一樣。
 
-不過,系統層級安裝 uv 的體驗最順。安裝方式擇一:
-
-```bash
-# macOS / Linux
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Windows (PowerShell)
-powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
-
-# Homebrew / pipx / cargo
-brew install uv
-pipx install uv
-cargo install --git https://github.com/astral-sh/uv uv
-```
-
-驗證:
-
-```bash
-uv --version
-```
-
-## 中國大陸 — 免 VPN
-
-在防火長城之後,有三處下載可能受阻:PyPI 套件、uv 抓取的 Python 直譯器(python-build-standalone,來自 GitHub),以及 skit 自己的 uv 引導下載。skit 可把這三者都導向國內鏡像——而且**絕不改動你的全域 uv 設定或環境變數**。
-
-- **首次執行**:若偵測到 PyPI/GitHub 連不上,`skit` 會詢問是否開啟鏡像,按 Enter 即可。
-- **隨時**:執行 `skit config` 查看所有設定,或直接設定鏡像:
-
-```bash
-skit config mirror tsinghua      # 或 aliyun / ustc
-skit config                      # 顯示所有設定(語言、編輯器、鏡像、表單樣式)
-skit config mirror off           # 例如出國時關閉
-```
-
-預設:PyPI → 清華 / 阿里雲 / 中科大;Python 發行版與 uv 二進位 → 南京大學(`mirror.nju.edu.cn`)。鏡像掛掉時,用 `skit config mirror custom` 並設定各網址可覆寫。
-
-**安裝 skit 本身**時(此時還沒有 skit 可設定),請先讓 uv 指向鏡像:
-
-```bash
-export UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
-uv tool install skit
-```
-
-已自行設定 `UV_DEFAULT_INDEX` / `UV_PYTHON_INSTALL_MIRROR`(或 `uv.toml`)?skit 會**尊重你的設定**,不會覆寫。
 
 ## 安裝
 
-從 PyPI(發布後):
+skit 建立在 [uv](https://docs.astral.sh/uv/) 之上（以 0.11.26 版測試）。還沒裝 uv？skit 會先徵求你同意，再把釘定版本的 uv 下載到自己的私有目錄——不碰你的 `PATH`，也不碰全域環境。當然，參考[官方文檔](https://docs.astral.sh/uv/getting-started/installation/) 安裝 uv 會更好。
 
 ```bash
+# 用 uv tool 從 PyPI 安裝 skit
 uv tool install skit
 ```
 
-直接從 git 安裝(現在就可用,不必等 PyPI 首發):
+> **人在中國大陸？**這一步 skit 還沒裝上、沒法替你設定，請手動讓 uv 指向鏡像（詳見[中國大陸](#中國大陸)）：
+>
+> ```bash
+> export UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+> uv tool install skit
+> ```
+
+或者，從 main 分支直接安裝開發版本
 
 ```bash
-uv tool install git+https://github.com/user/skit
-```
-
-或者完全不安裝,直接跑:
-
-```bash
-uvx --from git+https://github.com/user/skit skit --help
+uv tool install git+https://github.com/t41372/skit          # 最新開發版
+uvx --from git+https://github.com/t41372/skit skit --help   # 或是什麼都不裝，直接試
 ```
 
 ## 用法
 
+整個介面，就兩條命令：
+
 ```bash
-skit                          # TUI 工作檯:搜尋、Enter 執行、p 腳本設定、e 編輯腳本、Del 移除
-skit add my_script.py         # 加入腳本(copy 模式;偵測依賴與參數)
-skit add my_script.py --ref   # reference 模式:不複製,連結原檔
-skit add tool.exe --exe       # 登記可執行檔
-skit add --cmd "ffmpeg -i {input}" -n conv   # 登記命令模板(佔位符變表單)
-skit add --edit -n scratch    # 在編輯器裡寫一支全新腳本,再加入
-skit run my_script            # 執行;run 前跳參數表單
-skit run my_script -p fast    # 用具名參數組(-p / --preset)
-skit run my_script --save-preset fast   # 執行,並把這次的值存成參數組
-skit run my_script --dry-run  # 印出實際會跑的命令(token/glob 已展開),然後結束
-skit run my_script --raw      # 逃生門:跳過表單與注入,原樣直跑
-skit params my_script         # 查看納管參數 + 上次的值
-skit params my_script --manage WIDTH --secret API_KEY   # 納管偵測到的常量 / 標記機密
-skit params my_script --resync   # 對賬:腳本改了之後同步參數定義
-skit preset save my_script fast    # 保存具名參數組(NAME PRESET_NAME)
-skit deps my_script --dep "requests>=2,<3" --dep rich   # 查看/更新依賴
-skit edit my_script           # 在編輯器裡開啟腳本原始碼
-skit list                     # 列出所有已登記項目
-skit remove <name>            # 移除一個項目(原檔不動)
-skit doctor [--rebuild]       # 自檢 / 從散落的 meta.toml 重建索引
-skit config                   # 顯示所有設定;例如 skit config lang zh-TW · skit config mirror tsinghua
+skit add my_script.py   # 加入腳本
+skit                    # 打開選單，選腳本，填表單，跑
 ```
+
+其餘一切都在 TUI 裡完成——都在畫面上，滑鼠鍵盤皆可，什麼都不用背。
+
+剩下的 CLI 是給自動化和 AI agent 準備的——每個 TUI 動作都能腳本化：
+
+```bash
+skit run my_script -p fast    # 用已存的組合執行
+skit run my_script --dry-run  # 印出實際會跑的命令，不真的執行
+skit params my_script         # 查看納管參數與上次的值
+skit list --json              # 機器可讀的腳本清單
+skit config                   # 設定：語言、編輯器、鏡像、表單樣式
+skit --help                   # 其餘一切
+```
+
+## 語言
+
+| 語言 | 狀態 |
+| --- | --- |
+| English | ✅ 100%，經人工校對 |
+| 繁體中文（zh-TW） | ✅ 100%，經人工校對 |
+| 简体中文（zh-CN） | ✅ 100%，經人工校對 |
+
+skit 自動跟隨系統語言；想換，在 TUI 偏好設定裡改（自動化場景用 `skit config lang zh-TW`，或 `SKIT_LANG=en skit` 只切這一次）。
+
+## 中國大陸
+
+牆內有三處下載容易卡住：PyPI 套件、uv 從 GitHub 抓取的 Python 建置，還有 skit 引導下載的 uv 本體。skit 可以讓三者都走國內鏡像。
+
+鏡像設定只存在 skit 裡：不碰你的全域 uv 設定；你已經自己設好的鏡像（`UV_DEFAULT_INDEX`、`uv.toml` 等）也不會被覆寫。
+
+- **首次執行**：偵測到 PyPI/GitHub 連不上時，skit 會主動問要不要開鏡像——按個 Enter 就好。
+- **隨時**：TUI「偏好設定 → 鏡像」，或：
+
+```bash
+skit config mirror tsinghua   # 或：aliyun / ustc / custom / off
+```
+
+預設：PyPI → 清華 / 阿里雲 / 中科大；Python 建置與 uv 二進位 → 南京大學。哪個鏡像掛了，選 `custom` 就能逐項換網址。
+
+## 為什麼會有 skit
+
+skit 源自 [linux.do 上的一則求助帖](https://linux.do/t/topic/2512255)：腳本散落在各個資料夾、每個資料夾一個 .venv；每次要跑，不是開編輯器改寫死的參數，就是重新輸入記不住的命令列參數。發帖人甚至自己寫過一個啟動器——後來漸漸棄用，因為每支腳本的參數都得手動設定，太累。skit 拆掉的就是這個陷阱：參數從來不用手動設定——skit 直接從腳本裡讀出來。
 
 ## 開發
 
-開發流程完全以 uv 驅動——完整工作流與品質閘門(ruff、ty 最嚴格模式、pytest 覆蓋率下限 100%、mutmut 突變測試、zizmor 稽核的 workflows)見 [CONTRIBUTING.md](./CONTRIBUTING.md)。
+開發流程完全跑在 uv 上——完整工作流與品質關卡（ruff、ty 最嚴格模式、pytest 覆蓋率下限 100%、mutmut 突變測試、zizmor 稽核的 workflows）見 [CONTRIBUTING.md](./CONTRIBUTING.md)。
 
 ```bash
 uv sync --dev
 uv run pytest -q
-uv run python scripts/serve_preview.py   # TUI 網頁預覽(textual-serve,localhost:8000)
+uv run python scripts/serve_preview.py   # TUI 網頁預覽（textual-serve，localhost:8000）
 ```
 
 ## 授權

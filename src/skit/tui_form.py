@@ -4,7 +4,7 @@ Shared by the TUI workbench (full screen) and the CLI's inline mini-form (M6): s
 widgets, same validation, same keys — one flow, two frames. All logic stays in flows;
 this module renders and collects.
 
-Field widgets by kind (docs/ux-redesign.md §2):
+Field widgets by kind:
 - bool          → Checkbox
 - choice        → horizontal RadioSet (←/→ or click)
 - secret        → password Input (+ "reads $NAME" note when an env source is set)

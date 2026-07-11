@@ -345,7 +345,7 @@ msgstr "skit 會在執行時自動校對參數差異;可用 skit params %(name)s
 #: src/skit/cli.py:734 src/skit/cli.py:1010
 #, python-format
 msgid "Unknown preset \"%(preset)s\". Available: %(presets)s"
-msgstr "沒有名為「%(preset)s」的 preset。現有:%(presets)s"
+msgstr "沒有名為「%(preset)s」的參數組合。現有:%(presets)s"
 
 #: src/skit/cli.py:768
 #, python-format
@@ -404,7 +404,7 @@ msgstr "沿用上次的參數:%(args)s"
 #: src/skit/cli.py:881 src/skit/cli.py:961
 #, python-format
 msgid "Preset \"%(preset)s\" saved for %(name)s."
-msgstr "已為 %(name)s 儲存 preset「%(preset)s」。"
+msgstr "已為 %(name)s 儲存參數組合「%(preset)s」。"
 
 #: src/skit/cli.py:898
 #, python-format
@@ -458,7 +458,7 @@ msgstr "從腳本刪除一個參數組合(preset)。"
 #: src/skit/cli.py:1004
 #, python-format
 msgid "Preset \"%(preset)s\" deleted from %(name)s."
-msgstr "已從 %(name)s 刪除 preset「%(preset)s」。"
+msgstr "已從 %(name)s 刪除參數組合「%(preset)s」。"
 
 #: src/skit/cli.py:1033 src/skit/cli.py:1034
 msgid "yes"

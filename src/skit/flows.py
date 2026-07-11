@@ -12,7 +12,7 @@ form model; only the delivery differs:
 
 The layer is presentation-free: the TUI renders a FormPlan as widgets, the CLI as
 line prompts or an inline mini-form — one logic, N renderings. Rules implemented
-here, per docs/ux-redesign.md:
+here:
 
 - Prefill: definition default < last-used < preset (this run's input wins in the UI).
 - Values persist as TYPED TEXT (token/glob originals) — intent, not expansion.

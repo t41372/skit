@@ -1,4 +1,4 @@
-"""CLI entry point (Typer), v2 surface per docs/ux-redesign.md §8.
+"""CLI entry point (Typer): the v2 command surface.
 
 Running `skit` with no subcommand opens the TUI workbench. The commands here are the
 automation/SSH/muscle-memory shortcuts; every interactive flow goes through the shared

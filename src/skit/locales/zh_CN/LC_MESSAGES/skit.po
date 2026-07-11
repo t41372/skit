@@ -345,7 +345,7 @@ msgstr "skit 会在运行时自动校对参数差异;可用 skit params %(name)s
 #: src/skit/cli.py:734 src/skit/cli.py:1010
 #, python-format
 msgid "Unknown preset \"%(preset)s\". Available: %(presets)s"
-msgstr "没有名为“%(preset)s”的 preset。现有:%(presets)s"
+msgstr "没有名为“%(preset)s”的参数组合。现有:%(presets)s"
 
 #: src/skit/cli.py:768
 #, python-format
@@ -404,7 +404,7 @@ msgstr "沿用上次的参数:%(args)s"
 #: src/skit/cli.py:881 src/skit/cli.py:961
 #, python-format
 msgid "Preset \"%(preset)s\" saved for %(name)s."
-msgstr "已为 %(name)s 保存 preset“%(preset)s”。"
+msgstr "已为 %(name)s 保存参数组合“%(preset)s”。"
 
 #: src/skit/cli.py:898
 #, python-format
@@ -458,7 +458,7 @@ msgstr "从脚本删除一个参数组合(preset)。"
 #: src/skit/cli.py:1004
 #, python-format
 msgid "Preset \"%(preset)s\" deleted from %(name)s."
-msgstr "已从 %(name)s 删除 preset“%(preset)s”。"
+msgstr "已从 %(name)s 删除参数组合“%(preset)s”。"
 
 #: src/skit/cli.py:1033 src/skit/cli.py:1034
 msgid "yes"
@@ -1466,7 +1466,7 @@ msgstr "额外参数（原样传给脚本）"
 #: src/skit/tui_form.py:583
 #, python-format
 msgid "Preset \"%(preset)s\" saved."
-msgstr "已存成参数组合「%(preset)s」。"
+msgstr "已存成参数组合“%(preset)s”。"
 
 #: src/skit/tui_health.py:31 src/skit/tui_health.py:119
 #: src/skit/tui_prefs.py:30 src/skit/tui_prefs.py:122

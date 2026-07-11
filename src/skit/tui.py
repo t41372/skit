@@ -1,6 +1,6 @@
 """The TUI workbench (Textual): skit's home surface.
 
-Library screen (docs/ux-redesign.md §1): search + list + detail pane, two-row footer
+Library screen: search + list + detail pane, two-row footer
 with every action always visible (design assumption: most TUI users never press ?),
 recency sort, contextual r-rerun, lazy drift check on selection. Presentation only —
 all logic goes through the headless store/flows/launcher layers.

@@ -1,7 +1,7 @@
-"""Add flow in the TUI: source step → single review panel (docs/ux-redesign.md §3).
+"""Add flow in the TUI: source step → single review panel.
 
 The review panel is one always-editable surface — no wizard sequence to march through;
-Enter accepts everything as reviewed. Detection honesty rules (§0) render here: signal-
+Enter accepts everything as reviewed. Detection honesty rules render here: signal-
 driven checkbox defaults, the accumulator warning, filename-literal hints, and the
 "the script declares its own dependencies" read-only variant.
 """

@@ -1,5 +1,5 @@
 """Script settings (p): the merged per-script management screen — basics, parameters,
-presets, dependencies in one place (docs/ux-redesign.md §4).
+presets, dependencies in one place.
 
 Enter saves everything in one atomic [tool.skit] rewrite; Esc asks when there are
 unsaved changes. Reference-mode entries show the parameters read-only (skit never
