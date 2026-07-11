@@ -70,6 +70,15 @@ uv tool install git+https://github.com/t41372/skit          # 最新開發版
 uvx --from git+https://github.com/t41372/skit skit --help   # 或是什麼都不裝，直接試
 ```
 
+## 更新
+
+```bash
+uv tool upgrade skit-cli   # 更新到最新版——想「檢查更新」也用它：已是最新就會直接告訴你
+skit --version             # 看目前的版本
+```
+
+`uv tool upgrade` 會跟著你當初的安裝來源走：從 PyPI 裝的追 PyPI 正式版，`git+…` 裝的會重新抓 main 分支。
+
 ## 解除安裝
 
 ```bash

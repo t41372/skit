@@ -21,11 +21,14 @@ Set TypingSpeed 55ms
 
 # Hidden setup: recording shell + two filler library entries (a command template and an
 # executable) so the library shows variety of kinds. The two STAR scripts are added live
-# below, to show both detection paths. clear — none of this is recorded.
+# below, to show both detection paths. after_run=stay because this demo tells the
+# WORKBENCH story (run, land back in the library, rerun) — the out-of-box default is
+# "exit": run a script, skit quits like a launcher. clear — none of this is recorded.
 Hide
 Type "source ~/.bashrc" Enter
 Type "skit add --cmd 'echo {message}' -n my_command" Enter
 Type "skit add my_program.sh --exe -n my_program" Enter
+Type "skit config after_run stay" Enter
 Type "clear" Enter
 Show
 
@@ -36,21 +39,19 @@ Sleep 3s
 # clean prompt instead of stacking under 20 lines of source.
 Type "clear" Enter
 
-# 2 — skit reads the script's OWN command line: three flags become three form fields.
+# 2 — skit reads the script's OWN command line: `skit add` opens the review panel
+#     right in the terminal — name, description and detection prefilled; Ctrl+A accepts.
 Type "skit add my_script_1.py" Enter
-Sleep 1.8s
-Enter
-Sleep 900ms
-Enter
+Sleep 3.2s
+Ctrl+A
 Sleep 2.8s
 
-# 3 — A second script, parameters hard-coded as constants: skit detects them to manage.
+# 3 — A second script, parameters hard-coded as constants: the same panel shows the
+#     constants skit detected, pre-ticked for the run form to manage.
 Type "skit add my_script_2.py" Enter
-Sleep 1.6s
-Enter
-Sleep 900ms
-Enter
-Sleep 1.6s
+Sleep 3.2s
+Ctrl+A
+Sleep 2s
 Enter
 Sleep 2.6s
 
@@ -62,7 +63,8 @@ Type "clear" Enter
 Type "skit" Enter
 Sleep 3s
 
-# 5 — Run the argparse one. The form is generated from --name / --count / --shout:
+# 5 — Run the argparse one. The form is generated from --name / --count / --shout
+#     and opens with the FIRST FIELD focused (no leading Tab needed):
 #     a text field, a number field, and a checkbox — nothing was hand-written.
 Type "/"
 Sleep 400ms
@@ -70,7 +72,6 @@ Type "script_1"
 Sleep 1.2s
 Enter
 Sleep 2.5s
-Tab
 Right 20
 Backspace 20
 Type "Ada"
@@ -95,7 +96,6 @@ Type "script_2"
 Sleep 1.2s
 Enter
 Sleep 2.5s
-Tab
 Right 30
 Backspace 30
 Type "Injected!"

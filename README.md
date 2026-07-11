@@ -72,6 +72,15 @@ uv tool install git+https://github.com/t41372/skit          # latest development
 uvx --from git+https://github.com/t41372/skit skit --help   # try it without installing
 ```
 
+## Update
+
+```bash
+uv tool upgrade skit-cli   # update to the latest release — also how you "check": it says up to date if you are
+skit --version             # the version you're on
+```
+
+`uv tool upgrade` follows whatever source you installed from: PyPI installs track PyPI releases, `git+…` installs re-fetch the main branch.
+
 ## Uninstall
 
 ```bash
