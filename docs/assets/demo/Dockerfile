@@ -36,7 +36,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends fonts-noto-cjk bat \
     && ln -sf /usr/bin/batcat /usr/local/bin/bat \
     && rm -rf /var/lib/apt/lists/*
-COPY docs/demo/demo.bashrc /tmp/demo.bashrc
+COPY docs/assets/demo/demo.bashrc /tmp/demo.bashrc
 RUN cat /tmp/demo.bashrc >> /root/.bashrc
 
 # Pin the mirror off so a bare `skit` never triggers the first-run network probe/prompt.

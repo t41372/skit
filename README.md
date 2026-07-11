@@ -17,11 +17,11 @@ skit stores your Python scripts in one place and makes them painless to launch.
 
 **AI writes the scripts. skit gives them a home.**
 
-<video src="https://github.com/t41372/skit/raw/main/docs/demo-en.mp4" controls></video>
+<video src="https://github.com/t41372/skit/raw/main/docs/assets/demo-en.mp4" controls></video>
 
-[▶ Watch the demo](https://github.com/t41372/skit/raw/main/docs/demo-en.mp4)
+[▶ Watch the demo](https://github.com/t41372/skit/raw/main/docs/assets/demo-en.mp4)
 
-![Driving skit with the mouse alone — every control on screen is a click target](https://raw.githubusercontent.com/t41372/skit/main/docs/demo-mouse.gif)
+![Driving skit with the mouse alone — every control on screen is a click target](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/demo-mouse.gif)
 
 *Fully mouse operable — every key hint on screen is also a button.*
 

@@ -115,14 +115,14 @@ translations as needing review. Keep the committed `.mo` in sync (`compile`) or 
 
 ## Demo assets (README videos & screenshots)
 
-The README's demo videos (`docs/demo-*.mp4`) and its four-screen TUI screenshot grid
+The README's demo videos (`docs/assets/demo-*.mp4`) and its four-screen TUI screenshot grid
 (`docs/assets/tui-*-{en,zh}.png`) are never recorded by hand — a scripted, hermetic
 [VHS](https://github.com/charmbracelet/vhs) pipeline renders them, so they can be regenerated
 identically whenever the UI changes:
 
 ```bash
 bash scripts/record_demo.sh          # everything: 2 videos + 8 screenshots
-bash scripts/record_demo.sh videos   # docs/demo-en.mp4, docs/demo-zh.mp4
+bash scripts/record_demo.sh videos   # docs/assets/demo-en.mp4, docs/assets/demo-zh.mp4
 bash scripts/record_demo.sh shots    # docs/assets/tui-{library,form,add,settings}-{en,zh}.png
 ```
 
@@ -131,12 +131,12 @@ and never touch your machine.
 
 How the pieces fit:
 
-- **`docs/demo/Dockerfile`** — the recording environment: the official VHS image, plus uv,
+- **`docs/assets/demo/Dockerfile`** — the recording environment: the official VHS image, plus uv,
   skit installed from your working tree, `bat`, `fonts-noto-cjk` (real Han glyphs for the zh
-  renders), and a colored prompt (`docs/demo/demo.bashrc`).
-- **`docs/demo/demo.tape`** (the video) and **`docs/demo/shots.tape`** (the screenshots) —
+  renders), and a colored prompt (`docs/assets/demo/demo.bashrc`).
+- **`docs/assets/demo/demo.tape`** (the video) and **`docs/assets/demo/shots.tape`** (the screenshots) —
   the VHS keystroke choreography. Each tape is written once and drives every locale.
-- **`docs/demo/scripts/{en,zh}/`** — the dummy scripts being demoed, one set per language
+- **`docs/assets/demo/scripts/{en,zh}/`** — the dummy scripts being demoed, one set per language
   (their docstrings and `--help` text are what skit's forms display, so they are localized
   too). `scripts/record_demo.sh` runs each tape once per locale, with `SKIT_LANG` set and that
   language's scripts mounted at `/demo`.
@@ -156,9 +156,9 @@ Tips when editing tapes:
 - Showing a new screen? Add a `Screenshot "/out/shot-<name>.png"` line to `shots.tape` and the
   matching rename in `record_demo.sh`, then reference it from both READMEs.
 
-### The mouse-operability GIF (`docs/demo-mouse.gif`)
+### The mouse-operability GIF (`docs/assets/demo-mouse.gif`)
 
-One demo asset is **not** pipeline-generated: `docs/demo-mouse.gif`, the short clip under the
+One demo asset is **not** pipeline-generated: `docs/assets/demo-mouse.gif`, the short clip under the
 hero video that shows skit driven by mouse alone (design principle #2). VHS drives no mouse, so
 this is hand-captured — the one exception to the "never hand-recorded" rule. It's a single
 shared clip (English UI, reused verbatim in all three READMEs, not per-locale), and
@@ -176,7 +176,7 @@ common="setpts=PTS/1.5,fps=15,scale=1000:-1:flags=lanczos"
 ffmpeg -y -ss 16 -t 21 -i "$SRC" -vf "${common},palettegen=stats_mode=diff" pal.png
 ffmpeg -y -ss 16 -t 21 -i "$SRC" -i pal.png \
   -lavfi "${common} [x]; [x][1:v] paletteuse=dither=bayer:bayer_scale=3:diff_mode=rectangle" \
-  docs/demo-mouse.gif
+  docs/assets/demo-mouse.gif
 ```
 
 Keep it short and mouse-motion-focused (light on readable UI text) so it stays useful across

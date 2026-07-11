@@ -149,7 +149,7 @@ ignore = [
     "S603",    # dev-only maintainer tool: fixed-arg subprocess to pybabel
     "PLR0911", # subcommand dispatcher returns once per command
 ]
-"docs/demo/scripts/zh/*.py" = [
+"docs/assets/demo/scripts/zh/*.py" = [
     "RUF001",  # the Chinese demo scripts use fullwidth punctuation on purpose
 ]
 "scripts/i18n_coverage.py" = [

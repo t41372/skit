@@ -1,6 +1,6 @@
 # skit demo — one tape, every language. scripts/record_demo.sh mounts the language's scripts
-# at /demo and sets SKIT_LANG, then renames the single /out/demo.mp4 to docs/demo-en.mp4 /
-# docs/demo-zh.mp4. Same choreography, matched pacing, two locales — the reason to script it.
+# at /demo and sets SKIT_LANG, then renames the single /out/demo.mp4 to docs/assets/demo-en.mp4 /
+# docs/assets/demo-zh.mp4. Same choreography, matched pacing, two locales — the reason to script it.
 #
 # Output is MP4 (pausable / seekable / replayable) rather than a looping GIF: this demo packs
 # two capabilities and rewards a pause.

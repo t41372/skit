@@ -15,11 +15,11 @@
 
 **AI 写脚本，skit 管脚本。**
 
-<video src="https://github.com/t41372/skit/raw/main/docs/demo-zh.mp4" controls></video>
+<video src="https://github.com/t41372/skit/raw/main/docs/assets/demo-zh.mp4" controls></video>
 
-[▶ 观看演示](https://github.com/t41372/skit/raw/main/docs/demo-zh.mp4)
+[▶ 观看演示](https://github.com/t41372/skit/raw/main/docs/assets/demo-zh.mp4)
 
-![只用鼠标操作 skit——画面上每个控件都是可点击的目标](https://raw.githubusercontent.com/t41372/skit/main/docs/demo-mouse.gif)
+![只用鼠标操作 skit——画面上每个控件都是可点击的目标](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/demo-mouse.gif)
 
 *完全鼠标可操作性——画面上每个按键提示，也都是可点的按钮。*
 

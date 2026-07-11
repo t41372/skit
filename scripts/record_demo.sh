@@ -8,7 +8,7 @@
 # time, so nothing is baked and no rebuild is needed to iterate on tapes or scripts.
 #
 #   bash scripts/record_demo.sh          # everything: 2 videos + 8 screenshots
-#   bash scripts/record_demo.sh videos   # docs/demo-en.mp4, docs/demo-zh.mp4
+#   bash scripts/record_demo.sh videos   # docs/assets/demo-en.mp4, docs/assets/demo-zh.mp4
 #   bash scripts/record_demo.sh shots    # docs/assets/tui-{library,form,add,settings}-{en,zh}.png
 set -euo pipefail
 cd "$(dirname "$0")/.."   # repo root (build context)
@@ -17,31 +17,31 @@ MODE="${1:-all}"
 IMAGE=skit-demo
 
 echo "==> building demo image (vhs + uv + skit)…"
-docker build -f docs/demo/Dockerfile -t "$IMAGE" .
+docker build -f docs/assets/demo/Dockerfile -t "$IMAGE" .
 
-run_tape() {   # $1 = SKIT_LANG   $2 = scripts subdir (en/zh)   $3 = tape file in docs/demo/
+run_tape() {   # $1 = SKIT_LANG   $2 = scripts subdir (en/zh)   $3 = tape file in docs/assets/demo/
   docker run --rm -e "SKIT_LANG=$1" \
-    -v "$PWD/docs:/out" \
-    -v "$PWD/docs/demo/$3:/demo/demo.tape:ro" \
-    -v "$PWD/docs/demo/scripts/$2/my_script_1.py:/demo/my_script_1.py:ro" \
-    -v "$PWD/docs/demo/scripts/$2/my_script_2.py:/demo/my_script_2.py:ro" \
-    -v "$PWD/docs/demo/scripts/$2/my_program.sh:/demo/my_program.sh:ro" \
+    -v "$PWD/docs/assets:/out" \
+    -v "$PWD/docs/assets/demo/$3:/demo/demo.tape:ro" \
+    -v "$PWD/docs/assets/demo/scripts/$2/my_script_1.py:/demo/my_script_1.py:ro" \
+    -v "$PWD/docs/assets/demo/scripts/$2/my_script_2.py:/demo/my_script_2.py:ro" \
+    -v "$PWD/docs/assets/demo/scripts/$2/my_program.sh:/demo/my_program.sh:ro" \
     "$IMAGE" /demo/demo.tape
 }
 
 record() {   # $1 = SKIT_LANG   $2 = scripts subdir   $3 = output basename
-  echo "==> recording docs/$3  (SKIT_LANG=$1)…"
+  echo "==> recording docs/assets/$3  (SKIT_LANG=$1)…"
   run_tape "$1" "$2" demo.tape
-  mv docs/demo.mp4 "docs/$3"
-  echo "    wrote docs/$3"
+  mv docs/assets/demo.mp4 "docs/assets/$3"
+  echo "    wrote docs/assets/$3"
 }
 
 shoot() {   # $1 = SKIT_LANG   $2 = scripts subdir   $3 = filename suffix (en/zh)
   echo "==> screenshotting the TUI  (SKIT_LANG=$1)…"
   run_tape "$1" "$2" shots.tape
-  rm -f docs/shots.mp4   # VHS insists on a video output; only the PNGs matter here
+  rm -f docs/assets/shots.mp4   # VHS insists on a video output; only the PNGs matter here
   for shot in library form add settings; do
-    mv "docs/shot-$shot.png" "docs/assets/tui-$shot-$3.png"
+    mv "docs/assets/shot-$shot.png" "docs/assets/tui-$shot-$3.png"
     echo "    wrote docs/assets/tui-$shot-$3.png"
   done
 }
@@ -58,6 +58,6 @@ fi
 cat <<'EOF'
 ==> done.
 
-    Mouse-operability cameo (optional, separate): VHS can't show a cursor. Record a ~5s
-    QuickTime clip clicking a footer chip + a table row and keep it as its own short clip.
+    Mouse-operability cameo (docs/assets/demo-mouse.gif) — VHS can't show a cursor, so it's
+    hand-recorded separately (recipe in CONTRIBUTING.md, "The mouse-operability GIF").
 EOF
