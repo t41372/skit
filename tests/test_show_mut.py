@@ -15,7 +15,7 @@ from typer.testing import CliRunner
 
 from skit import argstate, cli, store
 from skit.langs.python import metawriter
-from skit.langs.python.metawriter import ParamSpec
+from skit.params import ParamDecl
 
 runner = CliRunner()
 
@@ -104,18 +104,18 @@ def test_show_inject_secret_output_exact(tmp_path):
     text = metawriter.write_params(
         'KEY = "abc"\nCITY = "Taipei"\nTOKEN = "t"\nprint(KEY, CITY, TOKEN)\n',
         [
-            ParamSpec(
+            ParamDecl(
                 name="KEY",
-                kind="const",
+                binding="const",
                 type="str",
                 default="abc",
                 secret=True,
                 env_source="API_KEY",
             ),
-            ParamSpec(
-                name="CITY", kind="const", type="str", default="Taipei", prompt="Which city?"
+            ParamDecl(
+                name="CITY", binding="const", type="str", default="Taipei", prompt="Which city?"
             ),
-            ParamSpec(name="TOKEN", kind="const", type="str", secret=True),
+            ParamDecl(name="TOKEN", binding="const", type="str", secret=True),
         ],
     )
     p = _py(tmp_path, text, "api.py")

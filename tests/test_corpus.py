@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from skit.langs.python import analyzer, metawriter, shim
+from skit.params import ParamDecl
 
 CORPUS = sorted((Path(__file__).parent / "corpus").glob("*.py"))
 
@@ -33,19 +34,10 @@ def _read(path: Path) -> str:
         return f.read()
 
 
-def _specs_for(text: str) -> list[metawriter.ParamSpec]:
-    return [
-        metawriter.ParamSpec(
-            name=c.name,
-            kind=c.kind,
-            type=c.type,
-            default=c.default,
-            prompt=c.prompt,
-            order=c.order,
-            secret=c.secret,
-        )
-        for c in analyzer.analyze(text).candidates
-    ]
+def _specs_for(text: str) -> list[ParamDecl]:
+    # ParamDecl.from_candidate is the field-aligned conversion this test used to spell out
+    # by hand; it carries exactly the same fields, so byte fidelity is unchanged.
+    return [ParamDecl.from_candidate(c) for c in analyzer.analyze(text).candidates]
 
 
 @pytest.mark.parametrize("path", CORPUS, ids=lambda p: p.name)

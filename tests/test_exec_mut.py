@@ -24,7 +24,7 @@ import pytest
 from skit import uvman
 from skit.langs import launch
 from skit.langs.python import shim
-from skit.langs.python.metawriter import ParamSpec
+from skit.params import Binding, ParamDecl, ParamType
 
 
 @pytest.fixture(autouse=True)
@@ -39,9 +39,14 @@ def _force_english_locale(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def spec(
-    name: str, *, kind: str = "const", type: str = "str", order: int = -1, secret: bool = False
-) -> ParamSpec:
-    return ParamSpec(name=name, kind=kind, type=type, order=order, secret=secret)
+    name: str,
+    *,
+    binding: Binding = "const",
+    type: ParamType = "str",
+    order: int = -1,
+    secret: bool = False,
+) -> ParamDecl:
+    return ParamDecl(name=name, binding=binding, type=type, order=order, secret=secret)
 
 
 def _run_injected(source: str, stdin: str = "") -> str:
@@ -141,14 +146,14 @@ def test_input_order_equal_to_call_count_is_drift() -> None:
     """order == len(input_calls) is one past the last call: definition drift, not a queue slot."""
     src = "x = input()\nprint(x)\n"
     with pytest.raises(shim.ShimError) as exc_info:
-        shim.inject(src, [spec("input-2", kind="input", order=1)], {"input-2": "v"})
+        shim.inject(src, [spec("input-2", binding="input", order=1)], {"input-2": "v"})
     assert str(exc_info.value) == "input-2"
 
 
 def test_input_spec_does_not_stop_later_const_specs() -> None:
     out = shim.inject(
         "x = input()\nCITY = 'a'\nprint(x, CITY)\n",
-        [spec("input-1", kind="input", order=0), spec("CITY")],
+        [spec("input-1", binding="input", order=0), spec("CITY")],
         {"input-1": "v", "CITY": "b"},
     )
     assert "CITY = 'b'" in out
@@ -171,7 +176,7 @@ def test_preamble_goes_directly_after_docstring_before_first_statement() -> None
     """With a docstring and the first input() immediately after it, the preamble must land
     between them — one line too low and the input() runs before the interception queue."""
     src = '"""d"""\nx = input("p: ")\nprint(x)\n'
-    out = shim.inject(src, [spec("input-1", kind="input", order=0)], {"input-1": "queued"})
+    out = shim.inject(src, [spec("input-1", binding="input", order=0)], {"input-1": "queued"})
     lines = out.splitlines()
     assert lines[0] == '"""d"""'
     assert lines[1].endswith("# skit:shim")
@@ -181,7 +186,7 @@ def test_preamble_goes_directly_after_docstring_before_first_statement() -> None
 def test_preamble_inserted_above_decorators() -> None:
     """Decorators sit above the def's lineno; inserting between them is a SyntaxError."""
     src = "@(lambda g: g)\ndef f():\n    return input('p: ')\nprint(f())\n"
-    out = shim.inject(src, [spec("input-1", kind="input", order=0)], {"input-1": "deco"})
+    out = shim.inject(src, [spec("input-1", binding="input", order=0)], {"input-1": "deco"})
     lines = out.splitlines()
     assert lines[0].endswith("# skit:shim")
     assert lines[1] == "@(lambda g: g)"

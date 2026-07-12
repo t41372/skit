@@ -7,7 +7,7 @@ from typer.testing import CliRunner
 
 from skit import cli, store
 from skit.langs.python import metawriter, reconcile
-from skit.langs.python.metawriter import ParamSpec
+from skit.params import Binding, ParamDecl, ParamType
 
 # Two candidates: CITY (const) and input-1 (order 0) — used by add/resync tests.
 SCRIPT = 'CITY = "Taipei"\nRETRIES = 3\nwho = input("Name: ")\nprint(CITY, RETRIES, who)\n'
@@ -20,8 +20,12 @@ def tmp_store(tmp_path, monkeypatch):
     monkeypatch.setenv("SKIT_LANG", "en")
 
 
-def spec(name, kind="const", type="str", order=-1, secret=False, prompt=""):
-    return ParamSpec(name=name, kind=kind, type=type, order=order, secret=secret, prompt=prompt)
+def spec(
+    name, binding: Binding = "const", type: ParamType = "str", order=-1, secret=False, prompt=""
+):
+    return ParamDecl(
+        name=name, binding=binding, type=type, order=order, secret=secret, prompt=prompt
+    )
 
 
 # ---------- reconcile.edit_specs pure logic ----------
@@ -54,7 +58,7 @@ def test_add_brings_candidate_under_management():
 
 def test_add_input_candidate_by_display_name():
     res = reconcile.edit_specs(SCRIPT, [], add=["input-1"])
-    assert res.specs[0].kind == "input"
+    assert res.specs[0].binding == "input"
     assert res.specs[0].order == 0
 
 
@@ -100,7 +104,7 @@ def entry(tmp_path):
     return store.add_python(script, mode="copy")
 
 
-def _read_back(entry) -> list[ParamSpec]:
+def _read_back(entry) -> list[ParamDecl]:
     return metawriter.read_params((entry.dir / "script.py").read_text(encoding="utf-8"))
 
 

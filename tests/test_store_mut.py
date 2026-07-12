@@ -22,8 +22,8 @@ import pytest
 
 from skit import argstate, config, store
 from skit.atomic import atomic_write_bytes
-from skit.langs.python.metawriter import ParamSpec
 from skit.models import ScriptMeta, now_iso, slugify
+from skit.params import ParamDecl
 from skit.paths import (
     config_dir,
     data_dir,
@@ -212,8 +212,8 @@ def test_looks_blocked_default_timeout_is_2_5(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _spec(name: str, *, default=None) -> ParamSpec:
-    return ParamSpec(name=name, kind="const", type="str", default=default, secret=False)
+def _spec(name: str, *, default=None) -> ParamDecl:
+    return ParamDecl(name=name, binding="const", type="str", default=default, secret=False)
 
 
 def test_save_preset_preserves_previously_saved_presets_for_same_slug(tmp_path, monkeypatch):

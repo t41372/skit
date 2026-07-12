@@ -22,7 +22,7 @@ import pytest
 from skit import flows, launcher, pep723, store
 from skit.langs import launch
 from skit.langs.python import analyzer, argspec, metawriter
-from skit.langs.python.metawriter import ParamSpec
+from skit.params import ParamDecl
 
 # --------------------------------------------------------------------------
 # analyzer._match_inputs — the equal-count duplicate-prompt multiset pass
@@ -82,8 +82,8 @@ def test_argparse_choices_with_non_literal_element_degrades_to_free_text() -> No
     assert spec is not None
     field = spec.fields[0]
     assert field.degraded is True
-    assert field.kind == "str"
-    assert field.choices == []
+    assert field.type == "str"
+    assert field.choices == ()
 
 
 # --------------------------------------------------------------------------
@@ -169,18 +169,18 @@ def test_join_for_display_uses_list2cmdline_on_windows(
 
 
 # --------------------------------------------------------------------------
-# metawriter.ParamSpec.to_dict — env_source round-trip
+# ParamDecl.to_block_dict — env_source round-trip
 # --------------------------------------------------------------------------
 
 
 def test_param_env_source_survives_write_read_round_trip() -> None:
-    # A secret sourced from an environment variable: to_dict serializes env_source
-    # (metawriter.py:96) and from_dict reads it back, so the binding survives a full
+    # A secret sourced from an environment variable: to_block_dict serializes env_source
+    # and from_block_dict reads it back, so the binding survives a full
     # write_params -> read_params round-trip.
     params = [
-        ParamSpec(
+        ParamDecl(
             name="API_KEY",
-            kind="const",
+            binding="const",
             type="str",
             secret=True,
             env_source="MY_API_KEY",

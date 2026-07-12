@@ -30,7 +30,7 @@ from skit import (
     store,
 )
 from skit.langs.python import analyzer, metawriter, shim
-from skit.langs.python.metawriter import ParamSpec
+from skit.params import ParamDecl
 from skit.paths import values_dir
 
 runner = CliRunner()
@@ -416,7 +416,7 @@ def run_entry_spy(monkeypatch):
 
 def test_run_python_with_params_injects(tmp_path, run_entry_spy):
     text = metawriter.write_params(
-        'CITY = "Taipei"\nprint(CITY)\n', [ParamSpec(name="CITY", kind="const", type="str")]
+        'CITY = "Taipei"\nprint(CITY)\n', [ParamDecl(name="CITY", binding="const", type="str")]
     )
     entry = store.add_python(_py(tmp_path, text), name="j")
     argstate.save_last(entry.slug, values={"CITY": "Kaohsiung"})
@@ -456,7 +456,7 @@ def test_run_not_found_exits_127():
 
 def test_run_raw_skips_form(tmp_path, run_entry_spy):
     text = metawriter.write_params(
-        'CITY = "Taipei"\nprint(CITY)\n', [ParamSpec(name="CITY", kind="const", type="str")]
+        'CITY = "Taipei"\nprint(CITY)\n', [ParamDecl(name="CITY", binding="const", type="str")]
     )
     store.add_python(_py(tmp_path, text), name="j")
     result = runner.invoke(cli.app, ["run", "j", "--raw", "--no-input"])
@@ -490,7 +490,7 @@ def test_run_nonzero_exit_propagates(tmp_path, run_entry_spy):
 
 def test_run_shim_error(tmp_path, run_entry_spy, monkeypatch):
     text = metawriter.write_params(
-        'CITY = "Taipei"\nprint(CITY)\n', [ParamSpec(name="CITY", kind="const", type="str")]
+        'CITY = "Taipei"\nprint(CITY)\n', [ParamDecl(name="CITY", binding="const", type="str")]
     )
     entry = store.add_python(_py(tmp_path, text), name="j")
     argstate.save_last(entry.slug, values={"CITY": "Kaohsiung"})
@@ -508,7 +508,7 @@ def test_run_bad_typed_value_caught_at_validation(tmp_path, run_entry_spy):
     # input, not drift — v2 catches it at form validation, before shim ever runs, and
     # maps it to the skit-side exit code.
     text = metawriter.write_params(
-        "RETRIES = 3\nprint(RETRIES)\n", [ParamSpec(name="RETRIES", kind="const", type="int")]
+        "RETRIES = 3\nprint(RETRIES)\n", [ParamDecl(name="RETRIES", binding="const", type="int")]
     )
     entry = store.add_python(_py(tmp_path, text), name="j")
     argstate.save_last(entry.slug, values={"RETRIES": "not-a-number"})
@@ -640,7 +640,7 @@ def test_params_command_no_placeholders(tmp_path):
 def test_params_python_table_with_secret(tmp_path):
     text = metawriter.write_params(
         'API = "x"\nprint(API)\n',
-        [ParamSpec(name="API", kind="const", type="str", default="x", secret=True)],
+        [ParamDecl(name="API", binding="const", type="str", default="x", secret=True)],
     )
     ent = store.add_python(_py(tmp_path, text), name="a")
     argstate.save_last(ent.slug, values={"API": "shown"}, secret_names={"API"})
@@ -658,7 +658,7 @@ def test_params_python_table_with_secret(tmp_path):
 def test_params_secret_purges_stored_last_value_and_presets(tmp_path):
     text = metawriter.write_params(
         'API_KEY = "x"\nprint(API_KEY)\n',
-        [ParamSpec(name="API_KEY", kind="const", type="str", default="x")],
+        [ParamDecl(name="API_KEY", binding="const", type="str", default="x")],
     )
     ent = store.add_python(_py(tmp_path, text), name="a")
     # Recorded while API_KEY was still a public parameter.
@@ -687,8 +687,8 @@ def test_params_secret_does_not_purge_other_still_public_params(tmp_path):
     text = metawriter.write_params(
         "API_KEY = 'x'\nCITY = 'y'\nprint(API_KEY, CITY)\n",
         [
-            ParamSpec(name="API_KEY", kind="const", type="str"),
-            ParamSpec(name="CITY", kind="const", type="str"),
+            ParamDecl(name="API_KEY", binding="const", type="str"),
+            ParamDecl(name="CITY", binding="const", type="str"),
         ],
     )
     ent = store.add_python(_py(tmp_path, text), name="a")
@@ -704,7 +704,7 @@ def test_params_edit_without_stored_value_prints_no_purge_message(tmp_path):
     # Nothing was ever stored for CITY, so marking it secret has nothing to purge — the purge
     # message must not appear (regression: kills an unconditional-print mutant).
     text = metawriter.write_params(
-        'CITY = "x"\nprint(CITY)\n', [ParamSpec(name="CITY", kind="const", type="str")]
+        'CITY = "x"\nprint(CITY)\n', [ParamDecl(name="CITY", binding="const", type="str")]
     )
     store.add_python(_py(tmp_path, text), name="a")
     result = runner.invoke(cli.app, ["params", "a", "--secret", "CITY"])
@@ -945,7 +945,7 @@ def test_onboard_params_interactive_selection(monkeypatch, tty):
 
 def test_paramspec_from_candidate_roundtrip():
     result = analyzer.analyze('CITY = "Taipei"\nprint(CITY)\n')
-    spec = metawriter.ParamSpec.from_candidate(result.candidates[0])
+    spec = ParamDecl.from_candidate(result.candidates[0])
     assert spec.name == "CITY"
 
 
@@ -972,7 +972,7 @@ def test_command_without_placeholders_has_no_fields(tmp_path):
 def test_collect_param_form_interactive_secret(monkeypatch, tty, tmp_path):
     text = metawriter.write_params(
         'API = "x"\nprint(API)\n',
-        [ParamSpec(name="API", kind="const", type="str", secret=True)],
+        [ParamDecl(name="API", binding="const", type="str", secret=True)],
     )
     ent = store.add_python(_py(tmp_path, text), name="a")
     plan = flows.plan_for_entry(ent)
@@ -984,7 +984,7 @@ def test_collect_param_form_interactive_secret(monkeypatch, tty, tmp_path):
 def test_param_form_prefill_uses_definition_default(tmp_path):
     text = metawriter.write_params(
         'CITY = "Osaka"\nprint(CITY)\n',
-        [ParamSpec(name="CITY", kind="const", type="str", default="Osaka")],
+        [ParamDecl(name="CITY", binding="const", type="str", default="Osaka")],
     )
     ent = store.add_python(_py(tmp_path, text), name="a")
     plan = flows.plan_for_entry(ent)
@@ -1047,7 +1047,7 @@ def test_params_table_escapes_markup_in_name_and_default(tmp_path):
     in the `skit params` table."""
     text = metawriter.write_params(
         "print(1)\n",
-        [ParamSpec(name="[red]NAME[/red]", kind="const", type="str", default="[blue]hi[/blue]")],
+        [ParamDecl(name="[red]NAME[/red]", binding="const", type="str", default="[blue]hi[/blue]")],
     )
     store.add_python(_py(tmp_path, text), name="a")
     result = runner.invoke(cli.app, ["params", "a"])
@@ -1068,7 +1068,7 @@ def test_params_candidates_line_escapes_markup_in_name(tmp_path, monkeypatch):
     """The "Detected but not yet managed" line interpolates candidate names raw; even though
     analyzer-derived names are normally valid identifiers, this is defense in depth against any
     future candidate source that isn't so constrained."""
-    hostile = analyzer.Candidate(kind="const", name="[red]NEW[/red]", type="str", default="x")
+    hostile = analyzer.Candidate(binding="const", name="[red]NEW[/red]", type="str", default="x")
     monkeypatch.setattr(
         cli.reconcile, "analyze", lambda text: analyzer.Analysis(candidates=[hostile])
     )
@@ -1195,7 +1195,7 @@ def test_edit_missing_reference_source_escapes_markup_in_path(tmp_path):
 
 def test_edit_params_updated_summary_escapes_markup_in_name(tmp_path):
     text = metawriter.write_params(
-        "X = 1\nprint(X)\n", [ParamSpec(name="X", kind="const", type="int", default=1)]
+        "X = 1\nprint(X)\n", [ParamDecl(name="X", binding="const", type="int", default=1)]
     )
     store.add_python(_py(tmp_path, text), name="[blue]a[/blue]")
     result = runner.invoke(cli.app, ["params", "[blue]a[/blue]", "--resync"])
@@ -1205,7 +1205,7 @@ def test_edit_params_updated_summary_escapes_markup_in_name(tmp_path):
 
 def test_edit_params_malformed_prompt_escapes_markup(tmp_path):
     text = metawriter.write_params(
-        "X = 1\nprint(X)\n", [ParamSpec(name="X", kind="const", type="int", default=1)]
+        "X = 1\nprint(X)\n", [ParamDecl(name="X", binding="const", type="int", default=1)]
     )
     store.add_python(_py(tmp_path, text), name="a")
     result = runner.invoke(cli.app, ["params", "a", "--prompt", "[red]bad[/red]"])
@@ -1243,7 +1243,7 @@ def test_collect_param_form_prompt_escapes_markup_in_param_prompt_text(monkeypat
     and can freely carry markup."""
     text = metawriter.write_params(
         'CITY = "x"\nprint(CITY)\n',
-        [ParamSpec(name="CITY", kind="const", type="str", prompt="[red]Where[/red]?")],
+        [ParamDecl(name="CITY", binding="const", type="str", prompt="[red]Where[/red]?")],
     )
     ent = store.add_python(_py(tmp_path, text), name="a")
     captured: dict[str, str] = {}

@@ -23,6 +23,7 @@ from .i18n import gettext
 from .langs.python import argspec, metawriter, reconcile
 from .langs.registry import spec_for
 from .models import Entry
+from .params import ParamDecl
 
 
 class DiscardChangesModal(ModalScreen[bool]):
@@ -67,9 +68,9 @@ class ParamRow(Vertical):
     ParamRow Input { width: 1fr; }
     """
 
-    def __init__(self, spec: metawriter.ParamSpec) -> None:
+    def __init__(self, spec: ParamDecl) -> None:
         super().__init__()
-        self.spec: metawriter.ParamSpec = spec
+        self.spec: ParamDecl = spec
 
     @override
     def compose(self) -> ComposeResult:
@@ -90,7 +91,7 @@ class ParamRow(Vertical):
             )
         yield Static("", classes="p-note")
 
-    def collect(self) -> metawriter.ParamSpec | None:
+    def collect(self) -> ParamDecl | None:
         """None when unmanaged (checkbox off)."""
         if not self.query_one(Checkbox).value:
             return None
@@ -148,7 +149,7 @@ class ScriptSettingsScreen(Screen[bool]):
         has_params_io = self._spec is not None and self._spec.params_io is not None
         if has_params_io and entry.script_path.exists():
             self._text = entry.script_path.read_text(encoding="utf-8", errors="replace")
-        self._specs: list[metawriter.ParamSpec] = metawriter.read_params(self._text)
+        self._specs: list[ParamDecl] = metawriter.read_params(self._text)
         # The resync outcome (incl. safety-rebind warnings) must survive the recompose that
         # action_resync triggers — a widget updated in place would be thrown away and rebuilt
         # empty. Kept on the instance so compose can re-emit it. Already escape()'d for markup.
@@ -250,7 +251,7 @@ class ScriptSettingsScreen(Screen[bool]):
                         value=False,
                         id=f"st-new-{i}",
                     )
-        if self._specs and all(s.kind == "input" for s in self._specs):
+        if self._specs and all(s.binding == "input" for s in self._specs):
             yield Static(
                 gettext("Every input() is managed — this script can now run with --no-input."),
                 classes="hint",
@@ -354,7 +355,7 @@ class ScriptSettingsScreen(Screen[bool]):
                 for i, c in enumerate(report.new):
                     box = self.query(f"#st-new-{i}")
                     if box and box.first(Checkbox).value:
-                        new_specs.append(metawriter.ParamSpec.from_candidate(c))
+                        new_specs.append(ParamDecl.from_candidate(c))
             copy_path = entry.script_path
             copy_path.write_text(metawriter.write_params(self._text, new_specs), encoding="utf-8")
             purged = argstate.purge_secret(entry.slug, {s.name for s in new_specs if s.secret})

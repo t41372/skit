@@ -15,7 +15,7 @@ from textual.widgets import Checkbox, DataTable, Input, Static
 from conftest import click_label, footer_text
 from skit import argstate, config, flows, launcher, store, tui
 from skit.langs.python import metawriter
-from skit.langs.python.metawriter import ParamSpec
+from skit.params import ParamDecl
 from skit.tui_form import FieldRow, RunFormScreen
 
 
@@ -65,7 +65,7 @@ MANAGED = 'CITY = "Taipei"\nprint(CITY)\n'
 
 def _managed_entry(tmp_path, name="j", default=None):
     text = metawriter.write_params(
-        MANAGED, [ParamSpec(name="CITY", kind="const", type="str", default=default)]
+        MANAGED, [ParamDecl(name="CITY", binding="const", type="str", default=default)]
     )
     return store.add_python(_py(tmp_path, text, f"{name}.py"), name=name)
 
@@ -320,7 +320,7 @@ async def test_form_preset_chips_apply_values(tmp_path, quiet_run):
 async def test_form_secret_field_masks_input(tmp_path, quiet_run):
     text = metawriter.write_params(
         'API_KEY = "x"\nprint(API_KEY)\n',
-        [ParamSpec(name="API_KEY", kind="const", type="str", secret=True)],
+        [ParamDecl(name="API_KEY", binding="const", type="str", secret=True)],
     )
     store.add_python(_py(tmp_path, text, "sec.py"), name="sec")
     app = tui.MenuApp()
@@ -755,7 +755,7 @@ async def test_insert_token_env_picker_filters_and_inserts(tmp_path, quiet_run, 
 async def test_insert_token_refused_for_secret_fields(tmp_path, quiet_run):
     text = metawriter.write_params(
         'API_KEY = "x"\nprint(API_KEY)\n',
-        [ParamSpec(name="API_KEY", kind="const", type="str", secret=True)],
+        [ParamDecl(name="API_KEY", binding="const", type="str", secret=True)],
     )
     store.add_python(_py(tmp_path, text, "sec2.py"), name="sec2")
     app = tui.MenuApp()
@@ -886,8 +886,8 @@ async def test_rerun_path_prints_drift_lines(tmp_path, quiet_run, monkeypatch):
     drifted = metawriter.write_params(
         "CITY = 'x'\nprint(CITY)\n",
         [
-            ParamSpec(name="CITY", kind="const", type="str"),
-            ParamSpec(name="GONE", kind="const", type="str"),
+            ParamDecl(name="CITY", binding="const", type="str"),
+            ParamDecl(name="GONE", binding="const", type="str"),
         ],
     )
     entry = store.add_python(_py(tmp_path, drifted, "drifty.py"), name="drifty")

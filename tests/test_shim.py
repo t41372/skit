@@ -6,19 +6,21 @@ from __future__ import annotations
 import pytest
 
 from skit.langs.python import shim
-from skit.langs.python.metawriter import ParamSpec
+from skit.params import Binding, ParamDecl, ParamType
 
 
 def spec(
     name: str,
     *,
-    kind: str = "const",
-    type: str = "str",
+    binding: Binding = "const",
+    type: ParamType = "str",
     order: int = -1,
     secret: bool = False,
     prompt: str = "",
-) -> ParamSpec:
-    return ParamSpec(name=name, kind=kind, type=type, order=order, secret=secret, prompt=prompt)
+) -> ParamDecl:
+    return ParamDecl(
+        name=name, binding=binding, type=type, order=order, secret=secret, prompt=prompt
+    )
 
 
 SCRIPT = '''"""Docstring stays."""
@@ -73,7 +75,7 @@ def _run_injected(source: str, stdin: str = "") -> str:
 
 
 def test_input_queue_by_order():
-    out = shim.inject(SCRIPT, [spec("input-1", kind="input", order=0)], {"input-1": "Alice"})
+    out = shim.inject(SCRIPT, [spec("input-1", binding="input", order=0)], {"input-1": "Alice"})
     # 3a: the managed call site itself is rewritten (input(...) -> _skit_i[K](...)) and a
     # single-line preamble defines the one-shot per-call-site overrides.
     assert 'who = _skit_i[0]("Your name: ")' in out
@@ -84,7 +86,7 @@ def test_input_queue_by_order():
 
 
 def test_input_queue_preamble_is_single_line_after_docstring():
-    out = shim.inject(SCRIPT, [spec("input-1", kind="input", order=0)], {"input-1": "Alice"})
+    out = shim.inject(SCRIPT, [spec("input-1", binding="input", order=0)], {"input-1": "Alice"})
     lines = out.splitlines()
     assert (
         lines[0] == '"""Docstring stays."""'
@@ -96,7 +98,7 @@ def test_input_queue_preamble_is_single_line_after_docstring():
 
 def test_input_queue_exhaustion_falls_back_to_stdin():
     src = "a = input('a: ')\nb = input('b: ')\nprint(a, b)\n"
-    out = shim.inject(src, [spec("input-1", kind="input", order=0)], {"input-1": "one"})
+    out = shim.inject(src, [spec("input-1", binding="input", order=0)], {"input-1": "one"})
     stdout = _run_injected(out, stdin="two\n")
     # Call 0 consumes the queue; call 1 falls back to native stdin pass-through.
     assert "one two" in stdout
@@ -107,7 +109,7 @@ def test_input_queue_in_loop_consumes_by_call_order():
     # The analyzer sees one input() call site (order 0), but it is invoked three times:
     # call 0 consumes the queue value; subsequent calls fall back to stdin. This is the key
     # advantage of the queue approach over in-place rewriting.
-    out = shim.inject(src, [spec("input-1", kind="input", order=0)], {"input-1": "first"})
+    out = shim.inject(src, [spec("input-1", binding="input", order=0)], {"input-1": "first"})
     stdout = _run_injected(out, stdin="second\nthird\n")
     assert "first|second|third" in stdout
 
@@ -115,7 +117,7 @@ def test_input_queue_in_loop_consumes_by_call_order():
 def test_input_queue_secret_masks_echo():
     src = "token = input('token: ')\nprint('len', len(token))\n"
     out = shim.inject(
-        src, [spec("input-1", kind="input", order=0, secret=True)], {"input-1": "hunter2"}
+        src, [spec("input-1", binding="input", order=0, secret=True)], {"input-1": "hunter2"}
     )
     stdout = _run_injected(out)
     assert "hunter2" not in stdout  # Secret values must never be echoed
@@ -125,7 +127,7 @@ def test_input_queue_secret_masks_echo():
 
 def test_input_queue_with_future_import():
     src = '"""doc"""\nfrom __future__ import annotations\nx = input()\nprint(x)\n'
-    out = shim.inject(src, [spec("input-1", kind="input", order=0)], {"input-1": "ok"})
+    out = shim.inject(src, [spec("input-1", binding="input", order=0)], {"input-1": "ok"})
     lines = out.splitlines()
     assert lines[1] == "from __future__ import annotations"  # preamble must go after __future__
     assert lines[2].endswith("# skit:shim")
@@ -135,7 +137,7 @@ def test_input_queue_with_future_import():
 def test_input_queue_combined_with_const_injection():
     out = shim.inject(
         SCRIPT,
-        [spec("CITY"), spec("input-1", kind="input", order=0)],
+        [spec("CITY"), spec("input-1", binding="input", order=0)],
         {"CITY": "Tainan", "input-1": "Bob"},
     )
     assert "CITY = 'Tainan'" in out
@@ -214,7 +216,7 @@ def test_input_order_beyond_calls_is_drift():
     """order=5 when there are no input() calls means the definition drifted."""
     src = "print('hello')\n"
     with pytest.raises(shim.ShimError):
-        shim.inject(src, [spec("input-1", kind="input", order=5)], {"input-1": "x"})
+        shim.inject(src, [spec("input-1", binding="input", order=5)], {"input-1": "x"})
 
 
 # ---------- inject: duplicate-prompt specs must never double-bind onto one call site (regression) ----------
@@ -230,8 +232,8 @@ def test_inject_two_identical_prompts_one_deleted_raises_cleanly_never_corrupts(
     src = 'first = input("Go? ")\nsecond = input("Go? ")\nprint(first, second)\n'
     edited = src.replace('first = input("Go? ")\n', "")  # delete the first call
     specs = [
-        spec("input-1", kind="input", order=0, prompt="Go? "),
-        spec("input-2", kind="input", order=1, prompt="Go? "),
+        spec("input-1", binding="input", order=0, prompt="Go? "),
+        spec("input-2", binding="input", order=1, prompt="Go? "),
     ]
     with pytest.raises(shim.ShimError):
         shim.inject(edited, specs, {"input-1": "AAA", "input-2": "BBB"})
@@ -244,22 +246,22 @@ def test_inject_duplicate_prompt_winner_only_still_injects_and_compiles():
     src = 'first = input("Go? ")\nsecond = input("Go? ")\nprint(first, second)\n'
     edited = src.replace('first = input("Go? ")\n', "")
     out = shim.inject(
-        edited, [spec("input-1", kind="input", order=0, prompt="Go? ")], {"input-1": "AAA"}
+        edited, [spec("input-1", binding="input", order=0, prompt="Go? ")], {"input-1": "AAA"}
     )
     assert "_skit_i[0]_i[0]" not in out
     compile(out, "<test>", "exec")
 
 
 def test_inject_specs_sharing_the_same_order_never_double_bind():
-    # Defense-in-depth at the shim layer itself: two ParamSpec entries that carry the identical
+    # Defense-in-depth at the shim layer itself: two ParamDecl entries that carry the identical
     # `order` (e.g. a hand-edited or otherwise corrupted [tool.skit] block) look up the exact same
     # _match_inputs binding and would both try to queue a replacement over the same input() callee
     # span. inject() must refuse to emit the second, overlapping replacement -- reporting drift via
     # ShimError instead of corrupting the temp copy.
     src = 'x = input("Go? ")\nprint(x)\n'
     specs = [
-        spec("input-1", kind="input", order=0, prompt="Go? "),
-        spec("input-2", kind="input", order=0, prompt="Go? "),
+        spec("input-1", binding="input", order=0, prompt="Go? "),
+        spec("input-2", binding="input", order=0, prompt="Go? "),
     ]
     with pytest.raises(shim.ShimError):
         shim.inject(src, specs, {"input-1": "AAA", "input-2": "BBB"})
@@ -268,9 +270,9 @@ def test_inject_specs_sharing_the_same_order_never_double_bind():
 def test_inject_triple_duplicate_specs_same_order_never_double_bind():
     src = 'x = input("Go? ")\nprint(x)\n'
     specs = [
-        spec("input-1", kind="input", order=0, prompt="Go? "),
-        spec("input-2", kind="input", order=0, prompt="Go? "),
-        spec("input-3", kind="input", order=0, prompt="Go? "),
+        spec("input-1", binding="input", order=0, prompt="Go? "),
+        spec("input-2", binding="input", order=0, prompt="Go? "),
+        spec("input-3", binding="input", order=0, prompt="Go? "),
     ]
     with pytest.raises(shim.ShimError):
         shim.inject(src, specs, {"input-1": "AAA", "input-2": "BBB", "input-3": "CCC"})
@@ -285,7 +287,7 @@ def test_preamble_inserted_at_end_for_no_docstring_no_future():
     # A file with only a bare input() call has no docstring and no __future__ import,
     # so _preamble_line_index returns 0: the preamble is inserted before line 0.
     src = "x = input('v: ')\nprint(x)\n"
-    out = shim.inject(src, [spec("input-1", kind="input", order=0)], {"input-1": "hi"})
+    out = shim.inject(src, [spec("input-1", binding="input", order=0)], {"input-1": "hi"})
     assert "# skit:shim" in out
     lines = out.splitlines()
     # The preamble must be the very first line (index 0)
@@ -344,7 +346,7 @@ def test_preamble_insertion_survives_form_feed_inside_docstring():
     input() is never actually overridden, and the queued value is silently dropped with no error at
     all -- the worst kind of failure this fix exists to prevent."""
     src = '"""line one\x0cline two"""\nname = input("who: ")\nprint(name)\n'
-    out = shim.inject(src, [spec("input-1", kind="input", order=0)], {"input-1": "Bob"})
+    out = shim.inject(src, [spec("input-1", binding="input", order=0)], {"input-1": "Bob"})
     # The docstring must be left intact as a single statement (the preamble must NOT have landed
     # inside it): it must still be the true first line, unsplit, before any skit-injected text.
     assert out.startswith('"""line one\x0cline two"""\n')
@@ -372,8 +374,8 @@ def test_input_value_follows_prompt_despite_runtime_call_order_diverging_from_so
         "print(username, password)\n"
     )
     specs = [
-        spec("input-1", kind="input", order=0, secret=True),  # "Password: ", defined first
-        spec("input-2", kind="input", order=1),  # "Username: ", defined second, RUNS first
+        spec("input-1", binding="input", order=0, secret=True),  # "Password: ", defined first
+        spec("input-2", binding="input", order=1),  # "Username: ", defined second, RUNS first
     ]
     out = shim.inject(src, specs, {"input-1": "SUPERSECRET", "input-2": "alice"})
     stdout = _run_injected(out)
@@ -392,7 +394,7 @@ def test_input_value_follows_prompt_after_an_earlier_input_is_deleted():
     original_order = 1  # as recorded when both input() calls existed
     edited_src = 'password = input("Password: ")\nprint("got", password)\n'  # first input() deleted
     stored_specs = [
-        spec("input-2", kind="input", order=original_order, secret=True, prompt="Password: ")
+        spec("input-2", binding="input", order=original_order, secret=True, prompt="Password: ")
     ]
     out = shim.inject(edited_src, stored_specs, {"input-2": "hunter2"})
     stdout = _run_injected(out)

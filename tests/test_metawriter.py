@@ -6,12 +6,12 @@ import pytest
 
 from skit import pep723
 from skit.langs.python import metawriter
-from skit.langs.python.metawriter import ParamSpec
+from skit.params import ParamDecl
 
 PARAMS = [
-    ParamSpec(name="API_KEY", kind="const", type="str", default="abc", secret=True),
-    ParamSpec(name="RETRIES", kind="const", type="int", default=3),
-    ParamSpec(name="input-1", kind="input", type="str", prompt="City: ", order=0),
+    ParamDecl(name="API_KEY", binding="const", type="str", default="abc", secret=True),
+    ParamDecl(name="RETRIES", binding="const", type="int", default=3),
+    ParamDecl(name="input-1", binding="input", type="str", prompt="City: ", order=0),
 ]
 
 
@@ -108,7 +108,7 @@ def test_empty_params_removes_section():
 
 
 def test_string_escaping():
-    params = [ParamSpec(name="MSG", default='say "hi" \\ bye')]
+    params = [ParamDecl(name="MSG", binding="const", default='say "hi" \\ bye')]
     out = metawriter.write_params("x = 1\n", params)
     got = metawriter.read_params(out)
     assert got[0].default == 'say "hi" \\ bye'
@@ -318,14 +318,14 @@ def test_read_params_tolerates_non_numeric_order() -> None:
 
 
 def test_from_dict_coerces_non_numeric_order() -> None:
-    assert ParamSpec.from_dict({"name": "X", "order": "abc"}).order == -1
-    assert ParamSpec.from_dict({"name": "X", "order": None}).order == -1
+    assert ParamDecl.from_block_dict({"name": "X", "order": "abc"}).order == -1
+    assert ParamDecl.from_block_dict({"name": "X", "order": None}).order == -1
 
 
 def test_from_dict_still_coerces_numeric_string_and_float_order() -> None:
     # The fix must not regress previously-working coercions (only non-numeric values fall back).
-    assert ParamSpec.from_dict({"name": "X", "order": "3"}).order == 3
-    assert ParamSpec.from_dict({"name": "X", "order": 1.9}).order == 1
+    assert ParamDecl.from_block_dict({"name": "X", "order": "3"}).order == 3
+    assert ParamDecl.from_block_dict({"name": "X", "order": 1.9}).order == 1
 
 
 def test_write_params_survives_unicode_line_separators_in_prompt():
@@ -333,7 +333,7 @@ def test_write_params_survives_unicode_line_separators_in_prompt():
     leaves one raw, _commentify shreds the comment body and every managed param definition
     is lost on the next read. Escaping them keeps the block whole and round-trips the value."""
     for sep in ("\u0085", "\u2028", "\u2029"):
-        spec = ParamSpec(name="CITY", kind="const", type="str", default="x", prompt=f"a{sep}b")
+        spec = ParamDecl(name="CITY", binding="const", type="str", default="x", prompt=f"a{sep}b")
         text = metawriter.write_params("CITY = 'x'\n", [spec])
         back = metawriter.read_params(text)
         assert len(back) == 1, f"block lost for separator {sep!r}"

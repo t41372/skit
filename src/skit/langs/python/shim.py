@@ -34,8 +34,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from ...params import ParamDecl
 from .analyzer import _is_main_guard, _literal_prompt, _literal_value, _match_inputs
-from .metawriter import ParamSpec
 
 
 class ShimError(Exception):
@@ -304,7 +304,7 @@ def write_injected(entry_dir: Path, content: str) -> Path:
     return Path(tmp)
 
 
-def inject(text: str, specs: list[ParamSpec], values: dict[str, str]) -> str:
+def inject(text: str, specs: list[ParamDecl], values: dict[str, str]) -> str:
     """Return the full injected script text. A parameter whose target can't be found means the
     definition has drifted, so raise ShimError (tell the user to re-add explicitly; never silently
     run stale values). A parameter whose target IS found but whose value doesn't fit the declared
@@ -320,7 +320,9 @@ def inject(text: str, specs: list[ParamSpec], values: dict[str, str]) -> str:
     input_calls = _input_calls(tree)
     current_inputs = [(i, _literal_prompt(c)) for i, c in enumerate(input_calls)]
     stored_inputs = [
-        (spec.order, spec.prompt) for spec in specs if spec.kind == "input" and spec.name in values
+        (spec.order, spec.prompt)
+        for spec in specs
+        if spec.binding == "input" and spec.name in values
     ]
     input_bindings = _match_inputs(stored_inputs, current_inputs)
     queue: dict[int, tuple[str, bool]] = {}
@@ -329,7 +331,7 @@ def inject(text: str, specs: list[ParamSpec], values: dict[str, str]) -> str:
         if spec.name not in values:
             continue  # no value received, leave it alone (preserve the script's original behavior)
         raw = values[spec.name]
-        if spec.kind == "input":
+        if spec.binding == "input":
             # Resolve the call site the same way reconcile does (3a, shared via
             # analyzer._match_inputs): prefer the stored prompt text over bare position, so a
             # source edit that inserts/removes an earlier input() can't silently rebind this value
@@ -342,7 +344,7 @@ def inject(text: str, specs: list[ParamSpec], values: dict[str, str]) -> str:
             resolved_order, _ambiguous = binding
             if resolved_order in queue:
                 # Defense-in-depth: _match_inputs is meant to be strictly 1:1 (a claim-aware exact
-                # pass, 3a-fix), but this loop keys off `spec.order`, not identity -- two ParamSpec
+                # pass, 3a-fix), but this loop keys off `spec.order`, not identity -- two ParamDecl
                 # entries that happen to carry the same `order` (a hand-edited or otherwise
                 # corrupted [tool.skit] block) look up the *same* binding and would otherwise both
                 # queue a replacement over the identical `input` callee span. _apply's non-overlap

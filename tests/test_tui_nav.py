@@ -19,7 +19,7 @@ from textual.widgets import Input, RadioSet, Select
 from conftest import click_label
 from skit import store, tui
 from skit.langs.python import metawriter
-from skit.langs.python.metawriter import ParamSpec
+from skit.params import ParamDecl
 from skit.tui_add import AddReviewScreen
 from skit.tui_form import RunFormScreen
 from skit.tui_prefs import PreferencesScreen
@@ -44,8 +44,8 @@ def _two_field_entry(tmp_path):
     text = metawriter.write_params(
         'CITY = "x"\nNAME = "y"\nprint(CITY, NAME)\n',
         [
-            ParamSpec(name="CITY", kind="const", type="str", default="x"),
-            ParamSpec(name="NAME", kind="const", type="str", default="y"),
+            ParamDecl(name="CITY", binding="const", type="str", default="x"),
+            ParamDecl(name="NAME", binding="const", type="str", default="y"),
         ],
     )
     return store.add_python(_py(tmp_path, text), name="two")

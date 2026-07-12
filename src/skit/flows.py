@@ -38,11 +38,12 @@ from typing import TYPE_CHECKING
 
 from . import argstate, launcher, tokens
 from .i18n import gettext
-from .langs.python import argspec, metawriter, reconcile, shim
+from .langs.python import reconcile, shim
 from .langs.python.analyzer import _is_secret_name
 from .langs.python.shim import ShimValueError, _coerce
 from .langs.registry import spec_for
 from .models import Entry
+from .params import ParamDecl
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -72,6 +73,50 @@ class FormField:
     flag: str = ""  # "--output"; "" = positional (flag source only)
     action: str = ""  # store_true | store_false (bool flags)
 
+    @classmethod
+    def from_decl(cls, d: ParamDecl) -> FormField:
+        """Project one ParamDecl onto the render-only form model. The single converter for
+        every value source, dispatched on delivery — the two hand-written converters this
+        replaced (inject-managed params, static CLI flags) plus the command-template
+        placeholder path, kept byte-for-byte to preserve the form's behaviour."""
+        if d.delivery == "inject":
+            # Managed const/input param: injected into a temp copy. source is left to
+            # FormField's own default ("inject"). "str" is intentionally absent from the
+            # type whitelist — an unknown type already falls back to "str".
+            return cls(
+                key=d.name,
+                label=d.prompt or d.name,
+                kind=d.type if d.type in ("int", "float", "bool") else "str",
+                default="" if d.default is None else _render_default(d.default),
+                has_default=d.default is not None,
+                secret=d.secret,
+                env_source=d.env_source,
+            )
+        if d.delivery == "flag":
+            # Reflected from the script's own CLI parser: assembled into real argv. A degraded
+            # field is a free-text field whatever its declared type said.
+            return cls(
+                key=d.name,
+                label=d.name,
+                kind="str" if d.degraded else d.type,
+                source="flag",
+                choices=list(d.choices),
+                default="" if d.default is None else _render_default(d.default),
+                has_default=d.default is not None,
+                help=d.help,
+                required=d.required,
+                secret=d.secret,
+                degraded=d.degraded,
+                multiple=d.multiple,
+                flag=d.flag,
+                action=d.action,
+            )
+        # Command-template placeholder (delivery="placeholder"): the value fills a {slot} in
+        # the command string. The only remaining delivery the form layer builds today.
+        return cls(
+            key=d.name, label=d.name, source="placeholder", required=d.required, secret=d.secret
+        )
+
 
 @dataclass
 class FormPlan:
@@ -79,7 +124,7 @@ class FormPlan:
     fields: list[FormField] = field(default_factory=list)
     drift_lines: list[str] = field(default_factory=list)  # localized, shown as a banner
     degraded_reason: str = ""  # argparse whole-parser degradation: "subparsers" | "dynamic"
-    specs: list[metawriter.ParamSpec] = field(default_factory=list)  # inject source only
+    specs: list[ParamDecl] = field(default_factory=list)  # inject source only
     text: str = ""  # script text (inject delivery needs it)
 
     @property
@@ -120,8 +165,14 @@ def plan_for_entry(entry: Entry) -> FormPlan:
         # which the non-interactive contract forbids. secret: C3 applies to every source —
         # a {api_key} placeholder masks and never lands in a state file, like any other secret.
         fields = [
-            FormField(
-                key=p, label=p, source="placeholder", required=True, secret=_is_secret_name(p)
+            FormField.from_decl(
+                ParamDecl(
+                    name=p,
+                    binding="none",
+                    delivery="placeholder",
+                    required=True,
+                    secret=_is_secret_name(p),
+                )
             )
             for p in (entry.meta.params or [])
         ]
@@ -140,7 +191,7 @@ def plan_for_entry(entry: Entry) -> FormPlan:
         drift = list(reconcile.drift_lines(report, entry.meta.name)) if report.has_drift else []
         return FormPlan(
             source="inject",
-            fields=[_field_from_spec(s) for s in report.usable],
+            fields=[FormField.from_decl(s) for s in report.usable],
             drift_lines=drift,
             specs=report.usable,
             text=text,
@@ -151,45 +202,11 @@ def plan_for_entry(entry: Entry) -> FormPlan:
             if not spec.ok:
                 return FormPlan(source="argparse", degraded_reason=spec.reason, text=text)
             return FormPlan(
-                source="argparse", fields=[_field_from_arg(a) for a in spec.fields], text=text
+                source="argparse",
+                fields=[FormField.from_decl(a) for a in spec.fields],
+                text=text,
             )
     return FormPlan(source="none", text=text)
-
-
-def _field_from_spec(s: metawriter.ParamSpec) -> FormField:
-    return FormField(
-        key=s.name,
-        label=s.prompt or s.name,
-        # "str" is intentionally absent from the whitelist: an unknown type already falls back
-        # to "str", so listing it would be redundant (and only breeds equivalent mutants).
-        kind=s.type if s.type in ("int", "float", "bool") else "str",
-        # source is left to FormField's own default ("inject") — inject IS the default source, so
-        # spelling it out here would only be a redundant, unkillable-equivalent mutation site.
-        # test_field_from_spec_maps_every_field pins that the result is "inject".
-        default="" if s.default is None else _render_default(s.default),
-        has_default=s.default is not None,
-        secret=s.secret,
-        env_source=s.env_source,
-    )
-
-
-def _field_from_arg(a: argspec.ArgField) -> FormField:
-    return FormField(
-        key=a.dest,
-        label=a.dest,
-        kind="str" if a.degraded else a.kind,
-        source="flag",
-        choices=list(a.choices),
-        default="" if a.default is None else _render_default(a.default),
-        has_default=a.default is not None,
-        help=a.help,
-        required=a.required,
-        secret=a.secret,
-        degraded=a.degraded,
-        multiple=a.multiple,
-        flag=a.flag,
-        action=a.action,
-    )
 
 
 def _render_default(value: str | int | float | bool) -> str:

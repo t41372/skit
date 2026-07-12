@@ -35,16 +35,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
+from ...params import ParamDecl
 from .analyzer import Candidate, _match_inputs, analyze
-from .metawriter import ParamSpec
 
 
 @dataclass
 class Report:
-    ok: list[ParamSpec] = field(default_factory=list)
-    missing: list[ParamSpec] = field(default_factory=list)
-    changed: list[tuple[ParamSpec, Candidate]] = field(default_factory=list)
-    rebind: list[tuple[ParamSpec, Candidate]] = field(default_factory=list)
+    ok: list[ParamDecl] = field(default_factory=list)
+    missing: list[ParamDecl] = field(default_factory=list)
+    changed: list[tuple[ParamDecl, Candidate]] = field(default_factory=list)
+    rebind: list[tuple[ParamDecl, Candidate]] = field(default_factory=list)
     new: list[Candidate] = field(default_factory=list)
     syntax_error: bool = False
 
@@ -55,7 +55,7 @@ class Report:
         return bool(self.missing or self.changed or self.rebind)
 
     @property
-    def usable(self) -> list[ParamSpec]:
+    def usable(self) -> list[ParamDecl]:
         """Definitions still safe to inject (ok + changed + rebind; changed is only a type
         warning, rebind is only a positional-fallback warning -- both still inject, just flagged,
         per 3a: no silent drop, no silent wrong-value swap either)."""
@@ -129,7 +129,7 @@ def render_warning(warning: str) -> str:
 
 @dataclass
 class EditResult:
-    specs: list[ParamSpec]
+    specs: list[ParamDecl]
     warnings: list[str] = field(
         default_factory=list
     )  # unmatched names etc.; i18n key + value by CLI
@@ -137,7 +137,7 @@ class EditResult:
 
 def edit_specs(
     text: str,
-    specs: list[ParamSpec],
+    specs: list[ParamDecl],
     *,
     resync: bool = False,
     add: list[str] | tuple[str, ...] = (),
@@ -158,7 +158,7 @@ def edit_specs(
     warnings: list[str] = []
     # Shallow-copy each spec: this function claims to be pure and must never mutate the caller's
     # objects (resync changes type, tweaks change secret/prompt).
-    by_name: dict[str, ParamSpec] = {s.name: replace(s) for s in specs}
+    by_name: dict[str, ParamDecl] = {s.name: replace(s) for s in specs}
     # Derive order from by_name's own (deduped) keys rather than re-deriving it from `specs`
     # directly: a corrupted/legacy definition set can contain duplicate names (analyzer used to be
     # able to emit two same-named const candidates; onboarding then wrote both), and order must
@@ -192,8 +192,8 @@ def edit_specs(
 
 def _apply_resync(
     text: str,
-    specs: list[ParamSpec],
-    by_name: dict[str, ParamSpec],
+    specs: list[ParamDecl],
+    by_name: dict[str, ParamDecl],
     order: list[str],
     warnings: list[str],
 ) -> None:
@@ -217,7 +217,12 @@ def _apply_resync(
             del by_name[name]
             order.remove(name)
         elif name in changed_types:
-            by_name[name].type = changed_types[name]
+            # changed_types[name] is a Candidate.type (a plain str); ParamDecl.type is the
+            # closed ParamType literal, so re-anchor the type through dataclasses.replace
+            # (whose kwargs are untyped) rather than a direct attribute write. by_name[name]
+            # is already a private shallow copy (see the replace() at the top of edit_specs),
+            # so swapping in a fresh copy is the same visible effect as mutating in place.
+            by_name[name] = replace(by_name[name], type=changed_types[name])
         elif name in rebind_targets:
             # The prompt no longer uniquely resolves; re-anchor to whichever call site position
             # currently supplied it, so the *next* run's plain reconcile() (no --resync) sees an
@@ -231,7 +236,7 @@ def _apply_resync(
 def _apply_add(
     text: str,
     add: list[str] | tuple[str, ...],
-    by_name: dict[str, ParamSpec],
+    by_name: dict[str, ParamDecl],
     order: list[str],
     warnings: list[str],
 ) -> None:
@@ -240,14 +245,14 @@ def _apply_add(
         if name in by_name:
             warnings.append(f"already-managed:{name}")
         elif name in candidates:
-            by_name[name] = ParamSpec.from_candidate(candidates[name])
+            by_name[name] = ParamDecl.from_candidate(candidates[name])
             order.append(name)
         else:
             warnings.append(f"not-a-candidate:{name}")
 
 
 def _apply_tweaks(
-    by_name: dict[str, ParamSpec],
+    by_name: dict[str, ParamDecl],
     warnings: list[str],
     *,
     secret: list[str] | tuple[str, ...],
@@ -272,17 +277,17 @@ def _apply_tweaks(
             warnings.append(f"not-managed:{name}")
 
 
-def reconcile(text: str, specs: list[ParamSpec]) -> Report:
+def reconcile(text: str, specs: list[ParamDecl]) -> Report:
     """Reconcile the definitions with the script's current content. On a syntax error, mark
     everything missing (nothing matches)."""
     analysis = analyze(text)
     if analysis.syntax_error:
         return Report(missing=list(specs), syntax_error=True)
 
-    consts = {c.name: c for c in analysis.candidates if c.kind == "const"}
-    inputs = {c.order: c for c in analysis.candidates if c.kind == "input"}
-    stored_inputs = [(s.order, s.prompt) for s in specs if s.kind == "input"]
-    current_inputs = [(c.order, c.prompt) for c in analysis.candidates if c.kind == "input"]
+    consts = {c.name: c for c in analysis.candidates if c.binding == "const"}
+    inputs = {c.order: c for c in analysis.candidates if c.binding == "input"}
+    stored_inputs = [(s.order, s.prompt) for s in specs if s.binding == "input"]
+    current_inputs = [(c.order, c.prompt) for c in analysis.candidates if c.binding == "input"]
     input_bindings = _match_inputs(stored_inputs, current_inputs)
 
     report = Report()
@@ -290,7 +295,7 @@ def reconcile(text: str, specs: list[ParamSpec]) -> Report:
     covered_inputs: set[int] = set()
 
     for spec in specs:
-        if spec.kind == "input":
+        if spec.binding == "input":
             binding = input_bindings.get(spec.order)
             if binding is None:
                 report.missing.append(spec)
@@ -314,8 +319,8 @@ def reconcile(text: str, specs: list[ParamSpec]) -> Report:
             report.ok.append(spec)
 
     for cand in analysis.candidates:
-        if (cand.kind == "const" and cand.name not in covered_consts) or (
-            cand.kind == "input" and cand.order not in covered_inputs
+        if (cand.binding == "const" and cand.name not in covered_consts) or (
+            cand.binding == "input" and cand.order not in covered_inputs
         ):
             report.new.append(cand)
     return report

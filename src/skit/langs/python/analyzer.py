@@ -40,7 +40,8 @@ _CLI_FRAMEWORKS = ("argparse", "click", "typer", "docopt", "fire")
 class Candidate:
     """A candidate parameter. const is keyed by variable name; input by call order (B1/A8)."""
 
-    kind: str  # "const" | "input"
+    # "const" | "input" — the source-anchor axis (field-aligned with ParamDecl.binding).
+    binding: str
     name: str  # const: variable name; input: display name (input-1, input-2, …)
     type: str = "str"  # one of INJECTABLE_TYPES
     default: str | int | float | bool | None = None  # const: the original value in the source
@@ -114,7 +115,7 @@ def _const_candidates(body: list[ast.stmt]) -> list[Candidate]:
     A name can be bound to more than one injectable literal in the same block (`X = 1` then later
     `X = 2`): a block runs sequentially, so the *last* assignment is the value the name actually
     holds once the block finishes running -- that's the "effective" definition a form default/type
-    must agree with. It's also the only sound choice once a single ParamSpec is shared across every
+    must agree with. It's also the only sound choice once a single ParamDecl is shared across every
     same-named occurrence: shim._const_targets replaces *every* occurrence of the name with the
     injected value (by design, so a guard-body override also gets the new value), so two
     same-named candidates would make the shim compute the replacement spans twice and corrupt the
@@ -140,7 +141,7 @@ def _const_candidates(body: list[ast.stmt]) -> list[Candidate]:
         if not ok:
             continue
         candidate = Candidate(
-            kind="const",
+            binding="const",
             name=name,
             type=_type_name(v),
             default=v,
@@ -197,7 +198,7 @@ def _input_candidates(tree: ast.Module) -> list[Candidate]:
     for i, call in enumerate(calls):
         prompt = _literal_prompt(call)
         candidate = Candidate(
-            kind="input",
+            binding="input",
             name=f"input-{i + 1}",
             prompt=prompt,
             order=i,
@@ -398,7 +399,7 @@ def analyze(text: str) -> Analysis:
                     seen.add(c.name)
     mutated = _mutated_names(tree)
     for c in candidates:
-        if c.kind == "const" and c.name in mutated:
+        if c.binding == "const" and c.name in mutated:
             c.demoted = True
             c.demotion = "accumulator"
     candidates.extend(_input_candidates(tree))

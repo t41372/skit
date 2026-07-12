@@ -11,7 +11,7 @@ import locale as _locale
 
 from skit import i18n, pep723
 from skit.langs.python import metawriter, reconcile
-from skit.langs.python.metawriter import ParamSpec
+from skit.params import ParamDecl
 
 # =====================================================================================
 # i18n: 130->134 (system locale lookup returns None) and 215 (ngettext lazy-init)
@@ -110,7 +110,7 @@ class TestMetawriterResidual:
         # dependencies comment at all): writing params must not prepend a spurious blank comment
         # separator, since there was nothing to separate from.
         src = "# /// script\n# ///\nprint('hi')\n"
-        params = [ParamSpec(name="X", kind="const", type="str", default="v")]
+        params = [ParamDecl(name="X", binding="const", type="str", default="v")]
         out = metawriter.write_params(src, params)
         assert [p.name for p in metawriter.read_params(out)] == ["X"]
         # No leading blank "#" separator line before the [tool.skit] header.
@@ -122,7 +122,7 @@ class TestMetawriterResidual:
         # then remove all params: the body must collapse to nothing, leaving a bare block, not a
         # dangling blank comment line.
         src = "# /// script\n# ///\nprint('hi')\n"
-        params = [ParamSpec(name="X", kind="const", type="str", default="v")]
+        params = [ParamDecl(name="X", binding="const", type="str", default="v")]
         with_params = metawriter.write_params(src, params)
         cleared = metawriter.write_params(with_params, [])
         assert metawriter.read_params(cleared) == []
@@ -137,14 +137,14 @@ class TestMetawriterResidual:
 
 class TestMetawriterAdversarial:
     def test_unicode_default_roundtrip(self):
-        params = [ParamSpec(name="CITY", kind="const", type="str", default="台北市 🌆")]
+        params = [ParamDecl(name="CITY", binding="const", type="str", default="台北市 🌆")]
         out = metawriter.write_params("x = 1\n", params)
         got = metawriter.read_params(out)
         assert got[0].default == "台北市 🌆"
 
     def test_crlf_source_preserved_outside_block(self):
         src = "print('a')\r\nprint('b')\r\n"
-        params = [ParamSpec(name="X", kind="const", type="str", default="v")]
+        params = [ParamDecl(name="X", binding="const", type="str", default="v")]
         out = metawriter.write_params(src, params)
         # user code lines (outside the injected block) must survive untouched, CRLF and all
         assert "print('a')\r\nprint('b')\r\n" in out
@@ -153,7 +153,7 @@ class TestMetawriterAdversarial:
         # A prompt containing a literal newline must be escaped so the block still round-trips
         # (an unescaped newline would split the TOML string across two "# " comment lines and
         # corrupt the block).
-        params = [ParamSpec(name="X", kind="input", type="str", prompt="Line1\nLine2", order=0)]
+        params = [ParamDecl(name="X", binding="input", type="str", prompt="Line1\nLine2", order=0)]
         out = metawriter.write_params("x = 1\n", params)
         meta = pep723.parse_block(out)
         assert meta is not None  # still parses as valid TOML-in-comments
@@ -161,7 +161,7 @@ class TestMetawriterAdversarial:
         assert got[0].prompt == "Line1\nLine2"
 
     def test_control_character_in_default_escaped(self):
-        params = [ParamSpec(name="X", kind="const", type="str", default="a\x01b")]
+        params = [ParamDecl(name="X", binding="const", type="str", default="a\x01b")]
         out = metawriter.write_params("x = 1\n", params)
         got = metawriter.read_params(out)
         assert got[0].default == "a\x01b"
@@ -175,8 +175,8 @@ class TestMetawriterAdversarial:
 
     def test_multiple_params_blank_line_separated(self):
         params = [
-            ParamSpec(name="A", kind="const", type="str", default="1"),
-            ParamSpec(name="B", kind="const", type="str", default="2"),
+            ParamDecl(name="A", binding="const", type="str", default="1"),
+            ParamDecl(name="B", binding="const", type="str", default="2"),
         ]
         out = metawriter.write_params("x = 1\n", params)
         # render_skit_toml puts a blank line before each [[tool.skit.params]] table
@@ -243,7 +243,7 @@ class TestPep723Adversarial:
 class TestReconcileResidual:
     def test_edit_specs_remove_unmanaged_name_warns(self):
         text = 'CITY = "Taipei"\n'
-        specs = [ParamSpec(name="CITY", kind="const", type="str")]
+        specs = [ParamDecl(name="CITY", binding="const", type="str")]
         result = reconcile.edit_specs(text, specs, remove=["GONE"])
         assert result.warnings == ["not-managed:GONE"]
         # the managed one is untouched
@@ -256,7 +256,7 @@ class TestReconcileAdversarial:
         # the current script (a legitimate "reset a definition" workflow), not error out because
         # it was "already managed" (it no longer is, by the time add runs).
         text = 'CITY = "Osaka"\n'
-        specs = [ParamSpec(name="CITY", kind="const", type="str", default="Taipei")]
+        specs = [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")]
         result = reconcile.edit_specs(text, specs, remove=["CITY"], add=["CITY"])
         assert result.warnings == []
         assert [s.name for s in result.specs] == ["CITY"]
@@ -264,7 +264,7 @@ class TestReconcileAdversarial:
 
     def test_edit_specs_add_already_managed_warns_and_keeps_original(self):
         text = 'CITY = "Osaka"\n'
-        specs = [ParamSpec(name="CITY", kind="const", type="str", default="Taipei")]
+        specs = [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")]
         result = reconcile.edit_specs(text, specs, add=["CITY"])
         assert result.warnings == ["already-managed:CITY"]
         # original definition (default="Taipei") preserved, not clobbered by the source's current
@@ -280,8 +280,8 @@ class TestReconcileAdversarial:
     def test_edit_specs_resync_prunes_and_retypes_together(self):
         text = 'RETRIES = "3"\n'  # type changed from int to str; CITY variable gone entirely
         specs = [
-            ParamSpec(name="CITY", kind="const", type="str", default="Taipei"),
-            ParamSpec(name="RETRIES", kind="const", type="int", default=3),
+            ParamDecl(name="CITY", binding="const", type="str", default="Taipei"),
+            ParamDecl(name="RETRIES", binding="const", type="int", default=3),
         ]
         result = reconcile.edit_specs(text, specs, resync=True)
         assert result.warnings == ["resync-dropped:CITY"]
@@ -293,8 +293,8 @@ class TestReconcileAdversarial:
         # Exercise all four categories in one call and check the final state reflects that order.
         text = 'CITY = "Taipei"\nTOKEN = "abc"\n'
         specs = [
-            ParamSpec(name="GONE", kind="const", type="str", default="x"),  # dropped by resync
-            ParamSpec(name="CITY", kind="const", type="str", default="Taipei"),
+            ParamDecl(name="GONE", binding="const", type="str", default="x"),  # dropped by resync
+            ParamDecl(name="CITY", binding="const", type="str", default="Taipei"),
         ]
         result = reconcile.edit_specs(
             text,
@@ -324,8 +324,8 @@ class TestReconcileAdversarial:
         # Both an input and const drift simultaneously in one reconcile call.
         script = 'name = input("Name: ")\nprint(name)\n'  # RETRIES const is gone; input kept
         specs = [
-            ParamSpec(name="RETRIES", kind="const", type="int", default=3),
-            ParamSpec(name="input-1", kind="input", type="str", order=0),
+            ParamDecl(name="RETRIES", binding="const", type="int", default=3),
+            ParamDecl(name="input-1", binding="input", type="str", order=0),
         ]
         report = reconcile.reconcile(script, specs)
         assert [s.name for s in report.missing] == ["RETRIES"]

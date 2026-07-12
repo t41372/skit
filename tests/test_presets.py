@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from skit import argstate
-from skit.langs.python.metawriter import ParamSpec
+from skit.params import ParamDecl
 from skit.paths import values_dir
 
 
@@ -18,8 +18,10 @@ def tmp_store(tmp_path, monkeypatch):
     monkeypatch.setenv("SKIT_STATE_DIR", str(tmp_path / "state"))
 
 
-def spec(name: str, *, default=None, secret: bool = False) -> ParamSpec:
-    return ParamSpec(name=name, kind="const", type="str", default=default, secret=secret)
+def spec(name: str, *, default=None, secret: bool = False) -> ParamDecl:
+    return ParamDecl(
+        name=name, binding="const", delivery="inject", type="str", default=default, secret=secret
+    )
 
 
 def test_preset_roundtrip(tmp_store):
@@ -37,7 +39,7 @@ def test_resolution_order_preset_over_last_over_default(tmp_store):
     from skit import flows
 
     specs = [spec("CITY", default="Osaka"), spec("N", default="1")]
-    plan = flows.FormPlan(source="inject", fields=[flows._field_from_spec(s) for s in specs])
+    plan = flows.FormPlan(source="inject", fields=[flows.FormField.from_decl(s) for s in specs])
     # Definition default only
     assert flows.prefill(plan, "s") == {"CITY": "Osaka", "N": "1"}
     # Last-used value overrides default

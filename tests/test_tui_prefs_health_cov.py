@@ -15,7 +15,7 @@ from textual.widgets import Input, OptionList, RadioButton, RadioSet, Select, St
 
 from skit import config, store, tui
 from skit.langs.python import metawriter
-from skit.langs.python.metawriter import ParamSpec
+from skit.params import ParamDecl
 from skit.paths import scripts_dir
 from skit.tui_health import HealthScreen
 from skit.tui_prefs import PreferencesScreen
@@ -45,8 +45,8 @@ def _screen_text(screen) -> str:
 _DRIFTED = metawriter.write_params(
     "CITY = 'x'\nprint(CITY)\n",
     [
-        ParamSpec(name="CITY", kind="const", type="str"),
-        ParamSpec(name="GONE", kind="const", type="str"),
+        ParamDecl(name="CITY", binding="const", type="str"),
+        ParamDecl(name="GONE", binding="const", type="str"),
     ],
 )
 

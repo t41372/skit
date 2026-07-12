@@ -28,13 +28,9 @@ Shape of `[tool.skit]` (the TOML once comment prefixes are stripped):
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
 
 from ... import pep723
-
-if TYPE_CHECKING:
-    from .analyzer import Candidate
+from ...params import ParamDecl
 
 SCT_SCHEMA = 1
 
@@ -44,82 +40,6 @@ _BLOCK_RE = re.compile(
     # that follow the block, deleting them on rewrite.
     r"(?m)^# /// script\s*$\n(?P<body>(?:^#(?:| .*)$\n)*?)^# ///[^\S\n]*$\n?",
 )
-
-
-@dataclass
-class ParamSpec:
-    """One `[[tool.skit.params]]`. Field-aligned with analyzer.Candidate and inter-convertible."""
-
-    name: str
-    kind: str = "const"  # "const" | "input"
-    type: str = "str"
-    default: str | int | float | bool | None = None
-    prompt: str = ""
-    order: int = -1
-    secret: bool = False
-    # Secret-value source: the name of an environment variable to read at run time instead of
-    # asking on every run. Stores WHERE to find the value, never the value itself — the reason
-    # this may live in a plain-text file at all (C3: values never land on disk; a variable
-    # *name* is not a secret).
-    env_source: str = ""
-
-    @classmethod
-    def from_candidate(cls, c: Candidate) -> ParamSpec:
-        """Build a managed-parameter spec from an analyzer.Candidate (the two are
-        field-aligned by design — A2). The one place this conversion lives, so the CLI,
-        TUI add panel, TUI settings, and reconcile can't drift on which fields carry over."""
-        return cls(
-            name=c.name,
-            kind=c.kind,
-            type=c.type,
-            default=c.default,
-            prompt=c.prompt,
-            order=c.order,
-            secret=c.secret,
-        )
-
-    def to_dict(self) -> dict[str, str | int | float | bool]:
-        d: dict[str, str | int | float | bool] = {
-            "name": self.name,
-            "kind": self.kind,
-            "type": self.type,
-        }
-        if self.default is not None:
-            d["default"] = self.default
-        if self.prompt:
-            d["prompt"] = self.prompt
-        if self.order >= 0:
-            d["order"] = self.order
-        if self.secret:
-            d["secret"] = True
-        if self.env_source:
-            d["env_source"] = self.env_source
-        return d
-
-    @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> ParamSpec:
-        # read_params is contracted to be total: a hand-edited `order` can be any valid TOML scalar
-        # (e.g. a non-numeric string), so an uncoercible value must fall back to "no explicit order"
-        # rather than raising and crashing every caller (TUI load, `skit params`/`run`/`edit`).
-        try:
-            order = int(d.get("order", -1))
-        except (TypeError, ValueError):
-            order = -1
-        return cls(
-            name=str(d.get("name", "")),
-            kind=str(d.get("kind", "const")),
-            type=str(d.get("type", "str")),
-            default=d.get("default"),
-            prompt=str(d.get("prompt", "")),
-            order=order,
-            secret=bool(d.get("secret", False)),
-            env_source=str(d.get("env_source", "")),
-        )
-
-
-@dataclass
-class SctMeta:
-    params: list[ParamSpec] = field(default_factory=list)
 
 
 def _toml_str(value: str) -> str:
@@ -150,13 +70,13 @@ def _toml_value(value: str | int | float | bool) -> str:
     return _toml_str(value)
 
 
-def render_skit_toml(params: list[ParamSpec]) -> str:
+def render_skit_toml(params: list[ParamDecl]) -> str:
     """Generate the comment-stripped [tool.skit] TOML text (without the comment prefix)."""
     lines = ["[tool.skit]", f"schema = {SCT_SCHEMA}"]
     for p in params:
         lines.append("")
         lines.append("[[tool.skit.params]]")
-        for key, val in p.to_dict().items():
+        for key, val in p.to_block_dict().items():
             lines.append(f"{key} = {_toml_value(val)}")
     return "\n".join(lines) + "\n"
 
@@ -215,7 +135,7 @@ def _drop_synthetic_separator(base: str, original: str) -> str:
     return base
 
 
-def write_params(text: str, params: list[ParamSpec]) -> str:
+def write_params(text: str, params: list[ParamDecl]) -> str:
     """Write (or replace) the script's [tool.skit] with the parameter definitions. Empty params
     means removing the section.
 
@@ -249,7 +169,7 @@ def write_params(text: str, params: list[ParamSpec]) -> str:
     return text[: m.start()] + new_block + text[m.end() :]
 
 
-def read_params(text: str) -> list[ParamSpec]:
+def read_params(text: str) -> list[ParamDecl]:
     """Read the script's [tool.skit] parameter definitions; empty list if no block/section/parse."""
     meta = pep723.parse_block(text)
     if not meta:
@@ -264,4 +184,4 @@ def read_params(text: str) -> list[ParamSpec]:
     raw = skit.get("params") if isinstance(skit, dict) else None
     if not isinstance(raw, list):
         return []
-    return [ParamSpec.from_dict(d) for d in raw if isinstance(d, dict) and d.get("name")]
+    return [ParamDecl.from_block_dict(d) for d in raw if isinstance(d, dict) and d.get("name")]

@@ -48,6 +48,7 @@ from . import (
 from .i18n import gettext, ngettext
 from .langs.python import analyzer, metawriter, reconcile
 from .langs.registry import spec_for
+from .params import ParamDecl
 
 app = typer.Typer(
     name="skit",
@@ -223,7 +224,7 @@ def _default_selection(candidates: list[analyzer.Candidate]) -> str:
 
 def _print_candidate(i: int, c: analyzer.Candidate) -> None:
     mark = gettext(" (secret)") if c.secret else ""
-    if c.kind == "const":
+    if c.binding == "const":
         console.print(
             "  "
             + gettext("%(num)s. %(name)s (%(type)s) = %(value)s%(secret)s")
@@ -269,7 +270,7 @@ def _print_add_hints(result: analyzer.Analysis, script_name: str) -> None:
         )
 
 
-def _onboard_params(text: str, script_name: str, no_input: bool) -> list[metawriter.ParamSpec]:
+def _onboard_params(text: str, script_name: str, no_input: bool) -> list[ParamDecl]:
     """Parameter onboarding at add time (A4: which constant counts as a parameter is a UX call).
 
     - argparse detected: nothing to manage — the run form is read statically from the
@@ -317,7 +318,7 @@ def _onboard_params(text: str, script_name: str, no_input: bool) -> list[metawri
         console=console,
     )
     picked = _parse_selection(answer, len(result.candidates))
-    return [metawriter.ParamSpec.from_candidate(result.candidates[i]) for i in picked]
+    return [ParamDecl.from_candidate(result.candidates[i]) for i in picked]
 
 
 # A brand-new script starts from just a shebang; if the editor is closed with nothing more
@@ -1279,7 +1280,7 @@ def preset_delete(
 # --------------------------------------------------------------------------
 
 
-def _secret_cell(s: metawriter.ParamSpec) -> str:
+def _secret_cell(s: ParamDecl) -> str:
     """The Secret column: "—", "yes", or "yes ← $ENVVAR" when an env source is set."""
     if not s.secret:
         return "—"
@@ -1292,7 +1293,7 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
     """Read view: managed parameters + last values + detected-but-unmanaged candidates."""
     last = argstate.load_state(entry.slug)["values"]
     entry_spec = spec_for(entry.meta.kind)
-    specs: list[metawriter.ParamSpec] = []
+    specs: list[ParamDecl] = []
     text = ""
     if entry_spec is not None and entry_spec.params_io is not None and entry.script_path.exists():
         text = entry.script_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
@@ -1308,7 +1309,7 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
         unmanaged = [c.name for c in report.new]
     if as_json:
         payload = {
-            "params": [s.to_dict() for s in specs],
+            "params": [s.to_block_dict() for s in specs],
             "unmanaged": unmanaged,
             "placeholders": entry.meta.params or [],
         }
@@ -1364,7 +1365,7 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
             )
             table.add_row(
                 escape(s.name),
-                escape(s.kind),
+                escape(s.binding),
                 escape(s.type),
                 escape(default_shown),
                 _secret_cell(s),
@@ -1468,7 +1469,7 @@ def params(
         _show_params(entry, as_json)
 
 
-def _apply_env_sources(specs: list[metawriter.ParamSpec], env_sources: dict[str, str]) -> list[str]:
+def _apply_env_sources(specs: list[ParamDecl], env_sources: dict[str, str]) -> list[str]:
     """Set/clear env_source on secret specs; returns warnings for unusable requests."""
     warnings: list[str] = []
     by_name = {s.name: s for s in specs}

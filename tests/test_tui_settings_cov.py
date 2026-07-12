@@ -13,7 +13,7 @@ from textual.widgets import Checkbox, Input, Static
 
 from skit import argstate, store, tui
 from skit.langs.python import metawriter, reconcile
-from skit.langs.python.metawriter import ParamSpec
+from skit.params import ParamDecl
 from skit.tui_settings import DiscardChangesModal, ParamRow, ScriptSettingsScreen
 
 
@@ -48,9 +48,9 @@ async def test_save_collects_managed_rows_drops_unticked_and_scrubs_secret(tmp_p
     text = metawriter.write_params(
         'CITY = "Taipei"\nAPI_KEY = "k"\nOLD = "o"\nprint(CITY, API_KEY, OLD)\n',
         [
-            ParamSpec(name="CITY", kind="const", type="str", default="Taipei"),
-            ParamSpec(name="API_KEY", kind="const", type="str", default="k", secret=True),
-            ParamSpec(name="OLD", kind="const", type="str", default="o"),
+            ParamDecl(name="CITY", binding="const", type="str", default="Taipei"),
+            ParamDecl(name="API_KEY", binding="const", type="str", default="k", secret=True),
+            ParamDecl(name="OLD", binding="const", type="str", default="o"),
         ],
     )
     entry = store.add_python(_py(tmp_path, text), name="cfg")
@@ -101,7 +101,7 @@ async def test_secret_checkbox_warns_then_clears_the_note(tmp_path):
     deleted; unticking clears the note again."""
     text = metawriter.write_params(
         'CITY = "x"\nprint(CITY)\n',
-        [ParamSpec(name="CITY", kind="const", type="str", default="x")],
+        [ParamDecl(name="CITY", binding="const", type="str", default="x")],
     )
     entry = store.add_python(_py(tmp_path, text), name="note")
     app = tui.MenuApp()
@@ -154,8 +154,8 @@ async def test_all_inputs_managed_shows_no_input_promise(tmp_path):
     text = metawriter.write_params(
         body,
         [
-            ParamSpec(name="input-1", kind="input", type="str", prompt="Name? ", order=0),
-            ParamSpec(name="input-2", kind="input", type="str", prompt="Age? ", order=1),
+            ParamDecl(name="input-1", binding="input", type="str", prompt="Name? ", order=0),
+            ParamDecl(name="input-2", binding="input", type="str", prompt="Age? ", order=1),
         ],
     )
     entry = store.add_python(_py(tmp_path, text), name="inputs")
@@ -246,7 +246,7 @@ async def test_reference_entry_is_read_only_and_linked(tmp_path):
         tmp_path,
         metawriter.write_params(
             'CITY = "x"\nprint(CITY)\n',
-            [ParamSpec(name="CITY", kind="const", type="str", default="x")],
+            [ParamDecl(name="CITY", binding="const", type="str", default="x")],
         ),
         "orig.py",
     )
@@ -274,8 +274,8 @@ async def test_resync_reports_a_dropped_definition(tmp_path):
     text = metawriter.write_params(
         'CITY = "x"\nprint(CITY)\n',
         [
-            ParamSpec(name="CITY", kind="const", type="str", default="x"),
-            ParamSpec(name="GONE", kind="const", type="str", default="y"),
+            ParamDecl(name="CITY", binding="const", type="str", default="x"),
+            ParamDecl(name="GONE", binding="const", type="str", default="y"),
         ],
     )
     entry = store.add_python(_py(tmp_path, text), name="drift")
@@ -330,7 +330,7 @@ async def test_save_tolerates_reconcile_returning_nothing(tmp_path, monkeypatch)
     Report in this path. Forcing None must still write the managed copy and dismiss, never crash."""
     text = metawriter.write_params(
         'CITY = "x"\nprint(CITY)\n',
-        [ParamSpec(name="CITY", kind="const", type="str", default="x")],
+        [ParamDecl(name="CITY", binding="const", type="str", default="x")],
     )
     entry = store.add_python(_py(tmp_path, text), name="nonerep")
     app = tui.MenuApp()

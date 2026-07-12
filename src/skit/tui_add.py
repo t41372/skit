@@ -25,6 +25,7 @@ from textual.widgets import Checkbox, Input, RadioButton, RadioSet, Static
 from . import editor, pep723, store, theme, tui_footer, tui_layout
 from .i18n import gettext
 from .langs.python import analyzer, argspec, metawriter
+from .params import ParamDecl
 
 
 class AddSourceScreen(Screen[str | None]):
@@ -315,7 +316,7 @@ class AddReviewScreen(Screen[str | None]):
         for i, c in enumerate(self._analysis.candidates):
             label = (
                 f"{c.name}  ({c.type} = {c.default!r})"
-                if c.kind == "const"
+                if c.binding == "const"
                 else gettext("input() #%(n)s: %(prompt)s")
                 % {"n": c.order + 1, "prompt": repr(c.prompt)}
             )
@@ -397,7 +398,7 @@ class AddReviewScreen(Screen[str | None]):
                 if self.query_one(f"#rv-cand-{i}", Checkbox).value
             ]
             if picked:
-                specs = [metawriter.ParamSpec.from_candidate(c) for c in picked]
+                specs = [ParamDecl.from_candidate(c) for c in picked]
                 copy_path = entry.script_path
                 current = copy_path.read_text(encoding="utf-8")
                 copy_path.write_text(metawriter.write_params(current, specs), encoding="utf-8")

@@ -17,7 +17,7 @@ from typer.testing import CliRunner
 
 from skit import argstate, cli, launcher, store
 from skit.langs.python import metawriter
-from skit.langs.python.metawriter import ParamSpec
+from skit.params import ParamDecl
 
 runner = CliRunner()
 
@@ -55,8 +55,8 @@ def _inject_entry(tmp_path: Path, name: str = "trip") -> store.Entry:
     text = metawriter.write_params(
         'CITY = "Taipei"\nTIMES = 2\nprint(CITY, TIMES)\n',
         [
-            ParamSpec(name="CITY", kind="const", type="str", default="Taipei"),
-            ParamSpec(name="TIMES", kind="const", type="int", default=2),
+            ParamDecl(name="CITY", binding="const", type="str", default="Taipei"),
+            ParamDecl(name="TIMES", binding="const", type="int", default=2),
         ],
     )
     return store.add_python(_py(tmp_path, text), name=name)
@@ -130,7 +130,7 @@ def test_set_saves_preset_with_dry_run_without_running(run_entry_spy):
 def test_set_secret_never_persisted_and_masked_in_dry_run(tmp_path, run_entry_spy):
     text = metawriter.write_params(
         'KEY = "old"\nprint(KEY)\n',
-        [ParamSpec(name="KEY", kind="const", type="str", secret=True)],
+        [ParamDecl(name="KEY", binding="const", type="str", secret=True)],
     )
     entry = store.add_python(_py(tmp_path, text), name="api")
     result = runner.invoke(

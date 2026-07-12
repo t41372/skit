@@ -32,7 +32,10 @@ Headless, stdlib-only.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from .langs.python.analyzer import Candidate
 
 Binding = Literal["const", "input", "envdefault", "none"]
 Delivery = Literal["inject", "env", "flag", "placeholder"]
@@ -76,6 +79,28 @@ class ParamDecl:
     def env_var(self) -> str:
         """The environment variable an env-delivered value sets."""
         return self.env_target or self.name
+
+    # ---------------------------------------------------------------- from a source candidate
+
+    @classmethod
+    def from_candidate(cls, c: Candidate) -> ParamDecl:
+        """Build a decl from an analyzer Candidate — the two are field-aligned by design
+        (A2), so the CLI, TUI add panel, TUI settings, and reconcile can't drift on which
+        fields carry over. The one place this conversion lives. binding/type come off a
+        Candidate typed ``str``; both are coerced through the closed literal sets (a no-op
+        for real analyzer output, which only ever emits const/input and INJECTABLE_TYPES),
+        and delivery is derived from the binding exactly like ``from_block_dict``."""
+        binding = _coerce_literal(c.binding, _BINDINGS, "none")
+        return cls(
+            name=c.name,
+            binding=binding,
+            delivery=_BINDING_DELIVERY.get(binding, "flag"),
+            type=_coerce_literal(c.type, _TYPES, "str"),
+            default=c.default,
+            prompt=c.prompt,
+            order=c.order,
+            secret=c.secret,
+        )
 
     # ---------------------------------------------------------------- block (in-file)
 

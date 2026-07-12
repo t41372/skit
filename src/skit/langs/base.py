@@ -27,9 +27,9 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from ..models import Entry
+    from ..params import ParamDecl
     from .python.analyzer import Analysis
     from .python.argspec import ArgSpec
-    from .python.metawriter import ParamSpec
     from .python.reconcile import Report
 
 
@@ -106,7 +106,7 @@ class Analyzer:
     """Static candidate detection + drift reconciliation (the A2 shared decision set)."""
 
     analyze: Callable[[str], Analysis]
-    reconcile: Callable[[str, list[ParamSpec]], Report]
+    reconcile: Callable[[str, list[ParamDecl]], Report]
 
 
 @dataclass(frozen=True)
@@ -120,8 +120,8 @@ class CliReader:
 class ParamsIO:
     """Read/write declared parameter definitions carried in the script text."""
 
-    read: Callable[[str], list[ParamSpec]]
-    write: Callable[[str, list[ParamSpec]], str]
+    read: Callable[[str], list[ParamDecl]]
+    write: Callable[[str, list[ParamDecl]], str]
 
 
 @dataclass(frozen=True)

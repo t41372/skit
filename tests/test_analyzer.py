@@ -59,7 +59,7 @@ def test_main_guard_reversed_form():
 def test_input_calls_ordered_b1():
     src = 'name = input("Name: ")\ndef f():\n    return input("Inner: ")\nage = input()\n'
     result = analyzer.analyze(src)
-    inputs = [c for c in result.candidates if c.kind == "input"]
+    inputs = [c for c in result.candidates if c.binding == "input"]
     assert [c.order for c in inputs] == [0, 1, 2]
     assert inputs[0].prompt == "Name: "
     assert inputs[1].prompt == "Inner: "
@@ -95,7 +95,7 @@ def test_syntax_error_returns_empty():
 
 def test_duplicate_top_level_const_is_deduped_to_one_candidate():
     # A name bound twice at module top level (e.g. from hand-editing) must yield exactly one
-    # candidate, not two: two same-named ParamSpecs made the shim compute and apply the same
+    # candidate, not two: two same-named ParamDecls made the shim compute and apply the same
     # replacement span twice (see shim.inject), corrupting the injected source.
     src = "CITY = 'a'\nCITY = 'b'\nprint(CITY)\n"
     result = analyzer.analyze(src)
@@ -139,12 +139,12 @@ def test_duplicate_const_injection_no_longer_corrupts_source():
     # injected. With a single deduped candidate/spec, shim replaces every same-named occurrence
     # exactly once and the result stays valid and correct.
     from skit.langs.python import shim
-    from skit.langs.python.metawriter import ParamSpec
+    from skit.params import ParamDecl
 
     src = "CITY = 'a'\nCITY = 'b'\nprint(CITY)\n"
     result = analyzer.analyze(src)
     (cand,) = result.candidates
-    spec = ParamSpec(name=cand.name, kind=cand.kind, type=cand.type, default=cand.default)
+    spec = ParamDecl.from_candidate(cand)
     injected = shim.inject(src, [spec], {"CITY": "Paris"})
     assert injected == "CITY = 'Paris'\nCITY = 'Paris'\nprint(CITY)\n"
     import ast

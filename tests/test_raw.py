@@ -22,10 +22,10 @@ def tmp_store(tmp_path, monkeypatch):
 @pytest.fixture
 def entry_with_params(tmp_path):
     from skit.langs.python import metawriter
-    from skit.langs.python.metawriter import ParamSpec
+    from skit.params import ParamDecl
 
     script = tmp_path / "hello.py"
-    text = metawriter.write_params(SCRIPT, [ParamSpec(name="CITY", kind="const", type="str")])
+    text = metawriter.write_params(SCRIPT, [ParamDecl(name="CITY", binding="const", type="str")])
     script.write_text(text, encoding="utf-8")
     return store.add_python(script, mode="copy")
 

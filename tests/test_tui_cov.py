@@ -13,7 +13,7 @@ from textual.widgets import DataTable, Input, Static
 from conftest import footer_text
 from skit import argstate, store, tui
 from skit.langs.python import metawriter
-from skit.langs.python.metawriter import ParamSpec
+from skit.params import ParamDecl
 
 
 @pytest.fixture(autouse=True)
@@ -112,8 +112,8 @@ async def test_detail_shows_copy_promise_and_masked_secret(tmp_path):
     text = metawriter.write_params(
         'CITY = "x"\nAPI_KEY = "s"\nprint(CITY, API_KEY)\n',
         [
-            ParamSpec(name="CITY", kind="const", type="str", default="x"),
-            ParamSpec(name="API_KEY", kind="const", type="str", secret=True),
+            ParamDecl(name="CITY", binding="const", type="str", default="x"),
+            ParamDecl(name="API_KEY", binding="const", type="str", secret=True),
         ],
     )
     store.add_python(_py(tmp_path, text), name="widget")

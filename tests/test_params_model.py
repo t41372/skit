@@ -63,6 +63,29 @@ def test_from_block_dict_is_total_on_garbage():
     assert d.default is None  # a table is not an injectable scalar
 
 
+# ---- from a source candidate --------------------------------------------------------------------
+
+
+def test_from_candidate_maps_fields_and_derives_delivery():
+    from skit.langs.python.analyzer import Candidate
+
+    const = ParamDecl.from_candidate(
+        Candidate(binding="const", name="CITY", type="str", default="Taipei", secret=True)
+    )
+    assert const.name == "CITY"
+    assert const.binding == "const"
+    # delivery is derived from the binding (a Candidate has no delivery of its own).
+    assert const.delivery == "inject"
+    assert (const.type, const.default, const.secret) == ("str", "Taipei", True)
+    assert (const.order, const.prompt) == (-1, "")
+
+    inp = ParamDecl.from_candidate(
+        Candidate(binding="input", name="input-1", prompt="Name: ", order=0)
+    )
+    assert (inp.binding, inp.delivery) == ("input", "inject")
+    assert (inp.prompt, inp.order) == ("Name: ", 0)
+
+
 # ---- meta [[parameters]] shape ------------------------------------------------------------------
 
 
@@ -90,6 +113,16 @@ def test_meta_roundtrip_full_model():
 def test_meta_dict_omits_defaults():
     d = ParamDecl(name="x").to_meta_dict()
     assert d == {"name": "x", "delivery": "flag", "type": "str"}
+
+
+def test_meta_dict_includes_binding_and_order_when_set():
+    # The two truthiness-gated head fields of to_meta_dict: a source-anchored binding and a
+    # call-order key are emitted only when present, and round-trip back unchanged.
+    src = ParamDecl(name="input-1", binding="input", delivery="inject", order=2)
+    d = src.to_meta_dict()
+    assert d["binding"] == "input"
+    assert d["order"] == 2
+    assert ParamDecl.from_meta_dict(d) == src
 
 
 def test_meta_roundtrip_env_delivery_and_target():

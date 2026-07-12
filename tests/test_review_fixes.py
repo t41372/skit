@@ -9,7 +9,7 @@ import pytest
 from skit import launcher, pep723, store, uvman
 from skit.langs import launch
 from skit.langs.python import metawriter, reconcile, shim
-from skit.langs.python.metawriter import ParamSpec
+from skit.params import ParamDecl
 
 
 @pytest.fixture(autouse=True)
@@ -51,14 +51,14 @@ def test_extra_args_quoted_for_posix_shell():
 @pytest.mark.parametrize("bad", ["inf", "-inf", "nan", "Infinity"])
 def test_inject_rejects_non_finite_float(bad):
     text = "RATE = 1.5\nprint(RATE)\n"
-    specs = [ParamSpec(name="RATE", kind="const", type="float")]
+    specs = [ParamDecl(name="RATE", binding="const", type="float")]
     with pytest.raises(shim.ShimError):
         shim.inject(text, specs, {"RATE": bad})
 
 
 def test_inject_accepts_normal_float():
     text = "RATE = 1.5\nprint(RATE)\n"
-    specs = [ParamSpec(name="RATE", kind="const", type="float")]
+    specs = [ParamDecl(name="RATE", binding="const", type="float")]
     out = shim.inject(text, specs, {"RATE": "2.75"})
     assert "RATE = 2.75" in out
 
@@ -82,7 +82,7 @@ def test_write_injected_unique_and_private(tmp_path):
 
 def test_write_params_prompt_with_newline_roundtrips():
     text = 'CITY = "Taipei"\nprint(CITY)\n'
-    specs = [ParamSpec(name="CITY", kind="const", type="str", prompt="City:\nwith newline\t!")]
+    specs = [ParamDecl(name="CITY", binding="const", type="str", prompt="City:\nwith newline\t!")]
     out = metawriter.write_params(text, specs)
     back = metawriter.read_params(out)
     assert len(back) == 1
@@ -94,7 +94,7 @@ def test_write_params_prompt_with_newline_roundtrips():
 
 def test_edit_specs_does_not_mutate_input():
     text = 'CITY = "Taipei"\n'
-    original = [ParamSpec(name="CITY", kind="const", type="str", secret=False, prompt="")]
+    original = [ParamDecl(name="CITY", binding="const", type="str", secret=False, prompt="")]
     reconcile.edit_specs(text, original, secret=["CITY"], prompts={"CITY": "changed"})
     assert original[0].secret is False
     assert original[0].prompt == ""
@@ -289,9 +289,9 @@ def test_slugify_leading_trailing_special():
 def test_inject_annotated_assignment():
     src = "CITY: str = 'Taipei'\nprint(CITY)\n"
     from skit.langs.python import shim
-    from skit.langs.python.metawriter import ParamSpec
+    from skit.params import ParamDecl
 
-    spec = ParamSpec(name="CITY", kind="const", type="str")
+    spec = ParamDecl(name="CITY", binding="const", type="str")
     out = shim.inject(src, [spec], {"CITY": "Kaohsiung"})
     assert "'Kaohsiung'" in out
 
@@ -302,10 +302,10 @@ def test_inject_annotated_assignment():
 def test_preamble_appended_when_only_future_imports():
     """A module with only __future__ imports has no viable insertion point; preamble goes at EOF."""
     from skit.langs.python import shim
-    from skit.langs.python.metawriter import ParamSpec
+    from skit.params import ParamDecl
 
     src = "from __future__ import annotations\nx = input()\nprint(x)\n"
-    spec = ParamSpec(name="input-1", kind="input", order=0)
+    spec = ParamDecl(name="input-1", binding="input", order=0)
     out = shim.inject(src, [spec], {"input-1": "v"})
     assert "# skit:shim" in out
     # The preamble must appear after the __future__ line (not before it)
@@ -325,7 +325,7 @@ def test_preamble_appends_newline_when_missing():
     src = "from __future__ import annotations"  # no trailing newline, no input() call to inject
     # We need at least one input() call for inject to do anything; add it inline.
     src_with_input = src + "\nresult = input('val: ')\nprint(result)"
-    spec = ParamSpec(name="input-1", kind="input", order=0)
+    spec = ParamDecl(name="input-1", binding="input", order=0)
     out = shim.inject(src_with_input, [spec], {"input-1": "v"})
     # The preamble line must stand alone (not merged onto a preceding line without a newline)
     for line in out.splitlines():

@@ -11,10 +11,11 @@ import pytest
 from skit import argstate, flows
 from skit.langs.python import metawriter as _metawriter
 from skit.models import Entry, ScriptMeta
+from skit.params import ParamDecl, ParamType
 
 
-def metawriter_write(text: str, params: list[tuple[str, str]]) -> str:
-    specs = [_metawriter.ParamSpec(name=n, kind="const", type=t) for n, t in params]
+def metawriter_write(text: str, params: list[tuple[str, ParamType]]) -> str:
+    specs = [ParamDecl(name=n, binding="const", type=t) for n, t in params]
     return _metawriter.write_params(text, specs)
 
 
@@ -581,23 +582,22 @@ def test_assemble_store_false_fires_flag_when_unchecked(tmp_path):
 
 
 def test_field_from_arg_maps_every_field(tmp_path):
-    from skit.langs.python import argspec
-
-    a = argspec.ArgField(
-        dest="mode",
+    a = ParamDecl(
+        name="mode",
+        binding="none",
+        delivery="flag",
         flag="--mode",
         required=True,
-        kind="choice",
-        choices=["a", "b"],
+        type="choice",
+        choices=("a", "b"),
         default="a",
         help="pick one",
         multiple=True,
         degraded=False,
         secret=True,
         action="",
-        order=3,
     )
-    f = flows._field_from_arg(a)
+    f = flows.FormField.from_decl(a)
     assert (f.key, f.label, f.kind, f.source) == ("mode", "mode", "choice", "flag")
     assert f.choices == ["a", "b"]
     assert (f.default, f.has_default) == ("a", True)
@@ -606,12 +606,12 @@ def test_field_from_arg_maps_every_field(tmp_path):
 
 
 def test_field_from_arg_degraded_renders_as_text(tmp_path):
-    from skit.langs.python import argspec
-
-    a = argspec.ArgField(dest="bg", flag="--bg", kind="int", degraded=True)
-    f = flows._field_from_arg(a)
+    a = ParamDecl(
+        name="bg", binding="none", delivery="flag", flag="--bg", type="int", degraded=True
+    )
+    f = flows.FormField.from_decl(a)
     assert f.kind == "str"  # a degraded field is a free-text field, whatever its type said
-    assert f.default == ""  # a None ArgField default renders as the empty string, not a sentinel
+    assert f.default == ""  # a None flag default renders as the empty string, not a sentinel
     assert f.has_default is False
 
 
@@ -680,28 +680,27 @@ def test_plan_subparsers_degrades_with_reason(tmp_path):
 
 
 def test_field_from_spec_maps_every_field(tmp_path):
-    from skit.langs.python import metawriter
-
-    spec = metawriter.ParamSpec(
+    spec = ParamDecl(
         name="API",
-        kind="const",
+        binding="const",
+        delivery="inject",
         type="int",
         default=7,
         prompt="How many?",
         secret=True,
         env_source="API_N",
     )
-    f = flows._field_from_spec(spec)
+    f = flows.FormField.from_decl(spec)
     assert (f.key, f.label, f.kind, f.source) == ("API", "How many?", "int", "inject")
     assert (f.default, f.has_default) == ("7", True)
     assert (f.secret, f.env_source) == (True, "API_N")
 
 
 def test_field_from_spec_unknown_type_falls_back_to_text():
-    from skit.langs.python import metawriter
-
-    spec = metawriter.ParamSpec(name="X", kind="const", type="weird")
-    f = flows._field_from_spec(spec)
+    # A non-numeric, non-bool type (choice here) is not in the inject whitelist, so the form
+    # field collapses to free text — the fallback branch of the inject projection.
+    spec = ParamDecl(name="X", binding="const", delivery="inject", type="choice")
+    f = flows.FormField.from_decl(spec)
     assert f.kind == "str"
     assert f.default == ""  # a None spec default renders as "", not a sentinel string
 
@@ -709,11 +708,14 @@ def test_field_from_spec_unknown_type_falls_back_to_text():
 def test_field_from_spec_maps_numeric_and_bool_kinds():
     # int is pinned elsewhere (WIDTH); float and bool need their own coverage so a corrupted
     # kind-whitelist entry can't quietly collapse them to free text.
-    from skit.langs.python import metawriter
+    def _inject(name: str, type: ParamType) -> flows.FormField:
+        return flows.FormField.from_decl(
+            ParamDecl(name=name, binding="const", delivery="inject", type=type)
+        )
 
-    assert flows._field_from_spec(metawriter.ParamSpec(name="R", type="float")).kind == "float"
-    assert flows._field_from_spec(metawriter.ParamSpec(name="B", type="bool")).kind == "bool"
-    assert flows._field_from_spec(metawriter.ParamSpec(name="I", type="int")).kind == "int"
+    assert _inject("R", "float").kind == "float"
+    assert _inject("B", "bool").kind == "bool"
+    assert _inject("I", "int").kind == "int"
 
 
 def test_type_error_messages_exact(tmp_path):

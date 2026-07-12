@@ -18,13 +18,18 @@ import pytest
 
 from skit import uvman
 from skit.langs.python import shim
-from skit.langs.python.metawriter import ParamSpec
+from skit.params import Binding, ParamDecl, ParamType
 
 
 def spec(
-    name: str, *, kind: str = "const", type: str = "str", order: int = -1, secret: bool = False
-) -> ParamSpec:
-    return ParamSpec(name=name, kind=kind, type=type, order=order, secret=secret)
+    name: str,
+    *,
+    binding: Binding = "const",
+    type: ParamType = "str",
+    order: int = -1,
+    secret: bool = False,
+) -> ParamDecl:
+    return ParamDecl(name=name, binding=binding, type=type, order=order, secret=secret)
 
 
 # Local fixtures (this file must not depend on conftest.py / other test modules' fixtures).

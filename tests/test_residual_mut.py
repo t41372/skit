@@ -14,7 +14,7 @@ import pytest
 
 from skit import i18n, pep723
 from skit.langs.python import analyzer, metawriter, reconcile
-from skit.langs.python.metawriter import ParamSpec
+from skit.params import ParamDecl
 
 # ---------------------------------------------------------------------------
 # analyzer._const_candidates
@@ -100,7 +100,7 @@ def test_main_guard_detects_real_guard():
 def test_input_candidates_type_and_lineno():
     src = "\nvalue = input('Name: ')\n"
     result = analyzer.analyze(src)
-    (only,) = [c for c in result.candidates if c.kind == "input"]
+    (only,) = [c for c in result.candidates if c.binding == "input"]
     assert only.type == "str"
     assert only.lineno == 2
 
@@ -211,7 +211,7 @@ def test_write_params_raises_with_exact_message_if_inject_block_invariant_broken
     must raise with this exact diagnostic message rather than silently mis-writing."""
     monkeypatch.setattr(pep723, "inject_block", lambda text, deps, requires_python="": text)
     with pytest.raises(RuntimeError, match=r"^inject_block failed to create a PEP 723 block$"):
-        metawriter.write_params("no block here\n", [ParamSpec(name="X")])
+        metawriter.write_params("no block here\n", [ParamDecl(name="X", binding="const")])
 
 
 # ---------------------------------------------------------------------------
@@ -392,11 +392,11 @@ def test_set_language_uses_the_given_tag_not_autodetect(monkeypatch, tmp_path):
 def test_drift_lines_exact_messages():
     i18n.init("en")
     report = reconcile.Report(
-        missing=[ParamSpec(name="GONE")],
+        missing=[ParamDecl(name="GONE", binding="const")],
         changed=[
             (
-                ParamSpec(name="RETRIES", type="int"),
-                analyzer.Candidate(kind="const", name="RETRIES", type="str"),
+                ParamDecl(name="RETRIES", binding="const", type="int"),
+                analyzer.Candidate(binding="const", name="RETRIES", type="str"),
             )
         ],
     )
@@ -444,11 +444,11 @@ def test_render_warning_partitions_on_first_colon_only():
 
 def test_spec_from_candidate_preserves_prompt_and_secret():
     cand = analyzer.Candidate(
-        kind="input", name="input-1", type="str", prompt="Name: ", order=0, secret=True
+        binding="input", name="input-1", type="str", prompt="Name: ", order=0, secret=True
     )
-    from skit.langs.python.metawriter import ParamSpec
+    from skit.params import ParamDecl
 
-    spec = ParamSpec.from_candidate(cand)
+    spec = ParamDecl.from_candidate(cand)
     assert spec.prompt == "Name: "
     assert spec.secret is True
 
@@ -462,7 +462,7 @@ def test_edit_specs_resync_defaults_to_off():
     """Without resync=True, a spec whose target no longer exists in the script must be left
     alone (not silently dropped)."""
     text = "CITY = 'Taipei'\n"
-    specs = [ParamSpec(name="GONE", kind="const", type="str")]
+    specs = [ParamDecl(name="GONE", binding="const", type="str")]
     result = reconcile.edit_specs(text, specs)
     assert [s.name for s in result.specs] == ["GONE"]
     assert result.warnings == []
@@ -477,7 +477,10 @@ def test_reconcile_processes_specs_after_an_input_spec():
     """An input-kind spec must only `continue` to the next spec, not abort the whole loop —
     a const spec listed after it must still be reconciled."""
     text = "CITY = 'Taipei'\nwho = input('Name: ')\n"
-    specs = [ParamSpec(name="input-1", kind="input", order=0), ParamSpec(name="CITY", type="str")]
+    specs = [
+        ParamDecl(name="input-1", binding="input", order=0),
+        ParamDecl(name="CITY", binding="const", type="str"),
+    ]
     report = reconcile.reconcile(text, specs)
     assert [s.name for s in report.ok] == ["input-1", "CITY"]
 
@@ -486,7 +489,7 @@ def test_reconcile_changed_candidate_not_double_counted_as_new():
     """A const whose type changed is covered (via report.changed); it must not also show up in
     report.new as if it were an undetected/uncovered candidate."""
     text = 'RETRIES = "3"\n'
-    specs = [ParamSpec(name="RETRIES", type="int")]
+    specs = [ParamDecl(name="RETRIES", binding="const", type="int")]
     report = reconcile.reconcile(text, specs)
     assert len(report.changed) == 1
     assert report.new == []

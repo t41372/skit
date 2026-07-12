@@ -17,7 +17,7 @@ from typer.testing import CliRunner
 
 from skit import argstate, cli, store
 from skit.langs.python import metawriter
-from skit.langs.python.metawriter import ParamSpec
+from skit.params import ParamDecl
 
 runner = CliRunner()
 
@@ -157,16 +157,16 @@ def test_show_json_inject_secret_and_state(tmp_path):
     text = metawriter.write_params(
         'KEY = "abc"\nCITY = "Taipei"\nprint(KEY, CITY)\n',
         [
-            ParamSpec(
+            ParamDecl(
                 name="KEY",
-                kind="const",
+                binding="const",
                 type="str",
                 default="abc",
                 secret=True,
                 env_source="API_KEY",
             ),
-            ParamSpec(
-                name="CITY", kind="const", type="str", default="Taipei", prompt="Which city?"
+            ParamDecl(
+                name="CITY", binding="const", type="str", default="Taipei", prompt="Which city?"
             ),
         ],
     )
@@ -234,7 +234,7 @@ def test_show_json_degraded_parser(tmp_path):
 
 def test_show_json_drift(tmp_path):
     text = metawriter.write_params(
-        'CITY = "x"\nprint(CITY)\n', [ParamSpec(name="CITY", kind="const", type="str")]
+        'CITY = "x"\nprint(CITY)\n', [ParamDecl(name="CITY", binding="const", type="str")]
     )
     entry = store.add_python(_py(tmp_path, text), name="stale")
     moved = entry.script_path.read_text(encoding="utf-8").replace('CITY = "x"', 'TOWN = "x"')
@@ -265,9 +265,9 @@ def test_show_human_masks_secret_default_and_names_env_source(tmp_path):
     text = metawriter.write_params(
         'KEY = "s3cret"\nprint(KEY)\n',
         [
-            ParamSpec(
+            ParamDecl(
                 name="KEY",
-                kind="const",
+                binding="const",
                 type="str",
                 default="s3cret",
                 secret=True,
@@ -286,7 +286,7 @@ def test_show_human_masks_secret_default_and_names_env_source(tmp_path):
 def test_show_human_secret_without_env_source(tmp_path):
     text = metawriter.write_params(
         'TOKEN = "t"\nprint(TOKEN)\n',
-        [ParamSpec(name="TOKEN", kind="const", type="str", secret=True)],
+        [ParamDecl(name="TOKEN", binding="const", type="str", secret=True)],
     )
     store.add_python(_py(tmp_path, text), name="tok")
     result = runner.invoke(cli.app, ["show", "tok"])
@@ -318,7 +318,7 @@ def test_show_human_no_fields_exe(tmp_path):
 
 def test_show_human_description_deps_presets_and_drift(tmp_path):
     text = metawriter.write_params(
-        'CITY = "x"\nprint(CITY)\n', [ParamSpec(name="CITY", kind="const", type="str")]
+        'CITY = "x"\nprint(CITY)\n', [ParamDecl(name="CITY", binding="const", type="str")]
     )
     result = runner.invoke(
         cli.app,
