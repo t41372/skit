@@ -86,6 +86,33 @@ class AddSourceScreen(Screen[str | None]):
     def _path_given(self, event: Input.Submitted) -> None:
         self._submit_path()
 
+    def _add_non_python(self, path: Path, error: Static) -> None:
+        """The direct-add lane (no review panel): exe entries have nothing to detect
+        inside them, and Tier-0 interpreted kinds have no analyzer to review with yet.
+        Interpreted adds record the shebang's interpreter and a comment-extracted
+        description via store.add_script."""
+        from .langs.registry import shebang_program, spec_for
+        from .store import infer_kind
+
+        kind = infer_kind(path)
+        kind_spec = spec_for(kind)
+        try:
+            if kind == "exe":
+                entry = store.add_exe(path)
+            elif kind_spec is not None and kind_spec.family == "interpreted":
+                program = shebang_program(path)
+                interpreter = program if program in kind_spec.shebangs else ""
+                entry = store.add_script(path, kind=kind, interpreter=interpreter)
+            else:
+                error.update(
+                    f"[red]{gettext("%(file)s isn't a script or an executable — pass --exe for a program, or --cmd for a command template.") % {'file': escape(path.name)}}[/red]"
+                )
+                return
+        except store.StoreError as exc:
+            error.update(f"[red]{escape(str(exc))}[/red]")
+            return
+        self.dismiss(entry.slug)
+
     def _submit_path(self) -> None:
         raw = self.query_one("#add-path", Input).value.strip()
         if not raw:
@@ -98,20 +125,7 @@ class AddSourceScreen(Screen[str | None]):
             )
             return
         if path.suffix.lower() != ".py":
-            from .store import infer_kind
-
-            if infer_kind(path) != "exe":
-                error.update(
-                    f"[red]{gettext("%(file)s isn't a .py file or an executable — pass --exe for a program, or --cmd for a command template.") % {'file': escape(path.name)}}[/red]"
-                )
-                return
-            # Executables skip the review panel: there is nothing to detect inside them.
-            try:
-                entry = store.add_exe(path)
-            except store.StoreError as exc:
-                error.update(f"[red]{escape(str(exc))}[/red]")
-                return
-            self.dismiss(entry.slug)
+            self._add_non_python(path, error)
             return
 
         def _reviewed(slug: str | None) -> None:

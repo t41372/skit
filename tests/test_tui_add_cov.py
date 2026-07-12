@@ -84,7 +84,8 @@ async def test_executable_path_is_added_directly(tmp_path):
     """A non-.py executable skips the review panel (nothing to detect inside a binary):
     submitting it commits an exe entry and dismisses."""
     exe = tmp_path / "runme.exe"
-    exe.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    # no shebang: a recognized shebang would (correctly) infer an interpreted kind now
+    exe.write_text("opaque program bytes\n", encoding="utf-8")
     os.chmod(exe, 0o755)  # noqa: S103 — +x makes POSIX infer_kind classify it "exe" (Win: .exe suffix)
     app = tui.MenuApp()
     async with app.run_test() as pilot:
@@ -100,12 +101,50 @@ async def test_executable_path_is_added_directly(tmp_path):
         assert entries[0].meta.kind == "exe"
 
 
+async def test_shell_script_path_adds_tier0_entry(tmp_path):
+    """A shell script (extension or shebang) skips the review panel too — Tier-0 add:
+    copy mode, comment description, interpreter recorded from the shebang."""
+    sh = tmp_path / "deploy.sh"
+    sh.write_text("#!/usr/bin/env zsh\n# Ship the current build\necho hi\n", encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        source = AddSourceScreen()
+        app.push_screen(source)
+        await pilot.pause()
+        source.query_one("#add-path", Input).value = str(sh)
+        source.action_continue_add()
+        await pilot.pause()
+        assert not isinstance(app.screen, AddSourceScreen)  # dismissed
+        entries = store.list_entries()
+        assert [e.meta.kind for e in entries] == ["shell"]
+        assert entries[0].meta.interpreter == "zsh"  # shebang outranks the kind default
+        assert entries[0].meta.description == "Ship the current build"
+        assert (entries[0].dir / "script.sh").exists()  # copy mode, extension kept
+
+
+async def test_shell_add_surfaces_store_error(tmp_path):
+    """add_script failures (name already taken) surface inline like the exe path."""
+    store.add_python(_py(tmp_path, "print(1)\n", "other.py"), name="deploy")
+    sh = tmp_path / "deploy.sh"
+    sh.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        source = AddSourceScreen()
+        app.push_screen(source)
+        await pilot.pause()
+        source.query_one("#add-path", Input).value = str(sh)
+        source.action_continue_add()
+        await pilot.pause()
+        assert "already taken" in _error(source)
+        assert isinstance(app.screen, AddSourceScreen)  # not dismissed
+
+
 async def test_executable_add_surfaces_store_error(tmp_path):
     """When add_exe rejects the entry (here: a name already taken), the failure is shown
     inline and nothing is dismissed — the exe path's error branch."""
     store.add_python(_py(tmp_path, "print(1)\n", "other.py"), name="runme")
     exe = tmp_path / "runme.exe"
-    exe.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    exe.write_text("opaque program bytes\n", encoding="utf-8")
     os.chmod(exe, 0o755)  # noqa: S103 — +x makes POSIX infer_kind classify it "exe" (Win: .exe suffix)
     app = tui.MenuApp()
     async with app.run_test() as pilot:

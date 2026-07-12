@@ -201,10 +201,12 @@ def _declared_plan(entry: Entry, lang: LangSpec) -> FormPlan | None:
         # declared env params ride along (see params.declared_for_template).
         decls = params.declared_for_template(entry.meta.parameters, entry.meta.params or [])
         return FormPlan(source="command", fields=[FormField.from_decl(d) for d in decls])
-    if lang.family == "binary" and entry.meta.parameters:
-        # Declared parameters are what give a program entry a form at all: flag rows
-        # assemble real argv, env rows overlay the child environment. (Other deliveries
-        # can't mean anything for an opaque binary and are dropped by the filter.)
+    if lang.params_io is None and entry.meta.parameters:
+        # Declared parameters apply to every kind whose param home is meta — programs
+        # (their only possible form) and Tier-0 interpreted kinds (env delivery is the
+        # ${VAR:-default} idiom's zero-rewrite channel even before an analyzer exists).
+        # Flag rows assemble real argv, env rows overlay the child environment; other
+        # deliveries mean nothing here and are dropped by the filter.
         decls = [
             d
             for d in params.declared_from_meta(entry.meta.parameters)

@@ -526,13 +526,30 @@ def add(
                 raise typer.Exit(EXIT_USAGE)
             resolved = Path(path).expanduser().resolve()
             kind = _infer_add_kind(resolved, exe)
+            kind_spec = spec_for(kind)
             if kind == "exe":
                 entry = store.add_exe(Path(path), name=name, description=description or "")
             elif kind == "unknown":
                 err_console.print(
-                    f"[red]{gettext("%(file)s isn't a .py file or an executable — pass --exe for a program, or --cmd for a command template.") % {'file': escape(resolved.name)}}[/red]"
+                    f"[red]{gettext("%(file)s isn't a script or an executable — pass --exe for a program, or --cmd for a command template.") % {'file': escape(resolved.name)}}[/red]"
                 )
                 raise typer.Exit(EXIT_USAGE)
+            elif kind != "python" and kind_spec is not None and kind_spec.family == "interpreted":
+                # Tier-0 interpreted add (shell/js/ruby/…): copy or reference, comment
+                # description, interpreter recorded from the shebang. No onboarding
+                # panel — these kinds have no analyzer to review with (yet).
+                from .langs.registry import shebang_program
+
+                program = shebang_program(resolved)
+                interpreter = program if program in kind_spec.shebangs else ""
+                entry = store.add_script(
+                    Path(path),
+                    kind=kind,
+                    name=name,
+                    mode="reference" if ref else "copy",
+                    description=description,
+                    interpreter=interpreter,
+                )
             else:
                 _require_py_file(resolved)
                 try:

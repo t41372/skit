@@ -10,6 +10,7 @@ the TUI caller is responsible for suspend/resume.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
@@ -26,7 +27,7 @@ from .models import Entry
 # (flows/cli/tui catch launcher.LaunchError) even though it now lives in langs/base.
 LaunchError = _base.LaunchError
 TargetMissingError = _base.TargetMissingError
-NotExecutableError = _base.NotExecutableError
+NotExecutableError = _base.NotExecutableError  # raised here too (needs check)
 
 
 def find_uv() -> str | None:
@@ -139,6 +140,24 @@ def _check_workdir(cwd: Path) -> None:
         )
 
 
+def _check_needs(entry: Entry) -> None:
+    """`needs = ["jq", …]`: every named external command must be on PATH before launch.
+    Exit-code contract: 126 (the target exists but its prerequisites can't run) — the
+    same NotExecutableError family a non-executable exe raises."""
+    missing = [tool for tool in entry.meta.needs or [] if shutil.which(tool) is None]
+    if missing:
+        raise NotExecutableError(
+            gettext("Missing required command(s): %(names)s — install them and retry.")
+            % {"names": ", ".join(missing)}
+        )
+
+
+def missing_needs(entry: Entry) -> list[str]:
+    """The subset of entry's declared external commands not on PATH (doctor/health
+    sweep — same check preflight enforces, surfaced as a report instead of an error)."""
+    return [tool for tool in entry.meta.needs or [] if shutil.which(tool) is None]
+
+
 def preflight(entry: Entry, invoke_cwd: Path | None = None) -> None:
     """Validate what can be checked before any values/params are collected: the launch target
     (script/exe) and the working directory. Raises LaunchError with the same messages the actual
@@ -147,6 +166,7 @@ def preflight(entry: Entry, invoke_cwd: Path | None = None) -> None:
     spec = spec_for(entry.meta.kind)
     if spec is not None:
         spec.launch.preflight(entry)
+    _check_needs(entry)
     _check_workdir(_resolve_workdir(entry, invoke_cwd or Path.cwd()))
 
 
@@ -167,6 +187,7 @@ def run_entry(
 
     The TUI must be suspended before calling this.
     """
+    _check_needs(entry)  # run and preflight agree: a missing tool never reaches spawn
     payload = _payload(entry, extra_args, values, script_override)
     cwd = _resolve_workdir(entry, invoke_cwd or Path.cwd())
     _check_workdir(cwd)

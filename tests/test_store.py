@@ -305,10 +305,17 @@ def test_infer_kind_posix_uses_execute_bit(tmp_path: Path, monkeypatch: pytest.M
 
     monkeypatch.setattr("sys.platform", "linux")
     prog = tmp_path / "prog"
-    prog.write_text("#!/bin/sh\n", encoding="utf-8")
+    prog.write_text("just bytes, no shebang\n", encoding="utf-8")
     assert store.infer_kind(prog) == "unknown"  # no +x yet
     prog.chmod(prog.stat().st_mode | 0o755)
     assert store.infer_kind(prog) == "exe"
+    # a recognized shebang outranks the execute bit: this is a shell script, not an
+    # opaque program, even without +x (approved inference change — multilang design)
+    scripty = tmp_path / "deploy"
+    scripty.write_text("#!/usr/bin/env bash\necho hi\n", encoding="utf-8")
+    assert store.infer_kind(scripty) == "shell"
+    scripty.chmod(scripty.stat().st_mode | 0o755)
+    assert store.infer_kind(scripty) == "shell"
 
 
 def test_infer_kind_windows_uses_pathext_not_execute_bit(

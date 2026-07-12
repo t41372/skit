@@ -263,6 +263,73 @@ def add_python(
     return _add_entry(meta, payload=source if mode == "copy" else None, after_copy=after_copy)
 
 
+def extract_comment_description(text: str, prefix: str) -> str:
+    """The first line of a leading comment block — the docstring analogue for comment
+    languages. Skips the shebang and blank lines; stops at the first code line. A
+    metadata-block opener (`# /// script`) is skipped rather than surfaced (it is
+    machinery, not a description)."""
+    for i, line in enumerate(text.splitlines()):
+        stripped = line.strip()
+        if i == 0 and stripped.startswith("#!"):
+            continue
+        if not stripped:
+            continue
+        if not stripped.startswith(prefix):
+            return ""
+        content = stripped[len(prefix) :].strip()
+        if content.startswith("///"):
+            continue  # a metadata fence, not prose
+        if content:
+            return content
+    return ""
+
+
+def add_script(
+    source: Path,
+    *,
+    kind: str,
+    name: str | None = None,
+    mode: Mode = "copy",
+    description: str | None = None,
+    workdir: str | None = None,
+    interpreter: str = "",
+) -> Entry:
+    """Add an interpreted (non-python) script: shell/fish/js/ts/powershell/ruby/….
+
+    Mirrors add_python's copy/reference semantics: copy mode decouples the entry from
+    its origin (verbatim byte copy, workdir defaults to "invoke"), reference mode never
+    touches the original. The interpreter is recorded from the argument (usually the
+    shebang's program via registry.shebang_program) so a #!/bin/zsh script keeps
+    running under zsh even though the kind's default is bash."""
+    spec = registry.spec_for(kind)
+    if spec is None or spec.family != "interpreted" or not spec.stored_name:
+        raise StoreError(gettext("Unknown entry kind: %(kind)s") % {"kind": kind})
+    source = source.expanduser().resolve()
+    if not source.is_file():
+        raise StoreError(gettext("File not found: %(path)s") % {"path": str(source)})
+    text = source.read_text(encoding="utf-8", errors="replace")
+    prefix = spec.comment.prefix if spec.comment is not None else "#"
+    desc = description if description is not None else extract_comment_description(text, prefix)
+    if mode == "reference":
+        resolved_workdir = "origin"
+    elif workdir is not None:
+        resolved_workdir = workdir
+    else:
+        resolved_workdir = "invoke"  # same decoupling rationale as add_python's copy mode
+    meta = ScriptMeta(
+        name=name or source.stem,
+        kind=kind,
+        mode=mode,
+        source=str(source),
+        source_hash=_hash_file(source),
+        added_at=now_iso(),
+        workdir=resolved_workdir,
+        description=desc,
+        interpreter=interpreter,
+    )
+    return _add_entry(meta, payload=source if mode == "copy" else None)
+
+
 def add_exe(source: Path, *, name: str | None = None, description: str = "") -> Entry:
     source = source.expanduser().resolve()
     if not source.exists():
@@ -557,6 +624,7 @@ __all__ = [
     "add_command",
     "add_exe",
     "add_python",
+    "add_script",
     "dir_size",
     "doctor_rebuild",
     "human_size",

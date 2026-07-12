@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from ..i18n import gettext
 from ..paths import private_bin_dir
@@ -252,3 +252,157 @@ class TemplateLaunch:
 
     def preflight(self, entry: Entry) -> None:
         return None  # nothing to check before values are collected
+
+
+def _which(name: str) -> str | None:
+    """PATH lookup, isolated so tests patch one seam for every interpreter strategy."""
+    return shutil.which(name)
+
+
+def resolve_interpreter(name: str) -> str:
+    """The absolute path of an interpreter binary, or a clean refusal.
+
+    Windows bash policy (approved in docs/design/multilang.md): PATH first (Git for
+    Windows puts bash there), then the config key `shell.bash_path`, then an honest
+    NotExecutableError (exit 126) that names both escape hatches — never a silent
+    reroute through WSL (principle 6: skit doesn't decide for the user's environment).
+    On POSIX a missing interpreter gets the same 126 with an install hint.
+    """
+    found = _which(name)
+    if found:
+        return found
+    if name in ("bash", "sh", "zsh") and sys.platform == "win32":
+        from .. import config
+
+        configured = config.load_bash_path()
+        if configured and Path(configured).exists():
+            return configured
+        raise NotExecutableError(
+            gettext(
+                "%(name)s isn't available on this system. Install Git for Windows (its bash "
+                "works) or WSL, or point skit at one with: skit config shell.bash_path <path>"
+            )
+            % {"name": name}
+        )
+    raise NotExecutableError(
+        gettext("The interpreter %(name)s isn't installed (or isn't on PATH).") % {"name": name}
+    )
+
+
+class InterpreterLaunch:
+    """Interpreted kinds (shell/fish/ruby/…): `<interpreter> <script> <args>`.
+
+    Running through the interpreter — instead of exec'ing the file like DirectLaunch —
+    is what removes the +x requirement and makes copy mode possible: the execute bit
+    and the shebang stay the file's business, not the launch contract's."""
+
+    def __init__(self, default_interpreter: str, *, prefix: tuple[str, ...] = ()) -> None:
+        self._default = default_interpreter
+        self._prefix = prefix  # extra argv between interpreter and script (e.g. Rscript flags)
+
+    def _interpreter_name(self, entry: Entry) -> str:
+        return entry.meta.interpreter or self._default
+
+    def build(
+        self,
+        entry: Entry,
+        extra: list[str],
+        values: dict[str, str] | None,
+        script_override: Path | None,
+    ) -> LaunchPayload:
+        script = script_override or entry.script_path
+        _check_script_exists(script)
+        interpreter = resolve_interpreter(self._interpreter_name(entry))
+        return ArgvLaunch([interpreter, *self._prefix, str(script), *extra])
+
+    def describe(
+        self,
+        entry: Entry,
+        extra: list[str],
+        values: dict[str, str] | None,
+        script_override: Path | None,
+    ) -> str:
+        # Side-effect-free: the bare interpreter name stands in (no PATH lookup) — the
+        # same stance describe takes on uv.
+        script = script_override or entry.script_path
+        return join_for_display([self._interpreter_name(entry), *self._prefix, str(script), *extra])
+
+    def target(self, entry: Entry) -> Path | None:
+        return entry.script_path
+
+    def preflight(self, entry: Entry) -> None:
+        # Both checks are cheap and local (no network, unlike uv), so preflight can
+        # afford them — the TUI gets "zsh isn't installed" before the terminal suspends.
+        _check_script_exists(entry.script_path)
+        resolve_interpreter(self._interpreter_name(entry))
+
+
+class RunnerLaunch:
+    """JS/TS: the first installed runner wins — deno > bun > node (deno's inline
+    npm:/jsr: specifiers are the closest thing JS has to PEP 723 self-containment,
+    bun auto-installs imports, node is the universal fallback). skit never downloads
+    a runtime (approved decision: assume the user's tooling); meta.interpreter or the
+    config key `js.runner` overrides the order outright."""
+
+    ORDER: ClassVar[tuple[str, ...]] = ("deno", "bun", "node")
+
+    # How each runner is invoked for a single script file.
+    _INVOKE: ClassVar[dict[str, tuple[str, ...]]] = {
+        "deno": ("run",),
+        "bun": ("run",),
+        "node": (),
+    }
+
+    def _resolve(self, entry: Entry) -> tuple[str, str]:
+        """(absolute path, runner name); raises NotExecutableError when nothing is installed."""
+        from .. import config
+
+        override = entry.meta.interpreter or config.load_js_runner()
+        candidates = (override,) if override else self.ORDER
+        for name in candidates:
+            found = _which(name)
+            if found:
+                return found, name
+        raise NotExecutableError(
+            gettext(
+                "No JavaScript runtime found (looked for: %(names)s). Install deno, bun, or "
+                "node — or pick one with: skit config js.runner <name>"
+            )
+            % {"names": ", ".join(candidates)}
+        )
+
+    def _preferred_name(self, entry: Entry) -> str:
+        """The runner name describe shows without touching PATH (side-effect-free)."""
+        from .. import config
+
+        return entry.meta.interpreter or config.load_js_runner() or self.ORDER[0]
+
+    def build(
+        self,
+        entry: Entry,
+        extra: list[str],
+        values: dict[str, str] | None,
+        script_override: Path | None,
+    ) -> LaunchPayload:
+        script = script_override or entry.script_path
+        _check_script_exists(script)
+        path, name = self._resolve(entry)
+        return ArgvLaunch([path, *self._INVOKE.get(name, ()), str(script), *extra])
+
+    def describe(
+        self,
+        entry: Entry,
+        extra: list[str],
+        values: dict[str, str] | None,
+        script_override: Path | None,
+    ) -> str:
+        name = self._preferred_name(entry)
+        script = script_override or entry.script_path
+        return join_for_display([name, *self._INVOKE.get(name, ()), str(script), *extra])
+
+    def target(self, entry: Entry) -> Path | None:
+        return entry.script_path
+
+    def preflight(self, entry: Entry) -> None:
+        _check_script_exists(entry.script_path)
+        self._resolve(entry)

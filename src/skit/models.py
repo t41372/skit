@@ -50,6 +50,17 @@ class ScriptMeta:
     params: list[str] | None = (
         None  # named placeholders in a command template (prompted before run)
     )
+    # Interpreted kinds: which interpreter binary runs the script ("bash", "zsh",
+    # "fish", or a js runner name). Empty = the kind's default_interpreter / runner
+    # detection order. Recorded at add time from the shebang/extension so a #!/bin/zsh
+    # script keeps running under zsh even when added as kind="shell".
+    interpreter: str = ""
+    # External commands the script needs on PATH (`needs = ["jq", "ffmpeg"]`): checked
+    # by launcher.preflight via shutil.which (exit 126 with the missing names) and swept
+    # by doctor/health. The honest dependency story for shells and templates — there is
+    # no package manager to isolate, but "fail before launch with a named tool" beats
+    # "jq: command not found" three pipes deep into a run.
+    needs: list[str] | None = None
     # Declared parameter schema rows ([[parameters]]), for kinds whose declarations
     # can't live in a text body (exe, command). Raw TOML tables here — the model
     # boundary is params.ParamDecl.from_meta_dict, which is total on hand-edited
@@ -77,6 +88,10 @@ class ScriptMeta:
             d["dependencies"] = self.dependencies
         if self.requires_python:
             d["requires_python"] = self.requires_python
+        if self.interpreter:
+            d["interpreter"] = self.interpreter
+        if self.needs:
+            d["needs"] = self.needs
         if self.params:
             d["params"] = self.params
         if self.parameters:
@@ -98,7 +113,7 @@ class ScriptMeta:
         invalid = [key for key in ("name", "kind") if not isinstance(d[key], str)]
         invalid += [
             key
-            for key in ("dependencies", "params", "parameters")
+            for key in ("dependencies", "needs", "params", "parameters")
             if d.get(key) is not None and not isinstance(d[key], list)
         ]
         if invalid:
@@ -118,6 +133,8 @@ class ScriptMeta:
             template=d.get("template", ""),
             dependencies=list(d["dependencies"]) if d.get("dependencies") else None,
             requires_python=d.get("requires_python", ""),
+            interpreter=d.get("interpreter", ""),
+            needs=list(d["needs"]) if d.get("needs") else None,
             params=list(d["params"]) if d.get("params") else None,
             # Non-dict rows (a hand-edited scalar in the array) are dropped here so every
             # downstream reader gets real tables; ParamDecl.from_meta_dict handles the rest.

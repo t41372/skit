@@ -273,3 +273,57 @@ def looks_blocked(timeout: float = 2.5) -> bool:
         except OSError:
             return True
     return False
+
+
+def load_bash_path() -> str:
+    """Windows escape hatch: an explicit bash to run shell entries with (config.toml
+    `[shell] bash_path`). Empty when unset; POSIX systems never need it."""
+    section = load_config().get("shell", {})  # pragma: no mutate — isinstance normalizes
+    value = section.get("bash_path", "") if isinstance(section, dict) else ""
+    return value if isinstance(value, str) else ""
+
+
+def save_bash_path(path: str) -> None:
+    """Persist (or clear, when empty) the Windows bash path, preserving every other key."""
+    doc = _load_config_for_save()
+    section = doc.get("shell")
+    if not isinstance(section, dict):
+        section = {}
+    if path.strip():
+        section["bash_path"] = path.strip()
+    else:
+        section.pop("bash_path", None)
+    if section:
+        doc["shell"] = section
+    else:
+        doc.pop("shell", None)
+    save_config(doc)
+
+
+_JS_RUNNERS = ("deno", "bun", "node")
+
+
+def load_js_runner() -> str:
+    """The preferred JS/TS runner (config.toml `[js] runner`), or "" for the built-in
+    detection order (deno > bun > node). Unknown values normalize to "" — a hand-edited
+    `runner = "carrier-pigeon"` must not poison every js run."""
+    section = load_config().get("js", {})  # pragma: no mutate — isinstance normalizes
+    value = section.get("runner", "") if isinstance(section, dict) else ""
+    return value if value in _JS_RUNNERS else ""
+
+
+def save_js_runner(name: str) -> None:
+    """Persist (or clear, when empty) the preferred JS runner, preserving every other key."""
+    doc = _load_config_for_save()
+    section = doc.get("js")
+    if not isinstance(section, dict):
+        section = {}
+    if name.strip():
+        section["runner"] = name.strip()
+    else:
+        section.pop("runner", None)
+    if section:
+        doc["js"] = section
+    else:
+        doc.pop("js", None)
+    save_config(doc)
