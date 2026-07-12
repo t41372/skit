@@ -14,8 +14,9 @@ import contextlib
 import pytest
 from textual.widgets import Checkbox, DataTable, Input, Static
 
-from skit import argstate, config, flows, launcher, metawriter, store, tui
-from skit.metawriter import ParamSpec
+from skit import argstate, config, flows, launcher, store, tui
+from skit.langs.python import metawriter
+from skit.langs.python.metawriter import ParamSpec
 from skit.tui_form import (
     EnvPickerModal,
     FieldRow,

@@ -15,21 +15,19 @@ import typer
 from typer.testing import CliRunner
 
 from skit import (
-    analyzer,
     argstate,
     cli,
     config,
     flows,
     i18n,
     launcher,
-    metawriter,
     pep723,
     promptform,
-    shim,
     store,
 )
 from skit.i18n import gettext
-from skit.metawriter import ParamSpec
+from skit.langs.python import analyzer, metawriter, shim
+from skit.langs.python.metawriter import ParamSpec
 
 runner = CliRunner()
 

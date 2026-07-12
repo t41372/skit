@@ -11,8 +11,9 @@ import pytest
 from textual.widgets import DataTable, Input, Static
 
 from conftest import footer_text
-from skit import argstate, metawriter, store, tui
-from skit.metawriter import ParamSpec
+from skit import argstate, store, tui
+from skit.langs.python import metawriter
+from skit.langs.python.metawriter import ParamSpec
 
 
 @pytest.fixture(autouse=True)

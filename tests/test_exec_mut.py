@@ -21,8 +21,9 @@ from pathlib import Path
 
 import pytest
 
-from skit import shim, uvman
-from skit.metawriter import ParamSpec
+from skit import uvman
+from skit.langs.python import shim
+from skit.langs.python.metawriter import ParamSpec
 
 
 @pytest.fixture(autouse=True)

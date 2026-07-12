@@ -3,7 +3,7 @@ framework detection, secret heuristics (C3 pre-stage)."""
 
 from __future__ import annotations
 
-from skit import analyzer
+from skit.langs.python import analyzer
 
 
 def test_module_level_consts():
@@ -138,8 +138,8 @@ def test_duplicate_const_injection_no_longer_corrupts_source():
     # to become unparseable (str case) or silently run with the wrong value (int case) once
     # injected. With a single deduped candidate/spec, shim replaces every same-named occurrence
     # exactly once and the result stays valid and correct.
-    from skit import shim
-    from skit.metawriter import ParamSpec
+    from skit.langs.python import shim
+    from skit.langs.python.metawriter import ParamSpec
 
     src = "CITY = 'a'\nCITY = 'b'\nprint(CITY)\n"
     result = analyzer.analyze(src)

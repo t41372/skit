@@ -12,8 +12,9 @@ import locale
 
 import pytest
 
-from skit import analyzer, i18n, metawriter, pep723, reconcile
-from skit.metawriter import ParamSpec
+from skit import i18n, pep723
+from skit.langs.python import analyzer, metawriter, reconcile
+from skit.langs.python.metawriter import ParamSpec
 
 # ---------------------------------------------------------------------------
 # analyzer._const_candidates
@@ -445,7 +446,7 @@ def test_spec_from_candidate_preserves_prompt_and_secret():
     cand = analyzer.Candidate(
         kind="input", name="input-1", type="str", prompt="Name: ", order=0, secret=True
     )
-    from skit.metawriter import ParamSpec
+    from skit.langs.python.metawriter import ParamSpec
 
     spec = ParamSpec.from_candidate(cand)
     assert spec.prompt == "Name: "

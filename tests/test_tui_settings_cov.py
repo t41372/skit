@@ -11,8 +11,9 @@ from __future__ import annotations
 import pytest
 from textual.widgets import Checkbox, Input, Static
 
-from skit import argstate, metawriter, reconcile, store, tui
-from skit.metawriter import ParamSpec
+from skit import argstate, store, tui
+from skit.langs.python import metawriter, reconcile
+from skit.langs.python.metawriter import ParamSpec
 from skit.tui_settings import DiscardChangesModal, ParamRow, ScriptSettingsScreen
 
 

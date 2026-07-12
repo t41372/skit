@@ -6,8 +6,9 @@ import sys
 
 import pytest
 
-from skit import launcher, metawriter, pep723, reconcile, shim, store, uvman
-from skit.metawriter import ParamSpec
+from skit import launcher, pep723, store, uvman
+from skit.langs.python import metawriter, reconcile, shim
+from skit.langs.python.metawriter import ParamSpec
 
 
 @pytest.fixture(autouse=True)
@@ -286,8 +287,8 @@ def test_slugify_leading_trailing_special():
 
 def test_inject_annotated_assignment():
     src = "CITY: str = 'Taipei'\nprint(CITY)\n"
-    from skit import shim
-    from skit.metawriter import ParamSpec
+    from skit.langs.python import shim
+    from skit.langs.python.metawriter import ParamSpec
 
     spec = ParamSpec(name="CITY", kind="const", type="str")
     out = shim.inject(src, [spec], {"CITY": "Kaohsiung"})
@@ -299,8 +300,8 @@ def test_inject_annotated_assignment():
 
 def test_preamble_appended_when_only_future_imports():
     """A module with only __future__ imports has no viable insertion point; preamble goes at EOF."""
-    from skit import shim
-    from skit.metawriter import ParamSpec
+    from skit.langs.python import shim
+    from skit.langs.python.metawriter import ParamSpec
 
     src = "from __future__ import annotations\nx = input()\nprint(x)\n"
     spec = ParamSpec(name="input-1", kind="input", order=0)

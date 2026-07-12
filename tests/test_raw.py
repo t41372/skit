@@ -21,8 +21,8 @@ def tmp_store(tmp_path, monkeypatch):
 
 @pytest.fixture
 def entry_with_params(tmp_path):
-    from skit import metawriter
-    from skit.metawriter import ParamSpec
+    from skit.langs.python import metawriter
+    from skit.langs.python.metawriter import ParamSpec
 
     script = tmp_path / "hello.py"
     text = metawriter.write_params(SCRIPT, [ParamSpec(name="CITY", kind="const", type="str")])

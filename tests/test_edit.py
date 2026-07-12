@@ -5,8 +5,9 @@ from __future__ import annotations
 import pytest
 from typer.testing import CliRunner
 
-from skit import cli, metawriter, reconcile, store
-from skit.metawriter import ParamSpec
+from skit import cli, store
+from skit.langs.python import metawriter, reconcile
+from skit.langs.python.metawriter import ParamSpec
 
 # Two candidates: CITY (const) and input-1 (order 0) — used by add/resync tests.
 SCRIPT = 'CITY = "Taipei"\nRETRIES = 3\nwho = input("Name: ")\nprint(CITY, RETRIES, who)\n'

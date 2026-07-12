@@ -31,7 +31,7 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from . import pep723
+from ... import pep723
 
 if TYPE_CHECKING:
     from .analyzer import Candidate

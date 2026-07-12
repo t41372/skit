@@ -22,8 +22,9 @@ from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import Checkbox, Input, RadioButton, RadioSet, Static
 
-from . import analyzer, argspec, editor, metawriter, pep723, store, theme, tui_footer, tui_layout
+from . import editor, pep723, store, theme, tui_footer, tui_layout
 from .i18n import gettext
+from .langs.python import analyzer, argspec, metawriter
 
 
 class AddSourceScreen(Screen[str | None]):

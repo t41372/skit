@@ -21,8 +21,9 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from skit import analyzer, argstate, cli, flows, inlineform, launcher, metawriter, store
-from skit.metawriter import ParamSpec
+from skit import argstate, cli, flows, inlineform, launcher, store
+from skit.langs.python import analyzer, metawriter
+from skit.langs.python.metawriter import ParamSpec
 
 runner = CliRunner()
 

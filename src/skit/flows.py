@@ -36,11 +36,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import argspec, argstate, launcher, metawriter, reconcile, shim, tokens
-from .analyzer import _is_secret_name
+from . import argstate, launcher, tokens
 from .i18n import gettext
+from .langs.python import argspec, metawriter, reconcile, shim
+from .langs.python.analyzer import _is_secret_name
+from .langs.python.shim import ShimValueError, _coerce
 from .models import Entry
-from .shim import ShimValueError, _coerce
 
 if TYPE_CHECKING:
     from collections.abc import Callable

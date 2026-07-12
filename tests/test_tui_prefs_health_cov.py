@@ -13,8 +13,9 @@ from __future__ import annotations
 import pytest
 from textual.widgets import Input, OptionList, RadioButton, RadioSet, Select, Static
 
-from skit import config, launcher, metawriter, store, tui
-from skit.metawriter import ParamSpec
+from skit import config, launcher, store, tui
+from skit.langs.python import metawriter
+from skit.langs.python.metawriter import ParamSpec
 from skit.paths import scripts_dir
 from skit.tui_health import HealthScreen
 from skit.tui_prefs import PreferencesScreen

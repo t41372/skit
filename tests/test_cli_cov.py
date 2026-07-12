@@ -12,8 +12,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from skit import argstate, cli, flows, launcher, metawriter, promptform, store
-from skit.metawriter import ParamSpec
+from skit import argstate, cli, flows, launcher, promptform, store
+from skit.langs.python import metawriter
+from skit.langs.python.metawriter import ParamSpec
 
 runner = CliRunner()
 

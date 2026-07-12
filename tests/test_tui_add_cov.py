@@ -14,7 +14,8 @@ import os
 import pytest
 from textual.widgets import Checkbox, Input, RadioSet, Static
 
-from skit import editor, metawriter, store, tui
+from skit import editor, store, tui
+from skit.langs.python import metawriter
 from skit.tui_add import AddReviewApp, AddReviewScreen, AddSourceScreen
 
 

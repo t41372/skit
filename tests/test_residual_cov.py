@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import locale as _locale
 
-from skit import i18n, metawriter, pep723, reconcile
-from skit.metawriter import ParamSpec
+from skit import i18n, pep723
+from skit.langs.python import metawriter, reconcile
+from skit.langs.python.metawriter import ParamSpec
 
 # =====================================================================================
 # i18n: 130->134 (system locale lookup returns None) and 215 (ngettext lazy-init)

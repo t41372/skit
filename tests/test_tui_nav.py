@@ -17,8 +17,9 @@ import pytest
 from textual.widgets import Input, RadioSet, Select
 
 from conftest import click_label
-from skit import metawriter, store, tui
-from skit.metawriter import ParamSpec
+from skit import store, tui
+from skit.langs.python import metawriter
+from skit.langs.python.metawriter import ParamSpec
 from skit.tui_add import AddReviewScreen
 from skit.tui_form import RunFormScreen
 from skit.tui_prefs import PreferencesScreen

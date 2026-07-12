@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from skit import argstate, flows
-from skit import metawriter as _metawriter
+from skit.langs.python import metawriter as _metawriter
 from skit.models import Entry, ScriptMeta
 
 
@@ -581,7 +581,7 @@ def test_assemble_store_false_fires_flag_when_unchecked(tmp_path):
 
 
 def test_field_from_arg_maps_every_field(tmp_path):
-    from skit import argspec
+    from skit.langs.python import argspec
 
     a = argspec.ArgField(
         dest="mode",
@@ -606,7 +606,7 @@ def test_field_from_arg_maps_every_field(tmp_path):
 
 
 def test_field_from_arg_degraded_renders_as_text(tmp_path):
-    from skit import argspec
+    from skit.langs.python import argspec
 
     a = argspec.ArgField(dest="bg", flag="--bg", kind="int", degraded=True)
     f = flows._field_from_arg(a)
@@ -680,7 +680,7 @@ def test_plan_subparsers_degrades_with_reason(tmp_path):
 
 
 def test_field_from_spec_maps_every_field(tmp_path):
-    from skit import metawriter
+    from skit.langs.python import metawriter
 
     spec = metawriter.ParamSpec(
         name="API",
@@ -698,7 +698,7 @@ def test_field_from_spec_maps_every_field(tmp_path):
 
 
 def test_field_from_spec_unknown_type_falls_back_to_text():
-    from skit import metawriter
+    from skit.langs.python import metawriter
 
     spec = metawriter.ParamSpec(name="X", kind="const", type="weird")
     f = flows._field_from_spec(spec)
@@ -709,7 +709,7 @@ def test_field_from_spec_unknown_type_falls_back_to_text():
 def test_field_from_spec_maps_numeric_and_bool_kinds():
     # int is pinned elsewhere (WIDTH); float and bool need their own coverage so a corrupted
     # kind-whitelist entry can't quietly collapse them to free text.
-    from skit import metawriter
+    from skit.langs.python import metawriter
 
     assert flows._field_from_spec(metawriter.ParamSpec(name="R", type="float")).kind == "float"
     assert flows._field_from_spec(metawriter.ParamSpec(name="B", type="bool")).kind == "bool"
@@ -972,7 +972,7 @@ def test_execute_classifies_not_executable(tmp_path, monkeypatch):
 
 
 def test_execute_classifies_injection_drift(tmp_path, monkeypatch):
-    from skit import shim
+    from skit.langs.python import shim
 
     def boom(*a, **k):
         raise shim.ShimError("target vanished")

@@ -15,8 +15,9 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-from skit import argstate, cli, metawriter, store
-from skit.metawriter import ParamSpec
+from skit import argstate, cli, store
+from skit.langs.python import metawriter
+from skit.langs.python.metawriter import ParamSpec
 
 runner = CliRunner()
 

@@ -3,8 +3,8 @@ warned, new not counted as drift."""
 
 from __future__ import annotations
 
-from skit import reconcile
-from skit.metawriter import ParamSpec
+from skit.langs.python import reconcile
+from skit.langs.python.metawriter import ParamSpec
 
 
 def spec(
@@ -319,8 +319,8 @@ def test_edit_specs_dedups_duplicate_names_even_when_untouched():
 
 
 def test_no_secret_also_clears_the_env_source():
-    from skit import reconcile
-    from skit.metawriter import ParamSpec
+    from skit.langs.python import reconcile
+    from skit.langs.python.metawriter import ParamSpec
 
     specs = [ParamSpec(name="API", kind="const", type="str", secret=True, env_source="MY_KEY")]
     result = reconcile.edit_specs('API = "x"\nprint(API)\n', specs, no_secret=["API"])

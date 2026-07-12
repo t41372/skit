@@ -21,18 +21,16 @@ from rich.markup import escape
 from typer.testing import CliRunner
 
 from skit import (
-    analyzer,
     argstate,
     cli,
     config,
     flows,
     launcher,
-    metawriter,
     promptform,
-    shim,
     store,
 )
-from skit.metawriter import ParamSpec
+from skit.langs.python import analyzer, metawriter, shim
+from skit.langs.python.metawriter import ParamSpec
 from skit.paths import values_dir
 
 runner = CliRunner()

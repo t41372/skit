@@ -18,8 +18,9 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Checkbox, Input, Label, Static
 
-from . import argspec, argstate, metawriter, pep723, reconcile, store, tui_footer
+from . import argstate, pep723, store, tui_footer
 from .i18n import gettext
+from .langs.python import argspec, metawriter, reconcile
 from .models import Entry
 
 

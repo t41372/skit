@@ -34,21 +34,19 @@ from rich.prompt import Confirm, Prompt
 from . import (
     __version__,
     agentskill,
-    analyzer,
     argstate,
     config,
     editor,
     flows,
     i18n,
     launcher,
-    metawriter,
     models,
     pep723,
     promptform,
-    reconcile,
     store,
 )
 from .i18n import gettext, ngettext
+from .langs.python import analyzer, metawriter, reconcile
 
 app = typer.Typer(
     name="skit",
@@ -279,7 +277,7 @@ def _onboard_params(text: str, script_name: str, no_input: bool) -> list[metawri
     """
     result = analyzer.analyze(text)
     if result.uses_cli_framework:
-        from . import argspec
+        from .langs.python import argspec
 
         spec = argspec.read_cli(text)
         if spec is not None and spec.ok and spec.fields:

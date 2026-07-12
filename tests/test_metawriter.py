@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from skit import metawriter, pep723
-from skit.metawriter import ParamSpec
+from skit import pep723
+from skit.langs.python import metawriter
+from skit.langs.python.metawriter import ParamSpec
 
 PARAMS = [
     ParamSpec(name="API_KEY", kind="const", type="str", default="abc", secret=True),

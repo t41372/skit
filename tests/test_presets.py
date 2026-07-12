@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from skit import argstate
-from skit.metawriter import ParamSpec
+from skit.langs.python.metawriter import ParamSpec
 from skit.paths import values_dir
 
 

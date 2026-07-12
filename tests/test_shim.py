@@ -5,8 +5,8 @@ from __future__ import annotations
 
 import pytest
 
-from skit import shim
-from skit.metawriter import ParamSpec
+from skit.langs.python import shim
+from skit.langs.python.metawriter import ParamSpec
 
 
 def spec(

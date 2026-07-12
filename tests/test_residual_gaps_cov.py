@@ -19,8 +19,9 @@ from pathlib import Path
 
 import pytest
 
-from skit import analyzer, argspec, flows, launcher, metawriter, pep723, store
-from skit.metawriter import ParamSpec
+from skit import flows, launcher, pep723, store
+from skit.langs.python import analyzer, argspec, metawriter
+from skit.langs.python.metawriter import ParamSpec
 
 # --------------------------------------------------------------------------
 # analyzer._match_inputs — the equal-count duplicate-prompt multiset pass

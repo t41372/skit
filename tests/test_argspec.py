@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from skit import argspec
+from skit.langs.python import argspec
 
 # The reference/stitch.py shape: a realistic AI-written argparse script (parser built
 # inside main(), Path types, choices, store_true flags, one unreadable custom type).

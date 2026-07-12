@@ -13,8 +13,9 @@ import pytest
 from textual.widgets import Checkbox, DataTable, Input, Static
 
 from conftest import click_label, footer_text
-from skit import argstate, config, flows, launcher, metawriter, store, tui
-from skit.metawriter import ParamSpec
+from skit import argstate, config, flows, launcher, store, tui
+from skit.langs.python import metawriter
+from skit.langs.python.metawriter import ParamSpec
 from skit.tui_form import FieldRow, RunFormScreen
 
 

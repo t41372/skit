@@ -65,7 +65,7 @@ class Report:
 def drift_lines(report: Report, name: str) -> list[str]:
     """The display lines for a drift report (shared by CLI/TUI). The only copy exit point in this
     module: plain-text old/new comparison; rich markup/color is wrapped by the caller."""
-    from .i18n import gettext
+    from ...i18n import gettext
 
     lines = [
         gettext("The parameter definitions for %(name)s have drifted from the script:")
@@ -106,7 +106,7 @@ def render_warning(warning: str) -> str:
 
     The codes are the closed set emitted by edit_specs; keeping the message lookup here (rather than
     a dynamic gettext(f"edit-warn-{code}")) lets Babel extract every string statically."""
-    from .i18n import gettext
+    from ...i18n import gettext
 
     code, _, name = warning.partition(":")
     return {

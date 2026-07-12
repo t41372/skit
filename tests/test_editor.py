@@ -438,7 +438,7 @@ def test_add_edit_name_conflict_exits_one(monkeypatch, tmp_path):
 
 
 def test_add_edit_writes_and_reports_managed_and_secret(monkeypatch, tmp_path):
-    from skit.metawriter import ParamSpec
+    from skit.langs.python.metawriter import ParamSpec
 
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     monkeypatch.setattr(

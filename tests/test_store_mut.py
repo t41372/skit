@@ -22,7 +22,7 @@ import pytest
 
 from skit import argstate, config, store
 from skit.atomic import atomic_write_bytes
-from skit.metawriter import ParamSpec
+from skit.langs.python.metawriter import ParamSpec
 from skit.models import ScriptMeta, now_iso, slugify
 from skit.paths import (
     config_dir,

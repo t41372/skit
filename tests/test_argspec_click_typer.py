@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from skit import argspec
+from skit.langs.python import argspec
 
 CLICK_SCRIPT = """
 import click

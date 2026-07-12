@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from skit import analyzer, metawriter, shim
+from skit.langs.python import analyzer, metawriter, shim
 
 CORPUS = sorted((Path(__file__).parent / "corpus").glob("*.py"))
 
