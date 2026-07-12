@@ -1,0 +1,147 @@
+"""ParamDecl: the universal parameter model (contract tests).
+
+The block shape is a FROZEN on-disk contract (existing user files carry it), so the
+round-trip tests here pin exact dict shapes, not just semantic equality.
+"""
+
+from __future__ import annotations
+
+from skit.params import ParamDecl, field_replace, normalize, validate_invariants
+
+# ---- block (in-file [tool.skit]) shape: frozen -------------------------------------------------
+
+
+def test_block_dict_const_shape_is_frozen():
+    d = ParamDecl(
+        name="API_KEY", binding="const", delivery="inject", type="str", default="xxx", secret=True
+    )
+    assert d.to_block_dict() == {
+        "name": "API_KEY",
+        "kind": "const",  # the FROZEN key/value: existing user files carry exactly this
+        "type": "str",
+        "default": "xxx",
+        "secret": True,
+    }
+
+
+def test_block_dict_input_shape_is_frozen():
+    d = ParamDecl(
+        name="input-1",
+        binding="input",
+        delivery="inject",
+        prompt="Name: ",
+        order=0,
+        env_source="MY_NAME",
+    )
+    assert d.to_block_dict() == {
+        "name": "input-1",
+        "kind": "input",
+        "type": "str",
+        "prompt": "Name: ",
+        "order": 0,
+        "env_source": "MY_NAME",
+    }
+
+
+def test_block_roundtrip_derives_delivery_from_binding():
+    src = ParamDecl(name="N", binding="const", delivery="inject", type="int", default=3)
+    back = ParamDecl.from_block_dict(src.to_block_dict())
+    assert back == src
+    envd = ParamDecl.from_block_dict({"name": "V", "kind": "envdefault", "default": "x"})
+    assert envd.binding == "envdefault"
+    assert envd.delivery == "env"  # implied, never stored in the block
+
+
+def test_from_block_dict_is_total_on_garbage():
+    d = ParamDecl.from_block_dict(
+        {"name": 5, "kind": "martian", "type": [], "order": "NaN", "default": {"t": 1}}
+    )
+    assert d.name == "5"
+    assert d.binding == "const"  # unknown binding degrades to the historical default
+    assert d.type == "str"
+    assert d.order == -1
+    assert d.default is None  # a table is not an injectable scalar
+
+
+# ---- meta [[parameters]] shape ------------------------------------------------------------------
+
+
+def test_meta_roundtrip_full_model():
+    src = ParamDecl(
+        name="width",
+        binding="none",
+        delivery="flag",
+        type="choice",
+        default="800",
+        required=True,
+        multiple=True,
+        choices=("400", "800"),
+        prompt="Width",
+        help="output width",
+        secret=False,
+        flag="--width",
+        action="",
+        env_target="",
+    )
+    back = ParamDecl.from_meta_dict(src.to_meta_dict())
+    assert back == src
+
+
+def test_meta_dict_omits_defaults():
+    d = ParamDecl(name="x").to_meta_dict()
+    assert d == {"name": "x", "delivery": "flag", "type": "str"}
+
+
+def test_meta_roundtrip_env_delivery_and_target():
+    src = ParamDecl(name="width", delivery="env", env_target="WIDTH_PX", secret=True)
+    back = ParamDecl.from_meta_dict(src.to_meta_dict())
+    assert back == src
+    assert back.env_var == "WIDTH_PX"
+
+
+def test_from_meta_dict_is_total_on_garbage():
+    d = ParamDecl.from_meta_dict(
+        {"name": "x", "delivery": "carrier-pigeon", "choices": "abc", "order": None}
+    )
+    assert d.delivery == "flag"
+    assert d.choices == ()
+    assert d.order == -1
+
+
+# ---- env_var / invariants / normalize -----------------------------------------------------------
+
+
+def test_env_var_defaults_to_name():
+    assert ParamDecl(name="WIDTH", delivery="env").env_var == "WIDTH"
+    assert ParamDecl(name="w", delivery="env", env_target="WIDTH").env_var == "WIDTH"
+
+
+def test_invariants_binding_implies_delivery():
+    ok = ParamDecl(name="a", binding="const", delivery="inject")
+    assert validate_invariants(ok) is None
+    bad = ParamDecl(name="a", binding="const", delivery="env")
+    assert validate_invariants(bad) == "binding-delivery-mismatch"
+    envd = ParamDecl(name="a", binding="envdefault", delivery="flag")
+    assert validate_invariants(envd) == "binding-delivery-mismatch"
+    free = ParamDecl(name="a", binding="none", delivery="env")
+    assert validate_invariants(free) is None
+
+
+def test_invariants_choice_needs_choices():
+    assert validate_invariants(ParamDecl(name="a", type="choice")) == "choice-without-choices"
+    assert validate_invariants(ParamDecl(name="a", type="choice", choices=("x",))) is None
+
+
+def test_normalize_repairs_delivery_from_binding():
+    bad = ParamDecl(name="a", binding="envdefault", delivery="flag")
+    fixed = normalize(bad)
+    assert fixed.delivery == "env"
+    ok = ParamDecl(name="b", binding="none", delivery="env")
+    assert normalize(ok) is ok  # nothing to repair: same object back
+
+
+def test_field_replace_returns_modified_copy():
+    a = ParamDecl(name="a", type="int")
+    b = field_replace(a, type="float")
+    assert b.type == "float"
+    assert a.type == "int"
