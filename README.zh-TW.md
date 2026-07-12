@@ -15,6 +15,8 @@
 
 **AI 寫腳本，skit 管腳本。**
 
+而且這個庫是你和 agent 共用的：你從選單和表單操作，AI agent 走確定性的 CLI 操作同一個庫——動手寫新的一次性腳本前先查庫，寫出好用的（經你同意後）收回庫裡，不再隨對話結束而消失。
+
 <video src="https://github.com/user-attachments/assets/9a648986-f782-43be-8dee-acfd6cc0b093" controls></video>
 
 ## 它做什麼
@@ -25,6 +27,7 @@
 - **環境零污染**。skit 把每支腳本的依賴用標準 PEP 723 語法聲明在腳本開頭，執行時由 uv 在隔離、有快取的環境裡解析——你不用管 venv，也不會往全域裝任何東西。
 - **滑鼠鍵盤皆可**。直接執行 `skit` 就是完整 TUI；畫面上每個按鍵提示同時也是一顆可點的按鈕。
 - **天生適合自動化**。每個 TUI 動作都有對應的 CLI 命令，帶 `--json` 輸出與明確退出碼——shell 腳本、CI、AI agent 都好接。
+- **也是你的 agent 的腳本庫**。官方 [Agent Skill](https://agentskills.io) 教會 Claude Code、Codex、Cursor、Gemini CLI 等 agent 完整用法：用 `skit list` 探索、用 `skit show` 讀參數結構、用 `skit run --set … --no-input` 執行。一句 `skit agent install` 就裝好——見[給你的 AI agent 用](#給你的-ai-agent-用)。
 - **多語言支持**。English、繁體中文、简体中文，更多語言在路上。見[語言](#語言)。
 
 
@@ -33,6 +36,7 @@
 | 腳本東一支西一支，散落在各個資料夾 | 全部收進同一個選單，附搜尋 |
 | 腳本帶著一堆奇怪的第三方依賴 | 每支腳本一個隔離環境——依賴以 PEP 723 聲明在腳本開頭，由 uv 解析 |
 | 命令列旗標轉頭就忘、`input()` 一項項問、常數寫死在原始碼裡，改個值都得開編輯器 | 靜態分析把參數通通讀出來，變成一張互動表單——原始碼一行不動。上次的值自動帶回；常用的存成組合（preset） |
+| AI 幫你寫的腳本隨對話結束石沉大海，下次又重寫一遍 | agent 先查庫再動手，現成的直接重用；值得留的收進庫裡——一次性腳本變成永久的、參數化的工具 |
 
 不需要為腳本做任何準備——不用重構，沒有設定檔要維護。AI 上週寫的腳本，和你去年寫完就忘的那支，啟動起來一模一樣。
 
@@ -126,10 +130,25 @@ skit                    # 打開選單，選腳本，填表單，跑
 ```bash
 skit run my_script -p fast    # 用已存的組合執行
 skit run my_script --dry-run  # 印出實際會跑的命令，不真的執行
+skit run my_script --set width=800 --no-input   # 直接指定參數值，永不詢問
+skit show my_script --json    # 一支腳本的完整參數結構，機器可讀
 skit params my_script         # 查看納管參數與上次的值
 skit list --json              # 機器可讀的腳本清單
 skit config                   # 設定：語言、編輯器、鏡像、表單樣式
 skit --help                   # 其餘一切
+```
+
+## 給你的 AI agent 用
+
+skit 是給人類和 AI agent 共用的腳本倉庫：同一個庫——你用表單，agent 用確定性的
+CLI。官方 [Agent Skill](https://agentskills.io) 讓相容的 agent（Claude Code、Codex、
+Cursor、Gemini CLI 等）先查你的庫再動手寫新的一次性腳本、直接檢視並執行庫裡現成的
+腳本，並在徵得你同意後把它寫出的實用腳本收進庫裡——不再隨 session 結束而消失。
+
+```bash
+skit agent install            # 從機器上偵測到的 agent 目錄裡挑一個
+skit agent install claude     # 或直接指名：claude / codex / agents（--project 只裝進這個 repo）
+npx skills add t41372/skit    # 或透過 skills.sh 安裝到 70+ 種 agent
 ```
 
 ## 語言

@@ -20,6 +20,7 @@ import time, so i18n initializes lazily on module import (see i18n.py).
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import sys
@@ -32,6 +33,7 @@ from rich.prompt import Confirm, Prompt
 
 from . import (
     __version__,
+    agentskill,
     analyzer,
     argstate,
     config,
@@ -658,6 +660,162 @@ def _list_description(e: store.Entry) -> str:
     return marker if desc == "—" else f"{desc}  {marker}"
 
 
+# --------------------------------------------------------------------------
+# show — the full read view of one script (identity + schema + presets)
+# --------------------------------------------------------------------------
+
+
+def _field_secret_cell(f: flows.FormField) -> str:
+    """The Secret column for a form field: "—", "yes", or "yes ← $ENVVAR"."""
+    if not f.secret:
+        return "—"
+    if f.env_source:
+        return gettext("yes") + f" ← ${escape(f.env_source)}"
+    return gettext("yes")
+
+
+def _field_to_dict(f: flows.FormField) -> dict[str, object]:
+    """One form field as a stable-shape JSON object (every key always present).
+    `default` is null when the script declares none; a secret's declared default is
+    emitted as-is, matching `params --json` (it already lives in the script's own text)."""
+    return {
+        "key": f.key,
+        "label": f.label,
+        "type": f.kind,
+        "source": f.source,
+        "required": f.required,
+        "secret": f.secret,
+        "multiple": f.multiple,
+        "degraded": f.degraded,
+        "choices": list(f.choices),
+        "default": f.default if f.has_default else None,
+        "help": f.help,
+        "flag": f.flag,
+        "action": f.action,
+        "env_source": f.env_source,
+    }
+
+
+def _print_show_human(entry: store.Entry, plan: flows.FormPlan, presets: list[str]) -> None:
+    meta = entry.meta
+    console.print(f"[bold]{escape(meta.name)}[/bold]  [dim]({meta.kind} · {meta.mode})[/dim]")
+    if meta.description:
+        console.print(f"  {escape(meta.description)}")
+    if meta.kind != "command":
+        console.print(f"  {gettext('Source: %(path)s') % {'path': escape(str(meta.source))}}")
+    if meta.workdir != "origin":
+        console.print(
+            f"  {gettext('Working directory: %(dir)s') % {'dir': escape(str(meta.workdir))}}"
+        )
+    marker = launcher.missing_marker(entry)
+    if marker is not None:
+        console.print(f"  [yellow]{escape(marker)}[/yellow]")
+    if meta.dependencies:
+        console.print(
+            f"  {gettext('Dependencies: %(deps)s') % {'deps': ', '.join(escape(d) for d in meta.dependencies)}}"
+        )
+    if meta.requires_python:
+        console.print(
+            f"  {gettext('Python constraint: %(python)s') % {'python': escape(meta.requires_python)}}"
+        )
+    if meta.template:
+        console.print(
+            f"  {gettext('Command template: %(template)s') % {'template': escape(meta.template)}}"
+        )
+    _print_drift(plan)
+    if plan.degraded_reason:
+        console.print(
+            f"[dim]{gettext("skit could not model this script's own arguments; pass them after -- instead.")}[/dim]"
+        )
+    if plan.fields:
+        _print_show_fields(plan)
+    else:
+        console.print(
+            f"  {gettext('No form fields — arguments after -- pass straight through to the script.')}"
+        )
+    if presets:
+        console.print(
+            f"  {gettext('Presets: %(names)s') % {'names': ', '.join(escape(p) for p in presets)}}"
+        )
+    console.print(f"  {gettext('Run it: skit run %(name)s') % {'name': escape(meta.name)}}")
+
+
+def _print_show_fields(plan: flows.FormPlan) -> None:
+    from rich.table import Table
+
+    table = Table(show_header=True, header_style="bold")  # pragma: no mutate — cosmetic
+    table.add_column(gettext("Parameter"))
+    table.add_column(gettext("Type"))
+    table.add_column(gettext("Required"))
+    table.add_column(gettext("Default"))
+    table.add_column(gettext("Choices"))
+    table.add_column(gettext("Secret"))
+    table.add_column(gettext("Help"))
+    for f in plan.fields:
+        if not f.has_default:
+            default_shown = "—"
+        elif f.secret:
+            default_shown = gettext("•••")
+        else:
+            default_shown = f.default or "—"
+        # Inject fields carry their form prompt in `label`; argparse fields carry help text.
+        help_shown = f.help or (f.label if f.label != f.key else "")
+        table.add_row(
+            escape(f.key),
+            escape(f.kind),
+            gettext("yes") if f.required else "—",
+            escape(default_shown),
+            escape(", ".join(f.choices)) if f.choices else "—",
+            _field_secret_cell(f),
+            escape(help_shown) if help_shown else "—",
+        )
+    console.print(table)
+
+
+@app.command(
+    help=gettext("Show everything about one script: metadata, dependencies, parameters, presets."),
+    epilog=gettext("Examples:  skit show resize  ·  skit show resize --json"),
+)
+def show(
+    name: str = _SCRIPT_ARG,
+    as_json: bool = typer.Option(False, "--json", help=gettext("Output as JSON")),
+) -> None:
+    """The single read view an automation (or a human) needs before running a script:
+    identity, dependencies, the unified parameter schema (all three sources), presets."""
+    try:
+        entry = store.resolve(name)
+    except store.NotFoundError as exc:
+        raise _fail(str(exc), 1) from exc
+    plan = flows.plan_for_entry(entry)
+    state = argstate.load_state(entry.slug)
+    presets = sorted(state["presets"])
+    if not as_json:
+        _print_show_human(entry, plan, presets)
+        return
+    last = state["last_run"]
+    payload = {
+        "name": entry.meta.name,
+        "slug": entry.slug,
+        "kind": entry.meta.kind,
+        "mode": entry.meta.mode,
+        "description": entry.meta.description,
+        "source": entry.meta.source,
+        "workdir": str(entry.meta.workdir),
+        "missing": launcher.target_missing(entry),
+        "dependencies": list(entry.meta.dependencies or []),
+        "requires_python": entry.meta.requires_python,
+        "template": entry.meta.template or None,
+        "param_source": plan.source,
+        "degraded_reason": plan.degraded_reason,
+        "drift": bool(plan.drift_lines),
+        "fields": [_field_to_dict(f) for f in plan.fields],
+        "presets": presets,
+        "last_run_at": last.get("at"),
+        "last_exit": last.get("exit"),
+    }
+    console.print_json(json.dumps(payload, ensure_ascii=False))
+
+
 @app.command(help=gettext("Remove a registered script (the original file is left untouched)."))
 def remove(
     name: str = _SCRIPT_ARG,
@@ -770,6 +928,46 @@ def _print_drift(plan: flows.FormPlan) -> None:
         err_console.print(f"[yellow]{escape(line)}[/yellow]")
 
 
+def _parse_set_opts(plan: flows.FormPlan, raw: list[str]) -> dict[str, str]:
+    """--set NAME=VALUE overrides: parsed strictly (never guess). A malformed item or an
+    unknown name is a usage error (exit 2); a value that fails its field's own validation
+    is a skit failure (exit 125), like any other bad value."""
+    pairs: dict[str, str] = {}
+    bad: list[str] = []
+    for item in raw:
+        key, sep, value = item.partition("=")
+        if sep and key.strip():
+            pairs[key.strip()] = value
+        else:
+            bad.append(item)
+    if bad:
+        err_console.print(
+            "[red]"
+            + gettext("Malformed --set (expected NAME=VALUE): %(items)s")
+            % {"items": ", ".join(escape(b) for b in bad)}
+            + _RED_CLOSE
+        )
+        raise typer.Exit(EXIT_USAGE)
+    fields_by_key = {f.key: f for f in plan.fields}
+    unknown = sorted(k for k in pairs if k not in fields_by_key)
+    if unknown:
+        err_console.print(
+            "[red]"
+            + gettext("Unknown parameter for --set: %(names)s. This script's parameters: %(valid)s")
+            % {
+                "names": ", ".join(escape(k) for k in unknown),
+                "valid": ", ".join(escape(k) for k in sorted(fields_by_key)) or "—",
+            }
+            + _RED_CLOSE
+        )
+        raise typer.Exit(EXIT_USAGE)
+    for key, value in pairs.items():
+        error = flows.validate_value(fields_by_key[key], value)
+        if error:
+            raise _fail(error, EXIT_SKIT)
+    return pairs
+
+
 def _collect_values(
     entry: store.Entry, plan: flows.FormPlan, prefill: dict[str, str], *, plain: bool
 ) -> dict[str, str]:
@@ -803,7 +1001,7 @@ _FAILURE_EXIT = flows.FAILURE_EXIT_CODES
 @app.command(
     help=gettext("Run a registered script or command in the terminal."),
     epilog=gettext(
-        "Examples:  skit run stitch  ·  skit run stitch -p web -- extra.png  ·  skit run stitch --dry-run"
+        "Examples:  skit run stitch  ·  skit run stitch -p web -- extra.png  ·  skit run stitch --set width=800 --no-input  ·  skit run stitch --dry-run"
     ),
 )
 def run(
@@ -820,6 +1018,13 @@ def run(
         "-p",
         help=gettext("Named preset of parameter values to prefill the form with"),
         autocompletion=_complete_preset,
+    ),
+    set_opts: list[str] = typer.Option(
+        None,
+        "--set",
+        help=gettext(
+            "Set a parameter value by name, as NAME=VALUE (repeatable; values may use tokens like {cwd} or {env:VAR}; the form no longer asks for a field you set)"
+        ),
     ),
     save_preset: str = typer.Option(
         None, "--save-preset", help=gettext("Save this run's values as a named preset")
@@ -849,6 +1054,14 @@ def run(
     except store.NotFoundError as exc:
         raise _fail(str(exc), EXIT_NOT_FOUND) from exc
     _validate_preset(entry, preset)
+    # Form-shaped flags contradict "as-is": refusing beats silently dropping a preset
+    # (or persisting an empty one) the way a bare warning-less run would. Checked before
+    # any raw-mode chatter so the refusal is the whole story.
+    if raw and (set_opts or preset or save_preset):
+        err_console.print(
+            f"[red]{gettext('--raw runs the script as-is; --set, --preset, and --save-preset do not apply.')}[/red]"
+        )
+        raise typer.Exit(EXIT_USAGE)
     if raw and entry.meta.kind == "python":
         console.print(
             f"[dim]{gettext('Raw mode: skipping the parameter form and injection.')}[/dim]"
@@ -862,12 +1075,18 @@ def run(
             f"[dim]{gettext("skit could not model this script's own arguments; pass them after -- instead.")}[/dim]"
         )
     prefilled = flows.prefill(plan, entry.slug, preset)
+    overrides = _parse_set_opts(plan, set_opts or [])
+    prefilled.update(overrides)
     extra = list(args or [])
     # Both ends must be a terminal: `skit run x | tee log` has a tty stdin but would
     # pump the inline form's ANSI straight into the pipe.
     interactive = not no_input and _is_interactive()
-    if interactive and plan.fields:
-        values = _collect_values(entry, plan, prefilled, plain=plain)
+    # An explicitly --set field is final — the form only asks for the rest (and a secret
+    # set this way is actually used; the prompt renderers never echo a secret prefill).
+    remaining = [f for f in plan.fields if f.key not in overrides]
+    if interactive and remaining:
+        ask_plan = dataclasses.replace(plan, fields=remaining)
+        values = {**prefilled, **_collect_values(entry, ask_plan, prefilled, plain=plain)}
     else:
         values = prefilled
         errors = flows.validate(plan, values)
@@ -878,11 +1097,15 @@ def run(
             for msg in errors.values():
                 err_console.print(f"[red]{escape(msg)}[/red]")
             raise typer.Exit(EXIT_SKIT)
-    if not extra and entry.meta.kind in ("python", "exe"):
+    # --raw promises "run the script as-is": replaying a previous run's arguments would
+    # betray exactly the clean slate it exists to provide (and the Agent Skill documents).
+    if not extra and not raw and entry.meta.kind in ("python", "exe"):
         last_extra = argstate.load_state(entry.slug)["extra_args"]
         if last_extra:
             extra = last_extra
-            console.print(
+            # stderr, like the drift banner: skit chrome must not pollute the script's
+            # own stdout, and agents watch stderr for skit-side signals (SKILL.md).
+            err_console.print(
                 f"[dim]{gettext('Reusing your last arguments: %(args)s') % {'args': ' '.join(escape(a) for a in extra)}}[/dim]"
             )
     try:
@@ -911,7 +1134,13 @@ def run(
     code = outcome.code
     if code is None:
         raise _fail(outcome.message, _FAILURE_EXIT[outcome.failure])
-    flows.save_after_run(entry.slug, plan, values, extra, code, at=models.now_iso())
+    if raw:
+        # The escape hatch leaves no fingerprints: it consulted no form memory, so it
+        # must not rewrite it either (values/extra args survive for the next real run).
+        # The run stamp still lands — Library sorting and `r` treat it as a run.
+        argstate.record_run(entry.slug, code, at=models.now_iso())
+    else:
+        flows.save_after_run(entry.slug, plan, values, extra, code, at=models.now_iso())
     if code != 0:
         err_console.print(
             f"[yellow]{gettext('Script exited with code %(code)s') % {'code': code}}[/yellow]"
@@ -1386,6 +1615,126 @@ def deps(
     console.print(
         f"[green]{gettext('Dependencies of %(name)s updated: %(deps)s') % {'name': escape(entry.meta.name), 'deps': ', '.join(escape(d) for d in new_deps) or '—'}}[/green]"
     )
+
+
+# --------------------------------------------------------------------------
+# agent — connect skit to AI coding agents
+# --------------------------------------------------------------------------
+
+agent_app = typer.Typer(
+    help=gettext("Connect skit to AI agents: install the official Agent Skill."),
+    no_args_is_help=True,
+)
+app.add_typer(agent_app, name="agent")
+
+
+def _agent_install_confirmed(skills_dir: Path) -> None:
+    # Read the bundled skill BEFORE the write-error wrap: a broken installation (skill
+    # missing from the package) must fail loudly, not as "could not write there".
+    text = agentskill.skill_text()
+    try:
+        written = agentskill.install_into(skills_dir, text)
+    except OSError as exc:
+        # e.g. --to points at an existing file: a clean one-liner, not a traceback.
+        raise _fail(
+            gettext("Could not write the skill there: %(error)s") % {"error": exc}, 1
+        ) from exc
+    console.print(
+        f"[green]{gettext('Installed the skit Agent Skill: %(path)s') % {'path': escape(str(written))}}[/green]"
+    )
+
+
+def _agent_pick_target(candidates: list[agentskill.Target]) -> agentskill.Target | None:
+    """Numbered picker + confirmation; None means the user backed out."""
+    scope_names = {"user": gettext("user"), "project": gettext("project")}
+    console.print(gettext("Agent directories on this machine:"))
+    for i, t in enumerate(candidates, start=1):
+        console.print(f"  {i}. {t.name} ({scope_names[t.scope]})  →  {escape(str(t.skills_dir))}")
+    choice = Prompt.ask(
+        gettext("Install where?"),
+        choices=[str(i) for i in range(1, len(candidates) + 1)],
+        default="1",
+        console=console,
+    )
+    target = candidates[int(choice) - 1]
+    if not Confirm.ask(
+        gettext("Write the skill into %(path)s?") % {"path": escape(str(target.skills_dir))},
+        default=True,
+        console=console,
+    ):
+        return None
+    return target
+
+
+@agent_app.command(
+    "install",
+    help=gettext("Install skit's Agent Skill into an AI agent's skills directory."),
+    epilog=gettext(
+        "Examples:  skit agent install  ·  skit agent install claude  ·  skit agent install codex --project  ·  skit agent install --to ~/.claude/skills"
+    ),
+)
+def agent_install(
+    target: str = typer.Argument(
+        None,
+        help=gettext(
+            "Where to install: claude, codex, or agents (the cross-agent ./.agents directory)"
+        ),
+    ),
+    to: Path = typer.Option(
+        None,
+        "--to",
+        help=gettext("Install into this skills directory instead of a named target"),
+    ),
+    project: bool = typer.Option(
+        False,
+        "--project",
+        help=gettext(
+            "Install into the current project (./.claude, ./.codex) instead of your home directory"
+        ),
+    ),
+) -> None:
+    """Teach the user's AI agents to use skit. An explicit TARGET or --to is consent by
+    itself; bare `skit agent install` detects agent directories and asks (principle #6:
+    skit never touches another tool's directory uninvited)."""
+    if to is not None and (target or project):
+        err_console.print(
+            f"[red]{gettext('Use a named target (with optional --project) or --to — not both.')}[/red]"
+        )
+        raise typer.Exit(EXIT_USAGE)
+    if to is not None:
+        _agent_install_confirmed(to.expanduser())
+        return
+    home, cwd = agentskill.default_roots()
+    if target:
+        resolved = agentskill.named_target(target, project=project, home=home, cwd=cwd)
+        if resolved is None:
+            err_console.print(
+                "[red]"
+                + gettext("Unknown target %(name)s. Valid targets: claude, codex, agents.")
+                % {"name": escape(target)}
+                + _RED_CLOSE
+            )
+            raise typer.Exit(EXIT_USAGE)
+        _agent_install_confirmed(resolved.skills_dir)
+        return
+    if not _is_interactive():
+        err_console.print(
+            f"[red]{gettext('Nothing installed: name a target (claude, codex, agents) or pass --to DIR.')}[/red]"
+        )
+        raise typer.Exit(EXIT_USAGE)
+    candidates = agentskill.detect_targets(home=home, cwd=cwd)
+    if not candidates:
+        raise _fail(
+            gettext(
+                "No agent directories detected (~/.claude, ~/.codex, ./.agents, …). Pass --to DIR to choose one yourself."
+            ),
+            1,
+        )
+    picked = _agent_pick_target(candidates)
+    if picked is None:
+        console.print(gettext("Cancelled — nothing was written."))
+        raise typer.Exit(0)  # pragma: no mutate — Exit(0)/Exit(None) both mean a clean exit
+    _agent_install_confirmed(picked.skills_dir)
 
 
 # --------------------------------------------------------------------------

@@ -42,12 +42,20 @@ pollution, independent of the test suite.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
-from skit import i18n, tui_footer
+# Import-time scrub, deliberately not a fixture: skit.cli's module-level rich Console
+# instances are constructed during collection — before any fixture runs — and they read
+# FORCE_COLOR/NO_COLOR at construction time. A shell exporting FORCE_COLOR (observed:
+# FORCE_COLOR=3) otherwise repaints every exact-output assertion with ANSI codes.
+for _var in ("FORCE_COLOR", "NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE"):
+    os.environ.pop(_var, None)
+
+from skit import i18n, tui_footer  # noqa: E402 — must import after the color scrub above
 
 if TYPE_CHECKING:
     from textual.widgets import Static
@@ -82,6 +90,12 @@ def _isolate_skit_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # last-set wins), and the _reset_i18n fixture below clears the cached catalog so the override
     # takes effect. This replaces the fragile per-test/per-file SKIT_LANG pinning.
     monkeypatch.setenv("SKIT_LANG", "en")
+
+    # Hermetic color, second layer: the import-time scrub above already cleaned the
+    # process env; this keeps any subprocess a test spawns clean too, even if a test
+    # setenv'd something exotic in between.
+    for var in ("FORCE_COLOR", "NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE"):
+        monkeypatch.delenv(var, raising=False)
 
 
 def footer_text(static: Static) -> str:

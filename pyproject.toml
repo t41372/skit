@@ -3,13 +3,24 @@
 # CLI command, and config dirs all stay "skit".
 name = "skit-cli"
 version = "0.1.1.dev0"
-description = "Script launcher and parameter manager: pick a script, fill in a form, run — no more opening an IDE just to tweak constants."
+description = "Script launcher and parameter manager: all your scripts in one menu, their flags, input() calls, and constants auto-extracted into a run form — no more opening an IDE just to tweak a value."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Yi-Ting Chiu", email = "mytim710@gmail.com" }]
-keywords = ["script", "launcher", "uv", "tui", "pep723", "script-manager"]
+keywords = [
+    "script",
+    "launcher",
+    "uv",
+    "tui",
+    "pep723",
+    "script-manager",
+    "script-runner",
+    "automation",
+    "ai-agent",
+    "agent-skills",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -176,3 +187,6 @@ ignore = [
 [tool.mutmut]
 paths_to_mutate = ["src/skit/"]
 tests_dir = ["tests/"]
+# The skill-sync test (tests/test_agent_skill.py) compares the repo-root skill against
+# the packaged copy; mutmut's mutants/ tree only carries src/ + tests/ by default.
+also_copy = ["skills/"]

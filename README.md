@@ -17,6 +17,10 @@ skit stores your Python scripts in one place and makes them painless to launch.
 
 **AI writes the scripts. skit gives them a home.**
 
+And it's a home you share with your agent: the library you drive from a menu, AI agents
+drive through a deterministic CLI — checking it before writing yet another one-off
+script, and (with your OK) saving the good ones back, so they outlive the chat.
+
 <video src="https://github.com/user-attachments/assets/d27121fe-5855-4270-91b0-b0ee9e5d11ee" controls></video>
 
 ## What it does
@@ -27,6 +31,7 @@ skit stores your Python scripts in one place and makes them painless to launch.
 - **No environment mess.** skit declares each script's dependencies in the script itself (PEP 723) and runs it through uv in an isolated, cached environment — no venvs to manage, nothing installed globally.
 - **Mouse or keyboard.** Plain `skit` opens the full TUI; every key hint on screen is also a clickable button.
 - **Automation-ready.** Every TUI action is also a CLI command with `--json` output and meaningful exit codes — for shell scripts, CI, and AI agents.
+- **Your agent's script library too.** The official [Agent Skill](https://agentskills.io) teaches Claude Code, Codex, Cursor, Gemini CLI, and friends the whole drill: discover scripts with `skit list`, read a parameter schema with `skit show`, run with `skit run --set … --no-input`. One `skit agent install` away — see [Works with your AI agent](#works-with-your-ai-agent).
 - **Speaks your language.** English, 繁體中文, and 简体中文, with more to come. See [Languages](#languages).
 
 | Problem | What skit does |
@@ -34,6 +39,7 @@ skit stores your Python scripts in one place and makes them painless to launch.
 | Scripts scattered all over the place | One central menu, with search |
 | Scripts with weird external dependencies | An isolated environment per script — dependencies declared in the file (PEP 723), resolved by uv |
 | CLI flags you forget ten minutes later, `input()` prompts, hard-coded constants meant to be edited by hand | Static analysis extracts them all into an interactive form — no code changes. Last-used values come prefilled; favorites save as presets. |
+| The weird script an AI wrote for you dies with the chat session | Agents check the library first, reuse what's there, and save the keepers — one-off scripts become permanent, parameterized tools |
 
 Nothing to set up per script — no refactoring, no config to maintain. The script an AI wrote last week and the one you barely remember from last year launch the same way.
 
@@ -128,10 +134,27 @@ The rest of the CLI exists for automation and AI agents — every TUI action, sc
 ```bash
 skit run my_script -p fast    # run with a saved preset
 skit run my_script --dry-run  # print the exact command, don't run it
+skit run my_script --set width=800 --no-input   # set values explicitly, never prompt
+skit show my_script --json    # one script's full parameter schema, machine-readable
 skit params my_script         # show managed parameters and last-used values
 skit list --json              # machine-readable listing
 skit config                   # settings: language, editor, mirror, form style
 skit --help                   # everything else
+```
+
+## Works with your AI agent
+
+skit is a script repository for humans *and* AI agents: one library — you get the
+forms, agents get a deterministic CLI. The official [Agent Skill](https://agentskills.io)
+teaches compatible agents (Claude Code, Codex, Cursor, Gemini CLI, and many more) to
+check your library before writing yet another one-off script, to inspect and run what's
+already there, and to offer to save the useful scripts they write — so they outlive the
+session that created them.
+
+```bash
+skit agent install            # pick one of the agent directories found on your machine
+skit agent install claude     # or name it: claude / codex / agents (--project for this repo only)
+npx skills add t41372/skit    # or install through skills.sh into 70+ agents
 ```
 
 ## Languages
