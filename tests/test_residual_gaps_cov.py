@@ -19,24 +19,24 @@ from pathlib import Path
 
 import pytest
 
-from skit import flows, launcher, pep723, store
+from skit import callmatch, flows, launcher, pep723, store
 from skit.langs import launch
-from skit.langs.python import analyzer, argspec, metawriter
+from skit.langs.python import argspec, metawriter
 from skit.params import ParamDecl
 
 # --------------------------------------------------------------------------
-# analyzer._match_inputs — the equal-count duplicate-prompt multiset pass
+# callmatch.match_calls — the equal-count duplicate-prompt multiset pass
 # --------------------------------------------------------------------------
 
 
 def test_match_inputs_binds_equal_count_duplicate_prompts_positionally() -> None:
     # A retry pattern: two managed input("Go? ") calls, both still present. Stored and current
     # have the SAME number of call sites for the identical prompt, so the multiset pass pairs
-    # them in positional order (analyzer.py:363-367) — a stable shape that must NOT be flagged
-    # as a rebind on every run. Neither is ambiguous (both resolve cleanly).
+    # them in positional order (callmatch._match_prompt_multisets) — a stable shape that must NOT
+    # be flagged as a rebind on every run. Neither is ambiguous (both resolve cleanly).
     stored = [(0, "Go? "), (1, "Go? ")]
     current = [(0, "Go? "), (1, "Go? ")]
-    assert analyzer._match_inputs(stored, current) == {0: (0, False), 1: (1, False)}
+    assert callmatch.match_calls(stored, current) == {0: (0, False), 1: (1, False)}
 
 
 # --------------------------------------------------------------------------

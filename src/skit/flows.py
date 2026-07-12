@@ -36,7 +36,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import argstate, launcher, params, tokens
+from . import argstate, launcher, params, rewrite, tokens
 from .i18n import gettext
 from .langs.base import LangSpec
 from .langs.launch import quote_for_shell as launch_quote
@@ -649,9 +649,12 @@ def execute(
             try:
                 # entry.dir is write_injected's fallback directory (used only when the OS
                 # temp dir isn't writable); test_execute_inject_falls_back_to_entry_dir
-                # pins that this run passes it through.
-                injected = shim.write_injected(
-                    entry.dir, shim.inject(plan.text, plan.specs, asm.inject_values)
+                # pins that this run passes it through. suffix=".py" so the temp copy keeps
+                # the extension `uv run --script` expects (shell kinds will pass ".sh").
+                injected = rewrite.write_injected(
+                    entry.dir,
+                    shim.inject(plan.text, plan.specs, asm.inject_values),
+                    suffix=".py",
                 )
             except ShimValueError as exc:
                 return RunOutcome(

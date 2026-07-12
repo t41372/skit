@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from skit import uvman
+from skit import rewrite, uvman
 from skit.langs import launch
 from skit.langs.python import shim
 from skit.params import Binding, ParamDecl, ParamType
@@ -220,7 +220,7 @@ def test_node_replacement_rejects_node_missing_either_end_position() -> None:
 
 
 # =========================================================================================
-# shim: _apply replacement ordering and multi-line spans
+# shim: byte-span replacement ordering and multi-line spans (via rewrite.apply_byte_spans)
 # =========================================================================================
 
 
@@ -240,7 +240,7 @@ def test_multiline_span_replacement_exact_output() -> None:
 
 
 # =========================================================================================
-# shim: write_injected placement and encoding
+# rewrite: write_injected placement and encoding
 # =========================================================================================
 
 
@@ -248,7 +248,7 @@ def test_write_injected_lands_outside_entry_dir(tmp_path: Path) -> None:
     """The injected temp file may contain plaintext secrets, so it must NOT be created inside the
     persistent store entry_dir (a crash there would leave a secret file next to script.py forever);
     it goes to the OS temp dir instead. Name prefix/suffix, exact content and 0600 perms still hold."""
-    p = shim.write_injected(tmp_path, "print('x')\n")
+    p = rewrite.write_injected(tmp_path, "print('x')\n", suffix=".py")
     try:
         assert p.parent != tmp_path
         assert tmp_path not in p.parents  # not anywhere under the persistent store dir
@@ -278,7 +278,7 @@ def test_write_injected_requests_utf8_explicitly(
         return real_fdopen(fd, *args, **kwargs)
 
     monkeypatch.setattr(os, "fdopen", spy)
-    p = shim.write_injected(tmp_path, "CITY = '臺北'\n")
+    p = rewrite.write_injected(tmp_path, "CITY = '臺北'\n", suffix=".py")
     try:
         assert str(seen.get("encoding") or "").lower() == "utf-8"
         assert p.read_text(encoding="utf-8") == "CITY = '臺北'\n"

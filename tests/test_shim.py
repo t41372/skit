@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pytest
 
+from skit import rewrite
 from skit.langs.python import shim
 from skit.params import Binding, ParamDecl, ParamType
 
@@ -255,7 +256,7 @@ def test_inject_duplicate_prompt_winner_only_still_injects_and_compiles():
 def test_inject_specs_sharing_the_same_order_never_double_bind():
     # Defense-in-depth at the shim layer itself: two ParamDecl entries that carry the identical
     # `order` (e.g. a hand-edited or otherwise corrupted [tool.skit] block) look up the exact same
-    # _match_inputs binding and would both try to queue a replacement over the same input() callee
+    # match_calls binding and would both try to queue a replacement over the same input() callee
     # span. inject() must refuse to emit the second, overlapping replacement -- reporting drift via
     # ShimError instead of corrupting the temp copy.
     src = 'x = input("Go? ")\nprint(x)\n'
@@ -312,7 +313,7 @@ def test_physical_lines_matches_splitlines_on_ordinary_text():
     """On text with only real newlines, _physical_lines must agree with str.splitlines(keepends=
     True) exactly (empty input, no trailing newline, and a trailing newline all round-trip)."""
     for text in ("", "a", "a\nb", "a\nb\n", "a\r\nb\rc\n"):
-        assert shim._physical_lines(text) == text.splitlines(keepends=True)
+        assert rewrite._physical_lines(text) == text.splitlines(keepends=True)
 
 
 def test_const_injection_survives_form_feed_between_targets():
@@ -420,7 +421,7 @@ def test_write_injected_cleanup_on_error(tmp_path, monkeypatch):
 
     monkeypatch.setattr(os, "fdopen", bad_fdopen)
     with pytest.raises(OSError, match="disk full"):
-        shim.write_injected(tmp_path, "print(1)\n")
+        rewrite.write_injected(tmp_path, "print(1)\n", suffix=".py")
     # No .injected-*.py file should remain
     leftovers = list(tmp_path.glob(".injected-*.py"))
     assert leftovers == []
@@ -452,7 +453,7 @@ def test_write_injected_closes_fd_when_chmod_raises(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "chmod", bad_chmod)
 
     with pytest.raises(OSError, match="permission denied"):
-        shim.write_injected(tmp_path, "print(1)\n")
+        rewrite.write_injected(tmp_path, "print(1)\n", suffix=".py")
 
     # If write_injected leaked the fd, this close would succeed; a real close-on-error means the
     # fd is already invalid, so closing it again must fail with EBADF.
@@ -469,7 +470,7 @@ def test_write_injected_lands_outside_entry_dir(tmp_path):
     directory, not next to the persistent script store: a SIGKILL/OOM/power-loss before the
     caller's `finally: unlink()` runs must never leave a plaintext-secret file sitting forever in
     entry_dir, since nothing skit owns ever sweeps it (unlike the OS's own temp directory)."""
-    path = shim.write_injected(tmp_path, "print(1)\n")
+    path = rewrite.write_injected(tmp_path, "print(1)\n", suffix=".py")
     try:
         assert path.parent != tmp_path
         assert not (tmp_path / path.name).exists()
@@ -492,7 +493,7 @@ def test_write_injected_falls_back_to_entry_dir_if_os_temp_unavailable(tmp_path,
         return real_mkstemp(*args, **kwargs)
 
     monkeypatch.setattr(tempfile, "mkstemp", flaky_mkstemp)
-    path = shim.write_injected(tmp_path, "print(1)\n")
+    path = rewrite.write_injected(tmp_path, "print(1)\n", suffix=".py")
     try:
         assert path.parent == tmp_path
     finally:

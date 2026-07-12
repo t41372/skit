@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-from skit import launcher, pep723, store, uvman
+from skit import launcher, pep723, rewrite, store, uvman
 from skit.langs import launch
 from skit.langs.python import metawriter, reconcile, shim
 from skit.params import ParamDecl
@@ -63,12 +63,12 @@ def test_inject_accepts_normal_float():
     assert "RATE = 2.75" in out
 
 
-# ---------- shim.write_injected: unique filename + private permissions ----------
+# ---------- rewrite.write_injected: unique filename + private permissions ----------
 
 
 def test_write_injected_unique_and_private(tmp_path):
-    a = shim.write_injected(tmp_path, "print(1)\n")
-    b = shim.write_injected(tmp_path, "print(2)\n")
+    a = rewrite.write_injected(tmp_path, "print(1)\n", suffix=".py")
+    b = rewrite.write_injected(tmp_path, "print(2)\n", suffix=".py")
     assert a != b
     assert a.name.startswith(".injected-")
     assert a.suffix == ".py"

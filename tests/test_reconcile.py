@@ -173,7 +173,7 @@ def test_unselected_candidates_are_new_but_not_drift():
 def test_input_duplicate_prompt_surplus_is_missing_not_ok_on_delete():
     # Regression: two stored input specs share the identical literal prompt (a retry pattern, e.g.
     # two `input("Go? ")` calls, both managed). The user deletes one of the two calls, leaving a
-    # single current call site with that prompt. Pre-fix, _match_inputs's exact pass let BOTH
+    # single current call site with that prompt. Pre-fix, match_calls's exact pass let BOTH
     # stored orders exact-match onto that one surviving call site (ambiguous=False), so reconcile
     # reported both "ok" with no drift warning at all -- and shim would go on to splice two
     # replacements over the same input() callee, corrupting the injected copy. The surplus spec

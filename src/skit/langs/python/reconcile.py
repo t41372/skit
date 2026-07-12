@@ -8,7 +8,7 @@ same set analyzer/shim uses (A2):
 - const: matched against analyzer's const candidates by **variable name**.
 - input: matched against analyzer's input candidates by **prompt text** first, falling back to
   **call order** (B1) only when the prompt can't disambiguate -- a dynamic/absent prompt, or the
-  prompt no longer uniquely identifies a call site (3a, `analyzer._match_inputs`). A positional
+  prompt no longer uniquely identifies a call site (3a, `callmatch.match_calls`). A positional
   fallback that had a prompt to check and didn't get an exact match is a `rebind`: still injectable,
   but flagged, since silently trusting position again is exactly the bug 3a fixes.
 
@@ -35,8 +35,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
+from ...callmatch import match_calls
 from ...params import ParamDecl
-from .analyzer import Candidate, _match_inputs, analyze
+from .analyzer import Candidate, analyze
 
 
 @dataclass
@@ -288,7 +289,7 @@ def reconcile(text: str, specs: list[ParamDecl]) -> Report:
     inputs = {c.order: c for c in analysis.candidates if c.binding == "input"}
     stored_inputs = [(s.order, s.prompt) for s in specs if s.binding == "input"]
     current_inputs = [(c.order, c.prompt) for c in analysis.candidates if c.binding == "input"]
-    input_bindings = _match_inputs(stored_inputs, current_inputs)
+    input_bindings = match_calls(stored_inputs, current_inputs)
 
     report = Report()
     covered_consts: set[str] = set()
