@@ -185,8 +185,9 @@ ignore = [
 "tests/corpus/**" = ["ALL"]  # corpus files are verbatim analyzer inputs, not code style subjects
 
 [tool.mutmut]
-paths_to_mutate = ["src/skit/"]
-tests_dir = ["tests/"]
+# Modern key names (paths_to_mutate / tests_dir print deprecation warnings on 3.6).
+source_paths = ["src/skit/"]
+pytest_add_cli_args_test_selection = ["tests/"]
 # The skill-sync test (tests/test_agent_skill.py) compares the repo-root skill against
 # the packaged copy; mutmut's mutants/ tree only carries src/ + tests/ by default.
 also_copy = ["skills/"]

@@ -235,3 +235,67 @@ def test_atomic_write_bytes_temp_fsync_failure_still_cleans_up_tmp_file(
 
     assert not path.exists()
     assert list(tmp_path.iterdir()) == []  # the temp file was cleaned up, not left behind
+
+
+# --------------------------------------------------------------------------
+# _replace_with_retry — Windows sharing-violation backoff (issue #4)
+# --------------------------------------------------------------------------
+
+
+def test_replace_retries_through_transient_permission_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two sharing violations then success: the write lands, with exact backoff."""
+    real_replace = os.replace
+    attempts: list[str] = []
+    sleeps: list[float] = []
+
+    def flaky_replace(src, dst):
+        attempts.append("call")
+        if len(attempts) <= 2:
+            raise PermissionError(13, "Permission denied")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(atomic.os, "replace", flaky_replace)
+    monkeypatch.setattr(atomic.time, "sleep", sleeps.append)
+    target = tmp_path / "registry.toml"
+    atomic.atomic_write_bytes(target, b"payload")
+    assert target.read_bytes() == b"payload"
+    assert len(attempts) == 3
+    assert sleeps == [0.01, 0.02]  # exponential, starting at the documented base
+
+
+def test_replace_gives_up_loudly_after_bounded_attempts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A target held open forever (antivirus, a leak) must surface, not spin."""
+    attempts: list[str] = []
+    sleeps: list[float] = []
+
+    def stuck_replace(src, dst):
+        attempts.append("call")
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(atomic.os, "replace", stuck_replace)
+    monkeypatch.setattr(atomic.time, "sleep", sleeps.append)
+    with pytest.raises(PermissionError):
+        atomic.atomic_write_bytes(tmp_path / "registry.toml", b"payload")
+    assert len(attempts) == 8  # 7 retried + 1 final loud attempt
+    assert sleeps == [0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64]
+
+
+def test_replace_other_oserrors_are_not_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the Windows sharing violation is transient; anything else stays immediate."""
+    attempts: list[str] = []
+
+    def broken_replace(src, dst):
+        attempts.append("call")
+        raise IsADirectoryError(21, "Is a directory")
+
+    monkeypatch.setattr(atomic.os, "replace", broken_replace)
+    monkeypatch.setattr(atomic.time, "sleep", lambda _s: pytest.fail("must not sleep"))
+    with pytest.raises(IsADirectoryError):
+        atomic.atomic_write_bytes(tmp_path / "registry.toml", b"payload")
+    assert len(attempts) == 1
