@@ -17,7 +17,7 @@
 
 而且這個庫是你和 agent 共用的：你從選單和表單操作，AI agent 走確定性的 CLI 操作同一個庫——動手寫新的一次性腳本前先查庫，寫出好用的（經你同意後）收回庫裡，不再隨對話結束而消失。
 
-<video src="https://github.com/user-attachments/assets/bd4f78ba-0a1f-4b73-b02e-bc1dc1d11c4c" controls></video>
+<video src="https://github.com/user-attachments/assets/9a648986-f782-43be-8dee-acfd6cc0b093" controls></video>
 
 ## 它做什麼
 

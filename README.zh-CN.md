@@ -17,7 +17,7 @@
 
 而且这个库是你和 agent 共用的：你从菜单和表单操作，AI agent 走确定性的 CLI 操作同一个库——动手写新的一次性脚本前先查库，写出好用的（经你同意后）收回库里，不再随对话结束而消失。
 
-<video src="https://github.com/user-attachments/assets/bd4f78ba-0a1f-4b73-b02e-bc1dc1d11c4c" controls></video>
+<video src="https://github.com/user-attachments/assets/9a648986-f782-43be-8dee-acfd6cc0b093" controls></video>
 
 ## 它做什么
 

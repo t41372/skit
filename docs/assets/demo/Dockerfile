@@ -29,15 +29,20 @@ RUN uv tool install --python 3.12 /src \
 # Fancy recording shell + i18n glyphs (late layer, so the skit-install layer stays cached):
 #  - bat: syntax-highlighted source display. Debian ships the binary as `batcat` (name
 #    clash with another package), so symlink it back to `bat`.
+#  - vim: the "edit script" scene runs skit's `e`, which opens $EDITOR (set to vim in
+#    demo.bashrc). The full `vim` package (not vim-tiny) has syntax, termguicolors and the
+#    habamax colorscheme the demo.vimrc asks for.
 #  - fonts-noto-cjk: the zh recordings need real Han glyphs or every character is a tofu box
 #    (JetBrains Mono covers Latin; chromium falls back to Noto CJK for Han codepoints).
-#  - demo.bashrc: colored prompt + bat defaults, appended to root's bashrc (the tape sources it).
+#  - demo.bashrc: colored prompt + bat defaults + EDITOR, appended to root's bashrc (the
+#    tape sources it). demo.vimrc: the maintainer's vim config, so the vim scene isn't bare `vi`.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends fonts-noto-cjk bat \
+    && apt-get install -y --no-install-recommends fonts-noto-cjk bat vim \
     && ln -sf /usr/bin/batcat /usr/local/bin/bat \
     && rm -rf /var/lib/apt/lists/*
 COPY docs/assets/demo/demo.bashrc /tmp/demo.bashrc
 RUN cat /tmp/demo.bashrc >> /root/.bashrc
+COPY docs/assets/demo/demo.vimrc /root/.vimrc
 
 # Pin the mirror off so a bare `skit` never triggers the first-run network probe/prompt.
 RUN skit config mirror off

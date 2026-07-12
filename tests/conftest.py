@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -54,7 +55,15 @@ import pytest
 for _var in ("FORCE_COLOR", "NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE"):
     os.environ.pop(_var, None)
 
-from skit import i18n  # noqa: E402 — must import after the color scrub above
+from skit import i18n, tui_footer  # noqa: E402 — must import after the color scrub above
+
+if TYPE_CHECKING:
+    from textual.widgets import Static
+
+# NOTE: textual must NOT be imported at conftest top level. pytest loads conftest before
+# any test module, which makes it the process's first importer: skit/__init__ has to run
+# before textual.constants reads TEXTUAL_DISABLE_KITTY_KEY from the environment
+# (tests/test_ime_input.py pins exactly this ordering).
 
 
 @pytest.fixture(autouse=True)
@@ -87,6 +96,27 @@ def _isolate_skit_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # setenv'd something exotic in between.
     for var in ("FORCE_COLOR", "NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE"):
         monkeypatch.delenv(var, raising=False)
+
+
+def footer_text(static: Static) -> str:
+    """Rendered footer text with the pill glue (U+2800, one cell wide like a space)
+    normalized back to spaces, so label assertions and click offsets read naturally.
+    THE shared copy — the glue scheme must change here and nowhere else."""
+    return str(static.render()).replace(tui_footer.GLUE, " ")
+
+
+async def click_label(pilot, selector: str, needle: str) -> None:
+    """Click a footer chip by its visible key or label text (chips carry left padding
+    of 1). Assumes the chip is on the footer's first rendered line — true at the wide
+    sizes the nav/click tests run at."""
+    from textual.widgets import Static  # deferred: see the import-order note above
+
+    static = pilot.app.screen.query_one(selector, Static)
+    plain = footer_text(static)
+    idx = plain.find(needle)
+    assert idx >= 0, (needle, plain)
+    await pilot.click(selector, offset=(idx + 1, 0))
+    await pilot.pause()
 
 
 @pytest.fixture(autouse=True)

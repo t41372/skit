@@ -12,6 +12,7 @@ import contextlib
 import pytest
 from textual.widgets import Checkbox, DataTable, Input, Static
 
+from conftest import click_label, footer_text
 from skit import argstate, config, flows, launcher, metawriter, store, tui
 from skit.metawriter import ParamSpec
 from skit.tui_form import FieldRow, RunFormScreen
@@ -377,8 +378,8 @@ async def test_library_footer_rows_stack_without_overlap(tmp_path):
         assert len(set(ys.values())) == 3, ys  # three distinct rows, no overlap
         assert ys["keys-local"] < ys["keys-global"] < ys["status"]  # keys above status
         assert ys["status"] == app.size.height - 1  # the footer is docked at the very bottom
-        assert "Run" in str(rows["keys-local"].render())
-        assert "Add script" in str(rows["keys-global"].render())
+        assert "Run" in footer_text(rows["keys-local"])
+        assert "Add script" in footer_text(rows["keys-global"])
         assert "script" in str(rows["status"].render())
 
 
@@ -419,16 +420,6 @@ async def test_fullscreen_run_form_body_fills_and_pins_footer(tmp_path, quiet_ru
         assert screen.styles.max_height is None
 
 
-async def _click_label(pilot, selector, needle):
-    """Click a footer chip by its label text (the chips carry left padding of 1)."""
-    static = pilot.app.screen.query_one(selector, Static)
-    plain = static.render().plain
-    idx = plain.find(needle)
-    assert idx >= 0, (needle, plain)
-    await pilot.click(selector, offset=(idx + 1, 0))
-    await pilot.pause()
-
-
 async def test_library_footer_chips_fire_on_click(tmp_path):
     """Every footer hint is also a button: clicking a Library chip fires the app action it
     advertises (app.* namespace), so a mouse user never has to touch the keyboard."""
@@ -436,11 +427,11 @@ async def test_library_footer_chips_fire_on_click(tmp_path):
     app = tui.MenuApp()
     async with app.run_test(size=(130, 30)) as pilot:
         await pilot.pause()
-        await _click_label(pilot, "#keys-global", "Add script")
+        await click_label(pilot, "#keys-global", "Add script")
         assert app.screen.__class__.__name__ == "AddSourceScreen"
         await pilot.press("escape")
         await pilot.pause()
-        await _click_label(pilot, "#keys-global", "Health check")
+        await click_label(pilot, "#keys-global", "Health check")
         assert app.screen.__class__.__name__ == "HealthScreen"
 
 
@@ -477,10 +468,10 @@ async def test_search_focus_swaps_footer_to_input_mode_and_esc_restores_it(tmp_p
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert "Add script" in str(app.query_one("#keys-global", Static).render())
+        assert "Add script" in footer_text(app.query_one("#keys-global", Static))
         app.action_focus_search()
         await pilot.pause()
-        local = str(app.query_one("#keys-local", Static).render())
+        local = footer_text(app.query_one("#keys-local", Static))
         assert "Back to list" in local
         assert "Run" in local
         assert "Script settings" not in local  # the letter chips are gone
@@ -489,7 +480,7 @@ async def test_search_focus_swaps_footer_to_input_mode_and_esc_restores_it(tmp_p
         await pilot.pause()
         assert app.focused is app.query_one(DataTable)
         assert app.return_value is None  # Esc left the search box; it did NOT quit
-        assert "Add script" in str(app.query_one("#keys-global", Static).render())
+        assert "Add script" in footer_text(app.query_one("#keys-global", Static))
 
 
 async def test_search_mode_esc_chip_returns_to_table_on_click(tmp_path):
@@ -500,10 +491,10 @@ async def test_search_mode_esc_chip_returns_to_table_on_click(tmp_path):
     async with app.run_test(size=(130, 30)) as pilot:
         app.action_focus_search()
         await pilot.pause()
-        await _click_label(pilot, "#keys-local", "Back to list")
+        await click_label(pilot, "#keys-local", "Back to list")
         assert app.focused is app.query_one(DataTable)
         assert app.return_value is None  # still running
-        assert "Add script" in str(app.query_one("#keys-global", Static).render())
+        assert "Add script" in footer_text(app.query_one("#keys-global", Static))
 
 
 async def test_enter_in_search_runs_the_highlighted_match(tmp_path, quiet_run):
@@ -529,7 +520,7 @@ async def test_pushed_screen_footer_chips_fire_on_click(tmp_path, quiet_run):
         app.action_run()
         await pilot.pause()
         assert isinstance(app.screen, RunFormScreen)
-        await _click_label(pilot, "#form-keys", "Cancel")
+        await click_label(pilot, "#form-keys", "Cancel")
         assert not isinstance(app.screen, RunFormScreen)  # dismissed by the click
         assert "values" not in quiet_run  # a click on Cancel does not run the script
 
@@ -604,8 +595,10 @@ def test_every_footer_chip_targets_an_existing_action():
 
 
 async def test_detail_pane_tab_toggle_and_narrow_autocollapse(tmp_path):
-    """Spec §1: the detail pane auto-collapses below 80 cols and Tab pins it. Tab must win
-    over Textual's built-in focus-nav (priority), and the pinned choice survives resizes."""
+    """Spec §1: the detail pane auto-collapses when the terminal is narrow AND too short
+    to stack it below the list (a narrow-but-tall portrait stacks instead — see
+    test_tui_responsive), and Tab pins it. Tab must win over Textual's built-in
+    focus-nav (priority), and the pinned choice survives resizes."""
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     app = tui.MenuApp()
     async with app.run_test(size=(120, 24)) as pilot:
@@ -617,9 +610,9 @@ async def test_detail_pane_tab_toggle_and_narrow_autocollapse(tmp_path):
         assert not detail.display  # Tab toggled it off (not a focus move)
         assert app.focused.__class__.__name__ == "DataTable"  # focus stayed on the table
     app2 = tui.MenuApp()
-    async with app2.run_test(size=(70, 24)) as pilot:
+    async with app2.run_test(size=(70, 12)) as pilot:
         await pilot.pause()
-        assert not app2.screen.query_one("#detail").display  # narrow → auto-collapsed
+        assert not app2.screen.query_one("#detail").display  # narrow + short → collapsed
 
 
 async def test_reference_entry_is_marked_in_the_list(tmp_path):
@@ -1028,7 +1021,12 @@ async def test_help_overlay_actually_renders_its_rows(tmp_path):
         await pilot.pause()
         statics = app.screen.query_one("#help-box").query(Static)
         assert all(w.region.width > 0 and w.region.height > 0 for w in statics)
-        assert "Rerun with last values" in str(statics.first().render())
+        body = str(statics.first().render())
+        assert "Rerun with last values" in body
+        # The overlay's claim is "everything in the footer is also here": the search and
+        # detail-pane rows are pinned with their right-aligned key column intact.
+        assert f"{'/':>16}  Search" in body
+        assert f"{'Tab':>16}  Detail pane" in body
 
 
 async def test_preset_empty_hint_occupies_real_columns(tmp_path, quiet_run):

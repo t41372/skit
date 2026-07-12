@@ -31,7 +31,7 @@ class DiscardChangesModal(ModalScreen[bool]):
     DEFAULT_CSS = """
     DiscardChangesModal { align: center middle; }
     DiscardChangesModal > Vertical { border: round $accent; padding: 1 2; width: auto;
-        height: auto; background: $background; }
+        max-width: 100%; height: auto; max-height: 100%; background: $background; }
     DiscardChangesModal Static { margin: 1 0 0 0; width: auto; }
     """
 
@@ -129,7 +129,8 @@ class ScriptSettingsScreen(Screen[bool]):
     }
     ScriptSettingsScreen .section { color: $accent; margin: 1 0 0 0; }
     ScriptSettingsScreen .hint { color: $text-muted; }
-    ScriptSettingsScreen #st-keys { dock: bottom; height: 1; color: $text-muted; padding: 0 1; }
+    ScriptSettingsScreen KeysBar { dock: bottom; }
+    ScriptSettingsScreen #st-keys { color: $text-muted; }
     """
 
     def __init__(self, entry: Entry, initial_section: str = "") -> None:
@@ -167,15 +168,17 @@ class ScriptSettingsScreen(Screen[bool]):
             yield from self._compose_params()
             yield from self._compose_presets()
             yield from self._compose_deps()
-        yield Static(
-            tui_footer.bar(
-                tui_footer.chip("screen.save", "Ctrl+A", gettext("Save")),
-                tui_footer.chip("screen.resync", "Ctrl+R", gettext("Resync")),
-                tui_footer.chip("screen.close", "Esc", gettext("Back")),
-                tui_footer.nav_chip(),
-            ),
-            id="st-keys",
-            markup=True,
+        yield tui_footer.KeysBar(
+            Static(
+                tui_footer.bar(
+                    tui_footer.chip("screen.save", "Ctrl+A", gettext("Save")),
+                    tui_footer.chip("screen.resync", "Ctrl+R", gettext("Resync")),
+                    tui_footer.chip("screen.close", "Esc", gettext("Back")),
+                    tui_footer.nav_chip(),
+                ),
+                id="st-keys",
+                markup=True,
+            )
         )
 
     def _compose_storage(self) -> ComposeResult:

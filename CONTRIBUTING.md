@@ -132,8 +132,10 @@ and never touch your machine.
 How the pieces fit:
 
 - **`docs/assets/demo/Dockerfile`** — the recording environment: the official VHS image, plus uv,
-  skit installed from your working tree, `bat`, `fonts-noto-cjk` (real Han glyphs for the zh
-  renders), and a colored prompt (`docs/assets/demo/demo.bashrc`).
+  skit installed from your working tree, `bat`, `vim` (the demo's "edit script" scene opens
+  `$EDITOR`, set to vim, configured by `docs/assets/demo/demo.vimrc` — a mirror of the maintainer's
+  `~/.vimrc`), `fonts-noto-cjk` (real Han glyphs for the zh renders), and a colored prompt
+  (`docs/assets/demo/demo.bashrc`).
 - **`docs/assets/demo/demo.tape`** (the video) and **`docs/assets/demo/shots.tape`** (the screenshots) —
   the VHS keystroke choreography. Each tape is written once and drives every locale.
 - **`docs/assets/demo/scripts/{en,zh}/`** — the dummy scripts being demoed, one set per language

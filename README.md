@@ -21,7 +21,7 @@ And it's a home you share with your agent: the library you drive from a menu, AI
 drive through a deterministic CLI — checking it before writing yet another one-off
 script, and (with your OK) saving the good ones back, so they outlive the chat.
 
-<video src="https://github.com/user-attachments/assets/65c9eed8-d6fa-4a16-836c-7017eb08bb9c" controls></video>
+<video src="https://github.com/user-attachments/assets/d27121fe-5855-4270-91b0-b0ee9e5d11ee" controls></video>
 
 ## What it does
 

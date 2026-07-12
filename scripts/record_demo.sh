@@ -23,9 +23,8 @@ run_tape() {   # $1 = SKIT_LANG   $2 = scripts subdir (en/zh)   $3 = tape file i
   docker run --rm -e "SKIT_LANG=$1" \
     -v "$PWD/docs/assets:/out" \
     -v "$PWD/docs/assets/demo/$3:/demo/demo.tape:ro" \
-    -v "$PWD/docs/assets/demo/scripts/$2/my_script_1.py:/demo/my_script_1.py:ro" \
-    -v "$PWD/docs/assets/demo/scripts/$2/my_script_2.py:/demo/my_script_2.py:ro" \
-    -v "$PWD/docs/assets/demo/scripts/$2/my_program.sh:/demo/my_program.sh:ro" \
+    -v "$PWD/docs/assets/demo/scripts/$2/greet.py:/demo/greet.py:ro" \
+    -v "$PWD/docs/assets/demo/scripts/$2/banner.py:/demo/banner.py:ro" \
     "$IMAGE" /demo/demo.tape
 }
 

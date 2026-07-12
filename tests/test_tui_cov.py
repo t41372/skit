@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 from textual.widgets import DataTable, Input, Static
 
+from conftest import footer_text
 from skit import argstate, metawriter, store, tui
 from skit.metawriter import ParamSpec
 
@@ -29,7 +30,7 @@ def _py(tmp_path, body: str, name: str = "job.py"):
 
 
 def _static_text(app, selector) -> str:
-    return str(app.query_one(selector, Static).render())
+    return footer_text(app.query_one(selector, Static))
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +161,15 @@ async def test_footer_global_row_lists_every_surface(tmp_path):
     app = tui.MenuApp()
     async with app.run_test():
         row = _static_text(app, "#keys-global")
-        for label in ("Add script", "Presets", "Preferences", "Health check", "Help"):
+        for label in (
+            "Add script",
+            "Presets",
+            "Search",
+            "Detail pane",
+            "Preferences",
+            "Health check",
+            "Help",
+        ):
             assert label in row
 
 

@@ -11,6 +11,11 @@ build/
 .pytest_cache/
 .ruff_cache/
 
+# Claude Code session-local state (worktrees, task metadata) — transient agent
+# artifacts, never sources; ruff/ty skip gitignored trees, so this also keeps the
+# pre-commit gates from tripping over another agent's in-flight worktree.
+.claude/
+
 # Test / coverage artifacts
 .coverage
 .coverage.*

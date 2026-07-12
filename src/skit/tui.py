@@ -3,11 +3,16 @@
 Library screen: search + list + detail pane, two-row footer
 with every action always visible (design assumption: most TUI users never press ?),
 recency sort, contextual r-rerun, lazy drift check on selection. Presentation only —
-all logic goes through the headless store/flows/launcher layers.
+all logic goes through the headless store/flows/launcher layers. Size adaptation is
+declarative: the tui_layout breakpoints put tier classes on every screen and the CSS
+here keys off them (portrait — narrow but tall enough — stacks the detail pane below
+the list, narrow+short hides it with the Tab chip as the way back, search flattens
+when short, and the footer key rows shrink to a scrollable sliver when short/tiny —
+the caps trim what is visible, never what the mouse can reach).
 
 Keys: Enter run · r rerun (after a first run) · p script settings · e edit script ·
 Del remove · a add script · s presets · , preferences · D health check · / search ·
-double Ctrl+C / Esc quit.
+Tab detail pane · double Ctrl+C / Esc quit.
 
 Focus model: the TABLE owns the keyboard by default, so every advertised single-letter
 key actually fires; `/` (or a click) enters the search box, where letters type as text
@@ -36,7 +41,18 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import DataTable, Input, Label, Static
 
-from . import argstate, config, editor, flows, launcher, models, store, theme, tui_footer
+from . import (
+    argstate,
+    config,
+    editor,
+    flows,
+    launcher,
+    models,
+    store,
+    theme,
+    tui_footer,
+    tui_layout,
+)
 from .i18n import gettext, ngettext
 from .models import Entry
 from .theme import CLAUDE_THEME
@@ -102,8 +118,11 @@ class ConfirmRemove(ModalScreen[bool]):
     ]
     DEFAULT_CSS = """
     ConfirmRemove { align: center middle; }
+    /* max-width/height: a long script name (user data) or a tiny terminal must shrink
+       the box and wrap its lines, never push the border off-screen. */
     #confirm-box {
         border: round $skit-box-maroon; padding: 1 2; width: auto; height: auto;
+        max-width: 100%; max-height: 100%;
         background: $background;
     }
     /* In an auto-width box a 1fr Static collapses to zero columns — every modal child
@@ -148,7 +167,11 @@ class HelpScreen(ModalScreen[None]):
     BINDINGS = [Binding("escape,question_mark", "dismiss_help", gettext("Close"))]
     DEFAULT_CSS = """
     HelpScreen { align: center middle; }
+    /* A scroll body (not a plain Vertical): on a terminal shorter than the key list
+       the overlay caps at the screen and scrolls — the box is focusable, so ↓/↑ and
+       the wheel both reach the clipped rows. */
     #help-box { border: round $accent; padding: 1 2; width: auto; height: auto;
+                max-width: 100%; max-height: 100%;
                 background: $background; }
     /* Same zero-width trap as the confirm box: 1fr Statics inside an auto box measure
        as nothing, which rendered the ? overlay as a tiny empty square. */
@@ -166,12 +189,14 @@ class HelpScreen(ModalScreen[None]):
             ("e", gettext("Edit script")),
             ("Del", gettext("Remove")),
             ("a", gettext("Add script")),
+            ("/", gettext("Search")),
+            ("Tab", gettext("Detail pane")),
             (",", gettext("Preferences")),
             ("D", gettext("Health check")),
             ("Ctrl+C Ctrl+C / Esc", gettext("Quit")),
         ]
         body = "\n".join(f"[$accent]{k:>16}[/]  {escape(v)}" for k, v in rows)
-        yield Vertical(
+        yield VerticalScroll(
             Static(body, markup=True),
             Static(
                 tui_footer.bar(tui_footer.chip("screen.dismiss_help", "Esc", gettext("Close"))),
@@ -215,16 +240,51 @@ class MenuApp(App[int | PendingRun]):
 
     TITLE = "skit · " + gettext("Library")
     ENABLE_COMMAND_PALETTE = False
+    # Size tiers (tui_layout): the app-level breakpoints put -w-*/-h-* classes on every
+    # screen in the stack, and ALL size adaptation below is CSS keyed off those classes.
+    HORIZONTAL_BREAKPOINTS = tui_layout.HORIZONTAL_BREAKPOINTS
+    VERTICAL_BREAKPOINTS = tui_layout.VERTICAL_BREAKPOINTS
     CSS = (
         theme.CHROME_CSS
         + """
     #search { dock: top; }
+    /* Short terminals: the bordered search box is the most expensive chrome (3 rows for
+       one line of function) — flatten it to a single borderless row and mark focus with
+       the theme's hover tint instead of the accent border. */
+    Screen.-h-short #search, Screen.-h-tiny #search { border: none; height: 1; padding: 0 1; }
+    Screen.-h-short #search:focus, Screen.-h-tiny #search:focus {
+        background: $block-hover-background;
+    }
     #main { height: 1fr; }
     /* btop grammar: each panel is a rounded box with its own muted border tint and its
        title ON the border (list green, detail indigo — the cpu/net pairing). */
     #entry-table { width: 3fr; border: round $skit-box-green; border-title-color: ansi_bright_white; }
     #detail { width: 2fr; border: round $skit-box-indigo; border-title-color: ansi_bright_white;
               padding: 0 1; }
+    /* Narrow terminals give the whole row to the list (spec §1) — EXCEPT the portrait
+       shape (narrow but normal/tall), where there is vertical room to spare: stack the
+       detail pane below the list instead of hiding it. The list hugs its rows (its own
+       scroll takes over past 60%), the detail keeps its landscape fill-the-rest habit. */
+    Screen.-w-narrow #detail { display: none; }
+    Screen.-w-narrow.-h-normal #main, Screen.-w-narrow.-h-tall #main { layout: vertical; }
+    Screen.-w-narrow.-h-normal #entry-table, Screen.-w-narrow.-h-tall #entry-table {
+        width: 1fr; height: auto; max-height: 60%;
+    }
+    Screen.-w-narrow.-h-normal #detail, Screen.-w-narrow.-h-tall #detail {
+        display: block; width: 1fr; height: 1fr;
+    }
+    /* The Tab pin: the user's explicit choice beats EVERY tier rule above, whatever
+       its specificity — that is exactly what !important is for. The pin is a pair of
+       classes on the SCREEN (not an inline style, so un-pinning is just removing
+       them; not on #detail, so sibling rules like the table handover below can see
+       the pin too). */
+    Screen.-detail-pinned-open #detail { display: block !important; }
+    Screen.-detail-pinned-closed #detail { display: none !important; }
+    /* Portrait with the pane pinned closed: hand the freed rows to the list — with
+       only the 60% cap they would sit blank, which is the opposite of what the user
+       asked for by hiding the pane. */
+    Screen.-w-narrow.-h-normal.-detail-pinned-closed #entry-table,
+    Screen.-w-narrow.-h-tall.-detail-pinned-closed #entry-table { max-height: 100%; }
     /* One docked container holds the whole footer. Docking each row separately makes
        every dock:bottom widget land on the SAME bottom line (dock does not stack), so
        the two key rows end up hidden behind the status line — the footer looks empty.
@@ -232,8 +292,15 @@ class MenuApp(App[int | PendingRun]):
        all three rows. */
     #footer { dock: bottom; height: auto; }
     #status { height: 1; color: $text-muted; padding: 0 1; }
-    #keys-local { height: 1; padding: 0 1; }
-    #keys-global { height: 1; padding: 0 1; }
+    /* Both key rows live in one KeysBar (see tui_footer): rows wrap chip-by-chip and
+       the height tier caps only how many wrapped lines are VISIBLE — the bar scrolls,
+       so every chip stays wheel-reachable at any size. The Library's budget is wider
+       than the shared default because it shows two rows; tall terminals are uncapped
+       (a portrait sliver shows every chip outright). #status stays at every tier: it
+       is the error/feedback channel. */
+    Screen.-h-normal #keys { max-height: 6; }
+    Screen.-h-short #keys { max-height: 2; }
+    Screen.-h-tiny #keys { max-height: 1; }
     """
     )
     BINDINGS = [
@@ -263,9 +330,6 @@ class MenuApp(App[int | PendingRun]):
         Binding("tab", "toggle_detail", gettext("Detail pane"), show=False, priority=True),
     ]
     CTRL_C_WINDOW = 2.0
-    # Below this terminal width the detail pane auto-collapses to give the list the whole
-    # row (spec §1); Tab pins it open/closed regardless.
-    MIN_DETAIL_WIDTH = 80
 
     def __init__(self) -> None:
         super().__init__()
@@ -273,7 +337,6 @@ class MenuApp(App[int | PendingRun]):
         self._visible: list[Entry] = []
         self._ctrl_c_at: float = 0.0
         self._drift_cache: dict[str, tuple[float, bool]] = {}  # slug -> (mtime, has_drift)
-        self._detail_manual: bool | None = None  # None = auto by width; else the user's Tab choice
 
     @override
     def get_default_screen(self) -> Screen[None]:
@@ -305,8 +368,9 @@ class MenuApp(App[int | PendingRun]):
             yield DataTable(cursor_type="row", zebra_stripes=False, id="entry-table")
             yield VerticalScroll(Static("", id="detail-body", markup=True), id="detail")
         with Vertical(id="footer"):
-            yield Static("", id="keys-local", markup=True)
-            yield Static("", id="keys-global", markup=True)
+            with tui_footer.KeysBar(id="keys"):
+                yield Static("", id="keys-local", markup=True)
+                yield Static("", id="keys-global", markup=True)
             yield Static("", id="status")
 
     # ------------------------------------------------------------------ data
@@ -388,6 +452,9 @@ class MenuApp(App[int | PendingRun]):
             tui_footer.chip("app.add", "a", gettext("Add script")),
             tui_footer.chip("app.presets", "s", gettext("Presets")),
             tui_footer.chip("app.focus_search", "/", gettext("Search")),
+            # The detail pane must be recoverable without memorizing Tab: when a size
+            # tier auto-hides it, this chip is the visible way back.
+            tui_footer.chip("app.toggle_detail", "Tab", gettext("Detail pane")),
             tui_footer.chip("app.preferences", ",", gettext("Preferences")),
             tui_footer.chip("app.health", "D", gettext("Health check")),
             tui_footer.chip("app.help", "?", gettext("Help")),
@@ -801,19 +868,22 @@ class MenuApp(App[int | PendingRun]):
 
     # ------------------------------------------------------------- detail pane
 
-    def on_resize(self, event: events.Resize) -> None:
-        """Narrow terminals give the whole row to the list (spec §1). Auto-collapse only
-        while the user hasn't pinned the pane with Tab."""
-        if self._detail_manual is None:
-            self._set_detail_visible(event.size.width >= self.MIN_DETAIL_WIDTH)
-
     def action_toggle_detail(self) -> None:
-        """Tab: show/hide the detail pane and pin that choice against auto-collapse."""
-        self._detail_manual = not self.query_one("#detail").display
-        self._set_detail_visible(self._detail_manual)
-
-    def _set_detail_visible(self, visible: bool) -> None:
-        self.query_one("#detail").display = visible
+        """Tab (or its footer chip): show/hide the detail pane and pin that choice
+        against the size tiers' auto-collapse. The pin is a pair of CSS classes on
+        the screen rather than an inline display style (an inline style could never
+        be overridden by CSS again, and sibling rules — the portrait table handover —
+        need to see the pin); the !important pin rules beat every tier rule. While
+        pinned, visibility is derived from the pin classes, which update
+        synchronously; on the FIRST toggle no class has changed this frame, so the
+        computed display is fresh and IS the tier cascade's answer — no Python
+        re-derivation of the CSS to drift out of sync."""
+        screen = self.screen
+        pinned_open = screen.has_class("-detail-pinned-open")
+        pinned_closed = screen.has_class("-detail-pinned-closed")
+        visible = pinned_open if pinned_open or pinned_closed else self.query_one("#detail").display
+        screen.set_class(not visible, "-detail-pinned-open")
+        screen.set_class(visible, "-detail-pinned-closed")
 
     # ------------------------------------------------------------- language
 
