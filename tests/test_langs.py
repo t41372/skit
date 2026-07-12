@@ -9,13 +9,17 @@ of crashing (list/show keep working; only run fails, with a clean LaunchError).
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
 from skit import launcher
 from skit.langs import registry
 from skit.models import Entry, ScriptMeta
+
+runner = CliRunner()
 
 
 def _entry(
@@ -155,3 +159,78 @@ def test_launcher_uv_delegates_follow_patches_on_the_canonical_module(monkeypatc
     assert launcher.find_uv() == "/patched/uv"
     monkeypatch.setattr("skit.langs.launch.ensure_uv", lambda: "/patched/uv2")
     assert launcher.ensure_uv() == "/patched/uv2"
+
+
+# ---- audited fixes: capability-honest CLI behavior --------------------------------------------
+
+
+def _exe(tmp_path: Path) -> Path:
+    prog = tmp_path / ("tool.exe" if sys.platform == "win32" else "tool")
+    prog.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    prog.chmod(0o755)
+    return prog
+
+
+def test_params_exe_prints_plain_message_without_manage_dead_end(tmp_path: Path):
+    # `--manage` hard-errors for kinds without an analyzer, so the empty-params message
+    # must not send exe users down that dead end (it used to suggest --manage).
+    from skit import cli, store
+
+    store.add_exe(_exe(tmp_path), name="prog")
+    result = runner.invoke(cli.app, ["params", "prog"])
+    assert result.exit_code == 0
+    assert "has no managed parameters" in result.output
+    assert "--manage" not in result.output
+
+
+def test_doctor_missing_uv_pure_exe_library_exits_zero(tmp_path: Path, monkeypatch):
+    # A library with no python entries runs fine without uv — exit 1 there sent
+    # automation chasing a phantom problem. The red uv line still prints.
+    from skit import cli, store
+
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: None)
+    store.add_exe(_exe(tmp_path), name="prog")
+    result = runner.invoke(cli.app, ["doctor"])
+    assert result.exit_code == 0
+    assert "uv" in result.output
+
+
+def test_doctor_missing_uv_with_python_entry_exits_one(tmp_path: Path, monkeypatch):
+    from skit import cli, store
+
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: None)
+    py = tmp_path / "a.py"
+    py.write_text("print(1)\n", encoding="utf-8")
+    store.add_python(py, name="a")
+    result = runner.invoke(cli.app, ["doctor"])
+    assert result.exit_code == 1
+
+
+def test_doctor_json_missing_uv_pure_exe_library_exits_zero(tmp_path: Path, monkeypatch):
+    from skit import cli, store
+
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: None)
+    store.add_exe(_exe(tmp_path), name="prog")
+    result = runner.invoke(cli.app, ["doctor", "--json"])
+    assert result.exit_code == 0
+
+
+# ---- plan_for_entry: capability degradation ----------------------------------------------------
+
+
+def test_plan_without_cli_reader_degrades_to_none_plan(tmp_path: Path, monkeypatch):
+    # A future kind can carry params_io+analyzer but no static CLI reader (e.g. shell
+    # before a getopts reader exists) — the plan must fall through to "none", not crash.
+    import dataclasses
+
+    from skit import flows, store
+
+    python_spec = registry.spec_for("python")
+    assert python_spec is not None
+    stripped = dataclasses.replace(python_spec, cli_reader=None)
+    monkeypatch.setattr("skit.flows.spec_for", lambda kind: stripped)
+    py = tmp_path / "b.py"
+    py.write_text("import argparse\np = argparse.ArgumentParser()\np.add_argument('--x')\n")
+    entry = store.add_python(py, name="b")
+    plan = flows.plan_for_entry(entry)
+    assert plan.source == "none"

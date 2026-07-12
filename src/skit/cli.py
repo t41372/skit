@@ -47,6 +47,7 @@ from . import (
 )
 from .i18n import gettext, ngettext
 from .langs.python import analyzer, metawriter, reconcile
+from .langs.registry import spec_for
 
 app = typer.Typer(
     name="skit",
@@ -356,7 +357,7 @@ def _onboard_python(
     else:
         params_specs = _onboard_params(text, entry.meta.name, no_input)
         if params_specs:
-            copy_path = entry.dir / "script.py"  # pragma: no mutate — fs-case
+            copy_path = entry.script_path
             current = copy_path.read_text(encoding="utf-8")  # pragma: no mutate — utf-8 equivalence
             new_text = metawriter.write_params(current, params_specs)
             copy_path.write_text(new_text, encoding="utf-8")  # pragma: no mutate
@@ -579,9 +580,10 @@ def _print_add_summary(
     entry: store.Entry, deps: list[str], managed: list[str], secrets: list[str]
 ) -> None:
     """One consolidated block after a successful add."""
+    entry_spec = spec_for(entry.meta.kind)
     mode_note = (
         gettext("(%(mode)s mode)") % {"mode": entry.meta.mode}
-        if entry.meta.kind == "python"
+        if entry_spec is not None and entry_spec.supports_modes
         else ""
     )
     console.print(
@@ -699,7 +701,8 @@ def _print_show_human(entry: store.Entry, plan: flows.FormPlan, presets: list[st
     console.print(f"[bold]{escape(meta.name)}[/bold]  [dim]({meta.kind} · {meta.mode})[/dim]")
     if meta.description:
         console.print(f"  {escape(meta.description)}")
-    if meta.kind != "command":
+    show_spec = spec_for(meta.kind)
+    if show_spec is None or show_spec.has_original_file:
         console.print(f"  {gettext('Source: %(path)s') % {'path': escape(str(meta.source))}}")
     if meta.workdir != "origin":
         console.print(
@@ -825,7 +828,8 @@ def remove(
     except store.NotFoundError as exc:
         raise _fail(str(exc), 1) from exc
     if not yes:
-        if entry.meta.kind == "command":
+        entry_spec = spec_for(entry.meta.kind)
+        if entry_spec is not None and not entry_spec.has_original_file:
             question = gettext('Remove "%(name)s"?') % {"name": entry.meta.name}
         else:
             question = gettext('Remove "%(name)s"? Your original file will not be deleted.') % {
@@ -863,7 +867,8 @@ def edit(name: str = _SCRIPT_ARG) -> None:
     except store.NotFoundError:
         _offer_create_in_editor(name)
         return
-    if entry.meta.kind != "python":
+    entry_spec = spec_for(entry.meta.kind)
+    if entry_spec is None or not entry_spec.editable:
         raise _fail(
             gettext("%(name)s isn't a Python script, so it has no source to edit.")
             % {"name": entry.meta.name},
@@ -882,7 +887,7 @@ def edit(name: str = _SCRIPT_ARG) -> None:
         )
         target = source
     else:
-        target = entry.dir / "script.py"
+        target = entry.script_path
         if not target.exists():
             raise _fail(
                 gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}, 1
@@ -1060,7 +1065,8 @@ def run(
             f"[red]{gettext('--raw runs the script as-is; --set, --preset, and --save-preset do not apply.')}[/red]"
         )
         raise typer.Exit(EXIT_USAGE)
-    if raw and entry.meta.kind == "python":
+    run_spec = spec_for(entry.meta.kind)
+    if raw and run_spec is not None and run_spec.analyzer is not None:
         console.print(
             f"[dim]{gettext('Raw mode: skipping the parameter form and injection.')}[/dim]"
         )
@@ -1097,7 +1103,9 @@ def run(
             raise typer.Exit(EXIT_SKIT)
     # --raw promises "run the script as-is": replaying a previous run's arguments would
     # betray exactly the clean slate it exists to provide (and the Agent Skill documents).
-    if not extra and not raw and entry.meta.kind in ("python", "exe"):
+    # takes_argv: a command template's "arguments" are its placeholders, so replaying a
+    # remembered argv tail there would be surprising rather than helpful.
+    if not extra and not raw and run_spec is not None and run_spec.takes_argv:
         last_extra = argstate.load_state(entry.slug)["extra_args"]
         if last_extra:
             extra = last_extra
@@ -1283,14 +1291,20 @@ def _secret_cell(s: metawriter.ParamSpec) -> str:
 def _show_params(entry: store.Entry, as_json: bool) -> None:
     """Read view: managed parameters + last values + detected-but-unmanaged candidates."""
     last = argstate.load_state(entry.slug)["values"]
+    entry_spec = spec_for(entry.meta.kind)
     specs: list[metawriter.ParamSpec] = []
     text = ""
-    if entry.meta.kind == "python" and entry.script_path.exists():
+    if entry_spec is not None and entry_spec.params_io is not None and entry.script_path.exists():
         text = entry.script_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
-        specs = metawriter.read_params(text)
+        specs = entry_spec.params_io.read(text)
     unmanaged: list[str] = []
-    if entry.meta.kind == "python" and entry.meta.mode == "copy" and text:
-        report = reconcile.reconcile(text, specs)
+    if (
+        entry_spec is not None
+        and entry_spec.analyzer is not None
+        and entry.meta.mode == "copy"
+        and text
+    ):
+        report = entry_spec.analyzer.reconcile(text, specs)
         unmanaged = [c.name for c in report.new]
     if as_json:
         payload = {
@@ -1300,7 +1314,7 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
         }
         console.print_json(json.dumps(payload, ensure_ascii=False))
         return
-    if entry.meta.kind == "command":
+    if entry_spec is not None and entry_spec.family == "template":
         placeholders = entry.meta.params or []
         if not placeholders:
             console.print(
@@ -1313,6 +1327,13 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
             console.print(f"  {escape(p)} = {escape(shown)}")
         return
     if not specs:
+        if entry_spec is None or entry_spec.analyzer is None:
+            # No analyzer means --manage can't do anything for this kind — suggesting it
+            # would send the user down a dead end (`skit params <exe> --manage X` errors).
+            console.print(
+                escape(gettext("%(name)s has no managed parameters.") % {"name": entry.meta.name})
+            )
+            return
         console.print(
             escape(
                 gettext(
@@ -1484,7 +1505,8 @@ def _edit_params(
     malformed: list[str],
 ) -> None:
     """Apply parameter-definition changes to a copy-mode Python entry (rewrites [tool.skit])."""
-    if entry.meta.kind != "python":
+    entry_spec = spec_for(entry.meta.kind)
+    if entry_spec is None or entry_spec.params_io is None or entry_spec.analyzer is None:
         raise _fail(
             gettext("%(name)s isn't a Python script; only Python entries have managed parameters.")
             % {"name": entry.meta.name},
@@ -1499,11 +1521,11 @@ def _edit_params(
             % {"name": entry.meta.name},
             1,
         )
-    copy_path = entry.dir / "script.py"  # pragma: no mutate — fs-case
+    copy_path = entry.script_path
     if not copy_path.exists():
         raise _fail(gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}, 1)
     text = copy_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
-    current = metawriter.read_params(text)
+    current = entry_spec.params_io.read(text)
     for item in malformed:
         err_console.print(
             f"[yellow]{escape(gettext('Ignored a malformed value: %(item)s (expected NAME=text).') % {'item': item})}[/yellow]"
@@ -1568,7 +1590,8 @@ def deps(
         entry = store.resolve(name)
     except store.NotFoundError as exc:
         raise _fail(str(exc), 1) from exc
-    if entry.meta.kind != "python":
+    deps_spec = spec_for(entry.meta.kind)
+    if deps_spec is None or not deps_spec.supports_deps:
         raise _fail(
             gettext("%(name)s is not a Python script entry.") % {"name": entry.meta.name}, 1
         )
@@ -1744,13 +1767,30 @@ def _drifted_entries(entries: list[store.Entry]) -> list[str]:
     """The health check is the one place that batch-reconciles the whole library."""
     out: list[str] = []
     for e in entries:
-        if e.meta.kind != "python" or not e.script_path.exists():
+        spec = spec_for(e.meta.kind)
+        if (
+            spec is None
+            or spec.analyzer is None
+            or spec.params_io is None
+            or not e.script_path.exists()
+        ):
             continue
         text = e.script_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
-        specs = metawriter.read_params(text)
-        if specs and reconcile.reconcile(text, specs).has_drift:
+        specs = spec.params_io.read(text)
+        if specs and spec.analyzer.reconcile(text, specs).has_drift:
             out.append(e.meta.name)
     return out
+
+
+def _uv_required(entries: list[store.Entry]) -> bool:
+    """Whether a missing uv should fail doctor's exit code. uv is what runs python
+    entries, so it's required when any python entry exists — and also for an EMPTY
+    library (a fresh install's doctor must still steer the user toward a working
+    setup). A non-empty library made purely of exe/command entries runs fine without
+    uv, and exiting 1 there sent automation chasing a phantom problem."""
+    if not entries:
+        return True
+    return any(e.meta.kind == "python" for e in entries)
 
 
 @app.command(help=gettext("Check that uv is available and the script store is intact."))
@@ -1792,7 +1832,7 @@ def doctor(
                 ensure_ascii=False,
             )
         )
-        raise typer.Exit(0 if uv else 1)
+        raise typer.Exit(0 if uv or not _uv_required(entries) else 1)
     if uv:
         console.print(f"[green]✓ {gettext('uv: %(path)s') % {'path': escape(uv)}}[/green]")
     else:
@@ -1820,7 +1860,7 @@ def doctor(
         gettext("Library: %(path)s (%(count)s · %(size)s)")
         % {"path": escape(str(location)), "count": len(entries), "size": store.human_size(size)}
     )
-    raise typer.Exit(0 if uv else 1)
+    raise typer.Exit(0 if uv or not _uv_required(entries) else 1)
 
 
 # --------------------------------------------------------------------------

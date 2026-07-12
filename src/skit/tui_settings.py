@@ -21,6 +21,7 @@ from textual.widgets import Checkbox, Input, Label, Static
 from . import argstate, pep723, store, tui_footer
 from .i18n import gettext
 from .langs.python import argspec, metawriter, reconcile
+from .langs.registry import spec_for
 from .models import Entry
 
 
@@ -143,7 +144,9 @@ class ScriptSettingsScreen(Screen[bool]):
         # settling); only user edits after mount count as dirt.
         self._dirt_armed: bool = False
         self._text: str = ""
-        if entry.meta.kind == "python" and entry.script_path.exists():
+        self._spec = spec_for(entry.meta.kind)
+        has_params_io = self._spec is not None and self._spec.params_io is not None
+        if has_params_io and entry.script_path.exists():
             self._text = entry.script_path.read_text(encoding="utf-8", errors="replace")
         self._specs: list[metawriter.ParamSpec] = metawriter.read_params(self._text)
         # The resync outcome (incl. safety-rebind warnings) must survive the recompose that
@@ -184,7 +187,7 @@ class ScriptSettingsScreen(Screen[bool]):
 
     def _compose_storage(self) -> ComposeResult:
         meta = self._entry.meta
-        if meta.kind != "python":
+        if self._spec is None or not self._spec.supports_modes:
             return
         yield Static(gettext("Storage"), classes="section")
         if meta.mode == "copy":
@@ -202,12 +205,12 @@ class ScriptSettingsScreen(Screen[bool]):
     def _compose_params(self) -> ComposeResult:
         yield Static(gettext("Parameters (the run form's fields)"), classes="section")
         meta = self._entry.meta
-        if meta.kind == "command":
+        if self._spec is not None and self._spec.family == "template":
             yield Static(escape(meta.template), classes="hint")
             for p in meta.params or []:
                 yield Static(f"· {escape(p)}")
             return
-        if meta.kind != "python":
+        if self._spec is None or self._spec.analyzer is None:
             yield Static(gettext("(programs have no managed parameters)"), classes="hint")
             return
         if meta.mode == "reference":
@@ -280,7 +283,7 @@ class ScriptSettingsScreen(Screen[bool]):
 
     def _compose_deps(self) -> ComposeResult:
         meta = self._entry.meta
-        if meta.kind != "python":
+        if self._spec is None or not self._spec.supports_deps:
             return
         yield Static(gettext("Dependencies"), classes="section")
         yield Input(
@@ -316,7 +319,8 @@ class ScriptSettingsScreen(Screen[bool]):
     # ----------------------------------------------------------------- save
 
     def action_resync(self) -> None:
-        if self._entry.meta.kind != "python" or self._entry.meta.mode != "copy":
+        no_analyzer = self._spec is None or self._spec.analyzer is None
+        if no_analyzer or self._entry.meta.mode != "copy":
             return
         result = reconcile.edit_specs(self._text, self._specs, resync=True)
         self._specs = result.specs
@@ -342,7 +346,8 @@ class ScriptSettingsScreen(Screen[bool]):
         description = self.query_one("#st-desc", Input).value.strip()
         if description != entry.meta.description:
             store.update_description(entry.slug, description)
-        if entry.meta.kind == "python" and entry.meta.mode == "copy" and self._text:
+        has_analyzer = self._spec is not None and self._spec.analyzer is not None
+        if has_analyzer and entry.meta.mode == "copy" and self._text:
             new_specs = [s for row in self.query(ParamRow) if (s := row.collect()) is not None]
             report = reconcile.reconcile(self._text, self._specs) if self._text else None
             if report is not None:
@@ -350,7 +355,7 @@ class ScriptSettingsScreen(Screen[bool]):
                     box = self.query(f"#st-new-{i}")
                     if box and box.first(Checkbox).value:
                         new_specs.append(metawriter.ParamSpec.from_candidate(c))
-            copy_path = entry.dir / "script.py"
+            copy_path = entry.script_path
             copy_path.write_text(metawriter.write_params(self._text, new_specs), encoding="utf-8")
             purged = argstate.purge_secret(entry.slug, {s.name for s in new_specs if s.secret})
             if purged:
@@ -358,7 +363,7 @@ class ScriptSettingsScreen(Screen[bool]):
                     gettext("Deleted previously remembered value(s): %(names)s")
                     % {"names": ", ".join(sorted(purged))}
                 )
-        if entry.meta.kind == "python":
+        if self._spec is not None and self._spec.supports_deps:
             deps = pep723.split_requirements(self.query_one("#st-deps", Input).value)
             python = self.query_one("#st-python", Input).value.strip()
             if deps != (entry.meta.dependencies or []) or python != entry.meta.requires_python:

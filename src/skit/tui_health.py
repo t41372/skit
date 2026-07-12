@@ -21,6 +21,7 @@ from textual.widgets.option_list import Option
 
 from . import config, flows, launcher, store, tui_footer
 from .i18n import gettext, ngettext
+from .langs.registry import spec_for
 from .paths import scripts_dir
 
 
@@ -79,7 +80,8 @@ class HealthScreen(Screen[str | None]):
                 if launcher.target_missing(e)
             ]
             for e in entries:
-                if e.meta.kind != "python" or not e.script_path.exists():
+                spec = spec_for(e.meta.kind)
+                if spec is None or spec.analyzer is None or not e.script_path.exists():
                     continue
                 if flows.plan_for_entry(e).drift_lines:
                     issues.append(

@@ -41,6 +41,7 @@ from .i18n import gettext
 from .langs.python import argspec, metawriter, reconcile, shim
 from .langs.python.analyzer import _is_secret_name
 from .langs.python.shim import ShimValueError, _coerce
+from .langs.registry import spec_for
 from .models import Entry
 
 if TYPE_CHECKING:
@@ -113,7 +114,8 @@ def plan_for_entry(entry: Entry) -> FormPlan:
     """Build the form plan for an entry. Total: unreadable/missing scripts yield the
     "none" plan (extra-args escape only) rather than raising — preflight owns existence
     errors, the form layer just refuses to invent fields it can't see."""
-    if entry.meta.kind == "command":
+    lang = spec_for(entry.meta.kind)
+    if lang is not None and lang.family == "template":
         # required: an empty placeholder silently assembles a broken command (`convert '' ''`),
         # which the non-interactive contract forbids. secret: C3 applies to every source —
         # a {api_key} placeholder masks and never lands in a state file, like any other secret.
@@ -124,12 +126,17 @@ def plan_for_entry(entry: Entry) -> FormPlan:
             for p in (entry.meta.params or [])
         ]
         return FormPlan(source="command", fields=fields)
-    if entry.meta.kind != "python" or not entry.script_path.exists():
+    if (
+        lang is None
+        or lang.params_io is None
+        or lang.analyzer is None
+        or not entry.script_path.exists()
+    ):
         return FormPlan(source="none")
     text = entry.script_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
-    specs = metawriter.read_params(text)
+    specs = lang.params_io.read(text)
     if specs:
-        report = reconcile.reconcile(text, specs)
+        report = lang.analyzer.reconcile(text, specs)
         drift = list(reconcile.drift_lines(report, entry.meta.name)) if report.has_drift else []
         return FormPlan(
             source="inject",
@@ -138,13 +145,14 @@ def plan_for_entry(entry: Entry) -> FormPlan:
             specs=report.usable,
             text=text,
         )
-    spec = argspec.read_cli(text)
-    if spec is not None:
-        if not spec.ok:
-            return FormPlan(source="argparse", degraded_reason=spec.reason, text=text)
-        return FormPlan(
-            source="argparse", fields=[_field_from_arg(a) for a in spec.fields], text=text
-        )
+    if lang.cli_reader is not None:
+        spec = lang.cli_reader.read_cli(text)
+        if spec is not None:
+            if not spec.ok:
+                return FormPlan(source="argparse", degraded_reason=spec.reason, text=text)
+            return FormPlan(
+                source="argparse", fields=[_field_from_arg(a) for a in spec.fields], text=text
+            )
     return FormPlan(source="none", text=text)
 
 

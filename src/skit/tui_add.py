@@ -398,7 +398,7 @@ class AddReviewScreen(Screen[str | None]):
             ]
             if picked:
                 specs = [metawriter.ParamSpec.from_candidate(c) for c in picked]
-                copy_path = entry.dir / "script.py"
+                copy_path = entry.script_path
                 current = copy_path.read_text(encoding="utf-8")
                 copy_path.write_text(metawriter.write_params(current, specs), encoding="utf-8")
         self.dismiss(entry.slug)

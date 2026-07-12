@@ -54,23 +54,25 @@ from . import (
     tui_layout,
 )
 from .i18n import gettext, ngettext
+from .langs.registry import spec_for
 from .models import Entry
 from .theme import CLAUDE_THEME
 from .tui_form import FormResult, RunFormScreen
 
-# Glyphs are locale-independent; the labels are translated at render time in _kind_badge.
-# The labels must be gettext() literals there (not values fed to gettext(kind)) or Babel
-# can't extract them — see scripts/i18n_coverage.py's dynamic-gettext check.
-_KIND_GLYPHS = {"python": "⬡", "exe": "▶", "command": "$"}
 
-
+# Glyphs are locale-independent and live on each kind's LangSpec; the labels are
+# translated at render time here. The labels must be gettext() literals (not values fed
+# to gettext(kind)) or Babel can't extract them — see scripts/i18n_coverage.py's
+# dynamic-gettext check — which is exactly why the label map does NOT live in the
+# registry: every new kind adds one literal line here, gated by the i18n coverage test.
 def _kind_badge(kind: str) -> tuple[str, str]:
     label = {
         "python": gettext("Python"),
         "exe": gettext("Program"),
         "command": gettext("Command"),
     }.get(kind, kind)
-    return _KIND_GLYPHS.get(kind, "?"), label
+    spec = spec_for(kind)
+    return (spec.glyph if spec is not None else "?"), label
 
 
 def _fuzzy_match(query: str, text: str) -> bool:
@@ -138,7 +140,8 @@ class ConfirmRemove(ModalScreen[bool]):
     @override
     def compose(self) -> ComposeResult:
         lines = [Label(gettext('Remove "%(name)s"?') % {"name": escape(self._entry.meta.name)})]
-        if self._entry.meta.kind != "command":
+        spec = spec_for(self._entry.meta.kind)
+        if spec is None or spec.has_original_file:
             lines.append(Static(f"[dim]{gettext('Your original file will not be deleted.')}[/dim]"))
         # The verb line IS the button row: y/Esc stay advertised, and each chip is
         # clickable — modals must not be the one place that suddenly demands keys.
@@ -389,8 +392,9 @@ class MenuApp(App[int | PendingRun]):
         ]
         for e in self._visible:
             glyph, kind_label = _kind_badge(e.meta.kind)
-            if e.meta.kind == "python" and e.meta.mode == "reference":
-                # reference: links the original, never copied (spec §1). kind-gated:
+            e_spec = spec_for(e.meta.kind)
+            if e_spec is not None and e_spec.supports_modes and e.meta.mode == "reference":
+                # reference: links the original, never copied (spec §1). capability-gated:
                 # command templates also carry mode="reference" in their meta, but there
                 # is no linked file to point an arrow at.
                 kind_label = f"{kind_label} ↗"
@@ -464,7 +468,8 @@ class MenuApp(App[int | PendingRun]):
 
     def _has_drift(self, entry: Entry) -> bool:
         """Drift is the expensive check (read + reconcile): lazy, per-selection, mtime-cached."""
-        if entry.meta.kind != "python" or not entry.script_path.exists():
+        spec = spec_for(entry.meta.kind)
+        if spec is None or spec.analyzer is None or not entry.script_path.exists():
             return False
         mtime = entry.script_path.stat().st_mtime
         cached = self._drift_cache.get(entry.slug)
@@ -497,8 +502,9 @@ class MenuApp(App[int | PendingRun]):
 
     def _detail_lines(self, entry: Entry) -> list[str]:
         glyph, kind_label = _kind_badge(entry.meta.kind)
+        spec = spec_for(entry.meta.kind)
         lines = [f"[bold $accent]{escape(entry.meta.name)}[/]", f"{glyph} {kind_label}"]
-        if entry.meta.kind == "python":
+        if spec is not None and spec.supports_modes:
             if entry.meta.mode == "copy":
                 lines.append(
                     f"[dim]✓ {gettext('The copy is kept by skit; your original file is never modified.')}[/dim]"
@@ -507,7 +513,7 @@ class MenuApp(App[int | PendingRun]):
                 lines.append(
                     f"[dim]↗ {gettext('Linked to the original: %(path)s') % {'path': escape(entry.meta.source)}}[/dim]"
                 )
-        if entry.meta.kind == "command":
+        if spec is not None and spec.family == "template":
             lines.append(f"[dim]{escape(entry.meta.template)}[/dim]")
         lines.append("")
         lines.append(
@@ -790,11 +796,11 @@ class MenuApp(App[int | PendingRun]):
         self._refresh_status(gettext("Edited %(name)s.") % {"name": escape(entry.meta.name)})
 
     def _editable_source(self, entry: Entry) -> Path | None:
-        if entry.meta.kind != "python":
+        spec = spec_for(entry.meta.kind)
+        if spec is None or not spec.editable:
             return None
-        if entry.meta.mode == "reference":
-            return Path(entry.meta.source)
-        return entry.dir / "script.py"
+        # script_path resolves both modes: the original in reference, the copy in copy.
+        return entry.script_path
 
     def action_remove(self) -> None:
         if len(self.screen_stack) > 1:
