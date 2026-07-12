@@ -42,6 +42,8 @@ dependencies = [
     "tomli-w>=1.2,<2",
     "textual>=8.2,<9",
     "rich>=15,<16",
+    "tree-sitter>=0.25,<0.27",
+    "tree-sitter-bash>=0.25,<0.26",
 ]
 
 [project.urls]
