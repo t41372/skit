@@ -29,9 +29,14 @@ def tmp_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture(autouse=True)
 def wide_console(monkeypatch: pytest.MonkeyPatch):
-    # Exact-output comparison: stop rich from wrapping the variable-length tmp paths.
+    # Exact-output comparison needs identical rendering on every OS: stop rich from
+    # wrapping the variable-length tmp paths, and pin legacy_windows off — the legacy
+    # Windows console substitutes the tables' heavy box chars (┏━┓ → ┌─┐), which broke
+    # these pins on windows-latest CI while the table-less minimal test passed.
     monkeypatch.setattr(cli.console, "_width", 400)
     monkeypatch.setattr(cli.err_console, "_width", 400)
+    monkeypatch.setattr(cli.console, "legacy_windows", False)
+    monkeypatch.setattr(cli.err_console, "legacy_windows", False)
 
 
 def _py(tmp_path: Path, body: str, name: str) -> Path:
