@@ -18,7 +18,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Checkbox, Input, Label, Static
 
-from . import argstate, pep723, store, tui_footer
+from . import argstate, params, pep723, store, tui_footer
 from .i18n import gettext
 from .langs.python import argspec, metawriter, reconcile
 from .langs.registry import spec_for
@@ -112,6 +112,108 @@ class ParamRow(Vertical):
             note.update("")
 
 
+def _default_text(value: str | int | float | bool) -> str:
+    """A declared default rendered for an editable Input (bool as the true/false words
+    coerce_default round-trips, everything else as its plain string)."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+class DeclParamRow(Vertical):
+    """One declared parameter (exe/command entries): keep/remove, type, default, flag
+    (binary kinds only), required, form label, secret + env source. Its delivery is fixed
+    at add time and shown read-only in the header (the CLI's --deliver changes it)."""
+
+    DEFAULT_CSS = """
+    DeclParamRow { height: auto; margin: 0 0 1 2; }
+    DeclParamRow .p-meta { color: $text-muted; width: auto; }
+    DeclParamRow Horizontal { height: auto; }
+    DeclParamRow Horizontal > Checkbox { width: auto; }
+    DeclParamRow Input { width: 1fr; }
+    """
+
+    def __init__(self, decl: ParamDecl, *, show_flag: bool) -> None:
+        super().__init__()
+        self.decl: ParamDecl = decl
+        self._show_flag: bool = show_flag
+
+    @override
+    def compose(self) -> ComposeResult:
+        d = self.decl
+        default = "" if d.default is None else _default_text(d.default)
+        yield Checkbox(
+            f"{escape(d.name)}  [dim]{escape(d.delivery)}[/dim]", value=True, classes="d-keep"
+        )
+        with Horizontal():
+            yield Static("  " + gettext("Type:"), classes="p-meta")
+            yield Input(
+                value=d.type,
+                placeholder=gettext("type: str / int / float / bool / choice"),
+                classes="d-type",
+            )
+        with Horizontal():
+            yield Static("  " + gettext("Default:"), classes="p-meta")
+            yield Input(
+                value=default,
+                placeholder=gettext("default value (optional)"),
+                classes="d-default",
+            )
+        if self._show_flag:
+            with Horizontal():
+                yield Static("  " + gettext("Flag:"), classes="p-meta")
+                yield Input(
+                    value=d.flag,
+                    placeholder=gettext("--flag (empty = positional)"),
+                    classes="d-flag",
+                )
+        yield Checkbox(gettext("required"), value=d.required, classes="d-required")
+        with Horizontal():
+            yield Static("  " + gettext("Form label:"), classes="p-meta")
+            yield Input(value=d.prompt, placeholder=d.name, classes="p-prompt")
+        with Horizontal():
+            yield Checkbox(
+                gettext("secret (never saved to disk)"), value=d.secret, classes="p-secret"
+            )
+            yield Input(
+                value=d.env_source,
+                placeholder=gettext("env variable to read it from (optional)"),
+                classes="p-env",
+            )
+        yield Static("", classes="p-note")
+
+    @property
+    def type_text(self) -> str:
+        """The raw text in the type field (validated by the screen, which owns the ParamType
+        literal narrowing, so an invalid type can be rejected rather than silently coerced)."""
+        return self.query_one(".d-type", Input).value.strip() or "str"
+
+    def collect(self) -> ParamDecl | None:
+        """None when removed (keep checkbox off). Gathers every field EXCEPT the type onto a
+        copy of the decl; the screen reads `type_text`, validates it, and sets the type."""
+        if not self.query_one(".d-keep", Checkbox).value:
+            return None
+        d = self.decl
+        d.default = self.query_one(".d-default", Input).value.strip() or None
+        if self._show_flag:
+            d.flag = self.query_one(".d-flag", Input).value.strip()
+        d.required = self.query_one(".d-required", Checkbox).value
+        d.prompt = self.query_one(".p-prompt", Input).value.strip()
+        d.secret = self.query_one(".p-secret", Checkbox).value
+        d.env_source = self.query_one(".p-env", Input).value.strip() if d.secret else ""
+        return d
+
+    @on(Checkbox.Changed, ".p-secret")
+    def _secret_note(self, event: Checkbox.Changed) -> None:
+        note = self.query_one(".p-note", Static)
+        if event.value and not self.decl.secret:
+            note.update(
+                f"[yellow]{gettext('Anything skit previously remembered for this value will be deleted too.')}[/yellow]"
+            )
+        else:
+            note.update("")
+
+
 class ScriptSettingsScreen(Screen[bool]):
     """Four sections in one screen; `s` in the Library deep-links to Presets."""
 
@@ -150,6 +252,16 @@ class ScriptSettingsScreen(Screen[bool]):
         if has_params_io and entry.script_path.exists():
             self._text = entry.script_path.read_text(encoding="utf-8", errors="replace")
         self._specs: list[ParamDecl] = metawriter.read_params(self._text)
+        # exe / command: the schema lives in meta.toml [[parameters]], edited through a
+        # declared-params editor (not the analyzer-driven [tool.skit] flow above).
+        self._declared: bool = (
+            self._spec is not None
+            and self._spec.params_io is None
+            and self._spec.family in ("binary", "template")
+        )
+        self._declared_decls: list[ParamDecl] = (
+            params.declared_from_meta(entry.meta.parameters) if self._declared else []
+        )
         # The resync outcome (incl. safety-rebind warnings) must survive the recompose that
         # action_resync triggers — a widget updated in place would be thrown away and rebuilt
         # empty. Kept on the instance so compose can re-emit it. Already escape()'d for markup.
@@ -206,10 +318,8 @@ class ScriptSettingsScreen(Screen[bool]):
     def _compose_params(self) -> ComposeResult:
         yield Static(gettext("Parameters (the run form's fields)"), classes="section")
         meta = self._entry.meta
-        if self._spec is not None and self._spec.family == "template":
-            yield Static(escape(meta.template), classes="hint")
-            for p in meta.params or []:
-                yield Static(f"· {escape(p)}")
+        if self._declared:
+            yield from self._compose_declared_editor()
             return
         if self._spec is None or self._spec.analyzer is None:
             yield Static(gettext("(programs have no managed parameters)"), classes="hint")
@@ -257,6 +367,85 @@ class ScriptSettingsScreen(Screen[bool]):
                 classes="hint",
             )
         yield Static(self._resync_report, id="st-resync-report", classes="hint", markup=True)
+
+    def _compose_declared_editor(self) -> ComposeResult:
+        """The exe/command declared-schema editor: one row per declared parameter, plus an
+        add-a-parameter field. A template shows its command line read-only above the rows
+        (the placeholders it names are visible there); a declared row overrides a
+        placeholder's schema or rides along as an env variable."""
+        meta = self._entry.meta
+        if self._spec is not None and self._spec.family == "template":
+            yield Static(escape(meta.template), classes="hint")
+        show_flag = self._spec is not None and self._spec.family == "binary"
+        for d in self._declared_decls:
+            yield DeclParamRow(d, show_flag=show_flag)
+        yield Static(gettext("Add a parameter — type a name, then Save:"), classes="hint")
+        yield Input(placeholder=gettext("new parameter name"), id="st-add-param")
+
+    def _new_declared(self, name: str) -> ParamDecl:
+        """A freshly-added declared parameter's default shape. A template placeholder stays
+        required (an empty slot silently assembles a broken command); everything else is an
+        optional env/flag value that falls back to the program's own default."""
+        placeholders = self._entry.meta.params or []
+        if self._spec is not None and self._spec.family == "template":
+            if name in placeholders:
+                return ParamDecl(name=name, binding="none", delivery="placeholder", required=True)
+            return ParamDecl(name=name, binding="none", delivery="env")
+        return ParamDecl(name=name, binding="none", delivery="flag")
+
+    def _collect_declared(self) -> list[ParamDecl] | None:
+        """Gather every declared row (+ the add-a-parameter field) into a validated decl
+        list, or None when a row is invalid — a notify() explains and the save is aborted so
+        an inconsistent schema is never written."""
+        out: list[ParamDecl] = []
+        seen: set[str] = set()
+        for row in self.query(DeclParamRow):
+            d = row.collect()
+            if d is None:
+                continue
+            checked = self._validate_declared(d, row.type_text)
+            if checked is None:
+                return None
+            out.append(checked)
+            seen.add(checked.name)
+        new_name = self.query_one("#st-add-param", Input).value.strip()
+        if new_name and new_name not in seen:
+            out.append(self._new_declared(new_name))
+        return out
+
+    def _validate_declared(self, d: ParamDecl, type_text: str) -> ParamDecl | None:
+        """Validate one collected row's type/default/invariants; notify + return None on the
+        first problem (the screen aborts the save)."""
+        param_type = params.as_param_type(type_text)
+        if param_type is None:
+            self.notify(
+                gettext("%(name)s has an unknown type — use str, int, float, bool, or choice.")
+                % {"name": d.name},
+                severity="error",
+            )
+            return None
+        d.type = param_type
+        if d.default is not None:
+            try:
+                d.default = params.coerce_default(str(d.default), d.type)
+            except ValueError:
+                self.notify(
+                    gettext("%(name)s: the default doesn't match its type.") % {"name": d.name},
+                    severity="error",
+                )
+                return None
+        normalized = params.normalize(d)
+        if params.validate_invariants(normalized) is not None:
+            self.notify(
+                gettext(
+                    "%(name)s is a choice parameter but has no choices; add them with "
+                    "`skit params` on the command line."
+                )
+                % {"name": d.name},
+                severity="error",
+            )
+            return None
+        return normalized
 
     def _cli_driven(self) -> bool:
         """Whether the run form currently comes from the script's own CLI surface — i.e.
@@ -335,7 +524,7 @@ class ScriptSettingsScreen(Screen[bool]):
             self._resync_report = gettext("Everything still matches the script.")
         self.refresh(recompose=True)
 
-    def action_save(self) -> None:
+    def action_save(self) -> None:  # noqa: PLR0912 — one atomic save across every section
         entry = self._entry
         new_name = self.query_one("#st-name", Input).value.strip()
         if new_name and new_name != entry.meta.name:
@@ -359,6 +548,17 @@ class ScriptSettingsScreen(Screen[bool]):
             copy_path = entry.script_path
             copy_path.write_text(metawriter.write_params(self._text, new_specs), encoding="utf-8")
             purged = argstate.purge_secret(entry.slug, {s.name for s in new_specs if s.secret})
+            if purged:
+                self.notify(
+                    gettext("Deleted previously remembered value(s): %(names)s")
+                    % {"names": ", ".join(sorted(purged))}
+                )
+        if self._declared:
+            decls = self._collect_declared()
+            if decls is None:
+                return  # a row is invalid; stay on the screen, nothing saved half-way
+            store.write_parameters(entry.slug, decls)
+            purged = argstate.purge_secret(entry.slug, {d.name for d in decls if d.secret})
             if purged:
                 self.notify(
                     gettext("Deleted previously remembered value(s): %(names)s")

@@ -14,7 +14,12 @@ from textual.widgets import Checkbox, Input, Static
 from skit import argstate, store, tui
 from skit.langs.python import metawriter, reconcile
 from skit.params import ParamDecl
-from skit.tui_settings import DiscardChangesModal, ParamRow, ScriptSettingsScreen
+from skit.tui_settings import (
+    DeclParamRow,
+    DiscardChangesModal,
+    ParamRow,
+    ScriptSettingsScreen,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -199,8 +204,9 @@ async def test_untick_preset_deletes_it_on_save(tmp_path):
 
 
 async def test_command_entry_shows_template_hides_storage_and_deps(tmp_path):
-    """A command entry has no stored file: no Storage/Dependencies sections, its template and named
-    placeholders are shown read-only, resync is a no-op, and save still dismisses cleanly."""
+    """A command entry has no stored file: no Storage/Dependencies sections, its template is shown
+    read-only above the declared editor's add-a-parameter field, resync is a no-op, and save still
+    dismisses cleanly."""
     entry = store.add_command("echo {msg} {name}", name="cmd")
     app = tui.MenuApp()
     async with app.run_test() as pilot:
@@ -208,9 +214,8 @@ async def test_command_entry_shows_template_hides_storage_and_deps(tmp_path):
         app.push_screen(screen)
         await pilot.pause()
         body = _body(screen)
-        assert "echo {msg} {name}" in body  # the template
-        assert "· msg" in body  # its placeholders
-        assert "· name" in body
+        assert "echo {msg} {name}" in body  # the template line (its placeholders are visible here)
+        assert screen.query("#st-add-param")  # the declared editor's add-a-parameter field
         assert "Storage" not in body  # storage section skipped for a non-python entry
         assert not screen.query("#st-deps")  # dependencies section skipped too
 
@@ -226,11 +231,28 @@ async def test_command_entry_shows_template_hides_storage_and_deps(tmp_path):
     assert store.resolve("cmd").meta.description == "cmd desc"
 
 
-async def test_exe_entry_states_it_has_no_managed_parameters(tmp_path):
-    """An executable ("program") entry carries no managed parameters — the screen says so."""
+async def test_exe_entry_shows_the_declared_params_editor(tmp_path):
+    """An executable ("program") entry has no managed parameters in-file, but its declared schema is
+    editable: the screen offers the add-a-parameter field (no rows until one is declared)."""
     tool = tmp_path / "mytool"
     tool.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
     entry = store.add_exe(tool, name="prog")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        assert screen.query("#st-add-param")  # the declared editor is present
+        assert not screen.query(DeclParamRow)  # no declared parameters yet
+
+
+async def test_unknown_kind_entry_states_no_managed_parameters(tmp_path):
+    """A forward-compat entry whose kind this skit version doesn't know (spec_for → None) shows the
+    plain no-managed-parameters note in settings rather than crashing."""
+    from skit.models import ScriptMeta
+
+    store._add_entry(ScriptMeta(name="alien", kind="martian"), payload=None)
+    entry = store.resolve("alien")
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         screen = ScriptSettingsScreen(entry)
@@ -365,3 +387,281 @@ async def test_presets_deeplink_tolerates_a_missing_presets_section(tmp_path):
         assert not screen.query("#st-presets-section")
         screen.on_mount()  # section now absent → the `if section:` guard skips the scroll
         await pilot.pause()
+
+
+# ---------------------------------------------------------------------------
+# Declared-schema editor (exe / command entries: meta.toml [[parameters]])
+# ---------------------------------------------------------------------------
+
+
+def _exe(tmp_path, name="prog"):
+    tool = tmp_path / "mytool"
+    tool.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    tool.chmod(0o755)
+    return store.add_exe(tool, name=name)
+
+
+async def test_exe_declared_editor_shows_rows_and_saves_edits(tmp_path):
+    """An exe with declared flag params shows one editable row each (with a Flag field), and one
+    atomic save writes the edited type/default/flag/required/prompt back to meta.toml."""
+    entry = _exe(tmp_path)
+    entry = store.write_parameters(
+        entry.slug,
+        [ParamDecl(name="width", delivery="flag", flag="--width", type="int", default=800)],
+    )
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        row = screen.query(DeclParamRow).first()
+        assert row.query(".d-flag")  # binary kinds expose the Flag field
+        assert row.query_one(".d-default", Input).value == "800"  # non-bool default rendered
+        row.query_one(".d-type", Input).value = "float"
+        row.query_one(".d-default", Input).value = "1.5"
+        row.query_one(".d-flag", Input).value = "--w"
+        row.query_one(".d-required", Checkbox).value = True
+        row.query_one(".p-prompt", Input).value = "Width?"
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+        assert not isinstance(app.screen, ScriptSettingsScreen)  # saved & dismissed
+
+    written = store.read_parameters(entry.slug)
+    d = written[0]
+    assert (d.type, d.default, d.flag, d.required, d.prompt) == (
+        "float",
+        1.5,
+        "--w",
+        True,
+        "Width?",
+    )
+
+
+async def test_command_declared_placeholder_row_has_no_flag_field(tmp_path):
+    """A command's declared placeholder row omits the Flag field (argv is not a template's
+    interface), and its delivery is shown read-only in the header."""
+    entry = store.add_command("convert {size}", name="conv")
+    entry = store.write_parameters(
+        entry.slug, [ParamDecl(name="size", delivery="placeholder", type="str")]
+    )
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        assert "convert {size}" in _body(screen)  # template read-only above the editor
+        row = screen.query(DeclParamRow).first()
+        assert not row.query(".d-flag")  # template kinds: no flag field
+        assert "placeholder" in str(row.query_one(".d-keep", Checkbox).label)
+        # collect() runs with show_flag=False here — editing + saving persists the row
+        row.query_one(".d-default", Input).value = "square"
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+        assert not isinstance(app.screen, ScriptSettingsScreen)
+    assert store.read_parameters(entry.slug)[0].default == "square"
+
+
+async def test_declared_add_parameter_flow_on_exe(tmp_path):
+    """Typing a name into the add-a-parameter field and saving declares a new flag parameter."""
+    entry = _exe(tmp_path)
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.query_one("#st-add-param", Input).value = "verbose"
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+
+    written = store.read_parameters(entry.slug)
+    assert [d.name for d in written] == ["verbose"]
+    assert written[0].delivery == "flag"  # kind-appropriate default for a binary
+
+
+def test_new_declared_delivery_defaults(tmp_path):
+    """_new_declared: exe → flag; a command placeholder name → required placeholder; any other
+    command name → env."""
+    exe = _exe(tmp_path, name="p1")
+    cmd = store.add_command("echo {msg}", name="c1")
+    exe_screen = ScriptSettingsScreen(exe)
+    cmd_screen = ScriptSettingsScreen(cmd)
+    assert exe_screen._new_declared("x").delivery == "flag"
+    placeholder = cmd_screen._new_declared("msg")
+    assert placeholder.delivery == "placeholder"
+    assert placeholder.required is True
+    assert cmd_screen._new_declared("RETRIES").delivery == "env"
+
+
+async def test_declared_row_removed_when_unticked(tmp_path):
+    entry = _exe(tmp_path)
+    entry = store.write_parameters(
+        entry.slug,
+        [ParamDecl(name="a", delivery="flag"), ParamDecl(name="b", delivery="flag")],
+    )
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        rows = {r.decl.name: r for r in screen.query(DeclParamRow)}
+        rows["a"].query_one(".d-keep", Checkbox).value = False  # remove a
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+
+    assert [d.name for d in store.read_parameters(entry.slug)] == ["b"]
+
+
+async def test_declared_invalid_type_notifies_and_stays(tmp_path, monkeypatch):
+    entry = _exe(tmp_path)
+    entry = store.write_parameters(entry.slug, [ParamDecl(name="a", delivery="flag", type="str")])
+    notes: list[str] = []
+    monkeypatch.setattr(
+        ScriptSettingsScreen, "notify", lambda self, message, **kw: notes.append(message)
+    )
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.query(DeclParamRow).first().query_one(".d-type", Input).value = "integer"
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+        assert isinstance(app.screen, ScriptSettingsScreen)  # not dismissed
+    assert any("unknown type" in m for m in notes)
+    assert store.read_parameters(entry.slug)[0].type == "str"  # nothing written
+
+
+async def test_declared_bad_default_notifies_and_stays(tmp_path, monkeypatch):
+    entry = _exe(tmp_path)
+    entry = store.write_parameters(entry.slug, [ParamDecl(name="a", delivery="flag", type="int")])
+    notes: list[str] = []
+    monkeypatch.setattr(
+        ScriptSettingsScreen, "notify", lambda self, message, **kw: notes.append(message)
+    )
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.query(DeclParamRow).first().query_one(".d-default", Input).value = "notanint"
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+        assert isinstance(app.screen, ScriptSettingsScreen)
+    assert any("default doesn't match" in m for m in notes)
+
+
+async def test_declared_choice_without_choices_notifies(tmp_path, monkeypatch):
+    entry = _exe(tmp_path)
+    entry = store.write_parameters(entry.slug, [ParamDecl(name="a", delivery="flag", type="str")])
+    notes: list[str] = []
+    monkeypatch.setattr(
+        ScriptSettingsScreen, "notify", lambda self, message, **kw: notes.append(message)
+    )
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.query(DeclParamRow).first().query_one(".d-type", Input).value = "choice"
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+        assert isinstance(app.screen, ScriptSettingsScreen)
+    assert any("choice parameter but has no choices" in m for m in notes)
+
+
+async def test_declared_existing_choice_with_choices_saves(tmp_path):
+    """An existing choice row keeps its (non-editable) choices, so it validates and saves."""
+    entry = _exe(tmp_path)
+    entry = store.write_parameters(
+        entry.slug,
+        [ParamDecl(name="a", delivery="flag", type="choice", choices=("x", "y"))],
+    )
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+        assert not isinstance(app.screen, ScriptSettingsScreen)
+    assert store.read_parameters(entry.slug)[0].choices == ("x", "y")
+
+
+async def test_declared_bool_default_round_trips_text(tmp_path):
+    """A bool default renders as the true/false word the editor round-trips through save."""
+    entry = _exe(tmp_path)
+    entry = store.write_parameters(
+        entry.slug, [ParamDecl(name="flag", delivery="flag", type="bool", default=True)]
+    )
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        assert screen.query(DeclParamRow).first().query_one(".d-default", Input).value == "true"
+        screen.action_save()
+        await pilot.pause()
+    assert store.read_parameters(entry.slug)[0].default is True
+
+
+async def test_declared_secret_toggle_purges_and_notes(tmp_path, monkeypatch):
+    entry = _exe(tmp_path)
+    entry = store.write_parameters(
+        entry.slug, [ParamDecl(name="TOKEN", delivery="env", type="str")]
+    )
+    argstate.save_last(entry.slug, values={"TOKEN": "plaintext"})
+    notes: list[str] = []
+    monkeypatch.setattr(
+        ScriptSettingsScreen, "notify", lambda self, message, **kw: notes.append(message)
+    )
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        row = screen.query(DeclParamRow).first()
+        row.query_one(".p-secret", Checkbox).value = True
+        await pilot.pause()
+        assert "previously remembered" in str(row.query_one(".p-note", Static).render())
+        row.query_one(".p-secret", Checkbox).value = False  # unticking clears the note
+        await pilot.pause()
+        assert str(row.query_one(".p-note", Static).render()) == ""
+        row.query_one(".p-secret", Checkbox).value = True  # re-secret it for the save assertions
+        row.query_one(".p-env", Input).value = "TOKEN_ENV"
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+
+    d = store.read_parameters(entry.slug)[0]
+    assert d.secret is True
+    assert d.env_source == "TOKEN_ENV"
+    assert "TOKEN" not in argstate.load_state(entry.slug)["values"]  # purged
+    assert any("Deleted previously remembered" in m for m in notes)
+
+
+async def test_declared_editor_is_keyboard_reachable(tmp_path):
+    """Every declared-editor widget is Tab-reachable (full keyboard operability)."""
+    entry = _exe(tmp_path)
+    entry = store.write_parameters(entry.slug, [ParamDecl(name="a", delivery="flag", type="str")])
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        reached: set[str] = set()
+        for _ in range(40):
+            await pilot.press("tab")
+            focused = app.focused
+            if focused is not None:
+                reached.update(focused.classes)
+                if focused.id == "st-add-param":
+                    reached.add("st-add-param")
+        assert "d-type" in reached  # a declared row's type field
+        assert "st-add-param" in reached  # the add-a-parameter field

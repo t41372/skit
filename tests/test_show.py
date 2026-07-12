@@ -35,6 +35,7 @@ PAYLOAD_KEYS = {
     "requires_python",
     "template",
     "param_source",
+    "param_origin",
     "degraded_reason",
     "drift",
     "fields",
@@ -108,6 +109,7 @@ def test_show_json_argparse_full_schema(tmp_path):
     assert payload["missing"] is False
     assert payload["template"] is None
     assert payload["param_source"] == "argparse"
+    assert payload["param_origin"] == "reader"  # argparse reader → machine-facing origin
     assert payload["degraded_reason"] == ""
     assert payload["drift"] is False
     assert payload["presets"] == []
@@ -175,6 +177,7 @@ def test_show_json_inject_secret_and_state(tmp_path):
     argstate.record_run(entry.slug, 3, at="2026-07-11T00:00:00+00:00")
     payload = _show_json("api")
     assert payload["param_source"] == "inject"
+    assert payload["param_origin"] == "managed"  # injected [tool.skit] params → "managed"
     assert payload["presets"] == ["fast"]
     assert payload["last_run_at"] == "2026-07-11T00:00:00+00:00"
     assert payload["last_exit"] == 3
@@ -198,6 +201,7 @@ def test_show_json_command_kind(tmp_path):
     assert payload["kind"] == "command"
     assert payload["template"] == "echo {target} {level}"
     assert payload["param_source"] == "command"
+    assert payload["param_origin"] == "command"
     fields = {f["key"]: f for f in payload["fields"]}
     assert set(fields) == {"target", "level"}
     assert fields["target"]["source"] == "placeholder"

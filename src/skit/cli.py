@@ -25,6 +25,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 from rich.console import Console
@@ -48,7 +49,10 @@ from . import (
 from .i18n import gettext, ngettext
 from .langs.python import analyzer, metawriter, reconcile
 from .langs.registry import spec_for
-from .params import ParamDecl
+from .params import ParamDecl, declared_from_meta, edit_declared
+
+if TYPE_CHECKING:
+    from .langs.base import LangSpec
 
 app = typer.Typer(
     name="skit",
@@ -675,6 +679,20 @@ def _field_secret_cell(f: flows.FormField) -> str:
     return gettext("yes")
 
 
+# The stable, machine-facing origin token for the whole form plan (additive to the legacy
+# param_source; a value source now includes "declared"/"env" that predates this key).
+_PARAM_ORIGIN = {
+    "declared": "declared",
+    "argparse": "reader",
+    "inject": "managed",
+    "command": "command",
+}
+
+
+def _param_origin(source: str) -> str:
+    return _PARAM_ORIGIN.get(source, "none")
+
+
 def _field_to_dict(f: flows.FormField) -> dict[str, object]:
     """One form field as a stable-shape JSON object (every key always present).
     `default` is null when the script declares none; a secret's declared default is
@@ -808,6 +826,7 @@ def show(
         "requires_python": entry.meta.requires_python,
         "template": entry.meta.template or None,
         "param_source": plan.source,
+        "param_origin": _param_origin(plan.source),
         "degraded_reason": plan.degraded_reason,
         "drift": bool(plan.drift_lines),
         "fields": [_field_to_dict(f) for f in plan.fields],
@@ -1289,6 +1308,85 @@ def _secret_cell(s: ParamDecl) -> str:
     return gettext("yes")
 
 
+def _declared_last_value(name: str, secret: bool, last: dict[str, str]) -> str:
+    """The Last-value cell for a declared row (a stored secret is masked, never echoed)."""
+    if secret:
+        return gettext("•••") if name in last else "—"
+    return last.get(name, "—")
+
+
+def _declared_default_cell(d: ParamDecl) -> str:
+    if d.default is None:
+        return "—"
+    if d.secret:
+        return gettext("•••")
+    return str(d.default)
+
+
+def _declared_schema_suffix(d: ParamDecl | None) -> str:
+    """A dim inline schema marker for a command placeholder / env rider (type · default · flags)."""
+    if d is None:
+        return ""  # an undeclared placeholder keeps the historical bare `name = value` line
+    parts = [escape(d.type)]
+    if d.default is not None:
+        shown = gettext("•••") if d.secret else str(d.default)
+        parts.append(escape(gettext("default %(value)s") % {"value": shown}))
+    if not d.required:
+        parts.append(gettext("optional"))
+    if d.secret:
+        parts.append(gettext("secret"))
+    return f"  [dim]{' · '.join(parts)}[/dim]"
+
+
+def _print_declared_table(decls: list[ParamDecl], last: dict[str, str]) -> None:
+    """The read table for an exe entry's declared parameters (flag/env delivery)."""
+    from rich.table import Table
+
+    table = Table(show_header=True, header_style="bold")  # pragma: no mutate — cosmetic
+    table.add_column(gettext("Parameter"))
+    table.add_column(gettext("Delivery"))
+    table.add_column(gettext("Type"))
+    table.add_column(gettext("Default"))
+    table.add_column(gettext("Secret"))
+    table.add_column(gettext("Last value"))
+    for d in decls:
+        table.add_row(
+            escape(d.name),
+            escape(d.delivery),
+            escape(d.type),
+            escape(_declared_default_cell(d)),
+            _secret_cell(d),
+            escape(_declared_last_value(d.name, d.secret, last)),
+        )
+    console.print(table)
+
+
+def _show_command_params(
+    entry: store.Entry, declared: list[ParamDecl], last: dict[str, str]
+) -> None:
+    """The read view for a command template: its placeholders (enriched with any declared
+    schema) plus declared environment riders."""
+    placeholders = entry.meta.params or []
+    by_name = {d.name: d for d in declared}
+    env_riders = [d for d in declared if d.delivery == "env" and d.name not in placeholders]
+    if not placeholders and not env_riders:
+        console.print(
+            escape(gettext("%(name)s has no managed parameters.") % {"name": entry.meta.name})
+        )
+        return
+    if placeholders:
+        console.print(gettext("Command template placeholders (the run form asks for them):"))
+        for p in placeholders:
+            d = by_name.get(p)
+            shown = _declared_last_value(p, d.secret if d is not None else False, last)
+            console.print(f"  {escape(p)} = {escape(shown)}{_declared_schema_suffix(d)}")
+    if env_riders:
+        console.print(gettext("Declared environment variables (set on the run):"))
+        for d in env_riders:
+            shown = _declared_last_value(d.name, d.secret, last)
+            console.print(f"  {escape(d.name)} = {escape(shown)}{_declared_schema_suffix(d)}")
+
+
 def _show_params(entry: store.Entry, as_json: bool) -> None:
     """Read view: managed parameters + last values + detected-but-unmanaged candidates."""
     last = argstate.load_state(entry.slug)["values"]
@@ -1307,25 +1405,22 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
     ):
         report = entry_spec.analyzer.reconcile(text, specs)
         unmanaged = [c.name for c in report.new]
+    # Declared [[parameters]] rows (empty for a python entry — it manages its schema in-file).
+    declared = declared_from_meta(entry.meta.parameters)
     if as_json:
         payload = {
             "params": [s.to_block_dict() for s in specs],
             "unmanaged": unmanaged,
             "placeholders": entry.meta.params or [],
+            "declared": [d.to_meta_dict() for d in declared],
         }
         console.print_json(json.dumps(payload, ensure_ascii=False))
         return
     if entry_spec is not None and entry_spec.family == "template":
-        placeholders = entry.meta.params or []
-        if not placeholders:
-            console.print(
-                escape(gettext("%(name)s has no managed parameters.") % {"name": entry.meta.name})
-            )
-            return
-        console.print(gettext("Command template placeholders (the run form asks for them):"))
-        for p in placeholders:
-            shown = last.get(p, "—")
-            console.print(f"  {escape(p)} = {escape(shown)}")
+        _show_command_params(entry, declared, last)
+        return
+    if declared and entry_spec is not None and entry_spec.family == "binary":
+        _print_declared_table(declared, last)
         return
     if not specs:
         if entry_spec is None or entry_spec.analyzer is None:
@@ -1394,9 +1489,9 @@ def _parse_kv_opts(raw: list[str], flag: str) -> tuple[dict[str, str], list[str]
 
 
 @app.command(
-    help=gettext("Show or edit a script's managed parameters."),
+    help=gettext("Show or edit a script's managed or declared parameters."),
     epilog=gettext(
-        "Examples:  skit params resize --manage WIDTH  ·  skit params api --secret KEY --env-source KEY=OPENAI_API_KEY"
+        "Examples:  skit params resize --manage WIDTH  ·  skit params conv --add size --type size=int --deliver size=flag --flag size=--size"
     ),
 )
 def params(
@@ -1413,6 +1508,48 @@ def params(
     ),
     unmanage: list[str] = typer.Option(
         None, "--unmanage", help=gettext("Drop a managed parameter (repeatable)")
+    ),
+    add: list[str] = typer.Option(
+        None,
+        "--add",
+        help=gettext("Declare a new parameter on an exe/command entry, by name (repeatable)"),
+    ),
+    rm: list[str] = typer.Option(
+        None, "--rm", help=gettext("Remove a declared parameter, by name (repeatable)")
+    ),
+    type_opt: list[str] = typer.Option(
+        None,
+        "--type",
+        help=gettext("Set a declared parameter's type, as NAME=str|int|float|bool|choice"),
+    ),
+    default_opt: list[str] = typer.Option(
+        None, "--default", help=gettext("Set a declared parameter's default, as NAME=VALUE")
+    ),
+    choices_opt: list[str] = typer.Option(
+        None,
+        "--choices",
+        help=gettext("Set a declared parameter's choices, as NAME=a,b,c (comma separated)"),
+    ),
+    deliver_opt: list[str] = typer.Option(
+        None,
+        "--deliver",
+        help=gettext(
+            "Set how a declared parameter reaches the program, as NAME=env|flag|placeholder"
+        ),
+    ),
+    flag_opt: list[str] = typer.Option(
+        None,
+        "--flag",
+        help=gettext("Set a declared flag parameter's option, as NAME=--out (empty = positional)"),
+    ),
+    required_opt: list[str] = typer.Option(
+        None, "--required", help=gettext("Mark a declared parameter as required (repeatable)")
+    ),
+    optional_opt: list[str] = typer.Option(
+        None, "--optional", help=gettext("Mark a declared parameter as optional (repeatable)")
+    ),
+    help_text_opt: list[str] = typer.Option(
+        None, "--help-text", help=gettext("Set a declared parameter's help text, as NAME=text")
     ),
     secret: list[str] = typer.Option(
         None, "--secret", help=gettext("Mark a managed parameter as secret (repeatable)")
@@ -1434,26 +1571,95 @@ def params(
     ),
     as_json: bool = typer.Option(False, "--json", help=gettext("Output the read view as JSON")),
 ) -> None:
-    """Show a script's managed parameters, or edit their definitions when any change flag
-    is given. Definitions travel with the file; values live in central state; secret
-    values are never shown or persisted."""
+    """Show a script's parameters, or edit their definitions when any change flag is given.
+    Python entries manage constants/inputs from the script itself (--manage/--unmanage);
+    exe and command entries carry a declared schema in meta.toml (--add/--rm/--type/…).
+    Definitions travel with the entry; values live in central state; secret values are
+    never shown or persisted."""
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
         raise _fail(str(exc), 1) from exc
     prompts, bad_prompts = _parse_kv_opts(prompt or [], "--prompt")
     env_sources, bad_env = _parse_kv_opts(env_source or [], "--env-source")
+    types, bad_type = _parse_kv_opts(type_opt or [], "--type")
+    defaults, bad_default = _parse_kv_opts(default_opt or [], "--default")
+    choices_raw, bad_choices = _parse_kv_opts(choices_opt or [], "--choices")
+    deliveries, bad_deliver = _parse_kv_opts(deliver_opt or [], "--deliver")
+    flags, bad_flag = _parse_kv_opts(flag_opt or [], "--flag")
+    help_texts, bad_help = _parse_kv_opts(help_text_opt or [], "--help-text")
+
+    entry_spec = spec_for(entry.meta.kind)
+    has_params_io = entry_spec is not None and entry_spec.params_io is not None
+    declared_kind = entry_spec is not None and entry_spec.params_io is None
+    declared_ops = bool(
+        add
+        or rm
+        or types
+        or defaults
+        or choices_raw
+        or deliveries
+        or flags
+        or required_opt
+        or optional_opt
+        or help_texts
+        or bad_type
+        or bad_default
+        or bad_choices
+        or bad_deliver
+        or bad_flag
+        or bad_help
+    )
+    shared_tweaks = bool(secret or no_secret or prompts or env_sources or bad_prompts or bad_env)
+    analyzer_ops = bool(resync or manage or unmanage)
+
+    # Python (or any in-file-managed kind): the declared-schema flags belong to exe/command.
+    if has_params_io and declared_ops:
+        raise _fail(
+            gettext(
+                "%(name)s manages its parameters from the script itself — use --manage / "
+                "--unmanage, or edit the [tool.skit] block."
+            )
+            % {"name": entry.meta.name},
+            1,
+        )
     if (
-        resync
-        or manage
-        or unmanage
-        or secret
-        or no_secret
-        or prompts
-        or env_sources
-        or bad_prompts
-        or bad_env
+        entry_spec is not None
+        and declared_kind
+        and (declared_ops or shared_tweaks)
+        and not analyzer_ops
     ):
+        _edit_declared_params(
+            entry,
+            entry_spec,
+            add=add or [],
+            rm=rm or [],
+            types=types,
+            defaults=defaults,
+            choices={n: v.split(",") for n, v in choices_raw.items()},
+            deliveries=deliveries,
+            flags=flags,
+            required=required_opt or [],
+            optional=optional_opt or [],
+            help_texts=help_texts,
+            secret=secret or [],
+            no_secret=no_secret or [],
+            prompts=prompts,
+            env_sources=env_sources,
+            malformed=(
+                bad_type
+                + bad_default
+                + bad_choices
+                + bad_deliver
+                + bad_flag
+                + bad_help
+                + bad_prompts
+                + bad_env
+            ),
+        )
+        return
+    # Python edits, and the analyzer-op-on-a-non-python refusal, both go through _edit_params.
+    if analyzer_ops or (has_params_io and shared_tweaks):
         _edit_params(
             entry,
             resync=resync,
@@ -1465,8 +1671,8 @@ def params(
             env_sources=env_sources,
             malformed=bad_prompts + bad_env,
         )
-    else:
-        _show_params(entry, as_json)
+        return
+    _show_params(entry, as_json)
 
 
 def _apply_env_sources(specs: list[ParamDecl], env_sources: dict[str, str]) -> list[str]:
@@ -1561,6 +1767,94 @@ def _edit_params(
     remaining = ", ".join(escape(s.name) for s in result.specs) or "—"
     console.print(
         f"[green]{gettext('Updated %(name)s. Managed parameters: %(names)s') % {'name': escape(entry.meta.name), 'names': remaining}}[/green]"
+    )
+
+
+def _render_declared_warning(warning: str) -> str:
+    """Translate an edit_declared warning ("code:name") into a user-facing line. The codes are
+    the closed set params.edit_declared emits; a static lookup (not gettext(f"...{code}")) keeps
+    every string Babel-extractable, mirroring reconcile.render_warning."""
+    code, _, name = warning.partition(":")
+    return {
+        "not-declared": gettext("%(name)s isn't a declared parameter; skipped."),
+        "already-declared": gettext("%(name)s is already declared; skipped."),
+        "bad-delivery": gettext("%(name)s: that delivery isn't available for this kind; skipped."),
+        "not-a-placeholder": gettext(
+            "%(name)s isn't a template placeholder, so it can't use placeholder delivery; skipped."
+        ),
+        "bad-type": gettext(
+            "%(name)s: unknown type; skipped (use str, int, float, bool, or choice)."
+        ),
+        "bad-default": gettext("%(name)s: the default doesn't fit its type; skipped."),
+        "choice-without-choices": gettext(
+            "%(name)s: a choice parameter needs choices; set --choices %(name)s=a,b,c."
+        ),
+    }[code] % {"name": name}
+
+
+def _edit_declared_params(
+    entry: store.Entry,
+    entry_spec: LangSpec,
+    *,
+    add: list[str],
+    rm: list[str],
+    types: dict[str, str],
+    defaults: dict[str, str],
+    choices: dict[str, list[str]],
+    deliveries: dict[str, str],
+    flags: dict[str, str],
+    required: list[str],
+    optional: list[str],
+    help_texts: dict[str, str],
+    secret: list[str],
+    no_secret: list[str],
+    prompts: dict[str, str],
+    env_sources: dict[str, str],
+    malformed: list[str],
+) -> None:
+    """Apply declared-schema changes to an exe/command entry (rewrites meta.toml [[parameters]]).
+    The allowed deliveries follow the kind: a binary takes flag/env argv+environment channels, a
+    template takes placeholder/env (argv is not a template's interface)."""
+    allowed = ("flag", "env") if entry_spec.family == "binary" else ("placeholder", "env")
+    for item in malformed:
+        err_console.print(
+            f"[yellow]{escape(gettext('Ignored a malformed value: %(item)s (expected NAME=VALUE).') % {'item': item})}[/yellow]"
+        )
+    result = edit_declared(
+        store.read_parameters(entry.slug),
+        add=add,
+        rm=rm,
+        types=types,
+        defaults=defaults,
+        choices=choices,
+        deliveries=deliveries,
+        flags=flags,
+        required=required,
+        optional=optional,
+        help_texts=help_texts,
+        secret=secret,
+        no_secret=no_secret,
+        prompts=prompts,
+        env_sources=env_sources,
+        allowed_deliveries=allowed,
+        placeholder_names=entry.meta.params or [],
+    )
+    for w in result.warnings:
+        err_console.print(f"[yellow]{escape(_render_declared_warning(w))}[/yellow]")
+    store.write_parameters(entry.slug, result.decls)
+    purged = argstate.purge_secret(entry.slug, {d.name for d in result.decls if d.secret})
+    if purged:
+        console.print(
+            "[dim]"
+            + gettext(
+                "Removed previously stored plaintext value(s) for now-secret parameter(s): %(names)s"
+            )
+            % {"names": ", ".join(escape(n) for n in sorted(purged))}
+            + _DIM_CLOSE
+        )
+    names = ", ".join(escape(d.name) for d in result.decls) or "—"
+    console.print(
+        f"[green]{gettext('Updated %(name)s. Declared parameters: %(names)s') % {'name': escape(entry.meta.name), 'names': names}}[/green]"
     )
 
 

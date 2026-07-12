@@ -31,10 +31,13 @@ Headless, stdlib-only.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
     from .langs.python.analyzer import Candidate
 
 Binding = Literal["const", "input", "envdefault", "none"]
@@ -288,6 +291,231 @@ def field_replace(decl: ParamDecl, **changes: Any) -> ParamDecl:
     import dataclasses
 
     return dataclasses.replace(decl, **changes)
+
+
+# ---------------------------------------------------------------- declared-schema edit ops
+
+# The public closed set of parameter types, for callers (CLI/TUI) that validate a
+# user-typed type value before it reaches a decl.
+ALLOWED_TYPES: tuple[ParamType, ...] = _TYPES
+
+
+def as_param_type(value: str) -> ParamType | None:
+    """The value as one of the five ParamTypes, or None when it isn't one — so a caller can
+    reject a hand-typed type (e.g. the TUI's type field) instead of silently coercing it."""
+    for t in _TYPES:
+        if value == t:
+            return t
+    return None
+
+
+def coerce_default(value: str, type_name: str) -> str | int | float | bool:
+    """Coerce a default STRING to the parameter's declared scalar type, raising ValueError
+    for a value that doesn't fit int/float/bool (str/choice keep the raw string). The bool
+    spellings are the same set langs/python/shim._coerce_bool accepts, so a declared default
+    and an injected Python constant agree on which words are true/false. inf/nan are refused
+    like shim does (repr(inf) is not a valid literal)."""
+    if type_name == "int":
+        return int(value)
+    if type_name == "float":
+        f = float(value)
+        if math.isnan(f) or math.isinf(f):
+            raise ValueError(value)
+        return f
+    if type_name == "bool":
+        low = value.strip().lower()
+        if low in ("true", "1", "yes", "y", "on"):
+            return True
+        if low in ("false", "0", "no", "n", "off"):
+            return False
+        raise ValueError(value)
+    return value
+
+
+@dataclass
+class DeclEditResult:
+    """The result of edit_declared: the new decl list plus a closed set of ``code:name``
+    warnings the caller renders (the UI owns the human wording, like reconcile.EditResult)."""
+
+    decls: list[ParamDecl]
+    warnings: list[str]
+
+
+def edit_declared(  # noqa: PLR0912 — a fixed-order edit pipeline; the branches are the ops
+    decls: list[ParamDecl],
+    *,
+    add: Sequence[str] = (),
+    rm: Sequence[str] = (),
+    types: Mapping[str, str] | None = None,
+    defaults: Mapping[str, str] | None = None,
+    choices: Mapping[str, Sequence[str]] | None = None,
+    deliveries: Mapping[str, str] | None = None,
+    flags: Mapping[str, str] | None = None,
+    required: Sequence[str] = (),
+    optional: Sequence[str] = (),
+    help_texts: Mapping[str, str] | None = None,
+    secret: Sequence[str] = (),
+    no_secret: Sequence[str] = (),
+    prompts: Mapping[str, str] | None = None,
+    env_sources: Mapping[str, str] | None = None,
+    allowed_deliveries: tuple[str, ...] = ("flag", "env"),
+    placeholder_names: Sequence[str] = (),
+) -> DeclEditResult:
+    """Pure edit ops on the declared [[parameters]] rows of an exe/command entry (never
+    mutates the caller's decls — each is shallow-copied first, like reconcile.edit_specs).
+
+    Apply order is fixed: rm -> add -> per-name tweaks. A tweak/rm on an unknown name is a
+    ``not-declared`` warning; an add on an existing name is ``already-declared``. New adds
+    default to delivery = allowed_deliveries[0], binding="none", type="str"; an add whose
+    name IS a template placeholder takes delivery="placeholder" (and stays required, so a
+    declared placeholder can never silently assemble an empty slot). After the tweaks each
+    touched decl is normalized and its invariants checked; a decl that comes out
+    inconsistent is REVERTED to its pre-tweak state and warned about (never persist a
+    broken row). env_source only means anything on a secret param (clearing secret clears
+    it), mirroring reconcile._apply_tweaks."""
+    types = types or {}
+    defaults = defaults or {}
+    choices = choices or {}
+    deliveries = deliveries or {}
+    flags = flags or {}
+    help_texts = help_texts or {}
+    prompts = prompts or {}
+    env_sources = env_sources or {}
+    placeholders = set(placeholder_names)
+
+    warnings: list[str] = []
+    by_name: dict[str, ParamDecl] = {d.name: field_replace(d) for d in decls}
+    order: list[str] = list(by_name)
+
+    for name in rm:
+        if name in by_name:
+            del by_name[name]
+            order.remove(name)
+        else:
+            warnings.append(f"not-declared:{name}")
+
+    for name in add:
+        if name in by_name:
+            warnings.append(f"already-declared:{name}")
+            continue
+        if name in placeholders:
+            by_name[name] = ParamDecl(
+                name=name, binding="none", delivery="placeholder", type="str", required=True
+            )
+        else:
+            by_name[name] = ParamDecl(
+                name=name,
+                binding="none",
+                delivery=_coerce_literal(allowed_deliveries[0], _DELIVERIES, "flag"),
+                type="str",
+            )
+        order.append(name)
+
+    tweak_names: list[str] = []
+    for src in (deliveries, types, choices, defaults, flags, help_texts, prompts, env_sources):
+        for name in src:
+            if name not in tweak_names:
+                tweak_names.append(name)
+    for seq in (required, optional, secret, no_secret):
+        for name in seq:
+            if name not in tweak_names:
+                tweak_names.append(name)
+
+    for name in tweak_names:
+        if name not in by_name:
+            warnings.append(f"not-declared:{name}")
+            continue
+        decl = by_name[name]
+        pre = field_replace(decl)
+        _apply_declared_tweaks(
+            decl,
+            name,
+            warnings,
+            deliveries=deliveries,
+            types=types,
+            choices=choices,
+            defaults=defaults,
+            flags=flags,
+            required=required,
+            optional=optional,
+            help_texts=help_texts,
+            prompts=prompts,
+            secret=secret,
+            no_secret=no_secret,
+            env_sources=env_sources,
+            allowed_deliveries=allowed_deliveries,
+            placeholders=placeholders,
+        )
+        normalized = normalize(decl)
+        if validate_invariants(normalized) is not None:
+            warnings.append(f"choice-without-choices:{name}")
+            by_name[name] = pre
+        else:
+            by_name[name] = normalized
+
+    return DeclEditResult(decls=[by_name[n] for n in order], warnings=warnings)
+
+
+def _apply_declared_tweaks(  # noqa: PLR0912 — one branch per editable field; a flat dispatch
+    decl: ParamDecl,
+    name: str,
+    warnings: list[str],
+    *,
+    deliveries: Mapping[str, str],
+    types: Mapping[str, str],
+    choices: Mapping[str, Sequence[str]],
+    defaults: Mapping[str, str],
+    flags: Mapping[str, str],
+    required: Sequence[str],
+    optional: Sequence[str],
+    help_texts: Mapping[str, str],
+    prompts: Mapping[str, str],
+    secret: Sequence[str],
+    no_secret: Sequence[str],
+    env_sources: Mapping[str, str],
+    allowed_deliveries: tuple[str, ...],
+    placeholders: set[str],
+) -> None:
+    """Apply one name's tweaks in place (decl is a private copy). Bad values append a coded
+    warning and skip that one field; the caller re-checks invariants and reverts on failure."""
+    if name in deliveries:
+        value = deliveries[name]
+        if value not in allowed_deliveries:
+            warnings.append(f"bad-delivery:{name}")
+        elif value == "placeholder" and name not in placeholders:
+            warnings.append(f"not-a-placeholder:{name}")
+        else:
+            decl.delivery = _coerce_literal(value, _DELIVERIES, decl.delivery)
+    if name in types:
+        value = types[name]
+        if value not in _TYPES:
+            warnings.append(f"bad-type:{name}")
+        else:
+            decl.type = _coerce_literal(value, _TYPES, decl.type)
+    if name in choices:
+        decl.choices = tuple(str(c) for c in choices[name])
+    if name in defaults:
+        try:
+            decl.default = coerce_default(defaults[name], decl.type)
+        except ValueError:
+            warnings.append(f"bad-default:{name}")
+    if name in flags:
+        decl.flag = flags[name].strip()
+    if name in required:
+        decl.required = True
+    if name in optional:
+        decl.required = False
+    if name in help_texts:
+        decl.help = help_texts[name]
+    if name in prompts:
+        decl.prompt = prompts[name]
+    if name in secret:
+        decl.secret = True
+    if name in no_secret:
+        decl.secret = False
+        decl.env_source = ""
+    if name in env_sources and decl.secret:
+        decl.env_source = env_sources[name].strip()
 
 
 def _coerce_literal[T: str](value: str, allowed: tuple[T, ...], fallback: T) -> T:

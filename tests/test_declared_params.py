@@ -7,11 +7,15 @@ and env delivery is the zero-rewrite value channel every kind can use.
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
 
-from skit import flows, launcher, store
+import pytest
+from typer.testing import CliRunner
+
+from skit import argstate, cli, flows, launcher, store
 from skit.models import Entry, ScriptMeta
 from skit.params import (
     ParamDecl,
@@ -19,6 +23,39 @@ from skit.params import (
     declared_from_meta,
     synthesized_placeholder,
 )
+
+runner = CliRunner()
+
+
+@pytest.fixture
+def run_entry_spy(monkeypatch):
+    """Capture the delivery-ready material handed to launcher.run_entry (nothing runs)."""
+    calls: dict[str, object] = {}
+
+    def fake(
+        entry,
+        extra_args=None,
+        *,
+        values=None,
+        invoke_cwd=None,
+        script_override=None,
+        env_overlay=None,
+    ):
+        calls["extra"] = list(extra_args or [])
+        calls["values"] = dict(values or {})
+        calls["env_overlay"] = dict(env_overlay or {})
+        return 0
+
+    monkeypatch.setattr(launcher, "run_entry", fake)
+    return calls
+
+
+def _exe(tmp_path: Path, name: str = "prog") -> store.Entry:
+    prog = tmp_path / ("t.exe" if sys.platform == "win32" else "t")
+    prog.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    prog.chmod(0o755)
+    return store.add_exe(prog, name=name)
+
 
 # ---- declared_for_template ---------------------------------------------------------------------
 
@@ -310,3 +347,326 @@ def test_exe_with_only_placeholder_rows_falls_through_to_none(tmp_path: Path):
     entry = store.add_exe(prog, name="prog3")
     store.write_parameters(entry.slug, [ParamDecl(name="slot", delivery="placeholder")])
     assert flows.plan_for_entry(store.resolve(entry.slug)).source == "none"
+
+
+# ==================================================================================================
+# CLI: skit params --add/--rm/--type/... on exe & command (add -> show -> json -> run --set)
+# ==================================================================================================
+
+
+def test_cli_add_flag_param_on_exe_then_run_set(tmp_path: Path, run_entry_spy):
+    entry = _exe(tmp_path)
+    result = runner.invoke(
+        cli.app,
+        [
+            "params",
+            "prog",
+            "--add",
+            "width",
+            "--type",
+            "width=int",
+            "--deliver",
+            "width=flag",
+            "--flag",
+            "width=--width",
+            "--default",
+            "width=800",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Declared parameters: width" in result.output
+    decls = store.read_parameters(entry.slug)
+    assert (decls[0].name, decls[0].delivery, decls[0].type, decls[0].flag) == (
+        "width",
+        "flag",
+        "int",
+        "--width",
+    )
+    assert decls[0].default == 800  # coerced + stored typed
+    # run --set assembles the real flag
+    result = runner.invoke(cli.app, ["run", "prog", "--set", "width=1024", "--no-input"])
+    assert result.exit_code == 0, result.output
+    assert run_entry_spy["extra"] == ["--width", "1024"]
+
+
+def test_cli_exe_show_table_and_json(tmp_path: Path):
+    entry = _exe(tmp_path)
+    store.write_parameters(
+        entry.slug,
+        [ParamDecl(name="width", delivery="flag", flag="--width", type="int", default=800)],
+    )
+    human = runner.invoke(cli.app, ["params", "prog"])
+    assert human.exit_code == 0
+    assert "width" in human.output
+    assert "flag" in human.output  # the Delivery column value
+    js = runner.invoke(cli.app, ["params", "prog", "--json"])
+    assert js.exit_code == 0
+    payload = json.loads(js.output)
+    assert payload["declared"][0]["name"] == "width"
+    assert payload["declared"][0]["delivery"] == "flag"
+
+
+def test_cli_exe_show_without_declared_is_plain_message(tmp_path: Path):
+    _exe(tmp_path)
+    result = runner.invoke(cli.app, ["params", "prog"])
+    assert result.exit_code == 0
+    assert "has no managed parameters" in result.output
+
+
+def test_cli_add_choice_placeholder_on_command_then_run(tmp_path: Path, run_entry_spy):
+    runner.invoke(cli.app, ["add", "--cmd", "convert {size}", "--name", "conv", "--no-input"])
+    result = runner.invoke(
+        cli.app,
+        [
+            "params",
+            "conv",
+            "--add",
+            "size",
+            "--type",
+            "size=choice",
+            "--choices",
+            "size=s,m,l",
+            "--default",
+            "size=m",
+            "--optional",
+            "size",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    decl = store.read_parameters(store.resolve("conv").slug)[0]
+    assert decl.delivery == "placeholder"  # add on a placeholder name
+    assert decl.type == "choice"
+    assert decl.choices == ("s", "m", "l")
+    assert decl.default == "m"
+    assert decl.required is False
+    # run --no-input: the declared default fills the placeholder without prompting
+    result = runner.invoke(cli.app, ["run", "conv", "--no-input"])
+    assert result.exit_code == 0, result.output
+    assert run_entry_spy["values"] == {"size": "m"}
+
+
+def test_cli_command_show_enriched_and_env_rider(tmp_path: Path):
+    runner.invoke(cli.app, ["add", "--cmd", "echo {msg}", "--name", "c", "--no-input"])
+    runner.invoke(
+        cli.app,
+        [
+            "params",
+            "c",
+            "--add",
+            "msg",
+            "--type",
+            "msg=str",
+            "--default",
+            "msg=hi",
+            "--optional",
+            "msg",
+        ],
+    )
+    runner.invoke(cli.app, ["params", "c", "--add", "RETRIES", "--deliver", "RETRIES=env"])
+    human = runner.invoke(cli.app, ["params", "c"])
+    assert human.exit_code == 0, human.output
+    assert "msg" in human.output
+    assert "optional" in human.output  # the schema suffix marker
+    assert "RETRIES" in human.output  # the declared env rider is listed
+    js = runner.invoke(cli.app, ["params", "c", "--json"])
+    names = {d["name"] for d in json.loads(js.output)["declared"]}
+    assert names == {"msg", "RETRIES"}
+
+
+def test_cli_command_env_rider_only_no_placeholders(tmp_path: Path):
+    # a template with no placeholders but a declared env rider: the show view still lists it
+    runner.invoke(cli.app, ["add", "--cmd", "echo hi", "--name", "noph", "--no-input"])
+    runner.invoke(cli.app, ["params", "noph", "--add", "RETRIES", "--deliver", "RETRIES=env"])
+    result = runner.invoke(cli.app, ["params", "noph"])
+    assert result.exit_code == 0
+    assert "RETRIES" in result.output
+
+
+def test_cli_python_declared_op_is_refused(tmp_path: Path):
+    body = 'CITY = "x"\nprint(CITY)\n'
+    (tmp_path / "job.py").write_text(body, encoding="utf-8")
+    store.add_python(tmp_path / "job.py", name="py")
+    result = runner.invoke(cli.app, ["params", "py", "--add", "WIDTH"])
+    assert result.exit_code == 1
+    assert "manages its parameters from the script itself" in result.output
+
+
+def test_cli_declared_malformed_value_warns(tmp_path: Path):
+    _exe(tmp_path)
+    result = runner.invoke(cli.app, ["params", "prog", "--type", "NOEQUALS"])
+    assert result.exit_code == 0, result.output
+    assert "Ignored a malformed value" in result.output
+
+
+def test_cli_declared_warning_codes_render(tmp_path: Path):
+    # Every closed warning code renders a distinct localized line (via _render_declared_warning).
+    for code in (
+        "not-declared:x",
+        "already-declared:x",
+        "bad-delivery:x",
+        "not-a-placeholder:x",
+        "bad-type:x",
+        "bad-default:x",
+        "choice-without-choices:x",
+    ):
+        line = cli._render_declared_warning(code)
+        assert "x" in line
+        assert ":" not in line.split("x", 1)[0]  # the code prefix isn't leaked into the message
+
+
+def test_cli_bad_type_warns_and_skips(tmp_path: Path):
+    entry = _exe(tmp_path)
+    store.write_parameters(entry.slug, [ParamDecl(name="w", delivery="flag", type="str")])
+    result = runner.invoke(cli.app, ["params", "prog", "--type", "w=integer"])
+    assert result.exit_code == 0, result.output
+    assert "unknown type" in result.output
+    assert store.read_parameters(entry.slug)[0].type == "str"  # unchanged
+
+
+def test_cli_secret_override_persists_value_now_that_it_isnt_secret(tmp_path: Path, run_entry_spy):
+    # THE defect fix, end to end: {token_file} matches the auto-secret heuristic, so before it
+    # could never be un-secreted and its value was never saved. A declared row with --no-secret
+    # makes it public, and the run value now persists in argstate.
+    runner.invoke(cli.app, ["add", "--cmd", "auth {token_file}", "--name", "auth", "--no-input"])
+    entry = store.resolve("auth")
+    # First declare token_file as a non-secret placeholder.
+    result = runner.invoke(
+        cli.app, ["params", "auth", "--add", "token_file", "--no-secret", "token_file"]
+    )
+    assert result.exit_code == 0, result.output
+    decl = store.read_parameters(entry.slug)[0]
+    assert decl.secret is False  # overridden away from the auto-secret heuristic
+    result = runner.invoke(cli.app, ["run", "auth", "--set", "token_file=creds.json", "--no-input"])
+    assert result.exit_code == 0, result.output
+    assert run_entry_spy["values"] == {"token_file": "creds.json"}
+    # Now that it isn't secret, the value IS remembered (the old behavior scrubbed it).
+    assert argstate.load_state(entry.slug)["values"]["token_file"] == "creds.json"  # noqa: S105
+
+
+def test_cli_secret_declared_env_purges_prior_plaintext(tmp_path: Path):
+    entry = _exe(tmp_path)
+    store.write_parameters(entry.slug, [ParamDecl(name="TOKEN", delivery="env")])
+    argstate.save_last(entry.slug, values={"TOKEN": "plaintext"})
+    result = runner.invoke(cli.app, ["params", "prog", "--secret", "TOKEN"])
+    assert result.exit_code == 0, result.output
+    assert "Removed previously stored plaintext" in result.output
+    assert "TOKEN" not in argstate.load_state(entry.slug)["values"]
+
+
+def test_cli_declared_secret_env_source_resolves_without_prompting(
+    tmp_path, run_entry_spy, monkeypatch
+):
+    # A secret env param with an env_source resolves under --no-input with no prompt: the value
+    # comes from the environment, never from a form field.
+    runner.invoke(cli.app, ["add", "--cmd", "echo hi", "--name", "svc", "--no-input"])
+    entry = store.resolve("svc")
+    runner.invoke(
+        cli.app,
+        [
+            "params",
+            "svc",
+            "--add",
+            "TOKEN",
+            "--deliver",
+            "TOKEN=env",
+            "--secret",
+            "TOKEN",
+            "--env-source",
+            "TOKEN=SVC_TOKEN",
+        ],
+    )
+    monkeypatch.setenv("SVC_TOKEN", "from-env")
+    result = runner.invoke(cli.app, ["run", "svc", "--no-input"])
+    assert result.exit_code == 0, result.output
+    assert run_entry_spy["env_overlay"] == {"TOKEN": "from-env"}
+    assert "TOKEN" not in argstate.load_state(entry.slug)["values"]  # C3: never persisted
+
+
+def test_cli_run_set_env_and_placeholder_dry_run(tmp_path: Path):
+    runner.invoke(cli.app, ["add", "--cmd", "echo {msg}", "--name", "dr", "--no-input"])
+    runner.invoke(
+        cli.app,
+        ["params", "dr", "--add", "RETRIES", "--deliver", "RETRIES=env", "--default", "RETRIES=3"],
+    )
+    result = runner.invoke(cli.app, ["run", "dr", "--set", "msg=hello", "--dry-run", "--no-input"])
+    assert result.exit_code == 0, result.output
+    assert "RETRIES=3" in result.output  # env overlay shown in the transparency line
+
+
+def test_cli_rm_declared_param(tmp_path: Path):
+    entry = _exe(tmp_path)
+    store.write_parameters(
+        entry.slug,
+        [ParamDecl(name="a", delivery="flag"), ParamDecl(name="b", delivery="flag")],
+    )
+    result = runner.invoke(cli.app, ["params", "prog", "--rm", "a"])
+    assert result.exit_code == 0, result.output
+    assert [d.name for d in store.read_parameters(entry.slug)] == ["b"]
+
+
+def test_cli_exe_declared_show_json_param_origin(tmp_path: Path):
+    entry = _exe(tmp_path)
+    store.write_parameters(
+        entry.slug, [ParamDecl(name="w", delivery="flag", flag="--w", type="int")]
+    )
+    payload = json.loads(runner.invoke(cli.app, ["show", "prog", "--json"]).output)
+    assert payload["param_source"] == "declared"
+    assert payload["param_origin"] == "declared"
+    js_fields = {f["key"]: f for f in payload["fields"]}
+    assert js_fields["w"]["source"] == "flag"
+
+
+def test_cli_exe_no_declared_show_json_param_origin_none(tmp_path: Path):
+    _exe(tmp_path)
+    payload = json.loads(runner.invoke(cli.app, ["show", "prog", "--json"]).output)
+    assert payload["param_source"] == "none"
+    assert payload["param_origin"] == "none"
+
+
+def test_cli_command_env_show_json_source_env(tmp_path: Path):
+    runner.invoke(cli.app, ["add", "--cmd", "echo {m}", "--name", "cj", "--no-input"])
+    runner.invoke(cli.app, ["params", "cj", "--add", "N", "--deliver", "N=env"])
+    payload = json.loads(runner.invoke(cli.app, ["show", "cj", "--json"]).output)
+    fields = {f["key"]: f for f in payload["fields"]}
+    assert fields["N"]["source"] == "env"  # env value source flows through show --json
+
+
+def test_cli_exe_show_masks_secret_default_and_last_value(tmp_path: Path):
+    # Covers the read-view secret masking: a secret row with a stored value → •••; a secret row
+    # with a default → •••; a secret row with no default → —.
+    entry = _exe(tmp_path)
+    store.write_parameters(
+        entry.slug,
+        [
+            ParamDecl(name="a", delivery="flag", type="str", secret=True),  # no default
+            ParamDecl(name="b", delivery="flag", type="str", default="x", secret=True),
+        ],
+    )
+    argstate.save_last(entry.slug, values={"a": "stale"})  # a value lingering from a public past
+    result = runner.invoke(cli.app, ["params", "prog"])
+    assert result.exit_code == 0, result.output
+    assert "•••" in result.output
+    assert "stale" not in result.output  # the secret value is never echoed
+
+
+def test_cli_command_show_masks_secret_placeholder_and_undeclared(tmp_path: Path):
+    # Covers _show_command_params secret masking + an undeclared placeholder's empty schema suffix.
+    entry = store.add_command("login {password} {other}", name="lg")
+    entry = store.write_parameters(
+        entry.slug,
+        [
+            ParamDecl(
+                name="password",
+                delivery="placeholder",
+                secret=True,
+                default="seed",
+                required=True,
+            )
+        ],
+    )
+    argstate.save_last(entry.slug, values={"password": "stale"})
+    result = runner.invoke(cli.app, ["params", "lg"])
+    assert result.exit_code == 0, result.output
+    assert "•••" in result.output  # secret default + last value masked
+    assert "seed" not in result.output
+    assert "other" in result.output  # the undeclared placeholder is still listed (bare)
