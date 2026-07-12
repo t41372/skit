@@ -44,9 +44,15 @@ class PreferencesScreen(Screen[bool]):
     PreferencesScreen .section { color: $accent; margin: 1 0 0 0; }
     PreferencesScreen .hint { color: $text-muted; }
     PreferencesScreen .error { color: $error; }
-    PreferencesScreen RadioSet { layout: horizontal; height: auto; border: none; }
+    PreferencesScreen RadioSet { height: auto; border: none; }
     PreferencesScreen RadioSet > RadioButton { width: auto; margin: 0 3 0 0; }
-    PreferencesScreen #pf-keys { dock: bottom; height: 1; color: $text-muted; padding: 0 1; }
+    /* Only the mirror row lays its options side by side — they are single words. The
+       form/after sets keep RadioSet's vertical default: their options are sentences,
+       and two sentences on one row overflow anything but a very wide terminal. */
+    PreferencesScreen #pf-mirror { layout: horizontal; }
+    PreferencesScreen.-w-narrow #pf-mirror { layout: vertical; }
+    PreferencesScreen KeysBar { dock: bottom; }
+    PreferencesScreen #pf-keys { color: $text-muted; }
     """
 
     def on_mount(self) -> None:
@@ -138,14 +144,16 @@ class PreferencesScreen(Screen[bool]):
                 value=mirror.uv_binary, placeholder=gettext("uv binary mirror URL"), id="pf-uv"
             )
             yield Static("", id="pf-uv-error", classes="error")
-        yield Static(
-            tui_footer.bar(
-                tui_footer.chip("screen.save", "Ctrl+A", gettext("Save")),
-                tui_footer.chip("screen.close", "Esc", gettext("Back")),
-                tui_footer.nav_chip(),
-            ),
-            id="pf-keys",
-            markup=True,
+        yield tui_footer.KeysBar(
+            Static(
+                tui_footer.bar(
+                    tui_footer.chip("screen.save", "Ctrl+A", gettext("Save")),
+                    tui_footer.chip("screen.close", "Esc", gettext("Back")),
+                    tui_footer.nav_chip(),
+                ),
+                id="pf-keys",
+                markup=True,
+            )
         )
 
     @on(RadioSet.Changed, "#pf-mirror")

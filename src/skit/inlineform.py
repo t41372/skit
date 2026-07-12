@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, override
 
 from textual.app import App
 
-from . import flows, theme
+from . import flows, theme, tui_layout
 from .theme import CLAUDE_THEME
 from .tui_form import FormResult, RunFormScreen
 
@@ -25,6 +25,11 @@ if TYPE_CHECKING:
 
 class _InlineFormApp(App[FormResult]):
     ENABLE_COMMAND_PALETTE = False
+    # Width tiers only. An inline screen is sized to its CONTENT (capped at 80% of
+    # the terminal), so a height tier computed from the screen size would classify a
+    # compact form as -h-short on a 50-row terminal and clip its own footer; the
+    # RunFormScreen:inline rules already govern the vertical behavior here.
+    HORIZONTAL_BREAKPOINTS = tui_layout.HORIZONTAL_BREAKPOINTS
     CSS = theme.CHROME_CSS
 
     def __init__(self, entry: Entry, plan: flows.FormPlan, prefill: dict[str, str]) -> None:

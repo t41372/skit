@@ -19,11 +19,10 @@ from rich.markup import escape
 from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
 from textual.screen import Screen
 from textual.widgets import Checkbox, Input, RadioButton, RadioSet, Static
 
-from . import analyzer, argspec, editor, metawriter, pep723, store, theme, tui_footer
+from . import analyzer, argspec, editor, metawriter, pep723, store, theme, tui_footer, tui_layout
 from .i18n import gettext
 
 
@@ -34,6 +33,8 @@ class AddSourceScreen(Screen[str | None]):
         Binding("escape", "cancel", gettext("Cancel")),
         *tui_footer.FIELD_NAV_BINDINGS,
     ]
+    # Boot on the path field, not the "*" pick (the body scroll container).
+    AUTO_FOCUS = "Input"
     DEFAULT_CSS = """
     /* The border lives on the body, not the Screen: a bordered Screen offsets its
        coordinate space and bottom-docked footer clicks land "outside" it. */
@@ -44,7 +45,9 @@ class AddSourceScreen(Screen[str | None]):
         border-title-style: bold;
     }
     AddSourceScreen .hint { color: $text-muted; }
-    AddSourceScreen #add-keys { dock: bottom; height: 1; padding: 0 1; }
+    /* Chips wrap pill-by-pill; visible lines follow the height tier and anything
+       past the cap stays wheel-reachable — see tui_footer.KeysBar. */
+    AddSourceScreen KeysBar { dock: bottom; }
     """
 
     def on_mount(self) -> None:
@@ -52,7 +55,10 @@ class AddSourceScreen(Screen[str | None]):
 
     @override
     def compose(self) -> ComposeResult:
-        with Vertical(id="add-body"):
+        # FormBody, not a plain Vertical: on a short terminal a fixed body puts the
+        # template/name fields under the docked footer with no way to reveal them —
+        # the scroll body keeps every field reachable (focus pulls it into view).
+        with tui_footer.FormBody(id="add-body"):
             yield Static(gettext("Path to a script or executable:"))
             yield Input(placeholder="~/scripts/tool.py", id="add-path")
             yield Static("", id="add-error", markup=True)
@@ -62,14 +68,16 @@ class AddSourceScreen(Screen[str | None]):
             )
             yield Input(placeholder="ffmpeg -i {input} {output}", id="add-template")
             yield Input(placeholder=gettext("Name for the command"), id="add-template-name")
-        yield Static(
-            tui_footer.bar(
-                tui_footer.chip("screen.continue_add", "Enter", gettext("Continue")),
-                tui_footer.chip("screen.cancel", "Esc", gettext("Cancel")),
-                tui_footer.nav_chip(),
-            ),
-            id="add-keys",
-            markup=True,
+        yield tui_footer.KeysBar(
+            Static(
+                tui_footer.bar(
+                    tui_footer.chip("screen.continue_add", "Enter", gettext("Continue")),
+                    tui_footer.chip("screen.cancel", "Esc", gettext("Cancel")),
+                    tui_footer.nav_chip(),
+                ),
+                id="add-keys",
+                markup=True,
+            )
         )
 
     @on(Input.Submitted, "#add-path")
@@ -165,7 +173,8 @@ class AddReviewScreen(Screen[str | None]):
     AddReviewScreen .section { color: $accent; margin: 1 0 0 0; }
     AddReviewScreen .hint { color: $text-muted; }
     AddReviewScreen .warn { color: $warning; }
-    AddReviewScreen #review-keys { dock: bottom; height: 1; color: $text-muted; padding: 0 1; }
+    AddReviewScreen KeysBar { dock: bottom; }
+    AddReviewScreen #review-keys { color: $text-muted; }
     """
 
     def __init__(
@@ -231,16 +240,18 @@ class AddReviewScreen(Screen[str | None]):
                 )
             yield from self._compose_deps()
             yield from self._compose_params()
-        yield Static(
-            tui_footer.bar(
-                tui_footer.chip("screen.accept", "Ctrl+A", gettext("Add")),
-                tui_footer.chip("screen.toggle_candidate", "Space", gettext("Toggle")),
-                tui_footer.chip("screen.edit_source", "Ctrl+E", gettext("Edit script")),
-                tui_footer.chip("screen.cancel", "Esc", gettext("Cancel")),
-                tui_footer.nav_chip(),
-            ),
-            id="review-keys",
-            markup=True,
+        yield tui_footer.KeysBar(
+            Static(
+                tui_footer.bar(
+                    tui_footer.chip("screen.accept", "Ctrl+A", gettext("Add")),
+                    tui_footer.chip("screen.toggle_candidate", "Space", gettext("Toggle")),
+                    tui_footer.chip("screen.edit_source", "Ctrl+E", gettext("Edit script")),
+                    tui_footer.chip("screen.cancel", "Esc", gettext("Cancel")),
+                    tui_footer.nav_chip(),
+                ),
+                id="review-keys",
+                markup=True,
+            )
         )
 
     def action_toggle_candidate(self) -> None:
@@ -400,6 +411,8 @@ class AddReviewApp(App[str | None]):
     `a` opens, hosted alone. Exits with the new entry's slug, or None on cancel."""
 
     ENABLE_COMMAND_PALETTE = False
+    HORIZONTAL_BREAKPOINTS = tui_layout.HORIZONTAL_BREAKPOINTS
+    VERTICAL_BREAKPOINTS = tui_layout.VERTICAL_BREAKPOINTS
 
     def __init__(
         self,

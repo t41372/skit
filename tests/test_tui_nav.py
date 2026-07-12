@@ -3,17 +3,20 @@ move, and arrows work wherever Tab works).
 
 ↓/↑ are Tab/Shift+Tab's arrow twins (tui_footer.FIELD_NAV_BINDINGS); they fire only
 when the focused widget doesn't claim the arrows itself (a RadioSet keeps them for its
-options). Every form screen advertises the pair with the clickable "Tab/↓ Next field"
-chip, and every form screen boots with its FIRST CONTROL focused — never the body
-scroll container. Policy: an advertised key needs a positive pilot test per surface;
-this file is that, for every form surface.
+options). Every form screen advertises BOTH directions with the clickable key-only pills
+"Tab/↓" and "Shift+Tab/↑", and every form screen boots with its FIRST CONTROL focused —
+never the body scroll container. Policy: an advertised key needs a positive pilot test
+per surface; this file is that, for every form surface — forward AND back, key AND chip.
+Tab/Shift+Tab are pressed literally (not assumed from Textual's built-ins): a future
+priority binding could claim either exactly as the Library already claims plain Tab.
 """
 
 from __future__ import annotations
 
 import pytest
-from textual.widgets import Input, RadioSet, Select, Static
+from textual.widgets import Input, RadioSet, Select
 
+from conftest import click_label
 from skit import metawriter, store, tui
 from skit.metawriter import ParamSpec
 from skit.tui_add import AddReviewScreen
@@ -53,16 +56,6 @@ def _focused_id(app) -> str:
     return app.focused.id or ""
 
 
-async def _click_label(pilot, selector, needle):
-    """Click a footer chip by its label text (the chips carry left padding of 1)."""
-    static = pilot.app.screen.query_one(selector, Static)
-    plain = static.render().plain
-    idx = plain.find(needle)
-    assert idx >= 0, (needle, plain)
-    await pilot.click(selector, offset=(idx + 1, 0))
-    await pilot.pause()
-
-
 async def test_run_form_boots_typeable_and_arrows_walk_the_fields(tmp_path):
     _two_field_entry(tmp_path)
     app = tui.MenuApp()
@@ -77,8 +70,14 @@ async def test_run_form_boots_typeable_and_arrows_walk_the_fields(tmp_path):
         assert second is not first  # ↓ moved on
         await pilot.press("up")
         assert app.focused is first  # ↑ came back
-        await _click_label(pilot, "#form-keys", "Next field")
+        await click_label(pilot, "#form-keys", "Tab/↓")
         assert app.focused is second  # the chip is the same action, clickable
+        await click_label(pilot, "#form-keys", "Shift+Tab/↑")
+        assert app.focused is first  # and the back chip walks the other way
+        await pilot.press("tab")  # the advertised keys themselves, not just the chips
+        assert app.focused is second
+        await pilot.press("shift+tab")
+        assert app.focused is first
 
 
 async def test_add_source_arrows_walk_path_template_name(tmp_path):
@@ -91,8 +90,14 @@ async def test_add_source_arrows_walk_path_template_name(tmp_path):
         assert _focused_id(app) == "add-template"
         await pilot.press("up")
         assert _focused_id(app) == "add-path"
-        await _click_label(pilot, "#add-keys", "Next field")
+        await click_label(pilot, "#add-keys", "Tab/↓")
         assert _focused_id(app) == "add-template"
+        await click_label(pilot, "#add-keys", "Shift+Tab/↑")
+        assert _focused_id(app) == "add-path"
+        await pilot.press("tab")  # the advertised keys themselves, not just the chips
+        assert _focused_id(app) == "add-template"
+        await pilot.press("shift+tab")
+        assert _focused_id(app) == "add-path"
 
 
 async def test_add_review_boots_on_name_and_arrows_move(tmp_path):
@@ -106,8 +111,14 @@ async def test_add_review_boots_on_name_and_arrows_move(tmp_path):
         assert _focused_id(app) == "rv-desc"
         await pilot.press("up")
         assert _focused_id(app) == "rv-name"
-        await _click_label(pilot, "#review-keys", "Next field")
+        await click_label(pilot, "#review-keys", "Tab/↓")
         assert _focused_id(app) == "rv-desc"
+        await click_label(pilot, "#review-keys", "Shift+Tab/↑")
+        assert _focused_id(app) == "rv-name"
+        await pilot.press("tab")  # the advertised keys themselves, not just the chips
+        assert _focused_id(app) == "rv-desc"
+        await pilot.press("shift+tab")
+        assert _focused_id(app) == "rv-name"
 
 
 async def test_prefs_boots_on_language_and_arrows_move(tmp_path):
@@ -125,8 +136,14 @@ async def test_prefs_boots_on_language_and_arrows_move(tmp_path):
         # (or the chip): the shared bindings must not steal them.
         await pilot.press("down")
         assert app.focused is radio  # still the same widget…
-        await _click_label(pilot, "#pf-keys", "Next field")
+        await click_label(pilot, "#pf-keys", "Tab/↓")
         assert app.focused is not radio  # …and the chip moves on to the next section
+        await click_label(pilot, "#pf-keys", "Shift+Tab/↑")
+        assert app.focused is radio  # …and the back chip returns to it
+        await pilot.press("shift+tab")  # the advertised keys themselves, not just the chips
+        assert _focused_id(app) == "pf-editor"
+        await pilot.press("tab")
+        assert app.focused is radio
 
 
 async def test_settings_boots_on_name_and_arrows_move(tmp_path):
@@ -142,5 +159,11 @@ async def test_settings_boots_on_name_and_arrows_move(tmp_path):
         assert second.id != "st-name"
         await pilot.press("up")
         assert _focused_id(app) == "st-name"
-        await _click_label(pilot, "#st-keys", "Next field")
+        await click_label(pilot, "#st-keys", "Tab/↓")
         assert app.focused is second
+        await click_label(pilot, "#st-keys", "Shift+Tab/↑")
+        assert _focused_id(app) == "st-name"
+        await pilot.press("tab")  # the advertised keys themselves, not just the chips
+        assert app.focused is second
+        await pilot.press("shift+tab")
+        assert _focused_id(app) == "st-name"

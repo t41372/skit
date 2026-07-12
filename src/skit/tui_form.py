@@ -216,8 +216,8 @@ class PresetNameModal(ModalScreen[str | None]):
     DEFAULT_CSS = """
     PresetNameModal { align: center middle; }
     PresetNameModal > Vertical {
-        border: round $accent; padding: 1 2; width: 60; height: auto;
-        background: $background;
+        border: round $accent; padding: 1 2; width: 60; max-width: 100%; height: auto;
+        max-height: 100%; background: $background;
     }
     """
 
@@ -276,8 +276,15 @@ class TokenMenuModal(ModalScreen[str | None]):
     DEFAULT_CSS = """
     TokenMenuModal { align: center middle; }
     TokenMenuModal > Vertical { border: round $accent; padding: 1 2; width: 64;
-        height: auto; background: $background; }
+        max-width: 100%; height: auto; max-height: 100%; background: $background; }
     TokenMenuModal OptionList { height: auto; border: none; }
+    /* Short terminals: cap the list AND flatten the box's vertical padding so the
+       fixed chrome (border+title+chip = 5 rows) plus the list fits the whole tier
+       band — the Esc chip must stay on screen (it is the modal's mouse path out);
+       the OptionList scrolls internally and keeps its highlight in view. */
+    TokenMenuModal.-h-short > Vertical, TokenMenuModal.-h-tiny > Vertical { padding: 0 2; }
+    TokenMenuModal.-h-short OptionList { max-height: 4; }
+    TokenMenuModal.-h-tiny OptionList { max-height: 2; }
     TokenMenuModal Static { width: auto; margin: 1 0 0 0; }
     """
 
@@ -333,9 +340,23 @@ class EnvPickerModal(ModalScreen[str | None]):
     DEFAULT_CSS = """
     EnvPickerModal { align: center middle; }
     EnvPickerModal > Vertical { border: round $accent; padding: 1 2; width: 64;
-        height: auto; max-height: 80%; background: $background; }
+        max-width: 100%; height: auto; max-height: 100%; background: $background; }
     EnvPickerModal OptionList { border: none; max-height: 12; }
+    /* The fixed chrome costs 10 rows (border+padding+title+input+chip), so the list
+       cap must shrink with the tier for the Esc chip — the modal's mouse path out —
+       to stay on screen across the WHOLE band, not just its top: 10+6 fits >=16
+       (normal); flattening the box padding and the chip margin cuts the chrome to 7,
+       so 7+3 fits >=10 (short) and 7+1 fits the tiny floor. (The input keeps its
+       border: user CSS — CHROME's Input rules — outranks anything a screen's
+       DEFAULT_CSS says, even !important, so it cannot be flattened from here.)
+       Filtering still works at every size — typing a full name submits even with
+       the list clipped. */
+    EnvPickerModal.-h-normal OptionList { max-height: 6; }
+    EnvPickerModal.-h-short > Vertical, EnvPickerModal.-h-tiny > Vertical { padding: 0 2; }
+    EnvPickerModal.-h-short OptionList { max-height: 3; }
+    EnvPickerModal.-h-tiny OptionList { max-height: 1; }
     EnvPickerModal Static { width: auto; margin: 1 0 0 0; }
+    EnvPickerModal.-h-short Static, EnvPickerModal.-h-tiny Static { margin: 0; }
     """
 
     @override
@@ -409,6 +430,12 @@ class RunFormScreen(Screen[FormResult]):
     }
     RunFormScreen #drift-banner, RunFormScreen #degraded-notice { color: $warning; padding: 0 1; }
     RunFormScreen #preset-row { height: auto; padding: 0 1; }
+    /* Narrow terminals: the caption-beside-chips row and horizontal option sets overflow
+       a Horizontal (it never wraps) — stack them vertically instead. The tier class gives
+       these rules higher specificity than the class-less horizontal rules they override. */
+    RunFormScreen.-w-narrow #preset-row { layout: vertical; }
+    RunFormScreen.-w-narrow #preset-row RadioSet { layout: vertical; }
+    RunFormScreen.-w-narrow FieldRow RadioSet { layout: vertical; }
     /* Widgets default to width:1fr; in a Horizontal that lets the "Preset:" caption
        swallow the whole row and push the chips (or the empty-state hint) clean off the
        screen. Everything in this row hugs its content. */
@@ -421,7 +448,10 @@ class RunFormScreen(Screen[FormResult]):
     RunFormScreen #preset-row RadioSet { layout: horizontal; height: auto; border: none; }
     RunFormScreen #preset-row RadioSet > RadioButton { width: auto; margin: 0 2 0 0; }
     RunFormScreen #form-body { padding: 0 1; }
-    RunFormScreen #form-keys { dock: bottom; height: 1; color: $text-muted; padding: 0 1; }
+    /* Chips wrap pill-by-pill; visible lines follow the height tier and anything
+       past the cap stays wheel-reachable — see tui_footer.KeysBar. */
+    RunFormScreen KeysBar { dock: bottom; }
+    RunFormScreen #form-keys { color: $text-muted; }
 
     /* Inline mode (the CLI's `skit run` mini-window): an inline Screen is sized to its
        content height, but the VerticalScroll body defaults to height:1fr, which collapses
@@ -494,16 +524,18 @@ class RunFormScreen(Screen[FormResult]):
                     import shlex
 
                     yield FieldRow(extra_field, shlex.join(last_extra))
-        yield Static(
-            tui_footer.bar(
-                tui_footer.chip("screen.submit", "Enter", gettext("Run")),
-                tui_footer.chip("screen.insert_token", "Ctrl+T", gettext("Insert value")),
-                tui_footer.chip("screen.save_preset", "Ctrl+S", gettext("Save as preset")),
-                tui_footer.chip("screen.cancel", "Esc", gettext("Cancel")),
-                tui_footer.nav_chip(),
-            ),
-            id="form-keys",
-            markup=True,
+        yield tui_footer.KeysBar(
+            Static(
+                tui_footer.bar(
+                    tui_footer.chip("screen.submit", "Enter", gettext("Run")),
+                    tui_footer.chip("screen.insert_token", "Ctrl+T", gettext("Insert value")),
+                    tui_footer.chip("screen.save_preset", "Ctrl+S", gettext("Save as preset")),
+                    tui_footer.chip("screen.cancel", "Esc", gettext("Cancel")),
+                    tui_footer.nav_chip(),
+                ),
+                id="form-keys",
+                markup=True,
+            )
         )
 
     @on(RadioSet.Changed, "#preset-set")

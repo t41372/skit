@@ -43,7 +43,8 @@ class HealthScreen(Screen[str | None]):
     HealthScreen .warn { color: $warning; }
     HealthScreen .bad { color: $error; }
     HealthScreen .hint { color: $text-muted; }
-    HealthScreen #hc-keys { dock: bottom; height: 1; color: $text-muted; padding: 0 1; }
+    HealthScreen KeysBar { dock: bottom; }
+    HealthScreen #hc-keys { color: $text-muted; }
     """
 
     def on_mount(self) -> None:
@@ -112,14 +113,16 @@ class HealthScreen(Screen[str | None]):
                 classes="hint",
             )
             yield Static("", id="hc-rebuilt", classes="ok")
-        yield Static(
-            tui_footer.bar(
-                tui_footer.chip("screen.jump", "Enter", gettext("Jump to script")),
-                tui_footer.chip("screen.rebuild", "R", gettext("Rebuild index")),
-                tui_footer.chip("screen.close", "Esc", gettext("Back")),
-            ),
-            id="hc-keys",
-            markup=True,
+        yield tui_footer.KeysBar(
+            Static(
+                tui_footer.bar(
+                    tui_footer.chip("screen.jump", "Enter", gettext("Jump to script")),
+                    tui_footer.chip("screen.rebuild", "R", gettext("Rebuild index")),
+                    tui_footer.chip("screen.close", "Esc", gettext("Back")),
+                ),
+                id="hc-keys",
+                markup=True,
+            )
         )
 
     @on(OptionList.OptionSelected, "#hc-issues")

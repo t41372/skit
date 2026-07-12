@@ -16,6 +16,12 @@ hint *is* the click target, and every modal's key hints use the same chips — t
 has a path. The keyboard side is enforced policy: every key a footer advertises must have a
 positive pilot test.
 
+The TUI is also responsive: `tui_layout.py` defines the shared size tiers (`-w-narrow`,
+`-h-short`, `-h-tiny`, …) that Textual sets as classes on every screen, and all size
+adaptation is CSS keyed off those classes — never per-screen width/height math in Python.
+Footer rows wrap chip-by-chip (pills are unbreakable), modals never exceed the screen, and
+new screens must degrade the same way.
+
 **3. Zero memorization** The user should be able to do everything without
 remembering a single line of CLI, hotkeys, or arguments, even if they wrote the script
 themselves. The interface should be ergonomic, convenient, and intuitive, following HCI

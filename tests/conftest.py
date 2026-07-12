@@ -43,10 +43,19 @@ pollution, independent of the test suite.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
-from skit import i18n
+from skit import i18n, tui_footer
+
+if TYPE_CHECKING:
+    from textual.widgets import Static
+
+# NOTE: textual must NOT be imported at conftest top level. pytest loads conftest before
+# any test module, which makes it the process's first importer: skit/__init__ has to run
+# before textual.constants reads TEXTUAL_DISABLE_KITTY_KEY from the environment
+# (tests/test_ime_input.py pins exactly this ordering).
 
 
 @pytest.fixture(autouse=True)
@@ -73,6 +82,27 @@ def _isolate_skit_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # last-set wins), and the _reset_i18n fixture below clears the cached catalog so the override
     # takes effect. This replaces the fragile per-test/per-file SKIT_LANG pinning.
     monkeypatch.setenv("SKIT_LANG", "en")
+
+
+def footer_text(static: Static) -> str:
+    """Rendered footer text with the pill glue (U+2800, one cell wide like a space)
+    normalized back to spaces, so label assertions and click offsets read naturally.
+    THE shared copy — the glue scheme must change here and nowhere else."""
+    return str(static.render()).replace(tui_footer.GLUE, " ")
+
+
+async def click_label(pilot, selector: str, needle: str) -> None:
+    """Click a footer chip by its visible key or label text (chips carry left padding
+    of 1). Assumes the chip is on the footer's first rendered line — true at the wide
+    sizes the nav/click tests run at."""
+    from textual.widgets import Static  # deferred: see the import-order note above
+
+    static = pilot.app.screen.query_one(selector, Static)
+    plain = footer_text(static)
+    idx = plain.find(needle)
+    assert idx >= 0, (needle, plain)
+    await pilot.click(selector, offset=(idx + 1, 0))
+    await pilot.pause()
 
 
 @pytest.fixture(autouse=True)
