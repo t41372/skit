@@ -4,9 +4,15 @@
 # the README's four-image grid:
 #
 #   shot-library.png   — the library workbench (list + details + two-line footer)
-#   shot-form.png      — the run form, generated from my_script_1's argparse flags
-#   shot-add.png       — the add review panel, constants detected in my_script_2
-#   shot-settings.png  — the script-settings screen of the freshly added my_script_2
+#   shot-form.png      — the run form, generated from greet's argparse flags
+#   shot-add.png       — the add review panel, constants detected in banner
+#   shot-settings.png  — the script-settings screen of the freshly added banner
+#
+# The library holds ONLY Python scripts (skit's exe / command-template support is still thin,
+# so the demo never shows those kinds). greet is pre-added silently; banner is added LIVE in
+# shot 1, which both captures the add panel AND populates the library for shot 2 — and a live
+# Ctrl+A is what gives banner the managed constants the settings shot needs (an interactive
+# `skit add x.py --no-input` deliberately manages nothing).
 #
 # The mp4 Output is mandatory for VHS; record_demo.sh deletes it.
 
@@ -16,38 +22,59 @@ Require skit
 Set Shell "bash"
 Set FontFamily "JetBrains Mono"
 Set FontSize 20
-Set Width 1200
+Set Width 1280
 Set Height 780
 Set Padding 20
 Set TypingSpeed 40ms
 
-# Hidden setup: three entries pre-added for a lively library (command template, executable,
-# the argparse script). my_script_2.py stays UN-added — the add-panel shot adds it live.
+# Hidden setup: pre-add greet (the argparse script) silently so the library isn't empty.
+# banner stays UN-added — shot 1 adds it live.
 Hide
 Type "source ~/.bashrc" Enter
-Type "skit add --cmd 'echo {message}' -n my_command" Enter
-Type "skit add my_program.sh --exe -n my_program" Enter
-Sleep 500ms
-# --no-input: an interactive `skit add x.py` opens the review panel now — the setup
-# wants the silent defaults, not a panel to drive.
-Type "skit add my_script_1.py --no-input" Enter
+Type "skit add greet.py --no-input" Enter
 Sleep 1.5s
 Type "clear" Enter
 Type "skit" Enter
 Sleep 3s
 Show
 
-# 1 — Library workbench.
-Screenshot "/out/shot-library.png"
-# VHS captures screenshots with a lag of roughly the next command, so every
-# Screenshot gets a settle Sleep — otherwise the frame shows the NEXT interaction
-# (this shipped a library shot with the search-focused footer once).
+# 1 — Add review panel: `a` → banner.py → the panel opens with the constants (Message / Times
+#     / Width) detected and pre-ticked. Tab down so the checklist is in view, screenshot, then
+#     Ctrl+A commits banner (managed constants and all) — which also fills the library for shot 2.
+Type "a"
+Sleep 1.5s
+Type "banner.py"
+Sleep 800ms
+Enter
+Sleep 2.5s
+Tab 4
+Sleep 1s
+Screenshot "/out/shot-add.png"
+# VHS captures screenshots with a lag of roughly the next command, so every Screenshot gets a
+# settle Sleep — otherwise the frame shows the NEXT interaction (this shipped a library shot
+# with the search-focused footer once).
+Sleep 2s
+Ctrl+A
 Sleep 2s
 
-# 2 — Run form for the argparse script (text / number / checkbox), partly filled in.
+# 2 — Library workbench: two Python scripts (banner · greet), list + detail + two-line footer.
+Screenshot "/out/shot-library.png"
+Sleep 2s
+
+# 3 — Script settings: banner is selected (fresh add), so `p` opens ITS settings — the
+#     constants it detected are now managed params.
+Type "p"
+Sleep 2.5s
+Screenshot "/out/shot-settings.png"
+Sleep 2s
+Escape
+Sleep 1s
+
+# 4 — Run form for the argparse script (text / number / checkbox), partly filled in. Search
+#     greet, run it, fill a couple of fields.
 Type "/"
 Sleep 400ms
-Type "script_1"
+Type "greet"
 Sleep 1s
 Enter
 Sleep 2.5s
@@ -65,36 +92,3 @@ Screenshot "/out/shot-form.png"
 Sleep 2s
 Escape
 Sleep 1.5s
-
-# Clear the leftover search filter (text persists across the run round-trip).
-Type "/"
-Sleep 300ms
-Backspace 20
-Escape
-Sleep 500ms
-
-# 3 — Add review panel. Tab down so the detected-constants checklist scrolls into view
-#     (the panel opens ON the name field; the differentiator lives below the fold).
-Type "a"
-Sleep 1.5s
-Type "my_script_2.py"
-Sleep 800ms
-Enter
-Sleep 2.5s
-Tab 4
-Sleep 1s
-Screenshot "/out/shot-add.png"
-Sleep 2s
-
-# 4 — Add it (Ctrl+A, per the footer), then open script settings on the new entry.
-Ctrl+A
-Sleep 2s
-Type "p"
-Sleep 2.5s
-Screenshot "/out/shot-settings.png"
-Sleep 2s
-
-Escape
-Sleep 800ms
-Escape
-Sleep 1s

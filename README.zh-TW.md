@@ -15,7 +15,7 @@
 
 **AI 寫腳本，skit 管腳本。**
 
-<video src="https://github.com/user-attachments/assets/bd4f78ba-0a1f-4b73-b02e-bc1dc1d11c4c" controls></video>
+<video src="https://github.com/user-attachments/assets/9a648986-f782-43be-8dee-acfd6cc0b093" controls></video>
 
 ## 它做什麼
 
