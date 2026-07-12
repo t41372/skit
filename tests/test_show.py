@@ -33,6 +33,7 @@ PAYLOAD_KEYS = {
     "missing",
     "dependencies",
     "requires_python",
+    "needs",
     "template",
     "param_source",
     "param_origin",

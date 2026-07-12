@@ -300,7 +300,7 @@ def save_bash_path(path: str) -> None:
     save_config(doc)
 
 
-_JS_RUNNERS = ("deno", "bun", "node")
+JS_RUNNERS = ("deno", "bun", "node")
 
 
 def load_js_runner() -> str:
@@ -309,7 +309,7 @@ def load_js_runner() -> str:
     `runner = "carrier-pigeon"` must not poison every js run."""
     section = load_config().get("js", {})  # pragma: no mutate — isinstance normalizes
     value = section.get("runner", "") if isinstance(section, dict) else ""
-    return value if value in _JS_RUNNERS else ""
+    return value if value in JS_RUNNERS else ""
 
 
 def save_js_runner(name: str) -> None:

@@ -491,6 +491,18 @@ def update_dependencies(
     return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
+def update_needs(name_or_slug: str, needs: list[str]) -> Entry:
+    """Update an entry's `needs` list (external commands checked on PATH before launch).
+    Mirrors update_dependencies' meta write, but applies to every kind — a shell script
+    or a command template can need `ffmpeg` just as a python script can. An empty list
+    clears the key (stored as None so the meta stays minimal)."""
+    entry = resolve(name_or_slug)
+    meta = entry.meta
+    meta.needs = needs or None
+    _write_meta(entry.dir, meta)
+    return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
+
+
 def write_parameters(name_or_slug: str, decls: list[ParamDecl]) -> Entry:
     """Persist declared parameter rows to meta.toml [[parameters]] (the schema home for
     kinds without a text body — exe/command). The legacy `params` placeholder-name list
@@ -632,5 +644,6 @@ __all__ = [
     "read_parameters",
     "remove",
     "resolve",
+    "update_needs",
     "write_parameters",
 ]

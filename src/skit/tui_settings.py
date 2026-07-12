@@ -285,6 +285,7 @@ class ScriptSettingsScreen(Screen[bool]):
             yield from self._compose_params()
             yield from self._compose_presets()
             yield from self._compose_deps()
+            yield from self._compose_needs()
         yield tui_footer.KeysBar(
             Static(
                 tui_footer.bar(
@@ -487,6 +488,16 @@ class ScriptSettingsScreen(Screen[bool]):
             id="st-python",
         )
 
+    def _compose_needs(self) -> ComposeResult:
+        # Every kind can declare needs: a shell script or a command template can require
+        # ffmpeg/jq on PATH just as a python script can (checked before launch, exit 126).
+        yield Static(gettext("Needs (external commands)"), classes="section")
+        yield Input(
+            value=", ".join(self._entry.meta.needs or []),
+            placeholder=gettext("comma separated, e.g. ffmpeg, jq"),
+            id="st-needs",
+        )
+
     def on_mount(self) -> None:
         self.query_one("#st-body").border_title = gettext("Script settings · %(name)s") % {
             "name": escape(self._entry.meta.name)
@@ -569,6 +580,11 @@ class ScriptSettingsScreen(Screen[bool]):
             python = self.query_one("#st-python", Input).value.strip()
             if deps != (entry.meta.dependencies or []) or python != entry.meta.requires_python:
                 store.update_dependencies(entry.slug, deps, requires_python=python)
+        needs = [
+            n.strip() for n in self.query_one("#st-needs", Input).value.split(",") if n.strip()
+        ]
+        if needs != (entry.meta.needs or []):
+            store.update_needs(entry.slug, needs)
         presets = argstate.load_state(entry.slug)["presets"]
         for i, name in enumerate(sorted(presets)):
             box = self.query(f"#st-preset-{i}")

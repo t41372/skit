@@ -1285,7 +1285,8 @@ def test_edit_non_python_message_exact():
     result = runner.invoke(cli.app, ["edit", "c"])
     assert result.exit_code == 1
     out = _norm(result.output)
-    assert "c isn't a Python script, so it has no source to edit." in out
+    # Kind-neutral now: shell/js ARE editable, so the refusal can't claim "Python only".
+    assert "c has no editable source (programs and command templates run as-is)." in out
     assert "XX" not in out
 
 

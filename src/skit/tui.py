@@ -68,6 +68,15 @@ from .tui_form import FormResult, RunFormScreen
 def _kind_badge(kind: str) -> tuple[str, str]:
     label = {
         "python": gettext("Python"),
+        "shell": gettext("Shell"),
+        "fish": gettext("fish"),
+        "js": gettext("JavaScript"),
+        "ts": gettext("TypeScript"),
+        "powershell": gettext("PowerShell"),
+        "ruby": gettext("Ruby"),
+        "perl": gettext("Perl"),
+        "lua": gettext("Lua"),
+        "r": gettext("R"),
         "exe": gettext("Program"),
         "command": gettext("Command"),
     }.get(kind, kind)
@@ -780,7 +789,9 @@ class MenuApp(App[int | PendingRun]):
         target = self._editable_source(entry)
         if target is None or not target.exists():
             self._refresh_status(
-                gettext("%(name)s: no editable script source (only Python scripts have one).")
+                gettext(
+                    "%(name)s has no editable source (programs and command templates run as-is)."
+                )
                 % {"name": escape(entry.meta.name)}
             )
             return

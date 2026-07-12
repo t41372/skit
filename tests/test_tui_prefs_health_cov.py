@@ -277,6 +277,24 @@ async def test_health_lists_drift_issue_and_mirror_on(tmp_path):
         assert "out of sync" in str(option.prompt)
 
 
+async def test_health_lists_missing_needs_issue(tmp_path, monkeypatch):
+    """A shell entry whose declared `needs` command is off PATH becomes a selectable
+    issue row naming the missing tool (the same sweep doctor prints)."""
+    sh = tmp_path / "d.sh"
+    sh.write_text("#!/bin/bash\necho hi\n", encoding="utf-8")
+    entry = store.add_script(sh, kind="shell", name="d")
+    store.update_needs("d", ["ffmpeg"])
+    monkeypatch.setattr("shutil.which", lambda _name: None)  # nothing on PATH
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(HealthScreen())
+        await pilot.pause()
+        issues = app.screen.query_one("#hc-issues", OptionList)
+        prompts = [str(issues.get_option_at_index(i).prompt) for i in range(issues.option_count)]
+    assert any("ffmpeg" in p and entry.slug for p in prompts)
+    assert any("missing external command" in p for p in prompts)
+
+
 # ---------------------------------------------------------------------------
 # HealthScreen — jump / rebuild / close actions
 # ---------------------------------------------------------------------------

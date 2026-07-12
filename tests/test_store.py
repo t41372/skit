@@ -365,3 +365,141 @@ def test_infer_kind_windows_falls_back_to_default_pathext(
     bat = tmp_path / "go.bat"
     bat.write_text("echo hi", encoding="utf-8")
     assert store.infer_kind(bat) == "exe"  # .BAT is in the default fallback set
+
+
+# ---------- extract_comment_description (the comment-language docstring analogue) ----------
+
+
+def test_extract_comment_description_first_comment_line_wins():
+    from skit import store
+
+    text = "#!/bin/bash\n# Ship the current build\n# more\necho hi\n"
+    assert store.extract_comment_description(text, "#") == "Ship the current build"
+
+
+def test_extract_comment_description_skips_shebang_and_blank_lines():
+    from skit import store
+
+    text = "#!/bin/sh\n\n# real desc\necho hi\n"  # shebang, then a blank, then the comment
+    assert store.extract_comment_description(text, "#") == "real desc"
+
+
+def test_extract_comment_description_skips_metadata_fence():
+    from skit import store
+
+    text = "#!/bin/bash\n# /// script\n# actual desc\ncode\n"  # the /// fence is machinery
+    assert store.extract_comment_description(text, "#") == "actual desc"
+
+
+def test_extract_comment_description_empty_comment_line_continues():
+    from skit import store
+
+    text = "#!/bin/sh\n#\n# after empty\necho\n"  # a bare `#` has no content; keep scanning
+    assert store.extract_comment_description(text, "#") == "after empty"
+
+
+def test_extract_comment_description_code_first_is_empty():
+    from skit import store
+
+    text = "NAME=1\n# a comment below code\n"  # first non-blank line is code -> no description
+    assert store.extract_comment_description(text, "#") == ""
+
+
+def test_extract_comment_description_only_shebang_is_empty():
+    from skit import store
+
+    assert store.extract_comment_description("#!/bin/sh\n\n", "#") == ""
+
+
+def test_extract_comment_description_lua_double_dash_prefix():
+    from skit import store
+
+    assert store.extract_comment_description("-- Lua tool\nprint('x')\n", "--") == "Lua tool"
+
+
+# ---------- add_script (the generic Tier-0 interpreted add) ----------
+
+
+def _sh(tmp_path: Path, body: str = "#!/bin/bash\n# Deploy it\necho hi\n") -> Path:
+    p = tmp_path / "deploy.sh"
+    p.write_text(body, encoding="utf-8")
+    return p
+
+
+def test_add_script_copy_is_byte_identical_and_records_hash(tmp_path: Path):
+    from skit import store
+
+    src = _sh(tmp_path)
+    entry = store.add_script(src, kind="shell")
+    assert entry.meta.kind == "shell"
+    assert entry.meta.mode == "copy"
+    assert entry.script_path.name == "script.sh"  # copy under the kind's stored name
+    assert entry.script_path.read_bytes() == src.read_bytes()  # verbatim
+    assert entry.meta.source_hash.startswith("sha256:")
+    assert entry.meta.workdir == "invoke"  # copy mode decouples from origin
+    assert entry.meta.description == "Deploy it"  # comment-extracted
+
+
+def test_add_script_reference_points_to_origin(tmp_path: Path):
+    from skit import store
+
+    src = _sh(tmp_path)
+    entry = store.add_script(src, kind="shell", mode="reference")
+    assert entry.meta.workdir == "origin"
+    assert entry.script_path == src.resolve()
+    assert not (entry.dir / "script.sh").exists()  # never copied
+
+
+def test_add_script_explicit_workdir_override(tmp_path: Path):
+    from skit import store
+
+    entry = store.add_script(_sh(tmp_path), kind="shell", workdir="store")
+    assert entry.meta.workdir == "store"
+
+
+def test_add_script_explicit_name_and_description(tmp_path: Path):
+    from skit import store
+
+    entry = store.add_script(_sh(tmp_path), kind="shell", name="ship", description="custom")
+    assert entry.meta.name == "ship"
+    assert entry.meta.description == "custom"  # explicit wins over comment extraction
+
+
+def test_add_script_records_interpreter(tmp_path: Path):
+    from skit import store
+
+    entry = store.add_script(_sh(tmp_path), kind="shell", interpreter="zsh")
+    assert entry.meta.interpreter == "zsh"
+
+
+def test_add_script_unknown_kind_raises(tmp_path: Path):
+    from skit import store
+
+    with pytest.raises(store.StoreError, match="Unknown entry kind"):
+        store.add_script(_sh(tmp_path), kind="martian")
+
+
+def test_add_script_non_interpreted_kind_raises(tmp_path: Path):
+    from skit import store
+
+    # exe is a real kind but not an interpreted, copyable one — add_script refuses it.
+    with pytest.raises(store.StoreError, match="Unknown entry kind"):
+        store.add_script(_sh(tmp_path), kind="exe")
+
+
+def test_add_script_missing_file_raises(tmp_path: Path):
+    from skit import store
+
+    with pytest.raises(store.StoreError, match="not found"):
+        store.add_script(tmp_path / "ghost.sh", kind="shell")
+
+
+def test_add_script_lua_uses_double_dash_description(tmp_path: Path):
+    from skit import store
+
+    p = tmp_path / "tool.lua"
+    p.write_text("-- Resize things\nprint('x')\n", encoding="utf-8")
+    entry = store.add_script(p, kind="lua")
+    assert entry.meta.kind == "lua"
+    assert entry.meta.description == "Resize things"  # '--' comment prefix honoured
+    assert entry.script_path.name == "script.lua"

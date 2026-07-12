@@ -665,3 +665,48 @@ async def test_declared_editor_is_keyboard_reachable(tmp_path):
                     reached.add("st-add-param")
         assert "d-type" in reached  # a declared row's type field
         assert "st-add-param" in reached  # the add-a-parameter field
+
+
+# ---------------------------------------------------------------------------
+# Needs (external commands): a section for every kind, saved via store.update_needs
+# ---------------------------------------------------------------------------
+
+
+async def test_settings_saves_needs_for_shell_entry(tmp_path):
+    """Every kind gets the "Needs (external commands)" input; saving comma-separated
+    values writes them through store.update_needs."""
+    sh = tmp_path / "d.sh"
+    sh.write_text("#!/bin/bash\necho hi\n", encoding="utf-8")
+    entry = store.add_script(sh, kind="shell", name="d")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        assert "Needs (external commands)" in _body(screen)
+        screen.query_one("#st-needs", Input).value = "ffmpeg, jq"
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+        assert not isinstance(app.screen, ScriptSettingsScreen)  # dismissed after save
+    assert store.resolve("d").meta.needs == ["ffmpeg", "jq"]
+
+
+async def test_settings_needs_prefilled_and_clearable(tmp_path):
+    """The input shows the current needs; blanking it clears them on save."""
+    sh = tmp_path / "d.sh"
+    sh.write_text("#!/bin/bash\necho hi\n", encoding="utf-8")
+    entry = store.add_script(sh, kind="shell", name="d")
+    store.update_needs("d", ["jq"])
+    entry = store.resolve("d")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        assert screen.query_one("#st-needs", Input).value == "jq"  # prefilled
+        screen.query_one("#st-needs", Input).value = "  "  # blank it out
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+    assert store.resolve("d").meta.needs is None  # cleared

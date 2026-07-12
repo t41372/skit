@@ -287,6 +287,30 @@ async def test_key_e_opens_the_editor(tmp_path, monkeypatch):
         assert len(opened) == 1
 
 
+async def test_key_e_opens_shell_script_source(tmp_path, monkeypatch):
+    """The `e` key opens interpreted (non-python) sources too — a shell entry's stored
+    copy is editable, so pressing `e` hands it to the editor."""
+    import contextlib
+
+    opened: list[object] = []
+    monkeypatch.setattr(tui.editor, "open_in_editor", opened.append)
+
+    @contextlib.contextmanager
+    def _noop(self):
+        yield
+
+    monkeypatch.setattr(tui.MenuApp, "suspend", _noop)
+    sh = tmp_path / "deploy.sh"
+    sh.write_text("#!/bin/bash\necho hi\n", encoding="utf-8")
+    store.add_script(sh, kind="shell", name="deploy")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        await pilot.press("e")
+        await pilot.pause()
+        assert len(opened) == 1
+        assert str(opened[0]).endswith("script.sh")  # the stored shell copy
+
+
 async def test_enter_in_search_runs_top_match_and_refocuses_table(tmp_path, monkeypatch):
     store.add_python(_py(tmp_path, "print(1)\n"), name="alpha")
     fired: list[str] = []

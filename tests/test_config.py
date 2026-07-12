@@ -279,3 +279,87 @@ def test_looks_blocked_true_when_second_host_unreachable(monkeypatch: pytest.Mon
     monkeypatch.setattr(socket, "create_connection", conn)
     assert config.looks_blocked(timeout=0.01) is True
     assert seen == ["pypi.org", "github.com"]
+
+
+# --------------------------------------------------------------------------
+# shell.bash_path (Windows escape hatch) + js.runner round-trips
+# --------------------------------------------------------------------------
+
+
+def test_bash_path_defaults_to_empty() -> None:
+    assert config.load_bash_path() == ""
+
+
+def test_bash_path_round_trip(tmp_path: Path) -> None:
+    bash = tmp_path / "bash"
+    bash.write_text("", encoding="utf-8")
+    config.save_bash_path(str(bash))
+    assert config.load_bash_path() == str(bash)
+
+
+def test_bash_path_strips_and_clears() -> None:
+    config.save_bash_path("  /opt/bash  ")
+    assert config.load_bash_path() == "/opt/bash"  # stripped on save
+    config.save_bash_path("")
+    assert config.load_bash_path() == ""  # empty clears the key
+    assert "shell" not in config.load_config()  # and drops the now-empty section
+
+
+def test_bash_path_garbage_normalizes_to_empty() -> None:
+    config.save_config({"shell": {"bash_path": 123}})  # not a string
+    assert config.load_bash_path() == ""
+
+
+def test_bash_path_garbage_section_normalizes_to_empty() -> None:
+    config.save_config({"shell": "not-a-table"})  # section isn't a dict
+    assert config.load_bash_path() == ""
+
+
+def test_bash_path_save_preserves_other_keys() -> None:
+    config.save_config({"language": "zh-CN"})
+    config.save_bash_path("/opt/bash")
+    doc = config.load_config()
+    assert doc["language"] == "zh-CN"  # untouched
+    assert doc["shell"]["bash_path"] == "/opt/bash"
+
+
+def test_bash_path_clear_preserves_other_shell_keys() -> None:
+    config.save_config({"shell": {"bash_path": "/x", "other": "keep"}})
+    config.save_bash_path("")
+    doc = config.load_config()
+    assert doc["shell"] == {"other": "keep"}  # only bash_path removed; section stays
+
+
+def test_js_runner_defaults_to_empty() -> None:
+    assert config.load_js_runner() == ""
+
+
+@pytest.mark.parametrize("name", config.JS_RUNNERS)
+def test_js_runner_round_trip(name: str) -> None:
+    config.save_js_runner(name)
+    assert config.load_js_runner() == name
+
+
+def test_js_runner_unknown_value_normalizes_to_empty() -> None:
+    config.save_config({"js": {"runner": "carrier-pigeon"}})
+    assert config.load_js_runner() == ""  # a hand-edited bad value must not poison runs
+
+
+def test_js_runner_garbage_section_normalizes_to_empty() -> None:
+    config.save_config({"js": ["not", "a", "table"]})
+    assert config.load_js_runner() == ""
+
+
+def test_js_runner_clears_and_drops_section() -> None:
+    config.save_js_runner("deno")
+    config.save_js_runner("")
+    assert config.load_js_runner() == ""
+    assert "js" not in config.load_config()
+
+
+def test_js_runner_save_preserves_other_keys() -> None:
+    config.save_config({"language": "en"})
+    config.save_js_runner("bun")
+    doc = config.load_config()
+    assert doc["language"] == "en"
+    assert doc["js"]["runner"] == "bun"

@@ -93,6 +93,17 @@ class HealthScreen(Screen[str | None]):
                             id=e.slug,
                         )
                     )
+            for e in entries:
+                missing_tools = launcher.missing_needs(e)
+                if missing_tools:
+                    issues.append(
+                        Option(
+                            f"⚠ {escape(e.meta.name)} — "
+                            + gettext("missing external command(s): %(tools)s")
+                            % {"tools": ", ".join(escape(t) for t in missing_tools)},
+                            id=e.slug,
+                        )
+                    )
             if issues:
                 yield Static(gettext("Issues (Enter jumps to the script):"), classes="warn")
                 yield OptionList(*issues, id="hc-issues")

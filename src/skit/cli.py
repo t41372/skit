@@ -48,7 +48,7 @@ from . import (
 )
 from .i18n import gettext, ngettext
 from .langs.python import analyzer, metawriter, reconcile
-from .langs.registry import spec_for
+from .langs.registry import KNOWN_KINDS, spec_for
 from .params import ParamDecl, declared_from_meta, edit_declared
 
 if TYPE_CHECKING:
@@ -443,6 +443,26 @@ def _infer_add_kind(resolved: Path, exe_flag: bool) -> str:
     return store.infer_kind(resolved, force_exe=exe_flag)
 
 
+def _forceable_kinds() -> list[str]:
+    """The kinds `--kind` may force: every interpreted language plus "exe". Command
+    templates are their own path (--cmd), and "unknown" is never a target."""
+    interpreted = sorted(
+        k for k in KNOWN_KINDS if (spec := spec_for(k)) is not None and spec.family == "interpreted"
+    )
+    return [*interpreted, "exe"]
+
+
+def _validate_forced_kind(value: str) -> None:
+    """Reject an unknown --kind value with a usage error that lists the valid kinds
+    (the non-interactive contract: never guess, fail cleanly)."""
+    valid = _forceable_kinds()
+    if value not in valid:
+        err_console.print(
+            f"[red]{gettext('Unknown kind: %(kind)s. Choose from: %(kinds)s') % {'kind': escape(value), 'kinds': ', '.join(valid)}}[/red]"
+        )
+        raise typer.Exit(EXIT_USAGE)
+
+
 @app.command(
     help=gettext("Add a script, executable, or command to skit."),
     epilog=gettext(
@@ -474,6 +494,11 @@ def add(
         False,
         "--exe",
         help=gettext("Force the executable kind (normally inferred from the file itself)"),
+    ),
+    kind: str = typer.Option(
+        None,
+        "--kind",
+        help=gettext("Force the language kind (e.g. shell, js) for an extensionless file"),
     ),
     cmd: str = typer.Option(
         None, "--cmd", help=gettext("Register a command template, e.g. --cmd 'ffmpeg -i {input}'")
@@ -525,7 +550,15 @@ def add(
                 )
                 raise typer.Exit(EXIT_USAGE)
             resolved = Path(path).expanduser().resolve()
-            kind = _infer_add_kind(resolved, exe)
+            if kind is not None:
+                # --kind forces the language outright (mirrors --exe), for an
+                # extensionless file the shebang/extension can't classify.
+                _validate_forced_kind(kind)
+                if exe and kind != "exe":
+                    err_console.print(f"[red]{gettext('Use --kind or --exe, not both.')}[/red]")
+                    raise typer.Exit(EXIT_USAGE)
+            else:
+                kind = _infer_add_kind(resolved, exe)
             kind_spec = spec_for(kind)
             if kind == "exe":
                 entry = store.add_exe(Path(path), name=name, description=description or "")
@@ -755,6 +788,10 @@ def _print_show_human(entry: store.Entry, plan: flows.FormPlan, presets: list[st
         console.print(
             f"  {gettext('Python constraint: %(python)s') % {'python': escape(meta.requires_python)}}"
         )
+    if meta.needs:
+        console.print(
+            f"  {gettext('Needs: %(needs)s') % {'needs': ', '.join(escape(n) for n in meta.needs)}}"
+        )
     if meta.template:
         console.print(
             f"  {gettext('Command template: %(template)s') % {'template': escape(meta.template)}}"
@@ -841,6 +878,7 @@ def show(
         "missing": launcher.target_missing(entry),
         "dependencies": list(entry.meta.dependencies or []),
         "requires_python": entry.meta.requires_python,
+        "needs": list(entry.meta.needs or []),
         "template": entry.meta.template or None,
         "param_source": plan.source,
         "param_origin": _param_origin(plan.source),
@@ -907,7 +945,7 @@ def edit(name: str = _SCRIPT_ARG) -> None:
     entry_spec = spec_for(entry.meta.kind)
     if entry_spec is None or not entry_spec.editable:
         raise _fail(
-            gettext("%(name)s isn't a Python script, so it has no source to edit.")
+            gettext("%(name)s has no editable source (programs and command templates run as-is).")
             % {"name": entry.meta.name},
             1,
         )
@@ -1880,10 +1918,45 @@ def _edit_declared_params(
 # --------------------------------------------------------------------------
 
 
+def _deps_read_view(entry: store.Entry, *, supports_deps: bool, as_json: bool) -> None:
+    """The bare `skit deps NAME` view: dependencies + Python constraint (python entries
+    only) and the needed external commands (every kind)."""
+    needs = list(entry.meta.needs or [])
+    if as_json:
+        console.print_json(
+            json.dumps(
+                {
+                    "dependencies": list(entry.meta.dependencies or []),
+                    "requires_python": entry.meta.requires_python,
+                    "needs": needs,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return
+    if supports_deps:
+        console.print(
+            gettext("Dependencies of %(name)s: %(deps)s")
+            % {
+                "name": escape(entry.meta.name),
+                "deps": ", ".join(escape(d) for d in (entry.meta.dependencies or [])) or "—",
+            }
+        )
+        if entry.meta.requires_python:
+            console.print(
+                gettext("Python constraint: %(python)s")
+                % {"python": escape(entry.meta.requires_python)}
+            )
+    console.print(
+        gettext("External commands needed by %(name)s: %(needs)s")
+        % {"name": escape(entry.meta.name), "needs": ", ".join(escape(n) for n in needs) or "—"}
+    )
+
+
 @app.command(
-    help=gettext("View or update a script's dependencies and Python constraint."),
+    help=gettext("View or update a script's dependencies, Python constraint, and needed commands."),
     epilog=gettext(
-        'Examples:  skit deps tool --dep "requests>=2,<3" --dep rich  ·  skit deps tool --clear'
+        'Examples:  skit deps tool --dep "requests>=2,<3" --dep rich  ·  skit deps clip --need jq'
     ),
 )
 def deps(
@@ -1895,59 +1968,68 @@ def deps(
     python: str = typer.Option(
         None, "--python", help=gettext('Python version constraint, e.g. ">=3.11"')
     ),
+    need: list[str] = typer.Option(
+        None,
+        "--need",
+        help=gettext(
+            "An external command the script needs on PATH (repeat; replaces the whole list)"
+        ),
+    ),
+    clear_needs: bool = typer.Option(
+        False, "--clear-needs", help=gettext("Remove every needed external command")
+    ),
     as_json: bool = typer.Option(False, "--json", help=gettext("Output as JSON")),
 ) -> None:
-    """View or update a script's recorded dependencies."""
+    """View or update a script's recorded dependencies and needed external commands.
+    Dependencies (PEP 723 + uv) are python-only; needs (commands that must be on PATH)
+    apply to every kind — a shell script may need `ffmpeg` too."""
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
         raise _fail(str(exc), 1) from exc
     deps_spec = spec_for(entry.meta.kind)
-    if deps_spec is None or not deps_spec.supports_deps:
+    supports_deps = deps_spec is not None and deps_spec.supports_deps
+    deps_requested = dep is not None or clear or python is not None
+    needs_requested = need is not None or clear_needs
+    if deps_requested and not supports_deps:
         raise _fail(
-            gettext("%(name)s is not a Python script entry.") % {"name": entry.meta.name}, 1
+            gettext("%(name)s is not a Python script entry — only --need applies here.")
+            % {"name": entry.meta.name},
+            1,
         )
     if dep and clear:
         err_console.print(
             f"[red]{gettext('Use --dep to set the list or --clear to empty it — not both.')}[/red]"
         )
         raise typer.Exit(EXIT_USAGE)
-    if dep is None and not clear and python is None:
-        current = entry.meta.dependencies or []
-        if as_json:
-            console.print_json(
-                json.dumps(
-                    {"dependencies": current, "requires_python": entry.meta.requires_python},
-                    ensure_ascii=False,
-                )
-            )
-            return
-        console.print(
-            gettext("Dependencies of %(name)s: %(deps)s")
-            % {
-                "name": escape(entry.meta.name),
-                "deps": ", ".join(escape(d) for d in current) or "—",
-            }
+    if need and clear_needs:
+        err_console.print(
+            f"[red]{gettext('Use --need to set the list or --clear-needs to empty it — not both.')}[/red]"
         )
-        if entry.meta.requires_python:
-            console.print(
-                gettext("Python constraint: %(python)s")
-                % {"python": escape(entry.meta.requires_python)}
-            )
+        raise typer.Exit(EXIT_USAGE)
+    if not deps_requested and not needs_requested:
+        _deps_read_view(entry, supports_deps=supports_deps, as_json=as_json)
         return
-    if clear:
-        new_deps: list[str] = []
-    elif dep is not None:
-        new_deps = list(dep)
-    else:
-        new_deps = list(entry.meta.dependencies or [])
-    try:
-        entry = store.update_dependencies(entry.slug, new_deps, requires_python=python)
-    except store.StoreError as exc:
-        raise _fail(str(exc), 1) from exc
-    console.print(
-        f"[green]{gettext('Dependencies of %(name)s updated: %(deps)s') % {'name': escape(entry.meta.name), 'deps': ', '.join(escape(d) for d in new_deps) or '—'}}[/green]"
-    )
+    if needs_requested:
+        new_needs = [] if clear_needs else list(need or [])
+        entry = store.update_needs(entry.slug, new_needs)
+        console.print(
+            f"[green]{gettext('Needs of %(name)s updated: %(needs)s') % {'name': escape(entry.meta.name), 'needs': ', '.join(escape(n) for n in new_needs) or '—'}}[/green]"
+        )
+    if deps_requested:
+        if clear:
+            new_deps: list[str] = []
+        elif dep is not None:
+            new_deps = list(dep)
+        else:
+            new_deps = list(entry.meta.dependencies or [])
+        try:
+            entry = store.update_dependencies(entry.slug, new_deps, requires_python=python)
+        except store.StoreError as exc:
+            raise _fail(str(exc), 1) from exc
+        console.print(
+            f"[green]{gettext('Dependencies of %(name)s updated: %(deps)s') % {'name': escape(entry.meta.name), 'deps': ', '.join(escape(d) for d in new_deps) or '—'}}[/green]"
+        )
 
 
 # --------------------------------------------------------------------------
@@ -2126,6 +2208,7 @@ def doctor(
     entries = store.list_entries()
     missing = [e.meta.name for e in entries if launcher.target_missing(e)]
     drifted = _drifted_entries(entries)
+    needs_missing = {e.meta.name: miss for e in entries if (miss := launcher.missing_needs(e))}
     mirror = config.load_mirror()
     location = scripts_dir()
     size = store.dir_size(location)
@@ -2137,6 +2220,7 @@ def doctor(
                     "entries": len(entries),
                     "missing": missing,
                     "drift": drifted,
+                    "needs_missing": needs_missing,
                     "mirror": mirror.pypi if mirror.enabled else "off",
                     "location": str(location),
                     "size_bytes": size,
@@ -2164,6 +2248,10 @@ def doctor(
         console.print(
             f"  [yellow]⚠ {gettext('%(name)s: form definitions are out of sync — run: skit params %(name)s --resync') % {'name': escape(d)}}[/yellow]"
         )
+    for nm_name, tools in needs_missing.items():
+        console.print(
+            f"  [yellow]⚠ {gettext('%(name)s: missing external command(s): %(tools)s') % {'name': escape(nm_name), 'tools': ', '.join(escape(t) for t in tools)}}[/yellow]"
+        )
     if mirror.enabled:
         console.print("✓ " + gettext("Mirror: on (%(pypi)s)") % {"pypi": escape(mirror.pypi)})
     else:
@@ -2179,23 +2267,34 @@ def doctor(
 # config (git-config grammar: bare = list, KEY = read, KEY VALUE = write)
 # --------------------------------------------------------------------------
 
-_CONFIG_KEYS = ("lang", "editor", "mirror", "form", "after_run")
+_CONFIG_KEYS = ("lang", "editor", "mirror", "form", "after_run", "shell.bash_path", "js.runner")
+
+
+def _config_lang_value() -> str:
+    override = config.load_config().get("language", "")
+    if isinstance(override, str) and override:
+        return override
+    return gettext("auto (%(locale)s)") % {"locale": i18n.current_locale()}
+
+
+def _config_mirror_value() -> str:
+    m = config.load_mirror()
+    return m.pypi if m.enabled else "off"
 
 
 def _config_value(key: str) -> str:
-    if key == "lang":
-        override = config.load_config().get("language", "")
-        if isinstance(override, str) and override:
-            return override
-        return gettext("auto (%(locale)s)") % {"locale": i18n.current_locale()}
-    if key == "editor":
-        return config.load_editor() or gettext("default ($VISUAL / $EDITOR)")
-    if key == "mirror":
-        m = config.load_mirror()
-        return m.pypi if m.enabled else "off"
-    if key == "form":
-        return config.load_form()
-    return config.load_after_run()  # "after_run" — _CONFIG_KEYS guards the key set
+    # Dispatch table (not an if-chain) keeps the key set open-ended without tripping the
+    # too-many-returns lint; _CONFIG_KEYS guards `key` so the lookup can't miss.
+    readers = {
+        "lang": _config_lang_value,
+        "editor": lambda: config.load_editor() or gettext("default ($VISUAL / $EDITOR)"),
+        "mirror": _config_mirror_value,
+        "form": config.load_form,
+        "after_run": config.load_after_run,
+        "shell.bash_path": lambda: config.load_bash_path() or gettext("auto (bash on PATH)"),
+        "js.runner": lambda: config.load_js_runner() or gettext("auto (deno > bun > node)"),
+    }
+    return readers[key]()
 
 
 def _config_set(key: str, value: str) -> None:
@@ -2226,6 +2325,23 @@ def _config_set(key: str, value: str) -> None:
             )
             raise typer.Exit(EXIT_USAGE)
         config.save_form(value)
+    elif key == "shell.bash_path":
+        # Validate on set (never on clear): an empty value clears the key. A non-empty
+        # path must point at a real file — a typo'd bash_path would otherwise surface
+        # only later as an opaque "isn't available" refusal on a Windows shell run.
+        if value.strip() and not Path(value).expanduser().is_file():
+            err_console.print(
+                f"[red]{gettext('No such file: %(path)s') % {'path': escape(value)}}[/red]"
+            )
+            raise typer.Exit(EXIT_USAGE)
+        config.save_bash_path(value)
+    elif key == "js.runner":
+        if value.strip() and value not in config.JS_RUNNERS:
+            err_console.print(
+                f"[red]{gettext('Unknown JS runner: %(value)s. Choose from: %(names)s') % {'value': escape(value), 'names': ', '.join(config.JS_RUNNERS)}}[/red]"
+            )
+            raise typer.Exit(EXIT_USAGE)
+        config.save_js_runner(value)
     else:  # after_run
         if value not in config.AFTER_RUN_MODES:
             err_console.print(
@@ -2244,7 +2360,10 @@ def _config_set(key: str, value: str) -> None:
 )
 def config_cmd(
     key: str = typer.Argument(
-        None, help=gettext("Setting name: lang / editor / mirror / form / after_run")
+        None,
+        help=gettext(
+            "Setting name: lang / editor / mirror / form / after_run / shell.bash_path / js.runner"
+        ),
     ),
     value: str = typer.Argument(
         None, help=gettext('New value (omit to read; lang also accepts "auto")')
@@ -2260,7 +2379,7 @@ def config_cmd(
             )
             return
         for k in _CONFIG_KEYS:
-            console.print(f"  {k:<8}{escape(_config_value(k))}")
+            console.print(f"  {k:<16}{escape(_config_value(k))}")
         return
     if key not in _CONFIG_KEYS:
         err_console.print(

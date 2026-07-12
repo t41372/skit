@@ -737,8 +737,10 @@ def test_deps_not_found():
 
 
 def test_deps_not_python(tmp_path):
+    # The PEP 723 dependency flavor is python-only: --dep on a command entry is refused.
+    # (The bare read view now works for every kind — it shows needs; see test_needs.py.)
     store.add_command("echo hi", name="e")
-    result = runner.invoke(cli.app, ["deps", "e"])
+    result = runner.invoke(cli.app, ["deps", "e", "--dep", "requests"])
     assert result.exit_code == 1
 
 
