@@ -7,12 +7,36 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import tomli_w
+
+# Windows can't replace a file that another handle has open (sharing violation →
+# PermissionError); concurrent readers of registry.toml hold it for microseconds, so a
+# bounded exponential backoff is the standard idiom (total worst-case wait ≈ 1.3 s).
+# POSIX replaces open files freely, so this path never fires there.
+_REPLACE_RETRIES = 7  # sleeps: 0.01 · 0.02 · 0.04 · 0.08 · 0.16 · 0.32 · 0.64 s
+_REPLACE_BACKOFF_START = 0.01
+
+
+def _replace_with_retry(src: str, dst: Path) -> None:
+    """os.replace that rides out transient Windows sharing violations. After the
+    retries are exhausted, the final attempt's PermissionError propagates — a target
+    held open indefinitely (antivirus, an actual leak) must stay loud."""
+    delay = _REPLACE_BACKOFF_START
+    for _ in range(_REPLACE_RETRIES):
+        try:
+            os.replace(src, dst)
+        except PermissionError:
+            time.sleep(delay)
+            delay *= 2
+        else:
+            return
+    os.replace(src, dst)
 
 
 def _fsync_dir(dir_path: Path) -> None:
@@ -39,7 +63,7 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())  # durable on disk BEFORE the rename, not just before this returns
-        os.replace(tmp, path)
+        _replace_with_retry(tmp, path)
         if sys.platform != "win32":  # os.open can't open a directory on Windows
             with contextlib.suppress(OSError):
                 _fsync_dir(path.parent)  # best-effort: persist the rename's directory entry too
