@@ -17,6 +17,10 @@ skit stores your Python scripts in one place and makes them painless to launch.
 
 **AI writes the scripts. skit gives them a home.**
 
+And it's a home you share with your agent: the library you drive from a menu, AI agents
+drive through a deterministic CLI — checking it before writing yet another one-off
+script, and (with your OK) saving the good ones back, so they outlive the chat.
+
 <video src="https://github.com/user-attachments/assets/65c9eed8-d6fa-4a16-836c-7017eb08bb9c" controls></video>
 
 ## What it does
@@ -27,6 +31,7 @@ skit stores your Python scripts in one place and makes them painless to launch.
 - **No environment mess.** skit declares each script's dependencies in the script itself (PEP 723) and runs it through uv in an isolated, cached environment — no venvs to manage, nothing installed globally.
 - **Mouse or keyboard.** Plain `skit` opens the full TUI; every key hint on screen is also a clickable button.
 - **Automation-ready.** Every TUI action is also a CLI command with `--json` output and meaningful exit codes — for shell scripts, CI, and AI agents.
+- **Your agent's script library too.** The official [Agent Skill](https://agentskills.io) teaches Claude Code, Codex, Cursor, Gemini CLI, and friends the whole drill: discover scripts with `skit list`, read a parameter schema with `skit show`, run with `skit run --set … --no-input`. One `skit agent install` away — see [Works with your AI agent](#works-with-your-ai-agent).
 - **Speaks your language.** English, 繁體中文, and 简体中文, with more to come. See [Languages](#languages).
 
 | Problem | What skit does |
@@ -34,6 +39,7 @@ skit stores your Python scripts in one place and makes them painless to launch.
 | Scripts scattered all over the place | One central menu, with search |
 | Scripts with weird external dependencies | An isolated environment per script — dependencies declared in the file (PEP 723), resolved by uv |
 | CLI flags you forget ten minutes later, `input()` prompts, hard-coded constants meant to be edited by hand | Static analysis extracts them all into an interactive form — no code changes. Last-used values come prefilled; favorites save as presets. |
+| The weird script an AI wrote for you dies with the chat session | Agents check the library first, reuse what's there, and save the keepers — one-off scripts become permanent, parameterized tools |
 
 Nothing to set up per script — no refactoring, no config to maintain. The script an AI wrote last week and the one you barely remember from last year launch the same way.
 

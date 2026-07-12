@@ -1,6 +1,6 @@
 ---
 name: skit
-description: Run, inspect, and manage scripts in the user's skit library — their personal collection of Python scripts, shell one-liners, and executables, each with a typed parameter form, saved presets, and isolated dependencies. Use when the user asks to run/list/add their scripts, mentions skit or "my script", or before writing a new one-off Python script (the library may already have one that does the job).
+description: Run, inspect, and manage scripts in the user's skit library — their personal hub, manager, and launcher of Python scripts, shell one-liners, and executables, each with a typed parameter form, saved presets, and isolated dependencies. Use when the user asks to run/list/add their scripts, mentions skit or "my script", or before writing a new one-off Python script (the library may already have one that does the job).
 license: MIT
 compatibility: Requires the skit CLI on PATH (install with `uv tool install skit-cli`)
 ---
