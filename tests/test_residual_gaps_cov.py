@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from skit import flows, launcher, pep723, store
+from skit.langs import launch
 from skit.langs.python import analyzer, argspec, metawriter
 from skit.langs.python.metawriter import ParamSpec
 
@@ -121,7 +122,7 @@ def test_describe_command_python_includes_python_and_with_flags(
     # The transparency line for a python entry mirrors build_command: it echoes --python for a
     # pinned interpreter (launcher.py:233) and one --with per declared dependency
     # (launcher.py:235).
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/fake/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/fake/uv")
     p = tmp_path / "s.py"
     p.write_text("print(1)\n", encoding="utf-8")
     entry = store.add_python(p)
@@ -164,7 +165,7 @@ def test_join_for_display_uses_list2cmdline_on_windows(
     # (launcher.py:249).
     monkeypatch.setattr("sys.platform", "win32")
     argv = ["C:/tools/tool.exe", "a b", "c"]
-    assert launcher._join_for_display(argv) == subprocess.list2cmdline(argv)
+    assert launch.join_for_display(argv) == subprocess.list2cmdline(argv)
 
 
 # --------------------------------------------------------------------------

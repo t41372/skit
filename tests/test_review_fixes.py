@@ -7,6 +7,7 @@ import sys
 import pytest
 
 from skit import launcher, pep723, store, uvman
+from skit.langs import launch
 from skit.langs.python import metawriter, reconcile, shim
 from skit.langs.python.metawriter import ParamSpec
 
@@ -384,13 +385,12 @@ def test_update_dependencies_exe_entry(tmp_path, monkeypatch):
 
 
 def test_find_uv_private_bin_exe_variant(tmp_path, monkeypatch):
-    from skit import launcher
 
     monkeypatch.setattr("shutil.which", lambda _: None)
-    monkeypatch.setattr("skit.launcher.private_bin_dir", lambda: tmp_path / "bin")
+    monkeypatch.setattr("skit.langs.launch.private_bin_dir", lambda: tmp_path / "bin")
     (tmp_path / "bin").mkdir()
     (tmp_path / "bin" / "uv.exe").touch()
-    assert launcher.find_uv() == str(tmp_path / "bin" / "uv.exe")
+    assert launch.find_uv() == str(tmp_path / "bin" / "uv.exe")
 
 
 # ---------- launcher: _build_python with only requires_python (no deps) ----------
@@ -404,7 +404,7 @@ def test_build_python_only_requires_python(tmp_path, monkeypatch):
     script = tmp_path / "s.py"
     script.write_text("print('ok')\n", encoding="utf-8")
     entry = store.add_python(script)
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/uv")
     entry.meta.requires_python = ">=3.11"
     entry.meta.dependencies = None
     cmd = launcher.build_command(entry)

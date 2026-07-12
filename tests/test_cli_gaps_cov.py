@@ -438,7 +438,7 @@ def test_deps_python_only_preserves_existing_deps(tmp_path):
 
 
 def test_doctor_json_uv_found(monkeypatch, tmp_path):
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/usr/bin/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/usr/bin/uv")
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     result = runner.invoke(cli.app, ["doctor", "--json"])
     assert result.exit_code == 0, result.output
@@ -448,7 +448,7 @@ def test_doctor_json_uv_found(monkeypatch, tmp_path):
 
 
 def test_doctor_json_uv_missing_exits_1(monkeypatch):
-    monkeypatch.setattr(launcher, "find_uv", lambda: None)
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: None)
     result = runner.invoke(cli.app, ["doctor", "--json"])
     assert result.exit_code == 1  # missing uv -> non-zero even in JSON mode
     assert '"uv"' in result.output
@@ -466,7 +466,7 @@ def _drifted_entry(tmp_path: Path, name: str) -> store.Entry:
 
 
 def test_doctor_reports_drift_with_resync_hint(monkeypatch, tmp_path):
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/usr/bin/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/usr/bin/uv")
     _drifted_entry(tmp_path, "widget")
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 0, result.output
@@ -478,7 +478,7 @@ def test_doctor_reports_drift_with_resync_hint(monkeypatch, tmp_path):
 def test_doctor_mirror_on_line(monkeypatch, tmp_path):
     from skit import config
 
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/usr/bin/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/usr/bin/uv")
     config.save_mirror(config.preset("tsinghua"))
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 0, result.output

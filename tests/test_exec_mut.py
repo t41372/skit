@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from skit import uvman
+from skit.langs import launch
 from skit.langs.python import shim
 from skit.langs.python.metawriter import ParamSpec
 
@@ -286,10 +287,9 @@ def test_write_injected_requests_utf8_explicitly(
 
 
 def test_find_uv_queries_path_for_the_exact_name_uv(monkeypatch: pytest.MonkeyPatch) -> None:
-    from skit import launcher
 
     monkeypatch.setattr("shutil.which", lambda name: "/path/to/uv" if name == "uv" else None)
-    assert launcher.find_uv() == "/path/to/uv"
+    assert launch.find_uv() == "/path/to/uv"
 
 
 def test_ensure_uv_returns_found_uv_without_downloading(
@@ -297,15 +297,14 @@ def test_ensure_uv_returns_found_uv_without_downloading(
 ) -> None:
     """When find_uv locates a binary, ensure_uv must return it and never touch the
     download path (a network fallback here would be a first-run regression)."""
-    from skit import launcher
 
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/found/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/found/uv")
 
     def never(**_kw: object) -> str:
         raise AssertionError("must not download when uv was found")
 
     monkeypatch.setattr(uvman, "ensure_uv_downloaded", never)
-    assert launcher.ensure_uv() == "/found/uv"
+    assert launch.ensure_uv() == "/found/uv"
 
 
 def test_ensure_uv_failure_message_includes_guidance_and_cause(
@@ -313,14 +312,14 @@ def test_ensure_uv_failure_message_includes_guidance_and_cause(
 ) -> None:
     from skit import launcher
 
-    monkeypatch.setattr(launcher, "find_uv", lambda: None)
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: None)
 
     def boom(**_kw: object) -> str:
         raise uvman.UvDownloadError("boom")
 
     monkeypatch.setattr(uvman, "ensure_uv_downloaded", boom)
     with pytest.raises(launcher.LaunchError) as exc_info:
-        launcher.ensure_uv()
+        launch.ensure_uv()
     assert str(exc_info.value) == (
         "uv not found. Install it (https://docs.astral.sh/uv/) or run skit doctor for"
         " guidance. (boom)"
@@ -332,7 +331,7 @@ def test_build_python_missing_script_message_names_the_path(
 ) -> None:
     from skit import launcher
 
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/fake/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/fake/uv")
     py_entry.script_path.unlink()
     with pytest.raises(launcher.LaunchError) as exc_info:
         launcher.build_command(py_entry)
@@ -441,7 +440,7 @@ def test_run_entry_forwards_script_override(
 ) -> None:
     from skit import launcher
 
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/fake/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/fake/uv")
     override = tmp_path / "inj.py"
     override.write_text("print(1)\n", encoding="utf-8")
     captured = _stub_run(monkeypatch)

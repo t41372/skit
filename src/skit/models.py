@@ -14,7 +14,11 @@ from .i18n import gettext
 
 SCHEMA_VERSION = 1
 
-Kind = Literal["python", "exe", "command"]
+# Kind is an OPEN string — a registry key resolved via langs.registry.spec_for. Keeping the
+# type open is the forward-compat contract: a meta written by a newer skit (an unknown kind)
+# must still list/show/remove cleanly and fail a run with a clean LaunchError, never a parse
+# error (see docs/design/multilang.md).
+Kind = str
 Mode = Literal["copy", "reference"]
 Workdir = str  # "origin" | "store" | "invoke" | absolute path
 
@@ -133,7 +137,11 @@ class Entry:
         """The in-store script in copy mode; the original path in reference mode."""
         if self.meta.mode == "reference":
             return Path(self.meta.source)
-        return self.dir / ("script.py" if self.meta.kind == "python" else "payload")
+        # Lazy import: models is the data layer everything imports, so it must not pull the
+        # registry (and through it the launch strategies) in at module load.
+        from .langs.registry import stored_name
+
+        return self.dir / stored_name(self.meta.kind)
 
 
 def now_iso() -> str:

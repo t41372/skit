@@ -306,7 +306,7 @@ def test_deps_set_store_error(tmp_path, monkeypatch):
 
 
 def test_doctor_rebuild_reports_problem(monkeypatch, tmp_path):
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/usr/bin/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/usr/bin/uv")
     src = _py(tmp_path, "print(1)\n")
     store.add_python(src, name="ref", mode="reference")
     src.unlink()

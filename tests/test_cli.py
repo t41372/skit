@@ -757,26 +757,26 @@ def test_deps_view_with_requires_python(tmp_path):
 
 
 def test_doctor_uv_found(monkeypatch, tmp_path):
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/usr/bin/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/usr/bin/uv")
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 0
 
 
 def test_doctor_uv_missing(monkeypatch):
-    monkeypatch.setattr(launcher, "find_uv", lambda: None)
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: None)
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 1
 
 
 def test_doctor_rebuild(monkeypatch, tmp_path):
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/usr/bin/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/usr/bin/uv")
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     result = runner.invoke(cli.app, ["doctor", "--rebuild"])
     assert result.exit_code == 0
 
 
 def test_doctor_reports_missing_reference(monkeypatch, tmp_path):
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/usr/bin/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/usr/bin/uv")
     src = _py(tmp_path, "print(1)\n")
     store.add_python(src, name="ref", mode="reference")
     src.unlink()
@@ -1128,7 +1128,7 @@ def test_deps_set_summary_escapes_markup(tmp_path):
 
 
 def test_doctor_rebuild_problem_line_escapes_markup(monkeypatch, tmp_path):
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/usr/bin/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/usr/bin/uv")
     monkeypatch.setattr(store, "doctor_rebuild", lambda: (0, ["[red]broken[/red]"]))
     result = runner.invoke(cli.app, ["doctor", "--rebuild"])
     assert result.exit_code == 0
@@ -1145,7 +1145,7 @@ def test_doctor_missing_reference_escapes_markup_in_name(tmp_path):
 
 
 def test_doctor_uv_path_escapes_markup(monkeypatch):
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/usr/[red]bin[/red]/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/usr/[red]bin[/red]/uv")
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 0
     assert "[red]bin[/red]" in result.output

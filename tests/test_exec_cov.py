@@ -67,7 +67,7 @@ def test_const_skips_non_literal_duplicate_then_replaces_literal():
 def test_build_python_missing_script_raises(py_entry, monkeypatch):
     from skit import launcher
 
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/fake/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/fake/uv")
     py_entry.script_path.unlink()
     with pytest.raises(launcher.LaunchError, match="script"):
         launcher.build_command(py_entry)
@@ -79,7 +79,7 @@ def test_build_python_missing_script_raises(py_entry, monkeypatch):
 def test_build_python_with_script_override_uses_no_project(py_entry, tmp_path, monkeypatch):
     from skit import launcher
 
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/fake/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/fake/uv")
     override = tmp_path / "injected.py"
     override.write_text("print(1)\n", encoding="utf-8")
     cmd = launcher.build_command(py_entry, script_override=override)
@@ -108,7 +108,7 @@ def test_build_shell_windows_platform_uses_list2cmdline(monkeypatch):
     from skit import launcher, store
 
     entry = store.add_command("echo hello", name="win-quote")
-    monkeypatch.setattr(launcher.sys, "platform", "win32")
+    monkeypatch.setattr("sys.platform", "win32")
     cmd = launcher.build_command(entry, ["a b", "c"])
     assert isinstance(cmd, str)
     assert cmd.startswith("echo hello ")

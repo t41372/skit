@@ -1,0 +1,130 @@
+"""The language registry: kind -> LangSpec resolution and add-time kind inference.
+
+Registration is explicit aggregation (a builder table), not import-time side effects —
+deterministic, statically analyzable, no import-order magic. Specs are built lazily and
+cached: resolving "python" never pays for a future language's parser import, and a
+language whose optional parser fails to import degrades its capabilities to None
+instead of crashing (the `spec.analyzer is None` idiom downstream handles the rest).
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from functools import cache
+from typing import TYPE_CHECKING
+
+from . import launch
+from .base import Analyzer, CliReader, CommentSyntax, LangSpec, ParamsIO
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from pathlib import Path
+
+
+def _python_spec() -> LangSpec:
+    from .python import analyzer, argspec, metawriter, reconcile
+
+    return LangSpec(
+        kind="python",
+        family="interpreted",
+        glyph="⬡",
+        launch=launch.UvLaunch(),
+        extensions=(".py",),
+        shebangs=("python", "python3"),
+        stored_name="script.py",  # PINNED: existing stores carry this name on disk
+        comment=CommentSyntax(prefix="#"),
+        params_io=ParamsIO(read=metawriter.read_params, write=metawriter.write_params),
+        analyzer=Analyzer(analyze=analyzer.analyze, reconcile=reconcile.reconcile),
+        cli_reader=CliReader(read_cli=argspec.read_cli),
+        supports_modes=True,
+        supports_deps=True,
+    )
+
+
+def _exe_spec() -> LangSpec:
+    return LangSpec(kind="exe", family="binary", glyph="▶", launch=launch.DirectLaunch())
+
+
+def _command_spec() -> LangSpec:
+    # takes_argv=False: a command's "arguments" are its placeholders; silently reusing a
+    # remembered argv tail on a template is more surprising than helpful (cli run's
+    # reuse-last-args affordance keys off this).
+    return LangSpec(
+        kind="command",
+        family="template",
+        glyph="$",
+        launch=launch.TemplateLaunch(),
+        takes_argv=False,
+    )
+
+
+_BUILDERS: dict[str, Callable[[], LangSpec]] = {
+    "python": _python_spec,
+    "exe": _exe_spec,
+    "command": _command_spec,
+}
+
+KNOWN_KINDS = frozenset(_BUILDERS)
+
+
+@cache
+def spec_for(kind: str) -> LangSpec | None:
+    """Resolve a kind to its LangSpec; None for a kind this skit version doesn't know
+    (a meta written by a newer skit — every consumer degrades: launcher raises a clean
+    LaunchError, forms fall back to the extra-args escape, the TUI shows a plain badge)."""
+    builder = _BUILDERS.get(kind)
+    return builder() if builder is not None else None
+
+
+def stored_name(kind: str) -> str:
+    """The in-store copy filename for a kind ("" when the kind is never copied).
+    Unknown kinds fall back to the historical "payload" so a newer store's copy-mode
+    entry still resolves to *some* path instead of crashing."""
+    spec = spec_for(kind)
+    if spec is None:
+        return "payload"
+    return spec.stored_name
+
+
+def infer_kind(path: Path, force_exe: bool = False) -> str:
+    """What kind of entry a path should become — the tool can see the file type, so
+    don't demand a flag: a registered extension names its kind, an executable file is
+    "exe", anything else is "unknown" (callers point at --exe / --cmd). Shared by the
+    CLI and the TUI add panel so the two paths can't drift apart."""
+    if force_exe:
+        return "exe"
+    by_ext = _extension_map().get(path.suffix.lower())
+    if by_ext is not None:
+        return by_ext
+    if path.is_file() and _is_executable_file(path):
+        return "exe"
+    return "unknown"
+
+
+@cache
+def _extension_map() -> dict[str, str]:
+    out: dict[str, str] = {}
+    for kind in _BUILDERS:
+        spec = spec_for(kind)
+        if spec is None:  # pragma: no cover — every _BUILDERS key resolves by construction
+            continue
+        for ext in spec.extensions:
+            out[ext] = kind
+    return out
+
+
+def _is_executable_file(path: Path) -> bool:
+    """Whether `path` is a program this platform would run directly.
+
+    POSIX has an execute bit, so os.access(X_OK) is the right question there. Windows has none —
+    os.access(X_OK) is True for *every* readable file, which would misclassify a plain `notes.txt`
+    as an executable — so on Windows a file counts as executable only when its extension is one the
+    OS itself treats as runnable, i.e. a member of PATHEXT (.exe/.bat/.cmd/…)."""
+    if sys.platform == "win32":
+        # PATHEXT is a Windows env var, always ';'-delimited (independent of os.pathsep), listing
+        # the extensions the shell will execute; fall back to the conventional default when unset.
+        pathext = os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
+        runnable = {ext.lower() for ext in pathext.split(";") if ext}
+        return path.suffix.lower() in runnable
+    return os.access(path, os.X_OK)

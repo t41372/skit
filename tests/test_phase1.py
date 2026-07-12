@@ -143,7 +143,7 @@ def test_build_command_reference_deps(tmp_path, monkeypatch):
     entry = store.add_python(
         script, mode="reference", dependencies=["requests", "rich"], requires_python=">=3.11"
     )
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/fake/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/fake/uv")
     cmd = launcher.build_command(entry)
     assert cmd[:4] == ["/fake/uv", "run", "--no-project", "--python"]
     assert ">=3.11" in cmd

@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 from textual.widgets import Input, OptionList, RadioButton, RadioSet, Select, Static
 
-from skit import config, launcher, store, tui
+from skit import config, store, tui
 from skit.langs.python import metawriter
 from skit.langs.python.metawriter import ParamSpec
 from skit.paths import scripts_dir
@@ -248,7 +248,7 @@ async def test_prefs_close_dismisses_false(tmp_path):
 
 async def test_health_uv_missing_shows_install_hint(tmp_path, monkeypatch):
     """When uv can't be found, the checklist shows the install pointer, not a path."""
-    monkeypatch.setattr(launcher, "find_uv", lambda: None)
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: None)
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         app.push_screen(HealthScreen())

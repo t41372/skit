@@ -12,7 +12,6 @@ import contextlib
 import hashlib
 import os
 import shutil
-import sys
 import time
 import tomllib
 from collections.abc import Callable, Iterator
@@ -22,6 +21,8 @@ from typing import Any
 from . import argstate, pep723
 from .atomic import atomic_write_toml
 from .i18n import gettext
+from .langs import registry
+from .langs.registry import stored_name
 from .models import Entry, Kind, Mode, ScriptMeta, ScriptMetaError, now_iso, slugify
 from .paths import registry_path, scripts_dir
 
@@ -178,33 +179,11 @@ def _extract_description(script_text: str) -> str:
 
 
 def infer_kind(path: Path, force_exe: bool = False) -> str:
-    """What kind of entry a path should become — the tool can see the file type, so
-    don't demand a flag: ".py" -> "python", an executable file -> "exe", anything else
-    -> "unknown" (callers point at --exe / --cmd). Shared by the CLI and the TUI add
-    panel so the two paths can't drift apart."""
-    if force_exe:
-        return "exe"
-    if path.suffix.lower() == ".py":
-        return "python"
-    if path.is_file() and _is_executable_file(path):
-        return "exe"
-    return "unknown"
-
-
-def _is_executable_file(path: Path) -> bool:
-    """Whether `path` is a program this platform would run directly.
-
-    POSIX has an execute bit, so os.access(X_OK) is the right question there. Windows has none —
-    os.access(X_OK) is True for *every* readable file, which would misclassify a plain `notes.txt`
-    as an executable — so on Windows a file counts as executable only when its extension is one the
-    OS itself treats as runnable, i.e. a member of PATHEXT (.exe/.bat/.cmd/…)."""
-    if sys.platform == "win32":
-        # PATHEXT is a Windows env var, always ';'-delimited (independent of os.pathsep), listing
-        # the extensions the shell will execute; fall back to the conventional default when unset.
-        pathext = os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
-        runnable = {ext.lower() for ext in pathext.split(";") if ext}
-        return path.suffix.lower() in runnable
-    return os.access(path, os.X_OK)
+    """What kind of entry a path should become. Delegates to the language registry
+    (langs.registry.infer_kind) — kept as a store-level name because the CLI and the
+    TUI add panel both resolve inference through the store, so the two paths can't
+    drift apart."""
+    return registry.infer_kind(path, force_exe=force_exe)
 
 
 def suggest_description(script_text: str) -> str:
@@ -251,7 +230,7 @@ def add_python(
         injected_text = pep723.inject_block(strict_text, dependencies or [], requires_python)
 
         def _write_injected(entry_dir: Path) -> None:
-            (entry_dir / "script.py").write_text(injected_text, encoding="utf-8")
+            (entry_dir / stored_name("python")).write_text(injected_text, encoding="utf-8")
 
         after_copy = _write_injected
         deps_injected = True
@@ -357,7 +336,7 @@ def _add_entry(
         try:
             if payload is not None:
                 # copy mode: copy the original verbatim (A5: never land a processed script)
-                shutil.copy2(payload, entry_dir / "script.py")
+                shutil.copy2(payload, entry_dir / stored_name(meta.kind))
             _write_meta(entry_dir, meta)
             if after_copy is not None:
                 after_copy(entry_dir)
@@ -432,7 +411,7 @@ def update_dependencies(
     if meta.kind == "python" and meta.mode == "copy":  # pragma: no mutate — and/or equivalent
         from . import pep723
 
-        script = entry.dir / "script.py"
+        script = entry.script_path
         if script.exists():
             text = script.read_text(encoding="utf-8", errors="replace")
             script.write_text(
