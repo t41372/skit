@@ -34,7 +34,9 @@ def _run(monkeypatch, args: list[str]):
     """Run the CLI and intercept launcher.run_entry. Returns (exit_code, captured kwargs)."""
     captured: dict[str, object] = {}
 
-    def fake_run_entry(entry, extra, *, values=None, invoke_cwd=None, script_override=None):
+    def fake_run_entry(
+        entry, extra, *, values=None, invoke_cwd=None, script_override=None, env_overlay=None
+    ):
         captured["script_override"] = script_override
         captured["values"] = values
         return 0

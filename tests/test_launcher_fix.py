@@ -45,7 +45,7 @@ def test_placeholder_value_with_double_braces_round_trips():
     # The old two-pass implementation collapsed this to "run --q { .name }" (single braces).
     # Quote with the same platform-aware helper the product uses (shlex on POSIX, list2cmdline on
     # Windows) rather than hardcoding shlex.quote, which would diverge on Windows.
-    assert cmd == "run --q " + launch._quote_for_shell("{{ .name }}")
+    assert cmd == "run --q " + launch.quote_for_shell("{{ .name }}")
 
 
 def test_placeholder_value_with_double_braces_inside_quoted_template_slot():
@@ -192,7 +192,7 @@ def test_quote_for_shell_uses_list2cmdline_on_windows(monkeypatch):
 
     monkeypatch.setattr("sys.platform", "win32")
     value = "My Movie.mp4"
-    quoted = launch._quote_for_shell(value)
+    quoted = launch.quote_for_shell(value)
     assert quoted == subprocess.list2cmdline([value])
     assert quoted == '"My Movie.mp4"'  # Windows double-quote wrapping, not POSIX single-quote
     assert quoted != shlex.quote(value)

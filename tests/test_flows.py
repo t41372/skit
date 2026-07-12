@@ -913,7 +913,9 @@ def test_execute_injects_then_cleans_up_the_temp_copy(tmp_path, monkeypatch):
 
     captured: dict[str, object] = {}
 
-    def fake_run(entry, extra, *, values=None, invoke_cwd=None, script_override=None):
+    def fake_run(
+        entry, extra, *, values=None, invoke_cwd=None, script_override=None, env_overlay=None
+    ):
         assert script_override is not None
         captured["override"] = script_override
         captured["existed_during_run"] = script_override.exists()
@@ -1127,7 +1129,9 @@ def test_execute_forwards_invoke_cwd(tmp_path, monkeypatch):
 
     captured: dict[str, object] = {}
 
-    def fake_run(entry, extra, *, values=None, invoke_cwd=None, script_override=None):
+    def fake_run(
+        entry, extra, *, values=None, invoke_cwd=None, script_override=None, env_overlay=None
+    ):
         captured["cwd"] = invoke_cwd
         return 0
 
@@ -1164,7 +1168,9 @@ def test_execute_inject_falls_back_to_entry_dir(tmp_path, monkeypatch):
 
     landed: dict[str, object] = {}
 
-    def fake_run(entry, extra, *, values=None, invoke_cwd=None, script_override=None):
+    def fake_run(
+        entry, extra, *, values=None, invoke_cwd=None, script_override=None, env_overlay=None
+    ):
         landed["path"] = script_override
         return 0
 

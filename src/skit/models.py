@@ -50,6 +50,13 @@ class ScriptMeta:
     params: list[str] | None = (
         None  # named placeholders in a command template (prompted before run)
     )
+    # Declared parameter schema rows ([[parameters]]), for kinds whose declarations
+    # can't live in a text body (exe, command). Raw TOML tables here — the model
+    # boundary is params.ParamDecl.from_meta_dict, which is total on hand-edited
+    # garbage. For template kinds, `params` above stays a write-through cache of the
+    # placeholder names so an OLDER skit still prompts instead of running a template
+    # with literal {holes} (downgrade safety; see docs/design/multilang.md).
+    parameters: list[dict[str, Any]] | None = None
     schema: int = SCHEMA_VERSION
 
     def to_toml_dict(self) -> dict[str, Any]:
@@ -72,6 +79,8 @@ class ScriptMeta:
             d["requires_python"] = self.requires_python
         if self.params:
             d["params"] = self.params
+        if self.parameters:
+            d["parameters"] = self.parameters
         return d
 
     @classmethod
@@ -89,7 +98,7 @@ class ScriptMeta:
         invalid = [key for key in ("name", "kind") if not isinstance(d[key], str)]
         invalid += [
             key
-            for key in ("dependencies", "params")
+            for key in ("dependencies", "params", "parameters")
             if d.get(key) is not None and not isinstance(d[key], list)
         ]
         if invalid:
@@ -110,6 +119,13 @@ class ScriptMeta:
             dependencies=list(d["dependencies"]) if d.get("dependencies") else None,
             requires_python=d.get("requires_python", ""),
             params=list(d["params"]) if d.get("params") else None,
+            # Non-dict rows (a hand-edited scalar in the array) are dropped here so every
+            # downstream reader gets real tables; ParamDecl.from_meta_dict handles the rest.
+            parameters=(
+                [row for row in d["parameters"] if isinstance(row, dict)]
+                if d.get("parameters")
+                else None
+            ),
             schema=d.get("schema", SCHEMA_VERSION),
         )
 

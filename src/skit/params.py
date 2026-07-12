@@ -41,6 +41,17 @@ Binding = Literal["const", "input", "envdefault", "none"]
 Delivery = Literal["inject", "env", "flag", "placeholder"]
 ParamType = Literal["str", "int", "float", "bool", "choice"]
 
+# Secret pre-check heuristic (matched against the upper-cased name / prompt). Universal:
+# python candidates, shell variables, command placeholders, and declared params all run
+# their names through the same rule, so "what counts as secret-looking" can never fork.
+_SECRET_HINTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD")
+
+
+def is_secret_name(text: str) -> bool:
+    up = text.upper()
+    return any(h in up for h in _SECRET_HINTS)
+
+
 _BINDINGS: tuple[Binding, ...] = ("const", "input", "envdefault", "none")
 _DELIVERIES: tuple[Delivery, ...] = ("inject", "env", "flag", "placeholder")
 _TYPES: tuple[ParamType, ...] = ("str", "int", "float", "bool", "choice")
@@ -202,6 +213,52 @@ class ParamDecl:
             order=order,
             env_target=str(d.get("env_target", "")),
         )
+
+
+def synthesized_placeholder(name: str) -> ParamDecl:
+    """The default schema of an undeclared command-template placeholder — exactly the
+    historical form behavior: required (an empty placeholder silently assembles a broken
+    command, which the non-interactive contract forbids), free-text, secret by the name
+    heuristic (C3 applies to every source)."""
+    return ParamDecl(
+        name=name,
+        binding="none",
+        delivery="placeholder",
+        required=True,
+        secret=is_secret_name(name),
+    )
+
+
+def declared_from_meta(parameters: list[dict[str, Any]] | None) -> list[ParamDecl]:
+    """The declared rows of a meta [[parameters]] array, nameless rows dropped (a
+    hand-edited row without a name can't key a form field, a value, or an edit op)."""
+    return [d for row in parameters or [] if (d := ParamDecl.from_meta_dict(row)).name]
+
+
+def declared_for_template(
+    parameters: list[dict[str, Any]] | None, placeholders: list[str]
+) -> list[ParamDecl]:
+    """The form decls for a command template: the template's placeholder list IS the
+    field list (in template order — the template is the source of truth for WHICH
+    parameters exist), and a declared row supplies a placeholder's schema when present
+    (type/default/optional/secret override — the fix for the auto-secret-no-override
+    defect). Declared env-delivery params ride along after the placeholders (an env
+    variable is a legitimate second channel into a shell template's child process);
+    any other declared delivery is ignored here — argv is not a template's interface
+    (takes_argv=False), so a flag row can only be a hand-edit mistake, and dropping it
+    from the form beats assembling arguments the template never reads."""
+    declared = {d.name: d for d in declared_from_meta(parameters)}
+    out: list[ParamDecl] = []
+    for name in placeholders:
+        decl = declared.get(name)
+        if decl is not None and decl.delivery == "placeholder":
+            out.append(decl)
+        else:
+            out.append(synthesized_placeholder(name))
+    out.extend(
+        d for d in declared.values() if d.delivery == "env" and d.name not in set(placeholders)
+    )
+    return out
 
 
 def validate_invariants(decl: ParamDecl) -> str | None:

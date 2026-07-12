@@ -173,7 +173,7 @@ class DirectLaunch:
         _check_exe_exists(entry.meta.source)
 
 
-def _quote_for_shell(value: str) -> str:
+def quote_for_shell(value: str) -> str:
     """Quote a single substituted value for the platform shell TemplateLaunch executes under,
     mirroring how `extra` args are already quoted below (shlex on POSIX, list2cmdline on Windows) —
     otherwise a value with spaces or shell metacharacters reshapes the command's argument
@@ -213,7 +213,7 @@ class TemplateLaunch:
             name = m.group(1)
             if name is None or name not in vals:
                 return matched
-            return _quote_for_shell(vals[name])
+            return quote_for_shell(vals[name])
 
         cmd = _TEMPLATE_TOKEN_RE.sub(repl, template)
         if extra:

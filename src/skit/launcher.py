@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 
 from . import config
@@ -156,8 +157,13 @@ def run_entry(
     values: dict[str, str] | None = None,
     invoke_cwd: Path | None = None,
     script_override: Path | None = None,
+    env_overlay: Mapping[str, str] | None = None,
 ) -> int:
     """Run straight through the terminal and return the exit code.
+
+    env_overlay: env-delivered parameter values, applied LAST — an explicitly set
+    parameter is a deliberate override, so it wins over both the ambient environment
+    and skit's own mirror variables.
 
     The TUI must be suspended before calling this.
     """
@@ -166,7 +172,7 @@ def run_entry(
     _check_workdir(cwd)
     # Overlay skit's mirror settings onto uv's environment — a no-op unless the user enabled them,
     # and never clobbering a variable the user set themselves (see config.mirror_env).
-    env = {**os.environ, **config.mirror_env(os.environ)}
+    env = {**os.environ, **config.mirror_env(os.environ), **(env_overlay or {})}
     # LaunchPayload is a closed two-member union, so isinstance/else is exhaustive (the
     # else narrows to ArgvLaunch) without the phantom no-match arm a `match` would add.
     if isinstance(payload, ShellLaunch):

@@ -24,12 +24,12 @@ import re
 from dataclasses import dataclass, field
 from typing import TypeGuard
 
+from ...params import is_secret_name
+
 # Injectable type domain: the shim's AST substitution only supports these
 # (JSON-representable, literal-reconstructable).
 INJECTABLE_TYPES = ("str", "int", "float", "bool")
 
-# Secret pre-check heuristic (matched against the upper-cased variable name / prompt).
-_SECRET_HINTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD")
 
 # Detecting these frameworks -> the script already has a proper CLI; suggest the L1 preset path
 # rather than injection.
@@ -72,11 +72,6 @@ class Analysis:
     @property
     def uses_cli_framework(self) -> bool:
         return bool(self.frameworks)
-
-
-def _is_secret_name(text: str) -> bool:
-    up = text.upper()
-    return any(h in up for h in _SECRET_HINTS)
 
 
 def _literal_value(node: ast.expr) -> tuple[bool, str | int | float | bool | None]:
@@ -146,7 +141,7 @@ def _const_candidates(body: list[ast.stmt]) -> list[Candidate]:
             type=_type_name(v),
             default=v,
             lineno=stmt.lineno,
-            secret=_is_secret_name(name),
+            secret=is_secret_name(name),
         )
         if name in index_by_name:
             out[index_by_name[name]] = candidate  # last occurrence's data wins; keep first slot
@@ -203,7 +198,7 @@ def _input_candidates(tree: ast.Module) -> list[Candidate]:
             prompt=prompt,
             order=i,
             lineno=call.lineno,
-            secret=_is_secret_name(prompt),
+            secret=is_secret_name(prompt),
         )
         candidate.type = "str"  # pragma: no mutate — matches Candidate's own field default
         out.append(candidate)

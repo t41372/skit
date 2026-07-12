@@ -20,8 +20,8 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass, field
 
-from ...params import ParamDecl, ParamType
-from .analyzer import _is_secret_name, _literal_value
+from ...params import ParamDecl, ParamType, is_secret_name
+from .analyzer import _literal_value
 
 # Actions that add no form field at all (argparse handles them internally).
 _NON_FIELD_ACTIONS = ("help", "version")
@@ -140,7 +140,7 @@ def _read_call(call: ast.Call) -> ParamDecl | None:
         required=required,
         help=_literal_str(kwargs.get("help")),
         multiple=multiple,
-        secret=_is_secret_name(dest),
+        secret=is_secret_name(dest),
     )
     if action in _BOOL_ACTIONS:
         f.type = "bool"
@@ -276,7 +276,7 @@ def _read_click_param(call: ast.Call, positional: bool) -> ParamDecl | None:
         required=(positional and nargs != -1) or _is_true_kwarg(kwargs.get("required")),
         help=_literal_str(kwargs.get("help")),
         multiple=nargs == -1 or _is_true_kwarg(kwargs.get("multiple")),
-        secret=_is_secret_name(dest),
+        secret=is_secret_name(dest),
     )
     is_flag = kwargs.get("is_flag")
     if isinstance(is_flag, ast.Constant) and is_flag.value is True:
@@ -426,7 +426,7 @@ def _read_typer_param(arg: ast.arg, default: ast.expr | None) -> ParamDecl:
         delivery="flag",
         flag=f"--{name.replace('_', '-')}",
         type=looked_up if looked_up is not None else "str",
-        secret=_is_secret_name(name),
+        secret=is_secret_name(name),
         # An annotation we can't model (Enum, Optional[...], List[...]) degrades the
         # field; NO annotation at all is fine — typer treats it as str, and so do we.
         degraded=annotation is not None and looked_up is None,

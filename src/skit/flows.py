@@ -36,10 +36,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import argstate, launcher, tokens
+from . import argstate, launcher, params, tokens
 from .i18n import gettext
+from .langs.base import LangSpec
+from .langs.launch import quote_for_shell as launch_quote
 from .langs.python import reconcile, shim
-from .langs.python.analyzer import _is_secret_name
 from .langs.python.shim import ShimValueError, _coerce
 from .langs.registry import spec_for
 from .models import Entry
@@ -72,6 +73,7 @@ class FormField:
     multiple: bool = False  # shlex-split + glob-expand each piece
     flag: str = ""  # "--output"; "" = positional (flag source only)
     action: str = ""  # store_true | store_false (bool flags)
+    env_target: str = ""  # env source only: the variable to SET ("" = the field's key)
 
     @classmethod
     def from_decl(cls, d: ParamDecl) -> FormField:
@@ -111,10 +113,39 @@ class FormField:
                 flag=d.flag,
                 action=d.action,
             )
-        # Command-template placeholder (delivery="placeholder"): the value fills a {slot} in
-        # the command string. The only remaining delivery the form layer builds today.
+        if d.delivery == "env":
+            # Declared env parameter: the value becomes an environment variable on the
+            # child process (zero rewriting — the transparency line shows the overlay).
+            return cls(
+                key=d.name,
+                label=d.prompt or d.name,
+                kind=d.type if d.type in ("int", "float", "bool", "choice") else "str",
+                source="env",
+                choices=list(d.choices),
+                default="" if d.default is None else _render_default(d.default),
+                has_default=d.default is not None,
+                help=d.help,
+                required=d.required,
+                secret=d.secret,
+                env_source=d.env_source,
+                env_target=d.env_target,
+            )
+        # Command-template placeholder (delivery="placeholder"): the value fills a {slot}
+        # in the command string. A declared row supplies real schema (type/choices/default/
+        # optional); an undeclared placeholder arrives as params.synthesized_placeholder,
+        # whose defaults reproduce the historical required-free-text field exactly.
         return cls(
-            key=d.name, label=d.name, source="placeholder", required=d.required, secret=d.secret
+            key=d.name,
+            label=d.prompt or d.name,
+            kind=d.type if d.type in ("int", "float", "bool", "choice") else "str",
+            source="placeholder",
+            choices=list(d.choices),
+            default="" if d.default is None else _render_default(d.default),
+            has_default=d.default is not None,
+            help=d.help,
+            required=d.required,
+            secret=d.secret,
+            env_source=d.env_source,
         )
 
 
@@ -148,6 +179,11 @@ class Assembly:
     # secret never lands in the scrollback (the process list is a documented boundary;
     # the terminal log needn't be).
     masked_args: list[str] = field(default_factory=list)
+    # env source, expanded: variables overlaid onto the child process environment
+    # (keyed by the TARGET variable name). Empty fields are absent — an unset optional
+    # env param must leave the variable unset so the script's own default applies.
+    env_values: dict[str, str] = field(default_factory=dict)
+    masked_env: dict[str, str] = field(default_factory=dict)  # secrets → ••• for display
 
 
 # --------------------------------------------------------------------------
@@ -155,28 +191,39 @@ class Assembly:
 # --------------------------------------------------------------------------
 
 
+def _declared_plan(entry: Entry, lang: LangSpec) -> FormPlan | None:
+    """The declared-schema plans (no source analysis involved): command templates and
+    program entries with [[parameters]] rows. None means "not this path — keep going"."""
+    if lang.family == "template":
+        # The template's placeholder list IS the field list; a declared [[parameters]]
+        # row supplies a placeholder's schema (type/default/optional/secret override),
+        # an undeclared one synthesizes the historical required-free-text field, and
+        # declared env params ride along (see params.declared_for_template).
+        decls = params.declared_for_template(entry.meta.parameters, entry.meta.params or [])
+        return FormPlan(source="command", fields=[FormField.from_decl(d) for d in decls])
+    if lang.family == "binary" and entry.meta.parameters:
+        # Declared parameters are what give a program entry a form at all: flag rows
+        # assemble real argv, env rows overlay the child environment. (Other deliveries
+        # can't mean anything for an opaque binary and are dropped by the filter.)
+        decls = [
+            d
+            for d in params.declared_from_meta(entry.meta.parameters)
+            if d.delivery in ("flag", "env")
+        ]
+        if decls:
+            return FormPlan(source="declared", fields=[FormField.from_decl(d) for d in decls])
+    return None
+
+
 def plan_for_entry(entry: Entry) -> FormPlan:
     """Build the form plan for an entry. Total: unreadable/missing scripts yield the
     "none" plan (extra-args escape only) rather than raising — preflight owns existence
     errors, the form layer just refuses to invent fields it can't see."""
     lang = spec_for(entry.meta.kind)
-    if lang is not None and lang.family == "template":
-        # required: an empty placeholder silently assembles a broken command (`convert '' ''`),
-        # which the non-interactive contract forbids. secret: C3 applies to every source —
-        # a {api_key} placeholder masks and never lands in a state file, like any other secret.
-        fields = [
-            FormField.from_decl(
-                ParamDecl(
-                    name=p,
-                    binding="none",
-                    delivery="placeholder",
-                    required=True,
-                    secret=_is_secret_name(p),
-                )
-            )
-            for p in (entry.meta.params or [])
-        ]
-        return FormPlan(source="command", fields=fields)
+    if lang is not None:
+        declared = _declared_plan(entry, lang)
+        if declared is not None:
+            return declared
     if (
         lang is None
         or lang.params_io is None
@@ -351,31 +398,39 @@ def assemble(
     else:
         expanded_extra = list(extra_args)
     out = Assembly(display=display)
-    if plan.source == "inject":
-        out.inject_values = {k: v for k, v in final.items() if v}
-        out.args = expanded_extra
-        out.masked_args = list(expanded_extra)
-    elif plan.source == "argparse":
+    # Routing is per FIELD on its source (the delivery axis), not per plan: one plan can
+    # legitimately mix deliveries (declared flag+env params on a program entry;
+    # placeholders + env params on a command template). final[f.key] is always present
+    # (the loop above wrote every field's key).
+    out.inject_values = {
+        f.key: final[f.key] for f in plan.fields if f.source == "inject" and final[f.key]
+    }
+    if any(f.source == "flag" for f in plan.fields):
         out.args = _assemble_flags(plan, final, cwd) + expanded_extra
-        # final[f.key] is always present (the loop above wrote every field's key).
         masked_final = {
             f.key: ("•••" if f.secret and final[f.key] else final[f.key]) for f in plan.fields
         }
         out.masked_args = _assemble_flags(plan, masked_final, cwd) + expanded_extra
-    elif plan.source == "command":
-        out.command_values = final
-        # A {api_key} placeholder is a secret like any other: mask its value in the shown
-        # command line so it never reaches the scrollback / --dry-run output, while the
-        # real value still substitutes into the process that runs. final[f.key] is always
-        # present (the loop above wrote every field's key).
-        out.masked_command_values = {
-            f.key: ("•••" if f.secret and final[f.key] else final[f.key]) for f in plan.fields
-        }
-        out.args = expanded_extra
-        out.masked_args = list(expanded_extra)
     else:
         out.args = expanded_extra
         out.masked_args = list(expanded_extra)
+    placeholder_fields = [f for f in plan.fields if f.source == "placeholder"]
+    if placeholder_fields:
+        out.command_values = {f.key: final[f.key] for f in placeholder_fields}
+        # A {api_key} placeholder is a secret like any other: mask its value in the shown
+        # command line so it never reaches the scrollback / --dry-run output, while the
+        # real value still substitutes into the process that runs.
+        out.masked_command_values = {
+            f.key: ("•••" if f.secret and final[f.key] else final[f.key])
+            for f in placeholder_fields
+        }
+    # Empty env fields are ABSENT (not set to ""): leaving the variable unset is what
+    # lets the script's own default fire; an empty-string export would shadow it.
+    env_fields = [f for f in plan.fields if f.source == "env" and final[f.key]]
+    out.env_values = {(f.env_target or f.key): final[f.key] for f in env_fields}
+    out.masked_env = {
+        (f.env_target or f.key): ("•••" if f.secret else final[f.key]) for f in env_fields
+    }
     return out
 
 
@@ -424,6 +479,8 @@ def _assemble_flags(plan: FormPlan, final: Mapping[str, str], cwd: Path) -> list
     positionals: list[str] = []
     flags: list[str] = []
     for f in plan.fields:
+        if f.source != "flag":
+            continue  # mixed-delivery plans: env/placeholder fields never enter argv
         value = final.get(f.key, "")
         if f.kind == "bool":
             fired = _coerce_bool_lenient(value)
@@ -553,8 +610,13 @@ def transparency_lines(entry: Entry, asm: Assembly, injected: Path | None) -> li
                 "  (written to a temporary copy, deleted after the run; your original file is untouched)"
             )
         )
+    # Env-delivered values render as a copy-pasteable VAR=value prefix (masked) — the
+    # honest picture of what actually happens: the child process env is overlaid, the
+    # script itself is never rewritten for these.
+    env_prefix = "".join(f"{k}={launch_quote(v)} " for k, v in asm.masked_env.items())
     lines.append(
         "→ "
+        + env_prefix
         + launcher.describe_command(
             entry, asm.masked_args, asm.masked_command_values, script_override=injected
         )
@@ -619,6 +681,7 @@ def execute(
                 values=asm.command_values,
                 invoke_cwd=invoke_cwd,
                 script_override=injected,
+                env_overlay=asm.env_values,
             )
         except launcher.TargetMissingError as exc:
             return RunOutcome(None, FAIL_MISSING, str(exc))

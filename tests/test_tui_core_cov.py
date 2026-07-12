@@ -55,7 +55,15 @@ def quiet_run(monkeypatch):
     config.save_after_run("stay")
     calls: dict[str, object] = {}
 
-    def fake_run(entry, extra_args=None, *, values=None, invoke_cwd=None, script_override=None):
+    def fake_run(
+        entry,
+        extra_args=None,
+        *,
+        values=None,
+        invoke_cwd=None,
+        script_override=None,
+        env_overlay=None,
+    ):
         calls["extra"] = list(extra_args or [])
         calls["values"] = dict(values or {})
         calls["override"] = script_override

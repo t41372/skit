@@ -24,6 +24,7 @@ from .i18n import gettext
 from .langs import registry
 from .langs.registry import stored_name
 from .models import Entry, Kind, Mode, ScriptMeta, ScriptMetaError, now_iso, slugify
+from .params import ParamDecl, declared_from_meta
 from .paths import registry_path, scripts_dir
 
 # Corruption/error types every meta.toml reader must treat the same way: valid-but-unreadable file,
@@ -423,6 +424,26 @@ def update_dependencies(
     return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
+def write_parameters(name_or_slug: str, decls: list[ParamDecl]) -> Entry:
+    """Persist declared parameter rows to meta.toml [[parameters]] (the schema home for
+    kinds without a text body — exe/command). The legacy `params` placeholder-name list
+    is deliberately NOT derived from decls: the template is the source of truth for
+    WHICH placeholders exist (extract_placeholders at add time), and keeping it
+    untouched is what lets an older skit still prompt for every placeholder
+    (downgrade safety) even when only some carry declared schema."""
+    entry = resolve(name_or_slug)
+    meta = entry.meta
+    meta.parameters = [d.to_meta_dict() for d in decls] or None
+    _write_meta(entry.dir, meta)
+    return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
+
+
+def read_parameters(name_or_slug: str) -> list[ParamDecl]:
+    """The declared [[parameters]] rows of an entry, as decls (nameless rows dropped)."""
+    entry = resolve(name_or_slug)
+    return declared_from_meta(entry.meta.parameters)
+
+
 def rename(name_or_slug: str, new_name: str) -> Entry:
     """Rename an entry's display name. The slug is immutable after add — it keys the
     entry directory and the argstate values file, so keeping it means nothing moves on
@@ -540,6 +561,8 @@ __all__ = [
     "doctor_rebuild",
     "human_size",
     "list_entries",
+    "read_parameters",
     "remove",
     "resolve",
+    "write_parameters",
 ]

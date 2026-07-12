@@ -271,7 +271,9 @@ def test_run_no_input_never_prompts_even_on_tty(tty, monkeypatch):
     argstate.save_last(ent.slug, values={"msg": "remembered"})
     captured: dict[str, object] = {}
 
-    def fake_run(entry, extra, *, values=None, invoke_cwd=None, script_override=None):
+    def fake_run(
+        entry, extra, *, values=None, invoke_cwd=None, script_override=None, env_overlay=None
+    ):
         captured["values"] = values
         return 0
 
@@ -312,7 +314,9 @@ def test_run_threads_slug_and_preset_into_prefill(monkeypatch, tmp_path):
     argstate.save_preset(ent.slug, "prod", {"msg": "from-preset"})
     captured: dict[str, object] = {}
 
-    def fake_run(entry, extra, *, values=None, invoke_cwd=None, script_override=None):
+    def fake_run(
+        entry, extra, *, values=None, invoke_cwd=None, script_override=None, env_overlay=None
+    ):
         captured["values"] = values
         return 0
 

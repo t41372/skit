@@ -34,7 +34,15 @@ def tmp_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def run_entry_spy(monkeypatch):
     calls = {}
 
-    def fake(entry, extra_args=None, *, values=None, invoke_cwd=None, script_override=None):
+    def fake(
+        entry,
+        extra_args=None,
+        *,
+        values=None,
+        invoke_cwd=None,
+        script_override=None,
+        env_overlay=None,
+    ):
         calls["entry"] = entry
         calls["extra"] = list(extra_args or [])
         calls["values"] = dict(values or {})
