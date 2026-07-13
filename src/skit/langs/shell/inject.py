@@ -1,4 +1,4 @@
-"""Shell injector: run-time value delivery for bash/sh/zsh (the correctness-critical half of A2).
+r"""Shell injector: run-time value delivery for bash/sh/zsh (the correctness-critical half of A2).
 
 Three deliveries, one entry point (`inject`), mirroring `langs/python/shim.py`'s discipline
 (ShimError vs ShimValueError, per-call-site binding via the shared `callmatch`, temp-file secret
@@ -37,10 +37,19 @@ The preamble (inserted after the shebang line, only when a read is actually inte
   call to the same site the wrapper falls through to the real, unpatched `read`, so a read inside a
   loop keeps consuming real stdin exactly as it always did.
 
-**Documented dialect variance (pinned by a test, not fought):** a value containing a **backslash** is
-processed by that shell's own `read` escape rules — bash keeps it under `-r` and eats it without,
-zsh/sh may consume it — i.e. exactly what the user typing that value would have got. skit delivers
-the bytes; the shell's `read` owns what they mean.
+**The delivery contract: what is in the form is what the script gets — byte for byte, or nothing.**
+A `read` line is not a value channel; it is parsed. So a value is either escaped so it survives that
+parsing intact, or refused outright (`InjectSplitError`) — never silently mangled:
+
+- Without `-r`, `read` UNESCAPES backslashes in the line it consumes, and a backslash before skit's
+  own join separator would escape it, merging two fields (form values `C:\` + `Doe` arrived as
+  FIRST="C: Doe", LAST=""). Each backslash is therefore doubled for a non-`-r` read, so the shell's
+  own unescaping reproduces the value exactly. `-r` reads take the line literally and are left alone.
+- A newline ENDS the line, so no variable can carry one — refused everywhere, single-variable reads
+  included. Space/tab split the line and are stripped from its edges — refused in any non-last
+  variable, and at the edges of the last. A carriage return is neither, and is delivered intact.
+- A read that REFRAMES its input (`-n`/`-N`/`-d`) or redefines `IFS` cannot receive a value through
+  one line at all, so the analyzer never offers it as a candidate (`read -a`'s existing degradation).
 
 **Dual syntax gates** run before anything launches (risks #3/#4): a mandatory offline tree-sitter
 re-parse (`has_error` ⇒ InjectSyntaxError, temp copy removed), and — when the interpreter is
@@ -269,6 +278,7 @@ class _ReadSite:
     node: Node  # that command's node
     prompt: str
     secret: bool  # the analyzer's certainty (`read -s`), before the spec's own override
+    raw: bool  # this read's -r: whether backslashes in the fed line are literal (see _feed_value)
 
 
 def _read_sites(root: Node) -> list[_ReadSite]:
@@ -284,10 +294,17 @@ def _read_sites(root: Node) -> list[_ReadSite]:
     commands.sort(key=lambda pair: pair[0].start_byte)
     out: list[_ReadSite] = []
     order = 0
-    for command, (node, (secret, prompt, varnames)) in enumerate(commands):
-        for _varname in varnames:
+    for command, (node, flags) in enumerate(commands):
+        for _varname in flags.varnames:
             out.append(
-                _ReadSite(order=order, command=command, node=node, prompt=prompt, secret=secret)
+                _ReadSite(
+                    order=order,
+                    command=command,
+                    node=node,
+                    prompt=flags.prompt,
+                    secret=flags.secret,
+                    raw=flags.raw,
+                )
             )
             order += 1
     return out
@@ -333,7 +350,9 @@ def _read_spans(
         if all(value is None for value in supplied):
             continue  # nothing managed on this call: it keeps reading real stdin
         _check_prefix(group, supplied)
-        line = " ".join(value for value in supplied if value is not None)
+        line = " ".join(
+            _feed_value(value, raw=group[0].raw) for value in supplied if value is not None
+        )
         secret = any(
             site.secret or site.order in secret_orders
             for site, value in zip(group, supplied, strict=True)
@@ -373,6 +392,20 @@ def _check_prefix(group: list[_ReadSite], supplied: list[str | None]) -> None:
         if later is not None:
             raise InjectGapError(_display_name(group[i]), _display_name(group[later]))
         return  # the first gap has nothing filled after it: a short line, which read handles
+
+
+def _feed_value(value: str, *, raw: bool) -> str:
+    """One value, escaped for the line this `read` will parse.
+
+    Without `-r` (the textbook form the analyzer offers), `read` PROCESSES backslashes in the line it
+    consumes: `\\x` becomes `x`, and — worse — a backslash before skit's own join separator escapes
+    it, merging two fields and emptying the next (form values C:\\ + Doe silently arrived as
+    FIRST="C: Doe", LAST=""). Doubling each backslash makes `read`'s own unescaping reproduce the
+    value byte-for-byte, which is the whole contract: what is in the form is what the script gets.
+
+    With `-r` the line is taken literally, so the value is already byte-exact and must NOT be
+    doubled."""
+    return value if raw else value.replace("\\", "\\\\")
 
 
 def _split_reason(value: str, *, is_last: bool) -> str:

@@ -35,6 +35,7 @@ Detection (docs/design/multilang.md, §"Shell analyzer/shim"):
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import tree_sitter_bash
@@ -60,6 +61,13 @@ _ENVDEFAULT_OPERATORS = (":-", ":=", "-", "=")
 
 # read flags that consume a following value (so their value argument is never a varname).
 _READ_VALUE_FLAGS = frozenset("adiNntpu")
+
+# read flags that REFRAME the input — the read stops early or on a different delimiter, so the one
+# line skit feeds it is not the value the script ends up with (`read -n 3 X` on "abcdefgh" gives
+# "abc"; `-N 5` gives ""; `-d :` stops at the colon). A managed value could not be delivered
+# faithfully, so a read carrying one of these is not offered as a candidate at all — the honest
+# Tier-0 degradation `read -a` already gets.
+_READ_REFRAMING_FLAGS = frozenset("nNd")
 
 # Arithmetic assignment operators: an `((...))` binary_expression with one of these on the left is a
 # mutation, so that name is a working variable (accumulator), not a constant.
@@ -304,21 +312,57 @@ def _expansion_default(node: Node, operator: Node) -> str:
 # ---------------------------------------------------------------- read
 
 
+@dataclass(frozen=True)
+class ReadFlags:
+    """The parsed shape of one `read` command — everything the injector needs to deliver a value
+    faithfully, or to know that it cannot."""
+
+    secret: bool  # -s: certainty, not a heuristic
+    prompt: str  # -p's literal text ("" when dynamic or absent)
+    varnames: list[str]
+    raw: bool  # -r: backslashes are literal. Without it, `read` processes them (see inject.quote_read)
+    reframing: (
+        bool  # -n/-N/-d: the read reframes its input, so a fed line isn't the delivered value
+    )
+
+
+def _has_ifs_prefix(node: Node) -> bool:
+    """`IFS=… read …` — a variable_assignment prefix on the read command that redefines the field
+    separator.
+
+    skit joins a multi-variable read's values with a SPACE and relies on default $IFS to split them
+    back apart, and on `read`'s default edge-stripping when deciding what is safe. A custom IFS
+    invalidates both halves of that model in opposite directions — `IFS=: read A B` would hand the
+    whole space-joined line to A, while `IFS= read -r LINE` does no splitting or stripping at all, so
+    a value skit refuses as unsafe would in fact have arrived intact. Rather than model an arbitrary
+    IFS, such a read is simply not offered as a candidate (the same honest degradation `read -a` and
+    the reframing flags get)."""
+    return any(
+        child.type == "variable_assignment"
+        and (name := child.child_by_field_name("name")) is not None
+        and _text(name) == "IFS"
+        for child in node.children
+    )
+
+
 def _read_candidates(root: Node) -> list[Candidate]:
     """Every interactive `read` varname, numbered by source order (B1), excluding data-reading
     forms (pipe-fed, redirect/here-string-fed, loop-fed)."""
-    reads: list[tuple[Node, tuple[bool, str, list[str]]]] = []
+    reads: list[tuple[Node, ReadFlags]] = []
     for node in _walk(root):
         if node.type != "command":
             continue
         parsed = _read_flags(node)
         if parsed is None or _is_data_read(node):
             continue
+        if parsed.reframing or _has_ifs_prefix(node):
+            continue  # skit cannot deliver a value through these faithfully — don't offer them
         reads.append((node, parsed))
     reads.sort(key=lambda pair: pair[0].start_byte)
     out: list[Candidate] = []
     order = 0
-    for node, (secret, prompt, varnames) in reads:
+    for node, flags in reads:
+        secret, prompt, varnames = flags.secret, flags.prompt, flags.varnames
         for varname in varnames:
             candidate = Candidate(
                 binding="input",
@@ -334,8 +378,8 @@ def _read_candidates(root: Node) -> list[Candidate]:
     return out
 
 
-def _read_flags(node: Node) -> tuple[bool, str, list[str]] | None:
-    """(secret, prompt, varnames) for a `read` command, or None when the command isn't a read.
+def _read_flags(node: Node) -> ReadFlags | None:
+    """The parsed shape of a `read` command, or None when the command isn't a read.
     Handles `builtin read` / `command read`, clustered flags (`-sp`), value-consuming flags, and a
     `--` end-of-options marker; a dynamic (non-literal) prompt collapses to ""."""
     name_node = node.child_by_field_name("name")
@@ -352,10 +396,12 @@ def _read_flags(node: Node) -> tuple[bool, str, list[str]] | None:
     return _parse_read_args(read_args)
 
 
-def _parse_read_args(args: list[Node]) -> tuple[bool, str, list[str]]:
+def _parse_read_args(args: list[Node]) -> ReadFlags:
     secret = False
     prompt = ""
     varnames: list[str] = []
+    raw = False
+    reframing = False
     options_done = False
     i = 0
     while i < len(args):
@@ -366,22 +412,31 @@ def _parse_read_args(args: list[Node]) -> tuple[bool, str, list[str]]:
             options_done = True
         elif not options_done and is_flag:
             cluster = word[1:]
-            secret_here, prompt_here, consumes_next = _scan_read_cluster(cluster, args, i)
+            secret_here, prompt_here, consumes_next, raw_here, reframing_here = _scan_read_cluster(
+                cluster, args, i
+            )
             secret = secret or secret_here
             prompt = prompt_here if prompt_here else prompt
+            raw = raw or raw_here
+            reframing = reframing or reframing_here
             if consumes_next:
                 i += 1
         elif arg.type == "word":
             varnames.append(word)  # a plain word after the flags is a target variable name
         i += 1
-    return secret, prompt, varnames
+    return ReadFlags(secret=secret, prompt=prompt, varnames=varnames, raw=raw, reframing=reframing)
 
 
-def _scan_read_cluster(cluster: str, args: list[Node], i: int) -> tuple[bool, str, bool]:
-    """Read one flag cluster (`-s`, `-sp`, `-n5`, …): (secret_seen, prompt_text, consumes_next)."""
+def _scan_read_cluster(
+    cluster: str, args: list[Node], i: int
+) -> tuple[bool, str, bool, bool, bool]:
+    """Read one flag cluster (`-s`, `-sp`, `-n5`, …):
+    (secret_seen, prompt_text, consumes_next, raw_seen, reframing_seen)."""
     secret = False
     prompt = ""
     consumes_next = False
+    raw = "r" in cluster.split("=", 1)[0]
+    reframing = any(ch in _READ_REFRAMING_FLAGS for ch in cluster)
     j = 0
     while j < len(cluster):
         ch = cluster[j]
@@ -401,7 +456,7 @@ def _scan_read_cluster(cluster: str, args: list[Node], i: int) -> tuple[bool, st
                 consumes_next = True  # `-t 5`, `-n 3` … — skip the value so it's not a varname
             break  # the rest of the cluster is this flag's attached value (or nothing)
         j += 1  # an unknown / no-value flag letter (r, e, …) — keep scanning the cluster
-    return secret, prompt, consumes_next
+    return secret, prompt, consumes_next, raw, reframing
 
 
 def _literal_argument(node: Node) -> str:

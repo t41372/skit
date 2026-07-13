@@ -44,7 +44,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -135,21 +134,36 @@ def _reset_i18n() -> None:
 
 
 @pytest.fixture(autouse=True)
-def _sweep_injected_temp_copies() -> Iterator[None]:
-    """Delete any injected temp copy a test left behind in the OS temp directory.
+def _sweep_injected_temp_copies(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Delete the injected temp copies THIS test created, and nothing else.
 
-    The product path always unlinks its own temp copy (flows.execute's `finally`), but the
-    injector tests call `inject()` directly and get a real 0600 file back — one that can carry a
-    plaintext secret literal from a test fixture. Nothing else would ever remove them, so an
-    unswept suite quietly accumulates thousands of secret-bearing files in $TMPDIR.
+    The product path always unlinks its own temp copy (flows.execute's `finally`), but the injector
+    tests call `inject()` directly and get a real 0600 file back — one that can carry a plaintext
+    secret literal from a test fixture. Nothing else would ever remove them, so an unswept suite
+    quietly accumulates thousands of secret-bearing files in the OS temp directory.
 
-    Only files that appeared DURING the test are removed, and only ones matching skit's own
-    `.injected-*` prefix, so a concurrently-running skit (or another tool) is never touched.
+    The paths are captured by wrapping `write_injected` itself, NOT by diffing a glob of the temp
+    directory: a glob-diff deletes every `.injected-*` that appeared during the test whoever made
+    it, so a developer running the suite while using skit in another terminal — or a second xdist
+    worker — would have its live temp copy pulled out from under it between write and exec. Each
+    injector binds `write_injected` at import, so every importing namespace is patched.
     """
-    tmp = Path(tempfile.gettempdir())
-    before = set(tmp.glob(".injected-*"))
+    from skit import rewrite
+    from skit.langs.javascript import inject as js_inject
+    from skit.langs.python import shim as py_shim
+    from skit.langs.shell import inject as sh_inject
+
+    created: list[Path] = []
+    real = rewrite.write_injected
+
+    def tracking(entry_dir: Path, content: str, *, suffix: str) -> Path:
+        path = real(entry_dir, content, suffix=suffix)
+        created.append(path)
+        return path
+
+    for module in (rewrite, js_inject, py_shim, sh_inject):
+        monkeypatch.setattr(module, "write_injected", tracking)
     yield
-    for leaked in tmp.glob(".injected-*"):
-        if leaked not in before:
-            with contextlib.suppress(OSError):
-                leaked.unlink()
+    for path in created:
+        with contextlib.suppress(OSError):
+            path.unlink()

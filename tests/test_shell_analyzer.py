@@ -194,15 +194,34 @@ def test_read_attached_prompt():
 
 
 def test_read_value_flags_skip_their_argument():
-    # -t 5 and -n 3 consume their value; only V is a varname.
-    (c,) = _reads("read -t 5 -n 3 V\n")
+    # -t 5 and -u 0 consume their value; only V is a varname. (-n/-N/-d also consume theirs, but
+    # they REFRAME the input, so such a read is excluded outright — see the reframing test below.)
+    (c,) = _reads("read -t 5 -u 0 V\n")
     assert c.name == "input-1"
 
 
 def test_read_attached_value_flag_not_consumed():
-    # -n5 attaches its value; W is still the varname.
-    (c,) = _reads("read -n5 W\n")
+    # -t5 attaches its value; W is still the varname.
+    (c,) = _reads("read -t5 W\n")
     assert c.name == "input-1"
+
+
+def test_reframing_reads_are_excluded_from_candidacy():
+    # -n/-N/-d make the read stop early or on another delimiter, so the single line skit feeds it is
+    # not the value the script would end up with (`read -n 3 X` on "abcdefgh" yields "abc"). Such a
+    # read cannot be delivered faithfully, so it is never offered — as `read -a` already isn't.
+    for src in ("read -n 3 X\n", "read -N 5 X\n", "read -d : X\n", "read -n3 X\n"):
+        assert _reads(src) == [], src
+
+
+def test_custom_ifs_reads_are_excluded_from_candidacy():
+    # skit joins a multi-var read's values with a SPACE and relies on default $IFS to split them
+    # back. A custom IFS breaks that in both directions: `IFS=: read A B` would hand the whole line
+    # to A, and `IFS= read -r LINE` does no splitting or edge-stripping at all (so a value skit
+    # would refuse as unsafe actually arrives intact). Neither is offered.
+    assert _reads("IFS=: read A B\n") == []
+    assert _reads("IFS= read -r LINE\n") == []
+    assert len(_reads('read -p "p: " A B\n')) == 2  # an ordinary read still is
 
 
 def test_read_end_of_options_marker():

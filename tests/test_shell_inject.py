@@ -635,20 +635,56 @@ def test_preamble_lands_after_the_shebang(tmp_path):
 
 
 @posix_only
-def test_backslash_value_follows_the_shells_own_read_rules(tmp_path):
-    """DOCUMENTED VARIANCE, not a bug: skit delivers the bytes; the script's own `read` decides
-    what a backslash means. `read -r` keeps it, a bare `read` eats it — exactly what the user
-    typing that value at the prompt would have got. A const, by contrast, is exact everywhere."""
+def test_backslash_values_arrive_byte_identical_raw_or_not(tmp_path):
+    """The delivery contract, not a documented variance: what is in the form is what the script
+    gets. A bare `read` UNESCAPES backslashes in the line it consumes, so skit doubles them; a
+    `read -r` takes the line literally, so it must NOT. Both land byte-identical.
+
+    The value that made this load-bearing: a trailing backslash in a NON-LAST variable escaped
+    skit's own join separator, merging two fields — form values "C:\\" + "Doe" silently arrived as
+    FIRST="C: Doe", LAST="".
+    """
     raw = '#!/usr/bin/env bash\nread -r -p "P: " a\necho "[$a]"\n'
     cooked = '#!/usr/bin/env bash\nread -p "P: " a\necho "[$a]"\n'
     value = "a\\b"
-    raw_out = run_shell(inject_src(raw, {"input-1": value}, tmp_path).path, tmp_path).stdout
-    cooked_out = run_shell(inject_src(cooked, {"input-1": value}, tmp_path).path, tmp_path).stdout
-    assert raw_out.endswith("[a\\b]\n")  # -r: the backslash survives
-    assert cooked_out.endswith("[ab]\n")  # no -r: bash's read consumes it (the shell's rule)
+    assert run_shell(inject_src(raw, {"input-1": value}, tmp_path).path, tmp_path).stdout.endswith(
+        "[a\\b]\n"
+    )
+    assert run_shell(
+        inject_src(cooked, {"input-1": value}, tmp_path).path, tmp_path
+    ).stdout.endswith("[a\\b]\n")  # doubled for the non-raw read, so read's unescaping restores it
+
+    # the field-merging case: a trailing backslash in a non-last variable
+    two = '#!/usr/bin/env bash\nread -p "P: " A B\necho "[$A][$B]"\n'
+    out = run_shell(
+        inject_src(two, {"input-1": "C:\\", "input-2": "Doe"}, tmp_path).path, tmp_path
+    ).stdout
+    assert out.endswith("[C:\\][Doe]\n")  # NOT [C: Doe][]
+
     # A const value is not read()'s business at all, so it is byte-exact in every dialect:
     const = '#!/usr/bin/env bash\nP=x\necho "[$P]"\n'
     assert run_shell(inject_src(const, {"P": value}, tmp_path).path, tmp_path).stdout == "[a\\b]\n"
+
+
+def test_reframing_and_custom_ifs_reads_are_never_offered(tmp_path):
+    """A read that reframes its input (-n/-N/-d) or redefines IFS cannot receive a value through the
+    one line skit feeds it — `read -n 3 X` would truncate "abcdefgh" to "abc", and `IFS=: read A B`
+    would hand the whole space-joined line to A. Neither is offered as a candidate at all, the same
+    honest degradation `read -a` already gets."""
+    for src in (
+        "read -n 3 X\n",
+        "read -N 5 X\n",
+        "read -d : X\n",
+        "IFS=: read A B\n",
+        "IFS= read -r LINE\n",
+        "read -a ARR\n",
+    ):
+        assert analyzer.analyze(src).candidates == [], src
+    # …while an ordinary read still is
+    assert [c.name for c in analyzer.analyze('read -p "p: " A B\n').candidates] == [
+        "input-1",
+        "input-2",
+    ]
 
 
 def test_fallthrough_keyword_is_dialect_selected():
