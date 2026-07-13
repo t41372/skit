@@ -216,12 +216,26 @@ Delivery:
   temp copy (`rewrite.write_injected`, 0600, OS tmp). **Quoting normalized, never
   preserved**: int/float bare; str always POSIX single-quoted with `'\''` escaping
   (immune to expansion/word-splitting — closes injection).
-- read → per-call-site rewrite `read …` → `_skit_read K …` (span replaces only the
-  command name) + a dialect preamble defining `_skit_read`: one-shot per SITE, echoes
-  prompt+value (`***` if secret), falls through to `command read "$@"` (POSIX-reachable
-  in bash/zsh/dash). bash/zsh variant feeds the real read via here-string; dash variant
-  uses eval with the same single-quote escaping. Site binding = same correctness level
-  as python's `_skit_i[K]`.
+- read → per-call-site rewrite `read …` → `_skit_read K 'value' <0|1> 'prompt' …` (span
+  replaces only the command name; every original flag/varname survives) + a preamble
+  defining `_skit_read`: one-shot per SITE, echoes prompt+value (`***` if secret), then
+  falls through to the real read. Site binding = same correctness level as python's
+  `_skit_i[K]`.
+
+  **Empirically corrected (the original sketch was wrong — verified on this machine):**
+  - macOS `/bin/bash` is **3.2**: no associative arrays, no `[[ -v ]]`. The preamble must
+    be POSIX-portable — per-site one-shot state lives in plain `_skit_used_<K>` variables
+    set through `eval`, never an array.
+  - `command read` **fails in zsh** (zsh's `command` bypasses builtins; the read never
+    runs and the variable comes back empty). `builtin read` works in bash 3.2/5, zsh and
+    macOS `/bin/sh`, but **dash has no `builtin`**. So the fallthrough keyword is
+    dialect-selected: `builtin` for bash/zsh, `command` for sh/dash.
+  - The queued value is fed through an unquoted heredoc (`<<EOF` / `$_sv` / `EOF`) — a
+    parameter-expansion result, so it is not re-scanned for escapes — and reaches the
+    function as a single-quote-escaped **argument**, exactly like a const value. Verified
+    working on bash 3.2, zsh and `/bin/sh`, including one-shot fall-through to real stdin.
+  - Documented dialect variance (not fought): a value containing a backslash is subject to
+    that shell's own `read` escape rules — i.e. exactly what the user typing it would get.
 - **Dual syntax gates after injection**: (1) mandatory offline re-parse,
   `tree.root_node.has_error` ⇒ InjectError; (2) `<interpreter> -n <tmp>` hardening
   (bash/zsh/sh dialect from `meta.interpreter`).
