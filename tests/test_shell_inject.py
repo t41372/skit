@@ -1188,3 +1188,16 @@ def test_params_warns_when_a_self_locating_script_has_injectable_consts(tmp_path
 def test_params_does_not_warn_when_the_script_never_self_locates(tmp_path):
     _shell_entry(tmp_path, "#!/usr/bin/env bash\nREGION=us-east-1\necho $REGION\n", name="noloc")
     assert "locates itself" not in runner.invoke(cli.app, ["params", "noloc"]).output
+
+
+def test_normalize_refuses_shell_metacharacters(tmp_path):
+    # `;` `|` `&` `(` `)` `<` `>` are inert in the single-quoted source (the analyzer offers the
+    # const) but break tree-sitter inside "${NAME:-…}" — and because analyze() degrades the WHOLE
+    # file on a parse error, letting one through would silently drop EVERY parameter on the entry
+    # while reporting success. They must be refused, so the const keeps delivering by temp copy.
+    for meta in (";", "|", "&", "(", ")", "<", ">"):
+        n = normalize.normalize_idiom(f"MSG='a{meta}b'\n", ["MSG"])
+        assert n.normalized == []
+        assert n.refused == ["unsafe-literal:MSG"]
+    ok = normalize.normalize_idiom("MSG='plain'\n", ["MSG"])
+    assert ok.normalized == ["MSG"]

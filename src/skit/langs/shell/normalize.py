@@ -44,8 +44,14 @@ from .analyzer import (
 if TYPE_CHECKING:
     from tree_sitter import Node
 
-# Characters that stop being inert once the literal is re-homed inside `"${NAME:-…}"`.
-_UNSAFE = ("}", '"', "`", "$", "\\", "\n")
+# Characters that stop being inert once the literal is re-homed inside `"${NAME:-…}"`. Two groups:
+#   - expansion/quoting: } " ` $ \ and newline break out of the ${:-} or the surrounding "…".
+#   - shell metacharacters: ; | & ( ) < > are harmless inside the single-quoted source literal (so
+#     the analyzer offers the const), but tree-sitter-bash cannot parse them inside the expansion
+#     body — and since analyze() degrades the WHOLE file to syntax_error on any parse error, a
+#     normalize that slipped one of these through would silently drop EVERY parameter on the entry
+#     while reporting success. Refuse them, so the const keeps being delivered by temp copy instead.
+_UNSAFE = ("}", '"', "`", "$", "\\", "\n", ";", "|", "&", "(", ")", "<", ">")
 
 
 def normalize_idiom(text: str, names: list[str]) -> Normalization:

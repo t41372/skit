@@ -30,6 +30,19 @@ def by_name(src: str) -> dict[str, analysis.Candidate]:
 # ---------------------------------------------------------------- const
 
 
+def _read_flags_of(src: str):
+    import tree_sitter
+    import tree_sitter_bash
+
+    from skit.langs.shell import analyzer as a
+
+    lang = tree_sitter.Language(tree_sitter_bash.language())
+    for n in a._walk(tree_sitter.Parser(lang).parse(src.encode()).root_node):
+        if n.type == "command":
+            return a._read_flags(n)
+    return None
+
+
 def test_const_word_number_raw_double_quoted():
     b = by_name("A=plain\nB=42\nC='raw text'\nD=\"double q\"\n")
     assert (b["A"].type, b["A"].default) == ("str", "plain")
@@ -591,3 +604,43 @@ def test_params_resync_reports_drift_after_edit(tmp_path):
     assert result.exit_code == 0, result.output
     assert "CITY" in result.output  # the drop is reported
     assert 'name = "CITY"' not in copy.read_text(encoding="utf-8")  # and applied
+
+
+def test_analyzer_and_injector_share_one_read_enumeration():
+    # The invariant that kept breaking: the analyzer (numbering candidates) and the injector
+    # (numbering rewrite sites) must agree on WHICH reads count and in what order, or a value lands
+    # on the wrong `read`. They now consume the same injectable_reads(), so they cannot diverge.
+    from skit.langs.shell import inject
+    from skit.langs.shell.analyzer import injectable_reads
+
+    for src in (
+        "read -n 3 CODE\nread NAME\n",  # a reframing read the analyzer drops
+        "IFS=: read A B\nread NAME\n",  # an IFS-prefixed read the analyzer drops
+        "read P\nread Q\nread R\n",
+        "cmd | while read x; do :; done\nread TOP\n",  # a data-read the analyzer drops
+    ):
+        root = inject._root(src)
+        n_reads = sum(len(flags.varnames) for _node, flags in injectable_reads(root))
+        assert len([c for c in shell.analyze(src).candidates if c.binding == "input"]) == n_reads
+        assert len(inject._read_sites(root)) == n_reads
+
+
+def test_read_flags_do_not_read_letters_from_an_attached_value():
+    # -pSure? has an 'r' in "Sure?"; -pEnter an 'n'; -idefault a 'd'. None must flip raw/reframing —
+    # those letters are the prompt/default TEXT, not option letters.
+    assert not _read_flags_of("read -pSure? X").raw
+    assert not _read_flags_of("read -pEnter X").reframing
+    assert not _read_flags_of("read -idefault X").reframing
+    assert _read_flags_of("read -r X").raw  # a real -r still registers
+    # an ATTACHED reframing value (`-n3`) is still detected and still excludes the read
+    assert _read_flags_of("read -n3 X").reframing
+    assert shell.analyze("read -n3 X\n").candidates == []
+
+
+def test_read_cluster_keeps_scanning_past_an_unknown_flag_letter():
+    # `-er`: 'e' (readline edit, no value) is unknown to the value-flag set, so the scan continues
+    # to 'r', which registers raw. The value still delivers as a normal read varname.
+    flags = _read_flags_of("read -er X")
+    assert flags.raw is True
+    assert flags.varnames == ["X"]
+    assert shell.analyze("read -er X\n").candidates[0].name == "input-1"

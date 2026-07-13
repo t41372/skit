@@ -83,13 +83,11 @@ from .analyzer import (
     _LANGUAGE,
     _arguments,
     _assignment_operator,
-    _is_data_read,
     _literal_text,
-    _read_flags,
     _text,
     _toplevel_assignments,
     _uses_self_location,
-    _walk,
+    injectable_reads,
 )
 
 if TYPE_CHECKING:
@@ -283,18 +281,13 @@ class _ReadSite:
 
 def _read_sites(root: Node) -> list[_ReadSite]:
     """Every interactive read varname, numbered exactly like `analyzer._read_candidates` — the
-    numbering IS the match key, so the two must not be able to disagree."""
-    commands = [
-        (node, parsed)
-        for node in _walk(root)
-        if node.type == "command"
-        and (parsed := _read_flags(node)) is not None
-        and not _is_data_read(node)
-    ]
-    commands.sort(key=lambda pair: pair[0].start_byte)
+    numbering IS the match key, so the two must not be able to disagree. They share the SAME
+    enumerator (`analyzer.injectable_reads`) precisely so they cannot: every past divergence (an
+    excluded read the injector still counted, shifting every later site) was a silent-wrong-value
+    bug."""
     out: list[_ReadSite] = []
     order = 0
-    for command, (node, flags) in enumerate(commands):
+    for command, (node, flags) in enumerate(injectable_reads(root)):
         for _varname in flags.varnames:
             out.append(
                 _ReadSite(

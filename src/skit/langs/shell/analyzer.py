@@ -320,7 +320,7 @@ class ReadFlags:
     secret: bool  # -s: certainty, not a heuristic
     prompt: str  # -p's literal text ("" when dynamic or absent)
     varnames: list[str]
-    raw: bool  # -r: backslashes are literal. Without it, `read` processes them (see inject.quote_read)
+    raw: bool  # -r: backslashes are literal. Without it, `read` processes them (see inject._feed_value)
     reframing: (
         bool  # -n/-N/-d: the read reframes its input, so a fed line isn't the delivered value
     )
@@ -345,9 +345,17 @@ def _has_ifs_prefix(node: Node) -> bool:
     )
 
 
-def _read_candidates(root: Node) -> list[Candidate]:
-    """Every interactive `read` varname, numbered by source order (B1), excluding data-reading
-    forms (pipe-fed, redirect/here-string-fed, loop-fed)."""
+def injectable_reads(root: Node) -> list[tuple[Node, ReadFlags]]:
+    """The `read` commands skit will manage, in source order — the SINGLE source of truth the
+    analyzer (which numbers candidates) and the injector (which numbers rewrite sites) BOTH consume,
+    so the two can never disagree on which reads count or in what order. Every divergence between
+    them has been a silent-wrong-value bug (a value landing on the wrong `read`), so there is exactly
+    one place that decides membership:
+
+    - not a read, or a data-reading form (pipe/redirect/here-string/loop-fed) → excluded;
+    - reframes its input (`-n`/`-N`/`-d`) or redefines `IFS` → excluded (skit cannot deliver a value
+      through the one line it feeds), the same honest degradation `read -a` already gets.
+    """
     reads: list[tuple[Node, ReadFlags]] = []
     for node in _walk(root):
         if node.type != "command":
@@ -356,12 +364,18 @@ def _read_candidates(root: Node) -> list[Candidate]:
         if parsed is None or _is_data_read(node):
             continue
         if parsed.reframing or _has_ifs_prefix(node):
-            continue  # skit cannot deliver a value through these faithfully — don't offer them
+            continue
         reads.append((node, parsed))
     reads.sort(key=lambda pair: pair[0].start_byte)
+    return reads
+
+
+def _read_candidates(root: Node) -> list[Candidate]:
+    """Every interactive `read` varname, numbered by source order (B1). Membership and order come
+    from the shared `injectable_reads` so they match the injector's rewrite sites exactly."""
     out: list[Candidate] = []
     order = 0
-    for node, flags in reads:
+    for node, flags in injectable_reads(root):
         secret, prompt, varnames = flags.secret, flags.prompt, flags.varnames
         for varname in varnames:
             candidate = Candidate(
@@ -435,16 +449,27 @@ def _scan_read_cluster(
     secret = False
     prompt = ""
     consumes_next = False
-    raw = "r" in cluster.split("=", 1)[0]
-    reframing = any(ch in _READ_REFRAMING_FLAGS for ch in cluster)
+    raw = False
+    reframing = False
     j = 0
     while j < len(cluster):
         ch = cluster[j]
+        # raw/reframing are decided per OPTION LETTER, inside the same walk that stops at the first
+        # value-consuming flag — never over the whole cluster string, which would read letters out of
+        # an attached VALUE (`-pSure?` has an 'r'; `-pEnter` an 'n') and wrongly flag the read.
+        if ch == "r":
+            raw = True
+            j += 1
+            continue
         if ch == "s":
             secret = True
             j += 1
             continue
         if ch in _READ_VALUE_FLAGS:
+            # n/N/d reframe the input; they are members of _READ_VALUE_FLAGS, so they land here and
+            # set reframing at exactly the point the cluster stops being option letters.
+            if ch in _READ_REFRAMING_FLAGS:
+                reframing = True
             attached = cluster[j + 1 :]
             if ch == "p":
                 if attached:
@@ -455,7 +480,7 @@ def _scan_read_cluster(
             elif not attached and i + 1 < len(args):
                 consumes_next = True  # `-t 5`, `-n 3` … — skip the value so it's not a varname
             break  # the rest of the cluster is this flag's attached value (or nothing)
-        j += 1  # an unknown / no-value flag letter (r, e, …) — keep scanning the cluster
+        j += 1  # an unknown / no-value flag letter (e, a, …) — keep scanning the cluster
     return secret, prompt, consumes_next, raw, reframing
 
 
