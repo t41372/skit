@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import replace
 from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -71,13 +72,31 @@ def _interpreted(
 
 
 def _shell_spec() -> LangSpec:
-    return _interpreted(
+    from .python import metawriter  # the '#'-comment block engine is language-blind (PEP-723 regex)
+
+    spec = _interpreted(
         "shell",
         "#",
         "bash",
         (".sh", ".bash", ".zsh"),
         ("bash", "sh", "zsh", "dash", "ash", "ksh"),
         "#",
+    )
+    # The in-file [tool.skit] block works verbatim on shell text (same '#' comment prefix), so shell
+    # gets the full manage/reconcile experience through the same metawriter as Python.
+    analyzer_cap: Analyzer | None
+    try:
+        from .shell import analyzer
+    except ImportError:  # pragma: no cover — a broken/absent tree-sitter grammar wheel
+        # Degrade the analyzer capability to None (the `if spec.analyzer is None` idiom downstream
+        # handles the rest); everything else about the shell kind still works.
+        analyzer_cap = None
+    else:
+        analyzer_cap = Analyzer(analyze=analyzer.analyze, reconcile=analyzer.reconcile)
+    return replace(
+        spec,
+        params_io=ParamsIO(read=metawriter.read_params, write=metawriter.write_params),
+        analyzer=analyzer_cap,
     )
 
 

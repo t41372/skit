@@ -12,7 +12,7 @@ import locale
 
 import pytest
 
-from skit import i18n, pep723
+from skit import analysis, i18n, pep723
 from skit.langs.python import analyzer, metawriter, reconcile
 from skit.params import ParamDecl
 
@@ -396,7 +396,7 @@ def test_drift_lines_exact_messages():
         changed=[
             (
                 ParamDecl(name="RETRIES", binding="const", type="int"),
-                analyzer.Candidate(binding="const", name="RETRIES", type="str"),
+                analysis.Candidate(binding="const", name="RETRIES", type="str"),
             )
         ],
     )
@@ -443,7 +443,7 @@ def test_render_warning_partitions_on_first_colon_only():
 
 
 def test_spec_from_candidate_preserves_prompt_and_secret():
-    cand = analyzer.Candidate(
+    cand = analysis.Candidate(
         binding="input", name="input-1", type="str", prompt="Name: ", order=0, secret=True
     )
     from skit.params import ParamDecl

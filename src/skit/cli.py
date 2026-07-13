@@ -35,6 +35,7 @@ from rich.prompt import Confirm, Prompt
 from . import (
     __version__,
     agentskill,
+    analysis,
     argstate,
     config,
     editor,
@@ -47,7 +48,7 @@ from . import (
     store,
 )
 from .i18n import gettext, ngettext
-from .langs.python import analyzer, metawriter, reconcile
+from .langs.python import analyzer, metawriter
 from .langs.registry import KNOWN_KINDS, spec_for
 from .params import ParamDecl, declared_from_meta, edit_declared
 
@@ -216,7 +217,7 @@ def _parse_selection(answer: str, count: int) -> list[int]:
     return picked
 
 
-def _default_selection(candidates: list[analyzer.Candidate]) -> str:
+def _default_selection(candidates: list[analysis.Candidate]) -> str:
     """Signal-driven default (UX spec §0): clean candidates in, demoted candidates out."""
     clean = [i for i, c in enumerate(candidates, start=1) if not c.demoted]
     if len(clean) == len(candidates):
@@ -226,7 +227,7 @@ def _default_selection(candidates: list[analyzer.Candidate]) -> str:
     return ",".join(str(i) for i in clean)
 
 
-def _print_candidate(i: int, c: analyzer.Candidate) -> None:
+def _print_candidate(i: int, c: analysis.Candidate) -> None:
     mark = gettext(" (secret)") if c.secret else ""
     if c.binding == "const":
         console.print(
@@ -252,7 +253,7 @@ def _print_candidate(i: int, c: analyzer.Candidate) -> None:
         )
 
 
-def _print_add_hints(result: analyzer.Analysis, script_name: str) -> None:
+def _print_add_hints(result: analysis.Analysis, script_name: str) -> None:
     """The honest, rule-backed hints (UX spec §0): argv passthrough, extractable filenames."""
     if result.uses_argv:
         console.print(
@@ -1792,7 +1793,7 @@ def _edit_params(
         err_console.print(
             f"[yellow]{escape(gettext('Ignored a malformed value: %(item)s (expected NAME=text).') % {'item': item})}[/yellow]"
         )
-    result = reconcile.edit_specs(
+    result = analysis.edit_specs(
         text,
         current,
         resync=resync,
@@ -1801,12 +1802,13 @@ def _edit_params(
         secret=secret,
         no_secret=no_secret,
         prompts=prompts,
+        analyze=entry_spec.analyzer.analyze,
     )
     for w in result.warnings:
-        err_console.print(f"[yellow]{escape(reconcile.render_warning(w))}[/yellow]")
+        err_console.print(f"[yellow]{escape(analysis.render_warning(w))}[/yellow]")
     for w in _apply_env_sources(result.specs, env_sources):
         err_console.print(f"[yellow]{escape(w)}[/yellow]")
-    new_text = metawriter.write_params(text, result.specs)
+    new_text = entry_spec.params_io.write(text, result.specs)
     copy_path.write_text(new_text, encoding="utf-8")  # pragma: no mutate — utf-8 equivalence
     secret_now = {s.name for s in result.specs if s.secret}
     purged = argstate.purge_secret(entry.slug, secret_now)

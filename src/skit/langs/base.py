@@ -26,11 +26,10 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    from ..analysis import Analysis, Report
     from ..models import Entry
     from ..params import ParamDecl
-    from .python.analyzer import Analysis
     from .python.argspec import ArgSpec
-    from .python.reconcile import Report
 
 
 class LaunchError(Exception):

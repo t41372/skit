@@ -10,14 +10,19 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
+      # tests/corpus/ holds byte-exact golden inputs (deliberate CRLF, missing
+      # trailing newlines, odd whitespace) — "fixing" them destroys what they test.
       - id: trailing-whitespace
+        exclude: ^tests/corpus/
       - id: end-of-file-fixer
+        exclude: ^tests/corpus/
       - id: check-yaml
       - id: check-toml
       - id: check-merge-conflict
       - id: check-added-large-files
       - id: mixed-line-ending
         args: [--fix=lf]
+        exclude: ^tests/corpus/
 
   - repo: local
     hooks:

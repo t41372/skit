@@ -1,26 +1,49 @@
-"""Golden corpus fidelity tests (C series).
+"""Golden corpus fidelity tests (C series), across every analyzable language.
 
-Every corpus script runs four checks:
-1. analyzer never raises: any script must yield candidates (or an empty list) without exceptions.
-2. metawriter byte-for-byte fidelity: write [tool.skit] then read it back; every byte outside the
-   newly added PEP 723 lines must be identical to the original (C1).
-3. shim with no values is the identity: inject(text, specs, {}) must return the exact same bytes.
-4. shim-injected output still compiles: inject a type-compatible sample value for each candidate
-   and verify that compile() accepts the result, with the PEP 723 block untouched.
+Language-blind checks run over both the Python (`corpus/*.py`) and shell (`corpus/shell/*.sh`)
+corpora — each parametrized as (analyze, path):
 
-Corpus coverage: shebang/coding, docstring, __future__, main guard, CRLF, tab indentation, no
-trailing newline, CJK identifiers, input() inside loops/comprehensions, walrus, decorator, async,
-argparse, and other real-world script shapes.
+1. analyzer never raises: any script yields candidates (or an empty list) without exceptions.
+2. metawriter byte fidelity: write [tool.skit] then read it back; every line the writer ADDS is a
+   comment line (the `#`-block engine is language-blind — it never touches code), and the read-back
+   round-trips the specs (C1).
+3. block round-trip preserves shebang position: an injected `# /// script` block lands AFTER the
+   shebang, and every code (non-comment) line survives verbatim.
+
+Python-only checks (the shim / injector is Python-only in this phase):
+
+4. shim with no values is the identity: inject(text, specs, {}) returns the exact same bytes.
+5. shim-injected output still compiles: inject a type-compatible sample value for each candidate and
+   verify compile() accepts the result, with the PEP 723 block untouched.
+
+Corpus coverage — Python: shebang/coding, docstring, __future__, main guard, CRLF, tab indentation,
+no trailing newline, CJK, input() in loops/comprehensions, walrus, decorator, async, argparse.
+Shell: word/number/raw/double-quoted consts, export/readonly/declare/local, envdefault :-/:=/-/=,
+the both-assigned-and-defaulted suppression, self-idiom, reads (clustered/multi-var/dynamic/retry),
+data-reads (pipe/redirect-fed), heredoc, demotions, argv/self-location hints, CJK+emoji, CRLF, no
+trailing newline, and a zsh dialect tree-sitter-bash can't parse (honest empty).
 """
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
-from skit.langs.python import analyzer, metawriter, shim
+from skit.analysis import Analysis
+from skit.langs.python import analyzer as py_analyzer
+from skit.langs.python import metawriter, shim
+from skit.langs.shell import analyzer as sh_analyzer
 from skit.params import ParamDecl
 
-CORPUS = sorted((Path(__file__).parent / "corpus").glob("*.py"))
+PY_CORPUS = sorted((Path(__file__).parent / "corpus").glob("*.py"))
+SH_CORPUS = sorted((Path(__file__).parent / "corpus" / "shell").glob("*.sh"))
+
+# (id, analyze, path) triples for the language-blind checks.
+_NEUTRAL = [(f"py:{p.name}", py_analyzer.analyze, p) for p in PY_CORPUS] + [
+    (f"sh:{p.name}", sh_analyzer.analyze, p) for p in SH_CORPUS
+]
+_NEUTRAL_IDS = [entry[0] for entry in _NEUTRAL]
+_NEUTRAL_ARGS = [(entry[1], entry[2]) for entry in _NEUTRAL]
 
 # Sample values used when exercising full-value injection
 _SAMPLE = {"str": "sample", "int": "7", "float": "1.5", "bool": "true"}
@@ -34,47 +57,61 @@ def _read(path: Path) -> str:
         return f.read()
 
 
-def _specs_for(text: str) -> list[ParamDecl]:
+def _specs_for(text: str, analyze: Callable[[str], Analysis]) -> list[ParamDecl]:
     # ParamDecl.from_candidate is the field-aligned conversion this test used to spell out
     # by hand; it carries exactly the same fields, so byte fidelity is unchanged.
-    return [ParamDecl.from_candidate(c) for c in analyzer.analyze(text).candidates]
+    return [ParamDecl.from_candidate(c) for c in analyze(text).candidates]
 
 
-@pytest.mark.parametrize("path", CORPUS, ids=lambda p: p.name)
-def test_analyzer_never_raises(path: Path):
-    analyzer.analyze(_read(path))
+@pytest.mark.parametrize(("analyze", "path"), _NEUTRAL_ARGS, ids=_NEUTRAL_IDS)
+def test_analyzer_never_raises(analyze: Callable[[str], Analysis], path: Path):
+    analyze(_read(path))
 
 
-@pytest.mark.parametrize("path", CORPUS, ids=lambda p: p.name)
-def test_metawriter_byte_fidelity(path: Path):
+@pytest.mark.parametrize(("analyze", "path"), _NEUTRAL_ARGS, ids=_NEUTRAL_IDS)
+def test_metawriter_byte_fidelity(analyze: Callable[[str], Analysis], path: Path):
     text = _read(path)
-    specs = _specs_for(text)
+    specs = _specs_for(text, analyze)
     written = metawriter.write_params(text, specs)
     # Read back must equal what was written
     assert metawriter.read_params(written) == specs
-    # Byte-for-byte fidelity: remove the lines metawriter added; the result must equal the
-    # original (C1).
+    # Byte-for-byte fidelity: every line the writer ADDED must be inside the comment block (# prefix)
+    # — the '#'-comment block engine is language-blind, so this holds for shell exactly as for python.
     added = [
         ln for ln in written.splitlines(keepends=True) if ln not in text.splitlines(keepends=True)
     ]
-    restored = written
-    for ln in added:
-        restored = restored.replace(ln, "", 1)
-    # Added lines must only appear inside the PEP 723 comment block (# prefix)
     assert all(ln.lstrip().startswith("#") for ln in added), added
 
 
-@pytest.mark.parametrize("path", CORPUS, ids=lambda p: p.name)
+@pytest.mark.parametrize(("analyze", "path"), _NEUTRAL_ARGS, ids=_NEUTRAL_IDS)
+def test_block_roundtrip_preserves_shebang(analyze: Callable[[str], Analysis], path: Path):
+    text = _read(path)
+    specs = _specs_for(text, analyze)
+    if not specs:
+        pytest.skip("no candidates → no block written")
+    written = metawriter.write_params(text, specs)
+    lines = text.splitlines(keepends=True)
+    if lines and lines[0].startswith("#!"):
+        # The shebang stays on line 1 and the injected block opens strictly after it.
+        assert written.splitlines(keepends=True)[0] == lines[0]
+        assert written.index("#!") < written.index("# /// script")
+    # metawriter only ever touches comment lines: every code (non-comment) line survives verbatim.
+    for ln in lines:
+        if not ln.lstrip().startswith("#"):
+            assert ln in written
+
+
+@pytest.mark.parametrize("path", PY_CORPUS, ids=lambda p: p.name)
 def test_shim_no_values_is_identity(path: Path):
     text = _read(path)
-    specs = _specs_for(text)
+    specs = _specs_for(text, py_analyzer.analyze)
     assert shim.inject(text, specs, {}) == text
 
 
-@pytest.mark.parametrize("path", CORPUS, ids=lambda p: p.name)
+@pytest.mark.parametrize("path", PY_CORPUS, ids=lambda p: p.name)
 def test_shim_full_injection_compiles(path: Path):
     text = _read(path)
-    specs = _specs_for(text)
+    specs = _specs_for(text, py_analyzer.analyze)
     if not specs:
         pytest.skip("no candidates")
     values = {s.name: _SAMPLE.get(s.type, "sample") for s in specs}

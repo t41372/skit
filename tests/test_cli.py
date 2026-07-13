@@ -21,6 +21,7 @@ from rich.markup import escape
 from typer.testing import CliRunner
 
 from skit import (
+    analysis,
     argstate,
     cli,
     config,
@@ -29,7 +30,7 @@ from skit import (
     promptform,
     store,
 )
-from skit.langs.python import analyzer, metawriter, shim
+from skit.langs.python import analyzer, metawriter, reconcile, shim
 from skit.params import ParamDecl
 from skit.paths import values_dir
 
@@ -1078,10 +1079,8 @@ def test_params_candidates_line_escapes_markup_in_name(tmp_path, monkeypatch):
     """The "Detected but not yet managed" line interpolates candidate names raw; even though
     analyzer-derived names are normally valid identifiers, this is defense in depth against any
     future candidate source that isn't so constrained."""
-    hostile = analyzer.Candidate(binding="const", name="[red]NEW[/red]", type="str", default="x")
-    monkeypatch.setattr(
-        cli.reconcile, "analyze", lambda text: analyzer.Analysis(candidates=[hostile])
-    )
+    hostile = analysis.Candidate(binding="const", name="[red]NEW[/red]", type="str", default="x")
+    monkeypatch.setattr(reconcile, "analyze", lambda text: analysis.Analysis(candidates=[hostile]))
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     result = runner.invoke(cli.app, ["params", "a"])
     assert result.exit_code == 0, result.output

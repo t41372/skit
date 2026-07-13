@@ -36,11 +36,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import argstate, launcher, params, rewrite, tokens
+from . import analysis, argstate, launcher, params, rewrite, tokens
 from .i18n import gettext
 from .langs.base import LangSpec
 from .langs.launch import quote_for_shell as launch_quote
-from .langs.python import reconcile, shim
+from .langs.python import shim
 from .langs.python.shim import ShimValueError, _coerce
 from .langs.registry import spec_for
 from .models import Entry
@@ -217,7 +217,18 @@ def _declared_plan(entry: Entry, lang: LangSpec) -> FormPlan | None:
     return None
 
 
-def plan_for_entry(entry: Entry) -> FormPlan:
+def _declared_riders(entry: Entry, taken: set[str]) -> list[FormField]:
+    """Declared [[parameters]] flag/env rows to merge into an analyzable kind's plan, minus any
+    name already fielded from the in-file block. Flag rows assemble real argv, env rows overlay the
+    child environment; other deliveries mean nothing here and are dropped (mirrors _declared_plan)."""
+    return [
+        FormField.from_decl(d)
+        for d in params.declared_from_meta(entry.meta.parameters)
+        if d.delivery in ("flag", "env") and d.name not in taken
+    ]
+
+
+def plan_for_entry(entry: Entry) -> FormPlan:  # noqa: PLR0911 — one return per plan source
     """Build the form plan for an entry. Total: unreadable/missing scripts yield the
     "none" plan (extra-args escape only) rather than raising — preflight owns existence
     errors, the form layer just refuses to invent fields it can't see."""
@@ -237,14 +248,25 @@ def plan_for_entry(entry: Entry) -> FormPlan:
     specs = lang.params_io.read(text)
     if specs:
         report = lang.analyzer.reconcile(text, specs)
-        drift = list(reconcile.drift_lines(report, entry.meta.name)) if report.has_drift else []
+        drift = list(analysis.drift_lines(report, entry.meta.name)) if report.has_drift else []
+        fields = [FormField.from_decl(s) for s in report.usable]
+        # MERGE: declared [[parameters]] flag/env rows ride along after the analyzer's in-file
+        # params (a shell/python entry may hand-declare an env or flag channel the analyzer can't
+        # see). Names already fielded from the in-file block win — no duplicate rows. For the
+        # overwhelming case (no meta.parameters) this appends nothing, so the plan is byte-identical.
+        fields += _declared_riders(entry, {f.key for f in fields})
         return FormPlan(
             source="inject",
-            fields=[FormField.from_decl(s) for s in report.usable],
+            fields=fields,
             drift_lines=drift,
             specs=report.usable,
             text=text,
         )
+    # No in-file specs, but declared meta rows may still exist (env is the ${VAR:-default} channel
+    # even before anything is managed in-file) — the declared path applies before CLI reflection.
+    riders = _declared_riders(entry, set())
+    if riders:
+        return FormPlan(source="declared", fields=riders, text=text)
     if lang.cli_reader is not None:
         spec = lang.cli_reader.read_cli(text)
         if spec is not None:

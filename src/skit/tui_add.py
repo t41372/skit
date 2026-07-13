@@ -22,7 +22,7 @@ from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import Checkbox, Input, RadioButton, RadioSet, Static
 
-from . import editor, pep723, store, theme, tui_footer, tui_layout
+from . import analysis, editor, pep723, store, theme, tui_footer, tui_layout
 from .i18n import gettext
 from .langs.python import analyzer, argspec, metawriter
 from .params import ParamDecl
@@ -208,7 +208,7 @@ class AddReviewScreen(Screen[str | None]):
         super().__init__()
         self._path: Path = path
         self._text: str = path.read_text(encoding="utf-8", errors="replace")
-        self._analysis: analyzer.Analysis = analyzer.analyze(self._text)
+        self._analysis: analysis.Analysis = analyzer.analyze(self._text)
         self._requires_python = requires_python
         # Survives the edit→rescan recompose: the rescan refreshes DETECTION, it must
         # never throw away what the user already typed into the panel.

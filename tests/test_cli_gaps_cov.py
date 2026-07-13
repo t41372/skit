@@ -21,8 +21,8 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from skit import argstate, cli, flows, inlineform, launcher, store
-from skit.langs.python import analyzer, metawriter
+from skit import analysis, argstate, cli, flows, inlineform, launcher, store
+from skit.langs.python import metawriter
 from skit.params import ParamDecl
 
 runner = CliRunner()
@@ -121,21 +121,21 @@ def test_complete_preset_swallows_resolve_errors():
 
 
 def test_default_selection_all_demoted_is_none():
-    demoted = [analyzer.Candidate(binding="const", name="ACC", type="int", default=0, demoted=True)]
+    demoted = [analysis.Candidate(binding="const", name="ACC", type="int", default=0, demoted=True)]
     assert cli._default_selection(demoted) == "none"
 
 
 def test_default_selection_mixed_lists_clean_indices_only():
     mixed = [
-        analyzer.Candidate(binding="const", name="CITY", type="str", default="x"),
-        analyzer.Candidate(binding="const", name="ACC", type="int", default=0, demoted=True),
+        analysis.Candidate(binding="const", name="CITY", type="str", default="x"),
+        analysis.Candidate(binding="const", name="ACC", type="int", default=0, demoted=True),
     ]
     # Only the first (1-based index 1) is clean, so the demoted second index is excluded.
     assert cli._default_selection(mixed) == "1"
 
 
 def test_print_candidate_demoted_prints_accumulator_warning(capsys):
-    c = analyzer.Candidate(binding="const", name="ACC", type="int", default=0, demoted=True)
+    c = analysis.Candidate(binding="const", name="ACC", type="int", default=0, demoted=True)
     cli._print_candidate(1, c)
     out = " ".join(capsys.readouterr().out.split())
     assert "looks like a loop accumulator" in out
@@ -147,7 +147,7 @@ def test_print_candidate_demoted_prints_accumulator_warning(capsys):
 
 
 def test_print_add_hints_argv_line(capsys):
-    cli._print_add_hints(analyzer.Analysis(uses_argv=True), "tool")
+    cli._print_add_hints(analysis.Analysis(uses_argv=True), "tool")
     out = " ".join(capsys.readouterr().out.split())
     assert "reads command-line arguments" in out
 

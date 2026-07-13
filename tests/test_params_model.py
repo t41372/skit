@@ -67,7 +67,7 @@ def test_from_block_dict_is_total_on_garbage():
 
 
 def test_from_candidate_maps_fields_and_derives_delivery():
-    from skit.langs.python.analyzer import Candidate
+    from skit.analysis import Candidate
 
     const = ParamDecl.from_candidate(
         Candidate(binding="const", name="CITY", type="str", default="Taipei", secret=True)

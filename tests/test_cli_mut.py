@@ -15,6 +15,7 @@ import typer
 from typer.testing import CliRunner
 
 from skit import (
+    analysis,
     argstate,
     cli,
     config,
@@ -26,7 +27,7 @@ from skit import (
     store,
 )
 from skit.i18n import gettext
-from skit.langs.python import analyzer, metawriter, shim
+from skit.langs.python import metawriter, shim
 from skit.params import ParamDecl
 
 runner = CliRunner()
@@ -136,7 +137,7 @@ def test_resolve_metadata_interactive_prompts_exact_text_and_defaults(monkeypatc
 
 
 def test_spec_from_candidate_copies_every_field():
-    c = analyzer.Candidate(
+    c = analysis.Candidate(
         binding="input",
         name="who",
         type="int",

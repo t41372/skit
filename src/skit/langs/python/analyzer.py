@@ -21,9 +21,9 @@ from __future__ import annotations
 
 import ast
 import re
-from dataclasses import dataclass, field
 from typing import TypeGuard
 
+from ...analysis import Analysis, Candidate
 from ...params import is_secret_name
 
 # Injectable type domain: the shim's AST substitution only supports these
@@ -34,44 +34,6 @@ INJECTABLE_TYPES = ("str", "int", "float", "bool")
 # Detecting these frameworks -> the script already has a proper CLI; suggest the L1 preset path
 # rather than injection.
 _CLI_FRAMEWORKS = ("argparse", "click", "typer", "docopt", "fire")
-
-
-@dataclass
-class Candidate:
-    """A candidate parameter. const is keyed by variable name; input by call order (B1/A8)."""
-
-    # "const" | "input" — the source-anchor axis (field-aligned with ParamDecl.binding).
-    binding: str
-    name: str  # const: variable name; input: display name (input-1, input-2, …)
-    type: str = "str"  # one of INJECTABLE_TYPES
-    default: str | int | float | bool | None = None  # const: the original value in the source
-    prompt: str = ""  # input: the literal prompt of input() (if any)
-    order: int = -1  # input: which input() call (0-based); -1 for const
-    lineno: int = 0
-    secret: bool = False  # heuristic pre-check, editable during onboarding
-    # Demotion signal (UX spec §0): a candidate that *parses* as a constant but whose usage
-    # says "not a parameter" — currently only "accumulator" (literal init + AugAssign anywhere,
-    # or reassigned inside a loop body). Demoted candidates default to unchecked at onboarding,
-    # with the reason surfaced; clean candidates default to checked.
-    demoted: bool = False
-    demotion: str = ""  # symbolic reason id; the UI owns the human wording
-
-
-@dataclass
-class Analysis:
-    candidates: list[Candidate] = field(default_factory=list)
-    frameworks: list[str] = field(default_factory=list)  # detected CLI frameworks
-    syntax_error: bool = False
-    uses_argv: bool = False  # sys.argv appears -> the run form gets a passthrough-args hint
-    # Filename-looking string literals passed directly as call arguments (never bound to a
-    # name): the "extract this into a named constant to manage it" hint. Capped, deduped,
-    # source order. Only literals a cheap deterministic rule can vouch for — nothing else
-    # (see the 'RGB' exclusion in the UX spec: no domain-knowledge guesses).
-    filename_literals: list[str] = field(default_factory=list)
-
-    @property
-    def uses_cli_framework(self) -> bool:
-        return bool(self.frameworks)
 
 
 def _literal_value(node: ast.expr) -> tuple[bool, str | int | float | bool | None]:

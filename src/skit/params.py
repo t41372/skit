@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from .langs.python.analyzer import Candidate
+    from .analysis import Candidate
 
 Binding = Literal["const", "input", "envdefault", "none"]
 Delivery = Literal["inject", "env", "flag", "placeholder"]
