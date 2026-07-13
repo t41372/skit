@@ -354,10 +354,12 @@ def test_infer_shebang_beats_exec_bit(tmp_path: Path):
 
 
 def test_infer_unknown_shebang_program_falls_to_exec_bit(tmp_path: Path):
-    # A recognized #! shape but an unmapped program: not an interpreted kind, so the +x
-    # bit makes it an exe (covers the "shebang present, no kind" fall-through).
+    # A recognized #! shape but an unmapped program: not an interpreted kind, so the fall-through
+    # is the executability check (covers the "shebang present, no kind" branch). On POSIX the +x
+    # bit makes it an exe; Windows has no execute bit and this extension-less file isn't in PATHEXT,
+    # so it honestly stays unknown — the same platform split as test_infer_exec_bit_only_is_exe.
     p = _write(tmp_path, "prog", b"#!/usr/bin/env frobnicator\n", executable=True)
-    assert reg.infer_kind(p) == "exe"
+    assert reg.infer_kind(p) == ("unknown" if sys.platform == "win32" else "exe")
 
 
 def test_infer_exec_bit_only_is_exe(tmp_path: Path):
