@@ -377,6 +377,50 @@ def test_multi_variable_read_refuses_whitespace_in_a_non_last_field(tmp_path):
     assert not temp_files(tmp_path)
 
 
+def test_read_refuses_a_newline_in_any_field_including_a_single_variable(tmp_path):
+    # A newline ENDS the read's line, so no variable can hold it — not even the only one. Accepting
+    # it delivered "a" while skit's own echo showed "a\nb": the value and the echo disagreed.
+    single = '#!/usr/bin/env bash\nread -p "Name: " NAME\n'
+    with pytest.raises(InjectSplitError) as exc_info:
+        inject_src(single, {"input-1": "a\nb"}, tmp_path)
+    assert exc_info.value.reason == "line-break"
+    # and in the LAST variable of a multi-var read, which is exempt from field-splitting only
+    multi = '#!/usr/bin/env bash\nread -p "A B: " A B\n'
+    with pytest.raises(InjectSplitError) as exc_info:
+        inject_src(multi, {"input-1": "x", "input-2": "a\nb"}, tmp_path)
+    assert exc_info.value.reason == "line-break"
+    assert not temp_files(tmp_path)
+
+
+def test_read_refuses_edge_whitespace_that_the_shell_would_strip(tmp_path):
+    # `read` strips leading/trailing IFS whitespace off the line, so " lead" would arrive as "lead"
+    # — a silent modification. Interior spaces in the last variable are fine (the line's remainder).
+    src = '#!/usr/bin/env bash\nread -p "Name: " NAME\n'
+    for edge in (" lead", "trail ", "\ttab-lead"):
+        with pytest.raises(InjectSplitError) as exc_info:
+            inject_src(src, {"input-1": edge}, tmp_path)
+        assert exc_info.value.reason == "edge-space"
+    result = inject_src(src, {"input-1": "de Lovelace"}, tmp_path)  # interior: accepted
+    assert result.path is not None
+
+
+@posix_only
+def test_read_accepts_a_carriage_return_which_the_shell_delivers_intact(tmp_path):
+    # CR is neither a default-$IFS splitter nor a line terminator: every supported shell hands the
+    # value over byte-intact, so refusing it would be a false positive.
+    src = '#!/usr/bin/env bash\nread -p "V: " V\nprintf "<%s>" "$V"\n'
+    result = inject_src(src, {"input-1": "a\rb"}, tmp_path)
+    assert result.path is not None
+    # Raw bytes on purpose: text mode would translate the CR away and hide what actually arrived.
+    out = subprocess.run(
+        [shutil.which("bash") or "bash", str(result.path)],
+        capture_output=True,
+        cwd=tmp_path,
+        check=False,
+    )
+    assert b"<a\rb>" in out.stdout
+
+
 def test_multi_variable_read_refuses_whitespace_when_a_trailing_var_is_unmanaged(tmp_path):
     # The exemption is keyed on the read's last VARIABLE, not the last supplied value: with only
     # input-1 managed, the shell still binds LAST from the same line, so "John Paul" would have
@@ -1076,15 +1120,17 @@ def test_cli_normalize_warning_renderer_covers_every_code():
         assert cli._render_normalize_warning(f"{code}:X")
 
 
-def test_split_guard_matches_default_ifs_not_python_isspace(tmp_path):
-    # A non-breaking space (U+00A0) is whitespace to Python but NOT a default-$IFS split
-    # character, so bash `read` keeps such a value whole — refusing it would be a false
-    # positive. Only space/tab/newline/CR are refused in a non-last field.
+def test_split_guard_refuses_only_what_the_shell_would_actually_mangle(tmp_path):
+    # The refusal set is measured against real shells, not Python's str.isspace():
+    #   U+00A0 - whitespace to Python, but not a default-$IFS splitter: the shell keeps it whole.
+    #   CR     - neither a splitter nor a line terminator: delivered byte-intact (verified with od).
+    # Both must be ACCEPTED in a non-last field. Only space/tab (which split the line across the
+    # fields) and newline (which ends the line) are refused there.
     src = '#!/usr/bin/env bash\nread -p "a b: " FIRST LAST\n'
-    nbsp = "a" + "\u00a0" + "b"  # U+00A0 no-break space: whitespace to Python, not a $IFS splitter
-    result = inject_src(src, {"input-1": nbsp, "input-2": "x"}, tmp_path)
-    assert result.path is not None  # accepted, not refused
-    for splitter in (" ", "\t", "\n", "\r"):
+    for accepted in ("a" + "\u00a0" + "b", "a\rb"):
+        result = inject_src(src, {"input-1": accepted, "input-2": "x"}, tmp_path)
+        assert result.path is not None  # accepted, not refused
+    for splitter in (" ", "\t", "\n"):
         with pytest.raises(InjectSplitError):
             inject_src(src, {"input-1": f"a{splitter}b", "input-2": "x"}, tmp_path)
 

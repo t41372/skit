@@ -1995,12 +1995,20 @@ def _edit_declared_params(
     malformed: list[str],
 ) -> None:
     """Apply declared-schema changes to a meta-schema entry (rewrites meta.toml [[parameters]]).
-    The allowed deliveries follow the kind: only a template's interface is its placeholders, so a
-    template takes placeholder/env; everything else (a binary, and every interpreted kind that
-    stores its schema in meta — ruby/perl/lua/r/powershell) takes flag/env, because they all
-    assemble a real argv. Branching on "template" rather than "binary" is what keeps a declared
-    `--add` on an interpreted kind from silently defaulting to an undeliverable placeholder row."""
-    allowed = ("placeholder", "env") if entry_spec.family == "template" else ("flag", "env")
+
+    The allowed deliveries follow the kind: a template's interface is its placeholders, so it takes
+    placeholder/env; everything else (a binary, and every interpreted kind that stores its schema in
+    meta — ruby/perl/lua/r/powershell) takes flag/env, because they all assemble a real argv.
+    Branching on "template" rather than "binary" keeps a declared `--add` on an interpreted kind
+    from defaulting to an undeliverable placeholder row.
+
+    allowed[0] is also the DEFAULT for a bare `--add NAME`, which is why "env" leads for a template:
+    a name that is not one of the template's {placeholders} cannot be one (the template is the
+    truth about which slots exist), so defaulting it to "placeholder" wrote a dead row that the run
+    surface then refused. env is the delivery a template can always honour, and it matches what the
+    TUI's own add-a-parameter field creates. `edit_declared` still maps a name that IS a placeholder
+    onto placeholder delivery, and membership validation is unchanged — only the default moves."""
+    allowed = ("env", "placeholder") if entry_spec.family == "template" else ("flag", "env")
     for item in malformed:
         err_console.print(
             f"[yellow]{escape(gettext('Ignored a malformed value: %(item)s (expected NAME=VALUE).') % {'item': item})}[/yellow]"

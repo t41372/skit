@@ -104,20 +104,26 @@ class InjectGapError(InjectError):
 
 
 class InjectSplitError(InjectError):
-    """A non-last variable of a multi-variable read (`read FIRST LAST`) was given a value
-    containing whitespace.
+    """A `read` line would deliver this value DIFFERENTLY from the one in the form.
 
-    One `read` consumes one LINE and splits it on $IFS, so the values of a single call are
-    joined into one line and re-split by the shell. Only the LAST variable can safely hold
-    whitespace (it absorbs the remainder of the line); whitespace in any earlier value would
-    silently spill across the IFS boundary — `FIRST="John Paul"` would leave FIRST="John" and
-    push "Paul" onto LAST, and a newline would truncate the line entirely. That is the silent
-    wrong-value binding risk this refusal exists to prevent. A value-shape problem, not drift,
-    so callers map it to FAIL_BAD_VALUE and must not suggest a resync."""
+    One `read` consumes a single LINE and re-splits it on $IFS, so a value can be mangled three
+    distinct ways (`reason` says which, and the caller words each one):
 
-    def __init__(self, name: str) -> None:
+    - "line-break": the value contains a newline, which ENDS the line — everything after it is
+      discarded. True for every variable, a single-variable `read NAME` included.
+    - "field-split": a space/tab in a non-last variable of a multi-variable read spills the
+      remainder into the next one (`FIRST="John Paul"` → FIRST="John", LAST="Paul").
+    - "edge-space": a leading/trailing space/tab, which `read` strips from the line's edges, so the
+      script would receive the value trimmed.
+
+    Silently delivering any of these is exactly the wrong-value binding this refusal exists to
+    prevent. A value-shape problem, not drift, so callers map it to FAIL_BAD_VALUE and must not
+    suggest a resync."""
+
+    def __init__(self, name: str, reason: str) -> None:
         self.name = name
-        super().__init__(name)
+        self.reason = reason
+        super().__init__(f"{name}: {reason}")
 
 
 class InjectSyntaxError(InjectError):

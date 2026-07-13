@@ -770,3 +770,28 @@ def test_declared_param_on_an_interpreted_kind_actually_delivers(tmp_path: Path,
     result = runner.invoke(cli.app, ["run", entry.slug, "--set", "GREETING=world", "--no-input"])
     assert result.exit_code == 0
     assert run_entry_spy["extra"] == ["--greeting", "world"]
+
+
+def test_template_add_of_a_non_placeholder_name_creates_a_deliverable_env_row(tmp_path: Path):
+    # The template is the truth about which {slots} exist, so a name that is not one cannot be a
+    # placeholder. Defaulting it to placeholder delivery wrote a row the CLI listed but the run
+    # surface refused ("Unknown parameter for --set") — and the TUI created an env row for the very
+    # same action. env is the delivery a template can always honour.
+    entry = store.add_command("greet {WHO}", name="tpl")
+    assert runner.invoke(cli.app, ["params", entry.slug, "--add", "RETRIES"]).exit_code == 0
+    decls = {d.name: d.delivery for d in store.read_parameters(entry.slug)}
+    assert decls["RETRIES"] == "env"
+    # and it really delivers, rather than being denied by --set
+    result = runner.invoke(
+        cli.app,
+        ["run", entry.slug, "--set", "WHO=ada", "--set", "RETRIES=3", "--dry-run", "--no-input"],
+    )
+    assert result.exit_code == 0
+    assert "RETRIES=3" in result.output.replace("\n", "")
+
+
+def test_template_add_of_a_real_placeholder_name_still_fills_the_slot(tmp_path: Path):
+    entry = store.add_command("greet {WHO}", name="tpl2")
+    runner.invoke(cli.app, ["params", entry.slug, "--add", "WHO", "--type", "WHO=str"])
+    decls = {d.name: d.delivery for d in store.read_parameters(entry.slug)}
+    assert decls["WHO"] == "placeholder"

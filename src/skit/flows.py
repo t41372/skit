@@ -697,6 +697,27 @@ def transparency_lines(entry: Entry, asm: Assembly, injected: Path | None) -> li
     return lines
 
 
+def _split_message(exc: InjectSplitError) -> str:
+    """The user-facing wording for each way a `read` line would mangle a value. A closed dict of
+    gettext literals (never gettext(reason)) so Babel can extract them — the same discipline
+    analysis.render_warning uses."""
+    return {
+        "line-break": gettext(
+            "%(name)s can't contain a line break: a shell `read` takes ONE line, so everything "
+            "after the break would be thrown away."
+        ),
+        "field-split": gettext(
+            "%(name)s is read on the same line as other values, so its value can't contain spaces "
+            "or tabs — the shell would split it across the other fields. Only the LAST value on a "
+            "`read` line may contain spaces."
+        ),
+        "edge-space": gettext(
+            "%(name)s starts or ends with a space or tab, which a shell `read` strips off the "
+            "line — the script would receive it trimmed. Remove the surrounding whitespace."
+        ),
+    }[exc.reason] % {"name": exc.name}
+
+
 def execute(  # noqa: PLR0911, PLR0912 — one early return/branch per injection failure mode; a flat error dispatch
     entry: Entry,
     plan: FormPlan,
@@ -770,16 +791,7 @@ def execute(  # noqa: PLR0911, PLR0912 — one early return/branch per injection
                     % {"empty": exc.empty, "filled": exc.filled},
                 )
             except InjectSplitError as exc:
-                return RunOutcome(
-                    None,
-                    FAIL_BAD_VALUE,
-                    gettext(
-                        "%(name)s is read on the same line as other values, so its value can't "
-                        "contain spaces or newlines — the shell would split it across the other "
-                        "fields. Only the last value on a `read` line may contain spaces."
-                    )
-                    % {"name": exc.name},
-                )
+                return RunOutcome(None, FAIL_BAD_VALUE, _split_message(exc))
             except InjectSyntaxError as exc:
                 # skit corrupted the script (a quoting/escaping bug) — a resync fixes
                 # nothing, so this must NOT carry the drift hint. Nothing was launched.

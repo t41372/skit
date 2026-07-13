@@ -99,10 +99,22 @@ _BUILTIN_SHELLS = ("bash", "zsh")
 # liveness guard, not a policy — a hung gate must never wedge a run.
 _GATE_TIMEOUT = 30.0
 
-# The characters default $IFS splits a `read` line on (space, tab, newline), plus CR so a value
-# can't smuggle a line break into a CRLF-tolerant read. Deliberately narrower than str.isspace():
-# a value is only unsafe in a non-last multi-var read field if the SHELL would split on it.
-_IFS_SPLIT = frozenset(" \t\n\r")
+# What a `read` line does to a value, measured on bash 3.2/5, sh, zsh and dash — three DIFFERENT
+# behaviours, so one refusal set would be wrong in both directions:
+#
+# - A newline **ends the line**. `read` consumes one line, so everything after the first newline is
+#   silently discarded — for EVERY variable, including a single-variable `read NAME`. No variable
+#   can absorb it, so a newline is refused everywhere.
+# - Space and tab are the default $IFS field separators: they split the line across the variables,
+#   and `read` also STRIPS them from the line's leading and trailing edges. So they are refused in
+#   any non-last variable (the value would spill into the next one), and refused at the EDGES of the
+#   last variable (they would be silently trimmed). Interior spaces in the last variable are fine —
+#   it takes the remainder of the line verbatim ("de Lovelace" arrives whole).
+# - A carriage return is neither: it is not in the default $IFS and does not end the line — every
+#   shell delivers `a\rb` intact (verified with od). Refusing it was a false positive; it is not
+#   in either set.
+_LINE_BREAK = frozenset("\n")
+_FIELD_SPLIT = frozenset(" \t")
 
 
 def inject(request: InjectRequest) -> InjectResult:
@@ -334,23 +346,26 @@ def _read_spans(
 
 
 def _check_prefix(group: list[_ReadSite], supplied: list[str | None]) -> None:
-    # A character in a non-last field that DEFAULT $IFS splits on would spill across the field
-    # boundary when the joined line is re-split by `read` (FIRST="John Paul" → FIRST="John", "Paul"
-    # pushed onto LAST; a newline truncates the line outright; a \r ends the line under bash). Only
-    # the read's LAST VARIABLE safely absorbs those — it takes the remainder of the line. Match
-    # exactly the default-IFS set (space, tab, newline) plus CR, NOT Python's broad str.isspace(),
-    # which also flags U+00A0/U+2028 that bash's default read does not split on (refusing those
-    # would be a false positive).
-    #
-    # The exemption is keyed on the last VARIABLE of the read (len-1), never on the last *supplied*
-    # value: `supplied` always has one slot per variable, so a trailing None is an UNMANAGED variable
-    # that the shell still binds from the same line. Exempting the last supplied value instead let
-    # `read FIRST LAST` with only input-1 managed accept "John Paul" and silently deliver
-    # FIRST="John", LAST="Paul" — the exact silent wrong-value binding this guard exists to prevent.
+    """Refuse any value a `read` line would deliver DIFFERENTLY from what the user typed.
+
+    The one contract this guard exists for: skit never silently hands the script a value other than
+    the one in the form. `read` re-splits the single line it is fed (see the _LINE_BREAK /
+    _FIELD_SPLIT note above), so three distinct refusals fall out — and the last variable is only
+    exempt from the FIELD-SPLIT rule, never from the line-break one.
+
+    The last-variable exemption is keyed on the read's last VARIABLE (len-1), never on the last
+    *supplied* value: `supplied` always has one slot per variable, so a trailing None is an UNMANAGED
+    variable the shell still binds from the same line. Keying it on the last supplied value instead
+    let `read FIRST LAST` with only input-1 managed accept "John Paul" and silently deliver
+    FIRST="John", LAST="Paul".
+    """
     last_index = len(supplied) - 1
     for i, value in enumerate(supplied):
-        if value is not None and i != last_index and any(ch in _IFS_SPLIT for ch in value):
-            raise InjectSplitError(_display_name(group[i]))
+        if value is None:
+            continue
+        reason = _split_reason(value, is_last=i == last_index)
+        if reason:
+            raise InjectSplitError(_display_name(group[i]), reason)
     for i, value in enumerate(supplied):
         if value is not None:
             continue
@@ -358,6 +373,24 @@ def _check_prefix(group: list[_ReadSite], supplied: list[str | None]) -> None:
         if later is not None:
             raise InjectGapError(_display_name(group[i]), _display_name(group[later]))
         return  # the first gap has nothing filled after it: a short line, which read handles
+
+
+def _split_reason(value: str, *, is_last: bool) -> str:
+    """Why a `read` line would mangle this value — "" when it arrives intact.
+
+    "line-break": a newline ends the line, so everything after it is discarded — true for EVERY
+    variable, a single-variable read included.
+    "field-split": a space/tab in a non-last variable spills the remainder into the next one.
+    "edge-space": a leading/trailing space or tab, which `read` strips from the line's edges (only
+    reachable on the last variable; interior spaces there arrive whole).
+    """
+    if any(ch in _LINE_BREAK for ch in value):
+        return "line-break"
+    if not is_last:
+        return "field-split" if any(ch in _FIELD_SPLIT for ch in value) else ""
+    if value[:1] in _FIELD_SPLIT or value[-1:] in _FIELD_SPLIT:
+        return "edge-space"
+    return ""
 
 
 def _display_name(site: _ReadSite) -> str:

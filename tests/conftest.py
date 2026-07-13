@@ -42,7 +42,9 @@ pollution, independent of the test suite.
 
 from __future__ import annotations
 
+import contextlib
 import os
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -58,6 +60,8 @@ for _var in ("FORCE_COLOR", "NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE"):
 from skit import i18n, tui_footer  # noqa: E402 — must import after the color scrub above
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from textual.widgets import Static
 
 # NOTE: textual must NOT be imported at conftest top level. pytest loads conftest before
@@ -128,3 +132,24 @@ def _reset_i18n() -> None:
     i18n._translations = None
     i18n._active = i18n.DEFAULT_LOCALE
     i18n._pseudo = False
+
+
+@pytest.fixture(autouse=True)
+def _sweep_injected_temp_copies() -> Iterator[None]:
+    """Delete any injected temp copy a test left behind in the OS temp directory.
+
+    The product path always unlinks its own temp copy (flows.execute's `finally`), but the
+    injector tests call `inject()` directly and get a real 0600 file back — one that can carry a
+    plaintext secret literal from a test fixture. Nothing else would ever remove them, so an
+    unswept suite quietly accumulates thousands of secret-bearing files in $TMPDIR.
+
+    Only files that appeared DURING the test are removed, and only ones matching skit's own
+    `.injected-*` prefix, so a concurrently-running skit (or another tool) is never touched.
+    """
+    tmp = Path(tempfile.gettempdir())
+    before = set(tmp.glob(".injected-*"))
+    yield
+    for leaked in tmp.glob(".injected-*"):
+        if leaked not in before:
+            with contextlib.suppress(OSError):
+                leaked.unlink()
