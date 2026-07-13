@@ -1978,10 +1978,13 @@ def _edit_declared_params(
     env_sources: dict[str, str],
     malformed: list[str],
 ) -> None:
-    """Apply declared-schema changes to an exe/command entry (rewrites meta.toml [[parameters]]).
-    The allowed deliveries follow the kind: a binary takes flag/env argv+environment channels, a
-    template takes placeholder/env (argv is not a template's interface)."""
-    allowed = ("flag", "env") if entry_spec.family == "binary" else ("placeholder", "env")
+    """Apply declared-schema changes to a meta-schema entry (rewrites meta.toml [[parameters]]).
+    The allowed deliveries follow the kind: only a template's interface is its placeholders, so a
+    template takes placeholder/env; everything else (a binary, and every interpreted kind that
+    stores its schema in meta — ruby/perl/lua/r/powershell) takes flag/env, because they all
+    assemble a real argv. Branching on "template" rather than "binary" is what keeps a declared
+    `--add` on an interpreted kind from silently defaulting to an undeliverable placeholder row."""
+    allowed = ("placeholder", "env") if entry_spec.family == "template" else ("flag", "env")
     for item in malformed:
         err_console.print(
             f"[yellow]{escape(gettext('Ignored a malformed value: %(item)s (expected NAME=VALUE).') % {'item': item})}[/yellow]"

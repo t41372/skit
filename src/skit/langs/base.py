@@ -103,6 +103,23 @@ class InjectGapError(InjectError):
         super().__init__(f"{empty} < {filled}")
 
 
+class InjectSplitError(InjectError):
+    """A non-last variable of a multi-variable read (`read FIRST LAST`) was given a value
+    containing whitespace.
+
+    One `read` consumes one LINE and splits it on $IFS, so the values of a single call are
+    joined into one line and re-split by the shell. Only the LAST variable can safely hold
+    whitespace (it absorbs the remainder of the line); whitespace in any earlier value would
+    silently spill across the IFS boundary — `FIRST="John Paul"` would leave FIRST="John" and
+    push "Paul" onto LAST, and a newline would truncate the line entirely. That is the silent
+    wrong-value binding risk this refusal exists to prevent. A value-shape problem, not drift,
+    so callers map it to FAIL_BAD_VALUE and must not suggest a resync."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__(name)
+
+
 class InjectSyntaxError(InjectError):
     """The injected copy failed a post-injection syntax gate (offline re-parse, or the
     interpreter's own `-n` check). skit corrupted the script — a resync cannot fix that, so

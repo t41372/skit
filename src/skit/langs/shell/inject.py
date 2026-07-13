@@ -66,6 +66,7 @@ from ..base import (
     InjectGapError,
     InjectRequest,
     InjectResult,
+    InjectSplitError,
     InjectSyntaxError,
     InjectValueError,
 )
@@ -328,6 +329,15 @@ def _read_spans(
 
 
 def _check_prefix(group: list[_ReadSite], supplied: list[str | None]) -> None:
+    # Whitespace in a non-last field would spill across the IFS boundary when the joined line
+    # is re-split by `read` (FIRST="John Paul" → FIRST="John", "Paul" pushed onto LAST; a newline
+    # truncates the line outright). Only the last variable safely absorbs whitespace. Refuse the
+    # rest explicitly rather than silently delivering the wrong value. The last index is len-1;
+    # a shorter supplied list (a trailing gap) makes its own filled tail the effective last.
+    last_filled = max((i for i, value in enumerate(supplied) if value is not None), default=-1)
+    for i, value in enumerate(supplied):
+        if value is not None and i != last_filled and any(ch.isspace() for ch in value):
+            raise InjectSplitError(_display_name(group[i]))
     for i, value in enumerate(supplied):
         if value is not None:
             continue

@@ -28,6 +28,7 @@ from skit.langs.base import (
     InjectError,
     InjectGapError,
     InjectRequest,
+    InjectSplitError,
     InjectSyntaxError,
     InjectValueError,
 )
@@ -364,6 +365,56 @@ def test_multi_variable_read_refuses_a_positional_gap(tmp_path):
         inject_src(src, {"input-2": "Lovelace"}, tmp_path)
     assert (exc_info.value.empty, exc_info.value.filled) == ("input-1", "input-2")
     assert not temp_files(tmp_path)
+
+
+def test_multi_variable_read_refuses_whitespace_in_a_non_last_field(tmp_path):
+    # "John Paul" in FIRST would spill across the IFS boundary when the joined line is re-split
+    # ("John" → FIRST, "Paul" → LAST). Refused instead of silently delivering the wrong value.
+    src = '#!/usr/bin/env bash\nread -p "First and last: " FIRST LAST\n'
+    with pytest.raises(InjectSplitError) as exc_info:
+        inject_src(src, {"input-1": "John Paul", "input-2": "Doe"}, tmp_path)
+    assert exc_info.value.name == "input-1"
+    assert not temp_files(tmp_path)
+
+
+def test_multi_variable_read_refuses_a_newline_in_a_non_last_field(tmp_path):
+    # The worst case Review A caught: a newline in an earlier value truncates the whole line,
+    # silently discarding EVERY later field. Must be refused, not silently run.
+    src = '#!/usr/bin/env bash\nread -p "First and last: " FIRST LAST\n'
+    with pytest.raises(InjectSplitError):
+        inject_src(src, {"input-1": "a\nb", "input-2": "KEEP"}, tmp_path)
+    assert not temp_files(tmp_path)
+
+
+@posix_only
+def test_multi_variable_read_allows_whitespace_in_the_last_field(tmp_path):
+    # The LAST variable absorbs the remainder of the line, so it may safely hold spaces —
+    # exactly what a typed multi-word tail does.
+    src = '#!/usr/bin/env bash\nread -p "First and last: " FIRST LAST\necho "[$FIRST][$LAST]"\n'
+    result = inject_src(src, {"input-1": "Ada", "input-2": "de Lovelace"}, tmp_path)
+    assert result.path is not None
+    assert run_shell(result.path, tmp_path).stdout.endswith("[Ada][de Lovelace]\n")
+
+
+@posix_only
+def test_execute_reports_a_whitespace_split_as_a_bad_value(tmp_path):
+    _shell_entry(
+        tmp_path,
+        '#!/usr/bin/env bash\nread -p "First and last: " FIRST LAST\necho "$FIRST $LAST"\n',
+        name="exsh5",
+    )
+    assert (
+        runner.invoke(
+            cli.app, ["params", "exsh5", "--manage", "input-1", "--manage", "input-2"]
+        ).exit_code
+        == 0
+    )
+    result = runner.invoke(
+        cli.app,
+        ["run", "exsh5", "--set", "input-1=John Paul", "--set", "input-2=Doe", "--no-input"],
+    )
+    assert result.exit_code == flows.FAILURE_EXIT_CODES[flows.FAIL_BAD_VALUE]
+    assert "input-1" in result.output
 
 
 @posix_only

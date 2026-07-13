@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: skit 0.2.1.dev0\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-07-12 19:11-0700\n"
+"POT-Creation-Date: 2026-07-12 20:40-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -241,7 +241,7 @@ msgstr ""
 msgid "A dependency (repeat for more; skips the interactive question)"
 msgstr ""
 
-#: src/skit/cli.py:513 src/skit/cli.py:2080
+#: src/skit/cli.py:513 src/skit/cli.py:2083
 msgid "Python version constraint, e.g. \">=3.11\""
 msgstr ""
 
@@ -324,7 +324,7 @@ msgid "List every registered script."
 msgstr ""
 
 #: src/skit/cli.py:674 src/skit/cli.py:856 src/skit/cli.py:1298
-#: src/skit/cli.py:2092 src/skit/cli.py:2306 src/skit/cli.py:2482
+#: src/skit/cli.py:2095 src/skit/cli.py:2309 src/skit/cli.py:2485
 msgid "Output as JSON"
 msgstr ""
 
@@ -361,7 +361,7 @@ msgstr ""
 msgid "Working directory: %(dir)s"
 msgstr ""
 
-#: src/skit/cli.py:790 src/skit/cli.py:2058
+#: src/skit/cli.py:790 src/skit/cli.py:2061
 #, python-format
 msgid "Python constraint: %(python)s"
 msgstr ""
@@ -793,7 +793,7 @@ msgstr ""
 msgid "Ignored a malformed value: %(item)s (expected NAME=text)."
 msgstr ""
 
-#: src/skit/cli.py:1832 src/skit/cli.py:2016
+#: src/skit/cli.py:1832 src/skit/cli.py:2019
 #, python-format
 msgid "Removed previously stored plaintext value(s) for now-secret parameter(s): %(names)s"
 msgstr ""
@@ -882,303 +882,303 @@ msgstr ""
 msgid "%(name)s: a choice parameter needs choices; set --choices %(name)s=a,b,c."
 msgstr ""
 
-#: src/skit/cli.py:1987
+#: src/skit/cli.py:1990
 #, python-format
 msgid "Ignored a malformed value: %(item)s (expected NAME=VALUE)."
 msgstr ""
 
-#: src/skit/cli.py:2023
+#: src/skit/cli.py:2026
 #, python-format
 msgid "Updated %(name)s. Declared parameters: %(names)s"
 msgstr ""
 
-#: src/skit/cli.py:2050
+#: src/skit/cli.py:2053
 #, python-format
 msgid "Dependencies of %(name)s: %(deps)s"
 msgstr ""
 
-#: src/skit/cli.py:2062
+#: src/skit/cli.py:2065
 #, python-format
 msgid "External commands needed by %(name)s: %(needs)s"
 msgstr ""
 
-#: src/skit/cli.py:2068
+#: src/skit/cli.py:2071
 msgid "View or update a script's dependencies, Python constraint, and needed commands."
 msgstr ""
 
-#: src/skit/cli.py:2070
+#: src/skit/cli.py:2073
 msgid "Examples:  skit deps tool --dep \"requests>=2,<3\" --dep rich  ·  skit deps clip --need jq"
 msgstr ""
 
-#: src/skit/cli.py:2076
+#: src/skit/cli.py:2079
 msgid "A dependency (repeat for more; replaces the whole list)"
 msgstr ""
 
-#: src/skit/cli.py:2078
+#: src/skit/cli.py:2081
 msgid "Remove every dependency"
 msgstr ""
 
-#: src/skit/cli.py:2086
+#: src/skit/cli.py:2089
 msgid "An external command the script needs on PATH (repeat; replaces the whole list)"
 msgstr ""
 
-#: src/skit/cli.py:2090
+#: src/skit/cli.py:2093
 msgid "Remove every needed external command"
 msgstr ""
 
-#: src/skit/cli.py:2107
+#: src/skit/cli.py:2110
 #, python-format
 msgid "%(name)s is not a Python script entry — only --need applies here."
 msgstr ""
 
-#: src/skit/cli.py:2113
+#: src/skit/cli.py:2116
 msgid "Use --dep to set the list or --clear to empty it — not both."
 msgstr ""
 
-#: src/skit/cli.py:2118
+#: src/skit/cli.py:2121
 msgid "Use --need to set the list or --clear-needs to empty it — not both."
 msgstr ""
 
-#: src/skit/cli.py:2128
+#: src/skit/cli.py:2131
 #, python-format
 msgid "Needs of %(name)s updated: %(needs)s"
 msgstr ""
 
-#: src/skit/cli.py:2142
+#: src/skit/cli.py:2145
 #, python-format
 msgid "Dependencies of %(name)s updated: %(deps)s"
 msgstr ""
 
-#: src/skit/cli.py:2151
+#: src/skit/cli.py:2154
 msgid "Connect skit to AI agents: install the official Agent Skill."
-msgstr ""
-
-#: src/skit/cli.py:2166
-#, python-format
-msgid "Could not write the skill there: %(error)s"
 msgstr ""
 
 #: src/skit/cli.py:2169
 #, python-format
+msgid "Could not write the skill there: %(error)s"
+msgstr ""
+
+#: src/skit/cli.py:2172
+#, python-format
 msgid "Installed the skit Agent Skill: %(path)s"
 msgstr ""
 
-#: src/skit/cli.py:2175
+#: src/skit/cli.py:2178
 msgid "user"
 msgstr ""
 
-#: src/skit/cli.py:2175
+#: src/skit/cli.py:2178
 msgid "project"
 msgstr ""
 
-#: src/skit/cli.py:2176
+#: src/skit/cli.py:2179
 msgid "Agent directories on this machine:"
 msgstr ""
 
-#: src/skit/cli.py:2180
+#: src/skit/cli.py:2183
 msgid "Install where?"
 msgstr ""
 
-#: src/skit/cli.py:2187
+#: src/skit/cli.py:2190
 #, python-format
 msgid "Write the skill into %(path)s?"
 msgstr ""
 
-#: src/skit/cli.py:2197
+#: src/skit/cli.py:2200
 msgid "Install skit's Agent Skill into an AI agent's skills directory."
 msgstr ""
 
-#: src/skit/cli.py:2199
+#: src/skit/cli.py:2202
 msgid "Examples:  skit agent install  ·  skit agent install claude  ·  skit agent install codex --project  ·  skit agent install --to ~/.claude/skills"
 msgstr ""
 
-#: src/skit/cli.py:2206
+#: src/skit/cli.py:2209
 msgid "Where to install: claude, codex, or agents (the cross-agent ./.agents directory)"
 msgstr ""
 
-#: src/skit/cli.py:2212
+#: src/skit/cli.py:2215
 msgid "Install into this skills directory instead of a named target"
 msgstr ""
 
-#: src/skit/cli.py:2218
+#: src/skit/cli.py:2221
 msgid "Install into the current project (./.claude, ./.codex) instead of your home directory"
 msgstr ""
 
-#: src/skit/cli.py:2227
+#: src/skit/cli.py:2230
 msgid "Use a named target (with optional --project) or --to — not both."
 msgstr ""
 
-#: src/skit/cli.py:2239
+#: src/skit/cli.py:2242
 #, python-format
 msgid "Unknown target %(name)s. Valid targets: claude, codex, agents."
 msgstr ""
 
-#: src/skit/cli.py:2248
+#: src/skit/cli.py:2251
 msgid "Nothing installed: name a target (claude, codex, agents) or pass --to DIR."
 msgstr ""
 
-#: src/skit/cli.py:2255
+#: src/skit/cli.py:2258
 msgid "No agent directories detected (~/.claude, ~/.codex, ./.agents, …). Pass --to DIR to choose one yourself."
 msgstr ""
 
-#: src/skit/cli.py:2261
+#: src/skit/cli.py:2264
 msgid "Cancelled — nothing was written."
 msgstr ""
 
-#: src/skit/cli.py:2301
+#: src/skit/cli.py:2304
 msgid "Check that uv is available and the script store is intact."
 msgstr ""
 
-#: src/skit/cli.py:2304
+#: src/skit/cli.py:2307
 msgid "Rebuild the index from each script's meta.toml"
 msgstr ""
 
-#: src/skit/cli.py:2315 src/skit/tui_health.py:159
+#: src/skit/cli.py:2318 src/skit/tui_health.py:159
 #, python-format
 msgid "Index rebuilt: %(count)s entry"
 msgid_plural "Index rebuilt: %(count)s entries"
 msgstr[0] ""
 msgstr[1] ""
 
-#: src/skit/cli.py:2344 src/skit/tui_health.py:59
+#: src/skit/cli.py:2347 src/skit/tui_health.py:59
 #, python-format
 msgid "uv: %(path)s"
 msgstr ""
 
-#: src/skit/cli.py:2347 src/skit/tui_health.py:62
+#: src/skit/cli.py:2350 src/skit/tui_health.py:62
 msgid "uv: not found. Install it from https://docs.astral.sh/uv/getting-started/installation/"
 msgstr ""
 
-#: src/skit/cli.py:2351 src/skit/tui_health.py:69
+#: src/skit/cli.py:2354 src/skit/tui_health.py:69
 #, python-format
 msgid "%(count)s script registered"
 msgid_plural "%(count)s scripts registered"
 msgstr[0] ""
 msgstr[1] ""
 
-#: src/skit/cli.py:2356
+#: src/skit/cli.py:2359
 #, python-format
 msgid "%(name)s: the launch target is gone from disk"
 msgstr ""
 
-#: src/skit/cli.py:2360
+#: src/skit/cli.py:2363
 #, python-format
 msgid "%(name)s: form definitions are out of sync — run: skit params %(name)s --resync"
 msgstr ""
 
-#: src/skit/cli.py:2364
+#: src/skit/cli.py:2367
 #, python-format
 msgid "%(name)s: missing external command(s): %(tools)s"
 msgstr ""
 
-#: src/skit/cli.py:2367 src/skit/tui_health.py:113
+#: src/skit/cli.py:2370 src/skit/tui_health.py:113
 #, python-format
 msgid "Mirror: on (%(pypi)s)"
 msgstr ""
 
-#: src/skit/cli.py:2369 src/skit/tui_health.py:117
+#: src/skit/cli.py:2372 src/skit/tui_health.py:117
 msgid "Mirror: off"
 msgstr ""
 
-#: src/skit/cli.py:2371 src/skit/tui_health.py:120
+#: src/skit/cli.py:2374 src/skit/tui_health.py:120
 #, python-format
 msgid "Library: %(path)s (%(count)s · %(size)s)"
 msgstr ""
 
-#: src/skit/cli.py:2388
+#: src/skit/cli.py:2391
 #, python-format
 msgid "auto (%(locale)s)"
 msgstr ""
 
-#: src/skit/cli.py:2401
+#: src/skit/cli.py:2404
 msgid "default ($VISUAL / $EDITOR)"
 msgstr ""
 
-#: src/skit/cli.py:2405
+#: src/skit/cli.py:2408
 msgid "auto (bash on PATH)"
 msgstr ""
 
-#: src/skit/cli.py:2406
+#: src/skit/cli.py:2409
 msgid "auto (deno > bun > node)"
 msgstr ""
 
-#: src/skit/cli.py:2415
+#: src/skit/cli.py:2418
 #, python-format
 msgid "Unknown language: %(tag)s. Available: %(locales)s"
 msgstr ""
 
-#: src/skit/cli.py:2429
+#: src/skit/cli.py:2432
 #, python-format
 msgid "Unknown mirror: %(name)s. Choose from: %(names)s"
 msgstr ""
 
-#: src/skit/cli.py:2435
+#: src/skit/cli.py:2438
 #, python-format
 msgid "Unknown form style: %(value)s. Choose from: tui, plain"
 msgstr ""
 
-#: src/skit/cli.py:2445
+#: src/skit/cli.py:2448
 #, python-format
 msgid "No such file: %(path)s"
 msgstr ""
 
-#: src/skit/cli.py:2452
+#: src/skit/cli.py:2455
 #, python-format
 msgid "Unknown JS runner: %(value)s. Choose from: %(names)s"
 msgstr ""
 
-#: src/skit/cli.py:2459
+#: src/skit/cli.py:2462
 #, python-format
 msgid "Unknown after-run behavior: %(value)s. Choose from: exit, stay"
 msgstr ""
 
-#: src/skit/cli.py:2467
+#: src/skit/cli.py:2470
 msgid "Read or set skit's settings (language, editor, mirror, form style, after-run)."
 msgstr ""
 
-#: src/skit/cli.py:2469
+#: src/skit/cli.py:2472
 msgid "Examples:  skit config  ·  skit config lang zh-TW  ·  skit config after_run stay"
 msgstr ""
 
-#: src/skit/cli.py:2476
+#: src/skit/cli.py:2479
 msgid "Setting name: lang / editor / mirror / form / after_run / shell.bash_path / js.runner"
 msgstr ""
 
-#: src/skit/cli.py:2480
+#: src/skit/cli.py:2483
 msgid "New value (omit to read; lang also accepts \"auto\")"
 msgstr ""
 
-#: src/skit/cli.py:2497
+#: src/skit/cli.py:2500
 #, python-format
 msgid "Unknown setting: %(key)s. Available: %(keys)s"
 msgstr ""
 
-#: src/skit/cli.py:2516 src/skit/tui_prefs.py:144
+#: src/skit/cli.py:2519 src/skit/tui_prefs.py:144
 msgid "uv binary mirror URL"
 msgstr ""
 
-#: src/skit/cli.py:2522 src/skit/tui_prefs.py:189
+#: src/skit/cli.py:2525 src/skit/tui_prefs.py:189
 #, python-format
 msgid "The uv binary is downloaded and executed, so its mirror URL must use https:// (got: %(url)s)."
 msgstr ""
 
-#: src/skit/cli.py:2536
+#: src/skit/cli.py:2539
 msgid "Mirror for faster installs in mainland China"
 msgstr ""
 
-#: src/skit/cli.py:2548 src/skit/tui_prefs.py:137
+#: src/skit/cli.py:2551 src/skit/tui_prefs.py:137
 msgid "PyPI index URL"
 msgstr ""
 
-#: src/skit/cli.py:2553 src/skit/tui_prefs.py:140
+#: src/skit/cli.py:2556 src/skit/tui_prefs.py:140
 msgid "Python-install mirror URL"
 msgstr ""
 
-#: src/skit/cli.py:2570
+#: src/skit/cli.py:2573
 msgid "Network to PyPI / GitHub looks slow or blocked."
 msgstr ""
 
-#: src/skit/cli.py:2572
+#: src/skit/cli.py:2575
 msgid "Configure mirrors for faster installs (mainland China)?"
 msgstr ""
 
@@ -1197,63 +1197,68 @@ msgstr ""
 msgid "Could not launch the editor (%(cmd)s): %(error)s. Set one with: skit config editor <cmd>"
 msgstr ""
 
-#: src/skit/flows.py:334
+#: src/skit/flows.py:377
 #, python-format
 msgid "%(name)s is required."
 msgstr ""
 
-#: src/skit/flows.py:350
+#: src/skit/flows.py:393
 msgid "a whole number"
 msgstr ""
 
-#: src/skit/flows.py:351
+#: src/skit/flows.py:394
 msgid "a number"
 msgstr ""
 
-#: src/skit/flows.py:352
+#: src/skit/flows.py:395
 msgid "on or off"
 msgstr ""
 
-#: src/skit/flows.py:354
+#: src/skit/flows.py:397
 #, python-format
 msgid "%(name)s needs %(type)s — you typed %(value)r."
 msgstr ""
 
-#: src/skit/flows.py:360
+#: src/skit/flows.py:403
 #, python-format
 msgid "%(name)s must be one of: %(choices)s"
 msgstr ""
 
-#: src/skit/flows.py:498
+#: src/skit/flows.py:541
 #, python-format
 msgid "%(name)s reads from the environment variable %(env)s, but it isn't set."
 msgstr ""
 
-#: src/skit/flows.py:637
+#: src/skit/flows.py:680
 #, python-format
 msgid "→ inject: %(pairs)s"
 msgstr ""
 
-#: src/skit/flows.py:640
+#: src/skit/flows.py:683
 msgid "  (written to a temporary copy, deleted after the run; your original file is untouched)"
 msgstr ""
 
-#: src/skit/flows.py:711
+#: src/skit/flows.py:754
 #, python-format
 msgid "%(value)s isn't a valid %(type)s for %(param)s."
 msgstr ""
 
-#: src/skit/flows.py:723
+#: src/skit/flows.py:766
 #, python-format
 msgid "%(empty)s is empty, but %(filled)s is filled and they are read on the same line — a shell `read` would hand your value to %(empty)s. Fill %(empty)s in, or clear %(filled)s."
 msgstr ""
 
-#: src/skit/flows.py:735
+#: src/skit/flows.py:777
+#, python-format
+msgid "%(name)s is read on the same line as other values, so its value can't contain spaces or newlines — the shell would split it across the other fields. Only the last value on a `read` line may contain spaces."
+msgstr ""
+
+#: src/skit/flows.py:789
 #, python-format
 msgid "skit refused to run its own injected copy: %(detail)s"
 msgstr ""
 
-#: src/skit/flows.py:743
+#: src/skit/flows.py:797
 #, python-format
 msgid "The script and its form definitions don't match anymore: %(detail)s. Run `skit params %(name)s --resync` to fix it."
 msgstr ""
@@ -1306,16 +1311,16 @@ msgstr ""
 msgid "No JavaScript runtime found (looked for: %(names)s). Install deno, bun, or node — or pick one with: skit config js.runner <name>"
 msgstr ""
 
-#: src/skit/langs/shell/inject.py:411
+#: src/skit/langs/shell/inject.py:423
 msgid "the injected copy no longer parses as a shell script (nothing was run)"
 msgstr ""
 
-#: src/skit/langs/shell/inject.py:434
+#: src/skit/langs/shell/inject.py:446
 #, python-format
 msgid "%(shell)s rejected the injected copy: %(detail)s"
 msgstr ""
 
-#: src/skit/langs/shell/inject.py:447
+#: src/skit/langs/shell/inject.py:459
 msgid "⚠ This script reads its own location ($0 / $BASH_SOURCE), and the injected values run from a temporary copy — so it sees the copy's path, not the original's. `skit params <script> --normalize NAME` delivers a value through the environment instead, with no copy at all."
 msgstr ""
 

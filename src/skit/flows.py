@@ -42,6 +42,7 @@ from .langs.base import (
     InjectError,
     InjectGapError,
     InjectRequest,
+    InjectSplitError,
     InjectSyntaxError,
     InjectValueError,
     LangSpec,
@@ -209,12 +210,15 @@ def _declared_plan(entry: Entry, lang: LangSpec) -> FormPlan | None:
         # declared env params ride along (see params.declared_for_template).
         decls = params.declared_for_template(entry.meta.parameters, entry.meta.params or [])
         return FormPlan(source="command", fields=[FormField.from_decl(d) for d in decls])
-    if lang.params_io is None and entry.meta.parameters:
-        # Declared parameters apply to every kind whose param home is meta — programs
-        # (their only possible form) and Tier-0 interpreted kinds (env delivery is the
-        # ${VAR:-default} idiom's zero-rewrite channel even before an analyzer exists).
-        # Flag rows assemble real argv, env rows overlay the child environment; other
-        # deliveries mean nothing here and are dropped by the filter.
+    if lang.params_io is None and lang.cli_reader is None and entry.meta.parameters:
+        # Declared parameters apply to every kind whose param home is meta AND has no other
+        # detected surface — programs (their only possible form) and Tier-0 interpreted kinds
+        # (env is the ${VAR:-default} idiom's zero-rewrite channel even before an analyzer
+        # exists). Reader-bearing kinds (PowerShell) are DELIBERATELY excluded: their declared
+        # rows must MERGE into the reader's param() plan as riders (plan_for_entry), never
+        # short-circuit it — otherwise one declared env var would erase the whole param() form.
+        # Flag rows assemble real argv, env rows overlay the child environment; other deliveries
+        # mean nothing here and are dropped by the filter.
         decls = [
             d
             for d in params.declared_from_meta(entry.meta.parameters)
@@ -271,8 +275,17 @@ def plan_for_entry(entry: Entry) -> FormPlan:  # noqa: PLR0911 — one return pe
         # wheel (js/shell) never enters here either (its cli_reader is None too).
         if lang.analyzer is None and lang.cli_reader is not None and entry.script_path.exists():
             reader_plan = _reader_plan(entry, lang.cli_reader)
+            # Declared [[parameters]] flag/env rows ride along after the reader's param()
+            # fields, exactly like they merge into an analyzable kind's in-file plan — so
+            # hand-declaring an env var augments the param() form instead of erasing it.
             if reader_plan is not None:
+                taken = {f.key for f in reader_plan.fields}
+                reader_plan.fields += _declared_riders(entry, taken)
                 return reader_plan
+            riders = _declared_riders(entry, set())
+            if riders:
+                # No readable param() surface, but declared rows still form a plan on their own.
+                return FormPlan(source="declared", fields=riders)
     if (
         lang is None
         or lang.params_io is None
@@ -684,7 +697,7 @@ def transparency_lines(entry: Entry, asm: Assembly, injected: Path | None) -> li
     return lines
 
 
-def execute(  # noqa: PLR0911 — one early return per injection failure mode; a flat error dispatch
+def execute(  # noqa: PLR0911, PLR0912 — one early return/branch per injection failure mode; a flat error dispatch
     entry: Entry,
     plan: FormPlan,
     asm: Assembly,
@@ -755,6 +768,17 @@ def execute(  # noqa: PLR0911 — one early return per injection failure mode; a
                         "%(empty)s in, or clear %(filled)s."
                     )
                     % {"empty": exc.empty, "filled": exc.filled},
+                )
+            except InjectSplitError as exc:
+                return RunOutcome(
+                    None,
+                    FAIL_BAD_VALUE,
+                    gettext(
+                        "%(name)s is read on the same line as other values, so its value can't "
+                        "contain spaces or newlines — the shell would split it across the other "
+                        "fields. Only the last value on a `read` line may contain spaces."
+                    )
+                    % {"name": exc.name},
                 )
             except InjectSyntaxError as exc:
                 # skit corrupted the script (a quoting/escaping bug) — a resync fixes

@@ -670,3 +670,82 @@ def test_cli_command_show_masks_secret_placeholder_and_undeclared(tmp_path: Path
     assert "•••" in result.output  # secret default + last value masked
     assert "seed" not in result.output
     assert "other" in result.output  # the undeclared placeholder is still listed (bare)
+
+
+# ---- capability-honesty fixes (review findings) ------------------------------------------------
+
+
+def _ruby(tmp_path: Path, name: str = "rb") -> store.Entry:
+    src = tmp_path / f"{name}.rb"
+    src.write_text('#!/usr/bin/env ruby\nputs "hi"\n', encoding="utf-8")
+    return store.add_script(src, kind="ruby", name=name)
+
+
+def test_declared_add_on_interpreted_meta_kind_defaults_to_deliverable_flag(tmp_path: Path):
+    # An interpreted kind whose schema home is meta (ruby/perl/lua/r) assembles a real argv, so a
+    # bare --add must default to flag delivery — not the placeholder a template gets, which would
+    # be a dead row that never reaches the child (the confirmed capability-honesty defect).
+    entry = _ruby(tmp_path)
+    assert runner.invoke(cli.app, ["params", entry.slug, "--add", "SIZE"]).exit_code == 0
+    (decl,) = store.read_parameters(entry.slug)
+    assert decl.delivery == "flag"
+    plan = flows.plan_for_entry(store.resolve(entry.slug))
+    assert plan.source == "declared"
+    assert [(f.key, f.source) for f in plan.fields] == [("SIZE", "flag")]
+
+
+def test_declared_add_on_interpreted_kind_delivers_at_run(tmp_path: Path):
+    entry = _ruby(tmp_path, name="rb2")
+    runner.invoke(cli.app, ["params", entry.slug, "--add", "SIZE", "--flag", "SIZE=--size"])
+    result = runner.invoke(
+        cli.app, ["run", entry.slug, "--set", "SIZE=5", "--dry-run", "--no-input"]
+    )
+    assert result.exit_code == 0
+    assert "--size" in result.output.replace("\n", "")
+    assert "5" in result.output
+
+
+def test_reader_kind_declared_env_rider_merges_not_erases(tmp_path: Path, monkeypatch):
+    # A PowerShell entry reads its param() block statically; a declared env row must RIDE ALONG
+    # after the reader's fields, never short-circuit _declared_plan and erase the whole form.
+    import dataclasses
+
+    from skit.langs import registry
+    from skit.langs.base import CliReader
+    from skit.langs.python.argspec import ArgSpec
+
+    ps = tmp_path / "deploy.ps1"
+    ps.write_text("param([string]$Region)\n", encoding="utf-8")
+    entry = store.add_script(ps, kind="powershell")
+    store.write_parameters(entry.slug, [ParamDecl(name="LOGLEVEL", delivery="env")])
+    fake = ArgSpec(fields=[ParamDecl(name="Region", delivery="flag", flag="-Region")])
+    spec = dataclasses.replace(
+        registry._powershell_spec(), cli_reader=CliReader(read_cli=lambda _t: fake)
+    )
+    monkeypatch.setattr("skit.flows.spec_for", lambda _kind: spec)
+    plan = flows.plan_for_entry(store.resolve(entry.slug))
+    assert plan.source == "argparse"
+    assert [(f.key, f.source) for f in plan.fields] == [("Region", "flag"), ("LOGLEVEL", "env")]
+
+
+def test_reader_kind_declared_rows_stand_alone_when_no_readable_surface(
+    tmp_path: Path, monkeypatch
+):
+    # No readable param() (no pwsh, or no param block) but declared rows exist: they still form a
+    # plan on their own rather than vanishing into the "none" fall-through.
+    import dataclasses
+
+    from skit.langs import registry
+    from skit.langs.base import CliReader
+
+    ps = tmp_path / "d2.ps1"
+    ps.write_text("Write-Output 'hi'\n", encoding="utf-8")
+    entry = store.add_script(ps, kind="powershell", name="d2")
+    store.write_parameters(entry.slug, [ParamDecl(name="LOGLEVEL", delivery="env")])
+    spec = dataclasses.replace(
+        registry._powershell_spec(), cli_reader=CliReader(read_cli=lambda _t: None)
+    )
+    monkeypatch.setattr("skit.flows.spec_for", lambda _kind: spec)
+    plan = flows.plan_for_entry(store.resolve(entry.slug))
+    assert plan.source == "declared"
+    assert [(f.key, f.source) for f in plan.fields] == [("LOGLEVEL", "env")]
