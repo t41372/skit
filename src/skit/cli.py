@@ -1453,6 +1453,7 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
         text = entry.script_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
         specs = entry_spec.params_io.read(text)
     unmanaged: list[str] = []
+    self_locating = False
     if (
         entry_spec is not None
         and entry_spec.analyzer is not None
@@ -1461,6 +1462,13 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
     ):
         report = entry_spec.analyzer.reconcile(text, specs)
         unmanaged = [c.name for c in report.new]
+        # $0/BASH_SOURCE: an injected constant runs from a temp copy, so the script would see the
+        # temp path instead of its own. Say so HERE — where the user decides whether to manage it —
+        # not only in the run-time warning, and point at the fix. Only meaningful for a kind that
+        # actually rewrites a copy (an injector); env delivery never moves the file.
+        self_locating = (
+            entry_spec.injector is not None and entry_spec.analyzer.analyze(text).uses_self_location
+        )
     # Declared [[parameters]] rows (empty for a python entry — it manages its schema in-file).
     declared = declared_from_meta(entry.meta.parameters)
     if as_json:
@@ -1527,6 +1535,10 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
         console.print(
             gettext("Detected but not yet managed: %(names)s (use --manage to manage them)")
             % {"names": ", ".join(escape(n) for n in unmanaged)}
+        )
+    if self_locating:
+        console.print(
+            f"[dim]{gettext('This script locates itself ($0 / BASH_SOURCE). Injecting a constant runs it from a temporary copy, so it would see that copy path instead. `skit params %(name)s --normalize NAME` converts a constant into the ${NAME:-default} idiom, which is delivered through the environment and leaves the file untouched.') % {'name': escape(entry.meta.name)}}[/dim]"
         )
 
 

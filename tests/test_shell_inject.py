@@ -1076,3 +1076,22 @@ def test_split_guard_matches_default_ifs_not_python_isspace(tmp_path):
     for splitter in (" ", "\t", "\n", "\r"):
         with pytest.raises(InjectSplitError):
             inject_src(src, {"input-1": f"a{splitter}b", "input-2": "x"}, tmp_path)
+
+
+def test_params_warns_when_a_self_locating_script_has_injectable_consts(tmp_path):
+    # $0/BASH_SOURCE: an injected const runs from a temp copy, so the script would see THAT path.
+    # The user must learn this where they decide to manage the const — not only at run time — and
+    # be pointed at --normalize (env delivery, file untouched).
+    _shell_entry(
+        tmp_path,
+        '#!/usr/bin/env bash\nHERE=$(dirname "$0")\nREGION=us-east-1\necho "$HERE $REGION"\n',
+        name="selfloc",
+    )
+    out = runner.invoke(cli.app, ["params", "selfloc"]).output.replace("\n", " ")
+    assert "locates itself" in out
+    assert "--normalize" in out
+
+
+def test_params_does_not_warn_when_the_script_never_self_locates(tmp_path):
+    _shell_entry(tmp_path, "#!/usr/bin/env bash\nREGION=us-east-1\necho $REGION\n", name="noloc")
+    assert "locates itself" not in runner.invoke(cli.app, ["params", "noloc"]).output

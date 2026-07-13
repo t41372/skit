@@ -87,10 +87,14 @@ class AddSourceScreen(Screen[str | None]):
         self._submit_path()
 
     def _add_non_python(self, path: Path, error: Static) -> None:
-        """The direct-add lane (no review panel): exe entries have nothing to detect
-        inside them, and Tier-0 interpreted kinds have no analyzer to review with yet.
-        Interpreted adds record the shebang's interpreter and a comment-extracted
-        description via store.add_script."""
+        """The direct-add lane (no review panel): exe entries have nothing to detect inside them,
+        and every other kind is added straight away.
+
+        Note that shell/js/ts/fish DO have analyzers — the review panel is simply Python-shaped
+        (it renders PEP 723 dependency completion alongside the candidates), so they take the
+        direct lane and surface their candidates afterwards in Script settings (`p`) and
+        `skit params`, which are both language-neutral. Interpreted adds record the shebang's
+        interpreter and a comment-extracted description via store.add_script."""
         from .langs.registry import shebang_program, spec_for
         from .store import infer_kind
 
