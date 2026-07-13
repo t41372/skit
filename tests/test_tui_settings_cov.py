@@ -832,3 +832,23 @@ async def test_settings_cli_driven_is_false_when_the_kind_has_no_reader(tmp_path
         app.push_screen(screen)
         await pilot.pause()
         assert screen._cli_driven() is False
+
+
+async def test_settings_declared_editor_opens_for_an_interpreted_meta_kind(tmp_path):
+    # ruby/perl/lua/r/powershell store their schema in meta.toml too — the declared editor must
+    # open for them, not the "(programs have no managed parameters)" dead end.
+    from skit.tui_settings import DeclParamRow
+
+    src = tmp_path / "t.rb"
+    src.write_text('#!/usr/bin/env ruby\nputs "hi"\n', encoding="utf-8")
+    entry = store.add_script(src, kind="ruby", name="rbt")
+    store.write_parameters(entry.slug, [ParamDecl(name="GREETING", delivery="flag", flag="--g")])
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(store.resolve(entry.slug))
+        app.push_screen(screen)
+        await pilot.pause()
+        rows = list(screen.query(DeclParamRow))
+        assert [r.decl.name for r in rows] == ["GREETING"]
+        # argv IS this kind's interface, so the Flag field must be editable (not template-hidden)
+        assert rows[0].query(".d-flag")

@@ -337,13 +337,19 @@ def _check_prefix(group: list[_ReadSite], supplied: list[str | None]) -> None:
     # A character in a non-last field that DEFAULT $IFS splits on would spill across the field
     # boundary when the joined line is re-split by `read` (FIRST="John Paul" → FIRST="John", "Paul"
     # pushed onto LAST; a newline truncates the line outright; a \r ends the line under bash). Only
-    # the last variable safely absorbs those. Match exactly the default-IFS set (space, tab, newline)
-    # plus CR — NOT Python's broad str.isspace(), which also flags U+00A0/U+2028 that bash's default
-    # read does not split on, and refusing those would be a false positive. The last index is len-1;
-    # a shorter supplied list (a trailing gap) makes its own filled tail the effective last.
-    last_filled = max((i for i, value in enumerate(supplied) if value is not None), default=-1)
+    # the read's LAST VARIABLE safely absorbs those — it takes the remainder of the line. Match
+    # exactly the default-IFS set (space, tab, newline) plus CR, NOT Python's broad str.isspace(),
+    # which also flags U+00A0/U+2028 that bash's default read does not split on (refusing those
+    # would be a false positive).
+    #
+    # The exemption is keyed on the last VARIABLE of the read (len-1), never on the last *supplied*
+    # value: `supplied` always has one slot per variable, so a trailing None is an UNMANAGED variable
+    # that the shell still binds from the same line. Exempting the last supplied value instead let
+    # `read FIRST LAST` with only input-1 managed accept "John Paul" and silently deliver
+    # FIRST="John", LAST="Paul" — the exact silent wrong-value binding this guard exists to prevent.
+    last_index = len(supplied) - 1
     for i, value in enumerate(supplied):
-        if value is not None and i != last_filled and any(ch in _IFS_SPLIT for ch in value):
+        if value is not None and i != last_index and any(ch in _IFS_SPLIT for ch in value):
             raise InjectSplitError(_display_name(group[i]))
     for i, value in enumerate(supplied):
         if value is not None:

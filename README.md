@@ -63,7 +63,7 @@ Python, shell, and JS/TS get the deepest treatment — static parameter detectio
 | **Python** | `uv run --script` | constants, `input()` | ✅ | argparse · click · typer | PEP 723 (uv) + needs |
 | **Shell** (bash/sh/zsh) | interpreter | constants, `${VAR:-}` env-defaults, `read` | ✅ | getopts | needs |
 | **JS / TS** | deno › bun › node | `const` | ✅ | `util.parseArgs` | needs |
-| **fish** | fish | `set` / `read` idioms | — | `argparse` builtin | needs |
+| **fish** | fish | `set -q NAME; or set NAME …` env-defaults | — | `argparse` builtin | needs |
 | **PowerShell** | pwsh | — | — | `param()` | needs |
 | **Ruby · Perl · Lua · R** | interpreter | — | — | — | needs |
 | **Programs** (exe) | direct exec | — | — | — | needs |

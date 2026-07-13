@@ -254,13 +254,10 @@ class ScriptSettingsScreen(Screen[bool]):
         # '#' engine, but JS/TS carry it behind '//', so the Python reader would return [] for a
         # perfectly valid managed JS entry (TUI↔CLI parity: cli._edit_params already routes this way).
         self._specs: list[ParamDecl] = params_io.read(self._text) if params_io is not None else []
-        # exe / command: the schema lives in meta.toml [[parameters]], edited through a
-        # declared-params editor (not the analyzer-driven [tool.skit] flow above).
-        self._declared: bool = (
-            self._spec is not None
-            and self._spec.params_io is None
-            and self._spec.family in ("binary", "template")
-        )
+        # Every kind whose schema lives in meta.toml [[parameters]] — exe, command, AND the
+        # interpreted kinds with no in-file block (ruby/perl/lua/r/powershell) — is edited through
+        # the declared-params editor rather than the analyzer-driven [tool.skit] flow above.
+        self._declared: bool = self._spec is not None and self._spec.params_io is None
         self._declared_decls: list[ParamDecl] = (
             params.declared_from_meta(entry.meta.parameters) if self._declared else []
         )
@@ -391,7 +388,9 @@ class ScriptSettingsScreen(Screen[bool]):
         meta = self._entry.meta
         if self._spec is not None and self._spec.family == "template":
             yield Static(escape(meta.template), classes="hint")
-        show_flag = self._spec is not None and self._spec.family == "binary"
+        # A flag only means something where argv is the interface: every non-template kind
+        # (binaries AND the interpreted meta-schema kinds), mirroring the CLI's allowed deliveries.
+        show_flag = self._spec is not None and self._spec.family != "template"
         for d in self._declared_decls:
             yield DeclParamRow(d, show_flag=show_flag)
         yield Static(gettext("Add a parameter — type a name, then Save:"), classes="hint")
@@ -540,13 +539,14 @@ class ScriptSettingsScreen(Screen[bool]):
     # ----------------------------------------------------------------- save
 
     def action_resync(self) -> None:
-        no_analyzer = self._spec is None or self._spec.analyzer is None
-        if no_analyzer or self._entry.meta.mode != "copy":
+        # One narrowing point (same idiom as action_save): the spec and its analyzer are proven
+        # together, so no second, unreachable None-guard is needed afterwards.
+        spec = self._spec
+        if spec is None or spec.analyzer is None or self._entry.meta.mode != "copy":
             return
-        analyzer = self._spec.analyzer if self._spec is not None else None
-        if analyzer is None:  # pragma: no cover — action_resync's guard already returned
-            return
-        result = analysis.edit_specs(self._text, self._specs, resync=True, analyze=analyzer.analyze)
+        result = analysis.edit_specs(
+            self._text, self._specs, resync=True, analyze=spec.analyzer.analyze
+        )
         self._specs = result.specs
         # Stash the outcome before recompose rebuilds the screen (updating the live Static
         # would be lost — recompose replaces it). compose re-emits self._resync_report.

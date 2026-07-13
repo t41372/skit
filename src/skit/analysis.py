@@ -70,9 +70,10 @@ class Analysis:
     # source order. Only literals a cheap deterministic rule can vouch for — nothing else
     # (see the 'RGB' exclusion in the UX spec: no domain-knowledge guesses).
     filename_literals: list[str] = field(default_factory=list)
-    # Shell only: $0 / $BASH_SOURCE / ${BASH_SOURCE[0]} / dirname "$0" appears, so a const
-    # rewrite that runs from a temp copy could change what the script thinks its own path is.
-    # The Python analyzer never sets it.
+    # The script locates itself — shell's $0 / $BASH_SOURCE / dirname "$0", fish's
+    # (status filename|dirname) — so a const rewrite that runs from a temp copy could change what
+    # the script thinks its own path is. `skit params` turns this into a hint (pointing at
+    # --normalize) for kinds that actually rewrite a copy; the Python analyzer never sets it.
     uses_self_location: bool = False
 
     @property

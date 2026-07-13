@@ -749,3 +749,24 @@ def test_reader_kind_declared_rows_stand_alone_when_no_readable_surface(
     plan = flows.plan_for_entry(store.resolve(entry.slug))
     assert plan.source == "declared"
     assert [(f.key, f.source) for f in plan.fields] == [("LOGLEVEL", "env")]
+
+
+def test_declared_table_is_shown_for_an_interpreted_meta_kind(tmp_path: Path):
+    # The read surface must not deny what the write surface created and the run delivers: a ruby
+    # entry's declared rows appeared in --json but printed "has no managed parameters" in the
+    # human view (gated on family=="binary" instead of "the schema lives in meta").
+    entry = _ruby(tmp_path, name="rb3")
+    runner.invoke(cli.app, ["params", entry.slug, "--add", "GREETING"])
+    out = runner.invoke(cli.app, ["params", entry.slug]).output
+    assert "GREETING" in out
+    assert "has no managed parameters" not in out
+
+
+def test_declared_param_on_an_interpreted_kind_actually_delivers(tmp_path: Path, run_entry_spy):
+    entry = _ruby(tmp_path, name="rb4")
+    runner.invoke(
+        cli.app, ["params", entry.slug, "--add", "GREETING", "--flag", "GREETING=--greeting"]
+    )
+    result = runner.invoke(cli.app, ["run", entry.slug, "--set", "GREETING=world", "--no-input"])
+    assert result.exit_code == 0
+    assert run_entry_spy["extra"] == ["--greeting", "world"]

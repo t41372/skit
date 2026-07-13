@@ -377,6 +377,17 @@ def test_multi_variable_read_refuses_whitespace_in_a_non_last_field(tmp_path):
     assert not temp_files(tmp_path)
 
 
+def test_multi_variable_read_refuses_whitespace_when_a_trailing_var_is_unmanaged(tmp_path):
+    # The exemption is keyed on the read's last VARIABLE, not the last supplied value: with only
+    # input-1 managed, the shell still binds LAST from the same line, so "John Paul" would have
+    # silently delivered FIRST="John", LAST="Paul". Refused.
+    src = '#!/usr/bin/env bash\nread -p "First and last: " FIRST LAST\n'
+    with pytest.raises(InjectSplitError) as exc_info:
+        inject_src(src, {"input-1": "John Paul"}, tmp_path)
+    assert exc_info.value.name == "input-1"
+    assert not temp_files(tmp_path)
+
+
 def test_multi_variable_read_refuses_a_newline_in_a_non_last_field(tmp_path):
     # The worst case Review A caught: a newline in an earlier value truncates the whole line,
     # silently discarding EVERY later field. Must be refused, not silently run.

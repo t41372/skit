@@ -1483,7 +1483,11 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
     if entry_spec is not None and entry_spec.family == "template":
         _show_command_params(entry, declared, last)
         return
-    if declared and entry_spec is not None and entry_spec.family == "binary":
+    if declared and entry_spec is not None and entry_spec.params_io is None:
+        # Every meta-schema kind, not just binaries: an interpreted kind whose schema lives in
+        # meta.toml (ruby/perl/lua/r/powershell) can hold declared flag/env rows that really do
+        # deliver, so denying they exist here (while --json listed them) was a read/write split.
+        # Templates already returned above.
         _print_declared_table(declared, last)
         return
     if not specs:
