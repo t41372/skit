@@ -13,6 +13,7 @@ from textual.widgets import Checkbox, Input, Static
 
 from skit import argstate, store, tui
 from skit.langs.python import metawriter, reconcile
+from skit.langs.registry import spec_for
 from skit.params import ParamDecl
 from skit.tui_settings import (
     DeclParamRow,
@@ -710,3 +711,124 @@ async def test_settings_needs_prefilled_and_clearable(tmp_path):
         screen.action_save()
         await pilot.pause()
     assert store.resolve("d").meta.needs is None  # cleared
+
+
+# ---- TUI↔CLI parity: the settings screen uses the ENTRY'S analyzer, never Python's ---------------
+
+
+def _shell(tmp_path, text: str, name: str = "sh"):
+    src = tmp_path / f"{name}.sh"
+    src.write_text(text, encoding="utf-8")
+    return store.add_script(src, kind="shell", name=name)
+
+
+async def test_settings_detects_shell_candidates_with_the_shell_analyzer(tmp_path):
+    # Hardcoding Python's analyzer here made the screen show ZERO detected candidates and report a
+    # perfectly valid shell script as a syntax error (the Python ast.parse fails on shell source).
+    entry = _shell(tmp_path, '#!/bin/bash\nGREETING="hello"\nPORT="${PORT:-8080}"\necho hi\n')
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        report = screen._reconcile()
+        assert report is not None
+        assert not report.syntax_error  # a valid shell script is NOT a syntax error
+        assert {c.name for c in report.new} == {"GREETING", "PORT"}
+
+
+async def test_settings_manages_a_shell_const_end_to_end(tmp_path):
+    entry = _shell(tmp_path, '#!/bin/bash\nGREETING="hello"\necho "$GREETING"\n', name="sh2")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        # tick the detected candidate, then save: it must land in the copy's [tool.skit] block
+        screen.query_one("#st-new-0", Checkbox).value = True
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+    spec = spec_for(entry.meta.kind)
+    assert spec is not None
+    assert spec.params_io is not None
+    written = spec.params_io.read(entry.script_path.read_text(encoding="utf-8"))
+    assert [s.name for s in written] == ["GREETING"]
+
+
+async def test_settings_reads_a_js_block_with_the_slash_engine(tmp_path):
+    # JS/TS carry their [tool.skit] block behind '//' — Python's '#' engine returns [] for a
+    # perfectly valid managed JS entry, so its managed params were invisible in the screen.
+    src = tmp_path / "a.mjs"
+    src.write_text("const WIDTH = 800;\nconsole.log(WIDTH);\n", encoding="utf-8")
+    entry = store.add_script(src, kind="js", name="jsx")
+    spec = spec_for(entry.meta.kind)
+    assert spec is not None
+    assert spec.params_io is not None
+    text = entry.script_path.read_text(encoding="utf-8")
+    entry.script_path.write_text(
+        spec.params_io.write(
+            text, [ParamDecl(name="WIDTH", binding="const", type="int", default=800)]
+        ),
+        encoding="utf-8",
+    )
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(store.resolve(entry.slug))
+        app.push_screen(screen)
+        await pilot.pause()
+        assert [row.spec.name for row in screen.query(ParamRow)] == ["WIDTH"]
+
+
+async def test_settings_resync_on_a_shell_entry_does_not_report_a_false_syntax_error(tmp_path):
+    entry = _shell(tmp_path, '#!/bin/bash\nGREETING="hello"\necho "$GREETING"\n', name="sh3")
+    spec = spec_for(entry.meta.kind)
+    assert spec is not None
+    assert spec.params_io is not None
+    text = entry.script_path.read_text(encoding="utf-8")
+    entry.script_path.write_text(
+        spec.params_io.write(
+            text, [ParamDecl(name="GREETING", binding="const", type="str", default="hello")]
+        ),
+        encoding="utf-8",
+    )
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(store.resolve(entry.slug))
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.action_resync()
+        await pilot.pause()
+        assert "syntax error" not in screen._resync_report.lower()
+
+
+async def test_settings_reconcile_is_none_when_the_script_is_gone(tmp_path):
+    # An analyzable entry whose stored copy vanished: there is no text to analyze, so the screen
+    # must degrade to "no report" rather than analyzing an empty string as if it were the script.
+    entry = _shell(tmp_path, '#!/bin/bash\nGREETING="hello"\n', name="sh4")
+    entry.script_path.unlink()
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(store.resolve(entry.slug))
+        app.push_screen(screen)
+        await pilot.pause()
+        assert screen._reconcile() is None
+
+
+async def test_settings_cli_driven_is_false_when_the_kind_has_no_reader(tmp_path, monkeypatch):
+    # Defensive contract: a spec carrying an analyzer but no cli_reader (a future kind, or a
+    # partially-degraded one) must report "not CLI-driven" rather than crash on a missing reader.
+    import dataclasses
+
+    entry = _shell(tmp_path, '#!/bin/bash\nGREETING="hello"\n', name="sh5")
+    spec = spec_for("shell")
+    assert spec is not None
+    monkeypatch.setattr(
+        "skit.tui_settings.spec_for", lambda _kind: dataclasses.replace(spec, cli_reader=None)
+    )
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(store.resolve(entry.slug))
+        app.push_screen(screen)
+        await pilot.pause()
+        assert screen._cli_driven() is False

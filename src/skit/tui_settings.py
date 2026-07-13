@@ -18,9 +18,8 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Checkbox, Input, Label, Static
 
-from . import argstate, params, pep723, store, tui_footer
+from . import analysis, argstate, params, pep723, store, tui_footer
 from .i18n import gettext
-from .langs.python import argspec, metawriter, reconcile
 from .langs.registry import spec_for
 from .models import Entry
 from .params import ParamDecl
@@ -248,10 +247,13 @@ class ScriptSettingsScreen(Screen[bool]):
         self._dirt_armed: bool = False
         self._text: str = ""
         self._spec = spec_for(entry.meta.kind)
-        has_params_io = self._spec is not None and self._spec.params_io is not None
-        if has_params_io and entry.script_path.exists():
+        params_io = self._spec.params_io if self._spec is not None else None
+        if params_io is not None and entry.script_path.exists():
             self._text = entry.script_path.read_text(encoding="utf-8", errors="replace")
-        self._specs: list[ParamDecl] = metawriter.read_params(self._text)
+        # The ENTRY'S OWN params_io — never Python's. shell/fish carry their block in the same
+        # '#' engine, but JS/TS carry it behind '//', so the Python reader would return [] for a
+        # perfectly valid managed JS entry (TUI↔CLI parity: cli._edit_params already routes this way).
+        self._specs: list[ParamDecl] = params_io.read(self._text) if params_io is not None else []
         # exe / command: the schema lives in meta.toml [[parameters]], edited through a
         # declared-params editor (not the analyzer-driven [tool.skit] flow above).
         self._declared: bool = (
@@ -266,6 +268,18 @@ class ScriptSettingsScreen(Screen[bool]):
         # action_resync triggers — a widget updated in place would be thrown away and rebuilt
         # empty. Kept on the instance so compose can re-emit it. Already escape()'d for markup.
         self._resync_report: str = ""
+
+    def _reconcile(self) -> analysis.Report | None:
+        """Reconcile the stored definitions against the script — through the ENTRY'S OWN analyzer.
+
+        Hardcoding Python's here silently broke every other analyzable kind: the Python analyzer
+        raises SyntaxError on shell/JS/fish source, so the screen showed zero detected candidates
+        and reported a valid script as unparseable. None when the kind has no analyzer, or when
+        there is no text to analyze."""
+        analyzer = self._spec.analyzer if self._spec is not None else None
+        if analyzer is None or not self._text:
+            return None
+        return analyzer.reconcile(self._text, self._specs)
 
     @override
     def compose(self) -> ComposeResult:
@@ -351,7 +365,7 @@ class ScriptSettingsScreen(Screen[bool]):
                 classes="hint",
             )
         else:
-            report = reconcile.reconcile(self._text, self._specs) if self._text else None
+            report = self._reconcile()
             if report is not None and report.new:
                 yield Static(
                     gettext("Detected but not yet managed — tick to manage:"), classes="hint"
@@ -454,7 +468,13 @@ class ScriptSettingsScreen(Screen[bool]):
         managed, plan_for_entry already serves the injected form, so there's no trap.)"""
         if self._specs or not self._text:
             return False
-        return argspec.read_cli(self._text) is not None
+        # The ENTRY'S OWN reader: shell getopts, JS util.parseArgs, fish argparse — Python's
+        # argspec would see none of them and wrongly offer the manage-a-constant checkboxes on a
+        # script that already drives its own CLI.
+        reader = self._spec.cli_reader if self._spec is not None else None
+        if reader is None:
+            return False
+        return reader.read_cli(self._text) is not None
 
     def _compose_presets(self) -> ComposeResult:
         yield Static(gettext("Presets"), classes="section", id="st-presets-section")
@@ -523,13 +543,16 @@ class ScriptSettingsScreen(Screen[bool]):
         no_analyzer = self._spec is None or self._spec.analyzer is None
         if no_analyzer or self._entry.meta.mode != "copy":
             return
-        result = reconcile.edit_specs(self._text, self._specs, resync=True)
+        analyzer = self._spec.analyzer if self._spec is not None else None
+        if analyzer is None:  # pragma: no cover — action_resync's guard already returned
+            return
+        result = analysis.edit_specs(self._text, self._specs, resync=True, analyze=analyzer.analyze)
         self._specs = result.specs
         # Stash the outcome before recompose rebuilds the screen (updating the live Static
         # would be lost — recompose replaces it). compose re-emits self._resync_report.
         if result.warnings:
             self._resync_report = "\n".join(
-                escape(reconcile.render_warning(w)) for w in result.warnings
+                escape(analysis.render_warning(w)) for w in result.warnings
             )
         else:
             self._resync_report = gettext("Everything still matches the script.")
@@ -547,17 +570,26 @@ class ScriptSettingsScreen(Screen[bool]):
         description = self.query_one("#st-desc", Input).value.strip()
         if description != entry.meta.description:
             store.update_description(entry.slug, description)
-        has_analyzer = self._spec is not None and self._spec.analyzer is not None
-        if has_analyzer and entry.meta.mode == "copy" and self._text:
+        # One narrowing point: an analyzable kind always carries params_io too (the registry pairs
+        # them), and a non-empty text with a live analyzer means reconcile always returns a report —
+        # so the capabilities are read straight off the narrowed spec, with no dead None-guards.
+        spec = self._spec
+        if (
+            spec is not None
+            and spec.analyzer is not None
+            and spec.params_io is not None
+            and entry.meta.mode == "copy"
+            and self._text
+        ):
             new_specs = [s for row in self.query(ParamRow) if (s := row.collect()) is not None]
-            report = reconcile.reconcile(self._text, self._specs) if self._text else None
-            if report is not None:
-                for i, c in enumerate(report.new):
-                    box = self.query(f"#st-new-{i}")
-                    if box and box.first(Checkbox).value:
-                        new_specs.append(ParamDecl.from_candidate(c))
-            copy_path = entry.script_path
-            copy_path.write_text(metawriter.write_params(self._text, new_specs), encoding="utf-8")
+            report = spec.analyzer.reconcile(self._text, self._specs)
+            for i, c in enumerate(report.new):
+                box = self.query(f"#st-new-{i}")
+                if box and box.first(Checkbox).value:
+                    new_specs.append(ParamDecl.from_candidate(c))
+            entry.script_path.write_text(
+                spec.params_io.write(self._text, new_specs), encoding="utf-8"
+            )
             purged = argstate.purge_secret(entry.slug, {s.name for s in new_specs if s.secret})
             if purged:
                 self.notify(
