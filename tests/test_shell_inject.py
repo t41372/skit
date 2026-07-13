@@ -1063,3 +1063,16 @@ def test_cli_normalize_warning_renderer_covers_every_code():
         "syntax-error",
     ):
         assert cli._render_normalize_warning(f"{code}:X")
+
+
+def test_split_guard_matches_default_ifs_not_python_isspace(tmp_path):
+    # A non-breaking space (U+00A0) is whitespace to Python but NOT a default-$IFS split
+    # character, so bash `read` keeps such a value whole — refusing it would be a false
+    # positive. Only space/tab/newline/CR are refused in a non-last field.
+    src = '#!/usr/bin/env bash\nread -p "a b: " FIRST LAST\n'
+    nbsp = "a" + "\u00a0" + "b"  # U+00A0 no-break space: whitespace to Python, not a $IFS splitter
+    result = inject_src(src, {"input-1": nbsp, "input-2": "x"}, tmp_path)
+    assert result.path is not None  # accepted, not refused
+    for splitter in (" ", "\t", "\n", "\r"):
+        with pytest.raises(InjectSplitError):
+            inject_src(src, {"input-1": f"a{splitter}b", "input-2": "x"}, tmp_path)

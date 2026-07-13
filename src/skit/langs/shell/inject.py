@@ -99,6 +99,11 @@ _BUILTIN_SHELLS = ("bash", "zsh")
 # liveness guard, not a policy — a hung gate must never wedge a run.
 _GATE_TIMEOUT = 30.0
 
+# The characters default $IFS splits a `read` line on (space, tab, newline), plus CR so a value
+# can't smuggle a line break into a CRLF-tolerant read. Deliberately narrower than str.isspace():
+# a value is only unsafe in a non-last multi-var read field if the SHELL would split on it.
+_IFS_SPLIT = frozenset(" \t\n\r")
+
 
 def inject(request: InjectRequest) -> InjectResult:
     """Deliver `request.values` for a shell entry.
@@ -329,14 +334,16 @@ def _read_spans(
 
 
 def _check_prefix(group: list[_ReadSite], supplied: list[str | None]) -> None:
-    # Whitespace in a non-last field would spill across the IFS boundary when the joined line
-    # is re-split by `read` (FIRST="John Paul" → FIRST="John", "Paul" pushed onto LAST; a newline
-    # truncates the line outright). Only the last variable safely absorbs whitespace. Refuse the
-    # rest explicitly rather than silently delivering the wrong value. The last index is len-1;
+    # A character in a non-last field that DEFAULT $IFS splits on would spill across the field
+    # boundary when the joined line is re-split by `read` (FIRST="John Paul" → FIRST="John", "Paul"
+    # pushed onto LAST; a newline truncates the line outright; a \r ends the line under bash). Only
+    # the last variable safely absorbs those. Match exactly the default-IFS set (space, tab, newline)
+    # plus CR — NOT Python's broad str.isspace(), which also flags U+00A0/U+2028 that bash's default
+    # read does not split on, and refusing those would be a false positive. The last index is len-1;
     # a shorter supplied list (a trailing gap) makes its own filled tail the effective last.
     last_filled = max((i for i, value in enumerate(supplied) if value is not None), default=-1)
     for i, value in enumerate(supplied):
-        if value is not None and i != last_filled and any(ch.isspace() for ch in value):
+        if value is not None and i != last_filled and any(ch in _IFS_SPLIT for ch in value):
             raise InjectSplitError(_display_name(group[i]))
     for i, value in enumerate(supplied):
         if value is not None:
