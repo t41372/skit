@@ -1,6 +1,7 @@
 # Multi-language support — design & implementation plan
 
-Status: **in progress** on branch `feat/multilang`. This document is the single source of
+Status: **shipped** on branch `feat/multilang` (see the "Status: shipped" section at the
+end for what landed vs. what was deferred). This document is the single source of
 truth for the design decisions; it was synthesized from three independent architecture
 studies (type-system lens, integration/migration lens, language-mechanics lens) plus a
 verified facts dossier (tree-sitter APIs/wheels, runtime status, PowerShell/fish parsing).
@@ -356,3 +357,46 @@ sdist builds there; analyzer degrades to None if a grammar fails to import.
 6. block-engine generalization corrupts python bytes → frozen-regex assert + corpus.
 7. double-binding two decls to one site → second claimant ⇒ drift error (mirror python).
 8. JS template literal / let misdetection → excluded/demoted + corpus.
+
+## Status: shipped
+
+This section records the delta between the plan above and what actually landed on
+`feat/multilang`, so the doc stays truthful as history rather than aspiration.
+
+**Landed:**
+
+- **12 kinds** registered in `langs/registry.py` (no `table.py` — the long-tail rows are
+  plain builder functions): `python`, `shell`, `fish`, `js`, `ts`, `powershell`, `ruby`,
+  `perl`, `lua`, `r`, `exe`, `command`. Open-str `Kind`; capability dispatch via
+  `spec.<cap> is None`; shebang-aware `infer_kind` (incl. `env -S`).
+- **Neutral cores**: `rewrite` (byte-span splice), `commentblock` (`#` and `//` block
+  engines), `callmatch`, `params.ParamDecl`, `analysis`.
+- **Declarative schema**: `[[parameters]]` in meta + in-file `[tool.skit]`; the full
+  `skit params --add/--rm/--type/--default/--choices/--deliver/--flag/--required/
+  --optional/--help-text` surface + TUI editor; env / flag / positional / placeholder
+  deliveries; `env` delivery overlay with masked transparency; placeholder write-through.
+- **Shell** (P3): tree-sitter-bash analyzer (const / `${VAR:-}` env-default / `read`),
+  injector (const byte-rewrite + `_skit_read` call-site binding), getopts `cli_reader`,
+  and opt-in `--normalize`.
+- **JS/TS** (P4): tree-sitter analyzer (`const`), `util.parseArgs` reader, const injector,
+  `RunnerLaunch` (deno › bun › node) + `js.runner` config.
+- **fish** (P5): env-idiom analyzer (env-default candidates) + builtin-`argparse` reader.
+- **PowerShell** (P5): `param()` reader via pwsh's own parser (static subprocess).
+- **Cross-cutting**: `needs` preflight + doctor/health sweep + `deps --need/--clear-needs`;
+  `shell.bash_path` config + Windows bash policy; `add --kind`.
+- **JSON (additive)**: `show --json` gains `param_origin` + `needs`; `params --json` gains
+  `declared`; `doctor --json` gains `needs_missing`; a field `source` may now be `env`.
+
+**Deferred (not shipped in this branch):**
+
+- **fish const/read injection** — fish has an analyzer but *no injector*, so it emits only
+  env-default candidates (delivering a const/read value would need an injector fish lacks).
+- **A TUI surface for shell `--normalize`** — the idiom rewrite is CLI-only; no TUI review
+  flow. (`tui_settings` normalizes `ParamDecl` invariants, a different operation.)
+- **PowerShell `params_io`** — no in-file `[tool.skit]` management; the `param()` block is
+  read as the CLI surface instead (`params_io is None`).
+- **A first-class `tsx` kind** — the analyzer carries a `tsx` grammar selector, but no
+  `tsx` kind is registered (only `js` / `ts`).
+- **Long-tail `cargo` / `jbang` rows** — only `ruby` / `perl` / `lua` / `r` shipped.
+- **Windows-native end-to-end tests** — the bash-path policy is implemented, but there is
+  no Windows e2e coverage of it yet.

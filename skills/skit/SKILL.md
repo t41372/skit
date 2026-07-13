@@ -1,6 +1,6 @@
 ---
 name: skit
-description: Run, inspect, and manage scripts in the user's skit library — their personal hub, manager, and launcher of Python scripts, shell one-liners, and executables, each with a typed parameter form, saved presets, and isolated dependencies. Use when the user asks to run/list/add their scripts, mentions skit or "my script", or before writing a new one-off Python script (the library may already have one that does the job).
+description: Run, inspect, and manage scripts in the user's skit library — their personal hub, manager, and launcher for scripts in many languages (Python, shell, JS/TS, and more), executables, and command templates, each with a typed parameter form, saved presets, and per-script dependencies. Use when the user asks to run/list/add their scripts, mentions skit or "my script", or before writing a new one-off script (the library may already have one that does the job).
 license: MIT
 compatibility: Requires the skit CLI on PATH (install with `uv tool install skit-cli`)
 ---
@@ -8,11 +8,14 @@ compatibility: Requires the skit CLI on PATH (install with `uv tool install skit
 # skit — the user's script library
 
 skit stores the user's scripts in one searchable library and makes them runnable
-without remembering flags. For every script it knows the parameter schema (extracted
-statically — flags, `input()` calls, and marked constants all become typed fields),
-remembers last-used values, saves named presets, and runs Python scripts through
-`uv run --script` in an isolated environment (dependencies declared per script,
-PEP 723). The library is *the user's curated space*: treat it like their dotfiles.
+without remembering flags. It runs many languages — Python, shell (bash/sh/zsh),
+JS/TS, fish, PowerShell, Ruby/Perl/Lua/R — plus executables and command templates.
+For every script it knows the parameter schema (extracted statically — flags,
+prompts, and marked constants all become typed fields), remembers last-used values,
+and saves named presets. Python runs through `uv run --script` in an isolated
+environment (dependencies declared per script, PEP 723); other languages run through
+their own interpreter or runner. The library is *the user's curated space*: treat it
+like their dotfiles.
 
 ## Ground rules
 
@@ -40,10 +43,13 @@ skit show <name> --json   # full parameter schema as JSON
 
 `show` is the map: each field's `type` (str/int/float/bool/choice), `required`,
 `default`, `choices`, and `source` — where the value goes: `flag` (passed as a real
-CLI flag), `inject` (a managed constant or `input()` answer, injected into a temporary
-copy at run time), or `placeholder` (fills the registered command template).
-`degraded_reason` non-empty means skit could not model the script's own parser
-(subcommands, dynamic args) — pass arguments through after `--` instead.
+CLI flag), `inject` (a managed constant or prompt answer, rewritten into a temporary
+copy at run time), `env` (delivered as an environment variable), or `placeholder`
+(fills the registered command template). The top-level `param_origin`
+(`declared`/`reader`/`managed`/`command`/`none`) says where the whole schema came
+from. `degraded_reason` non-empty means skit could not model the script's own parser
+(subcommands, dynamic args) — pass arguments through after `--` instead. `needs` lists
+the external commands the script requires on PATH.
 
 ## Run scripts
 
@@ -63,8 +69,8 @@ skit run <name> --raw --no-input                    # escape hatch: as-is, no fo
   also expand globs.
 - Unset fields fall back to: preset > last-used value > the script's own default.
   A required field with no value fails fast (exit 125) rather than prompting.
-- **Reuse warning:** with no `--` args given, a python/exe run reuses the *last run's*
-  extra args (it says so on stderr). Pass your own `--` args, or use `--raw` (which
+- **Reuse warning:** with no `--` args given, a script or exe run reuses the *last
+  run's* extra args (it says so on stderr). Pass your own `--` args, or use `--raw` (which
   never replays old arguments), when you need a clean slate; `--dry-run` shows exactly
   what would happen.
 - Secrets: prefer wiring them to environment variables (see below) over `--set`.
@@ -89,14 +95,19 @@ Always confirm with the user before adding. From a file or stdin:
 
 ```bash
 skit add path/to/script.py --name resize -d "Resize images to a target width" --no-input
+skit add path/to/backup.sh --name backup -d "Nightly database dump" --no-input
 skit add - --name fetch-report -d "Pull the weekly report" --no-input   # script text on stdin
 skit add path/to/script.py --ref --no-input      # reference the original file, don't copy
+skit add path/to/tool --kind shell --name tool -d "Cleanup helper" --no-input   # force the kind
 skit add --cmd 'ffmpeg -i {input} -vf scale={width}:-1 {output}' --name scale-video --no-input
 ```
 
 - Give every entry a `-d` description — `skit list` is the discovery surface.
-- Python dependencies belong in the script itself (PEP 723 inline metadata); skit
-  resolves them through uv at run time, nothing installs globally:
+- The kind is inferred from the extension or shebang. Force it with `--kind`
+  (`python`, `shell`, `js`, `ts`, `fish`, `powershell`, `ruby`, …) for an extensionless
+  file, or `--exe` for a program.
+- **Two kinds of dependency.** Python packages go in the script itself (PEP 723 inline
+  metadata) and skit resolves them through uv at run time, nothing installs globally:
 
 ```python
 # /// script
@@ -105,10 +116,13 @@ skit add --cmd 'ffmpeg -i {input} -vf scale={width}:-1 {output}' --name scale-vi
 # ///
 ```
 
-  You can also record them afterwards: `skit deps <name> --dep "requests>=2,<3"`.
-- **Under `--no-input`, detected parameters are NOT auto-managed.** For a script that
-  reads constants or `input()` (no argparse), bring its parameters under management
-  so they become form fields / `--set` targets:
+  Record them afterwards with `skit deps <name> --dep "requests>=2,<3"`. External
+  *commands* a script of any kind expects on PATH (a shell script needing `jq`, say)
+  are `needs`, checked before every run: `skit deps <name> --need jq --need ffmpeg`.
+- **Under `--no-input`, detected parameters are NOT auto-managed.** For a Python or
+  shell script that reads constants, prompts, or `${VAR:-}` env-defaults (no
+  argparse/getopts), bring its parameters under management so they become form fields
+  / `--set` targets:
 
 ```bash
 skit params <name>                    # see managed + detected-but-unmanaged parameters
@@ -117,8 +131,24 @@ skit params <name> --secret API_KEY --env-source API_KEY=OPENAI_API_KEY
 ```
 
   With `--env-source`, the secret is read from the environment at run time — the
-  value never appears in commands, files, or output. Scripts that parse their own
-  CLI (argparse/click/typer) need no management at all; skit reads them statically.
+  value never appears in commands, files, or output. Scripts that parse their own CLI
+  (Python argparse/click/typer, shell getopts, JS `util.parseArgs`, fish `argparse`,
+  PowerShell `param()`) need no management — skit reads them statically.
+- **Declared parameters** (for exe, command, and reader-less kinds like ruby/perl/lua/r)
+  are defined by hand on the entry, then behave like any other field:
+
+```bash
+skit params <name> --add OUTPUT --type OUTPUT=str --deliver OUTPUT=flag --flag OUTPUT=--out
+skit params <name> --add FORMAT --choices FORMAT=png,jpg,webp --default FORMAT=png --optional FORMAT
+skit params <name> --rm OUTPUT
+```
+
+  `--deliver` picks how the value reaches the program: `flag` (exe), `env` (any kind),
+  or `placeholder` (command templates).
+- **Shell only:** `skit params <name> --normalize WIDTH` rewrites a bare `WIDTH=800`
+  constant into the `${WIDTH:-800}` idiom in skit's *stored copy* (never the user's
+  original), so the value is delivered as an environment variable rather than by
+  rewriting a temporary copy. Opt-in, and the one edit skit ever makes to script text.
 
 ## Presets
 
@@ -134,9 +164,11 @@ skit preset delete <name> nightly
 ## Maintenance
 
 ```bash
-skit doctor --json     # environment health: uv presence, library location, drift/missing entries
+skit doctor --json     # health: uv, library location, drift/missing entries, needs_missing
 skit remove <name> -y  # remove an entry (the user's original file is never deleted) — ask first
 skit edit <name>       # open the stored source in the user's editor
+skit config js.runner deno         # pin the JS/TS runner (default: auto — deno > bun > node)
+skit config shell.bash_path /path  # where bash lives on Windows (POSIX auto-detects)
 ```
 
 If `show`/`run` reports drift (the script changed and its managed parameter

@@ -11,7 +11,9 @@
 
 [English](./README.md) | [繁體中文](./README.zh-TW.md) | **简体中文**
 
-**skit 是 Python 脚本的启动器，也是它们的集中收纳处。**
+**skit 是脚本的启动器，也是它们的集中收纳处。**
+
+skit 把你的脚本集中收进一处，启动毫不费力——Python、shell、JS/TS 支持最深，共十余种类型。
 
 **AI 写脚本，skit 管脚本。**
 
@@ -24,7 +26,7 @@
 - **收纳脚本**。`skit add` 把散落各处的脚本收进同一个可搜索的脚本库——复制一份收进库里，或用引用模式直接指向原始文件。
 - **参数不再折磨人**。命令行参数、`input()`、你勾选纳管的常量，全部变成表单字段（choices 变选择器、布尔变复选框、类型自动把关）。
 - **它会记住**。上次填的值自动带回；常用的一组存成命名组合。标记为机密的参数永不落盘。`{cwd}`、`{today}` 这类值 token 让同一个组合跨机器、跨目录通用。
-- **环境零污染**。skit 把每个脚本的依赖用标准 PEP 723 语法声明在脚本开头，运行时由 uv 在隔离、带缓存的环境里解析——你不用管 venv，也不会往全局装任何东西。
+- **环境零污染**。skit 把每个 Python 脚本的依赖用标准 PEP 723 语法声明在脚本开头，运行时由 uv 在隔离、带缓存的环境里解析——你不用管 venv，也不会往全局装任何东西。这份隔离是 Python 专属的；其他语言则借力你已经装好的工具——skit 会自动挑选 JS 运行时（deno › bun › node），并在运行前检查脚本声明的外部命令（`needs`）是否在 `PATH` 上，而不是替它们管理依赖包。
 - **鼠标键盘皆可**。直接运行 `skit` 就是完整 TUI；画面上每个快捷键提示同时也是一个可点的按钮。
 - **天生适合自动化**。每个 TUI 动作都有对应的 CLI 命令，带 `--json` 输出和明确退出码——shell 脚本、CI、AI agent 都好接。
 - **也是你的 agent 的脚本库**。官方 [Agent Skill](https://agentskills.io) 教会 Claude Code、Codex、Cursor、Gemini CLI 等 agent 完整用法：用 `skit list` 探索、用 `skit show` 读参数结构、用 `skit run --set … --no-input` 运行。一句 `skit agent install` 就装好——见[给你的 AI agent 用](#给你的-ai-agent-用)。
@@ -50,6 +52,23 @@
   <img width="480" alt="只用鼠标操作 skit——画面上每个控件都是可点击的目标" src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/demo-mouse.gif"><br>
   <em>完全鼠标可操作性——画面上每个按键提示，也都是可点的按钮。</em>
 </p>
+
+## 脚本语言支持
+
+Python、shell、JS/TS 支持最深——既静态检测参数，**也能注入值**；其余类型则负责启动、接受声明式参数，并读懂脚本自己的 CLI 解析器。
+
+| 类型 | 运行方式 | 检测参数 | 注入 | 读脚本自己的 CLI | 依赖 / needs |
+| --- | --- | --- | --- | --- | --- |
+| **Python** | `uv run --script` | 常量、`input()` | ✅ | argparse · click · typer | PEP 723（uv）+ needs |
+| **Shell**（bash/sh/zsh） | 解释器 | 常量、`${VAR:-}` 环境默认值、`read` | ✅ | getopts | needs |
+| **JS / TS** | deno › bun › node | `const` | ✅ | `util.parseArgs` | needs |
+| **fish** | fish | `set` / `read` 惯用法 | — | `argparse` 内建 | needs |
+| **PowerShell** | pwsh | — | — | `param()` | needs |
+| **Ruby · Perl · Lua · R** | 解释器 | — | — | — | needs |
+| **程序**（exe） | 直接执行 | — | — | — | needs |
+| **命令**（command） | 填充模板 | — | — | — | needs |
+
+每种类型也都能手动**声明**参数，所以连程序和命令模板都享有同样的表单 / 组合 / `--set` 体验。**needs** 是 skit 在运行前检查是否位于 `PATH` 上的外部命令（任何类型都适用）；只有 Python 才有按脚本隔离的依赖包。
 
 ## 安装
 

@@ -11,7 +11,9 @@
 
 [English](./README.md) | **繁體中文** | [简体中文](./README.zh-CN.md)
 
-**skit 是 Python 腳本的啟動器，也是它們的集中收納處。**
+**skit 是腳本的啟動器，也是它們的集中收納處。**
+
+skit 把你的腳本集中收進一處，啟動毫不費力——Python、shell、JS/TS 支援最深，共十餘種類型。
 
 **AI 寫腳本，skit 管腳本。**
 
@@ -24,7 +26,7 @@
 - **收納腳本**。`skit add` 把散落各處的腳本收進同一個可搜尋的腳本庫——複製一份收進庫裡，或用連結模式直接指向原檔。
 - **參數不再折磨人**。旗標、`input()`、你勾選納管的常數，全部變成表單欄位（choices 變選擇器、布林變勾選框、型別自動把關）。
 - **它會記住**。上次填的值自動帶回；常用的一組存成具名組合。標記為機密的參數永不落盤。`{cwd}`、`{today}` 這類值 token 讓同一個組合跨機器、跨目錄通用。
-- **環境零污染**。skit 把每支腳本的依賴用標準 PEP 723 語法聲明在腳本開頭，執行時由 uv 在隔離、有快取的環境裡解析——你不用管 venv，也不會往全域裝任何東西。
+- **環境零污染**。skit 把每支 Python 腳本的依賴用標準 PEP 723 語法聲明在腳本開頭，執行時由 uv 在隔離、有快取的環境裡解析——你不用管 venv，也不會往全域裝任何東西。這份隔離是 Python 專屬的；其他語言則借力你已經裝好的工具——skit 會自動挑選 JS 執行環境（deno › bun › node），並在執行前檢查腳本聲明的外部命令（`needs`）是否在 `PATH` 上，而不是替它們管理依賴套件。
 - **滑鼠鍵盤皆可**。直接執行 `skit` 就是完整 TUI；畫面上每個按鍵提示同時也是一顆可點的按鈕。
 - **天生適合自動化**。每個 TUI 動作都有對應的 CLI 命令，帶 `--json` 輸出與明確退出碼——shell 腳本、CI、AI agent 都好接。
 - **也是你的 agent 的腳本庫**。官方 [Agent Skill](https://agentskills.io) 教會 Claude Code、Codex、Cursor、Gemini CLI 等 agent 完整用法：用 `skit list` 探索、用 `skit show` 讀參數結構、用 `skit run --set … --no-input` 執行。一句 `skit agent install` 就裝好——見[給你的 AI agent 用](#給你的-ai-agent-用)。
@@ -50,6 +52,23 @@
   <img width="480" alt="只用滑鼠操作 skit——畫面上每個控制項都是可點擊的目標" src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/demo-mouse.gif"><br>
   <em>完全滑鼠可操作性——畫面上每個按鍵提示，也都是可點的按鈕。</em>
 </p>
+
+## 腳本語言支援
+
+Python、shell、JS/TS 支援最深——既靜態偵測參數，**也能注入值**；其餘類型則負責啟動、接受宣告式參數，並讀懂腳本自己的 CLI 解析器。
+
+| 類型 | 執行方式 | 偵測參數 | 注入 | 讀腳本自己的 CLI | 依賴 / needs |
+| --- | --- | --- | --- | --- | --- |
+| **Python** | `uv run --script` | 常數、`input()` | ✅ | argparse · click · typer | PEP 723（uv）+ needs |
+| **Shell**（bash/sh/zsh） | 直譯器 | 常數、`${VAR:-}` 環境預設值、`read` | ✅ | getopts | needs |
+| **JS / TS** | deno › bun › node | `const` | ✅ | `util.parseArgs` | needs |
+| **fish** | fish | `set` / `read` 慣用法 | — | `argparse` 內建 | needs |
+| **PowerShell** | pwsh | — | — | `param()` | needs |
+| **Ruby · Perl · Lua · R** | 直譯器 | — | — | — | needs |
+| **程式**（exe） | 直接執行 | — | — | — | needs |
+| **命令**（command） | 填充範本 | — | — | — | needs |
+
+每種類型也都能手動**宣告**參數，所以連程式和命令範本都享有同樣的表單 / 組合 / `--set` 體驗。**needs** 是 skit 在執行前檢查是否位於 `PATH` 上的外部命令（任何類型皆適用）；只有 Python 才有按腳本隔離的依賴套件。
 
 ## 安裝
 

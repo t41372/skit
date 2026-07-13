@@ -11,9 +11,9 @@
 
 **English** | [繁體中文](./README.zh-TW.md) | [简体中文](./README.zh-CN.md)
 
-**skit is a launcher and a home for your Python scripts.**
+**skit is a launcher and a home for your scripts.**
 
-skit stores your Python scripts in one place and makes them painless to launch.
+skit stores your scripts in one place and makes them painless to launch — Python, shell, and JS/TS the deepest, a dozen kinds in all.
 
 **AI writes the scripts. skit gives them a home.**
 
@@ -28,7 +28,7 @@ script, and (with your OK) saving the good ones back, so they outlive the chat.
 - **One home for your scripts.** `skit add` collects scattered scripts into a searchable library — keep a copy in the library, or reference the original file.
 - **Parameters without the pain.** Flags, `input()` calls, and the constants you tick become form fields (choices → pickers, booleans → checkboxes, types enforced).
 - **It remembers.** Last-used values come back automatically; save favorites as named presets. Parameters marked secret never touch disk. Tokens like `{cwd}` and `{today}` keep presets portable.
-- **No environment mess.** skit declares each script's dependencies in the script itself (PEP 723) and runs it through uv in an isolated, cached environment — no venvs to manage, nothing installed globally.
+- **No environment mess.** skit declares each Python script's dependencies in the script itself (PEP 723) and runs it through uv in an isolated, cached environment — no venvs to manage, nothing installed globally. That isolation is Python's; other languages lean on the tools you already have — skit detects the JS runner (deno › bun › node) and checks each script's declared external commands (`needs`) are on your `PATH`, instead of managing packages for them.
 - **Mouse or keyboard.** Plain `skit` opens the full TUI; every key hint on screen is also a clickable button.
 - **Automation-ready.** Every TUI action is also a CLI command with `--json` output and meaningful exit codes — for shell scripts, CI, and AI agents.
 - **Your agent's script library too.** The official [Agent Skill](https://agentskills.io) teaches Claude Code, Codex, Cursor, Gemini CLI, and friends the whole drill: discover scripts with `skit list`, read a parameter schema with `skit show`, run with `skit run --set … --no-input`. One `skit agent install` away — see [Works with your AI agent](#works-with-your-ai-agent).
@@ -53,6 +53,23 @@ Nothing to set up per script — no refactoring, no config to maintain. The scri
   <img width="480" alt="Driving skit with the mouse alone — every control on screen is a click target" src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/demo-mouse.gif"><br>
   <em>Fully mouse operable — every key hint on screen is also a button.</em>
 </p>
+
+## Language support
+
+Python, shell, and JS/TS get the deepest treatment — static parameter detection **and** value injection; the rest launch, take declared parameters, and honor their own CLI parser.
+
+| Kind | Runs via | Params detected | Injection | Reads its own CLI | Deps / needs |
+| --- | --- | --- | --- | --- | --- |
+| **Python** | `uv run --script` | constants, `input()` | ✅ | argparse · click · typer | PEP 723 (uv) + needs |
+| **Shell** (bash/sh/zsh) | interpreter | constants, `${VAR:-}` env-defaults, `read` | ✅ | getopts | needs |
+| **JS / TS** | deno › bun › node | `const` | ✅ | `util.parseArgs` | needs |
+| **fish** | fish | `set` / `read` idioms | — | `argparse` builtin | needs |
+| **PowerShell** | pwsh | — | — | `param()` | needs |
+| **Ruby · Perl · Lua · R** | interpreter | — | — | — | needs |
+| **Programs** (exe) | direct exec | — | — | — | needs |
+| **Commands** | template fill | — | — | — | needs |
+
+Every kind also takes hand-**declared** parameters, so even programs and command templates get the same form / preset / `--set` experience. **needs** are external commands skit checks are on your `PATH` before a run (any kind); only Python gets isolated per-script package dependencies.
 
 ## Install
 

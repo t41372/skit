@@ -115,6 +115,12 @@ translations as needing review. Keep the committed `.mo` in sync (`compile`) or 
 
 ## Demo assets (README videos & screenshots)
 
+> **Stale after the multi-language release.** The committed demo videos and screenshots predate
+> the multi-language UI copy changes and are **out of date**. Regenerate them before the next
+> release with `bash scripts/record_demo.sh` (needs Docker), then refresh the per-locale
+> references in all three READMEs. The hand-recorded `docs/assets/demo-mouse.gif` is unaffected
+> unless the screens it shows changed.
+
 The README's demo videos (`docs/assets/demo-*.mp4`) and its four-screen TUI screenshot grid
 (`docs/assets/tui-*-{en,zh}.png`) are never recorded by hand — a scripted, hermetic
 [VHS](https://github.com/charmbracelet/vhs) pipeline renders them, so they can be regenerated
