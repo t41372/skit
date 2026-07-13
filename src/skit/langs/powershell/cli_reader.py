@@ -209,7 +209,11 @@ def _row_to_decl(row: dict[Any, Any]) -> ParamDecl | None:
         delivery="flag",
         flag=f"-{name}",  # PowerShell flags are single-dash PascalCase: `-Name value`
         required=bool(row.get("mandatory")),
-        help=str(row.get("helpText") or ""),
+        # Comment-based help arrives with surrounding whitespace whose exact shape is a pwsh
+        # version detail (GetHelpContent trails a `.PARAMETER` block with newlines on some
+        # versions, none on others) and carries no meaning — strip it so the field text is
+        # stable across PowerShell versions.
+        help=str(row.get("helpText") or "").strip(),
         secret=is_secret_name(name),
     )
     if row.get("switch"):

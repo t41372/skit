@@ -77,6 +77,13 @@ def test_string_param_with_default_and_help(monkeypatch):
     assert not f.degraded
 
 
+def test_help_is_stripped_of_surrounding_whitespace(monkeypatch):
+    # pwsh's GetHelpContent trails a `.PARAMETER` block with newlines on some versions and not
+    # on others; the reader normalizes so the field text is identical whatever version ran.
+    fields, _ = _read(monkeypatch, [_row("Name", helpText="The city to deploy to.\n\n")])
+    assert fields["Name"].help == "The city to deploy to."
+
+
 def test_int_and_long_map_to_int(monkeypatch):
     fields, _ = _read(
         monkeypatch,
@@ -369,7 +376,7 @@ def test_integration_reads_a_real_param_block(tmp_path):
     fields = {f.name: f for f in spec.fields}
     assert fields["City"].required is True  # bare Mandatory spelling
     assert fields["Region"].required is True  # explicit Mandatory=$true spelling
-    assert fields["City"].help == "The city to deploy to."
+    assert fields["City"].help == "The city to deploy to."  # normalized across pwsh versions
     assert fields["Env"].type == "choice"
     assert fields["Env"].choices == ("dev", "prod")
     assert fields["Env"].default == "dev"
