@@ -17,14 +17,23 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import launch
-from .base import Analyzer, CliReader, CommentSyntax, LangSpec, LaunchStrategy, ParamsIO
+from .base import (
+    Analyzer,
+    CliReader,
+    CommentSyntax,
+    Injector,
+    LangSpec,
+    LaunchStrategy,
+    Normalizer,
+    ParamsIO,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 
 def _python_spec() -> LangSpec:
-    from .python import analyzer, argspec, metawriter, reconcile
+    from .python import analyzer, argspec, metawriter, reconcile, shim
 
     return LangSpec(
         kind="python",
@@ -38,6 +47,7 @@ def _python_spec() -> LangSpec:
         params_io=ParamsIO(read=metawriter.read_params, write=metawriter.write_params),
         analyzer=Analyzer(analyze=analyzer.analyze, reconcile=reconcile.reconcile),
         cli_reader=CliReader(read_cli=argspec.read_cli),
+        injector=Injector(inject=shim.inject_entry),
         supports_modes=True,
         supports_deps=True,
     )
@@ -85,18 +95,30 @@ def _shell_spec() -> LangSpec:
     # The in-file [tool.skit] block works verbatim on shell text (same '#' comment prefix), so shell
     # gets the full manage/reconcile experience through the same metawriter as Python.
     analyzer_cap: Analyzer | None
+    injector_cap: Injector | None
+    normalizer_cap: Normalizer | None
     try:
-        from .shell import analyzer
+        # One guard for all three: every one of them is a tree-sitter consumer (inject and
+        # normalize import the analyzer's grammar handle and node helpers), so they stand or fall
+        # together — a broken grammar wheel must not leave a half-capable shell kind behind.
+        from .shell import analyzer, inject, normalize
     except ImportError:  # pragma: no cover — a broken/absent tree-sitter grammar wheel
-        # Degrade the analyzer capability to None (the `if spec.analyzer is None` idiom downstream
-        # handles the rest); everything else about the shell kind still works.
+        # Degrade the capabilities to None (the `if spec.analyzer is None` idiom downstream handles
+        # the rest); everything else about the shell kind still works. With no analyzer there are no
+        # detected params at all, so an inject-delivery value can never reach the missing injector.
         analyzer_cap = None
+        injector_cap = None
+        normalizer_cap = None
     else:
         analyzer_cap = Analyzer(analyze=analyzer.analyze, reconcile=analyzer.reconcile)
+        injector_cap = Injector(inject=inject.inject)
+        normalizer_cap = Normalizer(normalize=normalize.normalize_idiom)
     return replace(
         spec,
         params_io=ParamsIO(read=metawriter.read_params, write=metawriter.write_params),
         analyzer=analyzer_cap,
+        injector=injector_cap,
+        normalizer=normalizer_cap,
     )
 
 

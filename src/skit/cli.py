@@ -1625,6 +1625,13 @@ def params(
             "Read a secret parameter from an environment variable at run time, as NAME=ENVVAR (empty ENVVAR clears it; repeatable)"
         ),
     ),
+    normalize_opt: list[str] = typer.Option(
+        None,
+        "--normalize",
+        help=gettext(
+            "Shell only: rewrite a constant into the ${NAME:-default} idiom in the stored copy, so its value is delivered as an environment variable instead of a rewritten temporary copy (repeatable)"
+        ),
+    ),
     as_json: bool = typer.Option(False, "--json", help=gettext("Output the read view as JSON")),
 ) -> None:
     """Show a script's parameters, or edit their definitions when any change flag is given.
@@ -1646,6 +1653,12 @@ def params(
     help_texts, bad_help = _parse_kv_opts(help_text_opt or [], "--help-text")
 
     entry_spec = spec_for(entry.meta.kind)
+    if normalize_opt:
+        # A source-idiom rewrite of the user's own stored file — deliberately its own op, not a
+        # modifier on the others: it changes what a parameter IS (inject-delivered -> env-delivered),
+        # so mixing it into the same pass as --manage/--secret would make the outcome order-dependent.
+        _normalize_params(entry, entry_spec, normalize_opt)
+        return
     has_params_io = entry_spec is not None and entry_spec.params_io is not None
     declared_kind = entry_spec is not None and entry_spec.params_io is None
     declared_ops = bool(
@@ -1824,6 +1837,102 @@ def _edit_params(
     remaining = ", ".join(escape(s.name) for s in result.specs) or "—"
     console.print(
         f"[green]{gettext('Updated %(name)s. Managed parameters: %(names)s') % {'name': escape(entry.meta.name), 'names': remaining}}[/green]"
+    )
+
+
+def _render_normalize_warning(warning: str) -> str:
+    """Translate a normalizer refusal ("code:name") into a user-facing line. Static lookup (not
+    gettext(f"…{code}")) so Babel can extract every string — same discipline as the other two
+    warning renderers."""
+    code, _, name = warning.partition(":")
+    return {
+        "not-a-const": gettext(
+            "%(name)s isn't a plain constant with a literal value, so there's nothing to normalize; skipped."
+        ),
+        "multiple-assignments": gettext(
+            "%(name)s is assigned more than once at the top level; normalizing it would change which value wins. Skipped."
+        ),
+        "readonly": gettext(
+            "%(name)s is readonly, so the script could never take a value from the environment; skipped."
+        ),
+        "already-env": gettext("%(name)s already reads from the environment; nothing to do."),
+        "unsafe-literal": gettext(
+            "%(name)s's value contains a character that can't be moved into ${...:-...} safely "
+            '(one of } " ` $ \\ or a newline); skipped — it keeps being injected into a temporary copy.'
+        ),
+        "syntax-error": gettext(
+            "Could not parse the script (syntax error); nothing was normalized."
+        ),
+    }[code] % {"name": name}
+
+
+def _reanchor_as_envdefault(spec: ParamDecl, cand: analysis.Candidate) -> ParamDecl:
+    """The normalized const's definition, re-anchored onto its new ${NAME:-default} expansion:
+    binding/delivery/type/default come from the source (the analyzer just re-read it), while the
+    user's own decisions — secret, its env source, a custom prompt — survive the rewrite."""
+    decl = ParamDecl.from_candidate(cand)
+    decl.secret = spec.secret
+    decl.prompt = spec.prompt
+    decl.env_source = spec.env_source
+    return decl
+
+
+def _normalize_params(entry: store.Entry, entry_spec: LangSpec | None, names: list[str]) -> None:
+    """`skit params <shell> --normalize NAME`: rewrite `NAME=value` into `NAME="${NAME:-value}"` in
+    the STORED COPY, then re-read the analyzer so the parameter becomes an env-delivered one — no
+    temporary copy is ever written for it again, and $0 keeps pointing at the real file."""
+    if (
+        entry_spec is None
+        or entry_spec.normalizer is None
+        or entry_spec.params_io is None
+        or entry_spec.analyzer is None
+    ):
+        raise _fail(
+            gettext(
+                '%(name)s has no --normalize: it is a shell idiom (VAR=value -> VAR="${VAR:-value}").'
+            )
+            % {"name": entry.meta.name},
+            1,
+        )
+    if entry.meta.mode == "reference":
+        raise _fail(
+            gettext(
+                "%(name)s is in reference mode, and skit never writes the original file. "
+                'Change the line to VAR="${VAR:-value}" in the source directly.'
+            )
+            % {"name": entry.meta.name},
+            1,
+        )
+    copy_path = entry.script_path
+    if not copy_path.exists():
+        raise _fail(gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}, 1)
+    text = copy_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
+    result = entry_spec.normalizer.normalize(text, list(names))
+    for warning in result.refused:
+        err_console.print(f"[yellow]{escape(_render_normalize_warning(warning))}[/yellow]")
+    if not result.normalized:
+        return  # every name was refused; the file is untouched (the warnings above said why)
+    # Re-read the analyzer: each normalized name is now an ${NAME:-default} expansion, i.e. an
+    # envdefault candidate. A name that was MANAGED must follow it — otherwise its stored const
+    # definition would go missing on the very next run (loud, and rightly so).
+    envdefaults = {
+        c.name: c
+        for c in entry_spec.analyzer.analyze(result.text).candidates
+        if c.binding == "envdefault"
+    }
+    normalized = set(result.normalized)
+    specs = [
+        _reanchor_as_envdefault(s, envdefaults[s.name])
+        if s.name in normalized and s.name in envdefaults
+        else s
+        for s in entry_spec.params_io.read(result.text)
+    ]
+    copy_path.write_text(
+        entry_spec.params_io.write(result.text, specs),
+        encoding="utf-8",  # pragma: no mutate — utf-8 equivalence
+    )
+    console.print(
+        f"[green]{gettext('Normalized %(names)s in %(name)s: delivered as environment variables from now on (no temporary copy, and $0 stays your real file).') % {'names': ', '.join(escape(n) for n in result.normalized), 'name': escape(entry.meta.name)}}[/green]"
     )
 
 

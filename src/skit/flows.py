@@ -36,12 +36,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import analysis, argstate, launcher, params, rewrite, tokens
+from . import analysis, argstate, launcher, params, tokens
 from .i18n import gettext
-from .langs.base import LangSpec
+from .langs.base import (
+    InjectError,
+    InjectGapError,
+    InjectRequest,
+    InjectSyntaxError,
+    InjectValueError,
+    LangSpec,
+)
 from .langs.launch import quote_for_shell as launch_quote
-from .langs.python import shim
-from .langs.python.shim import ShimValueError, _coerce
+from .langs.python.shim import _coerce
 from .langs.registry import spec_for
 from .models import Entry
 from .params import ParamDecl
@@ -335,11 +341,11 @@ def validate_value(f: FormField, value: str) -> str | None:
 def _type_error(f: FormField, value: str) -> str | None:
     if f.kind in ("int", "float", "bool"):
         try:
-            # f.key feeds only ShimValueError's param_name, which this function discards (it
+            # f.key feeds only InjectValueError's param_name, which this function discards (it
             # rebuilds the message from f.label below); f.key -> None is thus equivalent. The
             # killable value/kind coercion stays covered by test_type_error_messages_exact.
             _coerce(value, f.kind, f.key)  # pragma: no mutate
-        except ShimValueError:
+        except InjectValueError:
             type_names = {
                 "int": gettext("a whole number"),
                 "float": gettext("a number"),
@@ -648,7 +654,7 @@ def transparency_lines(entry: Entry, asm: Assembly, injected: Path | None) -> li
     return lines
 
 
-def execute(
+def execute(  # noqa: PLR0911 — one early return per injection failure mode; a flat error dispatch
     entry: Entry,
     plan: FormPlan,
     asm: Assembly,
@@ -664,21 +670,41 @@ def execute(
     boundary (the TUI must call this inside App.suspend()), the run banner, and mapping
     the outcome to an exit code or a status line. emit receives already-localized plain
     lines; the renderer styles them (dim console print / bare print).
+
+    Injection is the kind's own `injector` capability (python rewrites a temp copy; shell
+    picks per parameter between an environment overlay and a temp-copy rewrite), so this
+    function knows nothing about any language. A kind with no injector simply doesn't
+    inject — the same degradation as a missing analyzer, and unreachable in practice since
+    an inject plan only exists where an analyzer does.
     """
     injected: Path | None = None
     try:
-        if plan.source == "inject" and asm.inject_values:
+        # The injector's env overlay rides ON TOP of the assembled env-delivered values:
+        # both are "set this variable on the child", and a shell entry can legitimately
+        # produce both at once (a declared env rider plus an envdefault param).
+        env_overlay = dict(asm.env_values)
+        spec = spec_for(entry.meta.kind)
+        if (
+            plan.source == "inject"
+            and asm.inject_values
+            and spec is not None
+            and spec.injector is not None
+        ):
             try:
-                # entry.dir is write_injected's fallback directory (used only when the OS
-                # temp dir isn't writable); test_execute_inject_falls_back_to_entry_dir
-                # pins that this run passes it through. suffix=".py" so the temp copy keeps
-                # the extension `uv run --script` expects (shell kinds will pass ".sh").
-                injected = rewrite.write_injected(
-                    entry.dir,
-                    shim.inject(plan.text, plan.specs, asm.inject_values),
-                    suffix=".py",
+                result = spec.injector.inject(
+                    InjectRequest(
+                        text=plan.text,
+                        specs=plan.specs,
+                        values=asm.inject_values,
+                        # entry.dir is write_injected's fallback directory (used only when
+                        # the OS temp dir isn't writable);
+                        # test_execute_inject_falls_back_to_entry_dir pins that this run
+                        # passes it through.
+                        entry_dir=entry.dir,
+                        interpreter=entry.meta.interpreter or spec.default_interpreter,
+                    )
                 )
-            except ShimValueError as exc:
+            except InjectValueError as exc:
                 return RunOutcome(
                     None,
                     FAIL_BAD_VALUE,
@@ -689,7 +715,27 @@ def execute(
                         "param": exc.param_name,
                     },
                 )
-            except shim.ShimError as exc:
+            except InjectGapError as exc:
+                return RunOutcome(
+                    None,
+                    FAIL_BAD_VALUE,
+                    gettext(
+                        "%(empty)s is empty, but %(filled)s is filled and they are read on the "
+                        "same line — a shell `read` would hand your value to %(empty)s. Fill "
+                        "%(empty)s in, or clear %(filled)s."
+                    )
+                    % {"empty": exc.empty, "filled": exc.filled},
+                )
+            except InjectSyntaxError as exc:
+                # skit corrupted the script (a quoting/escaping bug) — a resync fixes
+                # nothing, so this must NOT carry the drift hint. Nothing was launched.
+                return RunOutcome(
+                    None,
+                    FAIL_DRIFT,
+                    gettext("skit refused to run its own injected copy: %(detail)s")
+                    % {"detail": str(exc)},
+                )
+            except InjectError as exc:
                 return RunOutcome(
                     None,
                     FAIL_DRIFT,
@@ -699,6 +745,10 @@ def execute(
                     )
                     % {"name": entry.meta.name, "detail": str(exc)},
                 )
+            injected = result.path
+            env_overlay.update(result.env)
+            for line in result.warnings:
+                emit(line)
         for line in transparency_lines(entry, asm, injected):
             emit(line)
         try:
@@ -708,7 +758,7 @@ def execute(
                 values=asm.command_values,
                 invoke_cwd=invoke_cwd,
                 script_override=injected,
-                env_overlay=asm.env_values,
+                env_overlay=env_overlay,
             )
         except launcher.TargetMissingError as exc:
             return RunOutcome(None, FAIL_MISSING, str(exc))

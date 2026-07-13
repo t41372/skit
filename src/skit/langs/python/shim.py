@@ -32,32 +32,16 @@ from dataclasses import dataclass
 
 from ...callmatch import match_calls
 from ...params import ParamDecl
-from ...rewrite import ByteSpan, apply_byte_spans, line_start_table, linecol_to_byte
+from ...rewrite import ByteSpan, apply_byte_spans, line_start_table, linecol_to_byte, write_injected
+from ..base import InjectError, InjectRequest, InjectResult, InjectValueError
 from .analyzer import _is_main_guard, _literal_prompt, _literal_value
 
-
-class ShimError(Exception):
-    pass
-
-
-class ShimValueError(ShimError):
-    """A value couldn't be coerced to its parameter's declared type.
-
-    Distinct from the base ShimError: that one means an injection *target* couldn't be located (the
-    script drifted from its [tool.skit] definitions). Here the target was found just fine — only the
-    value the user typed doesn't fit the declared int/float/bool type. Callers must not conflate the
-    two: telling a user to "re-add" a script because they mistyped a number is both wrong and
-    unhelpful (nothing about the source has drifted, so re-adding fixes nothing). Carries structured
-    fields (value / type_name / param_name) so a caller can build its own value-specific message
-    without re-parsing str(exc) — the str() form stays exactly "{value!r} -> {type_name}", matching
-    the plain ShimError message a `_coerce` failure has always raised.
-    """
-
-    def __init__(self, value: str, type_name: str, param_name: str) -> None:
-        self.value = value
-        self.type_name = type_name
-        self.param_name = param_name
-        super().__init__(f"{value!r} -> {type_name}")
+# The historical names, kept as aliases: the exception family moved to langs/base.py when shell
+# grew a second injector (flows maps them for EVERY language, so they can't live in python's
+# package), but `shim.ShimError` / `shim.ShimValueError` are a stable surface — tests and callers
+# spell them that way, and `except ShimError` must keep catching a shell injector's drift error.
+ShimError = InjectError
+ShimValueError = InjectValueError
 
 
 @dataclass
@@ -197,6 +181,23 @@ def _node_replacement(node: ast.expr, new_text: str) -> _Replacement:
         raise ShimError("missing node span")
     return _Replacement(
         node.lineno, node.col_offset, node.end_lineno, node.end_col_offset, new_text
+    )
+
+
+def inject_entry(request: InjectRequest) -> InjectResult:
+    """The Injector capability (registry-wired). Python delivers every managed value by
+    rewriting a temp copy — no environment channel, no warnings — so the result is exactly the
+    temp path `inject()` produced, and `flows.execute`'s behavior is byte-identical to the
+    hardcoded call it replaced. `inject` is looked up through the module globals on every call
+    (not captured at registry-build time), so monkeypatching `shim.inject` still works."""
+    return InjectResult(
+        path=write_injected(
+            # entry_dir is write_injected's fallback directory (used only when the OS temp dir
+            # isn't writable); suffix=".py" keeps the extension `uv run --script` expects.
+            request.entry_dir,
+            inject(request.text, request.specs, request.values),
+            suffix=".py",
+        )
     )
 
 

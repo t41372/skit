@@ -19,7 +19,7 @@ The three axes the old ``Kind`` literal conflated are separated here:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
@@ -46,6 +46,68 @@ class TargetMissingError(LaunchError):
 
 class NotExecutableError(LaunchError):
     """The exe target exists but has no execute permission (exit 126, docker convention)."""
+
+
+# ---------------------------------------------------------------- injection errors
+#
+# The neutral injection-failure family, shared by every injector (python's shim, shell's
+# inject). It lives here — not in a language package — because `flows.execute` maps these
+# onto its own failure codes (FAIL_BAD_VALUE / FAIL_DRIFT) for whatever language ran, and a
+# second language importing the first one's exception module just to raise a drift error
+# would be exactly the coupling the registry exists to prevent. `langs.python.shim` keeps
+# re-exporting them under their historical `ShimError` / `ShimValueError` names.
+
+
+class InjectError(Exception):
+    """An injection TARGET could not be located, or two definitions claimed one call site:
+    the script has drifted from its definitions. Callers map it to FAIL_DRIFT ("re-add /
+    resync"), so nothing that a resync cannot fix may be reported through it directly —
+    the two subclasses below carve out exactly those cases."""
+
+
+class InjectValueError(InjectError):
+    """A value couldn't be coerced to its parameter's declared type.
+
+    Distinct from the base InjectError: that one means an injection *target* couldn't be
+    located (the script drifted from its [tool.skit] definitions). Here the target was found
+    just fine — only the value the user typed doesn't fit the declared int/float/bool type.
+    Callers must not conflate the two: telling a user to "re-add" a script because they
+    mistyped a number is both wrong and unhelpful (nothing about the source has drifted, so
+    re-adding fixes nothing). Carries structured fields (value / type_name / param_name) so a
+    caller can build its own value-specific message without re-parsing str(exc) — the str()
+    form stays exactly "{value!r} -> {type_name}", matching the plain InjectError message a
+    `_coerce` failure has always raised.
+    """
+
+    def __init__(self, value: str, type_name: str, param_name: str) -> None:
+        self.value = value
+        self.type_name = type_name
+        self.param_name = param_name
+        super().__init__(f"{value!r} -> {type_name}")
+
+
+class InjectGapError(InjectError):
+    """A positional gap in a multi-variable read (`read FIRST LAST`): a value was supplied
+    for a later variable of the same call while an earlier one was left empty.
+
+    One `read` consumes one LINE and splits it on IFS, so the injected values of a single
+    call must form a contiguous prefix of its variables: there is no way to express "empty
+    first field, filled second" in that line — the shell would simply hand the second value
+    to the FIRST variable. That is the silent wrong-value binding risk #2 exists to prevent,
+    so it is refused explicitly. It is a value-shape problem, not drift (nothing in the
+    source changed), so callers map it to FAIL_BAD_VALUE and must not suggest a resync."""
+
+    def __init__(self, empty: str, filled: str) -> None:
+        self.empty = empty
+        self.filled = filled
+        super().__init__(f"{empty} < {filled}")
+
+
+class InjectSyntaxError(InjectError):
+    """The injected copy failed a post-injection syntax gate (offline re-parse, or the
+    interpreter's own `-n` check). skit corrupted the script — a resync cannot fix that, so
+    callers map it to FAIL_DRIFT's exit code but must NOT print the resync hint. Nothing is
+    launched, and the temp copy is removed before it is raised."""
 
 
 Family = Literal["interpreted", "binary", "template"]
@@ -116,6 +178,63 @@ class CliReader:
 
 
 @dataclass(frozen=True)
+class InjectRequest:
+    """Everything an injector needs, and nothing about the caller: the script text, the
+    definitions, this run's values, the temp-file fallback directory, and the interpreter
+    NAME the entry will actually run under ("" when the kind has none). Deliberately not an
+    Entry — an injector is a pure function of the source and the values."""
+
+    text: str
+    specs: list[ParamDecl]
+    values: dict[str, str]
+    entry_dir: Path
+    interpreter: str = ""
+
+
+@dataclass(frozen=True)
+class InjectResult:
+    """The three delivery channels an injector may use, in one record:
+
+    - ``path``: the injected temp copy to run instead of the stored script, or None when the
+      language delivered every value without rewriting a single byte (shell's env channel).
+    - ``env``: variables to overlay onto the child process environment.
+    - ``warnings``: already-localized lines the caller emits (e.g. "$0 will be the temp copy").
+    """
+
+    path: Path | None = None
+    env: dict[str, str] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class Injector:
+    """Run-time value delivery for a kind: rewrite a temp copy, overlay the environment, or
+    both. The caller (flows.execute) owns the temp file's lifetime and unlinks it."""
+
+    inject: Callable[[InjectRequest], InjectResult]
+
+
+@dataclass(frozen=True)
+class Normalizer:
+    """Opt-in source-idiom rewriting (A5 amendment): convert an inject-delivered parameter
+    into an env-delivered one *permanently*, in the stored copy. Separate from Injector
+    because it writes the user's file (a deliberate, explicit act) rather than a temp copy."""
+
+    normalize: Callable[[str, list[str]], Normalization]
+
+
+@dataclass(frozen=True)
+class Normalization:
+    """A normalizer's result: the new text, the names actually rewritten, and coded
+    ``reason:name`` refusals the caller renders (same shape as analysis.EditResult warnings —
+    the UI owns the human wording)."""
+
+    text: str
+    normalized: list[str] = field(default_factory=list)
+    refused: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class ParamsIO:
     """Read/write declared parameter definitions carried in the script text."""
 
@@ -146,6 +265,8 @@ class LangSpec:
     params_io: ParamsIO | None = None
     analyzer: Analyzer | None = None
     cli_reader: CliReader | None = None
+    injector: Injector | None = None  # run-time value delivery (temp-copy rewrite / env)
+    normalizer: Normalizer | None = None  # opt-in source-idiom rewrite (const -> envdefault)
     supports_modes: bool = False  # copy/reference choice offered at add time
     supports_deps: bool = False  # package-dependency management (PEP 723 + uv)
     takes_argv: bool = True  # False: appended args are not this kind's interface
