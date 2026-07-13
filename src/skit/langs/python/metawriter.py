@@ -27,19 +27,10 @@ Shape of `[tool.skit]` (the TOML once comment prefixes are stripped):
 
 from __future__ import annotations
 
-import re
-
 from ... import pep723
 from ...params import ParamDecl
 
 SCT_SCHEMA = 1
-
-_BLOCK_RE = re.compile(
-    # See the identical comment on pep723._BLOCK_RE: the closer's trailing whitespace is restricted
-    # to horizontal whitespace so a greedy `\s*$` can't cross a line boundary and swallow blank lines
-    # that follow the block, deleting them on rewrite.
-    r"(?m)^# /// script\s*$\n(?P<body>(?:^#(?:| .*)$\n)*?)^# ///[^\S\n]*$\n?",
-)
 
 
 def _toml_str(value: str) -> str:
@@ -81,25 +72,26 @@ def render_skit_toml(params: list[ParamDecl]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _commentify(toml_text: str) -> list[str]:
-    return [("# " + ln).rstrip() for ln in toml_text.splitlines()]
+def _commentify(toml_text: str, leader: str = "#") -> list[str]:
+    return [(leader + " " + ln).rstrip() for ln in toml_text.splitlines()]
 
 
-def _strip_comment_prefix(line: str) -> str:
-    if line.startswith("# "):  # pragma: no mutate — prefix length is unobservable, re-stripped next
-        return line[2:]
-    if line.startswith("#"):
-        return line[1:]
+def _strip_comment_prefix(line: str, leader: str = "#") -> str:
+    prefix = leader + " "
+    if line.startswith(prefix):  # pragma: no mutate — prefix length re-stripped next
+        return line[len(prefix) :]
+    if line.startswith(leader):
+        return line[len(leader) :]
     return line
 
 
-def _strip_skit_section(body_lines: list[str]) -> list[str]:
+def _strip_skit_section(body_lines: list[str], leader: str = "#") -> list[str]:
     """Remove any existing [tool.skit] section (and its [[tool.skit.params]]) from the block body,
     keeping the rest."""
     out: list[str] = []
     skipping = False  # pragma: no mutate — only read via truthiness (`if not skipping`)
     for line in body_lines:
-        stripped = _strip_comment_prefix(line).strip()
+        stripped = _strip_comment_prefix(line, leader).strip()
         if stripped.startswith("["):
             in_skit = stripped.startswith("[tool.skit]") or stripped.startswith("[[tool.skit.")
             skipping = in_skit
@@ -111,7 +103,7 @@ def _strip_skit_section(body_lines: list[str]) -> list[str]:
     return out
 
 
-def _drop_synthetic_separator(base: str, original: str) -> str:
+def _drop_synthetic_separator(base: str, original: str, leader: str = "#") -> str:
     """Undo inject_block()'s optional blank-line separator when write_params() is about to fill the
     freshly-created block with params in the same operation.
 
@@ -125,7 +117,7 @@ def _drop_synthetic_separator(base: str, original: str) -> str:
     `original`'s own content did not already start with a blank line at that point — inject_block
     itself skips the separator in that case, to avoid a double blank line).
     """
-    block_only = pep723.build_block([])
+    block_only = pep723.build_block([], leader=leader)
     idx = base.index(block_only)
     prefix = base[:idx]
     rest = base[idx + len(block_only) :]
@@ -135,43 +127,46 @@ def _drop_synthetic_separator(base: str, original: str) -> str:
     return base
 
 
-def write_params(text: str, params: list[ParamDecl]) -> str:
+def write_params(text: str, params: list[ParamDecl], leader: str = "#") -> str:
     """Write (or replace) the script's [tool.skit] with the parameter definitions. Empty params
     means removing the section.
 
-    - Existing PEP 723 block: replace/append [tool.skit] inside the block, other lines verbatim.
+    - Existing inline-metadata block: replace/append [tool.skit] inside the block, others verbatim.
     - No block and non-empty params: create a block with empty dependencies (same insertion point as
       pep723.inject_block).
+
+    `leader` selects the comment dialect: "#" (Python/shell) or "//" (JS/TS). The whole engine is
+    otherwise language-blind — it never touches a line outside the `leader /// … leader ///` block.
     """
-    m = _BLOCK_RE.search(text)
+    m = pep723._block_re(leader).search(text)
     if m is None:
         if not params:
             return text
         base = pep723.inject_block(
-            text, []
+            text, [], leader=leader
         )  # pragma: no mutate — build_block only checks truthiness of dependencies
         # inject_block has inserted the block; recurse once through the "block exists" path.
-        if _BLOCK_RE.search(base) is None:  # pragma: no cover — inject_block guarantees a block
-            raise RuntimeError("inject_block failed to create a PEP 723 block")
-        base = _drop_synthetic_separator(base, text)
-        return write_params(base, params)
+        if pep723._block_re(leader).search(base) is None:  # pragma: no cover — guaranteed by inject
+            raise RuntimeError("inject_block failed to create an inline-metadata block")
+        base = _drop_synthetic_separator(base, text, leader)
+        return write_params(base, params, leader)
     body_lines = m.group("body").splitlines()
-    kept = _strip_skit_section(body_lines)
+    kept = _strip_skit_section(body_lines, leader)
     new_body_lines = list(kept)
     if params:
         if new_body_lines:
-            new_body_lines.append("#")
-        new_body_lines.extend(_commentify(render_skit_toml(params)))
-    new_block = "# /// script\n"
+            new_body_lines.append(leader)
+        new_body_lines.extend(_commentify(render_skit_toml(params), leader))
+    new_block = f"{leader} /// script\n"
     if new_body_lines:
         new_block += "\n".join(new_body_lines) + "\n"
-    new_block += "# ///\n"
+    new_block += f"{leader} ///\n"
     return text[: m.start()] + new_block + text[m.end() :]
 
 
-def read_params(text: str) -> list[ParamDecl]:
+def read_params(text: str, leader: str = "#") -> list[ParamDecl]:
     """Read the script's [tool.skit] parameter definitions; empty list if no block/section/parse."""
-    meta = pep723.parse_block(text)
+    meta = pep723.parse_block(text, leader)
     if not meta:
         return []
     # All valid TOML, all defended: `tool`, `tool.skit`, and `tool.skit.params` could each be a

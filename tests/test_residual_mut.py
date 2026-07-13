@@ -209,8 +209,12 @@ def test_strip_skit_section_drops_trailing_empty_line():
 def test_write_params_raises_with_exact_message_if_inject_block_invariant_broken(monkeypatch):
     """Defensive branch: if pep723.inject_block ever failed to actually create a block, write_params
     must raise with this exact diagnostic message rather than silently mis-writing."""
-    monkeypatch.setattr(pep723, "inject_block", lambda text, deps, requires_python="": text)
-    with pytest.raises(RuntimeError, match=r"^inject_block failed to create a PEP 723 block$"):
+    monkeypatch.setattr(
+        pep723, "inject_block", lambda text, deps, requires_python="", leader="#": text
+    )
+    with pytest.raises(
+        RuntimeError, match=r"^inject_block failed to create an inline-metadata block$"
+    ):
         metawriter.write_params("no block here\n", [ParamDecl(name="X", binding="const")])
 
 

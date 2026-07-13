@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: skit 0.2.1.dev0\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-07-12 18:24-0700\n"
+"POT-Creation-Date: 2026-07-12 19:11-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -1258,6 +1258,15 @@ msgstr ""
 msgid "The script and its form definitions don't match anymore: %(detail)s. Run `skit params %(name)s --resync` to fix it."
 msgstr ""
 
+#: src/skit/langs/javascript/inject.py:182
+msgid "the injected copy no longer parses as a JavaScript/TypeScript script (nothing was run)"
+msgstr ""
+
+#: src/skit/langs/javascript/inject.py:221
+#, python-format
+msgid "node rejected the injected copy: %(detail)s"
+msgstr ""
+
 #: src/skit/langs/launch.py:60
 msgid "uv not found. Install it (https://docs.astral.sh/uv/) or run skit doctor for guidance."
 msgstr ""
@@ -1297,16 +1306,16 @@ msgstr ""
 msgid "No JavaScript runtime found (looked for: %(names)s). Install deno, bun, or node — or pick one with: skit config js.runner <name>"
 msgstr ""
 
-#: src/skit/langs/shell/inject.py:407
+#: src/skit/langs/shell/inject.py:411
 msgid "the injected copy no longer parses as a shell script (nothing was run)"
 msgstr ""
 
-#: src/skit/langs/shell/inject.py:430
+#: src/skit/langs/shell/inject.py:434
 #, python-format
 msgid "%(shell)s rejected the injected copy: %(detail)s"
 msgstr ""
 
-#: src/skit/langs/shell/inject.py:443
+#: src/skit/langs/shell/inject.py:447
 msgid "⚠ This script reads its own location ($0 / $BASH_SOURCE), and the injected values run from a temporary copy — so it sees the copy's path, not the original's. `skit params <script> --normalize NAME` delivers a value through the environment instead, with no copy at all."
 msgstr ""
 

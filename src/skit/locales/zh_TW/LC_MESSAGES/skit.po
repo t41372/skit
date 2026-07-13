@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: skit 0.0.1\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-07-12 18:24-0700\n"
+"POT-Creation-Date: 2026-07-12 19:11-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_TW\n"
@@ -1256,6 +1256,15 @@ msgstr "skit 拒絕執行自己注入出來的副本:%(detail)s"
 msgid "The script and its form definitions don't match anymore: %(detail)s. Run `skit params %(name)s --resync` to fix it."
 msgstr "腳本內容和表單定義對不上了：%(detail)s。執行 `skit params %(name)s --resync` 即可修復。"
 
+#: src/skit/langs/javascript/inject.py:182
+msgid "the injected copy no longer parses as a JavaScript/TypeScript script (nothing was run)"
+msgstr "注入後的副本已不再是合法的 JavaScript/TypeScript 腳本(什麼都沒執行)"
+
+#: src/skit/langs/javascript/inject.py:221
+#, python-format
+msgid "node rejected the injected copy: %(detail)s"
+msgstr "node 拒絕了注入後的副本:%(detail)s"
+
 #: src/skit/langs/launch.py:60
 msgid "uv not found. Install it (https://docs.astral.sh/uv/) or run skit doctor for guidance."
 msgstr "找不到 uv。請先安裝 uv(https://docs.astral.sh/uv/),或執行 skit doctor 取得安裝指引。"
@@ -1295,16 +1304,16 @@ msgstr "直譯器 %(name)s 未安裝（或不在 PATH 上）。"
 msgid "No JavaScript runtime found (looked for: %(names)s). Install deno, bun, or node — or pick one with: skit config js.runner <name>"
 msgstr "找不到 JavaScript 執行環境（查找過：%(names)s）。請安裝 deno、bun 或 node——或用 skit config js.runner <name> 指定一個。"
 
-#: src/skit/langs/shell/inject.py:407
+#: src/skit/langs/shell/inject.py:411
 msgid "the injected copy no longer parses as a shell script (nothing was run)"
 msgstr "注入後的副本已不再是合法的 shell 腳本(什麼都沒執行)"
 
-#: src/skit/langs/shell/inject.py:430
+#: src/skit/langs/shell/inject.py:434
 #, python-format
 msgid "%(shell)s rejected the injected copy: %(detail)s"
 msgstr "%(shell)s 拒絕了注入後的副本:%(detail)s"
 
-#: src/skit/langs/shell/inject.py:443
+#: src/skit/langs/shell/inject.py:447
 msgid "⚠ This script reads its own location ($0 / $BASH_SOURCE), and the injected values run from a temporary copy — so it sees the copy's path, not the original's. `skit params <script> --normalize NAME` delivers a value through the environment instead, with no copy at all."
 msgstr "⚠ 這個腳本會讀自己的位置($0 / $BASH_SOURCE),而注入後的值是從臨時副本執行的——所以它看到的是副本的路徑,不是原檔案的。`skit params <script> --normalize NAME` 改用環境變數傳值,完全不寫副本。"
 

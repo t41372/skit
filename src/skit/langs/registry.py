@@ -126,28 +126,56 @@ def _fish_spec() -> LangSpec:
     return _interpreted("fish", "∿", "fish", (".fish",), ("fish",), "#")
 
 
-def _js_spec() -> LangSpec:
-    return _interpreted(
-        "js",
-        "✦",
+def _js_analysis(lang: str) -> tuple[Analyzer | None, CliReader | None, Injector | None]:
+    """The three tree-sitter-backed JS/TS capabilities for a `lang` ("js"/"ts"), behind ONE import
+    guard: analyzer, parseArgs reader and injector are all grammar consumers, so they stand or fall
+    together — a broken grammar wheel must not leave a half-capable kind behind. Each is bound to the
+    kind's `lang` so ts parses under the TypeScript grammar and js under JavaScript."""
+    try:
+        from .javascript import analyzer, cli_reader, inject
+    except ImportError:  # pragma: no cover — a broken/absent tree-sitter grammar wheel
+        return None, None, None
+    return (
+        Analyzer(
+            analyze=lambda text: analyzer.analyze(text, lang=lang),
+            reconcile=lambda text, specs: analyzer.reconcile(text, specs, lang=lang),
+        ),
+        CliReader(read_cli=lambda text: cli_reader.read_cli(text, lang=lang)),
+        Injector(inject=lambda request: inject.inject(request, lang=lang)),
+    )
+
+
+def _javascript_spec(kind: str, glyph: str, extensions: tuple[str, ...], lang: str) -> LangSpec:
+    """A js/ts LangSpec: the Tier-0 interpreted base (RunnerLaunch, `//`-comment) plus the full
+    analysis stack (in-file [tool.skit] via the `//` block engine, analyzer, parseArgs reader,
+    const injector) — everything but params_io behind the tree-sitter import guard."""
+    from .javascript import io  # the '//' block engine is grammar-free (metawriter), always present
+
+    spec = _interpreted(
+        kind,
+        glyph,
         "",
-        (".js", ".mjs", ".cjs"),
-        ("node", "deno", "bun"),
+        extensions,
+        ("node", "deno", "bun") if lang == "js" else (),
         "//",
         launch_strategy=launch.RunnerLaunch(),
     )
+    analyzer_cap, cli_reader_cap, injector_cap = _js_analysis(lang)
+    return replace(
+        spec,
+        params_io=ParamsIO(read=io.read_params, write=io.write_params),
+        analyzer=analyzer_cap,
+        cli_reader=cli_reader_cap,
+        injector=injector_cap,
+    )
+
+
+def _js_spec() -> LangSpec:
+    return _javascript_spec("js", "✦", (".js", ".mjs", ".cjs"), "js")
 
 
 def _ts_spec() -> LangSpec:
-    return _interpreted(
-        "ts",
-        "✧",
-        "",
-        (".ts", ".mts", ".cts"),
-        (),
-        "//",
-        launch_strategy=launch.RunnerLaunch(),
-    )
+    return _javascript_spec("ts", "✧", (".ts", ".mts", ".cts"), "ts")
 
 
 def _powershell_spec() -> LangSpec:
