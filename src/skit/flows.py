@@ -55,6 +55,8 @@ from .params import ParamDecl
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from .langs.base import CliReader
+
 _GLOB_CHARS = ("*", "?", "[")
 
 
@@ -234,6 +236,23 @@ def _declared_riders(entry: Entry, taken: set[str]) -> list[FormField]:
     ]
 
 
+def _reader_plan(entry: Entry, reader: CliReader) -> FormPlan | None:
+    """The form plan for a reader-only kind (PowerShell): read the script's own CLI surface
+    statically and assemble real flags. None when the reader finds nothing readable (no
+    surface, or no tool to run the read) — the caller then falls through to the "none" plan,
+    exactly like the argparse/parseArgs fall-through does for analyzable kinds."""
+    text = entry.script_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
+    spec = reader.read_cli(text)
+    if spec is None:
+        return None
+    # A reader-only kind (PowerShell) never whole-spec-degrades: an unreadable surface comes
+    # back as None (handled above), never as an ok=False ArgSpec, so there is no degraded-reason
+    # branch here — the reader always yields a concrete, assemblable field list.
+    return FormPlan(
+        source="argparse", fields=[FormField.from_decl(a) for a in spec.fields], text=text
+    )
+
+
 def plan_for_entry(entry: Entry) -> FormPlan:  # noqa: PLR0911 — one return per plan source
     """Build the form plan for an entry. Total: unreadable/missing scripts yield the
     "none" plan (extra-args escape only) rather than raising — preflight owns existence
@@ -243,6 +262,17 @@ def plan_for_entry(entry: Entry) -> FormPlan:  # noqa: PLR0911 — one return pe
         declared = _declared_plan(entry, lang)
         if declared is not None:
             return declared
+        # Reader-only kinds — a static CLI surface with no analyzer and no injector, i.e.
+        # PowerShell's param() block read through PowerShell's own parser. They have no
+        # in-file [tool.skit] analysis path, so they bypass the inject/reconcile machinery
+        # below and consult the reader directly. Gated on `analyzer is None`, so every
+        # analyzable kind (python/shell/js/ts/fish) keeps its exact existing path — and a
+        # kind whose analyzer AND cli_reader were both degraded to None by a broken grammar
+        # wheel (js/shell) never enters here either (its cli_reader is None too).
+        if lang.analyzer is None and lang.cli_reader is not None and entry.script_path.exists():
+            reader_plan = _reader_plan(entry, lang.cli_reader)
+            if reader_plan is not None:
+                return reader_plan
     if (
         lang is None
         or lang.params_io is None

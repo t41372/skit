@@ -97,11 +97,12 @@ def _shell_spec() -> LangSpec:
     analyzer_cap: Analyzer | None
     injector_cap: Injector | None
     normalizer_cap: Normalizer | None
+    cli_reader_cap: CliReader | None
     try:
-        # One guard for all three: every one of them is a tree-sitter consumer (inject and
-        # normalize import the analyzer's grammar handle and node helpers), so they stand or fall
-        # together — a broken grammar wheel must not leave a half-capable shell kind behind.
-        from .shell import analyzer, inject, normalize
+        # One guard for all four: every one of them is a tree-sitter consumer (inject/normalize and
+        # the getopts reader import the analyzer's grammar handle and node helpers), so they stand or
+        # fall together — a broken grammar wheel must not leave a half-capable shell kind behind.
+        from .shell import analyzer, cli_reader, inject, normalize
     except ImportError:  # pragma: no cover — a broken/absent tree-sitter grammar wheel
         # Degrade the capabilities to None (the `if spec.analyzer is None` idiom downstream handles
         # the rest); everything else about the shell kind still works. With no analyzer there are no
@@ -109,21 +110,39 @@ def _shell_spec() -> LangSpec:
         analyzer_cap = None
         injector_cap = None
         normalizer_cap = None
+        cli_reader_cap = None
     else:
         analyzer_cap = Analyzer(analyze=analyzer.analyze, reconcile=analyzer.reconcile)
         injector_cap = Injector(inject=inject.inject)
         normalizer_cap = Normalizer(normalize=normalize.normalize_idiom)
+        cli_reader_cap = CliReader(read_cli=cli_reader.read_cli)
     return replace(
         spec,
         params_io=ParamsIO(read=metawriter.read_params, write=metawriter.write_params),
         analyzer=analyzer_cap,
+        cli_reader=cli_reader_cap,
         injector=injector_cap,
         normalizer=normalizer_cap,
     )
 
 
 def _fish_spec() -> LangSpec:
-    return _interpreted("fish", "∿", "fish", (".fish",), ("fish",), "#")
+    from .fish import analyzer, cli_reader
+    from .python import metawriter  # the '#'-comment block engine is language-blind (PEP-723 regex)
+
+    spec = _interpreted("fish", "∿", "fish", (".fish",), ("fish",), "#")
+    # fish v1: env-idiom detection (analyzer, envdefault candidates only — env delivery needs no
+    # injector) + argparse reading (cli_reader), plus in-file [tool.skit] via the '#' block engine.
+    # No injector: const/read injection is a later increment, so analyze() emits ONLY env-default
+    # candidates (env delivery reaches the child through the launcher's env overlay, never the
+    # injector — flows.execute only calls an injector for inject-delivery values, of which fish
+    # has none). Pure stdlib scanner, so no import guard is needed.
+    return replace(
+        spec,
+        params_io=ParamsIO(read=metawriter.read_params, write=metawriter.write_params),
+        analyzer=Analyzer(analyze=analyzer.analyze, reconcile=analyzer.reconcile),
+        cli_reader=CliReader(read_cli=cli_reader.read_cli),
+    )
 
 
 def _js_analysis(lang: str) -> tuple[Analyzer | None, CliReader | None, Injector | None]:
@@ -181,7 +200,9 @@ def _ts_spec() -> LangSpec:
 def _powershell_spec() -> LangSpec:
     # `pwsh -File` (explicit file semantics); powershell.exe users set
     # meta.interpreter — the strategy resolves whatever name is recorded.
-    return _interpreted(
+    from .powershell import cli_reader
+
+    spec = _interpreted(
         "powershell",
         "»",
         "pwsh",
@@ -190,6 +211,11 @@ def _powershell_spec() -> LangSpec:
         "#",
         prefix=("-File",),
     )
+    # The `param()` block IS the CLI surface, read through PowerShell's own parser (a static
+    # subprocess, stdlib only — no import guard needed; the reader degrades at run time when
+    # no pwsh/powershell.exe is on PATH). No analyzer/injector: injection is out of scope for
+    # PowerShell in v1 — the reader assembles real `-Name value` flags instead.
+    return replace(spec, cli_reader=CliReader(read_cli=cli_reader.read_cli))
 
 
 def _ruby_spec() -> LangSpec:
