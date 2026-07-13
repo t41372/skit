@@ -1201,3 +1201,23 @@ def test_normalize_refuses_shell_metacharacters(tmp_path):
         assert n.refused == ["unsafe-literal:MSG"]
     ok = normalize.normalize_idiom("MSG='plain'\n", ["MSG"])
     assert ok.normalized == ["MSG"]
+
+
+def test_empty_value_in_a_non_last_read_variable_is_a_gap(tmp_path):
+    # A managed empty string in a non-last position collapses on the join (the next field shifts
+    # into it), the same wrong binding as an unmanaged gap. flows omits empties before they reach
+    # inject(), but the injector must be self-correct: it treats an empty non-last value as a gap.
+    src = '#!/usr/bin/env bash\nread -p "p: " A B\n'
+    with pytest.raises(InjectGapError) as exc_info:
+        inject_src(src, {"input-1": "", "input-2": "x"}, tmp_path)
+    assert (exc_info.value.empty, exc_info.value.filled) == ("input-1", "input-2")
+    assert not temp_files(tmp_path)
+
+
+@posix_only
+def test_empty_value_in_the_last_read_variable_is_fine(tmp_path):
+    # A trailing empty is just a short line, which read handles (B reads empty).
+    src = '#!/usr/bin/env bash\nread -p "p: " A B\nprintf "[%s][%s]" "$A" "$B"\n'
+    result = inject_src(src, {"input-1": "x", "input-2": ""}, tmp_path)
+    assert result.path is not None
+    assert run_shell(result.path, tmp_path).stdout.endswith("[x][]")

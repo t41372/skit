@@ -373,18 +373,25 @@ def _check_prefix(group: list[_ReadSite], supplied: list[str | None]) -> None:
     """
     last_index = len(supplied) - 1
     for i, value in enumerate(supplied):
-        if value is None:
-            continue
-        reason = _split_reason(value, is_last=i == last_index)
-        if reason:
-            raise InjectSplitError(_display_name(group[i]), reason)
+        if value is not None and value != "":
+            reason = _split_reason(value, is_last=i == last_index)
+            if reason:
+                raise InjectSplitError(_display_name(group[i]), reason)
+    # A gap is an unmanaged variable (None) OR a managed empty string that isn't the last variable:
+    # an empty non-last value contributes nothing to the joined line, so the next field's value would
+    # shift up into it — the same wrong binding as a None gap. flows never sends an empty value (it
+    # omits them), so this only bites a direct inject() caller, but the injector must be correct on
+    # its own, not by relying on a downstream layer's invariant. A trailing empty is fine — a short
+    # line, which read handles.
     for i, value in enumerate(supplied):
-        if value is not None:
+        if value is not None and (value != "" or i == last_index):
             continue
-        later = next((j for j in range(i + 1, len(supplied)) if supplied[j] is not None), None)
+        later = next(
+            (j for j in range(i + 1, len(supplied)) if supplied[j] not in (None, "")), None
+        )
         if later is not None:
             raise InjectGapError(_display_name(group[i]), _display_name(group[later]))
-        return  # the first gap has nothing filled after it: a short line, which read handles
+        return  # nothing filled after this gap: a short line, which read handles
 
 
 def _feed_value(value: str, *, raw: bool) -> str:
