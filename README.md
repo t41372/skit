@@ -69,7 +69,7 @@ Python, shell, and JS/TS get static parameter detection **and** value injection.
 | **Programs** (exe) | direct exec | — | — | — | needs |
 | **Commands** | template fill | — | — | — | needs |
 
-You can also declare parameters by hand for any kind — so even plain executables and command templates get the same form / preset / `--set` experience. **needs** are external commands — skit checks they're on your `PATH` before each run (any kind). Python and JS/TS get isolated per-script package dependencies: uv resolves the PEP 723 block, and npm-style deps install into a `node_modules` next to the stored copy (`skit add` suggests them from the script's own imports). Managed JS/TS deps apply to copied entries — a referenced script keeps using its own project's `node_modules` — and installs never run package lifecycle scripts (npm and bun get `--ignore-scripts`; deno skips them by default). One more evener: when deno is the runner skit picks, it passes `--allow-all`, so the same script behaves the same under deno, bun, and node.
+You can also declare parameters by hand for any kind — so even plain executables and command templates get the same form / preset / `--set` experience. **needs** are external commands — skit checks they're on your `PATH` before each run (any kind). Python and JS/TS get isolated per-script package dependencies: uv resolves the PEP 723 block, and npm-style deps install into a `node_modules` next to the stored copy (`skit add` suggests them from the script's own imports). Managed JS/TS deps apply to copied entries — a referenced script keeps using its own project's `node_modules` — and installs never run package lifecycle scripts (npm and bun get `--ignore-scripts`; deno skips them by default). One more evener: when deno is the runner skit picks, it passes `--allow-all`, so the same script behaves the same under deno, bun, and node. skit bootstraps uv for Python, but never a JS runtime — you supply node, bun, or deno.
 
 ## Install
 
@@ -154,6 +154,7 @@ skit run my_script --dry-run  # print the exact command, don't run it
 skit run my_script --set width=800 --no-input   # set values explicitly, never prompt
 skit show my_script --json    # one script's full parameter schema, machine-readable
 skit params my_script         # show managed parameters and last-used values
+skit deps my_script --dep "requests>=2"   # set a script's package dependencies
 skit list --json              # machine-readable listing
 skit config                   # settings: language, editor, mirror, form style
 skit --help                   # everything else
