@@ -156,8 +156,10 @@ def _sweep_injected_temp_copies(monkeypatch: pytest.MonkeyPatch) -> Iterator[Non
     created: list[Path] = []
     real = rewrite.write_injected
 
-    def tracking(entry_dir: Path, content: str, *, suffix: str) -> Path:
-        path = real(entry_dir, content, suffix=suffix)
+    def tracking(
+        entry_dir: Path, content: str, *, suffix: str, prefer_entry_dir: bool = False
+    ) -> Path:
+        path = real(entry_dir, content, suffix=suffix, prefer_entry_dir=prefer_entry_dir)
         created.append(path)
         return path
 

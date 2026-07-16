@@ -338,15 +338,17 @@ def test_mirror_wizard_default_custom_when_non_preset(monkeypatch: pytest.Monkey
 def test_mirror_wizard_custom(monkeypatch: pytest.MonkeyPatch) -> None:
     config.save_mirror(config.MirrorConfig(enabled=True, pypi="https://old/simple"))
     captured = _prompts(
-        monkeypatch, ["custom", "https://my/pypi", "https://my/py", "https://my/uv"]
+        monkeypatch,
+        ["custom", "https://my/pypi", "https://my/py", "https://my/uv", "https://my/npm"],
     )
     cli._mirror_wizard()
     m = config.load_mirror()
     assert m.enabled
-    assert (m.pypi, m.python_install, m.uv_binary) == (
+    assert (m.pypi, m.python_install, m.uv_binary, m.npm) == (
         "https://my/pypi",
         "https://my/py",
         "https://my/uv",
+        "https://my/npm",
     )
     assert captured[0]["default"] == "custom"
 
@@ -357,10 +359,18 @@ def test_mirror_wizard_custom_rejects_non_https_uv_binary(monkeypatch: pytest.Mo
     config.save_mirror(config.MirrorConfig(enabled=True, pypi="https://old/simple"))
     _prompts(
         monkeypatch,
-        ["custom", "https://my/pypi", "https://my/py", "http://evil/uv", "https://good/uv"],
+        [
+            "custom",
+            "https://my/pypi",
+            "https://my/py",
+            "http://evil/uv",
+            "https://good/uv",
+            "https://my/npm",
+        ],
     )
     cli._mirror_wizard()
     assert config.load_mirror().uv_binary == "https://good/uv"
+    assert config.load_mirror().npm == "https://my/npm"
 
 
 # --- first-run probe ---

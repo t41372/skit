@@ -488,7 +488,7 @@ def test_write_injected_falls_back_to_entry_dir_if_os_temp_unavailable(tmp_path,
     real_mkstemp = tempfile.mkstemp
 
     def flaky_mkstemp(*args, **kwargs):
-        if "dir" not in kwargs:
+        if kwargs.get("dir") is None:  # the primary (OS-temp) attempt
             raise OSError("no system temp directory available")
         return real_mkstemp(*args, **kwargs)
 

@@ -526,7 +526,10 @@ def test_mirror_wizard_choice_prompt_exact_text(monkeypatch):
 def test_mirror_wizard_custom_computed_defaults_when_disabled(monkeypatch):
     assert not config.load_mirror().enabled
     calls = _capture_ask(
-        monkeypatch, cli.Prompt, "ask", ["custom", "https://x/pypi", "https://x/py"]
+        monkeypatch,
+        cli.Prompt,
+        "ask",
+        ["custom", "https://x/pypi", "https://x/py", "https://x/npm"],
     )
     uv_calls: list[object] = []
     monkeypatch.setattr(
@@ -543,11 +546,16 @@ def test_mirror_wizard_custom_computed_defaults_when_disabled(monkeypatch):
     assert kw2["default"] == config.PYTHON_INSTALL_MIRROR
     assert kw2["console"] is cli.console
     assert uv_calls == [config.UV_BINARY_MIRROR]
+    # calls[3] = npm registry prompt (the fourth custom URL, mirroring the TUI Preferences set)
+    (msg3,), kw3 = calls[3]
+    assert msg3 == gettext("npm registry URL")
+    assert kw3["default"] == config.NPM_REGISTRY_MIRROR
     m = config.load_mirror()
-    assert (m.pypi, m.python_install, m.uv_binary) == (
+    assert (m.pypi, m.python_install, m.uv_binary, m.npm) == (
         "https://x/pypi",
         "https://x/py",
         "https://x/uv",
+        "https://x/npm",
     )
 
 

@@ -11,6 +11,7 @@ is, the injected value is proven to actually reach the child process.
 from __future__ import annotations
 
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -47,6 +48,7 @@ def inject_src(
     specs: list[ParamDecl] | None = None,
     lang: str = "js",
     interpreter: str = "",
+    source: str = "",
 ) -> InjectResult:
     return inject.inject(
         InjectRequest(
@@ -55,6 +57,7 @@ def inject_src(
             values=values,
             entry_dir=tmp_path,
             interpreter=interpreter,
+            source=source,
         ),
         lang=lang,
     )
@@ -149,6 +152,28 @@ def test_ts_temp_copy_has_ts_suffix(tmp_path):
     assert "const N: number = 7;" in result.path.read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize(
+    ("source", "lang", "expected"),
+    [
+        ("tool.mjs", "js", ".mjs"),  # ESM origin → node reads the copy as ESM by extension
+        ("tool.cjs", "js", ".cjs"),  # CommonJS origin
+        ("plain.js", "js", ".js"),  # no explicit flavor → plain extension
+        ("", "js", ".js"),  # no origin recorded
+        ("tool.mts", "ts", ".mts"),
+        ("tool.cts", "ts", ".cts"),
+        ("plain.ts", "ts", ".ts"),
+    ],
+)
+def test_injected_copy_carries_the_origins_module_flavor(tmp_path, source, lang, expected):
+    # The store flattens the stored copy to script.js/script.ts; the temp copy re-encodes the
+    # origin's .mjs/.cjs flavor so node resolves the module type from the extension — before any
+    # package.json exists and independent of node's version.
+    src = "const N = 5;\n" if lang == "js" else "const N: number = 5;\n"
+    result = inject_src(src, {"N": "7"}, tmp_path, lang=lang, source=source)
+    assert result.path is not None
+    assert result.path.suffix == expected
+
+
 # ---------------------------------------------------------------- drift / bad value
 
 
@@ -227,6 +252,28 @@ def test_gate_node_skips_ts_suffix(tmp_path, monkeypatch):
     monkeypatch.setattr(inject.subprocess, "run", lambda *a, **k: called.__setitem__("run", True))
     inject._gate_node("node", tmp_path / "x.ts", ".ts")  # .ts is not node-checkable
     assert called["run"] is False
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node required for gate 2")
+def test_mjs_origin_esm_copy_survives_gate2_before_any_package_json(tmp_path, monkeypatch):
+    """Regression for the bricking bug: an ESM .mjs-origin entry is injected and gate 2
+    (`node --check`) runs BEFORE the deps install writes a "type": "module" package.json. The .mjs
+    temp-copy extension makes node read the copy as ESM even with auto-detect off (node <22.7); with
+    the pre-fix .js extension node would reject the `import` as CommonJS → InjectSyntaxError."""
+    node = shutil.which("node")
+    assert node is not None
+    if (
+        subprocess.run(  # skip if this node predates the auto-detect flag entirely
+            [node, "--no-experimental-detect-module", "-e", ""], capture_output=True, check=False
+        ).returncode
+        != 0
+    ):
+        pytest.skip("this node predates --no-experimental-detect-module")
+    monkeypatch.setenv("NODE_OPTIONS", "--no-experimental-detect-module")  # simulate node <22.7
+    src = 'import assert from "node:assert";\nconst N = 5;\nassert.ok(N);\n'
+    result = inject_src(src, {"N": "7"}, tmp_path, interpreter="node", source="orig.mjs")
+    assert result.path is not None
+    assert result.path.suffix == ".mjs"  # gate 2 accepted the ESM copy, no InjectSyntaxError
 
 
 def test_gate_node_skips_when_runner_is_not_node(tmp_path, monkeypatch):

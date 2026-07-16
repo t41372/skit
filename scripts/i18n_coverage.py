@@ -1,6 +1,16 @@
 """Programmatic i18n coverage — the check you can't do by eye.
 
-Four independent measures, each exact enough to gate a commit:
+Independent measures, each exact enough to gate a commit. Two guard catalog integrity directly:
+
+0.  CATALOG SYNTAX — every msgid/msgstr/msgctxt keyword (and every continuation line) must be a
+    quoted string. Babel's lenient parser silently mis-recovers a lost quote — a `msgstr foo"`
+    still "compiles" and counts as translated — so pin it at the line level.
+
+0b. PLACEHOLDER PARITY — every translated msgstr must carry the same %-format placeholders its
+    msgid does. A fuzzy `update` grafting an unrelated translation (msgstr `%(detail)s` under a
+    `%(error)s` msgid) sails past every other check and then crashes with KeyError at format time.
+
+And four measure coverage of the pipeline itself:
 
 1. EXTRACTION FRESHNESS — re-extract the .pot from source and diff its msgid set against
    the committed .pot. A string newly wrapped in gettext() but not re-extracted, or one
@@ -23,7 +33,7 @@ Four independent measures, each exact enough to gate a commit:
    such a message never becomes a msgid at all: it escapes checks 1 and 2 and silently ships
    the English source in every locale.
 
-Exit code 0 iff all four are clean. Usage: `uv run python scripts/i18n_coverage.py`.
+Exit code 0 iff every measure is clean. Usage: `uv run python scripts/i18n_coverage.py`.
 """
 
 from __future__ import annotations
@@ -58,6 +68,34 @@ def _ids(catalog) -> set[object]:
 
 def _shipped_locales() -> list[Path]:
     return sorted(p.parent.parent for p in LOCALES.glob("*/LC_MESSAGES/skit.po"))
+
+
+def check_po_syntax() -> list[str]:
+    """Flag structurally broken catalog lines pybabel's lenient parser silently mis-recovers.
+
+    A hand-edited `msgstr --ref …"` (opening quote lost) parses "successfully" under Babel and
+    even compiles — into a mangled runtime string — while counting as translated for the
+    completeness check. msgfmt --check would refuse it, but gettext-tools isn't a dev
+    dependency, so pin the invariant at the line level: every msgid/msgstr keyword must be
+    followed by a double-quoted string, and every continuation line must be one."""
+    problems: list[str] = []
+    keyword = re.compile(r"(msgid(?:_plural)?|msgstr(?:\[\d+\])?|msgctxt)\s+(\S.*)$")
+    for po in sorted(LOCALES.glob("*/LC_MESSAGES/skit.po")):
+        shown = po.relative_to(ROOT) if po.is_relative_to(ROOT) else po
+        for lineno, line in enumerate(po.read_text(encoding="utf-8").splitlines(), start=1):
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue  # blank separators and comments (incl. #~ obsolete entries)
+            m = keyword.match(stripped)
+            if m:
+                if not (m.group(2).startswith('"') and m.group(2).endswith('"')):
+                    problems.append(f"{shown}:{lineno}: unquoted {m.group(1)}")
+            elif not (stripped.startswith('"') and stripped.endswith('"')):
+                # A continuation line of a wrapped msgid/msgstr — babel silently TRUNCATES
+                # the entry at an unquoted one, which still counts as "translated" for the
+                # completeness check, so it must fail here.
+                problems.append(f"{shown}:{lineno}: unquoted continuation line")
+    return problems
 
 
 def check_freshness() -> list[str]:
@@ -118,6 +156,65 @@ def check_completeness() -> tuple[list[str], dict[str, float]]:
         done = total - untranslated - fuzzy
         coverage[tag] = 100.0 * done / total if total else 100.0
     return problems, coverage
+
+
+# --------------------------------------------------------------- placeholder parity
+
+# Named %-format placeholders — %(installer)s, %(error)s — captured by name (the conversion
+# letter/flags after the ")" don't affect which dict key the code must supply).
+_NAMED_PLACEHOLDER = re.compile(r"%\((\w+)\)")
+# A positional %-conversion (%s, %d) once %% escapes and %(name)s named refs are removed.
+_POSITIONAL_PLACEHOLDER = re.compile(r"%[a-zA-Z]")
+
+
+def _named_placeholders(text: str) -> set[str]:
+    return set(_NAMED_PLACEHOLDER.findall(text))
+
+
+def _positional_conversions(text: str) -> list[str]:
+    """The positional %-conversions (%s, %d, …) in source order, once %% escapes and %(name)s
+    named refs are removed. The conversion LETTER matters, not just the count: msgstr "%d" under
+    a "%s" msgid is a TypeError at format time just as a count mismatch is, so compare the
+    ordered tokens, not len()."""
+    bare = _NAMED_PLACEHOLDER.sub("", text).replace("%%", "")
+    return _POSITIONAL_PLACEHOLDER.findall(bare)
+
+
+def check_placeholder_parity() -> list[str]:
+    """Every translated (non-fuzzy) msgstr must carry the SAME %-format placeholders its msgid
+    does. The trap AGENTS.md warns about is a fuzzy `update` grafting an unrelated translation —
+    a msgstr referencing `%(detail)s` under a msgid that supplies `%(error)s` — which the
+    completeness, freshness and syntax gates all wave through (they never look inside the string),
+    then crashes with `KeyError: 'error'` at `%`-format time on the very run that hits it. A
+    positional `%s` count mismatch is the same failure as a `TypeError`. This is the check that
+    catches both, before the next translation change is where it ships."""
+    problems: list[str] = []
+    for locale_dir in _shipped_locales():
+        po = locale_dir / "LC_MESSAGES" / "skit.po"
+        cat = _read_catalog(po)
+        tag = locale_dir.name.replace("_", "-")
+        for m in cat:
+            if not m.id or m.fuzzy:
+                continue  # header, and fuzzy entries the completeness gate already flags
+            ids = m.id if isinstance(m.id, tuple) else (m.id,)
+            id_named = [_named_placeholders(i) for i in ids]
+            id_positional = [_positional_conversions(i) for i in ids]
+            strings = m.string if isinstance(m.string, tuple) else (m.string,)
+            for form in strings:
+                if not form:
+                    continue  # an untranslated plural form — the completeness gate owns it
+                if _named_placeholders(form) not in id_named:
+                    problems.append(
+                        f"[{tag}] placeholder mismatch: {m.id!r} — msgstr names "
+                        f"{sorted(_named_placeholders(form))}, msgid names "
+                        f"{[sorted(s) for s in id_named]}"
+                    )
+                elif _positional_conversions(form) not in id_positional:
+                    problems.append(
+                        f"[{tag}] positional-placeholder mismatch: {m.id!r} — msgstr has "
+                        f"{_positional_conversions(form)}, msgid has {id_positional}"
+                    )
+    return problems
 
 
 # ------------------------------------------------------------------- unwrapped literals
@@ -299,12 +396,22 @@ def scan_dynamic_gettext(src: Path = SRC) -> list[str]:
 
 
 def main() -> int:
+    syntax = check_po_syntax()
+    parity = check_placeholder_parity()
     fresh = check_freshness()
     completeness, coverage = check_completeness()
     unwrapped = scan_unwrapped()
     dynamic = scan_dynamic_gettext()
 
     print("=== i18n coverage ===\n")
+    print("0. Catalog syntax (unquoted msgid/msgstr lines):")
+    print("   OK — every catalog line is well-quoted" if not syntax else "")
+    for p in syntax:
+        print(f"   ✗ {p}")
+    print("0b. Placeholder parity (msgstr %-placeholders match msgid):")
+    print("   OK — every translated string keeps its msgid's placeholders" if not parity else "")
+    for p in parity:
+        print(f"   ✗ {p}")
     print("1. Extraction freshness (source ↔ skit.pot):")
     print("   OK — .pot matches the wrapped source strings" if not fresh else "")
     for p in fresh:
@@ -327,7 +434,7 @@ def main() -> int:
     for p in dynamic:
         print(f"   ✗ {p}")
 
-    failed = bool(fresh or completeness or unwrapped or dynamic)
+    failed = bool(syntax or parity or fresh or completeness or unwrapped or dynamic)
     print("\n" + ("FAIL — i18n coverage is incomplete" if failed else "PASS — i18n fully covered"))
     return 1 if failed else 0
 

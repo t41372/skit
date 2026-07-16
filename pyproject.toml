@@ -194,4 +194,7 @@ source_paths = ["src/skit/"]
 pytest_add_cli_args_test_selection = ["tests/"]
 # The skill-sync test (tests/test_agent_skill.py) compares the repo-root skill against
 # the packaged copy; mutmut's mutants/ tree only carries src/ + tests/ by default.
-also_copy = ["skills/"]
+# README.md rides along because pyproject's `readme` references it — without it, uv
+# can't build the project inside mutants/ on a cold cache. scripts/ rides along because
+# the i18n-gate tests (test_js_deps.py) import scripts/i18n_coverage.py by path.
+also_copy = ["skills/", "README.md", "scripts/"]

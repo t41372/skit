@@ -346,9 +346,12 @@ class RunnerLaunch:
 
     ORDER: ClassVar[tuple[str, ...]] = ("deno", "bun", "node")
 
-    # How each runner is invoked for a single script file.
+    # How each runner is invoked for a single script file. deno gets --allow-all: skit picks
+    # the runner automatically, so the SAME script must behave the same under all three — node
+    # and bun have no sandbox, and deno's would otherwise deny env/fs probes (auto-deny when
+    # stdin isn't a TTY: exactly the agent/CI path). skit is a launcher, not a sandbox.
     _INVOKE: ClassVar[dict[str, tuple[str, ...]]] = {
-        "deno": ("run",),
+        "deno": ("run", "--allow-all"),
         "bun": ("run",),
         "node": (),
     }
@@ -387,7 +390,41 @@ class RunnerLaunch:
         script = script_override or entry.script_path
         _check_script_exists(script)
         path, name = self._resolve(entry)
+        # Swept on EVERY launch (not just deps-managed ones): a crash-stranded injected copy in
+        # entry_dir may carry secret values, and it must not outlive the deps declaration that
+        # put it there — clearing the deps must not also disable the cleanup.
+        from .javascript import deps as js_deps
+
+        js_deps.sweep_stale_injected(entry.dir)
+        self._ensure_deps(entry, name)
         return ArgvLaunch([path, *self._INVOKE.get(name, ()), str(script), *extra])
+
+    def _ensure_deps(self, entry: Entry, runner: str) -> None:
+        """Make the copy-mode entry's package.json right before launch (copy mode only — a
+        reference entry lives in its own project, whose node_modules already serves it). With
+        declared deps, materialize node_modules next to the stored copy; with none but a
+        module-typed origin, write just the "type" so the flattened stored copy isn't misread.
+        Runs in build, not preflight: like UvLaunch's ensure_uv, a first install may hit the
+        network, and by build time the terminal is the script's."""
+        if entry.meta.mode != "copy":
+            return
+        from .javascript import deps as js_deps
+
+        # The original filename's explicit module flavor (.mjs/.cjs/.mts/.cts) — the store flattens
+        # sources to script.js/.ts, so this is the only surviving signal.
+        module_type = js_deps.module_type_for(entry.meta.source)
+        if not entry.meta.dependencies:
+            # No managed deps, but a module-typed origin still needs its "type": without a
+            # package.json, deno reads a bare .js/.ts as ESM (a CommonJS script throws
+            # `require is not defined`) and node <22.7 reads an ESM one as CommonJS.
+            js_deps.ensure_module_manifest(entry.dir, module_type)
+            return
+        from .. import config
+
+        env = {**os.environ, **config.mirror_env(os.environ)}
+        js_deps.ensure_installed(
+            entry.dir, list(entry.meta.dependencies), runner, env, module_type=module_type
+        )
 
     def describe(
         self,
@@ -405,4 +442,18 @@ class RunnerLaunch:
 
     def preflight(self, entry: Entry) -> None:
         _check_script_exists(entry.script_path)
-        self._resolve(entry)
+        _, name = self._resolve(entry)
+        if entry.meta.dependencies and entry.meta.mode == "copy":
+            # Cheap, offline check only (preflight must not touch the network): surface "npm is
+            # missing" before the TUI suspends, instead of mid-launch. But only when an install
+            # is actually pending — a fresh marker means build short-circuits without the
+            # installer, so demanding it here would refuse a run the CLI completes fine.
+            from .javascript import deps as js_deps
+
+            if js_deps.needs_install(
+                entry.dir,
+                list(entry.meta.dependencies),
+                name,
+                module_type=js_deps.module_type_for(entry.meta.source),
+            ):
+                js_deps.require_installer(name)

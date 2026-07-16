@@ -53,6 +53,8 @@ from .langs.registry import KNOWN_KINDS, spec_for
 from .params import ParamDecl, declared_from_meta, edit_declared
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from .langs.base import LangSpec
 
 app = typer.Typer(
@@ -159,7 +161,11 @@ def _resolve_python_metadata(
             )
         return [], ""
     if deps_opt is not None or python_opt is not None:
-        return list(deps_opt or []), python_opt or ""
+        # Strip/drop empties, matching the interactive path and _resolve_npm_dependencies: an
+        # empty "" requirement makes PEP 508 refuse the whole [tool.uv] block ("Empty field is
+        # not allowed"), and a whitespace-only --python is an unparseable version constraint —
+        # either bricks every subsequent run before the script starts.
+        return [d.strip() for d in (deps_opt or []) if d.strip()], (python_opt or "").strip()
     suggested = pep723.suggest_dependencies(text)
     if not suggested:
         return [], ""  # No dependencies: nothing to ask
@@ -178,6 +184,74 @@ def _resolve_python_metadata(
         gettext("Python version (leave empty for automatic)"), default="", console=console
     )
     return deps_list, py.strip()
+
+
+def _resolve_npm_dependencies(
+    script: Path,
+    deps_opt: list[str] | None,
+    no_input: bool,
+    scanner: Callable[[str], list[str]] | None,
+) -> list[str]:
+    """The npm dependency list a js/ts copy-mode add should record — the js analogue of
+    `_resolve_python_metadata`, sharing its contract exactly: explicit --dep wins without a
+    question; otherwise the script's own imports are the suggestion; non-interactive accepts the
+    suggestions as-is; interactively the list is offered for editing. No scanner (grammar failed
+    to import) or an unreadable file suggests nothing — honest degradation, never a blocked add."""
+    if deps_opt is not None:
+        # Drop empty/whitespace --dep values: an empty package name is junk in the --json
+        # contract and would fake a "cleared" list without sweeping node_modules.
+        return [d.strip() for d in deps_opt if d.strip()]
+    if scanner is None:
+        return []
+    try:
+        text = script.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+    suggested = scanner(text) if text else []
+    if not suggested:
+        return []
+    if no_input or not sys.stdin.isatty():
+        return suggested  # Non-interactive: accept the suggestions as-is
+    answer = Prompt.ask(
+        gettext("Dependencies to install (Enter to accept, edit the list, or '-' for none)"),
+        default=", ".join(suggested),
+        console=console,
+    )
+    if answer.strip().lower() in ("-", "none"):
+        return []
+    # npm-shaped split, NOT pep723.split_requirements: the PEP 508 splitter would merge a
+    # scoped package into its neighbor ("chalk, @scope/pkg" -> one bogus requirement).
+    from .langs.javascript import deps as js_deps
+
+    return js_deps.split_requirements(answer)
+
+
+def _refuse_unusable_add_flags(
+    kind: str, kind_spec: LangSpec | None, ref: bool, dep: list[str] | None, python: str | None
+) -> None:
+    """An explicit flag the add can't honor is refused, never dropped (the non-interactive
+    contract — silently assembling an entry that ignores what the caller asked for is exactly
+    the guessing it forbids). The uv flavor honors both flags; npm honors --dep on copies
+    only; every other kind honors neither."""
+    flavor = kind_spec.deps_flavor if kind_spec is not None else ""
+    if flavor == "uv":
+        return
+    if dep is not None and (flavor != "npm" or ref):
+        message = (
+            gettext(
+                "Reference-mode entries take no managed dependencies — they run from their own project. Add it as a copy, or drop --dep."
+            )
+            if flavor == "npm"
+            else gettext("%(kind)s entries don't take package dependencies — drop --dep.")
+            % {"kind": kind}
+        )
+        err_console.print(f"[red]{message}[/red]")
+        raise typer.Exit(EXIT_USAGE)
+    if python is not None:
+        err_console.print(
+            f"[red]{gettext("A Python constraint doesn't apply to %(kind)s scripts.") % {'kind': kind}}[/red]"
+        )
+        raise typer.Exit(EXIT_USAGE)
 
 
 def _prompt_identity(
@@ -372,9 +446,12 @@ def _onboard_python(
     return entry, final_deps, managed, secrets
 
 
-def _create_python_in_editor(name: str | None) -> None:
+def _create_python_in_editor(
+    name: str | None, deps_opt: list[str] | None = None, python_opt: str | None = None
+) -> None:
     """Write a starter script to a temp file, open the user's editor, then ingest whatever
-    they saved."""
+    they saved. Explicit --dep / --python ride through to the onboarding exactly as a
+    path-based python add would honor them."""
     import tempfile
 
     if not _is_interactive():
@@ -398,7 +475,9 @@ def _create_python_in_editor(name: str | None) -> None:
         if text.strip() in ("", _STARTER_SCRIPT.strip()):
             console.print(gettext("Nothing was written, so no script was added."))
             return
-        entry, deps, managed, secrets = _onboard_python(tmp, text, name=name)
+        entry, deps, managed, secrets = _onboard_python(
+            tmp, text, name=name, deps_opt=deps_opt, python_opt=python_opt
+        )
     except (editor.EditorError, store.StoreError) as exc:
         raise _fail(str(exc), 1) from exc
     finally:
@@ -406,7 +485,12 @@ def _create_python_in_editor(name: str | None) -> None:
     _print_add_summary(entry, deps, managed, secrets)
 
 
-def _add_from_stdin(name: str | None, description: str | None) -> None:
+def _add_from_stdin(
+    name: str | None,
+    description: str | None,
+    deps_opt: list[str] | None = None,
+    python_opt: str | None = None,
+) -> None:
     """`skit add -`: ingest a script from stdin (e.g. `pbpaste | skit add - -n clip`).
     stdin is the script, so there is nobody to prompt: the non-interactive contract
     applies, and a name is required up front."""
@@ -429,7 +513,13 @@ def _add_from_stdin(name: str | None, description: str | None) -> None:
     tmp.write_text(text, encoding="utf-8")  # pragma: no mutate
     try:
         entry, deps, managed, secrets = _onboard_python(
-            tmp, text, name=name, description=description, no_input=True
+            tmp,
+            text,
+            name=name,
+            description=description,
+            deps_opt=deps_opt,
+            python_opt=python_opt,
+            no_input=True,
         )
     except store.StoreError as exc:
         raise _fail(str(exc), 1) from exc
@@ -517,16 +607,23 @@ def add(
     ),
 ) -> None:
     """Add a script / executable / command to skit."""
+    # Both fresh-script lanes (editor buffer / stdin) have no original file for --ref to
+    # point at — refused, never dropped (the non-interactive contract).
+    if (edit_new or path == "-") and ref:
+        err_console.print(
+            f"[red]{gettext('--ref needs an existing file to reference — a script written in the editor or read from stdin has none.')}[/red]"
+        )
+        raise typer.Exit(EXIT_USAGE)
     if edit_new:
         if path:
             err_console.print(
                 f"[red]{gettext('Use --edit to write a new script, or pass a path to add an existing one — not both.')}[/red]"
             )
             raise typer.Exit(EXIT_USAGE)
-        _create_python_in_editor(name)
+        _create_python_in_editor(name, deps_opt=dep, python_opt=python)
         return
     if path == "-":
-        _add_from_stdin(name, description)
+        _add_from_stdin(name, description, deps_opt=dep, python_opt=python)
         return
     summary_deps: list[str] = []
     summary_managed: list[str] = []
@@ -536,6 +633,7 @@ def add(
             if not name:
                 err_console.print(f"[red]{gettext('A --cmd entry needs a --name')}[/red]")
                 raise typer.Exit(EXIT_USAGE)
+            _refuse_unusable_add_flags("command", spec_for("command"), ref, dep, python)
             entry = store.add_command(cmd, name=name, description=description or "")
             if entry.meta.params:
                 console.print(
@@ -561,6 +659,7 @@ def add(
             else:
                 kind = _infer_add_kind(resolved, exe)
             kind_spec = spec_for(kind)
+            _refuse_unusable_add_flags(kind, kind_spec, ref, dep, python)
             if kind == "exe":
                 entry = store.add_exe(Path(path), name=name, description=description or "")
             elif kind == "unknown":
@@ -584,6 +683,12 @@ def add(
                     description=description,
                     interpreter=interpreter,
                 )
+                if kind_spec.deps_flavor == "npm" and entry.meta.mode == "copy":
+                    summary_deps = _resolve_npm_dependencies(
+                        resolved, dep, no_input, kind_spec.dep_scanner
+                    )
+                    if summary_deps:
+                        entry = store.update_dependencies(entry.slug, summary_deps)
             else:
                 _require_py_file(resolved)
                 try:
@@ -2119,8 +2224,9 @@ def deps(
     as_json: bool = typer.Option(False, "--json", help=gettext("Output as JSON")),
 ) -> None:
     """View or update a script's recorded dependencies and needed external commands.
-    Dependencies (PEP 723 + uv) are python-only; needs (commands that must be on PATH)
-    apply to every kind — a shell script may need `ffmpeg` too."""
+    Dependencies apply to kinds with package management — python (PEP 723 + uv) and js/ts
+    (per-script npm installs); needs (commands that must be on PATH) apply to every kind —
+    a shell script may need `ffmpeg` too."""
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
@@ -2130,10 +2236,12 @@ def deps(
     deps_requested = dep is not None or clear or python is not None
     needs_requested = need is not None or clear_needs
     if deps_requested and not supports_deps:
+        # A refused flag, not an operational failure — the usage exit code, so `skit deps`
+        # agrees with `skit add` (and its own --dep/--clear conflict below) on what a refusal is.
         raise _fail(
-            gettext("%(name)s is not a Python script entry — only --need applies here.")
+            gettext("%(name)s doesn't take package dependencies — only --need applies here.")
             % {"name": entry.meta.name},
-            1,
+            EXIT_USAGE,
         )
     if dep and clear:
         err_console.print(
@@ -2148,26 +2256,43 @@ def deps(
     if not deps_requested and not needs_requested:
         _deps_read_view(entry, supports_deps=supports_deps, as_json=as_json)
         return
-    if needs_requested:
-        new_needs = [] if clear_needs else list(need or [])
-        entry = store.update_needs(entry.slug, new_needs)
-        console.print(
-            f"[green]{gettext('Needs of %(name)s updated: %(needs)s') % {'name': escape(entry.meta.name), 'needs': ', '.join(escape(n) for n in new_needs) or '—'}}[/green]"
-        )
+    # Deps BEFORE needs: a --dep/--python refusal raises (StoreUsageError) at the top of
+    # update_dependencies, before any write — so processing deps first means a refused request
+    # aborts with NOTHING committed. Doing needs first would persist the needs write and then
+    # exit 2 on the deps refusal, a partial application a --json/CI caller couldn't detect.
     if deps_requested:
         if clear:
             new_deps: list[str] = []
         elif dep is not None:
-            new_deps = list(dep)
+            # Drop empty/whitespace values so `--dep ''` clears (and sweeps) rather than
+            # recording a junk "" package the --json contract would then carry.
+            new_deps = [d.strip() for d in dep if d.strip()]
         else:
             new_deps = list(entry.meta.dependencies or [])
         try:
             entry = store.update_dependencies(entry.slug, new_deps, requires_python=python)
+        except store.StoreUsageError as exc:
+            raise _fail(str(exc), EXIT_USAGE) from exc
         except store.StoreError as exc:
             raise _fail(str(exc), 1) from exc
-        console.print(
-            f"[green]{gettext('Dependencies of %(name)s updated: %(deps)s') % {'name': escape(entry.meta.name), 'deps': ', '.join(escape(d) for d in new_deps) or '—'}}[/green]"
-        )
+        if not as_json:
+            console.print(
+                f"[green]{gettext('Dependencies of %(name)s updated: %(deps)s') % {'name': escape(entry.meta.name), 'deps': ', '.join(escape(d) for d in new_deps) or '—'}}[/green]"
+            )
+    if needs_requested:
+        # Drop empty/whitespace values, mirroring the --dep path: an empty command name is junk in
+        # the --json contract AND bricks the entry — `shutil.which("")` is None, so every run then
+        # fails "Missing required command(s):" before the script starts.
+        new_needs = [] if clear_needs else [n.strip() for n in (need or []) if n.strip()]
+        entry = store.update_needs(entry.slug, new_needs)
+        if not as_json:
+            console.print(
+                f"[green]{gettext('Needs of %(name)s updated: %(needs)s') % {'name': escape(entry.meta.name), 'needs': ', '.join(escape(n) for n in new_needs) or '—'}}[/green]"
+            )
+    if as_json:
+        # --json on a write: emit the final state as the machine contract, same shape as the
+        # read view, instead of the human confirmation lines above.
+        _deps_read_view(entry, supports_deps=supports_deps, as_json=True)
 
 
 # --------------------------------------------------------------------------
@@ -2582,6 +2707,11 @@ def _mirror_wizard() -> None:
                     console=console,
                 ),
                 uv_binary=_prompt_uv_binary(m.uv_binary or config.UV_BINARY_MIRROR),
+                npm=Prompt.ask(
+                    gettext("npm registry URL"),
+                    default=m.npm or config.NPM_REGISTRY_MIRROR,
+                    console=console,
+                ),
             )
         )
     else:

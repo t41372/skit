@@ -50,7 +50,10 @@ explicit consent prompt。
 
 skit is multi-language (`src/skit/langs/`): Python is deepest, but shell, JS/TS, fish,
 PowerShell and a data-driven long tail (ruby/perl/lua/r) all launch, and shell + JS/TS also
-get static parameter analysis and value injection. Two contributor rules follow:
+get static parameter analysis and value injection. JS/TS additionally get per-script npm
+dependencies (`langs/javascript/deps.py` — deliberately stdlib-only, since it runs on the
+launch path): declared packages materialize as a `node_modules` next to the stored copy,
+installed by the resolved runner's own installer (npm/bun/deno). Two contributor rules follow:
 
 - **Analyzers may depend on their language's parser; launch paths may not (the A2 amendment).**
   The former "the analyzer is stdlib-only" rule is superseded: each language's analyzer may

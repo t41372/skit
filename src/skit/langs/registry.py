@@ -49,7 +49,7 @@ def _python_spec() -> LangSpec:
         cli_reader=CliReader(read_cli=argspec.read_cli),
         injector=Injector(inject=shim.inject_entry),
         supports_modes=True,
-        supports_deps=True,
+        deps_flavor="uv",
     )
 
 
@@ -145,15 +145,18 @@ def _fish_spec() -> LangSpec:
     )
 
 
-def _js_analysis(lang: str) -> tuple[Analyzer | None, CliReader | None, Injector | None]:
-    """The three tree-sitter-backed JS/TS capabilities for a `lang` ("js"/"ts"), behind ONE import
-    guard: analyzer, parseArgs reader and injector are all grammar consumers, so they stand or fall
-    together — a broken grammar wheel must not leave a half-capable kind behind. Each is bound to the
-    kind's `lang` so ts parses under the TypeScript grammar and js under JavaScript."""
+def _js_analysis(
+    lang: str,
+) -> tuple[Analyzer | None, CliReader | None, Injector | None, Callable[[str], list[str]] | None]:
+    """The four tree-sitter-backed JS/TS capabilities for a `lang` ("js"/"ts"), behind ONE import
+    guard: analyzer, parseArgs reader, injector and dep scanner are all grammar consumers, so they
+    stand or fall together — a broken grammar wheel must not leave a half-capable kind behind. Each
+    is bound to the kind's `lang` so ts parses under the TypeScript grammar and js under
+    JavaScript."""
     try:
         from .javascript import analyzer, cli_reader, inject
     except ImportError:  # pragma: no cover — a broken/absent tree-sitter grammar wheel
-        return None, None, None
+        return None, None, None, None
     return (
         Analyzer(
             analyze=lambda text: analyzer.analyze(text, lang=lang),
@@ -161,6 +164,7 @@ def _js_analysis(lang: str) -> tuple[Analyzer | None, CliReader | None, Injector
         ),
         CliReader(read_cli=lambda text: cli_reader.read_cli(text, lang=lang)),
         Injector(inject=lambda request: inject.inject(request, lang=lang)),
+        lambda text: analyzer.external_imports(text, lang=lang),
     )
 
 
@@ -179,13 +183,17 @@ def _javascript_spec(kind: str, glyph: str, extensions: tuple[str, ...], lang: s
         "//",
         launch_strategy=launch.RunnerLaunch(),
     )
-    analyzer_cap, cli_reader_cap, injector_cap = _js_analysis(lang)
+    analyzer_cap, cli_reader_cap, injector_cap, dep_scanner = _js_analysis(lang)
     return replace(
         spec,
         params_io=ParamsIO(read=io.read_params, write=io.write_params),
         analyzer=analyzer_cap,
         cli_reader=cli_reader_cap,
         injector=injector_cap,
+        # Per-script npm deps (package.json + node_modules materialized next to the stored copy —
+        # the PEP 723 analogue); the scanner suggests the list from the script's own imports.
+        deps_flavor="npm",
+        dep_scanner=dep_scanner,
     )
 
 

@@ -107,6 +107,28 @@ class AddSourceScreen(Screen[str | None]):
                 program = shebang_program(path)
                 interpreter = program if program in kind_spec.shebangs else ""
                 entry = store.add_script(path, kind=kind, interpreter=interpreter)
+                # npm-flavor copy adds record the script's own imports as dependencies — the
+                # direct lane has no review step, so this mirrors the CLI's non-interactive
+                # "accept the suggestions as-is"; Script settings (`p`) edits them afterwards.
+                if (
+                    kind_spec.deps_flavor == "npm"
+                    and entry.meta.mode == "copy"
+                    and kind_spec.dep_scanner is not None
+                ):
+                    try:
+                        text = path.read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        text = ""
+                    scanned = kind_spec.dep_scanner(text) if text else []
+                    if scanned:
+                        entry = store.update_dependencies(entry.slug, scanned)
+                        # The CLI's add summary prints the recorded deps; the direct lane's
+                        # only surface is a toast — recording something that will download
+                        # packages on first run must never be invisible.
+                        self.notify(
+                            gettext("Dependencies recorded: %(deps)s (edit in Script settings)")
+                            % {"deps": ", ".join(scanned)}
+                        )
             else:
                 error.update(
                     f"[red]{gettext("%(file)s isn't a script or an executable — pass --exe for a program, or --cmd for a command template.") % {'file': escape(path.name)}}[/red]"

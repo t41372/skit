@@ -766,6 +766,20 @@ def execute(  # noqa: PLR0911, PLR0912 — one early return/branch per injection
                         # passes it through.
                         entry_dir=entry.dir,
                         interpreter=entry.meta.interpreter or spec.default_interpreter,
+                        # Deps-managed npm entries run their temp copy FROM entry_dir, so the
+                        # runner's upward module resolution still finds entry_dir/node_modules.
+                        # (A no-deps entry's temp copy stays in the OS temp dir — the secret-leftover
+                        # default; a consequence, shared with the Python injector's __file__, is that
+                        # `__dirname`/`import.meta.url` differ between an injected and a stored run.)
+                        prefer_entry_dir=(
+                            spec.deps_flavor == "npm"
+                            and entry.meta.mode == "copy"
+                            and bool(entry.meta.dependencies)
+                        ),
+                        # The original filename, so the JS/TS injector can give its temp copy an
+                        # .mjs/.cjs extension when the origin pinned a module flavor (the store
+                        # flattens the stored copy to script.js, losing that signal otherwise).
+                        source=entry.meta.source,
                     )
                 )
             except InjectValueError as exc:

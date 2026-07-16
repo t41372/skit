@@ -212,6 +212,16 @@ class InjectRequest:
     values: dict[str, str]
     entry_dir: Path
     interpreter: str = ""
+    # True when the temp copy must live in entry_dir rather than the OS temp directory: a
+    # copy-mode JS/TS entry with managed npm deps resolves imports upward FROM THE COPY'S OWN
+    # PATH, so only adjacency to entry_dir/node_modules keeps them working. The caller
+    # (flows.execute) computes it; every other injector ignores it.
+    prefer_entry_dir: bool = False
+    # The entry's ORIGINAL source path, so an injector that flattens its stored copy can still
+    # recover a signal the extension carried. The JS/TS injector uses it to give the temp copy an
+    # .mjs/.cjs extension when the origin pinned a module flavor — otherwise node (pre-22.7, no
+    # auto-detect) misreads a `.js` copy of an ESM script as CommonJS. Other injectors ignore it.
+    source: str = ""
 
 
 @dataclass(frozen=True)
@@ -291,8 +301,18 @@ class LangSpec:
     injector: Injector | None = None  # run-time value delivery (temp-copy rewrite / env)
     normalizer: Normalizer | None = None  # opt-in source-idiom rewrite (const -> envdefault)
     supports_modes: bool = False  # copy/reference choice offered at add time
-    supports_deps: bool = False  # package-dependency management (PEP 723 + uv)
+    # Package-dependency management: "uv" (PEP 723, python), "npm" (package.json materialized
+    # next to the stored copy, js/ts), or "" (no package deps — needs-only, like every other kind).
+    deps_flavor: Literal["", "uv", "npm"] = ""
+    # Suggests package deps from the script's own imports (add-time hint; None when the kind
+    # has no scanner or its grammar failed to import).
+    dep_scanner: Callable[[str], list[str]] | None = None
     takes_argv: bool = True  # False: appended args are not this kind's interface
+
+    @property
+    def supports_deps(self) -> bool:
+        """Whether this kind manages package dependencies at all (any flavor)."""
+        return bool(self.deps_flavor)
 
     @property
     def editable(self) -> bool:

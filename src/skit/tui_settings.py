@@ -493,19 +493,31 @@ class ScriptSettingsScreen(Screen[bool]):
 
     def _compose_deps(self) -> ComposeResult:
         meta = self._entry.meta
-        if self._spec is None or not self._spec.supports_deps:
+        if not self._deps_editable():
             return
         yield Static(gettext("Dependencies"), classes="section")
         yield Input(
             value=", ".join(meta.dependencies or []),
-            placeholder=gettext("comma separated, e.g. requests>=2,<3, rich"),
+            placeholder=gettext("comma separated, e.g. requests>=2,<3, rich")
+            if self._spec is not None and self._spec.deps_flavor == "uv"
+            else gettext("comma separated, e.g. chalk@^5, zod"),
             id="st-deps",
         )
-        yield Input(
-            value=meta.requires_python,
-            placeholder=gettext('Python constraint, e.g. ">=3.11" (empty = automatic)'),
-            id="st-python",
-        )
+        if self._spec is not None and self._spec.deps_flavor == "uv":
+            yield Input(
+                value=meta.requires_python,
+                placeholder=gettext('Python constraint, e.g. ">=3.11" (empty = automatic)'),
+                id="st-python",
+            )
+
+    def _deps_editable(self) -> bool:
+        """Whether this entry's package dependencies can be edited here: any uv-flavor entry
+        (reference mode records them in meta and delivers via --with), but an npm-flavor entry
+        only in copy mode — a reference entry runs from its own project, whose node_modules
+        already serves it, so offering the field would record deps the launch never uses."""
+        if self._spec is None or not self._spec.supports_deps:
+            return False
+        return self._spec.deps_flavor != "npm" or self._entry.meta.mode == "copy"
 
     def _compose_needs(self) -> ComposeResult:
         # Every kind can declare needs: a shell script or a command template can require
@@ -607,11 +619,30 @@ class ScriptSettingsScreen(Screen[bool]):
                     gettext("Deleted previously remembered value(s): %(names)s")
                     % {"names": ", ".join(sorted(purged))}
                 )
-        if self._spec is not None and self._spec.supports_deps:
-            deps = pep723.split_requirements(self.query_one("#st-deps", Input).value)
-            python = self.query_one("#st-python", Input).value.strip()
-            if deps != (entry.meta.dependencies or []) or python != entry.meta.requires_python:
-                store.update_dependencies(entry.slug, deps, requires_python=python)
+        if self._deps_editable():
+            raw_deps = self.query_one("#st-deps", Input).value
+            if self._spec is not None and self._spec.deps_flavor == "uv":
+                deps = pep723.split_requirements(raw_deps)
+                python = self.query_one("#st-python", Input).value.strip()
+            else:
+                # npm-shaped split — the PEP 508 splitter would merge a scoped package into
+                # its neighbor ("chalk, @scope/pkg" -> one bogus requirement). No Python
+                # constraint either (and no #st-python widget to read).
+                from .langs.javascript import deps as js_deps
+
+                deps = js_deps.split_requirements(raw_deps)
+                python = None
+            if deps != (entry.meta.dependencies or []) or (
+                python is not None and python != entry.meta.requires_python
+            ):
+                try:
+                    store.update_dependencies(entry.slug, deps, requires_python=python)
+                except store.StoreError as exc:
+                    # Clearing npm deps also sweeps node_modules from disk, which can fail
+                    # (a held-open file, a read-only remnant) — same treatment as a failed
+                    # rename: report and stay, never crash the app out from under the user.
+                    self.notify(str(exc), severity="error")
+                    return
         needs = [
             n.strip() for n in self.query_one("#st-needs", Input).value.split(",") if n.strip()
         ]

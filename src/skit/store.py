@@ -45,6 +45,12 @@ class StoreError(Exception):
     pass
 
 
+class StoreUsageError(StoreError):
+    """A refused request — an inapplicable flag or an operation the entry's kind/mode can't
+    honor — as opposed to an operational failure (a locked file, a bad disk). The CLI maps it to
+    the usage exit code so `skit deps` agrees with `skit add` on what a refusal looks like."""
+
+
 class NameConflictError(StoreError):
     pass
 
@@ -467,14 +473,48 @@ def update_dependencies(
     dependencies: list[str],
     requires_python: str | None = None,
 ) -> Entry:
-    """Update an entry's dependency record (meta.toml). In copy mode, also sync the copy's PEP 723
-    block; in reference mode, only touch meta (the original can't be written, A7) and pass it via
-    --with at run time."""
+    """Update an entry's dependency record (meta.toml). Python copy mode also syncs the copy's
+    PEP 723 block; python reference mode only touches meta (the original can't be written, A7)
+    and passes it via --with at run time. An npm-flavor entry (js/ts) is copy-mode only — the
+    engine materializes node_modules next to the stored copy, and a reference entry's script
+    lives in its own project, whose node_modules already serves it — and a Python constraint
+    is meaningless there, so both are refused loudly rather than recorded and ignored."""
     entry = resolve(name_or_slug)
     meta = entry.meta
+    spec = registry.spec_for(meta.kind)
+    if spec is not None and spec.deps_flavor == "npm":
+        if requires_python:
+            raise StoreUsageError(
+                gettext("A Python constraint doesn't apply to %(kind)s scripts.")
+                % {"kind": meta.kind}
+            )
+        if dependencies and meta.mode != "copy":
+            raise StoreUsageError(
+                gettext(
+                    "%(name)s is a reference-mode entry: it runs from its own project, which "
+                    "already provides its packages. Dependency management applies to copies."
+                )
+                % {"name": meta.name}
+            )
+    if spec is not None and spec.deps_flavor == "npm" and not dependencies:
+        # Sweep node_modules BEFORE writing meta. The disk cleanup is the step that can fail (a
+        # locked file), so doing it first means a failure leaves BOTH the record and the tree
+        # untouched — genuinely retryable, the "leave the entry unchanged" contract the TUI
+        # relies on. (Adding/changing deps has no clear step; the launch path installs.) clear()
+        # takes the entry's install lock so a concurrent run's installer can't have the tree
+        # ripped out from under it and then stamp over the wreckage.
+        from .langs.base import NotExecutableError
+        from .langs.javascript import deps as js_deps
+
+        try:
+            js_deps.clear(entry.dir)
+        except NotExecutableError as exc:
+            raise StoreError(str(exc)) from exc
     meta.dependencies = dependencies or None
     if requires_python is not None:
-        meta.requires_python = requires_python or ""
+        # Strip: a whitespace-only constraint ("   ") is truthy but an unparseable version
+        # specifier that bricks every run — store "" (omitted) instead.
+        meta.requires_python = (requires_python or "").strip()
     _write_meta(entry.dir, meta)
     if meta.kind == "python" and meta.mode == "copy":  # pragma: no mutate — and/or equivalent
         from . import pep723

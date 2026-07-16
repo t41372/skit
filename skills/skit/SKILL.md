@@ -13,9 +13,10 @@ JS/TS, fish, PowerShell, Ruby/Perl/Lua/R — plus executables and command templa
 For every script it knows the parameter schema (extracted statically — flags,
 prompts, and marked constants all become typed fields), remembers last-used values,
 and saves named presets. Python runs through `uv run --script` in an isolated
-environment (dependencies declared per script, PEP 723); other languages run through
-their own interpreter or runner. The library is *the user's curated space*: treat it
-like their dotfiles.
+environment (dependencies declared per script, PEP 723); JS/TS scripts get per-script
+npm dependencies (declared with `skit deps`, installed next to the stored copy on
+first run); other languages run through their own interpreter or runner. The library
+is *the user's curated space*: treat it like their dotfiles.
 
 ## Ground rules
 
@@ -116,7 +117,14 @@ skit add --cmd 'ffmpeg -i {input} -vf scale={width}:-1 {output}' --name scale-vi
 # ///
 ```
 
-  Record them afterwards with `skit deps <name> --dep "requests>=2,<3"`. External
+  Record them afterwards with `skit deps <name> --dep "requests>=2,<3"`. JS/TS
+  packages are declared the same way (`skit deps <name> --dep "chalk@^5"`; `skit add`
+  suggests them from the script's own imports) and installed into a per-script
+  `node_modules` next to the stored copy on first run — copy-mode entries only, since
+  a reference entry runs from its own project. JS/TS installs never run package
+  lifecycle scripts (npm and bun get `--ignore-scripts`; deno skips them by default), so
+  a package that requires its postinstall step won't work. When deno is the resolved
+  runner, skit invokes it with `--allow-all` — scripts are not sandboxed. External
   *commands* a script of any kind expects on PATH (a shell script needing `jq`, say)
   are `needs`, checked before every run: `skit deps <name> --need jq --need ffmpeg`.
 - **Under `--no-input`, detected parameters are NOT auto-managed.** For a Python or

@@ -1160,7 +1160,7 @@ def test_execute_inject_falls_back_to_entry_dir(tmp_path, monkeypatch):
     real_mkstemp = tempfile.mkstemp
 
     def flaky_mkstemp(*args, **kwargs):
-        if "dir" not in kwargs:  # the primary (OS-temp) attempt
+        if kwargs.get("dir") is None:  # the primary (OS-temp) attempt
             raise OSError("no temp dir")
         return real_mkstemp(*args, **kwargs)
 

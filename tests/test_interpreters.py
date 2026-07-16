@@ -220,7 +220,7 @@ def test_runner_detection_order_prefers_deno(tmp_path: Path, monkeypatch: pytest
     )
     entry = _entry(tmp_path, "js", body="console.log(1)\n")
     payload = launch.RunnerLaunch().build(entry, [], None, None)
-    assert _argv(payload) == ["/d", "run", str(entry.script_path)]
+    assert _argv(payload) == ["/d", "run", "--allow-all", str(entry.script_path)]
 
 
 def test_runner_falls_to_bun_then_node(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -578,8 +578,9 @@ def test_deps_need_works_on_python_too(tmp_path: Path):
 def test_deps_dep_on_shell_is_refused(tmp_path: Path):
     _shell(tmp_path)
     result = runner.invoke(cli.app, ["deps", "d", "--dep", "requests"])
-    assert result.exit_code == 1
-    assert "not a Python script" in result.output
+    # A refused flag is a usage error (2), the same code `skit add` gives.
+    assert result.exit_code == 2
+    assert "doesn't take package dependencies" in result.output
 
 
 def test_deps_read_view_shows_needs_for_shell(tmp_path: Path):

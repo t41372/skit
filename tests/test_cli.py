@@ -740,9 +740,10 @@ def test_deps_not_found():
 def test_deps_not_python(tmp_path):
     # The PEP 723 dependency flavor is python-only: --dep on a command entry is refused.
     # (The bare read view now works for every kind — it shows needs; see test_needs.py.)
+    # A refused flag is a usage error (2), matching `skit add`.
     store.add_command("echo hi", name="e")
     result = runner.invoke(cli.app, ["deps", "e", "--dep", "requests"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
 
 
 def test_deps_set(tmp_path):
@@ -760,6 +761,15 @@ def test_deps_view_with_requires_python(tmp_path):
     result = runner.invoke(cli.app, ["deps", "a"])
     assert result.exit_code == 0
     assert "3.12" in result.output
+
+
+def test_deps_command_strips_a_whitespace_only_python_constraint(tmp_path):
+    # A whitespace-only "   " is truthy but an unparseable version specifier that bricks every
+    # run; the store strips it to "" (omitted) rather than recording it.
+    store.add_python(_py(tmp_path, "print(1)\n"), name="a")
+    result = runner.invoke(cli.app, ["deps", "a", "--python", "   "])
+    assert result.exit_code == 0
+    assert store.resolve("a").meta.requires_python == ""
 
 
 # --------------------------------------------------------------------------
@@ -848,6 +858,15 @@ def test_resolve_metadata_explicit_opts():
     deps, py = cli._resolve_python_metadata("print(1)\n", ["requests", "rich"], ">=3.11", False)
     assert deps == ["requests", "rich"]
     assert py == ">=3.11"
+
+
+def test_resolve_metadata_explicit_opts_strips_and_drops_empties():
+    # Empty/whitespace explicit values would brick the entry: "" makes PEP 508 refuse the whole
+    # block ("Empty field is not allowed"), and a whitespace-only --python is an unparseable
+    # version constraint. Strip and drop them, matching the interactive and npm paths.
+    deps, py = cli._resolve_python_metadata("print(1)\n", ["", "  requests  ", "   "], "   ", False)
+    assert deps == ["requests"]
+    assert py == ""
 
 
 def test_resolve_metadata_no_suggestions():

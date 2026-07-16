@@ -238,3 +238,122 @@ def _collect_named_target(target: Node | None, out: set[str]) -> None:
     target like `obj.x = …` reassigns a property, not the top-level binding, so it is ignored)."""
     if target is not None and target.type == "identifier":
         out.add(_text(target))
+
+
+# ---------------------------------------------------------------- external imports
+
+# Module names node ships built in (the `node:`-prefixable set) — importing one of these bare
+# ("fs", "path") is NOT a package dependency. Source: `node -p "require('module').builtinModules"`
+# (node 22 LTS), minus internals. deno/bun implement the same set for compatibility.
+_NODE_BUILTINS = frozenset(
+    {
+        "assert",
+        "async_hooks",
+        "buffer",
+        "child_process",
+        "cluster",
+        "console",
+        "constants",
+        "crypto",
+        "dgram",
+        "diagnostics_channel",
+        "dns",
+        "domain",
+        "events",
+        "fs",
+        "http",
+        "http2",
+        "https",
+        "inspector",
+        "module",
+        "net",
+        "os",
+        "path",
+        "perf_hooks",
+        "process",
+        "punycode",
+        "querystring",
+        "readline",
+        "repl",
+        "stream",
+        "string_decoder",
+        "sys",
+        "timers",
+        "tls",
+        "trace_events",
+        "tty",
+        "url",
+        "util",
+        "v8",
+        "vm",
+        "wasi",
+        "worker_threads",
+        "zlib",
+    }
+)
+
+# Specifier schemes that never name an npm package: node builtins, deno's own registries, URLs,
+# and inline data. (npm:chalk IS a package, but one deno resolves natively without node_modules —
+# declaring it would double-manage it, so it is skipped too.)
+_NON_PACKAGE_PREFIXES = ("node:", "npm:", "jsr:", "http:", "https:", "data:", "file:", "bun:")
+
+
+def external_imports(text: str, *, lang: str = "js") -> list[str]:
+    """The bare package names this script imports — its npm dependencies as the source reveals
+    them, in first-appearance order. Covers static `import`/`export … from`, dynamic `import()`,
+    and CJS `require()`. Relative/absolute paths, `node:` builtins (bare or prefixed), and
+    URL/scheme specifiers are excluded; a deep import ("lodash/fp", "@scope/pkg/sub") maps to its
+    package root. A file that doesn't parse yields [] — the same honest degradation as analyze()."""
+    root = Parser(language_for(lang)).parse(text.encode("utf-8")).root_node
+    if root.has_error:
+        return []
+    out: list[str] = []
+    for node in _walk(root):
+        source = _import_source(node)
+        if source is None:
+            continue
+        package = _package_name(source)
+        if package is not None and package not in out:
+            out.append(package)
+    return out
+
+
+def _import_source(node: Node) -> str | None:
+    """The string literal a node imports from, or None when the node imports nothing: the `source`
+    field of an `import_statement`/`export_statement`, or the single string argument of a
+    `require(…)` / dynamic `import(…)` call. A non-literal specifier (`require(name)`) is None —
+    skit only reports what it can read statically."""
+    if node.type in ("import_statement", "export_statement"):
+        source = node.child_by_field_name("source")
+        return _string_value(source) if source is not None and source.type == "string" else None
+    if node.type != "call_expression":
+        return None
+    callee = node.child_by_field_name("function")
+    if callee is None or _text(callee) not in ("require", "import"):
+        return None
+    arguments = node.child_by_field_name("arguments")
+    if arguments is None:  # pragma: no cover — a parsed call_expression always carries arguments
+        return None
+    strings = [a for a in arguments.named_children if a.type == "string"]
+    if len(strings) != 1 or len(arguments.named_children) != 1:
+        return None  # not the plain require("pkg") shape; report nothing rather than guess
+    return _string_value(strings[0])
+
+
+def _package_name(source: str) -> str | None:
+    """The npm package a specifier names, or None when it isn't one (relative/absolute path,
+    builtin, URL scheme, or Node subpath import). "@scope/pkg/deep" → "@scope/pkg";
+    "lodash/fp" → "lodash". A "#"-prefixed specifier is a Node subpath import (the package.json
+    "imports" field) — a private internal mapping, never an installable package."""
+    if not source or source.startswith((".", "/", "#")) or source.startswith(_NON_PACKAGE_PREFIXES):
+        return None
+    parts = source.split("/")
+    package = "/".join(parts[:2]) if source.startswith("@") else parts[0]
+    # A scoped specifier must be "@scope/name" with both halves present; a bare "@scope", an
+    # empty scope ("@/pkg"), or an empty name ("@scope/") names no package.
+    scoped_malformed = source.startswith("@") and (
+        len(parts) < 2 or len(parts[0]) < 2 or not parts[1]
+    )
+    if package in _NODE_BUILTINS or scoped_malformed:
+        return None
+    return package

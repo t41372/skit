@@ -18,11 +18,13 @@ mandatory offline re-parse gate, 0600 temp file) without shell's env/read machin
    InjectSyntaxError, temp copy removed). This is the guarantee: skit never launches text it
    corrupted, on any platform, with or without a runtime installed.
 2. **Best-effort hardening** — `node --check <tmp>`, but ONLY when the resolvable runner is `node`
-   and the temp copy is a `.js`/`.mjs` file. `node --check` does not accept a `.ts` file, and a
-   deno/bun runner has no equivalently cheap parse-only check — so for those the offline gate stands
-   alone (it is the mandatory guarantee, so nothing is lost). The gate does not consult
-   `config.js.runner`; it is deliberately dependency-light, because gate 1 already vouched for the
-   text.
+   and the temp copy is a `.js`/`.mjs`/`.cjs` file. `node --check` does not accept a `.ts`/`.mts`/
+   `.cts` file, and a deno/bun runner has no equivalently cheap parse-only check — so for those the
+   offline gate stands alone (it is the mandatory guarantee, so nothing is lost). The gate does not
+   consult `config.js.runner`; it is deliberately dependency-light, because gate 1 already vouched
+   for the text. The temp copy's extension carries the origin's module flavor (see `_injected_suffix`)
+   so `--check` reads a `.mjs`-origin ESM script as ESM even before the deps install writes a
+   `"type": "module"` package.json — the premature-check bug that would otherwise brick the entry.
 """
 
 from __future__ import annotations
@@ -45,19 +47,38 @@ from ..base import (
     InjectValueError,
 )
 from .analyzer import _literal_value, _text, _toplevel_declarations, language_for
+from .deps import module_type_for
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from tree_sitter import Node
 
-# The temp-copy extension for each kind. It matches the stored copy's extension (js entries are
-# stored as script.js, ts as script.ts), so the injected copy runs through the exact launch path the
-# stored file would — the same runner, the same module resolution.
+# The temp-copy extension per kind. The store flattens every source to script.js/script.ts, so a
+# plain source's copy runs under the runner's own default module resolution. But when the ORIGINAL
+# filename pinned a module flavor (.mjs/.cjs/.mts/.cts), the copy carries it forward (see
+# _injected_suffix): node resolves ESM-vs-CommonJS from the extension alone, so an ESM script's
+# injected copy is treated as ESM even on node <22.7 (no auto-detect) and BEFORE any package.json
+# exists. Without this, gate 2 (`node --check`) rejects a correct ESM copy of a .mjs-origin entry —
+# the deps install writes the "type": "module" package.json only later, in RunnerLaunch.build.
 _SUFFIX = {"js": ".js", "ts": ".ts", "tsx": ".tsx"}
+_MODULE_SUFFIX = {
+    ("js", "module"): ".mjs",
+    ("js", "commonjs"): ".cjs",
+    ("ts", "module"): ".mts",
+    ("ts", "commonjs"): ".cts",
+}
 
-# Only these temp-copy extensions are eligible for gate 2 (`node --check` rejects .ts/.tsx).
-_NODE_CHECK_SUFFIXES = (".js", ".mjs")
+# Only these temp-copy extensions are eligible for gate 2 (`node --check` rejects .ts/.mts/.cts).
+_NODE_CHECK_SUFFIXES = (".js", ".mjs", ".cjs")
+
+
+def _injected_suffix(lang: str, source: str) -> str:
+    """The temp-copy extension: the module flavor the ORIGINAL filename pinned (.mjs/.cjs for js,
+    .mts/.cts for ts), else the kind's plain extension. Carrying the flavor forward lets node
+    resolve ESM-vs-CommonJS from the extension, independent of package.json and node version."""
+    return _MODULE_SUFFIX.get((lang, module_type_for(source)), _SUFFIX.get(lang, ".js"))
+
 
 # The runner resolution order (deno > bun > node), mirroring launch.RunnerLaunch. Used only to
 # decide whether gate 2 (`node --check`) applies — a non-node runner skips it.
@@ -101,8 +122,12 @@ def inject(request: InjectRequest, *, lang: str = "js") -> InjectResult:
 
     out = apply_byte_spans(text, spans)
     _gate_reparse(out, lang)  # gate 1 (mandatory, offline): never launch text we corrupted
-    suffix = _SUFFIX.get(lang, ".js")
-    path = write_injected(request.entry_dir, out, suffix=suffix)
+    suffix = _injected_suffix(lang, request.source)
+    # A deps-managed copy-mode entry must run from entry_dir: the runner resolves this copy's
+    # imports upward from ITS OWN path, and only adjacency finds entry_dir/node_modules.
+    path = write_injected(
+        request.entry_dir, out, suffix=suffix, prefer_entry_dir=request.prefer_entry_dir
+    )
     try:
         _gate_node(request.interpreter, path, suffix)  # gate 2 (hardening): `node --check`
     except BaseException:
@@ -198,8 +223,8 @@ def _resolve_runner(interpreter: str) -> tuple[str | None, str | None]:
 
 def _gate_node(interpreter: str, path: Path, suffix: str) -> None:
     """Gate 2 (hardening): `node --check <file>` parses without executing. Applies ONLY when the temp
-    copy is a .js/.mjs file AND the resolvable runner is node — node can't `--check` a .ts file, and
-    deno/bun have no equivalently cheap parse-only check, so those rely on gate 1 (the mandatory
+    copy is a .js/.mjs/.cjs file AND the resolvable runner is node — node can't `--check` a .ts file,
+    and deno/bun have no equivalently cheap parse-only check, so those rely on gate 1 (the mandatory
     guarantee). A missing/failed spawn never fails the run: gate 1 already vouched for the text."""
     if suffix not in _NODE_CHECK_SUFFIXES:
         return

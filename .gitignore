@@ -23,6 +23,7 @@ coverage.xml
 htmlcov/
 mutants/
 .mutmut-cache
+.mutmut-results.txt
 
 # Environment variables
 .env*.local

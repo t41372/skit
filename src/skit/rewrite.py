@@ -113,7 +113,9 @@ def linecol_to_byte(table: list[int], lineno: int, col: int) -> int:
     return table[lineno - 1] + col
 
 
-def write_injected(entry_dir: Path, content: str, *, suffix: str) -> Path:
+def write_injected(
+    entry_dir: Path, content: str, *, suffix: str, prefer_entry_dir: bool = False
+) -> Path:
     """Write the injected result to a unique temp file and return its path.
 
     The file is written to the OS temp directory, not entry_dir — the persistent script store
@@ -129,6 +131,12 @@ def write_injected(entry_dir: Path, content: str, *, suffix: str) -> Path:
     entry_dir is kept as a fallback (defense in depth) for the rare case the OS temp directory isn't
     writable, so a run never fails outright just because TMPDIR is misconfigured.
 
+    `prefer_entry_dir=True` INVERTS that choice: the copy is written into entry_dir (OS tmp as the
+    fallback). A copy-mode JS/TS entry with managed npm deps must run from entry_dir — module
+    resolution walks up from the copy's own path, and only adjacency finds entry_dir/node_modules.
+    The crash-leftover concern above is answered for that path by RunnerLaunch's sweep of aged
+    `.injected-*` files, which runs on every deps-managed launch.
+
     - Unique filename (.injected-XXXX<suffix>): concurrent runs of the same script don't clobber.
       suffix is language-specific (python ".py", shell ".sh") so the interpreter still recognizes
       the temp copy by extension.
@@ -136,10 +144,11 @@ def write_injected(entry_dir: Path, content: str, *, suffix: str) -> Path:
       literals), so don't let other local users read it (an extension of C3; the caller must still
       delete the file in a finally).
     """
+    dirs = (entry_dir, None) if prefer_entry_dir else (None, entry_dir)
     try:
-        fd, tmp = tempfile.mkstemp(prefix=".injected-", suffix=suffix)
+        fd, tmp = tempfile.mkstemp(dir=dirs[0], prefix=".injected-", suffix=suffix)
     except OSError:
-        fd, tmp = tempfile.mkstemp(dir=entry_dir, prefix=".injected-", suffix=suffix)
+        fd, tmp = tempfile.mkstemp(dir=dirs[1], prefix=".injected-", suffix=suffix)
     try:
         os.chmod(
             tmp, 0o600
