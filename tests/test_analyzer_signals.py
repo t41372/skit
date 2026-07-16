@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from skit import analyzer
+from skit.langs.python import analyzer
 
 IMAGE_STITCH = """
 from PIL import Image

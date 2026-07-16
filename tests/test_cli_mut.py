@@ -15,21 +15,20 @@ import typer
 from typer.testing import CliRunner
 
 from skit import (
-    analyzer,
+    analysis,
     argstate,
     cli,
     config,
     flows,
     i18n,
     launcher,
-    metawriter,
     pep723,
     promptform,
-    shim,
     store,
 )
 from skit.i18n import gettext
-from skit.metawriter import ParamSpec
+from skit.langs.python import metawriter, shim
+from skit.params import ParamDecl
 
 runner = CliRunner()
 
@@ -138,8 +137,8 @@ def test_resolve_metadata_interactive_prompts_exact_text_and_defaults(monkeypatc
 
 
 def test_spec_from_candidate_copies_every_field():
-    c = analyzer.Candidate(
-        kind="input",
+    c = analysis.Candidate(
+        binding="input",
         name="who",
         type="int",
         default=42,
@@ -147,10 +146,10 @@ def test_spec_from_candidate_copies_every_field():
         order=3,
         secret=True,
     )
-    spec = metawriter.ParamSpec.from_candidate(c)
+    spec = ParamDecl.from_candidate(c)
     assert (
         spec.name,
-        spec.kind,
+        spec.binding,
         spec.type,
         spec.default,
         spec.prompt,
@@ -273,7 +272,9 @@ def test_run_no_input_never_prompts_even_on_tty(tty, monkeypatch):
     argstate.save_last(ent.slug, values={"msg": "remembered"})
     captured: dict[str, object] = {}
 
-    def fake_run(entry, extra, *, values=None, invoke_cwd=None, script_override=None):
+    def fake_run(
+        entry, extra, *, values=None, invoke_cwd=None, script_override=None, env_overlay=None
+    ):
         captured["values"] = values
         return 0
 
@@ -293,7 +294,7 @@ def test_form_no_default_empty_answer_is_empty_not_sentinel(monkeypatch, tty, tm
     # Rich's Prompt.ask(default=None) returns None on empty input, so `or ""` (not
     # `or "XXXX"`) must decide the stored value.
     text = metawriter.write_params(
-        'CITY = "x"\nprint(CITY)\n', [ParamSpec(name="CITY", kind="const", type="str")]
+        'CITY = "x"\nprint(CITY)\n', [ParamDecl(name="CITY", binding="const", type="str")]
     )
     ent = store.add_python(_py(tmp_path, text), name="opt")
     plan = flows.plan_for_entry(ent)
@@ -314,7 +315,9 @@ def test_run_threads_slug_and_preset_into_prefill(monkeypatch, tmp_path):
     argstate.save_preset(ent.slug, "prod", {"msg": "from-preset"})
     captured: dict[str, object] = {}
 
-    def fake_run(entry, extra, *, values=None, invoke_cwd=None, script_override=None):
+    def fake_run(
+        entry, extra, *, values=None, invoke_cwd=None, script_override=None, env_overlay=None
+    ):
         captured["values"] = values
         return 0
 
@@ -327,7 +330,7 @@ def test_run_threads_slug_and_preset_into_prefill(monkeypatch, tmp_path):
 def test_collect_values_header_exact_text(monkeypatch, tty, tmp_path, capsys):
     text = metawriter.write_params(
         'CITY = "Osaka"\nprint(CITY)\n',
-        [ParamSpec(name="CITY", kind="const", type="str", default="Osaka")],
+        [ParamDecl(name="CITY", binding="const", type="str", default="Osaka")],
     )
     ent = store.add_python(_py(tmp_path, text), name="widget")
     plan = flows.plan_for_entry(ent)
@@ -341,7 +344,7 @@ def test_collect_values_header_exact_text(monkeypatch, tty, tmp_path, capsys):
 def test_param_form_custom_prompt_label_used(monkeypatch, tty, tmp_path):
     text = metawriter.write_params(
         'CITY = "x"\nprint(CITY)\n',
-        [ParamSpec(name="CITY", kind="const", type="str", prompt="Which city?")],
+        [ParamDecl(name="CITY", binding="const", type="str", prompt="Which city?")],
     )
     ent = store.add_python(_py(tmp_path, text), name="a")
     calls = _capture_ask(monkeypatch, cli.Prompt, "ask", ["Kyoto"])
@@ -352,7 +355,7 @@ def test_param_form_custom_prompt_label_used(monkeypatch, tty, tmp_path):
 
 def test_param_form_falls_back_to_name_when_no_prompt(monkeypatch, tty, tmp_path):
     text = metawriter.write_params(
-        'CITY = "x"\nprint(CITY)\n', [ParamSpec(name="CITY", kind="const", type="str")]
+        'CITY = "x"\nprint(CITY)\n', [ParamDecl(name="CITY", binding="const", type="str")]
     )
     ent = store.add_python(_py(tmp_path, text), name="a")
     calls = _capture_ask(monkeypatch, cli.Prompt, "ask", ["Kyoto"])
@@ -366,7 +369,7 @@ def test_param_form_secret_calls_password_true_and_stays_empty(monkeypatch, tty,
     # a secret's "default" is a value, and values for secrets never echo or persist.
     text = metawriter.write_params(
         'API = "x"\nprint(API)\n',
-        [ParamSpec(name="API", kind="const", type="str", secret=True, default="fallback")],
+        [ParamDecl(name="API", binding="const", type="str", secret=True, default="fallback")],
     )
     ent = store.add_python(_py(tmp_path, text), name="a")
     calls = _capture_ask(monkeypatch, cli.Prompt, "ask", [""])
@@ -381,7 +384,7 @@ def test_param_form_secret_calls_password_true_and_stays_empty(monkeypatch, tty,
 def test_param_form_secret_no_default_falls_back_to_empty(monkeypatch, tty, tmp_path):
     text = metawriter.write_params(
         'API = "x"\nprint(API)\n',
-        [ParamSpec(name="API", kind="const", type="str", secret=True)],
+        [ParamDecl(name="API", binding="const", type="str", secret=True)],
     )
     ent = store.add_python(_py(tmp_path, text), name="a")
     monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: "")
@@ -392,7 +395,7 @@ def test_param_form_secret_no_default_falls_back_to_empty(monkeypatch, tty, tmp_
 def test_param_form_non_secret_empty_answer_is_empty_not_sentinel(monkeypatch, tty, tmp_path):
     text = metawriter.write_params(
         'CITY = "Osaka"\nprint(CITY)\n',
-        [ParamSpec(name="CITY", kind="const", type="str", default="Osaka")],
+        [ParamDecl(name="CITY", binding="const", type="str", default="Osaka")],
     )
     ent = store.add_python(_py(tmp_path, text), name="a")
     plan = flows.plan_for_entry(ent)
@@ -412,7 +415,7 @@ def test_param_form_non_secret_empty_answer_is_empty_not_sentinel(monkeypatch, t
 
 def test_plan_for_entry_tolerates_invalid_utf8_bytes(tmp_path):
     text = metawriter.write_params(
-        'CITY = "Taipei"\nprint(CITY)\n', [ParamSpec(name="CITY", kind="const", type="str")]
+        'CITY = "Taipei"\nprint(CITY)\n', [ParamDecl(name="CITY", binding="const", type="str")]
     )
     ent = store.add_python(_py(tmp_path, text), name="a")
     # Corrupt the stored copy with invalid UTF-8 bytes; errors="replace" must keep this from
@@ -523,7 +526,10 @@ def test_mirror_wizard_choice_prompt_exact_text(monkeypatch):
 def test_mirror_wizard_custom_computed_defaults_when_disabled(monkeypatch):
     assert not config.load_mirror().enabled
     calls = _capture_ask(
-        monkeypatch, cli.Prompt, "ask", ["custom", "https://x/pypi", "https://x/py"]
+        monkeypatch,
+        cli.Prompt,
+        "ask",
+        ["custom", "https://x/pypi", "https://x/py", "https://x/npm"],
     )
     uv_calls: list[object] = []
     monkeypatch.setattr(
@@ -540,11 +546,16 @@ def test_mirror_wizard_custom_computed_defaults_when_disabled(monkeypatch):
     assert kw2["default"] == config.PYTHON_INSTALL_MIRROR
     assert kw2["console"] is cli.console
     assert uv_calls == [config.UV_BINARY_MIRROR]
+    # calls[3] = npm registry prompt (the fourth custom URL, mirroring the TUI Preferences set)
+    (msg3,), kw3 = calls[3]
+    assert msg3 == gettext("npm registry URL")
+    assert kw3["default"] == config.NPM_REGISTRY_MIRROR
     m = config.load_mirror()
-    assert (m.pypi, m.python_install, m.uv_binary) == (
+    assert (m.pypi, m.python_install, m.uv_binary, m.npm) == (
         "https://x/pypi",
         "https://x/py",
         "https://x/uv",
+        "https://x/npm",
     )
 
 
@@ -605,7 +616,7 @@ def test_run_shim_error_message_exact(tmp_path, monkeypatch):
     # "[tool.skit]") and THEN escaping the whole result — regression test for the bug where
     # per-value escape() left the literal brackets to be swallowed as (no-op) rich markup.
     text = metawriter.write_params(
-        'CITY = "Taipei"\nprint(CITY)\n', [ParamSpec(name="CITY", kind="const", type="str")]
+        'CITY = "Taipei"\nprint(CITY)\n', [ParamDecl(name="CITY", binding="const", type="str")]
     )
     entry = store.add_python(_py(tmp_path, text), name="widget")
     argstate.save_last(entry.slug, values={"CITY": "Kaohsiung"})
@@ -628,7 +639,7 @@ def test_run_drift_warning_names_the_entry(tmp_path, monkeypatch):
 
     monkeypatch.setattr(launcher, "run_entry", lambda *a, **k: 0)  # never actually launch anything
     text = metawriter.write_params(
-        'CITY = "Taipei"\nprint(CITY)\n', [ParamSpec(name="CITY", kind="const", type="str")]
+        'CITY = "Taipei"\nprint(CITY)\n', [ParamDecl(name="CITY", binding="const", type="str")]
     )
     entry = store.add_python(_py(tmp_path, text), name="widget")
     script_path = entry.dir / "script.py"
@@ -764,7 +775,7 @@ def test_onboard_python_copy_uses_explicit_deps_python_and_writes(monkeypatch, t
         cli,
         "_onboard_params",
         lambda text, name, no_input: [
-            ParamSpec(name="CITY", kind="const", type="str", default="x")
+            ParamDecl(name="CITY", binding="const", type="str", default="x")
         ],
     )
     p = _py(tmp_path, 'import rich\nCITY = "x"\nprint(rich, CITY)\n')
@@ -897,7 +908,7 @@ def test_onboard_python_collects_secret_names(monkeypatch, tmp_path):
         cli,
         "_onboard_params",
         lambda text, name, no_input: [
-            ParamSpec(name="API_KEY", kind="const", type="str", default="x", secret=True)
+            ParamDecl(name="API_KEY", binding="const", type="str", default="x", secret=True)
         ],
     )
     p = _py(tmp_path, 'API_KEY = "x"\nprint(API_KEY)\n')
@@ -1033,9 +1044,9 @@ def test_show_params_python_no_managed_exact(tmp_path, capsys):
 
 def test_show_params_python_table_all_cells_and_hint(tmp_path, capsys):
     specs = [
-        ParamSpec(name="CITY", kind="const", type="str", default="Taipei"),
-        ParamSpec(name="PORT", kind="input", type="str", default=None),
-        ParamSpec(name="API", kind="const", type="str", default="x", secret=True),
+        ParamDecl(name="CITY", binding="const", type="str", default="Taipei"),
+        ParamDecl(name="PORT", binding="input", type="str", default=None),
+        ParamDecl(name="API", binding="const", type="str", default="x", secret=True),
     ]
     # Two unmanaged candidates (RETRIES, TIMEOUT) so the hint's ", " join separator is exercised.
     text = metawriter.write_params(
@@ -1075,7 +1086,8 @@ def test_show_params_secret_masks_recorded_last_value(tmp_path, capsys):
     # Secret param with no default (default cell is "—"), so the only "•••" in the render is the
     # masked *last value* — isolating the mask so the last-value branch's mutants are observable.
     text = metawriter.write_params(
-        "print('x')\n", [ParamSpec(name="API", kind="input", type="str", default=None, secret=True)]
+        "print('x')\n",
+        [ParamDecl(name="API", binding="input", type="str", default=None, secret=True)],
     )
     entry = store.add_python(_py(tmp_path, text), name="s")
     # Recorded before it was secret (no secret_names), so a value exists in state; the now-secret
@@ -1093,7 +1105,7 @@ def test_show_params_reference_entry_suppresses_add_hint(tmp_path, capsys):
     # hint must be suppressed (kills the `mode == "copy"` guard and its and/or mutants).
     text = metawriter.write_params(
         "CITY = 'x'\nRETRIES = 3\nprint(CITY, RETRIES)\n",
-        [ParamSpec(name="CITY", kind="const", type="str", default="x")],
+        [ParamDecl(name="CITY", binding="const", type="str", default="x")],
     )
     store.add_python(_py(tmp_path, text, "ref.py"), name="r", mode="reference")
     cli._show_params(store.resolve("r"), as_json=False)
@@ -1106,7 +1118,7 @@ def test_show_params_reference_entry_suppresses_add_hint(tmp_path, capsys):
 
 def test_edit_params_updated_message_and_written_back(tmp_path):
     text = metawriter.write_params(
-        'CITY = "x"\nprint(CITY)\n', [ParamSpec(name="CITY", kind="const", type="str")]
+        'CITY = "x"\nprint(CITY)\n', [ParamDecl(name="CITY", binding="const", type="str")]
     )
     entry = store.add_python(_py(tmp_path, text), name="j")
     result = runner.invoke(cli.app, ["params", "j", "--secret", "CITY"])
@@ -1127,8 +1139,8 @@ def test_edit_params_resync_and_add_thread_flags(tmp_path):
     text = metawriter.write_params(
         "CITY = 'x'\nRETRIES = 3\nprint(CITY, RETRIES)\n",
         [
-            ParamSpec(name="CITY", kind="const", type="str"),
-            ParamSpec(name="GONE", kind="const", type="str"),
+            ParamDecl(name="CITY", binding="const", type="str"),
+            ParamDecl(name="GONE", binding="const", type="str"),
         ],
     )
     entry = store.add_python(_py(tmp_path, text), name="j")
@@ -1144,7 +1156,7 @@ def test_edit_params_resync_and_add_thread_flags(tmp_path):
 def test_edit_params_remove_all_shows_dash(tmp_path):
     # Removing the sole managed param leaves nothing; the "remaining" list falls back to "—".
     text = metawriter.write_params(
-        "CITY = 'x'\nprint(CITY)\n", [ParamSpec(name="CITY", kind="const", type="str")]
+        "CITY = 'x'\nprint(CITY)\n", [ParamDecl(name="CITY", binding="const", type="str")]
     )
     store.add_python(_py(tmp_path, text), name="j")
     result = runner.invoke(cli.app, ["params", "j", "--unmanage", "CITY"])
@@ -1158,7 +1170,7 @@ def test_edit_params_prompt_written_back(tmp_path):
     # A --prompt value must reach the file (kills prompts=None / a dropped prompts arg at the
     # edit_specs call).
     text = metawriter.write_params(
-        "CITY = 'x'\nprint(CITY)\n", [ParamSpec(name="CITY", kind="const", type="str")]
+        "CITY = 'x'\nprint(CITY)\n", [ParamDecl(name="CITY", binding="const", type="str")]
     )
     entry = store.add_python(_py(tmp_path, text), name="j")
     result = runner.invoke(cli.app, ["params", "j", "--prompt", "CITY=Where? "])
@@ -1172,7 +1184,7 @@ def test_edit_params_no_secret_unsets(tmp_path):
     # non-secret.
     text = metawriter.write_params(
         "CITY = 'x'\nprint(CITY)\n",
-        [ParamSpec(name="CITY", kind="const", type="str", secret=True)],
+        [ParamDecl(name="CITY", binding="const", type="str", secret=True)],
     )
     entry = store.add_python(_py(tmp_path, text), name="j")
     result = runner.invoke(cli.app, ["params", "j", "--no-secret", "CITY"])
@@ -1185,7 +1197,7 @@ def test_edit_params_renders_reconcile_warning(tmp_path):
     # --secret on a name that isn't managed produces a reconcile warning that must be rendered
     # (kills escape(render_warning(None)) / err_console.print(None) in the warnings loop).
     text = metawriter.write_params(
-        "CITY = 'x'\nprint(CITY)\n", [ParamSpec(name="CITY", kind="const", type="str")]
+        "CITY = 'x'\nprint(CITY)\n", [ParamDecl(name="CITY", binding="const", type="str")]
     )
     store.add_python(_py(tmp_path, text), name="j")
     result = runner.invoke(cli.app, ["params", "j", "--secret", "GHOST"])
@@ -1239,7 +1251,7 @@ def test_edit_params_missing_copy_message_exact(tmp_path):
 
 def test_edit_params_bad_prompt_warned_exact(tmp_path):
     text = metawriter.write_params(
-        'CITY = "x"\nprint(CITY)\n', [ParamSpec(name="CITY", kind="const", type="str")]
+        'CITY = "x"\nprint(CITY)\n', [ParamDecl(name="CITY", binding="const", type="str")]
     )
     store.add_python(_py(tmp_path, text), name="j")
     result = runner.invoke(cli.app, ["params", "j", "--prompt", "no-equals-sign"])
@@ -1282,7 +1294,8 @@ def test_edit_non_python_message_exact():
     result = runner.invoke(cli.app, ["edit", "c"])
     assert result.exit_code == 1
     out = _norm(result.output)
-    assert "c isn't a Python script, so it has no source to edit." in out
+    # Kind-neutral now: shell/js ARE editable, so the refusal can't claim "Python only".
+    assert "c has no editable source (programs and command templates run as-is)." in out
     assert "XX" not in out
 
 

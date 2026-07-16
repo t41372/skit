@@ -21,8 +21,9 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from skit import analyzer, argstate, cli, flows, inlineform, launcher, metawriter, store
-from skit.metawriter import ParamSpec
+from skit import analysis, argstate, cli, flows, inlineform, launcher, store
+from skit.langs.python import metawriter
+from skit.params import ParamDecl
 
 runner = CliRunner()
 
@@ -51,7 +52,15 @@ def _py(tmp_path: Path, body: str, name: str = "job.py") -> Path:
 def run_entry_spy(monkeypatch: pytest.MonkeyPatch):
     calls: dict[str, object] = {}
 
-    def fake(entry, extra_args=None, *, values=None, invoke_cwd=None, script_override=None):
+    def fake(
+        entry,
+        extra_args=None,
+        *,
+        values=None,
+        invoke_cwd=None,
+        script_override=None,
+        env_overlay=None,
+    ):
         calls["entry"] = entry
         calls["extra"] = list(extra_args or [])
         calls["values"] = dict(values or {})
@@ -112,21 +121,21 @@ def test_complete_preset_swallows_resolve_errors():
 
 
 def test_default_selection_all_demoted_is_none():
-    demoted = [analyzer.Candidate(kind="const", name="ACC", type="int", default=0, demoted=True)]
+    demoted = [analysis.Candidate(binding="const", name="ACC", type="int", default=0, demoted=True)]
     assert cli._default_selection(demoted) == "none"
 
 
 def test_default_selection_mixed_lists_clean_indices_only():
     mixed = [
-        analyzer.Candidate(kind="const", name="CITY", type="str", default="x"),
-        analyzer.Candidate(kind="const", name="ACC", type="int", default=0, demoted=True),
+        analysis.Candidate(binding="const", name="CITY", type="str", default="x"),
+        analysis.Candidate(binding="const", name="ACC", type="int", default=0, demoted=True),
     ]
     # Only the first (1-based index 1) is clean, so the demoted second index is excluded.
     assert cli._default_selection(mixed) == "1"
 
 
 def test_print_candidate_demoted_prints_accumulator_warning(capsys):
-    c = analyzer.Candidate(kind="const", name="ACC", type="int", default=0, demoted=True)
+    c = analysis.Candidate(binding="const", name="ACC", type="int", default=0, demoted=True)
     cli._print_candidate(1, c)
     out = " ".join(capsys.readouterr().out.split())
     assert "looks like a loop accumulator" in out
@@ -138,7 +147,7 @@ def test_print_candidate_demoted_prints_accumulator_warning(capsys):
 
 
 def test_print_add_hints_argv_line(capsys):
-    cli._print_add_hints(analyzer.Analysis(uses_argv=True), "tool")
+    cli._print_add_hints(analysis.Analysis(uses_argv=True), "tool")
     out = " ".join(capsys.readouterr().out.split())
     assert "reads command-line arguments" in out
 
@@ -246,7 +255,7 @@ def test_run_degraded_parser_prints_passthrough_hint(tmp_path, run_entry_spy):
 def test_run_interactive_uses_collect_values(tmp_path, run_entry_spy, monkeypatch):
     text = metawriter.write_params(
         'CITY = "Taipei"\nprint(CITY)\n',
-        [ParamSpec(name="CITY", kind="const", type="str", default="Taipei")],
+        [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
     )
     store.add_python(_py(tmp_path, text), name="j")
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
@@ -302,7 +311,7 @@ def test_run_dry_run_prints_command_and_exits_0(tmp_path, monkeypatch):
 
 def test_preset_save_from_last_saves_remembered_values(tmp_path):
     text = metawriter.write_params(
-        'CITY = "Taipei"\nprint(CITY)\n', [ParamSpec(name="CITY", kind="const", type="str")]
+        'CITY = "Taipei"\nprint(CITY)\n', [ParamDecl(name="CITY", binding="const", type="str")]
     )
     ent = store.add_python(_py(tmp_path, text), name="a")
     argstate.save_last(ent.slug, values={"CITY": "Osaka"})
@@ -313,7 +322,7 @@ def test_preset_save_from_last_saves_remembered_values(tmp_path):
 
 def test_preset_save_from_last_without_values_errors(tmp_path):
     text = metawriter.write_params(
-        'CITY = "Taipei"\nprint(CITY)\n', [ParamSpec(name="CITY", kind="const", type="str")]
+        'CITY = "Taipei"\nprint(CITY)\n', [ParamDecl(name="CITY", binding="const", type="str")]
     )
     store.add_python(_py(tmp_path, text), name="a")
     result = runner.invoke(cli.app, ["preset", "save", "a", "prod", "--from-last"])
@@ -337,14 +346,14 @@ def test_preset_list_json(tmp_path):
 
 
 def test_secret_cell_shows_env_source():
-    s = ParamSpec(name="API", kind="const", type="str", secret=True, env_source="OPENAI_API_KEY")
+    s = ParamDecl(name="API", binding="const", type="str", secret=True, env_source="OPENAI_API_KEY")
     assert cli._secret_cell(s) == "yes ← $OPENAI_API_KEY"
 
 
 def test_params_json_view(tmp_path):
     text = metawriter.write_params(
         'CITY = "Taipei"\nprint(CITY)\n',
-        [ParamSpec(name="CITY", kind="const", type="str", default="Taipei")],
+        [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
     )
     store.add_python(_py(tmp_path, text), name="a")
     result = runner.invoke(cli.app, ["params", "a", "--json"])
@@ -357,7 +366,7 @@ def test_params_json_view(tmp_path):
 
 def test_params_env_source_on_unmanaged_warns(tmp_path):
     text = metawriter.write_params(
-        'CITY = "Taipei"\nprint(CITY)\n', [ParamSpec(name="CITY", kind="const", type="str")]
+        'CITY = "Taipei"\nprint(CITY)\n', [ParamDecl(name="CITY", binding="const", type="str")]
     )
     store.add_python(_py(tmp_path, text), name="a")
     result = runner.invoke(cli.app, ["params", "a", "--env-source", "GHOST=OPENAI"])
@@ -367,7 +376,7 @@ def test_params_env_source_on_unmanaged_warns(tmp_path):
 
 def test_params_env_source_on_non_secret_warns(tmp_path):
     text = metawriter.write_params(
-        'CITY = "Taipei"\nprint(CITY)\n', [ParamSpec(name="CITY", kind="const", type="str")]
+        'CITY = "Taipei"\nprint(CITY)\n', [ParamDecl(name="CITY", binding="const", type="str")]
     )
     store.add_python(_py(tmp_path, text), name="a")
     result = runner.invoke(cli.app, ["params", "a", "--env-source", "CITY=OPENAI"])
@@ -378,7 +387,7 @@ def test_params_env_source_on_non_secret_warns(tmp_path):
 def test_params_env_source_on_secret_sets_it(tmp_path):
     text = metawriter.write_params(
         'API = "x"\nprint(API)\n',
-        [ParamSpec(name="API", kind="const", type="str", default="x", secret=True)],
+        [ParamDecl(name="API", binding="const", type="str", default="x", secret=True)],
     )
     entry = store.add_python(_py(tmp_path, text), name="a")
     result = runner.invoke(cli.app, ["params", "a", "--env-source", "API=OPENAI_API_KEY"])
@@ -437,7 +446,7 @@ def test_deps_python_only_preserves_existing_deps(tmp_path):
 
 
 def test_doctor_json_uv_found(monkeypatch, tmp_path):
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/usr/bin/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/usr/bin/uv")
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     result = runner.invoke(cli.app, ["doctor", "--json"])
     assert result.exit_code == 0, result.output
@@ -447,7 +456,7 @@ def test_doctor_json_uv_found(monkeypatch, tmp_path):
 
 
 def test_doctor_json_uv_missing_exits_1(monkeypatch):
-    monkeypatch.setattr(launcher, "find_uv", lambda: None)
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: None)
     result = runner.invoke(cli.app, ["doctor", "--json"])
     assert result.exit_code == 1  # missing uv -> non-zero even in JSON mode
     assert '"uv"' in result.output
@@ -455,7 +464,7 @@ def test_doctor_json_uv_missing_exits_1(monkeypatch):
 
 def _drifted_entry(tmp_path: Path, name: str) -> store.Entry:
     text = metawriter.write_params(
-        'CITY = "Taipei"\nprint(CITY)\n', [ParamSpec(name="CITY", kind="const", type="str")]
+        'CITY = "Taipei"\nprint(CITY)\n', [ParamDecl(name="CITY", binding="const", type="str")]
     )
     entry = store.add_python(_py(tmp_path, text), name=name)
     script_path = entry.dir / "script.py"
@@ -465,7 +474,7 @@ def _drifted_entry(tmp_path: Path, name: str) -> store.Entry:
 
 
 def test_doctor_reports_drift_with_resync_hint(monkeypatch, tmp_path):
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/usr/bin/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/usr/bin/uv")
     _drifted_entry(tmp_path, "widget")
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 0, result.output
@@ -477,7 +486,7 @@ def test_doctor_reports_drift_with_resync_hint(monkeypatch, tmp_path):
 def test_doctor_mirror_on_line(monkeypatch, tmp_path):
     from skit import config
 
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/usr/bin/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/usr/bin/uv")
     config.save_mirror(config.preset("tsinghua"))
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 0, result.output

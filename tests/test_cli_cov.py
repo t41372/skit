@@ -12,8 +12,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from skit import argstate, cli, flows, launcher, metawriter, promptform, store
-from skit.metawriter import ParamSpec
+from skit import argstate, cli, flows, launcher, promptform, store
+from skit.langs.python import metawriter
+from skit.params import ParamDecl
 
 runner = CliRunner()
 
@@ -42,7 +43,15 @@ def _py(tmp_path: Path, body: str, name: str = "job.py") -> Path:
 def run_entry_spy(monkeypatch):
     calls = {}
 
-    def fake(entry, extra_args=None, *, values=None, invoke_cwd=None, script_override=None):
+    def fake(
+        entry,
+        extra_args=None,
+        *,
+        values=None,
+        invoke_cwd=None,
+        script_override=None,
+        env_overlay=None,
+    ):
         calls["entry"] = entry
         calls["extra"] = list(extra_args or [])
         calls["values"] = dict(values or {})
@@ -93,7 +102,7 @@ def test_add_prints_description_when_given(tmp_path):
 
 def test_add_writes_selected_params_no_secret_notice(tmp_path, monkeypatch):
     p = _py(tmp_path, 'CITY = "Taipei"\nprint(CITY)\n')
-    specs = [ParamSpec(name="CITY", kind="const", type="str", default="Taipei")]
+    specs = [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")]
     monkeypatch.setattr(cli, "_onboard_params", lambda text, name, no_input: specs)
     result = runner.invoke(cli.app, ["add", str(p), "--name", "k"])
     assert result.exit_code == 0, result.output
@@ -103,7 +112,7 @@ def test_add_writes_selected_params_no_secret_notice(tmp_path, monkeypatch):
 
 def test_add_writes_selected_params_and_secret_notice(tmp_path, monkeypatch):
     p = _py(tmp_path, 'API = "x"\nprint(API)\n')
-    specs = [ParamSpec(name="API", kind="const", type="str", default="x", secret=True)]
+    specs = [ParamDecl(name="API", binding="const", type="str", default="x", secret=True)]
     monkeypatch.setattr(cli, "_onboard_params", lambda text, name, no_input: specs)
     result = runner.invoke(cli.app, ["add", str(p), "--name", "j"])
     assert result.exit_code == 0, result.output
@@ -143,7 +152,7 @@ def test_collect_command_values_non_interactive_no_default_omits_key(tmp_path):
 def test_param_form_interactive_non_secret(monkeypatch, tty, tmp_path):
     text = metawriter.write_params(
         'CITY = "Taipei"\nprint(CITY)\n',
-        [ParamSpec(name="CITY", kind="const", type="str", default="Taipei")],
+        [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
     )
     ent = store.add_python(_py(tmp_path, text), name="a")
     plan = flows.plan_for_entry(ent)
@@ -166,7 +175,7 @@ def test_param_form_interactive_non_secret(monkeypatch, tty, tmp_path):
 
 def test_run_prints_drift_warning_on_type_change(tmp_path, run_entry_spy):
     text = metawriter.write_params(
-        'CITY = "Taipei"\nprint(CITY)\n', [ParamSpec(name="CITY", kind="const", type="str")]
+        'CITY = "Taipei"\nprint(CITY)\n', [ParamDecl(name="CITY", binding="const", type="str")]
     )
     entry = store.add_python(_py(tmp_path, text), name="j")
     # Change CITY's source type from str to int, but keep the [tool.skit] block claiming str.
@@ -195,7 +204,7 @@ def test_run_with_valid_preset_succeeds(tmp_path, run_entry_spy):
 def test_preset_save_python_with_params_non_interactive_prefill(tmp_path):
     text = metawriter.write_params(
         'CITY = "Taipei"\nprint(CITY)\n',
-        [ParamSpec(name="CITY", kind="const", type="str", default="Taipei")],
+        [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
     )
     ent = store.add_python(_py(tmp_path, text), name="a")
     # CliRunner's stdin is not a tty, so _collect_param_form takes the non-interactive path and
@@ -210,7 +219,7 @@ def test_preset_save_python_secret_param_excluded_with_notice(monkeypatch, tty, 
     # the preset form must be skipped with the notice, never persisted (C3).
     text = metawriter.write_params(
         'API = "x"\nprint(API)\n',
-        [ParamSpec(name="API", kind="const", type="str", default="x", secret=True)],
+        [ParamDecl(name="API", binding="const", type="str", default="x", secret=True)],
     )
     ent = store.add_python(_py(tmp_path, text), name="a")
     monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: "typed-secret")
@@ -234,7 +243,7 @@ def test_params_python_missing_copy_reports_no_managed_params(tmp_path):
 
 def test_params_python_shows_non_secret_last_value(tmp_path):
     text = metawriter.write_params(
-        'CITY = "Taipei"\nprint(CITY)\n', [ParamSpec(name="CITY", kind="const", type="str")]
+        'CITY = "Taipei"\nprint(CITY)\n', [ParamDecl(name="CITY", binding="const", type="str")]
     )
     ent = store.add_python(_py(tmp_path, text), name="a")
     argstate.save_last(ent.slug, values={"CITY": "Osaka"})
@@ -273,7 +282,7 @@ def test_params_view_no_new_candidates(tmp_path):
     # Every detectable candidate is already managed -> report.new is empty, so the "Detected but
     # not yet managed" hint must not appear.
     text = metawriter.write_params(
-        'CITY = "Taipei"\nprint(CITY)\n', [ParamSpec(name="CITY", kind="const", type="str")]
+        'CITY = "Taipei"\nprint(CITY)\n', [ParamDecl(name="CITY", binding="const", type="str")]
     )
     store.add_python(_py(tmp_path, text), name="a")
     result = runner.invoke(cli.app, ["params", "a"])
@@ -305,7 +314,7 @@ def test_deps_set_store_error(tmp_path, monkeypatch):
 
 
 def test_doctor_rebuild_reports_problem(monkeypatch, tmp_path):
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/usr/bin/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/usr/bin/uv")
     src = _py(tmp_path, "print(1)\n")
     store.add_python(src, name="ref", mode="reference")
     src.unlink()

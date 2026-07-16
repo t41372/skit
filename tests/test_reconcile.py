@@ -3,21 +3,26 @@ warned, new not counted as drift."""
 
 from __future__ import annotations
 
-from skit import reconcile
-from skit.metawriter import ParamSpec
+from skit.langs.python import reconcile
+from skit.params import Binding, ParamDecl, ParamType
 
 
 def spec(
-    name: str, *, kind: str = "const", type: str = "str", order: int = -1, prompt: str = ""
-) -> ParamSpec:
-    return ParamSpec(name=name, kind=kind, type=type, order=order, prompt=prompt)
+    name: str,
+    *,
+    binding: Binding = "const",
+    type: ParamType = "str",
+    order: int = -1,
+    prompt: str = "",
+) -> ParamDecl:
+    return ParamDecl(name=name, binding=binding, type=type, order=order, prompt=prompt)
 
 
 SCRIPT = 'CITY = "Taipei"\nRETRIES = 3\nwho = input("Your name: ")\nprint(who, CITY, RETRIES)\n'
 
 
 def test_all_ok_no_drift():
-    specs = [spec("CITY"), spec("RETRIES", type="int"), spec("input-1", kind="input", order=0)]
+    specs = [spec("CITY"), spec("RETRIES", type="int"), spec("input-1", binding="input", order=0)]
     report = reconcile.reconcile(SCRIPT, specs)
     assert not report.has_drift
     assert report.usable == specs
@@ -52,21 +57,21 @@ def test_input_matched_by_order_not_position_in_file():
     # Code was inserted before the script; the input() line number changed but it's still call 0 —
     # not considered drift.
     text = "import os\nprint(os.name)\n" + SCRIPT
-    report = reconcile.reconcile(text, [spec("input-1", kind="input", order=0)])
+    report = reconcile.reconcile(text, [spec("input-1", binding="input", order=0)])
     assert not report.has_drift
 
 
 def test_input_removed_is_missing():
     text = SCRIPT.replace('who = input("Your name: ")', 'who = "nobody"')
-    report = reconcile.reconcile(text, [spec("input-1", kind="input", order=0)])
+    report = reconcile.reconcile(text, [spec("input-1", binding="input", order=0)])
     assert [s.name for s in report.missing] == ["input-1"]
 
 
 def test_new_input_call_reported_as_new_only():
     text = SCRIPT + 'more = input("More: ")\nprint(more)\n'
-    report = reconcile.reconcile(text, [spec("input-1", kind="input", order=0)])
+    report = reconcile.reconcile(text, [spec("input-1", binding="input", order=0)])
     assert not report.has_drift  # existing definitions are still present; new is not drift
-    assert [c.order for c in report.new if c.kind == "input"] == [1]
+    assert [c.order for c in report.new if c.binding == "input"] == [1]
 
 
 # ---------- 3a: input matching prefers the stored prompt over bare position ----------
@@ -79,7 +84,7 @@ def test_input_prompt_match_survives_an_earlier_insertion_no_drift():
     # prompt recorded, the match follows the prompt to its new position and is NOT flagged.
     text = 'extra = input("Extra: ")\n' + SCRIPT
     report = reconcile.reconcile(
-        text, [spec("input-1", kind="input", order=0, prompt="Your name: ")]
+        text, [spec("input-1", binding="input", order=0, prompt="Your name: ")]
     )
     assert not report.has_drift
     assert [s.name for s in report.ok] == ["input-1"]
@@ -99,9 +104,9 @@ def test_input_deleted_earlier_call_flags_rebind_instead_of_silent_ok():
         "print(first, second, third)\n"
     )
     specs = [
-        spec("input-1", kind="input", order=0, prompt="First: "),
-        spec("input-2", kind="input", order=1, prompt="Second: "),
-        spec("input-3", kind="input", order=2, prompt="Third: "),
+        spec("input-1", binding="input", order=0, prompt="First: "),
+        spec("input-2", binding="input", order=1, prompt="Second: "),
+        spec("input-3", binding="input", order=2, prompt="Third: "),
     ]
     edited = text.replace('first = input("First: ")\n', "")  # delete the first input() call
     report = reconcile.reconcile(edited, specs)
@@ -125,7 +130,7 @@ def test_input_rebind_flagged_when_prompt_can_no_longer_disambiguate():
     # as `rebind` -- still usable (no silent drop), but visibly warned (no silent trust either).
     text = 'value = input("New label: ")\nprint(value)\n'
     report = reconcile.reconcile(
-        text, [spec("input-1", kind="input", order=0, prompt="Old label: ")]
+        text, [spec("input-1", binding="input", order=0, prompt="Old label: ")]
     )
     assert report.has_drift
     assert [s.name for s, _ in report.rebind] == ["input-1"]
@@ -135,7 +140,7 @@ def test_input_rebind_flagged_when_prompt_can_no_longer_disambiguate():
 def test_drift_lines_mention_rebind():
     text = 'value = input("New label: ")\nprint(value)\n'
     report = reconcile.reconcile(
-        text, [spec("input-1", kind="input", order=0, prompt="Old label: ")]
+        text, [spec("input-1", binding="input", order=0, prompt="Old label: ")]
     )
     lines = reconcile.drift_lines(report, "myscript")
     assert any("input-1" in line for line in lines)
@@ -146,7 +151,7 @@ def test_resync_reanchors_rebound_input_order_and_prompt():
     # be re-anchored to wherever the fallback landed, so the *next* plain run sees an exact prompt
     # match again instead of re-deriving the same fallback (and the same warning) every time.
     text = 'value = input("New label: ")\nprint(value)\n'
-    specs = [spec("input-1", kind="input", order=0, prompt="Old label: ")]
+    specs = [spec("input-1", binding="input", order=0, prompt="Old label: ")]
     result = reconcile.edit_specs(text, specs, resync=True)
     assert "resync-rebound:input-1" in result.warnings
     (s,) = result.specs
@@ -168,15 +173,15 @@ def test_unselected_candidates_are_new_but_not_drift():
 def test_input_duplicate_prompt_surplus_is_missing_not_ok_on_delete():
     # Regression: two stored input specs share the identical literal prompt (a retry pattern, e.g.
     # two `input("Go? ")` calls, both managed). The user deletes one of the two calls, leaving a
-    # single current call site with that prompt. Pre-fix, _match_inputs's exact pass let BOTH
+    # single current call site with that prompt. Pre-fix, match_calls's exact pass let BOTH
     # stored orders exact-match onto that one surviving call site (ambiguous=False), so reconcile
     # reported both "ok" with no drift warning at all -- and shim would go on to splice two
     # replacements over the same input() callee, corrupting the injected copy. The surplus spec
     # must instead come back "missing" (drift), never silently "ok".
     text = 'first = input("Go? ")\nsecond = input("Go? ")\nprint(first, second)\n'
     specs = [
-        spec("input-1", kind="input", order=0, prompt="Go? "),
-        spec("input-2", kind="input", order=1, prompt="Go? "),
+        spec("input-1", binding="input", order=0, prompt="Go? "),
+        spec("input-2", binding="input", order=1, prompt="Go? "),
     ]
     edited = text.replace('first = input("Go? ")\n', "")  # delete the first call
     report = reconcile.reconcile(edited, specs)
@@ -195,8 +200,8 @@ def test_input_duplicate_prompt_surplus_is_rebind_not_ok_when_position_edited():
     # silent "ok" and never the winner's call site.
     text = 'first = input("Go? ")\nsecond = input("Go? ")\nprint(first, second)\n'
     specs = [
-        spec("input-1", kind="input", order=0, prompt="Go? "),
-        spec("input-2", kind="input", order=1, prompt="Go? "),
+        spec("input-1", binding="input", order=0, prompt="Go? "),
+        spec("input-2", binding="input", order=1, prompt="Go? "),
     ]
     edited = text.replace('second = input("Go? ")', 'second = input("Different: ")')
     report = reconcile.reconcile(edited, specs)
@@ -231,21 +236,21 @@ def test_drift_lines_mention_old_and_new_type():
 def test_edit_specs_not_managed_in_secret_warning():
     """Passing a name that isn't managed into secret= must record a warning, not crash."""
     text = 'CITY = "Taipei"\n'
-    specs = [ParamSpec(name="CITY", kind="const", type="str")]
+    specs = [ParamDecl(name="CITY", binding="const", type="str")]
     result = reconcile.edit_specs(text, specs, secret=["GONE"])
     assert any("not-managed" in w for w in result.warnings)
 
 
 def test_edit_specs_not_managed_in_no_secret_warning():
     text = 'CITY = "Taipei"\n'
-    specs = [ParamSpec(name="CITY", kind="const", type="str")]
+    specs = [ParamDecl(name="CITY", binding="const", type="str")]
     result = reconcile.edit_specs(text, specs, no_secret=["GONE"])
     assert any("not-managed" in w for w in result.warnings)
 
 
 def test_edit_specs_not_managed_in_prompts_warning():
     text = 'CITY = "Taipei"\n'
-    specs = [ParamSpec(name="CITY", kind="const", type="str")]
+    specs = [ParamDecl(name="CITY", binding="const", type="str")]
     result = reconcile.edit_specs(text, specs, prompts={"GONE": "Enter city:"})
     assert any("not-managed" in w for w in result.warnings)
 
@@ -258,9 +263,9 @@ def test_resync_on_unparseable_script_leaves_definitions_untouched():
     # its entire managed-parameter set dropped by --resync. reconcile() can't distinguish "really
     # gone" from "can't parse right now", so _apply_resync must consult report.syntax_error itself.
     specs = [
-        ParamSpec(name="API_KEY", kind="const", type="str", secret=True),
-        ParamSpec(name="RETRIES", kind="const", type="int"),
-        ParamSpec(name="input-1", kind="input", order=0),
+        ParamDecl(name="API_KEY", binding="const", type="str", secret=True),
+        ParamDecl(name="RETRIES", binding="const", type="int"),
+        ParamDecl(name="input-1", binding="input", order=0),
     ]
     broken = "API_KEY = 'x'\nRETRIES = (3\n"  # unclosed paren
     result = reconcile.edit_specs(broken, specs, resync=True)
@@ -272,7 +277,10 @@ def test_resync_on_unparseable_script_leaves_definitions_untouched():
 def test_resync_syntax_error_does_not_also_apply_other_edits_incorrectly():
     # A syntax-error resync combined with --remove: the resync guard must only skip the resync
     # step; the rest of edit_specs (remove/add/tweaks) still runs normally on the untouched specs.
-    specs = [ParamSpec(name="CITY", kind="const", type="str"), ParamSpec(name="Y", kind="const")]
+    specs = [
+        ParamDecl(name="CITY", binding="const", type="str"),
+        ParamDecl(name="Y", binding="const"),
+    ]
     broken = "def broken(:\n"
     result = reconcile.edit_specs(broken, specs, resync=True, remove=["Y"])
     assert [s.name for s in result.specs] == ["CITY"]
@@ -319,10 +327,10 @@ def test_edit_specs_dedups_duplicate_names_even_when_untouched():
 
 
 def test_no_secret_also_clears_the_env_source():
-    from skit import reconcile
-    from skit.metawriter import ParamSpec
+    from skit.langs.python import reconcile
+    from skit.langs.python.metawriter import ParamDecl
 
-    specs = [ParamSpec(name="API", kind="const", type="str", secret=True, env_source="MY_KEY")]
+    specs = [ParamDecl(name="API", binding="const", type="str", secret=True, env_source="MY_KEY")]
     result = reconcile.edit_specs('API = "x"\nprint(API)\n', specs, no_secret=["API"])
     assert result.specs[0].secret is False
     assert result.specs[0].env_source == ""  # an env source only means anything on a secret

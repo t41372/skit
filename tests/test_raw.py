@@ -21,11 +21,11 @@ def tmp_store(tmp_path, monkeypatch):
 
 @pytest.fixture
 def entry_with_params(tmp_path):
-    from skit import metawriter
-    from skit.metawriter import ParamSpec
+    from skit.langs.python import metawriter
+    from skit.params import ParamDecl
 
     script = tmp_path / "hello.py"
-    text = metawriter.write_params(SCRIPT, [ParamSpec(name="CITY", kind="const", type="str")])
+    text = metawriter.write_params(SCRIPT, [ParamDecl(name="CITY", binding="const", type="str")])
     script.write_text(text, encoding="utf-8")
     return store.add_python(script, mode="copy")
 
@@ -34,7 +34,9 @@ def _run(monkeypatch, args: list[str]):
     """Run the CLI and intercept launcher.run_entry. Returns (exit_code, captured kwargs)."""
     captured: dict[str, object] = {}
 
-    def fake_run_entry(entry, extra, *, values=None, invoke_cwd=None, script_override=None):
+    def fake_run_entry(
+        entry, extra, *, values=None, invoke_cwd=None, script_override=None, env_overlay=None
+    ):
         captured["script_override"] = script_override
         captured["values"] = values
         return 0

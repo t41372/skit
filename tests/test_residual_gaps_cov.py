@@ -19,22 +19,24 @@ from pathlib import Path
 
 import pytest
 
-from skit import analyzer, argspec, flows, launcher, metawriter, pep723, store
-from skit.metawriter import ParamSpec
+from skit import callmatch, flows, launcher, pep723, store
+from skit.langs import launch
+from skit.langs.python import argspec, metawriter
+from skit.params import ParamDecl
 
 # --------------------------------------------------------------------------
-# analyzer._match_inputs — the equal-count duplicate-prompt multiset pass
+# callmatch.match_calls — the equal-count duplicate-prompt multiset pass
 # --------------------------------------------------------------------------
 
 
 def test_match_inputs_binds_equal_count_duplicate_prompts_positionally() -> None:
     # A retry pattern: two managed input("Go? ") calls, both still present. Stored and current
     # have the SAME number of call sites for the identical prompt, so the multiset pass pairs
-    # them in positional order (analyzer.py:363-367) — a stable shape that must NOT be flagged
-    # as a rebind on every run. Neither is ambiguous (both resolve cleanly).
+    # them in positional order (callmatch._match_prompt_multisets) — a stable shape that must NOT
+    # be flagged as a rebind on every run. Neither is ambiguous (both resolve cleanly).
     stored = [(0, "Go? "), (1, "Go? ")]
     current = [(0, "Go? "), (1, "Go? ")]
-    assert analyzer._match_inputs(stored, current) == {0: (0, False), 1: (1, False)}
+    assert callmatch.match_calls(stored, current) == {0: (0, False), 1: (1, False)}
 
 
 # --------------------------------------------------------------------------
@@ -80,8 +82,8 @@ def test_argparse_choices_with_non_literal_element_degrades_to_free_text() -> No
     assert spec is not None
     field = spec.fields[0]
     assert field.degraded is True
-    assert field.kind == "str"
-    assert field.choices == []
+    assert field.type == "str"
+    assert field.choices == ()
 
 
 # --------------------------------------------------------------------------
@@ -120,7 +122,7 @@ def test_describe_command_python_includes_python_and_with_flags(
     # The transparency line for a python entry mirrors build_command: it echoes --python for a
     # pinned interpreter (launcher.py:233) and one --with per declared dependency
     # (launcher.py:235).
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/fake/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/fake/uv")
     p = tmp_path / "s.py"
     p.write_text("print(1)\n", encoding="utf-8")
     entry = store.add_python(p)
@@ -163,22 +165,22 @@ def test_join_for_display_uses_list2cmdline_on_windows(
     # (launcher.py:249).
     monkeypatch.setattr("sys.platform", "win32")
     argv = ["C:/tools/tool.exe", "a b", "c"]
-    assert launcher._join_for_display(argv) == subprocess.list2cmdline(argv)
+    assert launch.join_for_display(argv) == subprocess.list2cmdline(argv)
 
 
 # --------------------------------------------------------------------------
-# metawriter.ParamSpec.to_dict — env_source round-trip
+# ParamDecl.to_block_dict — env_source round-trip
 # --------------------------------------------------------------------------
 
 
 def test_param_env_source_survives_write_read_round_trip() -> None:
-    # A secret sourced from an environment variable: to_dict serializes env_source
-    # (metawriter.py:96) and from_dict reads it back, so the binding survives a full
+    # A secret sourced from an environment variable: to_block_dict serializes env_source
+    # and from_block_dict reads it back, so the binding survives a full
     # write_params -> read_params round-trip.
     params = [
-        ParamSpec(
+        ParamDecl(
             name="API_KEY",
-            kind="const",
+            binding="const",
             type="str",
             secret=True,
             env_source="MY_API_KEY",

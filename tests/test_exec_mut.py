@@ -21,8 +21,10 @@ from pathlib import Path
 
 import pytest
 
-from skit import shim, uvman
-from skit.metawriter import ParamSpec
+from skit import rewrite, uvman
+from skit.langs import launch
+from skit.langs.python import shim
+from skit.params import Binding, ParamDecl, ParamType
 
 
 @pytest.fixture(autouse=True)
@@ -37,9 +39,14 @@ def _force_english_locale(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def spec(
-    name: str, *, kind: str = "const", type: str = "str", order: int = -1, secret: bool = False
-) -> ParamSpec:
-    return ParamSpec(name=name, kind=kind, type=type, order=order, secret=secret)
+    name: str,
+    *,
+    binding: Binding = "const",
+    type: ParamType = "str",
+    order: int = -1,
+    secret: bool = False,
+) -> ParamDecl:
+    return ParamDecl(name=name, binding=binding, type=type, order=order, secret=secret)
 
 
 def _run_injected(source: str, stdin: str = "") -> str:
@@ -139,14 +146,14 @@ def test_input_order_equal_to_call_count_is_drift() -> None:
     """order == len(input_calls) is one past the last call: definition drift, not a queue slot."""
     src = "x = input()\nprint(x)\n"
     with pytest.raises(shim.ShimError) as exc_info:
-        shim.inject(src, [spec("input-2", kind="input", order=1)], {"input-2": "v"})
+        shim.inject(src, [spec("input-2", binding="input", order=1)], {"input-2": "v"})
     assert str(exc_info.value) == "input-2"
 
 
 def test_input_spec_does_not_stop_later_const_specs() -> None:
     out = shim.inject(
         "x = input()\nCITY = 'a'\nprint(x, CITY)\n",
-        [spec("input-1", kind="input", order=0), spec("CITY")],
+        [spec("input-1", binding="input", order=0), spec("CITY")],
         {"input-1": "v", "CITY": "b"},
     )
     assert "CITY = 'b'" in out
@@ -169,7 +176,7 @@ def test_preamble_goes_directly_after_docstring_before_first_statement() -> None
     """With a docstring and the first input() immediately after it, the preamble must land
     between them — one line too low and the input() runs before the interception queue."""
     src = '"""d"""\nx = input("p: ")\nprint(x)\n'
-    out = shim.inject(src, [spec("input-1", kind="input", order=0)], {"input-1": "queued"})
+    out = shim.inject(src, [spec("input-1", binding="input", order=0)], {"input-1": "queued"})
     lines = out.splitlines()
     assert lines[0] == '"""d"""'
     assert lines[1].endswith("# skit:shim")
@@ -179,7 +186,7 @@ def test_preamble_goes_directly_after_docstring_before_first_statement() -> None
 def test_preamble_inserted_above_decorators() -> None:
     """Decorators sit above the def's lineno; inserting between them is a SyntaxError."""
     src = "@(lambda g: g)\ndef f():\n    return input('p: ')\nprint(f())\n"
-    out = shim.inject(src, [spec("input-1", kind="input", order=0)], {"input-1": "deco"})
+    out = shim.inject(src, [spec("input-1", binding="input", order=0)], {"input-1": "deco"})
     lines = out.splitlines()
     assert lines[0].endswith("# skit:shim")
     assert lines[1] == "@(lambda g: g)"
@@ -213,7 +220,7 @@ def test_node_replacement_rejects_node_missing_either_end_position() -> None:
 
 
 # =========================================================================================
-# shim: _apply replacement ordering and multi-line spans
+# shim: byte-span replacement ordering and multi-line spans (via rewrite.apply_byte_spans)
 # =========================================================================================
 
 
@@ -233,7 +240,7 @@ def test_multiline_span_replacement_exact_output() -> None:
 
 
 # =========================================================================================
-# shim: write_injected placement and encoding
+# rewrite: write_injected placement and encoding
 # =========================================================================================
 
 
@@ -241,7 +248,7 @@ def test_write_injected_lands_outside_entry_dir(tmp_path: Path) -> None:
     """The injected temp file may contain plaintext secrets, so it must NOT be created inside the
     persistent store entry_dir (a crash there would leave a secret file next to script.py forever);
     it goes to the OS temp dir instead. Name prefix/suffix, exact content and 0600 perms still hold."""
-    p = shim.write_injected(tmp_path, "print('x')\n")
+    p = rewrite.write_injected(tmp_path, "print('x')\n", suffix=".py")
     try:
         assert p.parent != tmp_path
         assert tmp_path not in p.parents  # not anywhere under the persistent store dir
@@ -271,7 +278,7 @@ def test_write_injected_requests_utf8_explicitly(
         return real_fdopen(fd, *args, **kwargs)
 
     monkeypatch.setattr(os, "fdopen", spy)
-    p = shim.write_injected(tmp_path, "CITY = '臺北'\n")
+    p = rewrite.write_injected(tmp_path, "CITY = '臺北'\n", suffix=".py")
     try:
         assert str(seen.get("encoding") or "").lower() == "utf-8"
         assert p.read_text(encoding="utf-8") == "CITY = '臺北'\n"
@@ -285,10 +292,9 @@ def test_write_injected_requests_utf8_explicitly(
 
 
 def test_find_uv_queries_path_for_the_exact_name_uv(monkeypatch: pytest.MonkeyPatch) -> None:
-    from skit import launcher
 
     monkeypatch.setattr("shutil.which", lambda name: "/path/to/uv" if name == "uv" else None)
-    assert launcher.find_uv() == "/path/to/uv"
+    assert launch.find_uv() == "/path/to/uv"
 
 
 def test_ensure_uv_returns_found_uv_without_downloading(
@@ -296,15 +302,14 @@ def test_ensure_uv_returns_found_uv_without_downloading(
 ) -> None:
     """When find_uv locates a binary, ensure_uv must return it and never touch the
     download path (a network fallback here would be a first-run regression)."""
-    from skit import launcher
 
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/found/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/found/uv")
 
     def never(**_kw: object) -> str:
         raise AssertionError("must not download when uv was found")
 
     monkeypatch.setattr(uvman, "ensure_uv_downloaded", never)
-    assert launcher.ensure_uv() == "/found/uv"
+    assert launch.ensure_uv() == "/found/uv"
 
 
 def test_ensure_uv_failure_message_includes_guidance_and_cause(
@@ -312,14 +317,14 @@ def test_ensure_uv_failure_message_includes_guidance_and_cause(
 ) -> None:
     from skit import launcher
 
-    monkeypatch.setattr(launcher, "find_uv", lambda: None)
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: None)
 
     def boom(**_kw: object) -> str:
         raise uvman.UvDownloadError("boom")
 
     monkeypatch.setattr(uvman, "ensure_uv_downloaded", boom)
     with pytest.raises(launcher.LaunchError) as exc_info:
-        launcher.ensure_uv()
+        launch.ensure_uv()
     assert str(exc_info.value) == (
         "uv not found. Install it (https://docs.astral.sh/uv/) or run skit doctor for"
         " guidance. (boom)"
@@ -331,7 +336,7 @@ def test_build_python_missing_script_message_names_the_path(
 ) -> None:
     from skit import launcher
 
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/fake/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/fake/uv")
     py_entry.script_path.unlink()
     with pytest.raises(launcher.LaunchError) as exc_info:
         launcher.build_command(py_entry)
@@ -440,7 +445,7 @@ def test_run_entry_forwards_script_override(
 ) -> None:
     from skit import launcher
 
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/fake/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/fake/uv")
     override = tmp_path / "inj.py"
     override.write_text("print(1)\n", encoding="utf-8")
     captured = _stub_run(monkeypatch)

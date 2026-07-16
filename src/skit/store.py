@@ -12,7 +12,6 @@ import contextlib
 import hashlib
 import os
 import shutil
-import sys
 import time
 import tomllib
 from collections.abc import Callable, Iterator
@@ -22,7 +21,10 @@ from typing import Any
 from . import argstate, pep723
 from .atomic import atomic_write_toml
 from .i18n import gettext
+from .langs import registry
+from .langs.registry import stored_name
 from .models import Entry, Kind, Mode, ScriptMeta, ScriptMetaError, now_iso, slugify
+from .params import ParamDecl, declared_from_meta
 from .paths import registry_path, scripts_dir
 
 # Corruption/error types every meta.toml reader must treat the same way: valid-but-unreadable file,
@@ -41,6 +43,12 @@ _LOCK_POLL_SECONDS = 0.05
 
 class StoreError(Exception):
     pass
+
+
+class StoreUsageError(StoreError):
+    """A refused request — an inapplicable flag or an operation the entry's kind/mode can't
+    honor — as opposed to an operational failure (a locked file, a bad disk). The CLI maps it to
+    the usage exit code so `skit deps` agrees with `skit add` on what a refusal looks like."""
 
 
 class NameConflictError(StoreError):
@@ -178,33 +186,11 @@ def _extract_description(script_text: str) -> str:
 
 
 def infer_kind(path: Path, force_exe: bool = False) -> str:
-    """What kind of entry a path should become — the tool can see the file type, so
-    don't demand a flag: ".py" -> "python", an executable file -> "exe", anything else
-    -> "unknown" (callers point at --exe / --cmd). Shared by the CLI and the TUI add
-    panel so the two paths can't drift apart."""
-    if force_exe:
-        return "exe"
-    if path.suffix.lower() == ".py":
-        return "python"
-    if path.is_file() and _is_executable_file(path):
-        return "exe"
-    return "unknown"
-
-
-def _is_executable_file(path: Path) -> bool:
-    """Whether `path` is a program this platform would run directly.
-
-    POSIX has an execute bit, so os.access(X_OK) is the right question there. Windows has none —
-    os.access(X_OK) is True for *every* readable file, which would misclassify a plain `notes.txt`
-    as an executable — so on Windows a file counts as executable only when its extension is one the
-    OS itself treats as runnable, i.e. a member of PATHEXT (.exe/.bat/.cmd/…)."""
-    if sys.platform == "win32":
-        # PATHEXT is a Windows env var, always ';'-delimited (independent of os.pathsep), listing
-        # the extensions the shell will execute; fall back to the conventional default when unset.
-        pathext = os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
-        runnable = {ext.lower() for ext in pathext.split(";") if ext}
-        return path.suffix.lower() in runnable
-    return os.access(path, os.X_OK)
+    """What kind of entry a path should become. Delegates to the language registry
+    (langs.registry.infer_kind) — kept as a store-level name because the CLI and the
+    TUI add panel both resolve inference through the store, so the two paths can't
+    drift apart."""
+    return registry.infer_kind(path, force_exe=force_exe)
 
 
 def suggest_description(script_text: str) -> str:
@@ -251,7 +237,7 @@ def add_python(
         injected_text = pep723.inject_block(strict_text, dependencies or [], requires_python)
 
         def _write_injected(entry_dir: Path) -> None:
-            (entry_dir / "script.py").write_text(injected_text, encoding="utf-8")
+            (entry_dir / stored_name("python")).write_text(injected_text, encoding="utf-8")
 
         after_copy = _write_injected
         deps_injected = True
@@ -281,6 +267,73 @@ def add_python(
         requires_python="" if deps_injected else requires_python,
     )
     return _add_entry(meta, payload=source if mode == "copy" else None, after_copy=after_copy)
+
+
+def extract_comment_description(text: str, prefix: str) -> str:
+    """The first line of a leading comment block — the docstring analogue for comment
+    languages. Skips the shebang and blank lines; stops at the first code line. A
+    metadata-block opener (`# /// script`) is skipped rather than surfaced (it is
+    machinery, not a description)."""
+    for i, line in enumerate(text.splitlines()):
+        stripped = line.strip()
+        if i == 0 and stripped.startswith("#!"):
+            continue
+        if not stripped:
+            continue
+        if not stripped.startswith(prefix):
+            return ""
+        content = stripped[len(prefix) :].strip()
+        if content.startswith("///"):
+            continue  # a metadata fence, not prose
+        if content:
+            return content
+    return ""
+
+
+def add_script(
+    source: Path,
+    *,
+    kind: str,
+    name: str | None = None,
+    mode: Mode = "copy",
+    description: str | None = None,
+    workdir: str | None = None,
+    interpreter: str = "",
+) -> Entry:
+    """Add an interpreted (non-python) script: shell/fish/js/ts/powershell/ruby/….
+
+    Mirrors add_python's copy/reference semantics: copy mode decouples the entry from
+    its origin (verbatim byte copy, workdir defaults to "invoke"), reference mode never
+    touches the original. The interpreter is recorded from the argument (usually the
+    shebang's program via registry.shebang_program) so a #!/bin/zsh script keeps
+    running under zsh even though the kind's default is bash."""
+    spec = registry.spec_for(kind)
+    if spec is None or spec.family != "interpreted" or not spec.stored_name:
+        raise StoreError(gettext("Unknown entry kind: %(kind)s") % {"kind": kind})
+    source = source.expanduser().resolve()
+    if not source.is_file():
+        raise StoreError(gettext("File not found: %(path)s") % {"path": str(source)})
+    text = source.read_text(encoding="utf-8", errors="replace")
+    prefix = spec.comment.prefix if spec.comment is not None else "#"
+    desc = description if description is not None else extract_comment_description(text, prefix)
+    if mode == "reference":
+        resolved_workdir = "origin"
+    elif workdir is not None:
+        resolved_workdir = workdir
+    else:
+        resolved_workdir = "invoke"  # same decoupling rationale as add_python's copy mode
+    meta = ScriptMeta(
+        name=name or source.stem,
+        kind=kind,
+        mode=mode,
+        source=str(source),
+        source_hash=_hash_file(source),
+        added_at=now_iso(),
+        workdir=resolved_workdir,
+        description=desc,
+        interpreter=interpreter,
+    )
+    return _add_entry(meta, payload=source if mode == "copy" else None)
 
 
 def add_exe(source: Path, *, name: str | None = None, description: str = "") -> Entry:
@@ -357,7 +410,7 @@ def _add_entry(
         try:
             if payload is not None:
                 # copy mode: copy the original verbatim (A5: never land a processed script)
-                shutil.copy2(payload, entry_dir / "script.py")
+                shutil.copy2(payload, entry_dir / stored_name(meta.kind))
             _write_meta(entry_dir, meta)
             if after_copy is not None:
                 after_copy(entry_dir)
@@ -420,19 +473,53 @@ def update_dependencies(
     dependencies: list[str],
     requires_python: str | None = None,
 ) -> Entry:
-    """Update an entry's dependency record (meta.toml). In copy mode, also sync the copy's PEP 723
-    block; in reference mode, only touch meta (the original can't be written, A7) and pass it via
-    --with at run time."""
+    """Update an entry's dependency record (meta.toml). Python copy mode also syncs the copy's
+    PEP 723 block; python reference mode only touches meta (the original can't be written, A7)
+    and passes it via --with at run time. An npm-flavor entry (js/ts) is copy-mode only — the
+    engine materializes node_modules next to the stored copy, and a reference entry's script
+    lives in its own project, whose node_modules already serves it — and a Python constraint
+    is meaningless there, so both are refused loudly rather than recorded and ignored."""
     entry = resolve(name_or_slug)
     meta = entry.meta
+    spec = registry.spec_for(meta.kind)
+    if spec is not None and spec.deps_flavor == "npm":
+        if requires_python:
+            raise StoreUsageError(
+                gettext("A Python constraint doesn't apply to %(kind)s scripts.")
+                % {"kind": meta.kind}
+            )
+        if dependencies and meta.mode != "copy":
+            raise StoreUsageError(
+                gettext(
+                    "%(name)s is a reference-mode entry: it runs from its own project, which "
+                    "already provides its packages. Dependency management applies to copies."
+                )
+                % {"name": meta.name}
+            )
+    if spec is not None and spec.deps_flavor == "npm" and not dependencies:
+        # Sweep node_modules BEFORE writing meta. The disk cleanup is the step that can fail (a
+        # locked file), so doing it first means a failure leaves BOTH the record and the tree
+        # untouched — genuinely retryable, the "leave the entry unchanged" contract the TUI
+        # relies on. (Adding/changing deps has no clear step; the launch path installs.) clear()
+        # takes the entry's install lock so a concurrent run's installer can't have the tree
+        # ripped out from under it and then stamp over the wreckage.
+        from .langs.base import NotExecutableError
+        from .langs.javascript import deps as js_deps
+
+        try:
+            js_deps.clear(entry.dir)
+        except NotExecutableError as exc:
+            raise StoreError(str(exc)) from exc
     meta.dependencies = dependencies or None
     if requires_python is not None:
-        meta.requires_python = requires_python or ""
+        # Strip: a whitespace-only constraint ("   ") is truthy but an unparseable version
+        # specifier that bricks every run — store "" (omitted) instead.
+        meta.requires_python = (requires_python or "").strip()
     _write_meta(entry.dir, meta)
     if meta.kind == "python" and meta.mode == "copy":  # pragma: no mutate — and/or equivalent
         from . import pep723
 
-        script = entry.dir / "script.py"
+        script = entry.script_path
         if script.exists():
             text = script.read_text(encoding="utf-8", errors="replace")
             script.write_text(
@@ -442,6 +529,38 @@ def update_dependencies(
                 encoding="utf-8",
             )
     return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
+
+
+def update_needs(name_or_slug: str, needs: list[str]) -> Entry:
+    """Update an entry's `needs` list (external commands checked on PATH before launch).
+    Mirrors update_dependencies' meta write, but applies to every kind — a shell script
+    or a command template can need `ffmpeg` just as a python script can. An empty list
+    clears the key (stored as None so the meta stays minimal)."""
+    entry = resolve(name_or_slug)
+    meta = entry.meta
+    meta.needs = needs or None
+    _write_meta(entry.dir, meta)
+    return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
+
+
+def write_parameters(name_or_slug: str, decls: list[ParamDecl]) -> Entry:
+    """Persist declared parameter rows to meta.toml [[parameters]] (the schema home for
+    kinds without a text body — exe/command). The legacy `params` placeholder-name list
+    is deliberately NOT derived from decls: the template is the source of truth for
+    WHICH placeholders exist (extract_placeholders at add time), and keeping it
+    untouched is what lets an older skit still prompt for every placeholder
+    (downgrade safety) even when only some carry declared schema."""
+    entry = resolve(name_or_slug)
+    meta = entry.meta
+    meta.parameters = [d.to_meta_dict() for d in decls] or None
+    _write_meta(entry.dir, meta)
+    return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
+
+
+def read_parameters(name_or_slug: str) -> list[ParamDecl]:
+    """The declared [[parameters]] rows of an entry, as decls (nameless rows dropped)."""
+    entry = resolve(name_or_slug)
+    return declared_from_meta(entry.meta.parameters)
 
 
 def rename(name_or_slug: str, new_name: str) -> Entry:
@@ -557,10 +676,14 @@ __all__ = [
     "add_command",
     "add_exe",
     "add_python",
+    "add_script",
     "dir_size",
     "doctor_rebuild",
     "human_size",
     "list_entries",
+    "read_parameters",
     "remove",
     "resolve",
+    "update_needs",
+    "write_parameters",
 ]

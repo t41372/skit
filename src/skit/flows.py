@@ -36,14 +36,27 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import argspec, argstate, launcher, metawriter, reconcile, shim, tokens
-from .analyzer import _is_secret_name
+from . import analysis, argstate, launcher, params, tokens
 from .i18n import gettext
+from .langs.base import (
+    InjectError,
+    InjectGapError,
+    InjectRequest,
+    InjectSplitError,
+    InjectSyntaxError,
+    InjectValueError,
+    LangSpec,
+)
+from .langs.launch import quote_for_shell as launch_quote
+from .langs.python.shim import _coerce
+from .langs.registry import spec_for
 from .models import Entry
-from .shim import ShimValueError, _coerce
+from .params import ParamDecl
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from .langs.base import CliReader
 
 _GLOB_CHARS = ("*", "?", "[")
 
@@ -69,6 +82,80 @@ class FormField:
     multiple: bool = False  # shlex-split + glob-expand each piece
     flag: str = ""  # "--output"; "" = positional (flag source only)
     action: str = ""  # store_true | store_false (bool flags)
+    env_target: str = ""  # env source only: the variable to SET ("" = the field's key)
+
+    @classmethod
+    def from_decl(cls, d: ParamDecl) -> FormField:
+        """Project one ParamDecl onto the render-only form model. The single converter for
+        every value source, dispatched on delivery — the two hand-written converters this
+        replaced (inject-managed params, static CLI flags) plus the command-template
+        placeholder path, kept byte-for-byte to preserve the form's behaviour."""
+        if d.delivery == "inject":
+            # Managed const/input param: injected into a temp copy. source is left to
+            # FormField's own default ("inject"). "str" is intentionally absent from the
+            # type whitelist — an unknown type already falls back to "str".
+            return cls(
+                key=d.name,
+                label=d.prompt or d.name,
+                kind=d.type if d.type in ("int", "float", "bool") else "str",
+                default="" if d.default is None else _render_default(d.default),
+                has_default=d.default is not None,
+                secret=d.secret,
+                env_source=d.env_source,
+            )
+        if d.delivery == "flag":
+            # Reflected from the script's own CLI parser: assembled into real argv. A degraded
+            # field is a free-text field whatever its declared type said.
+            return cls(
+                key=d.name,
+                label=d.name,
+                kind="str" if d.degraded else d.type,
+                source="flag",
+                choices=list(d.choices),
+                default="" if d.default is None else _render_default(d.default),
+                has_default=d.default is not None,
+                help=d.help,
+                required=d.required,
+                secret=d.secret,
+                degraded=d.degraded,
+                multiple=d.multiple,
+                flag=d.flag,
+                action=d.action,
+            )
+        if d.delivery == "env":
+            # Declared env parameter: the value becomes an environment variable on the
+            # child process (zero rewriting — the transparency line shows the overlay).
+            return cls(
+                key=d.name,
+                label=d.prompt or d.name,
+                kind=d.type if d.type in ("int", "float", "bool", "choice") else "str",
+                source="env",
+                choices=list(d.choices),
+                default="" if d.default is None else _render_default(d.default),
+                has_default=d.default is not None,
+                help=d.help,
+                required=d.required,
+                secret=d.secret,
+                env_source=d.env_source,
+                env_target=d.env_target,
+            )
+        # Command-template placeholder (delivery="placeholder"): the value fills a {slot}
+        # in the command string. A declared row supplies real schema (type/choices/default/
+        # optional); an undeclared placeholder arrives as params.synthesized_placeholder,
+        # whose defaults reproduce the historical required-free-text field exactly.
+        return cls(
+            key=d.name,
+            label=d.prompt or d.name,
+            kind=d.type if d.type in ("int", "float", "bool", "choice") else "str",
+            source="placeholder",
+            choices=list(d.choices),
+            default="" if d.default is None else _render_default(d.default),
+            has_default=d.default is not None,
+            help=d.help,
+            required=d.required,
+            secret=d.secret,
+            env_source=d.env_source,
+        )
 
 
 @dataclass
@@ -77,7 +164,7 @@ class FormPlan:
     fields: list[FormField] = field(default_factory=list)
     drift_lines: list[str] = field(default_factory=list)  # localized, shown as a banner
     degraded_reason: str = ""  # argparse whole-parser degradation: "subparsers" | "dynamic"
-    specs: list[metawriter.ParamSpec] = field(default_factory=list)  # inject source only
+    specs: list[ParamDecl] = field(default_factory=list)  # inject source only
     text: str = ""  # script text (inject delivery needs it)
 
     @property
@@ -101,6 +188,11 @@ class Assembly:
     # secret never lands in the scrollback (the process list is a documented boundary;
     # the terminal log needn't be).
     masked_args: list[str] = field(default_factory=list)
+    # env source, expanded: variables overlaid onto the child process environment
+    # (keyed by the TARGET variable name). Empty fields are absent — an unset optional
+    # env param must leave the variable unset so the script's own default applies.
+    env_values: dict[str, str] = field(default_factory=dict)
+    masked_env: dict[str, str] = field(default_factory=dict)  # secrets → ••• for display
 
 
 # --------------------------------------------------------------------------
@@ -108,79 +200,133 @@ class Assembly:
 # --------------------------------------------------------------------------
 
 
-def plan_for_entry(entry: Entry) -> FormPlan:
+def _declared_plan(entry: Entry, lang: LangSpec) -> FormPlan | None:
+    """The declared-schema plans (no source analysis involved): command templates and
+    program entries with [[parameters]] rows. None means "not this path — keep going"."""
+    if lang.family == "template":
+        # The template's placeholder list IS the field list; a declared [[parameters]]
+        # row supplies a placeholder's schema (type/default/optional/secret override),
+        # an undeclared one synthesizes the historical required-free-text field, and
+        # declared env params ride along (see params.declared_for_template).
+        decls = params.declared_for_template(entry.meta.parameters, entry.meta.params or [])
+        return FormPlan(source="command", fields=[FormField.from_decl(d) for d in decls])
+    if lang.params_io is None and lang.cli_reader is None and entry.meta.parameters:
+        # Declared parameters apply to every kind whose param home is meta AND has no other
+        # detected surface — programs (their only possible form) and Tier-0 interpreted kinds
+        # (env is the ${VAR:-default} idiom's zero-rewrite channel even before an analyzer
+        # exists). Reader-bearing kinds (PowerShell) are DELIBERATELY excluded: their declared
+        # rows must MERGE into the reader's param() plan as riders (plan_for_entry), never
+        # short-circuit it — otherwise one declared env var would erase the whole param() form.
+        # Flag rows assemble real argv, env rows overlay the child environment; other deliveries
+        # mean nothing here and are dropped by the filter.
+        decls = [
+            d
+            for d in params.declared_from_meta(entry.meta.parameters)
+            if d.delivery in ("flag", "env")
+        ]
+        if decls:
+            return FormPlan(source="declared", fields=[FormField.from_decl(d) for d in decls])
+    return None
+
+
+def _declared_riders(entry: Entry, taken: set[str]) -> list[FormField]:
+    """Declared [[parameters]] flag/env rows to merge into an analyzable kind's plan, minus any
+    name already fielded from the in-file block. Flag rows assemble real argv, env rows overlay the
+    child environment; other deliveries mean nothing here and are dropped (mirrors _declared_plan)."""
+    return [
+        FormField.from_decl(d)
+        for d in params.declared_from_meta(entry.meta.parameters)
+        if d.delivery in ("flag", "env") and d.name not in taken
+    ]
+
+
+def _reader_plan(entry: Entry, reader: CliReader) -> FormPlan | None:
+    """The form plan for a reader-only kind (PowerShell): read the script's own CLI surface
+    statically and assemble real flags. None when the reader finds nothing readable (no
+    surface, or no tool to run the read) — the caller then falls through to the "none" plan,
+    exactly like the argparse/parseArgs fall-through does for analyzable kinds."""
+    text = entry.script_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
+    spec = reader.read_cli(text)
+    if spec is None:
+        return None
+    # A reader-only kind (PowerShell) never whole-spec-degrades: an unreadable surface comes
+    # back as None (handled above), never as an ok=False ArgSpec, so there is no degraded-reason
+    # branch here — the reader always yields a concrete, assemblable field list.
+    return FormPlan(
+        source="argparse", fields=[FormField.from_decl(a) for a in spec.fields], text=text
+    )
+
+
+def plan_for_entry(entry: Entry) -> FormPlan:  # noqa: PLR0911 — one return per plan source
     """Build the form plan for an entry. Total: unreadable/missing scripts yield the
     "none" plan (extra-args escape only) rather than raising — preflight owns existence
     errors, the form layer just refuses to invent fields it can't see."""
-    if entry.meta.kind == "command":
-        # required: an empty placeholder silently assembles a broken command (`convert '' ''`),
-        # which the non-interactive contract forbids. secret: C3 applies to every source —
-        # a {api_key} placeholder masks and never lands in a state file, like any other secret.
-        fields = [
-            FormField(
-                key=p, label=p, source="placeholder", required=True, secret=_is_secret_name(p)
-            )
-            for p in (entry.meta.params or [])
-        ]
-        return FormPlan(source="command", fields=fields)
-    if entry.meta.kind != "python" or not entry.script_path.exists():
+    lang = spec_for(entry.meta.kind)
+    if lang is not None:
+        declared = _declared_plan(entry, lang)
+        if declared is not None:
+            return declared
+        # Reader-only kinds — a static CLI surface with no analyzer and no injector, i.e.
+        # PowerShell's param() block read through PowerShell's own parser. They have no
+        # in-file [tool.skit] analysis path, so they bypass the inject/reconcile machinery
+        # below and consult the reader directly. Gated on `analyzer is None`, so every
+        # analyzable kind (python/shell/js/ts/fish) keeps its exact existing path — and a
+        # kind whose analyzer AND cli_reader were both degraded to None by a broken grammar
+        # wheel (js/shell) never enters here either (its cli_reader is None too).
+        if lang.analyzer is None and lang.cli_reader is not None and entry.script_path.exists():
+            reader_plan = _reader_plan(entry, lang.cli_reader)
+            # Declared [[parameters]] flag/env rows ride along after the reader's param()
+            # fields, exactly like they merge into an analyzable kind's in-file plan — so
+            # hand-declaring an env var augments the param() form instead of erasing it.
+            if reader_plan is not None:
+                taken = {f.key for f in reader_plan.fields}
+                reader_plan.fields += _declared_riders(entry, taken)
+                return reader_plan
+            riders = _declared_riders(entry, set())
+            if riders:
+                # No readable param() surface, but declared rows still form a plan on their own.
+                return FormPlan(source="declared", fields=riders)
+    if (
+        lang is None
+        or lang.params_io is None
+        or lang.analyzer is None
+        or not entry.script_path.exists()
+    ):
         return FormPlan(source="none")
     text = entry.script_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
-    specs = metawriter.read_params(text)
+    specs = lang.params_io.read(text)
     if specs:
-        report = reconcile.reconcile(text, specs)
-        drift = list(reconcile.drift_lines(report, entry.meta.name)) if report.has_drift else []
+        report = lang.analyzer.reconcile(text, specs)
+        drift = list(analysis.drift_lines(report, entry.meta.name)) if report.has_drift else []
+        fields = [FormField.from_decl(s) for s in report.usable]
+        # MERGE: declared [[parameters]] flag/env rows ride along after the analyzer's in-file
+        # params (a shell/python entry may hand-declare an env or flag channel the analyzer can't
+        # see). Names already fielded from the in-file block win — no duplicate rows. For the
+        # overwhelming case (no meta.parameters) this appends nothing, so the plan is byte-identical.
+        fields += _declared_riders(entry, {f.key for f in fields})
         return FormPlan(
             source="inject",
-            fields=[_field_from_spec(s) for s in report.usable],
+            fields=fields,
             drift_lines=drift,
             specs=report.usable,
             text=text,
         )
-    spec = argspec.read_cli(text)
-    if spec is not None:
-        if not spec.ok:
-            return FormPlan(source="argparse", degraded_reason=spec.reason, text=text)
-        return FormPlan(
-            source="argparse", fields=[_field_from_arg(a) for a in spec.fields], text=text
-        )
+    # No in-file specs, but declared meta rows may still exist (env is the ${VAR:-default} channel
+    # even before anything is managed in-file) — the declared path applies before CLI reflection.
+    riders = _declared_riders(entry, set())
+    if riders:
+        return FormPlan(source="declared", fields=riders, text=text)
+    if lang.cli_reader is not None:
+        spec = lang.cli_reader.read_cli(text)
+        if spec is not None:
+            if not spec.ok:
+                return FormPlan(source="argparse", degraded_reason=spec.reason, text=text)
+            return FormPlan(
+                source="argparse",
+                fields=[FormField.from_decl(a) for a in spec.fields],
+                text=text,
+            )
     return FormPlan(source="none", text=text)
-
-
-def _field_from_spec(s: metawriter.ParamSpec) -> FormField:
-    return FormField(
-        key=s.name,
-        label=s.prompt or s.name,
-        # "str" is intentionally absent from the whitelist: an unknown type already falls back
-        # to "str", so listing it would be redundant (and only breeds equivalent mutants).
-        kind=s.type if s.type in ("int", "float", "bool") else "str",
-        # source is left to FormField's own default ("inject") — inject IS the default source, so
-        # spelling it out here would only be a redundant, unkillable-equivalent mutation site.
-        # test_field_from_spec_maps_every_field pins that the result is "inject".
-        default="" if s.default is None else _render_default(s.default),
-        has_default=s.default is not None,
-        secret=s.secret,
-        env_source=s.env_source,
-    )
-
-
-def _field_from_arg(a: argspec.ArgField) -> FormField:
-    return FormField(
-        key=a.dest,
-        label=a.dest,
-        kind="str" if a.degraded else a.kind,
-        source="flag",
-        choices=list(a.choices),
-        default="" if a.default is None else _render_default(a.default),
-        has_default=a.default is not None,
-        help=a.help,
-        required=a.required,
-        secret=a.secret,
-        degraded=a.degraded,
-        multiple=a.multiple,
-        flag=a.flag,
-        action=a.action,
-    )
 
 
 def _render_default(value: str | int | float | bool) -> str:
@@ -238,11 +384,11 @@ def validate_value(f: FormField, value: str) -> str | None:
 def _type_error(f: FormField, value: str) -> str | None:
     if f.kind in ("int", "float", "bool"):
         try:
-            # f.key feeds only ShimValueError's param_name, which this function discards (it
+            # f.key feeds only InjectValueError's param_name, which this function discards (it
             # rebuilds the message from f.label below); f.key -> None is thus equivalent. The
             # killable value/kind coercion stays covered by test_type_error_messages_exact.
             _coerce(value, f.kind, f.key)  # pragma: no mutate
-        except ShimValueError:
+        except InjectValueError:
             type_names = {
                 "int": gettext("a whole number"),
                 "float": gettext("a number"),
@@ -325,31 +471,39 @@ def assemble(
     else:
         expanded_extra = list(extra_args)
     out = Assembly(display=display)
-    if plan.source == "inject":
-        out.inject_values = {k: v for k, v in final.items() if v}
-        out.args = expanded_extra
-        out.masked_args = list(expanded_extra)
-    elif plan.source == "argparse":
+    # Routing is per FIELD on its source (the delivery axis), not per plan: one plan can
+    # legitimately mix deliveries (declared flag+env params on a program entry;
+    # placeholders + env params on a command template). final[f.key] is always present
+    # (the loop above wrote every field's key).
+    out.inject_values = {
+        f.key: final[f.key] for f in plan.fields if f.source == "inject" and final[f.key]
+    }
+    if any(f.source == "flag" for f in plan.fields):
         out.args = _assemble_flags(plan, final, cwd) + expanded_extra
-        # final[f.key] is always present (the loop above wrote every field's key).
         masked_final = {
             f.key: ("•••" if f.secret and final[f.key] else final[f.key]) for f in plan.fields
         }
         out.masked_args = _assemble_flags(plan, masked_final, cwd) + expanded_extra
-    elif plan.source == "command":
-        out.command_values = final
-        # A {api_key} placeholder is a secret like any other: mask its value in the shown
-        # command line so it never reaches the scrollback / --dry-run output, while the
-        # real value still substitutes into the process that runs. final[f.key] is always
-        # present (the loop above wrote every field's key).
-        out.masked_command_values = {
-            f.key: ("•••" if f.secret and final[f.key] else final[f.key]) for f in plan.fields
-        }
-        out.args = expanded_extra
-        out.masked_args = list(expanded_extra)
     else:
         out.args = expanded_extra
         out.masked_args = list(expanded_extra)
+    placeholder_fields = [f for f in plan.fields if f.source == "placeholder"]
+    if placeholder_fields:
+        out.command_values = {f.key: final[f.key] for f in placeholder_fields}
+        # A {api_key} placeholder is a secret like any other: mask its value in the shown
+        # command line so it never reaches the scrollback / --dry-run output, while the
+        # real value still substitutes into the process that runs.
+        out.masked_command_values = {
+            f.key: ("•••" if f.secret and final[f.key] else final[f.key])
+            for f in placeholder_fields
+        }
+    # Empty env fields are ABSENT (not set to ""): leaving the variable unset is what
+    # lets the script's own default fire; an empty-string export would shadow it.
+    env_fields = [f for f in plan.fields if f.source == "env" and final[f.key]]
+    out.env_values = {(f.env_target or f.key): final[f.key] for f in env_fields}
+    out.masked_env = {
+        (f.env_target or f.key): ("•••" if f.secret else final[f.key]) for f in env_fields
+    }
     return out
 
 
@@ -398,6 +552,8 @@ def _assemble_flags(plan: FormPlan, final: Mapping[str, str], cwd: Path) -> list
     positionals: list[str] = []
     flags: list[str] = []
     for f in plan.fields:
+        if f.source != "flag":
+            continue  # mixed-delivery plans: env/placeholder fields never enter argv
         value = final.get(f.key, "")
         if f.kind == "bool":
             fired = _coerce_bool_lenient(value)
@@ -527,8 +683,13 @@ def transparency_lines(entry: Entry, asm: Assembly, injected: Path | None) -> li
                 "  (written to a temporary copy, deleted after the run; your original file is untouched)"
             )
         )
+    # Env-delivered values render as a copy-pasteable VAR=value prefix (masked) — the
+    # honest picture of what actually happens: the child process env is overlaid, the
+    # script itself is never rewritten for these.
+    env_prefix = "".join(f"{k}={launch_quote(v)} " for k, v in asm.masked_env.items())
     lines.append(
         "→ "
+        + env_prefix
         + launcher.describe_command(
             entry, asm.masked_args, asm.masked_command_values, script_override=injected
         )
@@ -536,7 +697,28 @@ def transparency_lines(entry: Entry, asm: Assembly, injected: Path | None) -> li
     return lines
 
 
-def execute(
+def _split_message(exc: InjectSplitError) -> str:
+    """The user-facing wording for each way a `read` line would mangle a value. A closed dict of
+    gettext literals (never gettext(reason)) so Babel can extract them — the same discipline
+    analysis.render_warning uses."""
+    return {
+        "line-break": gettext(
+            "%(name)s can't contain a line break: a shell `read` takes ONE line, so everything "
+            "after the break would be thrown away."
+        ),
+        "field-split": gettext(
+            "%(name)s is read on the same line as other values, so its value can't contain spaces "
+            "or tabs — the shell would split it across the other fields. Only the LAST value on a "
+            "`read` line may contain spaces."
+        ),
+        "edge-space": gettext(
+            "%(name)s starts or ends with a space or tab, which a shell `read` strips off the "
+            "line — the script would receive it trimmed. Remove the surrounding whitespace."
+        ),
+    }[exc.reason] % {"name": exc.name}
+
+
+def execute(  # noqa: PLR0911, PLR0912 — one early return/branch per injection failure mode; a flat error dispatch
     entry: Entry,
     plan: FormPlan,
     asm: Assembly,
@@ -552,18 +734,55 @@ def execute(
     boundary (the TUI must call this inside App.suspend()), the run banner, and mapping
     the outcome to an exit code or a status line. emit receives already-localized plain
     lines; the renderer styles them (dim console print / bare print).
+
+    Injection is the kind's own `injector` capability (python rewrites a temp copy; shell
+    picks per parameter between an environment overlay and a temp-copy rewrite), so this
+    function knows nothing about any language. A kind with no injector simply doesn't
+    inject — the same degradation as a missing analyzer, and unreachable in practice since
+    an inject plan only exists where an analyzer does.
     """
     injected: Path | None = None
     try:
-        if plan.source == "inject" and asm.inject_values:
+        # The injector's env overlay rides ON TOP of the assembled env-delivered values:
+        # both are "set this variable on the child", and a shell entry can legitimately
+        # produce both at once (a declared env rider plus an envdefault param).
+        env_overlay = dict(asm.env_values)
+        spec = spec_for(entry.meta.kind)
+        if (
+            plan.source == "inject"
+            and asm.inject_values
+            and spec is not None
+            and spec.injector is not None
+        ):
             try:
-                # entry.dir is write_injected's fallback directory (used only when the OS
-                # temp dir isn't writable); test_execute_inject_falls_back_to_entry_dir
-                # pins that this run passes it through.
-                injected = shim.write_injected(
-                    entry.dir, shim.inject(plan.text, plan.specs, asm.inject_values)
+                result = spec.injector.inject(
+                    InjectRequest(
+                        text=plan.text,
+                        specs=plan.specs,
+                        values=asm.inject_values,
+                        # entry.dir is write_injected's fallback directory (used only when
+                        # the OS temp dir isn't writable);
+                        # test_execute_inject_falls_back_to_entry_dir pins that this run
+                        # passes it through.
+                        entry_dir=entry.dir,
+                        interpreter=entry.meta.interpreter or spec.default_interpreter,
+                        # Deps-managed npm entries run their temp copy FROM entry_dir, so the
+                        # runner's upward module resolution still finds entry_dir/node_modules.
+                        # (A no-deps entry's temp copy stays in the OS temp dir — the secret-leftover
+                        # default; a consequence, shared with the Python injector's __file__, is that
+                        # `__dirname`/`import.meta.url` differ between an injected and a stored run.)
+                        prefer_entry_dir=(
+                            spec.deps_flavor == "npm"
+                            and entry.meta.mode == "copy"
+                            and bool(entry.meta.dependencies)
+                        ),
+                        # The original filename, so the JS/TS injector can give its temp copy an
+                        # .mjs/.cjs extension when the origin pinned a module flavor (the store
+                        # flattens the stored copy to script.js, losing that signal otherwise).
+                        source=entry.meta.source,
+                    )
                 )
-            except ShimValueError as exc:
+            except InjectValueError as exc:
                 return RunOutcome(
                     None,
                     FAIL_BAD_VALUE,
@@ -574,7 +793,29 @@ def execute(
                         "param": exc.param_name,
                     },
                 )
-            except shim.ShimError as exc:
+            except InjectGapError as exc:
+                return RunOutcome(
+                    None,
+                    FAIL_BAD_VALUE,
+                    gettext(
+                        "%(empty)s is empty, but %(filled)s is filled and they are read on the "
+                        "same line — a shell `read` would hand your value to %(empty)s. Fill "
+                        "%(empty)s in, or clear %(filled)s."
+                    )
+                    % {"empty": exc.empty, "filled": exc.filled},
+                )
+            except InjectSplitError as exc:
+                return RunOutcome(None, FAIL_BAD_VALUE, _split_message(exc))
+            except InjectSyntaxError as exc:
+                # skit corrupted the script (a quoting/escaping bug) — a resync fixes
+                # nothing, so this must NOT carry the drift hint. Nothing was launched.
+                return RunOutcome(
+                    None,
+                    FAIL_DRIFT,
+                    gettext("skit refused to run its own injected copy: %(detail)s")
+                    % {"detail": str(exc)},
+                )
+            except InjectError as exc:
                 return RunOutcome(
                     None,
                     FAIL_DRIFT,
@@ -584,6 +825,10 @@ def execute(
                     )
                     % {"name": entry.meta.name, "detail": str(exc)},
                 )
+            injected = result.path
+            env_overlay.update(result.env)
+            for line in result.warnings:
+                emit(line)
         for line in transparency_lines(entry, asm, injected):
             emit(line)
         try:
@@ -593,6 +838,7 @@ def execute(
                 values=asm.command_values,
                 invoke_cwd=invoke_cwd,
                 script_override=injected,
+                env_overlay=env_overlay,
             )
         except launcher.TargetMissingError as exc:
             return RunOutcome(None, FAIL_MISSING, str(exc))

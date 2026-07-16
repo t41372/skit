@@ -16,13 +16,25 @@ import sys
 import tomllib
 from typing import Any
 
-_BLOCK_RE = re.compile(
-    # The closer's trailing whitespace is restricted to horizontal whitespace ([^\S\n], i.e. space /
-    # tab / \r for CRLF) so it cannot cross a line boundary and swallow blank lines that follow the
-    # block — `\s*$` would otherwise match greedily across newlines and absorb them into the block,
-    # deleting them on rewrite (metawriter/pep723 both rebuild the text from m.end()).
-    r"(?m)^# /// script\s*$\n(?P<body>(?:^#(?:| .*)$\n)*?)^# ///[^\S\n]*$\n?",
-)
+
+def _block_re(leader: str) -> re.Pattern[str]:
+    """The inline-metadata block regex for a given line-comment `leader` ("#" for Python/shell,
+    "//" for JS/TS). One engine, two comment dialects: `# /// script … # ///` and
+    `// /// script … // ///`. Neither "#" nor "//" carries a regex metacharacter, so the leader is
+    spliced in literally — `_block_re("#").pattern` is therefore byte-identical to the historical
+    frozen pattern (pinned by a regression test), which is what keeps the Python golden corpus intact.
+
+    The closer's trailing whitespace is restricted to horizontal whitespace ([^\\S\\n], i.e. space /
+    tab / \\r for CRLF) so it cannot cross a line boundary and swallow blank lines that follow the
+    block — `\\s*$` would otherwise match greedily across newlines and absorb them into the block,
+    deleting them on rewrite (metawriter/pep723 both rebuild the text from m.end()).
+    """
+    return re.compile(
+        rf"(?m)^{leader} /// script\s*$\n(?P<body>(?:^{leader}(?:| .*)$\n)*?)^{leader} ///[^\S\n]*$\n?",
+    )
+
+
+_BLOCK_RE = _block_re("#")
 
 # Import name -> PyPI distribution name, for the common cases where they differ. Without this an
 # `import PIL` becomes a `PIL` dependency, which uv can't resolve (the package is `Pillow`). Curated
@@ -54,27 +66,29 @@ _IMPORT_TO_PACKAGE = {
 }
 
 
-def _strip_comment_prefix(line: str) -> str:
-    """_BLOCK_RE guarantees "#" or "# ..." lines; both branches agree on a bare "#"."""
-    if line.startswith("# "):  # pragma: no mutate — TOML tolerates the extra leading space
-        return line[2:]
-    return line[1:]  # pragma: no mutate — only reached on a bare "#"; [1:] == [2:] == ""
+def _strip_comment_prefix(line: str, leader: str = "#") -> str:
+    """_block_re guarantees `leader` or `leader ...` lines; both branches agree on a bare leader."""
+    prefix = leader + " "
+    if line.startswith(prefix):  # pragma: no mutate — TOML tolerates the extra leading space
+        return line[len(prefix) :]
+    # pragma: no mutate — only reached on a bare leader; [len(leader):] == [len(prefix):] == ""
+    return line[len(leader) :]
 
 
-def parse_block(text: str) -> dict[str, Any] | None:
-    """Return the PEP 723 metadata dict (dependencies / requires-python); None if no block."""
-    m = _BLOCK_RE.search(text)
+def parse_block(text: str, leader: str = "#") -> dict[str, Any] | None:
+    """Return the inline-metadata dict (dependencies / requires-python); None if no block."""
+    m = _block_re(leader).search(text)
     if not m:
         return None
-    lines = [_strip_comment_prefix(line) for line in m.group("body").splitlines()]
+    lines = [_strip_comment_prefix(line, leader) for line in m.group("body").splitlines()]
     try:
         return tomllib.loads("\n".join(lines))
     except tomllib.TOMLDecodeError:
         return None
 
 
-def has_block(text: str) -> bool:
-    return _BLOCK_RE.search(text) is not None
+def has_block(text: str, leader: str = "#") -> bool:
+    return _block_re(leader).search(text) is not None
 
 
 def suggest_dependencies(text: str) -> list[str]:
@@ -169,18 +183,18 @@ def _toml_str(value: str) -> str:
     return '"' + "".join(_escape(ch) for ch in out) + '"'
 
 
-def build_block(dependencies: list[str], requires_python: str = "") -> str:
-    """Generate the PEP 723 block text (including the trailing newline)."""
-    lines = ["# /// script"]
+def build_block(dependencies: list[str], requires_python: str = "", leader: str = "#") -> str:
+    """Generate the inline-metadata block text (including the trailing newline)."""
+    lines = [f"{leader} /// script"]
     if requires_python:
-        lines.append(f"# requires-python = {_toml_str(requires_python)}")
+        lines.append(f"{leader} requires-python = {_toml_str(requires_python)}")
     if dependencies:
-        lines.append("# dependencies = [")
-        lines.extend(f"#     {_toml_str(dep)}," for dep in dependencies)
-        lines.append("# ]")
+        lines.append(f"{leader} dependencies = [")
+        lines.extend(f"{leader}     {_toml_str(dep)}," for dep in dependencies)
+        lines.append(f"{leader} ]")
     else:
-        lines.append("# dependencies = []")
-    lines.append("# ///")
+        lines.append(f"{leader} dependencies = []")
+    lines.append(f"{leader} ///")
     return "\n".join(lines) + "\n"
 
 
@@ -225,18 +239,20 @@ def _structural_bracket_delta(s: str) -> int:
     return delta
 
 
-def set_dependencies(text: str, dependencies: list[str], requires_python: str = "") -> str:
+def set_dependencies(
+    text: str, dependencies: list[str], requires_python: str = "", leader: str = "#"
+) -> str:
     """Update the dependencies / requires-python lines in an existing block, keeping the rest
     (such as [tool.skit]). With no block this behaves like inject_block. Still comment-only (A5)."""
-    m = _BLOCK_RE.search(text)
+    m = _block_re(leader).search(text)
     if not m:
-        return inject_block(text, dependencies, requires_python)
+        return inject_block(text, dependencies, requires_python, leader)
     body_lines = m.group("body").splitlines()
     kept: list[str] = []
     in_deps_array = False  # pragma: no mutate — only read via truthiness (`if in_deps_array`)
     depth = 0
     for line in body_lines:
-        stripped = _strip_comment_prefix(line)
+        stripped = _strip_comment_prefix(line, leader)
         if in_deps_array:
             # Track bracket nesting depth rather than requiring the closer to be alone on its line:
             # a hand-edited array may close on the same line as the last element (`"requests"]`) or
@@ -262,22 +278,29 @@ def set_dependencies(text: str, dependencies: list[str], requires_python: str = 
         kept.append(line)
     new_head: list[str] = []
     if requires_python:
-        new_head.append(f"# requires-python = {_toml_str(requires_python)}")
+        new_head.append(f"{leader} requires-python = {_toml_str(requires_python)}")
     if dependencies:
-        new_head.append("# dependencies = [")
-        new_head.extend(f"#     {_toml_str(dep)}," for dep in dependencies)
-        new_head.append("# ]")
+        new_head.append(f"{leader} dependencies = [")
+        new_head.extend(f"{leader}     {_toml_str(dep)}," for dep in dependencies)
+        new_head.append(f"{leader} ]")
     else:
-        new_head.append("# dependencies = []")
+        new_head.append(f"{leader} dependencies = []")
     new_body = "\n".join(new_head + kept) + "\n"
-    new_block = "# /// script\n" + new_body + "# ///\n"
+    new_block = f"{leader} /// script\n" + new_body + f"{leader} ///\n"
     return text[: m.start()] + new_block + text[m.end() :]
 
 
-def inject_block(text: str, dependencies: list[str], requires_python: str = "") -> str:
+def inject_block(
+    text: str, dependencies: list[str], requires_python: str = "", leader: str = "#"
+) -> str:
     """Insert the block at the top of the script (after shebang / coding declarations).
-    If a block already exists, return the text unchanged."""
-    if has_block(text):
+    If a block already exists, return the text unchanged.
+
+    The shebang is always `#!` regardless of the comment leader (`#!/usr/bin/env node` is legal
+    in a `.mjs` file), so only the block-comment leader varies; the coding-declaration skip is a
+    Python-only line shape (`# -*- coding: … -*-`) and is a harmless no-op for a `//` leader, whose
+    lines never start with `#`."""
+    if has_block(text, leader):
         return text
     lines = text.splitlines(keepends=True)
     insert_at = 0
@@ -285,7 +308,7 @@ def inject_block(text: str, dependencies: list[str], requires_python: str = "") 
         insert_at = 1
     if len(lines) > insert_at and re.match(r"^#.*coding[:=]", lines[insert_at]):
         insert_at += 1
-    block = build_block(dependencies, requires_python)
+    block = build_block(dependencies, requires_python, leader)
     prefix = "".join(lines[:insert_at])
     suffix = "".join(lines[insert_at:])
     sep = "\n" if suffix and not suffix.startswith("\n") else ""

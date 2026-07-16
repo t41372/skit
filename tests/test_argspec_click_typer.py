@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from skit import argspec
+from skit.langs.python import argspec
 
 CLICK_SCRIPT = """
 import click
@@ -44,7 +44,7 @@ def test_click_fields_bottom_up_order_matches_runtime():
     assert spec is not None
     assert spec.ok
     # click applies decorators bottom-up: the bottom @click.argument is param #1.
-    assert [f.dest for f in spec.fields] == ["inputs", "fast", "mode", "gap", "output"]
+    assert [f.name for f in spec.fields] == ["inputs", "fast", "mode", "gap", "output"]
 
 
 def test_click_argument_variadic_is_multiple_not_required():
@@ -59,13 +59,13 @@ def test_click_argument_variadic_is_multiple_not_required():
 def test_click_is_flag_choice_int_and_required():
     spec = argspec.read_cli(CLICK_SCRIPT)
     assert spec is not None
-    by = {f.dest: f for f in spec.fields}
-    assert by["fast"].kind == "bool"
+    by = {f.name: f for f in spec.fields}
+    assert by["fast"].type == "bool"
     assert by["fast"].action == "store_true"
-    assert by["mode"].kind == "choice"
-    assert by["mode"].choices == ["a", "b"]
+    assert by["mode"].type == "choice"
+    assert by["mode"].choices == ("a", "b")
     assert by["mode"].default == "a"
-    assert by["gap"].kind == "int"
+    assert by["gap"].type == "int"
     assert by["gap"].default == 0
     assert by["output"].required is True
     assert by["output"].flag == "--output"
@@ -108,17 +108,17 @@ def test_typer_signature_order_and_kinds():
     spec = argspec.read_cli(TYPER_SCRIPT)
     assert spec is not None
     assert spec.ok
-    assert [f.dest for f in spec.fields] == ["inputs", "output", "gap", "fast", "label"]
-    by = {f.dest: f for f in spec.fields}
+    assert [f.name for f in spec.fields] == ["inputs", "output", "gap", "fast", "label"]
+    by = {f.name: f for f in spec.fields}
     assert by["inputs"].flag == ""  # Argument -> positional
     assert by["inputs"].required is True  # Ellipsis default
     assert by["output"].flag == "--output"
     assert by["output"].required is True
     assert by["output"].help == "output path"
-    assert by["gap"].kind == "int"
+    assert by["gap"].type == "int"
     assert by["gap"].default == 0
     assert by["gap"].flag == "--gap"  # derived from the parameter name
-    assert by["fast"].kind == "bool"
+    assert by["fast"].type == "bool"
     assert by["fast"].action == "store_true"
     assert by["label"].default == "x"  # plain literal default becomes an option
     assert by["label"].flag == "--label"
@@ -127,8 +127,8 @@ def test_typer_signature_order_and_kinds():
 def test_typer_run_pattern_reads_the_function():
     spec = argspec.read_cli("import typer\n\ndef main(n: int = 3):\n    pass\n\ntyper.run(main)\n")
     assert spec is not None
-    assert spec.fields[0].dest == "n"
-    assert spec.fields[0].kind == "int"
+    assert spec.fields[0].name == "n"
+    assert spec.fields[0].type == "int"
     assert spec.fields[0].default == 3
 
 
@@ -168,7 +168,7 @@ def test_argparse_still_wins_when_present():
     )
     spec = argspec.read_cli(text)
     assert spec is not None
-    assert [f.dest for f in spec.fields] == ["x"]
+    assert [f.name for f in spec.fields] == ["x"]
 
 
 def test_read_cli_none_for_plain_scripts():
@@ -184,7 +184,8 @@ def test_read_cli_none_for_plain_scripts():
 def test_click_field_orders_increment_by_one():
     spec = argspec.read_cli(CLICK_SCRIPT)
     assert spec is not None
-    assert [f.order for f in spec.fields] == [0, 1, 2, 3, 4]
+    # Order is list position now: five decorators -> five fields, in decorator-runtime order.
+    assert [i for i, _ in enumerate(spec.fields)] == [0, 1, 2, 3, 4]
 
 
 def test_click_from_import_form_is_recognized():
@@ -192,7 +193,7 @@ def test_click_from_import_form_is_recognized():
         "from click import command, option\n@command()\n@option('--x', type=int)\ndef m(x): pass\n"
     )
     assert spec is not None
-    assert [f.dest for f in spec.fields] == ["x"]
+    assert [f.name for f in spec.fields] == ["x"]
 
 
 def test_click_dotted_import_is_recognized():
@@ -201,7 +202,7 @@ def test_click_dotted_import_is_recognized():
         "@click.command()\n@click.option('--x')\ndef m(x): pass\n"
     )
     assert spec is not None
-    assert [f.dest for f in spec.fields] == ["x"]
+    assert [f.name for f in spec.fields] == ["x"]
 
 
 def test_click_secret_name_precheck_and_flag_default():
@@ -211,7 +212,7 @@ def test_click_secret_name_precheck_and_flag_default():
         "def m(api_key, fast): pass\n"
     )
     assert spec is not None
-    by = {f.dest: f for f in spec.fields}
+    by = {f.name: f for f in spec.fields}
     assert by["api_key"].secret is True
     assert by["fast"].secret is False
     assert by["fast"].default is False  # an is_flag option starts unchecked
@@ -227,7 +228,7 @@ def test_click_uppercase_type_constants():
     )
     assert spec is not None
     # Bottom-up decorator order: STRING, FLOAT, INT.
-    assert [f.kind for f in spec.fields] == ["str", "float", "int"]
+    assert [f.type for f in spec.fields] == ["str", "float", "int"]
     assert all(f.degraded is False for f in spec.fields)
 
 
@@ -240,7 +241,7 @@ def test_click_non_choice_call_type_degrades_even_with_list_arg():
     )
     assert spec is not None
     assert spec.fields[0].degraded is True
-    assert spec.fields[0].choices == []
+    assert spec.fields[0].choices == ()
 
 
 def test_click_non_literal_default_degrades():
@@ -266,7 +267,7 @@ def test_click_short_flag_only_and_help():
     )
     assert spec is not None
     assert spec.fields[0].flag == "-v"
-    assert spec.fields[0].dest == "v"
+    assert spec.fields[0].name == "v"
     assert spec.fields[0].help == "verbosity"
 
 
@@ -275,13 +276,14 @@ def test_typer_from_import_form_is_recognized():
         "from typer import Typer\napp = Typer()\n@app.command()\ndef m(x: int = 1): pass\n"
     )
     assert spec is not None
-    assert [f.dest for f in spec.fields] == ["x"]
+    assert [f.name for f in spec.fields] == ["x"]
 
 
 def test_typer_orders_match_signature_positions():
     spec = argspec.read_cli(TYPER_SCRIPT)
     assert spec is not None
-    assert [f.order for f in spec.fields] == [0, 1, 2, 3, 4]
+    # Order is list position now: five parameters -> five fields, in signature order.
+    assert [i for i, _ in enumerate(spec.fields)] == [0, 1, 2, 3, 4]
 
 
 def test_typer_bare_positional_no_default():
@@ -290,7 +292,7 @@ def test_typer_bare_positional_no_default():
     f = spec.fields[0]
     assert f.flag == ""  # positional
     assert f.required is True
-    assert f.kind == "int"
+    assert f.type == "int"
     assert f.degraded is False
 
 
@@ -298,7 +300,7 @@ def test_typer_unannotated_param_is_plain_text_not_degraded():
     spec = argspec.read_cli("import typer\n\ndef main(x=1): pass\n\ntyper.run(main)\n")
     assert spec is not None
     f = spec.fields[0]
-    assert f.kind == "str"
+    assert f.type == "str"
     assert f.degraded is False
     assert f.default == 1
 
@@ -359,7 +361,7 @@ def test_click_dotted_only_import_counts():
         "import click.testing\n@click.command()\n@click.option('--x')\ndef m(x): pass\n"
     )
     assert spec is not None
-    assert [f.dest for f in spec.fields] == ["x"]
+    assert [f.name for f in spec.fields] == ["x"]
 
 
 def test_click_from_dotted_module_counts():
@@ -367,7 +369,7 @@ def test_click_from_dotted_module_counts():
         "from click.decorators import command, option\n@command()\n@option('--x')\ndef m(x): pass\n"
     )
     assert spec is not None
-    assert [f.dest for f in spec.fields] == ["x"]
+    assert [f.name for f in spec.fields] == ["x"]
 
 
 def test_typer_dotted_only_import_counts():
@@ -375,7 +377,7 @@ def test_typer_dotted_only_import_counts():
         "import typer.main\n\ndef main(n: int = 1):\n    pass\n\ntyper.run(main)\n"
     )
     assert spec is not None
-    assert [f.dest for f in spec.fields] == ["n"]
+    assert [f.name for f in spec.fields] == ["n"]
 
 
 def test_typer_from_dotted_module_counts():
@@ -383,7 +385,7 @@ def test_typer_from_dotted_module_counts():
         "from typer.main import Typer\napp = Typer()\n@app.command()\ndef m(x: int = 1): pass\n"
     )
     assert spec is not None
-    assert [f.dest for f in spec.fields] == ["x"]
+    assert [f.name for f in spec.fields] == ["x"]
 
 
 def test_click_two_commands_without_group_degrade():
@@ -410,7 +412,7 @@ def test_click_foreign_decorators_between_options_are_skipped_not_fatal():
         "def m(first, second): pass\n"
     )
     assert spec is not None
-    assert sorted(f.dest for f in spec.fields) == ["first", "second"]
+    assert sorted(f.name for f in spec.fields) == ["first", "second"]
 
 
 def test_click_non_literal_name_skips_that_call_only():
@@ -419,7 +421,7 @@ def test_click_non_literal_name_skips_that_call_only():
         "@click.option(FLAG_CONST)\n@click.option('--real')\ndef m(real): pass\n"
     )
     assert spec is not None
-    assert [f.dest for f in spec.fields] == ["real"]
+    assert [f.name for f in spec.fields] == ["real"]
 
 
 def test_click_partly_non_literal_names_skip_that_call_only():
@@ -428,7 +430,7 @@ def test_click_partly_non_literal_names_skip_that_call_only():
         "@click.option('-x', EXTRA)\n@click.option('--real')\ndef m(x, real): pass\n"
     )
     assert spec is not None
-    assert [f.dest for f in spec.fields] == ["real"]
+    assert [f.name for f in spec.fields] == ["real"]
 
 
 def test_click_short_first_declaration_still_prefers_long_flag():
@@ -437,7 +439,7 @@ def test_click_short_first_declaration_still_prefers_long_flag():
     )
     assert spec is not None
     assert spec.fields[0].flag == "--output"
-    assert spec.fields[0].dest == "output"
+    assert spec.fields[0].name == "output"
 
 
 def test_click_dest_strips_dashes_not_letters():
@@ -445,7 +447,7 @@ def test_click_dest_strips_dashes_not_letters():
         "import click\n@click.command()\n@click.option('--Xray')\ndef m(xray): pass\n"
     )
     assert spec is not None
-    assert spec.fields[0].dest == "Xray"
+    assert spec.fields[0].name == "Xray"
 
 
 def test_click_default_none_is_clean():
@@ -465,7 +467,7 @@ def test_click_bare_float_and_str_types():
     )
     assert spec is not None
     # bottom-up: s first, then r
-    assert [f.kind for f in spec.fields] == ["str", "float"]
+    assert [f.type for f in spec.fields] == ["str", "float"]
     assert all(f.degraded is False for f in spec.fields)
 
 
@@ -521,7 +523,7 @@ def test_typer_bool_true_degrade_renders_as_text():
     assert spec is not None
     f = spec.fields[0]
     assert f.degraded is True
-    assert f.kind == "str"  # the degrade path pins the free-text kind exactly
+    assert f.type == "str"  # the degrade path pins the free-text kind exactly
 
 
 def test_typer_bool_false_flag_contract_exact():
@@ -530,7 +532,7 @@ def test_typer_bool_false_flag_contract_exact():
     )
     assert spec is not None
     f = spec.fields[0]
-    assert f.kind == "bool"
+    assert f.type == "bool"
     assert f.action == "store_true"
     assert f.default is False
     assert f.degraded is False
@@ -543,7 +545,7 @@ def test_click_non_literal_choice_list_degrades():
     )
     assert spec is not None
     assert spec.fields[0].degraded is True
-    assert spec.fields[0].kind != "choice"
+    assert spec.fields[0].type != "choice"
 
 
 def test_typer_unmodelable_annotation_degrades_despite_literal_default():
@@ -591,14 +593,14 @@ def test_annotated_reads_type_and_metadata():
     spec = argspec.read_cli(ANNOTATED_SCRIPT)
     assert spec is not None
     assert spec.ok
-    by = {f.dest: f for f in spec.fields}
+    by = {f.name: f for f in spec.fields}
     # Argument -> required positional, type from Annotated's first arg
     assert by["name"].flag == ""
     assert by["name"].required is True
-    assert by["name"].kind == "str"
+    assert by["name"].type == "str"
     assert by["name"].help == "who"
     # Option with a literal `= default`, type int
-    assert by["count"].kind == "int"
+    assert by["count"].type == "int"
     assert by["count"].default == 3
     assert by["count"].flag == "--count"
     assert by["count"].help == "how many"
@@ -607,7 +609,7 @@ def test_annotated_reads_type_and_metadata():
     assert by["mode"].flag == "--mode"
     assert by["mode"].default == "fast"
     # bool option defaulting False -> checkbox
-    assert by["fast"].kind == "bool"
+    assert by["fast"].type == "bool"
     assert by["fast"].action == "store_true"
 
 
@@ -620,7 +622,7 @@ def test_annotated_option_without_default_is_required():
     f = spec.fields[0]
     assert f.flag == "--x"  # still an option, not a positional
     assert f.required is True
-    assert f.kind == "int"
+    assert f.type == "int"
 
 
 def test_annotated_argument_with_default_is_optional_positional():
@@ -662,7 +664,7 @@ def test_annotated_choice_via_typing_qualified_name():
         "def main(gap: typing.Annotated[int, typer.Option()] = 0):\n    pass\n\ntyper.run(main)\n"
     )
     assert spec is not None
-    assert spec.fields[0].kind == "int"
+    assert spec.fields[0].type == "int"
     assert spec.fields[0].default == 0
 
 
@@ -682,7 +684,7 @@ def test_legacy_typer_style_still_works_after_annotated_refactor():
     # untouched by the Annotated addition.
     spec = argspec.read_cli(TYPER_SCRIPT)
     assert spec is not None
-    by = {f.dest: f for f in spec.fields}
+    by = {f.name: f for f in spec.fields}
     assert by["output"].required is True
     assert by["gap"].default == 0
     assert by["fast"].action == "store_true"
@@ -707,7 +709,7 @@ def test_annotated_without_typer_metadata_reads_as_plain_type():
     )
     assert spec is not None
     f = spec.fields[0]
-    assert f.kind == "int"
+    assert f.type == "int"
     assert f.default == 5
     assert f.degraded is False
 

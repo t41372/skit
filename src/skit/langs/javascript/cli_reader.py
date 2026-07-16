@@ -1,0 +1,197 @@
+"""Static parseArgs reader: turn a literal `util.parseArgs({options:{…}})` into form fields.
+
+The JS/TS analogue of the argparse reader (`langs/python/argspec.py`): a script that parses its own
+CLI doesn't get injection — skit reads its `options` declaration statically and renders the same
+form, then assembles real flags. Node's built-in `util.parseArgs` is the standard, dependency-free
+CLI surface, so it is the one reader here.
+
+Honesty rules (mirrors argspec's A4/C4 stance — never execute the user's script):
+- Only a LITERAL, inline `options` object is trusted. Each option's `type`/`default` must be a
+  literal or the field degrades to a free-text field that is omitted when left empty (the script's
+  own default then applies).
+- A surface that can't be modeled at all — `options` is an identifier reference, or a spread
+  (`...common`) merges in options from elsewhere — degrades the WHOLE spec: the form keeps only the
+  passthrough-args escape field, and the UI says so instead of pretending.
+- A computed key (`[flag]: …`) skips just that one field (its name is dynamic — unnameable).
+
+Headless; parses via tree-sitter (the analyzer's grammar handle), no query strings.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from tree_sitter import Parser
+
+from ...params import ParamDecl, is_secret_name
+from ..python.argspec import ArgSpec
+from .analyzer import _literal_value, _string_value, _text, _walk, language_for
+
+if TYPE_CHECKING:
+    from tree_sitter import Node
+
+
+def read_cli(  # noqa: PLR0911 — one early return per unreadable/degrade path; a flat dispatch
+    text: str, *, lang: str = "js"
+) -> ArgSpec | None:
+    """Read the script's `util.parseArgs` surface. None when there's nothing parseArgs-shaped (so
+    callers fall back to the other form sources); an ArgSpec with ok=False when the surface exists
+    but can't be modeled (whole-spec degrade)."""
+    root = Parser(language_for(lang)).parse(text.encode("utf-8")).root_node
+    if root.has_error:
+        return None
+    call = _find_parseargs(root)
+    if call is None:
+        return None
+    config = _first_argument(call)
+    if config is None or config.type != "object":
+        return None  # parseArgs() with no config object at all — no readable surface
+    options = _pair_value(config, "options")
+    if options is None:
+        return None  # no `options` key — nothing to model here
+    if options.type != "object":
+        # `options` is an identifier reference (`parseArgs({ options: opts })`): the real option
+        # set lives elsewhere and can't be read statically — degrade the whole spec, honestly.
+        return ArgSpec(ok=False, reason="dynamic")
+    if any(child.type == "spread_element" for child in options.named_children):
+        # A spread (`{ ...common, name: {…} }`) merges options we can't see — whole-spec degrade.
+        return ArgSpec(ok=False, reason="dynamic")
+    fields: list[ParamDecl] = []
+    for pair in options.named_children:
+        if pair.type != "pair":
+            continue
+        field = _read_option(pair)
+        if field is not None:
+            fields.append(field)
+    return ArgSpec(fields=fields)
+
+
+# ---------------------------------------------------------------- locating the call
+
+
+def _find_parseargs(root: Node) -> Node | None:
+    """The first `parseArgs(...)` / `*.parseArgs(...)` call in source order, or None. A member call
+    (`util.parseArgs`) matches on the trailing property name, so `node:util`'s import alias — however
+    the module was destructured or namespaced — doesn't matter."""
+    for node in _walk(root):
+        if node.type != "call_expression":
+            continue
+        fn = node.child_by_field_name("function")
+        if fn is None:  # pragma: no cover — a call_expression always has a function
+            continue
+        if fn.type == "identifier" and _text(fn) == "parseArgs":
+            return node
+        if fn.type == "member_expression":
+            prop = fn.child_by_field_name("property")
+            if prop is not None and _text(prop) == "parseArgs":
+                return node
+    return None
+
+
+def _first_argument(call: Node) -> Node | None:
+    """The first positional argument node of a call (skipping the parens), or None."""
+    arguments = call.child_by_field_name("arguments")
+    if arguments is None:  # pragma: no cover — a call_expression always has an arguments node
+        return None
+    for child in arguments.named_children:
+        return child
+    return None
+
+
+def _pair_value(obj: Node, key: str) -> Node | None:
+    """The value node of the object's `key: value` pair (property_identifier or string key), or None
+    when the object has no such key."""
+    for child in obj.named_children:
+        if child.type != "pair":
+            continue
+        key_node = child.child_by_field_name("key")
+        if key_node is not None and _property_name(key_node) == key:
+            return child.child_by_field_name("value")
+    return None
+
+
+def _property_name(key: Node) -> str:
+    """A pair key's name: a bare `property_identifier` or a quoted `string` key. Anything else
+    (a computed `[k]` key) yields "" — the caller treats that as no usable name."""
+    if key.type == "property_identifier":
+        return _text(key)
+    if key.type == "string":
+        return _string_value(key)
+    return ""
+
+
+# ---------------------------------------------------------------- reading one option
+
+
+def _read_option(pair: Node) -> ParamDecl | None:
+    """One `name: { type, short, default, multiple }` option → a flag-delivery ParamDecl, or None
+    for a computed (dynamic) key that can't name a field."""
+    key = pair.child_by_field_name("key")
+    if key is None or key.type == "computed_property_name":
+        return None  # `[flag]: …` — a dynamic key, unnameable; skip just this field
+    name = _property_name(key)
+    if not name:
+        return None  # an empty-string key (`"": {…}`) can't name a field — skip it
+    field = ParamDecl(
+        name=name,
+        binding="none",
+        delivery="flag",
+        flag=f"--{name}",
+        secret=is_secret_name(name),
+    )
+    spec = pair.child_by_field_name("value")
+    if spec is None or spec.type != "object":
+        field.degraded = True  # `name: someVar` — the option spec isn't inline; free-text fallback
+        return field
+    _apply_option_spec(field, spec)
+    return field
+
+
+def _apply_option_spec(field: ParamDecl, spec: Node) -> None:
+    """Fill type/default/multiple from an inline option-spec object. `short` is display-only (skit
+    always assembles the long `--name` flag), so it is read and ignored. Type is applied before
+    default so an explicit `default` always wins over a boolean's implicit `false`."""
+    props: dict[str, Node] = {}
+    for pair in spec.named_children:
+        if pair.type != "pair":
+            continue
+        key = pair.child_by_field_name("key")
+        value = pair.child_by_field_name("value")
+        if key is None or value is None or key.type == "computed_property_name":
+            continue
+        name = _property_name(key)
+        if name:
+            props[name] = value
+    if "type" in props:
+        _apply_type(field, props["type"])
+    if "default" in props:
+        _apply_default(field, props["default"])
+    if "multiple" in props and props["multiple"].type == "true":
+        field.multiple = True
+
+
+def _apply_type(field: ParamDecl, value: Node) -> None:
+    """Apply a literal `type: "string" | "boolean"`. A boolean becomes a store_true checkbox; a
+    string a text field; anything else (a non-literal or unknown type) degrades the field."""
+    if value.type == "string":
+        text = _string_value(value)
+        if text == "boolean":
+            field.type = "bool"
+            field.action = "store_true"
+            field.default = False
+            return
+        if text == "string":
+            field.type = "str"
+            return
+    field.degraded = True
+
+
+def _apply_default(field: ParamDecl, value: Node) -> None:
+    """Apply a literal `default:`; a non-literal default degrades the field (shown, but omitted when
+    left untouched so the script's own default applies)."""
+    literal = _literal_value(value)
+    if literal is None:
+        field.degraded = True
+        return
+    _type, default = literal
+    field.default = default

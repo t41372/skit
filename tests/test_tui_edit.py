@@ -71,7 +71,7 @@ async def test_edit_command_entry_reports_no_source(tmp_path, monkeypatch):
         app.action_edit()
         await pilot.pause()
         assert opened == []
-        assert "no editable script source" in str(app.query_one("#status", Static).render())
+        assert "no editable source" in str(app.query_one("#status", Static).render())
 
 
 async def test_edit_invalidates_the_drift_cache(tmp_path, monkeypatch):

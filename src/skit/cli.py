@@ -25,6 +25,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 from rich.console import Console
@@ -34,21 +35,27 @@ from rich.prompt import Confirm, Prompt
 from . import (
     __version__,
     agentskill,
-    analyzer,
+    analysis,
     argstate,
     config,
     editor,
     flows,
     i18n,
     launcher,
-    metawriter,
     models,
     pep723,
     promptform,
-    reconcile,
     store,
 )
 from .i18n import gettext, ngettext
+from .langs.python import analyzer, metawriter
+from .langs.registry import KNOWN_KINDS, spec_for
+from .params import ParamDecl, declared_from_meta, edit_declared
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from .langs.base import LangSpec
 
 app = typer.Typer(
     name="skit",
@@ -154,7 +161,11 @@ def _resolve_python_metadata(
             )
         return [], ""
     if deps_opt is not None or python_opt is not None:
-        return list(deps_opt or []), python_opt or ""
+        # Strip/drop empties, matching the interactive path and _resolve_npm_dependencies: an
+        # empty "" requirement makes PEP 508 refuse the whole [tool.uv] block ("Empty field is
+        # not allowed"), and a whitespace-only --python is an unparseable version constraint —
+        # either bricks every subsequent run before the script starts.
+        return [d.strip() for d in (deps_opt or []) if d.strip()], (python_opt or "").strip()
     suggested = pep723.suggest_dependencies(text)
     if not suggested:
         return [], ""  # No dependencies: nothing to ask
@@ -173,6 +184,74 @@ def _resolve_python_metadata(
         gettext("Python version (leave empty for automatic)"), default="", console=console
     )
     return deps_list, py.strip()
+
+
+def _resolve_npm_dependencies(
+    script: Path,
+    deps_opt: list[str] | None,
+    no_input: bool,
+    scanner: Callable[[str], list[str]] | None,
+) -> list[str]:
+    """The npm dependency list a js/ts copy-mode add should record — the js analogue of
+    `_resolve_python_metadata`, sharing its contract exactly: explicit --dep wins without a
+    question; otherwise the script's own imports are the suggestion; non-interactive accepts the
+    suggestions as-is; interactively the list is offered for editing. No scanner (grammar failed
+    to import) or an unreadable file suggests nothing — honest degradation, never a blocked add."""
+    if deps_opt is not None:
+        # Drop empty/whitespace --dep values: an empty package name is junk in the --json
+        # contract and would fake a "cleared" list without sweeping node_modules.
+        return [d.strip() for d in deps_opt if d.strip()]
+    if scanner is None:
+        return []
+    try:
+        text = script.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+    suggested = scanner(text) if text else []
+    if not suggested:
+        return []
+    if no_input or not sys.stdin.isatty():
+        return suggested  # Non-interactive: accept the suggestions as-is
+    answer = Prompt.ask(
+        gettext("Dependencies to install (Enter to accept, edit the list, or '-' for none)"),
+        default=", ".join(suggested),
+        console=console,
+    )
+    if answer.strip().lower() in ("-", "none"):
+        return []
+    # npm-shaped split, NOT pep723.split_requirements: the PEP 508 splitter would merge a
+    # scoped package into its neighbor ("chalk, @scope/pkg" -> one bogus requirement).
+    from .langs.javascript import deps as js_deps
+
+    return js_deps.split_requirements(answer)
+
+
+def _refuse_unusable_add_flags(
+    kind: str, kind_spec: LangSpec | None, ref: bool, dep: list[str] | None, python: str | None
+) -> None:
+    """An explicit flag the add can't honor is refused, never dropped (the non-interactive
+    contract — silently assembling an entry that ignores what the caller asked for is exactly
+    the guessing it forbids). The uv flavor honors both flags; npm honors --dep on copies
+    only; every other kind honors neither."""
+    flavor = kind_spec.deps_flavor if kind_spec is not None else ""
+    if flavor == "uv":
+        return
+    if dep is not None and (flavor != "npm" or ref):
+        message = (
+            gettext(
+                "Reference-mode entries take no managed dependencies — they run from their own project. Add it as a copy, or drop --dep."
+            )
+            if flavor == "npm"
+            else gettext("%(kind)s entries don't take package dependencies — drop --dep.")
+            % {"kind": kind}
+        )
+        err_console.print(f"[red]{message}[/red]")
+        raise typer.Exit(EXIT_USAGE)
+    if python is not None:
+        err_console.print(
+            f"[red]{gettext("A Python constraint doesn't apply to %(kind)s scripts.") % {'kind': kind}}[/red]"
+        )
+        raise typer.Exit(EXIT_USAGE)
 
 
 def _prompt_identity(
@@ -212,7 +291,7 @@ def _parse_selection(answer: str, count: int) -> list[int]:
     return picked
 
 
-def _default_selection(candidates: list[analyzer.Candidate]) -> str:
+def _default_selection(candidates: list[analysis.Candidate]) -> str:
     """Signal-driven default (UX spec §0): clean candidates in, demoted candidates out."""
     clean = [i for i, c in enumerate(candidates, start=1) if not c.demoted]
     if len(clean) == len(candidates):
@@ -222,9 +301,9 @@ def _default_selection(candidates: list[analyzer.Candidate]) -> str:
     return ",".join(str(i) for i in clean)
 
 
-def _print_candidate(i: int, c: analyzer.Candidate) -> None:
+def _print_candidate(i: int, c: analysis.Candidate) -> None:
     mark = gettext(" (secret)") if c.secret else ""
-    if c.kind == "const":
+    if c.binding == "const":
         console.print(
             "  "
             + gettext("%(num)s. %(name)s (%(type)s) = %(value)s%(secret)s")
@@ -248,7 +327,7 @@ def _print_candidate(i: int, c: analyzer.Candidate) -> None:
         )
 
 
-def _print_add_hints(result: analyzer.Analysis, script_name: str) -> None:
+def _print_add_hints(result: analysis.Analysis, script_name: str) -> None:
     """The honest, rule-backed hints (UX spec §0): argv passthrough, extractable filenames."""
     if result.uses_argv:
         console.print(
@@ -270,7 +349,7 @@ def _print_add_hints(result: analyzer.Analysis, script_name: str) -> None:
         )
 
 
-def _onboard_params(text: str, script_name: str, no_input: bool) -> list[metawriter.ParamSpec]:
+def _onboard_params(text: str, script_name: str, no_input: bool) -> list[ParamDecl]:
     """Parameter onboarding at add time (A4: which constant counts as a parameter is a UX call).
 
     - argparse detected: nothing to manage — the run form is read statically from the
@@ -279,7 +358,7 @@ def _onboard_params(text: str, script_name: str, no_input: bool) -> list[metawri
     """
     result = analyzer.analyze(text)
     if result.uses_cli_framework:
-        from . import argspec
+        from .langs.python import argspec
 
         spec = argspec.read_cli(text)
         if spec is not None and spec.ok and spec.fields:
@@ -318,7 +397,7 @@ def _onboard_params(text: str, script_name: str, no_input: bool) -> list[metawri
         console=console,
     )
     picked = _parse_selection(answer, len(result.candidates))
-    return [metawriter.ParamSpec.from_candidate(result.candidates[i]) for i in picked]
+    return [ParamDecl.from_candidate(result.candidates[i]) for i in picked]
 
 
 # A brand-new script starts from just a shebang; if the editor is closed with nothing more
@@ -358,7 +437,7 @@ def _onboard_python(
     else:
         params_specs = _onboard_params(text, entry.meta.name, no_input)
         if params_specs:
-            copy_path = entry.dir / "script.py"  # pragma: no mutate — fs-case
+            copy_path = entry.script_path
             current = copy_path.read_text(encoding="utf-8")  # pragma: no mutate — utf-8 equivalence
             new_text = metawriter.write_params(current, params_specs)
             copy_path.write_text(new_text, encoding="utf-8")  # pragma: no mutate
@@ -367,9 +446,12 @@ def _onboard_python(
     return entry, final_deps, managed, secrets
 
 
-def _create_python_in_editor(name: str | None) -> None:
+def _create_python_in_editor(
+    name: str | None, deps_opt: list[str] | None = None, python_opt: str | None = None
+) -> None:
     """Write a starter script to a temp file, open the user's editor, then ingest whatever
-    they saved."""
+    they saved. Explicit --dep / --python ride through to the onboarding exactly as a
+    path-based python add would honor them."""
     import tempfile
 
     if not _is_interactive():
@@ -393,7 +475,9 @@ def _create_python_in_editor(name: str | None) -> None:
         if text.strip() in ("", _STARTER_SCRIPT.strip()):
             console.print(gettext("Nothing was written, so no script was added."))
             return
-        entry, deps, managed, secrets = _onboard_python(tmp, text, name=name)
+        entry, deps, managed, secrets = _onboard_python(
+            tmp, text, name=name, deps_opt=deps_opt, python_opt=python_opt
+        )
     except (editor.EditorError, store.StoreError) as exc:
         raise _fail(str(exc), 1) from exc
     finally:
@@ -401,7 +485,12 @@ def _create_python_in_editor(name: str | None) -> None:
     _print_add_summary(entry, deps, managed, secrets)
 
 
-def _add_from_stdin(name: str | None, description: str | None) -> None:
+def _add_from_stdin(
+    name: str | None,
+    description: str | None,
+    deps_opt: list[str] | None = None,
+    python_opt: str | None = None,
+) -> None:
     """`skit add -`: ingest a script from stdin (e.g. `pbpaste | skit add - -n clip`).
     stdin is the script, so there is nobody to prompt: the non-interactive contract
     applies, and a name is required up front."""
@@ -424,7 +513,13 @@ def _add_from_stdin(name: str | None, description: str | None) -> None:
     tmp.write_text(text, encoding="utf-8")  # pragma: no mutate
     try:
         entry, deps, managed, secrets = _onboard_python(
-            tmp, text, name=name, description=description, no_input=True
+            tmp,
+            text,
+            name=name,
+            description=description,
+            deps_opt=deps_opt,
+            python_opt=python_opt,
+            no_input=True,
         )
     except store.StoreError as exc:
         raise _fail(str(exc), 1) from exc
@@ -437,6 +532,26 @@ def _infer_add_kind(resolved: Path, exe_flag: bool) -> str:
     """Type inference (v2) — delegated to store.infer_kind so the CLI and the TUI add
     panel share one rule and can't drift apart."""
     return store.infer_kind(resolved, force_exe=exe_flag)
+
+
+def _forceable_kinds() -> list[str]:
+    """The kinds `--kind` may force: every interpreted language plus "exe". Command
+    templates are their own path (--cmd), and "unknown" is never a target."""
+    interpreted = sorted(
+        k for k in KNOWN_KINDS if (spec := spec_for(k)) is not None and spec.family == "interpreted"
+    )
+    return [*interpreted, "exe"]
+
+
+def _validate_forced_kind(value: str) -> None:
+    """Reject an unknown --kind value with a usage error that lists the valid kinds
+    (the non-interactive contract: never guess, fail cleanly)."""
+    valid = _forceable_kinds()
+    if value not in valid:
+        err_console.print(
+            f"[red]{gettext('Unknown kind: %(kind)s. Choose from: %(kinds)s') % {'kind': escape(value), 'kinds': ', '.join(valid)}}[/red]"
+        )
+        raise typer.Exit(EXIT_USAGE)
 
 
 @app.command(
@@ -471,6 +586,11 @@ def add(
         "--exe",
         help=gettext("Force the executable kind (normally inferred from the file itself)"),
     ),
+    kind: str = typer.Option(
+        None,
+        "--kind",
+        help=gettext("Force the language kind (e.g. shell, js) for an extensionless file"),
+    ),
     cmd: str = typer.Option(
         None, "--cmd", help=gettext("Register a command template, e.g. --cmd 'ffmpeg -i {input}'")
     ),
@@ -487,16 +607,23 @@ def add(
     ),
 ) -> None:
     """Add a script / executable / command to skit."""
+    # Both fresh-script lanes (editor buffer / stdin) have no original file for --ref to
+    # point at — refused, never dropped (the non-interactive contract).
+    if (edit_new or path == "-") and ref:
+        err_console.print(
+            f"[red]{gettext('--ref needs an existing file to reference — a script written in the editor or read from stdin has none.')}[/red]"
+        )
+        raise typer.Exit(EXIT_USAGE)
     if edit_new:
         if path:
             err_console.print(
                 f"[red]{gettext('Use --edit to write a new script, or pass a path to add an existing one — not both.')}[/red]"
             )
             raise typer.Exit(EXIT_USAGE)
-        _create_python_in_editor(name)
+        _create_python_in_editor(name, deps_opt=dep, python_opt=python)
         return
     if path == "-":
-        _add_from_stdin(name, description)
+        _add_from_stdin(name, description, deps_opt=dep, python_opt=python)
         return
     summary_deps: list[str] = []
     summary_managed: list[str] = []
@@ -506,6 +633,7 @@ def add(
             if not name:
                 err_console.print(f"[red]{gettext('A --cmd entry needs a --name')}[/red]")
                 raise typer.Exit(EXIT_USAGE)
+            _refuse_unusable_add_flags("command", spec_for("command"), ref, dep, python)
             entry = store.add_command(cmd, name=name, description=description or "")
             if entry.meta.params:
                 console.print(
@@ -521,14 +649,46 @@ def add(
                 )
                 raise typer.Exit(EXIT_USAGE)
             resolved = Path(path).expanduser().resolve()
-            kind = _infer_add_kind(resolved, exe)
+            if kind is not None:
+                # --kind forces the language outright (mirrors --exe), for an
+                # extensionless file the shebang/extension can't classify.
+                _validate_forced_kind(kind)
+                if exe and kind != "exe":
+                    err_console.print(f"[red]{gettext('Use --kind or --exe, not both.')}[/red]")
+                    raise typer.Exit(EXIT_USAGE)
+            else:
+                kind = _infer_add_kind(resolved, exe)
+            kind_spec = spec_for(kind)
+            _refuse_unusable_add_flags(kind, kind_spec, ref, dep, python)
             if kind == "exe":
                 entry = store.add_exe(Path(path), name=name, description=description or "")
             elif kind == "unknown":
                 err_console.print(
-                    f"[red]{gettext("%(file)s isn't a .py file or an executable — pass --exe for a program, or --cmd for a command template.") % {'file': escape(resolved.name)}}[/red]"
+                    f"[red]{gettext("%(file)s isn't a script or an executable — pass --exe for a program, or --cmd for a command template.") % {'file': escape(resolved.name)}}[/red]"
                 )
                 raise typer.Exit(EXIT_USAGE)
+            elif kind != "python" and kind_spec is not None and kind_spec.family == "interpreted":
+                # Tier-0 interpreted add (shell/js/ruby/…): copy or reference, comment
+                # description, interpreter recorded from the shebang. No onboarding
+                # panel — these kinds have no analyzer to review with (yet).
+                from .langs.registry import shebang_program
+
+                program = shebang_program(resolved)
+                interpreter = program if program in kind_spec.shebangs else ""
+                entry = store.add_script(
+                    Path(path),
+                    kind=kind,
+                    name=name,
+                    mode="reference" if ref else "copy",
+                    description=description,
+                    interpreter=interpreter,
+                )
+                if kind_spec.deps_flavor == "npm" and entry.meta.mode == "copy":
+                    summary_deps = _resolve_npm_dependencies(
+                        resolved, dep, no_input, kind_spec.dep_scanner
+                    )
+                    if summary_deps:
+                        entry = store.update_dependencies(entry.slug, summary_deps)
             else:
                 _require_py_file(resolved)
                 try:
@@ -581,9 +741,10 @@ def _print_add_summary(
     entry: store.Entry, deps: list[str], managed: list[str], secrets: list[str]
 ) -> None:
     """One consolidated block after a successful add."""
+    entry_spec = spec_for(entry.meta.kind)
     mode_note = (
         gettext("(%(mode)s mode)") % {"mode": entry.meta.mode}
-        if entry.meta.kind == "python"
+        if entry_spec is not None and entry_spec.supports_modes
         else ""
     )
     console.print(
@@ -674,6 +835,20 @@ def _field_secret_cell(f: flows.FormField) -> str:
     return gettext("yes")
 
 
+# The stable, machine-facing origin token for the whole form plan (additive to the legacy
+# param_source; a value source now includes "declared"/"env" that predates this key).
+_PARAM_ORIGIN = {
+    "declared": "declared",
+    "argparse": "reader",
+    "inject": "managed",
+    "command": "command",
+}
+
+
+def _param_origin(source: str) -> str:
+    return _PARAM_ORIGIN.get(source, "none")
+
+
 def _field_to_dict(f: flows.FormField) -> dict[str, object]:
     """One form field as a stable-shape JSON object (every key always present).
     `default` is null when the script declares none; a secret's declared default is
@@ -701,7 +876,8 @@ def _print_show_human(entry: store.Entry, plan: flows.FormPlan, presets: list[st
     console.print(f"[bold]{escape(meta.name)}[/bold]  [dim]({meta.kind} · {meta.mode})[/dim]")
     if meta.description:
         console.print(f"  {escape(meta.description)}")
-    if meta.kind != "command":
+    show_spec = spec_for(meta.kind)
+    if show_spec is None or show_spec.has_original_file:
         console.print(f"  {gettext('Source: %(path)s') % {'path': escape(str(meta.source))}}")
     if meta.workdir != "origin":
         console.print(
@@ -717,6 +893,10 @@ def _print_show_human(entry: store.Entry, plan: flows.FormPlan, presets: list[st
     if meta.requires_python:
         console.print(
             f"  {gettext('Python constraint: %(python)s') % {'python': escape(meta.requires_python)}}"
+        )
+    if meta.needs:
+        console.print(
+            f"  {gettext('Needs: %(needs)s') % {'needs': ', '.join(escape(n) for n in meta.needs)}}"
         )
     if meta.template:
         console.print(
@@ -804,8 +984,10 @@ def show(
         "missing": launcher.target_missing(entry),
         "dependencies": list(entry.meta.dependencies or []),
         "requires_python": entry.meta.requires_python,
+        "needs": list(entry.meta.needs or []),
         "template": entry.meta.template or None,
         "param_source": plan.source,
+        "param_origin": _param_origin(plan.source),
         "degraded_reason": plan.degraded_reason,
         "drift": bool(plan.drift_lines),
         "fields": [_field_to_dict(f) for f in plan.fields],
@@ -827,7 +1009,8 @@ def remove(
     except store.NotFoundError as exc:
         raise _fail(str(exc), 1) from exc
     if not yes:
-        if entry.meta.kind == "command":
+        entry_spec = spec_for(entry.meta.kind)
+        if entry_spec is not None and not entry_spec.has_original_file:
             question = gettext('Remove "%(name)s"?') % {"name": entry.meta.name}
         else:
             question = gettext('Remove "%(name)s"? Your original file will not be deleted.') % {
@@ -865,9 +1048,10 @@ def edit(name: str = _SCRIPT_ARG) -> None:
     except store.NotFoundError:
         _offer_create_in_editor(name)
         return
-    if entry.meta.kind != "python":
+    entry_spec = spec_for(entry.meta.kind)
+    if entry_spec is None or not entry_spec.editable:
         raise _fail(
-            gettext("%(name)s isn't a Python script, so it has no source to edit.")
+            gettext("%(name)s has no editable source (programs and command templates run as-is).")
             % {"name": entry.meta.name},
             1,
         )
@@ -884,7 +1068,7 @@ def edit(name: str = _SCRIPT_ARG) -> None:
         )
         target = source
     else:
-        target = entry.dir / "script.py"
+        target = entry.script_path
         if not target.exists():
             raise _fail(
                 gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}, 1
@@ -1062,7 +1246,8 @@ def run(
             f"[red]{gettext('--raw runs the script as-is; --set, --preset, and --save-preset do not apply.')}[/red]"
         )
         raise typer.Exit(EXIT_USAGE)
-    if raw and entry.meta.kind == "python":
+    run_spec = spec_for(entry.meta.kind)
+    if raw and run_spec is not None and run_spec.analyzer is not None:
         console.print(
             f"[dim]{gettext('Raw mode: skipping the parameter form and injection.')}[/dim]"
         )
@@ -1099,7 +1284,9 @@ def run(
             raise typer.Exit(EXIT_SKIT)
     # --raw promises "run the script as-is": replaying a previous run's arguments would
     # betray exactly the clean slate it exists to provide (and the Agent Skill documents).
-    if not extra and not raw and entry.meta.kind in ("python", "exe"):
+    # takes_argv: a command template's "arguments" are its placeholders, so replaying a
+    # remembered argv tail there would be surprising rather than helpful.
+    if not extra and not raw and run_spec is not None and run_spec.takes_argv:
         last_extra = argstate.load_state(entry.slug)["extra_args"]
         if last_extra:
             extra = last_extra
@@ -1273,7 +1460,7 @@ def preset_delete(
 # --------------------------------------------------------------------------
 
 
-def _secret_cell(s: metawriter.ParamSpec) -> str:
+def _secret_cell(s: ParamDecl) -> str:
     """The Secret column: "—", "yes", or "yes ← $ENVVAR" when an env source is set."""
     if not s.secret:
         return "—"
@@ -1282,39 +1469,140 @@ def _secret_cell(s: metawriter.ParamSpec) -> str:
     return gettext("yes")
 
 
+def _declared_last_value(name: str, secret: bool, last: dict[str, str]) -> str:
+    """The Last-value cell for a declared row (a stored secret is masked, never echoed)."""
+    if secret:
+        return gettext("•••") if name in last else "—"
+    return last.get(name, "—")
+
+
+def _declared_default_cell(d: ParamDecl) -> str:
+    if d.default is None:
+        return "—"
+    if d.secret:
+        return gettext("•••")
+    return str(d.default)
+
+
+def _declared_schema_suffix(d: ParamDecl | None) -> str:
+    """A dim inline schema marker for a command placeholder / env rider (type · default · flags)."""
+    if d is None:
+        return ""  # an undeclared placeholder keeps the historical bare `name = value` line
+    parts = [escape(d.type)]
+    if d.default is not None:
+        shown = gettext("•••") if d.secret else str(d.default)
+        parts.append(escape(gettext("default %(value)s") % {"value": shown}))
+    if not d.required:
+        parts.append(gettext("optional"))
+    if d.secret:
+        parts.append(gettext("secret"))
+    return f"  [dim]{' · '.join(parts)}[/dim]"
+
+
+def _print_declared_table(decls: list[ParamDecl], last: dict[str, str]) -> None:
+    """The read table for an exe entry's declared parameters (flag/env delivery)."""
+    from rich.table import Table
+
+    table = Table(show_header=True, header_style="bold")  # pragma: no mutate — cosmetic
+    table.add_column(gettext("Parameter"))
+    table.add_column(gettext("Delivery"))
+    table.add_column(gettext("Type"))
+    table.add_column(gettext("Default"))
+    table.add_column(gettext("Secret"))
+    table.add_column(gettext("Last value"))
+    for d in decls:
+        table.add_row(
+            escape(d.name),
+            escape(d.delivery),
+            escape(d.type),
+            escape(_declared_default_cell(d)),
+            _secret_cell(d),
+            escape(_declared_last_value(d.name, d.secret, last)),
+        )
+    console.print(table)
+
+
+def _show_command_params(
+    entry: store.Entry, declared: list[ParamDecl], last: dict[str, str]
+) -> None:
+    """The read view for a command template: its placeholders (enriched with any declared
+    schema) plus declared environment riders."""
+    placeholders = entry.meta.params or []
+    by_name = {d.name: d for d in declared}
+    env_riders = [d for d in declared if d.delivery == "env" and d.name not in placeholders]
+    if not placeholders and not env_riders:
+        console.print(
+            escape(gettext("%(name)s has no managed parameters.") % {"name": entry.meta.name})
+        )
+        return
+    if placeholders:
+        console.print(gettext("Command template placeholders (the run form asks for them):"))
+        for p in placeholders:
+            d = by_name.get(p)
+            shown = _declared_last_value(p, d.secret if d is not None else False, last)
+            console.print(f"  {escape(p)} = {escape(shown)}{_declared_schema_suffix(d)}")
+    if env_riders:
+        console.print(gettext("Declared environment variables (set on the run):"))
+        for d in env_riders:
+            shown = _declared_last_value(d.name, d.secret, last)
+            console.print(f"  {escape(d.name)} = {escape(shown)}{_declared_schema_suffix(d)}")
+
+
 def _show_params(entry: store.Entry, as_json: bool) -> None:
     """Read view: managed parameters + last values + detected-but-unmanaged candidates."""
     last = argstate.load_state(entry.slug)["values"]
-    specs: list[metawriter.ParamSpec] = []
+    entry_spec = spec_for(entry.meta.kind)
+    specs: list[ParamDecl] = []
     text = ""
-    if entry.meta.kind == "python" and entry.script_path.exists():
+    if entry_spec is not None and entry_spec.params_io is not None and entry.script_path.exists():
         text = entry.script_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
-        specs = metawriter.read_params(text)
+        specs = entry_spec.params_io.read(text)
     unmanaged: list[str] = []
-    if entry.meta.kind == "python" and entry.meta.mode == "copy" and text:
-        report = reconcile.reconcile(text, specs)
+    self_locating = False
+    if (
+        entry_spec is not None
+        and entry_spec.analyzer is not None
+        and entry.meta.mode == "copy"
+        and text
+    ):
+        report = entry_spec.analyzer.reconcile(text, specs)
         unmanaged = [c.name for c in report.new]
+        # $0/BASH_SOURCE: an injected constant runs from a temp copy, so the script would see the
+        # temp path instead of its own. Say so HERE — where the user decides whether to manage it —
+        # not only in the run-time warning, and point at the fix. Only meaningful for a kind that
+        # actually rewrites a copy (an injector); env delivery never moves the file.
+        self_locating = (
+            entry_spec.injector is not None and entry_spec.analyzer.analyze(text).uses_self_location
+        )
+    # Declared [[parameters]] rows (empty for a python entry — it manages its schema in-file).
+    declared = declared_from_meta(entry.meta.parameters)
     if as_json:
         payload = {
-            "params": [s.to_dict() for s in specs],
+            "params": [s.to_block_dict() for s in specs],
             "unmanaged": unmanaged,
             "placeholders": entry.meta.params or [],
+            "declared": [d.to_meta_dict() for d in declared],
         }
         console.print_json(json.dumps(payload, ensure_ascii=False))
         return
-    if entry.meta.kind == "command":
-        placeholders = entry.meta.params or []
-        if not placeholders:
+    if entry_spec is not None and entry_spec.family == "template":
+        _show_command_params(entry, declared, last)
+        return
+    if declared and entry_spec is not None and entry_spec.params_io is None:
+        # Every meta-schema kind, not just binaries: an interpreted kind whose schema lives in
+        # meta.toml (ruby/perl/lua/r/powershell) can hold declared flag/env rows that really do
+        # deliver, so denying they exist here (while --json listed them) was a read/write split.
+        # Templates already returned above.
+        _print_declared_table(declared, last)
+        return
+    if not specs:
+        if entry_spec is None or entry_spec.analyzer is None:
+            # No analyzer means --manage can't do anything for this kind — suggesting it
+            # would send the user down a dead end (`skit params <exe> --manage X` errors).
             console.print(
                 escape(gettext("%(name)s has no managed parameters.") % {"name": entry.meta.name})
             )
             return
-        console.print(gettext("Command template placeholders (the run form asks for them):"))
-        for p in placeholders:
-            shown = last.get(p, "—")
-            console.print(f"  {escape(p)} = {escape(shown)}")
-        return
-    if not specs:
         console.print(
             escape(
                 gettext(
@@ -1345,7 +1633,7 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
             )
             table.add_row(
                 escape(s.name),
-                escape(s.kind),
+                escape(s.binding),
                 escape(s.type),
                 escape(default_shown),
                 _secret_cell(s),
@@ -1356,6 +1644,10 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
         console.print(
             gettext("Detected but not yet managed: %(names)s (use --manage to manage them)")
             % {"names": ", ".join(escape(n) for n in unmanaged)}
+        )
+    if self_locating:
+        console.print(
+            f"[dim]{gettext('This script locates itself ($0 / BASH_SOURCE). Injecting a constant runs it from a temporary copy, so it would see that copy path instead. `skit params %(name)s --normalize NAME` converts a constant into the ${NAME:-default} idiom, which is delivered through the environment and leaves the file untouched.') % {'name': escape(entry.meta.name)}}[/dim]"
         )
 
 
@@ -1374,9 +1666,9 @@ def _parse_kv_opts(raw: list[str], flag: str) -> tuple[dict[str, str], list[str]
 
 
 @app.command(
-    help=gettext("Show or edit a script's managed parameters."),
+    help=gettext("Show or edit a script's managed or declared parameters."),
     epilog=gettext(
-        "Examples:  skit params resize --manage WIDTH  ·  skit params api --secret KEY --env-source KEY=OPENAI_API_KEY"
+        "Examples:  skit params resize --manage WIDTH  ·  skit params conv --add size --type size=int --deliver size=flag --flag size=--size"
     ),
 )
 def params(
@@ -1393,6 +1685,48 @@ def params(
     ),
     unmanage: list[str] = typer.Option(
         None, "--unmanage", help=gettext("Drop a managed parameter (repeatable)")
+    ),
+    add: list[str] = typer.Option(
+        None,
+        "--add",
+        help=gettext("Declare a new parameter on an exe/command entry, by name (repeatable)"),
+    ),
+    rm: list[str] = typer.Option(
+        None, "--rm", help=gettext("Remove a declared parameter, by name (repeatable)")
+    ),
+    type_opt: list[str] = typer.Option(
+        None,
+        "--type",
+        help=gettext("Set a declared parameter's type, as NAME=str|int|float|bool|choice"),
+    ),
+    default_opt: list[str] = typer.Option(
+        None, "--default", help=gettext("Set a declared parameter's default, as NAME=VALUE")
+    ),
+    choices_opt: list[str] = typer.Option(
+        None,
+        "--choices",
+        help=gettext("Set a declared parameter's choices, as NAME=a,b,c (comma separated)"),
+    ),
+    deliver_opt: list[str] = typer.Option(
+        None,
+        "--deliver",
+        help=gettext(
+            "Set how a declared parameter reaches the program, as NAME=env|flag|placeholder"
+        ),
+    ),
+    flag_opt: list[str] = typer.Option(
+        None,
+        "--flag",
+        help=gettext("Set a declared flag parameter's option, as NAME=--out (empty = positional)"),
+    ),
+    required_opt: list[str] = typer.Option(
+        None, "--required", help=gettext("Mark a declared parameter as required (repeatable)")
+    ),
+    optional_opt: list[str] = typer.Option(
+        None, "--optional", help=gettext("Mark a declared parameter as optional (repeatable)")
+    ),
+    help_text_opt: list[str] = typer.Option(
+        None, "--help-text", help=gettext("Set a declared parameter's help text, as NAME=text")
     ),
     secret: list[str] = typer.Option(
         None, "--secret", help=gettext("Mark a managed parameter as secret (repeatable)")
@@ -1412,28 +1746,110 @@ def params(
             "Read a secret parameter from an environment variable at run time, as NAME=ENVVAR (empty ENVVAR clears it; repeatable)"
         ),
     ),
+    normalize_opt: list[str] = typer.Option(
+        None,
+        "--normalize",
+        help=gettext(
+            "Shell only: rewrite a constant into the ${NAME:-default} idiom in the stored copy, so its value is delivered as an environment variable instead of a rewritten temporary copy (repeatable)"
+        ),
+    ),
     as_json: bool = typer.Option(False, "--json", help=gettext("Output the read view as JSON")),
 ) -> None:
-    """Show a script's managed parameters, or edit their definitions when any change flag
-    is given. Definitions travel with the file; values live in central state; secret
-    values are never shown or persisted."""
+    """Show a script's parameters, or edit their definitions when any change flag is given.
+    Python entries manage constants/inputs from the script itself (--manage/--unmanage);
+    exe and command entries carry a declared schema in meta.toml (--add/--rm/--type/…).
+    Definitions travel with the entry; values live in central state; secret values are
+    never shown or persisted."""
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
         raise _fail(str(exc), 1) from exc
     prompts, bad_prompts = _parse_kv_opts(prompt or [], "--prompt")
     env_sources, bad_env = _parse_kv_opts(env_source or [], "--env-source")
+    types, bad_type = _parse_kv_opts(type_opt or [], "--type")
+    defaults, bad_default = _parse_kv_opts(default_opt or [], "--default")
+    choices_raw, bad_choices = _parse_kv_opts(choices_opt or [], "--choices")
+    deliveries, bad_deliver = _parse_kv_opts(deliver_opt or [], "--deliver")
+    flags, bad_flag = _parse_kv_opts(flag_opt or [], "--flag")
+    help_texts, bad_help = _parse_kv_opts(help_text_opt or [], "--help-text")
+
+    entry_spec = spec_for(entry.meta.kind)
+    if normalize_opt:
+        # A source-idiom rewrite of the user's own stored file — deliberately its own op, not a
+        # modifier on the others: it changes what a parameter IS (inject-delivered -> env-delivered),
+        # so mixing it into the same pass as --manage/--secret would make the outcome order-dependent.
+        _normalize_params(entry, entry_spec, normalize_opt)
+        return
+    has_params_io = entry_spec is not None and entry_spec.params_io is not None
+    declared_kind = entry_spec is not None and entry_spec.params_io is None
+    declared_ops = bool(
+        add
+        or rm
+        or types
+        or defaults
+        or choices_raw
+        or deliveries
+        or flags
+        or required_opt
+        or optional_opt
+        or help_texts
+        or bad_type
+        or bad_default
+        or bad_choices
+        or bad_deliver
+        or bad_flag
+        or bad_help
+    )
+    shared_tweaks = bool(secret or no_secret or prompts or env_sources or bad_prompts or bad_env)
+    analyzer_ops = bool(resync or manage or unmanage)
+
+    # Python (or any in-file-managed kind): the declared-schema flags belong to exe/command.
+    if has_params_io and declared_ops:
+        raise _fail(
+            gettext(
+                "%(name)s manages its parameters from the script itself — use --manage / "
+                "--unmanage, or edit the [tool.skit] block."
+            )
+            % {"name": entry.meta.name},
+            1,
+        )
     if (
-        resync
-        or manage
-        or unmanage
-        or secret
-        or no_secret
-        or prompts
-        or env_sources
-        or bad_prompts
-        or bad_env
+        entry_spec is not None
+        and declared_kind
+        and (declared_ops or shared_tweaks)
+        and not analyzer_ops
     ):
+        _edit_declared_params(
+            entry,
+            entry_spec,
+            add=add or [],
+            rm=rm or [],
+            types=types,
+            defaults=defaults,
+            choices={n: v.split(",") for n, v in choices_raw.items()},
+            deliveries=deliveries,
+            flags=flags,
+            required=required_opt or [],
+            optional=optional_opt or [],
+            help_texts=help_texts,
+            secret=secret or [],
+            no_secret=no_secret or [],
+            prompts=prompts,
+            env_sources=env_sources,
+            malformed=(
+                bad_type
+                + bad_default
+                + bad_choices
+                + bad_deliver
+                + bad_flag
+                + bad_help
+                + bad_prompts
+                + bad_env
+            ),
+        )
+        return
+    # Python edits, and the analyzer-op-on-a-non-python refusal, both go through _edit_params.
+    if analyzer_ops or (has_params_io and shared_tweaks):
         _edit_params(
             entry,
             resync=resync,
@@ -1445,11 +1861,11 @@ def params(
             env_sources=env_sources,
             malformed=bad_prompts + bad_env,
         )
-    else:
-        _show_params(entry, as_json)
+        return
+    _show_params(entry, as_json)
 
 
-def _apply_env_sources(specs: list[metawriter.ParamSpec], env_sources: dict[str, str]) -> list[str]:
+def _apply_env_sources(specs: list[ParamDecl], env_sources: dict[str, str]) -> list[str]:
     """Set/clear env_source on secret specs; returns warnings for unusable requests."""
     warnings: list[str] = []
     by_name = {s.name: s for s in specs}
@@ -1486,7 +1902,8 @@ def _edit_params(
     malformed: list[str],
 ) -> None:
     """Apply parameter-definition changes to a copy-mode Python entry (rewrites [tool.skit])."""
-    if entry.meta.kind != "python":
+    entry_spec = spec_for(entry.meta.kind)
+    if entry_spec is None or entry_spec.params_io is None or entry_spec.analyzer is None:
         raise _fail(
             gettext("%(name)s isn't a Python script; only Python entries have managed parameters.")
             % {"name": entry.meta.name},
@@ -1501,16 +1918,16 @@ def _edit_params(
             % {"name": entry.meta.name},
             1,
         )
-    copy_path = entry.dir / "script.py"  # pragma: no mutate — fs-case
+    copy_path = entry.script_path
     if not copy_path.exists():
         raise _fail(gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}, 1)
     text = copy_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
-    current = metawriter.read_params(text)
+    current = entry_spec.params_io.read(text)
     for item in malformed:
         err_console.print(
             f"[yellow]{escape(gettext('Ignored a malformed value: %(item)s (expected NAME=text).') % {'item': item})}[/yellow]"
         )
-    result = reconcile.edit_specs(
+    result = analysis.edit_specs(
         text,
         current,
         resync=resync,
@@ -1519,12 +1936,13 @@ def _edit_params(
         secret=secret,
         no_secret=no_secret,
         prompts=prompts,
+        analyze=entry_spec.analyzer.analyze,
     )
     for w in result.warnings:
-        err_console.print(f"[yellow]{escape(reconcile.render_warning(w))}[/yellow]")
+        err_console.print(f"[yellow]{escape(analysis.render_warning(w))}[/yellow]")
     for w in _apply_env_sources(result.specs, env_sources):
         err_console.print(f"[yellow]{escape(w)}[/yellow]")
-    new_text = metawriter.write_params(text, result.specs)
+    new_text = entry_spec.params_io.write(text, result.specs)
     copy_path.write_text(new_text, encoding="utf-8")  # pragma: no mutate — utf-8 equivalence
     secret_now = {s.name for s in result.specs if s.secret}
     purged = argstate.purge_secret(entry.slug, secret_now)
@@ -1543,15 +1961,245 @@ def _edit_params(
     )
 
 
+def _render_normalize_warning(warning: str) -> str:
+    """Translate a normalizer refusal ("code:name") into a user-facing line. Static lookup (not
+    gettext(f"…{code}")) so Babel can extract every string — same discipline as the other two
+    warning renderers."""
+    code, _, name = warning.partition(":")
+    return {
+        "not-a-const": gettext(
+            "%(name)s isn't a plain constant with a literal value, so there's nothing to normalize; skipped."
+        ),
+        "multiple-assignments": gettext(
+            "%(name)s is assigned more than once at the top level; normalizing it would change which value wins. Skipped."
+        ),
+        "readonly": gettext(
+            "%(name)s is readonly, so the script could never take a value from the environment; skipped."
+        ),
+        "already-env": gettext("%(name)s already reads from the environment; nothing to do."),
+        "unsafe-literal": gettext(
+            "%(name)s's value contains a character that can't be moved into ${...:-...} safely "
+            '(one of } " ` $ \\ or a newline); skipped — it keeps being injected into a temporary copy.'
+        ),
+        "syntax-error": gettext(
+            "Could not parse the script (syntax error); nothing was normalized."
+        ),
+    }[code] % {"name": name}
+
+
+def _reanchor_as_envdefault(spec: ParamDecl, cand: analysis.Candidate) -> ParamDecl:
+    """The normalized const's definition, re-anchored onto its new ${NAME:-default} expansion:
+    binding/delivery/type/default come from the source (the analyzer just re-read it), while the
+    user's own decisions — secret, its env source, a custom prompt — survive the rewrite."""
+    decl = ParamDecl.from_candidate(cand)
+    decl.secret = spec.secret
+    decl.prompt = spec.prompt
+    decl.env_source = spec.env_source
+    return decl
+
+
+def _normalize_params(entry: store.Entry, entry_spec: LangSpec | None, names: list[str]) -> None:
+    """`skit params <shell> --normalize NAME`: rewrite `NAME=value` into `NAME="${NAME:-value}"` in
+    the STORED COPY, then re-read the analyzer so the parameter becomes an env-delivered one — no
+    temporary copy is ever written for it again, and $0 keeps pointing at the real file."""
+    if (
+        entry_spec is None
+        or entry_spec.normalizer is None
+        or entry_spec.params_io is None
+        or entry_spec.analyzer is None
+    ):
+        raise _fail(
+            gettext(
+                '%(name)s has no --normalize: it is a shell idiom (VAR=value -> VAR="${VAR:-value}").'
+            )
+            % {"name": entry.meta.name},
+            1,
+        )
+    if entry.meta.mode == "reference":
+        raise _fail(
+            gettext(
+                "%(name)s is in reference mode, and skit never writes the original file. "
+                'Change the line to VAR="${VAR:-value}" in the source directly.'
+            )
+            % {"name": entry.meta.name},
+            1,
+        )
+    copy_path = entry.script_path
+    if not copy_path.exists():
+        raise _fail(gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}, 1)
+    text = copy_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
+    result = entry_spec.normalizer.normalize(text, list(names))
+    for warning in result.refused:
+        err_console.print(f"[yellow]{escape(_render_normalize_warning(warning))}[/yellow]")
+    if not result.normalized:
+        return  # every name was refused; the file is untouched (the warnings above said why)
+    # Re-read the analyzer: each normalized name is now an ${NAME:-default} expansion, i.e. an
+    # envdefault candidate. A name that was MANAGED must follow it — otherwise its stored const
+    # definition would go missing on the very next run (loud, and rightly so).
+    envdefaults = {
+        c.name: c
+        for c in entry_spec.analyzer.analyze(result.text).candidates
+        if c.binding == "envdefault"
+    }
+    normalized = set(result.normalized)
+    specs = [
+        _reanchor_as_envdefault(s, envdefaults[s.name])
+        if s.name in normalized and s.name in envdefaults
+        else s
+        for s in entry_spec.params_io.read(result.text)
+    ]
+    copy_path.write_text(
+        entry_spec.params_io.write(result.text, specs),
+        encoding="utf-8",  # pragma: no mutate — utf-8 equivalence
+    )
+    console.print(
+        f"[green]{gettext('Normalized %(names)s in %(name)s: delivered as environment variables from now on (no temporary copy, and $0 stays your real file).') % {'names': ', '.join(escape(n) for n in result.normalized), 'name': escape(entry.meta.name)}}[/green]"
+    )
+
+
+def _render_declared_warning(warning: str) -> str:
+    """Translate an edit_declared warning ("code:name") into a user-facing line. The codes are
+    the closed set params.edit_declared emits; a static lookup (not gettext(f"...{code}")) keeps
+    every string Babel-extractable, mirroring reconcile.render_warning."""
+    code, _, name = warning.partition(":")
+    return {
+        "not-declared": gettext("%(name)s isn't a declared parameter; skipped."),
+        "already-declared": gettext("%(name)s is already declared; skipped."),
+        "bad-delivery": gettext("%(name)s: that delivery isn't available for this kind; skipped."),
+        "not-a-placeholder": gettext(
+            "%(name)s isn't a template placeholder, so it can't use placeholder delivery; skipped."
+        ),
+        "bad-type": gettext(
+            "%(name)s: unknown type; skipped (use str, int, float, bool, or choice)."
+        ),
+        "bad-default": gettext("%(name)s: the default doesn't fit its type; skipped."),
+        "choice-without-choices": gettext(
+            "%(name)s: a choice parameter needs choices; set --choices %(name)s=a,b,c."
+        ),
+    }[code] % {"name": name}
+
+
+def _edit_declared_params(
+    entry: store.Entry,
+    entry_spec: LangSpec,
+    *,
+    add: list[str],
+    rm: list[str],
+    types: dict[str, str],
+    defaults: dict[str, str],
+    choices: dict[str, list[str]],
+    deliveries: dict[str, str],
+    flags: dict[str, str],
+    required: list[str],
+    optional: list[str],
+    help_texts: dict[str, str],
+    secret: list[str],
+    no_secret: list[str],
+    prompts: dict[str, str],
+    env_sources: dict[str, str],
+    malformed: list[str],
+) -> None:
+    """Apply declared-schema changes to a meta-schema entry (rewrites meta.toml [[parameters]]).
+
+    The allowed deliveries follow the kind: a template's interface is its placeholders, so it takes
+    placeholder/env; everything else (a binary, and every interpreted kind that stores its schema in
+    meta — ruby/perl/lua/r/powershell) takes flag/env, because they all assemble a real argv.
+    Branching on "template" rather than "binary" keeps a declared `--add` on an interpreted kind
+    from defaulting to an undeliverable placeholder row.
+
+    allowed[0] is also the DEFAULT for a bare `--add NAME`, which is why "env" leads for a template:
+    a name that is not one of the template's {placeholders} cannot be one (the template is the
+    truth about which slots exist), so defaulting it to "placeholder" wrote a dead row that the run
+    surface then refused. env is the delivery a template can always honour, and it matches what the
+    TUI's own add-a-parameter field creates. `edit_declared` still maps a name that IS a placeholder
+    onto placeholder delivery, and membership validation is unchanged — only the default moves."""
+    allowed = ("env", "placeholder") if entry_spec.family == "template" else ("flag", "env")
+    for item in malformed:
+        err_console.print(
+            f"[yellow]{escape(gettext('Ignored a malformed value: %(item)s (expected NAME=VALUE).') % {'item': item})}[/yellow]"
+        )
+    result = edit_declared(
+        store.read_parameters(entry.slug),
+        add=add,
+        rm=rm,
+        types=types,
+        defaults=defaults,
+        choices=choices,
+        deliveries=deliveries,
+        flags=flags,
+        required=required,
+        optional=optional,
+        help_texts=help_texts,
+        secret=secret,
+        no_secret=no_secret,
+        prompts=prompts,
+        env_sources=env_sources,
+        allowed_deliveries=allowed,
+        placeholder_names=entry.meta.params or [],
+    )
+    for w in result.warnings:
+        err_console.print(f"[yellow]{escape(_render_declared_warning(w))}[/yellow]")
+    store.write_parameters(entry.slug, result.decls)
+    purged = argstate.purge_secret(entry.slug, {d.name for d in result.decls if d.secret})
+    if purged:
+        console.print(
+            "[dim]"
+            + gettext(
+                "Removed previously stored plaintext value(s) for now-secret parameter(s): %(names)s"
+            )
+            % {"names": ", ".join(escape(n) for n in sorted(purged))}
+            + _DIM_CLOSE
+        )
+    names = ", ".join(escape(d.name) for d in result.decls) or "—"
+    console.print(
+        f"[green]{gettext('Updated %(name)s. Declared parameters: %(names)s') % {'name': escape(entry.meta.name), 'names': names}}[/green]"
+    )
+
+
 # --------------------------------------------------------------------------
 # deps
 # --------------------------------------------------------------------------
 
 
+def _deps_read_view(entry: store.Entry, *, supports_deps: bool, as_json: bool) -> None:
+    """The bare `skit deps NAME` view: dependencies + Python constraint (python entries
+    only) and the needed external commands (every kind)."""
+    needs = list(entry.meta.needs or [])
+    if as_json:
+        console.print_json(
+            json.dumps(
+                {
+                    "dependencies": list(entry.meta.dependencies or []),
+                    "requires_python": entry.meta.requires_python,
+                    "needs": needs,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return
+    if supports_deps:
+        console.print(
+            gettext("Dependencies of %(name)s: %(deps)s")
+            % {
+                "name": escape(entry.meta.name),
+                "deps": ", ".join(escape(d) for d in (entry.meta.dependencies or [])) or "—",
+            }
+        )
+        if entry.meta.requires_python:
+            console.print(
+                gettext("Python constraint: %(python)s")
+                % {"python": escape(entry.meta.requires_python)}
+            )
+    console.print(
+        gettext("External commands needed by %(name)s: %(needs)s")
+        % {"name": escape(entry.meta.name), "needs": ", ".join(escape(n) for n in needs) or "—"}
+    )
+
+
 @app.command(
-    help=gettext("View or update a script's dependencies and Python constraint."),
+    help=gettext("View or update a script's dependencies, Python constraint, and needed commands."),
     epilog=gettext(
-        'Examples:  skit deps tool --dep "requests>=2,<3" --dep rich  ·  skit deps tool --clear'
+        'Examples:  skit deps tool --dep "requests>=2,<3" --dep rich  ·  skit deps clip --need jq'
     ),
 )
 def deps(
@@ -1563,58 +2211,88 @@ def deps(
     python: str = typer.Option(
         None, "--python", help=gettext('Python version constraint, e.g. ">=3.11"')
     ),
+    need: list[str] = typer.Option(
+        None,
+        "--need",
+        help=gettext(
+            "An external command the script needs on PATH (repeat; replaces the whole list)"
+        ),
+    ),
+    clear_needs: bool = typer.Option(
+        False, "--clear-needs", help=gettext("Remove every needed external command")
+    ),
     as_json: bool = typer.Option(False, "--json", help=gettext("Output as JSON")),
 ) -> None:
-    """View or update a script's recorded dependencies."""
+    """View or update a script's recorded dependencies and needed external commands.
+    Dependencies apply to kinds with package management — python (PEP 723 + uv) and js/ts
+    (per-script npm installs); needs (commands that must be on PATH) apply to every kind —
+    a shell script may need `ffmpeg` too."""
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
         raise _fail(str(exc), 1) from exc
-    if entry.meta.kind != "python":
+    deps_spec = spec_for(entry.meta.kind)
+    supports_deps = deps_spec is not None and deps_spec.supports_deps
+    deps_requested = dep is not None or clear or python is not None
+    needs_requested = need is not None or clear_needs
+    if deps_requested and not supports_deps:
+        # A refused flag, not an operational failure — the usage exit code, so `skit deps`
+        # agrees with `skit add` (and its own --dep/--clear conflict below) on what a refusal is.
         raise _fail(
-            gettext("%(name)s is not a Python script entry.") % {"name": entry.meta.name}, 1
+            gettext("%(name)s doesn't take package dependencies — only --need applies here.")
+            % {"name": entry.meta.name},
+            EXIT_USAGE,
         )
     if dep and clear:
         err_console.print(
             f"[red]{gettext('Use --dep to set the list or --clear to empty it — not both.')}[/red]"
         )
         raise typer.Exit(EXIT_USAGE)
-    if dep is None and not clear and python is None:
-        current = entry.meta.dependencies or []
-        if as_json:
-            console.print_json(
-                json.dumps(
-                    {"dependencies": current, "requires_python": entry.meta.requires_python},
-                    ensure_ascii=False,
-                )
-            )
-            return
-        console.print(
-            gettext("Dependencies of %(name)s: %(deps)s")
-            % {
-                "name": escape(entry.meta.name),
-                "deps": ", ".join(escape(d) for d in current) or "—",
-            }
+    if need and clear_needs:
+        err_console.print(
+            f"[red]{gettext('Use --need to set the list or --clear-needs to empty it — not both.')}[/red]"
         )
-        if entry.meta.requires_python:
-            console.print(
-                gettext("Python constraint: %(python)s")
-                % {"python": escape(entry.meta.requires_python)}
-            )
+        raise typer.Exit(EXIT_USAGE)
+    if not deps_requested and not needs_requested:
+        _deps_read_view(entry, supports_deps=supports_deps, as_json=as_json)
         return
-    if clear:
-        new_deps: list[str] = []
-    elif dep is not None:
-        new_deps = list(dep)
-    else:
-        new_deps = list(entry.meta.dependencies or [])
-    try:
-        entry = store.update_dependencies(entry.slug, new_deps, requires_python=python)
-    except store.StoreError as exc:
-        raise _fail(str(exc), 1) from exc
-    console.print(
-        f"[green]{gettext('Dependencies of %(name)s updated: %(deps)s') % {'name': escape(entry.meta.name), 'deps': ', '.join(escape(d) for d in new_deps) or '—'}}[/green]"
-    )
+    # Deps BEFORE needs: a --dep/--python refusal raises (StoreUsageError) at the top of
+    # update_dependencies, before any write — so processing deps first means a refused request
+    # aborts with NOTHING committed. Doing needs first would persist the needs write and then
+    # exit 2 on the deps refusal, a partial application a --json/CI caller couldn't detect.
+    if deps_requested:
+        if clear:
+            new_deps: list[str] = []
+        elif dep is not None:
+            # Drop empty/whitespace values so `--dep ''` clears (and sweeps) rather than
+            # recording a junk "" package the --json contract would then carry.
+            new_deps = [d.strip() for d in dep if d.strip()]
+        else:
+            new_deps = list(entry.meta.dependencies or [])
+        try:
+            entry = store.update_dependencies(entry.slug, new_deps, requires_python=python)
+        except store.StoreUsageError as exc:
+            raise _fail(str(exc), EXIT_USAGE) from exc
+        except store.StoreError as exc:
+            raise _fail(str(exc), 1) from exc
+        if not as_json:
+            console.print(
+                f"[green]{gettext('Dependencies of %(name)s updated: %(deps)s') % {'name': escape(entry.meta.name), 'deps': ', '.join(escape(d) for d in new_deps) or '—'}}[/green]"
+            )
+    if needs_requested:
+        # Drop empty/whitespace values, mirroring the --dep path: an empty command name is junk in
+        # the --json contract AND bricks the entry — `shutil.which("")` is None, so every run then
+        # fails "Missing required command(s):" before the script starts.
+        new_needs = [] if clear_needs else [n.strip() for n in (need or []) if n.strip()]
+        entry = store.update_needs(entry.slug, new_needs)
+        if not as_json:
+            console.print(
+                f"[green]{gettext('Needs of %(name)s updated: %(needs)s') % {'name': escape(entry.meta.name), 'needs': ', '.join(escape(n) for n in new_needs) or '—'}}[/green]"
+            )
+    if as_json:
+        # --json on a write: emit the final state as the machine contract, same shape as the
+        # read view, instead of the human confirmation lines above.
+        _deps_read_view(entry, supports_deps=supports_deps, as_json=True)
 
 
 # --------------------------------------------------------------------------
@@ -1746,13 +2424,30 @@ def _drifted_entries(entries: list[store.Entry]) -> list[str]:
     """The health check is the one place that batch-reconciles the whole library."""
     out: list[str] = []
     for e in entries:
-        if e.meta.kind != "python" or not e.script_path.exists():
+        spec = spec_for(e.meta.kind)
+        if (
+            spec is None
+            or spec.analyzer is None
+            or spec.params_io is None
+            or not e.script_path.exists()
+        ):
             continue
         text = e.script_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
-        specs = metawriter.read_params(text)
-        if specs and reconcile.reconcile(text, specs).has_drift:
+        specs = spec.params_io.read(text)
+        if specs and spec.analyzer.reconcile(text, specs).has_drift:
             out.append(e.meta.name)
     return out
+
+
+def _uv_required(entries: list[store.Entry]) -> bool:
+    """Whether a missing uv should fail doctor's exit code. uv is what runs python
+    entries, so it's required when any python entry exists — and also for an EMPTY
+    library (a fresh install's doctor must still steer the user toward a working
+    setup). A non-empty library made purely of exe/command entries runs fine without
+    uv, and exiting 1 there sent automation chasing a phantom problem."""
+    if not entries:
+        return True
+    return any(e.meta.kind == "python" for e in entries)
 
 
 @app.command(help=gettext("Check that uv is available and the script store is intact."))
@@ -1776,6 +2471,7 @@ def doctor(
     entries = store.list_entries()
     missing = [e.meta.name for e in entries if launcher.target_missing(e)]
     drifted = _drifted_entries(entries)
+    needs_missing = {e.meta.name: miss for e in entries if (miss := launcher.missing_needs(e))}
     mirror = config.load_mirror()
     location = scripts_dir()
     size = store.dir_size(location)
@@ -1787,6 +2483,7 @@ def doctor(
                     "entries": len(entries),
                     "missing": missing,
                     "drift": drifted,
+                    "needs_missing": needs_missing,
                     "mirror": mirror.pypi if mirror.enabled else "off",
                     "location": str(location),
                     "size_bytes": size,
@@ -1794,7 +2491,7 @@ def doctor(
                 ensure_ascii=False,
             )
         )
-        raise typer.Exit(0 if uv else 1)
+        raise typer.Exit(0 if uv or not _uv_required(entries) else 1)
     if uv:
         console.print(f"[green]✓ {gettext('uv: %(path)s') % {'path': escape(uv)}}[/green]")
     else:
@@ -1814,6 +2511,10 @@ def doctor(
         console.print(
             f"  [yellow]⚠ {gettext('%(name)s: form definitions are out of sync — run: skit params %(name)s --resync') % {'name': escape(d)}}[/yellow]"
         )
+    for nm_name, tools in needs_missing.items():
+        console.print(
+            f"  [yellow]⚠ {gettext('%(name)s: missing external command(s): %(tools)s') % {'name': escape(nm_name), 'tools': ', '.join(escape(t) for t in tools)}}[/yellow]"
+        )
     if mirror.enabled:
         console.print("✓ " + gettext("Mirror: on (%(pypi)s)") % {"pypi": escape(mirror.pypi)})
     else:
@@ -1822,30 +2523,41 @@ def doctor(
         gettext("Library: %(path)s (%(count)s · %(size)s)")
         % {"path": escape(str(location)), "count": len(entries), "size": store.human_size(size)}
     )
-    raise typer.Exit(0 if uv else 1)
+    raise typer.Exit(0 if uv or not _uv_required(entries) else 1)
 
 
 # --------------------------------------------------------------------------
 # config (git-config grammar: bare = list, KEY = read, KEY VALUE = write)
 # --------------------------------------------------------------------------
 
-_CONFIG_KEYS = ("lang", "editor", "mirror", "form", "after_run")
+_CONFIG_KEYS = ("lang", "editor", "mirror", "form", "after_run", "shell.bash_path", "js.runner")
+
+
+def _config_lang_value() -> str:
+    override = config.load_config().get("language", "")
+    if isinstance(override, str) and override:
+        return override
+    return gettext("auto (%(locale)s)") % {"locale": i18n.current_locale()}
+
+
+def _config_mirror_value() -> str:
+    m = config.load_mirror()
+    return m.pypi if m.enabled else "off"
 
 
 def _config_value(key: str) -> str:
-    if key == "lang":
-        override = config.load_config().get("language", "")
-        if isinstance(override, str) and override:
-            return override
-        return gettext("auto (%(locale)s)") % {"locale": i18n.current_locale()}
-    if key == "editor":
-        return config.load_editor() or gettext("default ($VISUAL / $EDITOR)")
-    if key == "mirror":
-        m = config.load_mirror()
-        return m.pypi if m.enabled else "off"
-    if key == "form":
-        return config.load_form()
-    return config.load_after_run()  # "after_run" — _CONFIG_KEYS guards the key set
+    # Dispatch table (not an if-chain) keeps the key set open-ended without tripping the
+    # too-many-returns lint; _CONFIG_KEYS guards `key` so the lookup can't miss.
+    readers = {
+        "lang": _config_lang_value,
+        "editor": lambda: config.load_editor() or gettext("default ($VISUAL / $EDITOR)"),
+        "mirror": _config_mirror_value,
+        "form": config.load_form,
+        "after_run": config.load_after_run,
+        "shell.bash_path": lambda: config.load_bash_path() or gettext("auto (bash on PATH)"),
+        "js.runner": lambda: config.load_js_runner() or gettext("auto (deno > bun > node)"),
+    }
+    return readers[key]()
 
 
 def _config_set(key: str, value: str) -> None:
@@ -1876,6 +2588,23 @@ def _config_set(key: str, value: str) -> None:
             )
             raise typer.Exit(EXIT_USAGE)
         config.save_form(value)
+    elif key == "shell.bash_path":
+        # Validate on set (never on clear): an empty value clears the key. A non-empty
+        # path must point at a real file — a typo'd bash_path would otherwise surface
+        # only later as an opaque "isn't available" refusal on a Windows shell run.
+        if value.strip() and not Path(value).expanduser().is_file():
+            err_console.print(
+                f"[red]{gettext('No such file: %(path)s') % {'path': escape(value)}}[/red]"
+            )
+            raise typer.Exit(EXIT_USAGE)
+        config.save_bash_path(value)
+    elif key == "js.runner":
+        if value.strip() and value not in config.JS_RUNNERS:
+            err_console.print(
+                f"[red]{gettext('Unknown JS runner: %(value)s. Choose from: %(names)s') % {'value': escape(value), 'names': ', '.join(config.JS_RUNNERS)}}[/red]"
+            )
+            raise typer.Exit(EXIT_USAGE)
+        config.save_js_runner(value)
     else:  # after_run
         if value not in config.AFTER_RUN_MODES:
             err_console.print(
@@ -1894,7 +2623,10 @@ def _config_set(key: str, value: str) -> None:
 )
 def config_cmd(
     key: str = typer.Argument(
-        None, help=gettext("Setting name: lang / editor / mirror / form / after_run")
+        None,
+        help=gettext(
+            "Setting name: lang / editor / mirror / form / after_run / shell.bash_path / js.runner"
+        ),
     ),
     value: str = typer.Argument(
         None, help=gettext('New value (omit to read; lang also accepts "auto")')
@@ -1910,7 +2642,7 @@ def config_cmd(
             )
             return
         for k in _CONFIG_KEYS:
-            console.print(f"  {k:<8}{escape(_config_value(k))}")
+            console.print(f"  {k:<16}{escape(_config_value(k))}")
         return
     if key not in _CONFIG_KEYS:
         err_console.print(
@@ -1975,6 +2707,11 @@ def _mirror_wizard() -> None:
                     console=console,
                 ),
                 uv_binary=_prompt_uv_binary(m.uv_binary or config.UV_BINARY_MIRROR),
+                npm=Prompt.ask(
+                    gettext("npm registry URL"),
+                    default=m.npm or config.NPM_REGISTRY_MIRROR,
+                    console=console,
+                ),
             )
         )
     else:

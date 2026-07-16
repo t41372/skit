@@ -11,8 +11,9 @@ import pytest
 from textual.widgets import DataTable, Input, Static
 
 from conftest import footer_text
-from skit import argstate, metawriter, store, tui
-from skit.metawriter import ParamSpec
+from skit import argstate, store, tui
+from skit.langs.python import metawriter
+from skit.params import ParamDecl
 
 
 @pytest.fixture(autouse=True)
@@ -111,8 +112,8 @@ async def test_detail_shows_copy_promise_and_masked_secret(tmp_path):
     text = metawriter.write_params(
         'CITY = "x"\nAPI_KEY = "s"\nprint(CITY, API_KEY)\n',
         [
-            ParamSpec(name="CITY", kind="const", type="str", default="x"),
-            ParamSpec(name="API_KEY", kind="const", type="str", secret=True),
+            ParamDecl(name="CITY", binding="const", type="str", default="x"),
+            ParamDecl(name="API_KEY", binding="const", type="str", secret=True),
         ],
     )
     store.add_python(_py(tmp_path, text), name="widget")
@@ -284,6 +285,30 @@ async def test_key_e_opens_the_editor(tmp_path, monkeypatch):
         await pilot.press("e")
         await pilot.pause()
         assert len(opened) == 1
+
+
+async def test_key_e_opens_shell_script_source(tmp_path, monkeypatch):
+    """The `e` key opens interpreted (non-python) sources too — a shell entry's stored
+    copy is editable, so pressing `e` hands it to the editor."""
+    import contextlib
+
+    opened: list[object] = []
+    monkeypatch.setattr(tui.editor, "open_in_editor", opened.append)
+
+    @contextlib.contextmanager
+    def _noop(self):
+        yield
+
+    monkeypatch.setattr(tui.MenuApp, "suspend", _noop)
+    sh = tmp_path / "deploy.sh"
+    sh.write_text("#!/bin/bash\necho hi\n", encoding="utf-8")
+    store.add_script(sh, kind="shell", name="deploy")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        await pilot.press("e")
+        await pilot.pause()
+        assert len(opened) == 1
+        assert str(opened[0]).endswith("script.sh")  # the stored shell copy
 
 
 async def test_enter_in_search_runs_top_match_and_refocuses_table(tmp_path, monkeypatch):

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from skit import argspec
+from skit.langs.python import argspec
 
 # The reference/stitch.py shape: a realistic AI-written argparse script (parser built
 # inside main(), Path types, choices, store_true flags, one unreadable custom type).
@@ -44,7 +44,7 @@ def test_stitch_reads_eight_fields_in_source_order():
     spec = argspec.read_argparse(STITCH)
     assert spec is not None
     assert spec.ok
-    assert [f.dest for f in spec.fields] == [
+    assert [f.name for f in spec.fields] == [
         "inputs",
         "output",
         "direction",
@@ -63,7 +63,7 @@ def test_stitch_positional_multiple_required():
     assert inputs.flag == ""
     assert inputs.multiple is True
     assert inputs.required is True
-    assert inputs.kind == "str"  # Path renders as text
+    assert inputs.type == "str"  # Path renders as text
     assert inputs.help == "input images"
 
 
@@ -80,8 +80,8 @@ def test_stitch_choices_with_default():
     spec = argspec.read_argparse(STITCH)
     assert spec is not None
     direction = spec.fields[2]
-    assert direction.kind == "choice"
-    assert direction.choices == ["vertical", "horizontal"]
+    assert direction.type == "choice"
+    assert direction.choices == ("vertical", "horizontal")
     assert direction.default == "vertical"
 
 
@@ -89,7 +89,7 @@ def test_stitch_int_field():
     spec = argspec.read_argparse(STITCH)
     assert spec is not None
     gap = spec.fields[3]
-    assert gap.kind == "int"
+    assert gap.type == "int"
     assert gap.default == 0
 
 
@@ -105,7 +105,7 @@ def test_stitch_store_true_checkbox():
     spec = argspec.read_argparse(STITCH)
     assert spec is not None
     match_size = spec.fields[5]
-    assert match_size.kind == "bool"
+    assert match_size.type == "bool"
     assert match_size.action == "store_true"
     assert match_size.default is False
     assert match_size.flag == "--match-size"
@@ -118,7 +118,7 @@ def test_store_false_defaults_on():
     )
     assert spec is not None
     f = spec.fields[0]
-    assert f.kind == "bool"
+    assert f.type == "bool"
     assert f.default is True
 
 
@@ -169,7 +169,7 @@ def test_help_and_version_actions_are_not_fields():
         "ap.add_argument('--real')\n"
     )
     assert spec is not None
-    assert [f.dest for f in spec.fields] == ["real"]
+    assert [f.name for f in spec.fields] == ["real"]
 
 
 def test_secret_name_precheck():
@@ -196,7 +196,7 @@ def test_dest_override_wins():
         "ap.add_argument('--out-file', dest='target')\n"
     )
     assert spec is not None
-    assert spec.fields[0].dest == "target"
+    assert spec.fields[0].name == "target"
     assert spec.fields[0].flag == "--out-file"
 
 
@@ -211,8 +211,8 @@ def test_type_float_and_str_map_to_kinds():
         "ap.add_argument('--ratio', type=float)\nap.add_argument('--label', type=str)\n"
     )
     assert spec is not None
-    assert spec.fields[0].kind == "float"
-    assert spec.fields[1].kind == "str"
+    assert spec.fields[0].type == "float"
+    assert spec.fields[1].type == "str"
     assert spec.fields[0].degraded is False
     assert spec.fields[1].degraded is False
 
@@ -232,7 +232,7 @@ def test_non_literal_argument_name_skips_that_field_only():
         "ap.add_argument(FLAG_NAME)\nap.add_argument('--real')\n"
     )
     assert spec is not None
-    assert [f.dest for f in spec.fields] == ["real"]
+    assert [f.name for f in spec.fields] == ["real"]
 
 
 def test_short_flag_only_keeps_short_name():
@@ -241,13 +241,15 @@ def test_short_flag_only_keeps_short_name():
     )
     assert spec is not None
     assert spec.fields[0].flag == "-v"
-    assert spec.fields[0].dest == "v"
+    assert spec.fields[0].name == "v"
 
 
 def test_field_order_matches_source_order():
     spec = argspec.read_argparse(STITCH)
     assert spec is not None
-    assert [f.order for f in spec.fields] == list(range(8))
+    # Declaration order is carried by list position now (no per-field order attribute):
+    # the eight add_argument calls come back as eight fields, indexed in source order.
+    assert [i for i, _ in enumerate(spec.fields)] == list(range(8))
 
 
 def test_choices_win_over_type_for_kind():
@@ -257,8 +259,8 @@ def test_choices_win_over_type_for_kind():
     )
     assert spec is not None
     f = spec.fields[0]
-    assert f.kind == "choice"
-    assert f.choices == ["1", "2", "3"]
+    assert f.type == "choice"
+    assert f.choices == ("1", "2", "3")
 
 
 def test_required_false_literal_is_not_required():
@@ -281,7 +283,7 @@ def test_partly_non_literal_name_list_skips_that_field_only():
         "ap.add_argument('-x', EXTRA)\nap.add_argument('--real')\n"
     )
     assert spec is not None
-    assert [f.dest for f in spec.fields] == ["real"]
+    assert [f.name for f in spec.fields] == ["real"]
 
 
 def test_flag_dest_only_strips_dashes_not_letters():
@@ -291,7 +293,7 @@ def test_flag_dest_only_strips_dashes_not_letters():
         "import argparse\nap = argparse.ArgumentParser()\nap.add_argument('--Xterm')\n"
     )
     assert spec is not None
-    assert spec.fields[0].dest == "Xterm"
+    assert spec.fields[0].name == "Xterm"
 
 
 def test_computed_default_degrades_field():
@@ -302,6 +304,6 @@ def test_computed_default_degrades_field():
         "import argparse\nap = argparse.ArgumentParser()\nap.add_argument('--size', default=(1, 2))\n"
     )
     assert spec is not None
-    assert spec.fields[0].dest == "size"
+    assert spec.fields[0].name == "size"
     assert spec.fields[0].degraded is True
     assert spec.fields[0].default is None  # a computed default is never read as a value

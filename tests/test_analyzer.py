@@ -3,7 +3,8 @@ framework detection, secret heuristics (C3 pre-stage)."""
 
 from __future__ import annotations
 
-from skit import analyzer
+from skit import callmatch
+from skit.langs.python import analyzer
 
 
 def test_module_level_consts():
@@ -59,7 +60,7 @@ def test_main_guard_reversed_form():
 def test_input_calls_ordered_b1():
     src = 'name = input("Name: ")\ndef f():\n    return input("Inner: ")\nage = input()\n'
     result = analyzer.analyze(src)
-    inputs = [c for c in result.candidates if c.kind == "input"]
+    inputs = [c for c in result.candidates if c.binding == "input"]
     assert [c.order for c in inputs] == [0, 1, 2]
     assert inputs[0].prompt == "Name: "
     assert inputs[1].prompt == "Inner: "
@@ -95,7 +96,7 @@ def test_syntax_error_returns_empty():
 
 def test_duplicate_top_level_const_is_deduped_to_one_candidate():
     # A name bound twice at module top level (e.g. from hand-editing) must yield exactly one
-    # candidate, not two: two same-named ParamSpecs made the shim compute and apply the same
+    # candidate, not two: two same-named ParamDecls made the shim compute and apply the same
     # replacement span twice (see shim.inject), corrupting the injected source.
     src = "CITY = 'a'\nCITY = 'b'\nprint(CITY)\n"
     result = analyzer.analyze(src)
@@ -138,13 +139,13 @@ def test_duplicate_const_injection_no_longer_corrupts_source():
     # to become unparseable (str case) or silently run with the wrong value (int case) once
     # injected. With a single deduped candidate/spec, shim replaces every same-named occurrence
     # exactly once and the result stays valid and correct.
-    from skit import shim
-    from skit.metawriter import ParamSpec
+    from skit.langs.python import shim
+    from skit.params import ParamDecl
 
     src = "CITY = 'a'\nCITY = 'b'\nprint(CITY)\n"
     result = analyzer.analyze(src)
     (cand,) = result.candidates
-    spec = ParamSpec(name=cand.name, kind=cand.kind, type=cand.type, default=cand.default)
+    spec = ParamDecl.from_candidate(cand)
     injected = shim.inject(src, [spec], {"CITY": "Paris"})
     assert injected == "CITY = 'Paris'\nCITY = 'Paris'\nprint(CITY)\n"
     import ast
@@ -152,7 +153,7 @@ def test_duplicate_const_injection_no_longer_corrupts_source():
     ast.parse(injected)  # must still be valid Python (used to raise SyntaxError)
 
 
-# ---------- _match_inputs: prompt-keyed input matching (3a) ----------
+# ---------- callmatch.match_calls: prompt-keyed input matching (3a) ----------
 
 
 def test_match_inputs_prompt_survives_position_shift():
@@ -161,7 +162,7 @@ def test_match_inputs_prompt_survives_position_shift():
     # be flagged (ambiguous=False): this is exactly the "no silent rebind" case working as intended.
     stored = [(0, "Password: ")]
     current = [(0, "Username: "), (1, "Password: ")]
-    bindings = analyzer._match_inputs(stored, current)
+    bindings = callmatch.match_calls(stored, current)
     assert bindings == {0: (1, False)}
 
 
@@ -171,7 +172,7 @@ def test_match_inputs_falls_back_to_position_when_no_prompt_recorded():
     # pre-3a behaviour.
     stored = [(0, "")]
     current = [(0, "Anything: ")]
-    assert analyzer._match_inputs(stored, current) == {0: (0, False)}
+    assert callmatch.match_calls(stored, current) == {0: (0, False)}
 
 
 def test_match_inputs_flags_ambiguous_when_prompt_renamed_but_position_still_exists():
@@ -181,7 +182,7 @@ def test_match_inputs_flags_ambiguous_when_prompt_renamed_but_position_still_exi
     # catch).
     stored = [(0, "Old prompt: ")]
     current = [(0, "New prompt: ")]
-    bindings = analyzer._match_inputs(stored, current)
+    bindings = callmatch.match_calls(stored, current)
     assert bindings == {0: (0, True)}
 
 
@@ -190,17 +191,17 @@ def test_match_inputs_flags_ambiguous_when_two_call_sites_share_a_prompt():
     # alone; falling back to position is still flagged as ambiguous rather than silently trusted.
     stored = [(0, "Value: ")]
     current = [(0, "Value: "), (1, "Value: ")]
-    bindings = analyzer._match_inputs(stored, current)
+    bindings = callmatch.match_calls(stored, current)
     assert bindings == {0: (0, True)}
 
 
 def test_match_inputs_missing_when_neither_prompt_nor_position_resolves():
     stored = [(2, "Gone: ")]
     current = [(0, "Other: ")]
-    assert analyzer._match_inputs(stored, current) == {}
+    assert callmatch.match_calls(stored, current) == {}
 
 
-# ---------- _match_inputs: duplicate STORED prompts must never map two-to-one (regression) ----------
+# ---------- callmatch.match_calls: duplicate STORED prompts must never map two-to-one (regression) ----------
 
 
 def test_match_inputs_duplicate_stored_prompts_never_double_bind_on_delete():
@@ -211,7 +212,7 @@ def test_match_inputs_duplicate_stored_prompts_never_double_bind_on_delete():
     # bare position (1) no longer exists either, so it must come back missing entirely.
     stored = [(0, "Go? "), (1, "Go? ")]
     current = [(0, "Go? ")]
-    bindings = analyzer._match_inputs(stored, current)
+    bindings = callmatch.match_calls(stored, current)
     assert bindings == {0: (0, False)}
     # Explicit invariant: no two stored keys ever resolve to the same current order.
     resolved = [current_order for current_order, _ in bindings.values()]
@@ -226,7 +227,7 @@ def test_match_inputs_duplicate_stored_prompts_edit_one_flags_rebind_for_loser()
     # silently trusted and never double-bound onto position 0.
     stored = [(0, "Go? "), (1, "Go? ")]
     current = [(0, "Go? "), (1, "Different: ")]
-    bindings = analyzer._match_inputs(stored, current)
+    bindings = callmatch.match_calls(stored, current)
     assert bindings == {0: (0, False), 1: (1, True)}
     resolved = [current_order for current_order, _ in bindings.values()]
     assert len(resolved) == len(set(resolved))
@@ -238,7 +239,7 @@ def test_match_inputs_triple_duplicate_stored_prompts_only_one_winner():
     # exist in the current source either) -- never sharing the winner's current order.
     stored = [(0, "Go? "), (1, "Go? "), (2, "Go? ")]
     current = [(0, "Go? ")]
-    bindings = analyzer._match_inputs(stored, current)
+    bindings = callmatch.match_calls(stored, current)
     assert bindings == {0: (0, False)}
     resolved = [current_order for current_order, _ in bindings.values()]
     assert len(resolved) == len(set(resolved))

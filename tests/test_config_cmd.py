@@ -59,7 +59,15 @@ def test_bare_config_json() -> None:
     result = runner.invoke(cli.app, ["config", "--json"])
     assert result.exit_code == 0
     doc = json.loads(result.output)
-    assert set(doc) == {"lang", "editor", "mirror", "form", "after_run"}
+    assert set(doc) == {
+        "lang",
+        "editor",
+        "mirror",
+        "form",
+        "after_run",
+        "shell.bash_path",
+        "js.runner",
+    }
     assert doc["mirror"] == "off"
     assert doc["form"] == "tui"
     assert doc["after_run"] == "exit"  # the launcher default
@@ -220,6 +228,80 @@ def test_form_write_preserves_mirror_and_language() -> None:
     assert config.load_form() == "plain"
 
 
+# --- shell.bash_path ---
+
+
+def test_read_bash_path_default_line() -> None:
+    result = runner.invoke(cli.app, ["config", "shell.bash_path"])
+    assert result.exit_code == 0
+    assert "auto" in result.output  # the unset placeholder
+
+
+def test_set_bash_path_to_existing_file(tmp_path: Path) -> None:
+    bash = tmp_path / "bash"
+    bash.write_text("", encoding="utf-8")
+    result = runner.invoke(cli.app, ["config", "shell.bash_path", str(bash)])
+    assert result.exit_code == 0, result.output
+    assert config.load_bash_path() == str(bash)
+    # rich soft-wraps the long path; flatten before matching the echoed confirmation.
+    assert str(bash) in result.output.replace("\n", "")
+
+
+def test_set_bash_path_to_missing_file_is_usage_error(tmp_path: Path) -> None:
+    ghost = tmp_path / "nope"  # never created
+    result = runner.invoke(cli.app, ["config", "shell.bash_path", str(ghost)])
+    assert result.exit_code == 2
+    assert config.load_bash_path() == ""  # nothing written on the rejection
+
+
+def test_clear_bash_path_with_empty_value(tmp_path: Path) -> None:
+    bash = tmp_path / "bash"
+    bash.write_text("", encoding="utf-8")
+    runner.invoke(cli.app, ["config", "shell.bash_path", str(bash)])
+    result = runner.invoke(cli.app, ["config", "shell.bash_path", ""])
+    assert result.exit_code == 0
+    assert config.load_bash_path() == ""  # empty clears, no existence check
+
+
+def test_bare_config_lists_dotted_keys() -> None:
+    result = runner.invoke(cli.app, ["config"])
+    assert result.exit_code == 0
+    assert "shell.bash_path" in result.output
+    assert "js.runner" in result.output
+
+
+# --- js.runner ---
+
+
+def test_read_js_runner_default_line() -> None:
+    result = runner.invoke(cli.app, ["config", "js.runner"])
+    assert result.exit_code == 0
+    assert "auto" in result.output
+
+
+@pytest.mark.parametrize("name", list(config.JS_RUNNERS))
+def test_set_js_runner(name: str) -> None:
+    result = runner.invoke(cli.app, ["config", "js.runner", name])
+    assert result.exit_code == 0, result.output
+    assert config.load_js_runner() == name
+    assert name in result.output
+
+
+def test_set_js_runner_unknown_is_usage_error() -> None:
+    result = runner.invoke(cli.app, ["config", "js.runner", "carrier-pigeon"])
+    assert result.exit_code == 2
+    # the error names the real choices so the user can fix it in one step
+    assert "deno" in result.output
+    assert config.load_js_runner() == ""
+
+
+def test_clear_js_runner_with_empty_value() -> None:
+    runner.invoke(cli.app, ["config", "js.runner", "bun"])
+    result = runner.invoke(cli.app, ["config", "js.runner", ""])
+    assert result.exit_code == 0
+    assert config.load_js_runner() == ""
+
+
 # --- the mirror wizard (first-run only now) ---
 
 
@@ -256,15 +338,17 @@ def test_mirror_wizard_default_custom_when_non_preset(monkeypatch: pytest.Monkey
 def test_mirror_wizard_custom(monkeypatch: pytest.MonkeyPatch) -> None:
     config.save_mirror(config.MirrorConfig(enabled=True, pypi="https://old/simple"))
     captured = _prompts(
-        monkeypatch, ["custom", "https://my/pypi", "https://my/py", "https://my/uv"]
+        monkeypatch,
+        ["custom", "https://my/pypi", "https://my/py", "https://my/uv", "https://my/npm"],
     )
     cli._mirror_wizard()
     m = config.load_mirror()
     assert m.enabled
-    assert (m.pypi, m.python_install, m.uv_binary) == (
+    assert (m.pypi, m.python_install, m.uv_binary, m.npm) == (
         "https://my/pypi",
         "https://my/py",
         "https://my/uv",
+        "https://my/npm",
     )
     assert captured[0]["default"] == "custom"
 
@@ -275,10 +359,18 @@ def test_mirror_wizard_custom_rejects_non_https_uv_binary(monkeypatch: pytest.Mo
     config.save_mirror(config.MirrorConfig(enabled=True, pypi="https://old/simple"))
     _prompts(
         monkeypatch,
-        ["custom", "https://my/pypi", "https://my/py", "http://evil/uv", "https://good/uv"],
+        [
+            "custom",
+            "https://my/pypi",
+            "https://my/py",
+            "http://evil/uv",
+            "https://good/uv",
+            "https://my/npm",
+        ],
     )
     cli._mirror_wizard()
     assert config.load_mirror().uv_binary == "https://good/uv"
+    assert config.load_mirror().npm == "https://my/npm"
 
 
 # --- first-run probe ---

@@ -37,6 +37,7 @@ def test_placeholder_value_with_double_braces_round_trips():
     whole string) collapsed these to single braces because it couldn't tell a template-level
     escape from characters that came from the injected value."""
     from skit import launcher, store
+    from skit.langs import launch
 
     entry = store.add_command("run --q {q}", name="brace-value")
     cmd = launcher.build_command(entry, values={"q": "{{ .name }}"})
@@ -44,7 +45,7 @@ def test_placeholder_value_with_double_braces_round_trips():
     # The old two-pass implementation collapsed this to "run --q { .name }" (single braces).
     # Quote with the same platform-aware helper the product uses (shlex on POSIX, list2cmdline on
     # Windows) rather than hardcoding shlex.quote, which would diverge on Windows.
-    assert cmd == "run --q " + launcher._quote_for_shell("{{ .name }}")
+    assert cmd == "run --q " + launch.quote_for_shell("{{ .name }}")
 
 
 def test_placeholder_value_with_double_braces_inside_quoted_template_slot():
@@ -122,7 +123,7 @@ def test_build_python_missing_script_raises_before_calling_ensure_uv(py_entry, m
     def _boom():
         raise AssertionError("must not call ensure_uv before the script-exists check")
 
-    monkeypatch.setattr(launcher, "ensure_uv", _boom)
+    monkeypatch.setattr("skit.langs.launch.ensure_uv", _boom)
     py_entry.script_path.unlink()
     with pytest.raises(launcher.LaunchError, match="script"):
         launcher.build_command(py_entry)
@@ -134,7 +135,7 @@ def test_build_python_healthy_script_still_calls_ensure_uv(py_entry, monkeypatch
     from skit import launcher
 
     calls = []
-    monkeypatch.setattr(launcher, "ensure_uv", lambda: (calls.append(1), "/fake/uv")[1])
+    monkeypatch.setattr("skit.langs.launch.ensure_uv", lambda: (calls.append(1), "/fake/uv")[1])
     cmd = launcher.build_command(py_entry)
     assert calls == [1]
     assert cmd[0] == "/fake/uv"
@@ -187,11 +188,11 @@ def test_quote_for_shell_uses_list2cmdline_on_windows(monkeypatch):
     the branch by faking the platform and assert the two quoters genuinely differ for a spaced value."""
     import subprocess
 
-    from skit import launcher
+    from skit.langs import launch
 
-    monkeypatch.setattr(launcher.sys, "platform", "win32")
+    monkeypatch.setattr("sys.platform", "win32")
     value = "My Movie.mp4"
-    quoted = launcher._quote_for_shell(value)
+    quoted = launch.quote_for_shell(value)
     assert quoted == subprocess.list2cmdline([value])
     assert quoted == '"My Movie.mp4"'  # Windows double-quote wrapping, not POSIX single-quote
     assert quoted != shlex.quote(value)

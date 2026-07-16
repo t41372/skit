@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from skit.langs import launch
+
 
 @pytest.fixture(autouse=True)
 def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -28,7 +30,7 @@ def py_entry(tmp_path: Path):
 def test_python_command_uses_uv_run_script(py_entry, monkeypatch):
     from skit import launcher
 
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/fake/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/fake/uv")
     cmd = launcher.build_command(py_entry, ["--x", "1"])
     # C2: --no-project unconditionally (uv would otherwise attach a block-less script
     # to any enclosing project), and --script passed explicitly.
@@ -42,7 +44,7 @@ def test_python_without_uv_auto_downloads(py_entry, monkeypatch):
     the download also fails."""
     from skit import launcher, uvman
 
-    monkeypatch.setattr(launcher, "find_uv", lambda: None)
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: None)
     monkeypatch.setattr(uvman, "ensure_uv_downloaded", lambda **kw: "/downloaded/uv")
     cmd = launcher.build_command(py_entry)
     assert cmd[0] == "/downloaded/uv"
@@ -54,7 +56,7 @@ def test_python_uv_download_failure_raises(py_entry, monkeypatch):
     def boom(**kw):
         raise uvman.UvDownloadError("network down")
 
-    monkeypatch.setattr(launcher, "find_uv", lambda: None)
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: None)
     monkeypatch.setattr(uvman, "ensure_uv_downloaded", boom)
     with pytest.raises(launcher.LaunchError, match="uv"):
         launcher.build_command(py_entry)
@@ -115,22 +117,20 @@ def test_run_entry_real_execution(py_entry, tmp_path):
 
 def test_find_uv_private_bin_fallback(tmp_path, monkeypatch):
     """When uv is absent from PATH, find_uv should find the skit-private binary."""
-    from skit import launcher
 
     monkeypatch.setattr("shutil.which", lambda _name: None)
-    monkeypatch.setattr("skit.launcher.private_bin_dir", lambda: tmp_path / "bin")
+    monkeypatch.setattr("skit.langs.launch.private_bin_dir", lambda: tmp_path / "bin")
     (tmp_path / "bin").mkdir()
     (tmp_path / "bin" / "uv").touch()
-    assert launcher.find_uv() == str(tmp_path / "bin" / "uv")
+    assert launch.find_uv() == str(tmp_path / "bin" / "uv")
 
 
 def test_find_uv_returns_none_when_absent(tmp_path, monkeypatch):
     """When uv is in neither PATH nor the private bin, find_uv returns None."""
-    from skit import launcher
 
     monkeypatch.setattr("shutil.which", lambda _name: None)
-    monkeypatch.setattr("skit.launcher.private_bin_dir", lambda: tmp_path / "empty")
-    assert launcher.find_uv() is None
+    monkeypatch.setattr("skit.langs.launch.private_bin_dir", lambda: tmp_path / "empty")
+    assert launch.find_uv() is None
 
 
 # ---------- _resolve_workdir: source=None and absolute policy ----------
@@ -159,7 +159,7 @@ def test_workdir_absolute_path_used_directly(py_entry, tmp_path):
 def test_python_with_deps_and_python_version(py_entry, monkeypatch):
     from skit import launcher
 
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/uv")
     py_entry.meta.requires_python = ">=3.11"
     py_entry.meta.dependencies = ["requests", "rich"]
     cmd = launcher.build_command(py_entry)
@@ -199,7 +199,7 @@ def test_build_command_unknown_kind_raises(py_entry):
 def test_run_entry_missing_workdir_raises(py_entry, monkeypatch):
     from skit import launcher
 
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/fake/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/fake/uv")
     py_entry.meta.workdir = "/nonexistent/path/that/does/not/exist"
     # The message renders the path natively (backslashes on Windows), so match on str(Path(...)).
     with pytest.raises(launcher.LaunchError) as exc_info:
@@ -239,7 +239,7 @@ def test_run_entry_injects_mirror_env(py_entry, monkeypatch):
         seen_env.update(kw.get("env", {}))
         return _Result()
 
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/fake/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/fake/uv")
     monkeypatch.setattr(launcher.subprocess, "run", _fake_run)
     launcher.run_entry(py_entry)
     assert seen_env["UV_DEFAULT_INDEX"] == config.PYPI_PRESETS["tsinghua"]
@@ -262,7 +262,7 @@ def _capture_run_env(monkeypatch, py_entry) -> dict[str, str]:
         seen_env.update(kw.get("env", {}))
         return _Result()
 
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/fake/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/fake/uv")
     monkeypatch.setattr(launcher.subprocess, "run", _fake_run)
     launcher.run_entry(py_entry)
     return seen_env
@@ -382,7 +382,7 @@ def test_preflight_does_not_invoke_uv(py_entry, monkeypatch):
     def _boom():
         raise AssertionError("preflight must not call ensure_uv")
 
-    monkeypatch.setattr(launcher, "ensure_uv", _boom)
+    monkeypatch.setattr("skit.langs.launch.ensure_uv", _boom)
     launcher.preflight(py_entry)  # must not raise (and must not call ensure_uv)
 
 
@@ -449,8 +449,8 @@ def test_run_entry_succeeds_for_copy_mode_entry_with_deleted_origin(
     """Same reproduction, but through the actual run path (build_command + workdir check)."""
     from skit import launcher
 
-    monkeypatch.setattr(launcher, "find_uv", lambda: shutil.which("uv"))
-    if launcher.find_uv() is None:
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: shutil.which("uv"))
+    if launch.find_uv() is None:
         pytest.skip("no uv in environment")
     entry = copy_entry_isolated_origin
     entry.meta.workdir = "origin"
@@ -493,6 +493,6 @@ def test_preflight_reference_mode_still_raises_on_missing_script_when_origin_gon
 def test_describe_command_isolates_like_build_command(py_entry, monkeypatch):
     from skit import launcher
 
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/fake/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/fake/uv")
     line = launcher.describe_command(py_entry, ["--x"])
     assert "--no-project" in line  # the transparency line mirrors the real isolation

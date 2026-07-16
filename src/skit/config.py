@@ -29,6 +29,10 @@ _GITHUB_RELEASE = "https://mirror.nju.edu.cn/github-release"
 PYTHON_INSTALL_MIRROR = f"{_GITHUB_RELEASE}/astral-sh/python-build-standalone/"
 UV_BINARY_MIRROR = f"{_GITHUB_RELEASE}/astral-sh/uv"
 
+# The domestic npm registry (js/ts per-script deps). npmmirror is the successor of the old
+# taobao registry and the one mirror all three PyPI preset providers share.
+NPM_REGISTRY_MIRROR = "https://registry.npmmirror.com"
+
 # PyPI index presets (the part users pick between; the GitHub mirrors above are shared).
 PYPI_PRESETS: dict[str, str] = {
     "tsinghua": "https://pypi.tuna.tsinghua.edu.cn/simple",
@@ -42,6 +46,7 @@ PYPI_PRESETS: dict[str, str] = {
 # them would leave the GFW-blocked default index in place.
 _INDEX_ENV = ("UV_DEFAULT_INDEX", "UV_INDEX_URL")
 _PYTHON_MIRROR_ENV = "UV_PYTHON_INSTALL_MIRROR"
+_NPM_REGISTRY_ENV = ("NPM_CONFIG_REGISTRY", "npm_config_registry")
 
 
 def _config_path():
@@ -175,6 +180,7 @@ class MirrorConfig:
     pypi: str = ""
     python_install: str = ""
     uv_binary: str = ""
+    npm: str = ""  # npm registry (js/ts per-script deps + anything npm-ish the script spawns)
 
 
 def load_mirror() -> MirrorConfig:
@@ -207,6 +213,7 @@ def load_mirror() -> MirrorConfig:
         pypi=_url("pypi"),
         python_install=_url("python_install"),
         uv_binary=_https_url("uv_binary"),
+        npm=_url("npm"),
     )
 
 
@@ -218,17 +225,20 @@ def save_mirror(mirror: MirrorConfig) -> None:
         "pypi": mirror.pypi,
         "python_install": mirror.python_install,
         "uv_binary": mirror.uv_binary,
+        "npm": mirror.npm,
     }
     save_config(doc)
 
 
 def preset(name: str) -> MirrorConfig:
-    """Build an enabled MirrorConfig for a PyPI provider, sharing the NJU GitHub-release mirrors."""
+    """Build an enabled MirrorConfig for a PyPI provider, sharing the NJU GitHub-release mirrors
+    (and npmmirror — the one domestic npm registry every preset agrees on)."""
     return MirrorConfig(
         enabled=True,
         pypi=PYPI_PRESETS[name],
         python_install=PYTHON_INSTALL_MIRROR,
         uv_binary=UV_BINARY_MIRROR,
+        npm=NPM_REGISTRY_MIRROR,
     )
 
 
@@ -253,6 +263,10 @@ def mirror_env(base_env: Mapping[str, str]) -> dict[str, str]:
         overlay["UV_DEFAULT_INDEX"] = mirror.pypi
     if mirror.python_install and not base_env.get(_PYTHON_MIRROR_ENV):
         overlay[_PYTHON_MIRROR_ENV] = mirror.python_install
+    # npm reads its config env vars case-insensitively; bun and deno read the uppercase form.
+    # Setting the uppercase one reaches all three installers (and the script's own npm calls).
+    if mirror.npm and not any(base_env.get(v) for v in _NPM_REGISTRY_ENV):
+        overlay["NPM_CONFIG_REGISTRY"] = mirror.npm
     return overlay
 
 
@@ -273,3 +287,57 @@ def looks_blocked(timeout: float = 2.5) -> bool:
         except OSError:
             return True
     return False
+
+
+def load_bash_path() -> str:
+    """Windows escape hatch: an explicit bash to run shell entries with (config.toml
+    `[shell] bash_path`). Empty when unset; POSIX systems never need it."""
+    section = load_config().get("shell", {})  # pragma: no mutate — isinstance normalizes
+    value = section.get("bash_path", "") if isinstance(section, dict) else ""
+    return value if isinstance(value, str) else ""
+
+
+def save_bash_path(path: str) -> None:
+    """Persist (or clear, when empty) the Windows bash path, preserving every other key."""
+    doc = _load_config_for_save()
+    section = doc.get("shell")
+    if not isinstance(section, dict):
+        section = {}
+    if path.strip():
+        section["bash_path"] = path.strip()
+    else:
+        section.pop("bash_path", None)
+    if section:
+        doc["shell"] = section
+    else:
+        doc.pop("shell", None)
+    save_config(doc)
+
+
+JS_RUNNERS = ("deno", "bun", "node")
+
+
+def load_js_runner() -> str:
+    """The preferred JS/TS runner (config.toml `[js] runner`), or "" for the built-in
+    detection order (deno > bun > node). Unknown values normalize to "" — a hand-edited
+    `runner = "carrier-pigeon"` must not poison every js run."""
+    section = load_config().get("js", {})  # pragma: no mutate — isinstance normalizes
+    value = section.get("runner", "") if isinstance(section, dict) else ""
+    return value if value in JS_RUNNERS else ""
+
+
+def save_js_runner(name: str) -> None:
+    """Persist (or clear, when empty) the preferred JS runner, preserving every other key."""
+    doc = _load_config_for_save()
+    section = doc.get("js")
+    if not isinstance(section, dict):
+        section = {}
+    if name.strip():
+        section["runner"] = name.strip()
+    else:
+        section.pop("runner", None)
+    if section:
+        doc["js"] = section
+    else:
+        doc.pop("js", None)
+    save_config(doc)

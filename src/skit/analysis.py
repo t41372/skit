@@ -1,50 +1,95 @@
-"""Reconcile: before a run, reconcile the `[tool.skit]` definitions with the script's current
-content (Phase 3).
+"""Language-neutral analysis model + drift reconciliation (docs/design/multilang.md).
 
-Scripts get hand-edited (the copy in copy mode, the original in reference mode), while the
-definitions are a snapshot from add time, so the two drift apart. The reconcile keys are the
-same set analyzer/shim uses (A2):
+Two things live here, shared by every analyzable language (python today, shell next):
 
-- const: matched against analyzer's const candidates by **variable name**.
-- input: matched against analyzer's input candidates by **prompt text** first, falling back to
-  **call order** (B1) only when the prompt can't disambiguate -- a dynamic/absent prompt, or the
-  prompt no longer uniquely identifies a call site (3a, `analyzer._match_inputs`). A positional
-  fallback that had a prompt to check and didn't get an exact match is a `rebind`: still injectable,
-  but flagged, since silently trusting position again is exactly the bug 3a fixes.
+- **The candidate model** — `Candidate` (one detected parameter) and `Analysis` (the whole
+  detection result). Every language's `analyze(text) -> Analysis` returns these; they are
+  field-aligned with `params.ParamDecl` so the CLI, TUI, and reconcile can't drift on which
+  fields carry over. Moved here verbatim from the Python analyzer so a second language
+  (shell) does not import the Python one just to name its result type.
 
-It produces five categories:
+- **The reconcile machinery** — `Report`, `drift_lines`, `render_warning`, `EditResult`,
+  `edit_specs`, `reconcile`. All of it is language-agnostic *except* the one call to
+  `analyze(text)`, which each caller supplies as an explicit `analyze` parameter. The
+  per-language module (`langs/python/reconcile.py`, `langs/shell`) is a thin wiring shim
+  that binds its own analyzer's `analyze` and re-exports the rest.
 
-- ok: the definition still matches, proceed to the form as usual.
-- missing: the definition has no target (variable deleted/renamed, fewer inputs). Injecting these
-  anyway would throw the value into a black hole, so the caller should drop them from the form and
-  warn (old/new comparison).
-- changed: the const matched, but its type in the source changed (e.g. 3 -> "3"). Still injectable,
-  but the value domain may be off, so just warn.
-- rebind: an input matched only by falling back to bare position after its prompt failed to
-  uniquely resolve (3a). Still injectable (usable), but warned -- a source edit may have silently
-  reshuffled which question this value now answers.
-- new: candidates present in the script but not in the definitions. Note: during onboarding the user
-  may deliberately select only some, so new is not drift (has_drift excludes it) and is not raised
-  to nag the user at run time; it's reference info for views like `skit params`.
-
-This module only makes **decisions**; it does no I/O and produces no user copy — presentation
-is left to the CLI/TUI.
+This module only makes **decisions**; it does no I/O and produces no user copy beyond the
+two shared render helpers (`drift_lines`/`render_warning`), which are the only copy exit
+points — presentation/markup is left to the CLI/TUI. Headless, stdlib + skit-neutral only.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING
 
-from .analyzer import Candidate, _match_inputs, analyze
-from .metawriter import ParamSpec
+from .callmatch import match_calls
+from .params import ParamDecl
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+
+@dataclass
+class Candidate:
+    """A candidate parameter. const/envdefault are keyed by variable name; input by call
+    order (B1/A8)."""
+
+    # "const" | "input" | "envdefault" — the source-anchor axis (field-aligned with
+    # ParamDecl.binding). "envdefault" is shell's ${NAME:-default} idiom (env delivery).
+    binding: str
+    name: str  # const: variable name; input: display name (input-1, …); envdefault: variable name
+    type: str = "str"  # one of INJECTABLE_TYPES
+    default: str | int | float | bool | None = None  # const/envdefault: the source value/default
+    prompt: str = ""  # input: the literal prompt of input()/read (if any)
+    order: int = -1  # input: which input()/read call (0-based); -1 for const/envdefault
+    lineno: int = 0
+    secret: bool = False  # heuristic pre-check, editable during onboarding
+    # Demotion signal (UX spec §0): a candidate that *parses* as a constant but whose usage
+    # says "not a parameter" — currently only "accumulator" (literal init + AugAssign anywhere,
+    # or reassigned inside a loop body). Demoted candidates default to unchecked at onboarding,
+    # with the reason surfaced; clean candidates default to checked.
+    demoted: bool = False
+    demotion: str = ""  # symbolic reason id; the UI owns the human wording
+    # envdefault only: the ${NAME} variable the value is read from at run time (== name; kept
+    # explicit so an env-delivery caller never has to re-derive it). "" for const/input.
+    env_name: str = ""
+
+
+@dataclass
+class Analysis:
+    candidates: list[Candidate] = field(default_factory=list)
+    frameworks: list[str] = field(default_factory=list)  # detected CLI frameworks
+    syntax_error: bool = False
+    uses_argv: bool = (
+        False  # sys.argv / $1 / getopts appears -> the run form gets a passthrough hint
+    )
+    # Filename-looking string literals passed directly as call arguments (never bound to a
+    # name): the "extract this into a named constant to manage it" hint. Capped, deduped,
+    # source order. Only literals a cheap deterministic rule can vouch for — nothing else
+    # (see the 'RGB' exclusion in the UX spec: no domain-knowledge guesses).
+    filename_literals: list[str] = field(default_factory=list)
+    # The script locates itself — shell's $0 / $BASH_SOURCE / dirname "$0", fish's
+    # (status filename|dirname) — so a const rewrite that runs from a temp copy could change what
+    # the script thinks its own path is. `skit params` turns this into a hint (pointing at
+    # --normalize) for kinds that actually rewrite a copy; the Python analyzer never sets it.
+    uses_self_location: bool = False
+
+    @property
+    def uses_cli_framework(self) -> bool:
+        return bool(self.frameworks)
+
+
+# ---------------------------------------------------------------- reconcile
 
 
 @dataclass
 class Report:
-    ok: list[ParamSpec] = field(default_factory=list)
-    missing: list[ParamSpec] = field(default_factory=list)
-    changed: list[tuple[ParamSpec, Candidate]] = field(default_factory=list)
-    rebind: list[tuple[ParamSpec, Candidate]] = field(default_factory=list)
+    ok: list[ParamDecl] = field(default_factory=list)
+    missing: list[ParamDecl] = field(default_factory=list)
+    changed: list[tuple[ParamDecl, Candidate]] = field(default_factory=list)
+    rebind: list[tuple[ParamDecl, Candidate]] = field(default_factory=list)
     new: list[Candidate] = field(default_factory=list)
     syntax_error: bool = False
 
@@ -55,7 +100,7 @@ class Report:
         return bool(self.missing or self.changed or self.rebind)
 
     @property
-    def usable(self) -> list[ParamSpec]:
+    def usable(self) -> list[ParamDecl]:
         """Definitions still safe to inject (ok + changed + rebind; changed is only a type
         warning, rebind is only a positional-fallback warning -- both still inject, just flagged,
         per 3a: no silent drop, no silent wrong-value swap either)."""
@@ -71,11 +116,26 @@ def drift_lines(report: Report, name: str) -> list[str]:
         gettext("The parameter definitions for %(name)s have drifted from the script:")
         % {"name": name}
     ]
+    # An envdefault whose ${NAME:-default} vanished or was shadowed by a plain assignment is a
+    # correctness landmine (risk #1): the env value the user set would be silently ignored. It
+    # gets a dedicated LOUD line, distinct from a const's ordinary "target gone".
+    lines.extend(
+        "  "
+        + gettext(
+            "%(name)s is no longer read from the environment (its ${...:-default} was removed or "
+            "overridden by a plain assignment) — your value would be silently ignored. "
+            "Re-add or resync."
+        )
+        % {"name": spec.name}
+        for spec in report.missing
+        if spec.binding == "envdefault"
+    )
     lines.extend(
         "  "
         + gettext("%(name)s: injection target no longer exists (dropped from this run's form)")
         % {"name": spec.name}
         for spec in report.missing
+        if spec.binding != "envdefault"
     )
     lines.extend(
         "  "
@@ -129,7 +189,7 @@ def render_warning(warning: str) -> str:
 
 @dataclass
 class EditResult:
-    specs: list[ParamSpec]
+    specs: list[ParamDecl]
     warnings: list[str] = field(
         default_factory=list
     )  # unmatched names etc.; i18n key + value by CLI
@@ -137,7 +197,7 @@ class EditResult:
 
 def edit_specs(
     text: str,
-    specs: list[ParamSpec],
+    specs: list[ParamDecl],
     *,
     resync: bool = False,
     add: list[str] | tuple[str, ...] = (),
@@ -145,6 +205,7 @@ def edit_specs(
     secret: list[str] | tuple[str, ...] = (),
     no_secret: list[str] | tuple[str, ...] = (),
     prompts: dict[str, str] | None = None,
+    analyze: Callable[[str], Analysis],
 ) -> EditResult:
     """Pure function: apply a set of edit operations to the existing `[tool.skit]` definitions and
     return the new definition list.
@@ -153,12 +214,15 @@ def edit_specs(
     `skit params`; an input's name is bound to its order, so it's unique for inputs too). The apply
     order is intentionally fixed: resync (prune/retype) -> remove -> add -> secret/no_secret/prompt
     (tweaks). No I/O; unmatched names are collected into warnings for the caller to render.
+
+    `analyze` is the language's detector — the one language-specific dependency, threaded through so
+    this stays neutral (the Python/shell reconcile shims bind their own).
     """
     prompts = prompts or {}
     warnings: list[str] = []
     # Shallow-copy each spec: this function claims to be pure and must never mutate the caller's
     # objects (resync changes type, tweaks change secret/prompt).
-    by_name: dict[str, ParamSpec] = {s.name: replace(s) for s in specs}
+    by_name: dict[str, ParamDecl] = {s.name: replace(s) for s in specs}
     # Derive order from by_name's own (deduped) keys rather than re-deriving it from `specs`
     # directly: a corrupted/legacy definition set can contain duplicate names (analyzer used to be
     # able to emit two same-named const candidates; onboarding then wrote both), and order must
@@ -170,7 +234,7 @@ def edit_specs(
     # 1) resync: prune missing and update changed types per the current script (keeping custom
     #    secret/prompt/default).
     if resync:
-        _apply_resync(text, specs, by_name, order, warnings)
+        _apply_resync(text, specs, by_name, order, warnings, analyze=analyze)
 
     # 2) remove: explicit drop.
     for name in remove:
@@ -182,7 +246,7 @@ def edit_specs(
 
     # 3) add: bring a currently detected candidate under management (skip if already managed).
     if add:
-        _apply_add(text, add, by_name, order, warnings)
+        _apply_add(text, add, by_name, order, warnings, analyze=analyze)
 
     # 4) tweak secret / prompt (only for managed ones).
     _apply_tweaks(by_name, warnings, secret=secret, no_secret=no_secret, prompts=prompts)
@@ -192,12 +256,14 @@ def edit_specs(
 
 def _apply_resync(
     text: str,
-    specs: list[ParamSpec],
-    by_name: dict[str, ParamSpec],
+    specs: list[ParamDecl],
+    by_name: dict[str, ParamDecl],
     order: list[str],
     warnings: list[str],
+    *,
+    analyze: Callable[[str], Analysis],
 ) -> None:
-    report = reconcile(text, specs)
+    report = reconcile(text, specs, analyze=analyze)
     if report.syntax_error:
         # reconcile() can't tell "genuinely gone" from "the script doesn't parse right now" on its
         # own: with a syntax error, analyze() finds no candidates at all, so reconcile() marks
@@ -217,7 +283,12 @@ def _apply_resync(
             del by_name[name]
             order.remove(name)
         elif name in changed_types:
-            by_name[name].type = changed_types[name]
+            # changed_types[name] is a Candidate.type (a plain str); ParamDecl.type is the
+            # closed ParamType literal, so re-anchor the type through dataclasses.replace
+            # (whose kwargs are untyped) rather than a direct attribute write. by_name[name]
+            # is already a private shallow copy (see the replace() at the top of edit_specs),
+            # so swapping in a fresh copy is the same visible effect as mutating in place.
+            by_name[name] = replace(by_name[name], type=changed_types[name])
         elif name in rebind_targets:
             # The prompt no longer uniquely resolves; re-anchor to whichever call site position
             # currently supplied it, so the *next* run's plain reconcile() (no --resync) sees an
@@ -231,23 +302,25 @@ def _apply_resync(
 def _apply_add(
     text: str,
     add: list[str] | tuple[str, ...],
-    by_name: dict[str, ParamSpec],
+    by_name: dict[str, ParamDecl],
     order: list[str],
     warnings: list[str],
+    *,
+    analyze: Callable[[str], Analysis],
 ) -> None:
     candidates = {c.name: c for c in analyze(text).candidates}
     for name in add:
         if name in by_name:
             warnings.append(f"already-managed:{name}")
         elif name in candidates:
-            by_name[name] = ParamSpec.from_candidate(candidates[name])
+            by_name[name] = ParamDecl.from_candidate(candidates[name])
             order.append(name)
         else:
             warnings.append(f"not-a-candidate:{name}")
 
 
 def _apply_tweaks(
-    by_name: dict[str, ParamSpec],
+    by_name: dict[str, ParamDecl],
     warnings: list[str],
     *,
     secret: list[str] | tuple[str, ...],
@@ -272,25 +345,35 @@ def _apply_tweaks(
             warnings.append(f"not-managed:{name}")
 
 
-def reconcile(text: str, specs: list[ParamSpec]) -> Report:
+def reconcile(  # noqa: PLR0912 — one branch per binding and drift category; a flat dispatch
+    text: str, specs: list[ParamDecl], *, analyze: Callable[[str], Analysis]
+) -> Report:
     """Reconcile the definitions with the script's current content. On a syntax error, mark
-    everything missing (nothing matches)."""
+    everything missing (nothing matches).
+
+    Match keys by binding: const/envdefault by **variable name**, input by **prompt then order**
+    (callmatch). An envdefault matches whenever its name is still read from the environment
+    (default-text/type changes are fine — the value arrives by env either way); it goes missing
+    only when the analyzer no longer reports it (the ${NAME:-...} was deleted, or the name became a
+    plain top-level assignment that would shadow the env value — the analyzer's suppression rule)."""
     analysis = analyze(text)
     if analysis.syntax_error:
         return Report(missing=list(specs), syntax_error=True)
 
-    consts = {c.name: c for c in analysis.candidates if c.kind == "const"}
-    inputs = {c.order: c for c in analysis.candidates if c.kind == "input"}
-    stored_inputs = [(s.order, s.prompt) for s in specs if s.kind == "input"]
-    current_inputs = [(c.order, c.prompt) for c in analysis.candidates if c.kind == "input"]
-    input_bindings = _match_inputs(stored_inputs, current_inputs)
+    consts = {c.name: c for c in analysis.candidates if c.binding == "const"}
+    envdefaults = {c.name: c for c in analysis.candidates if c.binding == "envdefault"}
+    inputs = {c.order: c for c in analysis.candidates if c.binding == "input"}
+    stored_inputs = [(s.order, s.prompt) for s in specs if s.binding == "input"]
+    current_inputs = [(c.order, c.prompt) for c in analysis.candidates if c.binding == "input"]
+    input_bindings = match_calls(stored_inputs, current_inputs)
 
     report = Report()
     covered_consts: set[str] = set()
     covered_inputs: set[int] = set()
+    covered_envs: set[str] = set()
 
     for spec in specs:
-        if spec.kind == "input":
+        if spec.binding == "input":
             binding = input_bindings.get(spec.order)
             if binding is None:
                 report.missing.append(spec)
@@ -303,6 +386,14 @@ def reconcile(text: str, specs: list[ParamSpec]) -> Report:
             else:
                 report.ok.append(spec)
             continue
+        if spec.binding == "envdefault":
+            cand = envdefaults.get(spec.name)
+            if cand is None:
+                report.missing.append(spec)
+            else:
+                covered_envs.add(spec.name)
+                report.ok.append(spec)  # default-text/type changes stay ok (env delivery)
+            continue
         cand = consts.get(spec.name)
         if cand is None:
             report.missing.append(spec)
@@ -314,8 +405,10 @@ def reconcile(text: str, specs: list[ParamSpec]) -> Report:
             report.ok.append(spec)
 
     for cand in analysis.candidates:
-        if (cand.kind == "const" and cand.name not in covered_consts) or (
-            cand.kind == "input" and cand.order not in covered_inputs
+        if (
+            (cand.binding == "const" and cand.name not in covered_consts)
+            or (cand.binding == "input" and cand.order not in covered_inputs)
+            or (cand.binding == "envdefault" and cand.name not in covered_envs)
         ):
             report.new.append(cand)
     return report

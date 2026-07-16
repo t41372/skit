@@ -20,35 +20,27 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass, field
 
-from .analyzer import _is_secret_name, _literal_value
+from ...params import ParamDecl, ParamType, is_secret_name
+from .analyzer import _literal_value
 
 # Actions that add no form field at all (argparse handles them internally).
 _NON_FIELD_ACTIONS = ("help", "version")
 # Actions we model as a checkbox.
 _BOOL_ACTIONS = ("store_true", "store_false")
 
-
-@dataclass
-class ArgField:
-    """One add_argument call, as a form field."""
-
-    dest: str  # display/name key (flag name without dashes, or the positional name)
-    flag: str = ""  # "--output" (longest declared flag); "" for a positional
-    required: bool = False
-    kind: str = "str"  # "str" | "int" | "float" | "bool" | "choice"
-    choices: list[str] = field(default_factory=list)
-    default: str | int | float | bool | None = None
-    help: str = ""
-    multiple: bool = False  # nargs "+" / "*"
-    degraded: bool = False  # free-text fallback; omit from the command when left empty
-    secret: bool = False
-    action: str = ""  # "store_true" / "store_false" when kind == "bool"
-    order: int = 0
+# Bare-name type callables (`type=int|float|str`) mapped onto the form's closed type axis.
+# Typed as ParamType so a direct `f.type = _SCALAR_TYPES[...]` write stays inside the literal
+# domain (a str-typed AST identifier would not, under ty strictest).
+_SCALAR_TYPES: dict[str, ParamType] = {"int": "int", "float": "float", "str": "str"}
+# click's own type sentinels (`click.INT` / `click.FLOAT` / `click.STRING`).
+_CLICK_TYPES: dict[str, ParamType] = {"INT": "int", "FLOAT": "float", "STRING": "str"}
 
 
 @dataclass
 class ArgSpec:
-    fields: list[ArgField] = field(default_factory=list)
+    # Each field is a delivery=flag ParamDecl (binding="none": the script owns the parser,
+    # skit only reflects it). List position carries declaration order — there is no order field.
+    fields: list[ParamDecl] = field(default_factory=list)
     ok: bool = True  # False -> whole-parser degradation (passthrough escape only)
     reason: str = ""  # symbolic: "subparsers" | "dynamic" (UI owns the wording)
 
@@ -93,9 +85,9 @@ def read_argparse(text: str) -> ArgSpec | None:
         return ArgSpec(ok=False, reason="subparsers")
     if _any_call_inside_loop(tree):
         return ArgSpec(ok=False, reason="dynamic")
-    fields: list[ArgField] = []
-    for i, call in enumerate(sorted(calls, key=lambda c: (c.lineno, c.col_offset))):
-        f = _read_call(call, order=i)
+    fields: list[ParamDecl] = []
+    for call in sorted(calls, key=lambda c: (c.lineno, c.col_offset)):
+        f = _read_call(call)
         if f is not None:
             fields.append(f)
     return ArgSpec(fields=fields)
@@ -115,8 +107,8 @@ def _any_call_inside_loop(tree: ast.Module) -> bool:
     return False
 
 
-def _read_call(call: ast.Call, order: int) -> ArgField | None:
-    """One add_argument call -> ArgField, or None for non-field actions (--help/--version)."""
+def _read_call(call: ast.Call) -> ParamDecl | None:
+    """One add_argument call -> ParamDecl, or None for non-field actions (--help/--version)."""
     names = [a.value for a in call.args if isinstance(a, ast.Constant) and isinstance(a.value, str)]
     if not names or len(names) != len(call.args):
         # A non-literal name (or none at all): we can't even label the field — skip it and
@@ -140,17 +132,18 @@ def _read_call(call: ast.Call, order: int) -> ArgField | None:
         req_node = kwargs.get("required")
         required = isinstance(req_node, ast.Constant) and req_node.value is True
 
-    f = ArgField(
-        dest=dest,
+    f = ParamDecl(
+        name=dest,
+        binding="none",
+        delivery="flag",
         flag=flag,
         required=required,
         help=_literal_str(kwargs.get("help")),
         multiple=multiple,
-        secret=_is_secret_name(dest),
-        order=order,
+        secret=is_secret_name(dest),
     )
     if action in _BOOL_ACTIONS:
-        f.kind = "bool"
+        f.type = "bool"
         f.action = action
         f.default = action == "store_false"  # store_false means "on unless flagged"
     elif action:
@@ -161,15 +154,15 @@ def _read_call(call: ast.Call, order: int) -> ArgField | None:
     return f
 
 
-def _apply_value_kwargs(f: ArgField, kwargs: dict[str, ast.expr]) -> None:
-    """Fill kind/choices/default from literal kwargs; degrade the field on anything opaque."""
+def _apply_value_kwargs(f: ParamDecl, kwargs: dict[str, ast.expr]) -> None:
+    """Fill type/choices/default from literal kwargs; degrade the field on anything opaque."""
     if "choices" in kwargs:
         choices = _literal_str_list(kwargs["choices"])
         if choices is None:
             f.degraded = True
             return
-        f.kind = "choice"
-        f.choices = choices
+        f.type = "choice"
+        f.choices = tuple(choices)
     if "type" in kwargs and not _apply_type(f, kwargs["type"]):
         # A conversion function we can't run (e.g. parse_color): free-text fallback.
         f.degraded = True
@@ -184,11 +177,11 @@ def _apply_value_kwargs(f: ArgField, kwargs: dict[str, ast.expr]) -> None:
             f.degraded = True
 
 
-def _apply_type(f: ArgField, node: ast.expr) -> bool:
+def _apply_type(f: ParamDecl, node: ast.expr) -> bool:
     """Apply a literal type= kwarg. True when the type is form-representable."""
-    if isinstance(node, ast.Name) and node.id in ("int", "float", "str"):
-        if f.kind != "choice":  # choices win: the selector already constrains input
-            f.kind = node.id
+    if isinstance(node, ast.Name) and node.id in _SCALAR_TYPES:
+        if f.type != "choice":  # choices win: the selector already constrains input
+            f.type = _SCALAR_TYPES[node.id]
         return True
     # Path renders as text; anything else is an arbitrary callable we won't execute.
     return isinstance(node, ast.Name) and node.id == "Path"
@@ -247,8 +240,7 @@ def _read_click(tree: ast.Module) -> ArgSpec | None:
         return None
     if has_group or len(commands) > 1:
         return ArgSpec(ok=False, reason="subparsers")
-    fields: list[ArgField] = []
-    order = 0
+    fields: list[ParamDecl] = []
     for deco in reversed(commands[0].decorator_list):
         call = _decorator_call(deco)
         if call is None:
@@ -256,10 +248,9 @@ def _read_click(tree: ast.Module) -> ArgSpec | None:
         kind = _decorator_name(deco)
         if kind not in ("option", "argument"):
             continue
-        f = _read_click_param(call, positional=(kind == "argument"), order=order)
+        f = _read_click_param(call, positional=(kind == "argument"))
         if f is not None:
             fields.append(f)
-            order += 1
     return ArgSpec(fields=fields)
 
 
@@ -267,7 +258,7 @@ def _is_true_kwarg(node: ast.expr | None) -> bool:
     return isinstance(node, ast.Constant) and node.value is True
 
 
-def _read_click_param(call: ast.Call, positional: bool, order: int) -> ArgField | None:
+def _read_click_param(call: ast.Call, positional: bool) -> ParamDecl | None:
     names = [a.value for a in call.args if isinstance(a, ast.Constant) and isinstance(a.value, str)]
     if not names or len(names) != len(call.args):
         return None
@@ -276,15 +267,16 @@ def _read_click_param(call: ast.Call, positional: bool, order: int) -> ArgField 
     flag = "" if positional else (long_flags[0] if long_flags else names[0])
     dest = names[0] if positional else (flag.lstrip("-").replace("-", "_"))
     nargs = _literal_value(kwargs["nargs"])[1] if "nargs" in kwargs else None
-    f = ArgField(
-        dest=dest,
+    f = ParamDecl(
+        name=dest,
+        binding="none",
+        delivery="flag",
         flag=flag,
         # click arguments are required by default; nargs=-1 (variadic) is not.
         required=(positional and nargs != -1) or _is_true_kwarg(kwargs.get("required")),
         help=_literal_str(kwargs.get("help")),
         multiple=nargs == -1 or _is_true_kwarg(kwargs.get("multiple")),
-        secret=_is_secret_name(dest),
-        order=order,
+        secret=is_secret_name(dest),
     )
     is_flag = kwargs.get("is_flag")
     if isinstance(is_flag, ast.Constant) and is_flag.value is True:
@@ -293,7 +285,7 @@ def _read_click_param(call: ast.Call, positional: bool, order: int) -> ArgField 
             # can't assemble faithfully — degrade honestly (typer's rule, mirrored).
             f.degraded = True
             return f
-        f.kind = "bool"
+        f.type = "bool"
         f.action = "store_true"
         f.default = False
         return f
@@ -312,20 +304,20 @@ def _read_click_param(call: ast.Call, positional: bool, order: int) -> ArgField 
     return f
 
 
-def _apply_click_type(f: ArgField, node: ast.expr) -> bool:
+def _apply_click_type(f: ParamDecl, node: ast.expr) -> bool:
     """click type=: bare int/float/str, click.INT/FLOAT/STRING, click.Choice([...])."""
-    if isinstance(node, ast.Name) and node.id in ("int", "float", "str"):
-        f.kind = node.id
+    if isinstance(node, ast.Name) and node.id in _SCALAR_TYPES:
+        f.type = _SCALAR_TYPES[node.id]
         return True
-    if isinstance(node, ast.Attribute) and node.attr in ("INT", "FLOAT", "STRING"):
-        f.kind = {"INT": "int", "FLOAT": "float", "STRING": "str"}[node.attr]
+    if isinstance(node, ast.Attribute) and node.attr in _CLICK_TYPES:
+        f.type = _CLICK_TYPES[node.attr]
         return True
     if isinstance(node, ast.Call) and _decorator_name(node) == "Choice" and node.args:
         choices = _literal_str_list(node.args[0])
         if choices is None:
             return False
-        f.kind = "choice"
-        f.choices = choices
+        f.type = "choice"
+        f.choices = tuple(choices)
         return True
     return False
 
@@ -334,7 +326,13 @@ def _apply_click_type(f: ArgField, node: ast.expr) -> bool:
 # typer
 # --------------------------------------------------------------------------
 
-_ANNOTATION_KINDS = {"int": "int", "float": "float", "str": "str", "bool": "bool", "Path": "str"}
+_ANNOTATION_KINDS: dict[str, ParamType] = {
+    "int": "int",
+    "float": "float",
+    "str": "str",
+    "bool": "bool",
+    "Path": "str",
+}
 
 
 def _read_typer(tree: ast.Module) -> ArgSpec | None:
@@ -382,11 +380,11 @@ def _read_typer(tree: ast.Module) -> ArgSpec | None:
     # Positional-args defaults align to the TAIL of fn.args.args.
     pad = len(fn.args.args) - len(fn.args.defaults)
     aligned: list[ast.expr | None] = [None] * pad + defaults
-    fields: list[ArgField] = []
+    fields: list[ParamDecl] = []
     # len(aligned) == len(args) by construction: pad + positional defaults covers
     # args.args, and kw_defaults is exactly one entry per kwonly arg (None when absent).
     for i, arg in enumerate(args):
-        fields.append(_read_typer_param(arg, aligned[i], order=i))
+        fields.append(_read_typer_param(arg, aligned[i]))
     return ArgSpec(fields=fields)
 
 
@@ -418,16 +416,17 @@ def _annotated_parts(annotation: ast.expr | None) -> tuple[ast.expr | None, ast.
     return base, meta
 
 
-def _read_typer_param(arg: ast.arg, default: ast.expr | None, order: int) -> ArgField:
+def _read_typer_param(arg: ast.arg, default: ast.expr | None) -> ParamDecl:
     name = arg.arg
     annotation, annotated_meta = _annotated_parts(arg.annotation)
     looked_up = _ANNOTATION_KINDS.get(annotation.id) if isinstance(annotation, ast.Name) else None
-    f = ArgField(
-        dest=name,
+    f = ParamDecl(
+        name=name,
+        binding="none",
+        delivery="flag",
         flag=f"--{name.replace('_', '-')}",
-        kind=looked_up if looked_up is not None else "str",
-        secret=_is_secret_name(name),
-        order=order,
+        type=looked_up if looked_up is not None else "str",
+        secret=is_secret_name(name),
         # An annotation we can't model (Enum, Optional[...], List[...]) degrades the
         # field; NO annotation at all is fine — typer treats it as str, and so do we.
         degraded=annotation is not None and looked_up is None,
@@ -455,7 +454,7 @@ def _read_typer_param(arg: ast.arg, default: ast.expr | None, order: int) -> Arg
     return _typer_finish_bool(f)
 
 
-def _apply_typer_meta(f: ArgField, call: ast.Call, *, has_positional_default: bool) -> None:
+def _apply_typer_meta(f: ParamDecl, call: ast.Call, *, has_positional_default: bool) -> None:
     """Read flag/help (and, in the legacy style, the value default) from a typer
     Option/Argument call. In the Annotated style the call carries no positional default,
     so every string positional is a flag declaration."""
@@ -480,7 +479,7 @@ def _apply_typer_meta(f: ArgField, call: ast.Call, *, has_positional_default: bo
                 f.degraded = True
 
 
-def _apply_typer_signature_default(f: ArgField, default: ast.expr | None) -> None:
+def _apply_typer_signature_default(f: ParamDecl, default: ast.expr | None) -> None:
     """Apply the parameter's own `= value` default (the Annotated style keeps it there,
     and a bare `x: int = 5` too). None means required."""
     if default is None:
@@ -493,18 +492,18 @@ def _apply_typer_signature_default(f: ArgField, default: ast.expr | None) -> Non
         f.degraded = True
 
 
-def _typer_finish_bool(f: ArgField) -> ArgField:
+def _typer_finish_bool(f: ParamDecl) -> ParamDecl:
     """typer bools become --x/--no-x pairs; only the default-False case assembles as a
     plain store_true flag. Default-True (or required) would need the --no-x spelling —
     degrade rather than emit a flag that means the opposite."""
-    if f.kind != "bool":
+    if f.type != "bool":
         return f
     if f.default in (None, False) and not f.required:
         f.action = "store_true"
         f.default = False
         return f
     f.degraded = True
-    f.kind = "str"
+    f.type = "str"
     return f
 
 

@@ -11,9 +11,9 @@
 
 **English** | [繁體中文](./README.zh-TW.md) | [简体中文](./README.zh-CN.md)
 
-**skit is a launcher and a home for your Python scripts.**
+**skit is a launcher and a home for your scripts.**
 
-skit stores your Python scripts in one place and makes them painless to launch.
+skit stores your scripts in one place and makes them painless to launch.
 
 **AI writes the scripts. skit gives them a home.**
 
@@ -28,7 +28,7 @@ script, and (with your OK) saving the good ones back, so they outlive the chat.
 - **One home for your scripts.** `skit add` collects scattered scripts into a searchable library — keep a copy in the library, or reference the original file.
 - **Parameters without the pain.** Flags, `input()` calls, and the constants you tick become form fields (choices → pickers, booleans → checkboxes, types enforced).
 - **It remembers.** Last-used values come back automatically; save favorites as named presets. Parameters marked secret never touch disk. Tokens like `{cwd}` and `{today}` keep presets portable.
-- **No environment mess.** skit declares each script's dependencies in the script itself (PEP 723) and runs it through uv in an isolated, cached environment — no venvs to manage, nothing installed globally.
+- **No environment mess.** Python scripts declare their dependencies inline (PEP 723) and run via uv in isolated environments; JS/TS scripts get a per-script `node_modules`, installed from their declared packages on first run. Nothing global either way. Other languages use the tools already on your machine — skit checks that declared external commands are on your `PATH` before running.
 - **Mouse or keyboard.** Plain `skit` opens the full TUI; every key hint on screen is also a clickable button.
 - **Automation-ready.** Every TUI action is also a CLI command with `--json` output and meaningful exit codes — for shell scripts, CI, and AI agents.
 - **Your agent's script library too.** The official [Agent Skill](https://agentskills.io) teaches Claude Code, Codex, Cursor, Gemini CLI, and friends the whole drill: discover scripts with `skit list`, read a parameter schema with `skit show`, run with `skit run --set … --no-input`. One `skit agent install` away — see [Works with your AI agent](#works-with-your-ai-agent).
@@ -37,7 +37,7 @@ script, and (with your OK) saving the good ones back, so they outlive the chat.
 | Problem | What skit does |
 | --- | --- |
 | Scripts scattered all over the place | One central menu, with search |
-| Scripts with weird external dependencies | An isolated environment per script — dependencies declared in the file (PEP 723), resolved by uv |
+| Scripts that need specific packages or tools | Per-script dependencies for Python (PEP 723 + uv) and JS/TS (npm); for any language, skit checks declared external commands on your `PATH` |
 | CLI flags you forget ten minutes later, `input()` prompts, hard-coded constants meant to be edited by hand | Static analysis extracts them all into an interactive form — no code changes. Last-used values come prefilled; favorites save as presets. |
 | The weird script an AI wrote for you dies with the chat session | Agents check the library first, reuse what's there, and save the keepers — one-off scripts become permanent, parameterized tools |
 
@@ -53,6 +53,23 @@ Nothing to set up per script — no refactoring, no config to maintain. The scri
   <img width="480" alt="Driving skit with the mouse alone — every control on screen is a click target" src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/demo-mouse.gif"><br>
   <em>Fully mouse operable — every key hint on screen is also a button.</em>
 </p>
+
+## Language support
+
+Python, shell, and JS/TS get static parameter detection **and** value injection. The rest launch out of the box, accept declared parameters, and work with their own CLI parsers.
+
+| Kind | Runs via | Params detected | Injection | Reads its own CLI | Deps / needs |
+| --- | --- | --- | --- | --- | --- |
+| **Python** | `uv run --script` | constants, `input()` | ✅ | argparse · click · typer | PEP 723 (uv) + needs |
+| **Shell** (bash/sh/zsh) | interpreter | constants, `${VAR:-}` env-defaults, `read` | ✅ | getopts | needs |
+| **JS / TS** | deno › bun › node | `const` | ✅ | `util.parseArgs` | npm (per script) + needs |
+| **fish** | fish | `set -q NAME; or set NAME …` env-defaults | — | `argparse` builtin | needs |
+| **PowerShell** | pwsh | — | — | `param()` | needs |
+| **Ruby · Perl · Lua · R** | interpreter | — | — | — | needs |
+| **Programs** (exe) | direct exec | — | — | — | needs |
+| **Commands** | template fill | — | — | — | needs |
+
+You can also declare parameters by hand for any kind — so even plain executables and command templates get the same form / preset / `--set` experience. **needs** are external commands — skit checks they're on your `PATH` before each run (any kind). Python and JS/TS get isolated per-script package dependencies: uv resolves the PEP 723 block, and npm-style deps install into a `node_modules` next to the stored copy (`skit add` suggests them from the script's own imports). Managed JS/TS deps apply to copied entries — a referenced script keeps using its own project's `node_modules` — and installs never run package lifecycle scripts (npm and bun get `--ignore-scripts`; deno skips them by default). One more evener: when deno is the runner skit picks, it passes `--allow-all`, so the same script behaves the same under deno, bun, and node. skit bootstraps uv for Python, but never a JS runtime — you supply node, bun, or deno.
 
 ## Install
 
@@ -137,6 +154,7 @@ skit run my_script --dry-run  # print the exact command, don't run it
 skit run my_script --set width=800 --no-input   # set values explicitly, never prompt
 skit show my_script --json    # one script's full parameter schema, machine-readable
 skit params my_script         # show managed parameters and last-used values
+skit deps my_script --dep "requests>=2"   # set a script's package dependencies
 skit list --json              # machine-readable listing
 skit config                   # settings: language, editor, mirror, form style
 skit --help                   # everything else
@@ -169,18 +187,18 @@ skit follows your system language; switch it in the TUI preferences (for automat
 
 ## Mainland China (中国大陆)
 
-Three downloads tend to fail in mainland China: PyPI packages, the Python builds uv fetches from GitHub, and skit's own uv bootstrap. skit can route all three through domestic mirrors.
+Four downloads tend to fail in mainland China: PyPI packages, npm packages, the Python builds uv fetches from GitHub, and skit's own uv bootstrap. skit can route all four through domestic mirrors.
 
-Mirror settings live inside skit only: your global uv config is never touched, and existing mirror settings (`UV_DEFAULT_INDEX`, `uv.toml`, …) are respected.
+Mirror settings live inside skit only: your global uv config is never touched, and existing mirror settings (`UV_DEFAULT_INDEX`, `uv.toml`, …) are respected. The npm registry rides `NPM_CONFIG_REGISTRY`: an existing value of that variable in your environment still wins, but note npm itself ranks it above `~/.npmrc`.
 
 - **First run**: if PyPI/GitHub look unreachable, skit offers to turn mirrors on — just press Enter.
 - **Any time**: TUI Preferences → mirror, or:
 
 ```bash
-skit config mirror tsinghua   # or: aliyun / ustc / custom / off
+skit config mirror tsinghua   # or: aliyun / ustc / off
 ```
 
-Defaults: PyPI via Tsinghua / Aliyun / USTC; Python builds and the uv binary via NJU. Pick `custom` to swap any URL.
+Defaults: PyPI via Tsinghua / Aliyun / USTC; npm via npmmirror; Python builds and the uv binary via NJU. Custom URLs: pick `custom` in TUI Preferences (or the first-run wizard) to swap any of them.
 
 ## Why skit exists
 

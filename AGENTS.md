@@ -2,8 +2,9 @@
 
 ## What skit is
 
-A script launcher and parameter manager. Users add scattered Python scripts into one library,
-then run them from skit's TUI menu or the CLI. Read README.md for more info.
+A script launcher and parameter manager. Users add scattered scripts — Python, shell, JS/TS,
+and a dozen kinds in all — into one library, then run them from skit's TUI menu or the CLI.
+Read README.md for more info.
 
 ## Core design principles
 
@@ -44,6 +45,35 @@ gates.
 **6. Self-contained and non-invasive.** skit stays out of the user's global environment. It
 never mutates global/system/another tool's settings (shell env, `~/.config/uv/`, …) without an
 explicit consent prompt。
+
+## Language & analyzer rules
+
+skit is multi-language (`src/skit/langs/`): Python is deepest, but shell, JS/TS, fish,
+PowerShell and a data-driven long tail (ruby/perl/lua/r) all launch, and shell + JS/TS also
+get static parameter analysis and value injection. JS/TS additionally get per-script npm
+dependencies (`langs/javascript/deps.py` — deliberately stdlib-only, since it runs on the
+launch path): declared packages materialize as a `node_modules` next to the stored copy,
+installed by the resolved runner's own installer (npm/bun/deno). Two contributor rules follow:
+
+- **Analyzers may depend on their language's parser; launch paths may not (the A2 amendment).**
+  The former "the analyzer is stdlib-only" rule is superseded: each language's analyzer may
+  pull in its declared parser package — the tree-sitter grammars (`tree-sitter`, `-bash`,
+  `-javascript`, `-typescript`) are hard dependencies — but they stay *contained to analysis*.
+  Run/launch paths remain stdlib-only, and a grammar that fails to import degrades that kind's
+  capabilities to `None` (the `spec.analyzer is None` idiom downstream) instead of crashing. A
+  language's analyzer, injector and normalizer share one parse layer and stand or fall together
+  behind a single import guard.
+- **`--normalize` is the one exception to comment-only edits (the A5 amendment).** skit's edits
+  to a script's own text are otherwise confined to comments (the `[tool.skit]` block). `skit
+  params <shell-entry> --normalize NAME` carves out exactly one opt-in, consent-gated exception:
+  it rewrites a bare `NAME=value` constant into the `${NAME:-value}` env-default idiom. A real
+  semantic edit — but only to skit's **stored copy**, never the user's original, and only when
+  asked.
+
+Golden corpus: `tests/corpus/<lang>/` (and the Python files directly under `tests/corpus/`) are
+**byte-exact** analyzer inputs — deliberate CRLF, missing trailing newlines, odd whitespace,
+CJK/emoji. They are excluded from the pre-commit fixers (trailing-whitespace, end-of-file-fixer,
+mixed-line-ending); "fixing" them destroys exactly what they test.
 
 ## Commands
 

@@ -36,6 +36,34 @@ def _py(tmp_path: Path, body: str) -> Path:
 # --------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------- comment-leader generalization
+
+
+def test_block_re_hash_pattern_is_byte_identical_to_the_frozen_literal():
+    """The '#'-leader block regex MUST equal the exact historical frozen pattern: the whole Python
+    golden corpus and every existing user file depend on it byte-for-byte. Generalizing the engine to
+    also serve '//' (JS/TS) must not perturb the '#' path by a single character."""
+    frozen = r"(?m)^# /// script\s*$\n(?P<body>(?:^#(?:| .*)$\n)*?)^# ///[^\S\n]*$\n?"
+    assert pep723._block_re("#").pattern == frozen
+
+
+def test_block_re_double_slash_pattern_mirrors_the_hash_form():
+    assert pep723._block_re("//").pattern == (
+        r"(?m)^// /// script\s*$\n(?P<body>(?:^//(?:| .*)$\n)*?)^// ///[^\S\n]*$\n?"
+    )
+
+
+def test_slash_block_round_trips_with_shebang_skip():
+    """A `// /// script` block round-trips on a shebang'd file, and inject_block skips the `#!` line
+    exactly as it does for the '#' leader (a `#!/usr/bin/env node` shebang is legal in .mjs)."""
+    src = "#!/usr/bin/env node\nconst X = 5;\n"
+    out = pep723.inject_block(src, [], leader="//")
+    assert pep723.has_block(out, "//")
+    assert out.startswith("#!/usr/bin/env node\n")
+    assert out.index("#!") < out.index("// /// script")
+    assert pep723.parse_block(out, "//") == {"dependencies": []}
+
+
 def test_simple_list_splits():
     assert pep723.split_requirements("requests, rich") == ["requests", "rich"]
 

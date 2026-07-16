@@ -16,14 +16,20 @@ from pathlib import Path
 
 import pytest
 
-from skit import shim, uvman
-from skit.metawriter import ParamSpec
+from skit import uvman
+from skit.langs.python import shim
+from skit.params import Binding, ParamDecl, ParamType
 
 
 def spec(
-    name: str, *, kind: str = "const", type: str = "str", order: int = -1, secret: bool = False
-) -> ParamSpec:
-    return ParamSpec(name=name, kind=kind, type=type, order=order, secret=secret)
+    name: str,
+    *,
+    binding: Binding = "const",
+    type: ParamType = "str",
+    order: int = -1,
+    secret: bool = False,
+) -> ParamDecl:
+    return ParamDecl(name=name, binding=binding, type=type, order=order, secret=secret)
 
 
 # Local fixtures (this file must not depend on conftest.py / other test modules' fixtures).
@@ -66,7 +72,7 @@ def test_const_skips_non_literal_duplicate_then_replaces_literal():
 def test_build_python_missing_script_raises(py_entry, monkeypatch):
     from skit import launcher
 
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/fake/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/fake/uv")
     py_entry.script_path.unlink()
     with pytest.raises(launcher.LaunchError, match="script"):
         launcher.build_command(py_entry)
@@ -78,7 +84,7 @@ def test_build_python_missing_script_raises(py_entry, monkeypatch):
 def test_build_python_with_script_override_uses_no_project(py_entry, tmp_path, monkeypatch):
     from skit import launcher
 
-    monkeypatch.setattr(launcher, "find_uv", lambda: "/fake/uv")
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/fake/uv")
     override = tmp_path / "injected.py"
     override.write_text("print(1)\n", encoding="utf-8")
     cmd = launcher.build_command(py_entry, script_override=override)
@@ -107,7 +113,7 @@ def test_build_shell_windows_platform_uses_list2cmdline(monkeypatch):
     from skit import launcher, store
 
     entry = store.add_command("echo hello", name="win-quote")
-    monkeypatch.setattr(launcher.sys, "platform", "win32")
+    monkeypatch.setattr("sys.platform", "win32")
     cmd = launcher.build_command(entry, ["a b", "c"])
     assert isinstance(cmd, str)
     assert cmd.startswith("echo hello ")

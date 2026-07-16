@@ -143,6 +143,7 @@ class PreferencesScreen(Screen[bool]):
             yield Input(
                 value=mirror.uv_binary, placeholder=gettext("uv binary mirror URL"), id="pf-uv"
             )
+            yield Input(value=mirror.npm, placeholder=gettext("npm registry URL"), id="pf-npm")
             yield Static("", id="pf-uv-error", classes="error")
         yield tui_footer.KeysBar(
             Static(
@@ -166,7 +167,7 @@ class PreferencesScreen(Screen[bool]):
 
     def _toggle_custom(self) -> None:
         custom = self._mirror_choice() == "custom"
-        for wid in ("#pf-pypi", "#pf-pyinstall", "#pf-uv"):
+        for wid in ("#pf-pypi", "#pf-pyinstall", "#pf-uv", "#pf-npm"):
             self.query_one(wid, Input).display = custom
         self.query_one("#pf-uv-error", Static).display = custom
 
@@ -198,6 +199,7 @@ class PreferencesScreen(Screen[bool]):
                     pypi=self.query_one("#pf-pypi", Input).value.strip(),
                     python_install=self.query_one("#pf-pyinstall", Input).value.strip(),
                     uv_binary=uv_url,
+                    npm=self.query_one("#pf-npm", Input).value.strip(),
                 )
             )
         else:

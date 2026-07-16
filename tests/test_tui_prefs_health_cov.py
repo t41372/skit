@@ -13,8 +13,9 @@ from __future__ import annotations
 import pytest
 from textual.widgets import Input, OptionList, RadioButton, RadioSet, Select, Static
 
-from skit import config, launcher, metawriter, store, tui
-from skit.metawriter import ParamSpec
+from skit import config, store, tui
+from skit.langs.python import metawriter
+from skit.params import ParamDecl
 from skit.paths import scripts_dir
 from skit.tui_health import HealthScreen
 from skit.tui_prefs import PreferencesScreen
@@ -44,8 +45,8 @@ def _screen_text(screen) -> str:
 _DRIFTED = metawriter.write_params(
     "CITY = 'x'\nprint(CITY)\n",
     [
-        ParamSpec(name="CITY", kind="const", type="str"),
-        ParamSpec(name="GONE", kind="const", type="str"),
+        ParamDecl(name="CITY", binding="const", type="str"),
+        ParamDecl(name="GONE", binding="const", type="str"),
     ],
 )
 
@@ -247,7 +248,7 @@ async def test_prefs_close_dismisses_false(tmp_path):
 
 async def test_health_uv_missing_shows_install_hint(tmp_path, monkeypatch):
     """When uv can't be found, the checklist shows the install pointer, not a path."""
-    monkeypatch.setattr(launcher, "find_uv", lambda: None)
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: None)
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         app.push_screen(HealthScreen())
@@ -274,6 +275,24 @@ async def test_health_lists_drift_issue_and_mirror_on(tmp_path):
         option = issues.get_option_at_index(0)
         assert option.id == slug
         assert "out of sync" in str(option.prompt)
+
+
+async def test_health_lists_missing_needs_issue(tmp_path, monkeypatch):
+    """A shell entry whose declared `needs` command is off PATH becomes a selectable
+    issue row naming the missing tool (the same sweep doctor prints)."""
+    sh = tmp_path / "d.sh"
+    sh.write_text("#!/bin/bash\necho hi\n", encoding="utf-8")
+    entry = store.add_script(sh, kind="shell", name="d")
+    store.update_needs("d", ["ffmpeg"])
+    monkeypatch.setattr("shutil.which", lambda _name: None)  # nothing on PATH
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(HealthScreen())
+        await pilot.pause()
+        issues = app.screen.query_one("#hc-issues", OptionList)
+        prompts = [str(issues.get_option_at_index(i).prompt) for i in range(issues.option_count)]
+    assert any("ffmpeg" in p and entry.slug for p in prompts)
+    assert any("missing external command" in p for p in prompts)
 
 
 # ---------------------------------------------------------------------------

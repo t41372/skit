@@ -22,8 +22,10 @@ from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import Checkbox, Input, RadioButton, RadioSet, Static
 
-from . import analyzer, argspec, editor, metawriter, pep723, store, theme, tui_footer, tui_layout
+from . import analysis, editor, pep723, store, theme, tui_footer, tui_layout
 from .i18n import gettext
+from .langs.python import analyzer, argspec, metawriter
+from .params import ParamDecl
 
 
 class AddSourceScreen(Screen[str | None]):
@@ -84,6 +86,59 @@ class AddSourceScreen(Screen[str | None]):
     def _path_given(self, event: Input.Submitted) -> None:
         self._submit_path()
 
+    def _add_non_python(self, path: Path, error: Static) -> None:
+        """The direct-add lane (no review panel): exe entries have nothing to detect inside them,
+        and every other kind is added straight away.
+
+        Note that shell/js/ts/fish DO have analyzers — the review panel is simply Python-shaped
+        (it renders PEP 723 dependency completion alongside the candidates), so they take the
+        direct lane and surface their candidates afterwards in Script settings (`p`) and
+        `skit params`, which are both language-neutral. Interpreted adds record the shebang's
+        interpreter and a comment-extracted description via store.add_script."""
+        from .langs.registry import shebang_program, spec_for
+        from .store import infer_kind
+
+        kind = infer_kind(path)
+        kind_spec = spec_for(kind)
+        try:
+            if kind == "exe":
+                entry = store.add_exe(path)
+            elif kind_spec is not None and kind_spec.family == "interpreted":
+                program = shebang_program(path)
+                interpreter = program if program in kind_spec.shebangs else ""
+                entry = store.add_script(path, kind=kind, interpreter=interpreter)
+                # npm-flavor copy adds record the script's own imports as dependencies — the
+                # direct lane has no review step, so this mirrors the CLI's non-interactive
+                # "accept the suggestions as-is"; Script settings (`p`) edits them afterwards.
+                if (
+                    kind_spec.deps_flavor == "npm"
+                    and entry.meta.mode == "copy"
+                    and kind_spec.dep_scanner is not None
+                ):
+                    try:
+                        text = path.read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        text = ""
+                    scanned = kind_spec.dep_scanner(text) if text else []
+                    if scanned:
+                        entry = store.update_dependencies(entry.slug, scanned)
+                        # The CLI's add summary prints the recorded deps; the direct lane's
+                        # only surface is a toast — recording something that will download
+                        # packages on first run must never be invisible.
+                        self.notify(
+                            gettext("Dependencies recorded: %(deps)s (edit in Script settings)")
+                            % {"deps": ", ".join(scanned)}
+                        )
+            else:
+                error.update(
+                    f"[red]{gettext("%(file)s isn't a script or an executable — pass --exe for a program, or --cmd for a command template.") % {'file': escape(path.name)}}[/red]"
+                )
+                return
+        except store.StoreError as exc:
+            error.update(f"[red]{escape(str(exc))}[/red]")
+            return
+        self.dismiss(entry.slug)
+
     def _submit_path(self) -> None:
         raw = self.query_one("#add-path", Input).value.strip()
         if not raw:
@@ -96,20 +151,7 @@ class AddSourceScreen(Screen[str | None]):
             )
             return
         if path.suffix.lower() != ".py":
-            from .store import infer_kind
-
-            if infer_kind(path) != "exe":
-                error.update(
-                    f"[red]{gettext("%(file)s isn't a .py file or an executable — pass --exe for a program, or --cmd for a command template.") % {'file': escape(path.name)}}[/red]"
-                )
-                return
-            # Executables skip the review panel: there is nothing to detect inside them.
-            try:
-                entry = store.add_exe(path)
-            except store.StoreError as exc:
-                error.update(f"[red]{escape(str(exc))}[/red]")
-                return
-            self.dismiss(entry.slug)
+            self._add_non_python(path, error)
             return
 
         def _reviewed(slug: str | None) -> None:
@@ -192,7 +234,7 @@ class AddReviewScreen(Screen[str | None]):
         super().__init__()
         self._path: Path = path
         self._text: str = path.read_text(encoding="utf-8", errors="replace")
-        self._analysis: analyzer.Analysis = analyzer.analyze(self._text)
+        self._analysis: analysis.Analysis = analyzer.analyze(self._text)
         self._requires_python = requires_python
         # Survives the edit→rescan recompose: the rescan refreshes DETECTION, it must
         # never throw away what the user already typed into the panel.
@@ -314,7 +356,7 @@ class AddReviewScreen(Screen[str | None]):
         for i, c in enumerate(self._analysis.candidates):
             label = (
                 f"{c.name}  ({c.type} = {c.default!r})"
-                if c.kind == "const"
+                if c.binding == "const"
                 else gettext("input() #%(n)s: %(prompt)s")
                 % {"n": c.order + 1, "prompt": repr(c.prompt)}
             )
@@ -396,8 +438,8 @@ class AddReviewScreen(Screen[str | None]):
                 if self.query_one(f"#rv-cand-{i}", Checkbox).value
             ]
             if picked:
-                specs = [metawriter.ParamSpec.from_candidate(c) for c in picked]
-                copy_path = entry.dir / "script.py"
+                specs = [ParamDecl.from_candidate(c) for c in picked]
+                copy_path = entry.script_path
                 current = copy_path.read_text(encoding="utf-8")
                 copy_path.write_text(metawriter.write_params(current, specs), encoding="utf-8")
         self.dismiss(entry.slug)

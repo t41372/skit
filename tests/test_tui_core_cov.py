@@ -14,8 +14,9 @@ import contextlib
 import pytest
 from textual.widgets import Checkbox, DataTable, Input, Static
 
-from skit import argstate, config, flows, launcher, metawriter, store, tui
-from skit.metawriter import ParamSpec
+from skit import argstate, config, flows, launcher, store, tui
+from skit.langs.python import metawriter
+from skit.params import ParamDecl
 from skit.tui_form import (
     EnvPickerModal,
     FieldRow,
@@ -54,7 +55,15 @@ def quiet_run(monkeypatch):
     config.save_after_run("stay")
     calls: dict[str, object] = {}
 
-    def fake_run(entry, extra_args=None, *, values=None, invoke_cwd=None, script_override=None):
+    def fake_run(
+        entry,
+        extra_args=None,
+        *,
+        values=None,
+        invoke_cwd=None,
+        script_override=None,
+        env_overlay=None,
+    ):
         calls["extra"] = list(extra_args or [])
         calls["values"] = dict(values or {})
         calls["override"] = script_override
@@ -71,7 +80,7 @@ MANAGED = 'CITY = "Taipei"\nprint(CITY)\n'
 
 def _managed_entry(tmp_path, name="j", default=None):
     text = metawriter.write_params(
-        MANAGED, [ParamSpec(name="CITY", kind="const", type="str", default=default)]
+        MANAGED, [ParamDecl(name="CITY", binding="const", type="str", default=default)]
     )
     return store.add_python(_py(tmp_path, text, f"{name}.py"), name=name)
 
@@ -754,8 +763,8 @@ async def test_form_shows_drift_banner_when_the_plan_drifted(tmp_path, quiet_run
     drifted = metawriter.write_params(
         "CITY = 'x'\nprint(CITY)\n",
         [
-            ParamSpec(name="CITY", kind="const", type="str"),
-            ParamSpec(name="GONE", kind="const", type="str"),
+            ParamDecl(name="CITY", binding="const", type="str"),
+            ParamDecl(name="GONE", binding="const", type="str"),
         ],
     )
     store.add_python(_py(tmp_path, drifted, "drifty.py"), name="drifty")

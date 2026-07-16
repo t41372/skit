@@ -21,61 +21,19 @@ from __future__ import annotations
 
 import ast
 import re
-from dataclasses import dataclass, field
 from typing import TypeGuard
+
+from ...analysis import Analysis, Candidate
+from ...params import is_secret_name
 
 # Injectable type domain: the shim's AST substitution only supports these
 # (JSON-representable, literal-reconstructable).
 INJECTABLE_TYPES = ("str", "int", "float", "bool")
 
-# Secret pre-check heuristic (matched against the upper-cased variable name / prompt).
-_SECRET_HINTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD")
 
 # Detecting these frameworks -> the script already has a proper CLI; suggest the L1 preset path
 # rather than injection.
 _CLI_FRAMEWORKS = ("argparse", "click", "typer", "docopt", "fire")
-
-
-@dataclass
-class Candidate:
-    """A candidate parameter. const is keyed by variable name; input by call order (B1/A8)."""
-
-    kind: str  # "const" | "input"
-    name: str  # const: variable name; input: display name (input-1, input-2, …)
-    type: str = "str"  # one of INJECTABLE_TYPES
-    default: str | int | float | bool | None = None  # const: the original value in the source
-    prompt: str = ""  # input: the literal prompt of input() (if any)
-    order: int = -1  # input: which input() call (0-based); -1 for const
-    lineno: int = 0
-    secret: bool = False  # heuristic pre-check, editable during onboarding
-    # Demotion signal (UX spec §0): a candidate that *parses* as a constant but whose usage
-    # says "not a parameter" — currently only "accumulator" (literal init + AugAssign anywhere,
-    # or reassigned inside a loop body). Demoted candidates default to unchecked at onboarding,
-    # with the reason surfaced; clean candidates default to checked.
-    demoted: bool = False
-    demotion: str = ""  # symbolic reason id; the UI owns the human wording
-
-
-@dataclass
-class Analysis:
-    candidates: list[Candidate] = field(default_factory=list)
-    frameworks: list[str] = field(default_factory=list)  # detected CLI frameworks
-    syntax_error: bool = False
-    uses_argv: bool = False  # sys.argv appears -> the run form gets a passthrough-args hint
-    # Filename-looking string literals passed directly as call arguments (never bound to a
-    # name): the "extract this into a named constant to manage it" hint. Capped, deduped,
-    # source order. Only literals a cheap deterministic rule can vouch for — nothing else
-    # (see the 'RGB' exclusion in the UX spec: no domain-knowledge guesses).
-    filename_literals: list[str] = field(default_factory=list)
-
-    @property
-    def uses_cli_framework(self) -> bool:
-        return bool(self.frameworks)
-
-
-def _is_secret_name(text: str) -> bool:
-    up = text.upper()
-    return any(h in up for h in _SECRET_HINTS)
 
 
 def _literal_value(node: ast.expr) -> tuple[bool, str | int | float | bool | None]:
@@ -114,7 +72,7 @@ def _const_candidates(body: list[ast.stmt]) -> list[Candidate]:
     A name can be bound to more than one injectable literal in the same block (`X = 1` then later
     `X = 2`): a block runs sequentially, so the *last* assignment is the value the name actually
     holds once the block finishes running -- that's the "effective" definition a form default/type
-    must agree with. It's also the only sound choice once a single ParamSpec is shared across every
+    must agree with. It's also the only sound choice once a single ParamDecl is shared across every
     same-named occurrence: shim._const_targets replaces *every* occurrence of the name with the
     injected value (by design, so a guard-body override also gets the new value), so two
     same-named candidates would make the shim compute the replacement spans twice and corrupt the
@@ -140,12 +98,12 @@ def _const_candidates(body: list[ast.stmt]) -> list[Candidate]:
         if not ok:
             continue
         candidate = Candidate(
-            kind="const",
+            binding="const",
             name=name,
             type=_type_name(v),
             default=v,
             lineno=stmt.lineno,
-            secret=_is_secret_name(name),
+            secret=is_secret_name(name),
         )
         if name in index_by_name:
             out[index_by_name[name]] = candidate  # last occurrence's data wins; keep first slot
@@ -197,93 +155,15 @@ def _input_candidates(tree: ast.Module) -> list[Candidate]:
     for i, call in enumerate(calls):
         prompt = _literal_prompt(call)
         candidate = Candidate(
-            kind="input",
+            binding="input",
             name=f"input-{i + 1}",
             prompt=prompt,
             order=i,
             lineno=call.lineno,
-            secret=_is_secret_name(prompt),
+            secret=is_secret_name(prompt),
         )
         candidate.type = "str"  # pragma: no mutate — matches Candidate's own field default
         out.append(candidate)
-    return out
-
-
-def _match_inputs(
-    stored: list[tuple[int, str]], current: list[tuple[int, str]]
-) -> dict[int, tuple[int, bool]]:
-    """Bind each stored input (its recorded ``order``, ``prompt``) to a call site in the CURRENT
-    source (3a). Shared by reconcile (drift detection) and shim (actual injection) so both agree on
-    exactly the same call site for a given definition -- the reason this lives in analyzer rather
-    than in either caller (A2).
-
-    A value must follow its *question*, not its position: keying purely by ``order`` (B1's original
-    design) breaks the instant a source edit inserts or deletes an *earlier* input() call, silently
-    shifting every later position -- a secret-marked definition can then attach to a different
-    prompt with no warning at all. So the literal prompt text is tried first (it survives a shift);
-    bare position is only a fallback, and is trusted as "no news" only when neither side has a
-    prompt to compare in the first place (a dynamic/absent prompt, or a spec stored before 3a) --
-    that case is no worse than the pre-3a behaviour, so it must not manufacture a new warning.
-
-    Returns ``{stored_order: (current_order, ambiguous)}``. A stored order absent from the result
-    could not be matched at all (genuinely gone -- the caller reports it as missing). ``ambiguous``
-    is True when position had to be trusted *despite* having a prompt to check -- either the prompt
-    no longer appears anywhere (likely edited/renamed) or it now matches more than one call site (two
-    prompts collide) -- both are exactly the silent-rebind risk this function exists to surface, so
-    callers must turn it into a visible warning rather than silently treating it as "ok".
-
-    Two passes: exact prompt matches are resolved first and their current-order claimed, so a
-    *different* stored entry's positional fallback can never be handed a call site some other
-    definition already owns by an exact prompt match -- e.g. deleting input #1 entirely (its prompt
-    now matches nothing) must not let it fall back onto position 0, when input #2's own prompt has
-    already, and correctly, claimed position 0 for itself. Without this, the deleted entry would
-    silently "recover" a value onto a call site someone else already owns.
-
-    The exact pass itself must also be 1:1, not just enforced against the fallback pass: two or more
-    STORED entries can legitimately share the identical literal prompt (a retry pattern like two
-    `input("Go? ")` calls, both managed). If the current source now has exactly one call site with
-    that prompt (the user deleted one of the two calls), every one of those stored entries would
-    otherwise resolve its *own* "unique candidate" check independently and all exact-match onto the
-    same current order -- silently binding two different definitions to one call site. Downstream,
-    reconcile would call all of them "ok" (no warning at all) and shim would splice two replacements
-    over the same `input` callee span, corrupting the injected copy into unparsable source. So the
-    exact pass claims its current-order as it goes: the first stored entry (in the order given) that
-    uniquely resolves a prompt wins that current order outright, and any later stored entry whose own
-    "unique" candidate has *already* been claimed loses the exact match and falls through to the
-    positional-fallback pass below -- where it is correctly reported ``missing`` (its bare position no
-    longer exists either) or flagged ``ambiguous`` (a different call now sits at that position), but
-    never silently double-bound.
-    """
-    current_by_order = dict(current)
-    by_prompt: dict[str, list[int]] = {}
-    for order, prompt in current:
-        if prompt:
-            by_prompt.setdefault(prompt, []).append(order)
-
-    exact: dict[int, int] = {}
-    claimed: set[int] = set()
-    _match_prompt_multisets(stored, by_prompt, exact, claimed)
-    for order, prompt in stored:
-        if order in exact:
-            continue
-        if prompt:
-            candidates = by_prompt.get(prompt, [])
-            if len(candidates) == 1 and candidates[0] not in claimed:
-                exact[order] = candidates[0]
-                claimed.add(candidates[0])
-
-    out: dict[int, tuple[int, bool]] = {}
-    for order, prompt in stored:
-        if order in exact:
-            out[order] = (exact[order], False)
-            continue
-        # No exact prompt match (no prompt to compare, the prompt matches nothing anymore, it
-        # collides across multiple call sites, or its one candidate was already claimed by another
-        # stored entry's exact match): fall back to position, but never onto a call site an exact
-        # match already claimed, and flag it as ambiguous unless there was never a prompt to check
-        # in the first place (not a new risk, see the module-level note above).
-        if order in current_by_order and order not in claimed:
-            out[order] = (order, bool(prompt))
     return out
 
 
@@ -342,31 +222,6 @@ def _filename_literals(tree: ast.Module) -> list[str]:
     return out[:_FILENAME_HINT_CAP]
 
 
-def _match_prompt_multisets(
-    stored: list[tuple[int, str]],
-    by_prompt: dict[str, list[int]],
-    exact: dict[int, int],
-    claimed: set[int],
-) -> None:
-    """Multiset pass: when the stored and current sides have the SAME number of call
-    sites for a prompt, pair them in positional order. A retry pattern — two identical
-    `input("Go? ")` calls, both managed — is a stable shape, and without this pass the
-    per-entry uniqueness rule would flag it as a rebind on every run, forever (resync
-    can't fix what isn't drift)."""
-    stored_by_prompt: dict[str, list[int]] = {}
-    for order, prompt in stored:
-        if prompt:
-            stored_by_prompt.setdefault(prompt, []).append(order)
-    for prompt, stored_orders in stored_by_prompt.items():
-        current_orders = by_prompt.get(prompt, [])
-        if len(stored_orders) > 1 and len(current_orders) == len(stored_orders):
-            for stored_order, current_order in zip(
-                sorted(stored_orders), sorted(current_orders), strict=True
-            ):
-                exact[stored_order] = current_order
-                claimed.add(current_order)
-
-
 def _detect_frameworks(tree: ast.Module) -> list[str]:
     found: list[str] = []
     for node in ast.walk(tree):
@@ -398,7 +253,7 @@ def analyze(text: str) -> Analysis:
                     seen.add(c.name)
     mutated = _mutated_names(tree)
     for c in candidates:
-        if c.kind == "const" and c.name in mutated:
+        if c.binding == "const" and c.name in mutated:
             c.demoted = True
             c.demotion = "accumulator"
     candidates.extend(_input_candidates(tree))
