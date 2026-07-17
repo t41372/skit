@@ -56,6 +56,7 @@ def quiet_run(monkeypatch):
         invoke_cwd=None,
         script_override=None,
         env_overlay=None,
+        runner=None,
     ):
         calls["extra"] = list(extra_args or [])
         calls["values"] = dict(values or {})

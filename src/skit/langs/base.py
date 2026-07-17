@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from ..analysis import Analysis, Report
+    from ..config import PromptRunner
     from ..models import Entry
     from ..params import ParamDecl
     from .python.argspec import ArgSpec
@@ -154,7 +155,14 @@ LaunchPayload = ArgvLaunch | ShellLaunch
 
 
 class LaunchStrategy(Protocol):
-    """How a kind turns an Entry into a running process. Required on every LangSpec."""
+    """How a kind turns an Entry into a running process. Required on every LangSpec.
+
+    ``runner`` is the prompt kind's run-time axis (docs/design/prompt.md): a per-run
+    PromptRunner override resolved by the CLI/TUI layer and threaded through
+    execute → run_entry → build. Every other strategy accepts and ignores it — a
+    bounded, explicit protocol cost, chosen over smuggling the runner into ``values``
+    (where it could collide with a real parameter key). The type lives in ``config``
+    and is imported under TYPE_CHECKING only — never at runtime."""
 
     def build(
         self,
@@ -162,6 +170,8 @@ class LaunchStrategy(Protocol):
         extra: list[str],
         values: dict[str, str] | None,
         script_override: Path | None,
+        *,
+        runner: PromptRunner | None = None,
     ) -> LaunchPayload:
         """Assemble the launch payload; raises LaunchError family on failure."""
         ...
@@ -172,6 +182,8 @@ class LaunchStrategy(Protocol):
         extra: list[str],
         values: dict[str, str] | None,
         script_override: Path | None,
+        *,
+        runner: PromptRunner | None = None,
     ) -> str:
         """A purely descriptive command line: no lookups, no checks, no side effects."""
         ...
@@ -308,6 +320,12 @@ class LangSpec:
     # has no scanner or its grammar failed to import).
     dep_scanner: Callable[[str], list[str]] | None = None
     takes_argv: bool = True  # False: appended args are not this kind's interface
+    # Placeholder-delivered parameters are this kind's form interface: `{name}` holes
+    # become fields via params.declared_for_template (command templates and prompts).
+    # This trait — not `family` — is what every template/non-template decision keys off
+    # (flows._declared_plan, the params CLI/TUI surfaces), so a prompt (family
+    # "interpreted", for has_original_file's sake) still gets the placeholder paths.
+    placeholder_params: bool = False
 
     @property
     def supports_deps(self) -> bool:

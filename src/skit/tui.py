@@ -234,6 +234,7 @@ class PendingRun:
     values: dict[str, str]
     extra: list[str]
     show_drift: bool
+    runner: config.PromptRunner | None = None
 
 
 class _LibraryScreen(Screen[None]):
@@ -524,6 +525,10 @@ class MenuApp(App[int | PendingRun]):
                 )
         if spec is not None and spec.family == "template":
             lines.append(f"[dim]{escape(entry.meta.template)}[/dim]")
+        if entry.meta.kind == "prompt":
+            lines.append(
+                f"[dim]🤖 {gettext('Runs with %(runner)s') % {'runner': escape(entry.meta.runner)} if entry.meta.runner else gettext('Runner picked on the run form')}[/dim]"
+            )
         lines.append("")
         lines.append(
             escape(entry.meta.description)
@@ -676,7 +681,14 @@ class MenuApp(App[int | PendingRun]):
             self._refresh_status(gettext("Error: %(error)s") % {"error": escape(str(exc))})
             return
         plan = flows.plan_for_entry(entry)
-        if not plan.fields and not plan.degraded_reason:
+        is_prompt = entry.meta.kind == "prompt"
+        runner_names = [r.name for r in config.load_prompt_runners()] if is_prompt else []
+        if is_prompt and not runner_names:
+            self._refresh_status(
+                gettext("No runners configured — add one with: skit runner add NAME COMMAND…")
+            )
+            return
+        if not plan.fields and not plan.degraded_reason and not is_prompt:
             self._execute(entry, plan, {}, argstate.load_state(entry.slug)["extra_args"])
             return
         prefill = flows.prefill(plan, entry.slug)
@@ -684,10 +696,29 @@ class MenuApp(App[int | PendingRun]):
         def _submitted(result: FormResult) -> None:
             if result is None:
                 return
-            values, extra = result
-            self._execute(entry, plan, values, extra, show_drift=False)
+            values, extra, runner_name = result
+            runner = None
+            if runner_name is not None:
+                runner = config.find_prompt_runner(runner_name)
+                if runner is None:  # removed while the form was open — honest, not silent
+                    self._refresh_status(
+                        gettext("Error: %(error)s")
+                        % {"error": gettext("The runner is no longer configured.")}
+                    )
+                    return
+                argstate.save_last_runner(runner_name)
+            self._execute(entry, plan, values, extra, show_drift=False, runner=runner)
 
-        self.push_screen(RunFormScreen(entry, plan, prefill), _submitted)
+        self.push_screen(
+            RunFormScreen(
+                entry,
+                plan,
+                prefill,
+                runners=runner_names,
+                runner_default=entry.meta.runner or argstate.load_last_runner(),
+            ),
+            _submitted,
+        )
 
     def action_rerun(self) -> None:
         """r: skip the form, rerun with the last values — but never skip the checks."""
@@ -699,6 +730,11 @@ class MenuApp(App[int | PendingRun]):
                 gettext("%(name)s hasn't run yet — press Enter to fill the form first.")
                 % {"name": escape(entry.meta.name)}
             )
+            return
+        if entry.meta.kind == "prompt" and not entry.meta.runner:
+            # No pin means the runner question is open — rerun must never answer it
+            # silently (the picker in the form does, prefilled from last-picked).
+            self.action_run()
             return
         try:
             launcher.preflight(entry)
@@ -722,6 +758,7 @@ class MenuApp(App[int | PendingRun]):
         extra: list[str],
         *,
         show_drift: bool = True,
+        runner: config.PromptRunner | None = None,
     ) -> None:
         """Suspend, deliver (inject/flags/template), pass the terminal through, record.
 
@@ -735,7 +772,7 @@ class MenuApp(App[int | PendingRun]):
             # A launcher hands the terminal back: quit the TUI FIRST, run after
             # (_finish_run). Running under suspend() and exiting would repaint the
             # whole app for one frame on resume — a visible flash.
-            self.exit(PendingRun(entry, plan, asm, dict(values), list(extra), show_drift))
+            self.exit(PendingRun(entry, plan, asm, dict(values), list(extra), show_drift, runner))
             return
         with self.suspend():
             print(f"\n── {gettext('Run %(name)s') % {'name': entry.meta.name}} ──\n", flush=True)
@@ -744,7 +781,9 @@ class MenuApp(App[int | PendingRun]):
                     print(line, flush=True)
             # The shared delivery pipeline: inject, transparency, run, cleanup. The TUI
             # just prints what it emits (bare, inside the suspend) and shows a banner.
-            outcome = flows.execute(entry, plan, asm, emit=lambda line: print(line, flush=True))
+            outcome = flows.execute(
+                entry, plan, asm, emit=lambda line: print(line, flush=True), runner=runner
+            )
             if outcome.code is None:
                 print(gettext("Error: %(error)s") % {"error": outcome.message}, flush=True)
             print(f"\n{self._run_banner(outcome)}", flush=True)
@@ -930,7 +969,11 @@ def _finish_run(pending: PendingRun) -> int:
         for line in pending.plan.drift_lines:
             print(line, flush=True)
     outcome = flows.execute(
-        pending.entry, pending.plan, pending.asm, emit=lambda line: print(line, flush=True)
+        pending.entry,
+        pending.plan,
+        pending.asm,
+        emit=lambda line: print(line, flush=True),
+        runner=pending.runner,
     )
     if outcome.code is None:
         # Nothing ran: no phantom history, and the process exit code follows the same

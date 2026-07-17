@@ -62,5 +62,5 @@ def collect(entry: Entry, plan: flows.FormPlan, prefill: dict[str, str]) -> dict
     result = app.run(inline=True)
     if result is None:
         return None
-    values, _extra = result
+    values, _extra, _runner = result
     return values

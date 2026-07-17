@@ -931,7 +931,16 @@ def test_execute_env_delivery_writes_no_temp_copy(tmp_path, monkeypatch):
 
     seen: dict[str, object] = {}
 
-    def spy(entry, extra, *, values=None, invoke_cwd=None, script_override=None, env_overlay=None):
+    def spy(
+        entry,
+        extra,
+        *,
+        values=None,
+        invoke_cwd=None,
+        script_override=None,
+        env_overlay=None,
+        runner=None,
+    ):
         seen["override"] = script_override
         seen["env"] = dict(env_overlay or {})
         return 0

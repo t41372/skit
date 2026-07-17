@@ -50,7 +50,7 @@ from . import (
 from .i18n import gettext, ngettext
 from .langs.python import analyzer, metawriter
 from .langs.registry import KNOWN_KINDS, spec_for
-from .params import ParamDecl, declared_from_meta, edit_declared
+from .params import ParamDecl, declared_from_meta, edit_declared, is_secret_name
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -114,6 +114,14 @@ def _complete_preset(ctx: typer.Context, incomplete: str) -> list[str]:
     except Exception:  # completion must never crash the shell
         return []
     return sorted(p for p in presets if p.startswith(incomplete))
+
+
+def _complete_runner(incomplete: str) -> list[str]:
+    try:
+        names = [r.name for r in config.load_prompt_runners()]
+    except Exception:  # completion must never crash the shell
+        return []
+    return sorted(n for n in names if n.startswith(incomplete))
 
 
 _SCRIPT_ARG = typer.Argument(
@@ -528,6 +536,179 @@ def _add_from_stdin(
     _print_add_summary(entry, deps, managed, secrets)
 
 
+_STARTER_PROMPT = """# New prompt
+
+Describe the task for the agent. Mark the parts that change per run as {placeholders} —
+each becomes a form field. Literal braces are written {{ and }}.
+"""
+
+
+def _ask_prompt_runner(interactive: bool, runner_opt: str | None) -> str:
+    """The runner pin for a new prompt entry: --runner is validated as given; else an
+    interactive numbered pick prefilled from the last-picked state; else no pin (the
+    run form / --runner asks later — never a guess)."""
+    runners = config.load_prompt_runners()
+    names = [r.name for r in runners]
+    if runner_opt is not None:
+        if runner_opt not in names:
+            err_console.print(
+                "[red]"
+                + gettext("Unknown runner: %(runner)s. Configured runners: %(names)s")
+                % {"runner": escape(runner_opt), "names": ", ".join(names) or "—"}
+                + _RED_CLOSE
+            )
+            raise typer.Exit(EXIT_USAGE)
+        argstate.save_last_runner(runner_opt)
+        return runner_opt
+    if not interactive or not names:
+        return ""
+    last = argstate.load_last_runner()
+    default = last if last in names else "-"
+    console.print(f"[dim]{gettext('- = no pin (the run form asks each time)')}[/dim]")
+    picked = Prompt.ask(
+        gettext("Run this prompt with which agent?"),
+        choices=[*names, "-"],
+        default=default,
+        console=console,
+    )
+    if picked == "-":
+        return ""
+    argstate.save_last_runner(picked)
+    return picked
+
+
+def _onboard_prompt(
+    resolved: Path,
+    *,
+    name: str | None,
+    description: str | None,
+    ref: bool,
+    runner_opt: str | None,
+    no_input: bool,
+) -> tuple[store.Entry, list[str]]:
+    """Prompt onboarding at add time: detected placeholders are candidates (prompts
+    contain code snippets, so false positives are expected) — interactive adds pick the
+    kept subset, non-interactive adds manage them all (the command-template default);
+    unmanaged ones stay verbatim in the body. Returns (entry, managed names)."""
+    try:
+        text = resolved.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        raise store.StoreError(
+            gettext("Can't read %(path)s: %(error)s")
+            % {"path": str(resolved), "error": exc.strerror or str(exc)}
+        ) from exc
+    from .langs.prompt import analyzer as prompt_analyzer
+
+    detected = prompt_analyzer.placeholder_names(text)
+    interactive = not no_input and _is_interactive()
+    managed: list[str] | None = None  # None = keep every detected candidate
+    if detected and interactive:
+        console.print(gettext("Detected placeholders (each becomes a form field):"))
+        for i, placeholder in enumerate(detected, start=1):
+            mark = gettext(" (secret)") if is_secret_name(placeholder) else ""
+            console.print(f"  {i}. {escape(placeholder)}{mark}")
+        answer = Prompt.ask(
+            gettext("Manage which? (all / none / numbers like 1,3)"),
+            default="all",
+            console=console,
+        )
+        managed = [detected[i] for i in _parse_selection(answer, len(detected))]
+    runner = _ask_prompt_runner(interactive, runner_opt)
+    entry = store.add_prompt(
+        resolved,
+        name=name,
+        mode="reference" if ref else "copy",
+        description=description,
+        managed=managed,
+        runner=runner,
+    )
+    if runner:
+        console.print(
+            f"[dim]{gettext('Runs with %(runner)s (change it with: skit params %(name)s --runner NAME)') % {'runner': escape(runner), 'name': escape(entry.meta.name)}}[/dim]"
+        )
+    return entry, list(entry.meta.params or [])
+
+
+def _create_prompt_in_editor(
+    name: str | None, description: str | None, runner_opt: str | None
+) -> None:
+    """`skit add --prompt` with no path: draft a new prompt in $EDITOR, then ingest it —
+    the prompt twin of `add --edit`. Under a pipe/--no-input there is no editor: the
+    body arrives on stdin instead (`skit add --prompt -n review < body.md`)."""
+    import tempfile
+
+    if not _is_interactive():
+        _add_prompt_from_stdin(name, description, runner_opt)
+        return
+    if not name:
+        name = Prompt.ask(gettext("Name in skit"), console=console).strip()
+        if not name:
+            err_console.print(f"[red]{gettext('A name is required.')}[/red]")
+            raise typer.Exit(EXIT_USAGE)
+    fd, tmp_name = tempfile.mkstemp(suffix=".prompt.md", prefix="skit-new-")  # pragma: no mutate
+    os.close(fd)
+    tmp = Path(tmp_name)
+    tmp.write_text(_STARTER_PROMPT, encoding="utf-8")  # pragma: no mutate
+    try:
+        console.print(f"[dim]{gettext('Opening your editor…')}[/dim]")
+        editor.open_in_editor(tmp)
+        text = tmp.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate — utf-8 equiv
+        if text.strip() in ("", _STARTER_PROMPT.strip()):
+            console.print(gettext("Nothing was written, so no script was added."))
+            return
+        entry, managed = _onboard_prompt(
+            tmp,
+            name=name,
+            description=description,
+            ref=False,
+            runner_opt=runner_opt,
+            no_input=False,
+        )
+    except (editor.EditorError, store.StoreError) as exc:
+        raise _fail(str(exc), 1) from exc
+    finally:
+        tmp.unlink(missing_ok=True)  # pragma: no mutate — the temp file always exists here
+    _print_add_summary(entry, [], managed, [n for n in managed if is_secret_name(n)])
+
+
+def _add_prompt_from_stdin(
+    name: str | None, description: str | None, runner_opt: str | None
+) -> None:
+    """The prompt twin of `skit add -`: the body arrives on stdin, so there is nobody to
+    prompt — a name is required up front and every detected placeholder is managed."""
+    import tempfile
+
+    if not name:
+        err_console.print(
+            f"[red]{gettext('Reading the script from stdin needs an explicit --name.')}[/red]"
+        )
+        raise typer.Exit(EXIT_USAGE)
+    text = sys.stdin.read()
+    if not text.strip():
+        err_console.print(
+            f"[red]{gettext('Nothing arrived on stdin, so there is nothing to add.')}[/red]"
+        )
+        raise typer.Exit(1)
+    fd, tmp_name = tempfile.mkstemp(suffix=".prompt.md", prefix="skit-stdin-")  # pragma: no mutate
+    os.close(fd)
+    tmp = Path(tmp_name)
+    tmp.write_text(text, encoding="utf-8")  # pragma: no mutate
+    try:
+        entry, managed = _onboard_prompt(
+            tmp,
+            name=name,
+            description=description,
+            ref=False,
+            runner_opt=runner_opt,
+            no_input=True,
+        )
+    except store.StoreError as exc:
+        raise _fail(str(exc), 1) from exc
+    finally:
+        tmp.unlink(missing_ok=True)  # pragma: no mutate
+    _print_add_summary(entry, [], managed, [n for n in managed if is_secret_name(n)])
+
+
 def _infer_add_kind(resolved: Path, exe_flag: bool) -> str:
     """Type inference (v2) — delegated to store.infer_kind so the CLI and the TUI add
     panel share one rule and can't drift apart."""
@@ -594,6 +775,18 @@ def add(
     cmd: str = typer.Option(
         None, "--cmd", help=gettext("Register a command template, e.g. --cmd 'ffmpeg -i {input}'")
     ),
+    prompt_kind: bool = typer.Option(
+        False,
+        "--prompt",
+        help=gettext(
+            "Add the file as a prompt for an AI agent (with no path: draft one in your editor)"
+        ),
+    ),
+    runner: str = typer.Option(
+        None,
+        "--runner",
+        help=gettext("Pin the agent a prompt entry runs with (see skit runner list)"),
+    ),
     dep: list[str] = typer.Option(
         None,
         "--dep",
@@ -609,9 +802,22 @@ def add(
     """Add a script / executable / command to skit."""
     # Both fresh-script lanes (editor buffer / stdin) have no original file for --ref to
     # point at — refused, never dropped (the non-interactive contract).
-    if (edit_new or path == "-") and ref:
+    if (edit_new or path == "-" or (prompt_kind and not path)) and ref:
         err_console.print(
             f"[red]{gettext('--ref needs an existing file to reference — a script written in the editor or read from stdin has none.')}[/red]"
+        )
+        raise typer.Exit(EXIT_USAGE)
+    if runner is not None and (edit_new or cmd is not None or exe):
+        # --runner names the agent a PROMPT runs with; on a lane that can't produce one
+        # it would be silently ignored — refused instead (the non-interactive contract).
+        # Path-based adds check again after kind inference (a .prompt.md needs no flag).
+        err_console.print(
+            f"[red]{gettext('--runner only applies to prompt entries — add one with --prompt.')}[/red]"
+        )
+        raise typer.Exit(EXIT_USAGE)
+    if prompt_kind and (edit_new or exe or cmd is not None or kind is not None):
+        err_console.print(
+            f"[red]{gettext('--prompt names the kind outright — drop --edit/--exe/--kind/--cmd.')}[/red]"
         )
         raise typer.Exit(EXIT_USAGE)
     if edit_new:
@@ -623,7 +829,13 @@ def add(
         _create_python_in_editor(name, deps_opt=dep, python_opt=python)
         return
     if path == "-":
+        if prompt_kind:
+            _add_prompt_from_stdin(name, description, runner)
+            return
         _add_from_stdin(name, description, deps_opt=dep, python_opt=python)
+        return
+    if prompt_kind and not path:
+        _create_prompt_in_editor(name, description, runner)
         return
     summary_deps: list[str] = []
     summary_managed: list[str] = []
@@ -649,7 +861,9 @@ def add(
                 )
                 raise typer.Exit(EXIT_USAGE)
             resolved = Path(path).expanduser().resolve()
-            if kind is not None:
+            if prompt_kind:
+                kind = "prompt"  # --prompt forces the kind outright (mirrors --exe)
+            elif kind is not None:
                 # --kind forces the language outright (mirrors --exe), for an
                 # extensionless file the shebang/extension can't classify.
                 _validate_forced_kind(kind)
@@ -658,15 +872,49 @@ def add(
                     raise typer.Exit(EXIT_USAGE)
             else:
                 kind = _infer_add_kind(resolved, exe)
+            # A bare .md is too ambiguous to claim outright, and too likely a prompt
+            # to refuse outright: interactively, ask; under --no-input/pipe, an
+            # explicit --prompt is required — never a guess.
+            if (
+                kind == "unknown"
+                and resolved.suffix.lower() == ".md"
+                and not no_input
+                and _is_interactive()
+            ):
+                if Confirm.ask(
+                    gettext("%(file)s looks like a prompt. Add it as one?")
+                    % {"file": escape(resolved.name)},
+                    default=True,
+                    console=console,
+                ):
+                    kind = "prompt"
+                else:
+                    console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
+                    raise typer.Exit(EXIT_CANCELLED)
             kind_spec = spec_for(kind)
             _refuse_unusable_add_flags(kind, kind_spec, ref, dep, python)
+            if runner is not None and kind != "prompt":
+                err_console.print(
+                    f"[red]{gettext('--runner only applies to prompt entries — add one with --prompt.')}[/red]"
+                )
+                raise typer.Exit(EXIT_USAGE)
             if kind == "exe":
                 entry = store.add_exe(Path(path), name=name, description=description or "")
             elif kind == "unknown":
                 err_console.print(
-                    f"[red]{gettext("%(file)s isn't a script or an executable — pass --exe for a program, or --cmd for a command template.") % {'file': escape(resolved.name)}}[/red]"
+                    f"[red]{gettext("%(file)s isn't a script or an executable — pass --prompt for an AI-agent prompt, --exe for a program, or --cmd for a command template.") % {'file': escape(resolved.name)}}[/red]"
                 )
                 raise typer.Exit(EXIT_USAGE)
+            elif kind == "prompt":
+                entry, summary_managed = _onboard_prompt(
+                    resolved,
+                    name=name,
+                    description=description,
+                    ref=ref,
+                    runner_opt=runner,
+                    no_input=no_input,
+                )
+                summary_secrets = [n for n in summary_managed if is_secret_name(n)]
             elif kind != "python" and kind_spec is not None and kind_spec.family == "interpreted":
                 # Tier-0 interpreted add (shell/js/ruby/…): copy or reference, comment
                 # description, interpreter recorded from the shebang. No onboarding
@@ -902,6 +1150,10 @@ def _print_show_human(entry: store.Entry, plan: flows.FormPlan, presets: list[st
         console.print(
             f"  {gettext('Command template: %(template)s') % {'template': escape(meta.template)}}"
         )
+    if meta.kind == "prompt":
+        console.print(
+            f"  {gettext('Runner: %(runner)s') % {'runner': escape(meta.runner) if meta.runner else gettext('(asks at run time)')}}"
+        )
     _print_drift(plan)
     if plan.degraded_reason:
         console.print(
@@ -995,6 +1247,11 @@ def show(
         "last_run_at": last.get("at"),
         "last_exit": last.get("exit"),
     }
+    if entry.meta.kind == "prompt":
+        # Additive, prompt-only: the pin (null = asks/--runner decides) and what an agent
+        # may pass to --runner. English-only machine contract, like every --json key.
+        payload["runner"] = entry.meta.runner or None
+        payload["runners_available"] = [r.name for r in config.load_prompt_runners()]
     console.print_json(json.dumps(payload, ensure_ascii=False))
 
 
@@ -1182,6 +1439,55 @@ def _collect_values(
 _FAILURE_EXIT = flows.FAILURE_EXIT_CODES
 
 
+def _resolve_run_runner(
+    entry: store.Entry, runner_opt: str | None, no_input: bool
+) -> config.PromptRunner | None:
+    """The prompt kind's runner resolution (deterministic; the non-interactive contract):
+    --runner > the entry's pin > an interactive ask (prefilled from last-picked) > a
+    clean exit 126 — never a guess, never a ranking. Non-prompt entries return None
+    (and an explicit --runner on one is a usage error, not a silent drop)."""
+    if entry.meta.kind != "prompt":
+        if runner_opt is not None:
+            err_console.print(f"[red]{gettext('--runner only applies to prompt entries.')}[/red]")
+            raise typer.Exit(EXIT_USAGE)
+        return None
+    runners = config.load_prompt_runners()
+    names = [r.name for r in runners]
+    chosen = runner_opt or entry.meta.runner
+    picked = runner_opt is not None
+    if not chosen and not no_input and _is_interactive() and names:
+        last = argstate.load_last_runner()
+        chosen = Prompt.ask(
+            gettext("Run this prompt with which agent?"),
+            choices=names,
+            default=last if last in names else names[0],
+            console=console,
+        )
+        picked = True
+    if not chosen:
+        raise _fail(
+            gettext(
+                "No runner selected for %(name)s. Pass --runner NAME, or pin one with: "
+                "skit params %(name)s --runner NAME"
+            )
+            % {"name": entry.meta.name},
+            EXIT_NOT_EXECUTABLE,
+        )
+    found = next((r for r in runners if r.name == chosen), None)
+    if found is None:
+        raise _fail(
+            gettext(
+                "The runner %(runner)s isn't configured (known: %(names)s). Manage "
+                "runners with: skit runner list"
+            )
+            % {"runner": chosen, "names": ", ".join(names) or "—"},
+            EXIT_NOT_EXECUTABLE,
+        )
+    if picked:
+        argstate.save_last_runner(chosen)
+    return found
+
+
 @app.command(
     help=gettext("Run a registered script or command in the terminal."),
     epilog=gettext(
@@ -1230,6 +1536,12 @@ def run(
             "Print the exact command that would run (tokens and globs expanded), then exit"
         ),
     ),
+    runner: str = typer.Option(
+        None,
+        "--runner",
+        help=gettext("Run a prompt entry with this agent (overrides its pin for one run)"),
+        autocompletion=_complete_runner,
+    ),
 ) -> None:
     """Run a script (straight through the terminal). skit's own failures exit 125/126/127;
     the script's exit code passes through untouched."""
@@ -1247,6 +1559,7 @@ def run(
         )
         raise typer.Exit(EXIT_USAGE)
     run_spec = spec_for(entry.meta.kind)
+    runner_obj = _resolve_run_runner(entry, runner, no_input)
     if raw and run_spec is not None and run_spec.analyzer is not None:
         console.print(
             f"[dim]{gettext('Raw mode: skipping the parameter form and injection.')}[/dim]"
@@ -1312,11 +1625,15 @@ def run(
     if dry_run:
         # No temp copy is written for a dry run, so the command line shows the original
         # script path — the shape, not a doomed-to-be-deleted temp file.
-        for line in flows.transparency_lines(entry, asm, None):
+        for line in flows.transparency_lines(entry, asm, None, runner=runner_obj):
             console.print(f"[dim]{escape(line)}[/dim]")
         raise typer.Exit(0)
     outcome = flows.execute(
-        entry, plan, asm, emit=lambda line: console.print(f"[dim]{escape(line)}[/dim]")
+        entry,
+        plan,
+        asm,
+        emit=lambda line: console.print(f"[dim]{escape(line)}[/dim]"),
+        runner=runner_obj,
     )
     code = outcome.code
     if code is None:
@@ -1333,6 +1650,129 @@ def run(
             f"[yellow]{gettext('Script exited with code %(code)s') % {'code': code}}[/yellow]"
         )
     raise typer.Exit(code)
+
+
+# --------------------------------------------------------------------------
+# runner (the agent CLIs prompt entries run with — [[prompt.runners]] in config)
+# --------------------------------------------------------------------------
+
+runner_app = typer.Typer(
+    help=gettext("Manage the agents (runners) that prompt entries run with."),
+    no_args_is_help=True,
+)
+app.add_typer(runner_app, name="runner")
+
+
+@runner_app.command(
+    "list", help=gettext("List the configured runners (seeds them into config on first use).")
+)
+def runner_list(
+    as_json: bool = typer.Option(False, "--json", help=gettext("Output as JSON")),
+) -> None:
+    # The management surface is where the seeds materialize into the user's config —
+    # visible and editable, never a hidden built-in list.
+    config.ensure_prompt_runners_seeded()
+    runners = config.load_prompt_runners()
+    if as_json:
+        console.print_json(
+            json.dumps(
+                [{"name": r.name, "argv": list(r.argv)} for r in runners], ensure_ascii=False
+            )
+        )
+        return
+    if not runners:
+        console.print(gettext("No runners configured. Add one with: skit runner add NAME COMMAND…"))
+        return
+    from rich.table import Table
+
+    table = Table(show_header=True, header_style="bold")  # pragma: no mutate — cosmetic
+    table.add_column(gettext("Runner"))
+    table.add_column(gettext("Command"))
+    for r in runners:
+        table.add_row(escape(r.name), escape(_join_runner_argv(list(r.argv))))
+    console.print(table)
+
+
+def _join_runner_argv(argv: list[str]) -> str:
+    """Display-join a runner argv (the same platform-aware join describe uses)."""
+    from .langs.launch import join_for_display
+
+    return join_for_display(argv)
+
+
+def _runner_reason(code: str) -> str:
+    """The human wording for a runner-argv validation code. A closed dict of gettext
+    LITERALS resolved at call time (never at import — a module-level dict would freeze
+    the import-time locale), the same discipline as flows._split_message."""
+    return {
+        "empty": gettext(
+            "A runner needs a command — e.g. skit runner add mycli mycli run {prompt}"
+        ),
+        "prompt-slot-count": gettext(
+            "A runner command must contain the {prompt} slot exactly once — that's where the "
+            "rendered prompt lands."
+        ),
+        "prompt-in-binary": gettext(
+            "{prompt} can't be the command itself — the first word must be the program to run."
+        ),
+        "stray-hole": gettext(
+            "Runner commands take no placeholders besides {prompt} (write literal braces as "
+            "{{ and }})."
+        ),
+    }[code]
+
+
+@runner_app.command(
+    "add",
+    help=gettext(
+        "Register a runner: skit runner add NAME COMMAND… ({prompt} marks where the "
+        "rendered prompt goes; each shell word becomes one argument, no shell involved)"
+    ),
+    # Real runner argv contains flags (`--model sonnet`); without this Click would
+    # reject them as unknown options instead of collecting them. `--` still works as an
+    # explicit guard and is what SKILL.md teaches.
+    context_settings={"ignore_unknown_options": True},
+)
+def runner_add(
+    name: str = typer.Argument(..., help=gettext("Runner name (e.g. claude)")),
+    argv: list[str] = typer.Argument(
+        None, help=gettext("The command, word by word, with one {prompt} slot")
+    ),
+) -> None:
+    config.ensure_prompt_runners_seeded()
+    reason = config.validate_prompt_runner_argv(list(argv or []))
+    if reason is not None:
+        err_console.print(f"[red]{escape(_runner_reason(reason))}[/red]")
+        raise typer.Exit(EXIT_USAGE)
+    runners = config.load_prompt_runners()
+    if any(r.name == name for r in runners):
+        raise _fail(
+            gettext(
+                "The runner %(name)s already exists — remove it first: skit runner remove %(name)s"
+            )
+            % {"name": name},
+            1,
+        )
+    config.save_prompt_runners([*runners, config.PromptRunner(name, tuple(argv))])
+    console.print(
+        f"[green]{gettext('Runner %(name)s added: %(command)s') % {'name': escape(name), 'command': escape(_join_runner_argv(list(argv)))}}[/green]"
+    )
+
+
+@runner_app.command("remove", help=gettext("Remove a configured runner."))
+def runner_remove(
+    name: str = typer.Argument(..., help=gettext("Runner name"), autocompletion=_complete_runner),
+) -> None:
+    config.ensure_prompt_runners_seeded()
+    runners = config.load_prompt_runners()
+    if not any(r.name == name for r in runners):
+        raise _fail(
+            gettext("Unknown runner: %(runner)s. Configured runners: %(names)s")
+            % {"runner": name, "names": ", ".join(r.name for r in runners) or "—"},
+            1,
+        )
+    config.save_prompt_runners([r for r in runners if r.name != name])
+    console.print(f"[green]{gettext('Runner %(name)s removed.') % {'name': escape(name)}}[/green]")
 
 
 # --------------------------------------------------------------------------
@@ -1522,21 +1962,44 @@ def _print_declared_table(decls: list[ParamDecl], last: dict[str, str]) -> None:
     console.print(table)
 
 
+def _prompt_body_placeholders(entry: store.Entry) -> list[str]:
+    """A prompt entry's placeholders, scanned fresh from the body ("" list when the body
+    is unreadable — preflight owns existence errors)."""
+    try:
+        text = entry.script_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    from .langs.prompt import analyzer as prompt_analyzer
+
+    return prompt_analyzer.placeholder_names(text)
+
+
 def _show_command_params(
     entry: store.Entry, declared: list[ParamDecl], last: dict[str, str]
 ) -> None:
-    """The read view for a command template: its placeholders (enriched with any declared
-    schema) plus declared environment riders."""
+    """The read view for a placeholder kind (command template / prompt): its managed
+    placeholders (enriched with any declared schema) plus declared environment riders.
+    A prompt additionally reads its body fresh: candidates the user hasn't managed and
+    managed names the body no longer contains both surface HERE — where the user decides
+    what to do about them — not only at run time."""
     placeholders = entry.meta.params or []
     by_name = {d.name: d for d in declared}
     env_riders = [d for d in declared if d.delivery == "env" and d.name not in placeholders]
-    if not placeholders and not env_riders:
+    is_prompt = entry.meta.kind == "prompt"
+    fresh = _prompt_body_placeholders(entry) if is_prompt else []
+    unmanaged = [n for n in fresh if n not in placeholders]
+    gone = [n for n in placeholders if n not in fresh] if is_prompt else []
+    if not placeholders and not env_riders and not unmanaged:
         console.print(
             escape(gettext("%(name)s has no managed parameters.") % {"name": entry.meta.name})
         )
         return
     if placeholders:
-        console.print(gettext("Command template placeholders (the run form asks for them):"))
+        console.print(
+            gettext("Prompt placeholders (the run form asks for them):")
+            if is_prompt
+            else gettext("Command template placeholders (the run form asks for them):")
+        )
         for p in placeholders:
             d = by_name.get(p)
             shown = _declared_last_value(p, d.secret if d is not None else False, last)
@@ -1546,6 +2009,15 @@ def _show_command_params(
         for d in env_riders:
             shown = _declared_last_value(d.name, d.secret, last)
             console.print(f"  {escape(d.name)} = {escape(shown)}{_declared_schema_suffix(d)}")
+    if unmanaged:
+        console.print(
+            gettext("Detected but not yet managed: %(names)s (use --add to manage them)")
+            % {"names": ", ".join(escape(n) for n in unmanaged)}
+        )
+    if gone:
+        console.print(
+            f"[yellow]{gettext('No longer in the prompt (the value would be ignored): %(names)s — remove with --rm, or edit the body.') % {'names': ', '.join(escape(n) for n in gone)}}[/yellow]"
+        )
 
 
 def _show_params(entry: store.Entry, as_json: bool) -> None:
@@ -1574,6 +2046,11 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
         self_locating = (
             entry_spec.injector is not None and entry_spec.analyzer.analyze(text).uses_self_location
         )
+    if entry_spec is not None and entry_spec.kind == "prompt":
+        # The prompt's "detected but unmanaged" sweep is a fresh body scan, not the
+        # analyzer/reconcile machinery (command-kind parity: spec.analyzer is None).
+        managed_names = set(entry.meta.params or [])
+        unmanaged = [n for n in _prompt_body_placeholders(entry) if n not in managed_names]
     # Declared [[parameters]] rows (empty for a python entry — it manages its schema in-file).
     declared = declared_from_meta(entry.meta.parameters)
     if as_json:
@@ -1583,9 +2060,13 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
             "placeholders": entry.meta.params or [],
             "declared": [d.to_meta_dict() for d in declared],
         }
+        if entry.meta.kind == "prompt":
+            payload["runner"] = entry.meta.runner or None
         console.print_json(json.dumps(payload, ensure_ascii=False))
         return
-    if entry_spec is not None and entry_spec.family == "template":
+    if entry_spec is not None and entry_spec.placeholder_params:
+        # The trait, not the family: a prompt (family "interpreted") reads exactly like
+        # a command template — placeholders are the interface.
         _show_command_params(entry, declared, last)
         return
     if declared and entry_spec is not None and entry_spec.params_io is None:
@@ -1753,6 +2234,14 @@ def params(
             "Shell only: rewrite a constant into the ${NAME:-default} idiom in the stored copy, so its value is delivered as an environment variable instead of a rewritten temporary copy (repeatable)"
         ),
     ),
+    runner_pin: str = typer.Option(
+        None,
+        "--runner",
+        help=gettext(
+            "Prompt only: pin the agent this prompt runs with (empty value clears the pin)"
+        ),
+        autocompletion=_complete_runner,
+    ),
     as_json: bool = typer.Option(False, "--json", help=gettext("Output the read view as JSON")),
 ) -> None:
     """Show a script's parameters, or edit their definitions when any change flag is given.
@@ -1774,6 +2263,11 @@ def params(
     help_texts, bad_help = _parse_kv_opts(help_text_opt or [], "--help-text")
 
     entry_spec = spec_for(entry.meta.kind)
+    if runner_pin is not None:
+        # Its own op, like --normalize: re-pinning changes how the entry LAUNCHES, so
+        # mixing it into the schema-edit pass would make the outcome order-dependent.
+        _pin_prompt_runner(entry, runner_pin)
+        return
     if normalize_opt:
         # A source-idiom rewrite of the user's own stored file — deliberately its own op, not a
         # modifier on the others: it changes what a parameter IS (inject-delivered -> env-delivered),
@@ -1863,6 +2357,39 @@ def params(
         )
         return
     _show_params(entry, as_json)
+
+
+def _pin_prompt_runner(entry: store.Entry, runner_pin: str) -> None:
+    """`skit params <prompt> --runner NAME`: pin (or, with an empty value, clear) the
+    agent the entry runs with. Pinning an unknown name would store a run that can only
+    exit 126 — validated against the configured list instead."""
+    if entry.meta.kind != "prompt":
+        raise _fail(gettext("--runner only applies to prompt entries."), 1)
+    name = runner_pin.strip()
+    if name:
+        names = [r.name for r in config.load_prompt_runners()]
+        if name not in names:
+            raise _fail(
+                gettext(
+                    "The runner %(runner)s isn't configured (known: %(names)s). Manage "
+                    "runners with: skit runner list"
+                )
+                % {"runner": name, "names": ", ".join(names) or "—"},
+                1,
+            )
+        argstate.save_last_runner(name)
+    try:
+        store.write_prompt_runner(entry.slug, name)
+    except store.StoreError as exc:
+        raise _fail(str(exc), 1) from exc
+    if name:
+        console.print(
+            f"[green]{gettext('%(name)s now runs with %(runner)s.') % {'name': escape(entry.meta.name), 'runner': escape(name)}}[/green]"
+        )
+    else:
+        console.print(
+            f"[green]{gettext('Cleared the runner pin — %(name)s asks at run time.') % {'name': escape(entry.meta.name)}}[/green]"
+        )
 
 
 def _apply_env_sources(specs: list[ParamDecl], env_sources: dict[str, str]) -> list[str]:
@@ -2112,8 +2639,20 @@ def _edit_declared_params(
     truth about which slots exist), so defaulting it to "placeholder" wrote a dead row that the run
     surface then refused. env is the delivery a template can always honour, and it matches what the
     TUI's own add-a-parameter field creates. `edit_declared` still maps a name that IS a placeholder
-    onto placeholder delivery, and membership validation is unchanged — only the default moves."""
-    allowed = ("env", "placeholder") if entry_spec.family == "template" else ("flag", "env")
+    onto placeholder delivery, and membership validation is unchanged — only the default moves.
+
+    Prompt entries ride the same path with two differences: the placeholder truth is the BODY
+    (scanned fresh, so `--add` of a hole the user typed since adding works), and --add/--rm also
+    maintain the MANAGED list (meta `params`) — managing a detected placeholder / unmanaging one
+    is exactly the add/remove of its row. An --rm of a managed-but-undeclared name (the common
+    synthesized case) is therefore real work for a prompt, not a `not-declared` warning."""
+    is_prompt = entry.meta.kind == "prompt"
+    allowed = ("env", "placeholder") if entry_spec.placeholder_params else ("flag", "env")
+    managed = list(entry.meta.params or [])
+    body_placeholders = _prompt_body_placeholders(entry) if is_prompt else []
+    placeholder_truth = (
+        sorted(set(body_placeholders) | set(managed)) if is_prompt else entry.meta.params or []
+    )
     for item in malformed:
         err_console.print(
             f"[yellow]{escape(gettext('Ignored a malformed value: %(item)s (expected NAME=VALUE).') % {'item': item})}[/yellow]"
@@ -2135,9 +2674,29 @@ def _edit_declared_params(
         prompts=prompts,
         env_sources=env_sources,
         allowed_deliveries=allowed,
-        placeholder_names=entry.meta.params or [],
+        placeholder_names=placeholder_truth,
     )
-    for w in result.warnings:
+    warnings = list(result.warnings)
+    if is_prompt:
+        # Maintain the managed list alongside the schema rows: an added body placeholder
+        # becomes managed (in body order); a removed name stops being asked for. An --rm
+        # that only unmanages (no declared row to drop) is real work here, so its
+        # `not-declared` warning is retracted.
+        added_managed = [
+            n for n in add if n in body_placeholders and n not in managed and n not in rm
+        ]
+        removed_managed = [n for n in rm if n in managed]
+        if added_managed or removed_managed:
+            keep = [n for n in managed if n not in removed_managed] + added_managed
+            new_managed = [n for n in body_placeholders if n in set(keep)]
+            # A managed name the body has already lost isn't in body order — keep it at
+            # the tail unless this very call removed it (drift stays visible, never grows).
+            new_managed += [n for n in keep if n not in body_placeholders]
+            store.write_prompt_managed(entry.slug, new_managed)
+            warnings = [
+                w for w in warnings if w not in {f"not-declared:{n}" for n in removed_managed}
+            ]
+    for w in warnings:
         err_console.print(f"[yellow]{escape(_render_declared_warning(w))}[/yellow]")
     store.write_parameters(entry.slug, result.decls)
     purged = argstate.purge_secret(entry.slug, {d.name for d in result.decls if d.secret})
@@ -2425,6 +2984,14 @@ def _drifted_entries(entries: list[store.Entry]) -> list[str]:
     out: list[str] = []
     for e in entries:
         spec = spec_for(e.meta.kind)
+        if spec is not None and spec.kind == "prompt":
+            # Prompt drift is a fresh body scan (no analyzer capability, command-kind
+            # parity): a MANAGED placeholder the body no longer contains.
+            if e.script_path.exists():
+                fresh = set(_prompt_body_placeholders(e))
+                if any(name not in fresh for name in e.meta.params or []):
+                    out.append(e.meta.name)
+            continue
         if (
             spec is None
             or spec.analyzer is None
@@ -2472,6 +3039,7 @@ def doctor(
     missing = [e.meta.name for e in entries if launcher.target_missing(e)]
     drifted = _drifted_entries(entries)
     needs_missing = {e.meta.name: miss for e in entries if (miss := launcher.missing_needs(e))}
+    bad_runners = config.invalid_prompt_runners()
     mirror = config.load_mirror()
     location = scripts_dir()
     size = store.dir_size(location)
@@ -2484,6 +3052,7 @@ def doctor(
                     "missing": missing,
                     "drift": drifted,
                     "needs_missing": needs_missing,
+                    "runner_rows_invalid": bad_runners,
                     "mirror": mirror.pypi if mirror.enabled else "off",
                     "location": str(location),
                     "size_bytes": size,
@@ -2514,6 +3083,10 @@ def doctor(
     for nm_name, tools in needs_missing.items():
         console.print(
             f"  [yellow]⚠ {gettext('%(name)s: missing external command(s): %(tools)s') % {'name': escape(nm_name), 'tools': ', '.join(escape(t) for t in tools)}}[/yellow]"
+        )
+    if bad_runners:
+        console.print(
+            f"  [yellow]⚠ {gettext('Ignored malformed runner row(s) in config: %(rows)s (fix config.toml or re-add with skit runner add)') % {'rows': ', '.join(escape(r) for r in bad_runners)}}[/yellow]"
         )
     if mirror.enabled:
         console.print("✓ " + gettext("Mirror: on (%(pypi)s)") % {"pypi": escape(mirror.pypi)})

@@ -412,11 +412,13 @@ def run_entry_spy(monkeypatch):
         invoke_cwd=None,
         script_override=None,
         env_overlay=None,
+        runner=None,
     ):
         calls["entry"] = entry
         calls["extra"] = list(extra_args or [])
         calls["values"] = dict(values or {})
         calls["override"] = script_override
+        calls["runner"] = runner
         return calls.get("code", 0)
 
     monkeypatch.setattr(launcher, "run_entry", fake)

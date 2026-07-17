@@ -21,7 +21,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from .atomic import atomic_write_toml
-from .paths import values_dir
+from .paths import state_dir, values_dir
 
 
 def _load_doc(slug: str) -> dict[str, Any]:
@@ -149,6 +149,29 @@ def purge_secret(slug: str, names: Iterable[str]) -> set[str]:
 
     _save_doc(slug, doc)
     return removed
+
+
+def load_last_runner() -> str:
+    """The most recently PICKED prompt-runner name (state, not config). One job only:
+    prefill the next picker — it never resolves a non-interactive run (a --no-input run
+    must be provably unaffected by it). Corrupt/absent state degrades to "" (no prefill),
+    never an error."""
+    path = state_dir() / "prompt.toml"
+    if not path.exists():
+        return ""
+    try:
+        with open(path, "rb") as f:
+            doc = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return ""
+    value = doc.get("last_runner", "")  # pragma: no mutate — isinstance normalizes
+    return value if isinstance(value, str) else ""
+
+
+def save_last_runner(name: str) -> None:
+    """Remember an explicit runner pick (add-time picker, `--runner`, the run form's
+    picker). Using a PIN is not a pick and never lands here."""
+    atomic_write_toml(state_dir() / "prompt.toml", {"last_runner": name})
 
 
 def record_run(slug: str, exit_code: int, *, at: str) -> None:

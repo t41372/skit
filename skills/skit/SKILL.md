@@ -1,6 +1,6 @@
 ---
 name: skit
-description: Run, inspect, and manage scripts in the user's skit library — their personal hub, manager, and launcher for scripts in many languages (Python, shell, JS/TS, and more), executables, and command templates, each with a typed parameter form, saved presets, and per-script dependencies. Use when the user asks to run/list/add their scripts, mentions skit or "my script", or before writing a new one-off script (the library may already have one that does the job).
+description: Run, inspect, and manage scripts in the user's skit library — their personal hub, manager, and launcher for scripts in many languages (Python, shell, JS/TS, and more), executables, command templates, and AI-agent prompts, each with a typed parameter form, saved presets, and per-script dependencies. Use when the user asks to run/list/add their scripts or prompts, mentions skit or "my script", or before writing a new one-off script (the library may already have one that does the job).
 license: MIT
 compatibility: Requires the skit CLI on PATH (install with `uv tool install skit-cli`)
 ---
@@ -9,7 +9,8 @@ compatibility: Requires the skit CLI on PATH (install with `uv tool install skit
 
 skit stores the user's scripts in one searchable library and makes them runnable
 without remembering flags. It runs many languages — Python, shell (bash/sh/zsh),
-JS/TS, fish, PowerShell, Ruby/Perl/Lua/R — plus executables and command templates.
+JS/TS, fish, PowerShell, Ruby/Perl/Lua/R — plus executables, command templates, and
+prompts (parameterized text fired at an AI-agent CLI such as claude or codex).
 For every script it knows the parameter schema (extracted statically — flags,
 prompts, and marked constants all become typed fields), remembers last-used values,
 and saves named presets. Python runs through `uv run --script` in an isolated
@@ -168,6 +169,48 @@ skit preset list <name> --json
 skit run <name> -p nightly --no-input
 skit preset delete <name> nightly
 ```
+
+## Prompts & runners
+
+A **prompt** entry is a reusable, parameterized piece of text for an AI coding agent:
+`{placeholder}` holes become form fields / `--set` targets, and the rendered text is
+handed to a **runner** — a configured agent CLI (claude, codex, opencode, amp,
+antigravity are preconfigured; `{{` and `}}` write literal braces). The rendered
+prompt travels as ONE process argument, never through a shell.
+
+```bash
+skit add notes/review.prompt.md --no-input            # kind inferred; every {hole} managed
+skit add notes/spec.md --prompt --no-input            # bare .md needs the explicit flag
+skit add - --prompt --name review -d "Review a file" --no-input   # body on stdin
+skit add notes/review.prompt.md --runner claude --no-input        # pin the agent up front
+skit show <name> --json           # adds "runner" (the pin or null) and "runners_available"
+skit run <name> --runner claude --set target=src/app.py --no-input
+skit params <name> --runner claude   # pin the agent (empty value clears the pin)
+skit params <name> --add extra_hole  # manage a {hole} typed into the body later
+skit params <name> --rm noise        # unmanage a false positive (it stays verbatim text)
+```
+
+- **A run needs a runner.** Resolution is `--runner` > the entry's pin > exit 126 —
+  never a guess (interactive terminals get asked; `--no-input` never does). Check
+  `runners_available` in `skit show <name> --json` before picking.
+- Prompts contain code snippets, so a detected `{hole}` can be a false positive:
+  unmanaged holes pass through to the agent verbatim. `skit params <name> --json`
+  lists `placeholders` (managed), `unmanaged`, and `runner`.
+- Runners are user-editable config. `skit runner list --json` shows them; register a
+  custom tool with the argv after `--`, `{prompt}` marking where the rendered text
+  lands (exactly one slot, never the first word):
+
+```bash
+skit runner list --json                       # [{"name": …, "argv": […]}]
+skit runner add mycli -- mycli run {prompt}   # each word = one argument, no shell
+skit runner remove mycli
+```
+
+- The agent's own per-run flags pass through after `--`:
+  `skit run <name> --set a=1 --no-input -- --model opus`.
+- Prompts are NOT a secrets channel: whatever the rendered prompt contains lands in
+  the receiving agent's own session logs. skit still never persists a secret-marked
+  value, but confidentiality ends at the runner boundary.
 
 ## Maintenance
 

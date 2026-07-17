@@ -56,6 +56,7 @@ from .params import ParamDecl
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from .config import PromptRunner
     from .langs.base import CliReader
 
 _GLOB_CHARS = ("*", "?", "[")
@@ -201,13 +202,18 @@ class Assembly:
 
 
 def _declared_plan(entry: Entry, lang: LangSpec) -> FormPlan | None:
-    """The declared-schema plans (no source analysis involved): command templates and
-    program entries with [[parameters]] rows. None means "not this path — keep going"."""
-    if lang.family == "template":
-        # The template's placeholder list IS the field list; a declared [[parameters]]
-        # row supplies a placeholder's schema (type/default/optional/secret override),
-        # an undeclared one synthesizes the historical required-free-text field, and
-        # declared env params ride along (see params.declared_for_template).
+    """The declared-schema plans (no source analysis involved): placeholder kinds
+    (command templates and prompts) and program entries with [[parameters]] rows.
+    None means "not this path — keep going"."""
+    if lang.placeholder_params:
+        # The placeholder list IS the field list; a declared [[parameters]] row supplies
+        # a placeholder's schema (type/default/optional/secret override), an undeclared
+        # one synthesizes the historical required-free-text field, and declared env
+        # params ride along (see params.declared_for_template). The trait — not the
+        # family — gates this: a prompt is family "interpreted" (it has an original
+        # file) yet its form interface is placeholders, exactly like a command's.
+        if lang.stored_name:
+            return _placeholder_body_plan(entry)
         decls = params.declared_for_template(entry.meta.parameters, entry.meta.params or [])
         return FormPlan(source="command", fields=[FormField.from_decl(d) for d in decls])
     if lang.params_io is None and lang.cli_reader is None and entry.meta.parameters:
@@ -227,6 +233,43 @@ def _declared_plan(entry: Entry, lang: LangSpec) -> FormPlan | None:
         if decls:
             return FormPlan(source="declared", fields=[FormField.from_decl(d) for d in decls])
     return None
+
+
+def _placeholder_body_plan(entry: Entry) -> FormPlan:
+    """The prompt kind's plan: a command-template plan whose placeholder list is the
+    entry's MANAGED names (`meta.params` — what the user kept at add time), with the
+    body itself consulted fresh for drift. A managed hole the body no longer contains
+    still renders as a field (the declared schema is the user's record), but the banner
+    says its value would be ignored — the same honesty the in-file kinds get from
+    reconcile. An unreadable/missing body degrades to the extra-args-only plan;
+    preflight owns existence errors (the form layer never invents fields)."""
+    managed = list(entry.meta.params or [])
+    try:
+        text = entry.script_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return FormPlan(source="none")
+    from .langs.prompt import analyzer as prompt_analyzer
+
+    fresh = prompt_analyzer.placeholder_names(text)
+    gone = [name for name in managed if name not in fresh]
+    drift = (
+        [
+            gettext(
+                "No longer in the prompt (the value would be ignored): %(names)s — "
+                "edit the body or update parameters with: skit params %(name)s"
+            )
+            % {"names": ", ".join(gone), "name": entry.meta.name}
+        ]
+        if gone
+        else []
+    )
+    decls = params.declared_for_template(entry.meta.parameters, managed)
+    return FormPlan(
+        source="command",
+        fields=[FormField.from_decl(d) for d in decls],
+        drift_lines=drift,
+        text=text,
+    )
 
 
 def _declared_riders(entry: Entry, taken: set[str]) -> list[FormField]:
@@ -668,12 +711,19 @@ class RunOutcome:
         return self.code is not None
 
 
-def transparency_lines(entry: Entry, asm: Assembly, injected: Path | None) -> list[str]:
+def transparency_lines(
+    entry: Entry,
+    asm: Assembly,
+    injected: Path | None,
+    *,
+    runner: PromptRunner | None = None,
+) -> list[str]:
     """The plain what-actually-runs lines (trust through transparency; also how users
     passively learn their scripts' own flags). Secret values are already masked in
     asm.masked_args / asm.display. The renderer applies its own styling/escaping — these
     are semantic plain text, identical across CLI and TUI (the one place they used to
-    drift: `k = v` vs `k = 'v'`)."""
+    drift: `k = v` vs `k = 'v'`). `runner` is the prompt kind's resolved per-run pick,
+    threaded through to describe so --dry-run prints the real argv."""
     lines: list[str] = []
     if asm.inject_values:
         pairs = ", ".join(f"{k} = {v}" for k, v in asm.display)
@@ -691,7 +741,11 @@ def transparency_lines(entry: Entry, asm: Assembly, injected: Path | None) -> li
         "→ "
         + env_prefix
         + launcher.describe_command(
-            entry, asm.masked_args, asm.masked_command_values, script_override=injected
+            entry,
+            asm.masked_args,
+            asm.masked_command_values,
+            script_override=injected,
+            runner=runner,
         )
     )
     return lines
@@ -725,6 +779,7 @@ def execute(  # noqa: PLR0911, PLR0912 — one early return/branch per injection
     *,
     emit: Callable[[str], None],
     invoke_cwd: Path | None = None,
+    runner: PromptRunner | None = None,
 ) -> RunOutcome:
     """Deliver an assembled run: inject (if the source calls for it) -> emit the
     transparency lines -> run straight through the terminal -> clean up the temp copy.
@@ -829,7 +884,7 @@ def execute(  # noqa: PLR0911, PLR0912 — one early return/branch per injection
             env_overlay.update(result.env)
             for line in result.warnings:
                 emit(line)
-        for line in transparency_lines(entry, asm, injected):
+        for line in transparency_lines(entry, asm, injected, runner=runner):
             emit(line)
         try:
             code = launcher.run_entry(
@@ -839,6 +894,7 @@ def execute(  # noqa: PLR0911, PLR0912 — one early return/branch per injection
                 invoke_cwd=invoke_cwd,
                 script_override=injected,
                 env_overlay=env_overlay,
+                runner=runner,
             )
         except launcher.TargetMissingError as exc:
             return RunOutcome(None, FAIL_MISSING, str(exc))

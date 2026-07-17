@@ -34,8 +34,10 @@ from .i18n import gettext
 if TYPE_CHECKING:
     from .models import Entry
 
-# The submit result: (raw field values, extra passthrough args) or None on cancel.
-FormResult = tuple[dict[str, str], list[str]] | None
+# The submit result: (raw field values, extra passthrough args, picked runner name)
+# or None on cancel. The runner element is None unless the form showed a runner picker
+# (prompt entries in the TUI workbench); the CLI resolves its runner before the form.
+FormResult = tuple[dict[str, str], list[str], str | None] | None
 
 _EXTRA_KEY = "__extra_args__"
 
@@ -429,24 +431,30 @@ class RunFormScreen(Screen[FormResult]):
         border-title-style: bold;
     }
     RunFormScreen #drift-banner, RunFormScreen #degraded-notice { color: $warning; padding: 0 1; }
-    RunFormScreen #preset-row { height: auto; padding: 0 1; }
+    RunFormScreen #preset-row, RunFormScreen #runner-row { height: auto; padding: 0 1; }
     /* Narrow terminals: the caption-beside-chips row and horizontal option sets overflow
        a Horizontal (it never wraps) — stack them vertically instead. The tier class gives
        these rules higher specificity than the class-less horizontal rules they override. */
-    RunFormScreen.-w-narrow #preset-row { layout: vertical; }
-    RunFormScreen.-w-narrow #preset-row RadioSet { layout: vertical; }
+    RunFormScreen.-w-narrow #preset-row, RunFormScreen.-w-narrow #runner-row { layout: vertical; }
+    RunFormScreen.-w-narrow #preset-row RadioSet,
+    RunFormScreen.-w-narrow #runner-row RadioSet { layout: vertical; }
     RunFormScreen.-w-narrow FieldRow RadioSet { layout: vertical; }
     /* Widgets default to width:1fr; in a Horizontal that lets the "Preset:" caption
        swallow the whole row and push the chips (or the empty-state hint) clean off the
        screen. Everything in this row hugs its content. */
-    RunFormScreen #preset-row Static { width: auto; margin: 0 1 0 0; }
-    RunFormScreen #preset-row RadioSet { width: auto; }
+    RunFormScreen #preset-row Static, RunFormScreen #runner-row Static {
+        width: auto; margin: 0 1 0 0;
+    }
+    RunFormScreen #preset-row RadioSet, RunFormScreen #runner-row RadioSet { width: auto; }
     /* The empty-state hint is a long sentence: let it take the row's remaining width and
        wrap, rather than width:auto (its full content width) which overflows a narrow form.
        Two ids outrank the `#preset-row Static` width:auto rule above. */
     RunFormScreen #preset-row #preset-empty { color: $text-muted; width: 1fr; height: auto; }
-    RunFormScreen #preset-row RadioSet { layout: horizontal; height: auto; border: none; }
-    RunFormScreen #preset-row RadioSet > RadioButton { width: auto; margin: 0 2 0 0; }
+    RunFormScreen #preset-row RadioSet, RunFormScreen #runner-row RadioSet {
+        layout: horizontal; height: auto; border: none;
+    }
+    RunFormScreen #preset-row RadioSet > RadioButton,
+    RunFormScreen #runner-row RadioSet > RadioButton { width: auto; margin: 0 2 0 0; }
     RunFormScreen #form-body { padding: 0 1; }
     /* Chips wrap pill-by-pill; visible lines follow the height tier and anything
        past the cap stays wheel-reachable — see tui_footer.KeysBar. */
@@ -471,6 +479,8 @@ class RunFormScreen(Screen[FormResult]):
         plan: flows.FormPlan,
         prefill: dict[str, str],
         include_extra: bool = True,
+        runners: list[str] | None = None,
+        runner_default: str = "",
     ) -> None:
         super().__init__()
         self._entry: Entry = entry
@@ -479,6 +489,11 @@ class RunFormScreen(Screen[FormResult]):
         # The inline (CLI) frame hides the extra-args row: argv already owns passthrough
         # args there, and two sources for the same thing would fight.
         self._include_extra: bool = include_extra
+        # Prompt entries: the runner picker row (mouse- and keyboard-operable, like the
+        # preset chips). The workbench passes the configured names; the CLI's inline
+        # frame passes none — it resolved the runner before opening the form.
+        self._runners: list[str] = runners or []
+        self._runner_default: str = runner_default
         self._presets: dict[str, dict[str, str]] = argstate.load_state(entry.slug)["presets"]
 
     def on_mount(self) -> None:
@@ -495,6 +510,17 @@ class RunFormScreen(Screen[FormResult]):
                 )
             if self._plan.degraded_reason:
                 yield Static(_degraded_notice(self._plan.degraded_reason), id="degraded-notice")
+            if self._runners:
+                with Horizontal(id="runner-row"):
+                    yield Static(gettext("Runner:"), markup=False)
+                    with RadioSet(id="runner-set"):
+                        default = (
+                            self._runner_default
+                            if self._runner_default in self._runners
+                            else self._runners[0]
+                        )
+                        for runner_name in self._runners:
+                            yield RadioButton(escape(runner_name), value=(runner_name == default))
             with Horizontal(id="preset-row"):
                 yield Static(gettext("Preset:"), markup=False)
                 if self._presets:
@@ -553,6 +579,13 @@ class RunFormScreen(Screen[FormResult]):
     def _rows(self) -> list[FieldRow]:
         return [row for row in self.query(FieldRow) if row.field.key != _EXTRA_KEY]
 
+    def picked_runner(self) -> str | None:
+        """The runner picker's selection, or None when the form has no picker."""
+        if not self._runners:
+            return None
+        pressed = self.query_one("#runner-set", RadioSet).pressed_index
+        return self._runners[pressed] if 0 <= pressed < len(self._runners) else None
+
     def collect(self) -> tuple[dict[str, str], list[str]]:
         import shlex
 
@@ -573,7 +606,7 @@ class RunFormScreen(Screen[FormResult]):
             for row in self._rows():
                 row.show_error(errors.get(row.field.key))
             return
-        self.dismiss((values, extra))
+        self.dismiss((values, extra, self.picked_runner()))
 
     def action_cancel(self) -> None:
         self.dismiss(None)

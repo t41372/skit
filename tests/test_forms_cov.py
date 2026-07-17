@@ -215,9 +215,9 @@ def test_inline_collect_returns_values_when_form_submits(monkeypatch):
     entry = _command_entry()
     plan = flows.FormPlan(source="command", fields=[flows.FormField(key="m", label="m")])
 
-    def fake_run(_self: object, **kwargs: object) -> tuple[dict[str, str], list[str]]:
+    def fake_run(_self: object, **kwargs: object) -> tuple[dict[str, str], list[str], str | None]:
         assert kwargs.get("inline") is True  # opened in inline mode, not fullscreen
-        return {"m": "hi"}, ["--extra"]
+        return {"m": "hi"}, ["--extra"], None
 
     monkeypatch.setattr(inlineform._InlineFormApp, "run", fake_run)
     result = inlineform.collect(entry, plan, {"m": "seed"})
@@ -254,6 +254,7 @@ async def test_inline_app_pushes_form_and_submit_exits_with_result(tmp_path):
 
     result = app.return_value
     assert result is not None  # _done forwarded the submit result into app.exit
-    values, extra = result
+    values, extra, picked_runner = result
     assert extra == []  # include_extra=False: the inline frame hides the extra-args row
+    assert picked_runner is None  # no runner picker on a non-prompt form
     assert set(values) == {"width", "fast", "mode"}  # the plan's fields were collected

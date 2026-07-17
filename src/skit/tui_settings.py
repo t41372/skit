@@ -16,9 +16,9 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Checkbox, Input, Label, Static
+from textual.widgets import Checkbox, Input, Label, RadioButton, RadioSet, Static
 
-from . import analysis, argstate, params, pep723, store, tui_footer
+from . import analysis, argstate, config, params, pep723, store, tui_footer
 from .i18n import gettext
 from .langs.registry import spec_for
 from .models import Entry
@@ -258,9 +258,25 @@ class ScriptSettingsScreen(Screen[bool]):
         # interpreted kinds with no in-file block (ruby/perl/lua/r/powershell) — is edited through
         # the declared-params editor rather than the analyzer-driven [tool.skit] flow above.
         self._declared: bool = self._spec is not None and self._spec.params_io is None
-        self._declared_decls: list[ParamDecl] = (
-            params.declared_from_meta(entry.meta.parameters) if self._declared else []
-        )
+        self._is_prompt: bool = entry.meta.kind == "prompt"
+        if self._is_prompt:
+            # Every MANAGED placeholder gets an editable row (undeclared ones as their
+            # synthesized schema), plus declared env riders — the exact field list the
+            # run form serves, so what you edit is what you get.
+            self._declared_decls: list[ParamDecl] = params.declared_for_template(
+                entry.meta.parameters, entry.meta.params or []
+            )
+        else:
+            self._declared_decls = (
+                params.declared_from_meta(entry.meta.parameters) if self._declared else []
+            )
+        self._prompt_body_names: list[str] = []
+        if self._is_prompt and entry.script_path.exists():
+            from .langs.prompt import analyzer as prompt_analyzer
+
+            self._prompt_body_names = prompt_analyzer.placeholder_names(
+                entry.script_path.read_text(encoding="utf-8", errors="replace")
+            )
         # The resync outcome (incl. safety-rebind warnings) must survive the recompose that
         # action_resync triggers — a widget updated in place would be thrown away and rebuilt
         # empty. Kept on the instance so compose can re-emit it. Already escape()'d for markup.
@@ -293,6 +309,7 @@ class ScriptSettingsScreen(Screen[bool]):
                 id="st-desc",
             )
             yield from self._compose_storage()
+            yield from self._compose_runner()
             yield from self._compose_params()
             yield from self._compose_presets()
             yield from self._compose_deps()
@@ -326,6 +343,23 @@ class ScriptSettingsScreen(Screen[bool]):
                 gettext("Linked to the original: %(path)s") % {"path": escape(meta.source)},
                 classes="hint",
             )
+
+    def _compose_runner(self) -> ComposeResult:
+        if not self._is_prompt:
+            return
+        yield Static(gettext("Runner (the agent this prompt runs with)"), classes="section")
+        names = [r.name for r in config.load_prompt_runners()]
+        if not names:
+            yield Static(
+                gettext("No runners configured. Add one with: skit runner add NAME COMMAND…"),
+                classes="hint",
+            )
+            return
+        pin = self._entry.meta.runner
+        with RadioSet(id="st-runner-set"):
+            yield RadioButton(gettext("ask on the run form"), value=not pin)
+            for name in names:
+                yield RadioButton(escape(name), value=(name == pin))
 
     def _compose_params(self) -> ComposeResult:
         yield Static(gettext("Parameters (the run form's fields)"), classes="section")
@@ -388,11 +422,21 @@ class ScriptSettingsScreen(Screen[bool]):
         meta = self._entry.meta
         if self._spec is not None and self._spec.family == "template":
             yield Static(escape(meta.template), classes="hint")
-        # A flag only means something where argv is the interface: every non-template kind
-        # (binaries AND the interpreted meta-schema kinds), mirroring the CLI's allowed deliveries.
-        show_flag = self._spec is not None and self._spec.family != "template"
+        # A flag only means something where argv is the interface: every kind whose form
+        # is NOT placeholders (binaries AND the interpreted meta-schema kinds), mirroring
+        # the CLI's allowed deliveries. The trait — not the family — is the gate, so a
+        # prompt (family "interpreted") never grows a meaningless flag input.
+        show_flag = self._spec is not None and not self._spec.placeholder_params
         for d in self._declared_decls:
             yield DeclParamRow(d, show_flag=show_flag)
+        if self._is_prompt:
+            unmanaged = [n for n in self._prompt_body_names if n not in (meta.params or [])]
+            if unmanaged:
+                yield Static(
+                    gettext("Detected but not yet managed — tick to manage:"), classes="hint"
+                )
+                for i, candidate in enumerate(unmanaged):
+                    yield Checkbox(escape(candidate), value=False, id=f"st-prompt-new-{i}")
         yield Static(gettext("Add a parameter — type a name, then Save:"), classes="hint")
         yield Input(placeholder=gettext("new parameter name"), id="st-add-param")
 
@@ -400,8 +444,8 @@ class ScriptSettingsScreen(Screen[bool]):
         """A freshly-added declared parameter's default shape. A template placeholder stays
         required (an empty slot silently assembles a broken command); everything else is an
         optional env/flag value that falls back to the program's own default."""
-        placeholders = self._entry.meta.params or []
-        if self._spec is not None and self._spec.family == "template":
+        placeholders = self._prompt_body_names if self._is_prompt else self._entry.meta.params or []
+        if self._spec is not None and self._spec.placeholder_params:
             if name in placeholders:
                 return ParamDecl(name=name, binding="none", delivery="placeholder", required=True)
             return ParamDecl(name=name, binding="none", delivery="env")
@@ -570,7 +614,7 @@ class ScriptSettingsScreen(Screen[bool]):
             self._resync_report = gettext("Everything still matches the script.")
         self.refresh(recompose=True)
 
-    def action_save(self) -> None:  # noqa: PLR0912 — one atomic save across every section
+    def action_save(self) -> None:  # noqa: PLR0912, PLR0915 — one atomic save across every section
         entry = self._entry
         new_name = self.query_one("#st-name", Input).value.strip()
         if new_name and new_name != entry.meta.name:
@@ -612,6 +656,9 @@ class ScriptSettingsScreen(Screen[bool]):
             decls = self._collect_declared()
             if decls is None:
                 return  # a row is invalid; stay on the screen, nothing saved half-way
+            if self._is_prompt:
+                decls += self._ticked_prompt_candidates({d.name for d in decls})
+                self._save_prompt_managed(decls)
             store.write_parameters(entry.slug, decls)
             purged = argstate.purge_secret(entry.slug, {d.name for d in decls if d.secret})
             if purged:
@@ -654,6 +701,47 @@ class ScriptSettingsScreen(Screen[bool]):
             if box and not box.first(Checkbox).value:
                 argstate.delete_preset(entry.slug, name)
         self.dismiss(True)
+
+    def _ticked_prompt_candidates(self, taken: set[str]) -> list[ParamDecl]:
+        """The tick-to-manage checkboxes' yield: each ticked, still-unclaimed candidate
+        becomes a synthesized placeholder row (required, like every managed placeholder)."""
+        managed = self._entry.meta.params or []
+        unmanaged = [n for n in self._prompt_body_names if n not in managed]
+        out: list[ParamDecl] = []
+        for i, candidate in enumerate(unmanaged):
+            box = self.query(f"#st-prompt-new-{i}")
+            if box and box.first(Checkbox).value and candidate not in taken:
+                out.append(
+                    ParamDecl(
+                        name=candidate,
+                        binding="none",
+                        delivery="placeholder",
+                        required=True,
+                        secret=params.is_secret_name(candidate),
+                    )
+                )
+        return out
+
+    def _save_prompt_managed(self, decls: list[ParamDecl]) -> None:
+        """The managed list follows the kept placeholder rows: body order first, then any
+        managed name the body has lost but the user kept (drift stays visible, not grown).
+        Also persists the runner pin from its radio row."""
+        entry = self._entry
+        keep = [d.name for d in decls if d.delivery == "placeholder"]
+        keep_set = set(keep)
+        new_managed = [n for n in self._prompt_body_names if n in keep_set]
+        new_managed += [n for n in keep if n not in set(self._prompt_body_names)]
+        store.write_prompt_managed(entry.slug, new_managed)
+        radio = self.query("#st-runner-set")
+        if radio:
+            names = [r.name for r in config.load_prompt_runners()]
+            pressed = radio.first(RadioSet).pressed_index
+            # Index 0 is "ask on the run form" (no pin); 1.. map onto the names.
+            pin = names[pressed - 1] if 1 <= pressed <= len(names) else ""
+            if pin != entry.meta.runner:
+                store.write_prompt_runner(entry.slug, pin)
+                if pin:
+                    argstate.save_last_runner(pin)
 
     def action_close(self) -> None:
         if not self._dirty:

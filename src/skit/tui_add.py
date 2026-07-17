@@ -61,7 +61,7 @@ class AddSourceScreen(Screen[str | None]):
         # template/name fields under the docked footer with no way to reveal them —
         # the scroll body keeps every field reachable (focus pulls it into view).
         with tui_footer.FormBody(id="add-body"):
-            yield Static(gettext("Path to a script or executable:"))
+            yield Static(gettext("Path to a script, executable, or prompt:"))
             yield Input(placeholder="~/scripts/tool.py", id="add-path")
             yield Static("", id="add-error", markup=True)
             yield Static(
@@ -99,10 +99,26 @@ class AddSourceScreen(Screen[str | None]):
         from .store import infer_kind
 
         kind = infer_kind(path)
+        if kind == "unknown" and path.suffix.lower() == ".md":
+            # The TUI twin of the CLI's bare-.md ask: the user explicitly picked this
+            # file, and a .md that is neither script nor executable is a prompt in all
+            # but name — say so instead of dead-ending (mirrors issue #10's direction).
+            kind = "prompt"
         kind_spec = spec_for(kind)
         try:
             if kind == "exe":
                 entry = store.add_exe(path)
+            elif kind == "prompt":
+                # The direct-add lane manages every detected placeholder (the CLI's
+                # non-interactive default); refine in Script settings (`p`) afterwards.
+                # The runner stays unpinned — the run form's picker asks, prefilled
+                # from the last pick.
+                entry = store.add_prompt(path)
+                if entry.meta.params:
+                    self.notify(
+                        gettext("Placeholders managed: %(names)s (edit in Script settings)")
+                        % {"names": ", ".join(entry.meta.params)}
+                    )
             elif kind_spec is not None and kind_spec.family == "interpreted":
                 program = shebang_program(path)
                 interpreter = program if program in kind_spec.shebangs else ""
@@ -131,7 +147,7 @@ class AddSourceScreen(Screen[str | None]):
                         )
             else:
                 error.update(
-                    f"[red]{gettext("%(file)s isn't a script or an executable — pass --exe for a program, or --cmd for a command template.") % {'file': escape(path.name)}}[/red]"
+                    f"[red]{gettext("%(file)s isn't a script or an executable — pass --prompt for an AI-agent prompt, --exe for a program, or --cmd for a command template.") % {'file': escape(path.name)}}[/red]"
                 )
                 return
         except store.StoreError as exc:

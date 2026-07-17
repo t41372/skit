@@ -14,6 +14,7 @@ import shutil
 import subprocess
 from collections.abc import Mapping
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from . import config
 from .i18n import gettext
@@ -22,6 +23,9 @@ from .langs import launch as _launch
 from .langs.base import LaunchPayload, ShellLaunch
 from .langs.registry import spec_for
 from .models import Entry
+
+if TYPE_CHECKING:
+    from .config import PromptRunner
 
 # Public re-exports: the exception family is part of launcher's stable surface
 # (flows/cli/tui catch launcher.LaunchError) even though it now lives in langs/base.
@@ -68,11 +72,12 @@ def _payload(
     extra_args: list[str] | None,
     values: dict[str, str] | None,
     script_override: Path | None,
+    runner: PromptRunner | None = None,
 ) -> LaunchPayload:
     spec = spec_for(entry.meta.kind)
     if spec is None:
         raise LaunchError(gettext("Unknown entry kind: %(kind)s") % {"kind": entry.meta.kind})
-    return spec.launch.build(entry, extra_args or [], values, script_override)
+    return spec.launch.build(entry, extra_args or [], values, script_override, runner=runner)
 
 
 def build_command(
@@ -81,6 +86,7 @@ def build_command(
     values: dict[str, str] | None = None,
     *,
     script_override: Path | None = None,
+    runner: PromptRunner | None = None,
 ) -> list[str] | str:
     """Return an argv list (python/exe) or a shell string (command).
 
@@ -89,7 +95,7 @@ def build_command(
     script_override: the temporary script path after shim injection (python entries only; A5 leaves
     the original copy untouched).
     """
-    payload = _payload(entry, extra_args, values, script_override)
+    payload = _payload(entry, extra_args, values, script_override, runner)
     if isinstance(payload, ShellLaunch):
         return payload.command
     return payload.argv
@@ -101,6 +107,7 @@ def describe_command(
     values: dict[str, str] | None = None,
     *,
     script_override: Path | None = None,
+    runner: PromptRunner | None = None,
 ) -> str:
     """A purely descriptive command line for transparency output and --dry-run: no uv
     lookup or download, no existence checks, no side effects. Mirrors build_command's
@@ -110,7 +117,7 @@ def describe_command(
         # A kind written by a newer skit: nothing to assemble, but describe must not raise —
         # show the template (the only launch material meta itself carries), usually "".
         return entry.meta.template
-    return spec.launch.describe(entry, extra_args or [], values, script_override)
+    return spec.launch.describe(entry, extra_args or [], values, script_override, runner=runner)
 
 
 def target_missing(entry: Entry) -> bool:
@@ -178,6 +185,7 @@ def run_entry(
     invoke_cwd: Path | None = None,
     script_override: Path | None = None,
     env_overlay: Mapping[str, str] | None = None,
+    runner: PromptRunner | None = None,
 ) -> int:
     """Run straight through the terminal and return the exit code.
 
@@ -188,7 +196,7 @@ def run_entry(
     The TUI must be suspended before calling this.
     """
     _check_needs(entry)  # run and preflight agree: a missing tool never reaches spawn
-    payload = _payload(entry, extra_args, values, script_override)
+    payload = _payload(entry, extra_args, values, script_override, runner)
     cwd = _resolve_workdir(entry, invoke_cwd or Path.cwd())
     _check_workdir(cwd)
     # Overlay skit's mirror settings onto uv's environment — a no-op unless the user enabled them,

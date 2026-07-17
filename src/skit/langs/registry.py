@@ -256,6 +256,28 @@ def _command_spec() -> LangSpec:
         glyph="$",
         launch=launch.TemplateLaunch(),
         takes_argv=False,
+        placeholder_params=True,
+    )
+
+
+def _prompt_spec() -> LangSpec:
+    # family "interpreted", NOT "template": a prompt has an original file, copy/reference
+    # modes, and an editable stored body — has_original_file (family != "template") must
+    # stay True or reference-mode removal/drift messaging lies. The placeholder form
+    # surface comes from the placeholder_params trait instead. No analyzer capability, on
+    # purpose (command-kind parity): detection is langs/prompt/analyzer.placeholder_names,
+    # consumed directly by the add/params/plan surfaces, and `run --raw` then keeps the
+    # form exactly as it does for command templates.
+    return LangSpec(
+        kind="prompt",
+        family="interpreted",
+        glyph="✎",
+        launch=launch.PromptLaunch(),
+        extensions=(".prompt.md", ".prompt"),
+        stored_name="prompt.md",
+        supports_modes=True,
+        takes_argv=False,
+        placeholder_params=True,
     )
 
 
@@ -272,6 +294,7 @@ _BUILDERS: dict[str, Callable[[], LangSpec]] = {
     "r": _r_spec,
     "exe": _exe_spec,
     "command": _command_spec,
+    "prompt": _prompt_spec,
 }
 
 KNOWN_KINDS = frozenset(_BUILDERS)
@@ -303,6 +326,14 @@ def infer_kind(path: Path, force_exe: bool = False) -> str:
     CLI and the TUI add panel so the two paths can't drift apart."""
     if force_exe:
         return "exe"
+    # Compound registered extensions first (".prompt.md"): Path.suffix sees only the last
+    # dot component, so `review.prompt.md` reads as ".md" — unreachable through the plain
+    # suffix map. Longest-first endswith on the whole filename keeps a future ".d.ts"-style
+    # registration unambiguous, and single-suffix behavior below is untouched.
+    lowered = path.name.lower()
+    for ext, kind in _compound_extensions():
+        if lowered.endswith(ext):
+            return kind
     by_ext = _extension_map().get(path.suffix.lower())
     if by_ext is not None:
         return by_ext
@@ -356,6 +387,18 @@ def _shebang_map() -> dict[str, str]:
         for program in spec.shebangs:
             out[program] = kind
     return out
+
+
+@cache
+def _compound_extensions() -> tuple[tuple[str, str], ...]:
+    """Registered extensions with more than one dot component, longest first — the ones
+    Path.suffix can't see (matched by filename endswith in infer_kind)."""
+    out = [
+        (ext, kind)
+        for ext, kind in _extension_map().items()
+        if ext.count(".") > 1  # pragma: no mutate — ">= 2" is the same predicate
+    ]
+    return tuple(sorted(out, key=lambda pair: len(pair[0]), reverse=True))
 
 
 @cache

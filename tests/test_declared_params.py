@@ -40,6 +40,7 @@ def run_entry_spy(monkeypatch):
         invoke_cwd=None,
         script_override=None,
         env_overlay=None,
+        runner=None,
     ):
         calls["extra"] = list(extra_args or [])
         calls["values"] = dict(values or {})
@@ -291,7 +292,14 @@ def test_execute_passes_env_values_to_run_entry(tmp_path: Path, monkeypatch):
     seen: dict[str, object] = {}
 
     def fake_run_entry(
-        entry, extra, *, values=None, invoke_cwd=None, script_override=None, env_overlay=None
+        entry,
+        extra,
+        *,
+        values=None,
+        invoke_cwd=None,
+        script_override=None,
+        env_overlay=None,
+        runner=None,
     ):
         seen["env_overlay"] = env_overlay
         return 0

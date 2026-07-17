@@ -60,6 +60,7 @@ def run_entry_spy(monkeypatch: pytest.MonkeyPatch):
         invoke_cwd=None,
         script_override=None,
         env_overlay=None,
+        runner=None,
     ):
         calls["entry"] = entry
         calls["extra"] = list(extra_args or [])

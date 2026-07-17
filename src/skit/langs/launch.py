@@ -28,6 +28,7 @@ from .base import (
 )
 
 if TYPE_CHECKING:
+    from ..config import PromptRunner
     from ..models import Entry
 
 
@@ -113,6 +114,8 @@ class UvLaunch:
         extra: list[str],
         values: dict[str, str] | None,
         script_override: Path | None,
+        *,
+        runner: PromptRunner | None = None,
     ) -> LaunchPayload:
         # Check the cheap, local condition (does the script exist?) before the potentially-
         # network-bound one (is uv installed, or does it need downloading?) — mirrors
@@ -130,6 +133,8 @@ class UvLaunch:
         extra: list[str],
         values: dict[str, str] | None,
         script_override: Path | None,
+        *,
+        runner: PromptRunner | None = None,
     ) -> str:
         uv = find_uv() or "uv"  # when uv isn't installed yet the literal "uv" stands in
         cmd = [uv, "run", "--no-project", *self._argv_tail(entry)]
@@ -152,6 +157,8 @@ class DirectLaunch:
         extra: list[str],
         values: dict[str, str] | None,
         script_override: Path | None,
+        *,
+        runner: PromptRunner | None = None,
     ) -> LaunchPayload:
         exe = entry.meta.source
         _check_exe_exists(exe)
@@ -163,6 +170,8 @@ class DirectLaunch:
         extra: list[str],
         values: dict[str, str] | None,
         script_override: Path | None,
+        *,
+        runner: PromptRunner | None = None,
     ) -> str:
         return join_for_display([entry.meta.source, *extra])
 
@@ -232,6 +241,8 @@ class TemplateLaunch:
         extra: list[str],
         values: dict[str, str] | None,
         script_override: Path | None,
+        *,
+        runner: PromptRunner | None = None,
     ) -> LaunchPayload:
         return ShellLaunch(self._render(entry, extra, values))
 
@@ -241,6 +252,8 @@ class TemplateLaunch:
         extra: list[str],
         values: dict[str, str] | None,
         script_override: Path | None,
+        *,
+        runner: PromptRunner | None = None,
     ) -> str:
         try:
             return self._render(entry, extra, values)
@@ -309,6 +322,8 @@ class InterpreterLaunch:
         extra: list[str],
         values: dict[str, str] | None,
         script_override: Path | None,
+        *,
+        runner: PromptRunner | None = None,
     ) -> LaunchPayload:
         script = script_override or entry.script_path
         _check_script_exists(script)
@@ -321,6 +336,8 @@ class InterpreterLaunch:
         extra: list[str],
         values: dict[str, str] | None,
         script_override: Path | None,
+        *,
+        runner: PromptRunner | None = None,
     ) -> str:
         # Side-effect-free: the bare interpreter name stands in (no PATH lookup) — the
         # same stance describe takes on uv.
@@ -386,6 +403,8 @@ class RunnerLaunch:
         extra: list[str],
         values: dict[str, str] | None,
         script_override: Path | None,
+        *,
+        runner: PromptRunner | None = None,
     ) -> LaunchPayload:
         script = script_override or entry.script_path
         _check_script_exists(script)
@@ -432,6 +451,8 @@ class RunnerLaunch:
         extra: list[str],
         values: dict[str, str] | None,
         script_override: Path | None,
+        *,
+        runner: PromptRunner | None = None,
     ) -> str:
         name = self._preferred_name(entry)
         script = script_override or entry.script_path
@@ -457,3 +478,126 @@ class RunnerLaunch:
                 module_type=js_deps.module_type_for(entry.meta.source),
             ):
                 js_deps.require_installer(name)
+
+
+class PromptLaunch:
+    """prompt entries: two-stage render → the chosen runner's argv, no shell.
+
+    Stage 1 fills the body's managed `{placeholder}` holes with this run's values, raw;
+    stage 2 substitutes the rendered text into the runner argv's one `{prompt}` token —
+    a single execve argument, so there is no quoting and no injection surface (see
+    langs/prompt/render.py). The runner arrives from the CLI/TUI layer via the
+    `runner=` keyword (an explicit per-run pick); with none given, the entry's pinned
+    `meta.runner` resolves here — so a pinned prompt runs through every existing call
+    path with zero extra threading. No pin and no pick is an honest 126, never a guess.
+    """
+
+    def _resolve_runner(self, entry: Entry, runner: PromptRunner | None) -> PromptRunner:
+        if runner is not None:
+            return runner
+        from .. import config
+
+        pin = entry.meta.runner
+        if not pin:
+            raise NotExecutableError(
+                gettext(
+                    "No runner selected for %(name)s. Pass --runner NAME, or pin one with: "
+                    "skit params %(name)s --runner NAME"
+                )
+                % {"name": entry.meta.name}
+            )
+        found = config.find_prompt_runner(pin)
+        if found is None:
+            raise NotExecutableError(
+                gettext(
+                    "The runner %(runner)s isn't configured (known: %(names)s). Manage "
+                    "runners with: skit runner list"
+                )
+                % {
+                    "runner": pin,
+                    "names": ", ".join(r.name for r in config.load_prompt_runners()) or "—",
+                }
+            )
+        return found
+
+    def _require_binary(self, runner: PromptRunner) -> str:
+        """The runner binary's absolute path, or the usual exit-126 refusal."""
+        found = _which(runner.argv[0])
+        if found is None:
+            raise NotExecutableError(
+                gettext(
+                    "The runner %(runner)s needs %(binary)s, which isn't installed (or isn't "
+                    "on PATH)."
+                )
+                % {"runner": runner.name, "binary": runner.argv[0]}
+            )
+        return found
+
+    def build(
+        self,
+        entry: Entry,
+        extra: list[str],
+        values: dict[str, str] | None,
+        script_override: Path | None,
+        *,
+        runner: PromptRunner | None = None,
+    ) -> LaunchPayload:
+        from .prompt import render
+
+        script = script_override or entry.script_path
+        _check_script_exists(script)
+        chosen = self._resolve_runner(entry, runner)
+        binary = self._require_binary(chosen)
+        try:
+            text = script.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            raise LaunchError(
+                gettext("Can't read %(path)s: %(error)s")
+                % {"path": str(script), "error": exc.strerror or str(exc)}
+            ) from exc
+        rendered = render.render_body(text, values or {}, list(entry.meta.params or []))
+        argv = render.fill_runner_argv([binary, *chosen.argv[1:]], rendered)
+        # Extra argv appends after the runner template (TemplateLaunch parity): per-run
+        # agent flags pass through `skit run <prompt> -- --model …`. takes_argv=False
+        # only keeps the reuse-last-args affordance off, exactly like command entries.
+        argv += extra
+        render.check_argv_length(argv)
+        return ArgvLaunch(argv)
+
+    def describe(
+        self,
+        entry: Entry,
+        extra: list[str],
+        values: dict[str, str] | None,
+        script_override: Path | None,
+        *,
+        runner: PromptRunner | None = None,
+    ) -> str:
+        # Side-effect-free: no PATH lookup, no config read (a config read could seed the
+        # runner presets — a write). Without an explicit runner, the pin's NAME stands in
+        # for its argv, the same stance describe takes on uv and bare interpreter names.
+        from .prompt import render
+
+        argv = list(runner.argv) if runner is not None else [entry.meta.runner or "?", "{prompt}"]
+        script = script_override or entry.script_path
+        try:
+            text = script.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return join_for_display([*argv, *extra])
+        try:
+            rendered = render.render_body(text, values or {}, list(entry.meta.params or []))
+        except LaunchError:
+            return join_for_display([*argv, *extra])
+        return join_for_display([*render.fill_runner_argv(argv, rendered), *extra])
+
+    def target(self, entry: Entry) -> Path | None:
+        return entry.script_path
+
+    def preflight(self, entry: Entry) -> None:
+        """The pin-only scope, deliberate: a `--runner`/picker override is resolved by
+        the CLI/TUI layer and validated at build time — preflight's signature has no
+        runner axis, so it checks what the ENTRY declares (body exists; the pinned
+        runner, if any, is configured and its binary installed)."""
+        _check_script_exists(entry.script_path)
+        if entry.meta.runner:
+            self._require_binary(self._resolve_runner(entry, None))

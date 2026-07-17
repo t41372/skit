@@ -273,7 +273,14 @@ def test_run_no_input_never_prompts_even_on_tty(tty, monkeypatch):
     captured: dict[str, object] = {}
 
     def fake_run(
-        entry, extra, *, values=None, invoke_cwd=None, script_override=None, env_overlay=None
+        entry,
+        extra,
+        *,
+        values=None,
+        invoke_cwd=None,
+        script_override=None,
+        env_overlay=None,
+        runner=None,
     ):
         captured["values"] = values
         return 0
@@ -316,7 +323,14 @@ def test_run_threads_slug_and_preset_into_prefill(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
 
     def fake_run(
-        entry, extra, *, values=None, invoke_cwd=None, script_override=None, env_overlay=None
+        entry,
+        extra,
+        *,
+        values=None,
+        invoke_cwd=None,
+        script_override=None,
+        env_overlay=None,
+        runner=None,
     ):
         captured["values"] = values
         return 0

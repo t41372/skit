@@ -316,10 +316,14 @@ def add_script(
     text = source.read_text(encoding="utf-8", errors="replace")
     prefix = spec.comment.prefix if spec.comment is not None else "#"
     desc = description if description is not None else extract_comment_description(text, prefix)
-    if mode == "reference":
-        resolved_workdir = "origin"
-    elif workdir is not None:
+    # An EXPLICIT workdir wins in both modes (the docs/design/prompt.md amendment): the
+    # prompt add path must pin "invoke" even for a reference-mode entry, or the agent
+    # would launch in the prompt file's directory. No existing caller passes workdir at
+    # all, so the reference default below is byte-for-byte preserved for them.
+    if workdir is not None:
         resolved_workdir = workdir
+    elif mode == "reference":
+        resolved_workdir = "origin"
     else:
         resolved_workdir = "invoke"  # same decoupling rationale as add_python's copy mode
     meta = ScriptMeta(
@@ -334,6 +338,89 @@ def add_script(
         interpreter=interpreter,
     )
     return _add_entry(meta, payload=source if mode == "copy" else None)
+
+
+def prompt_description(text: str) -> str:
+    """A prompt body's suggested description: its first non-empty line, minus markdown
+    heading markers — the docstring analogue for markdown."""
+    for line in text.splitlines():
+        stripped = line.strip().lstrip("#").strip()
+        if stripped:
+            return stripped
+    return ""
+
+
+def add_prompt(
+    source: Path,
+    *,
+    name: str | None = None,
+    mode: Mode = "copy",
+    description: str | None = None,
+    managed: list[str] | None = None,
+    runner: str = "",
+) -> Entry:
+    """Add a prompt entry (docs/design/prompt.md). Mirrors add_script's copy/reference
+    semantics with the prompt kind's own defaults: workdir is PINNED to "invoke" in both
+    modes (agents work on the repo the user is standing in, never the prompt file's
+    directory), `managed` is the placeholder names the form asks for (None = every
+    detected candidate — the CLI's tick step passes the kept subset), and `runner` is
+    the optional pinned PromptRunner name."""
+    source = source.expanduser().resolve()
+    if not source.is_file():
+        raise StoreError(gettext("File not found: %(path)s") % {"path": str(source)})
+    text = source.read_text(encoding="utf-8", errors="replace")
+    from .langs.prompt import analyzer as prompt_analyzer
+
+    detected = prompt_analyzer.placeholder_names(text)
+    if managed is None:
+        resolved_managed = detected
+    else:
+        unknown = [n for n in managed if n not in detected]
+        if unknown:
+            raise StoreError(
+                gettext("Not a placeholder in this prompt: %(names)s")
+                % {"names": ", ".join(unknown)}
+            )
+        resolved_managed = [n for n in detected if n in set(managed)]  # body order, always
+    desc = description if description is not None else prompt_description(text)
+    meta = ScriptMeta(
+        name=name or source.stem.removesuffix(".prompt"),
+        kind="prompt",
+        mode=mode,
+        source=str(source),
+        source_hash=_hash_file(source),
+        added_at=now_iso(),
+        workdir="invoke",
+        description=desc,
+        params=resolved_managed or None,
+        runner=runner,
+    )
+    return _add_entry(meta, payload=source if mode == "copy" else None)
+
+
+def write_prompt_managed(name_or_slug: str, managed: list[str]) -> Entry:
+    """Persist a prompt entry's MANAGED placeholder list (meta `params`) — the names the
+    run form asks for and the renderer fills; everything else in the body stays verbatim.
+    Prompt-only: a command template's placeholder list comes from the template itself and
+    is never written through here."""
+    entry = resolve(name_or_slug)
+    if entry.meta.kind != "prompt":
+        raise StoreUsageError(gettext("%(name)s isn't a prompt entry.") % {"name": entry.meta.name})
+    meta = entry.meta
+    meta.params = managed or None
+    _write_meta(entry.dir, meta)
+    return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
+
+
+def write_prompt_runner(name_or_slug: str, runner: str) -> Entry:
+    """Persist (or clear, when empty) a prompt entry's pinned runner name."""
+    entry = resolve(name_or_slug)
+    if entry.meta.kind != "prompt":
+        raise StoreUsageError(gettext("%(name)s isn't a prompt entry.") % {"name": entry.meta.name})
+    meta = entry.meta
+    meta.runner = runner
+    _write_meta(entry.dir, meta)
+    return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
 def add_exe(source: Path, *, name: str | None = None, description: str = "") -> Entry:

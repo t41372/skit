@@ -314,6 +314,148 @@ def save_bash_path(path: str) -> None:
     save_config(doc)
 
 
+# --------------------------------------------------------------------------
+# prompt runners ([[prompt.runners]] — the agent CLIs `skit run <prompt>` fires)
+#
+# Deliberately scoped under `prompt.` and named PromptRunner in code: "runner" already
+# means a JS runtime elsewhere (RunnerLaunch, `js.runner`), and the two vocabularies
+# must never blur. A runner is a NAME plus an ARGV TOKEN LIST — one token list element
+# per execve argument, `{prompt}` marking where the rendered prompt lands. No shell is
+# ever involved (see langs/prompt/render.py), which is what makes multi-line prompts
+# safe on every platform.
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PromptRunner:
+    """One configured agent CLI a prompt entry can be fired at."""
+
+    name: str
+    argv: tuple[str, ...]
+
+
+# The five seeds (docs/design/prompt.md; gemini-cli deliberately excluded). Interactive
+# invocations — each opens the agent's own session with the prompt as opening message.
+# amp has no interactive-with-initial-prompt form, so its seed is the closest equivalent
+# (`amp -x` executes the prompt). All of it is user-editable data, not code.
+PROMPT_RUNNER_SEEDS: tuple[PromptRunner, ...] = (
+    PromptRunner("claude", ("claude", "{prompt}")),
+    PromptRunner("codex", ("codex", "{prompt}")),
+    PromptRunner("opencode", ("opencode", "--prompt", "{prompt}")),
+    PromptRunner("amp", ("amp", "-x", "{prompt}")),
+    PromptRunner("antigravity", ("antigravity", "{prompt}")),
+)
+
+
+def validate_prompt_runner_argv(argv: list[str]) -> str | None:
+    """Whether an argv token list is a well-formed runner template, as a symbolic reason
+    id (None = valid; the CLI owns the human wording). Rules: non-empty, all strings,
+    exactly one `{prompt}` token across all tokens, never in argv[0] (the binary), and
+    no other `{holes}` (per-runner parameters are explicitly out of v1)."""
+    if not argv or not all(isinstance(t, str) and t for t in argv):
+        return "empty"
+    from .langs.prompt.analyzer import RESERVED_NAME, TOKEN_RE
+
+    prompt_slots = 0
+    for i, token in enumerate(argv):
+        for m in TOKEN_RE.finditer(token):
+            name = m.group(1)
+            if name is None:
+                continue  # {{ / }} escapes are literal braces, always fine
+            if name != RESERVED_NAME:
+                return "stray-hole"
+            if i == 0:
+                return "prompt-in-binary"
+            prompt_slots += 1
+    if prompt_slots != 1:
+        return "prompt-slot-count"
+    return None
+
+
+def _parse_prompt_runners(rows: Any) -> tuple[list[PromptRunner], list[str]]:
+    """(valid runners, descriptors of skipped rows) — corruption-tolerant like every
+    other loader: a malformed row is skipped and reported by doctor, never a crash."""
+    valid: list[PromptRunner] = []
+    invalid: list[str] = []
+    if not isinstance(rows, list):
+        return [], ["prompt.runners"]
+    for row in rows:
+        if not isinstance(row, dict):
+            invalid.append(str(row))
+            continue
+        name = row.get("name")
+        argv = row.get("argv")
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or not isinstance(argv, list)
+            or not all(isinstance(t, str) for t in argv)
+            or validate_prompt_runner_argv([t for t in argv if isinstance(t, str)]) is not None
+        ):
+            invalid.append(str(name) if isinstance(name, str) and name else str(row))
+            continue
+        valid.append(PromptRunner(name.strip(), tuple(argv)))
+    return valid, invalid
+
+
+def _prompt_section() -> dict[str, Any]:
+    section = load_config().get("prompt", {})  # pragma: no mutate — isinstance normalizes
+    return section if isinstance(section, dict) else {}
+
+
+def prompt_runners_seeded() -> bool:
+    """True once the seed presets have been materialized (or the user authored their own
+    rows). The marker is what lets a deliberately EMPTIED runner list stay empty instead
+    of resurrecting the seeds on the next read."""
+    section = _prompt_section()
+    return section.get("runners_seeded") is True or "runners" in section
+
+
+def load_prompt_runners() -> list[PromptRunner]:
+    """The effective runner list, read-only: the configured rows once seeded (malformed
+    rows skipped), the built-in seeds before then. Reading never writes — materializing
+    the seeds into the user's config is ensure_prompt_runners_seeded(), called by the
+    `skit runner` management surface (the moment the user goes looking for the data)."""
+    if not prompt_runners_seeded():
+        return list(PROMPT_RUNNER_SEEDS)
+    valid, _invalid = _parse_prompt_runners(_prompt_section().get("runners", []))
+    return valid
+
+
+def invalid_prompt_runners() -> list[str]:
+    """Descriptors of configured runner rows the loader skips (doctor's report)."""
+    if not prompt_runners_seeded():
+        return []
+    _valid, invalid = _parse_prompt_runners(_prompt_section().get("runners", []))
+    return invalid
+
+
+def find_prompt_runner(name: str) -> PromptRunner | None:
+    for runner in load_prompt_runners():
+        if runner.name == name:
+            return runner
+    return None
+
+
+def save_prompt_runners(runners: list[PromptRunner]) -> None:
+    """Persist the whole runner list (and the seeded marker), preserving every other key."""
+    doc = _load_config_for_save()
+    section = doc.get("prompt")
+    if not isinstance(section, dict):
+        section = {}
+    section["runners_seeded"] = True
+    section["runners"] = [{"name": r.name, "argv": list(r.argv)} for r in runners]
+    doc["prompt"] = section
+    save_config(doc)
+
+
+def ensure_prompt_runners_seeded() -> None:
+    """Materialize the seed presets into the user's config on first management need, so
+    they are visible and editable — never a hidden built-in list. A no-op once seeded."""
+    if not prompt_runners_seeded():
+        save_prompt_runners(list(PROMPT_RUNNER_SEEDS))
+
+
 JS_RUNNERS = ("deno", "bun", "node")
 
 
