@@ -794,7 +794,9 @@ def test_add_python_strict_decode_requests_utf8(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "read_bytes", lambda self: _RecBytes(real_read_bytes(self)))
     store.add_python(src, dependencies=["httpx"])
 
-    assert any(a == ("utf-8",) for a, _kw in seen), seen
+    # Exactly one decode, positional "utf-8", NO errors= handler: a lossy errors="replace"
+    # (or any other handler) must fail this test, since that is the corruption the gate prevents.
+    assert seen == [(("utf-8",), {})]
 
 
 def test_add_script_unknown_kind_exact_message(tmp_path):

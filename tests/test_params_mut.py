@@ -75,6 +75,14 @@ def test_add_non_placeholder_row_delivery_falls_back_to_flag() -> None:
     assert res.decls[0].delivery == "flag"
 
 
+def test_add_non_placeholder_row_delivery_passes_valid_literal_through() -> None:
+    # The mirror case: a VALID caller-allowed delivery passes through as-is (the fallback test
+    # above can't see the first _coerce_literal argument, because an invalid value and a nulled
+    # value both collapse to "flag"). A real delivery must survive the coercion unchanged.
+    res = edit_declared([], add=["x"], allowed_deliveries=("env",))
+    assert res.decls[0].delivery == "env"
+
+
 # --------------------------------------------------------------- _apply_declared_tweaks fallback
 # The delivery tweak coerces the caller-allowed value through _DELIVERIES with the decl's
 # CURRENT delivery as the fallback: an allowed-but-unknown literal keeps the existing delivery

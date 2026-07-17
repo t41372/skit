@@ -214,7 +214,8 @@ def _structural_bracket_delta(s: str) -> int:
     them structural TOML array syntax.
     """
     delta = 0
-    quote: str | None = None  # pragma: no mutate — falsy sentinel, read only via `if quote`
+    quote = ""  # the active quote char, or "" when outside a string (a real quote is non-empty,
+    # so `if quote` distinguishes the two and a "" -> non-empty mutant misreads structural brackets)
     i = 0
     n = len(s)
     while i < n:
@@ -224,7 +225,7 @@ def _structural_bracket_delta(s: str) -> int:
                 i += 2  # pragma: no mutate — skip the escaped char; only reachable via `"` strings
                 continue
             if ch == quote:
-                quote = None  # pragma: no mutate — falsy sentinel, read only via `if quote`
+                quote = ""  # closing quote — back outside a string
             i += 1
             continue
         if ch in ("'", '"'):

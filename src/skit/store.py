@@ -227,7 +227,6 @@ def add_python(
     # reference mode: never touch the original; record in meta, and launcher passes it via
     # --with/--python.
     after_copy: Callable[[Path], None] | None = None
-    deps_injected = False  # pragma: no mutate — falsy-equivalent init (only read via truthiness)
     if (
         mode == "copy"
         and (dependencies or requires_python)
@@ -240,7 +239,6 @@ def add_python(
             (entry_dir / stored_name("python")).write_text(injected_text, encoding="utf-8")
 
         after_copy = _write_injected
-        deps_injected = True
     if mode == "reference":
         resolved_workdir = "origin"
     elif workdir is not None:
@@ -254,6 +252,9 @@ def add_python(
         # only script.py + meta.toml, with no reason to assume a script's relative file operations
         # target it.
         resolved_workdir = "invoke"
+    # deps were injected into the stored copy exactly when after_copy was set to write them;
+    # derive the flag from that instead of tracking a redundant parallel boolean.
+    deps_injected = after_copy is not None
     meta = ScriptMeta(
         name=final_name,
         kind="python",
