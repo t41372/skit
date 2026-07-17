@@ -1061,7 +1061,12 @@ def test_execute_without_an_injector_does_not_crash(tmp_path):
 
 
 @posix_only
-def test_cli_dry_run_shows_the_command(tmp_path):
+def test_cli_dry_run_shows_the_command(tmp_path, monkeypatch):
+    # Pin a wide console: the transparency line prints the script's absolute path, and under a
+    # long tmp_path Rich would otherwise soft-wrap it at the default 80 cols, splitting the
+    # "script.sh" token across a newline and breaking the substring check. Width is an
+    # environment detail, not what this test is about.
+    monkeypatch.setenv("COLUMNS", "200")
     _shell_entry(tmp_path, '#!/usr/bin/env bash\nWIDTH=800\necho "$WIDTH"\n', name="cln1")
     assert runner.invoke(cli.app, ["params", "cln1", "--manage", "WIDTH"]).exit_code == 0
     result = runner.invoke(
@@ -1070,6 +1075,7 @@ def test_cli_dry_run_shows_the_command(tmp_path):
     assert result.exit_code == 0, result.output
     assert "WIDTH = 1200" in result.output
     assert "script.sh" in result.output  # the ORIGINAL path: a dry run writes no temp copy
+    assert ".injected-" not in result.output  # …and not an injected temp copy
 
 
 def test_cli_normalize_turns_a_const_into_an_env_param(tmp_path):
