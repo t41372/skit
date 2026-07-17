@@ -33,7 +33,8 @@ if TYPE_CHECKING:
 def read_cli(text: str) -> ArgSpec | None:
     """Read the script's `getopts` surface. None when the script doesn't parse, has no getopts
     call, or builds its optstring dynamically — every one a "no readable surface" case."""
-    root = Parser(_LANGUAGE).parse(text.encode("utf-8")).root_node
+    data = text.encode("utf-8")  # pragma: no mutate — utf-8 equivalence
+    root = Parser(_LANGUAGE).parse(data).root_node
     if root.has_error:
         return None
     optstring = _find_getopts_optstring(root)
@@ -62,7 +63,11 @@ def _parse_optstring(optstring: str) -> list[ParamDecl]:
     """One field per option letter: `letter:` ⇒ a str value flag, a bare letter ⇒ a store_true
     boolean. A leading `:` (silent mode) and any non-alphanumeric character are skipped; repeated
     letters keep the first."""
-    body = optstring[1:] if optstring.startswith(":") else optstring
+    # No-op strip, kept for intent: a leading ':' is skipped by the non-alnum branch below anyway,
+    # so this can never change the emitted fields. Isolated onto its own line so the (equivalent)
+    # ':' comparison can be pragma'd without hiding the killable `[1:]` slice on the next line.
+    silent = optstring.startswith(":")  # pragma: no mutate — leading-':' strip is a semantic no-op
+    body = optstring[1:] if silent else optstring
     fields: list[ParamDecl] = []
     seen: set[str] = set()
     i = 0
@@ -81,10 +86,10 @@ def _parse_optstring(optstring: str) -> list[ParamDecl]:
 
 
 def _option(letter: str, takes_value: bool) -> ParamDecl:
+    # binding "none" / delivery "flag" are the ParamDecl defaults; passing them explicitly would
+    # only add equivalent drop-kwarg mutants. The behaviour-bearing fields stay explicit.
     decl = ParamDecl(
         name=letter,
-        binding="none",
-        delivery="flag",
         flag=f"-{letter}",
         secret=is_secret_name(letter),
     )
