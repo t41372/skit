@@ -49,7 +49,8 @@ jobs:
           import json
           import sys
 
-          stats = json.load(open("mutants/mutmut-cicd-stats.json"))
+          with open("mutants/mutmut-cicd-stats.json") as f:
+              stats = json.load(f)
           print("mutation summary:", json.dumps(stats, sort_keys=True))
           if stats.get("survived", 0):
               print(f"::error::{stats['survived']} mutant(s) survived the test suite (see 'mutmut results' above)")
