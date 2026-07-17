@@ -172,7 +172,7 @@ class FieldRow(Vertical):
             self.query_one(Input).value = value
 
     def show_error(self, message: str | None) -> None:
-        error = self.query_one(".field-error", Static)
+        error = self.query_one(".field-error", Static)  # pragma: no mutate — expect_type is a pure runtime assertion; None/omitted return the same unique .field-error match (equivalents); the selector/assignment variants stay pinned by test_show_error_reveals_message_then_clears  # fmt: skip
         error.update(escape(message) if message else "")
         error.display = bool(message)
 
@@ -583,7 +583,7 @@ class RunFormScreen(Screen[FormResult]):
         cursor of the focused text field. Secrets are excluded — their values skip
         token expansion by design."""
         if key:
-            row = self.query_one(f"#fr-{key}", FieldRow)
+            row = self.query_one(f"#fr-{key}", FieldRow)  # pragma: no mutate — expect_type is a pure runtime assertion; None/omitted return the same unique #fr-<key> match (equivalents); the selector-drop variant stays pinned by test_insert_token_opens_menu_for_the_named_field  # fmt: skip
         else:
             focused = self.focused
             if not isinstance(focused, Input):
@@ -616,8 +616,6 @@ class RunFormScreen(Screen[FormResult]):
                 secret_names=self._plan.secret_names,
             )
             self._presets = argstate.load_state(self._entry.slug)["presets"]
-            self.notify(
-                gettext('Preset "%(preset)s" saved.') % {"preset": name}, severity="information"
-            )
+            self.notify(gettext('Preset "%(preset)s" saved.') % {"preset": name})
 
         self.app.push_screen(PresetNameModal(set(self._presets)), _named)
