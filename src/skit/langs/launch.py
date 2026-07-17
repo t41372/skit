@@ -483,8 +483,8 @@ class RunnerLaunch:
 class PromptLaunch:
     """prompt entries: two-stage render → the chosen runner's argv, no shell.
 
-    Stage 1 fills the body's managed `{placeholder}` holes with this run's values, raw;
-    stage 2 substitutes the rendered text into the runner argv's one `{prompt}` token —
+    Stage 1 fills the body's managed `{{placeholder}}` holes with this run's values, raw;
+    stage 2 substitutes the rendered text into the runner argv's one `{{prompt}}` token —
     a single execve argument, so there is no quoting and no injection surface (see
     langs/prompt/render.py). The runner arrives from the CLI/TUI layer via the
     `runner=` keyword (an explicit per-run pick); with none given, the entry's pinned
@@ -582,7 +582,7 @@ class PromptLaunch:
         # a management-surface act) — and it's what keeps the transparency line honest
         # for a PINNED run that arrives without an explicit runner (the TUI rerun path):
         # a multi-token runner like the opencode seed must show its real flags, not a
-        # two-token stub. Only an unresolvable pin degrades to the name + "{prompt}".
+        # two-token stub. Only an unresolvable pin degrades to the name + "{{prompt}}".
         from .prompt import render
 
         if runner is None and entry.meta.runner:

@@ -320,7 +320,7 @@ def save_bash_path(path: str) -> None:
 # Deliberately scoped under `prompt.` and named PromptRunner in code: "runner" already
 # means a JS runtime elsewhere (RunnerLaunch, `js.runner`), and the two vocabularies
 # must never blur. A runner is a NAME plus an ARGV TOKEN LIST — one token list element
-# per execve argument, `{prompt}` marking where the rendered prompt lands. No shell is
+# per execve argument, `{{prompt}}` marking where the rendered prompt lands. No shell is
 # ever involved (see langs/prompt/render.py), which is what makes multi-line prompts
 # safe on every platform.
 # --------------------------------------------------------------------------

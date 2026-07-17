@@ -629,11 +629,18 @@ def _onboard_prompt(
             default="none" if flooded else "all",
             console=console,
         )
-        if answer.strip().lower() == "off":
+        normalized = answer.strip().lower()
+        if normalized == "off":
             interpolate = False
             managed = None
+        elif normalized == "all":
+            managed = detected  # an explicit "all" takes everything, preview or not
+            flooded = False
         else:
-            managed = [detected[i] for i in _parse_selection(answer, len(detected))]
+            # Numbers address only the PREVIEWED names — picking an index whose name
+            # was never shown would be a blind selection.
+            selectable = detected[: prompt_analyzer.LIST_PREVIEW_LIMIT]
+            managed = [selectable[i] for i in _parse_selection(answer, len(selectable))]
             flooded = False  # an explicit interactive answer is always honored
     runner = _ask_prompt_runner(interactive, runner_opt)
     entry = store.add_prompt(
@@ -2756,6 +2763,18 @@ def _edit_declared_params(
     is exactly the add/remove of its row. An --rm of a managed-but-undeclared name (the common
     synthesized case) is therefore real work for a prompt, not a `not-declared` warning."""
     is_prompt = entry.meta.kind == "prompt"
+    if is_prompt and not entry.meta.interpolate:
+        # The read view says insertion is off; the edit surface must not silently scan
+        # the body and write rows that are inert until the switch flips (coherence with
+        # the "off = no scanning" gate).
+        raise _fail(
+            gettext(
+                "Variable insertion is off for %(name)s — turn it on first with: "
+                "skit params %(name)s --interpolate"
+            )
+            % {"name": entry.meta.name},
+            1,
+        )
     allowed = ("env", "placeholder") if entry_spec.placeholder_params else ("flag", "env")
     managed = list(entry.meta.params or [])
     body_placeholders = _prompt_body_placeholders(entry) if is_prompt else []

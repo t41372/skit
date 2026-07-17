@@ -528,3 +528,44 @@ async def test_settings_candidate_checkboxes_are_flood_capped(tmp_path):
         screen = await _open_settings(app, pilot)
         boxes = [c for c in screen.query(Checkbox) if (c.id or "").startswith("st-prompt-new-")]
         assert len(boxes) == LIST_PREVIEW_LIMIT
+
+
+async def test_tui_add_flooded_prompt_says_so(tmp_path, monkeypatch):
+    from skit.langs.prompt.analyzer import AUTO_MANAGE_LIMIT
+    from skit.tui_add import AddSourceScreen
+
+    toasts: list[str] = []
+    monkeypatch.setattr(
+        AddSourceScreen, "notify", lambda self, message, **kwargs: toasts.append(str(message))
+    )
+    many = " ".join("{{h" + str(i) + "}}" for i in range(AUTO_MANAGE_LIMIT + 4))
+    src = tmp_path / "big.prompt.md"
+    src.write_text(many + "\n", encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.action_add()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, AddSourceScreen)
+        screen.query_one("#add-path", Input).value = str(src)
+        screen._submit_path()
+        await pilot.pause()
+    assert store.resolve("big").meta.params is None  # flood-capped
+    assert any("too many to manage automatically" in t for t in toasts)
+
+
+def test_prompt_flood_count_edges(tmp_path):
+    from skit.langs.prompt.analyzer import AUTO_MANAGE_LIMIT
+    from skit.tui_add import _prompt_flood_count
+
+    small = tmp_path / "s.prompt.md"
+    small.write_text("{{a}}\n", encoding="utf-8")
+    assert _prompt_flood_count(store.add_prompt(small)) is None  # under the cap
+    many = " ".join("{{h" + str(i) + "}}" for i in range(AUTO_MANAGE_LIMIT + 2))
+    big = tmp_path / "b.prompt.md"
+    big.write_text(many + "\n", encoding="utf-8")
+    entry = store.add_prompt(big, name="b")
+    assert _prompt_flood_count(entry) == AUTO_MANAGE_LIMIT + 2
+    entry.script_path.unlink()  # unreadable body degrades, never crashes the toast
+    assert _prompt_flood_count(entry) is None

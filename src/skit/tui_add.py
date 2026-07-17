@@ -28,6 +28,20 @@ from .langs.python import analyzer, argspec, metawriter
 from .params import ParamDecl
 
 
+def _prompt_flood_count(entry: store.Entry) -> int | None:
+    """The detected-placeholder count when a fresh prompt add was flood-capped (nothing
+    managed because of VOLUME, not absence), else None. Reads the stored body — the copy
+    skit just wrote — and degrades to None if it is somehow already unreadable."""
+    from .langs.prompt import analyzer as prompt_analyzer
+
+    try:
+        body = entry.script_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    detected = prompt_analyzer.placeholder_names(body)
+    return len(detected) if len(detected) > prompt_analyzer.AUTO_MANAGE_LIMIT else None
+
+
 class AddSourceScreen(Screen[str | None]):
     """Step 1: where does the script come from? Returns the new entry's slug, or None."""
 
@@ -110,14 +124,24 @@ class AddSourceScreen(Screen[str | None]):
                 entry = store.add_exe(path)
             elif kind == "prompt":
                 # The direct-add lane manages every detected placeholder (the CLI's
-                # non-interactive default); refine in Script settings (`p`) afterwards.
-                # The runner stays unpinned — the run form's picker asks, prefilled
-                # from the last pick.
+                # non-interactive default, flood-capped like it); refine in Script
+                # settings (`p`) afterwards. The runner stays unpinned — the run form's
+                # picker asks, prefilled from the last pick.
                 entry = store.add_prompt(path)
+                flood_count = _prompt_flood_count(entry)
                 if entry.meta.params:
                     self.notify(
                         gettext("Placeholders managed: %(names)s (edit in Script settings)")
                         % {"names": ", ".join(entry.meta.params)}
+                    )
+                elif flood_count is not None:
+                    # A capped add must not complete SILENTLY (the CLI says so too).
+                    self.notify(
+                        gettext(
+                            "Detected %(count)s placeholders — too many to manage "
+                            "automatically, so none were (tick them in Script settings)"
+                        )
+                        % {"count": flood_count}
                     )
             elif kind_spec is not None and kind_spec.family == "interpreted":
                 program = shebang_program(path)

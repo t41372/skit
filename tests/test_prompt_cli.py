@@ -855,3 +855,32 @@ def test_run_insertion_off_prompt_rejects_set_and_sends_verbatim(tmp_path, spawn
     result = runner.invoke(cli.app, ["run", "p", "--no-input"])
     assert result.exit_code == 0, result.output
     assert spawn_spy["values"] == {}
+
+
+def test_params_schema_edits_refused_while_insertion_is_off(tmp_path):
+    # Coherence with the read view: an off prompt must not be silently scanned and
+    # given inert rows — the edit surface refuses and names the way back on.
+    _added(tmp_path, text="{{a}} {{b}}\n")
+    runner.invoke(cli.app, ["params", "p", "--no-interpolate"])
+    for flags in (["--add", "b"], ["--rm", "a"], ["--deliver", "a=placeholder"]):
+        result = runner.invoke(cli.app, ["params", "p", *flags])
+        assert result.exit_code == 1, flags
+        assert "Variable insertion is off" in result.output
+    assert store.resolve("p").meta.params == ["a", "b"]  # nothing was mutated
+    runner.invoke(cli.app, ["params", "p", "--interpolate"])
+    assert runner.invoke(cli.app, ["params", "p", "--rm", "b"]).exit_code == 0
+
+
+def test_add_interactive_flooded_numbers_address_the_previewed_names_only(tmp_path, monkeypatch):
+    from skit.langs.prompt.analyzer import AUTO_MANAGE_LIMIT, LIST_PREVIEW_LIMIT
+
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    beyond = str(LIST_PREVIEW_LIMIT + 3)  # an index whose name was never shown
+    answers = iter([f"3,{beyond}", "-"])
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: next(answers)))
+    many = " ".join("{{h" + str(i) + "}}" for i in range(AUTO_MANAGE_LIMIT + 5))
+    src = _write(tmp_path, many + "\n")
+    result = runner.invoke(cli.app, ["add", str(src), "-n", "blind"])
+    assert result.exit_code == 0, result.output
+    # Only the previewed index landed; the blind one was ignored, not guessed.
+    assert store.resolve("blind").meta.params == ["h2"]

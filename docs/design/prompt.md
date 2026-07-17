@@ -113,7 +113,7 @@ The feature composes two shapes skit already has:
   document-payload machinery (stored copy, edit, peek, modes) is reused as-is; the
   parameter-form machinery is reused through **one bounded, specified change**
   (`placeholder_params`, below);
-- a **runner** is a named *argv template* with one reserved `{prompt}` slot
+- a **runner** is a named *argv template* with one reserved `{{prompt}}` slot
   (`["claude", "{{prompt}}"]`) → reuses the `TemplateLaunch` token grammar for the fill,
   and `ArgvLaunch` for the spawn.
 
@@ -261,9 +261,9 @@ scan living in `langs/prompt/`, never degrading to `None`.
 
 Reserved name: **`prompt` is never a placeholder in a prompt body.** Not a mechanical
 collision (body holes are stage 1, the runner slot is stage 2) but an ergonomic guard: a
-form field named "prompt" on a prompt entry, and a future per-runner `{prompt}` hole,
+form field named "prompt" on a prompt entry, and a future per-runner `{{prompt}}` hole,
 would be endless confusion. The analyzer excludes it from detection outright — a literal
-`{prompt}` in a body (a code sample, say) passes through to the agent verbatim rather
+`{{prompt}}` in a body (a code sample, say) passes through to the agent verbatim rather
 than erroring, which is the right call for text that quotes runner templates. It can
 therefore never be managed, offered, or --add'ed (the fresh-scan placeholder truth never
 contains it).
@@ -351,7 +351,7 @@ managed names, mirroring — not calling — the `_render` missing-check).
 2. Stage 1: substitute the body's managed `{placeholder}` holes from `values`
    (`asm.command_values`, delivered per the flows amendment above). Unmanaged braces pass
    through verbatim.
-3. Stage 2: substitute the rendered text into the runner argv's `{prompt}` token — plain
+3. Stage 2: substitute the rendered text into the runner argv's `{{prompt}}` token — plain
    string substitution inside one token, **no quoting of any kind**.
 4. Append `extra` argv (anything after `--` on `skit run`) to the rendered runner argv —
    mirroring `TemplateLaunch`'s append (`launch.py:219-226`), so per-run agent flags
@@ -440,7 +440,7 @@ skit edit review                            # edit the prompt body ($EDITOR on p
 
 `skit runner add` takes the argv **variadically** — each shell word becomes one token, so
 skit never parses a command string itself (no shlex ambiguity, no Windows-backslash
-mangling). Because real runner argv contains flags (`claude --model sonnet {prompt}`),
+mangling). Because real runner argv contains flags (`claude --model sonnet {{prompt}}`),
 the subcommand sets Click's `ignore_unknown_options` + `allow_extra_args` (the existing
 `run` passthrough precedent) so flag-looking tokens land in the argv list instead of
 erroring; `--` works as an explicit guard and is what SKILL.md teaches (the agent-skill
@@ -501,9 +501,9 @@ translated.
    the read/run surfaces agree — `skit params <prompt>` lists exactly what the run form
    asks, `--deliver x=placeholder` is accepted, the TUI editor shows no flag input on
    placeholder rows. Mutation-tested.
-3. **`{prompt}` slot validation** → a body `{prompt}` is excluded from detection and
+3. **`{{prompt}}` slot validation** → a body `{{prompt}}` is excluded from detection and
    passes through verbatim (corpus-pinned); a runner argv failing validation (zero/two
-   `{prompt}`s, `{prompt}` in argv[0], stray `{holes}`) is rejected at runner-add time.
+   `{{prompt}}`s, `{{prompt}}` in argv[0], stray `{{holes}}`) is rejected at runner-add time.
 4. **Runner unresolvable under `--no-input`** → exit 126, no guess; unknown `--runner`
    and a pinned-but-removed runner both list the known names. Pinned by a pipe/`--no-input`
    test.
@@ -567,7 +567,7 @@ main); P3 may trail.
 
 ## Deferred (explicitly out of v1)
 
-- **Print/exec (non-interactive) runners** — `claude -p {prompt}`, `codex exec {prompt}`:
+- **Print/exec (non-interactive) runners** — `claude -p {{prompt}}`, `codex exec {{prompt}}`:
   just more argv templates, plus (maybe) a per-runner interactive/print pairing so one
   `--print` flag flips a run. Design when needed.
 - **Per-runner stdin/file prompt delivery** — for CLIs that accept a prompt on stdin or
@@ -575,8 +575,8 @@ main); P3 may trail.
 - **Import existing slash commands** from `~/.claude/commands/`, Codex prompts, opencode
   configs (`skit add --import-claude` etc.). Potentially the killer `skit add` experience,
   but a separate surface with per-tool format knowledge.
-- **Per-runner parameters** (argv templates with holes beyond `{prompt}`, e.g.
-  `--model {model}`). v1 runners consume only `{prompt}`.
+- **Per-runner parameters** (argv templates with holes beyond `{{prompt}}`, e.g.
+  `--model {{model}}`). v1 runners consume only `{{prompt}}`.
 - **An in-body `[tool.skit]` block** for prompt params (v1 uses `meta.toml
   [[parameters]]`).
 - **Shell-syntax runners** (pipes/redirection in a runner definition) — wrap in a script
