@@ -69,6 +69,16 @@ installed by the resolved runner's own installer (npm/bun/deno). Two contributor
   it rewrites a bare `NAME=value` constant into the `${NAME:-value}` env-default idiom. A real
   semantic edit — but only to skit's **stored copy**, never the user's original, and only when
   asked.
+- **Prompts are entries too (docs/design/prompt.md).** The `prompt` kind stores a parameterized
+  text body fired at a configured agent CLI (a **PromptRunner** — `[[prompt.runners]]` in config;
+  never plain "runner" in code, which is the JS-runtime vocabulary). Contributor rules that
+  follow: template/non-template decisions key off `LangSpec.placeholder_params`, never
+  `family == "template"`; the render path is raw substitution with NO shell and NO quoting
+  (`langs/prompt/render.py` — `quote_for_shell` must never touch it); `LaunchStrategy.build`/
+  `describe` carry an accept-and-ignore `runner=` keyword on every strategy; runner resolution
+  is `--runner` > the entry's pin > an interactive ask > exit 126 — no ranking, no guessing, and
+  the last *pick* (never a pin use) prefills the next picker from state. Prompts are not a
+  secrets channel and no delivery mechanism pretends otherwise.
 
 Golden corpus: `tests/corpus/<lang>/` (and the Python files directly under `tests/corpus/`) are
 **byte-exact** analyzer inputs — deliberate CRLF, missing trailing newlines, odd whitespace,
