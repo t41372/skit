@@ -48,8 +48,14 @@ if TYPE_CHECKING:
     from ...params import ParamDecl
 
 # A parse-only static read; the timeout is a liveness guard (a hung subprocess must never
-# wedge an add / params call), not a policy.
-_TIMEOUT = 10.0
+# wedge an add / params call), not a policy — so it is sized to only ever fire on a genuine
+# wedge, never on a slow-but-working start. The floor here is pwsh's *cold* start: the first
+# invocation on a machine loads ~200 MB of .NET assemblies off disk and JITs the extractor,
+# which on a fresh, I/O-contended CI runner can take many seconds (a warm start is well under
+# one). 10 s was tight enough to clip that cold start under load and degrade the read to None
+# spuriously — a CI flake, and a real degrade for a first-time pwsh user on a slow disk. 30 s
+# keeps the wedge guard while giving the cold start ample headroom.
+_TIMEOUT = 30.0
 
 # PowerShell StaticType full names → the form's closed type axis. A SwitchParameter is
 # handled separately (it is a bool toggle, not a value flag); anything not in this table

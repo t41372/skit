@@ -264,7 +264,9 @@ def test_unparseable_json_returns_none(monkeypatch):
 
 
 def test_timeout_returns_none(monkeypatch):
-    _fake_subprocess(monkeypatch, raises=subprocess.TimeoutExpired(cmd="pwsh", timeout=10.0))
+    _fake_subprocess(
+        monkeypatch, raises=subprocess.TimeoutExpired(cmd="pwsh", timeout=cli_reader._TIMEOUT)
+    )
     assert cli_reader.read_cli("param()\n") is None
 
 
