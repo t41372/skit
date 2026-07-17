@@ -535,6 +535,7 @@ def test_validate_prompt_runner_argv_rules():
     assert ok(["claude", "{prompt}"]) is None
     assert ok(["a", "--m={prompt}"]) is None
     assert ok(["a", "{{lit}}", "{prompt}"]) is None  # escapes are not holes
+    assert ok(["a", "{{lit}} {prompt}"]) is None  # escape AND slot in the SAME token
     assert ok([]) == "empty"
     assert ok([""]) == "empty"
     assert ok(["claude"]) == "prompt-slot-count"
@@ -556,6 +557,14 @@ def test_ensure_seeded_materializes_once_and_empty_stays_empty():
     assert "runners" in config.load_config()["prompt"]
     config.save_prompt_runners([])
     config.ensure_prompt_runners_seeded()  # must NOT resurrect the seeds
+    assert config.load_prompt_runners() == []
+
+
+def test_marker_alone_counts_as_seeded_and_stays_empty():
+    # A hand-written marker with NO rows means "deliberately empty" — the seeds must
+    # not resurrect just because the runners key is absent.
+    config.save_config({"prompt": {"runners_seeded": True}})
+    assert config.prompt_runners_seeded()
     assert config.load_prompt_runners() == []
 
 
