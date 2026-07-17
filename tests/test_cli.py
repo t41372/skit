@@ -245,6 +245,31 @@ def test_add_unreadable_file_clean_error_not_traceback(tmp_path):
     assert "Can't read" in result.output
 
 
+def test_add_read_error_reports_clean_message(tmp_path, monkeypatch):
+    # The permission-based test above can only run as a non-root user (root reads through
+    # chmod 0o000), so under a root euid — CI-in-Docker, this container — it is skipped and
+    # cli.py's `except OSError` read guard goes uncovered, dropping the suite below the 100%
+    # floor. Inject the OSError directly so the clean-error branch is exercised regardless of
+    # euid: a mid-add read failure (a race unlinking the file, transient I/O) must still surface
+    # as a localized "Can't read" message, never a traceback.
+    p = _py(tmp_path, "print(1)\n")
+    target = p.resolve()
+    real_read_text = Path.read_text
+
+    # Signature mirrors Path.read_text (every parameter is str | None across 3.12–3.13, incl.
+    # 3.13's `newline`), so non-target reads delegate cleanly and the types check under `ty`.
+    def failing_read_text(self: Path, *args: str | None, **kwargs: str | None) -> str:
+        if self == target:
+            raise PermissionError(13, "Permission denied")
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", failing_read_text)
+    result = runner.invoke(cli.app, ["add", str(p)])
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "Can't read" in result.output
+
+
 def test_add_onboards_params_non_interactive_skips(tmp_path):
     # --no-input: even when candidates are found, don't select any and don't write [tool.skit]
     p = _py(tmp_path, 'CITY = "Taipei"\nprint(CITY)\n')
