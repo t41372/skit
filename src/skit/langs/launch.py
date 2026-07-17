@@ -102,7 +102,7 @@ class UvLaunch:
         # In reference mode, dependencies are recorded in meta (the original file can't take a
         # PEP 723 block), so pass them via --with/--python.
         if entry.meta.requires_python:
-            cmd += ["--python", entry.meta.requires_python]
+            cmd += ["--python", entry.meta.requires_python]  # pragma: no mutate — cmd is [] here
         for dep in entry.meta.dependencies or []:
             cmd += ["--with", dep]
         return cmd
