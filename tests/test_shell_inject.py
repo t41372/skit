@@ -1061,12 +1061,9 @@ def test_execute_without_an_injector_does_not_crash(tmp_path):
 
 
 @posix_only
-def test_cli_dry_run_shows_the_command(tmp_path, monkeypatch):
-    # Pin a wide console: the transparency line prints the script's absolute path, and under a
-    # long tmp_path Rich would otherwise soft-wrap it at the default 80 cols, splitting the
-    # "script.sh" token across a newline and breaking the substring check. Width is an
-    # environment detail, not what this test is about.
-    monkeypatch.setenv("COLUMNS", "200")
+def test_cli_dry_run_shows_the_command(tmp_path):
+    # The transparency line prints the script's absolute path; the shared conftest pins a wide
+    # COLUMNS so rich never soft-wraps that path token ("script.sh") on a long tmp_path.
     _shell_entry(tmp_path, '#!/usr/bin/env bash\nWIDTH=800\necho "$WIDTH"\n', name="cln1")
     assert runner.invoke(cli.app, ["params", "cln1", "--manage", "WIDTH"]).exit_code == 0
     result = runner.invoke(

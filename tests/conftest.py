@@ -94,6 +94,15 @@ def _isolate_skit_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # takes effect. This replaces the fragile per-test/per-file SKIT_LANG pinning.
     monkeypatch.setenv("SKIT_LANG", "en")
 
+    # Hermetic console width: skit's CLI output is a piped, non-tty rich.Console under CliRunner,
+    # so rich reads COLUMNS (falling back to 80). A test that asserts a substring living inside a
+    # long absolute path (a tmp_path, an entry dir) then passes or fails purely on how long the
+    # temp directory happens to be that run — rich soft-wraps or middle-truncates the path token
+    # ("script.sh" -> "s\ncript.sh", "[red]weird[bold]" -> "[red]w...py") once it overflows the
+    # width. Pin a wide width so those assertions test what they mean to, deterministically, no
+    # matter how deep the tmp path is (pytest's counter climbs across a session and under mutmut).
+    monkeypatch.setenv("COLUMNS", "200")
+
     # Hermetic color, second layer: the import-time scrub above already cleaned the
     # process env; this keeps any subprocess a test spawns clean too, even if a test
     # setenv'd something exotic in between.
