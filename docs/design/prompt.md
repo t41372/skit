@@ -109,7 +109,7 @@ gets.
 
 The feature composes two shapes skit already has:
 
-- a **prompt** is a stored text *document* with `{placeholder}` holes → the
+- a **prompt** is a stored text *document* with `{{placeholder}}` holes → the
   document-payload machinery (stored copy, edit, peek, modes) is reused as-is; the
   parameter-form machinery is reused through **one bounded, specified change**
   (`placeholder_params`, below);
@@ -348,7 +348,7 @@ managed names, mirroring — not calling — the `_render` missing-check).
 `PromptLaunch.build`:
 
 1. Read the prompt body (the stored `prompt.md`, or the referenced original).
-2. Stage 1: substitute the body's managed `{placeholder}` holes from `values`
+2. Stage 1: substitute the body's managed `{{placeholder}}` holes from `values`
    (`asm.command_values`, delivered per the flows amendment above). Unmanaged braces pass
    through verbatim.
 3. Stage 2: substitute the rendered text into the runner argv's `{{prompt}}` token — plain
