@@ -84,9 +84,12 @@ def test_check_exe_exists_skips_xbit_check_on_win32(tmp_path: Path, monkeypatch)
 
 def test_check_exe_exists_non_executable_message_is_the_english_source(tmp_path: Path, monkeypatch):
     monkeypatch.setattr("sys.platform", "linux")
+    # os.access(X_OK) is faked False so the exec-bit refusal fires deterministically on every
+    # platform (real Windows has no execute bit and returns True regardless of chmod, which would
+    # make this branch unreachable there).
+    monkeypatch.setattr(launch.os, "access", lambda _path, _mode: False)
     f = tmp_path / "tool"
     f.write_text("bytes\n", encoding="utf-8")
-    f.chmod(0o644)  # POSIX, regular, not +x -> the executable-bit refusal fires
     with pytest.raises(NotExecutableError) as exc:
         launch._check_exe_exists(str(f))
     assert str(exc.value) == f"{f} exists but isn't executable (chmod +x it?)."
