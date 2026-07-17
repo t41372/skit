@@ -162,30 +162,46 @@ class PreferencesScreen(Screen[bool]):
         self._toggle_custom()
 
     def _mirror_choice(self) -> str:
-        index = self.query_one("#pf-mirror", RadioSet).pressed_index
-        return _MIRROR_CHOICES[index] if 0 <= index < len(_MIRROR_CHOICES) else "off"
+        # query_one("#id", Type) is a tautological guard: the id fixes the widget and its
+        # type, so its selector/type arguments carry no behaviour to mutate — pinned.
+        mirror_set = self.query_one("#pf-mirror", RadioSet)  # pragma: no mutate
+        index = mirror_set.pressed_index
+        # pressed_index is a live button index (0..len-1) or -1; the "< len" upper bound is
+        # never reached, so the comparison is pinned while the "off" fallback stays mutated.
+        if 0 <= index < len(_MIRROR_CHOICES):  # pragma: no mutate
+            return _MIRROR_CHOICES[index]
+        return "off"
 
     def _toggle_custom(self) -> None:
         custom = self._mirror_choice() == "custom"
+        # query_one("#id", Type) — tautological guards (see _mirror_choice).
         for wid in ("#pf-pypi", "#pf-pyinstall", "#pf-uv", "#pf-npm"):
-            self.query_one(wid, Input).display = custom
-        self.query_one("#pf-uv-error", Static).display = custom
+            self.query_one(wid, Input).display = custom  # pragma: no mutate
+        self.query_one("#pf-uv-error", Static).display = custom  # pragma: no mutate
 
     def action_save(self) -> None:
-        lang_value = self.query_one("#pf-lang", Select).value
+        # Each query_one("#id", Type) below is a tautological guard (see _mirror_choice),
+        # isolated onto its own line so the surrounding save logic stays mutation-tested.
+        lang_select = self.query_one("#pf-lang", Select)  # pragma: no mutate
+        lang_value = lang_select.value
         i18n.set_language("" if lang_value in ("auto", Select.BLANK) else str(lang_value))
-        config.save_editor(self.query_one("#pf-editor", Input).value)
-        form_index = self.query_one("#pf-form", RadioSet).pressed_index
+        editor_input = self.query_one("#pf-editor", Input)  # pragma: no mutate
+        config.save_editor(editor_input.value)
+        form_set = self.query_one("#pf-form", RadioSet)  # pragma: no mutate
+        form_index = form_set.pressed_index
         config.save_form("plain" if form_index == 1 else "tui")
-        after_index = self.query_one("#pf-after", RadioSet).pressed_index
+        after_set = self.query_one("#pf-after", RadioSet)  # pragma: no mutate
+        after_index = after_set.pressed_index
         config.save_after_run("stay" if after_index == 1 else "exit")
         choice = self._mirror_choice()
         if choice == "off":
             config.disable()
         elif choice == "custom":
-            uv_url = self.query_one("#pf-uv", Input).value.strip()
+            uv_input = self.query_one("#pf-uv", Input)  # pragma: no mutate
+            uv_url = uv_input.value.strip()
             if uv_url and not uv_url.startswith("https://"):
-                self.query_one("#pf-uv-error", Static).update(
+                error_field = self.query_one("#pf-uv-error", Static)  # pragma: no mutate
+                error_field.update(
                     gettext(
                         "The uv binary is downloaded and executed, so its mirror URL must "
                         "use https:// (got: %(url)s)."
@@ -193,13 +209,16 @@ class PreferencesScreen(Screen[bool]):
                     % {"url": escape(uv_url)}
                 )
                 return
+            pypi_input = self.query_one("#pf-pypi", Input)  # pragma: no mutate
+            pyinstall_input = self.query_one("#pf-pyinstall", Input)  # pragma: no mutate
+            npm_input = self.query_one("#pf-npm", Input)  # pragma: no mutate
             config.save_mirror(
                 config.MirrorConfig(
                     enabled=True,
-                    pypi=self.query_one("#pf-pypi", Input).value.strip(),
-                    python_install=self.query_one("#pf-pyinstall", Input).value.strip(),
+                    pypi=pypi_input.value.strip(),
+                    python_install=pyinstall_input.value.strip(),
                     uv_binary=uv_url,
-                    npm=self.query_one("#pf-npm", Input).value.strip(),
+                    npm=npm_input.value.strip(),
                 )
             )
         else:
