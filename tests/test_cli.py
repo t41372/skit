@@ -256,7 +256,7 @@ def test_add_read_error_reports_clean_message(tmp_path, monkeypatch):
     target = p.resolve()
     real_read_text = Path.read_text
 
-    # Signature mirrors Path.read_text (every parameter is str | None across 3.12–3.13, incl.
+    # Signature mirrors Path.read_text (every parameter is str | None across 3.12-3.13, incl.
     # 3.13's `newline`), so non-target reads delegate cleanly and the types check under `ty`.
     def failing_read_text(self: Path, *args: str | None, **kwargs: str | None) -> str:
         if self == target:
