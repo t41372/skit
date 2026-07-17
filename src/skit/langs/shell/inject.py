@@ -204,7 +204,8 @@ def inject(request: InjectRequest) -> InjectResult:
 
 
 def _root(text: str) -> Node:
-    return Parser(_LANGUAGE).parse(text.encode("utf-8")).root_node
+    data = text.encode("utf-8")  # pragma: no mutate — "utf-8"/"UTF-8" are the same codec alias
+    return Parser(_LANGUAGE).parse(data).root_node
 
 
 # ---------------------------------------------------------------- const
@@ -346,10 +347,15 @@ def _read_spans(
         line = " ".join(
             _feed_value(value, raw=group[0].raw) for value in supplied if value is not None
         )
+        # `strict=True` is a defensive no-op: supplied is built one-per-site from group just above,
+        # so the two are provably equal-length and strict True/False/None behave identically. Pin
+        # the zip to its own line so only that expression is suppressed — the `any(...)` predicate
+        # below (whose `or` IS a real, tested mutation) stays mutated.
+        # pragma: no mutate start
+        pairs = zip(group, supplied, strict=True)
+        # pragma: no mutate end
         secret = any(
-            site.secret or site.order in secret_orders
-            for site, value in zip(group, supplied, strict=True)
-            if value is not None
+            site.secret or site.order in secret_orders for site, value in pairs if value is not None
         )
         start, end = _command_name_span(group[0].node)
         replacement = f"_skit_read {command} {quote(line)} {int(secret)} {quote(group[0].prompt)}"
@@ -373,7 +379,9 @@ def _check_prefix(group: list[_ReadSite], supplied: list[str | None]) -> None:
     """
     last_index = len(supplied) - 1
     for i, value in enumerate(supplied):
-        if value is not None and value != "":
+        # `value != ""` vs any other sentinel is unobservable: the only values it re-routes are ""
+        # and the sentinel itself, and _split_reason returns "" (no hazard) for both.
+        if value is not None and value != "":  # pragma: no mutate
             reason = _split_reason(value, is_last=i == last_index)
             if reason:
                 raise InjectSplitError(_display_name(group[i]), reason)
@@ -437,7 +445,7 @@ def _command_name_span(node: Node) -> tuple[int, int]:
     keyword too — `builtin _skit_read` would call the wrapper as a builtin and fail)."""
     name_node = node.child_by_field_name("name")
     if name_node is None:  # pragma: no cover — a `command` node always has a command_name
-        raise InjectError("read")
+        raise InjectError("read")  # pragma: no mutate — unreachable guard (see no cover above)
     if _text(name_node) in ("builtin", "command"):
         return name_node.start_byte, _arguments(node)[0].end_byte
     return name_node.start_byte, name_node.end_byte
@@ -449,7 +457,7 @@ def _command_name_span(node: Node) -> tuple[int, int]:
 def _fallthrough_keyword(interpreter: str) -> str:
     """`builtin` for bash/zsh, `command` for everything else (see the module docstring: `command
     read` silently does nothing in zsh, and dash has no `builtin` at all)."""
-    name = interpreter.rsplit("/", 1)[-1].removesuffix(".exe")
+    name = interpreter.rsplit("/", 1)[-1].removesuffix(".exe")  # pragma: no mutate (maxsplit inert)
     return "builtin" if name in _BUILTIN_SHELLS else "command"
 
 
@@ -518,7 +526,7 @@ def _gate_interpreter(interpreter: str, path: Path) -> None:
     except (OSError, subprocess.SubprocessError):
         return  # the gate itself couldn't run; gate 1 already vouched for the text
     if proc.returncode != 0:
-        detail = proc.stderr.decode("utf-8", errors="replace").strip().splitlines()
+        detail = proc.stderr.decode(errors="replace").strip().splitlines()
         raise InjectSyntaxError(
             gettext("%(shell)s rejected the injected copy: %(detail)s")
             % {"shell": interpreter, "detail": detail[0] if detail else ""}
