@@ -223,17 +223,20 @@ def synthesized_placeholder(name: str) -> ParamDecl:
     historical form behavior: required (an empty placeholder silently assembles a broken
     command, which the non-interactive contract forbids), free-text, secret by the name
     heuristic (C3 applies to every source)."""
+    # binding "none" / type "str" ARE the ParamDecl field defaults, so mutmut's "drop the
+    # binding='none' kwarg" mutation is equivalent (the removed kwarg == the default) and
+    # cannot be killed. mutmut can only suppress that per-kwarg mutation at whole-statement
+    # granularity, so wrap the constructor; every field it carries is independently pinned by
+    # test_params_mut.test_synthesized_placeholder_* (binding/delivery/required/secret).
+    # pragma: no mutate start
     return ParamDecl(
         name=name,
-        # binding "none" IS the ParamDecl field default, so dropping this kwarg is an
-        # equivalent mutant; pin the literal to suppress the remove.
-        # pragma: no mutate start
         binding="none",
-        # pragma: no mutate end
         delivery="placeholder",
         required=True,
         secret=is_secret_name(name),
     )
+    # pragma: no mutate end
 
 
 def declared_from_meta(parameters: list[dict[str, Any]] | None) -> list[ParamDecl]:
@@ -403,32 +406,29 @@ def edit_declared(  # noqa: PLR0912 — a fixed-order edit pipeline; the branche
             warnings.append(f"already-declared:{name}")
             continue
         if name in placeholders:
+            # binding "none" / type "str" ARE the ParamDecl field defaults, so mutmut's
+            # "drop the binding='none' / type='str' kwarg" mutations are equivalent (removed
+            # kwarg == field default) and unkillable. mutmut can only suppress those per-kwarg
+            # mutations at whole-statement granularity, so wrap the constructor; every field
+            # it carries (binding/delivery/type/required) is pinned by
+            # test_params_mut.test_add_placeholder_row_defaults.
+            # pragma: no mutate start
             by_name[name] = ParamDecl(
-                name=name,
-                # binding "none" / type "str" ARE the ParamDecl field defaults, so dropping
-                # either kwarg is an equivalent mutant; pin the literals to suppress the removes.
-                # pragma: no mutate start
-                binding="none",
-                # pragma: no mutate end
-                delivery="placeholder",
-                # pragma: no mutate start
-                type="str",
-                # pragma: no mutate end
-                required=True,
+                name=name, binding="none", delivery="placeholder", type="str", required=True
             )
+            # pragma: no mutate end
         else:
+            # Same equivalent binding='none' / type='str' removes; the delivery-fallback edge
+            # (allowed_deliveries[0] not a real Delivery -> "flag") is pinned by
+            # test_params_mut.test_add_non_placeholder_row_delivery_falls_back_to_flag.
+            # pragma: no mutate start
             by_name[name] = ParamDecl(
                 name=name,
-                # binding "none" / type "str" ARE the ParamDecl field defaults → dropping
-                # either is an equivalent mutant; pin the literals to suppress the removes.
-                # pragma: no mutate start
                 binding="none",
-                # pragma: no mutate end
                 delivery=_coerce_literal(allowed_deliveries[0], _DELIVERIES, "flag"),
-                # pragma: no mutate start
                 type="str",
-                # pragma: no mutate end
             )
+            # pragma: no mutate end
         order.append(name)
 
     tweak_names: list[str] = []
