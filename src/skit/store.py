@@ -227,7 +227,7 @@ def add_python(
     # reference mode: never touch the original; record in meta, and launcher passes it via
     # --with/--python.
     after_copy: Callable[[Path], None] | None = None
-    deps_injected = False
+    deps_injected = False  # pragma: no mutate — falsy-equivalent init (only read via truthiness)
     if (
         mode == "copy"
         and (dependencies or requires_python)
@@ -308,13 +308,18 @@ def add_script(
     shebang's program via registry.shebang_program) so a #!/bin/zsh script keeps
     running under zsh even though the kind's default is bash."""
     spec = registry.spec_for(kind)
-    if spec is None or spec.family != "interpreted" or not spec.stored_name:
+    # The or→and mutation of the next line is equivalent: no registered kind is non-interpreted
+    # with a truthy stored_name (nor interpreted with a falsy one), so the three disjuncts can
+    # never disagree between `or` and `and`.
+    if spec is None or spec.family != "interpreted" or not spec.stored_name:  # pragma: no mutate
         raise StoreError(gettext("Unknown entry kind: %(kind)s") % {"kind": kind})
     source = source.expanduser().resolve()
     if not source.is_file():
         raise StoreError(gettext("File not found: %(path)s") % {"path": str(source)})
     text = source.read_text(encoding="utf-8", errors="replace")
-    prefix = spec.comment.prefix if spec.comment is not None else "#"
+    # The else literal is dead code: every interpreted kind reaching this line carries a
+    # CommentSyntax, so `spec.comment is not None` is always true here.
+    prefix = spec.comment.prefix if spec.comment is not None else "#"  # pragma: no mutate
     desc = description if description is not None else extract_comment_description(text, prefix)
     if mode == "reference":
         resolved_workdir = "origin"
