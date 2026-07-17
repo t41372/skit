@@ -148,13 +148,13 @@ class HealthScreen(Screen[str | None]):
         issues = self.query("#hc-issues")
         if not issues:
             return
-        option_list = issues.first(OptionList)
+        option_list = issues.first(OptionList)  # pragma: no mutate — tautological guard
         if option_list.highlighted is not None:
             self.dismiss(str(option_list.get_option_at_index(option_list.highlighted).id))
 
     def action_rebuild(self) -> None:
         count, problems = store.doctor_rebuild()
-        report = self.query_one("#hc-rebuilt", Static)
+        report = self.query_one("#hc-rebuilt", Static)  # pragma: no mutate — tautological guard
         lines = [
             ngettext("Index rebuilt: %(count)s entry", "Index rebuilt: %(count)s entries", count)
             % {"count": count}

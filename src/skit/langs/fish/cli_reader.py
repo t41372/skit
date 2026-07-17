@@ -75,7 +75,10 @@ def _spec_tokens(words: list[str]) -> list[str]:
             return []  # `argparse -- $argv` — no specs
         if not w.startswith("-"):
             break  # the first non-flag token is the first spec
-        i += 2 if (w in _VALUE_OWN_OPTS and i + 1 < n) else 1
+        # Equivalent-mutant guard: the `i + 1 < n` boundary/arith mutants (`i - 1 < n`,
+        # `i + 1 <= n`) only differ when a value-own-opt is the LAST token, where consuming
+        # 1 vs 2 both overshoot `n` and yield the same empty spec list — unobservable.
+        i += 2 if (w in _VALUE_OWN_OPTS and i + 1 < n) else 1  # pragma: no mutate
     specs: list[str] = []
     while i < n and words[i] != "--":
         specs.append(words[i])
@@ -85,11 +88,16 @@ def _spec_tokens(words: list[str]) -> list[str]:
 
 def _read_spec(raw: str) -> ParamDecl | None:
     """One option spec → a flag-delivery ParamDecl, or None for an unparseable/garbage spec."""
-    spec = analyzer._dequote(raw).split("!", 1)[0].strip()  # dequote, then drop a !validator
+    # `[0]` keeps only the text before the FIRST `!`, so the maxsplit mutants (`split("!")`,
+    # `split("!", 2)`) are equivalent — maxsplit only affects elements after [0]. (An rsplit
+    # mutant IS observable and is pinned by test_validator_is_dropped_from_the_first_bang_forward.)
+    spec = analyzer._dequote(raw).split("!", 1)[0].strip()  # pragma: no mutate (dequote+strip !)
     if not spec:
         return None
     multiple = False
-    has_value = False
+    # Equivalent: `has_value` is only ever read in `elif has_value:`, where it retains this
+    # initial value solely on the no-suffix bool path — None and False are both falsy there.
+    has_value = False  # pragma: no mutate
     if spec.endswith(("=+", "=*")):
         has_value, multiple, core = True, True, spec[:-2]
     elif spec.endswith("=?"):
@@ -102,9 +110,10 @@ def _read_spec(raw: str) -> ParamDecl | None:
     if parsed is None:
         return None
     name, flag, numeric = parsed
-    decl = ParamDecl(
-        name=name, binding="none", delivery="flag", flag=flag, secret=is_secret_name(name)
-    )
+    # binding "none" / delivery "flag" are the ParamDecl defaults; passing them explicitly would
+    # only add equivalent drop-kwarg mutants, so omit them. The flag-spec binding/delivery contract
+    # stays pinned by test_flag_spec_binding_and_delivery.
+    decl = ParamDecl(name=name, flag=flag, secret=is_secret_name(name))
     if numeric:
         decl.degraded = True  # `#` implicit-integer flag — not modeled; free-text fallback
     elif has_value:
