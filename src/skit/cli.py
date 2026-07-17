@@ -204,9 +204,9 @@ def _resolve_npm_dependencies(
     if scanner is None:
         return []
     try:
-        text = script.read_text(encoding="utf-8", errors="replace")
+        text = script.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate — encoding None/utf-8/UTF-8 decode identically under skit's UTF-8-mode runtime (equivalent); the errors="replace" handler stays behaviourally pinned by test_resolve_npm_invalid_utf8_reads_with_replace  # fmt: skip
     except OSError:
-        text = ""
+        text = ""  # pragma: no mutate — an OSError fallback consumed only as `scanner(text) if text else []`; every spelling ("" / None / any garbage the scanner finds no import in) yields no suggestions, so the value is unobservable
     suggested = scanner(text) if text else []
     if not suggested:
         return []
@@ -233,7 +233,9 @@ def _refuse_unusable_add_flags(
     contract — silently assembling an entry that ignores what the caller asked for is exactly
     the guessing it forbids). The uv flavor honors both flags; npm honors --dep on copies
     only; every other kind honors neither."""
-    flavor = kind_spec.deps_flavor if kind_spec is not None else ""
+    flavor = (
+        kind_spec.deps_flavor if kind_spec is not None else ""
+    )  # pragma: no mutate — the "" sentinel is only ever compared to "uv"/"npm"; any other empty-branch value is unobservable
     if flavor == "uv":
         return
     if dep is not None and (flavor != "npm" or ref):
@@ -525,7 +527,16 @@ def _add_from_stdin(
         raise _fail(str(exc), 1) from exc
     finally:
         tmp.unlink(missing_ok=True)  # pragma: no mutate
-    _print_add_summary(entry, deps, managed, secrets)
+    _print_add_summary(
+        entry,
+        deps,
+        # managed/secrets are always empty on the stdin path (no_input=True skips parameter
+        # onboarding), so a None in these two positions is behaviorally identical.
+        # pragma: no mutate start
+        managed,
+        secrets,
+        # pragma: no mutate end
+    )
 
 
 def _infer_add_kind(resolved: Path, exe_flag: bool) -> str:
@@ -1152,12 +1163,17 @@ def _parse_set_opts(plan: flows.FormPlan, raw: list[str]) -> dict[str, str]:
     return pairs
 
 
+# A non-"tui" sentinel: `style` below is only ever compared against "tui", so this value's exact
+# spelling is behaviorally irrelevant (kept mutation-inert while the TERM/"dumb" reads stay tested).
+_PLAIN_STYLE = "plain"  # pragma: no mutate
+
+
 def _collect_values(
     entry: store.Entry, plan: flows.FormPlan, prefill: dict[str, str], *, plain: bool
 ) -> dict[str, str]:
     """Interactive collection through the configured renderer. The inline mini-form is
     the default; "plain" (--plain / form=plain / TERM=dumb) is the line-prompt fallback."""
-    style = "plain" if plain or os.environ.get("TERM") == "dumb" else config.load_form()
+    style = _PLAIN_STYLE if plain or os.environ.get("TERM") == "dumb" else config.load_form()
     if style == "tui":
         import importlib
 
@@ -1553,12 +1569,12 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
     last = argstate.load_state(entry.slug)["values"]
     entry_spec = spec_for(entry.meta.kind)
     specs: list[ParamDecl] = []
-    text = ""
+    text = ""  # pragma: no mutate — sentinel only reached when no file is read: None stays falsy like "" (reconcile skipped), and "XXXX" reconciles to the same empty result, so no output differs
     if entry_spec is not None and entry_spec.params_io is not None and entry.script_path.exists():
         text = entry.script_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
         specs = entry_spec.params_io.read(text)
     unmanaged: list[str] = []
-    self_locating = False
+    self_locating = False  # pragma: no mutate — =None is a true equivalent (read only via `if self_locating`); this line pragma also suppresses the killable =True, which is separately pinned by test_params_reference_mode_shell_omits_self_location_hint
     if (
         entry_spec is not None
         and entry_spec.analyzer is not None
@@ -1583,7 +1599,9 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
             "placeholders": entry.meta.params or [],
             "declared": [d.to_meta_dict() for d in declared],
         }
-        console.print_json(json.dumps(payload, ensure_ascii=False))
+        # ensure_ascii is inert here: console.print_json re-parses then re-serializes the
+        # string, normalizing any escaping (True/False/None/omitted all render identically).
+        console.print_json(json.dumps(payload, ensure_ascii=False))  # pragma: no mutate
         return
     if entry_spec is not None and entry_spec.family == "template":
         _show_command_params(entry, declared, last)
@@ -2048,10 +2066,8 @@ def _normalize_params(entry: store.Entry, entry_spec: LangSpec | None, names: li
         else s
         for s in entry_spec.params_io.read(result.text)
     ]
-    copy_path.write_text(
-        entry_spec.params_io.write(result.text, specs),
-        encoding="utf-8",  # pragma: no mutate — utf-8 equivalence
-    )
+    new_text = entry_spec.params_io.write(result.text, specs)
+    copy_path.write_text(new_text, encoding="utf-8")  # pragma: no mutate — utf-8 equivalence
     console.print(
         f"[green]{gettext('Normalized %(names)s in %(name)s: delivered as environment variables from now on (no temporary copy, and $0 stays your real file).') % {'names': ', '.join(escape(n) for n in result.normalized), 'name': escape(entry.meta.name)}}[/green]"
     )
@@ -2166,16 +2182,14 @@ def _deps_read_view(entry: store.Entry, *, supports_deps: bool, as_json: bool) -
     only) and the needed external commands (every kind)."""
     needs = list(entry.meta.needs or [])
     if as_json:
-        console.print_json(
-            json.dumps(
-                {
-                    "dependencies": list(entry.meta.dependencies or []),
-                    "requires_python": entry.meta.requires_python,
-                    "needs": needs,
-                },
-                ensure_ascii=False,
-            )
-        )
+        payload = {
+            "dependencies": list(entry.meta.dependencies or []),
+            "requires_python": entry.meta.requires_python,
+            "needs": needs,
+        }
+        # ensure_ascii is equivalent here (rich's print_json re-serializes the string, so True/
+        # False/dropped all render identically) — pragma the one-liner so those mutants aren't born.
+        console.print_json(json.dumps(payload, ensure_ascii=False))  # pragma: no mutate
         return
     if supports_deps:
         console.print(
@@ -2534,7 +2548,10 @@ _CONFIG_KEYS = ("lang", "editor", "mirror", "form", "after_run", "shell.bash_pat
 
 
 def _config_lang_value() -> str:
-    override = config.load_config().get("language", "")
+    # No `.get(..., "")` default: the isinstance-and-truthy guard below treats a missing key
+    # (None) and an empty string identically, so an explicit "" is redundant (dropping it also
+    # retires the equivalent default-value mutant while the "language" key stays mutation-tested).
+    override = config.load_config().get("language")
     if isinstance(override, str) and override:
         return override
     return gettext("auto (%(locale)s)") % {"locale": i18n.current_locale()}
