@@ -74,8 +74,13 @@ def fill_runner_argv(argv: list[str], rendered: str) -> list[str]:
 
 
 def check_argv_length(argv: list[str]) -> None:
-    """Refuse an over-long assembled command line before spawn (exit 125 via LaunchError)."""
-    total = sum(len(token) for token in argv) + len(argv)
+    """Refuse an over-long assembled command line before spawn (exit 125 via LaunchError).
+
+    Measured in UTF-8 BYTES, not characters: the OS limits (MAX_ARG_STRLEN, the Windows
+    command line) are byte/UTF-16-unit bounds, and a CJK/emoji-heavy prompt is 3-4 bytes
+    per character — a character count would wave through an argv the kernel then rejects
+    with a raw E2BIG at spawn."""
+    total = sum(len(token.encode("utf-8")) for token in argv) + len(argv)
     if total > ARGV_LIMIT:
         raise LaunchError(
             gettext(

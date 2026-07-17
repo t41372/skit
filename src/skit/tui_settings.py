@@ -356,8 +356,18 @@ class ScriptSettingsScreen(Screen[bool]):
             )
             return
         pin = self._entry.meta.runner
+        # A pin whose runner row was removed from config still gets an option — and it
+        # stays SELECTED, so opening settings and saving something unrelated never
+        # silently clears it (an unrequested data change). Picking another option (or
+        # "ask on the run form") is the explicit way out.
+        stale_pin = pin and all(name != pin for name in names)
         with RadioSet(id="st-runner-set"):
             yield RadioButton(gettext("ask on the run form"), value=not pin)
+            if stale_pin:
+                yield RadioButton(
+                    gettext("%(runner)s (no longer configured)") % {"runner": escape(pin)},
+                    value=True,
+                )
             for name in names:
                 yield RadioButton(escape(name), value=(name == pin))
 
@@ -735,12 +745,18 @@ class ScriptSettingsScreen(Screen[bool]):
         radio = self.query("#st-runner-set")
         if radio:
             names = [r.name for r in config.load_prompt_runners()]
+            current = entry.meta.runner
+            # The options mirror _compose_runner exactly: "ask" first, then a stale
+            # pin's own row (if any), then the configured names.
+            options = [""]
+            if current and current not in names:
+                options.append(current)
+            options += names
             pressed = radio.first(RadioSet).pressed_index
-            # Index 0 is "ask on the run form" (no pin); 1.. map onto the names.
-            pin = names[pressed - 1] if 1 <= pressed <= len(names) else ""
-            if pin != entry.meta.runner:
+            pin = options[pressed] if 0 <= pressed < len(options) else ""
+            if pin != current:
                 store.write_prompt_runner(entry.slug, pin)
-                if pin:
+                if pin in names:
                     argstate.save_last_runner(pin)
 
     def action_close(self) -> None:

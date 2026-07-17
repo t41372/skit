@@ -132,6 +132,15 @@ def test_check_argv_length_refuses_over_limit():
         render.check_argv_length(["x" * (render.ARGV_LIMIT + 1)])
 
 
+def test_check_argv_length_measures_utf8_bytes_not_characters():
+    # A CJK prompt is 3 bytes per character: the OS limits are byte bounds, so a
+    # character count would wave through an argv the kernel rejects with raw E2BIG.
+    cjk = "中" * (render.ARGV_LIMIT // 3 + 10)
+    assert len(cjk) < render.ARGV_LIMIT  # passes a character count…
+    with pytest.raises(LaunchError):  # …but not the byte count
+        render.check_argv_length([cjk])
+
+
 # --------------------------------------------------------------------------
 # registry: the spec row + compound-suffix inference
 # --------------------------------------------------------------------------
@@ -399,15 +408,34 @@ def test_describe_with_runner_shows_the_real_argv(tmp_path, monkeypatch):
     assert "•••" in shown
 
 
-def test_describe_without_runner_never_reads_config(tmp_path, monkeypatch):
-    entry = _entry_with_runner(tmp_path, monkeypatch, pin="claude")
+def test_describe_resolves_a_pinned_multi_token_runner(tmp_path, monkeypatch):
+    # The transparency contract on the TUI rerun path: a pinned run arrives with
+    # runner=None, and the line must still show the runner's REAL flags (the opencode
+    # seed is three tokens), not a two-token stub. Reading config is safe — loading
+    # never seeds (materializing is the management surface's act).
+    entry = _entry_with_runner(tmp_path, monkeypatch, pin="opencode")
+    shown = PromptLaunch().describe(entry, [], {"a": "1"}, None)
+    assert "--prompt" in shown  # the seed's real flag, not just the name
+    assert "Do 1" in shown
+
+
+def test_describe_unresolvable_pin_degrades_to_the_name_stub(tmp_path, monkeypatch):
+    entry = _entry_with_runner(tmp_path, monkeypatch, pin="ghost")
+    monkeypatch.setattr(config, "load_prompt_runners", lambda: [])
+    shown = PromptLaunch().describe(entry, [], {"a": "1"}, None)
+    assert "ghost" in shown  # the pin's NAME stands in when its row is gone
+    assert "Do 1" in shown
+
+
+def test_describe_with_no_pin_and_no_runner_never_reads_config(tmp_path, monkeypatch):
+    entry = _entry_with_runner(tmp_path, monkeypatch)
     monkeypatch.setattr(
         config,
         "load_prompt_runners",
-        lambda: pytest.fail("describe must not read config (a read can seed = a write)"),
+        lambda: pytest.fail("an unpinned describe has no reason to touch config"),
     )
     shown = PromptLaunch().describe(entry, [], {"a": "1"}, None)
-    assert "claude" in shown  # the pin's NAME stands in for its argv
+    assert "?" in shown
 
 
 def test_describe_degrades_on_missing_body_and_missing_values(tmp_path, monkeypatch):
@@ -445,6 +473,32 @@ def test_preflight_missing_body(tmp_path, monkeypatch):
 def test_target_is_the_prompt_body(tmp_path, monkeypatch):
     entry = _entry_with_runner(tmp_path, monkeypatch)
     assert PromptLaunch().target(entry) == entry.script_path
+
+
+def test_run_entry_preserves_crlf_bodies_byte_for_byte(tmp_path):
+    # Through the REAL read+render+spawn path: read_text's universal-newline mode would
+    # quietly rewrite CRLF to LF, so build reads bytes (design risk #5).
+    import json as _json
+    import sys
+
+    recorder = tmp_path / "recorder.py"
+    recorder.write_text(
+        "import json, sys\n"
+        "from pathlib import Path\n"
+        "Path(sys.argv[1]).write_text(json.dumps(sys.argv[2:]), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    out = tmp_path / "captured.json"
+    raw = (CORPUS / "02_crlf.prompt.md").read_bytes()
+    src = tmp_path / "crlf.prompt.md"
+    src.write_bytes(raw)
+    entry = store.add_prompt(src)
+    runner = config.PromptRunner("rec", (sys.executable, str(recorder), str(out), "{prompt}"))
+    assert launcher.run_entry(entry, [], values={"task": "T", "repo": "R"}, runner=runner) == 0
+    (captured,) = _json.loads(out.read_text(encoding="utf-8"))
+    expected = raw.decode("utf-8").replace("{task}", "T").replace("{repo}", "R")
+    assert captured == expected
+    assert "\r\n" in captured
 
 
 def test_run_entry_executes_the_recorder_end_to_end(tmp_path):

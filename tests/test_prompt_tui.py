@@ -448,3 +448,33 @@ async def test_tui_add_prompt_without_placeholders_skips_the_toast(tmp_path):
         screen._submit_path()
         await pilot.pause()
     assert store.resolve("plain").meta.params is None
+
+
+async def test_settings_save_preserves_a_stale_pin(tmp_path):
+    # The pinned runner's config row is gone: opening settings and saving something
+    # unrelated must NOT silently clear the pin — its own radio row holds it selected.
+    _prompt_entry(tmp_path, text="{a}\n", pin="mine")
+    config.save_prompt_runners([config.PromptRunner("other", ("other", "{prompt}"))])
+    app = tui.MenuApp()
+    async with app.run_test(size=(110, 40)) as pilot:
+        await pilot.pause()
+        screen = await _open_settings(app, pilot)
+        radio = screen.query_one("#st-runner-set", RadioSet)
+        assert radio.pressed_index == 1  # the stale pin's own row, preselected
+        screen.action_save()
+        await pilot.pause()
+    assert store.resolve("p").meta.runner == "mine"  # preserved, not wiped
+
+    # Explicitly picking a configured runner (index 2 = "other") replaces it.
+    app = tui.MenuApp()
+    async with app.run_test(size=(110, 40)) as pilot:
+        await pilot.pause()
+        screen = await _open_settings(app, pilot)
+        radio = screen.query_one("#st-runner-set", RadioSet)
+        buttons = list(radio.query("RadioButton"))
+        buttons[2].value = True
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+    assert store.resolve("p").meta.runner == "other"
+    assert argstate.load_last_runner() == "other"

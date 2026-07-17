@@ -536,11 +536,19 @@ def _add_from_stdin(
     _print_add_summary(entry, deps, managed, secrets)
 
 
-_STARTER_PROMPT = """# New prompt
-
-Describe the task for the agent. Mark the parts that change per run as {placeholders} —
-each becomes a form field. Literal braces are written {{ and }}.
-"""
+def _starter_prompt() -> str:
+    """The drafted-prompt starter body — user-visible prose in $EDITOR, so it goes
+    through gettext like every other UI string (resolved at call time, never import)."""
+    return (
+        gettext(
+            "# New prompt\n"
+            "\n"
+            "Describe the task for the agent. Mark the parts that change per run as "
+            "{placeholders} — each becomes a form field. Literal braces are written "
+            "{{ and }}."
+        )
+        + "\n"
+    )
 
 
 def _ask_prompt_runner(interactive: bool, runner_opt: str | None) -> str:
@@ -648,12 +656,13 @@ def _create_prompt_in_editor(
     fd, tmp_name = tempfile.mkstemp(suffix=".prompt.md", prefix="skit-new-")  # pragma: no mutate
     os.close(fd)
     tmp = Path(tmp_name)
-    tmp.write_text(_STARTER_PROMPT, encoding="utf-8")  # pragma: no mutate
+    starter = _starter_prompt()
+    tmp.write_text(starter, encoding="utf-8")  # pragma: no mutate
     try:
         console.print(f"[dim]{gettext('Opening your editor…')}[/dim]")
         editor.open_in_editor(tmp)
         text = tmp.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate — utf-8 equiv
-        if text.strip() in ("", _STARTER_PROMPT.strip()):
+        if text.strip() in ("", starter.strip()):
             console.print(gettext("Nothing was written, so no script was added."))
             return
         entry, managed = _onboard_prompt(

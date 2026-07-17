@@ -268,6 +268,16 @@ def test_run_prompt_no_input_without_pin_is_126(tmp_path):
     assert "No runner selected" in result.output
 
 
+def test_run_no_input_is_provably_unaffected_by_last_picked_state(tmp_path):
+    # The last-picked name is a PICKER DEFAULT only (design risk #10): a --no-input run
+    # with no pin must still refuse with 126, whatever state remembers.
+    _added(tmp_path)
+    argstate.save_last_runner("claude")
+    result = runner.invoke(cli.app, ["run", "p", "--set", "a=1", "--no-input"])
+    assert result.exit_code == 126
+    assert "No runner selected" in result.output
+
+
 def test_run_prompt_runner_flag_threads_through(tmp_path, spawn_spy):
     _added(tmp_path)
     result = runner.invoke(

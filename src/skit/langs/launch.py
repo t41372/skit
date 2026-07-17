@@ -549,7 +549,10 @@ class PromptLaunch:
         chosen = self._resolve_runner(entry, runner)
         binary = self._require_binary(chosen)
         try:
-            text = script.read_text(encoding="utf-8", errors="replace")
+            # read_bytes + decode, NOT read_text: universal-newline translation would
+            # quietly rewrite a CRLF body to LF, and the whole point of the no-shell
+            # argv channel is that the body arrives byte-identical (design risk #5).
+            text = script.read_bytes().decode("utf-8", errors="replace")
         except OSError as exc:
             raise LaunchError(
                 gettext("Can't read %(path)s: %(error)s")
@@ -573,15 +576,22 @@ class PromptLaunch:
         *,
         runner: PromptRunner | None = None,
     ) -> str:
-        # Side-effect-free: no PATH lookup, no config read (a config read could seed the
-        # runner presets — a write). Without an explicit runner, the pin's NAME stands in
-        # for its argv, the same stance describe takes on uv and bare interpreter names.
+        # Side-effect-free: no PATH lookup and no writes. Reading config IS safe here —
+        # load_prompt_runners never seeds (materializing is ensure_prompt_runners_seeded,
+        # a management-surface act) — and it's what keeps the transparency line honest
+        # for a PINNED run that arrives without an explicit runner (the TUI rerun path):
+        # a multi-token runner like the opencode seed must show its real flags, not a
+        # two-token stub. Only an unresolvable pin degrades to the name + "{prompt}".
         from .prompt import render
 
+        if runner is None and entry.meta.runner:
+            from .. import config
+
+            runner = config.find_prompt_runner(entry.meta.runner)
         argv = list(runner.argv) if runner is not None else [entry.meta.runner or "?", "{prompt}"]
         script = script_override or entry.script_path
         try:
-            text = script.read_text(encoding="utf-8", errors="replace")
+            text = script.read_bytes().decode("utf-8", errors="replace")
         except OSError:
             return join_for_display([*argv, *extra])
         try:

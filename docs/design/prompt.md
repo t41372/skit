@@ -133,7 +133,6 @@ slot is unused — the runner is a separate axis (see the seam below).
 
 ```python
 def _prompt_spec() -> LangSpec:
-    from .prompt import analyzer   # pure stdlib regex placeholder scan — no grammar, no guard
     return LangSpec(
         kind="prompt",
         family="interpreted",       # has an original file, copy/reference modes, editable body
@@ -142,7 +141,13 @@ def _prompt_spec() -> LangSpec:
         extensions=(".prompt.md", ".prompt"),   # compound suffix — see inference amendment
         stored_name="prompt.md",
         params_io=None,             # v1: declared params live in meta.toml [[parameters]]
-        analyzer=Analyzer(analyze=analyzer.analyze, reconcile=analyzer.reconcile),
+        # NO analyzer capability, deliberately (command-kind parity — implementation
+        # correction to the earlier draft, which registered one): every spec.analyzer
+        # consumer is shaped for params_io kinds, and registering one would flip
+        # `run --raw` into the skip-the-form branch, which then fails build with
+        # "Missing parameter values" for every managed hole. Detection lives in
+        # langs/prompt/analyzer.py as plain functions consumed directly by the
+        # add/params/plan surfaces.
         supports_modes=True,
         takes_argv=False,           # reuse-last-args stays off; extra argv still appends (below)
         placeholder_params=True,    # opens the placeholder form path (see flows amendment)
@@ -230,10 +235,14 @@ expected; unticked candidates are left verbatim at render time, and `{{` escapes
 brace. No tree-sitter, no import guard: a pure stdlib regex scan living in
 `langs/prompt/`, never degrading to `None`.
 
-Reserved name: **`prompt` is not a legal placeholder in a prompt body.** Not a mechanical
+Reserved name: **`prompt` is never a placeholder in a prompt body.** Not a mechanical
 collision (body holes are stage 1, the runner slot is stage 2) but an ergonomic guard: a
 form field named "prompt" on a prompt entry, and a future per-runner `{prompt}` hole,
-would be endless confusion. Rejected at add/params time with a clear message.
+would be endless confusion. The analyzer excludes it from detection outright — a literal
+`{prompt}` in a body (a code sample, say) passes through to the agent verbatim rather
+than erroring, which is the right call for text that quotes runner templates. It can
+therefore never be managed, offered, or --add'ed (the fresh-scan placeholder truth never
+contains it).
 
 Value tokens: `{cwd}`/`{today}` expand **inside field values** (the existing
 `flows._final_value` pipeline), same as every kind. The body itself gets **no** token
@@ -282,10 +291,12 @@ with its closest equivalent and a comment in the seeded config.)
   *within* a token, so a multi-line prompt is one `execve` argument — no shell, no
   quoting, no cmd.exe. A custom runner that genuinely needs shell syntax (pipes) is out of
   scope for v1 (wrap it in a script and point the runner at that).
-- **Seeded, not hard-coded.** When `runners_seeded` is absent, skit materializes the five
-  presets *into the user's config* (and writes the marker) so they are immediately visible
-  and editable — never a hidden built-in list. The marker distinguishes "never seeded"
-  from "deliberately emptied": removing all five must not resurrect them.
+- **Seeded, not hard-coded.** Loading is read-only (before seeding, the effective list
+  IS the five presets — a `skit run`/`show` never writes config as a side effect); the
+  presets materialize *into the user's config* (with the `runners_seeded` marker) on the
+  first `skit runner` management action — the moment the user goes looking for the data,
+  it is visible and editable, never a hidden built-in list. The marker distinguishes
+  "never seeded" from "deliberately emptied": removing all five must not resurrect them.
 - **`{prompt}` is the one reserved slot.** Validation (at `skit runner add` and on load):
   `argv` is a non-empty list of strings; `{prompt}` occurs exactly once across all tokens
   (it may be embedded, e.g. `"--message={prompt}"`, but not in `argv[0]`); no other
@@ -379,8 +390,9 @@ the docs rather than papered over:
   never persists the value in last-used/presets, masks it in transparency output) holds
   like any kind — but the user docs for the prompt kind state explicitly that the value's
   confidentiality ends at the runner boundary.
-- **Length.** argv has platform limits (Windows ≈32k chars; POSIX ARG_MAX is generous).
-  Rendering checks the assembled command line against a conservative platform bound and
+- **Length.** argv has platform limits (Windows ≈32k; Linux caps one argument at 128 KiB —
+  both BYTE bounds, so the check measures UTF-8 bytes, never characters). Rendering checks
+  the assembled command line against a conservative platform bound and
   refuses with a clean `LaunchError` (exit 125) naming the size — an honest refusal today;
   stdin/file delivery can arrive later *per-runner* when a seed CLI actually supports it
   (deferred, see below).
@@ -465,9 +477,9 @@ translated.
    the read/run surfaces agree — `skit params <prompt>` lists exactly what the run form
    asks, `--deliver x=placeholder` is accepted, the TUI editor shows no flag input on
    placeholder rows. Mutation-tested.
-3. **`{prompt}` slot validation** → a body placeholder named `prompt`, or a runner argv
-   failing validation (zero/two `{prompt}`s, `{prompt}` in argv[0], stray `{holes}`), is
-   rejected at add/params/runner-add time (corpus + unit).
+3. **`{prompt}` slot validation** → a body `{prompt}` is excluded from detection and
+   passes through verbatim (corpus-pinned); a runner argv failing validation (zero/two
+   `{prompt}`s, `{prompt}` in argv[0], stray `{holes}`) is rejected at runner-add time.
 4. **Runner unresolvable under `--no-input`** → exit 126, no guess; unknown `--runner`
    and a pinned-but-removed runner both list the known names. Pinned by a pipe/`--no-input`
    test.
