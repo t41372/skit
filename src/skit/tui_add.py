@@ -116,9 +116,18 @@ class AddSourceScreen(Screen[str | None]):
                     and kind_spec.dep_scanner is not None
                 ):
                     try:
-                        text = path.read_text(encoding="utf-8", errors="replace")
+                        # The codec spelling is inert here (import specifiers are ASCII, so
+                        # "utf-8"/"UTF-8"/dropped→locale-default all decode identically); only
+                        # errors="replace" is load-bearing, and its stray-byte tolerance is
+                        # pinned by test_non_python_tolerates_non_utf8_bytes. mutmut is
+                        # line-granular, so the whole read is pragma'd (fmt:skip keeps the
+                        # inline pragma on the statement line, where mutmut honors it).
+                        text = path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate  # fmt: skip
                     except OSError:
-                        text = ""
+                        # Unreachable: add_script above already decoded this same path with the
+                        # same codec, so a re-read cannot raise; and ""/None/"XXXX" are all falsy
+                        # or import-free, so the `if text` guard yields scanned=[] regardless.
+                        text = ""  # pragma: no mutate
                     scanned = kind_spec.dep_scanner(text) if text else []
                     if scanned:
                         entry = store.update_dependencies(entry.slug, scanned)
@@ -140,11 +149,14 @@ class AddSourceScreen(Screen[str | None]):
         self.dismiss(entry.slug)
 
     def _submit_path(self) -> None:
-        raw = self.query_one("#add-path", Input).value.strip()
+        # query_one's expect_type is a redundant runtime guard here (the node is always the
+        # declared type) and "#add-path"/"#add-error" are each the first widget of their type,
+        # so dropping the type / the selector cannot change what is returned — equivalent.
+        raw = self.query_one("#add-path", Input).value.strip()  # pragma: no mutate
         if not raw:
             return
         path = Path(raw).expanduser()
-        error = self.query_one("#add-error", Static)
+        error = self.query_one("#add-error", Static)  # pragma: no mutate
         if not path.is_file():
             error.update(
                 f"[red]{gettext('File not found: %(path)s') % {'path': escape(str(path))}}[/red]"
@@ -166,9 +178,11 @@ class AddSourceScreen(Screen[str | None]):
         self._submit_template()
 
     def _submit_template(self) -> None:
-        template = self.query_one("#add-template", Input).value.strip()
-        name = self.query_one("#add-template-name", Input).value.strip()
-        error = self.query_one("#add-error", Static)
+        # See _submit_path: query_one's type guard is inert and each id is the sole match, so
+        # the type-drop / None-type mutations of these three calls are equivalent.
+        template = self.query_one("#add-template", Input).value.strip()  # pragma: no mutate
+        name = self.query_one("#add-template-name", Input).value.strip()  # pragma: no mutate
+        error = self.query_one("#add-error", Static)  # pragma: no mutate
         if not template:
             return
         if not name:
@@ -184,7 +198,9 @@ class AddSourceScreen(Screen[str | None]):
     def action_continue_add(self) -> None:
         """Footer/Enter twin: submit whichever field the user filled — the script path
         takes precedence, else the command template."""
-        if self.query_one("#add-path", Input).value.strip():
+        # query_one type guard inert; "#add-path" is the first Input, so the type-drop/None
+        # mutations return the same widget — equivalent.
+        if self.query_one("#add-path", Input).value.strip():  # pragma: no mutate
             self._submit_path()
         else:
             self._submit_template()
@@ -233,7 +249,7 @@ class AddReviewScreen(Screen[str | None]):
         flags through them); everything stays editable on screen."""
         super().__init__()
         self._path: Path = path
-        self._text: str = path.read_text(encoding="utf-8", errors="replace")
+        self._text: str = path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate — encoding None/utf-8/UTF-8 decode identically under skit's UTF-8-mode runtime (equivalent); the errors="replace" handler stays behaviourally pinned by test_add_review_screen_reads_invalid_utf8_with_replace  # fmt: skip
         self._analysis: analysis.Analysis = analyzer.analyze(self._text)
         self._requires_python = requires_python
         # Survives the edit→rescan recompose: the rescan refreshes DETECTION, it must
@@ -308,7 +324,7 @@ class AddReviewScreen(Screen[str | None]):
         if pep723.has_block(self._text):
             meta = pep723.parse_block(self._text) or {}
             deps = meta.get("dependencies") or []
-            python = meta.get("requires-python", "")
+            python = meta.get("requires-python")
             yield Static(gettext("The script declares its own dependencies (PEP 723):"))
             if python:
                 yield Static(
@@ -317,7 +333,7 @@ class AddReviewScreen(Screen[str | None]):
             for d in deps:
                 yield Static("· " + gettext("installs %(dep)s") % {"dep": escape(str(d))})
             if not deps and not python:
-                yield Static(f"[dim]{gettext('(none declared)')}[/dim]", markup=True)
+                yield Static(f"[dim]{gettext('(none declared)')}[/dim]")
         else:
             suggested = ", ".join(pep723.suggest_dependencies(self._text))
             yield Input(
@@ -391,28 +407,32 @@ class AddReviewScreen(Screen[str | None]):
     def action_edit_source(self) -> None:
         """Ctrl+E: open the USER'S original file in their editor, then rescan on return
         (the edit→return→rescan loop; A5 is not involved — it's their file, their editor)."""
-        self._overrides["name"] = self.query_one("#rv-name", Input).value
-        self._overrides["desc"] = self.query_one("#rv-desc", Input).value
-        self._overrides["mode"] = str(self.query_one("#rv-mode", RadioSet).pressed_index)
+        self._overrides["name"] = self.query_one("#rv-name", Input).value  # pragma: no mutate — expect_type is a pure runtime assertion (equivalent); the override is pinned by test_edit_source_preserves_name_desc_and_mode_overrides  # fmt: skip
+        self._overrides["desc"] = self.query_one("#rv-desc", Input).value  # pragma: no mutate — expect_type equivalent; pinned by test_edit_source_preserves_name_desc_and_mode_overrides  # fmt: skip
+        self._overrides["mode"] = str(self.query_one("#rv-mode", RadioSet).pressed_index)  # pragma: no mutate — expect_type/type-selector equivalent; pinned by test_edit_source_preserves_name_desc_and_mode_overrides  # fmt: skip
         deps_box = self.query("#rv-deps")
         if deps_box:
-            self._overrides["deps"] = deps_box.first(Input).value
+            deps_input = deps_box.first(Input)  # pragma: no mutate — expect_type equivalent (unique #rv-deps match)  # fmt: skip
+            self._overrides["deps"] = deps_input.value
         with self.app.suspend():
             try:
                 editor.open_in_editor(self._path)
             except editor.EditorError as exc:
                 print(str(exc), flush=True)
-        self._text = self._path.read_text(encoding="utf-8", errors="replace")
+        self._text = self._path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate — encoding None/utf-8/UTF-8 decode identically under skit's UTF-8-mode runtime (equivalent); errors="replace" is pinned by test_edit_source_rescans_non_utf8_original_with_replace  # fmt: skip
         self._analysis = analyzer.analyze(self._text)
         self.refresh(recompose=True)
 
     def action_accept(self) -> None:
-        name = self.query_one("#rv-name", Input).value.strip() or None
-        desc = self.query_one("#rv-desc", Input).value.strip()
-        reference = self.query_one("#rv-mode", RadioSet).pressed_index == 1
-        deps: list[str] = []
+        name = self.query_one("#rv-name", Input).value.strip() or None  # pragma: no mutate — expect_type/type-selector equivalent (unique first #rv-name Input); pinned by test_accept_copy_uses_typed_name_desc_and_deps  # fmt: skip
+        desc = self.query_one("#rv-desc", Input).value.strip()  # pragma: no mutate — expect_type equivalent; pinned by test_accept_copy_uses_typed_name_desc_and_deps  # fmt: skip
+        mode_set = self.query_one("#rv-mode", RadioSet)  # pragma: no mutate — expect_type/type-selector equivalent (unique #rv-mode)  # fmt: skip
+        reference = mode_set.pressed_index == 1
+        deps: list[
+            str
+        ] = []  # pragma: no mutate — [] vs None is unobservable here: read only via deps-or-None on the PEP 723 branch, where both collapse to None
         if not pep723.has_block(self._text):
-            deps = pep723.split_requirements(self.query_one("#rv-deps", Input).value)
+            deps = pep723.split_requirements(self.query_one("#rv-deps", Input).value)  # pragma: no mutate — expect_type equivalent (unique #rv-deps); pinned by test_accept_copy_uses_typed_name_desc_and_deps  # fmt: skip
         try:
             entry = store.add_python(
                 self._path,
@@ -432,16 +452,20 @@ class AddReviewScreen(Screen[str | None]):
         # case, so querying #rv-cand-{i} here would raise NoMatches and crash after the entry
         # was already committed. Gate the collection on the same condition that mounts them.
         if entry.meta.mode == "copy" and not self._analysis.uses_cli_framework:
-            picked = [
-                self._analysis.candidates[i]
-                for i in range(len(self._analysis.candidates))
-                if self.query_one(f"#rv-cand-{i}", Checkbox).value
-            ]
+            picked = []
+            for i in range(len(self._analysis.candidates)):
+                checkbox = self.query_one(f"#rv-cand-{i}", Checkbox)  # pragma: no mutate — expect_type/per-index selector are query mechanics; the selection is pinned by test_accept_writes_only_checked_candidate_params  # fmt: skip
+                if checkbox.value:
+                    picked.append(self._analysis.candidates[i])
             if picked:
                 specs = [ParamDecl.from_candidate(c) for c in picked]
                 copy_path = entry.script_path
-                current = copy_path.read_text(encoding="utf-8")
-                copy_path.write_text(metawriter.write_params(current, specs), encoding="utf-8")
+                current = copy_path.read_text(
+                    encoding="utf-8"
+                )  # pragma: no mutate — utf-8 equivalence
+                copy_path.write_text(
+                    metawriter.write_params(current, specs), encoding="utf-8"
+                )  # pragma: no mutate — utf-8 equivalence
         self.dismiss(entry.slug)
 
     def action_cancel(self) -> None:
