@@ -271,7 +271,9 @@ class ScriptSettingsScreen(Screen[bool]):
                 params.declared_from_meta(entry.meta.parameters) if self._declared else []
             )
         self._prompt_body_names: list[str] = []
-        if self._is_prompt and entry.script_path.exists():
+        if self._is_prompt and not entry.meta.interpolate:
+            self._declared_decls = []
+        elif self._is_prompt and entry.script_path.exists():
             from .langs.prompt import analyzer as prompt_analyzer
 
             self._prompt_body_names = prompt_analyzer.placeholder_names(
@@ -437,16 +439,44 @@ class ScriptSettingsScreen(Screen[bool]):
         # the CLI's allowed deliveries. The trait — not the family — is the gate, so a
         # prompt (family "interpreted") never grows a meaningless flag input.
         show_flag = self._spec is not None and not self._spec.placeholder_params
+        if self._is_prompt:
+            # The per-prompt master switch: one click + Save turns insertion off outright
+            # (the escape hatch for long prompts full of {{lookalikes}}); the managed
+            # list survives underneath for a later switch-on.
+            yield Checkbox(
+                gettext("Variable insertion ({{name}} placeholders become form fields)"),
+                value=meta.interpolate,
+                id="st-interpolate",
+            )
+            if not meta.interpolate:
+                yield Static(
+                    gettext("Off — the body travels to the agent exactly as written."),
+                    classes="hint",
+                )
+                return
         for d in self._declared_decls:
             yield DeclParamRow(d, show_flag=show_flag)
         if self._is_prompt:
+            from .langs.prompt import analyzer as prompt_analyzer
+
             unmanaged = [n for n in self._prompt_body_names if n not in (meta.params or [])]
             if unmanaged:
                 yield Static(
                     gettext("Detected but not yet managed — tick to manage:"), classes="hint"
                 )
-                for i, candidate in enumerate(unmanaged):
+                for i, candidate in enumerate(unmanaged[: prompt_analyzer.LIST_PREVIEW_LIMIT]):
                     yield Checkbox(escape(candidate), value=False, id=f"st-prompt-new-{i}")
+                if len(unmanaged) > prompt_analyzer.LIST_PREVIEW_LIMIT:
+                    yield Static(
+                        gettext(
+                            "…and %(count)s more (manage them with: skit params %(name)s --add NAME)"
+                        )
+                        % {
+                            "count": len(unmanaged) - prompt_analyzer.LIST_PREVIEW_LIMIT,
+                            "name": escape(meta.name),
+                        },
+                        classes="hint",
+                    )
         yield Static(gettext("Add a parameter — type a name, then Save:"), classes="hint")
         yield Input(placeholder=gettext("new parameter name"), id="st-add-param")
 
@@ -662,7 +692,12 @@ class ScriptSettingsScreen(Screen[bool]):
                     gettext("Deleted previously remembered value(s): %(names)s")
                     % {"names": ", ".join(sorted(purged))}
                 )
-        if self._declared:
+        if self._is_prompt:
+            # The toggle is composed unconditionally for prompts, so query_one is safe.
+            wants_interpolate = self.query_one("#st-interpolate", Checkbox).value
+            if wants_interpolate != entry.meta.interpolate:
+                store.write_prompt_interpolate(entry.slug, wants_interpolate)
+        if self._declared and not (self._is_prompt and not entry.meta.interpolate):
             decls = self._collect_declared()
             if decls is None:
                 return  # a row is invalid; stay on the screen, nothing saved half-way

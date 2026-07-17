@@ -1,6 +1,6 @@
 # Prompts as first-class entries — final design
 
-Status: **approved** (v2.2, 2026-07-17; two adversarial review rounds, re-reviewed to zero). Resolves
+Status: **approved** (v3, 2026-07-17; two design + two code adversarial review rounds). Resolves
 [#6](https://github.com/t41372/skit/issues/6) — "Make prompts a part of skit?". This
 document is the single source of truth for the design, and supersedes the v1 proposal.
 Read `docs/design/multilang.md` first — this design is an additive layer on the kind
@@ -65,6 +65,30 @@ against the code before being adopted):
   appends to the rendered runner argv (mirroring `TemplateLaunch`); P1 ships a stub
   launch strategy.
 
+Revision notes (v2.2 → v3, maintainer-decided after using the shipped v2.2):
+
+- **Placeholders are DOUBLE-brace: `{{name}}`** (the prompt-template world's convention —
+  Anthropic Console, Jinja2, Handlebars — chosen over the command-template `{name}`
+  because prompts quote code: JSON, `${VAR}`, f-strings are full of single-brace
+  identifiers that are not parameters). Runner argv slots follow: `{{prompt}}`. The
+  command kind's shipped `{name}` grammar is untouched — two surfaces, two grammars,
+  documented as such.
+- **No escape sequences on the prompt surface.** Anything that isn't a MANAGED
+  `{{name}}` — unmanaged holes, single braces, triple-stache — travels byte-identical.
+  Nothing in a body ever needs escaping; residual false positives cost a candidate-list
+  entry, never a text mutation. (The `{{`/`}}` escape rule of v2.2 is gone with the
+  grammar that needed it.)
+- **A per-prompt insertion master switch** (`meta.interpolate`, default on): off = no
+  scanning, no fields, no drift, verbatim delivery. `skit add --no-interpolate`,
+  `skit params NAME --interpolate/--no-interpolate`, an "off" answer in the interactive
+  add, and a single checkbox in TUI Script settings. The managed list survives an
+  off/on round trip.
+- **Flood guards** for prompts never written with insertion in mind: above
+  AUTO_MANAGE_LIMIT (30) detections the auto path manages NOTHING (an explicit
+  interactive/managed selection is always honored), and every candidate list surface
+  (CLI add, params view, settings checkboxes) previews at most LIST_PREVIEW_LIMIT (20)
+  names plus a "+N more" tail.
+
 Round-2 verification additions (v2.1 → v2.2):
 
 - **The trait migration covers all five `family == "template"` decision sites**, not just
@@ -90,11 +114,11 @@ The feature composes two shapes skit already has:
   parameter-form machinery is reused through **one bounded, specified change**
   (`placeholder_params`, below);
 - a **runner** is a named *argv template* with one reserved `{prompt}` slot
-  (`["claude", "{prompt}"]`) → reuses the `TemplateLaunch` token grammar for the fill,
+  (`["claude", "{{prompt}}"]`) → reuses the `TemplateLaunch` token grammar for the fill,
   and `ArgvLaunch` for the spawn.
 
 Running a prompt is a **two-stage render**: fill the prompt's own placeholders from the
-form/`--set` values → substitute the rendered text into the chosen runner's `{prompt}`
+form/`--set` values → substitute the rendered text into the chosen runner's `{{prompt}}`
 token → exec, no shell in between. Two bounded integration points (the placeholder form
 path and the runner threading), one new kind, one config list, one launch strategy.
 
@@ -226,14 +250,14 @@ add-flow change, not two.
 
 ### Placeholder detection (the analyzer)
 
-The prompt body is scanned for `{name}` tokens using the **same token pattern**
-`TemplateLaunch` uses (`_TEMPLATE_TOKEN_RE`: `{name}`, with `{{`/`}}` escapes) — the
-pattern is shared; the render body is not (see the seam below). Each distinct `{name}`
-becomes a declared-param candidate offered in the existing tick-to-manage add panel —
-prompts often contain code snippets, so false positives (`{x}` inside a JSON example) are
-expected; unticked candidates are left verbatim at render time, and `{{` escapes a literal
-brace. No tree-sitter, no import guard: a pure stdlib regex scan living in
-`langs/prompt/`, never degrading to `None`.
+The prompt body is scanned for `{{name}}` tokens (double braces, identifier body, not
+brace-adjacent — a Handlebars `{{{raw}}}` is someone else's syntax and stays quiet). The
+grammar is deliberately INDEPENDENT of `TemplateLaunch`'s single-brace pattern (v3): code
+snippets full of `{x}`/`${VAR}`/JSON braces are never candidates. Each distinct `{{name}}`
+becomes a declared-param candidate offered in the existing tick-to-manage add panel;
+unticked candidates are left verbatim at render time, and there are NO escape sequences —
+what isn't managed is never touched. No tree-sitter, no import guard: a pure stdlib regex
+scan living in `langs/prompt/`, never degrading to `None`.
 
 Reserved name: **`prompt` is never a placeholder in a prompt body.** Not a mechanical
 collision (body holes are stage 1, the runner slot is stage 2) but an ergonomic guard: a
@@ -264,23 +288,23 @@ runners_seeded = true   # written once at seed time; an emptied list stays empty
 
 [[prompt.runners]]
 name = "claude"
-argv = ["claude", "{prompt}"]
+argv = ["claude", "{{prompt}}"]
 
 [[prompt.runners]]
 name = "codex"
-argv = ["codex", "{prompt}"]
+argv = ["codex", "{{prompt}}"]
 
 [[prompt.runners]]
 name = "opencode"
-argv = ["opencode", "{prompt}"]
+argv = ["opencode", "{{prompt}}"]
 
 [[prompt.runners]]
 name = "amp"
-argv = ["amp", "{prompt}"]
+argv = ["amp", "-x", "{{prompt}}"]
 
 [[prompt.runners]]
 name = "antigravity"
-argv = ["antigravity", "{prompt}"]
+argv = ["antigravity", "{{prompt}}"]
 ```
 
 (Seed argv shapes above are illustrative; each is pinned during implementation against the
@@ -297,10 +321,10 @@ with its closest equivalent and a comment in the seeded config.)
   first `skit runner` management action — the moment the user goes looking for the data,
   it is visible and editable, never a hidden built-in list. The marker distinguishes
   "never seeded" from "deliberately emptied": removing all five must not resurrect them.
-- **`{prompt}` is the one reserved slot.** Validation (at `skit runner add` and on load):
-  `argv` is a non-empty list of strings; `{prompt}` occurs exactly once across all tokens
-  (it may be embedded, e.g. `"--message={prompt}"`, but not in `argv[0]`); no other
-  `{holes}`; `{{`/`}}` escape literal braces.
+- **`{{prompt}}` is the one reserved slot.** Validation (at `skit runner add` and on load):
+  `argv` is a non-empty list of strings; `{{prompt}}` occurs exactly once across all tokens
+  (it may be embedded, e.g. `"--message={{prompt}}"`, but not in `argv[0]`); no other
+  `{{holes}}`; single-brace text is literal (a tool's own `{x}` syntax passes untouched).
 - Config API mirrors the existing per-section loaders: `config.load_prompt_runners() ->
   list[PromptRunner]`, `config.save_prompt_runners(...)`; a frozen `PromptRunner(name:
   str, argv: tuple[str, ...])`. Corruption-tolerant like every other loader: a malformed
@@ -404,7 +428,7 @@ skit add notes/review.prompt.md            # add an existing prompt file (kind i
 skit add notes/review.md                   # bare .md: interactive ask; --no-input requires --prompt
 skit add --prompt -n review                # author a new prompt: $EDITOR on a blank prompt.md
 skit runner list                           # configured runners (seeds materialized on first need)
-skit runner add mycli mycli run {prompt}   # variadic: the USER'S shell does the word splitting
+skit runner add mycli mycli run {{prompt}}   # variadic: the USER'S shell does the word splitting
 skit runner remove mycli
 skit run review --set target=src/foo.py            # runs with the entry's pinned runner
 skit run review --runner codex --set target=...    # per-run override

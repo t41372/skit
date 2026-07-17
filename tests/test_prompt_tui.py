@@ -53,7 +53,7 @@ def quiet_run(monkeypatch):
     return calls
 
 
-def _prompt_entry(tmp_path, text="Do {a}\n", name="p", pin=""):
+def _prompt_entry(tmp_path, text="Do {{a}}\n", name="p", pin=""):
     src = tmp_path / f"{name}.prompt.md"
     src.write_text(text, encoding="utf-8")
     entry = store.add_prompt(src, name=name)
@@ -263,7 +263,7 @@ async def test_detail_pane_unpinned_prompt_says_the_form_asks(tmp_path):
 
 async def test_tui_add_prompt_file_direct_lane(tmp_path):
     src = tmp_path / "task.prompt.md"
-    src.write_text("# Task\n\nDo {a} and {b}\n", encoding="utf-8")
+    src.write_text("# Task\n\nDo {{a}} and {{b}}\n", encoding="utf-8")
     app = tui.MenuApp()
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause()
@@ -283,7 +283,7 @@ async def test_tui_add_prompt_file_direct_lane(tmp_path):
 
 async def test_tui_add_bare_md_becomes_a_prompt(tmp_path):
     src = tmp_path / "notes.md"
-    src.write_text("Summarize {url}\n", encoding="utf-8")
+    src.write_text("Summarize {{url}}\n", encoding="utf-8")
     app = tui.MenuApp()
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause()
@@ -310,7 +310,7 @@ async def _open_settings(app, pilot):
 
 
 async def test_settings_prompt_rows_and_no_flag_input(tmp_path):
-    _prompt_entry(tmp_path, text="{a} {api_key}\n")
+    _prompt_entry(tmp_path, text="{{a}} {{api_key}}\n")
     app = tui.MenuApp()
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause()
@@ -325,7 +325,7 @@ async def test_settings_prompt_rows_and_no_flag_input(tmp_path):
 
 
 async def test_settings_runner_radio_pins_and_clears(tmp_path):
-    _prompt_entry(tmp_path, text="{a}\n")
+    _prompt_entry(tmp_path, text="{{a}}\n")
     app = tui.MenuApp()
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause()
@@ -356,7 +356,7 @@ async def test_settings_runner_radio_pins_and_clears(tmp_path):
 
 
 async def test_settings_runner_section_empty_state(tmp_path):
-    _prompt_entry(tmp_path, text="{a}\n")
+    _prompt_entry(tmp_path, text="{{a}}\n")
     config.save_prompt_runners([])
     app = tui.MenuApp()
     async with app.run_test(size=(110, 40)) as pilot:
@@ -370,7 +370,7 @@ async def test_settings_runner_section_empty_state(tmp_path):
 
 
 async def test_settings_tick_to_manage_a_detected_placeholder(tmp_path):
-    entry = _prompt_entry(tmp_path, text="{a} {b}\n")
+    entry = _prompt_entry(tmp_path, text="{{a}} {{b}}\n")
     store.write_prompt_managed(entry.slug, ["a"])
     app = tui.MenuApp()
     async with app.run_test(size=(110, 40)) as pilot:
@@ -388,7 +388,7 @@ async def test_settings_tick_to_manage_a_detected_placeholder(tmp_path):
 
 
 async def test_settings_unticking_a_row_unmanages_it(tmp_path):
-    _prompt_entry(tmp_path, text="{a} {b}\n")
+    _prompt_entry(tmp_path, text="{{a}} {{b}}\n")
     app = tui.MenuApp()
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause()
@@ -404,7 +404,7 @@ async def test_settings_unticking_a_row_unmanages_it(tmp_path):
 
 
 async def test_settings_typing_a_body_hole_name_manages_it(tmp_path):
-    entry = _prompt_entry(tmp_path, text="{a} {b}\n")
+    entry = _prompt_entry(tmp_path, text="{{a}} {{b}}\n")
     store.write_prompt_managed(entry.slug, ["a"])
     app = tui.MenuApp()
     async with app.run_test(size=(110, 40)) as pilot:
@@ -453,8 +453,8 @@ async def test_tui_add_prompt_without_placeholders_skips_the_toast(tmp_path):
 async def test_settings_save_preserves_a_stale_pin(tmp_path):
     # The pinned runner's config row is gone: opening settings and saving something
     # unrelated must NOT silently clear the pin — its own radio row holds it selected.
-    _prompt_entry(tmp_path, text="{a}\n", pin="mine")
-    config.save_prompt_runners([config.PromptRunner("other", ("other", "{prompt}"))])
+    _prompt_entry(tmp_path, text="{{a}}\n", pin="mine")
+    config.save_prompt_runners([config.PromptRunner("other", ("other", "{{prompt}}"))])
     app = tui.MenuApp()
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause()
@@ -478,3 +478,53 @@ async def test_settings_save_preserves_a_stale_pin(tmp_path):
         await pilot.pause()
     assert store.resolve("p").meta.runner == "other"
     assert argstate.load_last_runner() == "other"
+
+
+async def test_settings_interpolate_toggle_off_and_back_on(tmp_path):
+    _prompt_entry(tmp_path, text="{{a}}\n")
+    app = tui.MenuApp()
+    async with app.run_test(size=(110, 40)) as pilot:
+        await pilot.pause()
+        screen = await _open_settings(app, pilot)
+        toggle = screen.query_one("#st-interpolate", Checkbox)
+        assert toggle.value is True
+        toggle.value = False  # one click…
+        await pilot.pause()
+        screen.action_save()  # …plus Save turns insertion off
+        await pilot.pause()
+    off = store.resolve("p")
+    assert off.meta.interpolate is False
+    assert off.meta.params == ["a"]  # the managed list survives underneath
+
+    # Off state: no rows, no candidates, no add-param input — just the toggle + hint.
+    app = tui.MenuApp()
+    async with app.run_test(size=(110, 40)) as pilot:
+        await pilot.pause()
+        screen = await _open_settings(app, pilot)
+        from skit.tui_settings import DeclParamRow
+
+        assert not screen.query(DeclParamRow)
+        assert not screen.query("#st-add-param")
+        toggle = screen.query_one("#st-interpolate", Checkbox)
+        assert toggle.value is False
+        toggle.value = True
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+    on = store.resolve("p")
+    assert on.meta.interpolate is True
+    assert on.meta.params == ["a"]  # untouched by the off/on round trip
+
+
+async def test_settings_candidate_checkboxes_are_flood_capped(tmp_path):
+    from skit.langs.prompt.analyzer import LIST_PREVIEW_LIMIT
+
+    many = " ".join("{{u" + str(i) + "}}" for i in range(LIST_PREVIEW_LIMIT + 9))
+    entry = _prompt_entry(tmp_path, text="{{a}} " + many + "\n")
+    store.write_prompt_managed(entry.slug, ["a"])
+    app = tui.MenuApp()
+    async with app.run_test(size=(110, 40)) as pilot:
+        await pilot.pause()
+        screen = await _open_settings(app, pilot)
+        boxes = [c for c in screen.query(Checkbox) if (c.id or "").startswith("st-prompt-new-")]
+        assert len(boxes) == LIST_PREVIEW_LIMIT

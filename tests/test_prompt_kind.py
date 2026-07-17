@@ -33,7 +33,7 @@ def _write_prompt(tmp_path: Path, text: str, name: str = "p.prompt.md") -> Path:
     return path
 
 
-def _runner(name: str = "rec", argv: tuple[str, ...] = ("rec-bin", "{prompt}")):
+def _runner(name: str = "rec", argv: tuple[str, ...] = ("rec-bin", "{{prompt}}")):
     return config.PromptRunner(name, argv)
 
 
@@ -43,27 +43,42 @@ def _runner(name: str = "rec", argv: tuple[str, ...] = ("rec-bin", "{prompt}")):
 
 
 def test_placeholder_names_dedupes_in_body_order():
-    text = "a {b} c {a} d {b} {_x1} {9bad} { spaced} {a-b}"
+    text = "a {{b}} c {{a}} d {{b}} {{_x1}} {{9bad}} {{ spaced }} {{a-b}}"
     assert analyzer.placeholder_names(text) == ["b", "a", "_x1"]
 
 
-def test_placeholder_names_honors_escapes_and_reserved_name():
-    assert analyzer.placeholder_names("{{lit}} {prompt} {real}") == ["real"]
+def test_placeholder_names_single_braces_are_never_candidates():
+    # The whole point of the double-brace grammar: code-shaped text stays quiet.
+    text = 'JSON {"key": 1} f-string {value} shell ${HOME} empty {} plain {word}'
+    assert analyzer.placeholder_names(text) == []
 
 
-def test_token_pattern_is_shared_with_template_launch():
-    # The two surfaces must never drift on what counts as a placeholder.
-    assert analyzer.TOKEN_RE is langs_launch._TEMPLATE_TOKEN_RE
+def test_placeholder_names_brace_adjacent_is_not_a_candidate():
+    # A Handlebars triple-stache (and any brace-hugging shape) is someone else's syntax.
+    assert analyzer.placeholder_names("{{{raw}}} and {{{x}} and {{y}}}") == []
+
+
+def test_placeholder_names_reserved_name_excluded():
+    assert analyzer.placeholder_names("{{prompt}} {{real}}") == ["real"]
+
+
+def test_prompt_grammar_is_independent_of_command_templates():
+    # Deliberately NOT the command-template pattern: command {name} stays single-brace
+    # (a shipped, shell-quoted surface); the prompt surface is double-brace with no
+    # escapes. The two must not be conflated again.
+    assert analyzer.TOKEN_RE.pattern != langs_launch._TEMPLATE_TOKEN_RE.pattern
+    assert analyzer.placeholder_names("{name}") == []
 
 
 def test_corpus_basic_detection_and_render_byte_identity():
     text = (CORPUS / "01_basic.prompt.md").read_bytes().decode("utf-8")
     assert analyzer.placeholder_names(text) == ["target", "focus", "x"]
     rendered = render.render_body(text, {"target": "T", "focus": "F"}, ["target", "focus"])
-    # Managed holes filled; the {x} code sample (unmanaged) stays; {{ }} unescape.
+    # Managed holes filled; every literal shape — single braces, JSON, f-string,
+    # triple-stache, the unmanaged {{x}} — arrives byte-identical.
     assert "Review T for F. Again: T." in rendered
-    assert "{x}" in rendered
-    assert "Escaped: {literal}" in rendered
+    assert "Literals: {code} and JSON {\"key\": 1} and f'{value}' and {{{handlebars}}}" in rendered
+    assert "Unmanaged hole: {{x}}" in rendered
 
 
 def test_corpus_crlf_preserved_verbatim():
@@ -72,7 +87,7 @@ def test_corpus_crlf_preserved_verbatim():
     text = raw.decode("utf-8")
     rendered = render.render_body(text, {"task": "X", "repo": "Y"}, ["task", "repo"])
     assert "\r\n" in rendered
-    assert rendered == text.replace("{task}", "X").replace("{repo}", "Y")
+    assert rendered == text.replace("{{task}}", "X").replace("{{repo}}", "Y")
 
 
 def test_corpus_cjk_emoji_no_trailing_newline():
@@ -82,7 +97,7 @@ def test_corpus_cjk_emoji_no_trailing_newline():
     # CJK inside braces is not an identifier, so it is NOT a placeholder — verbatim.
     assert analyzer.placeholder_names(text) == ["focus"]
     rendered = render.render_body(text, {"focus": "效能"}, ["focus"])
-    assert "{目標檔案}" in rendered
+    assert "{{目標檔案}}" in rendered
     assert "專注於 效能" in rendered
     assert not rendered.endswith("\n")
 
@@ -91,7 +106,7 @@ def test_corpus_reserved_prompt_stays_verbatim():
     text = (CORPUS / "05_reserved.prompt.md").read_bytes().decode("utf-8")
     assert analyzer.placeholder_names(text) == ["real"]
     rendered = render.render_body(text, {"real": "R"}, ["real"])
-    assert "{prompt}\tliterally" in rendered
+    assert "{{prompt}}\tliterally" in rendered
 
 
 # --------------------------------------------------------------------------
@@ -106,24 +121,26 @@ def test_render_body_missing_managed_value_raises():
 
 def test_render_body_substitutes_raw_never_quotes():
     payload = '\'; rm -rf ~; $(touch pwned) `echo hi` "x" {inner} {{deep}}'
-    rendered = render.render_body("V={v} end", {"v": payload}, ["v"])
+    rendered = render.render_body("V={{v}} end", {"v": payload}, ["v"])
     # Byte-identical payload: no quoting, and the replacement is never re-scanned.
     assert rendered == f"V={payload} end"
 
 
 def test_render_body_empty_value_substitutes_empty():
-    assert render.render_body("[{v}]", {"v": ""}, ["v"]) == "[]"
+    assert render.render_body("[{{v}}]", {"v": ""}, ["v"]) == "[]"
 
 
 def test_fill_runner_argv_replaces_the_one_slot_raw():
     rendered = "line1\nline2 with {braces} and {{more}}"
-    argv = render.fill_runner_argv(["agent", "--m={prompt}", "{{lit}}"], rendered)
+    argv = render.fill_runner_argv(["agent", "--m={{prompt}}", "{lit}"], rendered)
     assert argv == ["agent", f"--m={rendered}", "{lit}"]
 
 
 def test_fill_runner_argv_leaves_foreign_holes_verbatim():
-    # Validation refuses these at save time; the renderer must still be total.
-    assert render.fill_runner_argv(["a", "{other}"], "X") == ["a", "{other}"]
+    # Validation refuses a stray {{hole}} at save time; the renderer must still be
+    # total — and single-brace text is a literal that never even matches.
+    assert render.fill_runner_argv(["a", "{{other}}"], "X") == ["a", "{{other}}"]
+    assert render.fill_runner_argv(["a", "{single}"], "X") == ["a", "{single}"]
 
 
 def test_check_argv_length_refuses_over_limit():
@@ -182,7 +199,7 @@ def test_infer_kind_compound_suffix():
 
 
 def test_add_prompt_manages_all_detected_by_default(tmp_path: Path):
-    src = _write_prompt(tmp_path, "# T\n\nDo {a} then {b}. Sample {a}.\n")
+    src = _write_prompt(tmp_path, "# T\n\nDo {{a}} then {{b}}. Sample {{a}}.\n")
     entry = store.add_prompt(src)
     assert entry.meta.kind == "prompt"
     assert entry.meta.params == ["a", "b"]
@@ -193,19 +210,19 @@ def test_add_prompt_manages_all_detected_by_default(tmp_path: Path):
 
 
 def test_add_prompt_managed_subset_keeps_body_order(tmp_path: Path):
-    src = _write_prompt(tmp_path, "{a} {b} {c}\n")
+    src = _write_prompt(tmp_path, "{{a}} {{b}} {{c}}\n")
     entry = store.add_prompt(src, managed=["c", "a"])
     assert entry.meta.params == ["a", "c"]  # body order, whatever the caller's order
 
 
 def test_add_prompt_refuses_unknown_managed_name(tmp_path: Path):
-    src = _write_prompt(tmp_path, "{a}\n")
+    src = _write_prompt(tmp_path, "{{a}}\n")
     with pytest.raises(store.StoreError, match="ghost"):
         store.add_prompt(src, managed=["ghost"])
 
 
 def test_add_prompt_reference_mode_still_pins_invoke_workdir(tmp_path: Path):
-    src = _write_prompt(tmp_path, "hello {x}\n")
+    src = _write_prompt(tmp_path, "hello {{x}}\n")
     entry = store.add_prompt(src, mode="reference")
     assert entry.meta.mode == "reference"
     assert entry.meta.workdir == "invoke"  # never the prompt file's directory
@@ -229,7 +246,7 @@ def test_prompt_description_takes_first_line_minus_heading():
 
 
 def test_write_prompt_managed_and_runner_roundtrip(tmp_path: Path):
-    entry = store.add_prompt(_write_prompt(tmp_path, "{a} {b}\n"))
+    entry = store.add_prompt(_write_prompt(tmp_path, "{{a}} {{b}}\n"))
     store.write_prompt_managed(entry.slug, ["b"])
     store.write_prompt_runner(entry.slug, "claude")
     reloaded = store.resolve(entry.slug)
@@ -268,7 +285,7 @@ def test_add_script_explicit_workdir_wins_in_reference_mode(tmp_path: Path):
 
 def test_prompt_plan_fields_follow_managed_list(tmp_path: Path):
     entry = store.add_prompt(
-        _write_prompt(tmp_path, "{a} {api_key} {skip}\n"), managed=["a", "api_key"]
+        _write_prompt(tmp_path, "{{a}} {{api_key}} {{skip}}\n"), managed=["a", "api_key"]
     )
     plan = flows.plan_for_entry(entry)
     assert plan.source == "command"
@@ -280,8 +297,8 @@ def test_prompt_plan_fields_follow_managed_list(tmp_path: Path):
 
 
 def test_prompt_plan_reports_drift_for_gone_managed_names(tmp_path: Path):
-    entry = store.add_prompt(_write_prompt(tmp_path, "{a} {b}\n"))
-    entry.script_path.write_text("only {a} now\n", encoding="utf-8")
+    entry = store.add_prompt(_write_prompt(tmp_path, "{{a}} {{b}}\n"))
+    entry.script_path.write_text("only {{a}} now\n", encoding="utf-8")
     plan = flows.plan_for_entry(entry)
     assert [f.key for f in plan.fields] == ["a", "b"]  # the record stays visible
     assert len(plan.drift_lines) == 1
@@ -289,7 +306,7 @@ def test_prompt_plan_reports_drift_for_gone_managed_names(tmp_path: Path):
 
 
 def test_prompt_plan_declared_rows_enrich_schema_and_env_riders_ride(tmp_path: Path):
-    entry = store.add_prompt(_write_prompt(tmp_path, "{n}\n"))
+    entry = store.add_prompt(_write_prompt(tmp_path, "{{n}}\n"))
     store.write_parameters(
         entry.slug,
         [
@@ -307,7 +324,7 @@ def test_prompt_plan_declared_rows_enrich_schema_and_env_riders_ride(tmp_path: P
 
 
 def test_prompt_plan_unreadable_body_degrades_to_none_plan(tmp_path: Path):
-    entry = store.add_prompt(_write_prompt(tmp_path, "{a}\n"))
+    entry = store.add_prompt(_write_prompt(tmp_path, "{{a}}\n"))
     entry.script_path.unlink()
     plan = flows.plan_for_entry(entry)
     assert plan.source == "none"
@@ -330,7 +347,7 @@ def test_command_plan_is_unaffected_by_the_trait_refactor(tmp_path: Path):
 # --------------------------------------------------------------------------
 
 
-def _entry_with_runner(tmp_path, monkeypatch, text="Do {a}\n", pin="", managed=None):
+def _entry_with_runner(tmp_path, monkeypatch, text="Do {{a}}\n", pin="", managed=None):
     entry = store.add_prompt(_write_prompt(tmp_path, text), managed=managed)
     if pin:
         entry = store.write_prompt_runner(entry.slug, pin)
@@ -350,7 +367,7 @@ def test_build_resolves_the_pin_when_no_override_is_given(tmp_path, monkeypatch)
     monkeypatch.setattr(
         config,
         "load_prompt_runners",
-        lambda: [config.PromptRunner("claude", ("claude", "{prompt}"))],
+        lambda: [config.PromptRunner("claude", ("claude", "{{prompt}}"))],
     )
     payload = PromptLaunch().build(entry, [], {"a": "1"}, None)
     assert isinstance(payload, ArgvLaunch)
@@ -371,7 +388,7 @@ def test_build_with_unconfigured_pin_is_exit_126(tmp_path, monkeypatch):
 
 
 def test_build_missing_binary_is_exit_126(tmp_path, monkeypatch):
-    entry = store.add_prompt(_write_prompt(tmp_path, "Do {a}\n"))
+    entry = store.add_prompt(_write_prompt(tmp_path, "Do {{a}}\n"))
     monkeypatch.setattr(langs_launch, "_which", lambda name: None)
     with pytest.raises(NotExecutableError, match="rec-bin"):
         PromptLaunch().build(entry, [], {"a": "1"}, None, runner=_runner())
@@ -395,7 +412,7 @@ def test_build_over_long_render_is_a_clean_launch_error(tmp_path, monkeypatch):
 def test_build_script_override_reads_the_override(tmp_path, monkeypatch):
     entry = _entry_with_runner(tmp_path, monkeypatch)
     override = tmp_path / "other.md"
-    override.write_text("Other {a}!", encoding="utf-8")
+    override.write_text("Other {{a}}!", encoding="utf-8")
     payload = PromptLaunch().build(entry, [], {"a": "Z"}, override, runner=_runner())
     assert isinstance(payload, ArgvLaunch)
     assert payload.argv[1] == "Other Z!"
@@ -440,11 +457,11 @@ def test_describe_with_no_pin_and_no_runner_never_reads_config(tmp_path, monkeyp
 
 def test_describe_degrades_on_missing_body_and_missing_values(tmp_path, monkeypatch):
     entry = _entry_with_runner(tmp_path, monkeypatch)
-    assert "{prompt}" in PromptLaunch().describe(entry, [], {}, None, runner=_runner())
+    assert "{{prompt}}" in PromptLaunch().describe(entry, [], {}, None, runner=_runner())
     entry.script_path.unlink()
     shown = PromptLaunch().describe(entry, [], {"a": "1"}, None, runner=_runner())
     assert "rec-bin" in shown
-    assert "{prompt}" in shown
+    assert "{{prompt}}" in shown
 
 
 def test_preflight_checks_the_pin_only(tmp_path, monkeypatch):
@@ -455,7 +472,7 @@ def test_preflight_checks_the_pin_only(tmp_path, monkeypatch):
     monkeypatch.setattr(
         config,
         "load_prompt_runners",
-        lambda: [config.PromptRunner("claude", ("claude", "{prompt}"))],
+        lambda: [config.PromptRunner("claude", ("claude", "{{prompt}}"))],
     )
     strategy.preflight(pinned)
     monkeypatch.setattr(langs_launch, "_which", lambda name: None)
@@ -493,10 +510,10 @@ def test_run_entry_preserves_crlf_bodies_byte_for_byte(tmp_path):
     src = tmp_path / "crlf.prompt.md"
     src.write_bytes(raw)
     entry = store.add_prompt(src)
-    runner = config.PromptRunner("rec", (sys.executable, str(recorder), str(out), "{prompt}"))
+    runner = config.PromptRunner("rec", (sys.executable, str(recorder), str(out), "{{prompt}}"))
     assert launcher.run_entry(entry, [], values={"task": "T", "repo": "R"}, runner=runner) == 0
     (captured,) = _json.loads(out.read_text(encoding="utf-8"))
-    expected = raw.decode("utf-8").replace("{task}", "T").replace("{repo}", "R")
+    expected = raw.decode("utf-8").replace("{{task}}", "T").replace("{{repo}}", "R")
     assert captured == expected
     assert "\r\n" in captured
 
@@ -517,11 +534,11 @@ def test_run_entry_executes_the_recorder_end_to_end(tmp_path):
     out = tmp_path / "captured.json"
     text = (CORPUS / "04_injection.prompt.md").read_bytes().decode("utf-8")
     entry = store.add_prompt(_write_prompt(tmp_path, text))
-    runner = config.PromptRunner("rec", (sys.executable, str(recorder), str(out), "{prompt}"))
+    runner = config.PromptRunner("rec", (sys.executable, str(recorder), str(out), "{{prompt}}"))
     code = launcher.run_entry(entry, [], values={"path": "src/x.py"}, runner=runner)
     assert code == 0
     captured = _json.loads(out.read_text(encoding="utf-8"))
-    assert captured == [text.replace("{path}", "src/x.py")]
+    assert captured == [text.replace("{{path}}", "src/x.py")]
     assert not (tmp_path / "pwned").exists()  # $(touch pwned) never ran
 
 
@@ -532,16 +549,16 @@ def test_run_entry_executes_the_recorder_end_to_end(tmp_path):
 
 def test_validate_prompt_runner_argv_rules():
     ok = config.validate_prompt_runner_argv
-    assert ok(["claude", "{prompt}"]) is None
-    assert ok(["a", "--m={prompt}"]) is None
-    assert ok(["a", "{{lit}}", "{prompt}"]) is None  # escapes are not holes
-    assert ok(["a", "{{lit}} {prompt}"]) is None  # escape AND slot in the SAME token
+    assert ok(["claude", "{{prompt}}"]) is None
+    assert ok(["a", "--m={{prompt}}"]) is None
+    assert ok(["a", "{lit}", "{{prompt}}"]) is None  # single braces are literals
+    assert ok(["a", "{lit} {{prompt}}"]) is None  # literal AND slot in the SAME token
     assert ok([]) == "empty"
     assert ok([""]) == "empty"
     assert ok(["claude"]) == "prompt-slot-count"
-    assert ok(["a", "{prompt}", "{prompt}"]) == "prompt-slot-count"
-    assert ok(["{prompt}"]) == "prompt-in-binary"
-    assert ok(["a", "{other}"]) == "stray-hole"
+    assert ok(["a", "{{prompt}}", "{{prompt}}"]) == "prompt-slot-count"
+    assert ok(["{{prompt}}"]) == "prompt-in-binary"
+    assert ok(["a", "{{other}}"]) == "stray-hole"
 
 
 def test_load_prompt_runners_is_read_only_before_seeding(tmp_path):
@@ -569,7 +586,7 @@ def test_marker_alone_counts_as_seeded_and_stays_empty():
 
 
 def test_hand_authored_rows_without_marker_count_as_seeded():
-    config.save_config({"prompt": {"runners": [{"name": "mine", "argv": ["m", "{prompt}"]}]}})
+    config.save_config({"prompt": {"runners": [{"name": "mine", "argv": ["m", "{{prompt}}"]}]}})
     assert config.prompt_runners_seeded()
     assert [r.name for r in config.load_prompt_runners()] == ["mine"]
 
@@ -580,9 +597,9 @@ def test_malformed_runner_rows_are_skipped_and_reported():
             "prompt": {
                 "runners_seeded": True,
                 "runners": [
-                    {"name": "good", "argv": ["g", "{prompt}"]},
+                    {"name": "good", "argv": ["g", "{{prompt}}"]},
                     {"name": "bad-no-slot", "argv": ["g"]},
-                    {"name": "", "argv": ["g", "{prompt}"]},
+                    {"name": "", "argv": ["g", "{{prompt}}"]},
                     {"name": "bad-argv", "argv": "not-a-list"},
                     {"name": "bad-token-type", "argv": ["g", 3]},
                     "not-a-table",
@@ -613,12 +630,12 @@ def test_runners_section_of_wrong_type_degrades():
 
 def test_save_prompt_runners_preserves_other_keys():
     config.save_config({"editor": "vi", "prompt": {"other": 1}})
-    config.save_prompt_runners([config.PromptRunner("x", ("x", "{prompt}"))])
+    config.save_prompt_runners([config.PromptRunner("x", ("x", "{{prompt}}"))])
     doc = config.load_config()
     assert doc["editor"] == "vi"
     assert doc["prompt"]["other"] == 1
     assert doc["prompt"]["runners_seeded"] is True
-    assert config.find_prompt_runner("x") == config.PromptRunner("x", ("x", "{prompt}"))
+    assert config.find_prompt_runner("x") == config.PromptRunner("x", ("x", "{{prompt}}"))
     assert config.find_prompt_runner("ghost") is None
 
 
@@ -640,9 +657,97 @@ def test_last_runner_roundtrip_and_corruption_degrades(tmp_path, monkeypatch):
 
 
 def test_build_unreadable_body_is_a_clean_launch_error(tmp_path, monkeypatch):
-    entry = store.add_prompt(_write_prompt(tmp_path, "Do {a}\n"))
+    entry = store.add_prompt(_write_prompt(tmp_path, "Do {{a}}\n"))
     monkeypatch.setattr(langs_launch, "_which", lambda name: f"/bin/{name}")
     entry.script_path.unlink()
     entry.script_path.mkdir()  # exists, but read_text raises IsADirectoryError
     with pytest.raises(LaunchError, match="Can't read"):
         PromptLaunch().build(entry, [], {"a": "1"}, None, runner=_runner())
+
+
+# --------------------------------------------------------------------------
+# the interpolate master switch + flood caps
+# --------------------------------------------------------------------------
+
+
+def test_meta_interpolate_round_trip_and_garbage_tolerance():
+    from skit.models import ScriptMeta
+
+    meta = ScriptMeta(name="p", kind="prompt", interpolate=False)
+    d = meta.to_toml_dict()
+    assert d["interpolate"] is False
+    assert ScriptMeta.from_toml_dict(d).interpolate is False
+    on = ScriptMeta(name="p", kind="prompt").to_toml_dict()
+    assert "interpolate" not in on  # default omitted — old metas stay untouched
+    # A hand-edited non-bool must not silently kill the feature (genuine-False rule).
+    assert ScriptMeta.from_toml_dict(
+        {"name": "p", "kind": "prompt", "interpolate": "no"}
+    ).interpolate
+
+
+def test_add_prompt_interpolate_off_scans_and_manages_nothing(tmp_path: Path):
+    entry = store.add_prompt(_write_prompt(tmp_path, "{{a}} {{b}}\n"), interpolate=False)
+    assert entry.meta.interpolate is False
+    assert entry.meta.params is None
+
+
+def test_add_prompt_auto_manage_flood_cap(tmp_path: Path):
+    from skit.langs.prompt.analyzer import AUTO_MANAGE_LIMIT
+
+    many = " ".join("{{h" + str(i) + "}}" for i in range(AUTO_MANAGE_LIMIT + 1))
+    entry = store.add_prompt(_write_prompt(tmp_path, many + "\n"))
+    assert entry.meta.params is None  # over the cap: nothing auto-managed
+    assert entry.meta.interpolate is True
+    # An EXPLICIT selection is always honored — the user asked.
+    explicit = store.add_prompt(
+        _write_prompt(tmp_path, many + "\n", name="explicit.prompt.md"),
+        name="explicit",
+        managed=["h0", "h3"],
+    )
+    assert explicit.meta.params == ["h0", "h3"]
+
+
+def test_write_prompt_interpolate_keeps_the_managed_list(tmp_path: Path):
+    entry = store.add_prompt(_write_prompt(tmp_path, "{{a}}\n"))
+    store.write_prompt_interpolate(entry.slug, False)
+    off = store.resolve(entry.slug)
+    assert off.meta.interpolate is False
+    assert off.meta.params == ["a"]  # survives for a later switch-on
+    store.write_prompt_interpolate(entry.slug, True)
+    assert store.resolve(entry.slug).meta.interpolate is True
+    entry2 = store.add_command("echo {x}", name="cmd")
+    with pytest.raises(store.StoreUsageError):
+        store.write_prompt_interpolate(entry2.slug, False)
+
+
+def test_plan_for_an_insertion_off_prompt_is_fieldless_and_driftless(tmp_path: Path):
+    entry = store.add_prompt(_write_prompt(tmp_path, "{{a}}\n"))
+    store.write_prompt_interpolate(entry.slug, False)
+    entry.script_path.write_text("no holes anymore\n", encoding="utf-8")
+    plan = flows.plan_for_entry(store.resolve(entry.slug))
+    assert plan.source == "command"
+    assert not plan.fields
+    assert not plan.drift_lines  # an off prompt can't drift
+
+
+def test_build_for_an_insertion_off_prompt_sends_the_body_verbatim(tmp_path, monkeypatch):
+    entry = store.add_prompt(_write_prompt(tmp_path, "Keep {{a}} as-is\n"))
+    store.write_prompt_interpolate(entry.slug, False)
+    monkeypatch.setattr(langs_launch, "_which", lambda name: f"/bin/{name}")
+    payload = PromptLaunch().build(store.resolve(entry.slug), [], {}, None, runner=_runner())
+    assert isinstance(payload, ArgvLaunch)
+    assert payload.argv[1] == "Keep {{a}} as-is\n"  # managed name NOT substituted
+    shown = PromptLaunch().describe(store.resolve(entry.slug), [], {}, None, runner=_runner())
+    assert "Keep {{a}} as-is" in shown
+
+
+def test_preview_names_caps_the_list():
+    from skit.langs.prompt.analyzer import LIST_PREVIEW_LIMIT, preview_names
+
+    short = [f"n{i}" for i in range(3)]
+    assert preview_names(short) == "n0, n1, n2"
+    long = [f"n{i}" for i in range(LIST_PREVIEW_LIMIT + 5)]
+    shown = preview_names(long)
+    assert "+5" in shown
+    assert f"n{LIST_PREVIEW_LIMIT - 1}" in shown
+    assert f"n{LIST_PREVIEW_LIMIT}" not in shown.replace("+5", "")

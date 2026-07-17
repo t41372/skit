@@ -544,8 +544,8 @@ def _starter_prompt() -> str:
             "# New prompt\n"
             "\n"
             "Describe the task for the agent. Mark the parts that change per run as "
-            "{placeholders} — each becomes a form field. Literal braces are written "
-            "{{ and }}."
+            "{{placeholders}} — each becomes a form field. Everything else travels to "
+            "the agent exactly as written."
         )
         + "\n"
     )
@@ -593,11 +593,13 @@ def _onboard_prompt(
     ref: bool,
     runner_opt: str | None,
     no_input: bool,
+    interpolate: bool = True,
 ) -> tuple[store.Entry, list[str]]:
     """Prompt onboarding at add time: detected placeholders are candidates (prompts
     contain code snippets, so false positives are expected) — interactive adds pick the
-    kept subset, non-interactive adds manage them all (the command-template default);
-    unmanaged ones stay verbatim in the body. Returns (entry, managed names)."""
+    kept subset (or answer "off" to switch insertion off for the whole entry),
+    non-interactive adds manage them all up to the flood cap; unmanaged ones stay
+    verbatim in the body. Returns (entry, managed names)."""
     try:
         text = resolved.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
@@ -607,20 +609,32 @@ def _onboard_prompt(
         ) from exc
     from .langs.prompt import analyzer as prompt_analyzer
 
-    detected = prompt_analyzer.placeholder_names(text)
+    detected = prompt_analyzer.placeholder_names(text) if interpolate else []
     interactive = not no_input and _is_interactive()
-    managed: list[str] | None = None  # None = keep every detected candidate
+    managed: list[str] | None = None  # None = keep every detected candidate (capped)
+    flooded = len(detected) > prompt_analyzer.AUTO_MANAGE_LIMIT
     if detected and interactive:
         console.print(gettext("Detected placeholders (each becomes a form field):"))
-        for i, placeholder in enumerate(detected, start=1):
+        for i, placeholder in enumerate(detected[: prompt_analyzer.LIST_PREVIEW_LIMIT], start=1):
             mark = gettext(" (secret)") if is_secret_name(placeholder) else ""
             console.print(f"  {i}. {escape(placeholder)}{mark}")
+        if len(detected) > prompt_analyzer.LIST_PREVIEW_LIMIT:
+            console.print(
+                "  "
+                + gettext("…and %(count)s more")
+                % {"count": len(detected) - prompt_analyzer.LIST_PREVIEW_LIMIT}
+            )
         answer = Prompt.ask(
-            gettext("Manage which? (all / none / numbers like 1,3)"),
-            default="all",
+            gettext("Manage which? (all / none / off / numbers like 1,3)"),
+            default="none" if flooded else "all",
             console=console,
         )
-        managed = [detected[i] for i in _parse_selection(answer, len(detected))]
+        if answer.strip().lower() == "off":
+            interpolate = False
+            managed = None
+        else:
+            managed = [detected[i] for i in _parse_selection(answer, len(detected))]
+            flooded = False  # an explicit interactive answer is always honored
     runner = _ask_prompt_runner(interactive, runner_opt)
     entry = store.add_prompt(
         resolved,
@@ -629,7 +643,17 @@ def _onboard_prompt(
         description=description,
         managed=managed,
         runner=runner,
+        interpolate=interpolate,
     )
+    if not interpolate:
+        console.print(
+            f"[dim]{gettext('Variable insertion is off — the body travels to the agent exactly as written (turn it on with: skit params %(name)s --interpolate)') % {'name': escape(entry.meta.name)}}[/dim]"
+        )
+    elif flooded and managed is None:
+        # The auto path tripped the flood cap: nothing was managed, say so honestly.
+        console.print(
+            f"[dim]{gettext('Detected %(count)s placeholders — too many to manage automatically, so none were. Manage the ones you need with: skit params %(name)s --add NAME, or turn insertion off with --no-interpolate.') % {'count': len(detected), 'name': escape(entry.meta.name)}}[/dim]"
+        )
     if runner:
         console.print(
             f"[dim]{gettext('Runs with %(runner)s (change it with: skit params %(name)s --runner NAME)') % {'runner': escape(runner), 'name': escape(entry.meta.name)}}[/dim]"
@@ -638,7 +662,11 @@ def _onboard_prompt(
 
 
 def _create_prompt_in_editor(
-    name: str | None, description: str | None, runner_opt: str | None
+    name: str | None,
+    description: str | None,
+    runner_opt: str | None,
+    *,
+    interpolate: bool = True,
 ) -> None:
     """`skit add --prompt` with no path: draft a new prompt in $EDITOR, then ingest it —
     the prompt twin of `add --edit`. Under a pipe/--no-input there is no editor: the
@@ -646,7 +674,7 @@ def _create_prompt_in_editor(
     import tempfile
 
     if not _is_interactive():
-        _add_prompt_from_stdin(name, description, runner_opt)
+        _add_prompt_from_stdin(name, description, runner_opt, interpolate=interpolate)
         return
     if not name:
         name = Prompt.ask(gettext("Name in skit"), console=console).strip()
@@ -672,6 +700,7 @@ def _create_prompt_in_editor(
             ref=False,
             runner_opt=runner_opt,
             no_input=False,
+            interpolate=interpolate,
         )
     except (editor.EditorError, store.StoreError) as exc:
         raise _fail(str(exc), 1) from exc
@@ -681,7 +710,11 @@ def _create_prompt_in_editor(
 
 
 def _add_prompt_from_stdin(
-    name: str | None, description: str | None, runner_opt: str | None
+    name: str | None,
+    description: str | None,
+    runner_opt: str | None,
+    *,
+    interpolate: bool = True,
 ) -> None:
     """The prompt twin of `skit add -`: the body arrives on stdin, so there is nobody to
     prompt — a name is required up front and every detected placeholder is managed."""
@@ -710,6 +743,7 @@ def _add_prompt_from_stdin(
             ref=False,
             runner_opt=runner_opt,
             no_input=True,
+            interpolate=interpolate,
         )
     except store.StoreError as exc:
         raise _fail(str(exc), 1) from exc
@@ -796,6 +830,13 @@ def add(
         "--runner",
         help=gettext("Pin the agent a prompt entry runs with (see skit runner list)"),
     ),
+    no_interpolate: bool = typer.Option(
+        False,
+        "--no-interpolate",
+        help=gettext(
+            "Prompt only: no variable insertion at all — the body travels exactly as written"
+        ),
+    ),
     dep: list[str] = typer.Option(
         None,
         "--dep",
@@ -814,6 +855,11 @@ def add(
     if (edit_new or path == "-" or (prompt_kind and not path)) and ref:
         err_console.print(
             f"[red]{gettext('--ref needs an existing file to reference — a script written in the editor or read from stdin has none.')}[/red]"
+        )
+        raise typer.Exit(EXIT_USAGE)
+    if no_interpolate and (edit_new or cmd is not None or exe):
+        err_console.print(
+            f"[red]{gettext('--no-interpolate only applies to prompt entries — add one with --prompt.')}[/red]"
         )
         raise typer.Exit(EXIT_USAGE)
     if runner is not None and (edit_new or cmd is not None or exe):
@@ -839,12 +885,12 @@ def add(
         return
     if path == "-":
         if prompt_kind:
-            _add_prompt_from_stdin(name, description, runner)
+            _add_prompt_from_stdin(name, description, runner, interpolate=not no_interpolate)
             return
         _add_from_stdin(name, description, deps_opt=dep, python_opt=python)
         return
     if prompt_kind and not path:
-        _create_prompt_in_editor(name, description, runner)
+        _create_prompt_in_editor(name, description, runner, interpolate=not no_interpolate)
         return
     summary_deps: list[str] = []
     summary_managed: list[str] = []
@@ -907,6 +953,11 @@ def add(
                     f"[red]{gettext('--runner only applies to prompt entries — add one with --prompt.')}[/red]"
                 )
                 raise typer.Exit(EXIT_USAGE)
+            if no_interpolate and kind != "prompt":
+                err_console.print(
+                    f"[red]{gettext('--no-interpolate only applies to prompt entries — add one with --prompt.')}[/red]"
+                )
+                raise typer.Exit(EXIT_USAGE)
             if kind == "exe":
                 entry = store.add_exe(Path(path), name=name, description=description or "")
             elif kind == "unknown":
@@ -922,6 +973,7 @@ def add(
                     ref=ref,
                     runner_opt=runner,
                     no_input=no_input,
+                    interpolate=not no_interpolate,
                 )
                 summary_secrets = [n for n in summary_managed if is_secret_name(n)]
             elif kind != "python" and kind_spec is not None and kind_spec.family == "interpreted":
@@ -1163,6 +1215,8 @@ def _print_show_human(entry: store.Entry, plan: flows.FormPlan, presets: list[st
         console.print(
             f"  {gettext('Runner: %(runner)s') % {'runner': escape(meta.runner) if meta.runner else gettext('(asks at run time)')}}"
         )
+        if not meta.interpolate:
+            console.print(f"  {gettext('Variable insertion: off (the body travels as written)')}")
     _print_drift(plan)
     if plan.degraded_reason:
         console.print(
@@ -1257,10 +1311,12 @@ def show(
         "last_exit": last.get("exit"),
     }
     if entry.meta.kind == "prompt":
-        # Additive, prompt-only: the pin (null = asks/--runner decides) and what an agent
-        # may pass to --runner. English-only machine contract, like every --json key.
+        # Additive, prompt-only: the pin (null = asks/--runner decides), what an agent
+        # may pass to --runner, and the insertion master switch. English-only machine
+        # contract, like every --json key.
         payload["runner"] = entry.meta.runner or None
         payload["runners_available"] = [r.name for r in config.load_prompt_runners()]
+        payload["interpolate"] = entry.meta.interpolate
     console.print_json(json.dumps(payload, ensure_ascii=False))
 
 
@@ -1715,18 +1771,18 @@ def _runner_reason(code: str) -> str:
     the import-time locale), the same discipline as flows._split_message."""
     return {
         "empty": gettext(
-            "A runner needs a command — e.g. skit runner add mycli mycli run {prompt}"
+            "A runner needs a command — e.g. skit runner add mycli mycli run {{prompt}}"
         ),
         "prompt-slot-count": gettext(
-            "A runner command must contain the {prompt} slot exactly once — that's where the "
-            "rendered prompt lands."
+            "A runner command must contain the {{prompt}} slot exactly once — that's where "
+            "the rendered prompt lands."
         ),
         "prompt-in-binary": gettext(
-            "{prompt} can't be the command itself — the first word must be the program to run."
+            "{{prompt}} can't be the command itself — the first word must be the program to run."
         ),
         "stray-hole": gettext(
-            "Runner commands take no placeholders besides {prompt} (write literal braces as "
-            "{{ and }})."
+            "Runner commands take only the {{prompt}} slot — single-brace text is literal, "
+            "and other {{holes}} aren't supported."
         ),
     }[code]
 
@@ -1734,7 +1790,7 @@ def _runner_reason(code: str) -> str:
 @runner_app.command(
     "add",
     help=gettext(
-        "Register a runner: skit runner add NAME COMMAND… ({prompt} marks where the "
+        "Register a runner: skit runner add NAME COMMAND… ({{prompt}} marks where the "
         "rendered prompt goes; each shell word becomes one argument, no shell involved)"
     ),
     # Real runner argv contains flags (`--model sonnet`); without this Click would
@@ -1745,7 +1801,7 @@ def _runner_reason(code: str) -> str:
 def runner_add(
     name: str = typer.Argument(..., help=gettext("Runner name (e.g. claude)")),
     argv: list[str] = typer.Argument(
-        None, help=gettext("The command, word by word, with one {prompt} slot")
+        None, help=gettext("The command, word by word, with one {{prompt}} slot")
     ),
 ) -> None:
     config.ensure_prompt_runners_seeded()
@@ -1995,6 +2051,15 @@ def _show_command_params(
     by_name = {d.name: d for d in declared}
     env_riders = [d for d in declared if d.delivery == "env" and d.name not in placeholders]
     is_prompt = entry.meta.kind == "prompt"
+    if is_prompt and not entry.meta.interpolate:
+        console.print(
+            gettext(
+                "Variable insertion is off — the body travels to the agent exactly as "
+                "written. Turn it on with: skit params %(name)s --interpolate"
+            )
+            % {"name": entry.meta.name}
+        )
+        return
     fresh = _prompt_body_placeholders(entry) if is_prompt else []
     unmanaged = [n for n in fresh if n not in placeholders]
     gone = [n for n in placeholders if n not in fresh] if is_prompt else []
@@ -2019,9 +2084,11 @@ def _show_command_params(
             shown = _declared_last_value(d.name, d.secret, last)
             console.print(f"  {escape(d.name)} = {escape(shown)}{_declared_schema_suffix(d)}")
     if unmanaged:
+        from .langs.prompt import analyzer as prompt_analyzer
+
         console.print(
             gettext("Detected but not yet managed: %(names)s (use --add to manage them)")
-            % {"names": ", ".join(escape(n) for n in unmanaged)}
+            % {"names": escape(prompt_analyzer.preview_names(unmanaged))}
         )
     if gone:
         console.print(
@@ -2055,7 +2122,7 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
         self_locating = (
             entry_spec.injector is not None and entry_spec.analyzer.analyze(text).uses_self_location
         )
-    if entry_spec is not None and entry_spec.kind == "prompt":
+    if entry_spec is not None and entry_spec.kind == "prompt" and entry.meta.interpolate:
         # The prompt's "detected but unmanaged" sweep is a fresh body scan, not the
         # analyzer/reconcile machinery (command-kind parity: spec.analyzer is None).
         managed_names = set(entry.meta.params or [])
@@ -2071,6 +2138,7 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
         }
         if entry.meta.kind == "prompt":
             payload["runner"] = entry.meta.runner or None
+            payload["interpolate"] = entry.meta.interpolate
         console.print_json(json.dumps(payload, ensure_ascii=False))
         return
     if entry_spec is not None and entry_spec.placeholder_params:
@@ -2251,6 +2319,14 @@ def params(
         ),
         autocompletion=_complete_runner,
     ),
+    interpolate_opt: bool = typer.Option(
+        None,
+        "--interpolate/--no-interpolate",
+        help=gettext(
+            "Prompt only: turn variable insertion on/off for this prompt (off = the body "
+            "travels exactly as written)"
+        ),
+    ),
     as_json: bool = typer.Option(False, "--json", help=gettext("Output the read view as JSON")),
 ) -> None:
     """Show a script's parameters, or edit their definitions when any change flag is given.
@@ -2272,6 +2348,11 @@ def params(
     help_texts, bad_help = _parse_kv_opts(help_text_opt or [], "--help-text")
 
     entry_spec = spec_for(entry.meta.kind)
+    if interpolate_opt is not None:
+        # Its own op, like --runner: flipping the master switch changes what the entry
+        # IS at run time, so it never mixes into the schema-edit pass.
+        _set_prompt_interpolate(entry, interpolate_opt)
+        return
     if runner_pin is not None:
         # Its own op, like --normalize: re-pinning changes how the entry LAUNCHES, so
         # mixing it into the schema-edit pass would make the outcome order-dependent.
@@ -2398,6 +2479,25 @@ def _pin_prompt_runner(entry: store.Entry, runner_pin: str) -> None:
     else:
         console.print(
             f"[green]{gettext('Cleared the runner pin — %(name)s asks at run time.') % {'name': escape(entry.meta.name)}}[/green]"
+        )
+
+
+def _set_prompt_interpolate(entry: store.Entry, interpolate: bool) -> None:
+    """`skit params <prompt> --interpolate/--no-interpolate`: the per-entry insertion
+    master switch. The managed list survives an off/on round trip."""
+    if entry.meta.kind != "prompt":
+        raise _fail(gettext("--interpolate only applies to prompt entries."), 1)
+    try:
+        store.write_prompt_interpolate(entry.slug, interpolate)
+    except store.StoreError as exc:
+        raise _fail(str(exc), 1) from exc
+    if interpolate:
+        console.print(
+            f"[green]{gettext('Variable insertion is on — %(name)s fills its managed placeholders again.') % {'name': escape(entry.meta.name)}}[/green]"
+        )
+    else:
+        console.print(
+            f"[green]{gettext('Variable insertion is off — %(name)s travels to the agent exactly as written.') % {'name': escape(entry.meta.name)}}[/green]"
         )
 
 
@@ -2995,8 +3095,9 @@ def _drifted_entries(entries: list[store.Entry]) -> list[str]:
         spec = spec_for(e.meta.kind)
         if spec is not None and spec.kind == "prompt":
             # Prompt drift is a fresh body scan (no analyzer capability, command-kind
-            # parity): a MANAGED placeholder the body no longer contains.
-            if e.script_path.exists():
+            # parity): a MANAGED placeholder the body no longer contains. An
+            # insertion-off prompt can't drift — nothing is filled.
+            if e.meta.interpolate and e.script_path.exists():
                 fresh = set(_prompt_body_placeholders(e))
                 if any(name not in fresh for name in e.meta.params or []):
                     out.append(e.meta.name)

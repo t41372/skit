@@ -339,19 +339,20 @@ class PromptRunner:
 # amp has no interactive-with-initial-prompt form, so its seed is the closest equivalent
 # (`amp -x` executes the prompt). All of it is user-editable data, not code.
 PROMPT_RUNNER_SEEDS: tuple[PromptRunner, ...] = (
-    PromptRunner("claude", ("claude", "{prompt}")),
-    PromptRunner("codex", ("codex", "{prompt}")),
-    PromptRunner("opencode", ("opencode", "--prompt", "{prompt}")),
-    PromptRunner("amp", ("amp", "-x", "{prompt}")),
-    PromptRunner("antigravity", ("antigravity", "{prompt}")),
+    PromptRunner("claude", ("claude", "{{prompt}}")),
+    PromptRunner("codex", ("codex", "{{prompt}}")),
+    PromptRunner("opencode", ("opencode", "--prompt", "{{prompt}}")),
+    PromptRunner("amp", ("amp", "-x", "{{prompt}}")),
+    PromptRunner("antigravity", ("antigravity", "{{prompt}}")),
 )
 
 
 def validate_prompt_runner_argv(argv: list[str]) -> str | None:
     """Whether an argv token list is a well-formed runner template, as a symbolic reason
     id (None = valid; the CLI owns the human wording). Rules: non-empty, all strings,
-    exactly one `{prompt}` token across all tokens, never in argv[0] (the binary), and
-    no other `{holes}` (per-runner parameters are explicitly out of v1)."""
+    exactly one `{{prompt}}` token across all tokens, never in argv[0] (the binary), and
+    no other `{{holes}}` (per-runner parameters are explicitly out of v1). Single-brace
+    text is a literal on this surface — a tool's own `{x}` syntax passes untouched."""
     if not argv or not all(isinstance(t, str) and t for t in argv):
         return "empty"
     from .langs.prompt.analyzer import RESERVED_NAME, TOKEN_RE
@@ -359,10 +360,7 @@ def validate_prompt_runner_argv(argv: list[str]) -> str | None:
     prompt_slots = 0
     for i, token in enumerate(argv):
         for m in TOKEN_RE.finditer(token):
-            name = m.group(1)
-            if name is None:
-                continue  # {{ / }} escapes are literal braces, always fine
-            if name != RESERVED_NAME:
+            if m.group(1) != RESERVED_NAME:
                 return "stray-hole"
             if i == 0:
                 return "prompt-in-binary"

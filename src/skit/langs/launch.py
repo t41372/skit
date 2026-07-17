@@ -558,7 +558,8 @@ class PromptLaunch:
                 gettext("Can't read %(path)s: %(error)s")
                 % {"path": str(script), "error": exc.strerror or str(exc)}
             ) from exc
-        rendered = render.render_body(text, values or {}, list(entry.meta.params or []))
+        managed = list(entry.meta.params or []) if entry.meta.interpolate else []
+        rendered = render.render_body(text, values or {}, managed)
         argv = render.fill_runner_argv([binary, *chosen.argv[1:]], rendered)
         # Extra argv appends after the runner template (TemplateLaunch parity): per-run
         # agent flags pass through `skit run <prompt> -- --model …`. takes_argv=False
@@ -588,14 +589,15 @@ class PromptLaunch:
             from .. import config
 
             runner = config.find_prompt_runner(entry.meta.runner)
-        argv = list(runner.argv) if runner is not None else [entry.meta.runner or "?", "{prompt}"]
+        argv = list(runner.argv) if runner is not None else [entry.meta.runner or "?", "{{prompt}}"]
         script = script_override or entry.script_path
         try:
             text = script.read_bytes().decode("utf-8", errors="replace")
         except OSError:
             return join_for_display([*argv, *extra])
+        managed = list(entry.meta.params or []) if entry.meta.interpolate else []
         try:
-            rendered = render.render_body(text, values or {}, list(entry.meta.params or []))
+            rendered = render.render_body(text, values or {}, managed)
         except LaunchError:
             return join_for_display([*argv, *extra])
         return join_for_display([*render.fill_runner_argv(argv, rendered), *extra])

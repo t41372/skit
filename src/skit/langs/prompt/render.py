@@ -3,9 +3,13 @@
 This deliberately does NOT reuse ``TemplateLaunch._render``: that body wraps every
 substituted value in ``quote_for_shell`` — correct for a ``ShellLaunch`` command string,
 corrupting for prompt text (the agent would read literal quotes around every value).
-Only the token pattern is shared (via analyzer.TOKEN_RE). Both stages are single passes
-over the ORIGINAL text built from match spans, so replacement text is never re-scanned —
-a value that itself contains ``{name}`` or ``{{`` arrives byte-identical.
+Both stages are single passes over the ORIGINAL text built from match spans, so
+replacement text is never re-scanned — a value that itself contains ``{{name}}``
+arrives byte-identical.
+
+There is NO escape handling on this surface (see analyzer.py): a token that isn't a
+MANAGED ``{{name}}`` — any other brace shape included — is left byte-identical. The
+render can only ever change the spans the user explicitly manages.
 """
 
 from __future__ import annotations
@@ -21,19 +25,19 @@ if TYPE_CHECKING:
     import re
 
 # The whole assembled command line must stay under the platform's argv ceiling: Windows
-# caps CreateProcess at 32767 chars; Linux caps a SINGLE argv string at 128 KiB
-# (MAX_ARG_STRLEN). Checked with headroom so the refusal is skit's clean LaunchError,
-# never a raw OS error mid-spawn.
+# caps CreateProcess at 32767 UTF-16 units; Linux caps a SINGLE argv string at 128 KiB
+# (MAX_ARG_STRLEN). Both are byte-ish bounds, so the check measures UTF-8 bytes with
+# headroom — the refusal is skit's clean LaunchError, never a raw OS error mid-spawn.
 ARGV_LIMIT = 30_000 if sys.platform == "win32" else 100_000
 
 
 def render_body(text: str, values: dict[str, str], managed: list[str]) -> str:
-    """Stage 1: fill the body's MANAGED placeholders from ``values``, raw.
+    """Stage 1: fill the body's MANAGED ``{{placeholder}}`` tokens from ``values``, raw.
 
-    ``{{``/``}}`` unescape to literal braces (command-template parity); an unmanaged
-    ``{name}`` passes through verbatim. A managed name with no value at all raises the
-    same missing-values LaunchError contract as ``TemplateLaunch._render`` (assembly
-    normally delivers every field's key, so this only fires on degenerate callers)."""
+    Everything else — unmanaged ``{{name}}``, single braces, triple-stache — passes
+    through byte-identical. A managed name with no value at all raises the same
+    missing-values LaunchError contract as ``TemplateLaunch._render`` (assembly normally
+    delivers every field's key, so this only fires on degenerate callers)."""
     missing = [name for name in managed if name not in values]
     if missing:
         raise LaunchError(
@@ -42,33 +46,23 @@ def render_body(text: str, values: dict[str, str], managed: list[str]) -> str:
     managed_set = set(managed)
 
     def repl(m: re.Match[str]) -> str:
-        matched = m.group(0)
-        if matched == "{{":
-            return "{"
-        if matched == "}}":
-            return "}"
         name = m.group(1)
-        if name is None or name not in managed_set:
-            return matched
+        if name not in managed_set:
+            return m.group(0)
         return values[name]
 
     return TOKEN_RE.sub(repl, text)
 
 
 def fill_runner_argv(argv: list[str], rendered: str) -> list[str]:
-    """Stage 2: substitute the rendered prompt into the runner argv's one ``{prompt}``
-    token, raw, inside its token — the result is real argv, no shell ever sees it.
-    ``{{``/``}}`` unescape in runner tokens too (same grammar everywhere)."""
+    """Stage 2: substitute the rendered prompt into the runner argv's one ``{{prompt}}``
+    token, raw, inside its token — the result is real argv, no shell ever sees it. Any
+    other brace shape in a runner token is a literal and stays byte-identical."""
 
     def repl(m: re.Match[str]) -> str:
-        matched = m.group(0)
-        if matched == "{{":
-            return "{"
-        if matched == "}}":
-            return "}"
         if m.group(1) == RESERVED_NAME:
             return rendered
-        return matched
+        return m.group(0)
 
     return [TOKEN_RE.sub(repl, token) for token in argv]
 

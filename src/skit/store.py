@@ -358,21 +358,31 @@ def add_prompt(
     description: str | None = None,
     managed: list[str] | None = None,
     runner: str = "",
+    interpolate: bool = True,
 ) -> Entry:
     """Add a prompt entry (docs/design/prompt.md). Mirrors add_script's copy/reference
     semantics with the prompt kind's own defaults: workdir is PINNED to "invoke" in both
     modes (agents work on the repo the user is standing in, never the prompt file's
     directory), `managed` is the placeholder names the form asks for (None = every
-    detected candidate — the CLI's tick step passes the kept subset), and `runner` is
-    the optional pinned PromptRunner name."""
+    detected candidate — the CLI's tick step passes the kept subset), `runner` is the
+    optional pinned PromptRunner name, and `interpolate=False` turns variable insertion
+    off outright (nothing scanned, nothing managed, the body travels verbatim).
+
+    Flood guard: `managed=None` (the auto path — `--no-input`, the TUI direct lane) caps
+    at AUTO_MANAGE_LIMIT detections. A long prompt that trips more was clearly not
+    written for insertion, and auto-managing hundreds of required fields would make the
+    entry unrunnable; nothing is managed instead (an EXPLICIT `managed` list is always
+    honored — the user asked)."""
     source = source.expanduser().resolve()
     if not source.is_file():
         raise StoreError(gettext("File not found: %(path)s") % {"path": str(source)})
     text = source.read_text(encoding="utf-8", errors="replace")
     from .langs.prompt import analyzer as prompt_analyzer
 
-    detected = prompt_analyzer.placeholder_names(text)
-    if managed is None:
+    detected = prompt_analyzer.placeholder_names(text) if interpolate else []
+    if not interpolate or (managed is None and len(detected) > prompt_analyzer.AUTO_MANAGE_LIMIT):
+        resolved_managed: list[str] = []
+    elif managed is None:
         resolved_managed = detected
     else:
         unknown = [n for n in managed if n not in detected]
@@ -394,6 +404,7 @@ def add_prompt(
         description=desc,
         params=resolved_managed or None,
         runner=runner,
+        interpolate=interpolate,
     )
     return _add_entry(meta, payload=source if mode == "copy" else None)
 
@@ -408,6 +419,18 @@ def write_prompt_managed(name_or_slug: str, managed: list[str]) -> Entry:
         raise StoreUsageError(gettext("%(name)s isn't a prompt entry.") % {"name": entry.meta.name})
     meta = entry.meta
     meta.params = managed or None
+    _write_meta(entry.dir, meta)
+    return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
+
+
+def write_prompt_interpolate(name_or_slug: str, interpolate: bool) -> Entry:
+    """Flip a prompt entry's insertion master switch. The managed list is deliberately
+    NOT cleared on off — switching back on restores exactly what was managed before."""
+    entry = resolve(name_or_slug)
+    if entry.meta.kind != "prompt":
+        raise StoreUsageError(gettext("%(name)s isn't a prompt entry.") % {"name": entry.meta.name})
+    meta = entry.meta
+    meta.interpolate = interpolate
     _write_meta(entry.dir, meta)
     return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 

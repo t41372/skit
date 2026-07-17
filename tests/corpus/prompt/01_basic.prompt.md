@@ -1,4 +1,5 @@
 # Review helper
 
-Review {target} for {focus}. Again: {target}.
-Escaped: {{literal}} and JSON sample {"key": 1} and {x}
+Review {{target}} for {{focus}}. Again: {{target}}.
+Literals: {code} and JSON {"key": 1} and f'{value}' and {{{handlebars}}}
+Unmanaged hole: {{x}}

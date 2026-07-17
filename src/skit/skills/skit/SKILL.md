@@ -173,36 +173,45 @@ skit preset delete <name> nightly
 ## Prompts & runners
 
 A **prompt** entry is a reusable, parameterized piece of text for an AI coding agent:
-`{placeholder}` holes become form fields / `--set` targets, and the rendered text is
-handed to a **runner** — a configured agent CLI (claude, codex, opencode, amp,
-antigravity are preconfigured; `{{` and `}}` write literal braces). The rendered
-prompt travels as ONE process argument, never through a shell.
+`{{placeholder}}` holes (double braces, identifier names) become form fields / `--set`
+targets, and the rendered text is handed to a **runner** — a configured agent CLI
+(claude, codex, opencode, amp, antigravity are preconfigured). There are NO escape
+sequences: single-brace text (JSON, `${VAR}`, f-strings) is never a placeholder, and an
+unmanaged `{{hole}}` passes through byte-identical — skit only ever touches the spans
+that are managed. The rendered prompt travels as ONE process argument, never through a
+shell.
 
 ```bash
-skit add notes/review.prompt.md --no-input            # kind inferred; every {hole} managed
+skit add notes/review.prompt.md --no-input            # kind inferred; detected {{holes}} managed
 skit add notes/spec.md --prompt --no-input            # bare .md needs the explicit flag
 skit add - --prompt --name review -d "Review a file" --no-input   # body on stdin
 skit add notes/review.prompt.md --runner claude --no-input        # pin the agent up front
-skit show <name> --json           # adds "runner" (the pin or null) and "runners_available"
+skit add big.prompt.md --prompt --no-interpolate --no-input       # no insertion at all
+skit show <name> --json           # adds "runner", "runners_available", "interpolate"
 skit run <name> --runner claude --set target=src/app.py --no-input
 skit params <name> --runner claude   # pin the agent (empty value clears the pin)
-skit params <name> --add extra_hole  # manage a {hole} typed into the body later
+skit params <name> --add extra_hole  # manage a {{hole}} typed into the body later
 skit params <name> --rm noise        # unmanage a false positive (it stays verbatim text)
+skit params <name> --no-interpolate  # switch insertion off; --interpolate turns it back on
 ```
 
 - **A run needs a runner.** Resolution is `--runner` > the entry's pin > exit 126 —
   never a guess (interactive terminals get asked; `--no-input` never does). Check
   `runners_available` in `skit show <name> --json` before picking.
-- Prompts contain code snippets, so a detected `{hole}` can be a false positive:
-  unmanaged holes pass through to the agent verbatim. `skit params <name> --json`
-  lists `placeholders` (managed), `unmanaged`, and `runner`.
+- Prompts contain code snippets, so a detected `{{hole}}` can be a false positive:
+  unmanaged holes pass through to the agent verbatim, `--rm` unmanages, and
+  `--no-interpolate` switches the whole entry to verbatim delivery. `skit params
+  <name> --json` lists `placeholders` (managed), `unmanaged`, `runner`, `interpolate`.
+- **Flood guard:** past 30 detected holes an add manages NOTHING automatically (the
+  prompt clearly wasn't written for insertion; stderr says so) — `--add` the ones you
+  need, or add with `--no-interpolate`.
 - Runners are user-editable config. `skit runner list --json` shows them; register a
-  custom tool with the argv after `--`, `{prompt}` marking where the rendered text
-  lands (exactly one slot, never the first word):
+  custom tool with the argv after `--`, `{{prompt}}` marking where the rendered text
+  lands (exactly one slot, never the first word; single-brace text is literal):
 
 ```bash
 skit runner list --json                       # [{"name": …, "argv": […]}]
-skit runner add mycli -- mycli run {prompt}   # each word = one argument, no shell
+skit runner add mycli -- mycli run {{prompt}} # each word = one argument, no shell
 skit runner remove mycli
 ```
 

@@ -243,6 +243,11 @@ def _placeholder_body_plan(entry: Entry) -> FormPlan:
     says its value would be ignored — the same honesty the in-file kinds get from
     reconcile. An unreadable/missing body degrades to the extra-args-only plan;
     preflight owns existence errors (the form layer never invents fields)."""
+    if not entry.meta.interpolate:
+        # Insertion is switched off for this prompt: no fields, no candidate scanning,
+        # no drift — the body travels verbatim and the run form is just the runner
+        # picker. (The managed list survives underneath for a later switch-on.)
+        return FormPlan(source="command")
     managed = list(entry.meta.params or [])
     try:
         text = entry.script_path.read_text(encoding="utf-8", errors="replace")

@@ -51,7 +51,7 @@ def spawn_spy(monkeypatch):
 
 
 def test_add_prompt_file_no_input_manages_everything(tmp_path):
-    src = _write(tmp_path, "# Review\n\nCheck {target} for {focus}\n")
+    src = _write(tmp_path, "# Review\n\nCheck {{target}} for {{focus}}\n")
     result = runner.invoke(cli.app, ["add", str(src), "--no-input"])
     assert result.exit_code == 0, result.output
     entry = store.resolve("p")
@@ -62,7 +62,7 @@ def test_add_prompt_file_no_input_manages_everything(tmp_path):
 
 
 def test_add_prompt_interactive_tick_subset_and_runner_pick(tmp_path):
-    src = _write(tmp_path, "{a} {b} {c}\n")
+    src = _write(tmp_path, "{{a}} {{b}} {{c}}\n")
     result = (
         runner.invoke(
             cli.app,
@@ -83,7 +83,7 @@ def test_add_prompt_interactive_selection(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     answers = iter(["1,3", "-"])
     monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: next(answers)))
-    src = _write(tmp_path, "{a} {b} {c}\n")
+    src = _write(tmp_path, "{{a}} {{b}} {{c}}\n")
     result = runner.invoke(cli.app, ["add", str(src), "-n", "picky"])
     assert result.exit_code == 0, result.output
     entry = store.resolve("picky")
@@ -96,7 +96,7 @@ def test_add_prompt_interactive_runner_pick_pins_and_remembers(tmp_path, monkeyp
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     answers = iter(["all", "codex"])
     monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: next(answers)))
-    src = _write(tmp_path, "{a}\n")
+    src = _write(tmp_path, "{{a}}\n")
     result = runner.invoke(cli.app, ["add", str(src), "-n", "pinned"])
     assert result.exit_code == 0, result.output
     assert store.resolve("pinned").meta.runner == "codex"
@@ -105,7 +105,7 @@ def test_add_prompt_interactive_runner_pick_pins_and_remembers(tmp_path, monkeyp
 
 
 def test_add_prompt_runner_flag_non_interactive(tmp_path):
-    src = _write(tmp_path, "{a}\n")
+    src = _write(tmp_path, "{{a}}\n")
     result = runner.invoke(
         cli.app, ["add", str(src), "-n", "auto", "--runner", "claude", "--no-input"]
     )
@@ -115,7 +115,7 @@ def test_add_prompt_runner_flag_non_interactive(tmp_path):
 
 
 def test_add_prompt_unknown_runner_flag_is_usage_error(tmp_path):
-    src = _write(tmp_path, "{a}\n")
+    src = _write(tmp_path, "{{a}}\n")
     result = runner.invoke(cli.app, ["add", str(src), "-n", "x", "--runner", "ghost", "--no-input"])
     assert result.exit_code == 2
     assert "Unknown runner" in result.output
@@ -130,7 +130,7 @@ def test_add_runner_flag_without_prompt_is_refused(tmp_path):
 
 
 def test_add_prompt_conflicts_with_other_kind_flags(tmp_path):
-    src = _write(tmp_path, "{a}\n")
+    src = _write(tmp_path, "{{a}}\n")
     for flags in (["--exe"], ["--kind", "shell"], ["--edit"], ["--cmd", "echo {x}"]):
         result = runner.invoke(cli.app, ["add", str(src), "--prompt", *flags])
         assert result.exit_code == 2, flags
@@ -139,14 +139,14 @@ def test_add_prompt_conflicts_with_other_kind_flags(tmp_path):
 
 def test_add_prompt_flag_forces_the_kind_on_any_extension(tmp_path):
     src = tmp_path / "notes.txt"
-    src.write_text("Do {thing}\n", encoding="utf-8")
+    src.write_text("Do {{thing}}\n", encoding="utf-8")
     result = runner.invoke(cli.app, ["add", str(src), "--prompt", "--no-input"])
     assert result.exit_code == 0, result.output
     assert store.resolve("notes").meta.kind == "prompt"
 
 
 def test_add_bare_md_no_input_requires_explicit_prompt(tmp_path):
-    src = _write(tmp_path, "hello {x}\n", name="notes.md")
+    src = _write(tmp_path, "hello {{x}}\n", name="notes.md")
     result = runner.invoke(cli.app, ["add", str(src), "--no-input"])
     assert result.exit_code == 2
     assert "--prompt" in result.output
@@ -156,7 +156,7 @@ def test_add_bare_md_interactive_ask_yes_and_no(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     monkeypatch.setattr(cli.Confirm, "ask", staticmethod(lambda *a, **k: True))
     monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: "-"))
-    src = _write(tmp_path, "hello {x}\n", name="notes.md")
+    src = _write(tmp_path, "hello {{x}}\n", name="notes.md")
     result = runner.invoke(cli.app, ["add", str(src)])
     assert result.exit_code == 0, result.output
     assert store.resolve("notes").meta.kind == "prompt"
@@ -169,7 +169,7 @@ def test_add_bare_md_interactive_ask_yes_and_no(tmp_path, monkeypatch):
 
 
 def test_add_prompt_from_stdin_needs_a_name(tmp_path):
-    result = runner.invoke(cli.app, ["add", "-", "--prompt"], input="body {x}\n")
+    result = runner.invoke(cli.app, ["add", "-", "--prompt"], input="body {{x}}\n")
     assert result.exit_code == 2
     assert "--name" in result.output
 
@@ -178,14 +178,14 @@ def test_add_prompt_from_stdin(tmp_path):
     result = runner.invoke(
         cli.app,
         ["add", "-", "--prompt", "-n", "clip", "--runner", "amp"],
-        input="Summarize {url} briefly.\n",
+        input="Summarize {{url}} briefly.\n",
     )
     assert result.exit_code == 0, result.output
     entry = store.resolve("clip")
     assert entry.meta.kind == "prompt"
     assert entry.meta.params == ["url"]
     assert entry.meta.runner == "amp"
-    assert entry.script_path.read_text() == "Summarize {url} briefly.\n"
+    assert entry.script_path.read_text() == "Summarize {{url}} briefly.\n"
 
 
 def test_add_prompt_from_stdin_empty_body(tmp_path):
@@ -196,7 +196,7 @@ def test_add_prompt_from_stdin_empty_body(tmp_path):
 
 def test_add_prompt_editor_lane_routes_to_stdin_when_not_interactive(tmp_path):
     # `skit add --prompt` with no path, no TTY: the body arrives on stdin.
-    result = runner.invoke(cli.app, ["add", "--prompt", "-n", "drafted"], input="Draft {a}\n")
+    result = runner.invoke(cli.app, ["add", "--prompt", "-n", "drafted"], input="Draft {{a}}\n")
     assert result.exit_code == 0, result.output
     assert store.resolve("drafted").meta.params == ["a"]
 
@@ -207,13 +207,13 @@ def test_add_prompt_editor_lane_interactive(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: next(answers)))
 
     def fake_editor(path: Path) -> None:
-        path.write_text("Edited body {v}\n", encoding="utf-8")
+        path.write_text("Edited body {{v}}\n", encoding="utf-8")
 
     monkeypatch.setattr(cli.editor, "open_in_editor", fake_editor)
     result = runner.invoke(cli.app, ["add", "--prompt", "-n", "note"])
     assert result.exit_code == 0, result.output
     entry = store.resolve("note")
-    assert entry.script_path.read_text() == "Edited body {v}\n"
+    assert entry.script_path.read_text() == "Edited body {{v}}\n"
     assert entry.meta.params == ["v"]
 
 
@@ -235,7 +235,7 @@ def test_add_prompt_editor_lane_asks_for_a_name(tmp_path, monkeypatch):
 
 
 def test_add_prompt_ref_mode_keeps_original_and_pins_invoke(tmp_path):
-    src = _write(tmp_path, "Ref {x}\n")
+    src = _write(tmp_path, "Ref {{x}}\n")
     result = runner.invoke(cli.app, ["add", str(src), "--ref", "--no-input"])
     assert result.exit_code == 0, result.output
     entry = store.resolve("p")
@@ -254,7 +254,7 @@ def test_add_prompt_no_path_with_ref_is_refused(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def _added(tmp_path, text="Do {a}\n", name="p", pin=""):
+def _added(tmp_path, text="Do {{a}}\n", name="p", pin=""):
     entry = store.add_prompt(_write(tmp_path, text, name=f"{name}.prompt.md"), name=name)
     if pin:
         entry = store.write_prompt_runner(entry.slug, pin)
@@ -341,7 +341,7 @@ def test_run_prompt_interactive_ask_prefilled_from_last_picked(tmp_path, spawn_s
 
 
 def test_run_prompt_dry_run_prints_the_resolved_argv(tmp_path):
-    _added(tmp_path, text="Say {a}!\n")
+    _added(tmp_path, text="Say {{a}}!\n")
     result = runner.invoke(
         cli.app,
         ["run", "p", "--runner", "claude", "--set", "a=hello world", "--no-input", "--dry-run"],
@@ -362,7 +362,7 @@ def test_run_prompt_extra_args_pass_through_after_dashes(tmp_path, spawn_spy):
 
 
 def test_run_prompt_secret_placeholder_masked_in_dry_run(tmp_path):
-    _added(tmp_path, text="Use {api_key}\n", name="sec")
+    _added(tmp_path, text="Use {{api_key}}\n", name="sec")
     result = runner.invoke(
         cli.app,
         ["run", "sec", "--runner", "claude", "--set", "api_key=hunter2", "--no-input", "--dry-run"],
@@ -378,9 +378,9 @@ def test_run_prompt_secret_placeholder_masked_in_dry_run(tmp_path):
 
 
 def test_params_read_view_shows_unmanaged_and_gone(tmp_path):
-    entry = _added(tmp_path, text="{a} {b}\n")
+    entry = _added(tmp_path, text="{{a}} {{b}}\n")
     store.write_prompt_managed(entry.slug, ["a"])
-    entry.script_path.write_text("{b} {c} only\n", encoding="utf-8")
+    entry.script_path.write_text("{{b}} {{c}} only\n", encoding="utf-8")
     result = runner.invoke(cli.app, ["params", "p"])
     assert result.exit_code == 0, result.output
     assert "Prompt placeholders" in result.output
@@ -390,7 +390,7 @@ def test_params_read_view_shows_unmanaged_and_gone(tmp_path):
 
 
 def test_params_json_carries_runner_and_unmanaged(tmp_path):
-    entry = _added(tmp_path, text="{a} {b}\n", pin="claude")
+    entry = _added(tmp_path, text="{{a}} {{b}}\n", pin="claude")
     store.write_prompt_managed(entry.slug, ["a"])
     result = runner.invoke(cli.app, ["params", "p", "--json"])
     assert result.exit_code == 0, result.output
@@ -401,7 +401,7 @@ def test_params_json_carries_runner_and_unmanaged(tmp_path):
 
 
 def test_params_add_manages_a_body_placeholder(tmp_path):
-    entry = _added(tmp_path, text="{a} {b}\n")
+    entry = _added(tmp_path, text="{{a}} {{b}}\n")
     store.write_prompt_managed(entry.slug, ["a"])
     result = runner.invoke(cli.app, ["params", "p", "--add", "b"])
     assert result.exit_code == 0, result.output
@@ -412,7 +412,7 @@ def test_params_add_manages_a_body_placeholder(tmp_path):
 
 
 def test_params_rm_unmanages_even_without_a_declared_row(tmp_path):
-    _added(tmp_path, text="{a} {b}\n")
+    _added(tmp_path, text="{{a}} {{b}}\n")
     result = runner.invoke(cli.app, ["params", "p", "--rm", "b"])
     assert result.exit_code == 0, result.output
     assert store.resolve("p").meta.params == ["a"]
@@ -421,7 +421,7 @@ def test_params_rm_unmanages_even_without_a_declared_row(tmp_path):
 
 
 def test_params_add_unknown_name_becomes_env_rider(tmp_path):
-    _added(tmp_path, text="{a}\n")
+    _added(tmp_path, text="{{a}}\n")
     result = runner.invoke(cli.app, ["params", "p", "--add", "EXTRA"])
     assert result.exit_code == 0, result.output
     assert store.resolve("p").meta.params == ["a"]  # not a body hole — not managed
@@ -429,7 +429,7 @@ def test_params_add_unknown_name_becomes_env_rider(tmp_path):
 
 
 def test_params_deliver_placeholder_is_allowed_on_prompts(tmp_path):
-    entry = _added(tmp_path, text="{a}\n")
+    entry = _added(tmp_path, text="{{a}}\n")
     store.write_parameters(entry.slug, [ParamDeclFactory("a")])
     result = runner.invoke(cli.app, ["params", "p", "--deliver", "a=placeholder"])
     assert result.exit_code == 0, result.output
@@ -517,7 +517,7 @@ def test_runner_list_materializes_the_seeds(tmp_path):
 
 def test_runner_list_json(tmp_path):
     payload = json.loads(runner.invoke(cli.app, ["runner", "list", "--json"]).output)
-    assert {"name": "claude", "argv": ["claude", "{prompt}"]} in payload
+    assert {"name": "claude", "argv": ["claude", "{{prompt}}"]} in payload
 
 
 def test_runner_list_empty_state(tmp_path):
@@ -530,19 +530,19 @@ def test_runner_list_empty_state(tmp_path):
 def test_runner_add_with_flag_bearing_argv(tmp_path):
     result = runner.invoke(
         cli.app,
-        ["runner", "add", "sonnet", "claude", "--model", "sonnet", "{prompt}"],
+        ["runner", "add", "sonnet", "claude", "--model", "sonnet", "{{prompt}}"],
     )
     assert result.exit_code == 0, result.output
     assert config.find_prompt_runner("sonnet") == config.PromptRunner(
-        "sonnet", ("claude", "--model", "sonnet", "{prompt}")
+        "sonnet", ("claude", "--model", "sonnet", "{{prompt}}")
     )
 
 
 def test_runner_add_validation_errors(tmp_path):
     cases = {
         ("noslot", "claude"): "exactly once",
-        ("bin", "{prompt}"): "first word",
-        ("stray", "x", "{other}"): "no placeholders besides",
+        ("bin", "{{prompt}}"): "first word",
+        ("stray", "x", "{{other}}"): "only the {{prompt}} slot",
     }
     for argv, needle in cases.items():
         result = runner.invoke(cli.app, ["runner", "add", *argv])
@@ -554,7 +554,7 @@ def test_runner_add_validation_errors(tmp_path):
 
 
 def test_runner_add_duplicate_name_refused(tmp_path):
-    result = runner.invoke(cli.app, ["runner", "add", "claude", "x", "{prompt}"])
+    result = runner.invoke(cli.app, ["runner", "add", "claude", "x", "{{prompt}}"])
     assert result.exit_code == 1
     assert "already exists" in result.output
 
@@ -581,7 +581,7 @@ def test_removing_every_runner_stays_empty(tmp_path):
 
 
 def test_doctor_reports_prompt_drift_and_bad_runner_rows(tmp_path):
-    entry = _added(tmp_path, text="{a}\n")
+    entry = _added(tmp_path, text="{{a}}\n")
     entry.script_path.write_text("no holes\n", encoding="utf-8")
     config.save_config(
         {
@@ -600,7 +600,7 @@ def test_doctor_reports_prompt_drift_and_bad_runner_rows(tmp_path):
 
 
 def test_doctor_healthy_prompt_reports_no_drift(tmp_path):
-    _added(tmp_path, text="{a}\n")
+    _added(tmp_path, text="{{a}}\n")
     payload = json.loads(runner.invoke(cli.app, ["doctor", "--json"]).output)
     assert payload["drift"] == []
     assert payload["runner_rows_invalid"] == []
@@ -648,7 +648,7 @@ def test_add_prompt_editor_lane_reports_store_errors(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     answers = iter(["taken", "all", "-", "all", "-"])
     monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: next(answers)))
-    monkeypatch.setattr(cli.editor, "open_in_editor", lambda path: path.write_text("body {x}\n"))
+    monkeypatch.setattr(cli.editor, "open_in_editor", lambda path: path.write_text("body {{x}}\n"))
     store.add_command("echo hi", name="taken")  # the editor lane's add will collide
     result = runner.invoke(cli.app, ["add", "--prompt"])  # name asked interactively
     assert result.exit_code == 1
@@ -663,7 +663,7 @@ def test_add_prompt_stdin_lane_reports_store_errors(tmp_path):
 
 
 def test_params_view_survives_an_unreadable_reference_body(tmp_path):
-    src = _write(tmp_path, "{a}\n")
+    src = _write(tmp_path, "{{a}}\n")
     store.add_prompt(src, mode="reference")
     src.unlink()  # the original vanished: fresh scan degrades to "no candidates"
     result = runner.invoke(cli.app, ["params", "p"])
@@ -684,8 +684,174 @@ def test_params_runner_pin_reports_store_errors(tmp_path, monkeypatch):
 
 
 def test_doctor_skips_a_prompt_whose_body_is_gone(tmp_path):
-    entry = _added(tmp_path, text="{a}\n")
+    entry = _added(tmp_path, text="{{a}}\n")
     entry.script_path.unlink()
     payload = json.loads(runner.invoke(cli.app, ["doctor", "--json"]).output)
     assert payload["drift"] == []  # missing is missing's problem, not drift's
     assert "p" in payload["missing"]
+
+
+# --------------------------------------------------------------------------
+# the interpolate switch + flood caps (CLI surfaces)
+# --------------------------------------------------------------------------
+
+
+def test_add_no_interpolate(tmp_path):
+    src = _write(tmp_path, "{{a}} {{b}}\n")
+    result = runner.invoke(cli.app, ["add", str(src), "--no-interpolate", "--no-input"])
+    assert result.exit_code == 0, result.output
+    entry = store.resolve("p")
+    assert entry.meta.interpolate is False
+    assert entry.meta.params is None
+    assert "insertion is off" in result.output.lower()
+
+
+def test_add_no_interpolate_refused_off_the_prompt_lanes(tmp_path):
+    py = tmp_path / "s.py"
+    py.write_text("print(1)\n")
+    result = runner.invoke(cli.app, ["add", str(py), "--no-interpolate", "--no-input"])
+    assert result.exit_code == 2
+    assert "--no-interpolate only applies to prompt entries" in result.output
+    result = runner.invoke(cli.app, ["add", "--cmd", "echo hi", "-n", "c", "--no-interpolate"])
+    assert result.exit_code == 2
+
+
+def test_add_no_interpolate_through_stdin_lane(tmp_path):
+    result = runner.invoke(
+        cli.app,
+        ["add", "-", "--prompt", "-n", "clip", "--no-interpolate"],
+        input="Body {{x}}\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert store.resolve("clip").meta.interpolate is False
+
+
+def test_add_interactive_off_answer_disables_insertion(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    answers = iter(["off", "-"])
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: next(answers)))
+    src = _write(tmp_path, "{{a}} {{b}}\n")
+    result = runner.invoke(cli.app, ["add", str(src), "-n", "quiet"])
+    assert result.exit_code == 0, result.output
+    entry = store.resolve("quiet")
+    assert entry.meta.interpolate is False
+    assert entry.meta.params is None
+
+
+def test_add_flood_cap_manages_nothing_and_says_so(tmp_path):
+    from skit.langs.prompt.analyzer import AUTO_MANAGE_LIMIT
+
+    many = " ".join("{{h" + str(i) + "}}" for i in range(AUTO_MANAGE_LIMIT + 5))
+    src = _write(tmp_path, many + "\n")
+    result = runner.invoke(cli.app, ["add", str(src), "--no-input"])
+    assert result.exit_code == 0, result.output
+    assert store.resolve("p").meta.params is None
+    assert "too many to manage automatically" in result.output
+
+
+def test_add_interactive_flood_defaults_to_none_and_caps_the_listing(tmp_path, monkeypatch):
+    from skit.langs.prompt.analyzer import AUTO_MANAGE_LIMIT, LIST_PREVIEW_LIMIT
+
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    seen: dict[str, object] = {}
+
+    def fake_ask(*a, **k):
+        if "Manage which" in a[0]:
+            seen["default"] = k.get("default")
+            return k.get("default")
+        return "-"
+
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(fake_ask))
+    many = " ".join("{{h" + str(i) + "}}" for i in range(AUTO_MANAGE_LIMIT + 5))
+    src = _write(tmp_path, many + "\n")
+    result = runner.invoke(cli.app, ["add", str(src), "-n", "big"])
+    assert result.exit_code == 0, result.output
+    assert seen["default"] == "none"  # flood flips the interactive default
+    assert f"…and {AUTO_MANAGE_LIMIT + 5 - LIST_PREVIEW_LIMIT} more" in result.output
+    assert store.resolve("big").meta.params is None
+
+
+def test_add_interactive_explicit_all_beats_the_flood_cap(tmp_path, monkeypatch):
+    from skit.langs.prompt.analyzer import AUTO_MANAGE_LIMIT
+
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    answers = iter(["all", "-"])
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: next(answers)))
+    many = " ".join("{{h" + str(i) + "}}" for i in range(AUTO_MANAGE_LIMIT + 2))
+    src = _write(tmp_path, many + "\n")
+    result = runner.invoke(cli.app, ["add", str(src), "-n", "all-in"])
+    assert result.exit_code == 0, result.output
+    assert len(store.resolve("all-in").meta.params or []) == AUTO_MANAGE_LIMIT + 2
+
+
+def test_params_interpolate_off_and_on(tmp_path):
+    _added(tmp_path)
+    result = runner.invoke(cli.app, ["params", "p", "--no-interpolate"])
+    assert result.exit_code == 0, result.output
+    assert store.resolve("p").meta.interpolate is False
+    view = runner.invoke(cli.app, ["params", "p"])
+    assert "Variable insertion is off" in view.output
+    payload = json.loads(runner.invoke(cli.app, ["params", "p", "--json"]).output)
+    assert payload["interpolate"] is False
+    assert payload["unmanaged"] == []  # no scanning while off
+    result = runner.invoke(cli.app, ["params", "p", "--interpolate"])
+    assert result.exit_code == 0, result.output
+    assert store.resolve("p").meta.interpolate is True
+    assert store.resolve("p").meta.params == ["a"]  # survived the round trip
+
+
+def test_params_interpolate_reports_store_errors(tmp_path, monkeypatch):
+    _added(tmp_path)
+
+    def boom(slug, on):
+        raise store.StoreError("disk on fire")
+
+    monkeypatch.setattr(cli.store, "write_prompt_interpolate", boom)
+    result = runner.invoke(cli.app, ["params", "p", "--no-interpolate"])
+    assert result.exit_code == 1
+    assert "disk on fire" in result.output
+
+
+def test_params_interpolate_refused_on_non_prompt(tmp_path):
+    store.add_command("echo {m}", name="cmd")
+    result = runner.invoke(cli.app, ["params", "cmd", "--no-interpolate"])
+    assert result.exit_code == 1
+    assert "--interpolate only applies to prompt entries" in result.output
+
+
+def test_params_unmanaged_listing_is_flood_capped(tmp_path):
+    from skit.langs.prompt.analyzer import LIST_PREVIEW_LIMIT
+
+    entry = _added(tmp_path)
+    many = " ".join("{{u" + str(i) + "}}" for i in range(LIST_PREVIEW_LIMIT + 7))
+    entry.script_path.write_text("{{a}} " + many + "\n", encoding="utf-8")
+    result = runner.invoke(cli.app, ["params", "p"])
+    assert result.exit_code == 0, result.output
+    assert "+7" in result.output
+
+
+def test_show_reports_the_interpolate_switch(tmp_path):
+    _added(tmp_path)
+    store.write_prompt_interpolate("p", False)
+    payload = json.loads(runner.invoke(cli.app, ["show", "p", "--json"]).output)
+    assert payload["interpolate"] is False
+    human = runner.invoke(cli.app, ["show", "p"])
+    assert "Variable insertion: off" in human.output
+
+
+def test_doctor_skips_drift_for_an_insertion_off_prompt(tmp_path):
+    entry = _added(tmp_path, text="{{a}}\n")
+    entry.script_path.write_text("gone\n", encoding="utf-8")
+    store.write_prompt_interpolate("p", False)
+    payload = json.loads(runner.invoke(cli.app, ["doctor", "--json"]).output)
+    assert payload["drift"] == []
+
+
+def test_run_insertion_off_prompt_rejects_set_and_sends_verbatim(tmp_path, spawn_spy):
+    _added(tmp_path, pin="claude")
+    store.write_prompt_interpolate("p", False)
+    result = runner.invoke(cli.app, ["run", "p", "--set", "a=1", "--no-input"])
+    assert result.exit_code == 2  # no fields: --set has nothing to target
+    result = runner.invoke(cli.app, ["run", "p", "--no-input"])
+    assert result.exit_code == 0, result.output
+    assert spawn_spy["values"] == {}

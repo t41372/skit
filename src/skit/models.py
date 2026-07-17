@@ -60,6 +60,12 @@ class ScriptMeta:
     # --runner is an honest exit 126 (never a guess; there is deliberately no global
     # default or detection ranking, because the runner choice changes the RESULT).
     runner: str = ""
+    # Prompt entries: the per-entry insertion master switch. False = this prompt does no
+    # variable insertion at all — no candidate scanning, no form fields, no drift, the
+    # body travels verbatim (the escape hatch for long prompts that were never written
+    # with {{holes}} in mind). Serialized only when False; the managed list survives a
+    # toggle so switching back on restores it.
+    interpolate: bool = True
     # External commands the script needs on PATH (`needs = ["jq", "ffmpeg"]`): checked
     # by launcher.preflight via shutil.which (exit 126 with the missing names) and swept
     # by doctor/health. The honest dependency story for shells and templates — there is
@@ -97,6 +103,8 @@ class ScriptMeta:
             d["interpreter"] = self.interpreter
         if self.runner:
             d["runner"] = self.runner
+        if not self.interpolate:
+            d["interpolate"] = False
         if self.needs:
             d["needs"] = self.needs
         if self.params:
@@ -142,6 +150,9 @@ class ScriptMeta:
             requires_python=d.get("requires_python", ""),
             interpreter=d.get("interpreter", ""),
             runner=d.get("runner", ""),
+            # Require a genuine False to disable (mirror-enabled's discipline): a
+            # hand-edited `interpolate = "no"` must not silently kill the feature.
+            interpolate=d.get("interpolate") is not False,
             needs=list(d["needs"]) if d.get("needs") else None,
             params=list(d["params"]) if d.get("params") else None,
             # Non-dict rows (a hand-edited scalar in the array) are dropped here so every

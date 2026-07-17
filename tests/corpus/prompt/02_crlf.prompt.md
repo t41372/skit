@@ -1,5 +1,5 @@
 # CRLF prompt
 
-Do {task} in {repo}.
+Do {{task}} in {{repo}}.
 Keep 
  endings.

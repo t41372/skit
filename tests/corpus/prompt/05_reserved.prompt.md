@@ -1,3 +1,3 @@
 # Reserved
 
-The runner slot spells {prompt}	literally; manage {real} though.
+The runner slot spells {{prompt}}	literally; manage {{real}} though.
