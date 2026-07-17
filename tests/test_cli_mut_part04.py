@@ -49,7 +49,10 @@ def captured_console(monkeypatch: pytest.MonkeyPatch) -> io.StringIO:
     """Redirect the module-level Console to a wide StringIO so table/candidate rendering
     is captured verbatim, without terminal-width wrapping."""
     buf = io.StringIO()
-    monkeypatch.setattr(cli, "console", Console(file=buf, width=200))
+    # legacy_windows=False so the header's heavy box chars (┏━┓/┃) aren't substituted with light
+    # ones (┌─┐/│) on the Windows CI console — otherwise _header_cells finds no ┃ line. Mirrors
+    # test_show_mut.wide_console.
+    monkeypatch.setattr(cli, "console", Console(file=buf, width=200, legacy_windows=False))
     return buf
 
 
