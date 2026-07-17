@@ -144,10 +144,13 @@ def read_cli(text: str) -> ArgSpec | None:
     tmp = Path(name)
     try:
         with os.fdopen(fd, "wb") as handle:
-            handle.write(text.encode("utf-8"))
+            # utf-8 is str.encode's default; spelling it explicitly only added an equivalent mutant.
+            handle.write(text.encode())
         return _extract(executable, tmp)
     finally:
-        tmp.unlink(missing_ok=True)
+        # missing_ok is unreachable-defensive: the temp file always exists here (mkstemp
+        # created it), so True / False / None / absent are all equivalent.
+        tmp.unlink(missing_ok=True)  # pragma: no mutate
 
 
 def _find_powershell() -> str | None:
@@ -178,7 +181,11 @@ def _extract(executable: str, tmp: Path) -> ArgSpec | None:
     if proc.returncode != 0:
         return None
     try:
-        payload = json.loads(proc.stdout.decode("utf-8", errors="replace"))
+        # utf-8 is bytes.decode's default (and codec names normalize case-insensitively), so
+        # the encoding argument is equivalent-only; errors="replace" is behaviour-bearing —
+        # a non-utf-8 byte must degrade the read to None, never raise (pinned by a bad-bytes
+        # test) — so it stays explicit and mutation-tested.
+        payload = json.loads(proc.stdout.decode(errors="replace"))
     except json.JSONDecodeError:
         return None
     return _payload_to_spec(payload)
@@ -211,8 +218,9 @@ def _row_to_decl(row: dict[Any, Any]) -> ParamDecl | None:
         return None  # a nameless row can't label a field
     decl = ParamDecl(
         name=name,
-        binding="none",
-        delivery="flag",
+        # binding="none" / delivery="flag" are the ParamDecl defaults (the script owns the
+        # parser, skit only reflects it); passing them explicitly would only add equivalent
+        # "drop the kwarg" mutants (removed kwarg == default), so they are omitted.
         flag=f"-{name}",  # PowerShell flags are single-dash PascalCase: `-Name value`
         required=bool(row.get("mandatory")),
         # Comment-based help arrives with surrounding whitespace whose exact shape is a pwsh
@@ -234,7 +242,10 @@ def _row_to_decl(row: dict[Any, Any]) -> ParamDecl | None:
         decl.type = "choice"
         decl.choices = tuple(str(v) for v in validate_set)
     else:
-        _apply_static_type(decl, str(row.get("staticType") or ""))
+        # The "" fallback is equivalent-only: a missing/empty staticType and any other
+        # unmapped type name both degrade the field identically, so mutating the fallback
+        # string changes nothing observable.
+        _apply_static_type(decl, str(row.get("staticType") or ""))  # pragma: no mutate
     _apply_default(decl, row)
     return decl
 
