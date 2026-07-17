@@ -225,7 +225,11 @@ def synthesized_placeholder(name: str) -> ParamDecl:
     heuristic (C3 applies to every source)."""
     return ParamDecl(
         name=name,
+        # binding "none" IS the ParamDecl field default, so dropping this kwarg is an
+        # equivalent mutant; pin the literal to suppress the remove.
+        # pragma: no mutate start
         binding="none",
+        # pragma: no mutate end
         delivery="placeholder",
         required=True,
         secret=is_secret_name(name),
@@ -400,14 +404,30 @@ def edit_declared(  # noqa: PLR0912 — a fixed-order edit pipeline; the branche
             continue
         if name in placeholders:
             by_name[name] = ParamDecl(
-                name=name, binding="none", delivery="placeholder", type="str", required=True
+                name=name,
+                # binding "none" / type "str" ARE the ParamDecl field defaults, so dropping
+                # either kwarg is an equivalent mutant; pin the literals to suppress the removes.
+                # pragma: no mutate start
+                binding="none",
+                # pragma: no mutate end
+                delivery="placeholder",
+                # pragma: no mutate start
+                type="str",
+                # pragma: no mutate end
+                required=True,
             )
         else:
             by_name[name] = ParamDecl(
                 name=name,
+                # binding "none" / type "str" ARE the ParamDecl field defaults → dropping
+                # either is an equivalent mutant; pin the literals to suppress the removes.
+                # pragma: no mutate start
                 binding="none",
+                # pragma: no mutate end
                 delivery=_coerce_literal(allowed_deliveries[0], _DELIVERIES, "flag"),
+                # pragma: no mutate start
                 type="str",
+                # pragma: no mutate end
             )
         order.append(name)
 
@@ -491,7 +511,10 @@ def _apply_declared_tweaks(  # noqa: PLR0912 — one branch per editable field; 
         if value not in _TYPES:
             warnings.append(f"bad-type:{name}")
         else:
-            decl.type = _coerce_literal(value, _TYPES, decl.type)
+            # `value` is guaranteed to be in _TYPES here (the guard above), so _coerce_literal
+            # always returns it and the fallback is dead code — mutating it to None is an
+            # equivalent mutant.
+            decl.type = _coerce_literal(value, _TYPES, decl.type)  # pragma: no mutate
     if name in choices:
         decl.choices = tuple(str(c) for c in choices[name])
     if name in defaults:
