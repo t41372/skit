@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from skit import launcher, store
+from skit import i18n, launcher, store
 
 # Two names that cannot plausibly exist on PATH, so shutil.which(...) is None for both — which
 # also means the join separator between them is exercised (kills the "XX, XX" join mutant).
@@ -26,6 +26,10 @@ def _isolated_dirs(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SKIT_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("SKIT_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("SKIT_CONFIG_DIR", str(tmp_path / "config"))
+    monkeypatch.setenv("SKIT_LANG", "en")
+    # Pin the module-global catalog to English so the exact-English message assertions can't be
+    # perturbed by a prior test that switched locale (SKIT_LANG only affects a fresh init).
+    i18n.init("en")
 
 
 def test_check_needs_message_names_missing_tools_verbatim() -> None:

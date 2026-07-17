@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from skit import analysis, cli, store
+from skit import analysis, cli, i18n, store
 from skit.langs.python import metawriter
 from skit.langs.registry import spec_for
 from skit.params import ParamDecl
@@ -33,6 +33,10 @@ def tmp_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SKIT_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("SKIT_CONFIG_DIR", str(tmp_path / "config"))
     monkeypatch.setenv("SKIT_LANG", "en")
+    # Reset the module-global catalog to English: SKIT_LANG only affects a *fresh* init, so a
+    # prior test that switched locale would otherwise leave a non-English catalog and break these
+    # exact-English assertions order-dependently.
+    i18n.init("en")
     return tmp_path
 
 
