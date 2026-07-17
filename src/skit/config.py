@@ -293,7 +293,9 @@ def load_bash_path() -> str:
     """Windows escape hatch: an explicit bash to run shell entries with (config.toml
     `[shell] bash_path`). Empty when unset; POSIX systems never need it."""
     section = load_config().get("shell", {})  # pragma: no mutate — isinstance normalizes
-    value = section.get("bash_path", "") if isinstance(section, dict) else ""
+    # The default here is dead weight: the isinstance(value, str) guard below maps any non-str
+    # default (None from a bare/removed .get) back to "", so mutating it is unobservable.
+    value = section.get("bash_path", "") if isinstance(section, dict) else ""  # pragma: no mutate
     return value if isinstance(value, str) else ""
 
 
@@ -322,7 +324,9 @@ def load_js_runner() -> str:
     detection order (deno > bun > node). Unknown values normalize to "" — a hand-edited
     `runner = "carrier-pigeon"` must not poison every js run."""
     section = load_config().get("js", {})  # pragma: no mutate — isinstance normalizes
-    value = section.get("runner", "") if isinstance(section, dict) else ""
+    # The default here is dead weight: the `value in JS_RUNNERS` guard below maps any non-runner
+    # default (None, "", "XXXX", or the else-branch value) back to "", so mutating it is unobservable.
+    value = section.get("runner", "") if isinstance(section, dict) else ""  # pragma: no mutate
     return value if value in JS_RUNNERS else ""
 
 
