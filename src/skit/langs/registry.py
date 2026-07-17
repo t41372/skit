@@ -332,7 +332,7 @@ def shebang_program(path: Path) -> str | None:
         return None
     if not first.startswith(b"#!"):
         return None
-    tokens = first[2:].decode("utf-8", errors="replace").split()
+    tokens = first[2:].decode(errors="replace").split()
     if not tokens:
         return None
     program = Path(tokens[0]).name
@@ -380,7 +380,11 @@ def _is_executable_file(path: Path) -> bool:
     if sys.platform == "win32":
         # PATHEXT is a Windows env var, always ';'-delimited (independent of os.pathsep), listing
         # the extensions the shell will execute; fall back to the conventional default when unset.
-        pathext = os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
+        # The fallback's exact case is unobservable — the extensions are compared case-insensitively
+        # below (both sides lowercased) — so mutating only its case is an equivalent no-op; its
+        # identity (spelling) stays pinned by test_win_pathext_fallback_recognizes_*.
+        default_pathext = ".COM;.EXE;.BAT;.CMD"  # pragma: no mutate — case washed out by .lower()
+        pathext = os.environ.get("PATHEXT") or default_pathext
         runnable = {ext.lower() for ext in pathext.split(";") if ext}
         return path.suffix.lower() in runnable
     return os.access(path, os.X_OK)
