@@ -19,15 +19,15 @@ from skit import uvman
 EXE = "uv.exe" if sys.platform == "win32" else "uv"
 
 
-def _tar_gz_with_uv(tmp_path: Path, content: bytes = b"genuine-uv-bytes") -> Path:
+def _tar_gz_with_uv(tmp_path: Path, content: bytes = b"genuine-uv-bytes", exe: str = EXE) -> Path:
     """A real tar.gz holding a single executable member named like the platform uv binary."""
     src_dir = tmp_path / f"src-{os.urandom(4).hex()}"
     src_dir.mkdir()
-    member = src_dir / EXE
+    member = src_dir / exe
     member.write_bytes(content)
     archive = tmp_path / f"uv-{os.urandom(4).hex()}.tar.gz"
     with tarfile.open(archive, "w:gz") as tf:
-        tf.add(member, arcname=f"uv-1.0/{EXE}")
+        tf.add(member, arcname=f"uv-1.0/{exe}")
     return archive
 
 
@@ -98,16 +98,20 @@ def test_extract_uv_cleanup_suppresses_only_oserror_after_rename(
     FileNotFoundError — which the `contextlib.suppress(OSError)` must swallow so the ORIGINAL
     exception propagates unchanged. Kills `suppress(OSError)` -> `suppress(None)`, under which the
     FileNotFoundError is not suppressed and a TypeError leaks out instead."""
-    archive = _tar_gz_with_uv(tmp_path)
+    # The post-os.replace `dest_dir` fsync is the only point an error can be injected AFTER the
+    # rename (so the staged file is already gone), and it is `sys.platform != "win32"`-guarded.
+    # Pin the POSIX branch — and name the archive member to match that branch's `exe_name` — so
+    # this cleanup path runs deterministically on every OS; os.replace itself is cross-platform.
+    monkeypatch.setattr("sys.platform", "linux")
+    archive = _tar_gz_with_uv(tmp_path, exe="uv")
     dest_dir = tmp_path / "dest"
-    real_fsync_path = uvman._fsync_path
 
     def _selective(path: Path) -> None:
-        # staged-file fsync succeeds; the post-replace directory fsync raises a non-OSError,
-        # entering the cleanup branch after the staged file is already gone.
+        # dest_dir fsync (post-replace) raises a non-OSError, entering the cleanup branch after the
+        # staged file is already gone. The staged fsync is a no-op — its real O_RDONLY/O_RDWR flag
+        # choice is platform-sensitive and irrelevant to the cleanup path under test.
         if path == dest_dir:
             raise ValueError("boom after replace, before dir fsync")
-        real_fsync_path(path)
 
     monkeypatch.setattr(uvman, "_fsync_path", _selective)
 
@@ -115,5 +119,5 @@ def test_extract_uv_cleanup_suppresses_only_oserror_after_rename(
         uvman._extract_uv(archive, dest_dir)
 
     # the rename had already committed before the failure, so the finished binary is at dest
-    assert (dest_dir / EXE).exists()
-    assert (dest_dir / EXE).read_bytes() == b"genuine-uv-bytes"
+    assert (dest_dir / "uv").exists()
+    assert (dest_dir / "uv").read_bytes() == b"genuine-uv-bytes"
