@@ -371,7 +371,7 @@ class MenuApp(App[int | PendingRun]):
         # The table owns the keyboard: that's what makes the advertised single-letter
         # keys real. `/` moves into the search box.
         table.focus()
-        self.watch(self.screen, "focused", self._refresh_footer_on_focus_move, init=False)
+        self.watch(self.screen, "focused", self._refresh_footer_on_focus_move, init=False)  # pragma: no mutate — init False/None/True/omitted are equivalent here (the initial fire is a redundant idempotent footer refresh); the object/attribute/callback mutations stay pinned by test_footer_switches_to_search_chips_when_focus_moves_to_search (+ test_tui_responsive focus tests)  # fmt: skip
 
     @override
     def compose(self) -> ComposeResult:
@@ -389,7 +389,8 @@ class MenuApp(App[int | PendingRun]):
 
     def _reload(self) -> None:
         self._entries = sorted(store.list_entries(), key=_activity_key, reverse=True)
-        self._apply_filter(self.query_one("#search", Input).value)
+        search = self.query_one("#search", Input)  # pragma: no mutate — expect_type is a pure runtime assertion; None/omitted and the type-only form return the same unique #search Input (equivalents); selector variants stay pinned by test_reload_applies_current_search_filter  # fmt: skip
+        self._apply_filter(search.value)
 
     def _apply_filter(self, query: str) -> None:
         table = self.query_one(DataTable)
@@ -424,7 +425,7 @@ class MenuApp(App[int | PendingRun]):
     # ---------------------------------------------------------------- render
 
     def _refresh_status(self, message: str = "") -> None:
-        status = self.query_one("#status", Static)
+        status = self.query_one("#status", Static)  # pragma: no mutate — expect_type is a pure runtime assertion; None/omitted and the type-only form return the same unique #status Static (equivalents); selector variants stay pinned by test_refresh_status_shows_placeholder_when_empty  # fmt: skip
         if message:
             status.update(message)
             return
@@ -439,9 +440,10 @@ class MenuApp(App[int | PendingRun]):
         )
 
     def _refresh_footer(self) -> None:
-        keys_local = self.query_one("#keys-local", Static)
-        keys_global = self.query_one("#keys-global", Static)
-        if self.focused is self.query_one("#search", Input):
+        keys_local = self.query_one("#keys-local", Static)  # pragma: no mutate — expect_type is a pure runtime assertion; None/omitted return the same unique #keys-local match (equivalents); the selector/assignment variants stay pinned by test_normal_local_footer_pins_every_chip  # fmt: skip
+        keys_global = self.query_one("#keys-global", Static)  # pragma: no mutate — expect_type is a pure runtime assertion; None/omitted return the same unique #keys-global match (equivalents); the selector/assignment variants stay pinned by test_normal_global_footer_pins_every_chip  # fmt: skip
+        search_box = self.query_one("#search", Input)  # pragma: no mutate — expect_type/type-selector are query mechanics; None/omitted/type-only return the same unique #search Input (equivalents); the selector/assignment variants stay pinned by test_search_mode_footer_pins_its_two_chips_and_blanks_global  # fmt: skip
+        if self.focused is search_box:
             # In the search box, letters are text: every single-letter chip would be a
             # dead button. Advertise only what still works while typing.
             keys_local.update(
@@ -490,7 +492,7 @@ class MenuApp(App[int | PendingRun]):
         return drift
 
     def _refresh_detail(self) -> None:
-        body = self.query_one("#detail-body", Static)
+        body = self.query_one("#detail-body", Static)  # pragma: no mutate — expect_type is a pure runtime assertion; None/omitted return the same unique #detail-body match (equivalents); the selector/assignment variants stay pinned by test_empty_library_detail_shows_exact_placeholder  # fmt: skip
         entry = self._selected()
         if entry is None:
             if not self._entries:
@@ -604,7 +606,7 @@ class MenuApp(App[int | PendingRun]):
 
     def on_key(self, event: events.Key) -> None:
         # While searching, Up/Down still drive the table (browse results as you type).
-        search = self.query_one("#search", Input)
+        search = self.query_one("#search", Input)  # pragma: no mutate — expect_type is a pure runtime assertion; None/omitted and the type-only form return the same unique #search Input (equivalents); selector variants stay pinned by test_updown_drive_the_table_while_the_search_box_is_focused  # fmt: skip
         if event.key in ("up", "down") and self.focused is search:
             table = self.query_one(DataTable)
             table.action_cursor_up() if event.key == "up" else table.action_cursor_down()
@@ -639,7 +641,9 @@ class MenuApp(App[int | PendingRun]):
         self._refresh_footer()
 
     def action_focus_search(self) -> None:
-        self.query_one("#search", Input).focus()
+        # The Library has exactly one Input (#search): the expect_type (Input→None) and the
+        # selector/type-drop query variants all resolve to that same widget — equivalent.
+        self.query_one("#search", Input).focus()  # pragma: no mutate
 
     def action_leave_search(self) -> None:
         """Click target of the search-mode footer chip — hand the keyboard back to the
@@ -648,7 +652,9 @@ class MenuApp(App[int | PendingRun]):
 
     def action_back_or_quit(self) -> None:
         """Esc in the search box returns to the table; Esc on the table quits."""
-        search = self.query_one("#search", Input)
+        # Sole Library Input: the expect_type (Input→None) and selector/type-drop query
+        # variants all resolve to that same #search widget — equivalent.
+        search = self.query_one("#search", Input)  # pragma: no mutate
         if self.focused is search:
             self.query_one(DataTable).focus()
             return
@@ -799,7 +805,10 @@ class MenuApp(App[int | PendingRun]):
             try:
                 editor.open_in_editor(target)
             except editor.EditorError as exc:
-                print(str(exc), flush=True)
+                # str(exc) stays on its own line so its str(None) mutant keeps being tested;
+                # flush= only toggles stdout buffering, never the printed text — equivalent.
+                error_text = str(exc)
+                print(error_text, flush=True)  # pragma: no mutate
                 with contextlib.suppress(EOFError):
                     input(gettext("Press Enter to return"))
         self._drift_cache.pop(entry.slug, None)
@@ -838,7 +847,8 @@ class MenuApp(App[int | PendingRun]):
 
         self.push_screen(AddSourceScreen(), _added)
 
-    def action_settings(self, section: str = "") -> None:
+    # section is only ever tested against "presets"; "" vs any other default is equivalent.
+    def action_settings(self, section: str = "") -> None:  # pragma: no mutate
         entry = self._selected()
         if entry is None:
             return
@@ -896,9 +906,16 @@ class MenuApp(App[int | PendingRun]):
         computed display is fresh and IS the tier cascade's answer — no Python
         re-derivation of the CSS to drift out of sync."""
         screen = self.screen
-        pinned_open = screen.has_class("-detail-pinned-open")
-        pinned_closed = screen.has_class("-detail-pinned-closed")
-        visible = pinned_open if pinned_open or pinned_closed else self.query_one("#detail").display
+        # The pin reads and their `or` are behaviourally redundant with the display fallback:
+        # set_class keeps #detail.display in sync with the pins, so `screen.has_class(...)` here
+        # and the fallback below always agree — mutating either read (None/wrong-cased/omitted
+        # class) or `or`→`and` yields the identical toggle. Isolated so the pragmas suppress only
+        # those equivalents; the `visible`/`#detail` mutations on the ternary line stay live and
+        # are pinned by test_tab_toggles_and_pins_detail_visibility (+ test_tui_responsive).
+        pinned_open = screen.has_class("-detail-pinned-open")  # pragma: no mutate
+        pinned_closed = screen.has_class("-detail-pinned-closed")  # pragma: no mutate
+        pinned = pinned_open or pinned_closed  # pragma: no mutate
+        visible = pinned_open if pinned else self.query_one("#detail").display
         screen.set_class(not visible, "-detail-pinned-open")
         screen.set_class(visible, "-detail-pinned-closed")
 
@@ -909,11 +926,10 @@ class MenuApp(App[int | PendingRun]):
         change in Preferences applies on the spot (spec §6) rather than only to the rows
         _reload rebuilds: the window title, the search placeholder, the column headers."""
         self.title = "skit · " + gettext("Library")
-        self.query_one("#search", Input).placeholder = gettext(
-            "/ to search names and descriptions…"
-        )
+        search = self.query_one("#search", Input)  # pragma: no mutate — expect_type is a pure runtime assertion; None/omitted and the type-only form return the same unique #search Input (equivalents); selector variants stay pinned by test_retranslate_updates_search_placeholder  # fmt: skip
+        search.placeholder = gettext("/ to search names and descriptions…")
         headers = [gettext("Name"), gettext("Kind"), " "]
-        for column, label in zip(self.query_one(DataTable).ordered_columns, headers, strict=False):
+        for column, label in zip(self.query_one(DataTable).ordered_columns, headers, strict=False):  # pragma: no mutate — always 3 columns and 3 headers, so strict False/True/None/omitted are all equivalent  # fmt: skip
             column.label = Text(label)
         self.query_one(DataTable).border_title = gettext("Scripts")
         self.query_one("#detail").border_title = gettext("Detail pane")
