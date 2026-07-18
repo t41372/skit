@@ -853,6 +853,31 @@ async def test_review_ctrl_e_rescans_and_keeps_edits(tmp_path, monkeypatch):
     assert store.resolve("renamed").meta.params == ["a", "b"]
 
 
+async def test_review_ctrl_e_in_input_is_end_of_line_not_editor(tmp_path, monkeypatch):
+    """The prompt review's Ctrl+E is non-priority too: while an Input has focus it is that
+    Input's end-of-line, not $EDITOR (the Ctrl+A rule). The chip stays the mouse path."""
+    edited: list[int] = []
+    monkeypatch.setattr(PromptReviewScreen, "action_edit_source", lambda self: edited.append(1))
+    src = tmp_path / "e.prompt.md"
+    src.write_text("{{a}}\n", encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        app.push_screen(PromptReviewScreen(src))
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, PromptReviewScreen)
+        name = review.query_one("#pv-name", Input)
+        name.focus()
+        name.value = "hello"
+        name.cursor_position = 0
+        await pilot.pause()
+        await pilot.press("ctrl+e")
+        await pilot.pause()
+        assert name.cursor_position == len("hello")  # end-of-line, the Input owns it
+        assert edited == []  # …never opened the editor
+
+
 async def test_review_reference_mode_links_the_original(tmp_path):
     src = tmp_path / "linked.prompt.md"
     src.write_text("{{a}}\n", encoding="utf-8")

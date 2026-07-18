@@ -410,7 +410,8 @@ def test_drift_lines_exact_messages():
         "  GONE: injection target no longer exists (dropped from this run's form)",
         "  RETRIES: type changed from int to str in the source"
         " (still injected — double-check the value)",
-        "To refresh the definitions, run: skit params NAME --resync",
+        # The remedy interpolates the real entry name (round-6), not a literal "NAME".
+        "To refresh the definitions, run: skit params myscript --resync",
     ]
 
 
@@ -429,7 +430,7 @@ def test_drift_lines_rebind_uses_input_read_wording():
     )
     lines = reconcile.drift_lines(report, "myscript")
     assert any("no longer matches a unique input/read call" in line for line in lines)
-    assert lines[-1] == "To refresh the definitions, run: skit params NAME --resync"
+    assert lines[-1] == "To refresh the definitions, run: skit params myscript --resync"
 
 
 # ---------------------------------------------------------------------------

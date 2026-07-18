@@ -543,6 +543,67 @@ def test_add_edit_empty_content_adds_nothing(monkeypatch):
         store.resolve("ghost")
 
 
+def test_add_edit_unregistered_shebang_refused_keeps_draft(monkeypatch):
+    """A draft whose shebang names an UNREGISTERED interpreter (awk, sed -f, …) can't be
+    honored: the CLI draft lane refuses (exit 2) with the --kind escape and KEEPS the temp
+    (the user's only copy) under data_dir/drafts/ — never fabricates a python entry."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    seen: dict[str, Path] = {}
+
+    def write_awk(p):
+        seen["path"] = p
+        p.write_text("#!/usr/bin/awk -f\nBEGIN { print 1 }\n", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(cli.editor, "open_in_editor", write_awk)
+    result = runner.invoke(cli.app, ["add", "-e", "--name", "aw"])
+    try:
+        assert result.exit_code == 2, result.output
+        assert "names no interpreter skit knows" in result.output
+        assert "--kind" in result.output  # the escape hatch
+        assert seen["path"].exists()  # the draft survived the refusal
+        from skit.paths import drafts_dir
+
+        assert seen["path"].parent == drafts_dir()  # kept under data_dir/drafts/
+        assert store.list_entries() == []  # nothing fabricated
+    finally:
+        seen["path"].unlink(missing_ok=True)
+
+
+def test_add_edit_untouched_starter_unlinks_the_draft(monkeypatch):
+    """The untouched-starter cancel is pure litter (no user content): the CLI python editor
+    lane now unlinks it, like the TUI always did — the temp is gone after 'Nothing was
+    written'."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    seen: dict[str, Path] = {}
+
+    def leave_starter(p):
+        seen["path"] = p  # editor opens but writes nothing
+        return 0
+
+    monkeypatch.setattr(cli.editor, "open_in_editor", leave_starter)
+    result = runner.invoke(cli.app, ["add", "-e", "--name", "ghost"])
+    assert result.exit_code == 0, result.output
+    assert "Nothing was written" in result.output
+    assert not seen["path"].exists()  # the litter was cleaned up
+
+
+def test_add_prompt_editor_untouched_starter_unlinks_the_draft(monkeypatch):
+    """Same for the prompt editor lane: an untouched starter is unlinked, not left behind."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    seen: dict[str, Path] = {}
+
+    def leave_starter(p):
+        seen["path"] = p
+        return 0
+
+    monkeypatch.setattr(cli.editor, "open_in_editor", leave_starter)
+    result = runner.invoke(cli.app, ["add", "--prompt", "--name", "ghostp"])
+    assert result.exit_code == 0, result.output
+    assert "Nothing was written" in result.output
+    assert not seen["path"].exists()
+
+
 def test_add_edit_prompts_for_name_when_omitted(monkeypatch):
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: "prompted")

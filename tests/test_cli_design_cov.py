@@ -417,7 +417,13 @@ def test_add_stdin_kind_js_records_scanned_deps(tmp_path):
 def test_add_stdin_exe_is_refused(tmp_path):
     result = runner.invoke(cli.app, ["add", "-", "--exe", "-n", "x"], input="echo\n")
     assert result.exit_code == 2
-    assert "needs an existing program on disk" in result.output
+    # Two honest refusal voices: the lane matrix's "can't apply here" (which fires first
+    # for --exe on stdin) or the older program-on-disk wording — either way exit 2.
+    assert (
+        "needs an existing program on disk" in result.output
+        or "--exe can't apply here" in result.output
+    )
+    assert not store.list_entries()
 
 
 def test_add_stdin_kind_exe_is_refused(tmp_path):
@@ -429,11 +435,12 @@ def test_add_stdin_kind_exe_is_refused(tmp_path):
 def test_add_edit_with_kind_is_refused(tmp_path):
     result = runner.invoke(cli.app, ["add", "--edit", "--kind", "shell"])
     assert result.exit_code == 2
-    # The message now points at the shebang (the draft's real kind signal), not a Python
-    # starter (finding 7): --edit reads the kind from the draft, so --kind is redundant.
+    # The lane matrix refuses --kind on the --edit lane and the hint points at the shebang
+    # (the draft's real kind signal), plus the stdin escape for other kinds: --edit reads
+    # the kind from the draft, so --kind is redundant.
     flat = _flat(result.output)
     assert "reads the kind from your draft's shebang" in flat
-    assert "pipe it in" in flat
+    assert "skit add - --kind" in flat  # the pipe-it-in escape hatch
 
 
 def test_add_edit_with_exe_is_refused(tmp_path):
@@ -538,6 +545,168 @@ def test_add_script_from_stdin_reads_stdin_when_text_is_none(tmp_path, monkeypat
     monkeypatch.setattr(sys, "stdin", io.StringIO("#!/usr/bin/env bash\necho hi\n"))
     cli._add_script_from_stdin("shell", "directsh", None)
     assert store.resolve("directsh").meta.kind == "shell"
+
+
+# ============================================================ add-lane flag matrix (round 6)
+
+
+def _drafts():
+    """The kept authoring/stdin drafts under skit's OWN data dir (data_dir/drafts/)."""
+    from skit.paths import drafts_dir
+
+    d = drafts_dir()
+    return sorted(d.glob("skit-*")) if d.is_dir() else []
+
+
+def test_add_cmd_refuses_ref_kind_python_loudly(tmp_path):
+    """The --cmd lane honors ONLY --name/--description: any of --ref/--kind/--dep/--python
+    is refused up front by the matrix (exit 2, nothing added), never silently dropped."""
+    for extra in (["--ref"], ["--kind", "shell"], ["--dep", "x"], ["--python", ">=3.11"]):
+        result = runner.invoke(cli.app, ["add", "--cmd", "echo {x}", "--name", "c", *extra])
+        assert result.exit_code == 2, (extra, result.output)
+        assert "can't apply here" in result.output
+        assert "a --cmd template takes only --name/--description" in _flat(result.output)
+        assert not store.list_entries()
+
+
+def test_add_stdin_non_prompt_refuses_runner_and_no_interpolate(tmp_path):
+    """--runner / --no-interpolate are prompt-only: on a NON-prompt stdin add they are
+    refused per final kind (matrix-admitted for the prompt case only), never dropped."""
+    for extra in (["--runner", "claude"], ["--no-interpolate"]):
+        result = runner.invoke(
+            cli.app, ["add", "-", "-n", "s", *extra], input="#!/usr/bin/env bash\necho hi\n"
+        )
+        assert result.exit_code == 2, (extra, result.output)
+        assert "only apply to prompt entries" in result.output
+        assert not store.list_entries()
+
+
+def test_add_prompt_stdin_refuses_dep_and_python(tmp_path):
+    """A prompt has no dependencies: --dep/--python on a prompt stdin add exit 2, add nothing."""
+    for extra in (["--dep", "requests"], ["--python", ">=3.11"]):
+        result = runner.invoke(
+            cli.app, ["add", "-", "--prompt", "-n", "p", *extra], input="Summarize {{url}}\n"
+        )
+        assert result.exit_code == 2, (extra, result.output)
+        assert "a prompt has no dependencies" in result.output
+        assert not store.list_entries()
+
+
+def test_add_shell_stdin_refuses_dep_flag(tmp_path):
+    """--dep is meaningless for a non-npm stdin kind (shell): refused per the piped text's
+    kind, exit 2, nothing added — deps belong to python (uv) and js/ts (npm) only."""
+    result = runner.invoke(
+        cli.app, ["add", "-", "--kind", "shell", "-n", "s", "--dep", "jq"], input="echo hi\n"
+    )
+    assert result.exit_code == 2
+    assert "don't apply to a shell entry" in result.output
+    assert not store.list_entries()
+
+
+def test_add_shell_stdin_refuses_python_flag(tmp_path):
+    result = runner.invoke(
+        cli.app,
+        ["add", "-", "--kind", "shell", "-n", "s", "--python", ">=3.11"],
+        input="echo hi\n",
+    )
+    assert result.exit_code == 2
+    assert "don't apply to a shell entry" in result.output
+    assert not store.list_entries()
+
+
+def test_add_js_stdin_explicit_dep_beats_scanner(tmp_path):
+    """An explicit --dep on a js stdin add is HONORED VERBATIM over skit's own import scan
+    (the worst drop was substituting the scan for a typed flag): the recorded dep list is
+    exactly the flag, not the scanned 'chalk'."""
+    result = runner.invoke(
+        cli.app,
+        ["add", "-", "--kind", "js", "-n", "jx", "--dep", "chalk@5"],
+        input="import chalk from 'chalk'\nconsole.log(chalk)\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert store.resolve("jx").meta.dependencies == ["chalk@5"]  # the flag, verbatim
+
+
+def test_add_js_stdin_without_scanner_still_adds_no_deps(tmp_path, monkeypatch):
+    """A2 degradation: a broken js grammar leaves dep_scanner None. The stdin lane must
+    still add the entry (no scan, no crash) — it just records no dependencies."""
+    import dataclasses
+
+    real = cli.spec_for
+
+    def scannerless(kind):
+        s = real(kind)
+        if kind == "js" and s is not None:
+            return dataclasses.replace(s, dep_scanner=None)
+        return s
+
+    monkeypatch.setattr(cli, "spec_for", scannerless)
+    result = runner.invoke(
+        cli.app, ["add", "-", "--kind", "js", "-n", "jd"], input="import chalk from 'chalk'\n"
+    )
+    assert result.exit_code == 0, result.output
+    assert store.resolve("jd").meta.dependencies in (None, [])  # no scanner -> no deps
+
+
+# ---- unregistered shebang: stdin refuses with the --kind escape (round 6) ----
+
+
+def test_add_stdin_unregistered_shebang_refused(tmp_path):
+    """An UNREGISTERED shebang (awk, sed -f, …) piped in with no --kind is a signal skit
+    can't honor: refused with the --kind escape, exactly like the path lane — never
+    fabricated into a python entry that can only die in uv run."""
+    result = runner.invoke(
+        cli.app, ["add", "-", "-n", "aw"], input="#!/usr/bin/awk -f\nBEGIN { print 1 }\n"
+    )
+    assert result.exit_code == 2
+    assert "names no interpreter skit knows" in result.output
+    assert "--kind" in result.output  # the escape hatch
+    assert not store.list_entries()  # nothing fabricated
+
+
+# ---- stdin keep-on-failure: all three lanes keep the draft under data_dir/drafts/ ----
+
+
+def test_add_python_stdin_name_conflict_keeps_draft(tmp_path):
+    """A NameConflictError on the python stdin lane keeps the temp (the piped text's only
+    materialized copy) under data_dir/drafts/ and says where — never destroys the paste."""
+    _py(tmp_path, name="dup")
+    result = runner.invoke(cli.app, ["add", "-", "-n", "dup"], input="print('hi')\n")
+    assert result.exit_code == 1
+    assert "Your draft was kept at" in result.output
+    from skit.paths import drafts_dir
+
+    kept = _drafts()
+    assert kept  # the paste's only materialized copy survived
+    assert all(p.parent == drafts_dir() for p in kept)  # kept under data_dir/drafts/
+
+
+def test_add_script_stdin_name_conflict_keeps_draft(tmp_path):
+    """The non-python (script) stdin lane keeps its draft the same way."""
+    _shell(tmp_path, name="dup")
+    result = runner.invoke(cli.app, ["add", "-", "--kind", "shell", "-n", "dup"], input="echo hi\n")
+    assert result.exit_code == 1
+    assert "Your draft was kept at" in result.output
+    from skit.paths import drafts_dir
+
+    kept = _drafts()
+    assert kept  # the paste's only materialized copy survived
+    assert all(p.parent == drafts_dir() for p in kept)
+
+
+def test_add_prompt_stdin_name_conflict_keeps_draft(tmp_path):
+    """The prompt stdin lane keeps its draft too — pbpaste of a prompt body isn't lost."""
+    _prompt(tmp_path, name="dup")
+    result = runner.invoke(
+        cli.app, ["add", "-", "--prompt", "-n", "dup"], input="Summarize {{url}}\n"
+    )
+    assert result.exit_code == 1
+    assert "Your draft was kept at" in result.output
+    from skit.paths import drafts_dir
+
+    kept = _drafts()
+    assert kept  # the paste's only materialized copy survived
+    assert all(p.parent == drafts_dir() for p in kept)
 
 
 # ============================================================ interpreted add review routing

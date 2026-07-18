@@ -837,6 +837,21 @@ def test_add_runner_flag_refused_on_cmd_edit_exe_lanes(tmp_path):
         ), args
 
 
+def test_add_no_interpolate_refused_up_front_on_non_prompt_path_lane(tmp_path):
+    """--no-interpolate is prompt-only: on a PATH add it is refused UP FRONT (before kind
+    inference) whenever the kind is already known — via --exe or an explicit non-prompt
+    --kind — never silently dropped."""
+    prog = tmp_path / "tool"
+    prog.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    for extra in (["--exe"], ["--kind", "shell"]):
+        result = runner.invoke(
+            cli.app, ["add", str(prog), *extra, "--no-interpolate", "-n", "t", "--no-input"]
+        )
+        assert result.exit_code == 2, extra
+        assert "--no-interpolate only applies to prompt entries" in result.output
+        assert not store.list_entries()
+
+
 def test_add_prompt_editor_lane_reports_store_errors(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     answers = iter(["taken", "all", "-", "all", "-"])

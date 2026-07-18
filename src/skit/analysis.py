@@ -155,7 +155,9 @@ def drift_lines(report: Report, name: str) -> list[str]:
         % {"name": spec.name}
         for spec, cand in report.rebind
     )
-    lines.append(gettext("To refresh the definitions, run: skit params NAME --resync"))
+    lines.append(
+        gettext("To refresh the definitions, run: skit params %(name)s --resync") % {"name": name}
+    )
     return lines
 
 

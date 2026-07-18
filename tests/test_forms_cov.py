@@ -174,9 +174,10 @@ def test_promptform_secret_without_env_source_prints_no_hint(monkeypatch):
 
 
 def test_promptform_required_choice_field_offers_the_choices(monkeypatch):
-    """A REQUIRED (or defaulted) choice is asked with its choices and defaults to the first
-    when nothing is prefilled; the picked choice is returned verbatim — rich's own choices=
-    validation guards it."""
+    """A REQUIRED (or defaulted) choice shows its choices in the label and defaults to the
+    first when nothing is prefilled; the picked choice is returned verbatim. rich's own
+    choices= gate is NOT used — the collector runs its own localized validation loop
+    (round-6), so the choices ride in the label text, not a choices= kwarg."""
     plan = flows.FormPlan(
         source="argparse",
         fields=[
@@ -190,8 +191,52 @@ def test_promptform_required_choice_field_offers_the_choices(monkeypatch):
     values = promptform.collect(plan, {}, console=console)
 
     assert values == {"mode": "b"}
-    assert calls[0][1]["choices"] == ["a", "b"]
+    assert "choices" not in calls[0][1]  # own loop, not rich's hardcoded-English choices= gate
     assert calls[0][1]["default"] == "a"  # no prefill -> first choice is the default
+    assert "(a/b)" in calls[0][0][0]  # the choices ride in the prompt label
+
+
+def test_promptform_required_choice_reasks_localized_until_valid(monkeypatch):
+    """A garbage answer to a REQUIRED choice re-asks with the LOCALIZED "Choose one of"
+    hint (no rich hardcoded English), then the valid choice is returned. The required
+    branch's hint has NO "(or Enter to skip)" tail — that belongs to the optional sibling."""
+    plan = flows.FormPlan(
+        source="argparse",
+        fields=[
+            flows.FormField(
+                key="mode", label="mode", kind="choice", choices=["a", "b"], required=True
+            )
+        ],
+    )
+    console = _console()
+    _script_ask(monkeypatch, promptform.Prompt, ["nope", "b"])
+    values = promptform.collect(plan, {}, console=console)
+
+    assert values == {"mode": "b"}
+    export = console.export_text()
+    assert "Choose one of: a, b" in export
+    assert "(or Enter to skip)" not in export  # required != optional
+
+
+def test_promptform_required_choice_default_enter_accepts(monkeypatch):
+    """Enter on a prefilled REQUIRED choice submits the default (a real choice) on the
+    first ask — no re-prompt, no hint."""
+    plan = flows.FormPlan(
+        source="argparse",
+        fields=[
+            flows.FormField(
+                key="mode", label="mode", kind="choice", choices=["a", "b"], required=True
+            )
+        ],
+    )
+    console = _console()
+    calls = _script_ask(monkeypatch, promptform.Prompt, ["b"])  # rich returns the default on Enter
+    values = promptform.collect(plan, {"mode": "b"}, console=console)
+
+    assert values == {"mode": "b"}
+    assert len(calls) == 1  # accepted first try, never re-asked
+    assert calls[0][1]["default"] == "b"  # the prefill seeds the default
+    assert "Choose one of" not in console.export_text()
 
 
 def test_promptform_optional_choice_enter_leaves_it_out(monkeypatch):

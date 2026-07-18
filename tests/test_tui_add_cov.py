@@ -608,6 +608,29 @@ async def test_edit_source_prints_editor_launch_failure(tmp_path, monkeypatch):
         assert any("cannot launch editor" in line for line in printed)
 
 
+async def test_review_ctrl_e_in_input_is_end_of_line_not_editor(tmp_path, monkeypatch):
+    """Ctrl+E is non-priority on the review panel (the Ctrl+A rule, one chord left): while
+    an Input has focus it is that Input's end-of-line and must NOT open $EDITOR — the chip
+    stays the mouse path mid-edit, the chord fires from non-Input focus."""
+    edited: list[int] = []
+    monkeypatch.setattr(AddReviewScreen, "action_edit_source", lambda self: edited.append(1))
+    p = _py(tmp_path, "print(1)\n", "plain.py")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = AddReviewScreen(p)
+        app.push_screen(screen)
+        await pilot.pause()
+        name = screen.query_one("#rv-name", Input)
+        name.focus()
+        name.value = "hello"
+        name.cursor_position = 0
+        await pilot.pause()
+        await pilot.press("ctrl+e")
+        await pilot.pause()
+        assert name.cursor_position == len("hello")  # Ctrl+E moved the cursor to end-of-line
+        assert edited == []  # …and did NOT open the editor
+
+
 async def test_accept_pep723_script_keeps_the_declared_block(tmp_path):
     """Accepting a declared-deps script must not re-split a deps field (there is none): the
     stored copy keeps the script's own PEP 723 block verbatim."""

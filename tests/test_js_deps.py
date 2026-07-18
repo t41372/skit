@@ -1397,7 +1397,12 @@ def test_add_cmd_refuses_dep_flag_loudly(tmp_path: Path):
         cli.app, ["add", "--cmd", "echo {x}", "--name", "e", "--dep", "requests"]
     )
     assert result.exit_code == 2
-    assert "don't take package dependencies" in result.output
+    # Either the lane matrix's "can't apply here" (a --cmd template takes only
+    # --name/--description) or the older per-kind wording — both exit 2, nothing added.
+    assert (
+        "don't take package dependencies" in result.output
+        or "--dep can't apply here" in result.output
+    )
     assert not store.list_entries()
 
 
@@ -1437,7 +1442,9 @@ def test_add_stdin_honors_explicit_dep_and_python_flags(tmp_path: Path):
 def test_add_stdin_refuses_ref_loudly(tmp_path: Path):
     result = runner.invoke(cli.app, ["add", "-", "--name", "clip", "--ref"], input='print("hi")\n')
     assert result.exit_code == 2
-    assert "existing file" in result.output
+    # The lane matrix refuses --ref on stdin ("can't apply here"); the older wording named
+    # the missing existing file. Either voice is honest — exit 2, nothing added.
+    assert "existing file" in result.output or "--ref can't apply here" in result.output
     assert not store.list_entries()
 
 
@@ -1445,7 +1452,7 @@ def test_add_edit_refuses_ref_loudly(tmp_path: Path, monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     result = runner.invoke(cli.app, ["add", "--edit", "--name", "n", "--ref"])
     assert result.exit_code == 2
-    assert "existing file" in result.output
+    assert "existing file" in result.output or "--ref can't apply here" in result.output
 
 
 def test_add_edit_honors_explicit_dep_and_python_flags(

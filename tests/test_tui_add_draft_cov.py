@@ -9,13 +9,20 @@ widget merely mounted.
 from __future__ import annotations
 
 import contextlib
+from pathlib import Path
 
 import pytest
-from textual.widgets import Checkbox, Input, RadioSet
+from textual.widgets import Checkbox, Input, OptionList, RadioSet, Static
 
 from skit import editor, store, tui
 from skit.langs.registry import spec_for
-from skit.tui_add import AddReviewScreen, AddSourceScreen, PromptReviewScreen
+from skit.tui_add import (
+    AddReviewScreen,
+    AddSourceScreen,
+    ExeReviewScreen,
+    KindPickModal,
+    PromptReviewScreen,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -213,6 +220,131 @@ async def test_draft_prompt_opens_fresh_prompt_review_and_copies(tmp_path, no_su
     assert entry.meta.mode == "copy"
     assert entry.meta.params == ["url"]
     assert not seen["path"].exists()
+
+
+# ------------------------------------------- draft with an UNREGISTERED shebang: ASK (round 6)
+
+
+def _select_option(option_list: OptionList, option_id: str) -> None:
+    """Highlight and select an OptionList entry by id (the real OptionSelected path)."""
+    idx = next(
+        i
+        for i in range(option_list.option_count)
+        if option_list.get_option_at_index(i).id == option_id
+    )
+    option_list.highlighted = idx
+    option_list.action_select()
+
+
+async def _draft_awk(app, pilot, monkeypatch) -> tuple[KindPickModal, Path]:
+    """Ctrl+N a draft whose shebang names awk (unregistered): the draft lane must ASK via
+    KindPickModal rather than fabricate a python entry. Returns the modal and the kept draft
+    path."""
+    seen = _editor_writes(monkeypatch, "#!/usr/bin/awk -f\nBEGIN { print 1 }\n")
+    app.push_screen(AddSourceScreen())
+    await pilot.pause()
+    await pilot.press("ctrl+n")
+    await pilot.pause()
+    modal = app.screen
+    assert isinstance(modal, KindPickModal)
+    draft = seen["path"]
+    assert isinstance(draft, Path)
+    return modal, draft
+
+
+async def test_draft_unregistered_shebang_pick_shell_lands_as_shell(
+    tmp_path, no_suspend, monkeypatch
+):
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        modal, draft = await _draft_awk(app, pilot, monkeypatch)
+        _select_option(modal.query_one(OptionList), "shell")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, AddReviewScreen)
+        assert review._kind == "shell"  # the chosen kind, not a fabricated python
+        review.query_one("#rv-name", Input).value = "awky"
+        review.action_accept()
+        await pilot.pause()
+    assert store.resolve("awky").meta.kind == "shell"
+    assert not draft.exists()  # committed → the store holds the copy
+
+
+async def test_draft_unregistered_shebang_pick_exe_routes_to_exe_review(
+    tmp_path, no_suspend, monkeypatch
+):
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        modal, _draft = await _draft_awk(app, pilot, monkeypatch)
+        _select_option(modal.query_one(OptionList), "exe")
+        await pilot.pause()
+        assert isinstance(app.screen, ExeReviewScreen)
+
+
+async def test_draft_unregistered_shebang_pick_prompt_routes_to_prompt_review(
+    tmp_path, no_suspend, monkeypatch
+):
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        modal, _draft = await _draft_awk(app, pilot, monkeypatch)
+        _select_option(modal.query_one(OptionList), "prompt")
+        await pilot.pause()
+        assert isinstance(app.screen, PromptReviewScreen)
+
+
+async def test_draft_unregistered_shebang_cancel_keeps_the_draft_and_notifies(
+    tmp_path, no_suspend, monkeypatch
+):
+    """Esc on the KindPickModal keeps the draft (the user's only copy) and says where —
+    never silently deletes it, never fabricates an entry."""
+    notes: list[str] = []
+    monkeypatch.setattr(
+        AddSourceScreen, "notify", lambda self, message, **kw: notes.append(message)
+    )
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        _modal, draft = await _draft_awk(app, pilot, monkeypatch)
+        await pilot.press("escape")  # dismiss the modal with None
+        await pilot.pause()
+    assert store.list_entries() == []  # nothing fabricated
+    assert draft.exists()  # the draft survived
+    assert any("Your draft was kept at" in n for n in notes)
+    draft.unlink(missing_ok=True)
+
+
+# ------------------------------------------- the add screen lists resumable drafts (round 6)
+
+
+async def test_add_source_lists_and_resumes_a_kept_draft(tmp_path, monkeypatch):
+    """Kept drafts are resumable, not lore: the add screen lists them, and selecting one
+    routes it through the normal path lane (fills #add-path → the review panel)."""
+    from skit.paths import drafts_dir
+
+    drafts_dir().mkdir(parents=True, exist_ok=True)
+    draft = drafts_dir() / "skit-new-resume.py"
+    draft.write_text("print('resume me')\n", encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        source = AddSourceScreen()
+        app.push_screen(source)
+        await pilot.pause()
+        drafts_list = source.query_one("#add-drafts", OptionList)
+        assert drafts_list.option_count == 1  # the kept draft is listed
+        _select_option(drafts_list, str(draft))
+        await pilot.pause()
+        assert source.query_one("#add-path", Input).value == str(draft)  # routed to the path lane
+        assert isinstance(app.screen, AddReviewScreen)  # opened the review panel
+
+
+async def test_add_source_hides_the_draft_list_when_none_kept(tmp_path):
+    """No kept drafts → no list (advertising an empty picker teaches a dead control)."""
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        source = AddSourceScreen()
+        app.push_screen(source)
+        await pilot.pause()
+        assert not source.query("#add-drafts")  # the OptionList is absent
+        assert "resume a kept draft" not in "".join(str(s.render()) for s in source.query(Static))
 
 
 # ---------------------------------------------------------------- review with no analyzer

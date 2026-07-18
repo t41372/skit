@@ -199,6 +199,33 @@ async def test_untick_preset_deletes_it_on_save(tmp_path):
     assert argstate.load_state(entry.slug)["presets"] == {"beta": {"Y": "2"}}  # only alpha gone
 
 
+async def test_untick_preset_is_name_keyed_against_a_concurrent_add(tmp_path):
+    """The delete pass maps checkbox indices through the names captured AT COMPOSE TIME,
+    not a fresh state read. A preset added concurrently (another `skit preset` — the
+    product's own agent-coexistence story) must not shift which name an untick deletes:
+    unticking beta deletes beta, even when a new name sorts ahead of everything shown."""
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="pre")
+    argstate.save_preset(entry.slug, "alpha", {"X": "1"})
+    argstate.save_preset(entry.slug, "beta", {"Y": "2"})
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        beta_box = screen.query_one("#st-preset-1", Checkbox)  # composed order: alpha, beta
+        assert "beta" in str(beta_box.label)
+        # A concurrent add of a name that sorts BEFORE the composed list — the old buggy
+        # save (re-reading + re-sorting state) would have shifted index 1 onto "alpha".
+        argstate.save_preset(entry.slug, "aardvark", {"Z": "3"})
+        beta_box.value = False  # untick beta for deletion
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+
+    survivors = argstate.load_state(entry.slug)["presets"]
+    assert set(survivors) == {"alpha", "aardvark"}  # exactly beta gone; the concurrent add survives
+
+
 # ---------------------------------------------------------------------------
 # Non-python / reference storage: early returns and read-only param views
 # ---------------------------------------------------------------------------

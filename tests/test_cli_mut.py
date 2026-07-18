@@ -1056,6 +1056,18 @@ def test_show_params_python_no_managed_exact(tmp_path, capsys):
     assert "XX" not in out
 
 
+def test_show_params_python_argparse_still_advertises_manage(tmp_path, capsys):
+    """The reader-driven read-view guard is scoped to NON-python kinds: a python entry that
+    both parses its own arguments (argparse) AND defines a constant keeps advertising
+    --manage — python manages constants alongside its CLI, unchanged (round 6)."""
+    text = "import argparse\nOUT = 'hi'\np = argparse.ArgumentParser()\np.add_argument('--n')\np.parse_args()\nprint(OUT)\n"
+    entry = store.add_python(_py(tmp_path, text), name="gpy")
+    cli._show_params(entry, as_json=False)
+    out = _norm(capsys.readouterr().out)
+    assert "--manage" in out  # python is untouched by the reader-driven suppression
+    assert "OUT" in out  # the constant is still offered as a candidate
+
+
 def test_show_params_python_table_all_cells_and_hint(tmp_path, capsys):
     specs = [
         ParamDecl(name="CITY", binding="const", type="str", default="Taipei"),

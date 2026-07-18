@@ -73,6 +73,45 @@ def test_bare_config_json() -> None:
     assert doc["after_run"] == "exit"  # the launcher default
 
 
+def test_config_json_emits_raw_values_never_a_localized_sentinel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`config --json` is a STABLE machine contract: it emits the RAW stored values, never
+    the localized DISPLAY sentinels. Under a non-English locale the payload must be
+    byte-identical to the English one — an agent must tell unset ("") apart from a value,
+    regardless of the user's language."""
+    monkeypatch.setenv("SKIT_LANG", "zh-TW")
+    i18n.init("zh-TW")
+    js_sentinel = i18n.gettext("auto (deno > bun > node)")
+    editor_sentinel = i18n.gettext("default ($VISUAL / $EDITOR)")
+    assert js_sentinel != "auto (deno > bun > node)"  # zh-TW really localized it (test is real)
+
+    out = runner.invoke(cli.app, ["config", "--json"]).output
+    doc = json.loads(out)
+    assert doc["editor"] == ""  # unset editor is raw "", not the localized "default (…)"
+    assert doc["js.runner"] == ""  # auto is raw ""
+    assert doc["lang"] == ""  # unset language override
+    assert doc["mirror"] == "off"  # a literal, never localized
+    assert doc["shell.bash_path"] == ""
+    assert js_sentinel not in out
+    assert editor_sentinel not in out
+
+    # Single-key and write paths are RAW too (same shape as the whole-config read).
+    assert json.loads(runner.invoke(cli.app, ["config", "editor", "--json"]).output) == {
+        "editor": ""
+    }
+    assert json.loads(runner.invoke(cli.app, ["config", "js.runner", "--json"]).output) == {
+        "js.runner": ""
+    }
+    written = json.loads(runner.invoke(cli.app, ["config", "mirror", "tsinghua", "--json"]).output)
+    assert written["mirror"] == config.PYPI_PRESETS["tsinghua"]  # the URL, not a localized word
+
+    # Human (non-json) output KEEPS the localized display sentinels — this is UI copy.
+    human = runner.invoke(cli.app, ["config"]).output
+    assert js_sentinel in human
+    assert editor_sentinel in human
+
+
 def test_read_one_key_json_emits_single_pair() -> None:
     """`config KEY --json` → {KEY: value} (the flag was previously ignored on this read
     path): stdout is exactly one JSON document, same shape as the whole-config read."""

@@ -1168,14 +1168,19 @@ def add(
             + _RED_CLOSE
         )
         raise typer.Exit(EXIT_USAGE)
-    # Cross-lane semantics that survive the matrix: --ref always needs a real file,
-    # and only prompt entries have runners/interpolation (checked again per kind on
-    # the path/stdin lanes after inference).
-    if lane in ("stdin", "editor", "prompt-editor") and ref:
+    # Defense-in-depth guards the matrix above now SHADOWS: both --ref and --exe are in
+    # `given` and absent from every non-path honorable set, so the matrix already refuses
+    # them on cmd/stdin/editor/prompt-editor first (with its own "can't apply here" voice).
+    # These two blocks are therefore unreachable today — kept as a safety net for any
+    # future lane the matrix doesn't yet enumerate, and excluded from coverage. (Reported
+    # in the round-6 gate-repair notes as deletion candidates.)
+    if lane in ("stdin", "editor", "prompt-editor") and ref:  # pragma: no cover — matrix-shadowed
         err_console.print(
             f"[red]{gettext('--ref needs an existing file to reference — a script written in the editor or read from stdin has none.')}[/red]"
         )
         raise typer.Exit(EXIT_USAGE)
+    # Cross-lane semantics the matrix defers to per-kind inference: only prompt entries have
+    # runners / interpolation, re-checked per kind on the path lane after its kind is known.
     if lane == "path":
         if no_interpolate and (exe or (kind is not None and kind != "prompt")):
             err_console.print(
@@ -1187,7 +1192,7 @@ def add(
                 f"[red]{gettext('--runner only applies to prompt entries — add one with --prompt.')}[/red]"
             )
             raise typer.Exit(EXIT_USAGE)
-    if exe and lane in ("stdin", "editor"):
+    if exe and lane in ("stdin", "editor"):  # pragma: no cover — matrix-shadowed (see above)
         err_console.print(
             f"[red]{gettext('--exe needs an existing program on disk — stdin and the editor author scripts.')}[/red]"
         )
@@ -2731,6 +2736,7 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
         specs = entry_spec.params_io.read(text)
     unmanaged: list[str] = []
     self_locating = False
+    reader_driven = False
     if (
         entry_spec is not None
         and entry_spec.analyzer is not None
@@ -2738,14 +2744,18 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
         and text
     ):
         report = entry_spec.analyzer.reconcile(text, specs)
-        unmanaged = [c.name for c in report.new]
+        an = entry_spec.analyzer.analyze(text)
+        # A reader-driven non-python entry's real interface IS its own parser (getopts /
+        # parseArgs / argparse): offering to --manage a bare constant would advertise
+        # REPLACING that form (the same uses_cli_framework gate the add panel and CLI
+        # onboarding fire). Python keeps managing constants alongside argparse — unchanged.
+        reader_driven = an.uses_cli_framework and entry.meta.kind != "python"
+        unmanaged = [] if reader_driven else [c.name for c in report.new]
         # $0/BASH_SOURCE: an injected constant runs from a temp copy, so the script would see the
         # temp path instead of its own. Say so HERE — where the user decides whether to manage it —
         # not only in the run-time warning, and point at the fix. Only meaningful for a kind that
         # actually rewrites a copy (an injector); env delivery never moves the file.
-        self_locating = (
-            entry_spec.injector is not None and entry_spec.analyzer.analyze(text).uses_self_location
-        )
+        self_locating = entry_spec.injector is not None and an.uses_self_location
     if entry_spec is not None and entry_spec.kind == "prompt" and entry.meta.interpolate:
         # The prompt's "detected but unmanaged" sweep is a fresh body scan, not the
         # analyzer/reconcile machinery (command-kind parity: spec.analyzer is None).
@@ -2778,9 +2788,11 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
         _print_declared_table(declared, last)
         return
     if not specs:
-        if entry_spec is None or entry_spec.analyzer is None:
-            # No analyzer means --manage can't do anything for this kind — suggesting it
-            # would send the user down a dead end (`skit params <exe> --manage X` errors).
+        if entry_spec is None or entry_spec.analyzer is None or reader_driven:
+            # No analyzer (or a reader-driven non-python kind whose own parser IS the
+            # interface) means --manage can't usefully act here — advertising it would
+            # send the user down a dead end (`skit params <exe> --manage X` errors) or
+            # offer to shadow the script's own getopts/parseArgs form.
             console.print(
                 escape(gettext("%(name)s has no managed parameters.") % {"name": entry.meta.name})
             )
