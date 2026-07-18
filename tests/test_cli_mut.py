@@ -1136,9 +1136,11 @@ def test_show_params_secret_masks_recorded_last_value(tmp_path, capsys):
     assert "XX" not in out
 
 
-def test_show_params_reference_entry_suppresses_add_hint(tmp_path, capsys):
-    # A reference entry's source can hold unmanaged candidates, but you can't --add to it, so the
-    # hint must be suppressed (kills the `mode == "copy"` guard and its and/or mutants).
+def test_show_params_reference_entry_names_unmanaged_with_ref_teaching(tmp_path, capsys):
+    # A reference entry now gets the SAME honest read as a copy entry — its unmanaged candidate
+    # (RETRIES) is named — but the `(use --manage to manage them)` ADVICE is dropped, because
+    # skit never writes the original file; the reference-mode teaching replaces it. Kills the
+    # ref-branch selection (names-only vs names + --manage advice) and the teaching-line print.
     text = metawriter.write_params(
         "CITY = 'x'\nRETRIES = 3\nprint(CITY, RETRIES)\n",
         [ParamDecl(name="CITY", binding="const", type="str", default="x")],
@@ -1146,7 +1148,9 @@ def test_show_params_reference_entry_suppresses_add_hint(tmp_path, capsys):
     store.add_python(_py(tmp_path, text, "ref.py"), name="r", mode="reference")
     cli._show_params(store.resolve("r"), as_json=False)
     out = _norm(capsys.readouterr().out)
-    assert "Detected but not yet managed" not in out  # reference mode: no --manage hint
+    assert "Detected but not yet managed: RETRIES" in out  # named honestly
+    assert "use --manage to manage them" not in out  # ...but no --manage advice on a ref entry
+    assert "skit never writes the original file" in out  # the reference-mode teaching instead
 
 
 # --- _edit_params (via `params --...`) -------------------------------------

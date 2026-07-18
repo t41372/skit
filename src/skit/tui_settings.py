@@ -701,18 +701,17 @@ class ScriptSettingsScreen(Screen[bool]):
         return normalized
 
     def _cli_driven(self) -> bool:
-        """Whether the run form currently comes from the script's own CLI surface — i.e.
-        nothing is managed yet AND the script parses its own arguments. (Once anything is
-        managed, plan_for_entry already serves the injected form, so there's no trap.)"""
+        """Whether the run form currently comes from a MODELED read of the script's own
+        CLI surface — i.e. nothing is managed yet AND the entry's own reader models a
+        form (flows.reader_fields, the one trap predicate every surface shares). Once
+        anything is managed, plan_for_entry already serves the injected form; and for
+        self-parsing skit couldn't model (docopt/fire, a dynamic optstring) the form is
+        passthrough-only, so managed constants are additive — no trap, offer stays."""
         if self._specs or not self._text:
             return False
-        # The ENTRY'S OWN reader: shell getopts, JS util.parseArgs, fish argparse — Python's
-        # argspec would see none of them and wrongly offer the manage-a-constant checkboxes on a
-        # script that already drives its own CLI.
-        reader = self._spec.cli_reader if self._spec is not None else None
-        if reader is None:
-            return False
-        return reader.read_cli(self._text) is not None
+        from . import flows
+
+        return flows.reader_fields(self._spec, self._text) > 0
 
     def _compose_presets(self) -> ComposeResult:
         yield Static(gettext("Presets"), classes="section", id="st-presets-section")

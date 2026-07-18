@@ -788,13 +788,16 @@ def test_onboard_script_params_skips_reference_entries(tmp_path, monkeypatch):
     assert cli._onboard_script_params(entry, _spec("shell"), no_input=False) == []
 
 
-def test_onboard_script_params_skips_cli_framework_scripts(tmp_path, monkeypatch):
-    # The guard is kind-agnostic: when the entry's OWN analyzer reports the script parses
-    # its own arguments (a CLI framework), onboarding manages nothing and never asks. The
-    # python analyzer is the one that detects frameworks (argparse), so drive it directly.
+def test_onboard_script_params_skips_when_reader_models_the_form(tmp_path, monkeypatch, capsys):
+    # Round-8 rule: onboarding skips (manages nothing, never asks) ONLY when the entry's own
+    # reader MODELS a form — that form IS the interface, and a managed constant would replace
+    # it. The python analyzer models argparse fields, so drive it directly. The ✓ read notice
+    # prints even though nothing is managed.
     p = tmp_path / "d.py"
     p.write_text(
-        "import argparse\nargparse.ArgumentParser().parse_args()\nCITY = 'x'\n", encoding="utf-8"
+        "import argparse\np = argparse.ArgumentParser()\np.add_argument('--n')\n"
+        "p.parse_args()\nCITY = 'x'\n",
+        encoding="utf-8",
     )
     entry = store.add_python(p, name="d")
     _fake_tty(monkeypatch)
@@ -803,7 +806,32 @@ def test_onboard_script_params_skips_cli_framework_scripts(tmp_path, monkeypatch
         cli.Prompt, "ask", staticmethod(lambda *a, **k: ask_hit.__setitem__("n", 1))
     )
     assert cli._onboard_script_params(entry, _spec("python"), no_input=False) == []
-    assert ask_hit["n"] == 0  # never reached the ask
+    assert ask_hit["n"] == 0  # never reached the ask — the modeled form is the interface
+    assert "skit read this script's own arguments" in capsys.readouterr().out
+
+
+def test_onboard_script_params_offers_candidates_when_reader_unmodeled(tmp_path, monkeypatch):
+    # The complement (both branches of the new `if flows.reader_fields(...)` guard): a script
+    # that self-parses but skit CANNOT model (a dynamic getopts optstring) runs on the
+    # passthrough field, so managed constants are ADDITIVE — the ask IS reached and the picked
+    # constant is managed on top of the reader form.
+    entry = _shell(
+        tmp_path,
+        body='#!/usr/bin/env bash\nOUTDIR=/tmp\nOPTS="n:v"\nwhile getopts "$OPTS" o; do :; done\n'
+        "echo $OUTDIR\n",
+        name="d",
+    )
+    _fake_tty(monkeypatch)
+    calls = {"n": 0}
+
+    def fake_ask(*_a, **_k):
+        calls["n"] += 1
+        return "1"
+
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(fake_ask))
+    managed = cli._onboard_script_params(entry, _spec("shell"), no_input=False)
+    assert calls["n"] == 1  # the candidate offer was reached — a dynamic optstring is not modeled
+    assert managed == ["OUTDIR"]  # candidate #1 managed on top of the passthrough form
 
 
 # ============================================================ run --forget-args

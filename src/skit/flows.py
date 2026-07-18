@@ -288,6 +288,24 @@ def _declared_riders(entry: Entry, taken: set[str]) -> list[FormField]:
     ]
 
 
+def reader_fields(lang: LangSpec | None, text: str) -> int:
+    """How many form fields the kind's own CLI reader models from `text` — 0 when there
+    is no modeled reader form (no reader, unreadable, dynamic/unmodelable parsing).
+
+    THE predicate for the manage-a-constant trap, shared by every surface that decides
+    whether to offer managing (add ticks, `params` advice, Script settings, the flip
+    note): managing REPLACES the run form only when a modeled reader form exists to be
+    replaced (plan_for_entry prefers managed specs). A script that self-parses but
+    couldn't be modeled (docopt/fire, a dynamic optstring) runs on the passthrough
+    field either way — there, managed constants are additive and the offer is honest."""
+    if lang is None or lang.cli_reader is None or not text:
+        return 0
+    spec = lang.cli_reader.read_cli(text)
+    if spec is None or not spec.ok:
+        return 0
+    return len(spec.fields)
+
+
 def _reader_plan(entry: Entry, reader: CliReader) -> FormPlan | None:
     """The form plan for a reader-only kind (PowerShell): read the script's own CLI surface
     statically and assemble real flags. None when the reader finds nothing readable (no

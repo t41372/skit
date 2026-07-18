@@ -407,8 +407,13 @@ def kind_for_shebang_text(text: str) -> str | None:
 # Versioned interpreter names: `#!/usr/bin/env python3.12` is the same explicit signal
 # as `python3` — uv/pyenv-provisioned scripts carry exact versions routinely. ONE rule
 # here, so the stdin, editor and TUI draft lanes can't split into per-lane carve-outs
-# (they did: two honored the spelling, one refused it).
-_VERSIONED_PYTHON = re.compile(r"python[\d.]*")
+# (they did: two honored the spelling, one refused it). python2 is deliberately OUT:
+# skit launches through `uv run --script` on python3 — claiming a python2 shebang would
+# fabricate exactly the entry that can only die at run time (the --kind escape applies).
+_VERSIONED_PYTHON = re.compile(r"python(3(\.\d+)*)?")
+# The version half of that signal ("3.12" of python3.12) — honored as a requires-python
+# default, never silently dropped (half-honoring an explicit signal is still a drop).
+_PYTHON_MINOR = re.compile(r"python(3)\.(\d+)(?:\.\d+)*")
 
 
 def _kind_for_program(program: str) -> str | None:
@@ -420,6 +425,37 @@ def _kind_for_program(program: str) -> str | None:
     if _VERSIONED_PYTHON.fullmatch(program):
         return "python"
     return None
+
+
+def kind_for_draft(path: Path) -> str:
+    """Kind inference for skit's OWN kept authoring drafts (paths.is_draft): the
+    shebang the user wrote outranks the file's suffix, because mkstemp picked the
+    suffix (.py starter, .prompt.md) BEFORE the user decided what to write — on a
+    draft the suffix is skit's artifact, not a user signal. A registered shebang
+    names its kind; an unregistered one is "unknown" (the caller's --kind /
+    kind-picker escape — never a fabricated python entry); no shebang at all falls
+    back to plain inference, where the suffix is all there is. This is the same
+    verdict the authoring lanes reached before the draft was kept, so a draft
+    crossing the keep/resume seam can never change kind."""
+    program = shebang_program(path)
+    if program is None:
+        return infer_kind(path)
+    return _kind_for_program(program) or "unknown"
+
+
+def python_version_pin(program: str | None) -> str:
+    """The requires-python constraint a versioned python shebang implies
+    ("python3.12" → ">=3.12,<3.13"), or "" for unversioned/absent/non-python
+    programs. The kind half of `#!/usr/bin/env python3.12` and the version half are
+    ONE explicit signal — honoring the first while dropping the second would run the
+    script on whatever python uv happens to pick."""
+    if program is None:
+        return ""
+    m = _PYTHON_MINOR.fullmatch(program)
+    if m is None:
+        return ""
+    major, minor = int(m.group(1)), int(m.group(2))
+    return f">={major}.{minor},<{major}.{minor + 1}"
 
 
 @cache

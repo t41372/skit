@@ -49,3 +49,12 @@ def drafts_dir() -> Path:
     kept" must be a promise the OS can't break (macOS reaps temp files in days), and an
     accumulation the user can see and manage beats invisible litter."""
     return data_dir() / "drafts"
+
+
+def is_draft(path: Path) -> bool:
+    """Whether `path` is one of skit's OWN kept drafts — the single definition every
+    draft-aware behavior keys on (the TUI's resumable list, the consume-on-success
+    unlink, and draft-aware kind inference). Both halves matter: the drafts directory
+    scopes it, and the mkstemp `skit-` prefix keeps a user file merely parked in that
+    directory from being treated (and consumed) as skit's artifact."""
+    return path.name.startswith("skit-") and path.resolve().parent == drafts_dir().resolve()

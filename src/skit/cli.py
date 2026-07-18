@@ -170,17 +170,34 @@ def _resolve_python_metadata(
                 % {"deps": ", ".join(escape(d) for d in deps)}
             )
         return [], ""
+    # A versioned shebang (python3.12) is ONE explicit signal: the kind half AND the
+    # version half. With no --python and no PEP 723 block, the version half becomes the
+    # recorded requires-python default — announced (or shown as the ask's default),
+    # never silently recorded and never silently dropped.
+    from .langs.registry import python_version_pin, shebang_program_from_line
+
+    pin = (
+        ""
+        if python_opt is not None
+        else python_version_pin(shebang_program_from_line(text.split("\n", 1)[0]))
+    )
     if deps_opt is not None or python_opt is not None:
         # Strip/drop empties, matching the interactive path and _resolve_npm_dependencies: an
         # empty "" requirement makes PEP 508 refuse the whole [tool.uv] block ("Empty field is
         # not allowed"), and a whitespace-only --python is an unparseable version constraint —
         # either bricks every subsequent run before the script starts.
-        return [d.strip() for d in (deps_opt or []) if d.strip()], (python_opt or "").strip()
+        if pin:
+            _note_python_pin(pin)
+        return [d.strip() for d in (deps_opt or []) if d.strip()], (python_opt or "").strip() or pin
     suggested = pep723.suggest_dependencies(text)
     if not suggested:
-        return [], ""  # No dependencies: nothing to ask
+        if pin:
+            _note_python_pin(pin)
+        return [], pin  # No dependencies: nothing to ask
     if no_input or not sys.stdin.isatty():
-        return suggested, ""  # Non-interactive: accept the suggestions as-is
+        if pin:
+            _note_python_pin(pin)
+        return suggested, pin  # Non-interactive: accept the suggestions as-is
     answer = Prompt.ask(
         gettext("Dependencies to install (Enter to accept, edit the list, or '-' for none)"),
         default=", ".join(suggested),
@@ -190,10 +207,26 @@ def _resolve_python_metadata(
         deps_list: list[str] = []
     else:
         deps_list = pep723.split_requirements(answer)
+    # The pin rides in as the ask's visible default — accepting or clearing it is the
+    # user's own move, so no separate announcement is needed on this path.
     py = Prompt.ask(
-        gettext("Python version (leave empty for automatic)"), default="", console=console
+        gettext("Python version (leave empty for automatic)"), default=pin, console=console
     )
     return deps_list, py.strip()
+
+
+def _note_python_pin(pin: str) -> None:
+    """The one-line consent trail for a shebang-derived requires-python: the constraint
+    is recorded on a path with no ask, so it must at least be said out loud."""
+    console.print(
+        "[dim]"
+        + gettext(
+            "The #! line pins a python version — recording requires-python %(pin)s "
+            "(change it with --python)."
+        )
+        % {"pin": pin}
+        + _DIM_CLOSE
+    )
 
 
 def _resolve_npm_dependencies(
@@ -389,8 +422,10 @@ def _print_reader_notice(kind_spec: LangSpec | None, text: str, frameworks: list
     )
     if spec is not None and spec.ok and spec.fields:
         console.print(
-            gettext(
-                "✓ skit read this script's own arguments (%(count)s fields). Running it opens a form — nothing to memorize."
+            ngettext(
+                "✓ skit read this script's own arguments (%(count)s field). Running it opens a form — nothing to memorize.",
+                "✓ skit read this script's own arguments (%(count)s fields). Running it opens a form — nothing to memorize.",
+                len(spec.fields),
             )
             % {"count": len(spec.fields)}
         )
@@ -408,14 +443,17 @@ def _print_reader_notice(kind_spec: LangSpec | None, text: str, frameworks: list
 def _onboard_params(text: str, script_name: str, no_input: bool) -> list[ParamDecl]:
     """Parameter onboarding at add time (A4: which constant counts as a parameter is a UX call).
 
-    - argparse detected: nothing to manage — the run form is read statically from the
-      script's own argument declarations (the unified form model).
+    - A MODELED reader form (argparse/click/typer read statically): nothing to manage —
+      that form is the interface, and a managed constant would replace it.
+    - Self-parsing skit can't model (docopt/fire): the run form is passthrough-only, so
+      managed constants ADD fields rather than replace anything — the offer stands.
     - Non-interactive: don't guess, don't select, return empty (honesty beats clever).
     """
     result = analyzer.analyze(text)
     if result.uses_cli_framework:
         _print_reader_notice(spec_for("python"), text, result.frameworks)
-        return []
+        if flows.reader_fields(spec_for("python"), text):
+            return []
     _print_add_hints(result, script_name)
     if not result.candidates or no_input or not sys.stdin.isatty():
         return []
@@ -438,21 +476,42 @@ def _onboard_params(text: str, script_name: str, no_input: bool) -> list[ParamDe
     return [ParamDecl.from_candidate(result.candidates[i]) for i in picked]
 
 
+def _print_reference_add_notice(
+    kind_spec: LangSpec | None, text: str, frameworks: list[str]
+) -> None:
+    """The ONE reference-mode add voice, python and non-python alike. When the
+    script's own parser models a form, say so — the reader works in reference mode,
+    so "setup was skipped" alone would read as "the form is lost" (it isn't).
+    Otherwise say plainly that parameter setup was skipped."""
+    if flows.reader_fields(kind_spec, text):
+        _print_reader_notice(kind_spec, text, frameworks)
+        return
+    console.print(
+        f"[dim]{gettext('Reference mode never touches the original file, so parameter setup was skipped.')}[/dim]"
+    )
+
+
 def _onboard_script_params(entry: store.Entry, kind_spec: LangSpec, no_input: bool) -> list[str]:
     """Line-mode parameter onboarding for analyzable interpreted kinds (shell/js/ts/
     fish) — the same candidate tick python gets. The analyzers shipped a whole PR
     without any add lane ever surfacing their findings; users concluded the language
-    support was fake. Copy mode only (reference never writes the original, A7);
-    non-interactive selects nothing (python's rule: honesty beats clever)."""
-    if entry.meta.mode != "copy" or kind_spec.analyzer is None or kind_spec.params_io is None:
+    support was fake. Ticks are copy mode only (reference never writes the original,
+    A7 — the reference voice says so); non-interactive selects nothing (python's
+    rule: honesty beats clever)."""
+    if kind_spec.analyzer is None or kind_spec.params_io is None:
         return []
     text = entry.script_path.read_text(encoding="utf-8", errors="replace")
     result = kind_spec.analyzer.analyze(text)
-    if result.uses_cli_framework:
-        # The script's own parser is the form — nothing to manage, and the SAME
-        # reassurance the python lane prints (three of four kinds said nothing here).
-        _print_reader_notice(kind_spec, text, result.frameworks)
+    if entry.meta.mode != "copy":
+        _print_reference_add_notice(kind_spec, text, result.frameworks)
         return []
+    if result.uses_cli_framework:
+        # The SAME reassurance (and the SAME modeled-form predicate) as the python
+        # lane: a modeled getopts/parseArgs form IS the interface — nothing to manage;
+        # a dynamic optstring runs on passthrough, so the candidate offer stands.
+        _print_reader_notice(kind_spec, text, result.frameworks)
+        if flows.reader_fields(kind_spec, text):
+            return []
     _print_add_hints(result, entry.meta.name)
     if not result.candidates or no_input or not sys.stdin.isatty():
         return []
@@ -514,9 +573,7 @@ def _onboard_python(
     managed: list[str] = []
     secrets: list[str] = []
     if entry.meta.mode == "reference":
-        console.print(
-            f"[dim]{gettext('Reference mode never touches the original file, so parameter setup was skipped.')}[/dim]"
-        )
+        _print_reference_add_notice(spec_for("python"), text, analyzer.analyze(text).frameworks)
     else:
         params_specs = _onboard_params(text, entry.meta.name, no_input)
         if params_specs:
@@ -1610,10 +1667,13 @@ def add(
     if lane == "path" and entry.meta.mode == "copy":
         # A resumed draft that reached the store is done accumulating: the same
         # "success: the store holds the copy" unlink every authoring lane performs.
-        # Only files in skit's OWN drafts home — a user's original is never touched,
-        # and a reference-mode entry still points at its file.
-        source = Path(path).expanduser().resolve()
-        if source.parent == Path(_drafts_home()).resolve():
+        # Only skit's OWN drafts (paths.is_draft — drafts home AND the skit- prefix):
+        # a user's file merely parked in that directory is never consumed, and a
+        # reference-mode entry still points at its file.
+        from .paths import is_draft
+
+        source = Path(path).expanduser()
+        if is_draft(source):
             source.unlink(missing_ok=True)  # pragma: no mutate
     _print_add_summary(entry, summary_deps, summary_managed, summary_secrets)
 
@@ -2848,26 +2908,26 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
     unmanaged: list[str] = []
     self_locating = False
     reader_driven = False
-    if (
-        entry_spec is not None
-        and entry_spec.analyzer is not None
-        and entry.meta.mode == "copy"
-        and text
-    ):
+    ref_mode = entry.meta.mode == "reference"
+    if entry_spec is not None and entry_spec.analyzer is not None and text:
+        # BOTH modes: the text is readable either way, and a reference entry deserves
+        # the same honest read (its reader form runs fine; its candidates are real —
+        # only the WRITE ops differ, and the advice below switches voice on that).
         report = entry_spec.analyzer.reconcile(text, specs)
         an = entry_spec.analyzer.analyze(text)
-        # A reader-driven entry's real interface IS its own parser (getopts / parseArgs
-        # / argparse): managed params don't ride "alongside" it — plan_for_entry
-        # prefers them, so following a --manage advice here REPLACES the reader form.
-        # The add lanes and the settings screen already gate on this for every kind,
-        # python included; the read view must not be the one surface selling the trap.
-        reader_driven = an.uses_cli_framework
+        # A MODELED reader form (flows.reader_fields — the one trap predicate every
+        # surface shares) is the entry's real interface: plan_for_entry prefers managed
+        # params, so a --manage advice here would sell REPLACING that form. Self-parsing
+        # skit couldn't model (docopt/fire, a dynamic optstring) runs on the passthrough
+        # field either way — managed constants are additive there, so candidates stay.
+        reader_driven = flows.reader_fields(entry_spec, text) > 0
         unmanaged = [] if reader_driven else [c.name for c in report.new]
         # $0/BASH_SOURCE: an injected constant runs from a temp copy, so the script would see the
         # temp path instead of its own. Say so HERE — where the user decides whether to manage it —
         # not only in the run-time warning, and point at the fix. Only meaningful for a kind that
-        # actually rewrites a copy (an injector); env delivery never moves the file.
-        self_locating = entry_spec.injector is not None and an.uses_self_location
+        # actually rewrites a copy (an injector, copy mode — the hint advises --normalize, a
+        # stored-copy write); env delivery never moves the file.
+        self_locating = not ref_mode and entry_spec.injector is not None and an.uses_self_location
     if entry_spec is not None and entry_spec.kind == "prompt" and entry.meta.interpolate:
         # The prompt's "detected but unmanaged" sweep is a fresh body scan, not the
         # analyzer/reconcile machinery (command-kind parity: spec.analyzer is None).
@@ -2901,22 +2961,31 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
         return
     if not specs:
         if entry_spec is None or entry_spec.analyzer is None or reader_driven:
-            # No analyzer (or a reader-driven non-python kind whose own parser IS the
-            # interface) means --manage can't usefully act here — advertising it would
-            # send the user down a dead end (`skit params <exe> --manage X` errors) or
-            # offer to shadow the script's own getopts/parseArgs form.
+            # No analyzer (or a modeled reader form that IS the interface) means
+            # --manage can't usefully act here — advertising it would send the user
+            # down a dead end (`skit params <exe> --manage X` errors) or offer to
+            # shadow the script's own getopts/parseArgs/argparse form.
             console.print(
                 escape(gettext("%(name)s has no managed parameters.") % {"name": entry.meta.name})
             )
             return
-        console.print(
-            escape(
-                gettext(
-                    "%(name)s has no managed parameters. Use --manage to bring a detected candidate under management."
-                )
-                % {"name": entry.meta.name}
+        if ref_mode:
+            # --manage is structurally refused on a reference entry (skit never
+            # writes the original) — advertising it here would be advice that is
+            # simultaneously the trap and a guaranteed refusal. The detected names
+            # still print below, with the reference voice.
+            console.print(
+                escape(gettext("%(name)s has no managed parameters.") % {"name": entry.meta.name})
             )
-        )
+        else:
+            console.print(
+                escape(
+                    gettext(
+                        "%(name)s has no managed parameters. Use --manage to bring a detected candidate under management."
+                    )
+                    % {"name": entry.meta.name}
+                )
+            )
     else:
         from rich.table import Table
 
@@ -2947,10 +3016,26 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
             )
         console.print(table)
     if unmanaged:
-        console.print(
-            gettext("Detected but not yet managed: %(names)s (use --manage to manage them)")
-            % {"names": ", ".join(escape(n) for n in unmanaged)}
-        )
+        if ref_mode:
+            console.print(
+                gettext("Detected but not yet managed: %(names)s")
+                % {"names": ", ".join(escape(n) for n in unmanaged)}
+            )
+            console.print(
+                "[dim]"
+                + escape(
+                    gettext(
+                        "Reference mode: skit never writes the original file — manage "
+                        "parameters by editing its [tool.skit] block in the source directly."
+                    )
+                )
+                + _DIM_CLOSE
+            )
+        else:
+            console.print(
+                gettext("Detected but not yet managed: %(names)s (use --manage to manage them)")
+                % {"names": ", ".join(escape(n) for n in unmanaged)}
+            )
     if self_locating:
         console.print(
             f"[dim]{gettext('This script locates itself ($0 / BASH_SOURCE). Injecting a constant runs it from a temporary copy, so it would see that copy path instead. `skit params %(name)s --normalize NAME` converts a constant into the ${NAME:-default} idiom, which is delivered through the environment and leaves the file untouched.') % {'name': escape(entry.meta.name)}}[/dim]"
@@ -3448,11 +3533,14 @@ def _edit_params(
         raise _fail(gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}, 1)
     text = copy_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
     current = entry_spec.params_io.read(text)
-    # Whether the run form was the script's OWN parser before this edit — an explicit
+    # Whether a MODELED reader form drove the run form before this edit — an explicit
     # --manage is honored (the user asked), but flipping the form's source without a
-    # word is the trap the settings screen and the read view both warn about.
+    # word is the trap the settings screen and the read view both warn about. The
+    # modeled-form predicate (flows.reader_fields), not uses_cli_framework: for
+    # self-parsing skit couldn't model there is no form being set aside, and claiming
+    # one would be its own overstatement.
     before = entry_spec.analyzer.analyze(text)
-    was_reader_driven = not current and before.uses_cli_framework
+    was_reader_driven = not current and flows.reader_fields(entry_spec, text) > 0
     for item in malformed:
         err_console.print(
             f"[yellow]{escape(gettext('Ignored a malformed value: %(item)s (expected NAME=text).') % {'item': item})}[/yellow]"

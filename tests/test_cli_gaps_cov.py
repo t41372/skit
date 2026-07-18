@@ -162,7 +162,8 @@ def test_onboard_params_argparse_fields_message(capsys):
     assert specs == []
     out = " ".join(capsys.readouterr().out.split())
     assert "skit read this script's own arguments" in out
-    assert "1 fields" in out  # one add_argument -> one field
+    assert "(1 field)" in out  # one add_argument -> singular (ngettext)
+    assert "(1 fields)" not in out  # the plural form must NOT be chosen for count == 1
 
 
 # --------------------------------------------------------------------------

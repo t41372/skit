@@ -37,7 +37,7 @@ from . import (
     tui_layout,
     tui_runner,
 )
-from .i18n import gettext
+from .i18n import gettext, ngettext
 from .langs.prompt import analyzer as prompt_analyzer
 from .params import ParamDecl, is_secret_name
 
@@ -111,6 +111,48 @@ class KindPickModal(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class DraftDeleteConfirm(ModalScreen[bool]):
+    """Deleting a kept draft destroys the user's ONLY copy of what they wrote — it
+    gets the same ask entry removal gets, never a bare one-keystroke delete."""
+
+    BINDINGS = [
+        Binding("y", "confirm", gettext("Delete")),
+        Binding("escape,n", "cancel", gettext("Keep")),
+    ]
+    DEFAULT_CSS = """
+    DraftDeleteConfirm { align: center middle; }
+    DraftDeleteConfirm > Vertical { border: round $accent; padding: 1 2; width: auto;
+        max-width: 100%; height: auto; max-height: 100%; background: $background; }
+    DraftDeleteConfirm Static { width: auto; margin: 1 0 0 0; }
+    """
+
+    def __init__(self, name: str) -> None:
+        super().__init__()
+        self._name: str = name
+
+    @override
+    def compose(self) -> ComposeResult:
+        from textual.widgets import Label
+
+        with Vertical():
+            yield Label(
+                gettext('Delete the draft "%(name)s"? It is the only copy.') % {"name": self._name}
+            )
+            yield Static(
+                tui_footer.bar(
+                    tui_footer.chip("screen.confirm", "y", gettext("Delete")),
+                    tui_footer.chip("screen.cancel", "Esc", gettext("Keep")),
+                ),
+                markup=True,
+            )
+
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
 class AddSourceScreen(Screen[str | None]):
     """Step 1: where does the script come from? Returns the new entry's slug, or None."""
 
@@ -120,6 +162,9 @@ class AddSourceScreen(Screen[str | None]):
         # on the CURRENT subject" (review panels, the Library) — one chord, one verb.
         Binding("ctrl+n", "draft_script", gettext("Write a new script"), priority=True),
         Binding("ctrl+p", "draft_prompt", gettext("Draft a prompt"), priority=True),
+        # NOT priority: Ctrl+D is the Input's own delete-right while a field has focus
+        # (the AGENTS grammar rule for editing chords) — the chip is the path mid-edit.
+        Binding("ctrl+d", "delete_draft", gettext("Delete a kept draft")),
         *tui_footer.FIELD_NAV_BINDINGS,
     ]
     # Boot on the path field, not the "*" pick (the body scroll container).
@@ -176,7 +221,9 @@ class AddSourceScreen(Screen[str | None]):
                 else []
             )
             if drafts:
-                # Kept drafts are resumable, not lore: list them where adding happens.
+                # Kept drafts are resumable, not lore: list them where adding happens —
+                # and deletable here too (an accumulation the user "can see and manage"
+                # with no way to manage it would be half a promise).
                 yield Static(gettext("…or resume a kept draft:"), classes="hint")
                 yield OptionList(
                     *(Option(escape(d.name), id=str(d)) for d in drafts[:_DRAFTS_LISTED]),
@@ -188,6 +235,13 @@ class AddSourceScreen(Screen[str | None]):
                         + gettext("…and %(count)s more") % {"count": len(drafts) - _DRAFTS_LISTED},
                         classes="hint",
                     )
+                yield Static(
+                    tui_footer.bar(
+                        tui_footer.chip("screen.delete_draft", "Ctrl+D", gettext("Delete draft…"))
+                    ),
+                    id="add-draft-actions",
+                    markup=True,
+                )
             yield Static(gettext("…or start from a blank page:"), classes="hint")
             # The authoring lanes were CLI-only (skit add --edit / --prompt) — a
             # TUI-first user could never discover them (zero-memorization).
@@ -249,15 +303,13 @@ class AddSourceScreen(Screen[str | None]):
         def _reviewed(slug: str | None) -> None:
             if slug is None:
                 return
-            from .paths import drafts_dir
+            from .paths import is_draft
 
-            if (
-                path.resolve().parent == drafts_dir().resolve()
-                and store.resolve(slug).meta.mode == "copy"
-            ):
+            if is_draft(path) and store.resolve(slug).meta.mode == "copy":
                 # A resumed draft that reached the store is done accumulating — the
                 # same "success: the store holds the copy" unlink every authoring
-                # lane performs. Reference mode still points at the file: kept.
+                # lane performs. Only skit's OWN drafts (is_draft: drafts home AND
+                # the skit- prefix); reference mode still points at the file: kept.
                 path.unlink(missing_ok=True)
             self.dismiss(slug)
 
@@ -329,6 +381,26 @@ class AddSourceScreen(Screen[str | None]):
         from .cli import _starter_prompt
 
         self._draft(".prompt.md", _starter_prompt(), "prompt")
+
+    def action_delete_draft(self) -> None:
+        """Ctrl+D / the Delete draft… chip: delete the highlighted kept draft — behind
+        the same ask entry removal gets, because the draft is the user's only copy."""
+        lists = self.query("#add-drafts")
+        if not lists:
+            return
+        option_list = lists.first(OptionList)
+        if option_list.highlighted is None:
+            return
+        draft = Path(str(option_list.get_option_at_index(option_list.highlighted).id))
+
+        def _confirmed(delete: bool | None) -> None:
+            if not delete:
+                return
+            draft.unlink(missing_ok=True)
+            self.notify(gettext("Deleted the draft %(name)s.") % {"name": draft.name})
+            self.refresh(recompose=True)
+
+        self.app.push_screen(DraftDeleteConfirm(draft.name), _confirmed)
 
     def _draft(self, suffix: str, starter: str, kind: str) -> None:
         import os
@@ -533,7 +605,15 @@ class AddReviewScreen(Screen[str | None]):
         self._spec = spec_for(kind)
         self._text: str = path.read_text(encoding="utf-8", errors="replace")
         self._analysis: analysis.Analysis = self._analyze()
+        # A versioned shebang (python3.12) is ONE signal: the kind half and the
+        # version half. With no explicit --python and no PEP 723 block, the version
+        # half becomes the recorded requires-python default — same rule as the CLI's
+        # _resolve_python_metadata, and _compose_deps SHOWS it (an invisibly recorded
+        # constraint would be a setting no TUI surface ever admits to).
+        self._py_pin_auto = kind == "python" and not requires_python
         self._requires_python = requires_python
+        if self._py_pin_auto:
+            self._requires_python = self._python_pin()
         # Survives the edit→rescan recompose: the rescan refreshes DETECTION, it must
         # never throw away what the user already typed into the panel.
         self._overrides: dict[str, str] = {}
@@ -550,6 +630,23 @@ class AddReviewScreen(Screen[str | None]):
         if self._spec is None or self._spec.analyzer is None:
             return analysis.Analysis()
         return self._spec.analyzer.analyze(self._text)
+
+    def _python_pin(self) -> str:
+        """The requires-python default a versioned shebang implies (registry's one
+        rule) — "" when a PEP 723 block owns the constraint."""
+        if pep723.has_block(self._text):
+            return ""
+        from .langs.registry import python_version_pin, shebang_program
+
+        return python_version_pin(shebang_program(self._path))
+
+    def _reader_modeled(self) -> bool:
+        """Whether the entry's own reader models a form from the current text — the
+        shared trap predicate (flows.reader_fields) the tick list and its Space chip
+        both key on."""
+        from . import flows
+
+        return flows.reader_fields(self._spec, self._text) > 0
 
     def _suggest_description(self) -> str:
         if self._kind == "python":
@@ -633,7 +730,7 @@ class AddReviewScreen(Screen[str | None]):
             self._spec is not None
             and self._spec.analyzer is not None
             and self._analysis.candidates
-            and not self._analysis.uses_cli_framework
+            and not self._reader_modeled()
         ):
             # The same condition that composes the checkboxes: advertising Space with
             # nothing to toggle teaches a dead key.
@@ -691,6 +788,14 @@ class AddReviewScreen(Screen[str | None]):
             yield Static(
                 gettext("detected from the script's imports — edit freely"), classes="hint"
             )
+            if self._requires_python:
+                # The recorded constraint is VISIBLE, whether it rode in on --python
+                # or was derived from a versioned shebang — a value the add writes
+                # but no surface shows would be an invisible setting.
+                yield Static(
+                    "· "
+                    + gettext("needs Python %(python)s") % {"python": escape(self._requires_python)}
+                )
 
     def _compose_params(self) -> ComposeResult:
         if self._spec is None or self._spec.analyzer is None:
@@ -698,25 +803,32 @@ class AddReviewScreen(Screen[str | None]):
         yield Static(gettext("Parameters"), classes="section")
         reader = self._spec.cli_reader
         spec = reader.read_cli(self._text) if reader is not None else None
-        if self._analysis.uses_cli_framework:
-            if spec is not None and spec.ok and spec.fields:
-                yield Static(
-                    gettext(
-                        "✓ skit read this script's own arguments (%(count)s fields). Running it "
-                        "opens a form — nothing to memorize."
-                    )
-                    % {"count": len(spec.fields)}
+        if spec is not None and spec.ok and spec.fields:
+            # A MODELED reader form IS the interface (the shared trap predicate,
+            # flows.reader_fields): no tick list — managing would replace this form.
+            yield Static(
+                ngettext(
+                    "✓ skit read this script's own arguments (%(count)s field). Running it "
+                    "opens a form — nothing to memorize.",
+                    "✓ skit read this script's own arguments (%(count)s fields). Running it "
+                    "opens a form — nothing to memorize.",
+                    len(spec.fields),
                 )
-            else:
-                yield Static(
-                    gettext(
-                        "This script parses its own arguments (%(names)s); skit couldn't model "
-                        "them statically, so the run form offers a passthrough-arguments field."
-                    )
-                    % {"names": ", ".join(self._analysis.frameworks)},
-                    classes="hint",
-                )
+                % {"count": len(spec.fields)}
+            )
             return
+        if self._analysis.uses_cli_framework:
+            # Self-parsing skit couldn't model: the run form is passthrough-only, so
+            # managed constants ADD fields rather than replace any — say so, then
+            # keep the tick list.
+            yield Static(
+                gettext(
+                    "This script parses its own arguments (%(names)s); skit couldn't model "
+                    "them statically, so the run form offers a passthrough-arguments field."
+                )
+                % {"names": ", ".join(self._analysis.frameworks)},
+                classes="hint",
+            )
         if self._analysis.candidates:
             yield Static(gettext("Tick the ones the run form should ask for:"), classes="hint")
         for i, c in enumerate(self._analysis.candidates):
@@ -771,6 +883,9 @@ class AddReviewScreen(Screen[str | None]):
                 print(str(exc), flush=True)
         self._text = self._path.read_text(encoding="utf-8", errors="replace")
         self._analysis = self._analyze()
+        if self._py_pin_auto:
+            # The pin came from the shebang, and the shebang may just have changed.
+            self._requires_python = self._python_pin()
         self.refresh(recompose=True)
 
     def _collected_deps(self) -> list[str]:

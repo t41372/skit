@@ -18,7 +18,7 @@ from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
-from . import argstate, pep723
+from . import argstate, paths, pep723
 from .atomic import atomic_write_toml
 from .i18n import gettext
 from .langs import registry
@@ -189,7 +189,15 @@ def infer_kind(path: Path, force_exe: bool = False) -> str:
     """What kind of entry a path should become. Delegates to the language registry
     (langs.registry.infer_kind) — kept as a store-level name because the CLI and the
     TUI add panel both resolve inference through the store, so the two paths can't
-    drift apart."""
+    drift apart.
+
+    Skit's own kept drafts are the one exception: their suffix is mkstemp's artifact
+    (a bash draft is still named skit-new-*.py), so a resumed draft is classified
+    shebang-first (registry.kind_for_draft) — otherwise the SAME bytes were shell
+    when authored and python when resumed, and the kept-draft advice ("add it with:
+    skit add <path>") was itself the corrupting command."""
+    if not force_exe and paths.is_draft(path):
+        return registry.kind_for_draft(path)
     return registry.infer_kind(path, force_exe=force_exe)
 
 
