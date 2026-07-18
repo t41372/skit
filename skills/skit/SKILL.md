@@ -62,6 +62,7 @@ skit run <name> -p <preset> --no-input              # a saved preset
 skit run <name> --no-input -- --verbose input.txt   # raw args to the script's own parser
 skit run <name> --set width=800 --dry-run --no-input  # print the command, run nothing
 skit run <name> --raw --no-input                    # escape hatch: as-is, no form flags (--set/-p refused)
+skit run <name> --forget-args --no-input            # erase the remembered extra args first, then run
 ```
 
 - `--set NAME=VALUE` works for every field kind (flags, injected constants, template
@@ -72,9 +73,9 @@ skit run <name> --raw --no-input                    # escape hatch: as-is, no fo
 - Unset fields fall back to: preset > last-used value > the script's own default.
   A required field with no value fails fast (exit 125) rather than prompting.
 - **Reuse warning:** with no `--` args given, a script or exe run reuses the *last
-  run's* extra args (it says so on stderr). Pass your own `--` args, or use `--raw` (which
-  never replays old arguments), when you need a clean slate; `--dry-run` shows exactly
-  what would happen.
+  run's* extra args (it says so on stderr). Pass your own `--` args, use `--raw` (which
+  never replays old arguments), or `--forget-args` (erases the remembered tail up front,
+  then runs) when you need a clean slate; `--dry-run` shows exactly what would happen.
 - Secrets: prefer wiring them to environment variables (see below) over `--set`.
   Secret values never persist to disk and are masked as ••• in dry-run output.
 
@@ -99,6 +100,7 @@ Always confirm with the user before adding. From a file or stdin:
 skit add path/to/script.py --name resize -d "Resize images to a target width" --no-input
 skit add path/to/backup.sh --name backup -d "Nightly database dump" --no-input
 skit add - --name fetch-report -d "Pull the weekly report" --no-input   # script text on stdin
+skit add - --kind shell -n backup -d "Nightly dump" --no-input   # stdin + forced kind (any interpreted kind)
 skit add path/to/script.py --ref --no-input      # reference the original file, don't copy
 skit add path/to/tool --kind shell --name tool -d "Cleanup helper" --no-input   # force the kind
 skit add --cmd 'ffmpeg -i {input} -vf scale={width}:-1 {output}' --name scale-video --no-input
@@ -159,6 +161,24 @@ skit params <name> --rm OUTPUT
   original), so the value is delivered as an environment variable rather than by
   rewriting a temporary copy. Opt-in, and the one edit skit ever makes to script text.
 
+### Where and how an entry runs
+
+Launch policy lives on the entry and is editable without remove + re-add:
+
+```bash
+skit params <name> --workdir origin      # run in: origin | store | invoke | an /absolute/path
+skit params <name> --interpreter zsh     # pin the interpreter/runtime (interpreted kinds only; empty clears it)
+skit params <name> --template 'ffmpeg -i {input} {output}'  # command kind: rewrite the template ({holes} re-read)
+```
+
+- `--workdir` sets where the process starts: `origin` (the script's own folder),
+  `store` (skit's stored copy), `invoke` (where skit was run from), or an absolute path.
+- `--interpreter` pins the binary an interpreted entry (shell/js/ts/fish/…) launches
+  with; refused on python and prompt kinds — they don't run through a pinnable
+  interpreter. `skit show <name> --json` reports the entry's `interpreter`.
+- `--template` rewrites a `command` entry's program and re-reads its `{placeholders}`;
+  refused on any other kind, and an empty template is refused.
+
 ## Presets
 
 Named value sets per script, ideal for recurring jobs:
@@ -212,6 +232,7 @@ skit params <name> --no-interpolate  # switch insertion off; --interpolate turns
 ```bash
 skit runner list --json                       # [{"name": …, "argv": […]}]
 skit runner add mycli -- mycli run {{prompt}} # each word = one argument, no shell
+skit runner add mycli --force -- mycli run --model opus {{prompt}}  # --force replaces an existing runner (edit)
 skit runner remove mycli
 ```
 
@@ -224,12 +245,18 @@ skit runner remove mycli
 ## Maintenance
 
 ```bash
-skit doctor --json     # health: uv, library location, drift/missing entries, needs_missing
+skit doctor --json     # health: uv, location, drift/missing, needs_missing, launch_blocked, mirror
+skit rename <name> <new-name>       # rename; presets, remembered values and history follow
+skit describe <name> "Nightly dump" # set/replace the description (an empty string clears it)
 skit remove <name> -y  # remove an entry (the user's original file is never deleted) — ask first
 skit edit <name>       # open the stored source in the user's editor
 skit config js.runner deno         # pin the JS/TS runner (default: auto — deno > bun > node)
 skit config shell.bash_path /path  # where bash lives on Windows (POSIX auto-detects)
 ```
+
+`doctor --json` adds `launch_blocked` — a `{name: reason}` map of entries whose run
+would refuse to start (uninstalled interpreter/JS runtime, a pinned agent binary that
+is gone, a vanished working directory) even though their target file is present.
 
 If `show`/`run` reports drift (the script changed and its managed parameter
 definitions no longer match), `skit params <name> --resync` refreshes them.
