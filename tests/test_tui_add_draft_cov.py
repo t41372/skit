@@ -9,6 +9,7 @@ widget merely mounted.
 from __future__ import annotations
 
 import contextlib
+import os
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from textual.widgets import Checkbox, Input, OptionList, RadioSet, Static
 from skit import editor, store, tui
 from skit.langs.registry import spec_for
 from skit.tui_add import (
+    _DRAFTS_LISTED,
     AddReviewScreen,
     AddSourceScreen,
     ExeReviewScreen,
@@ -425,3 +427,169 @@ async def test_review_panel_uses_radio_when_not_fresh(tmp_path):
         app.push_screen(review)
         await pilot.pause()
         assert review.query_one("#rv-mode", RadioSet)  # Storage section present
+
+
+# --------------------------------------------- drafts list: newest-first, capped, honest overflow
+
+
+def _seed_drafts(count: int) -> list[Path]:
+    """`count` kept drafts under drafts home with ascending mtimes (i is oldest→newest)."""
+    from skit.paths import drafts_dir
+
+    drafts_dir().mkdir(parents=True, exist_ok=True)
+    paths = []
+    for i in range(count):
+        p = drafts_dir() / f"skit-new-{i:03d}.py"
+        p.write_text("print(1)\n", encoding="utf-8")
+        os.utime(p, (1000 + i, 1000 + i))  # deterministic, ascending: paths[-1] is newest
+        paths.append(p)
+    return paths
+
+
+async def test_add_source_lists_newest_first_caps_and_counts_overflow(tmp_path):
+    """The kept-drafts list is sorted newest-first (mkstemp names are random, so a name sort
+    hides an arbitrary tail — the just-lost draft is exactly the one that must surface), capped
+    at _DRAFTS_LISTED, and the overflow past the cap is counted out loud (a silent cap reads as
+    'this is everything')."""
+    paths = _seed_drafts(_DRAFTS_LISTED + 3)  # 23
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        source = AddSourceScreen()
+        app.push_screen(source)
+        await pilot.pause()
+        drafts_list = source.query_one("#add-drafts", OptionList)
+        assert drafts_list.option_count == _DRAFTS_LISTED  # exactly the cap, not all 23
+        # Newest first: the highest-mtime draft is option 0; the cap slices off the OLDEST tail.
+        assert drafts_list.get_option_at_index(0).id == str(paths[-1])
+        assert drafts_list.get_option_at_index(_DRAFTS_LISTED - 1).id == str(paths[-_DRAFTS_LISTED])
+        hints = " ".join(str(s.render()) for s in source.query(".hint"))
+        assert "3 more" in hints  # 23 - 20 counted honestly
+
+
+async def test_add_source_no_overflow_line_at_the_cap(tmp_path):
+    """Exactly _DRAFTS_LISTED drafts → the list is full but there is NO overflow line (an
+    '…and 0 more' would be a lie)."""
+    _seed_drafts(_DRAFTS_LISTED)
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        source = AddSourceScreen()
+        app.push_screen(source)
+        await pilot.pause()
+        assert source.query_one("#add-drafts", OptionList).option_count == _DRAFTS_LISTED
+        hints = " ".join(str(s.render()) for s in source.query(".hint"))
+        assert "more" not in hints  # no overflow line at the cap
+
+
+async def test_add_source_mtime_oserror_sorts_that_draft_last(tmp_path, monkeypatch):
+    """The _mtime helper returns 0.0 on OSError (a draft that vanished/became unreadable
+    mid-sort must not crash the screen) — so it sorts to the very end despite a newer real
+    mtime, and the list still renders."""
+    from skit.paths import drafts_dir
+
+    drafts_dir().mkdir(parents=True, exist_ok=True)
+    good = drafts_dir() / "skit-new-good.py"
+    good.write_text("print(1)\n", encoding="utf-8")
+    os.utime(good, (5000, 5000))
+    bad = drafts_dir() / "skit-new-bad.py"
+    bad.write_text("print(1)\n", encoding="utf-8")
+    os.utime(bad, (9000, 9000))  # newer in reality, but its stat will raise → _mtime 0.0
+
+    real_stat = Path.stat
+
+    def fake_stat(self, *a, **k):
+        if self == bad:
+            raise OSError("simulated stat failure")
+        return real_stat(self, *a, **k)
+
+    monkeypatch.setattr(Path, "stat", fake_stat)
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        source = AddSourceScreen()
+        app.push_screen(source)
+        await pilot.pause()
+        drafts_list = source.query_one("#add-drafts", OptionList)
+        assert drafts_list.option_count == 2  # both still listed — no crash
+        assert drafts_list.get_option_at_index(0).id == str(good)  # 5000 beats the 0.0 fallback
+        assert drafts_list.get_option_at_index(1).id == str(bad)  # OSError → sorted last
+
+
+# --------------------------------------------- resume cleanup: accept unlinks, cancel keeps
+
+
+async def test_resume_draft_accept_unlinks_the_draft(tmp_path):
+    """Resuming a kept draft through the drafts list and completing the review unlinks it in
+    copy mode — the same 'success: the store holds the copy' cleanup the authoring lanes do."""
+    from skit.paths import drafts_dir
+
+    drafts_dir().mkdir(parents=True, exist_ok=True)
+    draft = drafts_dir() / "skit-new-accept.py"
+    draft.write_text("print('resume me')\n", encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        source = AddSourceScreen()
+        app.push_screen(source)
+        await pilot.pause()
+        _select_option(source.query_one("#add-drafts", OptionList), str(draft))
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, AddReviewScreen)
+        review.query_one("#rv-name", Input).value = "resumed"
+        review.action_accept()
+        await pilot.pause()
+    assert store.resolve("resumed").meta.kind == "python"
+    assert not draft.exists()  # the resumed draft reached the store → unlinked
+
+
+async def test_resume_draft_cancel_keeps_the_draft(tmp_path):
+    """Cancelling the review of a resumed draft keeps the file (reference-mode safety AND the
+    user's only copy) — nothing lands, the draft survives."""
+    from skit.paths import drafts_dir
+
+    drafts_dir().mkdir(parents=True, exist_ok=True)
+    draft = drafts_dir() / "skit-new-cancel.py"
+    draft.write_text("print('keep me')\n", encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        source = AddSourceScreen()
+        app.push_screen(source)
+        await pilot.pause()
+        _select_option(source.query_one("#add-drafts", OptionList), str(draft))
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, AddReviewScreen)
+        review.action_cancel()  # dismiss(None) → the resume callback returns early, file kept
+        await pilot.pause()
+    assert store.list_entries() == []  # nothing added
+    assert draft.exists()  # the draft survived the cancel
+    draft.unlink(missing_ok=True)
+
+
+# --------------------------------------------- Ctrl+E positive pilot (AGENTS.md keyboard rule)
+
+
+async def test_review_ctrl_e_opens_editor_from_non_input_focus(tmp_path, no_suspend, monkeypatch):
+    """Every advertised footer key has a POSITIVE pilot: on the review panel, focus a NON-Input
+    widget (the Storage radio) and press ctrl+e — the screen chord fires and $EDITOR opens on
+    the panel's subject. (The Input-focus negative — ctrl+e as end-of-line — is the non-priority
+    binding's other half, pinned elsewhere; this is the keyboard path the chip advertises.)"""
+    opened: dict[str, Path] = {}
+
+    def fake(path):
+        opened["path"] = path
+        return 0
+
+    monkeypatch.setattr(editor, "open_in_editor", fake)
+    sh = tmp_path / "e.sh"
+    sh.write_text("#!/usr/bin/env bash\necho hi\n", encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        review = AddReviewScreen(sh, kind="shell")
+        app.push_screen(review)
+        await pilot.pause()
+        # Focus the RadioSet (focusable, not an Input) so the screen's ctrl+e binding wins —
+        # an Input would consume ctrl+e as its own end-of-line (the Ctrl+A rule).
+        review.query_one("#rv-mode", RadioSet).focus()
+        await pilot.pause()
+        await pilot.press("ctrl+e")
+        await pilot.pause()
+    assert opened.get("path") == sh  # the editor opened on the review's subject

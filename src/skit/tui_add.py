@@ -41,6 +41,10 @@ from .i18n import gettext
 from .langs.prompt import analyzer as prompt_analyzer
 from .params import ParamDecl, is_secret_name
 
+# How many kept drafts the add screen lists at once; anything past the cap is counted
+# out loud by the overflow line, never silently hidden.
+_DRAFTS_LISTED = 20
+
 
 class KindPickModal(ModalScreen[str | None]):
     """The TUI twin of --kind/--exe/--prompt: an unclassifiable file gets an ASK, not
@@ -156,14 +160,34 @@ class AddSourceScreen(Screen[str | None]):
             yield Input(placeholder=gettext("Name for the command"), id="add-template-name")
             from .paths import drafts_dir
 
-            drafts = sorted(drafts_dir().glob("skit-*")) if drafts_dir().is_dir() else []
+            def _mtime(d: Path) -> float:
+                try:
+                    return d.stat().st_mtime
+                except OSError:
+                    return 0.0
+
+            # Newest first: mkstemp names are random, so a name sort hides an
+            # ARBITRARY tail — the draft the user just lost is exactly the one that
+            # must surface. The cap keeps the screen usable; the overflow line keeps
+            # it honest (a silent cap reads as "this is everything").
+            drafts = (
+                sorted(drafts_dir().glob("skit-*"), key=_mtime, reverse=True)
+                if drafts_dir().is_dir()
+                else []
+            )
             if drafts:
                 # Kept drafts are resumable, not lore: list them where adding happens.
                 yield Static(gettext("…or resume a kept draft:"), classes="hint")
                 yield OptionList(
-                    *(Option(escape(d.name), id=str(d)) for d in drafts[:20]),
+                    *(Option(escape(d.name), id=str(d)) for d in drafts[:_DRAFTS_LISTED]),
                     id="add-drafts",
                 )
+                if len(drafts) > _DRAFTS_LISTED:
+                    yield Static(
+                        "  "
+                        + gettext("…and %(count)s more") % {"count": len(drafts) - _DRAFTS_LISTED},
+                        classes="hint",
+                    )
             yield Static(gettext("…or start from a blank page:"), classes="hint")
             # The authoring lanes were CLI-only (skit add --edit / --prompt) — a
             # TUI-first user could never discover them (zero-memorization).
@@ -223,8 +247,19 @@ class AddSourceScreen(Screen[str | None]):
             kind = "prompt"
 
         def _reviewed(slug: str | None) -> None:
-            if slug is not None:
-                self.dismiss(slug)
+            if slug is None:
+                return
+            from .paths import drafts_dir
+
+            if (
+                path.resolve().parent == drafts_dir().resolve()
+                and store.resolve(slug).meta.mode == "copy"
+            ):
+                # A resumed draft that reached the store is done accumulating — the
+                # same "success: the store holds the copy" unlink every authoring
+                # lane performs. Reference mode still points at the file: kept.
+                path.unlink(missing_ok=True)
+            self.dismiss(slug)
 
         if kind == "prompt":
             self.app.push_screen(PromptReviewScreen(path), _reviewed)
@@ -334,10 +369,11 @@ class AddSourceScreen(Screen[str | None]):
             program = shebang_program(tmp)
             if mapped is not None:
                 kind = mapped
-            elif program is not None and not program.startswith("python"):
+            elif program is not None:
                 # An UNREGISTERED shebang is an explicit signal skit can't honor:
                 # ASK (the same modal an unclassifiable file gets), never fabricate
-                # a python entry that can only die in uv run.
+                # a python entry that can only die in uv run. Versioned pythons are
+                # the registry's rule now, not a per-lane carve-out.
                 def _kind_picked(picked: str | None) -> None:
                     if picked is None:
                         self.notify(gettext("Your draft was kept at %(path)s") % {"path": str(tmp)})

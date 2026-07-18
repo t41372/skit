@@ -10,6 +10,7 @@ instead of crashing (the `spec.analyzer is None` idiom downstream handles the re
 from __future__ import annotations
 
 import os
+import re
 import sys
 from dataclasses import replace
 from functools import cache
@@ -340,7 +341,7 @@ def infer_kind(path: Path, force_exe: bool = False) -> str:
     if path.is_file():
         program = shebang_program(path)
         if program is not None:
-            by_shebang = _shebang_map().get(program)
+            by_shebang = _kind_for_program(program)
             if by_shebang is not None:
                 return by_shebang
         if _is_executable_file(path):
@@ -355,7 +356,7 @@ def kind_for_shebang(path: Path) -> str | None:
     program = shebang_program(path)
     if program is None:
         return None
-    return _shebang_map().get(program)
+    return _kind_for_program(program)
 
 
 def shebang_program(path: Path) -> str | None:
@@ -400,7 +401,25 @@ def kind_for_shebang_text(text: str) -> str | None:
     program = shebang_program_from_line(first)
     if program is None:
         return None
-    return _shebang_map().get(program)
+    return _kind_for_program(program)
+
+
+# Versioned interpreter names: `#!/usr/bin/env python3.12` is the same explicit signal
+# as `python3` — uv/pyenv-provisioned scripts carry exact versions routinely. ONE rule
+# here, so the stdin, editor and TUI draft lanes can't split into per-lane carve-outs
+# (they did: two honored the spelling, one refused it).
+_VERSIONED_PYTHON = re.compile(r"python[\d.]*")
+
+
+def _kind_for_program(program: str) -> str | None:
+    """The kind a shebang program name maps to — the registered table first, then the
+    versioned-python rule. Every shebang→kind consumer goes through here."""
+    kind = _shebang_map().get(program)
+    if kind is not None:
+        return kind
+    if _VERSIONED_PYTHON.fullmatch(program):
+        return "python"
+    return None
 
 
 @cache

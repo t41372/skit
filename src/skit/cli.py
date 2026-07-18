@@ -376,6 +376,35 @@ def _print_add_hints(result: analysis.Analysis, script_name: str) -> None:
         )
 
 
+def _print_reader_notice(kind_spec: LangSpec | None, text: str, frameworks: list[str]) -> None:
+    """The add-time reassurance for a script that parses its own arguments, ONE voice
+    for every onboarding lane (python and non-python alike): either "skit read your
+    parser, here's your form" or the honest passthrough fallback. The analyzers once
+    shipped without any add lane surfacing their reading, and users concluded the
+    language support was fake — silence here is not neutral."""
+    spec = (
+        kind_spec.cli_reader.read_cli(text)
+        if kind_spec is not None and kind_spec.cli_reader is not None
+        else None
+    )
+    if spec is not None and spec.ok and spec.fields:
+        console.print(
+            gettext(
+                "✓ skit read this script's own arguments (%(count)s fields). Running it opens a form — nothing to memorize."
+            )
+            % {"count": len(spec.fields)}
+        )
+    else:
+        console.print(
+            "[dim]"
+            + gettext(
+                "This script parses its own arguments (%(names)s); skit couldn't model them statically, so the run form offers a passthrough-arguments field."
+            )
+            % {"names": ", ".join(frameworks)}
+            + _DIM_CLOSE
+        )
+
+
 def _onboard_params(text: str, script_name: str, no_input: bool) -> list[ParamDecl]:
     """Parameter onboarding at add time (A4: which constant counts as a parameter is a UX call).
 
@@ -385,25 +414,7 @@ def _onboard_params(text: str, script_name: str, no_input: bool) -> list[ParamDe
     """
     result = analyzer.analyze(text)
     if result.uses_cli_framework:
-        from .langs.python import argspec
-
-        spec = argspec.read_cli(text)
-        if spec is not None and spec.ok and spec.fields:
-            console.print(
-                gettext(
-                    "✓ skit read this script's own arguments (%(count)s fields). Running it opens a form — nothing to memorize."
-                )
-                % {"count": len(spec.fields)}
-            )
-        else:
-            console.print(
-                "[dim]"
-                + gettext(
-                    "This script parses its own arguments (%(names)s); skit couldn't model them statically, so the run form offers a passthrough-arguments field."
-                )
-                % {"names": ", ".join(result.frameworks)}
-                + _DIM_CLOSE
-            )
+        _print_reader_notice(spec_for("python"), text, result.frameworks)
         return []
     _print_add_hints(result, script_name)
     if not result.candidates or no_input or not sys.stdin.isatty():
@@ -438,7 +449,10 @@ def _onboard_script_params(entry: store.Entry, kind_spec: LangSpec, no_input: bo
     text = entry.script_path.read_text(encoding="utf-8", errors="replace")
     result = kind_spec.analyzer.analyze(text)
     if result.uses_cli_framework:
-        return []  # the script's own parser is the form — nothing to manage
+        # The script's own parser is the form — nothing to manage, and the SAME
+        # reassurance the python lane prints (three of four kinds said nothing here).
+        _print_reader_notice(kind_spec, text, result.frameworks)
+        return []
     _print_add_hints(result, entry.meta.name)
     if not result.candidates or no_input or not sys.stdin.isatty():
         return []
@@ -515,14 +529,69 @@ def _onboard_python(
     return entry, final_deps, managed, secrets
 
 
+def _classify_drafted_kind(tmp: Path, deps_opt: list[str] | None, python_opt: str | None) -> str:
+    """The drafted script's kind, read from its (possibly changed) shebang by the
+    registry's one rule — with the two post-editor refusals: an unregistered shebang,
+    and python-only flags against a non-python draft. Raises typer.Exit(2); the caller
+    announces the kept draft."""
+    from .langs.registry import kind_for_shebang, shebang_program
+
+    drafted_kind = kind_for_shebang(tmp)
+    drafted_program = shebang_program(tmp)
+    if drafted_kind is None and drafted_program is not None:
+        # An unregistered shebang can't be honored — refuse (the draft is kept; the
+        # path lane's --kind escape applies to it). Versioned pythons are the
+        # registry's rule now, not a per-lane carve-out.
+        err_console.print(
+            "[red]"
+            + gettext(
+                "The draft's #! names no interpreter skit knows — add it with: "
+                "skit add %(path)s --kind <language>"
+            )
+            % {"path": escape(str(tmp))}
+            + _RED_CLOSE
+        )
+        raise typer.Exit(EXIT_USAGE)
+    drafted_kind = drafted_kind or "python"
+    if drafted_kind != "python" and (deps_opt or python_opt):
+        # Python-only flags the draft can't honor are refused, never dropped.
+        err_console.print(
+            "[red]"
+            + gettext(
+                "--dep/--python are python flags, but the draft's shebang names "
+                "%(kind)s — drop them, or keep the python shebang."
+            )
+            % {"kind": drafted_kind}
+            + _RED_CLOSE
+        )
+        raise typer.Exit(EXIT_USAGE)
+    return drafted_kind
+
+
 def _create_python_in_editor(
-    name: str | None, deps_opt: list[str] | None = None, python_opt: str | None = None
+    name: str | None,
+    description: str | None = None,
+    deps_opt: list[str] | None = None,
+    python_opt: str | None = None,
+    no_input: bool = False,
 ) -> None:
     """Write a starter script to a temp file, open the user's editor, then ingest whatever
-    they saved. Explicit --dep / --python ride through to the onboarding exactly as a
-    path-based python add would honor them."""
+    they saved. Explicit --name/--description/--dep/--python ride through to the onboarding
+    exactly as a path-based python add would honor them. --no-input is refused outright:
+    an editor session IS interaction, so the lane can't keep the never-prompt promise —
+    the stdin lane is the non-interactive spelling."""
     import tempfile
 
+    if no_input:
+        err_console.print(
+            "[red]"
+            + gettext(
+                "--edit opens your editor, which --no-input forbids — pipe the script in "
+                "instead: skit add - -n NAME"
+            )
+            + _RED_CLOSE
+        )
+        raise typer.Exit(EXIT_USAGE)
     if not _is_interactive():
         err_console.print(
             f"[red]{gettext('Writing a new script in an editor needs an interactive terminal.')}[/red]"
@@ -561,52 +630,24 @@ def _create_python_in_editor(
             tmp.unlink(missing_ok=True)  # pragma: no mutate — no user content: pure litter
             console.print(gettext("Nothing was written, so no script was added."))
             return
-        from .langs.registry import kind_for_shebang, shebang_program
-
-        drafted_kind = kind_for_shebang(tmp)
-        drafted_program = shebang_program(tmp)
-        if (
-            drafted_kind is None
-            and drafted_program is not None
-            and not drafted_program.startswith("python")
-        ):
-            # An unregistered shebang can't be honored — refuse (the draft is kept;
-            # the path lane's --kind escape applies to it).
-            err_console.print(
-                "[red]"
-                + gettext(
-                    "The draft's #! names no interpreter skit knows — add it with: "
-                    "skit add %(path)s --kind <language>"
-                )
-                % {"path": escape(str(tmp))}
-                + _RED_CLOSE
-            )
-            raise typer.Exit(EXIT_USAGE)
-        drafted_kind = drafted_kind or "python"
+        drafted_kind = _classify_drafted_kind(tmp, deps_opt, python_opt)
         if drafted_kind != "python":
             # A changed shebang is an explicit signal, honored by the SAME rule (and
             # to the SAME depth) as the TUI draft lane: interpreter recorded, npm deps
             # scanned, candidates offered — not a second-class entry that launches a
-            # zsh script under bash. Python-only flags the draft can't honor are
-            # refused, never dropped.
-            if deps_opt or python_opt:
-                err_console.print(
-                    "[red]"
-                    + gettext(
-                        "--dep/--python are python flags, but the draft's shebang names "
-                        "%(kind)s — drop them, or keep the python shebang."
-                    )
-                    % {"kind": drafted_kind}
-                    + _RED_CLOSE
-                )
-                raise typer.Exit(EXIT_USAGE)
+            # zsh script under bash.
             from .langs.registry import shebang_program
 
             spec = spec_for(drafted_kind)
             program = shebang_program(tmp)
             interpreter = program if spec is not None and program in spec.shebangs else ""
             entry = store.add_script(
-                tmp, kind=drafted_kind, name=name, mode="copy", interpreter=interpreter
+                tmp,
+                kind=drafted_kind,
+                name=name,
+                mode="copy",
+                description=description,
+                interpreter=interpreter,
             )
             deps = []
             if (
@@ -620,14 +661,24 @@ def _create_python_in_editor(
             secrets = [n for n in managed if is_secret_name(n)]
         else:
             entry, deps, managed, secrets = _onboard_python(
-                tmp, text, name=name, deps_opt=deps_opt, python_opt=python_opt
+                tmp,
+                text,
+                name=name,
+                description=description,
+                deps_opt=deps_opt,
+                python_opt=python_opt,
             )
+    except typer.Exit:
+        # A post-editor refusal (unregistered shebang, --dep against a non-python
+        # shebang) keeps the draft like any other failure — and SAYS so. Exiting 2
+        # while silently leaving a file behind is a state fingerprint; exiting 2 and
+        # silently deleting it would destroy authored work.
+        _announce_kept_draft(tmp, resumable=False)
+        raise
     except (editor.EditorError, store.StoreError) as exc:
         # The draft is the user's ONLY copy of what they just wrote — a failure must
         # never delete it. Tell them where it lives instead.
-        err_console.print(
-            f"[dim]{gettext('Your draft was kept at %(path)s — fix the problem and add it with: skit add %(path)s') % {'path': escape(str(tmp))}}[/dim]"
-        )
+        _announce_kept_draft(tmp, resumable=True)
         raise _fail(str(exc), 1) from exc
     tmp.unlink(missing_ok=True)  # pragma: no mutate — success: the store holds the copy
     _print_add_summary(entry, deps, managed, secrets)
@@ -674,9 +725,7 @@ def _add_from_stdin(
             no_input=True,
         )
     except store.StoreError as exc:
-        err_console.print(
-            f"[dim]{gettext('Your draft was kept at %(path)s — fix the problem and add it with: skit add %(path)s') % {'path': escape(str(tmp))}}[/dim]"
-        )
+        _announce_kept_draft(tmp, resumable=True)
         raise _fail(str(exc), 1) from exc
     tmp.unlink(missing_ok=True)  # pragma: no mutate — success: the store holds the copy
     _print_add_summary(entry, deps, managed, secrets)
@@ -736,11 +785,11 @@ def _add_script_from_stdin(
             if deps:
                 entry = store.update_dependencies(entry.slug, deps)
     except store.StoreError as exc:
-        # The piped text may be genuinely ephemeral (pbpaste, curl, a heredoc) — the
-        # temp file is its only materialized copy and a failure must not destroy it.
-        err_console.print(
-            f"[dim]{gettext('Your draft was kept at %(path)s — fix the problem and add it with: skit add %(path)s') % {'path': escape(str(tmp))}}[/dim]"
-        )
+        # The piped text may be genuinely ephemeral (pbpaste, curl, a heredoc): once
+        # skit has accepted the work, the temp file is its only materialized copy and
+        # a mid-operation failure must not destroy it. (Usage refusals exit before
+        # anything materializes — they lose only what re-running the pipe re-supplies.)
+        _announce_kept_draft(tmp, resumable=True)
         raise _fail(str(exc), 1) from exc
     tmp.unlink(missing_ok=True)  # pragma: no mutate — success: the store holds the copy
     _print_add_summary(entry, deps, [], [])
@@ -776,6 +825,38 @@ def _custom_runner_hint() -> str:
     return gettext("Custom agents: skit runner add NAME COMMAND… (see skit runner --help)")
 
 
+def _validate_prompt_runner_opt(runner_opt: str | None) -> None:
+    """--runner names static config, so it is validated BEFORE any editor opens or a
+    draft materializes (the name-conflict precedent): a refusal must not cost authored
+    work or leave a silent state fingerprint behind."""
+    if runner_opt is None:
+        return
+    names = [r.name for r in config.load_prompt_runners()]
+    if runner_opt not in names:
+        err_console.print(
+            "[red]"
+            + gettext("Unknown runner: %(runner)s. Configured runners: %(names)s")
+            % {"runner": escape(runner_opt), "names": ", ".join(names) or "—"}
+            + _RED_CLOSE
+        )
+        raise typer.Exit(EXIT_USAGE)
+
+
+def _announce_kept_draft(tmp: Path, *, resumable: bool) -> None:
+    """The keep-on-failure announcement, one voice for every authoring/stdin lane.
+    `resumable=True` (mid-operation failures) adds the plain re-add command;
+    usage refusals pass False — their own message already names the fix, and
+    advertising a bare `skit add %(path)s` there would replay the refusal."""
+    if resumable:
+        err_console.print(
+            f"[dim]{gettext('Your draft was kept at %(path)s — fix the problem and add it with: skit add %(path)s') % {'path': escape(str(tmp))}}[/dim]"
+        )
+    else:
+        err_console.print(
+            f"[dim]{gettext('Your draft was kept at %(path)s') % {'path': escape(str(tmp))}}[/dim]"
+        )
+
+
 def _ask_prompt_runner(interactive: bool, runner_opt: str | None) -> str:
     """The runner pin for a new prompt entry: --runner is validated as given; else an
     interactive numbered pick prefilled from the last-picked state; else no pin (the
@@ -783,14 +864,7 @@ def _ask_prompt_runner(interactive: bool, runner_opt: str | None) -> str:
     runners = config.load_prompt_runners()
     names = [r.name for r in runners]
     if runner_opt is not None:
-        if runner_opt not in names:
-            err_console.print(
-                "[red]"
-                + gettext("Unknown runner: %(runner)s. Configured runners: %(names)s")
-                % {"runner": escape(runner_opt), "names": ", ".join(names) or "—"}
-                + _RED_CLOSE
-            )
-            raise typer.Exit(EXIT_USAGE)
+        _validate_prompt_runner_opt(runner_opt)
         argstate.save_last_runner(runner_opt)
         return runner_opt
     if not interactive or not names:
@@ -900,15 +974,29 @@ def _create_prompt_in_editor(
     runner_opt: str | None,
     *,
     interpolate: bool = True,
+    no_input: bool = False,
 ) -> None:
     """`skit add --prompt` with no path: draft a new prompt in $EDITOR, then ingest it —
-    the prompt twin of `add --edit`. Under a pipe/--no-input there is no editor: the
-    body arrives on stdin instead (`skit add --prompt -n review < body.md`)."""
+    the prompt twin of `add --edit`. Under a pipe there is no editor: the body arrives
+    on stdin instead (`skit add --prompt -n review < body.md`). --no-input in a terminal
+    is refused with that same pipe spelling — an editor session IS interaction, and
+    there is no body to read from a keyboard-attached stdin."""
     import tempfile
 
+    _validate_prompt_runner_opt(runner_opt)
     if not _is_interactive():
         _add_prompt_from_stdin(name, description, runner_opt, interpolate=interpolate)
         return
+    if no_input:
+        err_console.print(
+            "[red]"
+            + gettext(
+                "--prompt with no path opens your editor, which --no-input forbids — "
+                "pipe the body in instead: skit add - --prompt -n NAME"
+            )
+            + _RED_CLOSE
+        )
+        raise typer.Exit(EXIT_USAGE)
     if not name:
         name = Prompt.ask(gettext("Name in skit"), console=console).strip()
         if not name:
@@ -952,10 +1040,10 @@ def _create_prompt_in_editor(
         )
     except (editor.EditorError, store.StoreError) as exc:
         # Same draft-preservation rule as the script editor lane: the temp file is the
-        # user's only copy of what they just wrote.
-        err_console.print(
-            f"[dim]{gettext('Your draft was kept at %(path)s — fix the problem and add it with: skit add %(path)s') % {'path': escape(str(tmp))}}[/dim]"
-        )
+        # user's only copy of what they just wrote. (No typer.Exit twin here on
+        # purpose: --runner was validated before the editor opened, and nothing else
+        # in the prompt onboarding refuses — there is no post-editor exit to announce.)
+        _announce_kept_draft(tmp, resumable=True)
         raise _fail(str(exc), 1) from exc
     tmp.unlink(missing_ok=True)  # pragma: no mutate — success: the store holds the copy
     _print_add_summary(entry, [], managed, [n for n in managed if is_secret_name(n)])
@@ -977,6 +1065,9 @@ def _add_prompt_from_stdin(
             f"[red]{gettext('Reading the script from stdin needs an explicit --name.')}[/red]"
         )
         raise typer.Exit(EXIT_USAGE)
+    # BEFORE the pipe is consumed or a draft materializes: --runner is static config,
+    # and refusing it after mkstemp left a silent, anonymous fingerprint in drafts/.
+    _validate_prompt_runner_opt(runner_opt)
     text = sys.stdin.read()
     if not text.strip():
         err_console.print(
@@ -1000,11 +1091,11 @@ def _add_prompt_from_stdin(
             interpolate=interpolate,
         )
     except store.StoreError as exc:
-        # The piped text may be genuinely ephemeral (pbpaste, curl, a heredoc) — the
-        # temp file is its only materialized copy and a failure must not destroy it.
-        err_console.print(
-            f"[dim]{gettext('Your draft was kept at %(path)s — fix the problem and add it with: skit add %(path)s') % {'path': escape(str(tmp))}}[/dim]"
-        )
+        # The piped text may be genuinely ephemeral (pbpaste, curl, a heredoc): once
+        # skit has accepted the work, the temp file is its only materialized copy and
+        # a mid-operation failure must not destroy it. (Usage refusals exit before
+        # anything materializes — they lose only what re-running the pipe re-supplies.)
+        _announce_kept_draft(tmp, resumable=True)
         raise _fail(str(exc), 1) from exc
     tmp.unlink(missing_ok=True)  # pragma: no mutate — success: the store holds the copy
     _print_add_summary(entry, [], managed, [n for n in managed if is_secret_name(n)])
@@ -1117,6 +1208,31 @@ def add(
             f"[red]{gettext('--prompt names the kind outright — drop --edit/--exe/--kind/--cmd.')}[/red]"
         )
         raise typer.Exit(EXIT_USAGE)
+    # The lane itself is picked by exactly ONE selector. Colliding selectors used to be
+    # resolved by silent priority — `add real.py --cmd '…'` added the template and
+    # dropped the path without a word, the same drop the flag matrix below refuses one
+    # level down. Worse, the priority here and the dispatch order disagreed, so which
+    # lane answered depended on which OTHER flags were present.
+    selectors = [
+        flag
+        for flag, present in (
+            ("--cmd", cmd is not None),
+            ("--edit", edit_new),
+            (gettext("stdin ('-')"), path == "-"),
+            (gettext("a file path"), bool(path) and path != "-"),
+        )
+        if present
+    ]
+    if len(selectors) > 1:
+        err_console.print(
+            "[red]"
+            + gettext(
+                "%(flags)s each pick a different way to add — use exactly one (nothing was added)."
+            )
+            % {"flags": ", ".join(selectors)}
+            + _RED_CLOSE
+        )
+        raise typer.Exit(EXIT_USAGE)
     lane = (
         "cmd"
         if cmd is not None
@@ -1139,6 +1255,9 @@ def add(
     }
     # What each lane can honor. The path lane defers to per-kind checks after
     # inference (_refuse_unusable_add_flags and the prompt/runner re-checks).
+    # --no-input is not a column: its refusal is conditional per lane (--edit always
+    # refuses it; --prompt with no path honors it under a pipe and refuses it in a
+    # terminal), so the two editor-lane functions own that check.
     honorable = {
         "path": set(given),
         "cmd": set(),
@@ -1150,13 +1269,17 @@ def add(
     }
     lane_hint = {
         "cmd": gettext("a --cmd template takes only --name/--description"),
-        "stdin": gettext("the stdin lane can't honor it"),
+        # The only flags stdin can refuse are --ref/--exe, so the hint can name the
+        # actual reason instead of restating the refusal.
+        "stdin": gettext("stdin authors a brand-new copy, and --ref/--exe need an existing file"),
         "editor": gettext(
-            "--edit reads the kind from your draft's shebang (write e.g. "
-            "#!/usr/bin/env bash); other kinds can also be piped in via "
-            "skit add - --kind NAME"
+            "--edit drafts a fresh script: its kind comes from the shebang you write "
+            "(e.g. #!/usr/bin/env bash), --ref/--exe need an existing file, and a "
+            "prompt is drafted with skit add --prompt"
         ),
-        "prompt-editor": gettext("a drafted prompt takes only --name/--description/--runner"),
+        "prompt-editor": gettext(
+            "a drafted prompt takes only --name/--description/--runner/--no-interpolate"
+        ),
     }
     refused = [flag for flag, present in given.items() if present] if lane != "path" else []
     refused = [flag for flag in refused if flag not in honorable[lane]]
@@ -1184,15 +1307,14 @@ def add(
                 f"[red]{gettext('--runner only applies to prompt entries — add one with --prompt.')}[/red]"
             )
             raise typer.Exit(EXIT_USAGE)
-    if edit_new:
-        if path:
-            err_console.print(
-                f"[red]{gettext('Use --edit to write a new script, or pass a path to add an existing one — not both.')}[/red]"
-            )
-            raise typer.Exit(EXIT_USAGE)
-        _create_python_in_editor(name, deps_opt=dep, python_opt=python)
+    # Dispatch reads the SAME lane the matrix validated — a second, differently-ordered
+    # flag chain here is how two lanes once answered the same command.
+    if lane == "editor":
+        _create_python_in_editor(
+            name, description, deps_opt=dep, python_opt=python, no_input=no_input
+        )
         return
-    if path == "-":
+    if lane == "stdin":
         if prompt_kind:
             if dep or python is not None:
                 err_console.print(
@@ -1252,14 +1374,16 @@ def add(
             return
         _add_from_stdin(name, description, deps_opt=dep, python_opt=python, text=stdin_text)
         return
-    if prompt_kind and not path:
-        _create_prompt_in_editor(name, description, runner, interpolate=not no_interpolate)
+    if lane == "prompt-editor":
+        _create_prompt_in_editor(
+            name, description, runner, interpolate=not no_interpolate, no_input=no_input
+        )
         return
     summary_deps: list[str] = []
     summary_managed: list[str] = []
     summary_secrets: list[str] = []
     try:
-        if cmd is not None:
+        if lane == "cmd":
             if not name:
                 err_console.print(f"[red]{gettext('A --cmd entry needs a --name')}[/red]")
                 raise typer.Exit(EXIT_USAGE)
@@ -1361,17 +1485,9 @@ def add(
                     # opens (the python lane's _require_file discipline), so a typo'd
                     # path is a clean StoreError, never a raw FileNotFoundError.
                     _require_file(resolved)
-                    if runner is not None and config.find_prompt_runner(runner) is None:
-                        # An explicit flag the panel can't honor is refused, never
-                        # dropped — same rule _ask_prompt_runner enforces on its lane.
-                        runner_names = [r.name for r in config.load_prompt_runners()]
-                        err_console.print(
-                            "[red]"
-                            + gettext("Unknown runner: %(runner)s. Configured runners: %(names)s")
-                            % {"runner": escape(runner), "names": ", ".join(runner_names) or "—"}
-                            + _RED_CLOSE
-                        )
-                        raise typer.Exit(EXIT_USAGE)
+                    # An explicit flag the panel can't honor is refused, never
+                    # dropped — the same validator every prompt lane calls.
+                    _validate_prompt_runner_opt(runner)
                     from .tui_add import run_prompt_review
 
                     slug = run_prompt_review(
@@ -1491,6 +1607,14 @@ def add(
                     )
     except store.StoreError as exc:
         raise _fail(str(exc), 1) from exc
+    if lane == "path" and entry.meta.mode == "copy":
+        # A resumed draft that reached the store is done accumulating: the same
+        # "success: the store holds the copy" unlink every authoring lane performs.
+        # Only files in skit's OWN drafts home — a user's original is never touched,
+        # and a reference-mode entry still points at its file.
+        source = Path(path).expanduser().resolve()
+        if source.parent == Path(_drafts_home()).resolve():
+            source.unlink(missing_ok=True)  # pragma: no mutate
     _print_add_summary(entry, summary_deps, summary_managed, summary_secrets)
 
 
@@ -2732,11 +2856,12 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
     ):
         report = entry_spec.analyzer.reconcile(text, specs)
         an = entry_spec.analyzer.analyze(text)
-        # A reader-driven non-python entry's real interface IS its own parser (getopts /
-        # parseArgs / argparse): offering to --manage a bare constant would advertise
-        # REPLACING that form (the same uses_cli_framework gate the add panel and CLI
-        # onboarding fire). Python keeps managing constants alongside argparse — unchanged.
-        reader_driven = an.uses_cli_framework and entry.meta.kind != "python"
+        # A reader-driven entry's real interface IS its own parser (getopts / parseArgs
+        # / argparse): managed params don't ride "alongside" it — plan_for_entry
+        # prefers them, so following a --manage advice here REPLACES the reader form.
+        # The add lanes and the settings screen already gate on this for every kind,
+        # python included; the read view must not be the one surface selling the trap.
+        reader_driven = an.uses_cli_framework
         unmanaged = [] if reader_driven else [c.name for c in report.new]
         # $0/BASH_SOURCE: an injected constant runs from a temp copy, so the script would see the
         # temp path instead of its own. Say so HERE — where the user decides whether to manage it —
@@ -3323,6 +3448,11 @@ def _edit_params(
         raise _fail(gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}, 1)
     text = copy_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
     current = entry_spec.params_io.read(text)
+    # Whether the run form was the script's OWN parser before this edit — an explicit
+    # --manage is honored (the user asked), but flipping the form's source without a
+    # word is the trap the settings screen and the read view both warn about.
+    before = entry_spec.analyzer.analyze(text)
+    was_reader_driven = not current and before.uses_cli_framework
     for item in malformed:
         err_console.print(
             f"[yellow]{escape(gettext('Ignored a malformed value: %(item)s (expected NAME=text).') % {'item': item})}[/yellow]"
@@ -3359,6 +3489,17 @@ def _edit_params(
     console.print(
         f"[green]{gettext('Updated %(name)s. Managed parameters: %(names)s') % {'name': escape(entry.meta.name), 'names': remaining}}[/green]"
     )
+    if manage and was_reader_driven and result.specs:
+        console.print(
+            "[dim]"
+            + gettext(
+                "The run form now asks for the managed parameters — the script's own "
+                "command-line form (%(frameworks)s) is set aside until they are removed "
+                "(--unmanage)."
+            )
+            % {"frameworks": ", ".join(before.frameworks)}
+            + _DIM_CLOSE
+        )
 
 
 def _render_normalize_warning(warning: str) -> str:

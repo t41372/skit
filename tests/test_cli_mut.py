@@ -1056,16 +1056,26 @@ def test_show_params_python_no_managed_exact(tmp_path, capsys):
     assert "XX" not in out
 
 
-def test_show_params_python_argparse_still_advertises_manage(tmp_path, capsys):
-    """The reader-driven read-view guard is scoped to NON-python kinds: a python entry that
-    both parses its own arguments (argparse) AND defines a constant keeps advertising
-    --manage — python manages constants alongside its CLI, unchanged (round 6)."""
+def test_show_params_python_argparse_does_not_advertise_manage(tmp_path, capsys):
+    """A python entry that parses its own arguments (argparse) is reader-driven exactly like
+    every other kind: its own parser IS the run form, so managed params REPLACE it rather than
+    ride alongside — plan_for_entry prefers them. The read view must NOT advertise --manage
+    (following it would silently shadow the argparse form); the round-6 "python manages
+    constants alongside argparse" rationale was false. Plain "has no managed parameters." with
+    no --manage advice, and --json reports unmanaged == [] (no candidate offered)."""
+    import json
+
     text = "import argparse\nOUT = 'hi'\np = argparse.ArgumentParser()\np.add_argument('--n')\np.parse_args()\nprint(OUT)\n"
     entry = store.add_python(_py(tmp_path, text), name="gpy")
     cli._show_params(entry, as_json=False)
     out = _norm(capsys.readouterr().out)
-    assert "--manage" in out  # python is untouched by the reader-driven suppression
-    assert "OUT" in out  # the constant is still offered as a candidate
+    assert "gpy has no managed parameters." in out
+    assert "--manage" not in out  # reader-driven: --manage would shadow the argparse form
+    assert "OUT" not in out  # the constant is NOT offered as a candidate here
+    # --json agrees: no unmanaged candidate is advertised for a reader-driven python entry.
+    cli._show_params(entry, as_json=True)
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["unmanaged"] == []
 
 
 def test_show_params_python_table_all_cells_and_hint(tmp_path, capsys):

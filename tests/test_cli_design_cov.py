@@ -436,11 +436,12 @@ def test_add_edit_with_kind_is_refused(tmp_path):
     result = runner.invoke(cli.app, ["add", "--edit", "--kind", "shell"])
     assert result.exit_code == 2
     # The lane matrix refuses --kind on the --edit lane and the hint points at the shebang
-    # (the draft's real kind signal), plus the stdin escape for other kinds: --edit reads
-    # the kind from the draft, so --kind is redundant.
+    # (the draft's real kind signal): --edit reads the kind from the draft, so --kind is
+    # redundant. The hint also names the sibling lanes it can't do (--ref/--exe, a prompt).
     flat = _flat(result.output)
-    assert "reads the kind from your draft's shebang" in flat
-    assert "skit add - --kind" in flat  # the pipe-it-in escape hatch
+    assert "its kind comes from the shebang you write" in flat
+    assert "#!/usr/bin/env bash" in flat  # the concrete shebang example
+    assert "a prompt is drafted with skit add --prompt" in flat  # the prompt sibling lane
 
 
 def test_add_edit_with_exe_is_refused(tmp_path):
