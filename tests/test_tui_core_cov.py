@@ -14,6 +14,7 @@ import contextlib
 import pytest
 from textual.widgets import Checkbox, DataTable, Input, Select, Static
 
+from conftest import footer_text
 from skit import argstate, config, flows, launcher, store, tui
 from skit.langs.python import metawriter
 from skit.params import ParamDecl
@@ -626,11 +627,32 @@ async def test_form_save_preset_field_less_notifies_and_opens_no_modal(
         assert not screen.query("#preset-row")
         assert not screen.query("#preset-select")
         assert not screen.query("#preset-empty")
+        # …and the footer must not advertise Ctrl+S either — the visible key hint IS the
+        # mouse's click path, so it can't teach the exact action Ctrl+S refuses here.
+        keys = footer_text(screen.query_one("#form-keys", Static))
+        assert "Save as preset" not in keys
+        assert "Ctrl+S" not in keys
         screen.action_save_preset()
         await pilot.pause()
         assert app.screen is screen  # NO modal opened
     assert any("has no form fields, so there's nothing to save." in n for n in notes)
     assert argstate.load_state(entry.slug)["presets"] == {}  # created nothing
+
+
+async def test_form_footer_advertises_ctrl_s_only_when_fielded(tmp_path, quiet_run):
+    """The twin of the field-less footer: a fielded run form KEEPS the Ctrl+S 'Save as
+    preset' pill (there is a form to save), so the mouse always has a path to the same
+    action the key runs."""
+    _argparse_entry(tmp_path)  # has fields
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.action_run()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        keys = footer_text(screen.query_one("#form-keys", Static))
+        assert "Save as preset" in keys  # fielded → the pill is present
+        assert "Ctrl+S" in keys
 
 
 async def test_form_save_preset_from_empty_state_mounts_a_select(tmp_path, quiet_run):
@@ -687,11 +709,10 @@ async def test_form_save_preset_existing_select_gains_the_name(tmp_path, quiet_r
 
 async def test_form_save_preset_does_not_resurrect_a_cleared_field(tmp_path, quiet_run):
     """Clearing a prefilled field, then Ctrl+S + naming the preset, must not resurrect
-    the field: the post-save picker refresh selects the just-saved preset
-    programmatically, and _apply_preset skips exactly that one Changed — a one-shot
-    VALUE token, deterministic in any compositor (a frame-timing flag raced the bubbled
-    Changed in the headless harness and could race a real terminal the same way).
-    Picking a preset by hand still applies its values (finding 4)."""
+    the field. The refresh swallows EVERY Changed until the just-saved name lands —
+    set_options first resets the picker to "last values", and that intermediate
+    Changed("") is exactly how a single-value one-shot let this bug ship three times
+    (it re-applied the prefill overlay to every field). Hand-picks still apply."""
     entry = _argparse_entry(tmp_path)
     argstate.save_preset(entry.slug, "web", {"output": "web.png"})  # a #preset-select exists
     app = tui.MenuApp()
@@ -712,20 +733,81 @@ async def test_form_save_preset_does_not_resurrect_a_cleared_field(tmp_path, qui
         modal.action_save_name()
         await pilot.pause()
         await pilot.pause()
-        # The cleared field is not stored in the preset…
         assert "output" not in argstate.load_state(entry.slug)["presets"]["clean"]
         select = screen.query_one("#preset-select", Select)
-        assert select.value == "clean"  # the picker shows the just-saved preset
-        # …and THE headline observable: the cleared field STAYS cleared.
+        assert select.value == "clean"
+        # THE headline observable: the cleared field STAYS cleared.
         assert rows["output"].query_one(Input).value == ""
-        # Hand-picks still apply values (and the one-shot token is consumed: a later
-        # hand-pick of the just-saved name applies normally too).
+        # Hand-picks still apply, including of the just-saved name later.
         select.value = "web"
         await pilot.pause()
         assert rows["output"].query_one(Input).value == "web.png"
         select.value = "clean"
         await pilot.pause()
         assert rows["output"].query_one(Input).value == "orig.png"  # prefill overlay
+
+
+async def test_form_save_preset_while_another_preset_is_selected(tmp_path, quiet_run):
+    """The round-4 journey that broke the one-shot token: hand-pick a preset, EDIT a
+    field, save under a new name — the fields must keep the user's edits (set_options'
+    intermediate blank reset must not re-apply the prefill overlay), and the picker
+    must land on the new name."""
+    entry = _argparse_entry(tmp_path)
+    argstate.save_preset(entry.slug, "web", {"output": "web.png"})
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = RunFormScreen(
+            entry, plan=flows.plan_for_entry(entry), prefill={"output": "orig.png"}
+        )
+        app.push_screen(screen)
+        await pilot.pause()
+        select = screen.query_one("#preset-select", Select)
+        select.value = "web"  # hand-pick: applies web.png
+        await pilot.pause()
+        rows = {r.field.key: r for r in screen.query(FieldRow)}
+        assert rows["output"].query_one(Input).value == "web.png"
+        rows["output"].set_value("final.png")  # the user edits on top
+        screen.action_save_preset()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PresetNameModal)
+        modal.query_one(Input).value = "clean"
+        modal.action_save_name()
+        await pilot.pause()
+        await pilot.pause()
+        assert argstate.load_state(entry.slug)["presets"]["clean"]["output"] == "final.png"
+        assert select.value == "clean"
+        # The field keeps the user's edit — not stomped back to the prefill.
+        assert rows["output"].query_one(Input).value == "final.png"
+
+
+async def test_form_overwrite_selected_preset_keeps_a_cleared_field(tmp_path, quiet_run):
+    """Overwrite variant: hand-pick 'web', clear the field, Ctrl+S under the SAME name
+    — the cleared field stays cleared and the stored preset drops the value."""
+    entry = _argparse_entry(tmp_path)
+    argstate.save_preset(entry.slug, "web", {"output": "web.png"})
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = RunFormScreen(
+            entry, plan=flows.plan_for_entry(entry), prefill={"output": "orig.png"}
+        )
+        app.push_screen(screen)
+        await pilot.pause()
+        select = screen.query_one("#preset-select", Select)
+        select.value = "web"
+        await pilot.pause()
+        rows = {r.field.key: r for r in screen.query(FieldRow)}
+        rows["output"].set_value("")
+        screen.action_save_preset()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PresetNameModal)
+        modal.query_one(Input).value = "web"
+        modal.action_save_name()
+        await pilot.pause()
+        await pilot.pause()
+        assert "output" not in argstate.load_state(entry.slug)["presets"]["web"]
+        assert rows["output"].query_one(Input).value == ""  # not resurrected
 
 
 # ---------------------------------------------------------------------------

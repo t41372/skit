@@ -42,6 +42,7 @@ from . import (
     flows,
     healthcheck,
     i18n,
+    kindnames,
     launcher,
     models,
     pep723,
@@ -282,6 +283,12 @@ def _prompt_identity(
 
 def _require_file(resolved: Path) -> None:
     if not resolved.is_file():
+        raise store.StoreError(gettext("File not found: %(path)s") % {"path": str(resolved)})
+
+
+def _require_exists(resolved: Path) -> None:
+    """The exe lane's twin of _require_file (add_exe accepts any existing path)."""
+    if not resolved.exists():
         raise store.StoreError(gettext("File not found: %(path)s") % {"path": str(resolved)})
 
 
@@ -530,11 +537,30 @@ def _create_python_in_editor(
 
         drafted_kind = kind_for_shebang(tmp) or "python"
         if drafted_kind != "python":
-            # A changed shebang is an explicit signal, honored by the SAME rule the
-            # TUI draft lane uses — a bash draft must never be stored as a broken
-            # python entry (nor refused after the user already wrote it).
-            entry = store.add_script(tmp, kind=drafted_kind, name=name, mode="copy")
+            # A changed shebang is an explicit signal, honored by the SAME rule (and
+            # to the SAME depth) as the TUI draft lane: interpreter recorded, npm deps
+            # scanned, candidates offered — not a second-class entry that launches a
+            # zsh script under bash. Python-only flags the draft can't honor are
+            # refused, never dropped.
+            if deps_opt or python_opt:
+                err_console.print(
+                    "[red]"
+                    + gettext(
+                        "--dep/--python are python flags, but the draft's shebang names "
+                        "%(kind)s — drop them, or keep the python shebang."
+                    )
+                    % {"kind": drafted_kind}
+                    + _RED_CLOSE
+                )
+                raise typer.Exit(EXIT_USAGE)
+            from .langs.registry import shebang_program
+
             spec = spec_for(drafted_kind)
+            program = shebang_program(tmp)
+            interpreter = program if spec is not None and program in spec.shebangs else ""
+            entry = store.add_script(
+                tmp, kind=drafted_kind, name=name, mode="copy", interpreter=interpreter
+            )
             deps = []
             if (
                 spec is not None
@@ -543,7 +569,8 @@ def _create_python_in_editor(
                 and (deps := spec.dep_scanner(text))
             ):
                 entry = store.update_dependencies(entry.slug, deps)
-            managed, secrets = [], []
+            managed = _onboard_script_params(entry, spec, no_input=False) if spec else []
+            secrets = [n for n in managed if is_secret_name(n)]
         else:
             entry, deps, managed, secrets = _onboard_python(
                 tmp, text, name=name, deps_opt=deps_opt, python_opt=python_opt
@@ -1116,6 +1143,10 @@ def add(
                 )
                 raise typer.Exit(EXIT_USAGE)
             if kind == "exe":
+                # The same check add_exe performs, hoisted BEFORE the identity asks —
+                # two answered questions followed by "File not found" is the ordering
+                # the prompt lane's _require_file discipline forbids.
+                _require_exists(resolved)
                 if not no_input and _is_interactive():
                     # The one add lane that asked NOTHING while every sibling reviews
                     # identity — "nothing to detect inside a binary" justifies no tick
@@ -1355,7 +1386,7 @@ def list_cmd(
     table.add_column(gettext("Kind"))
     table.add_column(gettext("Description"))
     for e in entries:
-        table.add_row(escape(e.meta.name), e.meta.kind, _list_description(e))
+        table.add_row(escape(e.meta.name), kindnames.kind_label(e.meta.kind), _list_description(e))
     console.print(table)
 
 
@@ -1420,7 +1451,9 @@ def _field_to_dict(f: flows.FormField) -> dict[str, object]:
 
 def _print_show_human(entry: store.Entry, plan: flows.FormPlan, presets: list[str]) -> None:
     meta = entry.meta
-    console.print(f"[bold]{escape(meta.name)}[/bold]  [dim]({meta.kind} · {meta.mode})[/dim]")
+    console.print(
+        f"[bold]{escape(meta.name)}[/bold]  [dim]({kindnames.kind_label(meta.kind)} · {meta.mode})[/dim]"
+    )
     if meta.description:
         console.print(f"  {escape(meta.description)}")
     show_spec = spec_for(meta.kind)
@@ -1915,11 +1948,6 @@ def run(
         entry = store.resolve(name)
     except store.NotFoundError as exc:
         raise _fail(str(exc), EXIT_NOT_FOUND) from exc
-    if forget_args:
-        # An imperative clear, honored up front regardless of how the run then goes:
-        # the remembered argv tail was previously uneraseable from the CLI (an empty
-        # `--` is indistinguishable from no `--`).
-        argstate.save_last(entry.slug, extra_args=[])
     _validate_preset(entry, preset)
     # Form-shaped flags contradict "as-is": refusing beats silently dropping a preset
     # (or persisting an empty one) the way a bare warning-less run would. Checked before
@@ -1930,20 +1958,29 @@ def run(
         )
         raise typer.Exit(EXIT_USAGE)
     run_spec = spec_for(entry.meta.kind)
-    if raw and (run_spec is None or run_spec.analyzer is None):
+    if raw and (run_spec is None or run_spec.placeholder_params):
+        # Keyed on the INTERFACE trait, not an internal capability: a prompt/command
+        # entry's {placeholders} literally are the artifact, so "as-is" cannot exist —
+        # while a ruby/powershell/exe entry runs as-is exactly like python does.
         # Refused BEFORE runner resolution: a refusal must not first ask which agent
         # to use, write last-picked state, or send the caller through a 126 that a
         # later usage error contradicts. Nothing is changed.
         err_console.print(
             "[red]"
             + gettext(
-                "--raw only applies to kinds skit injects into; a %(kind)s entry's "
-                "parameters are its interface and always apply."
+                "--raw doesn't apply to a %(kind)s entry: its {placeholders} are the "
+                "artifact itself — there is no as-is without them."
             )
             % {"kind": entry.meta.kind}
             + _RED_CLOSE
         )
         raise typer.Exit(EXIT_USAGE)
+    if forget_args:
+        # An imperative clear — but placed BELOW every usage gate: an exit-2
+        # invocation must leave no fingerprints (the same rule the --raw refusal
+        # states three lines up). The remembered argv tail was previously
+        # uneraseable from the CLI (an empty `--` is indistinguishable from none).
+        argstate.save_last(entry.slug, extra_args=[])
     # One interaction paradigm per run, not two glued in sequence: when the inline
     # mini-form is about to open for a prompt entry anyway, the runner question moves
     # INTO the form (the same picker row the TUI workbench shows) instead of a bare
@@ -1958,7 +1995,7 @@ def run(
         bool(runner_names) and runner is None and run_interactive and form_style == "tui"
     )
     runner_obj = None if form_hosts_runner else _resolve_run_runner(entry, runner, no_input)
-    if raw and run_spec is not None and run_spec.analyzer is not None:
+    if raw:
         console.print(
             f"[dim]{gettext('Raw mode: skipping the parameter form and injection.')}[/dim]"
         )
@@ -2267,7 +2304,7 @@ def preset_save(
         raise _fail(
             gettext("%(name)s has no form fields, so there's nothing to save.")
             % {"name": entry.meta.name},
-            1,
+            EXIT_USAGE,
         )
     if from_last:
         last = argstate.load_state(entry.slug)["values"]
@@ -2817,21 +2854,37 @@ def params(
         # Its own op, like --runner: flipping the master switch changes what the entry
         # IS at run time, so it never mixes into the schema-edit pass.
         _set_prompt_interpolate(entry, interpolate_opt)
+        if as_json:
+            # --json on a write: the final read view (fix #14's rule holds on
+            # EVERY write branch of this command, not just the two it touched).
+            _show_params(store.resolve(entry.slug), as_json=True)
         return
     if runner_pin is not None:
         # Its own op, like --normalize: re-pinning changes how the entry LAUNCHES, so
         # mixing it into the schema-edit pass would make the outcome order-dependent.
         _pin_prompt_runner(entry, runner_pin)
+        if as_json:
+            # --json on a write: the final read view (fix #14's rule holds on
+            # EVERY write branch of this command, not just the two it touched).
+            _show_params(store.resolve(entry.slug), as_json=True)
         return
     if workdir_opt is not None or interpreter_opt is not None or template_opt is not None:
         # Entry policy, not schema — its own op for the same order-independence reason.
         _edit_entry_policy(entry, workdir_opt, interpreter_opt, template_opt)
+        if as_json:
+            # --json on a write: the final read view (fix #14's rule holds on
+            # EVERY write branch of this command, not just the two it touched).
+            _show_params(store.resolve(entry.slug), as_json=True)
         return
     if normalize_opt:
         # A source-idiom rewrite of the user's own stored file — deliberately its own op, not a
         # modifier on the others: it changes what a parameter IS (inject-delivered -> env-delivered),
         # so mixing it into the same pass as --manage/--secret would make the outcome order-dependent.
         _normalize_params(entry, entry_spec, normalize_opt)
+        if as_json:
+            # --json on a write: the final read view (fix #14's rule holds on
+            # EVERY write branch of this command, not just the two it touched).
+            _show_params(store.resolve(entry.slug), as_json=True)
         return
     has_params_io = entry_spec is not None and entry_spec.params_io is not None
     declared_kind = entry_spec is not None and entry_spec.params_io is None

@@ -679,7 +679,7 @@ def test_show_interpreted_header_and_source(tmp_path: Path):
     _shell(tmp_path)
     result = runner.invoke(cli.app, ["show", "d"])
     assert result.exit_code == 0
-    assert "shell · copy" in result.output
+    assert "Shell · copy" in result.output  # human header uses the translated kind label
     assert "Source:" in result.output
     assert "skit run d" in result.output
 

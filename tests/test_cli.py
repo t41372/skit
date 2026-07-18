@@ -244,6 +244,23 @@ def test_add_exe_no_input_never_asks(tmp_path, monkeypatch):
     assert store.resolve("archiver").meta.kind == "exe"  # stem became the name, no ask
 
 
+def test_add_exe_missing_path_errors_before_any_ask(tmp_path, monkeypatch):
+    """The exe existence check is hoisted BEFORE the identity asks: adding a missing path
+    with --exe interactively asks NOTHING (no name/description prompt lands, then a late
+    "File not found") and errors exit 1 — the ordering the prompt lane's _require_file
+    discipline forbids."""
+
+    def _boom(*a, **k):
+        raise AssertionError("the identity asks must not run before the existence check")
+
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr(cli.Prompt, "ask", _boom)
+    missing = tmp_path / "ghost.bin"  # never created
+    result = runner.invoke(cli.app, ["add", str(missing), "--exe"])
+    assert result.exit_code == 1, result.output
+    assert "File not found" in result.output
+
+
 def test_add_cmd_needs_name():
     result = runner.invoke(cli.app, ["add", "--cmd", "echo hi"])
     assert result.exit_code == 2
@@ -375,6 +392,36 @@ def test_list_description_exact_marker_when_no_description(tmp_path):
     entry = store.add_python(p, name="gone")
     entry.script_path.unlink()
     assert cli._list_description(entry) == f"[dim]⚠ missing: {entry.script_path}[/dim]"
+
+
+def test_list_and_show_human_faces_use_translated_kind_labels(tmp_path):
+    """The human list/show faces show the kind's translated LABEL, not its raw registry id:
+    under SKIT_LANG=en, python/prompt/exe render as Python/Prompt/Program. --json is the
+    machine contract and keeps the raw ids untouched."""
+    import json
+
+    store.add_python(_py(tmp_path, "print(1)\n", name="pyjob.py"), name="pyjob")
+    pr = tmp_path / "p.prompt.md"
+    pr.write_text("Do {{a}}\n", encoding="utf-8")
+    store.add_prompt(pr, name="pr")
+    exe = tmp_path / "tool"
+    exe.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    store.add_exe(exe, name="prog")
+    listed = runner.invoke(cli.app, ["list"]).output
+    for label in ("Python", "Prompt", "Program"):
+        assert label in listed  # the Kind column renders the label…
+    assert "python" not in listed  # …and never the raw id (the label is capitalized)
+    # show's (kind · mode) header uses the label too.
+    assert "Python ·" in runner.invoke(cli.app, ["show", "pyjob"]).output
+    assert "Prompt ·" in runner.invoke(cli.app, ["show", "pr"]).output
+    assert "Program ·" in runner.invoke(cli.app, ["show", "prog"]).output
+    # --json keeps the raw registry ids as a stable machine contract, never the labels.
+    payload = json.loads(runner.invoke(cli.app, ["list", "--json"]).output)
+    assert {row["name"]: row["kind"] for row in payload} == {
+        "pyjob": "python",
+        "pr": "prompt",
+        "prog": "exe",
+    }
 
 
 def test_list_description_appends_marker_after_description(tmp_path):
@@ -663,13 +710,15 @@ def test_preset_save_not_found():
 def test_preset_save_python_no_params(tmp_path):
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     result = runner.invoke(cli.app, ["preset", "save", "a", "p"], input="\n")
-    assert result.exit_code == 1  # no managed parameters
+    # A field-less entry has nothing to save: USAGE (2), the same code `run --save-preset`
+    # now uses for this refusal — not 1, which docker-convention reserves for the script.
+    assert result.exit_code == 2  # no managed parameters
 
 
 def test_preset_save_command_no_params(tmp_path):
     store.add_command("echo hi", name="e")  # no placeholders
     result = runner.invoke(cli.app, ["preset", "save", "e", "p"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
 
 
 def test_preset_save_command_with_params(tmp_path, tty, monkeypatch):

@@ -537,6 +537,40 @@ def test_params_runner_pin_and_clear(tmp_path):
     assert "asks at run time" in result.output
 
 
+def test_params_runner_pin_with_json_emits_the_read_view(tmp_path):
+    """An own-op with --json emits the final read view instead of silently dropping the
+    flag (the deps-write precedent): the human confirmation prints, THEN the read-view
+    JSON — every own-op branch of `skit params`, not just the schema edits it first fixed."""
+    _added(tmp_path)
+    result = runner.invoke(cli.app, ["params", "p", "--runner", "claude", "--json"])
+    assert result.exit_code == 0, result.output
+    assert store.resolve("p").meta.runner == "claude"  # the pin was written
+    payload = json.loads(result.output[result.output.index("{") :])  # valid JSON follows
+    assert payload["runner"] == "claude"  # the pin shows in the emitted read view
+
+
+def test_params_workdir_with_json_emits_the_read_view(tmp_path):
+    """The workdir/interpreter/template own-op honors --json the same way: the policy is
+    written, then a valid read-view JSON is emitted on stdout — not a silent drop."""
+    _added(tmp_path)
+    result = runner.invoke(cli.app, ["params", "p", "--workdir", "origin", "--json"])
+    assert result.exit_code == 0, result.output
+    assert store.resolve("p").meta.workdir == "origin"  # the policy was written
+    payload = json.loads(result.output[result.output.index("{") :])  # valid JSON follows
+    assert "params" in payload  # the entry's read view
+    assert payload["runner"] is None  # unpinned prompt renders a null runner
+
+
+def test_params_interpolate_with_json_emits_the_read_view(tmp_path):
+    """The interpolate own-op honors --json too — the fourth own-op face of the rule."""
+    _added(tmp_path)
+    result = runner.invoke(cli.app, ["params", "p", "--no-interpolate", "--json"])
+    assert result.exit_code == 0, result.output
+    assert store.resolve("p").meta.interpolate is False  # the switch flipped
+    payload = json.loads(result.output[result.output.index("{") :])  # valid JSON follows
+    assert payload["interpolate"] is False  # the new state shows in the read view
+
+
 def test_params_runner_pin_validates_the_name(tmp_path):
     _added(tmp_path)
     result = runner.invoke(cli.app, ["params", "p", "--runner", "ghost"])

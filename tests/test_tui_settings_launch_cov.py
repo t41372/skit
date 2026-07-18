@@ -322,12 +322,100 @@ async def test_declared_choice_empty_choices_shows_new_message(tmp_path, monkeyp
     assert any("fill its Choices field" in m for m in notes)
 
 
-# ---------------------------------------------------------------- unknown kind (defensive)
+# ------------------------------------------------ validate-then-write ordering
+
+
+async def test_save_refuses_invalid_workdir_before_the_rename(tmp_path, monkeypatch):
+    """action_save validates EVERYTHING before writing anything: an invalid custom workdir
+    refuses BEFORE the rename/description writes, so a new name typed alongside it is NEVER
+    persisted (the half-commit the Esc guard's "unsaved changes" would otherwise lie about)."""
+    _capture_notify(monkeypatch)
+    _shell(tmp_path)
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(store.resolve("sh"))
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.query_one("#st-name", Input).value = "renamed"  # a new name rides along
+        list(screen.query_one("#st-workdir", RadioSet).query(RadioButton))[3].value = True
+        await pilot.pause()
+        screen.query_one("#st-workdir-path", Input).value = "rel/ative"  # invalid
+        screen.action_save()
+        await pilot.pause()
+        assert isinstance(app.screen, ScriptSettingsScreen)  # stayed on the screen
+    assert store.resolve("sh").meta.name == "sh"  # the rename never ran
+    with pytest.raises(store.NotFoundError):
+        store.resolve("renamed")
+
+
+async def test_save_refuses_empty_template_before_the_rename(tmp_path, monkeypatch):
+    """An empty command template refuses before the rename write — a new name alongside it
+    is not persisted, and the template is left as it was."""
+    _capture_notify(monkeypatch)
+    store.add_command("echo {x}", name="cmd")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(store.resolve("cmd"))
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.query_one("#st-name", Input).value = "renamed"
+        screen.query_one("#st-template", Input).value = "   "  # empty is not a program
+        screen.action_save()
+        await pilot.pause()
+        assert isinstance(app.screen, ScriptSettingsScreen)
+    entry = store.resolve("cmd")
+    assert entry.meta.name == "cmd"  # the rename never ran
+    assert entry.meta.template == "echo {x}"  # template unchanged
+
+
+async def test_save_refuses_invalid_declared_row_before_the_rename(tmp_path, monkeypatch):
+    """An invalid declared row (a choice type with no Choices) refuses before the rename
+    write — a new name alongside it is not persisted."""
+    _capture_notify(monkeypatch)
+    tool = tmp_path / "prog"
+    tool.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    entry = store.add_exe(tool, name="prog")
+    entry = store.write_parameters(entry.slug, [ParamDecl(name="a", delivery="flag", type="str")])
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.query_one("#st-name", Input).value = "renamed"
+        screen.query(DeclParamRow).first().query_one(".d-type", Input).value = "choice"
+        # leave Choices empty → the row is invalid
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+        assert isinstance(app.screen, ScriptSettingsScreen)
+    assert store.resolve("prog").meta.name == "prog"  # the rename never ran
+
+
+async def test_save_rename_conflict_aborts_before_the_description_write(tmp_path, monkeypatch):
+    """The rename is the FIRST write (its name-conflict failure can't be pre-checked), so it
+    aborts ALONE: a description typed alongside a conflicting rename is NOT persisted after
+    the rename fails — zero prior writes, exactly the method's docstring promise."""
+    _capture_notify(monkeypatch)
+    _shell(tmp_path, name="sh")
+    _shell(tmp_path, name="taken")  # the conflicting name already exists
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(store.resolve("sh"))
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.query_one("#st-name", Input).value = "taken"  # collides with the other entry
+        screen.query_one("#st-desc", Input).value = "a fresh description"
+        screen.action_save()
+        await pilot.pause()
+        assert isinstance(app.screen, ScriptSettingsScreen)  # stayed on the screen
+    entry = store.resolve("sh")
+    assert entry.meta.name == "sh"  # the rename failed…
+    assert entry.meta.description == ""  # …and the description was NOT written half-way
 
 
 async def test_save_launch_noop_for_unknown_kind(tmp_path):
     # A meta.toml kind a newer skit defined and this one doesn't recognize: the launch
-    # section offers no policies, and _save_launch returns True without touching anything.
+    # section offers no policies, and _write_launch returns without touching anything.
     p = tmp_path / "x.py"
     p.write_text("print(1)\n", encoding="utf-8")
     entry = store.add_python(p, name="x")

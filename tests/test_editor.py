@@ -7,6 +7,8 @@ patch editor.subprocess.run.
 
 from __future__ import annotations
 
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -400,6 +402,74 @@ def test_add_edit_js_shebang_draft_scans_npm_deps(monkeypatch):
     entry = store.resolve("colorized")
     assert entry.meta.kind == "js"
     assert "chalk" in (entry.meta.dependencies or [])  # npm scan materialized the dep
+
+
+def test_add_edit_zsh_draft_records_interpreter_and_dry_run_names_zsh(monkeypatch):
+    """Full parity, part 1 — the interpreter is recorded from the shebang program: a
+    #!/usr/bin/env zsh draft lands with interpreter='zsh' (not the shell kind's default
+    bash), so it keeps running under zsh and the dry-run command line names zsh."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+
+    def write_script(p):
+        p.write_text("#!/usr/bin/env zsh\necho hi\n", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(cli.editor, "open_in_editor", write_script)
+    result = runner.invoke(cli.app, ["add", "-e", "--name", "zjob"])
+    assert result.exit_code == 0, result.output
+    entry = store.resolve("zjob")
+    assert entry.meta.kind == "shell"
+    assert entry.meta.interpreter == "zsh"  # recorded from the shebang, not left blank
+    dry = runner.invoke(cli.app, ["run", "zjob", "--dry-run", "--no-input"])
+    assert dry.exit_code == 0, dry.output
+    assert "zsh" in dry.output  # the dry-run command names the pinned interpreter
+
+
+def test_add_edit_shell_draft_onboards_picked_constants(monkeypatch):
+    """Full parity, part 2 — the candidate ask runs on a non-python draft exactly as the
+    python lane's does: the shell analyzer's constants are offered, and "all" writes them
+    as managed params into the stored copy (direct call: CliRunner replaces sys.stdin, so
+    the interactive onboarding gate can't be reached through invoke())."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    # _onboard_script_params gates on sys.stdin.isatty(); fake a tty like the onboarding
+    # unit tests do (a plain SimpleNamespace, not click's non-tty invoke stream).
+    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: True, read=lambda: ""))
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: "all"))
+
+    def write_script(p):
+        p.write_text(
+            "#!/usr/bin/env bash\nCITY=Taipei\nAPI_KEY=secret\necho $CITY\n", encoding="utf-8"
+        )
+        return 0
+
+    monkeypatch.setattr(cli.editor, "open_in_editor", write_script)
+    cli._create_python_in_editor(name="deploy")
+    entry = store.resolve("deploy")
+    assert entry.meta.kind == "shell"
+    spec = cli.spec_for("shell")
+    assert spec is not None
+    assert spec.params_io is not None
+    managed = {d.name for d in spec.params_io.read(entry.script_path.read_text(encoding="utf-8"))}
+    assert managed == {"CITY", "API_KEY"}  # both constants picked and written to the copy
+
+
+def test_add_edit_dep_flag_on_non_python_draft_is_refused(monkeypatch):
+    """Full parity, part 3 — --dep/--python are python-only flags: riding them on a draft
+    whose shebang names another kind is REFUSED (exit 2), never silently dropped, and
+    nothing is added."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+
+    def write_script(p):
+        p.write_text("#!/usr/bin/env bash\necho drafted\n", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(cli.editor, "open_in_editor", write_script)
+    result = runner.invoke(cli.app, ["add", "-e", "--name", "d", "--dep", "rich"])
+    assert result.exit_code == 2, result.output
+    assert "python flags" in result.output  # the refusal names the flags…
+    assert "shell" in result.output  # …and the draft's actual kind
+    with pytest.raises(store.NotFoundError):
+        store.resolve("d")  # nothing was added
 
 
 def test_add_edit_rejects_path(tmp_path):

@@ -8,6 +8,7 @@ writes the original file, A7); command entries show the template and placeholder
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import override
 
 from rich.markup import escape
@@ -421,12 +422,12 @@ class ScriptSettingsScreen(Screen[bool]):
             )
             self.query_one("#st-workdir-path", Input).display = is_custom
 
-    def _save_launch(self) -> bool:
-        """Persist the workdir policy (and interpreter pin). False = invalid input —
-        stay on the screen (the same contract as an invalid declared row)."""
+    def _validated_launch(self) -> tuple[str, str] | None:
+        """The validation half: (workdir, interpreter) to persist, or None on invalid
+        input — computed and CHECKED before any write anywhere in the save."""
         box = self.query("#st-workdir")
         if not box:
-            return True
+            return ("", "")
         pressed = box.first(RadioSet).pressed_index
         picked = (
             self._workdir_choices[pressed]
@@ -441,18 +442,33 @@ class ScriptSettingsScreen(Screen[bool]):
                 # "Fixed folder" picked but nothing typed: keep what is stored rather
                 # than guessing (an empty path is not a policy).
                 new_workdir = self._entry.meta.workdir
-        if new_workdir != self._entry.meta.workdir:
-            try:
-                store.write_workdir(self._entry.slug, new_workdir)
-            except store.StoreError as exc:
-                self.notify(str(exc), severity="error")
-                return False
+            if new_workdir not in ("origin", "store", "invoke") and not (
+                Path(new_workdir).expanduser().is_absolute()
+            ):
+                # The same rule store.write_workdir enforces, checked BEFORE any write.
+                self.notify(
+                    gettext(
+                        "The working directory must be origin, store, invoke, or an absolute path."
+                    ),
+                    severity="error",
+                )
+                return None
+        interp = ""
         interp_box = self.query("#st-interpreter")
         if interp_box:
-            new_interp = interp_box.first(Input).value.strip()
-            if new_interp != self._entry.meta.interpreter:
-                store.write_interpreter(self._entry.slug, new_interp)
-        return True
+            interp = interp_box.first(Input).value.strip()
+        return (new_workdir, interp)
+
+    def _write_launch(self, launch: tuple[str, str]) -> None:
+        """The write half — inputs already validated."""
+        new_workdir, new_interp = launch
+        box = self.query("#st-workdir")
+        if not box:
+            return
+        if new_workdir != self._entry.meta.workdir:
+            store.write_workdir(self._entry.slug, new_workdir)
+        if self.query("#st-interpreter") and new_interp != self._entry.meta.interpreter:
+            store.write_interpreter(self._entry.slug, new_interp)
 
     def _compose_runner(self) -> ComposeResult:
         if not self._is_prompt:
@@ -793,28 +809,42 @@ class ScriptSettingsScreen(Screen[bool]):
         self.refresh(recompose=True)
 
     def action_save(self) -> None:  # noqa: PLR0912, PLR0915 — one atomic save across every section
+        """VALIDATE EVERYTHING FIRST, write only after every check passes: a refusal
+        that lands after earlier sections were persisted makes both the Esc guard's
+        "unsaved changes" and this method's own "nothing saved half-way" a lie (the
+        exact half-commit Preferences was cured of; the rename write goes first, so
+        even its unpre-checkable name-conflict failure aborts with zero prior writes)."""
         entry = self._entry
         new_name = self.query_one("#st-name", Input).value.strip()
+        # ---- validation pass: no writes below may run unless ALL of these pass ----
+        launch = self._validated_launch()
+        if launch is None:
+            return  # invalid workdir input; nothing was written
+        new_template: str | None = None
+        template_box = self.query("#st-template")
+        if template_box:
+            new_template = template_box.first(Input).value
+            if new_template != entry.meta.template and not new_template.strip():
+                self.notify(gettext("Command template must not be empty"), severity="error")
+                return  # an empty template is not a program; nothing was written
+        pending_decls: list[ParamDecl] | None = None
+        if self._declared and not (self._is_prompt and not entry.meta.interpolate):
+            pending_decls = self._collect_declared()
+            if pending_decls is None:
+                return  # a row is invalid; nothing was written
+        # ---- write pass ----
         if new_name and new_name != entry.meta.name:
             try:
                 store.rename(entry.slug, new_name)
             except store.StoreError as exc:
                 self.notify(str(exc), severity="error")
-                return  # stay on the screen; nothing else is saved half-way
+                return  # first write failed; nothing else was saved
         description = self.query_one("#st-desc", Input).value.strip()
         if description != entry.meta.description:
             store.update_description(entry.slug, description)
-        if not self._save_launch():
-            return  # invalid workdir input; stay on the screen
-        template_box = self.query("#st-template")
-        if template_box:
-            new_template = template_box.first(Input).value
-            if new_template != entry.meta.template:
-                try:
-                    store.update_template(entry.slug, new_template)
-                except store.StoreError as exc:
-                    self.notify(str(exc), severity="error")
-                    return  # an empty template is not a program; stay on the screen
+        self._write_launch(launch)
+        if new_template is not None and new_template != entry.meta.template:
+            store.update_template(entry.slug, new_template)
         # One narrowing point: an analyzable kind always carries params_io too (the registry pairs
         # them), and a non-empty text with a live analyzer means reconcile always returns a report —
         # so the capabilities are read straight off the narrowed spec, with no dead None-guards.
@@ -849,10 +879,8 @@ class ScriptSettingsScreen(Screen[bool]):
             # The pin save lives HERE, not in the declared branch below: that branch is
             # skipped when insertion is off, and a pin change must never be dropped for it.
             self._save_runner_pin()
-        if self._declared and not (self._is_prompt and not entry.meta.interpolate):
-            decls = self._collect_declared()
-            if decls is None:
-                return  # a row is invalid; stay on the screen, nothing saved half-way
+        if pending_decls is not None:
+            decls = pending_decls
             if self._is_prompt:
                 decls += self._ticked_prompt_candidates({d.name for d in decls})
                 self._save_prompt_managed(decls)

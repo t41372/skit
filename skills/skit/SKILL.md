@@ -61,7 +61,7 @@ skit run <name> --set width=1200 --set fmt=png --no-input
 skit run <name> -p <preset> --no-input              # a saved preset
 skit run <name> --no-input -- --verbose input.txt   # raw args to the script's own parser
 skit run <name> --set width=800 --dry-run --no-input  # print the command, run nothing
-skit run <name> --raw --no-input                    # escape hatch: as-is; injected kinds only (see below)
+skit run <name> --raw --no-input                    # escape hatch: run the stored copy as-is (not prompt/command; see below)
 skit run <name> --forget-args --no-input            # erase the remembered extra args first, then run
 ```
 
@@ -76,9 +76,10 @@ skit run <name> --forget-args --no-input            # erase the remembered extra
   run's* extra args (it says so on stderr). Pass your own `--` args, use `--raw` (which
   never replays old arguments), or `--forget-args` (erases the remembered tail up front,
   then runs) when you need a clean slate; `--dry-run` shows exactly what would happen.
-- `--raw` only applies to kinds skit injects into (python/shell/js/ts/fish). On
-  prompt/command/exe and the declared-schema kinds the parameters ARE the interface,
-  so `--raw` is refused (exit 2) — there is nothing to skip. It also refuses
+- `--raw` runs a script's stored copy as-is, skipping the parameter form and injection.
+  It applies to every kind EXCEPT prompt and command, whose `{placeholders}` ARE the
+  artifact — there is no "as-is" without them, so `--raw` is refused there (exit 2). (exe
+  and the interpreted kinds run as-is exactly like python.) It also refuses
   `--set`/`-p`/`--save-preset`.
 - Secrets: prefer wiring them to environment variables (see below) over `--set`.
   Secret values never persist to disk and are masked as ••• in dry-run output.
@@ -237,7 +238,7 @@ skit params <name> --no-interpolate  # switch insertion off; --interpolate turns
 skit runner list --json                       # [{"name": …, "argv": […]}]
 skit runner add mycli -- mycli run {{prompt}} # each word = one argument, no shell
 skit runner add mycli --force -- mycli run --model opus {{prompt}}  # --force replaces an existing runner (edit)
-skit runner remove mycli
+skit runner remove mycli -y   # confirms without -y, like skit remove
 ```
 
 - The agent's own per-run flags pass through after `--`:

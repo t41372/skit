@@ -297,6 +297,21 @@ def test_params_normalize_with_schema_flag_refused_unchanged(tmp_path):
     _assert_one_op_refusal("sh", ["--normalize", "CITY", "--manage", "CITY"], "--normalize")
 
 
+def test_params_normalize_with_json_emits_the_read_view(tmp_path):
+    """The --normalize own-op honors --json like every other own-op: the source idiom is
+    rewritten, then a valid read-view JSON is emitted on stdout — not a silent drop (the
+    fourth own-op face, so the rule holds on ALL of interpolate/runner/workdir/normalize)."""
+    import json
+
+    _shell(tmp_path, body="#!/usr/bin/env bash\nCITY=Taipei\necho $CITY\n", name="sh")
+    result = runner.invoke(cli.app, ["params", "sh", "--normalize", "CITY", "--json"])
+    assert result.exit_code == 0, result.output
+    # The stored copy now carries the ${CITY:-Taipei} idiom (the semantic rewrite).
+    assert "${CITY:-Taipei}" in store.resolve("sh").script_path.read_text(encoding="utf-8")
+    payload = json.loads(result.output[result.output.index("{") :])  # valid JSON follows
+    assert "params" in payload  # the entry's read view
+
+
 def test_params_two_policy_groups_refused_unchanged(tmp_path):
     """Two policy ops in one call is refused just like a policy op + a schema flag — the
     first-listed op names the refusal, and nothing changes."""
@@ -543,19 +558,33 @@ def test_run_forget_args_erases_remembered_tail(tmp_path, spawn_spy):
     assert spawn_spy["extra"] == []  # the run reused nothing
 
 
+def test_run_forget_args_below_usage_gates_survives_a_refusal(tmp_path, spawn_spy):
+    """--forget-args moved BELOW every usage gate: an exit-2 invocation must leave no
+    fingerprints, so a refused run (here an unknown preset) leaves the remembered tail
+    intact — the same "nothing is changed" rule the raw refusal states. The clean-erase
+    twin above pins that a passing --forget-args run still wipes it."""
+    entry = _py(tmp_path, name="a")
+    argstate.save_last(entry.slug, extra_args=["--old", "value"])
+    result = runner.invoke(cli.app, ["run", "a", "--forget-args", "--preset", "nope", "--no-input"])
+    assert result.exit_code == 2, result.output  # unknown-preset usage error, before the clear
+    assert argstate.load_state(entry.slug)["extra_args"] == ["--old", "value"]  # NOT erased
+    assert "entry" not in spawn_spy  # nothing launched
+
+
 # ============================================================ raw refusal
 
 
-def test_run_raw_refused_on_analyzer_less_kind(tmp_path, spawn_spy):
-    """On a kind skit doesn't inject into (here: a command template) the parameters ARE
-    the interface, so `--raw` cannot be honored "as-is" — it's REFUSED (exit 2), not a
-    notice-then-run-anyway. Nothing launches."""
+def test_run_raw_refused_on_placeholder_kind(tmp_path, spawn_spy):
+    """On a kind whose {placeholders} ARE the artifact (here: a command template) there is
+    no "as-is" to run — `--raw` is REFUSED (exit 2) with the placeholder-keyed message, not
+    a notice-then-run-anyway. Nothing launches. The gate keys off placeholder_params (the
+    interface trait), not an internal analyzer capability."""
     store.add_command("echo hi", name="cmd")
     result = runner.invoke(cli.app, ["run", "cmd", "--raw", "--no-input"])
     assert result.exit_code == 2, result.output
     flat = _flat(result.output)
-    assert "--raw only applies to kinds skit injects into" in flat
-    assert "command entry's parameters are its interface" in flat
+    assert "--raw doesn't apply to a command entry" in flat
+    assert "there is no as-is without them" in flat
     assert "entry" not in spawn_spy  # refused before any launch
 
 
@@ -568,25 +597,28 @@ def test_run_raw_allowed_on_injected_kind(tmp_path, spawn_spy):
     assert spawn_spy["entry"].meta.name == "job"  # it really launched
 
 
-def test_run_raw_refused_on_exe_kind(tmp_path, spawn_spy):
-    """A program (exe) has no analyzer either — --raw is REFUSED (exit 2), not honored."""
+def test_run_raw_runs_an_exe_with_the_skip_notice(tmp_path, spawn_spy):
+    """A program (exe) has NO {placeholders} — it runs as-is exactly like python does.
+    --raw now RUNS it (exit 0) with the "Raw mode: skipping…" notice, not a refusal: the
+    gate flipped from the analyzer capability to the placeholder_params interface trait."""
     prog = tmp_path / "tool"
     prog.write_text("bytes\n", encoding="utf-8")
     store.add_exe(prog, name="tool")
     result = runner.invoke(cli.app, ["run", "tool", "--raw", "--no-input"])
-    assert result.exit_code == 2, result.output
-    assert "--raw only applies to kinds skit injects into" in _flat(result.output)
-    assert "entry" not in spawn_spy  # refused before any launch
+    assert result.exit_code == 0, result.output
+    assert "Raw mode: skipping the parameter form and injection." in _flat(result.output)
+    assert spawn_spy["entry"].meta.name == "tool"  # it really launched
 
 
 def test_run_raw_on_unpinned_prompt_refuses_before_runner_resolution(tmp_path, spawn_spy):
-    """--raw on an analyzer-less prompt is refused with exit 2 BEFORE runner resolution:
-    the refusal never first asks which agent (nor sends the caller through the unpinned
-    126), and last-picked state is NOT written by a refused run (finding 2)."""
+    """--raw on a prompt (its {placeholders} ARE the artifact) is refused with exit 2 BEFORE
+    runner resolution: the refusal never first asks which agent (nor sends the caller through
+    the unpinned 126), and last-picked state is NOT written by a refused run (finding 2)."""
     _prompt(tmp_path, name="p")  # no pin, no --runner
     result = runner.invoke(cli.app, ["run", "p", "--raw", "--no-input"])
     assert result.exit_code == 2, result.output  # usage, NOT the unpinned 126
-    assert "--raw only applies to kinds skit injects into" in _flat(result.output)
+    assert "--raw doesn't apply to a prompt entry" in _flat(result.output)
+    assert "there is no as-is without them" in _flat(result.output)
     assert "entry" not in spawn_spy  # nothing launched
     # last-picked state must be untouched (a refused run picks nothing).
     assert not (argstate.state_dir() / "prompt.toml").exists()

@@ -500,11 +500,14 @@ class RunFormScreen(Screen[FormResult]):
         self._runners: list[str] = runners or []
         self._runner_default: str = runner_default
         self._presets: dict[str, dict[str, str]] = argstate.load_state(entry.slug)["presets"]
-        # One-shot: the preset name whose next Select.Changed must NOT be applied to
-        # the fields (the programmatic post-save refresh). A value token, not a timing
-        # flag — a frame-based guard raced the bubbled Changed in the eager headless
-        # compositor and could race a real terminal the same way.
-        self._skip_apply_for: str | None = None
+        # Armed during the programmatic post-save picker refresh: while set, EVERY
+        # Select.Changed is ignored until the one carrying this value arrives (it is
+        # consumed and the guard clears). Not a single-value one-shot: set_options
+        # first RESETS the value to the blank option, so a refresh performed while a
+        # preset was selected emits an intermediate Changed("") that a one-shot token
+        # would let through — which is how this bug shipped three times. Not a timing
+        # flag either: frame-based guards raced the compositor.
+        self._skip_apply_until: str | None = None
 
     def on_mount(self) -> None:
         self.query_one("#form-panel").border_title = gettext("Run %(name)s") % {
@@ -576,19 +579,19 @@ class RunFormScreen(Screen[FormResult]):
                     import shlex
 
                     yield FieldRow(extra_field, shlex.join(last_extra))
-        yield tui_footer.KeysBar(
-            Static(
-                tui_footer.bar(
-                    tui_footer.chip("screen.submit", "Enter", gettext("Run")),
-                    tui_footer.chip("screen.insert_token", "Ctrl+T", gettext("Insert value")),
-                    tui_footer.chip("screen.save_preset", "Ctrl+S", gettext("Save as preset")),
-                    tui_footer.chip("screen.cancel", "Esc", gettext("Cancel")),
-                    tui_footer.nav_chip(),
-                ),
-                id="form-keys",
-                markup=True,
-            )
-        )
+        chips = [
+            tui_footer.chip("screen.submit", "Enter", gettext("Run")),
+            tui_footer.chip("screen.insert_token", "Ctrl+T", gettext("Insert value")),
+        ]
+        if self._plan.fields:
+            # Advertising Ctrl+S on a field-less form would teach the exact action
+            # it refuses there — same rationale that removed the preset row.
+            chips.append(tui_footer.chip("screen.save_preset", "Ctrl+S", gettext("Save as preset")))
+        chips += [
+            tui_footer.chip("screen.cancel", "Esc", gettext("Cancel")),
+            tui_footer.nav_chip(),
+        ]
+        yield tui_footer.KeysBar(Static(tui_footer.bar(*chips), id="form-keys", markup=True))
 
     def _compose_preset_row(self) -> ComposeResult:
         with Horizontal(id="preset-row"):
@@ -617,8 +620,9 @@ class RunFormScreen(Screen[FormResult]):
         the just-saved preset would resurrect values the user explicitly cleared
         (empty values are never stored in a preset, so they'd fall back to prefill)."""
         name = str(event.value)
-        if self._skip_apply_for is not None and name == self._skip_apply_for:
-            self._skip_apply_for = None  # one-shot: a later hand-pick applies normally
+        if self._skip_apply_until is not None:
+            if name == self._skip_apply_until:
+                self._skip_apply_until = None  # target seen; later hand-picks apply
             return
         preset_values = self._presets.get(name, {})
         chosen = self._prefill if not name else {**self._prefill, **preset_values}
@@ -747,10 +751,11 @@ class RunFormScreen(Screen[FormResult]):
     def _refresh_preset_picker(self, selected: str) -> None:
         """After Ctrl+S the dropdown must show the preset that was just saved — a row
         still reading "none yet — press Ctrl+S" right after the user did exactly that
-        is the UI contradicting the user's own action. The programmatic selection must
-        NOT re-apply the preset to the fields (see _apply_preset); the flag is lifted a
-        frame later, after the queued Changed message has been seen."""
-        self._skip_apply_for = selected
+        is the UI contradicting the user's own action. The refresh must NOT touch the
+        FIELDS at all (the form already holds exactly what the user typed/cleared):
+        every Changed the refresh emits — including set_options' blank reset — is
+        swallowed until the target value lands (see _apply_preset)."""
+        self._skip_apply_until = selected
         options = [(gettext("last values"), "")] + [(n, n) for n in sorted(self._presets)]
         existing = self.query("#preset-select")
         if existing:
