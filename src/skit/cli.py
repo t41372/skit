@@ -279,7 +279,7 @@ def _prompt_identity(
     return name, description
 
 
-def _require_py_file(resolved: Path) -> None:
+def _require_file(resolved: Path) -> None:
     if not resolved.is_file():
         raise store.StoreError(gettext("File not found: %(path)s") % {"path": str(resolved)})
 
@@ -989,6 +989,10 @@ def add(
                     and os.environ.get("TERM") != "dumb"
                     and config.load_form() == "tui"
                 ):
+                    # The panel's __init__ reads the body outright — guard BEFORE it
+                    # opens (the python lane's _require_file discipline), so a typo'd
+                    # path is a clean StoreError, never a raw FileNotFoundError.
+                    _require_file(resolved)
                     if runner is not None and config.find_prompt_runner(runner) is None:
                         # An explicit flag the panel can't honor is refused, never
                         # dropped — same rule _ask_prompt_runner enforces on its lane.
@@ -1049,7 +1053,7 @@ def add(
                     if summary_deps:
                         entry = store.update_dependencies(entry.slug, summary_deps)
             else:
-                _require_py_file(resolved)
+                _require_file(resolved)
                 try:
                     text = resolved.read_text(encoding="utf-8", errors="replace")
                 except OSError as exc:

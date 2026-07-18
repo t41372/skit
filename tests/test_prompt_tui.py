@@ -998,6 +998,28 @@ async def test_settings_ctrl_n_is_a_noop_on_non_prompt_entries(tmp_path):
         assert app.screen is screen  # no modal on a python entry's settings
 
 
+async def test_settings_runner_radio_change_arms_the_discard_ask(tmp_path):
+    # A pin-only edit is a real edit: Esc must raise the unsaved-changes ask, never
+    # silently drop it (the RadioSet was the one control that didn't arm dirty).
+    from skit.tui_settings import DiscardChangesModal
+
+    _prompt_entry(tmp_path, text="{{a}}\n")
+    app = tui.MenuApp()
+    async with app.run_test(size=(110, 40)) as pilot:
+        await pilot.pause()
+        screen = await _open_settings(app, pilot)
+        radio = screen.query_one("#st-runner-set", RadioSet)
+        list(radio.query("RadioButton"))[1].value = True
+        await pilot.pause()
+        assert screen._dirty is True
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(app.screen, DiscardChangesModal)
+        await pilot.press("escape")  # keep editing
+        await pilot.pause()
+    assert store.resolve("p").meta.runner == ""  # nothing silently written either
+
+
 async def test_settings_modal_cancel_leaves_the_picker_alone(tmp_path):
     _prompt_entry(tmp_path, text="{{a}}\n")
     app = tui.MenuApp()

@@ -173,6 +173,19 @@ def test_add_prompt_term_dumb_keeps_line_prompts(tmp_path, monkeypatch):
     assert store.resolve("dumbly").meta.params == ["a"]
 
 
+def test_add_prompt_missing_file_is_clean_on_the_panel_face(tmp_path, monkeypatch):
+    """A typo'd path on the TUI-gate lane must be the python lane's clean StoreError,
+    never a raw FileNotFoundError out of the panel's own file read."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr(
+        "skit.tui_add.run_prompt_review",
+        lambda *a, **kw: pytest.fail("the panel must not open for a missing file"),
+    )
+    result = runner.invoke(cli.app, ["add", str(tmp_path / "typo.prompt.md")])
+    assert result.exit_code == 1
+    assert "File not found" in result.output
+
+
 def test_add_prompt_runner_flag_non_interactive(tmp_path):
     src = _write(tmp_path, "{{a}}\n")
     result = runner.invoke(

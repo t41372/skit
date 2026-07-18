@@ -654,7 +654,10 @@ class ScriptSettingsScreen(Screen[bool]):
 
     @on(Input.Changed)
     @on(Checkbox.Changed)
+    @on(RadioSet.Changed)
     def _mark_dirty(self) -> None:
+        # RadioSet included: the runner pin radio is a real edit — without it, a
+        # pin-only change followed by Esc was discarded with no unsaved-changes ask.
         if self._dirt_armed:
             self._dirty = True
 
