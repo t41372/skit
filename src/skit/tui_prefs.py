@@ -105,8 +105,10 @@ class PreferencesScreen(Screen[bool]):
     BINDINGS = [
         Binding("escape", "close", gettext("Back")),
         Binding("ctrl+a", "save", gettext("Save"), priority=True),
-        Binding("ctrl+n", "manage_runners", gettext("Manage agents"), show=False, priority=True),
-        Binding("ctrl+t", "install_skill", gettext("Teach an AI agent"), show=False, priority=True),
+        # Ctrl+O/Ctrl+K, not Ctrl+N/Ctrl+T: Ctrl+N means "New agent" on every picker
+        # and Ctrl+T means "insert value" on the run form — one chord, one verb.
+        Binding("ctrl+o", "manage_runners", gettext("Manage agents"), show=False, priority=True),
+        Binding("ctrl+k", "install_skill", gettext("Teach an AI agent"), show=False, priority=True),
         *tui_footer.FIELD_NAV_BINDINGS,
     ]
     # Boot on the language dropdown, not the "*" pick (the body scroll container).
@@ -161,14 +163,14 @@ class PreferencesScreen(Screen[bool]):
         )
 
     def action_manage_runners(self) -> None:
-        """Ctrl+N / the Manage agents… chip: the runner registry, whole (list, edit,
+        """Ctrl+O / the Manage agents… chip: the runner registry, whole (list, edit,
         remove, add) — settings must never be reachable only by hand-editing config."""
         from .tui_runner import RunnerManageScreen
 
         self.app.push_screen(RunnerManageScreen(), lambda _: self._refresh_runner_count())
 
     def action_install_skill(self) -> None:
-        """Ctrl+T / the Teach an AI agent… chip: install the Agent Skill from the TUI —
+        """Ctrl+K / the Teach an AI agent… chip: install the Agent Skill from the TUI —
         a headline README feature that was CLI-only (`skit agent install`)."""
 
         def _installed(path: str | None) -> None:
@@ -268,9 +270,9 @@ class PreferencesScreen(Screen[bool]):
             yield Static("", id="pf-runner-count")
             yield Static(
                 tui_footer.bar(
-                    tui_footer.chip("screen.manage_runners", "Ctrl+N", gettext("Manage agents…")),
+                    tui_footer.chip("screen.manage_runners", "Ctrl+O", gettext("Manage agents…")),
                     tui_footer.chip(
-                        "screen.install_skill", "Ctrl+T", gettext("Teach an AI agent skit…")
+                        "screen.install_skill", "Ctrl+K", gettext("Teach an AI agent skit…")
                     ),
                 ),
                 id="pf-runner-manage",

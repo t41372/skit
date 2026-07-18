@@ -202,8 +202,8 @@ async def test_prefs_agents_count_updates_after_managing(tmp_path):
         await pilot.pause()
         screen = _as(app.screen, PreferencesScreen)
         assert "5 agents configured" in str(screen.query_one("#pf-runner-count", Static).render())
-        # Ctrl+N opens the manage screen; remove one runner (confirm) and come back.
-        await pilot.press("ctrl+n")
+        # Ctrl+O opens the manage screen; remove one runner (confirm) and come back.
+        await pilot.press("ctrl+o")
         await pilot.pause()
         manage = app.screen
         assert isinstance(manage, RunnerManageScreen)
@@ -246,7 +246,7 @@ async def test_prefs_ctrl_t_opens_then_cancel_notifies_nothing(tmp_path, monkeyp
     async with app.run_test() as pilot:
         app.push_screen(PreferencesScreen())
         await pilot.pause()
-        await pilot.press("ctrl+t")
+        await pilot.press("ctrl+k")
         await pilot.pause()
         assert isinstance(app.screen, SkillInstallModal)
         _as(app.screen, SkillInstallModal).action_cancel()  # dismiss(None): no notify
@@ -320,7 +320,7 @@ async def test_prefs_ctrl_t_install_notifies_with_the_written_path(tmp_path, mon
     async with app.run_test() as pilot:
         app.push_screen(PreferencesScreen())
         await pilot.pause()
-        await pilot.press("ctrl+t")
+        await pilot.press("ctrl+k")
         await pilot.pause()
         options = app.screen.query_one(OptionList)
         options.highlighted = 0
