@@ -1246,6 +1246,10 @@ def _print_show_human(entry: store.Entry, plan: flows.FormPlan, presets: list[st
         console.print(
             f"  {gettext('Working directory: %(dir)s') % {'dir': escape(str(meta.workdir))}}"
         )
+    if meta.interpreter:
+        console.print(
+            f"  {gettext('Interpreter: %(program)s') % {'program': escape(meta.interpreter)}}"
+        )
     marker = launcher.missing_marker(entry)
     if marker is not None:
         console.print(f"  [yellow]{escape(marker)}[/yellow]")
@@ -1350,6 +1354,7 @@ def show(
         "description": entry.meta.description,
         "source": entry.meta.source,
         "workdir": str(entry.meta.workdir),
+        "interpreter": entry.meta.interpreter or None,
         "missing": launcher.target_missing(entry),
         "dependencies": list(entry.meta.dependencies or []),
         "requires_python": entry.meta.requires_python,
@@ -1395,6 +1400,43 @@ def remove(
         typer.confirm(question, abort=True)
     removed = store.remove(name)
     console.print(f"[green]{gettext('Removed: %(name)s') % {'name': escape(removed)}}[/green]")
+
+
+@app.command(help=gettext("Rename a script (presets, remembered values and history survive)."))
+def rename(
+    name: str = _SCRIPT_ARG,
+    new_name: str = typer.Argument(..., help=gettext("The new name")),
+) -> None:
+    """The CLI twin of the Script-settings name field: agents curate the library too,
+    and remove + re-add (the only workaround before) destroyed presets and history."""
+    try:
+        entry = store.rename(name, new_name)
+    except (store.NotFoundError, store.StoreError) as exc:
+        raise _fail(str(exc), 1) from exc
+    console.print(
+        f"[green]{gettext('Renamed to %(name)s.') % {'name': escape(entry.meta.name)}}[/green]"
+    )
+
+
+@app.command(help=gettext("Set a script's description (shown in the Library and skit list)."))
+def describe(
+    name: str = _SCRIPT_ARG,
+    text: str = typer.Argument(..., help=gettext("The description (empty text clears it)")),
+) -> None:
+    """The CLI twin of the Script-settings description field — the discovery surface
+    agents are told to maintain must be writable by them."""
+    try:
+        entry = store.update_description(name, text.strip())
+    except store.NotFoundError as exc:
+        raise _fail(str(exc), 1) from exc
+    if entry.meta.description:
+        console.print(
+            f"[green]{gettext('Description updated for %(name)s.') % {'name': escape(entry.meta.name)}}[/green]"
+        )
+    else:
+        console.print(
+            f"[green]{gettext('Description cleared for %(name)s.') % {'name': escape(entry.meta.name)}}[/green]"
+        )
 
 
 def _offer_create_in_editor(name: str) -> None:
@@ -2470,6 +2512,22 @@ def params(
             "travels exactly as written)"
         ),
     ),
+    workdir_opt: str = typer.Option(
+        None,
+        "--workdir",
+        help=gettext(
+            "Set where the entry runs: origin (its own folder), store, invoke (where you "
+            "run skit from), or an absolute path"
+        ),
+    ),
+    interpreter_opt: str = typer.Option(
+        None,
+        "--interpreter",
+        help=gettext(
+            "Pin the interpreter/runtime an interpreted entry runs with (e.g. zsh, bun; "
+            "empty value returns to automatic)"
+        ),
+    ),
     as_json: bool = typer.Option(False, "--json", help=gettext("Output the read view as JSON")),
 ) -> None:
     """Show a script's parameters, or edit their definitions when any change flag is given.
@@ -2500,6 +2558,10 @@ def params(
         # Its own op, like --normalize: re-pinning changes how the entry LAUNCHES, so
         # mixing it into the schema-edit pass would make the outcome order-dependent.
         _pin_prompt_runner(entry, runner_pin)
+        return
+    if workdir_opt is not None or interpreter_opt is not None:
+        # Launch policy, not schema — its own op for the same order-independence reason.
+        _edit_launch_policy(entry, workdir_opt, interpreter_opt)
         return
     if normalize_opt:
         # A source-idiom rewrite of the user's own stored file — deliberately its own op, not a
@@ -2590,6 +2652,31 @@ def params(
         )
         return
     _show_params(entry, as_json)
+
+
+def _edit_launch_policy(
+    entry: store.Entry, workdir_opt: str | None, interpreter_opt: str | None
+) -> None:
+    """params --workdir / --interpreter: the launch policies every kind honors but the
+    product previously exposed nowhere outside a hand-edited meta.toml."""
+    try:
+        if workdir_opt is not None:
+            entry = store.write_workdir(entry.slug, workdir_opt)
+            console.print(
+                f"[green]{gettext('%(name)s now runs in: %(dir)s') % {'name': escape(entry.meta.name), 'dir': escape(entry.meta.workdir)}}[/green]"
+            )
+        if interpreter_opt is not None:
+            entry = store.write_interpreter(entry.slug, interpreter_opt)
+            if entry.meta.interpreter:
+                console.print(
+                    f"[green]{gettext('%(name)s now runs with: %(program)s') % {'name': escape(entry.meta.name), 'program': escape(entry.meta.interpreter)}}[/green]"
+                )
+            else:
+                console.print(
+                    f"[green]{gettext('%(name)s is back to automatic interpreter detection.') % {'name': escape(entry.meta.name)}}[/green]"
+                )
+    except store.StoreError as exc:
+        raise _fail(str(exc), 1) from exc
 
 
 def _pin_prompt_runner(entry: store.Entry, runner_pin: str) -> None:

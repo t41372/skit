@@ -446,6 +446,54 @@ def write_prompt_runner(name_or_slug: str, runner: str) -> Entry:
     return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
+_WORKDIR_LITERALS = ("origin", "store", "invoke")
+
+
+def write_workdir(name_or_slug: str, workdir: str) -> Entry:
+    """Persist an entry's working-directory policy: origin | store | invoke | an
+    absolute path — the launch policy every kind honors (launcher._resolve_workdir),
+    previously writable only by hand-editing meta.toml."""
+    entry = resolve(name_or_slug)
+    value = workdir.strip()
+    if value not in _WORKDIR_LITERALS:
+        expanded = Path(value).expanduser()
+        if not value or not expanded.is_absolute():
+            raise StoreUsageError(
+                gettext("The working directory must be origin, store, invoke, or an absolute path.")
+            )
+        value = str(expanded)
+    meta = entry.meta
+    meta.workdir = value
+    _write_meta(entry.dir, meta)
+    return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
+
+
+def write_interpreter(name_or_slug: str, interpreter: str) -> Entry:
+    """Persist (or clear, when empty) an interpreted entry's interpreter/runtime pin
+    (shell → the binary, js/ts → deno/bun/node). Refused for kinds that launch some
+    other way — a pin must never be recorded where nothing reads it."""
+    entry = resolve(name_or_slug)
+    from .langs.registry import spec_for
+
+    spec = spec_for(entry.meta.kind)
+    if (
+        spec is None
+        or spec.family != "interpreted"
+        # Kinds whose launch never reads meta.interpreter: python goes through uv's
+        # PEP 723 machinery, prompts through a PromptRunner — a pin must not be
+        # recorded where nothing reads it.
+        or entry.meta.kind in ("python", "prompt")
+    ):
+        raise StoreUsageError(
+            gettext("%(name)s doesn't run through a pinnable interpreter.")
+            % {"name": entry.meta.name}
+        )
+    meta = entry.meta
+    meta.interpreter = interpreter.strip()
+    _write_meta(entry.dir, meta)
+    return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
+
+
 def add_exe(source: Path, *, name: str | None = None, description: str = "") -> Entry:
     source = source.expanduser().resolve()
     if not source.exists():

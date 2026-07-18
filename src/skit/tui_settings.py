@@ -315,6 +315,7 @@ class ScriptSettingsScreen(Screen[bool]):
                 id="st-desc",
             )
             yield from self._compose_storage()
+            yield from self._compose_launch()
             yield from self._compose_runner()
             yield from self._compose_params()
             yield from self._compose_presets()
@@ -349,6 +350,71 @@ class ScriptSettingsScreen(Screen[bool]):
                 gettext("Linked to the original: %(path)s") % {"path": escape(meta.source)},
                 classes="hint",
             )
+
+    def _compose_launch(self) -> ComposeResult:
+        """Where the entry runs, and (for interpreted kinds) what runs it — launcher
+        policies the product previously implemented in full but exposed NOWHERE: the
+        only way to change them was hand-editing meta.toml."""
+        meta = self._entry.meta
+        if self._spec is None:
+            return  # unknown kind: don't offer policies a newer skit defined
+        yield Static(gettext("Run in (working directory)"), classes="section")
+        custom = meta.workdir not in ("origin", "store", "invoke")
+        with RadioSet(id="st-workdir"):
+            yield RadioButton(gettext("The script's own folder"), value=meta.workdir == "origin")
+            yield RadioButton(gettext("skit's stored-copy folder"), value=meta.workdir == "store")
+            yield RadioButton(gettext("Wherever skit is run from"), value=meta.workdir == "invoke")
+            yield RadioButton(gettext("A fixed folder (type it below)"), value=custom)
+        yield Input(
+            value=meta.workdir if custom else "",
+            placeholder=gettext("/absolute/path"),
+            id="st-workdir-path",
+        )
+        if self._spec.family == "interpreted" and meta.kind not in ("python", "prompt"):
+            yield Static(gettext("Interpreter / runtime"), classes="section")
+            yield Input(
+                value=meta.interpreter,
+                placeholder=gettext("empty = automatic (shebang, then detection order)"),
+                id="st-interpreter",
+            )
+
+    @on(RadioSet.Changed, "#st-workdir")
+    def _workdir_changed(self, event: RadioSet.Changed) -> None:
+        self._toggle_workdir_path()
+
+    def _toggle_workdir_path(self) -> None:
+        box = self.query("#st-workdir")
+        if box:
+            pressed = box.first(RadioSet).pressed_index
+            self.query_one("#st-workdir-path", Input).display = pressed == 3
+
+    def _save_launch(self) -> bool:
+        """Persist the workdir policy (and interpreter pin). False = invalid input —
+        stay on the screen (the same contract as an invalid declared row)."""
+        box = self.query("#st-workdir")
+        if not box:
+            return True
+        pressed = box.first(RadioSet).pressed_index
+        if 0 <= pressed <= 2:
+            new_workdir = ("origin", "store", "invoke")[pressed]
+        else:
+            new_workdir = self.query_one("#st-workdir-path", Input).value.strip()
+            if not new_workdir:
+                # "Fixed folder" picked but nothing typed: keep what is stored rather
+                # than guessing (an empty path is not a policy).
+                new_workdir = self._entry.meta.workdir
+        if new_workdir != self._entry.meta.workdir:
+            try:
+                store.write_workdir(self._entry.slug, new_workdir)
+            except store.StoreError as exc:
+                self.notify(str(exc), severity="error")
+                return False
+        interp_box = self.query("#st-interpreter")
+        if interp_box:
+            new_interp = interp_box.first(Input).value.strip()
+            if new_interp != self._entry.meta.interpreter:
+                store.write_interpreter(self._entry.slug, new_interp)
+        return True
 
     def _compose_runner(self) -> ComposeResult:
         if not self._is_prompt:
@@ -643,6 +709,7 @@ class ScriptSettingsScreen(Screen[bool]):
         self.query_one("#st-body").border_title = gettext("Script settings · %(name)s") % {
             "name": escape(self._entry.meta.name)
         }
+        self._toggle_workdir_path()
         self.call_after_refresh(setattr, self, "_dirt_armed", True)
         if self._initial == "presets":
             # `s` in the Library deep-links here: land the eye on the Presets section.
@@ -695,6 +762,8 @@ class ScriptSettingsScreen(Screen[bool]):
         description = self.query_one("#st-desc", Input).value.strip()
         if description != entry.meta.description:
             store.update_description(entry.slug, description)
+        if not self._save_launch():
+            return  # invalid workdir input; stay on the screen
         # One narrowing point: an analyzable kind always carries params_io too (the registry pairs
         # them), and a non-empty text with a live analyzer means reconcile always returns a report —
         # so the capabilities are read straight off the narrowed spec, with no dead None-guards.
