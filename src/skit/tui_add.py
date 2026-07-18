@@ -22,7 +22,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import Screen
-from textual.widgets import Checkbox, Input, RadioButton, RadioSet, Static
+from textual.widgets import Checkbox, Input, RadioButton, RadioSet, Select, Static
 
 from . import (
     analysis,
@@ -683,11 +683,13 @@ class PromptReviewScreen(Screen[str | None]):
             with Vertical(id="pv-holes"):
                 yield from self._compose_placeholders()
             yield Static(gettext("Runner (the agent this prompt runs with)"), classes="section")
-            with tui_runner.PickList(id="pv-runner-set"):
-                default = self._default_runner()
-                yield RadioButton(gettext("ask on the run form"), value=default == "")
-                for runner_name in self._runner_names:
-                    yield RadioButton(escape(runner_name), value=(runner_name == default))
+            yield Select(
+                [(gettext("ask on the run form"), "")]
+                + [(name, name) for name in self._runner_names],
+                value=self._default_runner(),
+                allow_blank=False,
+                id="pv-runner-select",
+            )
             yield Static(tui_runner.new_runner_chip(), id="pv-runner-new", markup=True)
         yield tui_footer.KeysBar(
             Static(
@@ -767,24 +769,24 @@ class PromptReviewScreen(Screen[str | None]):
             self.focused.toggle()
 
     def _picked_runner(self) -> str:
-        """The runner radio's pick ("" = no pin). Index 0 is always "ask on the run
-        form"; the rest map straight onto self._runner_names."""
-        pressed = self.query_one("#pv-runner-set", RadioSet).pressed_index
-        options = ["", *self._runner_names]
-        return options[pressed] if 0 <= pressed < len(options) else ""
+        """The runner dropdown's pick ("" = no pin). Value-keyed — no index math."""
+        value = self.query_one("#pv-runner-select", Select).value
+        return "" if value is Select.BLANK else str(value)
 
     def action_new_runner(self) -> None:
         """Ctrl+N / the New agent… chip: define a custom runner without leaving the
         panel — it lands in config, joins the picker, and is selected immediately."""
 
-        async def _added(runner_name: str | None) -> None:
+        def _added(runner_name: str | None) -> None:
             if not runner_name:
                 return
             self._runner_names.append(runner_name)
-            radio_set = self.query_one("#pv-runner-set", RadioSet)
-            button = RadioButton(escape(runner_name))
-            await radio_set.mount(button)
-            button.value = True
+            select = self.query_one("#pv-runner-select", Select)
+            select.set_options(
+                [(gettext("ask on the run form"), "")]
+                + [(name, name) for name in self._runner_names]
+            )
+            select.value = runner_name
 
         self.app.push_screen(tui_runner.RunnerAddModal(), _added)
 

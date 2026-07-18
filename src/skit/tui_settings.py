@@ -16,7 +16,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Checkbox, Input, Label, RadioButton, RadioSet, Static
+from textual.widgets import Checkbox, Input, Label, RadioButton, RadioSet, Select, Static
 
 from . import analysis, argstate, config, params, pep723, store, tui_footer, tui_runner
 from .i18n import gettext
@@ -278,9 +278,6 @@ class ScriptSettingsScreen(Screen[bool]):
         # the declared-params editor rather than the analyzer-driven [tool.skit] flow above.
         self._declared: bool = self._spec is not None and self._spec.params_io is None
         self._is_prompt: bool = entry.meta.kind == "prompt"
-        # Index-aligned values behind the runner radio's options; filled by
-        # _compose_runner and appended by action_new_runner.
-        self._runner_options: list[str] = []
         if self._is_prompt:
             # Every MANAGED placeholder gets an editable row (undeclared ones as their
             # synthesized schema), plus declared env riders — the exact field list the
@@ -445,22 +442,13 @@ class ScriptSettingsScreen(Screen[bool]):
         # silently clears it (an unrequested data change). Picking another option (or
         # "ask on the run form") is the explicit way out.
         stale_pin = pin and all(name != pin for name in names)
-        # Index-aligned option values for the save path — composed here and appended by
-        # action_new_runner, never re-derived from config at save time: a runner list
-        # that changed while the screen was open must not shift the mapping.
-        self._runner_options = [""]
+        # A VALUE-keyed dropdown: the save path reads Select.value, so a runner list
+        # that changed while the screen was open can never shift an index mapping.
+        options: list[tuple[str, str]] = [(gettext("ask on the run form"), "")]
         if stale_pin:
-            self._runner_options.append(pin)
-        self._runner_options += names
-        with tui_runner.PickList(id="st-runner-set"):
-            yield RadioButton(gettext("ask on the run form"), value=not pin)
-            if stale_pin:
-                yield RadioButton(
-                    gettext("%(runner)s (no longer configured)") % {"runner": escape(pin)},
-                    value=True,
-                )
-            for name in names:
-                yield RadioButton(escape(name), value=(name == pin))
+            options.append((gettext("%(runner)s (no longer configured)") % {"runner": pin}, pin))
+        options += [(name, name) for name in names]
+        yield Select(options, value=pin, allow_blank=False, id="st-runner-select")
         # Custom agents are first-class: the picker always carries the door to define
         # one (footer grammar — the key hint IS the click target), even when the
         # configured list was deliberately emptied.
@@ -472,14 +460,21 @@ class ScriptSettingsScreen(Screen[bool]):
         if not self._is_prompt:
             return
 
-        async def _added(name: str | None) -> None:
+        def _added(name: str | None) -> None:
             if not name:
                 return
-            self._runner_options.append(name)
-            radio_set = self.query_one("#st-runner-set", RadioSet)
-            button = RadioButton(escape(name))
-            await radio_set.mount(button)
-            button.value = True
+            # Rebuild exactly as compose does — the new runner is in config now.
+            names = [r.name for r in config.load_prompt_runners()]
+            pin = self._entry.meta.runner
+            options: list[tuple[str, str]] = [(gettext("ask on the run form"), "")]
+            if pin and pin not in names:
+                options.append(
+                    (gettext("%(runner)s (no longer configured)") % {"runner": pin}, pin)
+                )
+            options += [(n, n) for n in names]
+            select = self.query_one("#st-runner-select", Select)
+            select.set_options(options)
+            select.value = name
 
         self.app.push_screen(tui_runner.RunnerAddModal(), _added)
 
@@ -745,6 +740,7 @@ class ScriptSettingsScreen(Screen[bool]):
     @on(Input.Changed)
     @on(Checkbox.Changed)
     @on(RadioSet.Changed)
+    @on(Select.Changed)
     def _mark_dirty(self) -> None:
         # RadioSet included: the runner pin radio is a real edit — without it, a
         # pin-only change followed by Esc was discarded with no unsaved-changes ask.
@@ -911,16 +907,14 @@ class ScriptSettingsScreen(Screen[bool]):
         store.write_prompt_managed(entry.slug, new_managed)
 
     def _save_runner_pin(self) -> None:
-        """Persist the runner radio's pick against the option values recorded at compose
-        time (self._runner_options) — the live truth for a picker action_new_runner may
-        have grown mid-session."""
+        """Persist the runner dropdown's pick. Value-keyed — no index mapping exists
+        to shift, however the runner list changed while the screen was open."""
         entry = self._entry
-        # The radio always composes for a prompt (even an emptied runner list keeps the
-        # "ask" option), and this only runs for prompts — query_one is safe.
-        radio = self.query_one("#st-runner-set", RadioSet)
+        # The dropdown always composes for a prompt (even an emptied runner list keeps
+        # the "ask" option), and this only runs for prompts — query_one is safe.
         current = entry.meta.runner
-        pressed = radio.pressed_index
-        pin = self._runner_options[pressed] if 0 <= pressed < len(self._runner_options) else ""
+        value = self.query_one("#st-runner-select", Select).value
+        pin = "" if value is Select.BLANK else str(value)
         if pin != current:
             store.write_prompt_runner(entry.slug, pin)
             # A pick of a real configured runner prefills future pickers; re-keeping a

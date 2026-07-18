@@ -318,7 +318,7 @@ async def test_form_escape_cancels_without_running(tmp_path, quiet_run):
         assert "values" not in quiet_run  # nothing launched
 
 
-async def test_form_preset_chips_apply_values(tmp_path, quiet_run):
+async def test_form_preset_dropdown_applies_and_restores(tmp_path, quiet_run):
     entry = _argparse_entry(tmp_path)
     argstate.save_preset(entry.slug, "web", {"output": "web.png"})
     app = tui.MenuApp()
@@ -327,14 +327,17 @@ async def test_form_preset_chips_apply_values(tmp_path, quiet_run):
         await pilot.pause()
         screen = app.screen
         assert isinstance(screen, RunFormScreen)
-        from textual.widgets import RadioSet
+        from textual.widgets import Select
 
-        preset_set = screen.query_one("#preset-set", RadioSet)
-        buttons = list(preset_set.query("RadioButton"))
-        buttons[1].value = True  # click the "web" chip
-        await pilot.pause()
+        preset = screen.query_one("#preset-select", Select)
         rows = {row.field.key: row for row in screen.query(FieldRow)}
+        baseline = rows["output"].query_one(Input).value  # the "last values" state
+        preset.value = "web"  # value-keyed switch onto the preset
+        await pilot.pause()
         assert rows["output"].query_one(Input).value == "web.png"
+        preset.value = ""  # first option: "last values" restores the prefill
+        await pilot.pause()
+        assert rows["output"].query_one(Input).value == baseline
 
 
 async def test_form_secret_field_masks_input(tmp_path, quiet_run):

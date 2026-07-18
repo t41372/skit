@@ -1,4 +1,4 @@
-"""The runner (agent) UI: the PickList at scale, the management screen, the action
+"""The runner (agent) UI: the runner dropdown at scale, the management screen, the action
 modal, and the add/edit modal's in-place replace.
 
 Every test asserts an observable outcome — the config row that was written (and its
@@ -12,12 +12,11 @@ import contextlib
 import shlex
 
 import pytest
-from textual.widgets import Input, OptionList, Static
+from textual.widgets import Input, OptionList, Select, Static
 
 from skit import config, launcher, store, tui
 from skit.tui_form import RunFormScreen
 from skit.tui_runner import (
-    PickList,
     RunnerActionModal,
     RunnerAddModal,
     RunnerManageScreen,
@@ -28,6 +27,21 @@ def _as[S](obj: object, cls: type[S]) -> S:
     """Narrow app.screen to a concrete screen/modal type (ty runs in strict mode)."""
     assert isinstance(obj, cls)
     return obj
+
+
+def _value(select: Select[str]) -> str:
+    """A runner/preset Select's current value as a plain string. Every such picker is
+    allow_blank=False with an explicit "" option for the blank ("ask"/"last values")
+    state, so the value is always a real str, never the NULL sentinel — no index math."""
+    value = select.value
+    assert isinstance(value, str)
+    return value
+
+
+def _option_count(select: Select[str]) -> int:
+    """How many options a Select carries. Select has no public option accessor, so we read
+    the private _options; allow_blank=False means it holds no synthetic leading blank row."""
+    return len(select._options)
 
 
 def _find_runner(name: str) -> config.PromptRunner:
@@ -80,12 +94,13 @@ def _prompt(tmp_path, text="Do {{a}}\n", name="p"):
     return store.add_prompt(src, name=name)
 
 
-# ---------------------------------------------------------------- PickList at scale
+# ------------------------------------------------------------- runner dropdown at scale
 
 
-async def test_run_form_picklist_selects_past_the_visible_cap(tmp_path, quiet_run):
-    # Eight runners: the PickList shows at most five rows, but arrows/wheel reach every
-    # one (the old horizontal picker CLIPPED past the terminal edge at exactly this count).
+async def test_run_form_runner_select_scales_to_many_runners(tmp_path, quiet_run):
+    # Eight runners: a dropdown collapses to one row and its overlay scales to any count
+    # (the old horizontal picker CLIPPED past the terminal edge at exactly this number).
+    # Value-keyed selection reaches the eighth with no index math and no scroll gymnastics.
     eight = [config.PromptRunner(f"r{i}", (f"r{i}", "{{prompt}}")) for i in range(1, 9)]
     config.save_prompt_runners(eight)
     _prompt(tmp_path)
@@ -94,20 +109,79 @@ async def test_run_form_picklist_selects_past_the_visible_cap(tmp_path, quiet_ru
         await pilot.pause()
         app.action_run()
         await pilot.pause()
-        picker = app.screen.query_one("#runner-set", PickList)
-        picker.focus()
+        select = app.screen.query_one("#runner-select", Select)
+        assert _option_count(select) == 8  # every runner is an option — none clipped
+        select.value = "r8"  # the eighth, exactly where a 5-row fold used to bury it
         await pilot.pause()
-        assert picker.pressed_index == 0  # boots on the first
-        for _ in range(5):  # arrow down past the 5th visible row
-            await pilot.press("down")
-        await pilot.press("space")  # commit the highlighted option
-        await pilot.pause()
-        assert picker.pressed_index == 5  # the sixth runner, below the fold
         form = _as(app.screen, RunFormScreen)
         form.query_one(Input).value = "hi"
         form.action_submit()
         await pilot.pause()
-    assert quiet_run["runner"] == config.find_prompt_runner("r6")
+    assert quiet_run["runner"] == config.find_prompt_runner("r8")
+
+
+async def test_run_form_enter_shim_is_a_full_keyboard_journey(tmp_path, quiet_run):
+    # Policy #2: every advertised key needs a positive pilot test, and Enter is advertised
+    # as Run. The shim lets that muscle memory coexist with a focused dropdown — with the
+    # Select focused Enter OPERATES it (open, then choose in the overlay); only from a plain
+    # field does Enter submit.
+    eight = [config.PromptRunner(f"r{i}", (f"r{i}", "{{prompt}}")) for i in range(1, 9)]
+    config.save_prompt_runners(eight)
+    _prompt(tmp_path)
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.action_run()
+        await pilot.pause()
+        screen = _as(app.screen, RunFormScreen)
+        select = screen.query_one("#runner-select", Select)
+        select.focus()
+        await pilot.pause()
+        start = _value(select)
+        # 1) Enter on the focused Select opens its overlay — it must NOT submit.
+        await pilot.press("enter")
+        await pilot.pause()
+        assert select.expanded  # the overlay is open
+        assert "values" not in quiet_run  # nothing ran
+        # 2) Arrow within the overlay, then Enter picks the highlighted option (still no run).
+        await pilot.press("down")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert not select.expanded  # choosing folded the overlay
+        assert _value(select) != start  # the highlighted option really landed
+        assert "values" not in quiet_run  # Enter CHOSE, it did not submit
+        picked = _value(select)
+        # 3) Enter from a plain field DOES submit (the muscle-memory path is intact).
+        field = screen.query_one(Input)
+        field.value = "hi"
+        field.focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+    assert quiet_run["values"] == {"a": "hi"}
+    assert quiet_run["runner"] == config.find_prompt_runner(picked)
+
+
+async def test_run_form_enter_on_overlay_without_a_highlight_is_a_safe_noop(tmp_path, quiet_run):
+    # The shim's inner guard: Enter routed into an open overlay that has nothing highlighted
+    # must neither pick nor submit — fold nothing, stay put, never crash.
+    _prompt(tmp_path)
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.action_run()
+        await pilot.pause()
+        screen = _as(app.screen, RunFormScreen)
+        select = screen.query_one("#runner-select", Select)
+        select.expanded = True
+        await pilot.pause()
+        overlay = select.query_one(OptionList)
+        overlay.highlighted = None  # the no-highlight state the guard defends against
+        overlay.focus()
+        await pilot.pause()
+        screen.action_submit()
+        await pilot.pause()
+        assert "values" not in quiet_run  # guard was False → returned without submitting
 
 
 # ---------------------------------------------------------------- RunnerActionModal

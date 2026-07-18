@@ -25,7 +25,16 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Checkbox, Input, Label, OptionList, RadioButton, RadioSet, Static
+from textual.widgets import (
+    Checkbox,
+    Input,
+    Label,
+    OptionList,
+    RadioButton,
+    RadioSet,
+    Select,
+    Static,
+)
 from textual.widgets.option_list import Option
 
 from . import argstate, flows, tokens, tui_footer, tui_runner
@@ -438,7 +447,7 @@ class RunFormScreen(Screen[FormResult]):
     RunFormScreen #preset-row, RunFormScreen #runner-row { height: auto; padding: 0 1; }
     /* Narrow terminals: the caption-beside-list row overflows a Horizontal (it never
        wraps) — stack caption above the list instead. The pickers themselves are
-       PickLists: always vertical, capped, scrollable — no per-width orientation. */
+       dropdowns collapse to one row and their overlays scale on their own. */
     RunFormScreen.-w-narrow #preset-row, RunFormScreen.-w-narrow #runner-row { layout: vertical; }
     RunFormScreen.-w-narrow FieldRow RadioSet { layout: vertical; }
     /* Widgets default to width:1fr; in a Horizontal that lets the "Preset:" caption
@@ -509,24 +518,34 @@ class RunFormScreen(Screen[FormResult]):
             if self._runners:
                 with Horizontal(id="runner-row"):
                     yield Static(gettext("Runner:"), markup=False)
-                    with tui_runner.PickList(id="runner-set"):
-                        default = (
-                            self._runner_default
-                            if self._runner_default in self._runners
-                            else self._runners[0]
-                        )
-                        for runner_name in self._runners:
-                            yield RadioButton(escape(runner_name), value=(runner_name == default))
+                    default = (
+                        self._runner_default
+                        if self._runner_default in self._runners
+                        else self._runners[0]
+                    )
+                    # A dropdown, deliberately: the runner is a SECONDARY control (the
+                    # pin or last pick is usually right) — collapsed it costs one row
+                    # instead of pushing the actual parameter fields down the screen,
+                    # and the overlay scales to any number of agents.
+                    yield Select(
+                        [(name, name) for name in self._runners],
+                        value=default,
+                        allow_blank=False,
+                        id="runner-select",
+                    )
                     # Custom agents are first-class: the picker always carries the door
                     # to define one (footer grammar — the key hint IS the click target).
                     yield Static(tui_runner.new_runner_chip(), id="runner-new", markup=True)
             with Horizontal(id="preset-row"):
                 yield Static(gettext("Preset:"), markup=False)
                 if self._presets:
-                    with tui_runner.PickList(id="preset-set"):
-                        yield RadioButton(gettext("last values"), value=True)
-                        for name in sorted(self._presets):
-                            yield RadioButton(escape(name))
+                    yield Select(
+                        [(gettext("last values"), "")]
+                        + [(name, name) for name in sorted(self._presets)],
+                        value="",
+                        allow_blank=False,
+                        id="preset-select",
+                    )
                 else:
                     # Empty state teaches the Ctrl+S affordance precisely when the user
                     # has no presets and most needs to learn it (spec §2).
@@ -579,14 +598,14 @@ class RunFormScreen(Screen[FormResult]):
             )
         )
 
-    @on(RadioSet.Changed, "#preset-set")
-    def _apply_preset(self, event: RadioSet.Changed) -> None:
-        """Chip switch: overlay the whole preset onto the fields ("last values" restores)."""
-        index = event.radio_set.pressed_index
-        names = sorted(self._presets)
-        chosen = (
-            self._prefill if index == 0 else {**self._prefill, **self._presets[names[index - 1]]}
-        )
+    @on(Select.Changed, "#preset-select")
+    def _apply_preset(self, event: Select.Changed) -> None:
+        """Dropdown switch: overlay the whole preset onto the fields ("last values"
+        restores). Value-keyed, so a preset list that changed since compose can never
+        shift the mapping."""
+        name = str(event.value)
+        preset_values = self._presets.get(name, {})
+        chosen = self._prefill if not name else {**self._prefill, **preset_values}
         for row in self.query(FieldRow):
             if row.field.key != _EXTRA_KEY:
                 row.set_value(chosen.get(row.field.key, ""))
@@ -598,8 +617,8 @@ class RunFormScreen(Screen[FormResult]):
         """The runner picker's selection, or None when the form has no picker."""
         if not self._runners:
             return None
-        pressed = self.query_one("#runner-set", RadioSet).pressed_index
-        return self._runners[pressed] if 0 <= pressed < len(self._runners) else None
+        value = self.query_one("#runner-select", Select).value
+        return None if value is Select.BLANK else str(value)
 
     def action_new_runner(self) -> None:
         """Ctrl+N / the New agent… chip: define a custom runner without leaving the
@@ -607,14 +626,13 @@ class RunFormScreen(Screen[FormResult]):
         if not self._runners:
             return  # no picker on this form (non-prompt entry, or the CLI inline frame)
 
-        async def _added(name: str | None) -> None:
+        def _added(name: str | None) -> None:
             if not name:
                 return
             self._runners.append(name)
-            radio_set = self.query_one("#runner-set", RadioSet)
-            button = RadioButton(escape(name))
-            await radio_set.mount(button)
-            button.value = True
+            select = self.query_one("#runner-select", Select)
+            select.set_options([(n, n) for n in self._runners])
+            select.value = name
 
         self.app.push_screen(tui_runner.RunnerAddModal(), _added)
 
@@ -632,6 +650,18 @@ class RunFormScreen(Screen[FormResult]):
         return values, extra
 
     def action_submit(self) -> None:
+        # Enter is priority-bound to submit-from-any-field; when a dropdown owns the
+        # focus, Enter must keep operating the dropdown instead (open it, or choose
+        # the highlighted option in its overlay) — the shim that lets Select coexist
+        # with the submit muscle memory.
+        focused = self.focused
+        if isinstance(focused, Select):
+            focused.expanded = not focused.expanded
+            return
+        if focused is not None and any(isinstance(a, Select) for a in focused.ancestors):
+            if isinstance(focused, OptionList) and focused.highlighted is not None:
+                focused.action_select()
+            return
         values, extra = self.collect()
         errors = flows.validate(self._plan, values)
         if errors:

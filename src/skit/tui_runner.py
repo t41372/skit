@@ -2,8 +2,8 @@
 the management screen.
 
 Every surface that picks a runner (the run form, the prompt add review, Script
-settings) uses the same vertical PickList and mounts the same Ctrl+N chip that opens
-RunnerAddModal — the zero-memorization twin of `skit runner add NAME COMMAND…`. The
+settings) uses a value-keyed Select dropdown and mounts the same Ctrl+N chip that
+opens RunnerAddModal — the zero-memorization twin of `skit runner add NAME COMMAND…`. The
 command is typed as one line and split into argv with shlex (quotes group words); no
 shell is ever involved at launch, the split happens exactly once, here, and the tokens
 go into config verbatim. RunnerManageScreen (reached from Preferences) is where the
@@ -21,28 +21,11 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Input, Label, OptionList, RadioSet, Static
+from textual.widgets import Input, Label, OptionList, Static
 from textual.widgets.option_list import Option
 
 from . import config, tui_footer
 from .i18n import gettext
-
-
-class PickList(RadioSet):
-    """A pick-one-of-N radio list that stays usable at any N.
-
-    Always vertical, at most five rows visible; RadioSet is a VerticalScroll that
-    auto-scrolls the selection into view, so arrows, wheel and click all reach every
-    option no matter how many there are. One widget, so the run form, the prompt
-    review panel and Script settings can never drift into per-screen layouts again
-    (the old run-form picker was a horizontal row that CLIPPED past the terminal
-    edge — unusable at exactly the runner counts custom agents produce)."""
-
-    SCOPED_CSS = False
-    DEFAULT_CSS = """
-    PickList { layout: vertical; height: auto; max-height: 5; border: none; width: auto; }
-    PickList > RadioButton { width: auto; }
-    """
 
 
 def _reason_text(code: str) -> str:

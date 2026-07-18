@@ -7,13 +7,35 @@ from __future__ import annotations
 import contextlib
 
 import pytest
-from textual.widgets import Checkbox, Input, RadioSet, Static
+from textual.widgets import Checkbox, Input, OptionList, RadioSet, Select, Static
 
 from skit import argstate, config, flows, launcher, store, tui
 from skit.tui_add import AddSourceScreen, PromptReviewScreen
 from skit.tui_form import RunFormScreen
 from skit.tui_runner import RunnerAddModal
 from skit.tui_settings import ScriptSettingsScreen
+
+
+def _value(select: Select[str]) -> str:
+    """A runner Select's current value as a plain string. Every runner picker is
+    allow_blank=False with an explicit "" option for the "ask on the run form" state, so
+    the value is always a real str, never the NULL sentinel — reads need no index math."""
+    value = select.value
+    assert isinstance(value, str)
+    return value
+
+
+def _option_count(select: Select[str]) -> int:
+    """How many options a Select carries. Select has no public option accessor, so we read
+    the private _options; allow_blank=False means it holds no synthetic leading blank row."""
+    return len(select._options)
+
+
+async def _click_option(pilot, overlay: OptionList, index: int) -> None:
+    """Mouse-click option `index` in an open Select overlay. The overlay draws a one-row
+    top border, so option i sits at row i+1 (x=2 lands inside the padded label)."""
+    await pilot.click(overlay, offset=(2, index + 1))
+    await pilot.pause()
 
 
 @pytest.fixture(autouse=True)
@@ -77,9 +99,8 @@ async def test_form_picker_defaults_to_the_pin_and_submits_it(tmp_path, quiet_ru
         await pilot.pause()
         screen = app.screen
         assert isinstance(screen, RunFormScreen)
-        radio = screen.query_one("#runner-set", RadioSet)
-        names = [r.name for r in config.load_prompt_runners()]
-        assert names[radio.pressed_index] == "codex"
+        select = screen.query_one("#runner-select", Select)
+        assert _value(select) == "codex"  # the pin is the default
         screen.query_one(Input).value = "hello"
         screen.action_submit()
         await pilot.pause()
@@ -97,19 +118,24 @@ async def test_form_picker_keyboard_pick_runs_and_remembers(tmp_path, quiet_run)
         await pilot.pause()
         screen = app.screen
         assert isinstance(screen, RunFormScreen)
-        radio = screen.query_one("#runner-set", RadioSet)
-        names = [r.name for r in config.load_prompt_runners()]
-        assert names[radio.pressed_index] == "opencode"  # last-picked prefill
-        radio.focus()
+        select = screen.query_one("#runner-select", Select)
+        assert _value(select) == "opencode"  # last-picked prefill
+        select.focus()
         await pilot.pause()
-        # Keyboard-only operation (policy #2): arrow to another option, Space picks it
-        # (Enter would submit the form — the screen's priority binding owns it).
-        await pilot.press("right")
-        await pilot.press("space")
+        # Keyboard-only operation (policy #2): Enter opens the overlay (the shim), ↓ moves
+        # the highlight, Enter chooses it — none of these submit while the Select owns focus.
+        await pilot.press("enter")
         await pilot.pause()
-        picked = names[radio.pressed_index]
+        await pilot.press("down")
+        await pilot.press("enter")
+        await pilot.pause()
+        picked = _value(select)
         assert picked != "opencode"  # the keys really moved the selection
-        screen.query_one(Input).value = "x"
+        # Step off the Select to a field so Ctrl+R runs (on the Select it would re-open it).
+        field = screen.query_one(Input)
+        field.value = "x"
+        field.focus()
+        await pilot.pause()
         await pilot.press("ctrl+r")
         await pilot.pause()
     assert quiet_run["runner"] == config.find_prompt_runner(picked)
@@ -125,14 +151,20 @@ async def test_form_picker_mouse_click_picks_a_runner(tmp_path, quiet_run):
         await pilot.pause()
         screen = app.screen
         assert isinstance(screen, RunFormScreen)
-        radio = screen.query_one("#runner-set", RadioSet)
-        buttons = list(radio.query("RadioButton"))
-        await pilot.click(buttons[1])  # mouse-only operation (policy #2)
+        select = screen.query_one("#runner-select", Select)
+        await pilot.click(select)  # mouse-only (policy #2): open the overlay…
         await pilot.pause()
-        screen.query_one(Input).value = "x"
+        assert select.expanded
+        await _click_option(pilot, select.query_one(OptionList), 1)  # …and click an option
+        names = [r.name for r in config.load_prompt_runners()]
+        assert _value(select) == names[1]  # the mouse pick landed
+        # A pick re-focuses the Select; step off it before running.
+        field = screen.query_one(Input)
+        field.value = "x"
+        field.focus()
+        await pilot.pause()
         screen.action_submit()
         await pilot.pause()
-    names = [r.name for r in config.load_prompt_runners()]
     assert quiet_run["runner"] == config.find_prompt_runner(names[1])
 
 
@@ -378,11 +410,10 @@ async def test_settings_runner_radio_pins_and_clears(tmp_path):
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause()
         screen = await _open_settings(app, pilot)
-        radio = screen.query_one("#st-runner-set", RadioSet)
-        assert radio.pressed_index == 0  # "ask on the run form" (no pin)
+        select = screen.query_one("#st-runner-select", Select)
+        assert _value(select) == ""  # "ask on the run form" (no pin)
         names = [r.name for r in config.load_prompt_runners()]
-        buttons = list(radio.query("RadioButton"))
-        buttons[1].value = True  # the first configured runner
+        select.value = names[0]  # the first configured runner
         await pilot.pause()
         screen.action_save()
         await pilot.pause()
@@ -394,9 +425,9 @@ async def test_settings_runner_radio_pins_and_clears(tmp_path):
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause()
         screen = await _open_settings(app, pilot)
-        radio = screen.query_one("#st-runner-set", RadioSet)
-        assert radio.pressed_index == 1  # the saved pin is preselected
-        next(iter(radio.query("RadioButton"))).value = True
+        select = screen.query_one("#st-runner-select", Select)
+        assert _value(select) == names[0]  # the saved pin is preselected
+        select.value = ""  # back to "ask on the run form"
         await pilot.pause()
         screen.action_save()
         await pilot.pause()
@@ -410,8 +441,9 @@ async def test_settings_runner_section_empty_config_keeps_ask_and_the_door(tmp_p
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause()
         screen = await _open_settings(app, pilot)
-        radio = screen.query_one("#st-runner-set", RadioSet)
-        assert len(list(radio.query("RadioButton"))) == 1  # just "ask on the run form"
+        select = screen.query_one("#st-runner-select", Select)
+        assert _option_count(select) == 1  # just "ask on the run form"
+        assert _value(select) == ""
         assert screen.query("#st-runner-new")  # the New agent… door never disappears
         screen.action_save()  # saving the lone "ask" option is a clean no-op
         await pilot.pause()
@@ -432,13 +464,37 @@ async def test_settings_ctrl_n_adds_a_custom_agent_ready_to_pin(tmp_path):
         modal.query_one("#runner-add-command", Input).value = "mycli go {{prompt}}"
         modal.action_save_runner()
         await pilot.pause()
-        radio = screen.query_one("#st-runner-set", RadioSet)
-        buttons = list(radio.query("RadioButton"))
-        assert radio.pressed_index == len(buttons) - 1  # new agent selected in place
+        select = screen.query_one("#st-runner-select", Select)
+        assert _value(select) == "mycli"  # the new agent is selected in place
         screen.action_save()
         await pilot.pause()
-    assert store.resolve("p").meta.runner == "mycli"  # the index mapping held
+    assert store.resolve("p").meta.runner == "mycli"  # the value survived the mid-session add
     assert argstate.load_last_runner() == "mycli"
+
+
+async def test_settings_ctrl_n_add_preserves_a_stale_pin_option(tmp_path):
+    # A stale pin (pinned to a runner no longer configured) plus a mid-session Ctrl+N add:
+    # the rebuilt dropdown must STILL carry the stale-pin row, never silently drop it.
+    _prompt_entry(tmp_path, text="{{a}}\n", pin="gone")
+    config.save_prompt_runners([config.PromptRunner("other", ("other", "{{prompt}}"))])
+    app = tui.MenuApp()
+    async with app.run_test(size=(110, 40)) as pilot:
+        await pilot.pause()
+        screen = await _open_settings(app, pilot)
+        select = screen.query_one("#st-runner-select", Select)
+        assert _value(select) == "gone"  # the stale pin is preselected
+        await pilot.press("ctrl+n")
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, RunnerAddModal)
+        modal.query_one("#runner-add-name", Input).value = "fresh"
+        modal.query_one("#runner-add-command", Input).value = "fresh go {{prompt}}"
+        modal.action_save_runner()
+        await pilot.pause()
+        select = screen.query_one("#st-runner-select", Select)
+        assert _value(select) == "fresh"  # the new agent is selected in place
+        # ask + stale "gone" + "other" + new "fresh": count 4 only if the stale row survived.
+        assert _option_count(select) == 4
 
 
 async def test_settings_pin_change_saves_even_with_insertion_off(tmp_path):
@@ -450,13 +506,12 @@ async def test_settings_pin_change_saves_even_with_insertion_off(tmp_path):
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause()
         screen = await _open_settings(app, pilot)
-        radio = screen.query_one("#st-runner-set", RadioSet)
-        buttons = list(radio.query("RadioButton"))
-        buttons[1].value = True  # the first configured runner
+        select = screen.query_one("#st-runner-select", Select)
+        names = [r.name for r in config.load_prompt_runners()]
+        select.value = names[0]  # the first configured runner
         await pilot.pause()
         screen.action_save()
         await pilot.pause()
-    names = [r.name for r in config.load_prompt_runners()]
     assert store.resolve("p").meta.runner == names[0]
 
 
@@ -552,20 +607,19 @@ async def test_settings_save_preserves_a_stale_pin(tmp_path):
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause()
         screen = await _open_settings(app, pilot)
-        radio = screen.query_one("#st-runner-set", RadioSet)
-        assert radio.pressed_index == 1  # the stale pin's own row, preselected
+        select = screen.query_one("#st-runner-select", Select)
+        assert _value(select) == "mine"  # the stale pin's own row, preselected
         screen.action_save()
         await pilot.pause()
     assert store.resolve("p").meta.runner == "mine"  # preserved, not wiped
 
-    # Explicitly picking a configured runner (index 2 = "other") replaces it.
+    # Explicitly picking the one configured runner replaces it.
     app = tui.MenuApp()
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause()
         screen = await _open_settings(app, pilot)
-        radio = screen.query_one("#st-runner-set", RadioSet)
-        buttons = list(radio.query("RadioButton"))
-        buttons[2].value = True
+        select = screen.query_one("#st-runner-select", Select)
+        select.value = "other"
         await pilot.pause()
         screen.action_save()
         await pilot.pause()
@@ -705,14 +759,13 @@ async def test_review_runner_pick_pins_and_remembers(tmp_path):
         await pilot.pause()
         review = app.screen
         assert isinstance(review, PromptReviewScreen)
-        radio = review.query_one("#pv-runner-set", RadioSet)
-        assert radio.pressed_index == 0  # no pin, no last pick: "ask on the run form"
-        buttons = list(radio.query("RadioButton"))
-        buttons[1].value = True  # the first configured runner
+        select = review.query_one("#pv-runner-select", Select)
+        assert _value(select) == ""  # no pin, no last pick: "ask on the run form"
+        names = [r.name for r in config.load_prompt_runners()]
+        select.value = names[0]  # the first configured runner
         await pilot.pause()
         review.action_accept()
         await pilot.pause()
-    names = [r.name for r in config.load_prompt_runners()]
     assert store.resolve("r").meta.runner == names[0]
     assert argstate.load_last_runner() == names[0]  # a real pick is remembered
 
@@ -721,7 +774,6 @@ async def test_review_prefills_last_picked_and_explicit_runner_wins(tmp_path):
     argstate.save_last_runner("amp")
     src = tmp_path / "l.prompt.md"
     src.write_text("x {{a}}\n", encoding="utf-8")
-    names = [r.name for r in config.load_prompt_runners()]
     app = tui.MenuApp()
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause()
@@ -729,8 +781,8 @@ async def test_review_prefills_last_picked_and_explicit_runner_wins(tmp_path):
         await pilot.pause()
         review = app.screen
         assert isinstance(review, PromptReviewScreen)
-        radio = review.query_one("#pv-runner-set", RadioSet)
-        assert radio.pressed_index == names.index("amp") + 1  # last-picked prefill
+        select = review.query_one("#pv-runner-select", Select)
+        assert _value(select) == "amp"  # last-picked prefill
         review.action_cancel()
         await pilot.pause()
 
@@ -738,8 +790,8 @@ async def test_review_prefills_last_picked_and_explicit_runner_wins(tmp_path):
         await pilot.pause()
         review = app.screen
         assert isinstance(review, PromptReviewScreen)
-        radio = review.query_one("#pv-runner-set", RadioSet)
-        assert radio.pressed_index == names.index("codex") + 1  # the flag wins
+        select = review.query_one("#pv-runner-select", Select)
+        assert _value(select) == "codex"  # the flag wins
         assert review.query_one("#pv-interpolate", Checkbox).value is False
         review.action_cancel()
         await pilot.pause()
@@ -837,9 +889,8 @@ async def test_review_ctrl_n_defines_a_custom_agent_and_selects_it(tmp_path):
         modal.query_one("#runner-add-command", Input).value = "aider --message {{prompt}}"
         modal.action_save_runner()  # the Save chip's click twin
         await pilot.pause()
-        radio = review.query_one("#pv-runner-set", RadioSet)
-        buttons = list(radio.query("RadioButton"))
-        assert radio.pressed_index == len(buttons) - 1  # new agent selected in place
+        select = review.query_one("#pv-runner-select", Select)
+        assert _value(select) == "aider"  # new agent selected in place
         review.action_accept()
         await pilot.pause()
     assert store.resolve("n").meta.runner == "aider"
@@ -901,14 +952,14 @@ async def test_review_modal_cancel_leaves_the_picker_alone(tmp_path):
         await pilot.pause()
         review = app.screen
         assert isinstance(review, PromptReviewScreen)
-        before = len(list(review.query_one("#pv-runner-set", RadioSet).query("RadioButton")))
+        before = _option_count(review.query_one("#pv-runner-select", Select))
         await pilot.press("ctrl+n")
         await pilot.pause()
         assert isinstance(app.screen, RunnerAddModal)
         await pilot.press("escape")
         await pilot.pause()
-        after = len(list(review.query_one("#pv-runner-set", RadioSet).query("RadioButton")))
-        assert after == before
+        after = _option_count(review.query_one("#pv-runner-select", Select))
+        assert after == before  # a cancelled add adds no option
         review.action_cancel()
         await pilot.pause()
 
@@ -928,13 +979,13 @@ async def test_review_ctrl_e_keeps_the_runner_pick_and_reports_editor_errors(tmp
         await pilot.pause()
         review = app.screen
         assert isinstance(review, PromptReviewScreen)
-        radio = review.query_one("#pv-runner-set", RadioSet)
-        list(radio.query("RadioButton"))[2].value = True  # pick the second runner
+        select = review.query_one("#pv-runner-select", Select)
+        select.value = names[1]  # pick the second configured runner
         await pilot.pause()
         review.action_edit_source()
         await pilot.pause()
-        radio = review.query_one("#pv-runner-set", RadioSet)
-        assert radio.pressed_index == names.index(names[1]) + 1  # the pick survived
+        select = review.query_one("#pv-runner-select", Select)
+        assert _value(select) == names[1]  # the pick survived the rescan
 
         # An editor failure is reported, never a crash out of the panel.
         monkeypatch.setattr(
@@ -973,14 +1024,14 @@ async def test_form_modal_cancel_leaves_the_picker_alone(tmp_path, quiet_run):
         await pilot.pause()
         screen = app.screen
         assert isinstance(screen, RunFormScreen)
-        radio = screen.query_one("#runner-set", RadioSet)
-        before = len(list(radio.query("RadioButton")))
+        select = screen.query_one("#runner-select", Select)
+        before = _option_count(select)
         await pilot.press("ctrl+n")
         await pilot.pause()
         assert isinstance(app.screen, RunnerAddModal)
         await pilot.press("escape")
         await pilot.pause()
-        assert len(list(radio.query("RadioButton"))) == before
+        assert _option_count(select) == before  # a cancelled add adds no option
         screen.action_cancel()
         await pilot.pause()
 
@@ -998,9 +1049,9 @@ async def test_settings_ctrl_n_is_a_noop_on_non_prompt_entries(tmp_path):
         assert app.screen is screen  # no modal on a python entry's settings
 
 
-async def test_settings_runner_radio_change_arms_the_discard_ask(tmp_path):
+async def test_settings_runner_select_change_arms_the_discard_ask(tmp_path):
     # A pin-only edit is a real edit: Esc must raise the unsaved-changes ask, never
-    # silently drop it (the RadioSet was the one control that didn't arm dirty).
+    # silently drop it (Select.Changed is what arms the dirty flag for the runner pin).
     from skit.tui_settings import DiscardChangesModal
 
     _prompt_entry(tmp_path, text="{{a}}\n")
@@ -1008,8 +1059,9 @@ async def test_settings_runner_radio_change_arms_the_discard_ask(tmp_path):
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause()
         screen = await _open_settings(app, pilot)
-        radio = screen.query_one("#st-runner-set", RadioSet)
-        list(radio.query("RadioButton"))[1].value = True
+        select = screen.query_one("#st-runner-select", Select)
+        names = [r.name for r in config.load_prompt_runners()]
+        select.value = names[0]  # a pin-only edit
         await pilot.pause()
         assert screen._dirty is True
         await pilot.press("escape")
@@ -1026,14 +1078,14 @@ async def test_settings_modal_cancel_leaves_the_picker_alone(tmp_path):
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause()
         screen = await _open_settings(app, pilot)
-        radio = screen.query_one("#st-runner-set", RadioSet)
-        before = len(list(radio.query("RadioButton")))
+        select = screen.query_one("#st-runner-select", Select)
+        before = _option_count(select)
         await pilot.press("ctrl+n")
         await pilot.pause()
         assert isinstance(app.screen, RunnerAddModal)
         await pilot.press("escape")
         await pilot.pause()
-        assert len(list(radio.query("RadioButton"))) == before
+        assert _option_count(select) == before  # a cancelled add adds no option
 
 
 def test_run_prompt_review_returns_the_apps_result(tmp_path, monkeypatch):
@@ -1067,10 +1119,12 @@ async def test_form_ctrl_n_defines_a_custom_agent_and_runs_with_it(tmp_path, qui
         modal.query_one("#runner-add-command", Input).value = "aider --message {{prompt}}"
         modal.action_save_runner()
         await pilot.pause()
-        radio = screen.query_one("#runner-set", RadioSet)
-        buttons = list(radio.query("RadioButton"))
-        assert radio.pressed_index == len(buttons) - 1  # joined the picker, selected
-        screen.query_one(Input).value = "x"
+        select = screen.query_one("#runner-select", Select)
+        assert _value(select) == "aider"  # joined the picker, selected in place
+        field = screen.query_one(Input)
+        field.value = "x"
+        field.focus()  # step off the Select so Enter/submit runs (not re-open the overlay)
+        await pilot.pause()
         screen.action_submit()
         await pilot.pause()
     assert quiet_run["runner"] == config.find_prompt_runner("aider")
