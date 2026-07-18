@@ -618,7 +618,7 @@ class RunFormScreen(Screen[FormResult]):
         if not self._runners:
             return None
         value = self.query_one("#runner-select", Select).value
-        return None if value is Select.BLANK else str(value)
+        return None if value is Select.NULL else str(value)
 
     def action_new_runner(self) -> None:
         """Ctrl+N / the New agent… chip: define a custom runner without leaving the

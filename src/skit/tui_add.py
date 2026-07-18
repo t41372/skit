@@ -771,7 +771,7 @@ class PromptReviewScreen(Screen[str | None]):
     def _picked_runner(self) -> str:
         """The runner dropdown's pick ("" = no pin). Value-keyed — no index math."""
         value = self.query_one("#pv-runner-select", Select).value
-        return "" if value is Select.BLANK else str(value)
+        return "" if value is Select.NULL else str(value)
 
     def action_new_runner(self) -> None:
         """Ctrl+N / the New agent… chip: define a custom runner without leaving the

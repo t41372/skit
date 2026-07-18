@@ -914,7 +914,7 @@ class ScriptSettingsScreen(Screen[bool]):
         # the "ask" option), and this only runs for prompts — query_one is safe.
         current = entry.meta.runner
         value = self.query_one("#st-runner-select", Select).value
-        pin = "" if value is Select.BLANK else str(value)
+        pin = "" if value is Select.NULL else str(value)
         if pin != current:
             store.write_prompt_runner(entry.slug, pin)
             # A pick of a real configured runner prefills future pickers; re-keeping a

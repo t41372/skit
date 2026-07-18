@@ -311,7 +311,7 @@ class PreferencesScreen(Screen[bool]):
 
     def action_save(self) -> None:
         lang_value = self.query_one("#pf-lang", Select).value
-        i18n.set_language("" if lang_value in ("auto", Select.BLANK) else str(lang_value))
+        i18n.set_language("" if lang_value in ("auto", Select.NULL) else str(lang_value))
         config.save_editor(self.query_one("#pf-editor", Input).value)
         form_index = self.query_one("#pf-form", RadioSet).pressed_index
         config.save_form("plain" if form_index == 1 else "tui")
