@@ -440,7 +440,7 @@ def test_add_entry_name_conflict_exact_message(sample_script):
     other.write_text("print(1)\n", encoding="utf-8")
     with pytest.raises(store.NameConflictError) as exc:
         store.add_python(other, name="dup")
-    assert str(exc.value) == "The name dup is already taken (use --name to pick another)"
+    assert str(exc.value) == "The name dup is already taken — pick another name."
 
 
 def test_add_entry_reuses_preexisting_empty_slug_dir():

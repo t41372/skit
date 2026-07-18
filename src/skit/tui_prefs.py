@@ -21,7 +21,7 @@ from textual.screen import Screen
 from textual.widgets import Input, RadioButton, RadioSet, Select, Static
 
 from . import config, i18n, tui_footer
-from .i18n import gettext
+from .i18n import gettext, ngettext
 
 _MIRROR_CHOICES = [*config.PYPI_PRESETS, "custom", "off"]
 
@@ -30,6 +30,7 @@ class PreferencesScreen(Screen[bool]):
     BINDINGS = [
         Binding("escape", "close", gettext("Back")),
         Binding("ctrl+a", "save", gettext("Save"), priority=True),
+        Binding("ctrl+n", "manage_runners", gettext("Manage agents"), show=False, priority=True),
         *tui_footer.FIELD_NAV_BINDINGS,
     ]
     # Boot on the language dropdown, not the "*" pick (the body scroll container).
@@ -58,6 +59,27 @@ class PreferencesScreen(Screen[bool]):
     def on_mount(self) -> None:
         self.query_one("#pf-body").border_title = gettext("Preferences")
         self._toggle_custom()
+        self._refresh_runner_count()
+
+    def _refresh_runner_count(self) -> None:
+        names = [r.name for r in config.load_prompt_runners()]
+        self.query_one("#pf-runner-count", Static).update(
+            ngettext(
+                "%(count)s agent configured: %(names)s",
+                "%(count)s agents configured: %(names)s",
+                len(names),
+            )
+            % {"count": len(names), "names": ", ".join(names)}
+            if names
+            else gettext("No agents configured.")
+        )
+
+    def action_manage_runners(self) -> None:
+        """Ctrl+N / the Manage agents… chip: the runner registry, whole (list, edit,
+        remove, add) — settings must never be reachable only by hand-editing config."""
+        from .tui_runner import RunnerManageScreen
+
+        self.app.push_screen(RunnerManageScreen(), lambda _: self._refresh_runner_count())
 
     @override
     def compose(self) -> ComposeResult:
@@ -116,6 +138,41 @@ class PreferencesScreen(Screen[bool]):
                     gettext("Return to the Library"),
                     value=config.load_after_run() == "stay",
                 )
+
+            yield Static(gettext("JavaScript runtime"), classes="section")
+            js_current = config.load_js_runner()
+            with RadioSet(id="pf-js"):
+                yield RadioButton(
+                    gettext("Automatic — the first of deno / bun / node found"),
+                    value=js_current not in config.JS_RUNNERS,
+                )
+                for js_name in config.JS_RUNNERS:
+                    yield RadioButton(js_name, value=(js_name == js_current))
+            yield Static(
+                gettext("Runs js/ts entries that don't pin their own runtime."),
+                classes="hint",
+            )
+
+            yield Static(gettext("Shell on Windows"), classes="section")
+            yield Input(
+                value=config.load_bash_path(),
+                placeholder=gettext(r"Path to bash.exe (empty = Git Bash / WSL detection)"),
+                id="pf-bash",
+            )
+            yield Static(
+                gettext("Only used on Windows, where shell scripts need an explicit bash."),
+                classes="hint",
+            )
+
+            yield Static(gettext("Agents (prompt runners)"), classes="section")
+            yield Static("", id="pf-runner-count")
+            yield Static(
+                tui_footer.bar(
+                    tui_footer.chip("screen.manage_runners", "Ctrl+N", gettext("Manage agents…"))
+                ),
+                id="pf-runner-manage",
+                markup=True,
+            )
 
             yield Static(
                 gettext("Download mirror (mainland-China acceleration)"), classes="section"
@@ -179,6 +236,9 @@ class PreferencesScreen(Screen[bool]):
         config.save_form("plain" if form_index == 1 else "tui")
         after_index = self.query_one("#pf-after", RadioSet).pressed_index
         config.save_after_run("stay" if after_index == 1 else "exit")
+        js_index = self.query_one("#pf-js", RadioSet).pressed_index
+        config.save_js_runner("" if js_index <= 0 else config.JS_RUNNERS[js_index - 1])
+        config.save_bash_path(self.query_one("#pf-bash", Input).value)
         choice = self._mirror_choice()
         if choice == "off":
             config.disable()

@@ -222,7 +222,8 @@ def test_inline_collect_returns_values_when_form_submits(monkeypatch):
     monkeypatch.setattr(inlineform._InlineFormApp, "run", fake_run)
     result = inlineform.collect(entry, plan, {"m": "seed"})
 
-    assert result == {"m": "hi"}  # values returned, the extra list discarded
+    # values + picked runner returned, the extra list discarded
+    assert result == ({"m": "hi"}, None)
 
 
 def test_inline_collect_returns_none_when_cancelled(monkeypatch):

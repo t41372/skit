@@ -368,7 +368,7 @@ class ScriptSettingsScreen(Screen[bool]):
         if stale_pin:
             self._runner_options.append(pin)
         self._runner_options += names
-        with RadioSet(id="st-runner-set"):
+        with tui_runner.PickList(id="st-runner-set"):
             yield RadioButton(gettext("ask on the run form"), value=not pin)
             if stale_pin:
                 yield RadioButton(

@@ -1227,7 +1227,7 @@ def test_edit_params_non_python_message_exact():
     result = runner.invoke(cli.app, ["params", "c", "--resync"])
     assert result.exit_code == 1
     out = _norm(result.output)
-    assert "c isn't a Python script; only Python entries have managed parameters." in out
+    assert "c has no managed parameters — its kind has no analyzer to read them from." in out
     assert "XX" not in out
 
 

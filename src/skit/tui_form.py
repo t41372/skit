@@ -433,29 +433,21 @@ class RunFormScreen(Screen[FormResult]):
     }
     RunFormScreen #drift-banner, RunFormScreen #degraded-notice { color: $warning; padding: 0 1; }
     RunFormScreen #preset-row, RunFormScreen #runner-row { height: auto; padding: 0 1; }
-    /* Narrow terminals: the caption-beside-chips row and horizontal option sets overflow
-       a Horizontal (it never wraps) — stack them vertically instead. The tier class gives
-       these rules higher specificity than the class-less horizontal rules they override. */
+    /* Narrow terminals: the caption-beside-list row overflows a Horizontal (it never
+       wraps) — stack caption above the list instead. The pickers themselves are
+       PickLists: always vertical, capped, scrollable — no per-width orientation. */
     RunFormScreen.-w-narrow #preset-row, RunFormScreen.-w-narrow #runner-row { layout: vertical; }
-    RunFormScreen.-w-narrow #preset-row RadioSet,
-    RunFormScreen.-w-narrow #runner-row RadioSet { layout: vertical; }
     RunFormScreen.-w-narrow FieldRow RadioSet { layout: vertical; }
     /* Widgets default to width:1fr; in a Horizontal that lets the "Preset:" caption
-       swallow the whole row and push the chips (or the empty-state hint) clean off the
+       swallow the whole row and push the list (or the empty-state hint) clean off the
        screen. Everything in this row hugs its content. */
     RunFormScreen #preset-row Static, RunFormScreen #runner-row Static {
         width: auto; margin: 0 1 0 0;
     }
-    RunFormScreen #preset-row RadioSet, RunFormScreen #runner-row RadioSet { width: auto; }
     /* The empty-state hint is a long sentence: let it take the row's remaining width and
        wrap, rather than width:auto (its full content width) which overflows a narrow form.
        Two ids outrank the `#preset-row Static` width:auto rule above. */
     RunFormScreen #preset-row #preset-empty { color: $text-muted; width: 1fr; height: auto; }
-    RunFormScreen #preset-row RadioSet, RunFormScreen #runner-row RadioSet {
-        layout: horizontal; height: auto; border: none;
-    }
-    RunFormScreen #preset-row RadioSet > RadioButton,
-    RunFormScreen #runner-row RadioSet > RadioButton { width: auto; margin: 0 2 0 0; }
     RunFormScreen #form-body { padding: 0 1; }
     /* Chips wrap pill-by-pill; visible lines follow the height tier and anything
        past the cap stays wheel-reachable — see tui_footer.KeysBar. */
@@ -514,7 +506,7 @@ class RunFormScreen(Screen[FormResult]):
             if self._runners:
                 with Horizontal(id="runner-row"):
                     yield Static(gettext("Runner:"), markup=False)
-                    with RadioSet(id="runner-set"):
+                    with tui_runner.PickList(id="runner-set"):
                         default = (
                             self._runner_default
                             if self._runner_default in self._runners
@@ -528,7 +520,7 @@ class RunFormScreen(Screen[FormResult]):
             with Horizontal(id="preset-row"):
                 yield Static(gettext("Preset:"), markup=False)
                 if self._presets:
-                    with RadioSet(id="preset-set"):
+                    with tui_runner.PickList(id="preset-set"):
                         yield RadioButton(gettext("last values"), value=True)
                         for name in sorted(self._presets):
                             yield RadioButton(escape(name))
@@ -543,12 +535,28 @@ class RunFormScreen(Screen[FormResult]):
                 for f in self._plan.fields:
                     yield FieldRow(f, self._prefill.get(f.key, ""))
                 if self._include_extra:
+                    from .langs.registry import spec_for
+
+                    spec = spec_for(self._entry.meta.kind)
+                    takes_argv = spec is None or spec.takes_argv
                     extra_field = flows.FormField(
                         key=_EXTRA_KEY,
-                        label=gettext("Extra arguments (passed to the script as-is)"),
+                        # Prompts: the extra args go to the AGENT's command line, not a
+                        # script — the label must not lie about where they land.
+                        label=(
+                            gettext("Extra arguments (passed to the script as-is)")
+                            if takes_argv
+                            else gettext("Extra agent arguments (appended to the runner command)")
+                        ),
                         source="flag",
                     )
-                    last_extra = argstate.load_state(self._entry.slug)["extra_args"]
+                    # Replay semantics mirror the CLI's takes_argv rule: a kind whose
+                    # "arguments" are its placeholders never gets a remembered argv tail
+                    # prefilled — the CLI deliberately refuses to replay there, and the
+                    # form must not resurrect the same surprise.
+                    last_extra = (
+                        argstate.load_state(self._entry.slug)["extra_args"] if takes_argv else []
+                    )
                     # shlex.join, because collect() shlex.split()s: an argument that
                     # contains spaces must survive the round trip as ONE argument.
                     import shlex

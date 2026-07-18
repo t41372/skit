@@ -503,7 +503,7 @@ def _add_entry(
         existing_slugs, existing_names = _fs_truth(entries)
         if meta.name in existing_names:
             raise NameConflictError(
-                gettext("The name %(name)s is already taken (use --name to pick another)")
+                gettext("The name %(name)s is already taken — pick another name.")
                 % {"name": meta.name}
             )
         slug = _unique_slug(slugify(meta.name), existing_slugs)

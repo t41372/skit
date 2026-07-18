@@ -80,6 +80,7 @@ def _kind_badge(kind: str) -> tuple[str, str]:
         "r": gettext("R"),
         "exe": gettext("Program"),
         "command": gettext("Command"),
+        "prompt": gettext("Prompt"),
     }.get(kind, kind)
     spec = spec_for(kind)
     return (spec.glyph if spec is not None else "?"), label
@@ -695,9 +696,11 @@ class MenuApp(App[int | PendingRun]):
 
             self.push_screen(tui_runner.RunnerAddModal(), _runner_added)
             return
-        if not plan.fields and not plan.degraded_reason and not is_prompt:
-            self._execute(entry, plan, {}, argstate.load_state(entry.slug)["extra_args"])
-            return
+        # The form ALWAYS opens — even field-less. It is the TUI's only path to extra
+        # arguments, and the one place remembered args become VISIBLE before launch
+        # (the old skip-shortcut replayed them invisibly, forever). Enter on the fresh
+        # form submits immediately, so the fast path costs one keypress; the truly
+        # form-free rerun is the explicit `r` key.
         prefill = flows.prefill(plan, entry.slug)
 
         def _submitted(result: FormResult) -> None:

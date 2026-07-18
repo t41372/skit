@@ -185,6 +185,10 @@ async def test_execute_records_failure_code_and_status(tmp_path, quiet_run):
     async with app.run_test() as pilot:
         app.action_run()
         await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        screen.action_submit()
+        await pilot.pause()
         assert argstate.load_state(entry.slug)["last_run"]["exit"] == 3
         status = str(app.query_one("#status", Static).render())
         assert "✗ failed (code 3)" in status
@@ -210,14 +214,21 @@ async def test_run_with_fields_opens_the_form(tmp_path, quiet_run):
         assert isinstance(app.screen, RunFormScreen)
 
 
-async def test_run_without_fields_skips_the_form(tmp_path, quiet_run):
+async def test_run_without_fields_still_opens_the_form(tmp_path, quiet_run):
+    """Even a field-less entry gets the form: it is the TUI's only path to extra
+    arguments, and the one place remembered args are VISIBLE before launch (the old
+    skip-shortcut replayed them invisibly). Enter on the fresh form submits, so the
+    fast path costs exactly one keypress; `r` stays the true form-free rerun."""
     store.add_python(_py(tmp_path, "print(1)\n"), name="plain")
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         app.action_run()
         await pilot.pause()
-        assert not isinstance(app.screen, RunFormScreen)
-        assert "values" in quiet_run  # launched directly
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        await pilot.press("enter")  # the advertised Run key, straight away
+        await pilot.pause()
+        assert "values" in quiet_run  # launched through the form
 
 
 # ---------------------------------------------------------------------------
@@ -517,8 +528,11 @@ async def test_enter_in_search_runs_the_highlighted_match(tmp_path, quiet_run):
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)  # Enter targets the highlighted match
+        screen.action_submit()
+        await pilot.pause()
         assert "values" in quiet_run  # the highlighted script ran
-        assert app.focused is app.query_one(DataTable)
 
 
 async def test_pushed_screen_footer_chips_fire_on_click(tmp_path, quiet_run):
@@ -810,6 +824,11 @@ async def test_default_after_run_exits_the_tui_before_running(tmp_path, quiet_ru
     async with app.run_test() as pilot:
         await pilot.pause()
         app.action_run()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        screen.action_submit()
+        await pilot.pause()
         pending = app.return_value
         assert isinstance(pending, tui.PendingRun)
         assert pending.entry.meta.name == "a"
@@ -860,6 +879,10 @@ async def test_after_run_stay_returns_to_the_library(tmp_path, quiet_run):
     async with app.run_test() as pilot:
         await pilot.pause()
         app.action_run()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        screen.action_submit()
         await pilot.pause()
         assert app.return_value is None  # still open
         assert "✓ finished" in str(app.query_one("#status", Static).render())

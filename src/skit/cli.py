@@ -1529,10 +1529,20 @@ def _parse_set_opts(plan: flows.FormPlan, raw: list[str]) -> dict[str, str]:
 
 
 def _collect_values(
-    entry: store.Entry, plan: flows.FormPlan, prefill: dict[str, str], *, plain: bool
-) -> dict[str, str]:
+    entry: store.Entry,
+    plan: flows.FormPlan,
+    prefill: dict[str, str],
+    *,
+    plain: bool,
+    runners: list[str] | None = None,
+    runner_default: str = "",
+) -> tuple[dict[str, str], str | None]:
     """Interactive collection through the configured renderer. The inline mini-form is
-    the default; "plain" (--plain / form=plain / TERM=dumb) is the line-prompt fallback."""
+    the default; "plain" (--plain / form=plain / TERM=dumb) is the line-prompt fallback.
+
+    Returns (values, picked runner name). The runner element is non-None only when
+    `runners` was passed AND the inline form actually rendered its picker row — the
+    line-prompt fallback never answers the runner question (the caller line-asks)."""
     style = "plain" if plain or os.environ.get("TERM") == "dumb" else config.load_form()
     if style == "tui":
         import importlib
@@ -1542,15 +1552,17 @@ def _collect_values(
         except ImportError:  # pragma: no cover — transitional
             pass
         else:
-            values = inlineform.collect(entry, plan, prefill)
-            if values is None:
+            result = inlineform.collect(
+                entry, plan, prefill, runners=runners, runner_default=runner_default
+            )
+            if result is None:
                 raise typer.Exit(EXIT_CANCELLED)  # cancelling is not a skit failure
-            return values
+            return result
     console.print(
         gettext("Parameters for %(name)s (press Enter to keep the value shown):")
         % {"name": escape(entry.meta.name)}
     )
-    return promptform.collect(plan, prefill, console=console)
+    return promptform.collect(plan, prefill, console=console), None
 
 
 # How a flows.RunOutcome failure maps to skit's exit-code contract (docker convention).
@@ -1662,6 +1674,14 @@ def run(
         help=gettext("Run a prompt entry with this agent (overrides its pin for one run)"),
         autocompletion=_complete_runner,
     ),
+    forget_args: bool = typer.Option(
+        False,
+        "--forget-args",
+        help=gettext(
+            "Forget the remembered extra arguments before this run (they are otherwise "
+            "reused when you pass none)"
+        ),
+    ),
 ) -> None:
     """Run a script (straight through the terminal). skit's own failures exit 125/126/127;
     the script's exit code passes through untouched."""
@@ -1669,6 +1689,11 @@ def run(
         entry = store.resolve(name)
     except store.NotFoundError as exc:
         raise _fail(str(exc), EXIT_NOT_FOUND) from exc
+    if forget_args:
+        # An imperative clear, honored up front regardless of how the run then goes:
+        # the remembered argv tail was previously uneraseable from the CLI (an empty
+        # `--` is indistinguishable from no `--`).
+        argstate.save_last(entry.slug, extra_args=[])
     _validate_preset(entry, preset)
     # Form-shaped flags contradict "as-is": refusing beats silently dropping a preset
     # (or persisting an empty one) the way a bare warning-less run would. Checked before
@@ -1679,13 +1704,37 @@ def run(
         )
         raise typer.Exit(EXIT_USAGE)
     run_spec = spec_for(entry.meta.kind)
-    runner_obj = _resolve_run_runner(entry, runner, no_input)
+    # One interaction paradigm per run, not two glued in sequence: when the inline
+    # mini-form is about to open for a prompt entry anyway, the runner question moves
+    # INTO the form (the same picker row the TUI workbench shows) instead of a bare
+    # line prompt followed by a Textual form. --plain/TERM=dumb/--runner/pipes keep
+    # the deterministic line-mode resolution.
+    form_style = "plain" if plain or os.environ.get("TERM") == "dumb" else config.load_form()
+    run_interactive = not no_input and _is_interactive()
+    runner_names = (
+        [r.name for r in config.load_prompt_runners()] if entry.meta.kind == "prompt" else []
+    )
+    form_hosts_runner = (
+        bool(runner_names)
+        and runner is None
+        and run_interactive
+        and form_style == "tui"
+        and not dry_run
+    )
+    runner_obj = None if form_hosts_runner else _resolve_run_runner(entry, runner, no_input)
     if raw and run_spec is not None and run_spec.analyzer is not None:
         console.print(
             f"[dim]{gettext('Raw mode: skipping the parameter form and injection.')}[/dim]"
         )
         plan = flows.FormPlan(source="none")
     else:
+        if raw:
+            # Honest no-op notice (kinds without an analyzer have no injection to skip;
+            # their parameters ARE the interface): the flag must never appear to do
+            # nothing silently.
+            console.print(
+                f"[dim]{gettext('Raw mode: this kind has no injection to skip — its parameters are the interface and still apply.')}[/dim]"
+            )
         plan = flows.plan_for_entry(entry)
     _print_drift(plan)
     if plan.degraded_reason:
@@ -1698,13 +1747,43 @@ def run(
     extra = list(args or [])
     # Both ends must be a terminal: `skit run x | tee log` has a tty stdin but would
     # pump the inline form's ANSI straight into the pipe.
-    interactive = not no_input and _is_interactive()
+    interactive = run_interactive
     # An explicitly --set field is final — the form only asks for the rest (and a secret
     # set this way is actually used; the prompt renderers never echo a secret prefill).
     remaining = [f for f in plan.fields if f.key not in overrides]
-    if interactive and remaining:
+    if interactive and (remaining or form_hosts_runner):
+        # form_hosts_runner opens the form even field-less: the picker row is the
+        # question (exactly the TUI workbench's rule for prompt entries).
         ask_plan = dataclasses.replace(plan, fields=remaining)
-        values = {**prefilled, **_collect_values(entry, ask_plan, prefilled, plain=plain)}
+        collected, picked_runner = _collect_values(
+            entry,
+            ask_plan,
+            prefilled,
+            plain=plain,
+            runners=runner_names if form_hosts_runner else None,
+            runner_default=entry.meta.runner or argstate.load_last_runner(),
+        )
+        values = {**prefilled, **collected}
+        if form_hosts_runner:
+            if picked_runner is None:
+                # The inline renderer degraded to line prompts mid-flight — fall back
+                # to the deterministic line-mode resolution.
+                runner_obj = _resolve_run_runner(entry, runner, no_input)
+            else:
+                runner_obj = config.find_prompt_runner(picked_runner)
+                if runner_obj is None:  # removed while the form was open — honest
+                    raise _fail(
+                        gettext(
+                            "The runner %(runner)s isn't configured (known: %(names)s). "
+                            "Manage runners with: skit runner list"
+                        )
+                        % {
+                            "runner": picked_runner,
+                            "names": ", ".join(r.name for r in config.load_prompt_runners()) or "—",
+                        },
+                        EXIT_NOT_EXECUTABLE,
+                    )
+                argstate.save_last_runner(picked_runner)
     else:
         values = prefilled
         errors = flows.validate(plan, values)
@@ -1858,6 +1937,11 @@ def runner_add(
     argv: list[str] = typer.Argument(
         None, help=gettext("The command, word by word, with one {{prompt}} slot")
     ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help=gettext("Replace the runner if the name already exists (the edit path)"),
+    ),
 ) -> None:
     config.ensure_prompt_runners_seeded()
     reason = config.validate_prompt_runner_argv(list(argv or []))
@@ -1865,15 +1949,19 @@ def runner_add(
         err_console.print(f"[red]{escape(_runner_reason(reason))}[/red]")
         raise typer.Exit(EXIT_USAGE)
     runners = config.load_prompt_runners()
-    if any(r.name == name for r in runners):
+    exists = any(r.name == name for r in runners)
+    if exists and not force:
         raise _fail(
-            gettext(
-                "The runner %(name)s already exists — remove it first: skit runner remove %(name)s"
-            )
+            gettext("The runner %(name)s already exists — pass --force to replace its command.")
             % {"name": name},
             1,
         )
-    config.save_prompt_runners([*runners, config.PromptRunner(name, tuple(argv))])
+    new_row = config.PromptRunner(name, tuple(argv))
+    if exists:
+        # Replace in place: an edit keeps the row's position in every picker.
+        config.save_prompt_runners([new_row if r.name == name else r for r in runners])
+    else:
+        config.save_prompt_runners([*runners, new_row])
     console.print(
         f"[green]{gettext('Runner %(name)s added: %(command)s') % {'name': escape(name), 'command': escape(_join_runner_argv(list(argv)))}}[/green]"
     )
@@ -2596,7 +2684,9 @@ def _edit_params(
     entry_spec = spec_for(entry.meta.kind)
     if entry_spec is None or entry_spec.params_io is None or entry_spec.analyzer is None:
         raise _fail(
-            gettext("%(name)s isn't a Python script; only Python entries have managed parameters.")
+            gettext(
+                "%(name)s has no managed parameters — its kind has no analyzer to read them from."
+            )
             % {"name": entry.meta.name},
             1,
         )

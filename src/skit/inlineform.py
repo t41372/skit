@@ -6,7 +6,9 @@ scrollback survives. Submit collapses the form and the script runs right below i
 `--plain` / `form = "plain"` / TERM=dumb fall back to line prompts instead.
 
 The extra-arguments row is hidden here: on the CLI, passthrough args already arrived
-via `skit run NAME -- <args>` (argv owns them; two sources would fight).
+via `skit run NAME -- <args>` (argv owns them; two sources would fight). The runner
+picker row IS hosted here when the caller passes the configured names — one
+interaction paradigm per run, instead of a line prompt glued to a Textual form.
 """
 
 from __future__ import annotations
@@ -32,11 +34,20 @@ class _InlineFormApp(App[FormResult]):
     HORIZONTAL_BREAKPOINTS = tui_layout.HORIZONTAL_BREAKPOINTS
     CSS = theme.CHROME_CSS
 
-    def __init__(self, entry: Entry, plan: flows.FormPlan, prefill: dict[str, str]) -> None:
+    def __init__(
+        self,
+        entry: Entry,
+        plan: flows.FormPlan,
+        prefill: dict[str, str],
+        runners: list[str] | None = None,
+        runner_default: str = "",
+    ) -> None:
         super().__init__()
         self._entry: Entry = entry
         self._plan: flows.FormPlan = plan
         self._prefill: dict[str, str] = prefill
+        self._runners: list[str] = runners or []
+        self._runner_default: str = runner_default
 
     @override
     def get_css_variables(self) -> dict[str, str]:
@@ -52,15 +63,30 @@ class _InlineFormApp(App[FormResult]):
             self.exit(result)
 
         self.push_screen(
-            RunFormScreen(self._entry, self._plan, self._prefill, include_extra=False), _done
+            RunFormScreen(
+                self._entry,
+                self._plan,
+                self._prefill,
+                include_extra=False,
+                runners=self._runners,
+                runner_default=self._runner_default,
+            ),
+            _done,
         )
 
 
-def collect(entry: Entry, plan: flows.FormPlan, prefill: dict[str, str]) -> dict[str, str] | None:
-    """Run the inline form; returns raw values, or None when the user cancelled."""
-    app = _InlineFormApp(entry, plan, prefill)
+def collect(
+    entry: Entry,
+    plan: flows.FormPlan,
+    prefill: dict[str, str],
+    runners: list[str] | None = None,
+    runner_default: str = "",
+) -> tuple[dict[str, str], str | None] | None:
+    """Run the inline form; returns (raw values, picked runner name or None when the
+    form had no picker), or None when the user cancelled."""
+    app = _InlineFormApp(entry, plan, prefill, runners, runner_default)
     result = app.run(inline=True)
     if result is None:
         return None
-    values, _extra, _runner = result
-    return values
+    values, _extra, runner = result
+    return values, runner

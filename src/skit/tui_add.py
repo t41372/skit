@@ -593,7 +593,7 @@ class PromptReviewScreen(Screen[str | None]):
             with Vertical(id="pv-holes"):
                 yield from self._compose_placeholders()
             yield Static(gettext("Runner (the agent this prompt runs with)"), classes="section")
-            with RadioSet(id="pv-runner-set"):
+            with tui_runner.PickList(id="pv-runner-set"):
                 default = self._default_runner()
                 yield RadioButton(gettext("ask on the run form"), value=default == "")
                 for runner_name in self._runner_names:
