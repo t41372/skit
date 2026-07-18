@@ -24,6 +24,7 @@ import dataclasses
 import json
 import os
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -2484,7 +2485,16 @@ def doctor(
                     "missing": missing,
                     "drift": drifted,
                     "needs_missing": needs_missing,
-                    "mirror": mirror.pypi if mirror.enabled else "off",
+                    # The stored per-axis URLs plus the master switch — all three states
+                    # (on / paused-with-URLs / empty) are distinguishable: an axis applies
+                    # iff `enabled` and its URL is non-empty.
+                    "mirror": {
+                        "enabled": mirror.enabled,
+                        "pypi": mirror.pypi,
+                        "python_install": mirror.python_install,
+                        "uv_binary": mirror.uv_binary,
+                        "npm": mirror.npm,
+                    },
                     "location": str(location),
                     "size_bytes": size,
                 },
@@ -2515,10 +2525,7 @@ def doctor(
         console.print(
             f"  [yellow]⚠ {gettext('%(name)s: missing external command(s): %(tools)s') % {'name': escape(nm_name), 'tools': ', '.join(escape(t) for t in tools)}}[/yellow]"
         )
-    if mirror.enabled:
-        console.print("✓ " + gettext("Mirror: on (%(pypi)s)") % {"pypi": escape(mirror.pypi)})
-    else:
-        console.print("✓ " + gettext("Mirror: off"))
+    console.print("✓ " + escape(config.mirrors_line(mirror)))
     console.print(
         gettext("Library: %(path)s (%(count)s · %(size)s)")
         % {"path": escape(str(location)), "count": len(entries), "size": store.human_size(size)}
@@ -2530,8 +2537,6 @@ def doctor(
 # config (git-config grammar: bare = list, KEY = read, KEY VALUE = write)
 # --------------------------------------------------------------------------
 
-_CONFIG_KEYS = ("lang", "editor", "mirror", "form", "after_run", "shell.bash_path", "js.runner")
-
 
 def _config_lang_value() -> str:
     override = config.load_config().get("language", "")
@@ -2540,24 +2545,161 @@ def _config_lang_value() -> str:
     return gettext("auto (%(locale)s)") % {"locale": i18n.current_locale()}
 
 
-def _config_mirror_value() -> str:
+def _lang_override() -> str:
+    override = config.load_config().get("language", "")
+    return override if isinstance(override, str) else ""
+
+
+def _mirror_master_value() -> str:
+    """The master switch as it reads AND writes: "on" / "off" — symmetric vocabulary.
+    Which URLs a paused config keeps is the axis keys' business (they read the stored
+    state), so `mirror off` + `mirror.pypi tsinghua` in the listing = paused, restorable."""
     m = config.load_mirror()
-    return m.pypi if m.enabled else "off"
+    return "on" if m.enabled and (m.pypi or m.python_install or m.uv_binary or m.npm) else "off"
+
+
+def _mirror_github_raw() -> str:
+    """Machine token for the github axis: preset name, base URL, "off", or — for a
+    hand-edited pair no base derives — the literal "custom" (a token that fails loudly
+    if written back, instead of display prose that would be saved as a garbage URL)."""
+    m = config.load_mirror()
+    choice = config.github_choice(m)
+    if choice != "custom":
+        return choice
+    return config.github_base(m) or "custom"
+
+
+# One row per key, a (human, raw) reader pair. The human column may localize its unset
+# fallbacks ("auto (…)"); the raw column feeds --json and is machine tokens only
+# ("" = unset/auto), never strings that change with SKIT_LANG. ONE table, not two — a key
+# added to only one of two parallel tables is exactly how the columns would drift apart.
+_CONFIG_READERS: dict[str, tuple[Callable[[], str], Callable[[], str]]] = {
+    "lang": (_config_lang_value, _lang_override),
+    "editor": (
+        lambda: config.load_editor() or gettext("default ($VISUAL / $EDITOR)"),
+        config.load_editor,
+    ),
+    "mirror": (_mirror_master_value, _mirror_master_value),
+    "mirror.pypi": (
+        lambda: config.pypi_display(config.load_mirror()),
+        lambda: config.pypi_display(config.load_mirror()),
+    ),
+    "mirror.github": (lambda: config.github_display(config.load_mirror()), _mirror_github_raw),
+    "mirror.npm": (
+        lambda: config.npm_display(config.load_mirror()),
+        lambda: config.npm_display(config.load_mirror()),
+    ),
+    "form": (config.load_form, config.load_form),
+    "after_run": (config.load_after_run, config.load_after_run),
+    "shell.bash_path": (
+        lambda: config.load_bash_path() or gettext("auto (bash on PATH)"),
+        config.load_bash_path,
+    ),
+    "js.runner": (
+        lambda: config.load_js_runner() or gettext("auto (deno > bun > node)"),
+        config.load_js_runner,
+    ),
+}
+_CONFIG_KEYS = tuple(_CONFIG_READERS)
 
 
 def _config_value(key: str) -> str:
     # Dispatch table (not an if-chain) keeps the key set open-ended without tripping the
     # too-many-returns lint; _CONFIG_KEYS guards `key` so the lookup can't miss.
-    readers = {
-        "lang": _config_lang_value,
-        "editor": lambda: config.load_editor() or gettext("default ($VISUAL / $EDITOR)"),
-        "mirror": _config_mirror_value,
-        "form": config.load_form,
-        "after_run": config.load_after_run,
-        "shell.bash_path": lambda: config.load_bash_path() or gettext("auto (bash on PATH)"),
-        "js.runner": lambda: config.load_js_runner() or gettext("auto (deno > bun > node)"),
-    }
-    return readers[key]()
+    return _CONFIG_READERS[key][0]()
+
+
+def _config_raw_value(key: str) -> str:
+    """--json values: raw machine tokens only ("" = unset/auto), never localized display
+    prose — an agent parsing the JSON must not see strings that change with SKIT_LANG."""
+    return _CONFIG_READERS[key][1]()
+
+
+# The per-axis preset-name lists as they appear in error messages. Joined once at import
+# time: the preset tables are compile-time constants, and hoisting the join keeps the
+# separator out of every function body (a singleton table would otherwise make the
+# in-function join separator an unkillable-equivalent mutation point).
+_PYPI_PRESET_NAMES = ", ".join(config.PYPI_PRESETS)
+_GITHUB_PRESET_NAMES = ", ".join(config.GITHUB_RELEASE_PRESETS)
+_NPM_PRESET_NAMES = ", ".join(config.NPM_PRESETS)
+
+
+def _finish_axis_write(saved: config.MirrorConfig, wrote_url: bool) -> None:
+    """After an axis write: if a URL was stored but the master switch is paused, SAY so —
+    the write must neither silently do nothing nor silently resurrect the other axes."""
+    if wrote_url and not saved.enabled:
+        # stderr, like every other skit-side signal (drift banner, malformed-value warnings):
+        # an agent piping stdout must see only the confirmation, never a mixed-in warning.
+        err_console.print(
+            f"[yellow]{gettext('Mirrors are switched off — run `skit config mirror on` to activate them.')}[/yellow]"
+        )
+
+
+def _set_mirror_master(value: str) -> None:
+    """`mirror` is only the master switch (on / off). Vendor names are per-axis vocabulary:
+    each ecosystem has its own mirror providers, so "tsinghua" (a PyPI vendor) says nothing
+    about npm or GitHub releases and is rejected here with a pointer to the axis keys."""
+    if value == "off":
+        config.disable()
+    elif value == "on":
+        if not config.enable():
+            err_console.print(
+                f"[red]{gettext('Nothing to enable: no mirror URLs are saved. Set an axis first: mirror.pypi / mirror.github / mirror.npm.')}[/red]"
+            )
+            raise typer.Exit(EXIT_USAGE)
+    else:
+        err_console.print(
+            f"[red]{gettext('Unknown mirror value: %(name)s. "mirror" is the master switch (on / off); mirrors are picked per ecosystem: mirror.pypi (%(pypi)s), mirror.github (%(github)s), mirror.npm (%(npm)s) — each also takes a URL or "off".') % {'name': escape(value), 'pypi': _PYPI_PRESET_NAMES, 'github': _GITHUB_PRESET_NAMES, 'npm': _NPM_PRESET_NAMES}}[/red]"
+        )
+        raise typer.Exit(EXIT_USAGE)
+
+
+def _mirror_axis_url(key: str, value: str, presets: dict[str, str]) -> str:
+    """Resolve a single-URL axis value: "off" -> "", a preset name -> its URL, a URL -> itself.
+    Anything else (a typo, another axis's vendor, copied display prose) is refused rather
+    than saved as a bogus URL."""
+    if value == "off":
+        return ""
+    if value in presets:
+        return presets[value]
+    if config.is_url_token(value):
+        return value
+    err_console.print(
+        f"[red]{gettext('Unknown %(key)s value: %(name)s. Choose from: %(names)s, off — or give a full URL.') % {'key': key, 'name': escape(value), 'names': ', '.join(presets)}}[/red]"
+    )
+    raise typer.Exit(EXIT_USAGE)
+
+
+def _set_mirror_pypi(value: str) -> None:
+    url = _mirror_axis_url("mirror.pypi", value, config.PYPI_PRESETS)
+    _finish_axis_write(config.update_mirror_axes(pypi=url), wrote_url=bool(url))
+
+
+def _set_mirror_github(value: str) -> None:
+    """The github-release axis expands one base prefix to both URLs it serves (Python builds
+    and the uv binary). https only: the uv binary is downloaded and executed."""
+    if value == "off":
+        # A clear stores no URL, so it can never trigger the paused-notice path — calling
+        # _finish_axis_write(wrote_url=False) here would be a guaranteed no-op.
+        config.update_mirror_axes(python_install="", uv_binary="")
+        return
+    if value in config.GITHUB_RELEASE_PRESETS:
+        base = config.GITHUB_RELEASE_PRESETS[value]
+    elif value.startswith("https://") and config.is_url_token(value):
+        base = value
+    else:
+        err_console.print(
+            f"[red]{gettext('Unknown mirror.github value: %(name)s. Choose from: %(names)s, off — or give an https:// github-release base URL (the uv binary is downloaded and executed, so https:// is required).') % {'name': escape(value), 'names': _GITHUB_PRESET_NAMES}}[/red]"
+        )
+        raise typer.Exit(EXIT_USAGE)
+    python_install, uv_binary = config.github_release_urls(base)
+    saved = config.update_mirror_axes(python_install=python_install, uv_binary=uv_binary)
+    _finish_axis_write(saved, wrote_url=True)
+
+
+def _set_mirror_npm(value: str) -> None:
+    url = _mirror_axis_url("mirror.npm", value, config.NPM_PRESETS)
+    _finish_axis_write(config.update_mirror_axes(npm=url), wrote_url=bool(url))
 
 
 def _config_set(key: str, value: str) -> None:
@@ -2571,16 +2713,13 @@ def _config_set(key: str, value: str) -> None:
     elif key == "editor":
         config.save_editor(value)
     elif key == "mirror":
-        if value == "off":
-            config.disable()
-        elif value in config.PYPI_PRESETS:
-            config.save_mirror(config.preset(value))
-        else:
-            choices = ", ".join([*config.PYPI_PRESETS, "off"])
-            err_console.print(
-                f"[red]{gettext('Unknown mirror: %(name)s. Choose from: %(names)s') % {'name': escape(value), 'names': choices}}[/red]"
-            )
-            raise typer.Exit(EXIT_USAGE)
+        _set_mirror_master(value)
+    elif key == "mirror.pypi":
+        _set_mirror_pypi(value)
+    elif key == "mirror.github":
+        _set_mirror_github(value)
+    elif key == "mirror.npm":
+        _set_mirror_npm(value)
     elif key == "form":
         if value not in config.FORM_STYLES:
             err_console.print(
@@ -2618,14 +2757,15 @@ def _config_set(key: str, value: str) -> None:
     "config",
     help=gettext("Read or set skit's settings (language, editor, mirror, form style, after-run)."),
     epilog=gettext(
-        "Examples:  skit config  ·  skit config lang zh-TW  ·  skit config after_run stay"
+        "Examples:  skit config  ·  skit config lang zh-TW  ·  skit config mirror.pypi tsinghua"
     ),
 )
 def config_cmd(
     key: str = typer.Argument(
         None,
         help=gettext(
-            "Setting name: lang / editor / mirror / form / after_run / shell.bash_path / js.runner"
+            "Setting name: lang / editor / mirror / mirror.pypi / mirror.github / "
+            "mirror.npm / form / after_run / shell.bash_path / js.runner"
         ),
     ),
     value: str = typer.Argument(
@@ -2638,7 +2778,7 @@ def config_cmd(
     if key is None:
         if as_json:
             console.print_json(
-                json.dumps({k: _config_value(k) for k in _CONFIG_KEYS}, ensure_ascii=False)
+                json.dumps({k: _config_raw_value(k) for k in _CONFIG_KEYS}, ensure_ascii=False)
             )
             return
         for k in _CONFIG_KEYS:
@@ -2650,6 +2790,9 @@ def config_cmd(
         )
         raise typer.Exit(EXIT_USAGE)
     if value is None:
+        if as_json:
+            console.print_json(json.dumps({key: _config_raw_value(key)}, ensure_ascii=False))
+            return
         console.print(escape(_config_value(key)))
         return
     _config_set(key, value)
@@ -2661,61 +2804,72 @@ def config_cmd(
 # --------------------------------------------------------------------------
 
 
-def _prompt_uv_binary(default: str) -> str:
-    """Prompt for the uv-binary mirror URL, insisting on https:// (the binary is
-    downloaded, chmod +x'd, and executed — an http:// mirror is a MITM->RCE vector)."""
+def _prompt_axis_url(label: str) -> str:
+    """A custom axis's URL — a real one-token http(s) URL, same gate as the CLI's axis
+    keys (a vendor-name typo like "tsinghua" here would persist as UV_DEFAULT_INDEX and
+    fail mysteriously later). Deliberately no preset default: a preset URL prefill would
+    let a bare Enter store a "custom" that reads back as that preset."""
     while True:
-        value = Prompt.ask(gettext("uv binary mirror URL"), default=default, console=console)
-        if value.startswith("https://"):
+        value = Prompt.ask(label, console=console).strip()
+        if config.is_url_token(value):
+            return value
+        err_console.print(f"[red]{gettext('A custom choice needs a URL.')}[/red]")
+
+
+def _prompt_github_base() -> str:
+    """The github-release base URL, https:// only: it derives the uv-binary download — an
+    executable — so an http:// base would be a MITM->RCE vector."""
+    while True:
+        value = Prompt.ask(gettext("github-release mirror base URL"), console=console).strip()
+        if value.startswith("https://") and config.is_url_token(value):
             return value
         err_console.print(
             "[red]"
             + gettext(
-                "The uv binary is downloaded and executed, so its mirror URL must use https:// (got: %(url)s)."
+                "The uv binary is downloaded and executed, so the github-release base URL must use https:// (got: %(url)s)."
             )
             % {"url": escape(value)}
             + _RED_CLOSE
         )
 
 
-def _mirror_wizard() -> None:
-    m = config.load_mirror()
-    if not m.enabled:
-        default = "off"
-    else:
-        default = next((k for k, v in config.PYPI_PRESETS.items() if v == m.pypi), "custom")
-    choice = Prompt.ask(
-        gettext("Mirror for faster installs in mainland China"),
-        choices=[*config.PYPI_PRESETS, "custom", "off"],
-        default=default,
-        console=console,
+def _wizard_axis_choice(label: str, presets: dict[str, str]) -> str:
+    """One axis question. The wizard runs only on an unconfigured store (the [mirror]
+    marker gates re-entry), so the default is simply the axis's recommended preset."""
+    return Prompt.ask(
+        label, choices=[*presets, "custom", "off"], default=next(iter(presets)), console=console
     )
-    if choice == "off":
-        config.disable()
-    elif choice == "custom":
-        config.save_mirror(
-            config.MirrorConfig(
-                enabled=True,
-                pypi=Prompt.ask(
-                    gettext("PyPI index URL"),
-                    default=m.pypi or config.PYPI_PRESETS["tsinghua"],
-                    console=console,
-                ),
-                python_install=Prompt.ask(
-                    gettext("Python-install mirror URL"),
-                    default=m.python_install or config.PYTHON_INSTALL_MIRROR,
-                    console=console,
-                ),
-                uv_binary=_prompt_uv_binary(m.uv_binary or config.UV_BINARY_MIRROR),
-                npm=Prompt.ask(
-                    gettext("npm registry URL"),
-                    default=m.npm or config.NPM_REGISTRY_MIRROR,
-                    console=console,
-                ),
-            )
-        )
+
+
+def _mirror_wizard() -> None:
+    """Ask per ecosystem axis — three independent choices (three Enters accept the recommended
+    preset of each). No single vendor question: the PyPI providers are not npm or
+    github-release vendors, so one answer must never silently configure another axis."""
+    pypi = _wizard_axis_choice(gettext("PyPI index (Python packages)"), config.PYPI_PRESETS)
+    if pypi == "custom":
+        pypi_url = _prompt_axis_url(gettext("PyPI index URL"))
     else:
-        config.save_mirror(config.preset(choice))
+        pypi_url = "" if pypi == "off" else config.PYPI_PRESETS[pypi]
+    github = _wizard_axis_choice(
+        gettext("GitHub releases (Python builds, the uv binary)"), config.GITHUB_RELEASE_PRESETS
+    )
+    if github == "off":
+        python_install_url = uv_url = ""
+    else:
+        base = (
+            _prompt_github_base() if github == "custom" else config.GITHUB_RELEASE_PRESETS[github]
+        )
+        python_install_url, uv_url = config.github_release_urls(base)
+    npm = _wizard_axis_choice(gettext("npm registry (JS/TS packages)"), config.NPM_PRESETS)
+    if npm == "custom":
+        npm_url = _prompt_axis_url(gettext("npm registry URL"))
+    else:
+        npm_url = "" if npm == "off" else config.NPM_PRESETS[npm]
+    config.save_mirror(
+        config.compose(
+            pypi=pypi_url, python_install=python_install_url, uv_binary=uv_url, npm=npm_url
+        )
+    )
 
 
 def _maybe_first_run_setup() -> None:

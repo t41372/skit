@@ -172,7 +172,8 @@ skit preset delete <name> nightly
 ## Maintenance
 
 ```bash
-skit doctor --json     # health: uv, library location, drift/missing entries, needs_missing
+skit doctor --json     # health: uv, library location, drift/missing entries, needs_missing,
+                       # mirror {enabled + stored URLs; an axis applies iff enabled and its URL is set}
 skit remove <name> -y  # remove an entry (the user's original file is never deleted) — ask first
 skit edit <name>       # open the stored source in the user's editor
 skit config js.runner deno         # pin the JS/TS runner (default: auto — deno > bun > node)

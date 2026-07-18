@@ -101,6 +101,20 @@ def _isolate_skit_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(var, raising=False)
 
 
+def full_mirror():
+    """All three mirror axes on their recommended presets — the standard "mirrors on"
+    fixture for tests that just need an enabled mirror config. Axes stay independently
+    settable in prod; only tests bundle them for convenience."""
+    from skit import config  # deferred: see the import-order note above
+
+    return config.compose(
+        pypi=config.PYPI_PRESETS["tsinghua"],
+        python_install=config.PYTHON_INSTALL_MIRROR,
+        uv_binary=config.UV_BINARY_MIRROR,
+        npm=config.NPM_REGISTRY_MIRROR,
+    )
+
+
 def footer_text(static: Static) -> str:
     """Rendered footer text with the pill glue (U+2800, one cell wide like a space)
     normalized back to spaces, so label assertions and click offsets read naturally.

@@ -21,6 +21,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import full_mirror
 from skit import rewrite, uvman
 from skit.langs import launch
 from skit.langs.python import shim
@@ -493,7 +494,7 @@ def test_run_entry_shell_child_gets_mirror_env_and_exit_code_passthrough(
 
     monkeypatch.delenv("UV_DEFAULT_INDEX", raising=False)
     monkeypatch.delenv("UV_PYTHON_INSTALL_MIRROR", raising=False)
-    config.save_mirror(config.preset("tsinghua"))
+    config.save_mirror(full_mirror())
     outfile = tmp_path / "env.txt"
     entry = store.add_command(
         f'printf "%s" "$UV_DEFAULT_INDEX" > "{outfile}"; exit 7', name="env-exit"

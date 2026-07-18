@@ -1,4 +1,6 @@
-"""Config + mirror settings (config.py): persistence, presets, env injection with the defer rule."""
+"""Config + mirror settings (config.py): persistence, per-axis presets, env injection with
+the defer rule. The three mirror axes (pypi / github-release / npm) are independent — each
+ecosystem has its own vendor landscape, and these tests pin that independence."""
 
 from __future__ import annotations
 
@@ -7,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import full_mirror
 from skit import atomic, config
 
 
@@ -24,26 +27,246 @@ def test_defaults_when_no_config() -> None:
     assert config.uv_binary_base() == ""
 
 
-def test_preset_saves_all_three_vectors() -> None:
-    config.save_mirror(config.preset("aliyun"))
+def test_full_mirror_saves_all_four_vectors() -> None:
+    config.save_mirror(full_mirror())
     assert config.is_configured()
     m = config.load_mirror()
     assert m.enabled
-    assert m.pypi == config.PYPI_PRESETS["aliyun"]
+    assert m.pypi == config.PYPI_PRESETS["tsinghua"]
     assert m.python_install == config.PYTHON_INSTALL_MIRROR
     assert m.uv_binary == config.UV_BINARY_MIRROR
+    assert m.npm == config.NPM_REGISTRY_MIRROR
+
+
+def test_compose_enables_iff_any_axis_on() -> None:
+    assert not config.compose().enabled
+    for axis in ("pypi", "python_install", "uv_binary", "npm"):
+        assert config.compose(**{axis: "https://x"}).enabled, axis
+
+
+def test_axes_are_independent() -> None:
+    """One axis's vendor choice must never drag another axis along: the PyPI providers are
+    not npm or github-release vendors, and each axis works alone."""
+    m = config.compose(pypi=config.PYPI_PRESETS["aliyun"])
+    assert (m.python_install, m.uv_binary, m.npm) == ("", "", "")
+    m = config.compose(npm=config.NPM_PRESETS["npmmirror"])
+    assert (m.pypi, m.python_install, m.uv_binary) == ("", "", "")
+    base = config.GITHUB_RELEASE_PRESETS["nju"]
+    m = config.compose(python_install=config.github_release_urls(base)[0])
+    assert (m.pypi, m.npm) == ("", "")
+
+
+def test_is_url_token_accepts_pastable_http_urls() -> None:
+    # The shared custom-URL gate (CLI axis keys, TUI inputs, wizard prompts all route here).
+    assert config.is_url_token("https://pypi.tuna.tsinghua.edu.cn/simple") is True
+    assert config.is_url_token("http://corp.internal/simple") is True  # http allowed (pypi/npm)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "",  # empty
+        "tsinghua",  # a vendor name, not a URL — would persist as a broken UV_DEFAULT_INDEX
+        "ftp://x",  # non-http(s) scheme
+        "https://a b/x",  # embedded space (display prose)
+        "https://a\tb",  # any whitespace, not just spaces
+        "https://a\nb",
+        "https://a·b",  # the axes_summary display separator
+        "pypi=tsinghua · npm=off",  # a round-tripped display string
+    ],
+)
+def test_is_url_token_rejects_non_urls(bad: str) -> None:
+    assert config.is_url_token(bad) is False
+
+
+def test_github_release_urls_expand_from_one_base() -> None:
+    python_install, uv_binary = config.github_release_urls("https://my.mirror/gh/")
+    assert python_install == "https://my.mirror/gh/astral-sh/python-build-standalone/"
+    assert uv_binary == "https://my.mirror/gh/astral-sh/uv"
+
+
+def test_axis_choice_readers() -> None:
+    m = full_mirror()
+    assert config.pypi_choice(m) == "tsinghua"
+    assert config.github_choice(m) == "nju"
+    assert config.npm_choice(m) == "npmmirror"
+    custom = config.compose(
+        pypi="https://my/simple", python_install="https://my/py/", npm="https://my/npm"
+    )
+    assert config.pypi_choice(custom) == "custom"
+    assert config.github_choice(custom) == "custom"  # half-set pair is custom, not a preset
+    assert config.npm_choice(custom) == "custom"
+    off = config.MirrorConfig()
+    assert config.pypi_choice(off) == "off"
+    assert config.github_choice(off) == "off"
+    assert config.npm_choice(off) == "off"
+
+
+def test_github_base_recovers_a_custom_derivable_base() -> None:
+    """github_base reverses a base-derived custom pair back to exactly its base (the value the
+    single-URL github input round-trips), and returns "" for a pair no base expands to."""
+    base = "https://my.mirror/gh"
+    python_install, uv_binary = config.github_release_urls(base)
+    m = config.compose(python_install=python_install, uv_binary=uv_binary)
+    assert config.github_base(m) == base
+    # A hand-edited pair that no single base expands to is not derivable.
+    underivable = config.compose(python_install="https://x/py/", uv_binary="https://x/uv")
+    assert config.github_base(underivable) == ""
+
+
+def test_axis_choice_readers_are_blind_to_the_master_switch() -> None:
+    # Three-state storage (on / paused / empty): a paused config keeps its URLs on disk and
+    # the readers must still REPORT them. Visibility is the readers' job; whether an axis is
+    # APPLIED is the master's (mirror_env / mirrors_line fold that in — never these readers).
+    paused = config.MirrorConfig(
+        enabled=False,
+        pypi=config.PYPI_PRESETS["ustc"],
+        npm=config.NPM_REGISTRY_MIRROR,
+        python_install=config.PYTHON_INSTALL_MIRROR,
+        uv_binary=config.UV_BINARY_MIRROR,
+    )
+    assert config.pypi_choice(paused) == "ustc"
+    assert config.github_choice(paused) == "nju"
+    assert config.npm_choice(paused) == "npmmirror"
+
+
+def test_axis_display_helpers_exact() -> None:
+    m = full_mirror()
+    assert config.pypi_display(m) == "tsinghua"
+    assert config.github_display(m) == "nju"
+    assert config.npm_display(m) == "npmmirror"
+    custom = config.compose(
+        pypi="https://my/simple",
+        python_install="https://my/py/",
+        uv_binary="https://my/uv",
+        npm="https://my/npm",
+    )
+    assert config.pypi_display(custom) == "https://my/simple"
+    # An underivable, hand-edited github pair joins with " + " — never the " · " axes_summary
+    # separator, which must stay unambiguous.
+    assert config.github_display(custom) == "https://my/py/ + https://my/uv"
+    assert config.npm_display(custom) == "https://my/npm"
+    # A half-set github pair shows the live half and marks the blank half off.
+    assert config.github_display(config.compose(python_install="https://my/py/")) == (
+        "https://my/py/ + off"
+    )
+    assert config.github_display(config.compose(uv_binary="https://my/uv")) == (
+        "off + https://my/uv"
+    )
+    off = config.MirrorConfig()
+    assert config.pypi_display(off) == "off"
+    assert config.github_display(off) == "off"
+    assert config.npm_display(off) == "off"
+
+
+def test_axes_summary_exact_strings() -> None:
+    assert config.axes_summary(full_mirror()) == "pypi=tsinghua · github=nju · npm=npmmirror"
+    assert config.axes_summary(config.MirrorConfig()) == "off"
+    npm_only = config.compose(npm=config.NPM_PRESETS["npmmirror"])
+    assert config.axes_summary(npm_only) == "pypi=off · github=off · npm=npmmirror"
+
+
+def test_mirrors_line_three_states_exact() -> None:
+    """F4: the one-line status (doctor, TUI health) tells the three storage states apart —
+    empty off, on, and paused (off but URLs kept) — instead of collapsing paused into off."""
+    assert config.mirrors_line(config.MirrorConfig()) == "Mirrors: off"
+    assert config.mirrors_line(full_mirror()) == (
+        "Mirrors: pypi=tsinghua · github=nju · npm=npmmirror"
+    )
+    paused = config.MirrorConfig(
+        enabled=False,
+        pypi=config.PYPI_PRESETS["tsinghua"],
+        python_install=config.PYTHON_INSTALL_MIRROR,
+        uv_binary=config.UV_BINARY_MIRROR,
+        npm=config.NPM_REGISTRY_MIRROR,
+    )
+    assert config.mirrors_line(paused) == (
+        "Mirrors: off (saved: pypi=tsinghua · github=nju · npm=npmmirror)"
+    )
+
+
+def test_update_mirror_axes_fresh_url_auto_enables() -> None:
+    # Fresh (off, nothing saved): a first URL turns the master on — one-command setup.
+    saved = config.update_mirror_axes(pypi=config.PYPI_PRESETS["tsinghua"])
+    assert saved.enabled
+    assert saved.pypi == config.PYPI_PRESETS["tsinghua"]
+    assert config.load_mirror().enabled  # and it persisted
+
+
+def test_update_mirror_axes_off_on_empty_stays_off() -> None:
+    # Off applied to an empty config is a no-op that must NOT flip the master on.
+    saved = config.update_mirror_axes(pypi="")
+    assert not saved.enabled
+
+
+def test_update_mirror_axes_enabled_stays_on_while_a_url_remains() -> None:
+    config.save_mirror(full_mirror())
+    saved = config.update_mirror_axes(pypi="")  # drop one of several
+    assert saved.enabled
+    assert saved.pypi == ""
+    assert saved.npm == config.NPM_REGISTRY_MIRROR  # the others survive
+
+
+def test_update_mirror_axes_clearing_the_last_url_disables() -> None:
+    config.save_mirror(config.compose(npm=config.NPM_REGISTRY_MIRROR))
+    saved = config.update_mirror_axes(npm="")
+    assert not saved.enabled
+    assert saved.npm == ""
+
+
+def test_update_mirror_axes_paused_stays_paused_and_preserves_others() -> None:
+    # Paused (off with URLs saved): a write keeps the master off — flipping it would
+    # resurrect every other saved axis behind the user's back.
+    config.save_mirror(full_mirror())
+    config.disable()
+    saved = config.update_mirror_axes(npm="https://new/npm")
+    assert not saved.enabled  # still paused, not silently resurrected
+    assert saved.npm == "https://new/npm"  # the asked-for change landed
+    assert saved.pypi == config.PYPI_PRESETS["tsinghua"]  # untouched axis preserved
+
+
+def test_update_mirror_axes_none_leaves_axes_untouched() -> None:
+    config.save_mirror(full_mirror())
+    saved = config.update_mirror_axes(npm="https://new/npm")  # only npm passed
+    assert saved.pypi == config.PYPI_PRESETS["tsinghua"]
+    assert saved.python_install == config.PYTHON_INSTALL_MIRROR
+    assert saved.uv_binary == config.UV_BINARY_MIRROR
+
+
+@pytest.mark.parametrize("axis", ["pypi", "python_install", "uv_binary", "npm"])
+def test_enable_works_for_each_single_axis(axis: str) -> None:
+    # Any ONE saved URL is enough to re-enable — each guard operand stands alone (an
+    # or-chain, never and), because each axis is independently meaningful.
+    config.save_mirror(config.compose(**{axis: "https://x"}))
+    config.disable()
+    assert config.enable() is True
+    assert config.load_mirror().enabled
+
+
+def test_enable_restores_saved_urls() -> None:
+    config.save_mirror(full_mirror())
+    config.disable()
+    assert config.enable() is True
+    m = config.load_mirror()
+    assert m.enabled
+    assert m.pypi == config.PYPI_PRESETS["tsinghua"]
+
+
+def test_enable_refuses_when_nothing_saved() -> None:
+    assert config.enable() is False
+    assert not config.load_mirror().enabled
 
 
 def test_save_mirror_preserves_other_keys() -> None:
     config.save_config({"language": "zh-CN"})
-    config.save_mirror(config.preset("ustc"))
+    config.save_mirror(config.compose(pypi=config.PYPI_PRESETS["ustc"]))
     doc = config.load_config()
     assert doc["language"] == "zh-CN"  # not clobbered by the mirror write
     assert doc["mirror"]["pypi"] == config.PYPI_PRESETS["ustc"]
 
 
 def test_mirror_env_overlays_all_vectors() -> None:
-    config.save_mirror(config.preset("tsinghua"))
+    config.save_mirror(full_mirror())
     env = config.mirror_env({})
     assert env["UV_DEFAULT_INDEX"] == config.PYPI_PRESETS["tsinghua"]
     assert env["UV_PYTHON_INSTALL_MIRROR"] == config.PYTHON_INSTALL_MIRROR
@@ -52,14 +275,14 @@ def test_mirror_env_overlays_all_vectors() -> None:
 
 @pytest.mark.parametrize("index_var", config._INDEX_ENV)
 def test_mirror_env_defers_to_user_index(index_var: str) -> None:
-    config.save_mirror(config.preset("tsinghua"))
+    config.save_mirror(full_mirror())
     env = config.mirror_env({index_var: "https://mine/simple"})
     assert "UV_DEFAULT_INDEX" not in env  # the user's index wins
     assert "UV_PYTHON_INSTALL_MIRROR" in env  # the untouched vector is still injected
 
 
 def test_mirror_env_defers_to_user_python_mirror() -> None:
-    config.save_mirror(config.preset("tsinghua"))
+    config.save_mirror(full_mirror())
     env = config.mirror_env({"UV_PYTHON_INSTALL_MIRROR": "https://mine/py/"})
     assert "UV_PYTHON_INSTALL_MIRROR" not in env
     assert "UV_DEFAULT_INDEX" in env
@@ -69,14 +292,14 @@ def test_mirror_env_defers_to_user_python_mirror() -> None:
 
 
 def test_mirror_env_does_not_defer_on_extra_index_url() -> None:
-    config.save_mirror(config.preset("tsinghua"))
+    config.save_mirror(full_mirror())
     env = config.mirror_env({"UV_EXTRA_INDEX_URL": "https://x"})
     # UV_EXTRA_INDEX_URL is additive, so the blocked default index is still live -> skit must inject.
     assert env["UV_DEFAULT_INDEX"] == config.PYPI_PRESETS["tsinghua"]
 
 
 def test_mirror_env_does_not_defer_on_uv_index() -> None:
-    config.save_mirror(config.preset("tsinghua"))
+    config.save_mirror(full_mirror())
     env = config.mirror_env({"UV_INDEX": "https://x"})
     # UV_INDEX is additive too (F1: dropped from _INDEX_ENV), so injection must still happen.
     assert env["UV_DEFAULT_INDEX"] == config.PYPI_PRESETS["tsinghua"]
@@ -86,19 +309,19 @@ def test_mirror_env_does_not_defer_on_uv_index() -> None:
 
 
 def test_mirror_env_injects_when_index_env_blank() -> None:
-    config.save_mirror(config.preset("tsinghua"))
+    config.save_mirror(full_mirror())
     env = config.mirror_env({"UV_INDEX_URL": ""})
     assert env["UV_DEFAULT_INDEX"] == config.PYPI_PRESETS["tsinghua"]
 
 
 def test_mirror_env_injects_when_python_mirror_blank() -> None:
-    config.save_mirror(config.preset("tsinghua"))
+    config.save_mirror(full_mirror())
     env = config.mirror_env({"UV_PYTHON_INSTALL_MIRROR": ""})
     assert env["UV_PYTHON_INSTALL_MIRROR"] == config.PYTHON_INSTALL_MIRROR
 
 
 def test_disable_keeps_urls_but_turns_off() -> None:
-    config.save_mirror(config.preset("tsinghua"))
+    config.save_mirror(full_mirror())
     config.disable()
     m = config.load_mirror()
     assert not m.enabled
@@ -152,9 +375,9 @@ def test_load_mirror_preserves_https_uv_binary() -> None:
     assert config.uv_binary_base() == "https://ok/uv"
 
 
-def test_preset_uv_binary_stays_https() -> None:
-    # Sanity: the shared NJU preset is https and must survive the https enforcement unchanged.
-    config.save_mirror(config.preset("tsinghua"))
+def test_nju_preset_uv_binary_stays_https() -> None:
+    # Sanity: the NJU github-release preset is https and must survive the https enforcement.
+    config.save_mirror(full_mirror())
     assert config.load_mirror().uv_binary == config.UV_BINARY_MIRROR
     assert config.UV_BINARY_MIRROR.startswith("https://")
 
@@ -188,7 +411,7 @@ def test_save_editor_backs_up_corrupt_config_instead_of_wiping_it(
 def test_save_mirror_backs_up_corrupt_config_instead_of_wiping_it(cfg_dir: Path) -> None:
     corrupt = 'language = "zh-CN"\nthis is = = not valid toml'
     (cfg_dir / "config.toml").write_text(corrupt, encoding="utf-8")
-    config.save_mirror(config.preset("aliyun"))
+    config.save_mirror(config.compose(pypi=config.PYPI_PRESETS["aliyun"]))
     assert config.load_mirror().pypi == config.PYPI_PRESETS["aliyun"]
     backup = cfg_dir / "config.toml.bak"
     assert backup.is_file()
