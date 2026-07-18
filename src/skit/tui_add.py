@@ -42,16 +42,6 @@ from .langs.prompt import analyzer as prompt_analyzer
 from .params import ParamDecl, is_secret_name
 
 
-def _kind_for_draft(path: Path) -> str:
-    """The kind a freshly-drafted script's shebang names (python when it kept the
-    starter's, or names no registered interpreter). The temp file's .py suffix must
-    not decide — the user's shebang is the explicit signal (shared rule with the CLI
-    --edit lane via registry.kind_for_shebang)."""
-    from .langs.registry import kind_for_shebang
-
-    return kind_for_shebang(path) or "python"
-
-
 class KindPickModal(ModalScreen[str | None]):
     """The TUI twin of --kind/--exe/--prompt: an unclassifiable file gets an ASK, not
     an error message that teaches CLI flags to a user who is here to avoid them."""

@@ -145,30 +145,6 @@ async def test_draft_script_cancelled_review_keeps_the_draft_and_notifies(
     seen["path"].unlink(missing_ok=True)
 
 
-def test_kind_for_draft_reads_the_shebang_not_the_suffix(tmp_path):
-    """The draft always starts life as a .py temp file, so the SUFFIX must never decide
-    its kind — the user's shebang is the explicit signal. A python (or absent) shebang
-    stays python; a registered non-python shebang re-infers; an unknown one falls back to
-    python."""
-    from skit.tui_add import _kind_for_draft
-
-    no_shebang = tmp_path / "a.py"
-    no_shebang.write_text("import sys\nprint('hi')\n", encoding="utf-8")
-    assert _kind_for_draft(no_shebang) == "python"  # no shebang → python fallback
-
-    py_shebang = tmp_path / "b.py"
-    py_shebang.write_text("#!/usr/bin/env python3\nprint('hi')\n", encoding="utf-8")
-    assert _kind_for_draft(py_shebang) == "python"  # python shebang matches python
-
-    bash_shebang = tmp_path / "c.py"
-    bash_shebang.write_text("#!/usr/bin/env bash\necho hi\n", encoding="utf-8")
-    assert _kind_for_draft(bash_shebang) == "shell"  # re-inferred from the bash shebang
-
-    unknown = tmp_path / "d.py"
-    unknown.write_text("#!/usr/bin/env cobol\nDISPLAY 'hi'.\n", encoding="utf-8")
-    assert _kind_for_draft(unknown) == "python"  # unmatched shebang → python fallback
-
-
 async def test_draft_bash_shebang_becomes_a_shell_entry(tmp_path, no_suspend, monkeypatch):
     """The draft lane honors a changed shebang: writing a #!/usr/bin/env bash body into
     the python starter re-infers the kind, so the entry lands as SHELL — never a broken

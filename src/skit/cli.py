@@ -1168,17 +1168,9 @@ def add(
             + _RED_CLOSE
         )
         raise typer.Exit(EXIT_USAGE)
-    # Defense-in-depth guards the matrix above now SHADOWS: both --ref and --exe are in
-    # `given` and absent from every non-path honorable set, so the matrix already refuses
-    # them on cmd/stdin/editor/prompt-editor first (with its own "can't apply here" voice).
-    # These two blocks are therefore unreachable today — kept as a safety net for any
-    # future lane the matrix doesn't yet enumerate, and excluded from coverage. (Reported
-    # in the round-6 gate-repair notes as deletion candidates.)
-    if lane in ("stdin", "editor", "prompt-editor") and ref:  # pragma: no cover — matrix-shadowed
-        err_console.print(
-            f"[red]{gettext('--ref needs an existing file to reference — a script written in the editor or read from stdin has none.')}[/red]"
-        )
-        raise typer.Exit(EXIT_USAGE)
+    # (--ref/--exe on the non-path lanes are refused by the matrix itself — no shadowed
+    # duplicate guards: dead defense that compares against nothing teaches the next
+    # reader a second rule that isn't there.)
     # Cross-lane semantics the matrix defers to per-kind inference: only prompt entries have
     # runners / interpolation, re-checked per kind on the path lane after its kind is known.
     if lane == "path":
@@ -1192,11 +1184,6 @@ def add(
                 f"[red]{gettext('--runner only applies to prompt entries — add one with --prompt.')}[/red]"
             )
             raise typer.Exit(EXIT_USAGE)
-    if exe and lane in ("stdin", "editor"):  # pragma: no cover — matrix-shadowed (see above)
-        err_console.print(
-            f"[red]{gettext('--exe needs an existing program on disk — stdin and the editor author scripts.')}[/red]"
-        )
-        raise typer.Exit(EXIT_USAGE)
     if edit_new:
         if path:
             err_console.print(
