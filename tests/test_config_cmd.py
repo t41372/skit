@@ -318,7 +318,10 @@ def test_paused_config_is_fully_visible_in_config_list() -> None:
 def test_read_mirror_axis_shows_custom_url() -> None:
     runner.invoke(cli.app, ["config", "mirror.npm", "https://my.registry"])
     result = runner.invoke(cli.app, ["config", "mirror.npm"])
-    assert "https://my.registry" in result.output.replace("\n", "")
+    # Exact-equality (not substring `in`): the read echoes the stored URL verbatim and
+    # nothing else — and it sidesteps CodeQL's incomplete-URL-substring heuristic, which
+    # can't tell a round-trip test assertion from bypassable sanitization logic.
+    assert result.output.strip() == "https://my.registry"
 
 
 @pytest.mark.parametrize("value", ["nju", "https://my.mirror/gh"])
