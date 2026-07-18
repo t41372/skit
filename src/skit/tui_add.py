@@ -496,7 +496,7 @@ class AddReviewScreen(Screen[str | None]):
     def _apply_mode_visibility(self) -> None:
         """Reference mode folds away what accept would skip — never a silent drop:
         the CLI refuses --dep on an npm reference add and says parameter setup is
-        skipped; the panel must tell the same truth BEFORE Ctrl+A, not swallow ticks."""
+        skipped; the panel must tell the same truth BEFORE Ctrl+S, not swallow ticks."""
         mode_box = self.query("#rv-mode")
         reference = bool(mode_box) and mode_box.first(RadioSet).pressed_index == 1
         spec = self._spec
@@ -776,11 +776,11 @@ class AddReviewScreen(Screen[str | None]):
 
 
 class PromptReviewScreen(Screen[str | None]):
-    """The prompt twin of AddReviewScreen — same contract (everything prefilled, Ctrl+A
+    """The prompt twin of AddReviewScreen — same contract (everything prefilled, Ctrl+S
     is the only required act), prompt-shaped sections: the insertion master switch, the
     placeholder tick list (flood-capped), and the runner pick with the New agent… door.
 
-    Nothing is stored until Ctrl+A: the flood warning, the tick defaults and the switch
+    Nothing is stored until Ctrl+S: the flood warning, the tick defaults and the switch
     all happen BEFORE the entry exists, so a long prompt never lands half-configured."""
 
     BINDINGS = [
