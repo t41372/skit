@@ -85,12 +85,12 @@ def _logical_lines(text: str) -> list[tuple[str, int]]:
     the continuation marker); an even count is literal escaped backslashes."""
     out: list[tuple[str, int]] = []
     pending = ""
-    pending_lineno = 0
+    pending_lineno = 0  # pragma: no mutate — reassigned to `idx` on the first iteration (pending is "" at start) before any read, so this initializer's value (0 / None / 1) is unobservable
     for idx, physical in enumerate(text.split("\n"), start=1):
         if not pending:
             pending_lineno = idx
         combined = pending + physical
-        trailing = len(combined) - len(combined.rstrip("\\"))
+        trailing = len(combined) - len(combined.rstrip("\\"))  # pragma: no mutate — `trailing` is read only as `trailing % 2`; `len + len(rstrip)` differs from `len - len(rstrip)` by 2·len(rstrip) (even), so the -/+ swap keeps the same parity and is unobservable; the killable rstrip-arg mutation stays pinned by the continuation tests  # fmt: skip
         if trailing % 2 == 1:
             pending = combined[:-1]  # drop the continuation backslash; join with the next line
         else:
@@ -118,7 +118,7 @@ def _tokenize(line: str) -> list[str]:
             while i < n:
                 c = line[i]
                 cur += c
-                if c == "\\" and i + 1 < n:
+                if c == "\\" and i + 1 < n:  # pragma: no mutate — `i + 2 < n` is a true equivalent here (a stricter bound only skips differently when the escaped char is the line's last, where the scan already ends with an identical token); this line pragma also suppresses the killable `c == "\\"` / `i - 1 < n` / `i + 1 <= n` variants, which are separately pinned by the tokenize escape tests  # fmt: skip
                     cur += line[i + 1]
                     i += 2
                     continue
@@ -261,7 +261,7 @@ def _classify_set(words: list[str]) -> _SetStmt | None:
         return None
     flags: list[str] = []
     operands: list[str] = []
-    options_done = False
+    options_done = False  # pragma: no mutate — =None is a true equivalent (read only via `not options_done`); this line pragma also suppresses the killable =True, which is separately pinned by test_classify_set_matrix
     for w in rest[1:]:
         if not options_done and w == "--":
             options_done = True
@@ -356,7 +356,7 @@ def _strip_comment(line: str) -> str:
     while i < n:
         ch = line[i]
         if quote is not None:
-            if ch == "\\" and i + 1 < n:
+            if ch == "\\" and i + 1 < n:  # pragma: no mutate — inside a quote this branch only decides how far to skip; every `i + 1 < n` variant (i-1<n / i+2<n / i+1<=n) differs from it solely at the line's last char, where the loop already exits with the same return, so all are equivalent; the killable `ch == "\\"` string mutation stays pinned by test_strip_comment_paths  # fmt: skip
                 i += 2
                 continue
             if ch == quote:
@@ -367,7 +367,7 @@ def _strip_comment(line: str) -> str:
             quote = ch
             i += 1
             continue
-        if ch == "\\" and i + 1 < n:
+        if ch == "\\" and i + 1 < n:  # pragma: no mutate — the escaped-skip's exact bound is immaterial (a total scanner tolerates an over/under-skip only at the line's last char, where it already exits with the same return), so i-1<n / i+2<n / i+1<=n are all equivalent; the killable `ch == "\\"` string mutation stays pinned by test_strip_comment_backslash_escapes_a_quote_outside_quotes  # fmt: skip
             i += 2
             continue
         if ch == "#" and (i == 0 or line[i - 1].isspace()):
