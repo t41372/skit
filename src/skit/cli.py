@@ -536,6 +536,56 @@ def _add_from_stdin(
     _print_add_summary(entry, deps, managed, secrets)
 
 
+def _add_script_from_stdin(kind: str, name: str | None, description: str | None) -> None:
+    """`skit add - --kind shell`: the non-python twin of _add_from_stdin. Before this
+    lane existed, --kind on stdin was SILENTLY DROPPED and the text became a python
+    entry — bash source stored as script.py and fed to `uv run --script` (a corrupted
+    entry, in the codebase whose contract is refuse-never-drop)."""
+    import tempfile
+
+    from .langs.registry import shebang_program
+
+    if not name:
+        err_console.print(
+            f"[red]{gettext('Reading the script from stdin needs an explicit --name.')}[/red]"
+        )
+        raise typer.Exit(EXIT_USAGE)
+    text = sys.stdin.read()
+    if not text.strip():
+        err_console.print(
+            f"[red]{gettext('Nothing arrived on stdin, so there is nothing to add.')}[/red]"
+        )
+        raise typer.Exit(1)
+    kind_spec = spec_for(kind)
+    suffix = kind_spec.extensions[0] if kind_spec is not None and kind_spec.extensions else ".txt"
+    fd, tmp_name = tempfile.mkstemp(suffix=suffix, prefix="skit-stdin-")  # pragma: no mutate
+    os.close(fd)
+    tmp = Path(tmp_name)
+    tmp.write_text(text, encoding="utf-8")  # pragma: no mutate
+    try:
+        program = shebang_program(tmp)
+        interpreter = program if kind_spec is not None and program in kind_spec.shebangs else ""
+        entry = store.add_script(
+            tmp, kind=kind, name=name, mode="copy", description=description, interpreter=interpreter
+        )
+        deps: list[str] = []
+        if (
+            kind_spec is not None
+            and kind_spec.deps_flavor == "npm"
+            and kind_spec.dep_scanner is not None
+        ):
+            # Mirror the path lane's non-interactive default: record the script's own
+            # imports (they download packages on first run — the summary says so).
+            deps = kind_spec.dep_scanner(text)
+            if deps:
+                entry = store.update_dependencies(entry.slug, deps)
+    except store.StoreError as exc:
+        raise _fail(str(exc), 1) from exc
+    finally:
+        tmp.unlink(missing_ok=True)  # pragma: no mutate
+    _print_add_summary(entry, deps, [], [])
+
+
 def _starter_prompt() -> str:
     """The drafted-prompt starter body — user-visible prose in $EDITOR, so it goes
     through gettext like every other UI string (resolved at call time, never import)."""
@@ -889,6 +939,20 @@ def add(
             f"[red]{gettext('--prompt names the kind outright — drop --edit/--exe/--kind/--cmd.')}[/red]"
         )
         raise typer.Exit(EXIT_USAGE)
+    # The fresh-text lanes can't produce a program on disk, and --edit's starter is
+    # python-shaped: an explicit flag the lane can't honor is refused, never dropped
+    # (before this check, `cat tool.sh | skit add - --kind shell` silently stored the
+    # bash source as a PYTHON entry).
+    if exe and (edit_new or path == "-"):
+        err_console.print(
+            f"[red]{gettext('--exe needs an existing program on disk — stdin and the editor author scripts.')}[/red]"
+        )
+        raise typer.Exit(EXIT_USAGE)
+    if kind is not None and edit_new:
+        err_console.print(
+            f"[red]{gettext('--edit writes a Python starter; to author another kind, pipe it in: skit add - --kind %(kind)s -n NAME') % {'kind': escape(kind)}}[/red]"
+        )
+        raise typer.Exit(EXIT_USAGE)
     if edit_new:
         if path:
             err_console.print(
@@ -901,6 +965,16 @@ def add(
         if prompt_kind:
             _add_prompt_from_stdin(name, description, runner, interpolate=not no_interpolate)
             return
+        if kind is not None:
+            _validate_forced_kind(kind)
+            if kind == "exe":  # --kind exe: same impossibility as --exe, same refusal
+                err_console.print(
+                    f"[red]{gettext('--exe needs an existing program on disk — stdin and the editor author scripts.')}[/red]"
+                )
+                raise typer.Exit(EXIT_USAGE)
+            if kind != "python":
+                _add_script_from_stdin(kind, name, description)
+                return
         _add_from_stdin(name, description, deps_opt=dep, python_opt=python)
         return
     if prompt_kind and not path:

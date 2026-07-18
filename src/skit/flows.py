@@ -568,7 +568,14 @@ def _final_value(
     if f.secret:
         return _resolve_secret(f, raw, env)
     try:
-        value = tokens.expand(raw, cwd=cwd, env=env, now=now) if raw else ""
+        # Placeholder-delivery values keep `{{`/`}}` literal (prompt text is
+        # brace-heavy; the body promise is "unmanaged text travels untouched") —
+        # the escape pair belongs to inject/flag values only.
+        value = (
+            tokens.expand(raw, cwd=cwd, env=env, now=now, brace_escapes=f.source != "placeholder")
+            if raw
+            else ""
+        )
     except tokens.TokenError as exc:
         raise FormError(str(exc)) from exc
     if raw and tokens.has_tokens(raw):

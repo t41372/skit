@@ -196,8 +196,11 @@ class FieldRow(Vertical):
             return
         lines: list[str] = []
         if tokens.has_tokens(value):
-            expanded, error = tokens.preview(value, cwd=Path.cwd())
-            lines.append(f"→ {escape(error if error else expanded)}")
+            expanded, error = tokens.preview(
+                value, cwd=Path.cwd(), brace_escapes=self.field.source != "placeholder"
+            )
+            if expanded != value or error:
+                lines.append(f"→ {escape(error if error else expanded)}")
         count = flows.glob_feedback(value, Path.cwd())
         if count is not None:
             lines.append(
