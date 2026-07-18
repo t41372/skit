@@ -467,12 +467,18 @@ distinct from the agent itself failing.
 ## TUI surface
 
 A `prompt` entry runs through the **same run form** as every other kind, with one
-addition: a **runner picker** row at the top (chip-consistent, mouse- and
-keyboard-operable per principle #2), prefilled with the entry's pin (or last-picked when
-unpinned). Below it, the placeholders render as ordinary form fields (choices/bool/secret
+addition: a **runner picker** row at the top — a value-keyed `Select` dropdown (the
+runner is a SECONDARY control: collapsed it costs one row instead of pushing the
+parameter fields down, and its overlay scales to any number of agents), prefilled with
+the entry's pin (or last-picked when unpinned). The form's priority Enter binding
+("Enter runs from any field") coexists with dropdowns via a shim in `action_submit`:
+Enter on a focused Select toggles its overlay, Enter inside the open overlay chooses
+the highlighted option, everything else submits. The preset row and every other runner
+picker (Script settings pin, the prompt review panel) use the same dropdown; reads are
+value-keyed, so a runner list that changes mid-session can never shift an index
+mapping. Below it, the placeholders render as ordinary form fields (choices/bool/secret
 all work — via the `placeholder_params` plan path). Every new string is a static
-`gettext()` literal; the picker wraps/degrades under the existing `tui_layout` size
-tiers — no per-screen width math.
+`gettext()` literal.
 
 **The prompt review panel (`tui_add.PromptReviewScreen`).** Adding a prompt is never a
 blind direct add: the panel is the prompt twin of the python `AddReviewScreen`, with the
