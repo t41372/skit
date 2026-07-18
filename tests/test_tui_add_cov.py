@@ -12,11 +12,18 @@ import contextlib
 import os
 
 import pytest
-from textual.widgets import Checkbox, Input, RadioSet, Static
+from textual.widgets import Checkbox, Input, OptionList, RadioButton, RadioSet, Static
 
 from skit import editor, store, tui
 from skit.langs.python import metawriter
-from skit.tui_add import AddReviewApp, AddReviewScreen, AddSourceScreen
+from skit.tui_add import (
+    AddReviewApp,
+    AddReviewScreen,
+    AddSourceScreen,
+    ExeReviewScreen,
+    KindPickModal,
+    PromptReviewScreen,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -80,9 +87,11 @@ async def test_missing_path_shows_file_not_found(tmp_path):
         assert store.list_entries() == []
 
 
-async def test_executable_path_is_added_directly(tmp_path):
-    """A non-.py executable skips the review panel (nothing to detect inside a binary):
-    submitting it commits an exe entry and dismisses."""
+async def test_executable_path_opens_identity_review_then_adds(tmp_path):
+    """A recognized executable no longer instant-adds: it gets an identity review
+    (name + description) like every other kind — "nothing to detect inside a binary"
+    justifies no tick list, not skipping identity. Ctrl+A commits the exe entry with the
+    reviewed name/description."""
     exe = tmp_path / "runme.exe"
     # no shebang: a recognized shebang would (correctly) infer an interpreted kind now
     exe.write_text("opaque program bytes\n", encoding="utf-8")
@@ -95,10 +104,39 @@ async def test_executable_path_is_added_directly(tmp_path):
         source.query_one("#add-path", Input).value = str(exe)
         source.action_continue_add()
         await pilot.pause()
-        assert not isinstance(app.screen, AddSourceScreen)  # dismissed
-        entries = store.list_entries()
-        assert [e.meta.name for e in entries] == ["runme"]
-        assert entries[0].meta.kind == "exe"
+        review = app.screen
+        assert isinstance(review, ExeReviewScreen)  # identity review, not an instant add
+        assert review.query_one("#xv-name", Input).value == "runme"  # prefilled from the stem
+        review.query_one("#xv-name", Input).value = "launcher"
+        review.query_one("#xv-desc", Input).value = "the deploy tool"
+        review.action_accept()  # Ctrl+A
+        await pilot.pause()
+        assert not isinstance(app.screen, (ExeReviewScreen, AddSourceScreen))  # both gone
+    entries = store.list_entries()
+    assert [e.meta.name for e in entries] == ["launcher"]
+    assert entries[0].meta.kind == "exe"
+    assert entries[0].meta.description == "the deploy tool"
+
+
+async def test_exe_review_cancel_adds_nothing(tmp_path):
+    """Esc on the exe identity review leaves the store untouched (the cancel branch)."""
+    exe = tmp_path / "runme.exe"
+    exe.write_text("opaque program bytes\n", encoding="utf-8")
+    os.chmod(exe, 0o755)  # noqa: S103
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        source = AddSourceScreen()
+        app.push_screen(source)
+        await pilot.pause()
+        source.query_one("#add-path", Input).value = str(exe)
+        source.action_continue_add()
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ExeReviewScreen)
+        review.action_cancel()  # Esc → dismiss(None)
+        await pilot.pause()
+        assert isinstance(app.screen, AddSourceScreen)  # returned to the source step
+    assert store.list_entries() == []
 
 
 async def test_shell_script_path_opens_the_review_panel(tmp_path):
@@ -150,13 +188,18 @@ async def test_shell_add_surfaces_store_error(tmp_path):
     assert len(store.list_entries()) == 1  # nothing new landed
 
 
-async def test_executable_add_surfaces_store_error(tmp_path):
-    """When add_exe rejects the entry (here: a name already taken), the failure is shown
-    inline and nothing is dismissed — the exe path's error branch."""
+async def test_executable_add_surfaces_store_error(tmp_path, monkeypatch):
+    """When add_exe rejects the entry (here: a name already taken), the failure notifies
+    and the review panel stays open — nothing is dismissed. The exe review's error branch,
+    the twin of the python/shell panels' StoreError handling."""
     store.add_python(_py(tmp_path, "print(1)\n", "other.py"), name="runme")
     exe = tmp_path / "runme.exe"
     exe.write_text("opaque program bytes\n", encoding="utf-8")
     os.chmod(exe, 0o755)  # noqa: S103 — +x makes POSIX infer_kind classify it "exe" (Win: .exe suffix)
+    notes: list[str] = []
+    monkeypatch.setattr(
+        ExeReviewScreen, "notify", lambda self, message, **kw: notes.append(message)
+    )
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         source = AddSourceScreen()
@@ -165,9 +208,112 @@ async def test_executable_add_surfaces_store_error(tmp_path):
         source.query_one("#add-path", Input).value = str(exe)
         source.action_continue_add()
         await pilot.pause()
-        assert "already taken" in _error(source)
-        assert isinstance(app.screen, AddSourceScreen)  # not dismissed
-        assert [e.meta.name for e in store.list_entries()] == ["runme"]  # only the first
+        review = app.screen
+        assert isinstance(review, ExeReviewScreen)
+        review.action_accept()  # name "runme" already taken → StoreError
+        await pilot.pause()
+        assert app.screen is review  # the error keeps the panel open
+    assert any("already taken" in n for n in notes)
+    assert [e.meta.name for e in store.list_entries()] == ["runme"]  # only the first
+
+
+def _select_kind(modal: KindPickModal, kind_id: str) -> None:
+    """Highlight the KindPickModal option with the given id and select it (the real
+    OptionList.OptionSelected path, so the modal's own _picked handler dismisses)."""
+    options = modal.query_one(OptionList)
+    idx = next(
+        i for i in range(options.option_count) if options.get_option_at_index(i).id == kind_id
+    )
+    options.highlighted = idx
+    options.action_select()
+
+
+async def _ask_kind_for(tmp_path, app, pilot, name: str = "notes.txt") -> KindPickModal:
+    unknown = tmp_path / name
+    unknown.write_text("some opaque text\n", encoding="utf-8")
+    source = AddSourceScreen()
+    app.push_screen(source)
+    await pilot.pause()
+    source.query_one("#add-path", Input).value = str(unknown)
+    source.action_continue_add()
+    await pilot.pause()
+    modal = app.screen
+    assert isinstance(modal, KindPickModal)
+    return modal
+
+
+async def test_kind_pick_lists_interpreted_kinds_plus_exe_and_prompt(tmp_path):
+    """The ask offers the sorted interpreted kinds and the two catch-alls (a program /
+    a prompt) — the exhaustive TUI twin of --kind/--exe/--prompt."""
+    from skit.langs.registry import KNOWN_KINDS
+    from skit.langs.registry import spec_for as _spec_for
+
+    # prompt is family "interpreted" but appears once, as the dedicated catch-all below.
+    interpreted = sorted(
+        k
+        for k in KNOWN_KINDS
+        if (s := _spec_for(k)) is not None and s.family == "interpreted" and k != "prompt"
+    )
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        modal = await _ask_kind_for(tmp_path, app, pilot)
+        options = modal.query_one(OptionList)
+        ids = [options.get_option_at_index(i).id for i in range(options.option_count)]
+    assert ids == [*interpreted, "exe", "prompt"]  # interpreted kinds first, catch-alls last
+    assert ids.count("prompt") == 1  # never duplicated (would crash OptionList)
+
+
+async def test_kind_pick_shell_routes_to_the_add_review_panel(tmp_path):
+    """Picking an interpreted kind opens the same AddReviewScreen a recognized shell
+    script would, with that kind — and accepting commits it."""
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        modal = await _ask_kind_for(tmp_path, app, pilot)
+        _select_kind(modal, "shell")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, AddReviewScreen)
+        assert review._kind == "shell"
+        review.action_accept()
+        await pilot.pause()
+    assert store.resolve("notes").meta.kind == "shell"
+
+
+async def test_kind_pick_exe_routes_to_the_exe_review(tmp_path):
+    """Picking "a program" opens the ExeReviewScreen (the identity review), not an
+    instant add."""
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        modal = await _ask_kind_for(tmp_path, app, pilot)
+        _select_kind(modal, "exe")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ExeReviewScreen)
+        review.action_accept()
+        await pilot.pause()
+    assert store.resolve("notes").meta.kind == "exe"
+
+
+async def test_kind_pick_prompt_routes_to_the_prompt_review(tmp_path):
+    """Picking "a prompt for an AI agent" opens the PromptReviewScreen."""
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        modal = await _ask_kind_for(tmp_path, app, pilot)
+        _select_kind(modal, "prompt")
+        await pilot.pause()
+        assert isinstance(app.screen, PromptReviewScreen)
+
+
+async def test_kind_pick_cancel_adds_nothing(tmp_path):
+    """Esc on the ask returns to the source step and adds nothing (the None branch of the
+    _kind_picked callback)."""
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        modal = await _ask_kind_for(tmp_path, app, pilot)
+        modal.action_cancel()
+        await pilot.pause()
+        assert isinstance(app.screen, AddSourceScreen)
+    assert store.list_entries() == []
 
 
 async def test_py_path_opens_review_and_accept_flows_back_a_slug(tmp_path):
@@ -528,6 +674,79 @@ async def test_space_on_a_non_checkbox_focus_is_a_noop(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# AddReviewScreen: reference-mode honesty (fold what accept would skip)
+# ---------------------------------------------------------------------------
+
+
+def _flip_mode(review, index: int) -> None:
+    list(review.query_one("#rv-mode", RadioSet).query(RadioButton))[index].value = True
+
+
+async def test_review_reference_mode_folds_params_but_keeps_python_deps(tmp_path):
+    """Linking a python original folds the PARAMS section (skit never writes to the file)
+    but keeps the deps section — uv deps still apply to a linked file — and shows the
+    single-sentence note. Copy mode restores everything."""
+    p = _py(tmp_path, "import sys\nprint(sys.argv)\n", "tool.py")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        review = AddReviewScreen(p, kind="python")
+        app.push_screen(review)
+        await pilot.pause()
+        # copy mode on open: params visible, note hidden
+        assert review.query_one("#rv-params-wrap").display is True
+        assert review.query_one("#rv-ref-note", Static).display is False
+        _flip_mode(review, 1)  # "Link the original"
+        await pilot.pause()
+        assert review.query_one("#rv-params-wrap").display is False  # params folded
+        assert review.query_one("#rv-deps-wrap").display is True  # python (uv) deps stay
+        note = review.query_one("#rv-ref-note", Static)
+        assert note.display is True
+        text = str(note.render())
+        assert "parameter setup is skipped" in text
+        assert "npm dependencies" not in text  # non-npm: single sentence only
+        _flip_mode(review, 0)  # back to "Keep a copy"
+        await pilot.pause()
+        assert review.query_one("#rv-params-wrap").display is True  # restored
+        assert review.query_one("#rv-ref-note", Static).display is False
+
+
+async def test_review_reference_mode_npm_folds_deps_and_adds_second_sentence(tmp_path):
+    """For an npm kind, linking folds the DEPS section too (npm deps apply to stored
+    copies only) and the note gains the second sentence."""
+    js = tmp_path / "tool.js"
+    js.write_text("import chalk from 'chalk'\nconsole.log(chalk)\n", encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        review = AddReviewScreen(js, kind="js")
+        app.push_screen(review)
+        await pilot.pause()
+        assert review.query_one("#rv-deps-wrap").display is True
+        _flip_mode(review, 1)
+        await pilot.pause()
+        assert review.query_one("#rv-params-wrap").display is False
+        assert review.query_one("#rv-deps-wrap").display is False  # npm deps folded too
+        text = str(review.query_one("#rv-ref-note", Static).render())
+        assert "parameter setup is skipped" in text
+        assert "npm dependencies apply to stored copies only" in text  # second sentence
+
+
+async def test_review_reference_prefill_folds_on_mount(tmp_path):
+    """on_mount applies the initial visibility even when reference is PREFILLED (--ref):
+    the panel opens already folded, no flip required."""
+    js = tmp_path / "tool.js"
+    js.write_text("console.log(1)\n", encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        review = AddReviewScreen(js, kind="js", reference=True)
+        app.push_screen(review)
+        await pilot.pause()
+        assert review.query_one("#rv-mode", RadioSet).pressed_index == 1  # reference prefilled
+        assert review.query_one("#rv-params-wrap").display is False  # already folded on open
+        assert review.query_one("#rv-deps-wrap").display is False
+        assert review.query_one("#rv-ref-note", Static).display is True
+
+
+# ---------------------------------------------------------------------------
 # AddReviewApp: the CLI face of the panel (`skit add x.py` in a terminal)
 # ---------------------------------------------------------------------------
 
@@ -570,6 +789,19 @@ async def test_add_review_app_ref_prefill_and_cancel_leaves_store_untouched(tmp_
         await pilot.pause()
     assert app.return_value is None
     assert store.list_entries() == []
+
+
+async def test_add_review_app_forwards_fresh_no_storage_section(tmp_path):
+    """AddReviewApp forwards fresh=True to the screen: a freshly-hosted panel has no
+    Storage section (a temp draft has no original to link) — finding 14."""
+    p = _py(tmp_path, "print(1)\n")
+    app = AddReviewApp(p, fresh=True)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, AddReviewScreen)
+        assert screen._fresh is True
+        assert not screen.query("#rv-mode")  # fresh: the storage ask is absent
 
 
 def test_run_add_review_returns_the_apps_result(tmp_path, monkeypatch):

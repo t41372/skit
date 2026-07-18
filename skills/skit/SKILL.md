@@ -61,7 +61,7 @@ skit run <name> --set width=1200 --set fmt=png --no-input
 skit run <name> -p <preset> --no-input              # a saved preset
 skit run <name> --no-input -- --verbose input.txt   # raw args to the script's own parser
 skit run <name> --set width=800 --dry-run --no-input  # print the command, run nothing
-skit run <name> --raw --no-input                    # escape hatch: as-is, no form flags (--set/-p refused)
+skit run <name> --raw --no-input                    # escape hatch: as-is; injected kinds only (see below)
 skit run <name> --forget-args --no-input            # erase the remembered extra args first, then run
 ```
 
@@ -76,6 +76,10 @@ skit run <name> --forget-args --no-input            # erase the remembered extra
   run's* extra args (it says so on stderr). Pass your own `--` args, use `--raw` (which
   never replays old arguments), or `--forget-args` (erases the remembered tail up front,
   then runs) when you need a clean slate; `--dry-run` shows exactly what would happen.
+- `--raw` only applies to kinds skit injects into (python/shell/js/ts/fish). On
+  prompt/command/exe and the declared-schema kinds the parameters ARE the interface,
+  so `--raw` is refused (exit 2) — there is nothing to skip. It also refuses
+  `--set`/`-p`/`--save-preset`.
 - Secrets: prefer wiring them to environment variables (see below) over `--set`.
   Secret values never persist to disk and are masked as ••• in dry-run output.
 
@@ -257,6 +261,9 @@ skit config shell.bash_path /path  # where bash lives on Windows (POSIX auto-det
 `doctor --json` adds `launch_blocked` — a `{name: reason}` map of entries whose run
 would refuse to start (uninstalled interpreter/JS runtime, a pinned agent binary that
 is gone, a vanished working directory) even though their target file is present.
+Note: doctor's EXIT CODE reflects uv availability only — per-entry warnings (missing
+targets, drift, launch_blocked) do not change it. Read `--json` for health, never the
+exit code.
 
 If `show`/`run` reports drift (the script changed and its managed parameter
 definitions no longer match), `skit params <name> --resync` refreshes them.

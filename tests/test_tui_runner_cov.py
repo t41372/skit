@@ -20,6 +20,7 @@ from skit.tui_runner import (
     RunnerActionModal,
     RunnerAddModal,
     RunnerManageScreen,
+    RunnerRemoveConfirm,
 )
 
 
@@ -313,7 +314,9 @@ async def test_manage_screen_pick_then_edit_replaces_in_place(tmp_path):
     assert _find_runner("codex").argv == ("codex", "--new", "{{prompt}}")
 
 
-async def test_manage_screen_pick_then_remove_deletes_the_row(tmp_path):
+async def test_manage_screen_pick_then_remove_confirms_then_deletes(tmp_path):
+    """Removing an agent is destructive config surgery, so it now ASKS first — the
+    RunnerRemoveConfirm. Pressing y confirms and deletes the row."""
     config.ensure_prompt_runners_seeded()
     app = tui.MenuApp()
     async with app.run_test(size=(100, 32)) as pilot:
@@ -324,12 +327,38 @@ async def test_manage_screen_pick_then_remove_deletes_the_row(tmp_path):
         await pilot.pause()
         _as(app.screen, RunnerActionModal).action_remove()  # RunnerActionModal → "remove"
         await pilot.pause()
+        confirm = app.screen
+        assert isinstance(confirm, RunnerRemoveConfirm)  # asked before deleting
+        assert config.find_prompt_runner("claude") is not None  # not yet gone
+        await pilot.press("y")  # confirm
+        await pilot.pause()
         assert isinstance(app.screen, RunnerManageScreen)
         # the list reloaded without claude
         remaining = screen.query_one(OptionList)
         ids = [remaining.get_option_at_index(i).id for i in range(remaining.option_count)]
     assert config.find_prompt_runner("claude") is None
     assert "claude" not in ids
+
+
+async def test_manage_screen_remove_confirm_kept_deletes_nothing(tmp_path):
+    """Esc on the confirm keeps the agent — the "really is False" branch: nothing is
+    removed and the list is unchanged."""
+    config.ensure_prompt_runners_seeded()
+    before = config.load_prompt_runners()
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        screen = await _open_manage(app, pilot)
+        options = screen.query_one(OptionList)
+        options.highlighted = 0  # claude
+        options.action_select()
+        await pilot.pause()
+        _as(app.screen, RunnerActionModal).action_remove()
+        await pilot.pause()
+        assert isinstance(app.screen, RunnerRemoveConfirm)
+        await pilot.press("escape")  # Esc → keep
+        await pilot.pause()
+        assert isinstance(app.screen, RunnerManageScreen)
+    assert config.load_prompt_runners() == before  # nothing removed
 
 
 async def test_manage_screen_pick_then_cancel_changes_nothing(tmp_path):

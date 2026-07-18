@@ -1,6 +1,6 @@
 """The TUI add flow's authoring lanes and the kind-parametric review panel.
 
-Covers the Ctrl+E / Ctrl+P draft-in-$EDITOR lanes (fresh mode: no Storage section,
+Covers the Ctrl+N / Ctrl+P draft-in-$EDITOR lanes (fresh mode: no Storage section,
 accept always copies), a review panel for a kind with NO analyzer, and the js deps
 prefill. Every test asserts the entry that landed (or that nothing did), never that a
 widget merely mounted.
@@ -50,7 +50,7 @@ def _editor_writes(monkeypatch, content: str | None):
     return seen
 
 
-# ---------------------------------------------------------------- Ctrl+E draft a script
+# ---------------------------------------------------------------- Ctrl+N draft a script
 
 
 async def test_draft_script_opens_fresh_review_and_copies(tmp_path, no_suspend, monkeypatch):
@@ -59,7 +59,7 @@ async def test_draft_script_opens_fresh_review_and_copies(tmp_path, no_suspend, 
     async with app.run_test(size=(100, 40)) as pilot:
         app.push_screen(AddSourceScreen())
         await pilot.pause()
-        await pilot.press("ctrl+e")  # the advertised Write a script… key
+        await pilot.press("ctrl+n")  # the advertised Write a script… key
         await pilot.pause()
         review = app.screen
         assert isinstance(review, AddReviewScreen)
@@ -86,7 +86,7 @@ async def test_draft_script_unchanged_starter_adds_nothing(tmp_path, no_suspend,
         source = AddSourceScreen()
         app.push_screen(source)
         await pilot.pause()
-        await pilot.press("ctrl+e")
+        await pilot.press("ctrl+n")
         await pilot.pause()
         assert isinstance(app.screen, AddSourceScreen)  # no review panel opened
     assert store.list_entries() == []
@@ -103,7 +103,7 @@ async def test_draft_script_editor_error_is_reported_not_crashed(tmp_path, no_su
         source = AddSourceScreen()
         app.push_screen(source)
         await pilot.pause()
-        await pilot.press("ctrl+e")
+        await pilot.press("ctrl+n")
         await pilot.pause()
         # The editor never wrote → the starter is unchanged → nothing is added, no crash.
         assert isinstance(app.screen, AddSourceScreen)
@@ -117,13 +117,61 @@ async def test_draft_script_cancelled_review_adds_nothing(tmp_path, no_suspend, 
         source = AddSourceScreen()
         app.push_screen(source)
         await pilot.pause()
-        await pilot.press("ctrl+e")
+        await pilot.press("ctrl+n")
         await pilot.pause()
         review = app.screen
         assert isinstance(review, AddReviewScreen)
         review.action_cancel()  # dismiss(None) → the draft callback adds nothing
         await pilot.pause()
     assert store.list_entries() == []
+
+
+def test_kind_for_draft_reads_the_shebang_not_the_suffix(tmp_path):
+    """The draft always starts life as a .py temp file, so the SUFFIX must never decide
+    its kind — the user's shebang is the explicit signal. A python (or absent) shebang
+    stays python; a registered non-python shebang re-infers; an unknown one falls back to
+    python."""
+    from skit.tui_add import _kind_for_draft
+
+    no_shebang = tmp_path / "a.py"
+    no_shebang.write_text("import sys\nprint('hi')\n", encoding="utf-8")
+    assert _kind_for_draft(no_shebang) == "python"  # no shebang → python fallback
+
+    py_shebang = tmp_path / "b.py"
+    py_shebang.write_text("#!/usr/bin/env python3\nprint('hi')\n", encoding="utf-8")
+    assert _kind_for_draft(py_shebang) == "python"  # python shebang matches python
+
+    bash_shebang = tmp_path / "c.py"
+    bash_shebang.write_text("#!/usr/bin/env bash\necho hi\n", encoding="utf-8")
+    assert _kind_for_draft(bash_shebang) == "shell"  # re-inferred from the bash shebang
+
+    unknown = tmp_path / "d.py"
+    unknown.write_text("#!/usr/bin/env cobol\nDISPLAY 'hi'.\n", encoding="utf-8")
+    assert _kind_for_draft(unknown) == "python"  # unmatched shebang → python fallback
+
+
+async def test_draft_bash_shebang_becomes_a_shell_entry(tmp_path, no_suspend, monkeypatch):
+    """The draft lane honors a changed shebang: writing a #!/usr/bin/env bash body into
+    the python starter re-infers the kind, so the entry lands as SHELL — never a broken
+    python entry with a bash body (finding 6)."""
+    seen = _editor_writes(monkeypatch, "#!/usr/bin/env bash\n# Ship it\necho drafted\n")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        app.push_screen(AddSourceScreen())
+        await pilot.pause()
+        await pilot.press("ctrl+n")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, AddReviewScreen)
+        assert review._kind == "shell"  # re-inferred, not the .py suffix's python
+        assert review._fresh is True
+        review.query_one("#rv-name", Input).value = "shipit"
+        review.action_accept()
+        await pilot.pause()
+    entry = store.resolve("shipit")
+    assert entry.meta.kind == "shell"
+    assert entry.meta.mode == "copy"  # fresh always copies
+    assert not seen["path"].exists()
 
 
 # ---------------------------------------------------------------- Ctrl+P draft a prompt

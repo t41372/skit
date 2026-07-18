@@ -982,8 +982,10 @@ async def test_add_rescan_preserves_user_edits(tmp_path, monkeypatch):
         assert screen.query_one("#rv-desc", Input).value == "my description"
 
 
-async def test_add_panel_rejects_non_executable_file(tmp_path):
-    from skit.tui_add import AddSourceScreen
+async def test_add_panel_asks_kind_for_unclassifiable_file(tmp_path):
+    """An unclassifiable file no longer shows a CLI-flag error — it ASKS: the KindPickModal
+    (the TUI twin of --kind/--exe/--prompt). Esc cancels and adds nothing."""
+    from skit.tui_add import AddSourceScreen, KindPickModal
 
     notes = tmp_path / "notes.txt"
     notes.write_text("hi", encoding="utf-8")
@@ -998,8 +1000,11 @@ async def test_add_panel_rejects_non_executable_file(tmp_path):
 
         screen._path_given(_Input.Submitted(box, str(notes)))
         await pilot.pause()
-        error = str(screen.query_one("#add-error").render())
-        assert "notes.txt" in error
+        modal = app.screen
+        assert isinstance(modal, KindPickModal)  # asked, not errored
+        modal.action_cancel()  # Esc → dismiss(None)
+        await pilot.pause()
+        assert isinstance(app.screen, AddSourceScreen)  # back on the source step
         assert store.list_entries() == []  # nothing was added
 
 

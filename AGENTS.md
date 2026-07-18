@@ -75,9 +75,10 @@ installed by the resolved runner's own installer (npm/bun/deno). Two contributor
   follow: template/non-template decisions key off `LangSpec.placeholder_params`, never
   `family == "template"`; the render path is raw substitution with NO shell and NO quoting
   (`langs/prompt/render.py` — `quote_for_shell` must never touch it); `LaunchStrategy.build`/
-  `describe` carry an accept-and-ignore `runner=` keyword on every strategy; runner resolution
-  is `--runner` > the entry's pin > an interactive ask > exit 126 — no ranking, no guessing, and
-  the last *pick* (never a pin use) prefills the next picker from state. Prompts are not a
+  `describe` carry an accept-and-ignore `runner=` keyword on every strategy; runner resolution:
+  non-interactive is `--runner` > the entry's pin > exit 126 — no ranking, no guessing;
+  interactive runs host the form's runner picker (prefilled pin > last pick), and the last
+  *pick* (never a pin left untouched) prefills the next picker from state. Prompts are not a
   secrets channel and no delivery mechanism pretends otherwise.
 
 Golden corpus: `tests/corpus/<lang>/` (and the Python files directly under `tests/corpus/`) are

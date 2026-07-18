@@ -11,6 +11,8 @@ MITM→RCE).
 from __future__ import annotations
 
 import os
+import sys
+from pathlib import Path
 from typing import override
 
 from rich.markup import escape
@@ -94,6 +96,12 @@ class SkillInstallModal(ModalScreen[str | None]):
 
 
 class PreferencesScreen(Screen[bool]):
+    def __init__(self) -> None:
+        super().__init__()
+        self._dirty: bool = False
+        # Widgets emit Changed while composing; only user edits after mount count.
+        self._dirt_armed: bool = False
+
     BINDINGS = [
         Binding("escape", "close", gettext("Back")),
         Binding("ctrl+a", "save", gettext("Save"), priority=True),
@@ -128,6 +136,16 @@ class PreferencesScreen(Screen[bool]):
         self.query_one("#pf-body").border_title = gettext("Preferences")
         self._toggle_custom()
         self._refresh_runner_count()
+        self.call_after_refresh(setattr, self, "_dirt_armed", True)
+
+    @on(Input.Changed)
+    @on(RadioSet.Changed)
+    @on(Select.Changed)
+    def _mark_dirty(self) -> None:
+        # Same guard Script settings has: eight sections of unsaved edits must not
+        # vanish on a stray Esc while its sibling screen asks first.
+        if self._dirt_armed:
+            self._dirty = True
 
     def _refresh_runner_count(self) -> None:
         names = [r.name for r in config.load_prompt_runners()]
@@ -231,16 +249,20 @@ class PreferencesScreen(Screen[bool]):
                 classes="hint",
             )
 
-            yield Static(gettext("Shell on Windows"), classes="section")
-            yield Input(
-                value=config.load_bash_path(),
-                placeholder=gettext(r"Path to bash.exe (empty = Git Bash / WSL detection)"),
-                id="pf-bash",
-            )
-            yield Static(
-                gettext("Only used on Windows, where shell scripts need an explicit bash."),
-                classes="hint",
-            )
+            if sys.platform == "win32":
+                # Windows-only fact, Windows-only section: every other OS just runs
+                # bash from PATH, and a section that can never apply is scroll noise.
+                yield Static(gettext("Shell on Windows"), classes="section")
+                yield Input(
+                    value=config.load_bash_path(),
+                    placeholder=gettext(r"Path to bash.exe (empty = Git Bash / WSL detection)"),
+                    id="pf-bash",
+                )
+                yield Static(
+                    gettext("Shell scripts need an explicit bash here."),
+                    classes="hint",
+                )
+                yield Static("", id="pf-bash-error", classes="error")
 
             yield Static(gettext("Agents (prompt runners)"), classes="section")
             yield Static("", id="pf-runner-count")
@@ -319,7 +341,17 @@ class PreferencesScreen(Screen[bool]):
         config.save_after_run("stay" if after_index == 1 else "exit")
         js_index = self.query_one("#pf-js", RadioSet).pressed_index
         config.save_js_runner("" if js_index <= 0 else config.JS_RUNNERS[js_index - 1])
-        config.save_bash_path(self.query_one("#pf-bash", Input).value)
+        bash_box = self.query("#pf-bash")
+        if bash_box:
+            bash_value = bash_box.first(Input).value
+            # Same rule as `skit config shell.bash_path` — a typo'd path must not
+            # ride into config through this door when the CLI door refuses it.
+            if bash_value.strip() and not Path(bash_value).expanduser().is_file():
+                self.query_one("#pf-bash-error", Static).update(
+                    gettext("No such file: %(path)s") % {"path": escape(bash_value)}
+                )
+                return
+            config.save_bash_path(bash_value)
         choice = self._mirror_choice()
         if choice == "off":
             config.disable()
@@ -348,4 +380,13 @@ class PreferencesScreen(Screen[bool]):
         self.dismiss(True)
 
     def action_close(self) -> None:
-        self.dismiss(False)
+        if not self._dirty:
+            self.dismiss(False)
+            return
+        from .tui_settings import DiscardChangesModal
+
+        def _decided(discard: bool | None) -> None:
+            if discard:
+                self.dismiss(False)
+
+        self.app.push_screen(DiscardChangesModal(), _decided)

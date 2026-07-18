@@ -403,10 +403,13 @@ def test_build_missing_body_is_exit_127(tmp_path, monkeypatch):
 
 def test_build_over_long_render_is_a_clean_launch_error(tmp_path, monkeypatch):
     entry = _entry_with_runner(tmp_path, monkeypatch)
-    with pytest.raises(LaunchError, match="characters"):
+    # The size is measured (and worded) in BYTES, not characters — the limit is an OS
+    # argv byte cap, so the message must say "bytes"/"-byte limit", never "characters".
+    with pytest.raises(LaunchError, match=r"bytes.*-byte limit") as excinfo:
         PromptLaunch().build(
             entry, [], {"a": "x" * (render.ARGV_LIMIT + 10)}, None, runner=_runner()
         )
+    assert "characters" not in str(excinfo.value)
 
 
 def test_build_script_override_reads_the_override(tmp_path, monkeypatch):

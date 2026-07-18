@@ -1900,11 +1900,7 @@ def run(
         [r.name for r in config.load_prompt_runners()] if entry.meta.kind == "prompt" else []
     )
     form_hosts_runner = (
-        bool(runner_names)
-        and runner is None
-        and run_interactive
-        and form_style == "tui"
-        and not dry_run
+        bool(runner_names) and runner is None and run_interactive and form_style == "tui"
     )
     runner_obj = None if form_hosts_runner else _resolve_run_runner(entry, runner, no_input)
     if raw and run_spec is not None and run_spec.analyzer is not None:
@@ -1914,12 +1910,19 @@ def run(
         plan = flows.FormPlan(source="none")
     else:
         if raw:
-            # Honest no-op notice (kinds without an analyzer have no injection to skip;
-            # their parameters ARE the interface): the flag must never appear to do
-            # nothing silently.
-            console.print(
-                f"[dim]{gettext('Raw mode: this kind has no injection to skip — its parameters are the interface and still apply.')}[/dim]"
+            # Refusal, not a notice-then-business-as-usual: on these kinds the
+            # parameters ARE the interface, so "as-is" cannot be honored — same
+            # contract as --raw with --set (refuse, never quietly do less).
+            err_console.print(
+                "[red]"
+                + gettext(
+                    "--raw only applies to kinds skit injects into; a %(kind)s entry's "
+                    "parameters are its interface and always apply."
+                )
+                % {"kind": entry.meta.kind}
+                + _RED_CLOSE
             )
+            raise typer.Exit(EXIT_USAGE)
         plan = flows.plan_for_entry(entry)
     _print_drift(plan)
     if plan.degraded_reason:
@@ -1968,7 +1971,10 @@ def run(
                         },
                         EXIT_NOT_EXECUTABLE,
                     )
-                argstate.save_last_runner(picked_runner)
+                if picked_runner != entry.meta.runner:
+                    # A PIN left untouched is not a pick — only a real choice
+                    # prefills future pickers (argstate's own contract).
+                    argstate.save_last_runner(picked_runner)
     else:
         values = prefilled
         errors = flows.validate(plan, values)
@@ -1997,6 +2003,14 @@ def run(
     except flows.FormError as exc:
         raise _fail(str(exc), EXIT_SKIT) from exc
     if save_preset:
+        if not plan.fields:
+            # Same rule (and sentence) as `skit preset save`: a field-less entry has
+            # nothing to put in a preset — creating an empty one is refuse-worthy.
+            raise _fail(
+                gettext("%(name)s has no form fields, so there's nothing to save.")
+                % {"name": entry.meta.name},
+                1,
+            )
         argstate.save_preset(
             entry.slug,
             save_preset,
@@ -2147,9 +2161,14 @@ def runner_add(
         config.save_prompt_runners([new_row if r.name == name else r for r in runners])
     else:
         config.save_prompt_runners([*runners, new_row])
-    console.print(
-        f"[green]{gettext('Runner %(name)s added: %(command)s') % {'name': escape(name), 'command': escape(_join_runner_argv(list(argv)))}}[/green]"
-    )
+    if exists:
+        console.print(
+            f"[green]{gettext('Runner %(name)s updated: %(command)s') % {'name': escape(name), 'command': escape(_join_runner_argv(list(argv)))}}[/green]"
+        )
+    else:
+        console.print(
+            f"[green]{gettext('Runner %(name)s added: %(command)s') % {'name': escape(name), 'command': escape(_join_runner_argv(list(argv)))}}[/green]"
+        )
 
 
 @runner_app.command("remove", help=gettext("Remove a configured runner."))
@@ -2697,6 +2716,54 @@ def params(
     help_texts, bad_help = _parse_kv_opts(help_text_opt or [], "--help-text")
 
     entry_spec = spec_for(entry.meta.kind)
+    # One operation per invocation, ENFORCED — not silently first-wins. The policy ops
+    # below each used to early-return, dropping any schema flags riding along with a
+    # green exit 0 (the exact refuse-never-drop sin this command's own siblings guard
+    # against). --workdir/--interpreter/--template stay one combinable launch-policy
+    # group; everything else must come alone.
+    schema_ops = bool(
+        resync
+        or manage
+        or unmanage
+        or add
+        or rm
+        or secret
+        or no_secret
+        or required_opt
+        or optional_opt
+        or prompt
+        or env_source
+        or type_opt
+        or default_opt
+        or choices_opt
+        or deliver_opt
+        or flag_opt
+        or help_text_opt
+    )
+    own_ops = [
+        name
+        for name, present in (
+            ("--interpolate/--no-interpolate", interpolate_opt is not None),
+            ("--runner", runner_pin is not None),
+            (
+                "--workdir/--interpreter/--template",
+                workdir_opt is not None or interpreter_opt is not None or template_opt is not None,
+            ),
+            ("--normalize", bool(normalize_opt)),
+        )
+        if present
+    ]
+    if own_ops and (schema_ops or len(own_ops) > 1):
+        err_console.print(
+            "[red]"
+            + gettext(
+                "%(op)s is its own operation — run it in a separate skit params call "
+                "(nothing was changed)."
+            )
+            % {"op": own_ops[0]}
+            + _RED_CLOSE
+        )
+        raise typer.Exit(EXIT_USAGE)
     if interpolate_opt is not None:
         # Its own op, like --runner: flipping the master switch changes what the entry
         # IS at run time, so it never mixes into the schema-edit pass.

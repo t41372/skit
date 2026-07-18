@@ -136,6 +136,18 @@ def test_set_saves_preset_with_dry_run_without_running(run_entry_spy):
     }
 
 
+def test_save_preset_on_field_less_entry_refused_saves_nothing(run_entry_spy):
+    """A field-less entry has nothing to put in a preset — `--save-preset` is refused
+    (exit 1) with the same sentence `skit preset save` uses, and nothing is saved OR run
+    (finding 13, the CLI face)."""
+    runner.invoke(cli.app, ["add", "--cmd", "echo hi", "--name", "noargs", "--no-input"])
+    result = runner.invoke(cli.app, ["run", "noargs", "--save-preset", "nope", "--no-input"])
+    assert result.exit_code == 1, result.output
+    assert "has no form fields, so there's nothing to save." in result.output
+    assert "entry" not in run_entry_spy  # refused before any launch
+    assert argstate.load_state(store.resolve("noargs").slug)["presets"] == {}  # saved nothing
+
+
 def test_set_secret_never_persisted_and_masked_in_dry_run(tmp_path, run_entry_spy):
     text = metawriter.write_params(
         'KEY = "old"\nprint(KEY)\n',

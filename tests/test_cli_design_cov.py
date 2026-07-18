@@ -88,6 +88,12 @@ def _find_runner(name):
     return r
 
 
+def _flat(text: str) -> str:
+    """Collapse rich's soft-wrap newlines/whitespace so a message split across the 80-col
+    CliRunner width still matches as one string."""
+    return " ".join(text.split())
+
+
 # ============================================================ curation
 
 
@@ -232,6 +238,82 @@ def test_params_template_empty_refused(tmp_path):
     result = runner.invoke(cli.app, ["params", "cmd", "--template", "   "])
     assert result.exit_code == 1
     assert store.resolve("cmd").meta.template == "echo {x}"  # unchanged
+
+
+# ============================================================ params: one op per call
+
+
+def _fingerprint(name):
+    """Everything a params edit could touch: the meta AND the stored script text. A
+    refused one-op combo must leave BOTH byte-identical (the "nothing was changed"
+    contract), so the snapshot has to see the script's own [tool.skit] block too."""
+    entry = store.resolve(name)
+    script = entry.script_path.read_text(encoding="utf-8") if entry.script_path.exists() else ""
+    return (entry.meta, script)
+
+
+def _assert_one_op_refusal(name, argv, op):
+    before = _fingerprint(name)
+    result = runner.invoke(cli.app, ["params", name, *argv])
+    assert result.exit_code == 2, result.output
+    flat = _flat(result.output)
+    assert f"{op} is its own operation" in flat
+    assert "nothing was changed" in flat
+    assert _fingerprint(name) == before  # neither the policy op NOR the rider applied
+
+
+def test_params_workdir_with_schema_flag_refused_unchanged(tmp_path):
+    _shell(tmp_path, name="sh")
+    _assert_one_op_refusal(
+        "sh", ["--workdir", "invoke", "--manage", "CITY"], "--workdir/--interpreter/--template"
+    )
+
+
+def test_params_interpolate_with_schema_flag_refused_unchanged(tmp_path):
+    _prompt(tmp_path, name="pr")
+    _assert_one_op_refusal(
+        "pr", ["--interpolate", "--secret", "a"], "--interpolate/--no-interpolate"
+    )
+
+
+def test_params_runner_with_schema_flag_refused_unchanged(tmp_path):
+    config.ensure_prompt_runners_seeded()
+    _prompt(tmp_path, name="pr")
+    _assert_one_op_refusal("pr", ["--runner", "claude", "--resync"], "--runner")
+
+
+def test_params_normalize_with_schema_flag_refused_unchanged(tmp_path):
+    _shell(tmp_path, body="#!/usr/bin/env bash\nCITY=Taipei\necho $CITY\n", name="sh")
+    _assert_one_op_refusal("sh", ["--normalize", "CITY", "--manage", "CITY"], "--normalize")
+
+
+def test_params_two_policy_groups_refused_unchanged(tmp_path):
+    """Two policy ops in one call is refused just like a policy op + a schema flag — the
+    first-listed op names the refusal, and nothing changes."""
+    config.ensure_prompt_runners_seeded()
+    _prompt(tmp_path, name="pr")
+    _assert_one_op_refusal(
+        "pr", ["--interpolate", "--runner", "claude"], "--interpolate/--no-interpolate"
+    )
+
+
+def test_params_workdir_plus_runner_refused_names_runner_first(tmp_path):
+    config.ensure_prompt_runners_seeded()
+    _prompt(tmp_path, name="pr")
+    # --runner is listed before the workdir group, so it's the op named in the refusal.
+    _assert_one_op_refusal("pr", ["--workdir", "invoke", "--runner", "claude"], "--runner")
+
+
+def test_params_launch_policy_group_stays_combinable(tmp_path):
+    """--workdir/--interpreter/--template are ONE launch-policy group, not three ops — so
+    --workdir + --interpreter in a single call is allowed and both apply (exit 0)."""
+    _shell(tmp_path, name="sh")
+    result = runner.invoke(cli.app, ["params", "sh", "--workdir", "invoke", "--interpreter", "zsh"])
+    assert result.exit_code == 0, result.output
+    assert "is its own operation" not in result.output  # NOT one-op-refused
+    meta = store.resolve("sh").meta
+    assert meta.workdir == "invoke"  # both landed
+    assert meta.interpreter == "zsh"
 
 
 # ============================================================ show interpreter key
@@ -447,14 +529,29 @@ def test_run_forget_args_erases_remembered_tail(tmp_path, spawn_spy):
     assert spawn_spy["extra"] == []  # the run reused nothing
 
 
-# ============================================================ raw no-op notice
+# ============================================================ raw refusal
 
 
-def test_run_raw_notice_on_analyzer_less_kind(tmp_path, spawn_spy):
+def test_run_raw_refused_on_analyzer_less_kind(tmp_path, spawn_spy):
+    """On a kind skit doesn't inject into (here: a command template) the parameters ARE
+    the interface, so `--raw` cannot be honored "as-is" — it's REFUSED (exit 2), not a
+    notice-then-run-anyway. Nothing launches."""
     store.add_command("echo hi", name="cmd")
     result = runner.invoke(cli.app, ["run", "cmd", "--raw", "--no-input"])
+    assert result.exit_code == 2, result.output
+    flat = _flat(result.output)
+    assert "--raw only applies to kinds skit injects into" in flat
+    assert "command entry's parameters are its interface" in flat
+    assert "entry" not in spawn_spy  # refused before any launch
+
+
+def test_run_raw_allowed_on_injected_kind(tmp_path, spawn_spy):
+    """The twin: on an injected kind (python) --raw stays a legitimate escape hatch — it
+    runs the stored copy as-is, no refusal."""
+    _py(tmp_path, name="job")
+    result = runner.invoke(cli.app, ["run", "job", "--raw", "--no-input"])
     assert result.exit_code == 0, result.output
-    assert "no injection to skip" in result.output  # the honest no-op notice
+    assert spawn_spy["entry"].meta.name == "job"  # it really launched
 
 
 # ============================================================ doctor launch_blocked
@@ -483,6 +580,17 @@ def test_runner_add_force_replaces_in_place(tmp_path):
     assert result.exit_code == 0, result.output
     assert [r.name for r in config.load_prompt_runners()] == before  # order held
     assert _find_runner("codex").argv == ("codex", "--model", "o1", "{{prompt}}")
+    # Replacing says "updated", never "added" — the word must match the act.
+    assert "Runner codex updated:" in result.output
+    assert "added" not in result.output
+
+
+def test_runner_add_fresh_says_added(tmp_path):
+    config.ensure_prompt_runners_seeded()
+    result = runner.invoke(cli.app, ["runner", "add", "sonnet", "--", "claude", "{{prompt}}"])
+    assert result.exit_code == 0, result.output
+    assert "Runner sonnet added:" in result.output  # a genuinely new row says "added"
+    assert "updated" not in result.output
 
 
 def test_runner_add_without_force_refuses_with_force_hint(tmp_path):
@@ -549,3 +657,53 @@ def test_run_prompt_inline_picker_removed_runner_is_126(tmp_path, spawn_spy, mon
     assert result.exit_code == 126
     assert "ghostrunner" in result.output
     assert "entry" not in spawn_spy  # never launched
+
+
+def test_run_prompt_inline_pin_left_untouched_is_not_a_pick(tmp_path, spawn_spy, monkeypatch):
+    """A PINNED prompt whose form comes back with the pin unchanged did not "pick" a
+    runner — the last-picked state that prefills future pickers stays put (argstate's
+    contract: using a pin is not a pick)."""
+    _prompt(tmp_path, pin="claude")
+    _prompt_run_interactive(monkeypatch)
+    monkeypatch.setattr("skit.inlineform.collect", lambda *a, **k: ({"a": "hi"}, "claude"))
+    result = runner.invoke(cli.app, ["run", "p"])
+    assert result.exit_code == 0, result.output
+    assert spawn_spy["runner"] == config.find_prompt_runner("claude")  # ran with the pin
+    assert argstate.load_last_runner() == ""  # last-picked state untouched
+
+
+def test_run_prompt_inline_pick_differing_from_pin_is_saved(tmp_path, spawn_spy, monkeypatch):
+    """The twin: choosing a runner that DIFFERS from the pin is a real pick and IS
+    remembered for the next picker."""
+    _prompt(tmp_path, pin="claude")
+    _prompt_run_interactive(monkeypatch)
+    monkeypatch.setattr("skit.inlineform.collect", lambda *a, **k: ({"a": "hi"}, "codex"))
+    result = runner.invoke(cli.app, ["run", "p"])
+    assert result.exit_code == 0, result.output
+    assert spawn_spy["runner"] == config.find_prompt_runner("codex")
+    assert argstate.load_last_runner() == "codex"  # a real change is remembered
+
+
+def test_run_prompt_dry_run_still_hosts_the_runner_picker(tmp_path, spawn_spy, monkeypatch):
+    """--dry-run no longer forces a bare line ask: an interactive tui prompt dry-run hosts
+    the runner picker in the form exactly like a real run (finding 5), then prints the
+    resolved command instead of launching."""
+    _prompt(tmp_path)
+    _prompt_run_interactive(monkeypatch)
+    seen: dict[str, object] = {}
+
+    def fake_collect(entry, plan, prefill, runners=None, runner_default=""):
+        seen["runners"] = list(runners or [])
+        return {"a": "hi"}, "codex"
+
+    monkeypatch.setattr("skit.inlineform.collect", fake_collect)
+    ask_hit = {"n": 0}
+    monkeypatch.setattr(
+        cli.Prompt, "ask", staticmethod(lambda *a, **k: ask_hit.__setitem__("n", 1))
+    )
+    result = runner.invoke(cli.app, ["run", "p", "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert seen["runners"] == [r.name for r in config.load_prompt_runners()]  # picker hosted
+    assert ask_hit["n"] == 0  # NOT line-asked, despite --dry-run
+    assert "entry" not in spawn_spy  # dry-run launches nothing
+    assert "codex" in result.output  # the resolved runner's real command is shown

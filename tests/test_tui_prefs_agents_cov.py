@@ -12,7 +12,7 @@ from textual.widgets import Input, OptionList, RadioButton, RadioSet, Static
 
 from skit import agentskill, config, tui
 from skit.tui_prefs import PreferencesScreen, SkillInstallModal
-from skit.tui_runner import RunnerActionModal, RunnerManageScreen
+from skit.tui_runner import RunnerActionModal, RunnerManageScreen, RunnerRemoveConfirm
 
 
 def _as[S](obj: object, cls: type[S]) -> S:
@@ -66,17 +66,130 @@ async def test_prefs_js_runner_auto_clears_to_empty(tmp_path):
     assert config.load_js_runner() == ""  # auto == empty
 
 
-async def test_prefs_bash_path_persists(tmp_path):
+async def test_prefs_bash_section_is_windows_only(tmp_path, monkeypatch):
+    """Off Windows the "Shell on Windows" section never composes — a section that can
+    never apply is scroll noise. Saving still works (the bash box is simply absent)."""
+    monkeypatch.setattr("skit.tui_prefs.sys.platform", "darwin")
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         app.push_screen(PreferencesScreen())
         await pilot.pause()
         screen = _as(app.screen, PreferencesScreen)
-        screen.query_one("#pf-bash", Input).value = "/opt/git/bin/bash.exe"
+        assert not screen.query("#pf-bash")  # the whole Windows section is gone
+        screen.action_save()
+        await pilot.pause()
+        assert not isinstance(app.screen, PreferencesScreen)  # saved and dismissed
+
+
+async def test_prefs_bash_path_persists_on_win32(tmp_path, monkeypatch):
+    monkeypatch.setattr("skit.tui_prefs.sys.platform", "win32")
+    bash = tmp_path / "bash.exe"
+    bash.write_text("", encoding="utf-8")  # a REAL file — the save-side check requires it
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesScreen())
+        await pilot.pause()
+        screen = _as(app.screen, PreferencesScreen)
+        screen.query_one("#pf-bash", Input).value = str(bash)
         await pilot.pause()
         screen.action_save()
         await pilot.pause()
-    assert config.load_bash_path() == "/opt/git/bin/bash.exe"
+        assert not isinstance(app.screen, PreferencesScreen)  # valid path → saved + dismissed
+    assert config.load_bash_path() == str(bash)
+
+
+async def test_prefs_bash_bad_path_shows_error_and_does_not_save(tmp_path, monkeypatch):
+    """The same rule as `skit config shell.bash_path`: a typo'd path must not ride into
+    config through the TUI door. The error shows in #pf-bash-error and the screen stays."""
+    monkeypatch.setattr("skit.tui_prefs.sys.platform", "win32")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesScreen())
+        await pilot.pause()
+        screen = _as(app.screen, PreferencesScreen)
+        screen.query_one("#pf-bash", Input).value = "/opt/git/bin/nope.exe"
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+        assert isinstance(app.screen, PreferencesScreen)  # refused → stayed open
+        assert "No such file" in str(screen.query_one("#pf-bash-error", Static).render())
+    assert config.load_bash_path() == ""  # nothing rode into config
+
+
+async def test_prefs_bash_empty_path_saves_on_win32(tmp_path, monkeypatch):
+    """An empty bash path is a valid value (auto-detect) — it saves without the file check."""
+    monkeypatch.setattr("skit.tui_prefs.sys.platform", "win32")
+    config.save_bash_path("/old/bash.exe")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesScreen())
+        await pilot.pause()
+        screen = _as(app.screen, PreferencesScreen)
+        screen.query_one("#pf-bash", Input).value = ""
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+        assert not isinstance(app.screen, PreferencesScreen)  # saved + dismissed
+    assert config.load_bash_path() == ""  # cleared
+
+
+# ---------------------------------------------------------------- unsaved-changes guard
+
+
+async def test_prefs_clean_esc_closes_without_asking(tmp_path):
+    """A clean Esc (no edits since mount) closes straight away — the discard modal only
+    guards actual unsaved work."""
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesScreen())
+        await pilot.pause()
+        screen = _as(app.screen, PreferencesScreen)
+        assert screen._dirt_armed is True  # armed after the mount settle
+        screen.action_close()
+        await pilot.pause()
+        assert not isinstance(app.screen, PreferencesScreen)  # closed, no modal
+
+
+async def test_prefs_dirty_esc_asks_and_keep_editing_stays(tmp_path):
+    """Editing a field arms _dirty; Esc then routes through DiscardChangesModal. Keeping
+    editing (discard=False) leaves Preferences open."""
+    from skit.tui_settings import DiscardChangesModal
+
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesScreen())
+        await pilot.pause()
+        screen = _as(app.screen, PreferencesScreen)
+        list(screen.query_one("#pf-js", RadioSet).query(RadioButton))[2].value = True  # a real edit
+        await pilot.pause()
+        assert screen._dirty is True
+        screen.action_close()  # dirty → ask
+        await pilot.pause()
+        confirm = app.screen
+        assert isinstance(confirm, DiscardChangesModal)
+        confirm.action_keep()  # keep editing → stays
+        await pilot.pause()
+        assert isinstance(app.screen, PreferencesScreen)
+
+
+async def test_prefs_dirty_esc_discard_closes(tmp_path):
+    """Discarding (y) from the modal closes Preferences without saving the edit."""
+    from skit.tui_settings import DiscardChangesModal
+
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesScreen())
+        await pilot.pause()
+        screen = _as(app.screen, PreferencesScreen)
+        list(screen.query_one("#pf-js", RadioSet).query(RadioButton))[2].value = True
+        await pilot.pause()
+        assert screen._dirty is True
+        screen.action_close()
+        await pilot.pause()
+        _as(app.screen, DiscardChangesModal).action_discard()  # y → close
+        await pilot.pause()
+        assert not isinstance(app.screen, PreferencesScreen)
+    assert config.load_js_runner() == ""  # the unsaved edit never persisted
 
 
 # ---------------------------------------------------------------- agents section
@@ -89,7 +202,7 @@ async def test_prefs_agents_count_updates_after_managing(tmp_path):
         await pilot.pause()
         screen = _as(app.screen, PreferencesScreen)
         assert "5 agents configured" in str(screen.query_one("#pf-runner-count", Static).render())
-        # Ctrl+N opens the manage screen; remove one runner and come back.
+        # Ctrl+N opens the manage screen; remove one runner (confirm) and come back.
         await pilot.press("ctrl+n")
         await pilot.pause()
         manage = app.screen
@@ -99,6 +212,8 @@ async def test_prefs_agents_count_updates_after_managing(tmp_path):
         options.action_select()
         await pilot.pause()
         _as(app.screen, RunnerActionModal).action_remove()  # → remove
+        await pilot.pause()
+        _as(app.screen, RunnerRemoveConfirm).action_confirm()  # the new destructive-op ask
         await pilot.pause()
         manage.action_close()
         await pilot.pause()

@@ -204,6 +204,44 @@ class RunnerActionModal(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class RunnerRemoveConfirm(ModalScreen[bool]):
+    """Removing a configured agent is destructive config surgery — it gets the same
+    ask the Library gives entry removal, not a bare one-keystroke delete."""
+
+    BINDINGS = [
+        Binding("y", "confirm", gettext("Remove")),
+        Binding("escape,n", "cancel", gettext("Keep")),
+    ]
+    DEFAULT_CSS = """
+    RunnerRemoveConfirm { align: center middle; }
+    RunnerRemoveConfirm > Vertical { border: round $accent; padding: 1 2; width: auto;
+        max-width: 100%; height: auto; max-height: 100%; background: $background; }
+    RunnerRemoveConfirm Static { width: auto; margin: 1 0 0 0; }
+    """
+
+    def __init__(self, name: str) -> None:
+        super().__init__()
+        self._name: str = name
+
+    @override
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label(gettext('Remove the agent "%(name)s"?') % {"name": self._name})
+            yield Static(
+                tui_footer.bar(
+                    tui_footer.chip("screen.confirm", "y", gettext("Remove")),
+                    tui_footer.chip("screen.cancel", "Esc", gettext("Keep")),
+                ),
+                markup=True,
+            )
+
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
 class RunnerManageScreen(Screen[None]):
     """The runner registry, whole: every configured agent listed with its command;
     pick one to edit or remove it, Ctrl+N to define a new one. Reached from
@@ -279,10 +317,15 @@ class RunnerManageScreen(Screen[None]):
             if action == "edit":
                 self.app.push_screen(RunnerAddModal(editing=name), lambda _: self._reload())
             elif action == "remove":
-                config.save_prompt_runners(
-                    [r for r in config.load_prompt_runners() if r.name != name]
-                )
-                self._reload()
+
+                def _confirmed(really: bool | None) -> None:
+                    if really:
+                        config.save_prompt_runners(
+                            [r for r in config.load_prompt_runners() if r.name != name]
+                        )
+                        self._reload()
+
+                self.app.push_screen(RunnerRemoveConfirm(name), _confirmed)
 
         self.app.push_screen(RunnerActionModal(name), _decided)
 

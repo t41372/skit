@@ -12,7 +12,7 @@ from __future__ import annotations
 import contextlib
 
 import pytest
-from textual.widgets import Checkbox, DataTable, Input, Static
+from textual.widgets import Checkbox, DataTable, Input, Select, Static
 
 from skit import argstate, config, flows, launcher, store, tui
 from skit.langs.python import metawriter
@@ -597,6 +597,87 @@ async def test_preset_modal_cancel_saves_nothing(tmp_path, quiet_run):
         await pilot.pause()
         assert not isinstance(app.screen, PresetNameModal)
         assert argstate.load_state(entry.slug)["presets"] == {}  # nothing saved
+
+
+def _preset_values(select: Select[str]) -> list[str]:
+    # allow_blank=False means no NULL/NoSelection sentinel rides in _options — the
+    # isinstance filter is just the type-narrowing ty needs (it never drops a real row).
+    return [value for _, value in select._options if isinstance(value, str)]
+
+
+async def test_form_save_preset_field_less_notifies_and_opens_no_modal(
+    tmp_path, quiet_run, monkeypatch
+):
+    """Ctrl+S on a field-less entry's always-open form would create an EMPTY preset —
+    instead it notifies (the same sentence the CLI uses) and opens no modal (finding 13)."""
+    store.add_command("echo hi", name="noargs")
+    entry = store.resolve("noargs")
+    plan = flows.plan_for_entry(entry)
+    assert plan.fields == []  # truly field-less
+    notes: list[str] = []
+    monkeypatch.setattr(RunFormScreen, "notify", lambda self, msg, **kw: notes.append(msg))
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = RunFormScreen(entry, plan, {})
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.action_save_preset()
+        await pilot.pause()
+        assert app.screen is screen  # NO modal opened
+    assert any("has no form fields, so there's nothing to save." in n for n in notes)
+    assert argstate.load_state(entry.slug)["presets"] == {}  # created nothing
+
+
+async def test_form_save_preset_from_empty_state_mounts_a_select(tmp_path, quiet_run):
+    """The first preset save replaces the "none yet — press Ctrl+S" hint with a real
+    dropdown, selected on the just-saved preset (finding 13, the empty→select path)."""
+    entry = _argparse_entry(tmp_path)
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = RunFormScreen(entry, plan=flows.plan_for_entry(entry), prefill={})
+        app.push_screen(screen)
+        await pilot.pause()
+        assert screen.query("#preset-empty")  # the teaching hint is showing
+        assert not screen.query("#preset-select")
+        screen.action_save_preset()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PresetNameModal)
+        modal.query_one(Input).value = "quick"
+        modal.action_save_name()
+        await pilot.pause()
+        assert app.screen is screen  # back on the form
+        assert not screen.query("#preset-empty")  # the hint is gone
+        select = screen.query_one("#preset-select", Select)
+        assert select.value == "quick"  # the just-saved preset is selected
+        assert "quick" in _preset_values(select)
+    assert "quick" in argstate.load_state(entry.slug)["presets"]
+
+
+async def test_form_save_preset_existing_select_gains_the_name(tmp_path, quiet_run):
+    """When a dropdown already exists, a new save adds the name and selects it — the row
+    never contradicts the user's own just-made save (finding 13, the existing-select path)."""
+    entry = _argparse_entry(tmp_path)
+    argstate.save_preset(entry.slug, "web", {"output": "x"})  # a preset already exists
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = RunFormScreen(entry, plan=flows.plan_for_entry(entry), prefill={})
+        app.push_screen(screen)
+        await pilot.pause()
+        select = screen.query_one("#preset-select", Select)  # dropdown already present
+        assert _preset_values(select) == ["", "web"]
+        screen.action_save_preset()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PresetNameModal)
+        modal.query_one(Input).value = "quick"
+        modal.action_save_name()
+        await pilot.pause()
+        select = screen.query_one("#preset-select", Select)
+        assert select.value == "quick"  # selects the new one
+        # options are the blank row + the presets sorted by name (quick < web)
+        assert _preset_values(select) == ["", "quick", "web"]  # old preset kept, new added
+    assert set(argstate.load_state(entry.slug)["presets"]) == {"web", "quick"}
 
 
 # ---------------------------------------------------------------------------

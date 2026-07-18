@@ -78,8 +78,8 @@ def check_argv_length(argv: list[str]) -> None:
     if total > ARGV_LIMIT:
         raise LaunchError(
             gettext(
-                "The rendered prompt makes the command line %(size)s characters — over this "
-                "platform's %(limit)s limit. Shorten the prompt or its parameter values."
+                "The rendered prompt makes the command line %(size)s bytes — over this "
+                "platform's %(limit)s-byte limit. Shorten the prompt or its parameter values."
             )
             % {"size": total, "limit": ARGV_LIMIT}
         )

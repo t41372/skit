@@ -107,6 +107,111 @@ async def test_workdir_relative_path_notifies_and_stays(tmp_path, monkeypatch):
     assert store.resolve("sh").meta.workdir == "invoke"  # nothing persisted
 
 
+# ------------------------------------------------------- workdir options are kind-aware
+
+
+def _exe(tmp_path, name="ex"):
+    import os
+
+    p = tmp_path / f"{name}.bin"
+    p.write_text("opaque\n", encoding="utf-8")
+    os.chmod(p, 0o755)  # noqa: S103
+    return store.add_exe(p, name=name)
+
+
+async def _workdir_shape(entry):
+    """Open Script settings for an entry and read back the workdir radio's value-keyed
+    choices and the number of buttons rendered."""
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        choices = list(screen._workdir_choices)
+        count = len(list(screen.query_one("#st-workdir", RadioSet).query(RadioButton)))
+    return choices, count
+
+
+async def test_workdir_options_shell_has_all_four(tmp_path):
+    _shell(tmp_path)
+    choices, count = await _workdir_shape(store.resolve("sh"))
+    assert choices == ["origin", "store", "invoke", "custom"]  # a real file with a stored copy
+    assert count == 4
+
+
+async def test_workdir_options_command_drops_origin_and_store(tmp_path):
+    store.add_command("echo hi", name="cmd")
+    choices, count = await _workdir_shape(store.resolve("cmd"))
+    # A command template has no file (no origin) and no stored copy (no store).
+    assert choices == ["invoke", "custom"]
+    assert count == 2
+
+
+async def test_workdir_options_exe_drops_store_only(tmp_path):
+    _exe(tmp_path)
+    choices, count = await _workdir_shape(store.resolve("ex"))
+    # An exe references a real program (origin) but is never copied (no store).
+    assert choices == ["origin", "invoke", "custom"]
+    assert "store" not in choices
+    assert count == 3
+
+
+async def test_command_workdir_saves_custom_path_from_index_one(tmp_path):
+    """Value-keyed save: for a command the custom option is at index 1 (not the shell's
+    index 3), and it must still resolve to the typed path — not a hardcoded slot."""
+    store.add_command("echo hi", name="cmd")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        screen = ScriptSettingsScreen(store.resolve("cmd"))
+        app.push_screen(screen)
+        await pilot.pause()
+        buttons = list(screen.query_one("#st-workdir", RadioSet).query(RadioButton))
+        assert len(buttons) == 2
+        buttons[1].value = True  # "A fixed folder" — index 1 for a command
+        await pilot.pause()
+        assert screen.query_one("#st-workdir-path", Input).display is True
+        screen.query_one("#st-workdir-path", Input).value = "/opt/cmd"
+        screen.action_save()
+        await pilot.pause()
+    assert store.resolve("cmd").meta.workdir == "/opt/cmd"
+
+
+async def test_command_workdir_saves_invoke_from_index_zero(tmp_path):
+    store.add_command("echo hi", name="cmd")
+    store.write_workdir(store.resolve("cmd").slug, "/tmp/x")  # start off "invoke"
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        screen = ScriptSettingsScreen(store.resolve("cmd"))
+        app.push_screen(screen)
+        await pilot.pause()
+        buttons = list(screen.query_one("#st-workdir", RadioSet).query(RadioButton))
+        buttons[0].value = True  # "Wherever skit is run from" (invoke) — index 0
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+    assert store.resolve("cmd").meta.workdir == "invoke"
+
+
+async def test_exe_workdir_saves_custom_from_index_two(tmp_path):
+    """The exe custom slot is index 2 (no store option between origin and invoke) — the
+    value-keyed mapping keeps it honest."""
+    _exe(tmp_path)
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        screen = ScriptSettingsScreen(store.resolve("ex"))
+        app.push_screen(screen)
+        await pilot.pause()
+        buttons = list(screen.query_one("#st-workdir", RadioSet).query(RadioButton))
+        assert len(buttons) == 3
+        buttons[2].value = True  # custom is index 2 for an exe
+        await pilot.pause()
+        assert screen.query_one("#st-workdir-path", Input).display is True
+        screen.query_one("#st-workdir-path", Input).value = "/opt/exe"
+        screen.action_save()
+        await pilot.pause()
+    assert store.resolve("ex").meta.workdir == "/opt/exe"
+
+
 # ---------------------------------------------------------------- interpreter pin
 
 

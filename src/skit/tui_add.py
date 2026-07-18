@@ -21,8 +21,8 @@ from textual import on
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
-from textual.screen import Screen
-from textual.widgets import Checkbox, Input, RadioButton, RadioSet, Select, Static
+from textual.screen import ModalScreen, Screen
+from textual.widgets import Checkbox, Input, OptionList, RadioButton, RadioSet, Select, Static
 
 from . import (
     analysis,
@@ -41,12 +41,85 @@ from .langs.prompt import analyzer as prompt_analyzer
 from .params import ParamDecl, is_secret_name
 
 
+def _kind_for_draft(path: Path) -> str:
+    """The kind a freshly-drafted script's shebang names (python when it kept the
+    starter's, or names no registered interpreter). The temp file's .py suffix must
+    not decide — the user's shebang is the explicit signal."""
+    from .langs.registry import KNOWN_KINDS, shebang_program, spec_for
+
+    program = shebang_program(path)
+    if program:
+        for candidate in sorted(KNOWN_KINDS):
+            spec = spec_for(candidate)
+            if spec is not None and program in spec.shebangs:
+                return candidate
+    return "python"
+
+
+class KindPickModal(ModalScreen[str | None]):
+    """The TUI twin of --kind/--exe/--prompt: an unclassifiable file gets an ASK, not
+    an error message that teaches CLI flags to a user who is here to avoid them."""
+
+    AUTO_FOCUS = "OptionList"
+    BINDINGS = [Binding("escape", "cancel", gettext("Cancel"))]
+    DEFAULT_CSS = """
+    KindPickModal { align: center middle; }
+    KindPickModal > Vertical { border: round $accent; padding: 1 2; width: 56;
+        max-width: 100%; height: auto; max-height: 100%; background: $background; }
+    KindPickModal OptionList { height: auto; max-height: 10; border: none; }
+    KindPickModal Static { width: auto; margin: 1 0 0 0; }
+    """
+
+    def __init__(self, filename: str) -> None:
+        super().__init__()
+        self._filename: str = filename
+
+    @override
+    def compose(self) -> ComposeResult:
+        from textual.widgets import Label
+        from textual.widgets.option_list import Option
+
+        from .langs.registry import KNOWN_KINDS, spec_for
+
+        # "prompt" is family "interpreted" too, but it has its OWN dedicated option below
+        # ("A prompt for an AI agent") — listing it here as well would duplicate the id
+        # (OptionList raises DuplicateID) and offer the same kind twice.
+        interpreted = sorted(
+            k
+            for k in KNOWN_KINDS
+            if (spec := spec_for(k)) is not None and spec.family == "interpreted" and k != "prompt"
+        )
+        with Vertical():
+            yield Label(
+                gettext("What is %(file)s? skit can't tell from the name.")
+                % {"file": self._filename}
+            )
+            yield OptionList(
+                *(Option(kind, id=kind) for kind in interpreted),
+                Option(gettext("A program (run it directly)"), id="exe"),
+                Option(gettext("A prompt for an AI agent"), id="prompt"),
+            )
+            yield Static(
+                tui_footer.bar(tui_footer.chip("screen.cancel", "Esc", gettext("Cancel"))),
+                markup=True,
+            )
+
+    @on(OptionList.OptionSelected)
+    def _picked(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(str(event.option.id))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class AddSourceScreen(Screen[str | None]):
     """Step 1: where does the script come from? Returns the new entry's slug, or None."""
 
     BINDINGS = [
         Binding("escape", "cancel", gettext("Cancel")),
-        Binding("ctrl+e", "draft_script", gettext("Write a new script"), priority=True),
+        # Ctrl+N, not Ctrl+E: everywhere else in the product Ctrl+E means "open $EDITOR
+        # on the CURRENT subject" (review panels, the Library) — one chord, one verb.
+        Binding("ctrl+n", "draft_script", gettext("Write a new script"), priority=True),
         Binding("ctrl+p", "draft_prompt", gettext("Draft a prompt"), priority=True),
         *tui_footer.FIELD_NAV_BINDINGS,
     ]
@@ -90,7 +163,7 @@ class AddSourceScreen(Screen[str | None]):
             # TUI-first user could never discover them (zero-memorization).
             yield Static(
                 tui_footer.bar(
-                    tui_footer.chip("screen.draft_script", "Ctrl+E", gettext("Write a script…")),
+                    tui_footer.chip("screen.draft_script", "Ctrl+N", gettext("Write a script…")),
                     tui_footer.chip("screen.draft_prompt", "Ctrl+P", gettext("Draft a prompt…")),
                 ),
                 id="add-draft",
@@ -149,16 +222,21 @@ class AddSourceScreen(Screen[str | None]):
             self.app.push_screen(AddReviewScreen(path, kind=kind), _reviewed)
             return
         if kind == "exe":
-            try:
-                entry = store.add_exe(path)
-            except store.StoreError as exc:
-                error.update(f"[red]{escape(str(exc))}[/red]")
-                return
-            self.dismiss(entry.slug)
+            self.app.push_screen(ExeReviewScreen(path), _reviewed)
             return
-        error.update(
-            f"[red]{gettext("%(file)s isn't a script or an executable — pass --prompt for an AI-agent prompt, --exe for a program, or --cmd for a command template.") % {'file': escape(path.name)}}[/red]"
-        )
+
+        # Unclassifiable: ASK, don't teach CLI flags (the TUI twin of --kind/--exe).
+        def _kind_picked(picked: str | None) -> None:
+            if picked is None:
+                return
+            if picked == "prompt":
+                self.app.push_screen(PromptReviewScreen(path), _reviewed)
+            elif picked == "exe":
+                self.app.push_screen(ExeReviewScreen(path), _reviewed)
+            else:
+                self.app.push_screen(AddReviewScreen(path, kind=picked), _reviewed)
+
+        self.app.push_screen(KindPickModal(path.name), _kind_picked)
 
     @on(Input.Submitted, "#add-template")
     @on(Input.Submitted, "#add-template-name")
@@ -190,8 +268,11 @@ class AddSourceScreen(Screen[str | None]):
             self._submit_template()
 
     def action_draft_script(self) -> None:
-        """Ctrl+E / the Write a script… chip: author a brand-new python script in
-        $EDITOR, then review it in the same panel a path-add gets."""
+        """Ctrl+N / the Write a script… chip: author a brand-new script in $EDITOR,
+        then review it in the same panel a path-add gets. The starter is python, but a
+        CHANGED SHEBANG is an explicit signal and is honored — the chip says "script",
+        not "python script", and a bash draft must never be stored as a broken python
+        entry."""
         from .cli import _STARTER_SCRIPT  # lazy: cli imports this module lazily too
 
         self._draft(".py", _STARTER_SCRIPT, "python")
@@ -226,12 +307,87 @@ class AddSourceScreen(Screen[str | None]):
             if slug is not None:
                 self.dismiss(slug)
 
+        if kind == "python":
+            kind = _kind_for_draft(tmp)
         review: Screen[str | None] = (
             PromptReviewScreen(tmp, fresh=True)
             if kind == "prompt"
             else AddReviewScreen(tmp, kind=kind, fresh=True)
         )
         self.app.push_screen(review, _reviewed)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ExeReviewScreen(Screen[str | None]):
+    """Identity review for a program add: name + description. "Nothing to detect
+    inside a binary" justifies no tick list — not skipping identity while every other
+    kind reviews it."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", gettext("Cancel")),
+        Binding("ctrl+a", "accept", gettext("Add"), priority=True),
+        *tui_footer.FIELD_NAV_BINDINGS,
+    ]
+    AUTO_FOCUS = "Input"
+    DEFAULT_CSS = """
+    ExeReviewScreen #xv-body {
+        padding: 0 1;
+        border: round $skit-box-olive;
+        border-title-color: ansi_bright_white;
+        border-title-style: bold;
+    }
+    ExeReviewScreen .section { color: $accent; margin: 1 0 0 0; }
+    ExeReviewScreen .hint { color: $text-muted; }
+    ExeReviewScreen KeysBar { dock: bottom; }
+    ExeReviewScreen #xv-keys { color: $text-muted; }
+    """
+
+    def __init__(self, path: Path) -> None:
+        super().__init__()
+        self._path: Path = path
+
+    def on_mount(self) -> None:
+        self.query_one("#xv-body").border_title = gettext("Add %(name)s") % {
+            "name": escape(self._path.name)
+        }
+
+    @override
+    def compose(self) -> ComposeResult:
+        with tui_footer.FormBody(id="xv-body"):
+            yield Static(gettext("Name"), classes="section")
+            yield Input(value=self._path.stem, id="xv-name")
+            yield Static(gettext("Description"), classes="section")
+            yield Input(
+                placeholder=gettext("(shown in the Library — you can write one line)"),
+                id="xv-desc",
+            )
+            yield Static(
+                gettext("The program runs from its own location; skit never copies a binary."),
+                classes="hint",
+            )
+        yield tui_footer.KeysBar(
+            Static(
+                tui_footer.bar(
+                    tui_footer.chip("screen.accept", "Ctrl+A", gettext("Add")),
+                    tui_footer.chip("screen.cancel", "Esc", gettext("Cancel")),
+                    tui_footer.nav_chip(),
+                ),
+                id="xv-keys",
+                markup=True,
+            )
+        )
+
+    def action_accept(self) -> None:
+        name = self.query_one("#xv-name", Input).value.strip() or None
+        desc = self.query_one("#xv-desc", Input).value.strip()
+        try:
+            entry = store.add_exe(self._path, name=name, description=desc)
+        except store.StoreError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        self.dismiss(entry.slug)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -323,6 +479,36 @@ class AddReviewScreen(Screen[str | None]):
         self.query_one("#review-body").border_title = gettext("Add %(name)s") % {
             "name": escape(self._path.name)
         }
+        self._apply_mode_visibility()
+
+    @on(RadioSet.Changed, "#rv-mode")
+    def _mode_changed(self, event: RadioSet.Changed) -> None:
+        self._apply_mode_visibility()
+
+    def _apply_mode_visibility(self) -> None:
+        """Reference mode folds away what accept would skip — never a silent drop:
+        the CLI refuses --dep on an npm reference add and says parameter setup is
+        skipped; the panel must tell the same truth BEFORE Ctrl+A, not swallow ticks."""
+        mode_box = self.query("#rv-mode")
+        reference = bool(mode_box) and mode_box.first(RadioSet).pressed_index == 1
+        spec = self._spec
+        npm = spec is not None and spec.deps_flavor == "npm"
+        self.query_one("#rv-params-wrap").display = not reference
+        if npm:
+            self.query_one("#rv-deps-wrap").display = not reference
+        note = self.query_one("#rv-ref-note", Static)
+        if reference:
+            lines = [
+                gettext(
+                    "Link the original: parameter setup is skipped — skit never writes to the file."
+                )
+            ]
+            if npm:
+                lines.append(
+                    gettext("npm dependencies apply to stored copies only, so none are recorded.")
+                )
+            note.update(" ".join(lines))
+        note.display = reference
 
     @override
     def compose(self) -> ComposeResult:
@@ -355,8 +541,11 @@ class AddReviewScreen(Screen[str | None]):
                         ),
                         value=reference,
                     )
-            yield from self._compose_deps()
-            yield from self._compose_params()
+            with Vertical(id="rv-deps-wrap"):
+                yield from self._compose_deps()
+            with Vertical(id="rv-params-wrap"):
+                yield from self._compose_params()
+            yield Static("", id="rv-ref-note", classes="hint", markup=False)
         yield tui_footer.KeysBar(
             Static(
                 tui_footer.bar(
@@ -899,6 +1088,7 @@ class AddReviewApp(_ReviewHost):
                 reference=reference,
                 deps=deps,
                 requires_python=requires_python,
+                fresh=fresh,
             )
         )
 

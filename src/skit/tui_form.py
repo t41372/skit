@@ -699,6 +699,16 @@ class RunFormScreen(Screen[FormResult]):
         self.app.push_screen(TokenMenuModal(), _insert)
 
     def action_save_preset(self) -> None:
+        if not self._plan.fields:
+            # The always-open form shows this row on field-less entries too — saving
+            # there would create an EMPTY preset (the `skit preset save` CLI refuses
+            # the same thing with the same sentence).
+            self.notify(
+                gettext("%(name)s has no form fields, so there's nothing to save.")
+                % {"name": self._entry.meta.name},
+                severity="warning",
+            )
+            return
         values, _extra = self.collect()
 
         def _named(name: str | None) -> None:
@@ -711,8 +721,28 @@ class RunFormScreen(Screen[FormResult]):
                 secret_names=self._plan.secret_names,
             )
             self._presets = argstate.load_state(self._entry.slug)["presets"]
+            self._refresh_preset_picker(name)
             self.notify(
                 gettext('Preset "%(preset)s" saved.') % {"preset": name}, severity="information"
             )
 
         self.app.push_screen(PresetNameModal(set(self._presets)), _named)
+
+    def _refresh_preset_picker(self, selected: str) -> None:
+        """After Ctrl+S the dropdown must show the preset that was just saved — a row
+        still reading "none yet — press Ctrl+S" right after the user did exactly that
+        is the UI contradicting the user's own action."""
+        options = [(gettext("last values"), "")] + [(n, n) for n in sorted(self._presets)]
+        existing = self.query("#preset-select")
+        if existing:
+            select = existing.first(Select)
+            select.set_options(options)
+            select.value = selected
+            return
+        # No #preset-select means the row still holds the empty-state hint (the two are
+        # mutually exclusive at compose, and the branch above owns the other case) — swap
+        # it for a real dropdown, selected on the just-saved preset.
+        self.query_one("#preset-empty", Static).remove()
+        self.query_one("#preset-row").mount(
+            Select(options, value=selected, allow_blank=False, id="preset-select")
+        )

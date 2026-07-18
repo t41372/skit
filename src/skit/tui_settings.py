@@ -278,6 +278,8 @@ class ScriptSettingsScreen(Screen[bool]):
         # the declared-params editor rather than the analyzer-driven [tool.skit] flow above.
         self._declared: bool = self._spec is not None and self._spec.params_io is None
         self._is_prompt: bool = entry.meta.kind == "prompt"
+        # Value-keyed option list behind the workdir radio (kind-aware; "custom" last).
+        self._workdir_choices: list[str] = []
         if self._is_prompt:
             # Every MANAGED placeholder gets an editable row (undeclared ones as their
             # synthesized schema), plus declared env riders — the exact field list the
@@ -374,12 +376,24 @@ class ScriptSettingsScreen(Screen[bool]):
         if self._spec is None:
             return  # unknown kind: don't offer policies a newer skit defined
         yield Static(gettext("Run in (working directory)"), classes="section")
-        custom = meta.workdir not in ("origin", "store", "invoke")
+        # Kind-aware options: a command template has no "own folder" (no file), and a
+        # reference-only exe has no stored copy — offering either would be a label
+        # that reads as one thing and silently resolves as another.
+        choices: list[tuple[str, str]] = []
+        if self._spec.has_original_file:
+            choices.append((gettext("The script's own folder"), "origin"))
+        if self._spec.stored_name:
+            choices.append((gettext("skit's stored-copy folder"), "store"))
+        choices.append((gettext("Wherever skit is run from"), "invoke"))
+        choices.append((gettext("A fixed folder (type it below)"), "custom"))
+        self._workdir_choices = [value for _, value in choices]
+        known_values = {value for _, value in choices if value != "custom"}
+        custom = meta.workdir not in known_values
         with RadioSet(id="st-workdir"):
-            yield RadioButton(gettext("The script's own folder"), value=meta.workdir == "origin")
-            yield RadioButton(gettext("skit's stored-copy folder"), value=meta.workdir == "store")
-            yield RadioButton(gettext("Wherever skit is run from"), value=meta.workdir == "invoke")
-            yield RadioButton(gettext("A fixed folder (type it below)"), value=custom)
+            for label, value in choices:
+                yield RadioButton(
+                    label, value=(meta.workdir == value if value != "custom" else custom)
+                )
         yield Input(
             value=meta.workdir if custom else "",
             placeholder=gettext("/absolute/path"),
@@ -401,7 +415,11 @@ class ScriptSettingsScreen(Screen[bool]):
         box = self.query("#st-workdir")
         if box:
             pressed = box.first(RadioSet).pressed_index
-            self.query_one("#st-workdir-path", Input).display = pressed == 3
+            is_custom = (
+                0 <= pressed < len(self._workdir_choices)
+                and self._workdir_choices[pressed] == "custom"
+            )
+            self.query_one("#st-workdir-path", Input).display = is_custom
 
     def _save_launch(self) -> bool:
         """Persist the workdir policy (and interpreter pin). False = invalid input —
@@ -410,8 +428,13 @@ class ScriptSettingsScreen(Screen[bool]):
         if not box:
             return True
         pressed = box.first(RadioSet).pressed_index
-        if 0 <= pressed <= 2:
-            new_workdir = ("origin", "store", "invoke")[pressed]
+        picked = (
+            self._workdir_choices[pressed]
+            if 0 <= pressed < len(self._workdir_choices)
+            else "custom"
+        )
+        if picked != "custom":
+            new_workdir = picked
         else:
             new_workdir = self.query_one("#st-workdir-path", Input).value.strip()
             if not new_workdir:

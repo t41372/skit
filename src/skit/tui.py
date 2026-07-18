@@ -716,7 +716,10 @@ class MenuApp(App[int | PendingRun]):
                         % {"error": gettext("The runner is no longer configured.")}
                     )
                     return
-                argstate.save_last_runner(runner_name)
+                if runner_name != entry.meta.runner:
+                    # A PIN left untouched is not a pick — only a real choice prefills
+                    # future pickers (argstate's contract; settings enforces the same).
+                    argstate.save_last_runner(runner_name)
             self._execute(entry, plan, values, extra, show_drift=False, runner=runner)
 
         self.push_screen(
