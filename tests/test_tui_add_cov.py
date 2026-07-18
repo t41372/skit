@@ -101,9 +101,10 @@ async def test_executable_path_is_added_directly(tmp_path):
         assert entries[0].meta.kind == "exe"
 
 
-async def test_shell_script_path_adds_tier0_entry(tmp_path):
-    """A shell script (extension or shebang) skips the review panel too — Tier-0 add:
-    copy mode, comment description, interpreter recorded from the shebang."""
+async def test_shell_script_path_opens_the_review_panel(tmp_path):
+    """A shell script gets the SAME review panel python gets (the add flow must not be
+    four different products by extension): identity prefilled from the comments, and
+    accept records copy mode + the shebang-pinned interpreter."""
     sh = tmp_path / "deploy.sh"
     sh.write_text("#!/usr/bin/env zsh\n# Ship the current build\necho hi\n", encoding="utf-8")
     app = tui.MenuApp()
@@ -114,7 +115,12 @@ async def test_shell_script_path_adds_tier0_entry(tmp_path):
         source.query_one("#add-path", Input).value = str(sh)
         source.action_continue_add()
         await pilot.pause()
-        assert not isinstance(app.screen, AddSourceScreen)  # dismissed
+        review = app.screen
+        assert isinstance(review, AddReviewScreen)
+        assert review.query_one("#rv-desc", Input).value == "Ship the current build"
+        assert not review.query("#rv-deps")  # shell has no dependency story
+        review.action_accept()
+        await pilot.pause()
         entries = store.list_entries()
         assert [e.meta.kind for e in entries] == ["shell"]
         assert entries[0].meta.interpreter == "zsh"  # shebang outranks the kind default
@@ -123,7 +129,8 @@ async def test_shell_script_path_adds_tier0_entry(tmp_path):
 
 
 async def test_shell_add_surfaces_store_error(tmp_path):
-    """add_script failures (name already taken) surface inline like the exe path."""
+    """add_script failures (name already taken) keep the review panel open with the
+    error as a notification — same contract as the python panel."""
     store.add_python(_py(tmp_path, "print(1)\n", "other.py"), name="deploy")
     sh = tmp_path / "deploy.sh"
     sh.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
@@ -135,8 +142,12 @@ async def test_shell_add_surfaces_store_error(tmp_path):
         source.query_one("#add-path", Input).value = str(sh)
         source.action_continue_add()
         await pilot.pause()
-        assert "already taken" in _error(source)
-        assert isinstance(app.screen, AddSourceScreen)  # not dismissed
+        review = app.screen
+        assert isinstance(review, AddReviewScreen)
+        review.action_accept()
+        await pilot.pause()
+        assert app.screen is review  # the error keeps the panel open
+    assert len(store.list_entries()) == 1  # nothing new landed
 
 
 async def test_executable_add_surfaces_store_error(tmp_path):

@@ -38,7 +38,6 @@ from . import (
 )
 from .i18n import gettext
 from .langs.prompt import analyzer as prompt_analyzer
-from .langs.python import analyzer, argspec, metawriter
 from .params import ParamDecl, is_secret_name
 
 
@@ -100,75 +99,14 @@ class AddSourceScreen(Screen[str | None]):
     def _path_given(self, event: Input.Submitted) -> None:
         self._submit_path()
 
-    def _add_non_python(self, path: Path, error: Static) -> None:
-        """The direct-add lane (no review panel): exe entries have nothing to detect inside them,
-        and every other kind is added straight away.
-
-        Note that shell/js/ts/fish DO have analyzers — the review panel is simply Python-shaped
-        (it renders PEP 723 dependency completion alongside the candidates), so they take the
-        direct lane and surface their candidates afterwards in Script settings (`p`) and
-        `skit params`, which are both language-neutral. Interpreted adds record the shebang's
-        interpreter and a comment-extracted description via store.add_script."""
-        from .langs.registry import shebang_program, spec_for
+    def _submit_path(self) -> None:
+        """Every scripty kind gets the SAME review panel (identity, storage, deps,
+        candidate ticks per its own analyzer) — the add flow must not be four
+        different products depending on file extension. Only exe (nothing to detect
+        inside a binary) takes the direct lane; unknown files get the honest error."""
+        from .langs.registry import spec_for
         from .store import infer_kind
 
-        kind = infer_kind(path)
-        if kind == "unknown" and path.suffix.lower() == ".md":
-            # The TUI twin of the CLI's bare-.md ask: the user explicitly picked this
-            # file, and a .md that is neither script nor executable is a prompt in all
-            # but name — say so instead of dead-ending (mirrors issue #10's direction).
-            kind = "prompt"
-        kind_spec = spec_for(kind)
-        if kind == "prompt":
-            # Prompts get the same review treatment python gets — never a blind direct
-            # add: the panel shows the placeholder ticks, the insertion switch and the
-            # runner pick (with the New agent… door) before anything is stored.
-            def _reviewed(slug: str | None) -> None:
-                if slug is not None:
-                    self.dismiss(slug)
-
-            self.app.push_screen(PromptReviewScreen(path), _reviewed)
-            return
-        try:
-            if kind == "exe":
-                entry = store.add_exe(path)
-            elif kind_spec is not None and kind_spec.family == "interpreted":
-                program = shebang_program(path)
-                interpreter = program if program in kind_spec.shebangs else ""
-                entry = store.add_script(path, kind=kind, interpreter=interpreter)
-                # npm-flavor copy adds record the script's own imports as dependencies — the
-                # direct lane has no review step, so this mirrors the CLI's non-interactive
-                # "accept the suggestions as-is"; Script settings (`p`) edits them afterwards.
-                if (
-                    kind_spec.deps_flavor == "npm"
-                    and entry.meta.mode == "copy"
-                    and kind_spec.dep_scanner is not None
-                ):
-                    try:
-                        text = path.read_text(encoding="utf-8", errors="replace")
-                    except OSError:
-                        text = ""
-                    scanned = kind_spec.dep_scanner(text) if text else []
-                    if scanned:
-                        entry = store.update_dependencies(entry.slug, scanned)
-                        # The CLI's add summary prints the recorded deps; the direct lane's
-                        # only surface is a toast — recording something that will download
-                        # packages on first run must never be invisible.
-                        self.notify(
-                            gettext("Dependencies recorded: %(deps)s (edit in Script settings)")
-                            % {"deps": ", ".join(scanned)}
-                        )
-            else:
-                error.update(
-                    f"[red]{gettext("%(file)s isn't a script or an executable — pass --prompt for an AI-agent prompt, --exe for a program, or --cmd for a command template.") % {'file': escape(path.name)}}[/red]"
-                )
-                return
-        except store.StoreError as exc:
-            error.update(f"[red]{escape(str(exc))}[/red]")
-            return
-        self.dismiss(entry.slug)
-
-    def _submit_path(self) -> None:
         raw = self.query_one("#add-path", Input).value.strip()
         if not raw:
             return
@@ -179,15 +117,35 @@ class AddSourceScreen(Screen[str | None]):
                 f"[red]{gettext('File not found: %(path)s') % {'path': escape(str(path))}}[/red]"
             )
             return
-        if path.suffix.lower() != ".py":
-            self._add_non_python(path, error)
-            return
+        kind = infer_kind(path)
+        if kind == "unknown" and path.suffix.lower() == ".md":
+            # The TUI twin of the CLI's bare-.md ask: the user explicitly picked this
+            # file, and a .md that is neither script nor executable is a prompt in all
+            # but name — say so instead of dead-ending (mirrors issue #10's direction).
+            kind = "prompt"
 
         def _reviewed(slug: str | None) -> None:
             if slug is not None:
                 self.dismiss(slug)
 
-        self.app.push_screen(AddReviewScreen(path), _reviewed)
+        if kind == "prompt":
+            self.app.push_screen(PromptReviewScreen(path), _reviewed)
+            return
+        kind_spec = spec_for(kind)
+        if kind_spec is not None and kind_spec.family == "interpreted":
+            self.app.push_screen(AddReviewScreen(path, kind=kind), _reviewed)
+            return
+        if kind == "exe":
+            try:
+                entry = store.add_exe(path)
+            except store.StoreError as exc:
+                error.update(f"[red]{escape(str(exc))}[/red]")
+                return
+            self.dismiss(entry.slug)
+            return
+        error.update(
+            f"[red]{gettext("%(file)s isn't a script or an executable — pass --prompt for an AI-agent prompt, --exe for a program, or --cmd for a command template.") % {'file': escape(path.name)}}[/red]"
+        )
 
     @on(Input.Submitted, "#add-template")
     @on(Input.Submitted, "#add-template-name")
@@ -252,6 +210,7 @@ class AddReviewScreen(Screen[str | None]):
         self,
         path: Path,
         *,
+        kind: str = "python",
         name: str | None = None,
         description: str | None = None,
         reference: bool = False,
@@ -259,11 +218,21 @@ class AddReviewScreen(Screen[str | None]):
         requires_python: str = "",
     ) -> None:
         """The keyword arguments prefill the panel (the CLI face passes `skit add`'s
-        flags through them); everything stays editable on screen."""
+        flags through them); everything stays editable on screen.
+
+        Kind-parametric (the audit's worst finding): the panel was python-only while
+        shell/js/ts/fish shipped full analyzers that no add lane ever showed — the same
+        verb gave python a review panel and shell a toast. Identity/storage are
+        universal; deps render per deps_flavor; candidates come from the entry's OWN
+        analyzer capability (None → no tick list, identity still reviewed)."""
         super().__init__()
         self._path: Path = path
+        self._kind: str = kind
+        from .langs.registry import spec_for
+
+        self._spec = spec_for(kind)
         self._text: str = path.read_text(encoding="utf-8", errors="replace")
-        self._analysis: analysis.Analysis = analyzer.analyze(self._text)
+        self._analysis: analysis.Analysis = self._analyze()
         self._requires_python = requires_python
         # Survives the edit→rescan recompose: the rescan refreshes DETECTION, it must
         # never throw away what the user already typed into the panel.
@@ -277,6 +246,17 @@ class AddReviewScreen(Screen[str | None]):
         if deps:
             self._overrides["deps"] = ", ".join(deps)
 
+    def _analyze(self) -> analysis.Analysis:
+        if self._spec is None or self._spec.analyzer is None:
+            return analysis.Analysis()
+        return self._spec.analyzer.analyze(self._text)
+
+    def _suggest_description(self) -> str:
+        if self._kind == "python":
+            return store.suggest_description(self._text)
+        prefix = self._spec.comment.prefix if self._spec and self._spec.comment else "#"
+        return store.extract_comment_description(self._text, prefix)
+
     def on_mount(self) -> None:
         self.query_one("#review-body").border_title = gettext("Add %(name)s") % {
             "name": escape(self._path.name)
@@ -289,7 +269,7 @@ class AddReviewScreen(Screen[str | None]):
             yield Input(value=self._overrides.get("name", self._path.stem), id="rv-name")
             yield Static(gettext("Description"), classes="section")
             yield Input(
-                value=self._overrides.get("desc", store.suggest_description(self._text)),
+                value=self._overrides.get("desc", self._suggest_description()),
                 placeholder=gettext("(the script has no docstring — you can write one line)"),
                 id="rv-desc",
             )
@@ -333,7 +313,21 @@ class AddReviewScreen(Screen[str | None]):
             self.focused.toggle()
 
     def _compose_deps(self) -> ComposeResult:
+        spec = self._spec
+        if spec is None or not spec.deps_flavor:
+            return  # kinds with no dependency story (shell/fish/the data-driven tail)
         yield Static(gettext("Dependencies"), classes="section")
+        if spec.deps_flavor == "npm":
+            scanned = spec.dep_scanner(self._text) if spec.dep_scanner else []
+            yield Input(
+                value=self._overrides.get("deps", ", ".join(scanned)),
+                placeholder=gettext("comma separated, e.g. chalk, @scope/pkg"),
+                id="rv-deps",
+            )
+            yield Static(
+                gettext("detected from the script's imports — edit freely"), classes="hint"
+            )
+            return
         if pep723.has_block(self._text):
             meta = pep723.parse_block(self._text) or {}
             deps = meta.get("dependencies") or []
@@ -359,8 +353,11 @@ class AddReviewScreen(Screen[str | None]):
             )
 
     def _compose_params(self) -> ComposeResult:
+        if self._spec is None or self._spec.analyzer is None:
+            return  # no analyzer capability: nothing to tick (identity was still reviewed)
         yield Static(gettext("Parameters"), classes="section")
-        spec = argspec.read_cli(self._text)
+        reader = self._spec.cli_reader
+        spec = reader.read_cli(self._text) if reader is not None else None
         if self._analysis.uses_cli_framework:
             if spec is not None and spec.ok and spec.fields:
                 yield Static(
@@ -432,18 +429,22 @@ class AddReviewScreen(Screen[str | None]):
             except editor.EditorError as exc:
                 print(str(exc), flush=True)
         self._text = self._path.read_text(encoding="utf-8", errors="replace")
-        self._analysis = analyzer.analyze(self._text)
+        self._analysis = self._analyze()
         self.refresh(recompose=True)
 
-    def action_accept(self) -> None:
-        name = self.query_one("#rv-name", Input).value.strip() or None
-        desc = self.query_one("#rv-desc", Input).value.strip()
-        reference = self.query_one("#rv-mode", RadioSet).pressed_index == 1
-        deps: list[str] = []
-        if not pep723.has_block(self._text):
-            deps = pep723.split_requirements(self.query_one("#rv-deps", Input).value)
-        try:
-            entry = store.add_python(
+    def _collected_deps(self) -> list[str]:
+        flavor = self._spec.deps_flavor if self._spec is not None else ""
+        if flavor == "npm":
+            from .langs.javascript import deps as js_deps
+
+            return js_deps.split_requirements(self.query_one("#rv-deps", Input).value)
+        if flavor == "uv" and not pep723.has_block(self._text):
+            return pep723.split_requirements(self.query_one("#rv-deps", Input).value)
+        return []
+
+    def _store_entry(self, name: str | None, desc: str, reference: bool, deps: list[str]):
+        if self._kind == "python":
+            return store.add_python(
                 self._path,
                 name=name,
                 mode="reference" if reference else "copy",
@@ -451,16 +452,46 @@ class AddReviewScreen(Screen[str | None]):
                 dependencies=deps or None,
                 requires_python=self._requires_python,
             )
+        from .langs.registry import shebang_program
+
+        program = shebang_program(self._path)
+        interpreter = program if self._spec is not None and program in self._spec.shebangs else ""
+        entry = store.add_script(
+            self._path,
+            kind=self._kind,
+            name=name,
+            mode="reference" if reference else "copy",
+            description=desc,
+            interpreter=interpreter,
+        )
+        if deps and entry.meta.mode == "copy":
+            entry = store.update_dependencies(entry.slug, deps)
+        return entry
+
+    def action_accept(self) -> None:
+        name = self.query_one("#rv-name", Input).value.strip() or None
+        desc = self.query_one("#rv-desc", Input).value.strip()
+        reference = self.query_one("#rv-mode", RadioSet).pressed_index == 1
+        deps = self._collected_deps()
+        try:
+            entry = self._store_entry(name, desc, reference, deps)
         except store.StoreError as exc:
             self.notify(str(exc), severity="error")
             return
         # The candidate checkboxes exist only when _compose_params rendered them, i.e. for
-        # a copy of a NON-cli-framework script. A script that both parses its own arguments
-        # AND defines a module-level constant / input() yields uses_cli_framework=True with a
-        # non-empty candidates list; _compose_params returns before the checkbox loop in that
-        # case, so querying #rv-cand-{i} here would raise NoMatches and crash after the entry
-        # was already committed. Gate the collection on the same condition that mounts them.
-        if entry.meta.mode == "copy" and not self._analysis.uses_cli_framework:
+        # a copy of a NON-cli-framework script with an analyzer. A script that both parses
+        # its own arguments AND defines a managed-looking constant yields
+        # uses_cli_framework=True with a non-empty candidates list; _compose_params returns
+        # before the checkbox loop in that case, so querying #rv-cand-{i} here would raise
+        # NoMatches and crash after the entry was already committed. Gate the collection on
+        # the same condition that mounts them.
+        if (
+            entry.meta.mode == "copy"
+            and self._spec is not None
+            and self._spec.analyzer is not None
+            and self._spec.params_io is not None
+            and not self._analysis.uses_cli_framework
+        ):
             picked = [
                 self._analysis.candidates[i]
                 for i in range(len(self._analysis.candidates))
@@ -470,7 +501,7 @@ class AddReviewScreen(Screen[str | None]):
                 specs = [ParamDecl.from_candidate(c) for c in picked]
                 copy_path = entry.script_path
                 current = copy_path.read_text(encoding="utf-8")
-                copy_path.write_text(metawriter.write_params(current, specs), encoding="utf-8")
+                copy_path.write_text(self._spec.params_io.write(current, specs), encoding="utf-8")
         self.dismiss(entry.slug)
 
     def action_cancel(self) -> None:
@@ -767,12 +798,13 @@ class _ReviewHost(App[str | None]):
 
 
 class AddReviewApp(_ReviewHost):
-    """`skit add x.py` in an interactive terminal."""
+    """`skit add x.py` / `skit add x.sh` in an interactive terminal."""
 
     def __init__(
         self,
         path: Path,
         *,
+        kind: str = "python",
         name: str | None = None,
         description: str | None = None,
         reference: bool = False,
@@ -782,6 +814,7 @@ class AddReviewApp(_ReviewHost):
         super().__init__(
             AddReviewScreen(
                 path,
+                kind=kind,
                 name=name,
                 description=description,
                 reference=reference,
@@ -819,6 +852,7 @@ class PromptReviewApp(_ReviewHost):
 def run_add_review(
     path: Path,
     *,
+    kind: str = "python",
     name: str | None = None,
     description: str | None = None,
     reference: bool = False,
@@ -828,6 +862,7 @@ def run_add_review(
     """Blocking CLI entry to the review panel. Returns the new slug, or None."""
     return AddReviewApp(
         path,
+        kind=kind,
         name=name,
         description=description,
         reference=reference,

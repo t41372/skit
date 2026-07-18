@@ -409,6 +409,48 @@ def _onboard_params(text: str, script_name: str, no_input: bool) -> list[ParamDe
     return [ParamDecl.from_candidate(result.candidates[i]) for i in picked]
 
 
+def _onboard_script_params(entry: store.Entry, kind_spec: LangSpec, no_input: bool) -> list[str]:
+    """Line-mode parameter onboarding for analyzable interpreted kinds (shell/js/ts/
+    fish) — the same candidate tick python gets. The analyzers shipped a whole PR
+    without any add lane ever surfacing their findings; users concluded the language
+    support was fake. Copy mode only (reference never writes the original, A7);
+    non-interactive selects nothing (python's rule: honesty beats clever)."""
+    if entry.meta.mode != "copy" or kind_spec.analyzer is None or kind_spec.params_io is None:
+        return []
+    text = entry.script_path.read_text(encoding="utf-8", errors="replace")
+    result = kind_spec.analyzer.analyze(text)
+    if result.uses_cli_framework:
+        return []  # the script's own parser is the form — nothing to manage
+    _print_add_hints(result, entry.meta.name)
+    if not result.candidates or no_input or not sys.stdin.isatty():
+        return []
+    console.print(
+        ngettext(
+            "Found %(count)s parameter candidate (constants / input() calls):",
+            "Found %(count)s parameter candidates (constants / input() calls):",
+            len(result.candidates),
+        )
+        % {"count": len(result.candidates)}
+    )
+    for i, c in enumerate(result.candidates, start=1):
+        _print_candidate(i, c)
+    answer = Prompt.ask(
+        gettext("Which ones should skit manage? (e.g. 1,3 / all / none)"),
+        default=_default_selection(result.candidates),
+        console=console,
+    )
+    picked = _parse_selection(answer, len(result.candidates))
+    specs = [ParamDecl.from_candidate(result.candidates[i]) for i in picked]
+    if not specs:
+        return []
+    copy_path = entry.script_path
+    current = copy_path.read_text(encoding="utf-8")  # pragma: no mutate — utf-8 equivalence
+    copy_path.write_text(
+        kind_spec.params_io.write(current, specs), encoding="utf-8"
+    )  # pragma: no mutate
+    return [s.name for s in specs]
+
+
 # A brand-new script starts from just a shebang; if the editor is closed with nothing more
 # than this (or empty), we treat it as "cancelled" and add nothing.
 _STARTER_SCRIPT = "#!/usr/bin/env python3\n"
@@ -1106,27 +1148,53 @@ def add(
                     )
                 summary_secrets = [n for n in summary_managed if is_secret_name(n)]
             elif kind != "python" and kind_spec is not None and kind_spec.family == "interpreted":
-                # Tier-0 interpreted add (shell/js/ruby/…): copy or reference, comment
-                # description, interpreter recorded from the shebang. No onboarding
-                # panel — these kinds have no analyzer to review with (yet).
-                from .langs.registry import shebang_program
+                # Interpreted add (shell/js/ts/fish/ruby/…): the SAME review panel the
+                # python lane hosts — identity, storage, deps per flavor, and the tick
+                # list from the kind's own analyzer. (The old comment claimed these
+                # kinds "have no analyzer to review with"; shell/js/ts/fish all do —
+                # the panel just was never wired to them.)
+                if (
+                    not no_input
+                    and _is_interactive()
+                    and os.environ.get("TERM") != "dumb"
+                    and config.load_form() == "tui"
+                ):
+                    from .tui_add import run_add_review
 
-                program = shebang_program(resolved)
-                interpreter = program if program in kind_spec.shebangs else ""
-                entry = store.add_script(
-                    Path(path),
-                    kind=kind,
-                    name=name,
-                    mode="reference" if ref else "copy",
-                    description=description,
-                    interpreter=interpreter,
-                )
-                if kind_spec.deps_flavor == "npm" and entry.meta.mode == "copy":
-                    summary_deps = _resolve_npm_dependencies(
-                        resolved, dep, no_input, kind_spec.dep_scanner
+                    slug = run_add_review(
+                        resolved,
+                        kind=kind,
+                        name=name,
+                        description=description,
+                        reference=ref,
+                        deps=dep,
                     )
-                    if summary_deps:
-                        entry = store.update_dependencies(entry.slug, summary_deps)
+                    if slug is None:
+                        console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
+                        raise typer.Exit(EXIT_CANCELLED)
+                    entry = store.resolve(slug)
+                    summary_deps = list(entry.meta.dependencies or [])
+                else:
+                    from .langs.registry import shebang_program
+
+                    program = shebang_program(resolved)
+                    interpreter = program if program in kind_spec.shebangs else ""
+                    entry = store.add_script(
+                        Path(path),
+                        kind=kind,
+                        name=name,
+                        mode="reference" if ref else "copy",
+                        description=description,
+                        interpreter=interpreter,
+                    )
+                    if kind_spec.deps_flavor == "npm" and entry.meta.mode == "copy":
+                        summary_deps = _resolve_npm_dependencies(
+                            resolved, dep, no_input, kind_spec.dep_scanner
+                        )
+                        if summary_deps:
+                            entry = store.update_dependencies(entry.slug, summary_deps)
+                    summary_managed = _onboard_script_params(entry, kind_spec, no_input)
+                    summary_secrets = [n for n in summary_managed if is_secret_name(n)]
             else:
                 _require_file(resolved)
                 try:

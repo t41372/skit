@@ -748,7 +748,7 @@ async def test_tui_direct_add_records_scanned_js_dependencies(tmp_path: Path):
     from textual.widgets import Input as TInput
 
     from skit import tui
-    from skit.tui_add import AddSourceScreen
+    from skit.tui_add import AddReviewScreen, AddSourceScreen
 
     src = _js_file(tmp_path, 'import chalk from "chalk";\nimport fs from "node:fs";\n')
     app = tui.MenuApp()
@@ -759,6 +759,11 @@ async def test_tui_direct_add_records_scanned_js_dependencies(tmp_path: Path):
         screen.query_one("#add-path", TInput).value = str(src)
         screen.action_continue_add()
         await pilot.pause()
+        review = app.screen
+        assert isinstance(review, AddReviewScreen)  # js gets the panel too now
+        assert review.query_one("#rv-deps", TInput).value == "chalk"  # builtin excluded
+        review.action_accept()
+        await pilot.pause()
     (entry,) = store.list_entries()
     assert entry.meta.kind == "js"
     assert entry.meta.dependencies == ["chalk"]  # the builtin was not suggested
@@ -768,7 +773,7 @@ async def test_tui_direct_add_js_without_imports_records_none(tmp_path: Path):
     from textual.widgets import Input as TInput
 
     from skit import tui
-    from skit.tui_add import AddSourceScreen
+    from skit.tui_add import AddReviewScreen, AddSourceScreen
 
     src = _js_file(tmp_path, "console.log(1);\n")
     app = tui.MenuApp()
@@ -779,6 +784,11 @@ async def test_tui_direct_add_js_without_imports_records_none(tmp_path: Path):
         screen.query_one("#add-path", TInput).value = str(src)
         screen.action_continue_add()
         await pilot.pause()
+        review = app.screen
+        assert isinstance(review, AddReviewScreen)
+        assert review.query_one("#rv-deps", TInput).value == ""
+        review.action_accept()
+        await pilot.pause()
     (entry,) = store.list_entries()
     assert entry.meta.dependencies is None
 
@@ -786,12 +796,12 @@ async def test_tui_direct_add_js_without_imports_records_none(tmp_path: Path):
 async def test_tui_direct_add_survives_the_source_vanishing_after_the_copy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """The scan re-reads the ORIGINAL file after the copy landed; if it vanished in between
-    (the race the OSError guard defends), the add still succeeds — just without suggestions."""
+    """The panel scans the text ONCE at open; a source vanishing right after the copy
+    landed no longer loses the suggestions (the old direct lane re-read and raced)."""
     from textual.widgets import Input as TInput
 
     from skit import tui
-    from skit.tui_add import AddSourceScreen
+    from skit.tui_add import AddReviewScreen, AddSourceScreen
 
     real_add_script = store.add_script
 
@@ -810,8 +820,12 @@ async def test_tui_direct_add_survives_the_source_vanishing_after_the_copy(
         screen.query_one("#add-path", TInput).value = str(src)
         screen.action_continue_add()
         await pilot.pause()
+        review = app.screen
+        assert isinstance(review, AddReviewScreen)
+        review.action_accept()  # the panel scanned at open — no re-read can race
+        await pilot.pause()
     (entry,) = store.list_entries()
-    assert entry.meta.dependencies is None  # nothing scanned, nothing recorded
+    assert entry.meta.dependencies == ["chalk"]  # the suggestions survived the vanish
 
 
 async def test_settings_js_copy_offers_deps_without_python_constraint(tmp_path: Path):
@@ -1401,30 +1415,6 @@ def test_add_python_still_honors_both_flags(tmp_path: Path):
     copy_text = store.resolve("j").script_path.read_text(encoding="utf-8")
     assert '"requests"' in copy_text
     assert 'requires-python = ">=3.11"' in copy_text
-
-
-async def test_tui_direct_add_toasts_the_recorded_dependencies(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    from textual.widgets import Input as TInput
-
-    from skit import tui
-    from skit.tui_add import AddSourceScreen
-
-    notes: list[str] = []
-    monkeypatch.setattr(
-        AddSourceScreen, "notify", lambda self, message, **kw: notes.append(str(message))
-    )
-    src = _js_file(tmp_path, 'import chalk from "chalk";\n')
-    app = tui.MenuApp()
-    async with app.run_test() as pilot:
-        screen = AddSourceScreen()
-        app.push_screen(screen)
-        await pilot.pause()
-        screen.query_one("#add-path", TInput).value = str(src)
-        screen.action_continue_add()
-        await pilot.pause()
-    assert any("chalk" in n for n in notes)  # recording deps is never invisible
 
 
 # ==========================================================================
