@@ -14,6 +14,14 @@ from skit import argstate, cli, config, store
 runner = CliRunner()
 
 
+def _json(result):
+    """The --json contract: stdout is EXACTLY one JSON document (SKILL.md's stable
+    contract), so parse the WHOLE output — never slice from the first `{`, which would
+    mask a human line leaking onto stdout. These own-op writes emit no stderr, so the
+    mixed .output equals stdout here and parsing it whole is the strict purity check."""
+    return json.loads(result.output)
+
+
 def _write(tmp_path: Path, text: str, name: str = "p.prompt.md") -> Path:
     path = tmp_path / name
     path.write_text(text, encoding="utf-8")
@@ -317,6 +325,50 @@ def test_add_prompt_editor_lane_asks_for_a_name(tmp_path, monkeypatch):
     assert "A name is required" in result.output
 
 
+def _never(*_a, **_k):
+    raise AssertionError("the editor must not be launched here")
+
+
+def test_add_prompt_editor_lane_name_taken_refuses_before_the_editor(tmp_path, monkeypatch):
+    """The prompt editor lane checks the name conflict BEFORE $EDITOR opens (the same
+    draft-preservation rule as the script lane) — the editor is never launched."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    _write(tmp_path, "existing {{a}}\n", "e.prompt.md")
+    store.add_prompt(tmp_path / "e.prompt.md", name="taken")
+    monkeypatch.setattr(cli.editor, "open_in_editor", _never)  # must NOT be launched
+    result = runner.invoke(cli.app, ["add", "--prompt", "-n", "taken"])
+    assert result.exit_code == 1
+    assert "already taken" in result.output
+    # _never raises AssertionError if the editor opens — a clean SystemExit proves refusal
+    # happened before the editor.
+    assert not isinstance(result.exception, AssertionError)
+
+
+def test_add_prompt_editor_lane_post_edit_failure_keeps_the_draft(tmp_path, monkeypatch):
+    """A failure AFTER the prompt edit keeps the temp draft (the user's only copy) and names
+    where it lives — nothing is added (finding R2, the prompt lane)."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    seen: dict[str, Path] = {}
+
+    def fake_editor(path: Path) -> None:
+        seen["path"] = path
+        path.write_text("Drafted prompt {{v}}\n", encoding="utf-8")
+
+    def onboard_boom(*_a, **_k):
+        raise store.StoreError("disk full")
+
+    monkeypatch.setattr(cli.editor, "open_in_editor", fake_editor)
+    monkeypatch.setattr(cli, "_onboard_prompt", onboard_boom)
+    result = runner.invoke(cli.app, ["add", "--prompt", "-n", "keptprompt"])
+    try:
+        assert result.exit_code == 1
+        assert "Your draft was kept at" in result.output
+        assert seen["path"].exists()  # the draft survived the failure
+        assert store.list_entries() == []  # nothing added
+    finally:
+        seen["path"].unlink(missing_ok=True)
+
+
 def test_add_prompt_ref_mode_keeps_original_and_pins_invoke(tmp_path):
     src = _write(tmp_path, "Ref {{x}}\n")
     result = runner.invoke(cli.app, ["add", str(src), "--ref", "--no-input"])
@@ -545,7 +597,7 @@ def test_params_runner_pin_with_json_emits_the_read_view(tmp_path):
     result = runner.invoke(cli.app, ["params", "p", "--runner", "claude", "--json"])
     assert result.exit_code == 0, result.output
     assert store.resolve("p").meta.runner == "claude"  # the pin was written
-    payload = json.loads(result.output[result.output.index("{") :])  # valid JSON follows
+    payload = _json(result)  # stdout is exactly one JSON document
     assert payload["runner"] == "claude"  # the pin shows in the emitted read view
 
 
@@ -556,7 +608,7 @@ def test_params_workdir_with_json_emits_the_read_view(tmp_path):
     result = runner.invoke(cli.app, ["params", "p", "--workdir", "origin", "--json"])
     assert result.exit_code == 0, result.output
     assert store.resolve("p").meta.workdir == "origin"  # the policy was written
-    payload = json.loads(result.output[result.output.index("{") :])  # valid JSON follows
+    payload = _json(result)  # stdout is exactly one JSON document
     assert "params" in payload  # the entry's read view
     assert payload["runner"] is None  # unpinned prompt renders a null runner
 
@@ -567,7 +619,7 @@ def test_params_interpolate_with_json_emits_the_read_view(tmp_path):
     result = runner.invoke(cli.app, ["params", "p", "--no-interpolate", "--json"])
     assert result.exit_code == 0, result.output
     assert store.resolve("p").meta.interpolate is False  # the switch flipped
-    payload = json.loads(result.output[result.output.index("{") :])  # valid JSON follows
+    payload = _json(result)  # stdout is exactly one JSON document
     assert payload["interpolate"] is False  # the new state shows in the read view
 
 

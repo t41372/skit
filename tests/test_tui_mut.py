@@ -106,6 +106,21 @@ async def test_remove_modal_command_entry_omits_file_reassurance(tmp_path):
         assert "original file" not in body  # a command has no file; the line would be noise
 
 
+async def test_remove_modal_omits_reassurance_when_the_original_is_gone(tmp_path):
+    """The reassurance is a promise about a file that still exists. For a drafted entry (or
+    one whose original was since deleted) meta.source points at a gone path, so the line must
+    NOT show — reassuring the user about an already-gone file would be a lie."""
+    src = _py(tmp_path, "print(1)\n", "gone.py")
+    store.add_python(src, name="a")
+    src.unlink()  # the original is gone from disk
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.action_remove()
+        await pilot.pause()
+        body = "".join(str(w.render()) for w in app.screen.query(Static))
+        assert "original file" not in body  # the original is gone, so no false promise
+
+
 async def test_remove_confirmed_removes_entry(tmp_path):
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     app = tui.MenuApp()

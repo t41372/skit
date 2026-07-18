@@ -44,8 +44,15 @@ def test_repeated_letter_keeps_first():
     assert list(fs) == ["v"]
 
 
-def test_dynamic_optstring_degrades_to_none():
-    assert sc.read_cli('getopts "$OPTS" opt\n') is None
+def test_dynamic_optstring_degrades_to_dynamic():
+    """A dynamic optstring is DETECTED but unmodelable: the reader degrades honestly to
+    ok=False 'dynamic' (the python/JS distinction), not None — None would claim the script
+    has no CLI at all, and the run form must instead say it couldn't model this one."""
+    spec = sc.read_cli('getopts "$OPTS" opt\n')
+    assert spec is not None
+    assert spec.ok is False
+    assert spec.reason == "dynamic"
+    assert spec.fields == []
 
 
 def test_getopts_without_optstring_is_none():
@@ -80,3 +87,19 @@ def test_plan_reads_getopts_and_assembles_flags(tmp_path: Path, monkeypatch):
     assert [f.key for f in plan.fields] == ["n", "v"]
     asm = flows.assemble(plan, {"n": "Ada", "v": "true"}, [], cwd=tmp_path)
     assert asm.args == ["-n", "Ada", "-v"]
+
+
+def test_plan_dynamic_getopts_degrades_with_reason(tmp_path: Path, monkeypatch):
+    """A shell entry whose getopts optstring is dynamic surfaces the degraded-form notice
+    on the run form (source='argparse', degraded_reason='dynamic') instead of silently
+    claiming there is no CLI — the same honest degradation python/JS give."""
+    monkeypatch.setenv("SKIT_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SKIT_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SKIT_CONFIG_DIR", str(tmp_path / "config"))
+    src = tmp_path / "dyn.sh"
+    src.write_text('#!/usr/bin/env bash\nOPTS="n:v"\nwhile getopts "$OPTS" opt; do :; done\n')
+    entry = store.add_script(src, kind="shell", name="dyn")
+    plan = flows.plan_for_entry(entry)
+    assert plan.source == "argparse"
+    assert plan.degraded_reason == "dynamic"
+    assert plan.fields == []

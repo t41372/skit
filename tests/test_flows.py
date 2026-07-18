@@ -534,11 +534,16 @@ def test_record_run_zero_exit_survives_save(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_coerce_bool_lenient_accepts_every_truthy_spelling():
+def test_truthy_accepts_every_truthy_spelling():
+    """flows.truthy is THE single public bool-spelling rule every renderer shares — the
+    same spellings assembly fires the flag on, so "on"/"y" render checked, never a second
+    rule pretending to be one."""
     for spelling in ("true", "1", "yes", "y", "on", " TRUE ", "On"):
-        assert flows._coerce_bool_lenient(spelling) is True, spelling
+        assert flows.truthy(spelling) is True, spelling
     for spelling in ("false", "0", "no", "n", "off", "", "garbage"):
-        assert flows._coerce_bool_lenient(spelling) is False, spelling
+        assert flows.truthy(spelling) is False, spelling
+    # The internal assembly alias IS the public function (never a divergent second copy).
+    assert flows._coerce_bool_lenient is flows.truthy
 
 
 def test_expand_glob_piece_globs_only_when_glob_chars_present(tmp_path):
@@ -883,6 +888,33 @@ def test_transparency_lines_inject_source_shows_masked_and_temp_note(tmp_path):
     assert "temporary copy" in joined
     assert "sekret" not in joined  # the secret value never appears
     assert "•••" in joined
+
+
+def test_assemble_display_lists_only_inject_delivered_values(tmp_path):
+    """The "→ inject:" transparency line lists ONLY inject-delivered values: env values
+    already render as a VAR=value prefix and flag values appear in the command line itself,
+    so listing them under "inject" claimed a temporary-copy rewrite that never happens
+    (finding R2/M2). One mixed plan, three deliveries, one honest inject line."""
+    plan = flows.FormPlan(
+        source="inject",
+        fields=[
+            flows.FormField(key="OUT", label="OUT", source="inject"),
+            flows.FormField(key="CITY", label="CITY", source="env"),
+            flows.FormField(key="name", label="name", source="flag", flag="--name"),
+        ],
+    )
+    asm = flows.assemble(
+        plan,
+        {"OUT": "out.jpg", "CITY": "Taipei", "name": "ada"},
+        [],
+        cwd=tmp_path,
+        env={},
+    )
+    # Only the inject field appears in the inject display; env/flag deliver elsewhere.
+    assert asm.display == [("OUT", "out.jpg")]
+    assert asm.masked_env == {"CITY": "Taipei"}  # env renders as its own VAR=value prefix
+    assert "--name" in asm.args  # the flag rides the command line…
+    assert "ada" in asm.args  # …with its value
 
 
 def test_transparency_lines_flag_source_is_single_command_line(tmp_path):

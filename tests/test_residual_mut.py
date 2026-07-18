@@ -410,8 +410,26 @@ def test_drift_lines_exact_messages():
         "  GONE: injection target no longer exists (dropped from this run's form)",
         "  RETRIES: type changed from int to str in the source"
         " (still injected — double-check the value)",
-        "To refresh the definitions, re-run `skit add` or edit the [tool.skit] block.",
+        "To refresh the definitions, run: skit params NAME --resync",
     ]
+
+
+def test_drift_lines_rebind_uses_input_read_wording():
+    """The rebind (positional-fallback) line speaks of an 'input/read call', not an
+    'input() call' — the wording is honest across every analyzable kind, not just python's
+    input()."""
+    i18n.init("en")
+    report = reconcile.Report(
+        rebind=[
+            (
+                ParamDecl(name="PW", binding="input", type="str"),
+                analysis.Candidate(binding="input", name="PW", type="str"),
+            )
+        ]
+    )
+    lines = reconcile.drift_lines(report, "myscript")
+    assert any("no longer matches a unique input/read call" in line for line in lines)
+    assert lines[-1] == "To refresh the definitions, run: skit params NAME --resync"
 
 
 # ---------------------------------------------------------------------------

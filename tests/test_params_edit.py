@@ -196,9 +196,13 @@ def test_secret_and_env_source_together():
     assert d.env_source == "API_TOKEN"  # stripped
 
 
-def test_env_source_on_a_non_secret_param_is_ignored():
+def test_env_source_on_a_non_secret_param_warns_and_leaves_it_unset():
+    """--env-source only applies to a secret param: on a non-secret one it does nothing to
+    the decl (env_source stays "") but must NOT vanish silently — the declared lane now
+    warns exactly like the in-file lane, so an explicit flag that no-ops is surfaced."""
     res = edit_declared([ParamDecl(name="a", secret=False)], env_sources={"a": "VAR"})
     assert _by_name(res.decls)["a"].env_source == ""  # only means anything on a secret param
+    assert "env-source-not-secret:a" in res.warnings  # the no-op flag is surfaced, not dropped
 
 
 def test_no_secret_clears_the_env_source():

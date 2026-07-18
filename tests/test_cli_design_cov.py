@@ -10,6 +10,7 @@ or the exact user-facing wording — never that a line merely ran.
 
 from __future__ import annotations
 
+import io
 import json
 import sys
 import types
@@ -21,6 +22,13 @@ from skit import argstate, cli, config, store
 from skit.langs.registry import spec_for
 
 runner = CliRunner()
+
+
+def _json(result):
+    """The --json contract: stdout is EXACTLY one JSON document (SKILL.md's stable
+    contract), so parse the WHOLE output — never slice from the first `{`, which would
+    mask a human line leaking onto stdout."""
+    return json.loads(result.output)
 
 
 @pytest.fixture(autouse=True)
@@ -301,15 +309,36 @@ def test_params_normalize_with_json_emits_the_read_view(tmp_path):
     """The --normalize own-op honors --json like every other own-op: the source idiom is
     rewritten, then a valid read-view JSON is emitted on stdout — not a silent drop (the
     fourth own-op face, so the rule holds on ALL of interpolate/runner/workdir/normalize)."""
-    import json
-
     _shell(tmp_path, body="#!/usr/bin/env bash\nCITY=Taipei\necho $CITY\n", name="sh")
     result = runner.invoke(cli.app, ["params", "sh", "--normalize", "CITY", "--json"])
     assert result.exit_code == 0, result.output
     # The stored copy now carries the ${CITY:-Taipei} idiom (the semantic rewrite).
     assert "${CITY:-Taipei}" in store.resolve("sh").script_path.read_text(encoding="utf-8")
-    payload = json.loads(result.output[result.output.index("{") :])  # valid JSON follows
+    payload = _json(result)  # stdout is exactly one JSON document (the read view)
     assert "params" in payload  # the entry's read view
+
+
+def test_params_interpreter_with_json_emits_pure_read_view(tmp_path):
+    """The --interpreter own-op (entry policy) honors --json too: the interpreter is written,
+    then a valid read-view JSON is the WHOLE of stdout — the human confirmation is silenced
+    (the same _edit_entry_policy quiet sink workdir/template share)."""
+    _shell(tmp_path, name="sh")
+    result = runner.invoke(cli.app, ["params", "sh", "--interpreter", "zsh", "--json"])
+    assert result.exit_code == 0, result.output
+    assert store.resolve("sh").meta.interpreter == "zsh"  # the policy was written
+    payload = _json(result)  # stdout parses whole — no human line leaked
+    assert "params" in payload
+
+
+def test_params_template_with_json_emits_pure_read_view(tmp_path):
+    """The --template own-op honors --json the same way (a command entry's editable
+    template) — written, then a pure read-view JSON on stdout."""
+    store.add_command("echo {msg}", name="cmd")
+    result = runner.invoke(cli.app, ["params", "cmd", "--template", "echo {greeting}", "--json"])
+    assert result.exit_code == 0, result.output
+    assert store.resolve("cmd").meta.template == "echo {greeting}"  # the template was rewritten
+    payload = _json(result)  # stdout is exactly one JSON document
+    assert "params" in payload
 
 
 def test_params_two_policy_groups_refused_unchanged(tmp_path):
@@ -450,6 +479,67 @@ def test_add_stdin_kind_empty_input(tmp_path):
     assert "Nothing arrived on stdin" in result.output
 
 
+# ---- stdin shebang routing (F2): no --kind, the piped text's shebang decides ----
+
+
+def test_add_stdin_bash_shebang_no_kind_routes_to_shell(tmp_path):
+    """No --kind: the piped text's shebang is the explicit signal — a bash snippet lands as
+    a SHELL entry (kind_for_shebang_text), never a broken python entry with a bash body."""
+    result = runner.invoke(
+        cli.app, ["add", "-", "-n", "clip"], input="#!/usr/bin/env bash\necho hi\n"
+    )
+    assert result.exit_code == 0, result.output
+    assert store.resolve("clip").meta.kind == "shell"
+
+
+def test_add_stdin_zsh_shebang_records_interpreter(tmp_path):
+    """Interpreter recording still works through the stdin text: the tmp copy carries the
+    shebang the reader reads, so a zsh-shebang snippet lands as shell with interpreter=zsh."""
+    result = runner.invoke(
+        cli.app, ["add", "-", "-n", "zclip"], input="#!/usr/bin/env zsh\necho hi\n"
+    )
+    assert result.exit_code == 0, result.output
+    entry = store.resolve("zclip")
+    assert entry.meta.kind == "shell"
+    assert entry.meta.interpreter == "zsh"  # read from the piped shebang, not left blank
+
+
+def test_add_stdin_no_shebang_defaults_to_python(tmp_path):
+    """No shebang → the python lane (unchanged): kind_for_shebang_text returns None, so the
+    fallback stays python."""
+    result = runner.invoke(cli.app, ["add", "-", "-n", "plainpy"], input="print('hi')\n")
+    assert result.exit_code == 0, result.output
+    assert store.resolve("plainpy").meta.kind == "python"
+
+
+def test_add_stdin_explicit_kind_overrides_shebang(tmp_path):
+    """An explicit --kind still WINS over the text's shebang: a python-shebang body forced to
+    --kind shell lands as shell, never re-inferred back to python."""
+    result = runner.invoke(
+        cli.app,
+        ["add", "-", "--kind", "shell", "-n", "forced"],
+        input="#!/usr/bin/env python3\necho hi\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert store.resolve("forced").meta.kind == "shell"
+
+
+def test_add_from_stdin_reads_stdin_when_text_is_none(tmp_path, monkeypatch):
+    """_add_from_stdin keeps its standalone stdin-reading contract: called directly with no
+    text (the default), it reads sys.stdin itself — the fallback the `add` lane never uses
+    now that it threads the once-read text through."""
+    monkeypatch.setattr(sys, "stdin", io.StringIO("print('hi')\n"))
+    cli._add_from_stdin("directpy", None)
+    assert store.resolve("directpy").meta.kind == "python"
+
+
+def test_add_script_from_stdin_reads_stdin_when_text_is_none(tmp_path, monkeypatch):
+    """The non-python twin keeps the same standalone contract."""
+    monkeypatch.setattr(sys, "stdin", io.StringIO("#!/usr/bin/env bash\necho hi\n"))
+    cli._add_script_from_stdin("shell", "directsh", None)
+    assert store.resolve("directsh").meta.kind == "shell"
+
+
 # ============================================================ interpreted add review routing
 
 
@@ -585,6 +675,9 @@ def test_run_raw_refused_on_placeholder_kind(tmp_path, spawn_spy):
     flat = _flat(result.output)
     assert "--raw doesn't apply to a command entry" in flat
     assert "there is no as-is without them" in flat
+    # A command template's grammar is SINGLE braces — the message speaks {placeholders}.
+    assert "{placeholders}" in flat
+    assert "{{" not in flat
     assert "entry" not in spawn_spy  # refused before any launch
 
 
@@ -617,8 +710,12 @@ def test_run_raw_on_unpinned_prompt_refuses_before_runner_resolution(tmp_path, s
     _prompt(tmp_path, name="p")  # no pin, no --runner
     result = runner.invoke(cli.app, ["run", "p", "--raw", "--no-input"])
     assert result.exit_code == 2, result.output  # usage, NOT the unpinned 126
-    assert "--raw doesn't apply to a prompt entry" in _flat(result.output)
-    assert "there is no as-is without them" in _flat(result.output)
+    flat = _flat(result.output)
+    assert "--raw doesn't apply to a prompt entry" in flat
+    assert "there is no as-is without them" in flat
+    # The prompt kind's real grammar is DOUBLE braces — the message must speak {{placeholders}}
+    # (single braces here would contradict the syntax the user actually writes).
+    assert "{{placeholders}}" in flat
     assert "entry" not in spawn_spy  # nothing launched
     # last-picked state must be untouched (a refused run picks nothing).
     assert not (argstate.state_dir() / "prompt.toml").exists()

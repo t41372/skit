@@ -234,6 +234,58 @@ async def test_command_entry_shows_template_hides_storage_and_deps(tmp_path):
     assert store.resolve("cmd").meta.description == "cmd desc"
 
 
+async def test_ctrl_a_in_a_focused_input_moves_home_without_saving(tmp_path, monkeypatch):
+    """The exact regression that forced Save from Ctrl+A to Ctrl+S: Ctrl+A is every Input's
+    cursor-home, so on a screen full of Inputs it must move the cursor to the start and NOT
+    save/close. The save chord now lives on Ctrl+S, so Ctrl+A belongs entirely to the Input."""
+    shell_src = tmp_path / "s.sh"
+    shell_src.write_text("#!/usr/bin/env bash\necho hi\n", encoding="utf-8")
+    store.add_script(shell_src, kind="shell", name="sh")
+    saved: list[int] = []
+    monkeypatch.setattr(ScriptSettingsScreen, "action_save", lambda self: saved.append(1))
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(store.resolve("sh"))
+        app.push_screen(screen)
+        await pilot.pause()
+        desc = screen.query_one("#st-desc", Input)
+        desc.focus()
+        desc.value = "hello world"
+        desc.cursor_position = len(desc.value)
+        await pilot.pause()
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        assert desc.cursor_position == 0  # Ctrl+A moved the cursor home (the Input owns it)
+        assert saved == []  # …and did NOT save
+        assert isinstance(app.screen, ScriptSettingsScreen)  # still open, nothing dismissed
+
+
+async def test_resync_chip_only_where_resync_can_act(tmp_path):
+    """The Resync chip renders only where action_resync actually does something — a
+    copy-mode analyzable entry (python/shell). For a command/exe/prompt entry resync is a
+    no-op, so advertising the key would teach a dead chord (the mouse's click path must not
+    point at a no-op)."""
+    # copy-mode shell: the chip is advertised
+    shell_src = tmp_path / "s.sh"
+    shell_src.write_text("#!/usr/bin/env bash\necho hi\n", encoding="utf-8")
+    store.add_script(shell_src, kind="shell", name="sh")
+    # a command entry: resync is a no-op, so no chip
+    store.add_command("echo {msg}", name="cmd")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        shell_screen = ScriptSettingsScreen(store.resolve("sh"))
+        app.push_screen(shell_screen)
+        await pilot.pause()
+        assert "Resync" in str(shell_screen.query_one("#st-keys", Static).render())
+        shell_screen.dismiss(False)
+        await pilot.pause()
+
+        cmd_screen = ScriptSettingsScreen(store.resolve("cmd"))
+        app.push_screen(cmd_screen)
+        await pilot.pause()
+        assert "Resync" not in str(cmd_screen.query_one("#st-keys", Static).render())
+
+
 async def test_exe_entry_shows_the_declared_params_editor(tmp_path):
     """An executable ("program") entry has no managed parameters in-file, but its declared schema is
     editable: the screen offers the add-a-parameter field (no rows until one is declared)."""

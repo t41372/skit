@@ -27,6 +27,14 @@ from skit.params import (
 runner = CliRunner()
 
 
+def _json(result):
+    """The --json contract: stdout is EXACTLY one JSON document (SKILL.md's stable
+    contract). Parse the WHOLE of stdout — never slice from the first `{`, which would
+    mask a human line leaking onto stdout. Warnings ride stderr, which CliRunner keeps
+    separate, so this stays pure."""
+    return json.loads(result.output)
+
+
 @pytest.fixture
 def run_entry_spy(monkeypatch):
     """Capture the delivery-ready material handed to launcher.run_entry (nothing runs)."""
@@ -422,9 +430,9 @@ def test_cli_exe_show_without_declared_is_plain_message(tmp_path: Path):
 
 
 def test_cli_declared_edit_with_json_emits_the_final_read_view(tmp_path: Path):
-    """A declared edit with --json emits the final read-view JSON AFTER the edit, instead
-    of silently dropping the flag — an explicit --json never no-ops (finding 14, the
-    declared-edit branch)."""
+    """A declared edit with --json emits the final read-view JSON as the WHOLE of stdout,
+    instead of silently dropping the flag — an explicit --json never no-ops (finding 14),
+    and under the purity rule the human summary rides stderr, not stdout."""
     _exe(tmp_path)
     result = runner.invoke(
         cli.app,
@@ -441,10 +449,29 @@ def test_cli_declared_edit_with_json_emits_the_final_read_view(tmp_path: Path):
         ],
     )
     assert result.exit_code == 0, result.output
-    assert "Updated prog" in result.output  # the human edit summary still prints
-    payload = json.loads(result.output[result.output.index("{") :])  # then the read-view JSON
+    # Under --json stdout is EXACTLY the read-view JSON — the human "Updated prog" summary
+    # is silenced (it would break the one-document contract), so parse the whole output.
+    payload = _json(result)
     assert payload["declared"][0]["name"] == "width"  # the just-added row is in the JSON
     assert payload["declared"][0]["delivery"] == "flag"
+
+
+def test_cli_env_source_on_non_secret_declared_param_warns(tmp_path: Path):
+    """--env-source on a DECLARED non-secret param warns (it only applies to secrets) instead
+    of vanishing — the in-file lane's rule, now on the declared lane too. The warning rides
+    stderr, so under --json stdout stays exactly one read-view document."""
+    entry = _exe(tmp_path)
+    store.write_parameters(entry.slug, [ParamDecl(name="WIDTH", delivery="env")])
+    result = runner.invoke(cli.app, ["params", "prog", "--env-source", "WIDTH=COLS"])
+    assert result.exit_code == 0, result.output
+    assert "WIDTH isn't secret" in result.stderr  # the no-op flag is surfaced, not dropped
+    # --json: stdout is exactly one JSON document; the warning stays on stderr, so the
+    # STDOUT stream (not the mixed .output) parses whole.
+    jr = runner.invoke(cli.app, ["params", "prog", "--env-source", "WIDTH=COLS", "--json"])
+    assert jr.exit_code == 0, jr.output
+    payload = json.loads(jr.stdout)  # stdout alone is pure JSON
+    assert any(p["name"] == "WIDTH" for p in payload["declared"])
+    assert "WIDTH isn't secret" in jr.stderr  # the warning rode stderr, not stdout
 
 
 def test_cli_python_manage_with_json_emits_the_final_read_view(tmp_path: Path):
@@ -455,8 +482,8 @@ def test_cli_python_manage_with_json_emits_the_final_read_view(tmp_path: Path):
     store.add_python(src, name="job")
     result = runner.invoke(cli.app, ["params", "job", "--manage", "CITY", "--json"])
     assert result.exit_code == 0, result.output
-    assert "Updated job" in result.output  # the human edit summary still prints
-    payload = json.loads(result.output[result.output.index("{") :])  # then the read-view JSON
+    # --json purity: the human "Updated job" summary is silenced; stdout is the read view.
+    payload = _json(result)
     assert [p["name"] for p in payload["params"]] == ["CITY"]  # CITY is now managed in the JSON
 
 

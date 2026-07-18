@@ -523,6 +523,27 @@ async def test_choice_set_value_ignores_a_value_outside_the_choices(tmp_path, qu
         assert mode.value == "a"  # unchanged
 
 
+async def test_bool_field_reads_checked_state_through_truthy(tmp_path, quiet_run):
+    """A bool field reads its checked state through flows.truthy in the widget lane too —
+    so a stored "on"/"y" checks the box (the same spelling assembly fires --fast on), never
+    unchecked-while-the-run-passes-the-flag. set_value drives the shared rule."""
+    _argparse_entry(tmp_path)
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.action_run()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        fast = next(r for r in screen.query(FieldRow) if r.field.key == "fast")
+        box = fast.query_one(Checkbox)
+        fast.set_value("on")
+        assert box.value is True  # "on" checks the box
+        fast.set_value("y")
+        assert box.value is True  # "y" too
+        fast.set_value("off")
+        assert box.value is False  # and "off" clears it
+
+
 async def test_live_preview_reports_glob_match_count(tmp_path, quiet_run):
     """Typing a glob into a free-text field shows a live match count. Uses an absolute pattern
     (glob ignores the cwd for it) so the count is deterministic WITHOUT chdir'ing — chdir breaks
@@ -546,6 +567,35 @@ async def test_live_preview_reports_glob_match_count(tmp_path, quiet_run):
 # ---------------------------------------------------------------------------
 # tui_form: PresetNameModal branches
 # ---------------------------------------------------------------------------
+
+
+async def test_save_preset_captures_set_fixed_fields_from_prefill(tmp_path, quiet_run):
+    """The CLI opens a REDUCED form when --set fixed some fields: those values ride in the
+    prefill with no composed row. A preset saved here must capture them too (`--save-preset`
+    on the identical run does — one feature, one rule), never silently drop the pinned value."""
+    entry = _argparse_entry(tmp_path)
+    full = flows.plan_for_entry(entry)
+    # Reproduce `--set output=fixed.png`: drop output's row, pin its value in the prefill.
+    reduced = flows.FormPlan(
+        source=full.source,
+        fields=[f for f in full.fields if f.key != "output"],
+        text=full.text,
+    )
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = RunFormScreen(entry, plan=reduced, prefill={"output": "fixed.png"})
+        app.push_screen(screen)
+        await pilot.pause()
+        assert not any(r.field.key == "output" for r in screen.query(FieldRow))  # no row for it
+        screen.action_save_preset()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PresetNameModal)
+        modal.query_one(Input).value = "pinned"
+        modal.action_save_name()
+        await pilot.pause()
+    saved = argstate.load_state(entry.slug)["presets"]["pinned"]
+    assert saved["output"] == "fixed.png"  # the --set-fixed value was captured from prefill
 
 
 async def test_preset_modal_overwrite_hint_and_click_save(tmp_path, quiet_run):

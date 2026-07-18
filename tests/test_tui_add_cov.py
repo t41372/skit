@@ -90,7 +90,7 @@ async def test_missing_path_shows_file_not_found(tmp_path):
 async def test_executable_path_opens_identity_review_then_adds(tmp_path):
     """A recognized executable no longer instant-adds: it gets an identity review
     (name + description) like every other kind — "nothing to detect inside a binary"
-    justifies no tick list, not skipping identity. Ctrl+A commits the exe entry with the
+    justifies no tick list, not skipping identity. Ctrl+S commits the exe entry with the
     reviewed name/description."""
     exe = tmp_path / "runme.exe"
     # no shebang: a recognized shebang would (correctly) infer an interpreted kind now
@@ -109,7 +109,7 @@ async def test_executable_path_opens_identity_review_then_adds(tmp_path):
         assert review.query_one("#xv-name", Input).value == "runme"  # prefilled from the stem
         review.query_one("#xv-name", Input).value = "launcher"
         review.query_one("#xv-desc", Input).value = "the deploy tool"
-        review.action_accept()  # Ctrl+A
+        review.action_accept()  # Ctrl+S
         await pilot.pause()
         assert not isinstance(app.screen, (ExeReviewScreen, AddSourceScreen))  # both gone
     entries = store.list_entries()
@@ -515,6 +515,31 @@ async def test_pep723_empty_block_says_none_declared(tmp_path):
         text = _static_text(screen)
         assert "The script declares its own dependencies (PEP 723):" in text
         assert "(none declared)" in text
+
+
+async def test_review_space_chip_absent_for_argparse_present_for_candidates(tmp_path):
+    """The Space (Toggle) chip is advertised only when there ARE candidate checkboxes to
+    toggle — the same condition that composes them. An argparse-driven script has none
+    (advertising a dead key), a const-bearing script has them."""
+    argp = _py(
+        tmp_path,
+        "import argparse\nap = argparse.ArgumentParser()\nap.add_argument('--x')\nap.parse_args()\n",
+        "ap.py",
+    )
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(AddReviewScreen(argp))
+        await pilot.pause()
+        keys = str(app.screen.query_one("#review-keys", Static).render())
+        assert "Toggle" not in keys  # no candidates → no Space chip (no dead key taught)
+
+    const = _py(tmp_path, 'CITY = "Taipei"\nprint(CITY)\n', "const.py")
+    app2 = tui.MenuApp()
+    async with app2.run_test() as pilot:
+        app2.push_screen(AddReviewScreen(const))
+        await pilot.pause()
+        keys2 = str(app2.screen.query_one("#review-keys", Static).render())
+        assert "Toggle" in keys2  # candidates present → the Space chip is advertised
 
 
 async def test_space_toggles_the_focused_candidate(tmp_path):

@@ -173,12 +173,17 @@ def test_promptform_secret_without_env_source_prints_no_hint(monkeypatch):
     assert "environment variable" not in console.export_text()  # no source -> no hint
 
 
-def test_promptform_choice_field_offers_the_choices(monkeypatch):
-    """A choice field is asked with its choices and defaults to the first when nothing is
-    prefilled; the picked choice is returned verbatim."""
+def test_promptform_required_choice_field_offers_the_choices(monkeypatch):
+    """A REQUIRED (or defaulted) choice is asked with its choices and defaults to the first
+    when nothing is prefilled; the picked choice is returned verbatim — rich's own choices=
+    validation guards it."""
     plan = flows.FormPlan(
         source="argparse",
-        fields=[flows.FormField(key="mode", label="mode", kind="choice", choices=["a", "b"])],
+        fields=[
+            flows.FormField(
+                key="mode", label="mode", kind="choice", choices=["a", "b"], required=True
+            )
+        ],
     )
     console = _console()
     calls = _script_ask(monkeypatch, promptform.Prompt, ["b"])
@@ -187,6 +192,50 @@ def test_promptform_choice_field_offers_the_choices(monkeypatch):
     assert values == {"mode": "b"}
     assert calls[0][1]["choices"] == ["a", "b"]
     assert calls[0][1]["default"] == "a"  # no prefill -> first choice is the default
+
+
+def test_promptform_optional_choice_enter_leaves_it_out(monkeypatch):
+    """An optional choice with no default: Enter (empty answer) means "leave it out" — the
+    prompt is asked WITHOUT rich's choices= (so "" is accepted), matching the TUI RadioSet
+    that returns "" and assembly then omits the flag. The first choice is never forced."""
+    plan = flows.FormPlan(
+        source="argparse",
+        fields=[flows.FormField(key="mode", label="mode", kind="choice", choices=["a", "b"])],
+    )
+    console = _console()
+    calls = _script_ask(monkeypatch, promptform.Prompt, [""])
+    values = promptform.collect(plan, {}, console=console)
+
+    assert values == {"mode": ""}  # empty stays empty (the flag is omitted at assembly)
+    assert calls[0][1]["default"] == ""  # asked with an empty default, not the first choice
+    assert "choices" not in calls[0][1]  # rich's choices= gate is off so "" is allowed
+
+
+def test_promptform_optional_choice_reasks_until_a_real_choice(monkeypatch):
+    """A typed answer must still be a real choice: garbage re-asks (with the hint), and a
+    valid choice is then returned."""
+    plan = flows.FormPlan(
+        source="argparse",
+        fields=[flows.FormField(key="mode", label="mode", kind="choice", choices=["a", "b"])],
+    )
+    console = _console()
+    _script_ask(monkeypatch, promptform.Prompt, ["nope", "b"])
+    values = promptform.collect(plan, {}, console=console)
+
+    assert values == {"mode": "b"}
+    assert "Choose one of: a, b (or Enter to skip)" in console.export_text()
+
+
+def test_promptform_bool_default_accepts_on_and_y_spellings(monkeypatch):
+    """The bool default is read through flows.truthy, so a stored "on"/"y" renders as a
+    CHECKED default in the line form (the same spelling rule assembly fires on)."""
+    plan = flows.FormPlan(
+        source="argparse", fields=[flows.FormField(key="flag", label="flag", kind="bool")]
+    )
+    console = _console()
+    calls = _script_ask(monkeypatch, promptform.Confirm, [True])
+    promptform.collect(plan, {"flag": "on"}, console=console)
+    assert calls[0][1]["default"] is True  # "on" seeds a checked default, not unchecked
 
 
 def test_promptform_degraded_field_prints_leave_empty_hint(monkeypatch):

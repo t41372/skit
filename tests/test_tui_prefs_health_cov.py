@@ -346,6 +346,58 @@ async def test_health_selecting_issue_jumps_to_that_script(tmp_path):
     assert results == [slug]
 
 
+async def test_health_enter_jumps_via_auto_focus(tmp_path):
+    """AUTO_FOCUS puts the keyboard on the issues list, so the advertised Enter lands on a
+    row (not the scroll container) and dismisses with its slug — pressing the real key, not
+    calling the action, proves the focus wiring."""
+    slug = _rich_health_setup(tmp_path)
+    results: list[str | None] = []
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(HealthScreen(), results.append)
+        await pilot.pause()
+        issues = app.screen.query_one("#hc-issues", OptionList)
+        assert issues.has_focus  # AUTO_FOCUS parked the keyboard on the list
+        issues.highlighted = 0
+        await pilot.press("enter")
+        await pilot.pause()
+    assert results == [slug]
+
+
+async def test_health_ctrl_r_rebuilds(tmp_path):
+    """Rebuild is Ctrl+R per the key grammar (it refreshes the screen's subject): pressing
+    the real chord runs the rebuild and the report line appears."""
+    store.add_python(_py(tmp_path, "print(1)\n"), name="ok")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(HealthScreen())
+        await pilot.pause()
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+        report = str(app.screen.query_one("#hc-rebuilt", Static).render())
+    assert "Index rebuilt" in report
+
+
+async def test_health_rebuild_recomposes_entry_count_and_keeps_report(tmp_path):
+    """A rebuild recomposes the whole screen (the settings-resync discipline), so the entry
+    count reflects the rebuilt reality instead of a stale snapshot contradicting the "Index
+    rebuilt: N" line — and the outcome report survives the recompose via the instance."""
+    store.add_python(_py(tmp_path, "print(1)\n"), name="ok")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = HealthScreen()
+        app.push_screen(screen)
+        await pilot.pause()
+        assert "1 script registered" in _screen_text(screen)
+        # A second entry lands AFTER the screen composed — the displayed count is now stale.
+        store.add_python(_py(tmp_path, "print(2)\n", "two.py"), name="second")
+        screen.action_rebuild()
+        await pilot.pause()
+        text = _screen_text(screen)
+        assert "2 scripts registered" in text  # the count updated via the recompose
+        assert "Index rebuilt: 2 entries" in text  # the report survived the recompose
+
+
 async def test_health_action_jump_dismisses_to_highlighted(tmp_path):
     """The Enter/footer twin dismisses to the highlighted issue's slug."""
     slug = _rich_health_setup(tmp_path)

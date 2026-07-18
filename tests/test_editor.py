@@ -472,6 +472,54 @@ def test_add_edit_dep_flag_on_non_python_draft_is_refused(monkeypatch):
         store.resolve("d")  # nothing was added
 
 
+# --------------------------------------------------------------------------
+# draft preservation (finding R2): refuse a taken name BEFORE the editor; keep the
+# draft on a post-edit failure
+# --------------------------------------------------------------------------
+
+
+def test_add_edit_python_name_taken_refuses_before_the_editor(tmp_path, monkeypatch):
+    """The name conflict is caught BEFORE $EDITOR opens — discovering it after the user
+    authored a whole script (then deleting their only copy) destroyed real work. The editor
+    is never launched."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    store.add_python(_py(tmp_path, "print(1)\n", "orig.py"), name="taken")
+    monkeypatch.setattr(cli.editor, "open_in_editor", _boom)  # must NOT be launched
+    result = runner.invoke(cli.app, ["add", "-e", "--name", "taken"])
+    assert result.exit_code == 1
+    assert "already taken" in result.output
+    # _boom raises AssertionError if the editor is launched — a clean SystemExit means it
+    # was refused before the editor ever opened.
+    assert not isinstance(result.exception, AssertionError)
+
+
+def test_add_edit_python_post_edit_failure_keeps_the_draft(monkeypatch):
+    """A failure AFTER the edit must never delete the temp draft — it is the user's only
+    copy of what they just wrote. The error names where the draft lives and nothing is
+    added."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    seen: dict[str, Path] = {}
+
+    def write_script(p):
+        seen["path"] = p
+        p.write_text("import sys\nprint('drafted')\n", encoding="utf-8")
+        return 0
+
+    def onboard_boom(*_a, **_k):
+        raise store.StoreError("disk full")
+
+    monkeypatch.setattr(cli.editor, "open_in_editor", write_script)
+    monkeypatch.setattr(cli, "_onboard_python", onboard_boom)
+    result = runner.invoke(cli.app, ["add", "-e", "--name", "keptpy"])
+    try:
+        assert result.exit_code == 1
+        assert "Your draft was kept at" in result.output
+        assert seen["path"].exists()  # the draft survived the failure
+        assert store.list_entries() == []  # nothing added
+    finally:
+        seen["path"].unlink(missing_ok=True)
+
+
 def test_add_edit_rejects_path(tmp_path):
     p = _py(tmp_path, "print(1)\n")
     result = runner.invoke(cli.app, ["add", "-e", str(p)])

@@ -320,6 +320,19 @@ async def test_detail_pane_unpinned_prompt_says_the_form_asks(tmp_path):
         assert "Runner picked on the run form" in detail
 
 
+async def test_detail_pane_stale_pin_says_no_longer_configured(tmp_path):
+    """A prompt pinned to a runner whose config row is gone: the detail pane says
+    '(no longer configured)' — the same honesty Script settings gives (two surfaces, one
+    truth), never a bare 'Runs with X' that would launch straight into a 126."""
+    _prompt_entry(tmp_path, pin="nonesuch-agent")  # not a configured runner
+    app = tui.MenuApp()
+    async with app.run_test(size=(120, 34)) as pilot:
+        await pilot.pause()
+        detail = str(app.query_one("#detail-body", Static).render())
+        assert "nonesuch-agent" in detail
+        assert "no longer configured" in detail
+
+
 # --------------------------------------------------------------------------
 # add lane
 # --------------------------------------------------------------------------

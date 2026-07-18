@@ -110,8 +110,17 @@ async def test_draft_script_editor_error_is_reported_not_crashed(tmp_path, no_su
     assert store.list_entries() == []
 
 
-async def test_draft_script_cancelled_review_adds_nothing(tmp_path, no_suspend, monkeypatch):
-    _editor_writes(monkeypatch, "import sys\nprint('drafted')\n")
+async def test_draft_script_cancelled_review_keeps_the_draft_and_notifies(
+    tmp_path, no_suspend, monkeypatch
+):
+    """A cancelled review must NEVER silently delete the draft — it is the user's only copy
+    of what they just wrote. The temp file is kept and a notification says where it lives;
+    nothing lands in the store (finding R2, the TUI lane)."""
+    seen = _editor_writes(monkeypatch, "import sys\nprint('drafted')\n")
+    notes: list[str] = []
+    monkeypatch.setattr(
+        AddSourceScreen, "notify", lambda self, message, **kw: notes.append(message)
+    )
     app = tui.MenuApp()
     async with app.run_test(size=(100, 40)) as pilot:
         source = AddSourceScreen()
@@ -121,9 +130,12 @@ async def test_draft_script_cancelled_review_adds_nothing(tmp_path, no_suspend, 
         await pilot.pause()
         review = app.screen
         assert isinstance(review, AddReviewScreen)
-        review.action_cancel()  # dismiss(None) → the draft callback adds nothing
+        review.action_cancel()  # dismiss(None) → the draft callback keeps the file
         await pilot.pause()
-    assert store.list_entries() == []
+    assert store.list_entries() == []  # nothing added
+    assert seen["path"].exists()  # the draft survived the cancel
+    assert any("Your draft was kept at" in n for n in notes)  # and the user was told where
+    seen["path"].unlink(missing_ok=True)
 
 
 def test_kind_for_draft_reads_the_shebang_not_the_suffix(tmp_path):

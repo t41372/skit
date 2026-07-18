@@ -73,6 +73,23 @@ def test_bare_config_json() -> None:
     assert doc["after_run"] == "exit"  # the launcher default
 
 
+def test_read_one_key_json_emits_single_pair() -> None:
+    """`config KEY --json` → {KEY: value} (the flag was previously ignored on this read
+    path): stdout is exactly one JSON document, same shape as the whole-config read."""
+    result = runner.invoke(cli.app, ["config", "form", "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == {"form": "tui"}
+
+
+def test_set_one_key_json_emits_final_pair() -> None:
+    """`config KEY VALUE --json` → the FINAL {KEY: value} after the write (the flag was
+    ignored on this write path too), not the human "key = value" line."""
+    result = runner.invoke(cli.app, ["config", "form", "plain", "--json"])
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == {"form": "plain"}  # the written state
+    assert config.load_form() == "plain"  # really persisted
+
+
 def test_unknown_key_exits_2() -> None:
     result = runner.invoke(cli.app, ["config", "theme"])
     assert result.exit_code == 2

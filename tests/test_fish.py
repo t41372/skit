@@ -369,6 +369,27 @@ def test_no_argparse_returns_none():
     assert fc.read_cli("echo hello\n") is None
 
 
+def test_argparse_variable_specs_degrade_to_dynamic():
+    """A variable spec list (`argparse $specs -- $argv`) is DETECTED but unmodelable: the
+    reader degrades to ok=False 'dynamic' (the python/JS rule) instead of fabricating a
+    phantom `$specs` flag out of the variable name."""
+    spec = fc.read_cli("argparse $specs -- $argv\n")
+    assert spec is not None
+    assert spec.ok is False
+    assert spec.reason == "dynamic"
+    assert spec.fields == []
+
+
+def test_argparse_command_substitution_specs_degrade_to_dynamic():
+    """Command substitution (`argparse (make_specs) -- $argv`) is dynamic too — the option
+    set is unknowable statically."""
+    spec = fc.read_cli("argparse (make_specs) -- $argv\n")
+    assert spec is not None
+    assert spec.ok is False
+    assert spec.reason == "dynamic"
+    assert spec.fields == []
+
+
 def test_argparse_garbage_specs_are_skipped():
     # Empty spec, a value-suffix with no name (`=`), validator-only, bare and leading separators.
     spec = fc.read_cli("argparse '' '=' '!v' '#' '/x' 'ok' -- $argv\n")
