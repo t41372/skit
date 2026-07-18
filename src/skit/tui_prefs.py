@@ -17,8 +17,10 @@ from rich.markup import escape
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.screen import Screen
-from textual.widgets import Input, RadioButton, RadioSet, Select, Static
+from textual.containers import Vertical
+from textual.screen import ModalScreen, Screen
+from textual.widgets import Input, Label, OptionList, RadioButton, RadioSet, Select, Static
+from textual.widgets.option_list import Option
 
 from . import config, i18n, tui_footer
 from .i18n import gettext, ngettext
@@ -26,11 +28,77 @@ from .i18n import gettext, ngettext
 _MIRROR_CHOICES = [*config.PYPI_PRESETS, "custom", "off"]
 
 
+class SkillInstallModal(ModalScreen[str | None]):
+    """Pick an agent directory and install the Agent Skill into it (the TUI face of
+    `skit agent install`). Dismisses with the written path, or None. Consent stays
+    explicit: nothing is written until a directory is picked (principle #6)."""
+
+    AUTO_FOCUS = "OptionList"
+    BINDINGS = [Binding("escape", "cancel", gettext("Cancel"))]
+    DEFAULT_CSS = """
+    SkillInstallModal { align: center middle; }
+    SkillInstallModal > Vertical { border: round $accent; padding: 1 2; width: 76;
+        max-width: 100%; height: auto; max-height: 100%; background: $background; }
+    SkillInstallModal OptionList { height: auto; border: none; }
+    SkillInstallModal .hint { color: $text-muted; }
+    SkillInstallModal Static { width: auto; margin: 1 0 0 0; }
+    """
+
+    @override
+    def compose(self) -> ComposeResult:
+        from . import agentskill
+
+        home, cwd = agentskill.default_roots()
+        self._targets = agentskill.detect_targets(home=home, cwd=cwd)
+        scope_names = {"user": gettext("user"), "project": gettext("project")}
+        with Vertical():
+            yield Label(gettext("Teach an AI agent to use skit"))
+            if self._targets:
+                yield OptionList(
+                    *(
+                        Option(
+                            f"{escape(t.name)} ({scope_names[t.scope]})  "
+                            f"[dim]{escape(str(t.skills_dir))}[/dim]",
+                            id=str(i),
+                        )
+                        for i, t in enumerate(self._targets)
+                    )
+                )
+            else:
+                yield Static(
+                    gettext(
+                        "No agent directories detected (~/.claude, ~/.codex, ./.agents, …). "
+                        "Install by hand with: skit agent install --to DIR"
+                    ),
+                    classes="hint",
+                )
+            yield Static(
+                tui_footer.bar(tui_footer.chip("screen.cancel", "Esc", gettext("Cancel"))),
+                markup=True,
+            )
+
+    @on(OptionList.OptionSelected)
+    def _picked(self, event: OptionList.OptionSelected) -> None:
+        from . import agentskill
+
+        target = self._targets[int(str(event.option.id))]
+        try:
+            written = agentskill.install_into(target.skills_dir, agentskill.skill_text())
+        except OSError as exc:
+            self.notify(str(exc), severity="error")
+            return
+        self.dismiss(str(written))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class PreferencesScreen(Screen[bool]):
     BINDINGS = [
         Binding("escape", "close", gettext("Back")),
         Binding("ctrl+a", "save", gettext("Save"), priority=True),
         Binding("ctrl+n", "manage_runners", gettext("Manage agents"), show=False, priority=True),
+        Binding("ctrl+t", "install_skill", gettext("Teach an AI agent"), show=False, priority=True),
         *tui_footer.FIELD_NAV_BINDINGS,
     ]
     # Boot on the language dropdown, not the "*" pick (the body scroll container).
@@ -80,6 +148,16 @@ class PreferencesScreen(Screen[bool]):
         from .tui_runner import RunnerManageScreen
 
         self.app.push_screen(RunnerManageScreen(), lambda _: self._refresh_runner_count())
+
+    def action_install_skill(self) -> None:
+        """Ctrl+T / the Teach an AI agent… chip: install the Agent Skill from the TUI —
+        a headline README feature that was CLI-only (`skit agent install`)."""
+
+        def _installed(path: str | None) -> None:
+            if path:
+                self.notify(gettext("Installed the skit Agent Skill: %(path)s") % {"path": path})
+
+        self.app.push_screen(SkillInstallModal(), _installed)
 
     @override
     def compose(self) -> ComposeResult:
@@ -168,7 +246,10 @@ class PreferencesScreen(Screen[bool]):
             yield Static("", id="pf-runner-count")
             yield Static(
                 tui_footer.bar(
-                    tui_footer.chip("screen.manage_runners", "Ctrl+N", gettext("Manage agents…"))
+                    tui_footer.chip("screen.manage_runners", "Ctrl+N", gettext("Manage agents…")),
+                    tui_footer.chip(
+                        "screen.install_skill", "Ctrl+T", gettext("Teach an AI agent skit…")
+                    ),
                 ),
                 id="pf-runner-manage",
                 markup=True,

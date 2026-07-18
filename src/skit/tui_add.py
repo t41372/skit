@@ -46,6 +46,8 @@ class AddSourceScreen(Screen[str | None]):
 
     BINDINGS = [
         Binding("escape", "cancel", gettext("Cancel")),
+        Binding("ctrl+e", "draft_script", gettext("Write a new script"), priority=True),
+        Binding("ctrl+p", "draft_prompt", gettext("Draft a prompt"), priority=True),
         *tui_footer.FIELD_NAV_BINDINGS,
     ]
     # Boot on the path field, not the "*" pick (the body scroll container).
@@ -83,6 +85,17 @@ class AddSourceScreen(Screen[str | None]):
             )
             yield Input(placeholder="ffmpeg -i {input} {output}", id="add-template")
             yield Input(placeholder=gettext("Name for the command"), id="add-template-name")
+            yield Static(gettext("…or start from a blank page:"), classes="hint")
+            # The authoring lanes were CLI-only (skit add --edit / --prompt) — a
+            # TUI-first user could never discover them (zero-memorization).
+            yield Static(
+                tui_footer.bar(
+                    tui_footer.chip("screen.draft_script", "Ctrl+E", gettext("Write a script…")),
+                    tui_footer.chip("screen.draft_prompt", "Ctrl+P", gettext("Draft a prompt…")),
+                ),
+                id="add-draft",
+                markup=True,
+            )
         yield tui_footer.KeysBar(
             Static(
                 tui_footer.bar(
@@ -176,6 +189,50 @@ class AddSourceScreen(Screen[str | None]):
         else:
             self._submit_template()
 
+    def action_draft_script(self) -> None:
+        """Ctrl+E / the Write a script… chip: author a brand-new python script in
+        $EDITOR, then review it in the same panel a path-add gets."""
+        from .cli import _STARTER_SCRIPT  # lazy: cli imports this module lazily too
+
+        self._draft(".py", _STARTER_SCRIPT, "python")
+
+    def action_draft_prompt(self) -> None:
+        """Ctrl+P / the Draft a prompt… chip: the prompt twin."""
+        from .cli import _starter_prompt
+
+        self._draft(".prompt.md", _starter_prompt(), "prompt")
+
+    def _draft(self, suffix: str, starter: str, kind: str) -> None:
+        import os
+        import tempfile
+
+        fd, tmp_name = tempfile.mkstemp(suffix=suffix, prefix="skit-new-")  # pragma: no mutate
+        os.close(fd)
+        tmp = Path(tmp_name)
+        tmp.write_text(starter, encoding="utf-8")  # pragma: no mutate
+        with self.app.suspend():
+            try:
+                editor.open_in_editor(tmp)
+            except editor.EditorError as exc:
+                print(str(exc), flush=True)
+        text = tmp.read_text(encoding="utf-8", errors="replace")
+        if text.strip() in ("", starter.strip()):
+            tmp.unlink(missing_ok=True)  # pragma: no mutate
+            self.notify(gettext("Nothing was written, so no script was added."))
+            return
+
+        def _reviewed(slug: str | None) -> None:
+            tmp.unlink(missing_ok=True)  # pragma: no mutate — the panel copied or cancelled
+            if slug is not None:
+                self.dismiss(slug)
+
+        review: Screen[str | None] = (
+            PromptReviewScreen(tmp, fresh=True)
+            if kind == "prompt"
+            else AddReviewScreen(tmp, kind=kind, fresh=True)
+        )
+        self.app.push_screen(review, _reviewed)
+
     def action_cancel(self) -> None:
         self.dismiss(None)
 
@@ -216,6 +273,7 @@ class AddReviewScreen(Screen[str | None]):
         reference: bool = False,
         deps: list[str] | None = None,
         requires_python: str = "",
+        fresh: bool = False,
     ) -> None:
         """The keyword arguments prefill the panel (the CLI face passes `skit add`'s
         flags through them); everything stays editable on screen.
@@ -228,6 +286,10 @@ class AddReviewScreen(Screen[str | None]):
         super().__init__()
         self._path: Path = path
         self._kind: str = kind
+        # A freshly-drafted temp file has no original to link — the storage section is
+        # skipped and accept always copies (the CLI refuses --ref there for the same
+        # reason).
+        self._fresh: bool = fresh
         from .langs.registry import spec_for
 
         self._spec = spec_for(kind)
@@ -273,22 +335,26 @@ class AddReviewScreen(Screen[str | None]):
                 placeholder=gettext("(the script has no docstring — you can write one line)"),
                 id="rv-desc",
             )
-            yield Static(gettext("Storage"), classes="section")
-            # "1" == the reference button. Default to copy on first compose (no override);
-            # after an edit→rescan, restore whichever the user had picked.
-            reference = self._overrides.get("mode") == "1"
-            with RadioSet(id="rv-mode"):
-                yield RadioButton(
-                    gettext("Keep a copy — skit stores it; your original file is never modified"),
-                    value=not reference,
-                )
-                yield RadioButton(
-                    gettext(
-                        "Link the original — edits take effect immediately, but skit won't write "
-                        "to the file, so parameter definitions are yours to maintain"
-                    ),
-                    value=reference,
-                )
+            if not self._fresh:
+                # A freshly-drafted temp file has no original to link: no storage ask.
+                yield Static(gettext("Storage"), classes="section")
+                # "1" == the reference button. Default to copy on first compose (no
+                # override); after an edit→rescan, restore whichever the user picked.
+                reference = self._overrides.get("mode") == "1"
+                with RadioSet(id="rv-mode"):
+                    yield RadioButton(
+                        gettext(
+                            "Keep a copy — skit stores it; your original file is never modified"
+                        ),
+                        value=not reference,
+                    )
+                    yield RadioButton(
+                        gettext(
+                            "Link the original — edits take effect immediately, but skit won't "
+                            "write to the file, so parameter definitions are yours to maintain"
+                        ),
+                        value=reference,
+                    )
             yield from self._compose_deps()
             yield from self._compose_params()
         yield tui_footer.KeysBar(
@@ -419,7 +485,8 @@ class AddReviewScreen(Screen[str | None]):
         (the edit→return→rescan loop; A5 is not involved — it's their file, their editor)."""
         self._overrides["name"] = self.query_one("#rv-name", Input).value
         self._overrides["desc"] = self.query_one("#rv-desc", Input).value
-        self._overrides["mode"] = str(self.query_one("#rv-mode", RadioSet).pressed_index)
+        if not self._fresh:
+            self._overrides["mode"] = str(self.query_one("#rv-mode", RadioSet).pressed_index)
         deps_box = self.query("#rv-deps")
         if deps_box:
             self._overrides["deps"] = deps_box.first(Input).value
@@ -471,7 +538,7 @@ class AddReviewScreen(Screen[str | None]):
     def action_accept(self) -> None:
         name = self.query_one("#rv-name", Input).value.strip() or None
         desc = self.query_one("#rv-desc", Input).value.strip()
-        reference = self.query_one("#rv-mode", RadioSet).pressed_index == 1
+        reference = not self._fresh and self.query_one("#rv-mode", RadioSet).pressed_index == 1
         deps = self._collected_deps()
         try:
             entry = self._store_entry(name, desc, reference, deps)
@@ -549,11 +616,15 @@ class PromptReviewScreen(Screen[str | None]):
         reference: bool = False,
         runner: str | None = None,
         interpolate: bool = True,
+        fresh: bool = False,
     ) -> None:
         """The keyword arguments prefill the panel (the CLI face passes `skit add`'s
-        flags through them); everything stays editable on screen."""
+        flags through them); everything stays editable on screen. fresh=True is the
+        drafted-in-$EDITOR lane: a temp file with no original to link, so the storage
+        section is skipped and accept always copies."""
         super().__init__()
         self._path: Path = path
+        self._fresh: bool = fresh
         self._text: str = path.read_text(encoding="utf-8", errors="replace")
         self._detected: list[str] = prompt_analyzer.placeholder_names(self._text)
         self._runner_names: list[str] = []
@@ -601,20 +672,8 @@ class PromptReviewScreen(Screen[str | None]):
                 placeholder=gettext("(taken from the first line — you can write your own)"),
                 id="pv-desc",
             )
-            yield Static(gettext("Storage"), classes="section")
-            reference = self._overrides.get("mode") == "1"
-            with RadioSet(id="pv-mode"):
-                yield RadioButton(
-                    gettext("Keep a copy — skit stores it; your original file is never modified"),
-                    value=not reference,
-                )
-                yield RadioButton(
-                    gettext(
-                        "Link the original — edits take effect immediately; skit never "
-                        "writes to the file"
-                    ),
-                    value=reference,
-                )
+            if not self._fresh:
+                yield from self._compose_storage()
             yield Static(gettext("Variable insertion"), classes="section")
             yield Checkbox(
                 gettext("Fill {{name}} placeholders from a form before each run"),
@@ -643,6 +702,22 @@ class PromptReviewScreen(Screen[str | None]):
                 markup=True,
             )
         )
+
+    def _compose_storage(self) -> ComposeResult:
+        yield Static(gettext("Storage"), classes="section")
+        reference = self._overrides.get("mode") == "1"
+        with RadioSet(id="pv-mode"):
+            yield RadioButton(
+                gettext("Keep a copy — skit stores it; your original file is never modified"),
+                value=not reference,
+            )
+            yield RadioButton(
+                gettext(
+                    "Link the original — edits take effect immediately; skit never "
+                    "writes to the file"
+                ),
+                value=reference,
+            )
 
     def _compose_placeholders(self) -> ComposeResult:
         """The tick list. Flood honesty (docs/design/prompt.md): past AUTO_MANAGE_LIMIT
@@ -718,7 +793,8 @@ class PromptReviewScreen(Screen[str | None]):
         (the same edit→return→rescan loop as the python panel — their file, their editor)."""
         self._overrides["name"] = self.query_one("#pv-name", Input).value
         self._overrides["desc"] = self.query_one("#pv-desc", Input).value
-        self._overrides["mode"] = str(self.query_one("#pv-mode", RadioSet).pressed_index)
+        if not self._fresh:
+            self._overrides["mode"] = str(self.query_one("#pv-mode", RadioSet).pressed_index)
         self._overrides["interpolate"] = (
             "on" if self.query_one("#pv-interpolate", Checkbox).value else "off"
         )
@@ -739,7 +815,7 @@ class PromptReviewScreen(Screen[str | None]):
     def action_accept(self) -> None:
         name = self.query_one("#pv-name", Input).value.strip() or None
         desc = self.query_one("#pv-desc", Input).value.strip()
-        reference = self.query_one("#pv-mode", RadioSet).pressed_index == 1
+        reference = not self._fresh and self.query_one("#pv-mode", RadioSet).pressed_index == 1
         interpolate = self.query_one("#pv-interpolate", Checkbox).value
         managed: list[str] | None = None
         if interpolate:
@@ -810,6 +886,7 @@ class AddReviewApp(_ReviewHost):
         reference: bool = False,
         deps: list[str] | None = None,
         requires_python: str = "",
+        fresh: bool = False,
     ) -> None:
         super().__init__(
             AddReviewScreen(
