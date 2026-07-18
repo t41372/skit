@@ -42,3 +42,10 @@ def private_bin_dir() -> Path:
 
 def values_dir() -> Path:
     return state_dir() / "values"
+
+
+def drafts_dir() -> Path:
+    """Where authoring drafts live — skit's OWN data dir, not $TMPDIR: "your draft was
+    kept" must be a promise the OS can't break (macOS reaps temp files in days), and an
+    accumulation the user can see and manage beats invisible litter."""
+    return data_dir() / "drafts"

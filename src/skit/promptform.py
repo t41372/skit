@@ -63,9 +63,23 @@ def _ask_once(f: flows.FormField, default: str, console: Console) -> str:
         return Prompt.ask(f"  {label}", password=True, console=console)
     if f.kind == "choice" and f.choices:
         if f.required or default:
-            return Prompt.ask(
-                f"  {label}", choices=f.choices, default=default or f.choices[0], console=console
-            )
+            # The same localized loop as the optional branch below — delegating the
+            # re-prompt to rich spoke hardcoded English inside a translated form.
+            answer = Prompt.ask(
+                f"  {label} ({'/'.join(f.choices)})",
+                default=default or f.choices[0],
+                console=console,
+            ).strip()
+            while answer not in f.choices:
+                console.print(
+                    f"[red]{gettext('Choose one of: %(choices)s') % {'choices': ', '.join(f.choices)}}[/red]"
+                )
+                answer = Prompt.ask(
+                    f"  {label} ({'/'.join(f.choices)})",
+                    default=default or f.choices[0],
+                    console=console,
+                ).strip()
+            return answer
         # Optional with no default: Enter must mean "leave it out" (the TUI's RadioSet
         # returns "" and assembly omits the flag) — forcing the first choice submitted
         # a value the user never chose. Empty stays allowed; anything typed must be a

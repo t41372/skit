@@ -25,8 +25,9 @@ on the screen's current subject, Ctrl+N always creates the screen's primary obje
 script on the add step, an agent on a runner picker), Ctrl+T always inserts a value,
 Ctrl+R re-runs/refreshes the screen's subject (the run form runs it; Script settings
 resyncs its definitions from the script), and Ctrl+S saves/commits the screen's work
-(the run form's save-as-preset included). Ctrl+A belongs to the Input (cursor-home) and
-is never a screen chord.
+(the run form's save-as-preset included). Ctrl+A (cursor-home) and — while an Input has focus —
+Ctrl+E (end-of-line) belong to the Input: screen chords for them are never
+priority-bound; the chip is the path mid-edit.
 Never bind a text-editing chord (Ctrl+K and friends) with `priority=True` on a screen
 full of Inputs — the Input's own editing wins there, and the chip stays the mouse path.
 

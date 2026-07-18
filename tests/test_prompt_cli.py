@@ -829,7 +829,12 @@ def test_add_runner_flag_refused_on_cmd_edit_exe_lanes(tmp_path):
     ):
         result = runner.invoke(cli.app, args)
         assert result.exit_code == 2, args
-        assert "--runner only applies to prompt entries" in result.output
+        # Two honest refusal voices: the path lane's prompt-specific message, or the
+        # lane matrix's "can't apply here" — either way exit 2, nothing added.
+        assert (
+            "--runner only applies to prompt entries" in result.output
+            or "--runner can't apply here" in result.output
+        ), args
 
 
 def test_add_prompt_editor_lane_reports_store_errors(tmp_path, monkeypatch):

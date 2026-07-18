@@ -23,6 +23,7 @@ from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Checkbox, Input, OptionList, RadioButton, RadioSet, Select, Static
+from textual.widgets.option_list import Option
 
 from . import (
     analysis,
@@ -139,6 +140,7 @@ class AddSourceScreen(Screen[str | None]):
         border-title-style: bold;
     }
     AddSourceScreen .hint { color: $text-muted; }
+    AddSourceScreen #add-drafts { height: auto; max-height: 4; border: none; }
     /* Chips wrap pill-by-pill; visible lines follow the height tier and anything
        past the cap stays wheel-reachable — see tui_footer.KeysBar. */
     AddSourceScreen KeysBar { dock: bottom; }
@@ -162,6 +164,16 @@ class AddSourceScreen(Screen[str | None]):
             )
             yield Input(placeholder="ffmpeg -i {input} {output}", id="add-template")
             yield Input(placeholder=gettext("Name for the command"), id="add-template-name")
+            from .paths import drafts_dir
+
+            drafts = sorted(drafts_dir().glob("skit-*")) if drafts_dir().is_dir() else []
+            if drafts:
+                # Kept drafts are resumable, not lore: list them where adding happens.
+                yield Static(gettext("…or resume a kept draft:"), classes="hint")
+                yield OptionList(
+                    *(Option(escape(d.name), id=str(d)) for d in drafts[:20]),
+                    id="add-drafts",
+                )
             yield Static(gettext("…or start from a blank page:"), classes="hint")
             # The authoring lanes were CLI-only (skit add --edit / --prompt) — a
             # TUI-first user could never discover them (zero-memorization).
@@ -187,6 +199,12 @@ class AddSourceScreen(Screen[str | None]):
 
     @on(Input.Submitted, "#add-path")
     def _path_given(self, event: Input.Submitted) -> None:
+        self._submit_path()
+
+    @on(OptionList.OptionSelected, "#add-drafts")
+    def _draft_resumed(self, event: OptionList.OptionSelected) -> None:
+        """Picking a kept draft routes it through the same path lane as any file."""
+        self.query_one("#add-path", Input).value = str(event.option.id)
         self._submit_path()
 
     def _submit_path(self) -> None:
@@ -291,7 +309,11 @@ class AddSourceScreen(Screen[str | None]):
         import os
         import tempfile
 
-        fd, tmp_name = tempfile.mkstemp(suffix=suffix, prefix="skit-new-")  # pragma: no mutate
+        from .cli import _drafts_home
+
+        fd, tmp_name = tempfile.mkstemp(  # pragma: no mutate
+            suffix=suffix, prefix="skit-new-", dir=_drafts_home()
+        )
         os.close(fd)
         tmp = Path(tmp_name)
         tmp.write_text(starter, encoding="utf-8")  # pragma: no mutate
@@ -316,7 +338,31 @@ class AddSourceScreen(Screen[str | None]):
             self.dismiss(slug)
 
         if kind == "python":
-            kind = _kind_for_draft(tmp)
+            from .langs.registry import kind_for_shebang, shebang_program
+
+            mapped = kind_for_shebang(tmp)
+            program = shebang_program(tmp)
+            if mapped is not None:
+                kind = mapped
+            elif program is not None and not program.startswith("python"):
+                # An UNREGISTERED shebang is an explicit signal skit can't honor:
+                # ASK (the same modal an unclassifiable file gets), never fabricate
+                # a python entry that can only die in uv run.
+                def _kind_picked(picked: str | None) -> None:
+                    if picked is None:
+                        self.notify(gettext("Your draft was kept at %(path)s") % {"path": str(tmp)})
+                        return
+                    chosen: Screen[str | None] = (
+                        PromptReviewScreen(tmp, fresh=True)
+                        if picked == "prompt"
+                        else ExeReviewScreen(tmp)
+                        if picked == "exe"
+                        else AddReviewScreen(tmp, kind=picked, fresh=True)
+                    )
+                    self.app.push_screen(chosen, _reviewed)
+
+                self.app.push_screen(KindPickModal(tmp.name), _kind_picked)
+                return
         review: Screen[str | None] = (
             PromptReviewScreen(tmp, fresh=True)
             if kind == "prompt"
@@ -406,7 +452,9 @@ class AddReviewScreen(Screen[str | None]):
 
     BINDINGS = [
         Binding("escape", "cancel", gettext("Cancel")),
-        Binding("ctrl+e", "edit_source", gettext("Edit script"), priority=True),
+        # Non-priority: Ctrl+E is every Input's end-of-line (the Ctrl+A rule, one
+        # chord left) — the chip is the path while typing; the chord fires elsewhere.
+        Binding("ctrl+e", "edit_source", gettext("Edit script")),
         Binding("ctrl+s", "accept", gettext("Add"), priority=True),
         *tui_footer.FIELD_NAV_BINDINGS,
     ]
@@ -785,7 +833,8 @@ class PromptReviewScreen(Screen[str | None]):
 
     BINDINGS = [
         Binding("escape", "cancel", gettext("Cancel")),
-        Binding("ctrl+e", "edit_source", gettext("Edit prompt"), priority=True),
+        # Non-priority: see AddReviewScreen — Ctrl+E belongs to the Input mid-edit.
+        Binding("ctrl+e", "edit_source", gettext("Edit prompt")),
         Binding("ctrl+s", "accept", gettext("Add"), priority=True),
         Binding("ctrl+n", "new_runner", gettext("New agent"), show=False, priority=True),
         *tui_footer.FIELD_NAV_BINDINGS,

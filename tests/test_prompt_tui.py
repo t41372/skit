@@ -839,6 +839,10 @@ async def test_review_ctrl_e_rescans_and_keeps_edits(tmp_path, monkeypatch):
         review = app.screen
         assert isinstance(review, PromptReviewScreen)
         review.query_one("#pv-name", Input).value = "renamed"
+        # Ctrl+E is non-priority now (it belongs to the Input mid-edit): step off the
+        # Input first — the chord fires from any non-Input focus, the chip always works.
+        review.query_one("#pv-interpolate", Checkbox).focus()
+        await pilot.pause()
         await pilot.press("ctrl+e")  # the advertised Edit key
         await pilot.pause()
         assert review.query_one("#pv-name", Input).value == "renamed"  # edit survived

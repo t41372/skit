@@ -63,8 +63,14 @@ def analyze(text: str) -> Analysis:
     clobbered = _clobbered_names(stmts)
     candidates = [c for c in envdefaults if c.name not in clobbered]
     code = _code(text)
+    # Same rule as the shell analyzer: a script that drives its own argparse must say
+    # so, or every uses_cli_framework guard is dead for this kind.
+    from . import cli_reader
+
+    frameworks = ["argparse"] if cli_reader.read_cli(text) is not None else []
     return Analysis(
         candidates=candidates,
+        frameworks=frameworks,
         uses_argv="$argv" in code,
         uses_self_location=_has_self_location(code),
     )

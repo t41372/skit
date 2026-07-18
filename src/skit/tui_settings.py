@@ -281,6 +281,10 @@ class ScriptSettingsScreen(Screen[bool]):
         self._is_prompt: bool = entry.meta.kind == "prompt"
         # Value-keyed option list behind the workdir radio (kind-aware; "custom" last).
         self._workdir_choices: list[str] = []
+        # The preset names as composed — the delete pass maps checkbox indices
+        # through THIS list, never a fresh state read (a preset added/deleted
+        # mid-session must not shift which name an untick deletes).
+        self._preset_names: list[str] = []
         if self._is_prompt:
             # Every MANAGED placeholder gets an editable row (undeclared ones as their
             # synthesized schema), plus declared env riders — the exact field list the
@@ -720,8 +724,12 @@ class ScriptSettingsScreen(Screen[bool]):
             )
             return
         yield Static(gettext("Untick a preset to delete it on save:"), classes="hint")
-        for i, (name, values) in enumerate(sorted(presets.items())):
-            summary = ", ".join(f"{k}={v}" for k, v in values.items())
+        # NAME-keyed via the list captured here (the runner Select's rule): a preset
+        # added or deleted mid-session (a concurrent skit preset save — the product's
+        # own agent-coexistence story) must never shift which name an untick deletes.
+        self._preset_names = sorted(presets)
+        for i, name in enumerate(self._preset_names):
+            summary = ", ".join(f"{k}={v}" for k, v in presets[name].items())
             yield Checkbox(
                 f"{escape(name)}  [dim]{escape(summary)}[/dim]", value=True, id=f"st-preset-{i}"
             )
@@ -922,8 +930,9 @@ class ScriptSettingsScreen(Screen[bool]):
         ]
         if needs != (entry.meta.needs or []):
             store.update_needs(entry.slug, needs)
-        presets = argstate.load_state(entry.slug)["presets"]
-        for i, name in enumerate(sorted(presets)):
+        for i, name in enumerate(self._preset_names):
+            # The compose-time names, not a fresh state read: index i belongs to the
+            # checkbox the user actually saw.
             box = self.query(f"#st-preset-{i}")
             if box and not box.first(Checkbox).value:
                 argstate.delete_preset(entry.slug, name)

@@ -281,6 +281,17 @@ def _prompt_identity(
     return name, description
 
 
+def _drafts_home() -> str:
+    """Authoring/stdin temps live under skit's own data dir, not $TMPDIR: the
+    keep-on-failure promise must survive the OS's temp reaper, and the accumulation is
+    visible (the TUI add screen lists resumable drafts)."""
+    from .paths import drafts_dir
+
+    home = drafts_dir()
+    home.mkdir(parents=True, exist_ok=True)
+    return str(home)
+
+
 def _require_file(resolved: Path) -> None:
     if not resolved.is_file():
         raise store.StoreError(gettext("File not found: %(path)s") % {"path": str(resolved)})
@@ -536,7 +547,9 @@ def _create_python_in_editor(
             + _RED_CLOSE
         )
         raise typer.Exit(1)
-    fd, tmp_name = tempfile.mkstemp(suffix=".py", prefix="skit-new-")  # pragma: no mutate
+    fd, tmp_name = tempfile.mkstemp(
+        suffix=".py", prefix="skit-new-", dir=_drafts_home()
+    )  # pragma: no mutate
     os.close(fd)
     tmp = Path(tmp_name)
     tmp.write_text(_STARTER_SCRIPT, encoding="utf-8")  # pragma: no mutate
@@ -545,11 +558,31 @@ def _create_python_in_editor(
         editor.open_in_editor(tmp)
         text = tmp.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate — utf-8 equiv
         if text.strip() in ("", _STARTER_SCRIPT.strip()):
+            tmp.unlink(missing_ok=True)  # pragma: no mutate — no user content: pure litter
             console.print(gettext("Nothing was written, so no script was added."))
             return
-        from .langs.registry import kind_for_shebang
+        from .langs.registry import kind_for_shebang, shebang_program
 
-        drafted_kind = kind_for_shebang(tmp) or "python"
+        drafted_kind = kind_for_shebang(tmp)
+        drafted_program = shebang_program(tmp)
+        if (
+            drafted_kind is None
+            and drafted_program is not None
+            and not drafted_program.startswith("python")
+        ):
+            # An unregistered shebang can't be honored — refuse (the draft is kept;
+            # the path lane's --kind escape applies to it).
+            err_console.print(
+                "[red]"
+                + gettext(
+                    "The draft's #! names no interpreter skit knows — add it with: "
+                    "skit add %(path)s --kind <language>"
+                )
+                % {"path": escape(str(tmp))}
+                + _RED_CLOSE
+            )
+            raise typer.Exit(EXIT_USAGE)
+        drafted_kind = drafted_kind or "python"
         if drafted_kind != "python":
             # A changed shebang is an explicit signal, honored by the SAME rule (and
             # to the SAME depth) as the TUI draft lane: interpreter recorded, npm deps
@@ -624,7 +657,9 @@ def _add_from_stdin(
             f"[red]{gettext('Nothing arrived on stdin, so there is nothing to add.')}[/red]"
         )
         raise typer.Exit(1)
-    fd, tmp_name = tempfile.mkstemp(suffix=".py", prefix="skit-stdin-")  # pragma: no mutate
+    fd, tmp_name = tempfile.mkstemp(
+        suffix=".py", prefix="skit-stdin-", dir=_drafts_home()
+    )  # pragma: no mutate
     os.close(fd)
     tmp = Path(tmp_name)
     tmp.write_text(text, encoding="utf-8")  # pragma: no mutate
@@ -639,14 +674,20 @@ def _add_from_stdin(
             no_input=True,
         )
     except store.StoreError as exc:
+        err_console.print(
+            f"[dim]{gettext('Your draft was kept at %(path)s — fix the problem and add it with: skit add %(path)s') % {'path': escape(str(tmp))}}[/dim]"
+        )
         raise _fail(str(exc), 1) from exc
-    finally:
-        tmp.unlink(missing_ok=True)  # pragma: no mutate
+    tmp.unlink(missing_ok=True)  # pragma: no mutate — success: the store holds the copy
     _print_add_summary(entry, deps, managed, secrets)
 
 
 def _add_script_from_stdin(
-    kind: str, name: str | None, description: str | None, text: str | None = None
+    kind: str,
+    name: str | None,
+    description: str | None,
+    text: str | None = None,
+    explicit_deps: list[str] | None = None,
 ) -> None:
     """`skit add - --kind shell`: the non-python twin of _add_from_stdin. Before this
     lane existed, --kind on stdin was SILENTLY DROPPED and the text became a python
@@ -670,7 +711,9 @@ def _add_script_from_stdin(
         raise typer.Exit(1)
     kind_spec = spec_for(kind)
     suffix = kind_spec.extensions[0] if kind_spec is not None and kind_spec.extensions else ".txt"
-    fd, tmp_name = tempfile.mkstemp(suffix=suffix, prefix="skit-stdin-")  # pragma: no mutate
+    fd, tmp_name = tempfile.mkstemp(
+        suffix=suffix, prefix="skit-stdin-", dir=_drafts_home()
+    )  # pragma: no mutate
     os.close(fd)
     tmp = Path(tmp_name)
     tmp.write_text(text, encoding="utf-8")  # pragma: no mutate
@@ -681,20 +724,25 @@ def _add_script_from_stdin(
             tmp, kind=kind, name=name, mode="copy", description=description, interpreter=interpreter
         )
         deps: list[str] = []
-        if (
-            kind_spec is not None
-            and kind_spec.deps_flavor == "npm"
-            and kind_spec.dep_scanner is not None
-        ):
-            # Mirror the path lane's non-interactive default: record the script's own
-            # imports (they download packages on first run — the summary says so).
-            deps = kind_spec.dep_scanner(text)
+        if kind_spec is not None and kind_spec.deps_flavor == "npm":
+            # Explicit beats scanner (the path lane's _resolve_npm_dependencies rule —
+            # substituting skit's own scan for a flag the user typed is a silent
+            # override, the worst form of a drop). No flag: the scan is the
+            # non-interactive default, as on the path lane.
+            if explicit_deps:
+                deps = list(explicit_deps)
+            elif kind_spec.dep_scanner is not None:
+                deps = kind_spec.dep_scanner(text)
             if deps:
                 entry = store.update_dependencies(entry.slug, deps)
     except store.StoreError as exc:
+        # The piped text may be genuinely ephemeral (pbpaste, curl, a heredoc) — the
+        # temp file is its only materialized copy and a failure must not destroy it.
+        err_console.print(
+            f"[dim]{gettext('Your draft was kept at %(path)s — fix the problem and add it with: skit add %(path)s') % {'path': escape(str(tmp))}}[/dim]"
+        )
         raise _fail(str(exc), 1) from exc
-    finally:
-        tmp.unlink(missing_ok=True)  # pragma: no mutate
+    tmp.unlink(missing_ok=True)  # pragma: no mutate — success: the store holds the copy
     _print_add_summary(entry, deps, [], [])
 
 
@@ -878,7 +926,9 @@ def _create_prompt_in_editor(
             + _RED_CLOSE
         )
         raise typer.Exit(1)
-    fd, tmp_name = tempfile.mkstemp(suffix=".prompt.md", prefix="skit-new-")  # pragma: no mutate
+    fd, tmp_name = tempfile.mkstemp(
+        suffix=".prompt.md", prefix="skit-new-", dir=_drafts_home()
+    )  # pragma: no mutate
     os.close(fd)
     tmp = Path(tmp_name)
     starter = _starter_prompt()
@@ -888,6 +938,7 @@ def _create_prompt_in_editor(
         editor.open_in_editor(tmp)
         text = tmp.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate — utf-8 equiv
         if text.strip() in ("", starter.strip()):
+            tmp.unlink(missing_ok=True)  # pragma: no mutate — no user content: pure litter
             console.print(gettext("Nothing was written, so no script was added."))
             return
         entry, managed = _onboard_prompt(
@@ -932,7 +983,9 @@ def _add_prompt_from_stdin(
             f"[red]{gettext('Nothing arrived on stdin, so there is nothing to add.')}[/red]"
         )
         raise typer.Exit(1)
-    fd, tmp_name = tempfile.mkstemp(suffix=".prompt.md", prefix="skit-stdin-")  # pragma: no mutate
+    fd, tmp_name = tempfile.mkstemp(
+        suffix=".prompt.md", prefix="skit-stdin-", dir=_drafts_home()
+    )  # pragma: no mutate
     os.close(fd)
     tmp = Path(tmp_name)
     tmp.write_text(text, encoding="utf-8")  # pragma: no mutate
@@ -947,9 +1000,13 @@ def _add_prompt_from_stdin(
             interpolate=interpolate,
         )
     except store.StoreError as exc:
+        # The piped text may be genuinely ephemeral (pbpaste, curl, a heredoc) — the
+        # temp file is its only materialized copy and a failure must not destroy it.
+        err_console.print(
+            f"[dim]{gettext('Your draft was kept at %(path)s — fix the problem and add it with: skit add %(path)s') % {'path': escape(str(tmp))}}[/dim]"
+        )
         raise _fail(str(exc), 1) from exc
-    finally:
-        tmp.unlink(missing_ok=True)  # pragma: no mutate
+    tmp.unlink(missing_ok=True)  # pragma: no mutate — success: the store holds the copy
     _print_add_summary(entry, [], managed, [n for n in managed if is_secret_name(n)])
 
 
@@ -1051,50 +1108,88 @@ def add(
     ),
 ) -> None:
     """Add a script / executable / command to skit."""
-    # Both fresh-script lanes (editor buffer / stdin) have no original file for --ref to
-    # point at — refused, never dropped (the non-interactive contract).
-    if (edit_new or path == "-" or (prompt_kind and not path)) and ref:
-        err_console.print(
-            f"[red]{gettext('--ref needs an existing file to reference — a script written in the editor or read from stdin has none.')}[/red]"
-        )
-        raise typer.Exit(EXIT_USAGE)
-    if no_interpolate and (edit_new or cmd is not None or exe):
-        err_console.print(
-            f"[red]{gettext('--no-interpolate only applies to prompt entries — add one with --prompt.')}[/red]"
-        )
-        raise typer.Exit(EXIT_USAGE)
-    if runner is not None and (edit_new or cmd is not None or exe):
-        # --runner names the agent a PROMPT runs with; on a lane that can't produce one
-        # it would be silently ignored — refused instead (the non-interactive contract).
-        # Path-based adds check again after kind inference (a .prompt.md needs no flag).
-        err_console.print(
-            f"[red]{gettext('--runner only applies to prompt entries — add one with --prompt.')}[/red]"
-        )
-        raise typer.Exit(EXIT_USAGE)
+    # ONE lane x flag matrix, validated up front — five rounds of pairwise guards each
+    # stopped at the lane a finding was filed against, and the unfiled pairs silently
+    # dropped (or scanner-overrode) explicit flags. Refuse-never-drop applies to the
+    # whole table, not to whichever cell last got a bug report.
     if prompt_kind and (edit_new or exe or cmd is not None or kind is not None):
         err_console.print(
             f"[red]{gettext('--prompt names the kind outright — drop --edit/--exe/--kind/--cmd.')}[/red]"
         )
         raise typer.Exit(EXIT_USAGE)
-    # The fresh-text lanes can't produce a program on disk, and --edit's starter is
-    # python-shaped: an explicit flag the lane can't honor is refused, never dropped
-    # (before this check, `cat tool.sh | skit add - --kind shell` silently stored the
-    # bash source as a PYTHON entry).
-    if exe and (edit_new or path == "-"):
-        err_console.print(
-            f"[red]{gettext('--exe needs an existing program on disk — stdin and the editor author scripts.')}[/red]"
-        )
-        raise typer.Exit(EXIT_USAGE)
-    if kind is not None and edit_new:
+    lane = (
+        "cmd"
+        if cmd is not None
+        else "stdin"
+        if path == "-"
+        else "editor"
+        if edit_new
+        else "prompt-editor"
+        if prompt_kind and not path
+        else "path"
+    )
+    given = {
+        "--ref": ref,
+        "--exe": exe,
+        "--kind": kind is not None,
+        "--runner": runner is not None,
+        "--no-interpolate": no_interpolate,
+        "--dep": bool(dep),
+        "--python": python is not None,
+    }
+    # What each lane can honor. The path lane defers to per-kind checks after
+    # inference (_refuse_unusable_add_flags and the prompt/runner re-checks).
+    honorable = {
+        "path": set(given),
+        "cmd": set(),
+        # stdin: --kind routes; --dep/--python/--runner/--no-interpolate are checked
+        # per final kind inside the lane (python/npm honor deps; prompt honors runner).
+        "stdin": {"--kind", "--dep", "--python", "--runner", "--no-interpolate"},
+        "editor": {"--dep", "--python"},
+        "prompt-editor": {"--runner", "--no-interpolate"},
+    }
+    lane_hint = {
+        "cmd": gettext("a --cmd template takes only --name/--description"),
+        "stdin": gettext("the stdin lane can't honor it"),
+        "editor": gettext(
+            "--edit reads the kind from your draft's shebang (write e.g. "
+            "#!/usr/bin/env bash); other kinds can also be piped in via "
+            "skit add - --kind NAME"
+        ),
+        "prompt-editor": gettext("a drafted prompt takes only --name/--description/--runner"),
+    }
+    refused = [flag for flag, present in given.items() if present] if lane != "path" else []
+    refused = [flag for flag in refused if flag not in honorable[lane]]
+    if refused:
         err_console.print(
             "[red]"
-            + gettext(
-                "--edit reads the kind from your draft's shebang (write e.g. "
-                "#!/usr/bin/env bash) — drop --kind, or pipe it in: "
-                "skit add - --kind %(kind)s -n NAME"
-            )
-            % {"kind": escape(kind)}
+            + gettext("%(flags)s can't apply here — %(hint)s (nothing was added).")
+            % {"flags": ", ".join(refused), "hint": lane_hint[lane]}
             + _RED_CLOSE
+        )
+        raise typer.Exit(EXIT_USAGE)
+    # Cross-lane semantics that survive the matrix: --ref always needs a real file,
+    # and only prompt entries have runners/interpolation (checked again per kind on
+    # the path/stdin lanes after inference).
+    if lane in ("stdin", "editor", "prompt-editor") and ref:
+        err_console.print(
+            f"[red]{gettext('--ref needs an existing file to reference — a script written in the editor or read from stdin has none.')}[/red]"
+        )
+        raise typer.Exit(EXIT_USAGE)
+    if lane == "path":
+        if no_interpolate and (exe or (kind is not None and kind != "prompt")):
+            err_console.print(
+                f"[red]{gettext('--no-interpolate only applies to prompt entries — add one with --prompt.')}[/red]"
+            )
+            raise typer.Exit(EXIT_USAGE)
+        if runner is not None and exe:
+            err_console.print(
+                f"[red]{gettext('--runner only applies to prompt entries — add one with --prompt.')}[/red]"
+            )
+            raise typer.Exit(EXIT_USAGE)
+    if exe and lane in ("stdin", "editor"):
+        err_console.print(
+            f"[red]{gettext('--exe needs an existing program on disk — stdin and the editor author scripts.')}[/red]"
         )
         raise typer.Exit(EXIT_USAGE)
     if edit_new:
@@ -1107,8 +1202,20 @@ def add(
         return
     if path == "-":
         if prompt_kind:
+            if dep or python is not None:
+                err_console.print(
+                    f"[red]{gettext('--dep/--python are script flags — a prompt has no dependencies.')}[/red]"
+                )
+                raise typer.Exit(EXIT_USAGE)
             _add_prompt_from_stdin(name, description, runner, interpolate=not no_interpolate)
             return
+        if runner is not None or no_interpolate:
+            # Matrix-admitted for the prompt case only; a non-prompt stdin add can't
+            # honor either — refused per final kind, never dropped.
+            err_console.print(
+                f"[red]{gettext('--runner/--no-interpolate only apply to prompt entries — pipe one with --prompt.')}[/red]"
+            )
+            raise typer.Exit(EXIT_USAGE)
         stdin_text = sys.stdin.read()
         if kind is not None:
             _validate_forced_kind(kind)
@@ -1120,12 +1227,36 @@ def add(
         else:
             # No --kind: the piped text's shebang is the explicit signal, honored by
             # the SAME registry rule as both draft lanes — `pbpaste | skit add -` of
-            # a bash snippet must never be stored as a broken python entry.
+            # a bash snippet must never be stored as a broken python entry. An
+            # UNREGISTERED shebang (awk, sed -f, …) is a signal skit can't honor:
+            # refused with the --kind escape, exactly like the path lane — never
+            # fabricated into a python entry that can only die in uv run.
             from .langs.registry import kind_for_shebang_text
 
-            kind = kind_for_shebang_text(stdin_text) or "python"
+            kind = kind_for_shebang_text(stdin_text)
+            if kind is None and stdin_text.startswith("#!"):
+                err_console.print(
+                    "[red]"
+                    + gettext(
+                        "The piped text's #! names no interpreter skit knows — pass "
+                        "--kind <language> to choose one."
+                    )
+                    + _RED_CLOSE
+                )
+                raise typer.Exit(EXIT_USAGE)
+            kind = kind or "python"
         if kind != "python":
-            _add_script_from_stdin(kind, name, description, stdin_text)
+            kspec = spec_for(kind)
+            npm = kspec is not None and kspec.deps_flavor == "npm"
+            if python is not None or (dep and not npm):
+                err_console.print(
+                    "[red]"
+                    + gettext("--dep/--python don't apply to a %(kind)s entry (piped text's kind).")
+                    % {"kind": kind}
+                    + _RED_CLOSE
+                )
+                raise typer.Exit(EXIT_USAGE)
+            _add_script_from_stdin(kind, name, description, stdin_text, explicit_deps=dep)
             return
         _add_from_stdin(name, description, deps_opt=dep, python_opt=python, text=stdin_text)
         return
@@ -3886,6 +4017,22 @@ def _config_value(key: str) -> str:
     return readers[key]()
 
 
+def _config_raw(key: str) -> str:
+    """The stored value for --json — RAW, never the localized display sentinel: the
+    machine contract must not change with the user's locale, and an agent must be able
+    to distinguish unset ("") from a value that happens to look like the sentinel."""
+    readers = {
+        "lang": lambda: config.load_config().get("language", ""),
+        "editor": config.load_editor,
+        "mirror": lambda: m.pypi if (m := config.load_mirror()).enabled else "off",
+        "form": config.load_form,
+        "after_run": config.load_after_run,
+        "shell.bash_path": config.load_bash_path,
+        "js.runner": config.load_js_runner,
+    }
+    return readers[key]()
+
+
 def _config_set(key: str, value: str) -> None:
     if key == "lang":
         if value.lower() != "auto" and not i18n.is_supported(value):
@@ -3964,7 +4111,7 @@ def config_cmd(
     if key is None:
         if as_json:
             console.print_json(
-                json.dumps({k: _config_value(k) for k in _CONFIG_KEYS}, ensure_ascii=False)
+                json.dumps({k: _config_raw(k) for k in _CONFIG_KEYS}, ensure_ascii=False)
             )
             return
         for k in _CONFIG_KEYS:
@@ -3977,7 +4124,7 @@ def config_cmd(
         raise typer.Exit(EXIT_USAGE)
     if value is None:
         if as_json:
-            console.print_json(json.dumps({key: _config_value(key)}, ensure_ascii=False))
+            console.print_json(json.dumps({key: _config_raw(key)}, ensure_ascii=False))
             return
         console.print(escape(_config_value(key)))
         return
@@ -3985,7 +4132,7 @@ def config_cmd(
     if as_json:
         # Under --json stdout is exactly one JSON document: the final state, same
         # shape as the read (the flag was previously ignored on these two paths).
-        console.print_json(json.dumps({key: _config_value(key)}, ensure_ascii=False))
+        console.print_json(json.dumps({key: _config_raw(key)}, ensure_ascii=False))
         return
     console.print(f"[green]{key} = {escape(_config_value(key))}[/green]")
 
