@@ -40,6 +40,16 @@ def _python(tmp_path: Path, name: str = "py") -> store.Entry:
     return store.add_python(src, name=name)
 
 
+def _command(name: str = "cmd") -> store.Entry:
+    return store.add_command("echo hi", name=name)
+
+
+def _exe(tmp_path: Path, name: str = "prog") -> store.Entry:
+    prog = tmp_path / name
+    prog.write_text("bytes\n", encoding="utf-8")
+    return store.add_exe(prog, name=name)
+
+
 # ---------------------------------------------------------------- write_workdir
 
 
@@ -75,6 +85,41 @@ def test_write_workdir_rejects_empty(tmp_path):
     _shell(tmp_path)
     with pytest.raises(store.StoreUsageError):
         store.write_workdir("sh", "   ")
+
+
+def test_write_workdir_origin_refused_on_a_command(tmp_path):
+    """A command template has no original file, so "origin" can't resolve to one — it's
+    refused (StoreUsageError), not silently persisted to resolve as something else (finding 8)."""
+    _command()
+    before = store.resolve("cmd").meta.workdir
+    with pytest.raises(store.StoreUsageError, match="no original file — origin doesn't apply"):
+        store.write_workdir("cmd", "origin")
+    assert store.resolve("cmd").meta.workdir == before  # unchanged
+
+
+def test_write_workdir_store_refused_on_a_command(tmp_path):
+    """A command has no stored copy either — "store" is refused too (finding 8)."""
+    _command()
+    with pytest.raises(store.StoreUsageError, match="no stored copy — store doesn't apply"):
+        store.write_workdir("cmd", "store")
+
+
+def test_write_workdir_store_refused_on_an_exe(tmp_path):
+    """A program (exe) launches its original binary directly with no stored copy — "store"
+    is refused, while "origin" (its real file) still applies (finding 8)."""
+    _exe(tmp_path)
+    with pytest.raises(store.StoreUsageError, match="no stored copy — store doesn't apply"):
+        store.write_workdir("prog", "store")
+    # But the exe DOES have an original file, so origin/invoke/abs paths still work.
+    assert store.write_workdir("prog", "origin").meta.workdir == "origin"
+
+
+def test_write_workdir_command_still_accepts_invoke_and_paths(tmp_path):
+    """The refusals are surgical: a command still accepts the literals it CAN honor
+    (invoke) and an absolute path (finding 8)."""
+    _command()
+    assert store.write_workdir("cmd", "invoke").meta.workdir == "invoke"
+    assert store.write_workdir("cmd", "/opt/data").meta.workdir == "/opt/data"
 
 
 # ---------------------------------------------------------------- write_interpreter

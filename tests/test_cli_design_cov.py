@@ -170,6 +170,16 @@ def test_params_workdir_relative_is_clean_error(tmp_path):
     assert "origin, store, invoke, or an absolute path" in result.output
 
 
+def test_params_workdir_origin_on_a_command_fails_cleanly(tmp_path):
+    """`skit params <command> --workdir origin` fails cleanly (exit 1, StoreUsageError
+    surfaced) — a command has no original file for "origin" to mean (finding 8)."""
+    runner.invoke(cli.app, ["add", "--cmd", "echo hi", "--name", "c", "--no-input"])
+    result = runner.invoke(cli.app, ["params", "c", "--workdir", "origin"])
+    assert result.exit_code == 1
+    assert "no original file — origin doesn't apply" in _flat(result.output)
+    assert store.resolve("c").meta.workdir != "origin"  # nothing persisted
+
+
 # ============================================================ launch policy: interpreter
 
 
@@ -375,7 +385,11 @@ def test_add_stdin_kind_exe_is_refused(tmp_path):
 def test_add_edit_with_kind_is_refused(tmp_path):
     result = runner.invoke(cli.app, ["add", "--edit", "--kind", "shell"])
     assert result.exit_code == 2
-    assert "pipe it in" in result.output
+    # The message now points at the shebang (the draft's real kind signal), not a Python
+    # starter (finding 7): --edit reads the kind from the draft, so --kind is redundant.
+    flat = _flat(result.output)
+    assert "reads the kind from your draft's shebang" in flat
+    assert "pipe it in" in flat
 
 
 def test_add_edit_with_exe_is_refused(tmp_path):
@@ -552,6 +566,46 @@ def test_run_raw_allowed_on_injected_kind(tmp_path, spawn_spy):
     result = runner.invoke(cli.app, ["run", "job", "--raw", "--no-input"])
     assert result.exit_code == 0, result.output
     assert spawn_spy["entry"].meta.name == "job"  # it really launched
+
+
+def test_run_raw_refused_on_exe_kind(tmp_path, spawn_spy):
+    """A program (exe) has no analyzer either — --raw is REFUSED (exit 2), not honored."""
+    prog = tmp_path / "tool"
+    prog.write_text("bytes\n", encoding="utf-8")
+    store.add_exe(prog, name="tool")
+    result = runner.invoke(cli.app, ["run", "tool", "--raw", "--no-input"])
+    assert result.exit_code == 2, result.output
+    assert "--raw only applies to kinds skit injects into" in _flat(result.output)
+    assert "entry" not in spawn_spy  # refused before any launch
+
+
+def test_run_raw_on_unpinned_prompt_refuses_before_runner_resolution(tmp_path, spawn_spy):
+    """--raw on an analyzer-less prompt is refused with exit 2 BEFORE runner resolution:
+    the refusal never first asks which agent (nor sends the caller through the unpinned
+    126), and last-picked state is NOT written by a refused run (finding 2)."""
+    _prompt(tmp_path, name="p")  # no pin, no --runner
+    result = runner.invoke(cli.app, ["run", "p", "--raw", "--no-input"])
+    assert result.exit_code == 2, result.output  # usage, NOT the unpinned 126
+    assert "--raw only applies to kinds skit injects into" in _flat(result.output)
+    assert "entry" not in spawn_spy  # nothing launched
+    # last-picked state must be untouched (a refused run picks nothing).
+    assert not (argstate.state_dir() / "prompt.toml").exists()
+    assert argstate.load_last_runner() == ""
+
+
+def test_run_raw_on_unpinned_prompt_refuses_without_asking_when_interactive(tmp_path, monkeypatch):
+    """Even in an interactive terminal with agents configured, the raw refusal fires
+    before the runner ask — Prompt.ask is never reached (finding 2)."""
+    _prompt(tmp_path, name="p")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+
+    def _boom(*a, **k):
+        raise AssertionError("runner ask reached before the raw refusal")
+
+    monkeypatch.setattr(cli.Prompt, "ask", _boom)
+    result = runner.invoke(cli.app, ["run", "p", "--raw"])
+    assert result.exit_code == 2, result.output
+    assert argstate.load_last_runner() == ""  # no pick recorded
 
 
 # ============================================================ doctor launch_blocked

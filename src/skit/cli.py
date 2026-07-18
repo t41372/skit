@@ -526,9 +526,28 @@ def _create_python_in_editor(
         if text.strip() in ("", _STARTER_SCRIPT.strip()):
             console.print(gettext("Nothing was written, so no script was added."))
             return
-        entry, deps, managed, secrets = _onboard_python(
-            tmp, text, name=name, deps_opt=deps_opt, python_opt=python_opt
-        )
+        from .langs.registry import kind_for_shebang
+
+        drafted_kind = kind_for_shebang(tmp) or "python"
+        if drafted_kind != "python":
+            # A changed shebang is an explicit signal, honored by the SAME rule the
+            # TUI draft lane uses — a bash draft must never be stored as a broken
+            # python entry (nor refused after the user already wrote it).
+            entry = store.add_script(tmp, kind=drafted_kind, name=name, mode="copy")
+            spec = spec_for(drafted_kind)
+            deps = []
+            if (
+                spec is not None
+                and spec.deps_flavor == "npm"
+                and spec.dep_scanner is not None
+                and (deps := spec.dep_scanner(text))
+            ):
+                entry = store.update_dependencies(entry.slug, deps)
+            managed, secrets = [], []
+        else:
+            entry, deps, managed, secrets = _onboard_python(
+                tmp, text, name=name, deps_opt=deps_opt, python_opt=python_opt
+            )
     except (editor.EditorError, store.StoreError) as exc:
         raise _fail(str(exc), 1) from exc
     finally:
@@ -993,7 +1012,14 @@ def add(
         raise typer.Exit(EXIT_USAGE)
     if kind is not None and edit_new:
         err_console.print(
-            f"[red]{gettext('--edit writes a Python starter; to author another kind, pipe it in: skit add - --kind %(kind)s -n NAME') % {'kind': escape(kind)}}[/red]"
+            "[red]"
+            + gettext(
+                "--edit reads the kind from your draft's shebang (write e.g. "
+                "#!/usr/bin/env bash) — drop --kind, or pipe it in: "
+                "skit add - --kind %(kind)s -n NAME"
+            )
+            % {"kind": escape(kind)}
+            + _RED_CLOSE
         )
         raise typer.Exit(EXIT_USAGE)
     if edit_new:
@@ -1090,10 +1116,25 @@ def add(
                 )
                 raise typer.Exit(EXIT_USAGE)
             if kind == "exe":
+                if not no_input and _is_interactive():
+                    # The one add lane that asked NOTHING while every sibling reviews
+                    # identity — "nothing to detect inside a binary" justifies no tick
+                    # list, not skipping the name and the discovery-surface description.
+                    if not name:
+                        name = (
+                            Prompt.ask(
+                                gettext("Name in skit"), default=resolved.stem, console=console
+                            ).strip()
+                            or None
+                        )
+                    if description is None:
+                        description = Prompt.ask(
+                            gettext("Description (optional)"), default="", console=console
+                        ).strip()
                 entry = store.add_exe(Path(path), name=name, description=description or "")
             elif kind == "unknown":
                 err_console.print(
-                    f"[red]{gettext("%(file)s isn't a script or an executable — pass --prompt for an AI-agent prompt, --exe for a program, or --cmd for a command template.") % {'file': escape(resolved.name)}}[/red]"
+                    f"[red]{gettext("%(file)s isn't a script or an executable — pass --kind <language> for an extensionless script, --prompt for an AI-agent prompt, --exe for a program, or --cmd for a command template.") % {'file': escape(resolved.name)}}[/red]"
                 )
                 raise typer.Exit(EXIT_USAGE)
             elif kind == "prompt":
@@ -1889,6 +1930,20 @@ def run(
         )
         raise typer.Exit(EXIT_USAGE)
     run_spec = spec_for(entry.meta.kind)
+    if raw and (run_spec is None or run_spec.analyzer is None):
+        # Refused BEFORE runner resolution: a refusal must not first ask which agent
+        # to use, write last-picked state, or send the caller through a 126 that a
+        # later usage error contradicts. Nothing is changed.
+        err_console.print(
+            "[red]"
+            + gettext(
+                "--raw only applies to kinds skit injects into; a %(kind)s entry's "
+                "parameters are its interface and always apply."
+            )
+            % {"kind": entry.meta.kind}
+            + _RED_CLOSE
+        )
+        raise typer.Exit(EXIT_USAGE)
     # One interaction paradigm per run, not two glued in sequence: when the inline
     # mini-form is about to open for a prompt entry anyway, the runner question moves
     # INTO the form (the same picker row the TUI workbench shows) instead of a bare
@@ -1909,20 +1964,6 @@ def run(
         )
         plan = flows.FormPlan(source="none")
     else:
-        if raw:
-            # Refusal, not a notice-then-business-as-usual: on these kinds the
-            # parameters ARE the interface, so "as-is" cannot be honored — same
-            # contract as --raw with --set (refuse, never quietly do less).
-            err_console.print(
-                "[red]"
-                + gettext(
-                    "--raw only applies to kinds skit injects into; a %(kind)s entry's "
-                    "parameters are its interface and always apply."
-                )
-                % {"kind": entry.meta.kind}
-                + _RED_CLOSE
-            )
-            raise typer.Exit(EXIT_USAGE)
         plan = flows.plan_for_entry(entry)
     _print_drift(plan)
     if plan.degraded_reason:
@@ -2004,13 +2045,16 @@ def run(
         raise _fail(str(exc), EXIT_SKIT) from exc
     if save_preset:
         if not plan.fields:
-            # Same rule (and sentence) as `skit preset save`: a field-less entry has
-            # nothing to put in a preset — creating an empty one is refuse-worthy.
-            raise _fail(
-                gettext("%(name)s has no form fields, so there's nothing to save.")
-                % {"name": entry.meta.name},
-                1,
+            # Same rule (and sentence) as `skit preset save` — but NOT its exit code:
+            # inside `run`, 1-124 belongs to the script (docker convention), so a
+            # skit-side refusal must be usage-shaped, never look like the script ran.
+            err_console.print(
+                "[red]"
+                + gettext("%(name)s has no form fields, so there's nothing to save.")
+                % {"name": entry.meta.name}
+                + _RED_CLOSE
             )
+            raise typer.Exit(EXIT_USAGE)
         argstate.save_preset(
             entry.slug,
             save_preset,
@@ -2174,6 +2218,7 @@ def runner_add(
 @runner_app.command("remove", help=gettext("Remove a configured runner."))
 def runner_remove(
     name: str = typer.Argument(..., help=gettext("Runner name"), autocompletion=_complete_runner),
+    yes: bool = typer.Option(False, "--yes", "-y", help=gettext("Skip confirmation")),
 ) -> None:
     config.ensure_prompt_runners_seeded()
     runners = config.load_prompt_runners()
@@ -2183,6 +2228,10 @@ def runner_remove(
             % {"runner": name, "names": ", ".join(r.name for r in runners) or "—"},
             1,
         )
+    if not yes:
+        # The same ask its two siblings give: skit remove confirms unless -y, and the
+        # TUI's agent removal confirms — deleting config rows is not a one-keystroke act.
+        typer.confirm(gettext('Remove the agent "%(name)s"?') % {"name": name}, abort=True)
     config.save_prompt_runners([r for r in runners if r.name != name])
     console.print(f"[green]{gettext('Runner %(name)s removed.') % {'name': escape(name)}}[/green]")
 
@@ -2851,6 +2900,10 @@ def params(
                 + bad_env
             ),
         )
+        if as_json:
+            # --json on a write: emit the final state as the machine contract (the
+            # deps write path's precedent) — an explicit flag never silently no-ops.
+            _show_params(store.resolve(entry.slug), as_json=True)
         return
     # Python edits, and the analyzer-op-on-a-non-python refusal, both go through _edit_params.
     if analyzer_ops or (has_params_io and shared_tweaks):
@@ -2865,6 +2918,9 @@ def params(
             env_sources=env_sources,
             malformed=bad_prompts + bad_env,
         )
+        if as_json:
+            # Same machine contract as the declared branch above.
+            _show_params(store.resolve(entry.slug), as_json=True)
         return
     _show_params(entry, as_json)
 

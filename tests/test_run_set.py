@@ -138,11 +138,12 @@ def test_set_saves_preset_with_dry_run_without_running(run_entry_spy):
 
 def test_save_preset_on_field_less_entry_refused_saves_nothing(run_entry_spy):
     """A field-less entry has nothing to put in a preset — `--save-preset` is refused
-    (exit 1) with the same sentence `skit preset save` uses, and nothing is saved OR run
-    (finding 13, the CLI face)."""
+    with the same sentence `skit preset save` uses, and nothing is saved OR run. The
+    exit code is USAGE (2), NOT 1: inside `run`, 1-124 belongs to the script (docker
+    convention), so a skit-side refusal must never look like the script ran (finding 1)."""
     runner.invoke(cli.app, ["add", "--cmd", "echo hi", "--name", "noargs", "--no-input"])
     result = runner.invoke(cli.app, ["run", "noargs", "--save-preset", "nope", "--no-input"])
-    assert result.exit_code == 1, result.output
+    assert result.exit_code == 2, result.output
     assert "has no form fields, so there's nothing to save." in result.output
     assert "entry" not in run_entry_spy  # refused before any launch
     assert argstate.load_state(store.resolve("noargs").slug)["presets"] == {}  # saved nothing

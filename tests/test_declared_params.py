@@ -421,6 +421,45 @@ def test_cli_exe_show_without_declared_is_plain_message(tmp_path: Path):
     assert "has no managed parameters" in result.output
 
 
+def test_cli_declared_edit_with_json_emits_the_final_read_view(tmp_path: Path):
+    """A declared edit with --json emits the final read-view JSON AFTER the edit, instead
+    of silently dropping the flag — an explicit --json never no-ops (finding 14, the
+    declared-edit branch)."""
+    _exe(tmp_path)
+    result = runner.invoke(
+        cli.app,
+        [
+            "params",
+            "prog",
+            "--add",
+            "width",
+            "--deliver",
+            "width=flag",
+            "--flag",
+            "width=--width",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Updated prog" in result.output  # the human edit summary still prints
+    payload = json.loads(result.output[result.output.index("{") :])  # then the read-view JSON
+    assert payload["declared"][0]["name"] == "width"  # the just-added row is in the JSON
+    assert payload["declared"][0]["delivery"] == "flag"
+
+
+def test_cli_python_manage_with_json_emits_the_final_read_view(tmp_path: Path):
+    """The twin on the analyzer branch: `skit params <py> --manage CITY --json` emits the
+    final read-view JSON after managing CITY (finding 14, the analyzer-edit branch)."""
+    src = tmp_path / "job.py"
+    src.write_text('CITY = "Taipei"\nprint(CITY)\n', encoding="utf-8")
+    store.add_python(src, name="job")
+    result = runner.invoke(cli.app, ["params", "job", "--manage", "CITY", "--json"])
+    assert result.exit_code == 0, result.output
+    assert "Updated job" in result.output  # the human edit summary still prints
+    payload = json.loads(result.output[result.output.index("{") :])  # then the read-view JSON
+    assert [p["name"] for p in payload["params"]] == ["CITY"]  # CITY is now managed in the JSON
+
+
 def test_cli_add_choice_placeholder_on_command_then_run(tmp_path: Path, run_entry_spy):
     runner.invoke(cli.app, ["add", "--cmd", "convert {size}", "--name", "conv", "--no-input"])
     result = runner.invoke(

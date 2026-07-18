@@ -263,6 +263,27 @@ async def test_kind_pick_lists_interpreted_kinds_plus_exe_and_prompt(tmp_path):
     assert ids.count("prompt") == 1  # never duplicated (would crash OptionList)
 
 
+async def test_kind_pick_options_show_translated_labels_ids_stay_raw(tmp_path):
+    """The interpreted-kind options render their translated display labels (kindnames.
+    kind_label), while the option ids stay the raw kinds the add flow routes on (finding 5)."""
+    from skit.kindnames import kind_label
+
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        modal = await _ask_kind_for(tmp_path, app, pilot)
+        options = modal.query_one(OptionList)
+        by_id = {
+            options.get_option_at_index(i).id: str(options.get_option_at_index(i).prompt)
+            for i in range(options.option_count)
+        }
+    # Every interpreted-kind option shows its kind_label, never the raw id.
+    assert by_id["shell"] == kind_label("shell") == "Shell"
+    assert by_id["js"] == kind_label("js") == "JavaScript"
+    assert by_id["ts"] == kind_label("ts") == "TypeScript"
+    # The catch-alls keep their own descriptive prompts; ids remain the routing kinds.
+    assert set(by_id) >= {"shell", "js", "ts", "exe", "prompt"}
+
+
 async def test_kind_pick_shell_routes_to_the_add_review_panel(tmp_path):
     """Picking an interpreted kind opens the same AddReviewScreen a recognized shell
     script would, with that kind — and accepting commits it."""

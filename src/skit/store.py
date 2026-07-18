@@ -455,6 +455,20 @@ def write_workdir(name_or_slug: str, workdir: str) -> Entry:
     previously writable only by hand-editing meta.toml."""
     entry = resolve(name_or_slug)
     value = workdir.strip()
+    spec = registry.spec_for(entry.meta.kind)
+    # Kind-aware, same rule as the settings radio: a command template has no "origin"
+    # (no file) and a reference-only kind has no stored copy — confirming a policy
+    # that silently resolves as something else is a label that lies.
+    if value == "origin" and spec is not None and not spec.has_original_file:
+        raise StoreUsageError(
+            gettext("%(name)s has no original file — origin doesn't apply to its kind.")
+            % {"name": entry.meta.name}
+        )
+    if value == "store" and spec is not None and not spec.stored_name:
+        raise StoreUsageError(
+            gettext("%(name)s has no stored copy — store doesn't apply to its kind.")
+            % {"name": entry.meta.name}
+        )
     if value not in _WORKDIR_LITERALS:
         expanded = Path(value).expanduser()
         if not value or not expanded.is_absolute():

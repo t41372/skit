@@ -20,6 +20,12 @@ hint *is* the click target, and every modal's key hints use the same chips — t
 has a path. The keyboard side is enforced policy: every key a footer advertises must have a
 positive pilot test.
 
+Key grammar: a chord keeps one meaning per context class — Ctrl+E always opens `$EDITOR`
+on the screen's current subject, Ctrl+N always creates the screen's primary object (a
+script on the add step, an agent on a runner picker), Ctrl+T always inserts a value.
+Never bind a text-editing chord (Ctrl+K and friends) with `priority=True` on a screen
+full of Inputs — the Input's own editing wins there, and the chip stays the mouse path.
+
 The TUI is also responsive: `tui_layout.py` defines the shared size tiers (`-w-narrow`,
 `-h-short`, `-h-tiny`, …) that Textual sets as classes on every screen, and all size
 adaptation is CSS keyed off those classes — never per-screen width/height math in Python.

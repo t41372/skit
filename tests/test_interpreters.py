@@ -342,6 +342,26 @@ def test_shebang_env_with_only_flags_is_none(tmp_path: Path):
     assert reg.shebang_program(p) is None  # env, then nothing but a flag
 
 
+def test_kind_for_shebang_maps_the_program_or_none(tmp_path: Path):
+    """The one shebang→kind mapping, shared by the TUI draft lane and the CLI --edit lane
+    (registry.kind_for_shebang). A registered #! program names its kind; an unmapped or
+    absent shebang is None — the caller (never this helper) decides the python fallback."""
+    bash = _write(tmp_path, "a", b"#!/usr/bin/env bash\necho hi\n")
+    assert reg.kind_for_shebang(bash) == "shell"
+
+    node = _write(tmp_path, "b", b"#!/usr/bin/env node\n")
+    assert reg.kind_for_shebang(node) == "js"
+
+    py = _write(tmp_path, "c", b"#!/usr/bin/env python3\n")
+    assert reg.kind_for_shebang(py) == "python"
+
+    unmapped = _write(tmp_path, "d", b"#!/usr/bin/env cobol\n")
+    assert reg.kind_for_shebang(unmapped) is None  # recognized shape, unmapped program
+
+    no_shebang = _write(tmp_path, "e", b"echo hi\n")
+    assert reg.kind_for_shebang(no_shebang) is None  # no #! at all
+
+
 def test_infer_extension_beats_shebang(tmp_path: Path):
     # A .py file whose shebang says bash is still python — the extension is authoritative.
     p = _write(tmp_path, "j.py", b"#!/bin/bash\n", executable=True)

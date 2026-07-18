@@ -500,6 +500,9 @@ class RunFormScreen(Screen[FormResult]):
         self._runners: list[str] = runners or []
         self._runner_default: str = runner_default
         self._presets: dict[str, dict[str, str]] = argstate.load_state(entry.slug)["presets"]
+        # True only for the one frame after Ctrl+S while the picker is refreshed
+        # programmatically (its Changed must not overwrite the user's field edits).
+        self._suppress_preset_apply: bool = False
 
     def on_mount(self) -> None:
         self.query_one("#form-panel").border_title = gettext("Run %(name)s") % {
@@ -536,23 +539,10 @@ class RunFormScreen(Screen[FormResult]):
                     # Custom agents are first-class: the picker always carries the door
                     # to define one (footer grammar — the key hint IS the click target).
                     yield Static(tui_runner.new_runner_chip(), id="runner-new", markup=True)
-            with Horizontal(id="preset-row"):
-                yield Static(gettext("Preset:"), markup=False)
-                if self._presets:
-                    yield Select(
-                        [(gettext("last values"), "")]
-                        + [(name, name) for name in sorted(self._presets)],
-                        value="",
-                        allow_blank=False,
-                        id="preset-select",
-                    )
-                else:
-                    # Empty state teaches the Ctrl+S affordance precisely when the user
-                    # has no presets and most needs to learn it (spec §2).
-                    yield Static(
-                        gettext("none yet — fill the form and press Ctrl+S to save one"),
-                        id="preset-empty",
-                    )
+            if self._plan.fields:
+                # Field-less forms get no preset row: it existed to teach "fill the
+                # form and press Ctrl+S", the exact action Ctrl+S refuses there.
+                yield from self._compose_preset_row()
             with tui_footer.FormBody(id="form-body"):
                 for f in self._plan.fields:
                     yield FieldRow(f, self._prefill.get(f.key, ""))
@@ -598,11 +588,34 @@ class RunFormScreen(Screen[FormResult]):
             )
         )
 
+    def _compose_preset_row(self) -> ComposeResult:
+        with Horizontal(id="preset-row"):
+            yield Static(gettext("Preset:"), markup=False)
+            if self._presets:
+                yield Select(
+                    [(gettext("last values"), "")]
+                    + [(name, name) for name in sorted(self._presets)],
+                    value="",
+                    allow_blank=False,
+                    id="preset-select",
+                )
+            else:
+                # Empty state teaches the Ctrl+S affordance precisely when the user
+                # has no presets and most needs to learn it (spec §2).
+                yield Static(
+                    gettext("none yet — fill the form and press Ctrl+S to save one"),
+                    id="preset-empty",
+                )
+
     @on(Select.Changed, "#preset-select")
     def _apply_preset(self, event: Select.Changed) -> None:
         """Dropdown switch: overlay the whole preset onto the fields ("last values"
         restores). Value-keyed, so a preset list that changed since compose can never
-        shift the mapping."""
+        shift the mapping. Suppressed during the post-save picker refresh — reapplying
+        the just-saved preset would resurrect values the user explicitly cleared
+        (empty values are never stored in a preset, so they'd fall back to prefill)."""
+        if self._suppress_preset_apply:
+            return
         name = str(event.value)
         preset_values = self._presets.get(name, {})
         chosen = self._prefill if not name else {**self._prefill, **preset_values}
@@ -731,7 +744,11 @@ class RunFormScreen(Screen[FormResult]):
     def _refresh_preset_picker(self, selected: str) -> None:
         """After Ctrl+S the dropdown must show the preset that was just saved — a row
         still reading "none yet — press Ctrl+S" right after the user did exactly that
-        is the UI contradicting the user's own action."""
+        is the UI contradicting the user's own action. The programmatic selection must
+        NOT re-apply the preset to the fields (see _apply_preset); the flag is lifted a
+        frame later, after the queued Changed message has been seen."""
+        self._suppress_preset_apply = True
+        self.call_after_refresh(setattr, self, "_suppress_preset_apply", False)
         options = [(gettext("last values"), "")] + [(n, n) for n in sorted(self._presets)]
         existing = self.query("#preset-select")
         if existing:

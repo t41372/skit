@@ -8,7 +8,7 @@ never that a widget merely composed.
 from __future__ import annotations
 
 import pytest
-from textual.widgets import Input, OptionList, RadioButton, RadioSet, Static
+from textual.widgets import Input, OptionList, RadioButton, RadioSet, Select, Static
 
 from skit import agentskill, config, tui
 from skit.tui_prefs import PreferencesScreen, SkillInstallModal
@@ -116,6 +116,33 @@ async def test_prefs_bash_bad_path_shows_error_and_does_not_save(tmp_path, monke
     assert config.load_bash_path() == ""  # nothing rode into config
 
 
+async def test_prefs_save_is_atomic_a_bad_bash_path_persists_nothing(tmp_path, monkeypatch):
+    """action_save validates the bash path BEFORE persisting anything: a bad path refuses
+    the whole save, so editor/form/after-run/js edited in the same pass stay unchanged on
+    disk (finding 9, the win32 bash arm)."""
+    monkeypatch.setattr("skit.tui_prefs.sys.platform", "win32")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesScreen())
+        await pilot.pause()
+        screen = _as(app.screen, PreferencesScreen)
+        screen.query_one("#pf-editor", Input).value = "micro"
+        list(screen.query_one("#pf-form", RadioSet).query(RadioButton))[1].value = True  # plain
+        list(screen.query_one("#pf-after", RadioSet).query(RadioButton))[1].value = True  # stay
+        list(screen.query_one("#pf-js", RadioSet).query(RadioButton))[2].value = True  # bun
+        screen.query_one("#pf-bash", Input).value = "/opt/git/bin/nope.exe"  # missing → refuse
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+        assert isinstance(app.screen, PreferencesScreen)  # refused → stayed open
+        assert "No such file" in str(screen.query_one("#pf-bash-error", Static).render())
+    assert config.load_editor() == ""  # nothing rode into config
+    assert config.load_form() == "tui"
+    assert config.load_after_run() == "exit"
+    assert config.load_js_runner() == ""
+    assert config.load_bash_path() == ""
+
+
 async def test_prefs_bash_empty_path_saves_on_win32(tmp_path, monkeypatch):
     """An empty bash path is a valid value (auto-detect) — it saves without the file check."""
     monkeypatch.setattr("skit.tui_prefs.sys.platform", "win32")
@@ -190,6 +217,62 @@ async def test_prefs_dirty_esc_discard_closes(tmp_path):
         await pilot.pause()
         assert not isinstance(app.screen, PreferencesScreen)
     assert config.load_js_runner() == ""  # the unsaved edit never persisted
+
+
+# ------------------------------------------------- chord grammar: Ctrl+O / Ctrl+K
+
+
+async def test_prefs_ctrl_k_in_an_input_edits_the_field_not_a_modal(tmp_path):
+    """Ctrl+O/Ctrl+K are NON-priority (finding 3): with focus in a prefs Input, Ctrl+K
+    is the Input's own delete-to-end-of-line — the screen must NOT answer a text-editing
+    chord with a modal on a screen full of text fields."""
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesScreen())
+        await pilot.pause()
+        screen = _as(app.screen, PreferencesScreen)
+        editor_box = screen.query_one("#pf-editor", Input)
+        editor_box.value = "micro --wait"
+        editor_box.focus()
+        await pilot.pause()
+        editor_box.cursor_position = 5  # after "micro"
+        await pilot.press("ctrl+k")
+        await pilot.pause()
+        assert not isinstance(app.screen, SkillInstallModal)  # no modal hijacked the chord
+        assert app.screen is screen  # still on Preferences
+        assert editor_box.value == "micro"  # delete-to-end ran in the Input
+
+
+async def test_prefs_ctrl_k_from_non_input_focus_opens_the_skill_modal(tmp_path, monkeypatch):
+    """The twin: from a non-Input focus (the language dropdown boots there) Ctrl+K still
+    opens the Teach-an-AI-agent modal — the chord fires, just never over an Input."""
+    monkeypatch.setattr(agentskill, "detect_targets", lambda *, home, cwd: [])
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesScreen())
+        await pilot.pause()
+        screen = _as(app.screen, PreferencesScreen)
+        screen.query_one("#pf-lang", Select).focus()  # a non-Input widget
+        await pilot.pause()
+        await pilot.press("ctrl+k")
+        await pilot.pause()
+        assert isinstance(app.screen, SkillInstallModal)
+
+
+async def test_prefs_ctrl_o_from_non_input_focus_opens_manage_runners(tmp_path):
+    """Ctrl+O from a non-Input focus opens the Manage agents screen (finding 3, twin)."""
+    from skit.tui_runner import RunnerManageScreen
+
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesScreen())
+        await pilot.pause()
+        screen = _as(app.screen, PreferencesScreen)
+        screen.query_one("#pf-lang", Select).focus()
+        await pilot.pause()
+        await pilot.press("ctrl+o")
+        await pilot.pause()
+        assert isinstance(app.screen, RunnerManageScreen)
 
 
 # ---------------------------------------------------------------- agents section

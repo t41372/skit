@@ -365,6 +365,43 @@ def test_add_edit_creates_in_editor(monkeypatch):
     assert "rich" in (ent.dir / "script.py").read_text(encoding="utf-8")
 
 
+def test_add_edit_bash_shebang_draft_becomes_a_shell_entry(monkeypatch):
+    """A changed shebang in the draft is honored exactly like the TUI draft lane: writing a
+    #!/usr/bin/env bash body makes the entry SHELL via store.add_script, never a broken
+    python entry with a bash body (finding 7)."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+
+    def write_script(p):
+        p.write_text("#!/usr/bin/env bash\n# Ship it\necho drafted\n", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(cli.editor, "open_in_editor", write_script)
+    result = runner.invoke(cli.app, ["add", "-e", "--name", "deploy"])
+    assert result.exit_code == 0, result.output
+    entry = store.resolve("deploy")
+    assert entry.meta.kind == "shell"  # re-inferred from the shebang, not the .py temp suffix
+    assert "echo drafted" in entry.script_path.read_text(encoding="utf-8")
+
+
+def test_add_edit_js_shebang_draft_scans_npm_deps(monkeypatch):
+    """A node-shebang draft lands as a js entry and its declared npm imports are scanned
+    into the entry's dependencies (the deps branch of the changed-shebang lane, finding 7)."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+
+    def write_script(p):
+        p.write_text(
+            "#!/usr/bin/env node\nimport chalk from 'chalk'\nconsole.log(chalk)\n", encoding="utf-8"
+        )
+        return 0
+
+    monkeypatch.setattr(cli.editor, "open_in_editor", write_script)
+    result = runner.invoke(cli.app, ["add", "-e", "--name", "colorized"])
+    assert result.exit_code == 0, result.output
+    entry = store.resolve("colorized")
+    assert entry.meta.kind == "js"
+    assert "chalk" in (entry.meta.dependencies or [])  # npm scan materialized the dep
+
+
 def test_add_edit_rejects_path(tmp_path):
     p = _py(tmp_path, "print(1)\n")
     result = runner.invoke(cli.app, ["add", "-e", str(p)])

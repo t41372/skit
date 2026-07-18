@@ -46,6 +46,7 @@ from . import (
     config,
     editor,
     flows,
+    kindnames,
     launcher,
     models,
     store,
@@ -61,27 +62,11 @@ from .theme import CLAUDE_THEME
 from .tui_form import FormResult, RunFormScreen
 
 
-# Glyphs are locale-independent and live on each kind's LangSpec; the labels are
-# translated at render time here. The labels must be gettext() literals (not values fed
-# to gettext(kind)) or Babel can't extract them — see scripts/i18n_coverage.py's
-# dynamic-gettext check — which is exactly why the label map does NOT live in the
-# registry: every new kind adds one literal line here, gated by the i18n coverage test.
+# Glyphs are locale-independent and live on each kind's LangSpec; the translated
+# labels live in kindnames.kind_label — ONE map for every surface that shows a kind
+# to a person (this badge, the add flow's kind ask).
 def _kind_badge(kind: str) -> tuple[str, str]:
-    label = {
-        "python": gettext("Python"),
-        "shell": gettext("Shell"),
-        "fish": gettext("fish"),
-        "js": gettext("JavaScript"),
-        "ts": gettext("TypeScript"),
-        "powershell": gettext("PowerShell"),
-        "ruby": gettext("Ruby"),
-        "perl": gettext("Perl"),
-        "lua": gettext("Lua"),
-        "r": gettext("R"),
-        "exe": gettext("Program"),
-        "command": gettext("Command"),
-        "prompt": gettext("Prompt"),
-    }.get(kind, kind)
+    label = kindnames.kind_label(kind)
     spec = spec_for(kind)
     return (spec.glyph if spec is not None else "?"), label
 

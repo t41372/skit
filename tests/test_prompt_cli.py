@@ -643,19 +643,38 @@ def test_runner_add_duplicate_name_refused(tmp_path):
 
 
 def test_runner_remove_and_unknown(tmp_path):
-    assert runner.invoke(cli.app, ["runner", "remove", "amp"]).exit_code == 0
+    # -y skips the confirm (finding 11); the unknown-name refusal is checked before the ask.
+    assert runner.invoke(cli.app, ["runner", "remove", "amp", "-y"]).exit_code == 0
     assert config.find_prompt_runner("amp") is None
-    result = runner.invoke(cli.app, ["runner", "remove", "amp"])
+    result = runner.invoke(cli.app, ["runner", "remove", "amp", "-y"])
     assert result.exit_code == 1
     assert "Unknown runner" in result.output
 
 
 def test_removing_every_runner_stays_empty(tmp_path):
     for name in ("claude", "codex", "opencode", "amp", "antigravity"):
-        assert runner.invoke(cli.app, ["runner", "remove", name]).exit_code == 0
+        assert runner.invoke(cli.app, ["runner", "remove", name, "--yes"]).exit_code == 0
     assert config.load_prompt_runners() == []
     # The seeds must NOT resurrect (the runners_seeded marker).
     assert runner.invoke(cli.app, ["runner", "list"]).output.count("claude") == 0
+
+
+def test_runner_remove_confirms_unless_yes(tmp_path):
+    """Deleting a configured agent is not a one-keystroke act: without -y the CLI asks
+    (typer.confirm, abort=True) and a "y" answer goes through (finding 11)."""
+    result = runner.invoke(cli.app, ["runner", "remove", "amp"], input="y\n")
+    assert result.exit_code == 0, result.output
+    assert 'Remove the agent "amp"?' in result.output
+    assert config.find_prompt_runner("amp") is None  # confirmed → gone
+    assert "Runner amp removed." in result.output
+
+
+def test_runner_remove_abort_keeps_the_runner(tmp_path):
+    """Answering "n" (or EOF) aborts: exit 1, nothing removed — the confirm really guards."""
+    result = runner.invoke(cli.app, ["runner", "remove", "amp"], input="n\n")
+    assert result.exit_code == 1  # typer.confirm(abort=True) → Abort → exit 1
+    assert config.find_prompt_runner("amp") is not None  # still configured
+    assert "Runner amp removed." not in result.output
 
 
 # --------------------------------------------------------------------------

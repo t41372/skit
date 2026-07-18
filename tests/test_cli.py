@@ -161,6 +161,10 @@ def test_add_rejects_non_py(tmp_path):
     p = _py(tmp_path, "data", name="notes.txt")
     result = runner.invoke(cli.app, ["add", str(p)])
     assert result.exit_code == 2
+    # The message now leads with the extensionless-script escape hatch (finding 6): a file
+    # skit can't classify might still be a real script that just lacks an extension.
+    flat = " ".join(result.output.split())
+    assert "pass --kind <language> for an extensionless script" in flat
 
 
 def test_add_needs_path():
@@ -179,6 +183,65 @@ def test_add_exe(tmp_path):
     result = runner.invoke(cli.app, ["add", str(exe), "--exe", "--name", "tool"])
     assert result.exit_code == 0, result.output
     assert store.resolve("tool").meta.kind == "exe"
+
+
+def test_add_exe_interactive_line_asks_name_and_description(tmp_path, monkeypatch):
+    """The exe add lane no longer asks NOTHING while every sibling reviews identity: in a
+    terminal it line-asks the name (default: the file stem) and a description (finding 10)."""
+    exe = tmp_path / "backup"
+    exe.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    asked: list[str] = []
+
+    def fake_ask(prompt, **kwargs):
+        asked.append(str(prompt))
+        return {"Name in skit": "nightly", "Description (optional)": "runs the backup"}.get(
+            str(prompt), kwargs.get("default", "")
+        )
+
+    monkeypatch.setattr(cli.Prompt, "ask", fake_ask)
+    result = runner.invoke(cli.app, ["add", str(exe), "--exe"])
+    assert result.exit_code == 0, result.output
+    assert any("Name in skit" in a for a in asked)
+    assert any("Description (optional)" in a for a in asked)
+    entry = store.resolve("nightly")
+    assert entry.meta.kind == "exe"
+    assert entry.meta.description == "runs the backup"
+
+
+def test_add_exe_interactive_skips_asks_when_name_and_description_given(tmp_path, monkeypatch):
+    """Interactive, but --name and --description already supplied: each ask is skipped (a
+    flag already answered it), so no line prompt fires and both flags stand (finding 10)."""
+
+    def _boom(*a, **k):
+        raise AssertionError("no ask should fire when the flag already provided the value")
+
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr(cli.Prompt, "ask", _boom)
+    exe = tmp_path / "backup"
+    exe.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    result = runner.invoke(
+        cli.app, ["add", str(exe), "--exe", "--name", "given", "--description", "prewritten"]
+    )
+    assert result.exit_code == 0, result.output
+    entry = store.resolve("given")
+    assert entry.meta.kind == "exe"
+    assert entry.meta.description == "prewritten"
+
+
+def test_add_exe_no_input_never_asks(tmp_path, monkeypatch):
+    """--no-input keeps the deterministic contract: no line prompts at all (a pipe/CI run
+    must never block on Prompt.ask), so the file stem becomes the name (finding 10)."""
+
+    def _boom(*a, **k):
+        raise AssertionError("Prompt.ask must not run under --no-input")
+
+    monkeypatch.setattr(cli.Prompt, "ask", _boom)
+    exe = tmp_path / "archiver"
+    exe.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    result = runner.invoke(cli.app, ["add", str(exe), "--exe", "--no-input"])
+    assert result.exit_code == 0, result.output
+    assert store.resolve("archiver").meta.kind == "exe"  # stem became the name, no ask
 
 
 def test_add_cmd_needs_name():

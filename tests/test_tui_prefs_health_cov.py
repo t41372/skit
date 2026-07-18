@@ -181,6 +181,36 @@ async def test_prefs_save_custom_non_https_uv_is_blocked(tmp_path):
     assert config.load_mirror().enabled is False  # nothing persisted for the mirror
 
 
+async def test_prefs_save_is_atomic_a_bad_uv_url_persists_nothing(tmp_path):
+    """action_save is validate-then-write: a bad custom uv URL refuses BEFORE any section
+    is persisted, so editor/form/after-run/js — all edited in this same save — stay
+    unchanged on disk. A half-written save would make the Esc "unsaved changes" guard a lie
+    (finding 9, the uv arm)."""
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesScreen())
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, PreferencesScreen)
+        # Edit every persisted section, THEN break the uv URL so the save must refuse.
+        screen.query_one("#pf-editor", Input).value = "micro"
+        list(screen.query_one("#pf-form", RadioSet).query(RadioButton))[1].value = True  # plain
+        list(screen.query_one("#pf-after", RadioSet).query(RadioButton))[1].value = True  # stay
+        list(screen.query_one("#pf-js", RadioSet).query(RadioButton))[2].value = True  # bun
+        list(screen.query_one("#pf-mirror", RadioSet).query(RadioButton))[3].value = True  # custom
+        await pilot.pause()
+        screen.query_one("#pf-uv", Input).value = "http://mirror.example/uv"  # not https → refuse
+        screen.action_save()
+        await pilot.pause()
+        assert isinstance(app.screen, PreferencesScreen)  # refused → stayed open
+    # NOTHING was persisted — the refusal fired before the first config write.
+    assert config.load_editor() == ""
+    assert config.load_form() == "tui"
+    assert config.load_after_run() == "exit"
+    assert config.load_js_runner() == ""
+    assert config.load_mirror().enabled is False
+
+
 async def test_prefs_save_custom_https_urls_persist(tmp_path):
     """A valid custom mirror (https uv) persists all three URLs and dismisses True."""
     results: list[bool | None] = []

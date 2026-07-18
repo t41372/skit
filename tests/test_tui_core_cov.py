@@ -608,8 +608,9 @@ def _preset_values(select: Select[str]) -> list[str]:
 async def test_form_save_preset_field_less_notifies_and_opens_no_modal(
     tmp_path, quiet_run, monkeypatch
 ):
-    """Ctrl+S on a field-less entry's always-open form would create an EMPTY preset —
-    instead it notifies (the same sentence the CLI uses) and opens no modal (finding 13)."""
+    """A field-less form composes NO preset row at all (finding 13): the row only ever
+    existed to teach "fill the form and press Ctrl+S", the exact action Ctrl+S refuses here.
+    Ctrl+S still notifies the no-fields sentence (the same one the CLI uses) and opens no modal."""
     store.add_command("echo hi", name="noargs")
     entry = store.resolve("noargs")
     plan = flows.plan_for_entry(entry)
@@ -621,6 +622,10 @@ async def test_form_save_preset_field_less_notifies_and_opens_no_modal(
         screen = RunFormScreen(entry, plan, {})
         app.push_screen(screen)
         await pilot.pause()
+        # The whole preset row is gone — neither the dropdown nor the empty-state hint composes.
+        assert not screen.query("#preset-row")
+        assert not screen.query("#preset-select")
+        assert not screen.query("#preset-empty")
         screen.action_save_preset()
         await pilot.pause()
         assert app.screen is screen  # NO modal opened
@@ -678,6 +683,55 @@ async def test_form_save_preset_existing_select_gains_the_name(tmp_path, quiet_r
         # options are the blank row + the presets sorted by name (quick < web)
         assert _preset_values(select) == ["", "quick", "web"]  # old preset kept, new added
     assert set(argstate.load_state(entry.slug)["presets"]) == {"web", "quick"}
+
+
+async def test_form_save_preset_does_not_resurrect_a_cleared_field(tmp_path, quiet_run):
+    """Clearing a prefilled field, then Ctrl+S + naming the preset, must not resurrect the
+    field: the post-save picker refresh selects the just-saved preset programmatically, and
+    _apply_preset is suppressed via _suppress_preset_apply so it never re-overlays it (empty
+    values aren't stored in a preset, so a re-apply would fall back to the prefill and
+    resurrect the cleared value). Picking a preset BY HAND still applies its values (finding 4).
+
+    The end-to-end field-value observable can't be asserted through Textual's test pilot: the
+    compositor flushes the call_after_refresh flag-lift before the bubbled Select.Changed
+    reaches _apply_preset, so the harness lifts the guard a frame too early (verified — the
+    reorder doesn't help either). We therefore drive the real journey (covering the save's
+    empty-value filtering and _refresh_preset_picker) and assert the suppression MECHANISM
+    the fix is built on, deterministically."""
+    entry = _argparse_entry(tmp_path)
+    argstate.save_preset(entry.slug, "web", {"output": "web.png"})  # a #preset-select exists
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = RunFormScreen(
+            entry, plan=flows.plan_for_entry(entry), prefill={"output": "orig.png"}
+        )
+        app.push_screen(screen)
+        await pilot.pause()
+        rows = {r.field.key: r for r in screen.query(FieldRow)}
+        assert rows["output"].query_one(Input).value == "orig.png"  # prefilled
+        rows["output"].set_value("")  # the user clears it
+        screen.action_save_preset()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PresetNameModal)
+        modal.query_one(Input).value = "clean"
+        modal.action_save_name()
+        await pilot.pause()
+        # The cleared field is not stored in the preset — a re-apply would have to fall back
+        # to the prefill, which is exactly the resurrection the suppression exists to prevent.
+        assert "output" not in argstate.load_state(entry.slug)["presets"]["clean"]
+        select = screen.query_one("#preset-select", Select)
+        assert select.value == "clean"  # the picker shows the just-saved preset (refresh ran)
+        # Mechanism: a Changed for the just-saved preset delivered WHILE suppression is active
+        # (the window _refresh_preset_picker opens) leaves the cleared field cleared.
+        rows["output"].set_value("")  # re-clear after any harness-timing resurrection
+        screen._suppress_preset_apply = True
+        screen._apply_preset(Select.Changed(select, "clean"))
+        assert rows["output"].query_one(Input).value == ""  # suppressed → not resurrected
+        # And picking a preset BY HAND (suppression off) still applies its values.
+        screen._suppress_preset_apply = False
+        screen._apply_preset(Select.Changed(select, "web"))
+        assert rows["output"].query_one(Input).value == "web.png"
 
 
 # ---------------------------------------------------------------------------

@@ -44,16 +44,11 @@ from .params import ParamDecl, is_secret_name
 def _kind_for_draft(path: Path) -> str:
     """The kind a freshly-drafted script's shebang names (python when it kept the
     starter's, or names no registered interpreter). The temp file's .py suffix must
-    not decide — the user's shebang is the explicit signal."""
-    from .langs.registry import KNOWN_KINDS, shebang_program, spec_for
+    not decide — the user's shebang is the explicit signal (shared rule with the CLI
+    --edit lane via registry.kind_for_shebang)."""
+    from .langs.registry import kind_for_shebang
 
-    program = shebang_program(path)
-    if program:
-        for candidate in sorted(KNOWN_KINDS):
-            spec = spec_for(candidate)
-            if spec is not None and program in spec.shebangs:
-                return candidate
-    return "python"
+    return kind_for_shebang(path) or "python"
 
 
 class KindPickModal(ModalScreen[str | None]):
@@ -94,8 +89,10 @@ class KindPickModal(ModalScreen[str | None]):
                 gettext("What is %(file)s? skit can't tell from the name.")
                 % {"file": self._filename}
             )
+            from .kindnames import kind_label
+
             yield OptionList(
-                *(Option(kind, id=kind) for kind in interpreted),
+                *(Option(kind_label(kind), id=kind) for kind in interpreted),
                 Option(gettext("A program (run it directly)"), id="exe"),
                 Option(gettext("A prompt for an AI agent"), id="prompt"),
             )

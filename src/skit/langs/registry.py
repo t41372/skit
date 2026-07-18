@@ -348,6 +348,16 @@ def infer_kind(path: Path, force_exe: bool = False) -> str:
     return "unknown"
 
 
+def kind_for_shebang(path: Path) -> str | None:
+    """The kind a file's #! line names, or None. The one shebang→kind mapping, shared
+    by every draft/authoring lane — a changed shebang is an explicit user signal, and
+    the TUI and CLI faces must read it by the same rule."""
+    program = shebang_program(path)
+    if program is None:
+        return None
+    return _shebang_map().get(program)
+
+
 def shebang_program(path: Path) -> str | None:
     """The program basename a #! line names, or None (no shebang / unreadable).
 

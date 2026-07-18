@@ -105,10 +105,12 @@ class PreferencesScreen(Screen[bool]):
     BINDINGS = [
         Binding("escape", "close", gettext("Back")),
         Binding("ctrl+a", "save", gettext("Save"), priority=True),
-        # Ctrl+O/Ctrl+K, not Ctrl+N/Ctrl+T: Ctrl+N means "New agent" on every picker
-        # and Ctrl+T means "insert value" on the run form — one chord, one verb.
-        Binding("ctrl+o", "manage_runners", gettext("Manage agents"), show=False, priority=True),
-        Binding("ctrl+k", "install_skill", gettext("Teach an AI agent"), show=False, priority=True),
+        # Ctrl+O/Ctrl+K, not Ctrl+N/Ctrl+T (those mean "New agent" / "insert value"
+        # elsewhere) — and NON-priority: Ctrl+K is every Input's delete-to-end-of-line,
+        # and a screen full of text fields must never answer an editing chord with a
+        # modal. The chips stay the mouse path; the chords fire from any non-Input focus.
+        Binding("ctrl+o", "manage_runners", gettext("Manage agents"), show=False),
+        Binding("ctrl+k", "install_skill", gettext("Teach an AI agent"), show=False),
         *tui_footer.FIELD_NAV_BINDINGS,
     ]
     # Boot on the language dropdown, not the "*" pick (the body scroll container).
@@ -334,30 +336,12 @@ class PreferencesScreen(Screen[bool]):
         self.query_one("#pf-uv-error", Static).display = custom
 
     def action_save(self) -> None:
-        lang_value = self.query_one("#pf-lang", Select).value
-        i18n.set_language("" if lang_value in ("auto", Select.NULL) else str(lang_value))
-        config.save_editor(self.query_one("#pf-editor", Input).value)
-        form_index = self.query_one("#pf-form", RadioSet).pressed_index
-        config.save_form("plain" if form_index == 1 else "tui")
-        after_index = self.query_one("#pf-after", RadioSet).pressed_index
-        config.save_after_run("stay" if after_index == 1 else "exit")
-        js_index = self.query_one("#pf-js", RadioSet).pressed_index
-        config.save_js_runner("" if js_index <= 0 else config.JS_RUNNERS[js_index - 1])
-        bash_box = self.query("#pf-bash")
-        if bash_box:
-            bash_value = bash_box.first(Input).value
-            # Same rule as `skit config shell.bash_path` — a typo'd path must not
-            # ride into config through this door when the CLI door refuses it.
-            if bash_value.strip() and not Path(bash_value).expanduser().is_file():
-                self.query_one("#pf-bash-error", Static).update(
-                    gettext("No such file: %(path)s") % {"path": escape(bash_value)}
-                )
-                return
-            config.save_bash_path(bash_value)
+        # VALIDATE EVERYTHING FIRST, write only after all checks pass: a refusal that
+        # lands after half the sections are persisted makes the Esc guard's "unsaved
+        # changes" a lie (Script settings' own contract: nothing is saved half-way).
         choice = self._mirror_choice()
-        if choice == "off":
-            config.disable()
-        elif choice == "custom":
+        uv_url = ""
+        if choice == "custom":
             uv_url = self.query_one("#pf-uv", Input).value.strip()
             if uv_url and not uv_url.startswith("https://"):
                 self.query_one("#pf-uv-error", Static).update(
@@ -368,6 +352,29 @@ class PreferencesScreen(Screen[bool]):
                     % {"url": escape(uv_url)}
                 )
                 return
+        bash_box = self.query("#pf-bash")
+        bash_value = bash_box.first(Input).value if bash_box else ""
+        if bash_box and bash_value.strip() and not Path(bash_value).expanduser().is_file():
+            # Same rule as `skit config shell.bash_path` — a typo'd path must not
+            # ride into config through this door when the CLI door refuses it.
+            self.query_one("#pf-bash-error", Static).update(
+                gettext("No such file: %(path)s") % {"path": escape(bash_value)}
+            )
+            return
+        lang_value = self.query_one("#pf-lang", Select).value
+        i18n.set_language("" if lang_value in ("auto", Select.NULL) else str(lang_value))
+        config.save_editor(self.query_one("#pf-editor", Input).value)
+        form_index = self.query_one("#pf-form", RadioSet).pressed_index
+        config.save_form("plain" if form_index == 1 else "tui")
+        after_index = self.query_one("#pf-after", RadioSet).pressed_index
+        config.save_after_run("stay" if after_index == 1 else "exit")
+        js_index = self.query_one("#pf-js", RadioSet).pressed_index
+        config.save_js_runner("" if js_index <= 0 else config.JS_RUNNERS[js_index - 1])
+        if bash_box:
+            config.save_bash_path(bash_value)
+        if choice == "off":
+            config.disable()
+        elif choice == "custom":
             config.save_mirror(
                 config.MirrorConfig(
                     enabled=True,
