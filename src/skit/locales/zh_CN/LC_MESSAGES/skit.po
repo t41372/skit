@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: skit 0.0.1\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-07-15 19:17-0700\n"
+"POT-Creation-Date: 2026-07-17 23:48-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -93,1129 +93,1160 @@ msgstr "显示版本"
 msgid "The script declares its own dependencies (PEP 723): %(deps)s"
 msgstr "脚本已用 PEP 723 语法声明依赖：%(deps)s"
 
-#: src/skit/cli.py:171 src/skit/cli.py:210
+#: src/skit/cli.py:175 src/skit/cli.py:216
 msgid "Dependencies to install (Enter to accept, edit the list, or '-' for none)"
 msgstr "要安装的依赖(Enter 采用,可自行编辑,或输入 - 表示不需要)"
 
-#: src/skit/cli.py:180
+#: src/skit/cli.py:184
 msgid "Python version (leave empty for automatic)"
 msgstr "Python 版本(留空 = 自动)"
 
-#: src/skit/cli.py:236
+#: src/skit/cli.py:242
 msgid "Reference-mode entries take no managed dependencies — they run from their own project. Add it as a copy, or drop --dep."
 msgstr "reference 模式条目不受理依赖管理——它从自己的项目运行。以复制模式加入，或去掉 --dep。"
 
-#: src/skit/cli.py:239
+#: src/skit/cli.py:245
 #, python-format
 msgid "%(kind)s entries don't take package dependencies — drop --dep."
 msgstr "%(kind)s 条目不接受依赖包——去掉 --dep。"
 
-#: src/skit/cli.py:246 src/skit/store.py:482
+#: src/skit/cli.py:252 src/skit/store.py:488
 #, python-format
 msgid "A Python constraint doesn't apply to %(kind)s scripts."
 msgstr "Python 约束不适用于 %(kind)s 脚本。"
 
-#: src/skit/cli.py:258 src/skit/cli.py:457
+#: src/skit/cli.py:264 src/skit/cli.py:463
 msgid "Name in skit"
 msgstr "在 skit 里的名称"
 
-#: src/skit/cli.py:261
+#: src/skit/cli.py:267
 msgid "Description (optional)"
 msgstr "描述(可留空)"
 
-#: src/skit/cli.py:270 src/skit/store.py:208 src/skit/store.py:309
-#: src/skit/store.py:336 src/skit/tui_add.py:150
+#: src/skit/cli.py:276 src/skit/store.py:214 src/skit/store.py:315
+#: src/skit/store.py:342 src/skit/tui_add.py:150
 #, python-format
 msgid "File not found: %(path)s"
 msgstr "找不到文件：%(path)s"
 
-#: src/skit/cli.py:299
+#: src/skit/cli.py:305
 msgid " (secret)"
 msgstr " (机密)"
 
-#: src/skit/cli.py:303
+#: src/skit/cli.py:309
 #, python-format
 msgid "%(num)s. %(name)s (%(type)s) = %(value)s%(secret)s"
 msgstr "%(num)s. %(name)s(%(type)s)= %(value)s%(secret)s"
 
-#: src/skit/cli.py:315
+#: src/skit/cli.py:321
 #, python-format
 msgid "%(num)s. input() #%(ordinal)s: %(prompt)s%(secret)s"
 msgstr "%(num)s. input() 第 %(ordinal)s 个:%(prompt)s%(secret)s"
 
-#: src/skit/cli.py:320
+#: src/skit/cli.py:326
 msgid "⚠ looks like a loop accumulator — probably not a parameter"
 msgstr "⚠ 看起来是循环的累加变量，多半不是参数"
 
-#: src/skit/cli.py:330 src/skit/tui_add.py:385
+#: src/skit/cli.py:336 src/skit/tui_add.py:385
 msgid "This script reads command-line arguments; the run form has an extra-arguments field for them."
 msgstr "这个脚本会吃命令行参数；运行表单里有「额外参数」栏可以填。"
 
-#: src/skit/cli.py:339
+#: src/skit/cli.py:345
 #, python-format
 msgid "💡 %(names)s are written directly inside the code, so skit can't turn them into form fields. To manage one, first give it a name at the top of the script, e.g. OUTPUT = '…' (skit edit %(script)s)."
 msgstr "💡 %(names)s 直接写在代码里，skit 没法把它们变成表单字段。想管理其中一个，先在脚本开头给它取个名字，例如 OUTPUT = '…'（skit edit %(script)s）。"
 
-#: src/skit/cli.py:361 src/skit/tui_add.py:339
+#: src/skit/cli.py:367 src/skit/tui_add.py:339
 #, python-format
 msgid "✓ skit read this script's own arguments (%(count)s fields). Running it opens a form — nothing to memorize."
 msgstr "✓ skit 看懂了这个脚本自己的参数（共 %(count)s 项）。运行时会打开表单——不用背任何命令。"
 
-#: src/skit/cli.py:369 src/skit/tui_add.py:347
+#: src/skit/cli.py:375 src/skit/tui_add.py:347
 #, python-format
 msgid "This script parses its own arguments (%(names)s); skit couldn't model them statically, so the run form offers a passthrough-arguments field."
 msgstr "这个脚本自己解析参数（%(names)s）；skit 无法静态读懂它们，运行表单会提供「额外参数（原样传给脚本）」栏。"
 
-#: src/skit/cli.py:380
+#: src/skit/cli.py:386
 #, python-format
 msgid "Found %(count)s parameter candidate (constants / input() calls):"
 msgid_plural "Found %(count)s parameter candidates (constants / input() calls):"
 msgstr[0] "找到 %(count)s 个候选参数(写死的常量 / input() 调用):"
 
-#: src/skit/cli.py:389
+#: src/skit/cli.py:395
 msgid "Which ones should skit manage? (e.g. 1,3 / all / none)"
 msgstr "哪些交给 skit 管理?(编号如 1,3 / all / none)"
 
-#: src/skit/cli.py:429
+#: src/skit/cli.py:435
 msgid "Reference mode never touches the original file, so parameter setup was skipped."
 msgstr "reference 模式绝不改动原文件;跳过参数设置。"
 
-#: src/skit/cli.py:453
+#: src/skit/cli.py:459
 msgid "Writing a new script in an editor needs an interactive terminal."
 msgstr "用编辑器新建脚本需要交互式终端。"
 
-#: src/skit/cli.py:459 src/skit/store.py:563 src/skit/tui_add.py:175
+#: src/skit/cli.py:465 src/skit/store.py:573 src/skit/tui_add.py:175
 msgid "A name is required."
 msgstr "必须提供名称。"
 
-#: src/skit/cli.py:466
+#: src/skit/cli.py:472
 msgid "Opening your editor…"
 msgstr "正在打开编辑器…"
 
-#: src/skit/cli.py:470
+#: src/skit/cli.py:476
 msgid "Nothing was written, so no script was added."
 msgstr "没有写入任何内容,因此没有加入脚本。"
 
-#: src/skit/cli.py:495
+#: src/skit/cli.py:501
 msgid "Reading the script from stdin needs an explicit --name."
 msgstr "从 stdin 读脚本必须用 --name 指定名称。"
 
-#: src/skit/cli.py:501
+#: src/skit/cli.py:507
 msgid "Nothing arrived on stdin, so there is nothing to add."
 msgstr "stdin 没有收到任何内容，没有东西可添加。"
 
-#: src/skit/cli.py:546
+#: src/skit/cli.py:552
 #, python-format
 msgid "Unknown kind: %(kind)s. Choose from: %(kinds)s"
 msgstr "未知类型：%(kind)s。可选：%(kinds)s"
 
-#: src/skit/cli.py:552
+#: src/skit/cli.py:558
 msgid "Add a script, executable, or command to skit."
 msgstr "把脚本、可执行文件或命令加入 skit。"
 
-#: src/skit/cli.py:554
+#: src/skit/cli.py:560
 #, python-brace-format
 msgid "Examples:  skit add tools/resize.py  ·  skit add --cmd 'ffmpeg -i {input}' -n convert  ·  pbpaste | skit add - -n clip"
 msgstr "例：skit add tools/resize.py · skit add --cmd 'ffmpeg -i {input}' -n convert · pbpaste | skit add - -n clip"
 
-#: src/skit/cli.py:559
+#: src/skit/cli.py:565
 msgid "Path to a script or executable, or '-' to read a script from stdin"
 msgstr "脚本或可执行文件路径；「-」表示从 stdin 读脚本"
 
-#: src/skit/cli.py:562
+#: src/skit/cli.py:568
 msgid "Name / alias (defaults to the file name)"
 msgstr "名称 / alias(默认用文件名)"
 
-#: src/skit/cli.py:568
+#: src/skit/cli.py:574
 msgid "Description (defaults to the first line of the docstring)"
 msgstr "描述(默认取 docstring 首行)"
 
-#: src/skit/cli.py:571
+#: src/skit/cli.py:577
 msgid "Write a brand-new script in your editor, then add it"
 msgstr "在编辑器里新写一支脚本,再加入 skit"
 
-#: src/skit/cli.py:576
+#: src/skit/cli.py:582
 msgid "Reference mode: link to the original file instead of copying it"
 msgstr "reference 模式:不复制,链接原文件"
 
-#: src/skit/cli.py:581
+#: src/skit/cli.py:587
 msgid "Force the executable kind (normally inferred from the file itself)"
 msgstr "强制当作可执行文件（一般会自动判断）"
 
-#: src/skit/cli.py:586
+#: src/skit/cli.py:592
 msgid "Force the language kind (e.g. shell, js) for an extensionless file"
 msgstr "强制指定语言类型（如 shell、js），用于没有扩展名的文件"
 
-#: src/skit/cli.py:589
+#: src/skit/cli.py:595
 #, python-brace-format
 msgid "Register a command template, e.g. --cmd 'ffmpeg -i {input}'"
 msgstr "登记命令模板,如 --cmd 'ffmpeg -i {input}'"
 
-#: src/skit/cli.py:594
+#: src/skit/cli.py:600
 msgid "A dependency (repeat for more; skips the interactive question)"
 msgstr "一项依赖（可重复；会跳过交互询问）"
 
-#: src/skit/cli.py:597 src/skit/cli.py:2206
+#: src/skit/cli.py:603 src/skit/cli.py:2212
 msgid "Python version constraint, e.g. \">=3.11\""
 msgstr "Python 版本约束,如 \">=3.11\""
 
-#: src/skit/cli.py:600
+#: src/skit/cli.py:606
 msgid "Never prompt; accept the detected suggestions"
 msgstr "从不询问;直接采用检测到的建议"
 
-#: src/skit/cli.py:608
+#: src/skit/cli.py:614
 msgid "--ref needs an existing file to reference — a script written in the editor or read from stdin has none."
 msgstr "--ref 需要一个已存在的文件可供引用——在编辑器里写的或从 stdin 读入的脚本没有原始文件。"
 
-#: src/skit/cli.py:614
+#: src/skit/cli.py:620
 msgid "Use --edit to write a new script, or pass a path to add an existing one — not both."
 msgstr "用 --edit 新写脚本,或传入路径加入现有文件,两者不能同时使用。"
 
-#: src/skit/cli.py:628
+#: src/skit/cli.py:634
 msgid "A --cmd entry needs a --name"
 msgstr "--cmd 条目必须指定 --name"
 
-#: src/skit/cli.py:635
+#: src/skit/cli.py:641
 #, python-format
 msgid "Detected parameters: %(names)s (the run form asks for them; your last values are remembered)"
 msgstr "检测到参数：%(names)s（运行表单会询问；会记住你上次的值）"
 
-#: src/skit/cli.py:642
+#: src/skit/cli.py:648
 msgid "Provide a script path, or use --cmd to register a command template"
 msgstr "请提供脚本路径,或用 --cmd 登记命令模板"
 
-#: src/skit/cli.py:651
+#: src/skit/cli.py:657
 msgid "Use --kind or --exe, not both."
 msgstr "--kind 与 --exe 只能择一。"
 
-#: src/skit/cli.py:661 src/skit/tui_add.py:134
+#: src/skit/cli.py:667 src/skit/tui_add.py:134
 #, python-format
 msgid "%(file)s isn't a script or an executable — pass --exe for a program, or --cmd for a command template."
 msgstr "%(file)s 不是脚本也不是可执行文件——程序请加 --exe，命令模板请用 --cmd。"
 
-#: src/skit/cli.py:692
+#: src/skit/cli.py:698
 #, python-format
 msgid "Can't read %(path)s: %(error)s"
 msgstr "无法读取 %(path)s:%(error)s"
 
-#: src/skit/cli.py:715
+#: src/skit/cli.py:721
 msgid "Cancelled — nothing was added."
 msgstr "已取消——没有添加任何东西。"
 
-#: src/skit/cli.py:740
+#: src/skit/cli.py:746
 #, python-format
 msgid "(%(mode)s mode)"
 msgstr "(%(mode)s 模式)"
 
-#: src/skit/cli.py:745
+#: src/skit/cli.py:751
 #, python-format
 msgid "Added: %(name)s"
 msgstr "已加入:%(name)s"
 
-#: src/skit/cli.py:749
+#: src/skit/cli.py:755
 #, python-format
 msgid "Description: %(desc)s"
 msgstr "描述:%(desc)s"
 
-#: src/skit/cli.py:753 src/skit/cli.py:885
+#: src/skit/cli.py:759 src/skit/cli.py:891
 #, python-format
 msgid "Dependencies: %(deps)s"
 msgstr "依赖:%(deps)s"
 
-#: src/skit/cli.py:757
+#: src/skit/cli.py:763
 #, python-format
 msgid "Managed parameters: %(names)s"
 msgstr "管理中的参数:%(names)s"
 
-#: src/skit/cli.py:759 src/skit/cli.py:914
+#: src/skit/cli.py:765 src/skit/cli.py:920
 #, python-format
 msgid "Run it: skit run %(name)s"
 msgstr "运行:skit run %(name)s"
 
-#: src/skit/cli.py:762
+#: src/skit/cli.py:768
 #, python-format
 msgid "Secret parameter values are never saved to disk: %(names)s"
 msgstr "机密参数的值不会写入磁盘:%(names)s"
 
-#: src/skit/cli.py:771
+#: src/skit/cli.py:777
 msgid "List every registered script."
 msgstr "列出所有已登记的脚本。"
 
-#: src/skit/cli.py:773 src/skit/cli.py:955 src/skit/cli.py:1397
-#: src/skit/cli.py:2218 src/skit/cli.py:2433 src/skit/cli.py:2609
+#: src/skit/cli.py:779 src/skit/cli.py:961 src/skit/cli.py:1403
+#: src/skit/cli.py:2224 src/skit/cli.py:2458 src/skit/cli.py:2768
 msgid "Output as JSON"
 msgstr "以 JSON 输出"
 
-#: src/skit/cli.py:796
+#: src/skit/cli.py:802
 msgid "No scripts yet. Add one with: skit add <path>"
 msgstr "还没有任何脚本。用 skit add <path> 加一个。"
 
-#: src/skit/cli.py:801 src/skit/tui.py:367 src/skit/tui.py:915
+#: src/skit/cli.py:807 src/skit/tui.py:367 src/skit/tui.py:915
 #: src/skit/tui_add.py:259
 msgid "Name"
 msgstr "名称"
 
-#: src/skit/cli.py:802 src/skit/cli.py:1613 src/skit/tui.py:367
+#: src/skit/cli.py:808 src/skit/cli.py:1619 src/skit/tui.py:367
 #: src/skit/tui.py:915
 msgid "Kind"
 msgstr "类型"
 
-#: src/skit/cli.py:803 src/skit/tui_add.py:261
+#: src/skit/cli.py:809 src/skit/tui_add.py:261
 msgid "Description"
 msgstr "说明"
 
-#: src/skit/cli.py:828 src/skit/cli.py:829 src/skit/cli.py:940
-#: src/skit/cli.py:1462 src/skit/cli.py:1463
+#: src/skit/cli.py:834 src/skit/cli.py:835 src/skit/cli.py:946
+#: src/skit/cli.py:1468 src/skit/cli.py:1469
 msgid "yes"
 msgstr "是"
 
-#: src/skit/cli.py:875
+#: src/skit/cli.py:881
 #, python-format
 msgid "Source: %(path)s"
 msgstr "来源:%(path)s"
 
-#: src/skit/cli.py:878
+#: src/skit/cli.py:884
 #, python-format
 msgid "Working directory: %(dir)s"
 msgstr "工作目录:%(dir)s"
 
-#: src/skit/cli.py:889 src/skit/cli.py:2184
+#: src/skit/cli.py:895 src/skit/cli.py:2190
 #, python-format
 msgid "Python constraint: %(python)s"
 msgstr "Python 版本约束:%(python)s"
 
-#: src/skit/cli.py:893
+#: src/skit/cli.py:899
 #, python-format
 msgid "Needs: %(needs)s"
 msgstr "所需命令：%(needs)s"
 
-#: src/skit/cli.py:897
+#: src/skit/cli.py:903
 #, python-format
 msgid "Command template: %(template)s"
 msgstr "命令模板:%(template)s"
 
-#: src/skit/cli.py:902 src/skit/cli.py:1254
+#: src/skit/cli.py:908 src/skit/cli.py:1260
 msgid "skit could not model this script's own arguments; pass them after -- instead."
 msgstr "skit 无法读懂这个脚本自己的参数声明；请把参数放在 -- 之后直接传入。"
 
-#: src/skit/cli.py:908
+#: src/skit/cli.py:914
 msgid "No form fields — arguments after -- pass straight through to the script."
 msgstr "没有表单字段——接在 -- 之后的参数会透传给脚本。"
 
-#: src/skit/cli.py:912
+#: src/skit/cli.py:918
 #, python-format
 msgid "Presets: %(names)s"
 msgstr "参数组合:%(names)s"
 
-#: src/skit/cli.py:921 src/skit/cli.py:1501 src/skit/cli.py:1612
+#: src/skit/cli.py:927 src/skit/cli.py:1507 src/skit/cli.py:1618
 msgid "Parameter"
 msgstr "参数"
 
-#: src/skit/cli.py:922 src/skit/cli.py:1503 src/skit/cli.py:1614
+#: src/skit/cli.py:928 src/skit/cli.py:1509 src/skit/cli.py:1620
 msgid "Type"
 msgstr "类型"
 
-#: src/skit/cli.py:923
+#: src/skit/cli.py:929
 msgid "Required"
 msgstr "必填"
 
-#: src/skit/cli.py:924 src/skit/cli.py:1504 src/skit/cli.py:1615
+#: src/skit/cli.py:930 src/skit/cli.py:1510 src/skit/cli.py:1621
 msgid "Default"
 msgstr "默认值"
 
-#: src/skit/cli.py:925
+#: src/skit/cli.py:931
 msgid "Choices"
 msgstr "可选值"
 
-#: src/skit/cli.py:926 src/skit/cli.py:1505 src/skit/cli.py:1616
+#: src/skit/cli.py:932 src/skit/cli.py:1511 src/skit/cli.py:1622
 msgid "Secret"
 msgstr "机密"
 
-#: src/skit/cli.py:927 src/skit/tui.py:337 src/skit/tui.py:473
+#: src/skit/cli.py:933 src/skit/tui.py:337 src/skit/tui.py:473
 msgid "Help"
 msgstr "帮助"
 
-#: src/skit/cli.py:932 src/skit/cli.py:1469 src/skit/cli.py:1477
-#: src/skit/cli.py:1487 src/skit/cli.py:1620 src/skit/cli.py:1624
+#: src/skit/cli.py:938 src/skit/cli.py:1475 src/skit/cli.py:1483
+#: src/skit/cli.py:1493 src/skit/cli.py:1626 src/skit/cli.py:1630
 msgid "•••"
 msgstr "•••"
 
-#: src/skit/cli.py:950
+#: src/skit/cli.py:956
 msgid "Show everything about one script: metadata, dependencies, parameters, presets."
 msgstr "显示一个脚本的完整信息:元数据、依赖、参数、参数组合。"
 
-#: src/skit/cli.py:951
+#: src/skit/cli.py:957
 msgid "Examples:  skit show resize  ·  skit show resize --json"
 msgstr "例:skit show resize · skit show resize --json"
 
-#: src/skit/cli.py:995
+#: src/skit/cli.py:1001
 msgid "Remove a registered script (the original file is left untouched)."
 msgstr "移除一个已登记的脚本(原文件不受影响)。"
 
-#: src/skit/cli.py:998
+#: src/skit/cli.py:1004
 msgid "Skip confirmation"
 msgstr "跳过确认"
 
-#: src/skit/cli.py:1008 src/skit/tui.py:151
+#: src/skit/cli.py:1014 src/skit/tui.py:151
 #, python-format
 msgid "Remove \"%(name)s\"?"
 msgstr "移除「%(name)s」？"
 
-#: src/skit/cli.py:1010
+#: src/skit/cli.py:1016
 #, python-format
 msgid "Remove \"%(name)s\"? Your original file will not be deleted."
 msgstr "移除「%(name)s」？你的原始文件不会被删除。"
 
-#: src/skit/cli.py:1015
+#: src/skit/cli.py:1021
 #, python-format
 msgid "Removed: %(name)s"
 msgstr "已移除:%(name)s"
 
-#: src/skit/cli.py:1022
+#: src/skit/cli.py:1028
 #, python-format
 msgid "No script named %(name)s."
 msgstr "找不到名为 %(name)s 的脚本。"
 
-#: src/skit/cli.py:1026
+#: src/skit/cli.py:1032
 #, python-format
 msgid "No script named \"%(name)s\". Create it now?"
 msgstr "找不到名为“%(name)s”的脚本。要现在创建吗?"
 
-#: src/skit/cli.py:1035
+#: src/skit/cli.py:1041
 msgid "Open a script's source in your editor (offers to create it if the name is new)."
 msgstr "用编辑器打开脚本源码(名称不存在时可新建)。"
 
-#: src/skit/cli.py:1036
+#: src/skit/cli.py:1042
 msgid "Example:  skit edit resize"
 msgstr "例：skit edit resize"
 
-#: src/skit/cli.py:1048 src/skit/tui.py:793
+#: src/skit/cli.py:1054 src/skit/tui.py:793
 #, python-format
 msgid "%(name)s has no editable source (programs and command templates run as-is)."
 msgstr "%(name)s 没有可编辑的源码（程序和命令模板按原样运行）。"
 
-#: src/skit/cli.py:1056
+#: src/skit/cli.py:1062
 #, python-format
 msgid "%(name)s: the referenced source file is gone: %(path)s"
 msgstr "%(name)s:reference 原文件已消失:%(path)s"
 
-#: src/skit/cli.py:1061
+#: src/skit/cli.py:1067
 #, python-format
 msgid "Editing the original file (reference mode): %(path)s"
 msgstr "正在编辑原始文件(reference 模式):%(path)s"
 
-#: src/skit/cli.py:1068 src/skit/cli.py:1917 src/skit/cli.py:2023
+#: src/skit/cli.py:1074 src/skit/cli.py:1923 src/skit/cli.py:2029
 #, python-format
 msgid "%(name)s has no stored copy to edit."
 msgstr "%(name)s 没有可编辑的副本。"
 
-#: src/skit/cli.py:1075
+#: src/skit/cli.py:1081
 #, python-format
 msgid "Saved %(name)s."
 msgstr "已保存 %(name)s。"
 
-#: src/skit/cli.py:1078
+#: src/skit/cli.py:1084
 #, python-format
 msgid "skit reconciles parameter drift at run time; review managed parameters with: skit params %(name)s"
 msgstr "skit 会在运行时自动校对参数差异;可用 skit params %(name)s 查看管理中的参数"
 
-#: src/skit/cli.py:1094 src/skit/cli.py:1439
+#: src/skit/cli.py:1100 src/skit/cli.py:1445
 #, python-format
 msgid "Unknown preset \"%(preset)s\". Available: %(presets)s"
 msgstr "没有名为“%(preset)s”的参数组合。现有:%(presets)s"
 
-#: src/skit/cli.py:1124
+#: src/skit/cli.py:1130
 #, python-format
 msgid "Malformed --set (expected NAME=VALUE): %(items)s"
 msgstr "--set 格式错误(应为 NAME=VALUE):%(items)s"
 
-#: src/skit/cli.py:1134
+#: src/skit/cli.py:1140
 #, python-format
 msgid "Unknown parameter for --set: %(names)s. This script's parameters: %(valid)s"
 msgstr "--set 指到不存在的参数:%(names)s。这个脚本的参数:%(valid)s"
 
-#: src/skit/cli.py:1168
+#: src/skit/cli.py:1174
 #, python-format
 msgid "Parameters for %(name)s (press Enter to keep the value shown):"
 msgstr "%(name)s 的参数(按 Enter 沿用显示的值):"
 
-#: src/skit/cli.py:1180
+#: src/skit/cli.py:1186
 msgid "Run a registered script or command in the terminal."
 msgstr "在终端运行已登记的脚本或命令。"
 
-#: src/skit/cli.py:1182
+#: src/skit/cli.py:1188
 msgid "Examples:  skit run stitch  ·  skit run stitch -p web -- extra.png  ·  skit run stitch --set width=800 --no-input  ·  skit run stitch --dry-run"
 msgstr "例:skit run stitch · skit run stitch -p web -- extra.png · skit run stitch --set width=800 --no-input · skit run stitch --dry-run"
 
-#: src/skit/cli.py:1188
+#: src/skit/cli.py:1194
 msgid "Arguments passed through to the script (after --)"
 msgstr "透传给脚本的参数(接在 -- 之后)"
 
-#: src/skit/cli.py:1191
+#: src/skit/cli.py:1197
 msgid "Never prompt; reuse last values and defaults"
 msgstr "从不询问;沿用上次的值 / 默认值"
 
-#: src/skit/cli.py:1197
+#: src/skit/cli.py:1203
 msgid "Named preset of parameter values to prefill the form with"
 msgstr "用哪个参数组合(preset)预填表单"
 
-#: src/skit/cli.py:1204
+#: src/skit/cli.py:1210
 #, python-brace-format
 msgid "Set a parameter value by name, as NAME=VALUE (repeatable; values may use tokens like {cwd} or {env:VAR}; the form no longer asks for a field you set)"
 msgstr "直接以 NAME=VALUE 指定参数值(可重复;值可用 {cwd}、{env:VAR} 等占位符;已指定的字段表单不再询问)"
 
-#: src/skit/cli.py:1208
+#: src/skit/cli.py:1214
 msgid "Save this run's values as a named preset"
 msgstr "把这次的值存成参数组合"
 
-#: src/skit/cli.py:1211
+#: src/skit/cli.py:1217
 msgid "Line-by-line prompts instead of the inline form"
 msgstr "用逐行问答取代迷你表单"
 
-#: src/skit/cli.py:1217
+#: src/skit/cli.py:1223
 msgid "Skip the parameter form and injection and run the script as-is (escape hatch)"
 msgstr "跳过参数表单与注入,原样运行脚本(逃生门)"
 
-#: src/skit/cli.py:1224
+#: src/skit/cli.py:1230
 msgid "Print the exact command that would run (tokens and globs expanded), then exit"
 msgstr "打印实际会运行的完整命令（token 与通配符已展开）后退出"
 
-#: src/skit/cli.py:1240
+#: src/skit/cli.py:1246
 msgid "--raw runs the script as-is; --set, --preset, and --save-preset do not apply."
 msgstr "--raw 会原样运行脚本;--set、--preset、--save-preset 都不适用。"
 
-#: src/skit/cli.py:1246
+#: src/skit/cli.py:1252
 msgid "Raw mode: skipping the parameter form and injection."
 msgstr "raw 模式:已跳过参数表单与注入。"
 
-#: src/skit/cli.py:1290
+#: src/skit/cli.py:1296
 #, python-format
 msgid "Reusing your last arguments: %(args)s"
 msgstr "沿用上次的参数:%(args)s"
 
-#: src/skit/cli.py:1304 src/skit/cli.py:1390
+#: src/skit/cli.py:1310 src/skit/cli.py:1396
 #, python-format
 msgid "Preset \"%(preset)s\" saved for %(name)s."
 msgstr "已为 %(name)s 保存参数组合“%(preset)s”。"
 
-#: src/skit/cli.py:1327
+#: src/skit/cli.py:1333
 #, python-format
 msgid "Script exited with code %(code)s"
 msgstr "脚本以 exit code %(code)s 结束"
 
-#: src/skit/cli.py:1337
+#: src/skit/cli.py:1343
 msgid "Manage named parameter presets for a script."
 msgstr "管理脚本的参数组合(preset)。"
 
-#: src/skit/cli.py:1342
+#: src/skit/cli.py:1348
 msgid "Save a set of parameter values as a named preset."
 msgstr "把一组参数值保存成参数组合(preset)。"
 
-#: src/skit/cli.py:1345 src/skit/cli.py:1424 src/skit/tui_form.py:232
+#: src/skit/cli.py:1351 src/skit/cli.py:1430 src/skit/tui_form.py:232
 msgid "Preset name"
 msgstr "组合名称"
 
-#: src/skit/cli.py:1349
+#: src/skit/cli.py:1355
 msgid "Save the last run's values without asking (automation-friendly)"
 msgstr "直接存上次运行的值，不再询问（适合自动化）"
 
-#: src/skit/cli.py:1361
+#: src/skit/cli.py:1367
 #, python-format
 msgid "%(name)s has no form fields, so there's nothing to save."
 msgstr "%(name)s 没有表单字段，没有东西可存。"
 
-#: src/skit/cli.py:1371
+#: src/skit/cli.py:1377
 #, python-format
 msgid "%(name)s has no remembered values yet — run it once first."
 msgstr "%(name)s 还没有记住的值——先运行一次。"
 
-#: src/skit/cli.py:1384
+#: src/skit/cli.py:1390
 #, python-format
 msgid "Secret values are never stored in presets; skipped: %(names)s"
 msgstr "机密值不会存入参数组合;已跳过:%(names)s"
 
-#: src/skit/cli.py:1394
+#: src/skit/cli.py:1400
 msgid "List a script's saved presets."
 msgstr "列出脚本已保存的参数组合(preset)。"
 
-#: src/skit/cli.py:1411
+#: src/skit/cli.py:1417
 #, python-format
 msgid "No presets for %(name)s yet. Create one with: skit run %(name)s --save-preset <preset>"
 msgstr "%(name)s 还没有参数组合。创建一个：skit run %(name)s --save-preset <组合名>"
 
-#: src/skit/cli.py:1421
+#: src/skit/cli.py:1427
 msgid "Delete a named preset from a script."
 msgstr "从脚本删除一个参数组合(preset)。"
 
-#: src/skit/cli.py:1433
+#: src/skit/cli.py:1439
 #, python-format
 msgid "Preset \"%(preset)s\" deleted from %(name)s."
 msgstr "已从 %(name)s 删除参数组合“%(preset)s”。"
 
-#: src/skit/cli.py:1488
+#: src/skit/cli.py:1494
 #, python-format
 msgid "default %(value)s"
 msgstr "默认 %(value)s"
 
-#: src/skit/cli.py:1490
+#: src/skit/cli.py:1496
 msgid "optional"
 msgstr "选填"
 
-#: src/skit/cli.py:1492
+#: src/skit/cli.py:1498
 msgid "secret"
 msgstr "机密"
 
-#: src/skit/cli.py:1502
+#: src/skit/cli.py:1508
 msgid "Delivery"
 msgstr "传递方式"
 
-#: src/skit/cli.py:1506 src/skit/cli.py:1617
+#: src/skit/cli.py:1512 src/skit/cli.py:1623
 msgid "Last value"
 msgstr "上次的值"
 
-#: src/skit/cli.py:1529 src/skit/cli.py:1597
+#: src/skit/cli.py:1535 src/skit/cli.py:1603
 #, python-format
 msgid "%(name)s has no managed parameters."
 msgstr "%(name)s 没有纳管的参数。"
 
-#: src/skit/cli.py:1533
+#: src/skit/cli.py:1539
 msgid "Command template placeholders (the run form asks for them):"
 msgstr "命令模板的占位符（运行表单会询问）："
 
-#: src/skit/cli.py:1539
+#: src/skit/cli.py:1545
 msgid "Declared environment variables (set on the run):"
 msgstr "声明的环境变量（运行时设置）："
 
-#: src/skit/cli.py:1603
+#: src/skit/cli.py:1609
 #, python-format
 msgid "%(name)s has no managed parameters. Use --manage to bring a detected candidate under management."
 msgstr "%(name)s 没有纳管的参数。用 --manage 把检测到的候选纳入管理。"
 
-#: src/skit/cli.py:1639
+#: src/skit/cli.py:1645
 #, python-format
 msgid "Detected but not yet managed: %(names)s (use --manage to manage them)"
 msgstr "检测到但尚未纳管：%(names)s（用 --manage 纳管）"
 
-#: src/skit/cli.py:1644
+#: src/skit/cli.py:1650
 #, python-brace-format, python-format
 msgid "This script locates itself ($0 / BASH_SOURCE). Injecting a constant runs it from a temporary copy, so it would see that copy path instead. `skit params %(name)s --normalize NAME` converts a constant into the ${NAME:-default} idiom, which is delivered through the environment and leaves the file untouched."
 msgstr "这个脚本会定位自身（$0 / BASH_SOURCE）。注入常量会让它从临时副本运行，因此它看到的会是副本的路径。`skit params %(name)s --normalize NAME` 可以把常量改写成 ${NAME:-default} 惯用法——改用环境变量投递，原文件保持不动。"
 
-#: src/skit/cli.py:1663
+#: src/skit/cli.py:1669
 msgid "Show or edit a script's managed or declared parameters."
 msgstr "查看或编辑脚本的受管或声明参数。"
 
-#: src/skit/cli.py:1665
+#: src/skit/cli.py:1671
 msgid "Examples:  skit params resize --manage WIDTH  ·  skit params conv --add size --type size=int --deliver size=flag --flag size=--size"
 msgstr "例：skit params resize --manage WIDTH · skit params conv --add size --type size=int --deliver size=flag --flag size=--size"
 
-#: src/skit/cli.py:1673
+#: src/skit/cli.py:1679
 msgid "Prune definitions that no longer match the script and refresh changed types"
 msgstr "修剪已对不上脚本的定义,并更新类型已变的项"
 
-#: src/skit/cli.py:1678
+#: src/skit/cli.py:1684
 msgid "Bring a currently detected candidate under management (repeatable)"
 msgstr "把当前检测到的候选纳入管理(可重复)"
 
-#: src/skit/cli.py:1681
+#: src/skit/cli.py:1687
 msgid "Drop a managed parameter (repeatable)"
 msgstr "移除一个受管理的参数(可重复)"
 
-#: src/skit/cli.py:1686
+#: src/skit/cli.py:1692
 msgid "Declare a new parameter on an exe/command entry, by name (repeatable)"
 msgstr "为 exe/command 条目声明一个新参数，按名称指定(可重复)"
 
-#: src/skit/cli.py:1689
+#: src/skit/cli.py:1695
 msgid "Remove a declared parameter, by name (repeatable)"
 msgstr "移除一个声明的参数，按名称指定(可重复)"
 
-#: src/skit/cli.py:1694
+#: src/skit/cli.py:1700
 msgid "Set a declared parameter's type, as NAME=str|int|float|bool|choice"
 msgstr "设置声明参数的类型，格式 NAME=str|int|float|bool|choice"
 
-#: src/skit/cli.py:1697
+#: src/skit/cli.py:1703
 msgid "Set a declared parameter's default, as NAME=VALUE"
 msgstr "设置声明参数的默认值，格式 NAME=VALUE"
 
-#: src/skit/cli.py:1702
+#: src/skit/cli.py:1708
 msgid "Set a declared parameter's choices, as NAME=a,b,c (comma separated)"
 msgstr "设置声明参数的可选值，格式 NAME=a,b,c(逗号分隔)"
 
-#: src/skit/cli.py:1708
+#: src/skit/cli.py:1714
 msgid "Set how a declared parameter reaches the program, as NAME=env|flag|placeholder"
 msgstr "设置声明参数如何传递给程序，格式 NAME=env|flag|placeholder"
 
-#: src/skit/cli.py:1714
+#: src/skit/cli.py:1720
 msgid "Set a declared flag parameter's option, as NAME=--out (empty = positional)"
 msgstr "设置声明的 flag 参数选项，格式 NAME=--out(留空为位置参数)"
 
-#: src/skit/cli.py:1717
+#: src/skit/cli.py:1723
 msgid "Mark a declared parameter as required (repeatable)"
 msgstr "把某个声明参数标为必填(可重复)"
 
-#: src/skit/cli.py:1720
+#: src/skit/cli.py:1726
 msgid "Mark a declared parameter as optional (repeatable)"
 msgstr "把某个声明参数标为选填(可重复)"
 
-#: src/skit/cli.py:1723
+#: src/skit/cli.py:1729
 msgid "Set a declared parameter's help text, as NAME=text"
 msgstr "设置声明参数的帮助文字，格式 NAME=text"
 
-#: src/skit/cli.py:1726
+#: src/skit/cli.py:1732
 msgid "Mark a managed parameter as secret (repeatable)"
 msgstr "把某个受管参数标为机密(可重复)"
 
-#: src/skit/cli.py:1731
+#: src/skit/cli.py:1737
 msgid "Remove the secret mark from a managed parameter (repeatable)"
 msgstr "取消某个受管参数的机密标记(可重复)"
 
-#: src/skit/cli.py:1734
+#: src/skit/cli.py:1740
 msgid "Set a parameter's form prompt, as NAME=text (repeatable)"
 msgstr "以 NAME=text 设定参数的表单提示(可重复)"
 
-#: src/skit/cli.py:1740
+#: src/skit/cli.py:1746
 msgid "Read a secret parameter from an environment variable at run time, as NAME=ENVVAR (empty ENVVAR clears it; repeatable)"
 msgstr "运行时从环境变量读取机密参数，格式 NAME=ENVVAR（ENVVAR 留空表示清除；可重复）"
 
-#: src/skit/cli.py:1747
+#: src/skit/cli.py:1753
 #, python-brace-format
 msgid "Shell only: rewrite a constant into the ${NAME:-default} idiom in the stored copy, so its value is delivered as an environment variable instead of a rewritten temporary copy (repeatable)"
 msgstr "仅限 Shell:把常量改写成 ${NAME:-default} 写法(改的是仓库副本),之后它的值就用环境变量传递,不必再改写临时副本(可重复)"
 
-#: src/skit/cli.py:1750
+#: src/skit/cli.py:1756
 msgid "Output the read view as JSON"
 msgstr "读取视图以 JSON 输出"
 
-#: src/skit/cli.py:1804
+#: src/skit/cli.py:1810
 #, python-format
 msgid "%(name)s manages its parameters from the script itself — use --manage / --unmanage, or edit the [tool.skit] block."
 msgstr "%(name)s 从脚本自身管理参数——请使用 --manage / --unmanage，或直接编辑 [tool.skit] 区块。"
 
-#: src/skit/cli.py:1870
+#: src/skit/cli.py:1876
 #, python-format
 msgid "%(name)s isn't a managed parameter; --env-source skipped."
 msgstr "%(name)s 不是纳管的参数；--env-source 已略过。"
 
-#: src/skit/cli.py:1877
+#: src/skit/cli.py:1883
 #, python-format
 msgid "%(name)s isn't secret; --env-source only applies to secret parameters (mark it with --secret first)."
 msgstr "%(name)s 不是机密参数；--env-source 只适用于机密参数（先用 --secret 标记）。"
 
-#: src/skit/cli.py:1902
+#: src/skit/cli.py:1908
 #, python-format
 msgid "%(name)s isn't a Python script; only Python entries have managed parameters."
 msgstr "%(name)s 不是 Python 脚本;只有 Python 条目有受管理的参数。"
 
-#: src/skit/cli.py:1909
+#: src/skit/cli.py:1915
 #, python-format
 msgid "%(name)s is in reference mode, and skit never writes the original file. Edit the [tool.skit] block in the source directly."
 msgstr "%(name)s 是 reference 模式;skit 绝不写原文件。请直接改原文件的 [tool.skit] 区块。"
 
-#: src/skit/cli.py:1922
+#: src/skit/cli.py:1928
 #, python-format
 msgid "Ignored a malformed value: %(item)s (expected NAME=text)."
 msgstr "已忽略格式错误的值：%(item)s（应为 NAME=text）。"
 
-#: src/skit/cli.py:1947 src/skit/cli.py:2142
+#: src/skit/cli.py:1953 src/skit/cli.py:2148
 #, python-format
 msgid "Removed previously stored plaintext value(s) for now-secret parameter(s): %(names)s"
 msgstr "已移除下列刚设为机密的参数先前以明文存储的值:%(names)s"
 
-#: src/skit/cli.py:1954
+#: src/skit/cli.py:1960
 #, python-format
 msgid "Updated %(name)s. Managed parameters: %(names)s"
 msgstr "已更新 %(name)s。受管理的参数:%(names)s"
 
-#: src/skit/cli.py:1965
+#: src/skit/cli.py:1971
 #, python-format
 msgid "%(name)s isn't a plain constant with a literal value, so there's nothing to normalize; skipped."
 msgstr "%(name)s 不是带字面值的普通常量,没有可以规范化的东西;已跳过。"
 
-#: src/skit/cli.py:1968
+#: src/skit/cli.py:1974
 #, python-format
 msgid "%(name)s is assigned more than once at the top level; normalizing it would change which value wins. Skipped."
 msgstr "%(name)s 在顶层被赋值多次;规范化会改变最终生效的值。已跳过。"
 
-#: src/skit/cli.py:1971
+#: src/skit/cli.py:1977
 #, python-format
 msgid "%(name)s is readonly, so the script could never take a value from the environment; skipped."
 msgstr "%(name)s 是 readonly,脚本永远不可能从环境变量取值;已跳过。"
 
-#: src/skit/cli.py:1973
+#: src/skit/cli.py:1979
 #, python-format
 msgid "%(name)s already reads from the environment; nothing to do."
 msgstr "%(name)s 已经从环境变量读取了;无需处理。"
 
-#: src/skit/cli.py:1975
+#: src/skit/cli.py:1981
 #, python-format
 msgid "%(name)s's value contains a character that can't be moved into ${...:-...} safely (one of } \" ` $ \\ or a newline); skipped — it keeps being injected into a temporary copy."
 msgstr "%(name)s 的值里有无法安全放进 ${...:-...} 的字符(} \" ` $ \\ 或换行);已跳过——它会继续用临时副本注入。"
 
-#: src/skit/cli.py:1979
+#: src/skit/cli.py:1985
 msgid "Could not parse the script (syntax error); nothing was normalized."
 msgstr "无法解析脚本(语法错误);没有做任何规范化。"
 
-#: src/skit/cli.py:2007
+#: src/skit/cli.py:2013
 #, python-brace-format, python-format
 msgid "%(name)s has no --normalize: it is a shell idiom (VAR=value -> VAR=\"${VAR:-value}\")."
 msgstr "%(name)s 没有 --normalize:那是 shell 的写法(VAR=value -> VAR=\"${VAR:-value}\")。"
 
-#: src/skit/cli.py:2015
+#: src/skit/cli.py:2021
 #, python-brace-format, python-format
 msgid "%(name)s is in reference mode, and skit never writes the original file. Change the line to VAR=\"${VAR:-value}\" in the source directly."
 msgstr "%(name)s 是 reference 模式;skit 绝不写原文件。请直接把原文件里那行改成 VAR=\"${VAR:-value}\"。"
 
-#: src/skit/cli.py:2050
+#: src/skit/cli.py:2056
 #, python-format
 msgid "Normalized %(names)s in %(name)s: delivered as environment variables from now on (no temporary copy, and $0 stays your real file)."
 msgstr "已规范化 %(name)s 中的 %(names)s:今后用环境变量传值(不再写临时副本,$0 也仍指向你的真实文件)。"
 
-#: src/skit/cli.py:2060
+#: src/skit/cli.py:2066
 #, python-format
 msgid "%(name)s isn't a declared parameter; skipped."
 msgstr "%(name)s 不是已声明的参数，已跳过。"
 
-#: src/skit/cli.py:2061
+#: src/skit/cli.py:2067
 #, python-format
 msgid "%(name)s is already declared; skipped."
 msgstr "%(name)s 已经声明过，已跳过。"
 
-#: src/skit/cli.py:2062
+#: src/skit/cli.py:2068
 #, python-format
 msgid "%(name)s: that delivery isn't available for this kind; skipped."
 msgstr "%(name)s：该传递方式不适用于此类型，已跳过。"
 
-#: src/skit/cli.py:2064
+#: src/skit/cli.py:2070
 #, python-format
 msgid "%(name)s isn't a template placeholder, so it can't use placeholder delivery; skipped."
 msgstr "%(name)s 不是模板占位符，无法使用 placeholder 传递方式，已跳过。"
 
-#: src/skit/cli.py:2067
+#: src/skit/cli.py:2073
 #, python-format
 msgid "%(name)s: unknown type; skipped (use str, int, float, bool, or choice)."
 msgstr "%(name)s：未知类型，已跳过(可用 str、int、float、bool 或 choice)。"
 
-#: src/skit/cli.py:2069
+#: src/skit/cli.py:2075
 #, python-format
 msgid "%(name)s: the default doesn't fit its type; skipped."
 msgstr "%(name)s：默认值与其类型不符，已跳过。"
 
-#: src/skit/cli.py:2071
+#: src/skit/cli.py:2077
 #, python-format
 msgid "%(name)s: a choice parameter needs choices; set --choices %(name)s=a,b,c."
 msgstr "%(name)s：choice 参数需要可选值，请设置 --choices %(name)s=a,b,c。"
 
-#: src/skit/cli.py:2113
+#: src/skit/cli.py:2119
 #, python-format
 msgid "Ignored a malformed value: %(item)s (expected NAME=VALUE)."
 msgstr "已忽略格式错误的值：%(item)s（应为 NAME=VALUE）。"
 
-#: src/skit/cli.py:2149
+#: src/skit/cli.py:2155
 #, python-format
 msgid "Updated %(name)s. Declared parameters: %(names)s"
 msgstr "已更新 %(name)s。已声明的参数:%(names)s"
 
-#: src/skit/cli.py:2176
+#: src/skit/cli.py:2182
 #, python-format
 msgid "Dependencies of %(name)s: %(deps)s"
 msgstr "%(name)s 的依赖:%(deps)s"
 
-#: src/skit/cli.py:2188
+#: src/skit/cli.py:2194
 #, python-format
 msgid "External commands needed by %(name)s: %(needs)s"
 msgstr "%(name)s 所需的外部命令：%(needs)s"
 
-#: src/skit/cli.py:2194
+#: src/skit/cli.py:2200
 msgid "View or update a script's dependencies, Python constraint, and needed commands."
 msgstr "查看或更新脚本的依赖、Python 版本约束，以及所需的外部命令。"
 
-#: src/skit/cli.py:2196
+#: src/skit/cli.py:2202
 msgid "Examples:  skit deps tool --dep \"requests>=2,<3\" --dep rich  ·  skit deps clip --need jq"
 msgstr "示例：skit deps tool --dep \"requests>=2,<3\" --dep rich  ·  skit deps clip --need jq"
 
-#: src/skit/cli.py:2202
+#: src/skit/cli.py:2208
 msgid "A dependency (repeat for more; replaces the whole list)"
 msgstr "一项依赖（可重复；整组取代原列表）"
 
-#: src/skit/cli.py:2204
+#: src/skit/cli.py:2210
 msgid "Remove every dependency"
 msgstr "清空所有依赖"
 
-#: src/skit/cli.py:2212
+#: src/skit/cli.py:2218
 msgid "An external command the script needs on PATH (repeat; replaces the whole list)"
 msgstr "脚本在 PATH 上所需的一个外部命令（可重复；整组取代原列表）"
 
-#: src/skit/cli.py:2216
+#: src/skit/cli.py:2222
 msgid "Remove every needed external command"
 msgstr "清空所有所需的外部命令"
 
-#: src/skit/cli.py:2234
+#: src/skit/cli.py:2242
 #, python-format
 msgid "%(name)s doesn't take package dependencies — only --need applies here."
 msgstr "%(name)s 不接受包依赖——这里只能用 --need。"
 
-#: src/skit/cli.py:2240
+#: src/skit/cli.py:2248
 msgid "Use --dep to set the list or --clear to empty it — not both."
 msgstr "--dep 用来设置列表、--clear 用来清空——两者择一。"
 
-#: src/skit/cli.py:2245
+#: src/skit/cli.py:2253
 msgid "Use --need to set the list or --clear-needs to empty it — not both."
 msgstr "--need 用来设置列表、--clear-needs 用来清空——两者择一。"
 
-#: src/skit/cli.py:2255
-#, python-format
-msgid "Needs of %(name)s updated: %(needs)s"
-msgstr "%(name)s 所需的命令已更新：%(needs)s"
-
-#: src/skit/cli.py:2269
+#: src/skit/cli.py:2280
 #, python-format
 msgid "Dependencies of %(name)s updated: %(deps)s"
 msgstr "%(name)s 的依赖已更新:%(deps)s"
 
-#: src/skit/cli.py:2278
+#: src/skit/cli.py:2290
+#, python-format
+msgid "Needs of %(name)s updated: %(needs)s"
+msgstr "%(name)s 所需的命令已更新：%(needs)s"
+
+#: src/skit/cli.py:2303
 msgid "Connect skit to AI agents: install the official Agent Skill."
 msgstr "把 skit 接上 AI agent:安装官方 Agent Skill。"
 
-#: src/skit/cli.py:2293
+#: src/skit/cli.py:2318
 #, python-format
 msgid "Could not write the skill there: %(error)s"
 msgstr "无法把 skill 写到那里:%(error)s"
 
-#: src/skit/cli.py:2296
+#: src/skit/cli.py:2321
 #, python-format
 msgid "Installed the skit Agent Skill: %(path)s"
 msgstr "已安装 skit Agent Skill:%(path)s"
 
-#: src/skit/cli.py:2302
+#: src/skit/cli.py:2327
 msgid "user"
 msgstr "用户"
 
-#: src/skit/cli.py:2302
+#: src/skit/cli.py:2327
 msgid "project"
 msgstr "项目"
 
-#: src/skit/cli.py:2303
+#: src/skit/cli.py:2328
 msgid "Agent directories on this machine:"
 msgstr "这台机器上的 agent 目录:"
 
-#: src/skit/cli.py:2307
+#: src/skit/cli.py:2332
 msgid "Install where?"
 msgstr "要装到哪里?"
 
-#: src/skit/cli.py:2314
+#: src/skit/cli.py:2339
 #, python-format
 msgid "Write the skill into %(path)s?"
 msgstr "把 skill 写入 %(path)s?"
 
-#: src/skit/cli.py:2324
+#: src/skit/cli.py:2349
 msgid "Install skit's Agent Skill into an AI agent's skills directory."
 msgstr "把 skit 的 Agent Skill 安装到 AI agent 的 skills 目录。"
 
-#: src/skit/cli.py:2326
+#: src/skit/cli.py:2351
 msgid "Examples:  skit agent install  ·  skit agent install claude  ·  skit agent install codex --project  ·  skit agent install --to ~/.claude/skills"
 msgstr "例:skit agent install · skit agent install claude · skit agent install codex --project · skit agent install --to ~/.claude/skills"
 
-#: src/skit/cli.py:2333
+#: src/skit/cli.py:2358
 msgid "Where to install: claude, codex, or agents (the cross-agent ./.agents directory)"
 msgstr "安装目标:claude、codex,或 agents(跨 agent 的 ./.agents 目录)"
 
-#: src/skit/cli.py:2339
+#: src/skit/cli.py:2364
 msgid "Install into this skills directory instead of a named target"
 msgstr "安装到这个 skills 目录,而不是具名目标"
 
-#: src/skit/cli.py:2345
+#: src/skit/cli.py:2370
 msgid "Install into the current project (./.claude, ./.codex) instead of your home directory"
 msgstr "安装到当前项目(./.claude、./.codex),而不是主目录"
 
-#: src/skit/cli.py:2354
+#: src/skit/cli.py:2379
 msgid "Use a named target (with optional --project) or --to — not both."
 msgstr "具名目标(可搭配 --project)和 --to 二选一,不能同时。"
 
-#: src/skit/cli.py:2366
+#: src/skit/cli.py:2391
 #, python-format
 msgid "Unknown target %(name)s. Valid targets: claude, codex, agents."
 msgstr "没有 %(name)s 这个目标。可用目标:claude、codex、agents。"
 
-#: src/skit/cli.py:2375
+#: src/skit/cli.py:2400
 msgid "Nothing installed: name a target (claude, codex, agents) or pass --to DIR."
 msgstr "没有安装任何东西:请指定目标(claude、codex、agents)或改用 --to DIR。"
 
-#: src/skit/cli.py:2382
+#: src/skit/cli.py:2407
 msgid "No agent directories detected (~/.claude, ~/.codex, ./.agents, …). Pass --to DIR to choose one yourself."
 msgstr "没有检测到 agent 目录(~/.claude、~/.codex、./.agents 等)。可用 --to DIR 自行指定。"
 
-#: src/skit/cli.py:2388
+#: src/skit/cli.py:2413
 msgid "Cancelled — nothing was written."
 msgstr "已取消——没有写入任何东西。"
 
-#: src/skit/cli.py:2428
+#: src/skit/cli.py:2453
 msgid "Check that uv is available and the script store is intact."
 msgstr "检查 uv 是否可用以及脚本仓库是否完好。"
 
-#: src/skit/cli.py:2431
+#: src/skit/cli.py:2456
 msgid "Rebuild the index from each script's meta.toml"
 msgstr "从各脚本的 meta.toml 重建索引"
 
-#: src/skit/cli.py:2442 src/skit/tui_health.py:159
+#: src/skit/cli.py:2467 src/skit/tui_health.py:152
 #, python-format
 msgid "Index rebuilt: %(count)s entry"
 msgid_plural "Index rebuilt: %(count)s entries"
 msgstr[0] "索引已重建:%(count)s 条"
 
-#: src/skit/cli.py:2471 src/skit/tui_health.py:59
+#: src/skit/cli.py:2505 src/skit/tui_health.py:59
 #, python-format
 msgid "uv: %(path)s"
 msgstr "uv:%(path)s"
 
-#: src/skit/cli.py:2474 src/skit/tui_health.py:62
+#: src/skit/cli.py:2508 src/skit/tui_health.py:62
 msgid "uv: not found. Install it from https://docs.astral.sh/uv/getting-started/installation/"
 msgstr "uv:未找到。安装方式:https://docs.astral.sh/uv/getting-started/installation/"
 
-#: src/skit/cli.py:2478 src/skit/tui_health.py:69
+#: src/skit/cli.py:2512 src/skit/tui_health.py:69
 #, python-format
 msgid "%(count)s script registered"
 msgid_plural "%(count)s scripts registered"
 msgstr[0] "已登记 %(count)s 个脚本"
 
-#: src/skit/cli.py:2483
+#: src/skit/cli.py:2517
 #, python-format
 msgid "%(name)s: the launch target is gone from disk"
 msgstr "%(name)s：运行目标已从磁盘消失"
 
-#: src/skit/cli.py:2487
+#: src/skit/cli.py:2521
 #, python-format
 msgid "%(name)s: form definitions are out of sync — run: skit params %(name)s --resync"
 msgstr "%(name)s：表单定义过期——运行：skit params %(name)s --resync"
 
-#: src/skit/cli.py:2491
+#: src/skit/cli.py:2525
 #, python-format
 msgid "%(name)s: missing external command(s): %(tools)s"
 msgstr "%(name)s：缺少外部命令：%(tools)s"
 
-#: src/skit/cli.py:2494 src/skit/tui_health.py:113
-#, python-format
-msgid "Mirror: on (%(pypi)s)"
-msgstr "镜像:已开启(%(pypi)s)"
-
-#: src/skit/cli.py:2496 src/skit/tui_health.py:117
-msgid "Mirror: off"
-msgstr "镜像:已关闭"
-
-#: src/skit/cli.py:2498 src/skit/tui_health.py:120
+#: src/skit/cli.py:2529 src/skit/tui_health.py:113
 #, python-format
 msgid "Library: %(path)s (%(count)s · %(size)s)"
 msgstr "脚本库：%(path)s（%(count)s 个 · %(size)s）"
 
-#: src/skit/cli.py:2515
+#: src/skit/cli.py:2557
 #, python-format
 msgid "auto (%(locale)s)"
 msgstr "自动（%(locale)s）"
 
-#: src/skit/cli.py:2528
+#: src/skit/cli.py:2589
 msgid "default ($VISUAL / $EDITOR)"
 msgstr "默认（$VISUAL / $EDITOR）"
 
-#: src/skit/cli.py:2532
+#: src/skit/cli.py:2596
 msgid "auto (bash on PATH)"
 msgstr "自动（使用 PATH 上的 bash）"
 
-#: src/skit/cli.py:2533
+#: src/skit/cli.py:2597
 msgid "auto (deno > bun > node)"
 msgstr "自动（deno > bun > node）"
 
-#: src/skit/cli.py:2542
+#: src/skit/cli.py:2625
+msgid "Mirrors are switched off — run `skit config mirror on` to activate them."
+msgstr "镜像当前处于关闭状态——运行 `skit config mirror on` 启用。"
+
+#: src/skit/cli.py:2638
+msgid "Nothing to enable: no mirror URLs are saved. Set an axis first: mirror.pypi / mirror.github / mirror.npm."
+msgstr "没有可启用的镜像：尚未保存任何镜像 URL。请先设置某个轴：mirror.pypi / mirror.github / mirror.npm。"
+
+#: src/skit/cli.py:2643
+#, python-format
+msgid "Unknown mirror value: %(name)s. \"mirror\" is the master switch (on / off); mirrors are picked per ecosystem: mirror.pypi (%(pypi)s), mirror.github (%(github)s), mirror.npm (%(npm)s) — each also takes a URL or \"off\"."
+msgstr "未知的 mirror 值：%(name)s。“mirror”只是总开关（on / off）；镜像按生态各自挑选：mirror.pypi（%(pypi)s）、mirror.github（%(github)s）、mirror.npm（%(npm)s）——每项也接受 URL 或“off”。"
+
+#: src/skit/cli.py:2665
+#, python-format
+msgid "Unknown %(key)s value: %(name)s. Choose from: %(names)s, off — or give a full URL."
+msgstr "未知的 %(key)s 值：%(name)s。可选：%(names)s、off——或直接给出完整 URL。"
+
+#: src/skit/cli.py:2686
+#, python-format
+msgid "Unknown mirror.github value: %(name)s. Choose from: %(names)s, off — or give an https:// github-release base URL (the uv binary is downloaded and executed, so https:// is required)."
+msgstr "未知的 mirror.github 值：%(name)s。可选：%(names)s、off——或给出一个 https:// 的 github-release 基底 URL（uv 主程序会被下载并执行，因此必须是 https://）。"
+
+#: src/skit/cli.py:2703
 #, python-format
 msgid "Unknown language: %(tag)s. Available: %(locales)s"
 msgstr "未知语言:%(tag)s。可用语言:%(locales)s"
 
-#: src/skit/cli.py:2556
-#, python-format
-msgid "Unknown mirror: %(name)s. Choose from: %(names)s"
-msgstr "未知镜像:%(name)s。可选:%(names)s"
-
-#: src/skit/cli.py:2562
+#: src/skit/cli.py:2720
 #, python-format
 msgid "Unknown form style: %(value)s. Choose from: tui, plain"
 msgstr "未知的表单形态：%(value)s。可选：tui、plain"
 
-#: src/skit/cli.py:2572
+#: src/skit/cli.py:2730
 #, python-format
 msgid "No such file: %(path)s"
 msgstr "找不到文件：%(path)s"
 
-#: src/skit/cli.py:2579
+#: src/skit/cli.py:2737
 #, python-format
 msgid "Unknown JS runner: %(value)s. Choose from: %(names)s"
 msgstr "未知的 JS 运行时：%(value)s。可选：%(names)s"
 
-#: src/skit/cli.py:2586
+#: src/skit/cli.py:2744
 #, python-format
 msgid "Unknown after-run behavior: %(value)s. Choose from: exit, stay"
 msgstr "未知的运行后行为：%(value)s。可选：exit、stay"
 
-#: src/skit/cli.py:2594
+#: src/skit/cli.py:2752
 msgid "Read or set skit's settings (language, editor, mirror, form style, after-run)."
 msgstr "读取或设置 skit 的设置（语言、编辑器、镜像、表单形态、运行后行为）。"
 
-#: src/skit/cli.py:2596
-msgid "Examples:  skit config  ·  skit config lang zh-TW  ·  skit config after_run stay"
-msgstr "例：skit config · skit config lang zh-CN · skit config after_run stay"
+#: src/skit/cli.py:2754
+msgid "Examples:  skit config  ·  skit config lang zh-TW  ·  skit config mirror.pypi tsinghua"
+msgstr "例：skit config · skit config lang zh-CN · skit config mirror.pypi tsinghua"
 
-#: src/skit/cli.py:2603
-msgid "Setting name: lang / editor / mirror / form / after_run / shell.bash_path / js.runner"
-msgstr "设置项：lang / editor / mirror / form / after_run / shell.bash_path / js.runner"
+#: src/skit/cli.py:2761
+msgid "Setting name: lang / editor / mirror / mirror.pypi / mirror.github / mirror.npm / form / after_run / shell.bash_path / js.runner"
+msgstr "设置项：lang / editor / mirror / mirror.pypi / mirror.github / mirror.npm / form / after_run / shell.bash_path / js.runner"
 
-#: src/skit/cli.py:2607
+#: src/skit/cli.py:2766
 msgid "New value (omit to read; lang also accepts \"auto\")"
 msgstr "新值（省略表示读取；lang 也接受 \"auto\"）"
 
-#: src/skit/cli.py:2624
+#: src/skit/cli.py:2783
 #, python-format
 msgid "Unknown setting: %(key)s. Available: %(keys)s"
 msgstr "未知的设置：%(key)s。可用：%(keys)s"
 
-#: src/skit/cli.py:2643 src/skit/tui_prefs.py:144
-msgid "uv binary mirror URL"
-msgstr "uv 主程序镜像 URL"
+#: src/skit/cli.py:2808 src/skit/tui_prefs.py:220 src/skit/tui_prefs.py:232
+msgid "A custom choice needs a URL."
+msgstr "选了 custom 就需要填 URL。"
 
-#: src/skit/cli.py:2649 src/skit/tui_prefs.py:190
+#: src/skit/cli.py:2815 src/skit/tui_prefs.py:162
+msgid "github-release mirror base URL"
+msgstr "github-release 镜像基底 URL"
+
+#: src/skit/cli.py:2821 src/skit/tui_prefs.py:237
 #, python-format
-msgid "The uv binary is downloaded and executed, so its mirror URL must use https:// (got: %(url)s)."
-msgstr "uv 二进制文件会被下载并执行,因此其镜像地址必须使用 https://(当前为:%(url)s)。"
+msgid "The uv binary is downloaded and executed, so the github-release base URL must use https:// (got: %(url)s)."
+msgstr "uv 主程序会被下载并执行,因此 github-release 基底 URL 必须使用 https://(当前为:%(url)s)。"
 
-#: src/skit/cli.py:2663
-msgid "Mirror for faster installs in mainland China"
-msgstr "中国大陆下载加速镜像"
+#: src/skit/cli.py:2840 src/skit/tui_prefs.py:149
+msgid "PyPI index (Python packages)"
+msgstr "PyPI 索引（Python 包）"
 
-#: src/skit/cli.py:2675 src/skit/tui_prefs.py:137
+#: src/skit/cli.py:2842 src/skit/tui_prefs.py:153
 msgid "PyPI index URL"
 msgstr "PyPI 索引 URL"
 
-#: src/skit/cli.py:2680 src/skit/tui_prefs.py:140
-msgid "Python-install mirror URL"
-msgstr "Python 下载镜像 URL"
+#: src/skit/cli.py:2846 src/skit/tui_prefs.py:155
+msgid "GitHub releases (Python builds, the uv binary)"
+msgstr "GitHub 发布（Python 本体、uv 主程序）"
 
-#: src/skit/cli.py:2686 src/skit/tui_prefs.py:146
+#: src/skit/cli.py:2855 src/skit/tui_prefs.py:165
+msgid "npm registry (JS/TS packages)"
+msgstr "npm registry（JS/TS 包）"
+
+#: src/skit/cli.py:2857 src/skit/tui_prefs.py:169
 msgid "npm registry URL"
 msgstr "npm registry URL"
 
-#: src/skit/cli.py:2702
+#: src/skit/cli.py:2873
 msgid "Network to PyPI / GitHub looks slow or blocked."
 msgstr "检测到访问 PyPI / GitHub 缓慢或受阻。"
 
-#: src/skit/cli.py:2704
+#: src/skit/cli.py:2875
 msgid "Configure mirrors for faster installs (mainland China)?"
 msgstr "是否配置镜像以加速下载(中国大陆)?"
 
-#: src/skit/config.py:92 src/skit/i18n.py:304
+#: src/skit/config.py:113 src/skit/i18n.py:304
 #, python-format
 msgid "%(path)s is corrupt and could not be parsed. It has been backed up to %(backup)s before this change; recover any lost settings from that file."
 msgstr "%(path)s 已损坏而无法解析。更改前已备份至 %(backup)s;请从该文件恢复任何丢失的设置。"
 
-#: src/skit/config.py:101 src/skit/i18n.py:313
+#: src/skit/config.py:122 src/skit/i18n.py:313
 #, python-format
 msgid "%(path)s is corrupt and could not be parsed, and it could not be backed up either; the settings it contained will be lost when this change is saved."
 msgstr "%(path)s 已损坏而无法解析,且无法备份;保存此更改后,其中的设置将会丢失。"
+
+#: src/skit/config.py:356
+msgid "Mirrors: off"
+msgstr "镜像：全部关闭"
+
+#: src/skit/config.py:358
+#, python-format
+msgid "Mirrors: %(axes)s"
+msgstr "镜像：%(axes)s"
+
+#: src/skit/config.py:359
+#, python-format
+msgid "Mirrors: off (saved: %(axes)s)"
+msgstr "镜像:已关闭(保留:%(axes)s)"
 
 #: src/skit/editor.py:73
 #, python-format
@@ -1278,61 +1309,61 @@ msgstr "%(name)s 与其他值读在同一行，所以它的值不能包含空格
 msgid "%(name)s starts or ends with a space or tab, which a shell `read` strips off the line — the script would receive it trimmed. Remove the surrounding whitespace."
 msgstr "%(name)s 以空格或制表符开头或结尾，而 shell 的 `read` 会把行首尾的空白剥掉——脚本收到的会是被修剪过的值。请去掉两端的空白。"
 
-#: src/skit/flows.py:782
+#: src/skit/flows.py:789
 #, python-format
 msgid "%(value)s isn't a valid %(type)s for %(param)s."
 msgstr "%(value)s 不是 %(param)s 的有效 %(type)s 值。"
 
-#: src/skit/flows.py:794
+#: src/skit/flows.py:801
 #, python-format
 msgid "%(empty)s is empty, but %(filled)s is filled and they are read on the same line — a shell `read` would hand your value to %(empty)s. Fill %(empty)s in, or clear %(filled)s."
 msgstr "%(empty)s 是空的,但 %(filled)s 有值,而它们由同一行 read 读取——shell 的 `read` 会把你的值给到 %(empty)s。请填上 %(empty)s,或清空 %(filled)s。"
 
-#: src/skit/flows.py:808
+#: src/skit/flows.py:815
 #, python-format
 msgid "skit refused to run its own injected copy: %(detail)s"
 msgstr "skit 拒绝运行自己注入出来的副本:%(detail)s"
 
-#: src/skit/flows.py:816
+#: src/skit/flows.py:823
 #, python-format
 msgid "The script and its form definitions don't match anymore: %(detail)s. Run `skit params %(name)s --resync` to fix it."
 msgstr "脚本内容和表单定义对不上了：%(detail)s。运行 `skit params %(name)s --resync` 即可修复。"
 
-#: src/skit/langs/javascript/deps.py:178
+#: src/skit/langs/javascript/deps.py:217
 #, python-format
 msgid "Couldn't clear the old dependency environment: %(detail)s"
 msgstr "无法清除旧的依赖环境:%(detail)s"
 
-#: src/skit/langs/javascript/deps.py:191
+#: src/skit/langs/javascript/deps.py:230
 #, python-format
 msgid "%(installer)s is needed to install this script's dependencies, but it isn't on your PATH."
 msgstr "安装这个脚本的依赖需要 %(installer)s，但它不在你的 PATH 上。"
 
-#: src/skit/langs/javascript/deps.py:225 src/skit/langs/javascript/deps.py:236
+#: src/skit/langs/javascript/deps.py:272 src/skit/langs/javascript/deps.py:283
 #, python-format
 msgid "Couldn't prepare the dependency environment: %(error)s"
 msgstr "无法准备依赖环境:%(error)s"
 
-#: src/skit/langs/javascript/deps.py:356
+#: src/skit/langs/javascript/deps.py:437
 #, python-format
 msgid "Installing dependencies (%(installer)s)…"
 msgstr "正在安装依赖(%(installer)s)…"
 
-#: src/skit/langs/javascript/deps.py:369
+#: src/skit/langs/javascript/deps.py:450
 #, python-format
 msgid "Couldn't run %(installer)s: %(error)s"
 msgstr "无法运行 %(installer)s:%(error)s"
 
-#: src/skit/langs/javascript/deps.py:374
+#: src/skit/langs/javascript/deps.py:455
 #, python-format
 msgid "Installing dependencies failed (%(installer)s): %(detail)s"
 msgstr "依赖安装失败(%(installer)s):%(detail)s"
 
-#: src/skit/langs/javascript/inject.py:186
+#: src/skit/langs/javascript/inject.py:207
 msgid "the injected copy no longer parses as a JavaScript/TypeScript script (nothing was run)"
 msgstr "注入后的副本已不再是合法的 JavaScript/TypeScript 脚本(什么都没运行)"
 
-#: src/skit/langs/javascript/inject.py:225
+#: src/skit/langs/javascript/inject.py:246
 #, python-format
 msgid "node rejected the injected copy: %(detail)s"
 msgstr "node 拒绝了注入后的副本:%(detail)s"
@@ -1389,7 +1420,7 @@ msgstr "%(shell)s 拒绝了注入后的副本:%(detail)s"
 msgid "⚠ This script reads its own location ($0 / $BASH_SOURCE), and the injected values run from a temporary copy — so it sees the copy's path, not the original's. `skit params <script> --normalize NAME` delivers a value through the environment instead, with no copy at all."
 msgstr "⚠ 这个脚本会读自己的位置($0 / $BASH_SOURCE),而注入后的值是从临时副本运行的——所以它看到的是副本的路径,不是原文件的。`skit params <script> --normalize NAME` 改用环境变量传值,完全不写副本。"
 
-#: src/skit/launcher.py:74 src/skit/store.py:306
+#: src/skit/launcher.py:74 src/skit/store.py:312
 #, python-format
 msgid "Unknown entry kind: %(kind)s"
 msgstr "未知条目类型:%(kind)s"
@@ -1428,51 +1459,51 @@ msgstr "留空＝用脚本自己的默认值。"
 msgid "Enter to read it from the environment variable %(env)s."
 msgstr "直接按 Enter 就从环境变量 %(env)s 读取。"
 
-#: src/skit/store.py:363
+#: src/skit/store.py:369
 msgid "Command template must not be empty"
 msgstr "命令模板不可为空"
 
-#: src/skit/store.py:390
+#: src/skit/store.py:396
 #, python-format
 msgid "The name %(name)s is already taken (use --name to pick another)"
 msgstr "名称已存在:%(name)s(可用 --name 指定其他名字)"
 
-#: src/skit/store.py:400
+#: src/skit/store.py:406
 #, python-format
 msgid "Refusing to reuse the existing, non-empty entry directory: %(path)s"
 msgstr "拒绝重复使用既有且非空的条目目录:%(path)s"
 
-#: src/skit/store.py:442
+#: src/skit/store.py:448
 #, python-format
 msgid "Script not found: %(name)s"
 msgstr "找不到脚本:%(name)s"
 
-#: src/skit/store.py:448
+#: src/skit/store.py:454
 #, python-format
 msgid "%(name)s: metadata is corrupt (%(error)s); run skit doctor --rebuild"
 msgstr "%(name)s:元数据已损坏(%(error)s);请运行 skit doctor --rebuild"
 
-#: src/skit/store.py:488
+#: src/skit/store.py:494
 #, python-format
 msgid "%(name)s is a reference-mode entry: it runs from its own project, which already provides its packages. Dependency management applies to copies."
 msgstr "%(name)s 是 reference 模式条目：它从自己的项目运行，包由该项目提供。依赖管理仅适用于复制进库的条目。"
 
-#: src/skit/store.py:569
+#: src/skit/store.py:579
 #, python-format
 msgid "The name %(name)s is already taken."
 msgstr "名称 %(name)s 已被使用。"
 
-#: src/skit/store.py:613
+#: src/skit/store.py:623
 #, python-format
 msgid "%(slug)s: meta.toml is missing; skipped"
 msgstr "%(slug)s:缺 meta.toml,已跳过"
 
-#: src/skit/store.py:619
+#: src/skit/store.py:629
 #, python-format
 msgid "%(slug)s: meta.toml is corrupt (%(error)s); skipped"
 msgstr "%(slug)s:meta.toml 损坏(%(error)s),已跳过"
 
-#: src/skit/store.py:625
+#: src/skit/store.py:635
 #, python-format
 msgid "%(slug)s: the referenced source file is gone: %(path)s"
 msgstr "%(slug)s:reference 原文件已消失:%(path)s"
@@ -1604,7 +1635,7 @@ msgid "Detail pane"
 msgstr "详情栏"
 
 #: src/skit/tui.py:206 src/skit/tui.py:335 src/skit/tui.py:471
-#: src/skit/tui_prefs.py:59
+#: src/skit/tui_prefs.py:68
 msgid "Preferences"
 msgstr "偏好设置"
 
@@ -1950,7 +1981,7 @@ msgstr "⚠ 目前没有匹配的文件"
 msgid "Save as preset"
 msgstr "存成参数组合"
 
-#: src/skit/tui_form.py:236 src/skit/tui_prefs.py:32 src/skit/tui_prefs.py:151
+#: src/skit/tui_form.py:236 src/skit/tui_prefs.py:40 src/skit/tui_prefs.py:174
 #: src/skit/tui_settings.py:221 src/skit/tui_settings.py:303
 msgid "Save"
 msgstr "保存"
@@ -2021,13 +2052,13 @@ msgstr "额外参数（原样传给脚本）"
 msgid "Preset \"%(preset)s\" saved."
 msgstr "已存成参数组合“%(preset)s”。"
 
-#: src/skit/tui_health.py:32 src/skit/tui_health.py:134
-#: src/skit/tui_prefs.py:31 src/skit/tui_prefs.py:152
+#: src/skit/tui_health.py:32 src/skit/tui_health.py:127
+#: src/skit/tui_prefs.py:39 src/skit/tui_prefs.py:175
 #: src/skit/tui_settings.py:220 src/skit/tui_settings.py:305
 msgid "Back"
 msgstr "返回"
 
-#: src/skit/tui_health.py:33 src/skit/tui_health.py:133
+#: src/skit/tui_health.py:33 src/skit/tui_health.py:126
 msgid "Rebuild index"
 msgstr "重建索引"
 
@@ -2048,71 +2079,75 @@ msgstr "缺少外部命令：%(tools)s"
 msgid "Issues (Enter jumps to the script):"
 msgstr "问题（Enter 跳到该脚本）："
 
-#: src/skit/tui_health.py:132
+#: src/skit/tui_health.py:125
 msgid "Jump to script"
 msgstr "跳到脚本"
 
-#: src/skit/tui_prefs.py:65
+#: src/skit/tui_prefs.py:74
 msgid "Interface language"
 msgstr "界面语言"
 
-#: src/skit/tui_prefs.py:67
+#: src/skit/tui_prefs.py:76
 msgid "Automatic (follow the system)"
 msgstr "自动（跟随系统）"
 
-#: src/skit/tui_prefs.py:73
+#: src/skit/tui_prefs.py:82
 #, python-format
 msgid "Currently in effect: %(locale)s"
 msgstr "当前生效：%(locale)s"
 
-#: src/skit/tui_prefs.py:77
+#: src/skit/tui_prefs.py:86
 msgid "Editor"
 msgstr "编辑器"
 
-#: src/skit/tui_prefs.py:80
+#: src/skit/tui_prefs.py:89
 msgid "e.g. code --wait (empty = use $VISUAL / $EDITOR)"
 msgstr "例如 code --wait（留空＝用 $VISUAL / $EDITOR）"
 
-#: src/skit/tui_prefs.py:86
+#: src/skit/tui_prefs.py:95
 #, python-format
 msgid "Empty means: %(cmd)s (from $VISUAL / $EDITOR)"
 msgstr "留空表示：%(cmd)s（来自 $VISUAL / $EDITOR）"
 
-#: src/skit/tui_prefs.py:91
+#: src/skit/tui_prefs.py:100
 msgid "Interactive form"
 msgstr "交互表单"
 
-#: src/skit/tui_prefs.py:94
+#: src/skit/tui_prefs.py:103
 msgid "Mini form — opens in place, fully clickable"
 msgstr "迷你表单——就地展开、可戳可点"
 
-#: src/skit/tui_prefs.py:98
+#: src/skit/tui_prefs.py:107
 msgid "Line-by-line prompts — plainest, best over slow terminals"
 msgstr "逐行问答——最朴素，适合慢速终端"
 
-#: src/skit/tui_prefs.py:103
+#: src/skit/tui_prefs.py:112
 msgid "Used by terminal runs: `skit run` parameter prompts and the `skit add` review panel."
 msgstr "用于终端流程：`skit run` 的参数询问与 `skit add` 的检视面板。"
 
-#: src/skit/tui_prefs.py:109
+#: src/skit/tui_prefs.py:118
 msgid "After a run (from this menu)"
 msgstr "运行结束后（从这个菜单启动时）"
 
-#: src/skit/tui_prefs.py:112
+#: src/skit/tui_prefs.py:121
 msgid "Quit skit — leave the script's output in the terminal"
 msgstr "退出 skit——把脚本输出留在终端"
 
-#: src/skit/tui_prefs.py:116
+#: src/skit/tui_prefs.py:125
 msgid "Return to the Library"
 msgstr "返回脚本库"
 
-#: src/skit/tui_prefs.py:121
-msgid "Download mirror (mainland-China acceleration)"
+#: src/skit/tui_prefs.py:130
+msgid "Download mirrors (mainland-China acceleration)"
 msgstr "下载镜像（中国大陆加速）"
 
-#: src/skit/tui_prefs.py:134
-msgid "Affects where dependencies and Python itself are downloaded from."
-msgstr "影响安装依赖与下载 Python 的来源。"
+#: src/skit/tui_prefs.py:133
+msgid "Each ecosystem is its own choice — mirror vendors differ per axis."
+msgstr "每个生态各自选择——不同生态的镜像供应商并不相同。"
+
+#: src/skit/tui_prefs.py:138
+msgid "Master switch — \"off\" pauses mirrors but keeps the saved URLs."
+msgstr "总开关——“off”暂停镜像但保留已存的 URL。"
 
 #: src/skit/tui_settings.py:30 src/skit/tui_settings.py:46
 msgid "Discard"
@@ -2525,3 +2560,21 @@ msgstr "uv 已安装:%(path)s"
 
 #~ msgid "%(name)s: no editable script source (only Python scripts have one)."
 #~ msgstr "%(name)s：没有可编辑的脚本源码（只有 Python 脚本有）。"
+
+#~ msgid "Mirror: on (%(pypi)s)"
+#~ msgstr "镜像:已开启(%(pypi)s)"
+
+#~ msgid "Unknown mirror: %(name)s. Choose from: %(names)s"
+#~ msgstr "未知镜像:%(name)s。可选:%(names)s"
+
+#~ msgid "Mirror for faster installs in mainland China"
+#~ msgstr "中国大陆下载加速镜像"
+
+#~ msgid "Affects where dependencies and Python itself are downloaded from."
+#~ msgstr "影响安装依赖与下载 Python 的来源。"
+
+#~ msgid "uv binary mirror URL"
+#~ msgstr "uv 主程序镜像 URL"
+
+#~ msgid "Python-install mirror URL"
+#~ msgstr "Python 下载镜像 URL"

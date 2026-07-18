@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import full_mirror
 from skit.langs import launch
 
 
@@ -229,7 +230,7 @@ def test_run_entry_injects_mirror_env(py_entry, monkeypatch):
 
     monkeypatch.delenv("UV_DEFAULT_INDEX", raising=False)
     monkeypatch.delenv("UV_PYTHON_INSTALL_MIRROR", raising=False)
-    config.save_mirror(config.preset("tsinghua"))
+    config.save_mirror(full_mirror())
     seen_env: dict[str, str] = {}
 
     class _Result:
@@ -282,7 +283,7 @@ def test_run_entry_keeps_user_index_when_mirror_enabled(py_entry, monkeypatch):
     user's value (mirror never clobbers it), while injecting the untouched python-install vector."""
     from skit import config
 
-    config.save_mirror(config.preset("tsinghua"))
+    config.save_mirror(full_mirror())
     monkeypatch.setenv("UV_DEFAULT_INDEX", "https://user/own/simple")
     monkeypatch.delenv("UV_PYTHON_INSTALL_MIRROR", raising=False)
     seen_env = _capture_run_env(monkeypatch, py_entry)

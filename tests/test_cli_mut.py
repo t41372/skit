@@ -14,6 +14,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
+from conftest import full_mirror
 from skit import (
     analysis,
     argstate,
@@ -474,39 +475,78 @@ def test_config_list_mirror_off_lines(capsys):
     assert "XX" not in out
 
 
-def test_config_list_mirror_on_shows_url(capsys):
-    config.save_mirror(config.preset("tsinghua"))
+def test_config_list_mirror_on_shows_per_axis_tokens(capsys):
+    config.save_mirror(full_mirror())
     result = runner.invoke(cli.app, ["config"])
     out = _norm(result.output)
-    assert config.PYPI_PRESETS["tsinghua"] in out
+    # The master reads "on"; each axis key lists its own stored token, so a paused config
+    # would stay legible key-by-key (mirror off + mirror.pypi tsinghua).
+    assert "mirror on" in out
+    assert "mirror.pypi tsinghua" in out
+    assert "mirror.github nju" in out
+    assert "mirror.npm npmmirror" in out
     assert "XX" not in out
 
 
 # --------------------------------------------------------------------------
-# _prompt_uv_binary
+# _prompt_github_base
 # --------------------------------------------------------------------------
 
 
-def test_prompt_uv_binary_prompt_text_and_default(monkeypatch):
-    calls = _capture_ask(monkeypatch, cli.Prompt, "ask", ["https://good/uv"])
-    result = cli._prompt_uv_binary("https://default/uv")
-    assert result == "https://good/uv"
+def test_prompt_github_base_prompt_text_and_no_default(monkeypatch):
+    calls = _capture_ask(monkeypatch, cli.Prompt, "ask", ["https://good/gh"])
+    result = cli._prompt_github_base()
+    assert result == "https://good/gh"
     (msg,), kw = calls[0]
-    assert msg == gettext("uv binary mirror URL")
-    assert kw["default"] == "https://default/uv"
+    assert msg == gettext("github-release mirror base URL")
+    # Deliberately NO preset default: a prefilled preset would let a bare Enter store a
+    # "custom" that reads back as that preset.
+    assert "default" not in kw
     assert kw["console"] is cli.console
 
 
-def test_prompt_uv_binary_rejects_http_with_exact_message(monkeypatch, capsys):
-    _capture_ask(monkeypatch, cli.Prompt, "ask", ["http://evil/uv", "https://good/uv"])
-    result = cli._prompt_uv_binary("https://default/uv")
-    assert result == "https://good/uv"
+def test_prompt_github_base_rejects_http_with_exact_message(monkeypatch, capsys):
+    _capture_ask(monkeypatch, cli.Prompt, "ask", ["http://evil/gh", "https://good/gh"])
+    result = cli._prompt_github_base()
+    assert result == "https://good/gh"
     err = _norm(capsys.readouterr().err)
     assert (
-        "The uv binary is downloaded and executed, so its mirror URL must use https:// "
-        "(got: http://evil/uv)." in err
+        "The uv binary is downloaded and executed, so the github-release base URL must use "
+        "https:// (got: http://evil/gh)." in err
     )
     assert "XX" not in err
+
+
+def test_prompt_github_base_rejects_whitespace_token(monkeypatch, capsys):
+    # https but not a single pastable token (embedded space) is refused just like http://.
+    _capture_ask(monkeypatch, cli.Prompt, "ask", ["https://a b/gh", "https://good/gh"])
+    result = cli._prompt_github_base()
+    assert result == "https://good/gh"
+    err = _norm(capsys.readouterr().err)
+    assert "https://a b/gh" in err
+
+
+# --------------------------------------------------------------------------
+# _prompt_axis_url
+# --------------------------------------------------------------------------
+
+
+def test_prompt_axis_url_rejects_non_url_with_exact_message(monkeypatch, capsys):
+    """R2-4: the wizard's custom-URL prompt shares the is_url_token gate — a vendor-name
+    typo re-prompts with the exact inline-error msgid until a real URL arrives."""
+    _capture_ask(monkeypatch, cli.Prompt, "ask", ["tsinghua", "https://good/x"])
+    result = cli._prompt_axis_url("PyPI index URL")
+    assert result == "https://good/x"
+    err = _norm(capsys.readouterr().err)
+    assert "A custom choice needs a URL." in err
+    assert "XX" not in err
+
+
+def test_prompt_axis_url_strips_padding(monkeypatch):
+    # A padded paste passes the gate after strip and comes back stripped (an unstripped
+    # " https://x" would fail is_url_token's scheme check and loop forever here).
+    _capture_ask(monkeypatch, cli.Prompt, "ask", ["  https://good/x  "])
+    assert cli._prompt_axis_url("PyPI index URL") == "https://good/x"
 
 
 # --------------------------------------------------------------------------
@@ -514,47 +554,53 @@ def test_prompt_uv_binary_rejects_http_with_exact_message(monkeypatch, capsys):
 # --------------------------------------------------------------------------
 
 
-def test_mirror_wizard_choice_prompt_exact_text(monkeypatch):
-    calls = _capture_ask(monkeypatch, cli.Prompt, "ask", ["off"])
+def test_mirror_wizard_axis_prompts_exact_text(monkeypatch):
+    calls = _capture_ask(monkeypatch, cli.Prompt, "ask", ["off", "off", "off"])
     cli._mirror_wizard()
-    (msg,), kw = calls[0]
-    assert msg == gettext("Mirror for faster installs in mainland China")
-    assert kw["choices"] == [*config.PYPI_PRESETS, "custom", "off"]
-    assert kw["console"] is cli.console
+    (msg0,), kw0 = calls[0]
+    assert msg0 == gettext("PyPI index (Python packages)")
+    assert kw0["choices"] == [*config.PYPI_PRESETS, "custom", "off"]
+    assert kw0["console"] is cli.console
+    (msg1,), kw1 = calls[1]
+    assert msg1 == gettext("GitHub releases (Python builds, the uv binary)")
+    assert kw1["choices"] == [*config.GITHUB_RELEASE_PRESETS, "custom", "off"]
+    assert kw1["console"] is cli.console
+    (msg2,), kw2 = calls[2]
+    assert msg2 == gettext("npm registry (JS/TS packages)")
+    assert kw2["choices"] == [*config.NPM_PRESETS, "custom", "off"]
+    assert kw2["console"] is cli.console
 
 
-def test_mirror_wizard_custom_computed_defaults_when_disabled(monkeypatch):
+def test_mirror_wizard_custom_axis_prompts_carry_no_default(monkeypatch):
     assert not config.load_mirror().enabled
     calls = _capture_ask(
         monkeypatch,
         cli.Prompt,
         "ask",
-        ["custom", "https://x/pypi", "https://x/py", "https://x/npm"],
-    )
-    uv_calls: list[object] = []
-    monkeypatch.setattr(
-        cli, "_prompt_uv_binary", lambda default: uv_calls.append(default) or "https://x/uv"
+        ["custom", "https://x/pypi", "custom", "https://x/gh", "custom", "https://x/npm"],
     )
     cli._mirror_wizard()
-    # calls[1] = PyPI index URL prompt, calls[2] = Python-install mirror prompt
+    # calls: 0 = pypi choice, 1 = PyPI index URL, 2 = github choice, 3 = github base URL
+    # (one question — it derives both github vectors), 4 = npm choice, 5 = npm registry URL.
+    # Each custom URL prompt carries NO preset default (a prefill would let a bare Enter store
+    # a "custom" that reads back as the preset).
     (msg1,), kw1 = calls[1]
     assert msg1 == gettext("PyPI index URL")
-    assert kw1["default"] == config.PYPI_PRESETS["tsinghua"]
+    assert "default" not in kw1
     assert kw1["console"] is cli.console
-    (msg2,), kw2 = calls[2]
-    assert msg2 == gettext("Python-install mirror URL")
-    assert kw2["default"] == config.PYTHON_INSTALL_MIRROR
-    assert kw2["console"] is cli.console
-    assert uv_calls == [config.UV_BINARY_MIRROR]
-    # calls[3] = npm registry prompt (the fourth custom URL, mirroring the TUI Preferences set)
     (msg3,), kw3 = calls[3]
-    assert msg3 == gettext("npm registry URL")
-    assert kw3["default"] == config.NPM_REGISTRY_MIRROR
+    assert msg3 == gettext("github-release mirror base URL")
+    assert "default" not in kw3
+    assert kw3["console"] is cli.console
+    (msg5,), kw5 = calls[5]
+    assert msg5 == gettext("npm registry URL")
+    assert "default" not in kw5
     m = config.load_mirror()
+    # The single github base expands to both github-release vectors.
     assert (m.pypi, m.python_install, m.uv_binary, m.npm) == (
         "https://x/pypi",
-        "https://x/py",
-        "https://x/uv",
+        "https://x/gh/astral-sh/python-build-standalone/",
+        "https://x/gh/astral-sh/uv",
         "https://x/npm",
     )
 
@@ -579,12 +625,81 @@ def test_set_language_arg_unknown_message_exact():
     assert "XX" not in out.replace("xx-YY", "")
 
 
-def test_set_mirror_arg_unknown_message_exact():
+def test_set_mirror_master_unknown_message_exact():
     result = runner.invoke(cli.app, ["config", "mirror", "nope"])
     assert result.exit_code == 2
-    choices = ", ".join([*config.PYPI_PRESETS, "off"])
     out = _norm(result.output)
-    assert f"Unknown mirror: nope. Choose from: {choices}" in out
+    pypi = ", ".join(config.PYPI_PRESETS)
+    github = ", ".join(config.GITHUB_RELEASE_PRESETS)
+    npm = ", ".join(config.NPM_PRESETS)
+    expected = (
+        'Unknown mirror value: nope. "mirror" is the master switch (on / off); mirrors are '
+        f"picked per ecosystem: mirror.pypi ({pypi}), mirror.github ({github}), "
+        f'mirror.npm ({npm}) — each also takes a URL or "off".'
+    )
+    assert expected in out
+    assert "XX" not in out
+
+
+# Parametrized over BOTH single-URL axes: mirror.pypi's preset table has several entries, so
+# its message exercises the ", " join separator (npm's singleton table never would).
+@pytest.mark.parametrize(
+    ("key", "presets"),
+    [("mirror.pypi", config.PYPI_PRESETS), ("mirror.npm", config.NPM_PRESETS)],
+)
+def test_set_mirror_axis_unknown_message_exact(key, presets):
+    result = runner.invoke(cli.app, ["config", key, "nope"])
+    assert result.exit_code == 2
+    out = _norm(result.output)
+    names = ", ".join(presets)
+    assert f"Unknown {key} value: nope. Choose from: {names}, off — or give a full URL." in out
+    assert "XX" not in out
+
+
+# Parametrized over every axis-key writer (pypi / github / npm): each has its own
+# _finish_axis_write call site, and each must fire the notice on a paused URL write.
+@pytest.mark.parametrize(
+    "write",
+    [
+        ["config", "mirror.pypi", "aliyun"],
+        ["config", "mirror.github", "nju"],
+        ["config", "mirror.npm", "npmmirror"],
+    ],
+)
+def test_paused_axis_write_notice_exact_text_on_stderr(write):
+    """The paused-write notice, letter-exact and on stderr: stdout must stay a clean
+    machine-readable confirmation for an agent piping it."""
+    runner.invoke(cli.app, ["config", "mirror.pypi", "tsinghua"])
+    runner.invoke(cli.app, ["config", "mirror", "off"])
+    result = runner.invoke(cli.app, write)
+    assert result.exit_code == 0
+    err = _norm(result.stderr)
+    assert "Mirrors are switched off — run `skit config mirror on` to activate them." in err
+    assert "XX" not in err
+    assert "switched off" not in _norm(result.stdout)
+
+
+def test_mirror_master_on_nothing_saved_message_exact():
+    result = runner.invoke(cli.app, ["config", "mirror", "on"])
+    assert result.exit_code == 2
+    out = _norm(result.output)
+    assert (
+        "Nothing to enable: no mirror URLs are saved. Set an axis first: "
+        "mirror.pypi / mirror.github / mirror.npm." in out
+    )
+    assert "XX" not in out
+
+
+def test_set_mirror_github_http_message_exact():
+    result = runner.invoke(cli.app, ["config", "mirror.github", "http://evil/gh"])
+    assert result.exit_code == 2
+    out = _norm(result.output)
+    names = ", ".join(config.GITHUB_RELEASE_PRESETS)
+    assert (
+        f"Unknown mirror.github value: http://evil/gh. Choose from: {names}, off — or give "
+        "an https:// github-release base URL (the uv binary is downloaded and executed, so "
+        "https:// is required)." in out
+    )
     assert "XX" not in out
 
 
