@@ -500,9 +500,11 @@ class RunFormScreen(Screen[FormResult]):
         self._runners: list[str] = runners or []
         self._runner_default: str = runner_default
         self._presets: dict[str, dict[str, str]] = argstate.load_state(entry.slug)["presets"]
-        # True only for the one frame after Ctrl+S while the picker is refreshed
-        # programmatically (its Changed must not overwrite the user's field edits).
-        self._suppress_preset_apply: bool = False
+        # One-shot: the preset name whose next Select.Changed must NOT be applied to
+        # the fields (the programmatic post-save refresh). A value token, not a timing
+        # flag — a frame-based guard raced the bubbled Changed in the eager headless
+        # compositor and could race a real terminal the same way.
+        self._skip_apply_for: str | None = None
 
     def on_mount(self) -> None:
         self.query_one("#form-panel").border_title = gettext("Run %(name)s") % {
@@ -614,9 +616,10 @@ class RunFormScreen(Screen[FormResult]):
         shift the mapping. Suppressed during the post-save picker refresh — reapplying
         the just-saved preset would resurrect values the user explicitly cleared
         (empty values are never stored in a preset, so they'd fall back to prefill)."""
-        if self._suppress_preset_apply:
-            return
         name = str(event.value)
+        if self._skip_apply_for is not None and name == self._skip_apply_for:
+            self._skip_apply_for = None  # one-shot: a later hand-pick applies normally
+            return
         preset_values = self._presets.get(name, {})
         chosen = self._prefill if not name else {**self._prefill, **preset_values}
         for row in self.query(FieldRow):
@@ -747,8 +750,7 @@ class RunFormScreen(Screen[FormResult]):
         is the UI contradicting the user's own action. The programmatic selection must
         NOT re-apply the preset to the fields (see _apply_preset); the flag is lifted a
         frame later, after the queued Changed message has been seen."""
-        self._suppress_preset_apply = True
-        self.call_after_refresh(setattr, self, "_suppress_preset_apply", False)
+        self._skip_apply_for = selected
         options = [(gettext("last values"), "")] + [(n, n) for n in sorted(self._presets)]
         existing = self.query("#preset-select")
         if existing:

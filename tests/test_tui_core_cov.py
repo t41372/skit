@@ -686,18 +686,12 @@ async def test_form_save_preset_existing_select_gains_the_name(tmp_path, quiet_r
 
 
 async def test_form_save_preset_does_not_resurrect_a_cleared_field(tmp_path, quiet_run):
-    """Clearing a prefilled field, then Ctrl+S + naming the preset, must not resurrect the
-    field: the post-save picker refresh selects the just-saved preset programmatically, and
-    _apply_preset is suppressed via _suppress_preset_apply so it never re-overlays it (empty
-    values aren't stored in a preset, so a re-apply would fall back to the prefill and
-    resurrect the cleared value). Picking a preset BY HAND still applies its values (finding 4).
-
-    The end-to-end field-value observable can't be asserted through Textual's test pilot: the
-    compositor flushes the call_after_refresh flag-lift before the bubbled Select.Changed
-    reaches _apply_preset, so the harness lifts the guard a frame too early (verified — the
-    reorder doesn't help either). We therefore drive the real journey (covering the save's
-    empty-value filtering and _refresh_preset_picker) and assert the suppression MECHANISM
-    the fix is built on, deterministically."""
+    """Clearing a prefilled field, then Ctrl+S + naming the preset, must not resurrect
+    the field: the post-save picker refresh selects the just-saved preset
+    programmatically, and _apply_preset skips exactly that one Changed — a one-shot
+    VALUE token, deterministic in any compositor (a frame-timing flag raced the bubbled
+    Changed in the headless harness and could race a real terminal the same way).
+    Picking a preset by hand still applies its values (finding 4)."""
     entry = _argparse_entry(tmp_path)
     argstate.save_preset(entry.slug, "web", {"output": "web.png"})  # a #preset-select exists
     app = tui.MenuApp()
@@ -717,21 +711,21 @@ async def test_form_save_preset_does_not_resurrect_a_cleared_field(tmp_path, qui
         modal.query_one(Input).value = "clean"
         modal.action_save_name()
         await pilot.pause()
-        # The cleared field is not stored in the preset — a re-apply would have to fall back
-        # to the prefill, which is exactly the resurrection the suppression exists to prevent.
+        await pilot.pause()
+        # The cleared field is not stored in the preset…
         assert "output" not in argstate.load_state(entry.slug)["presets"]["clean"]
         select = screen.query_one("#preset-select", Select)
-        assert select.value == "clean"  # the picker shows the just-saved preset (refresh ran)
-        # Mechanism: a Changed for the just-saved preset delivered WHILE suppression is active
-        # (the window _refresh_preset_picker opens) leaves the cleared field cleared.
-        rows["output"].set_value("")  # re-clear after any harness-timing resurrection
-        screen._suppress_preset_apply = True
-        screen._apply_preset(Select.Changed(select, "clean"))
-        assert rows["output"].query_one(Input).value == ""  # suppressed → not resurrected
-        # And picking a preset BY HAND (suppression off) still applies its values.
-        screen._suppress_preset_apply = False
-        screen._apply_preset(Select.Changed(select, "web"))
+        assert select.value == "clean"  # the picker shows the just-saved preset
+        # …and THE headline observable: the cleared field STAYS cleared.
+        assert rows["output"].query_one(Input).value == ""
+        # Hand-picks still apply values (and the one-shot token is consumed: a later
+        # hand-pick of the just-saved name applies normally too).
+        select.value = "web"
+        await pilot.pause()
         assert rows["output"].query_one(Input).value == "web.png"
+        select.value = "clean"
+        await pilot.pause()
+        assert rows["output"].query_one(Input).value == "orig.png"  # prefill overlay
 
 
 # ---------------------------------------------------------------------------
