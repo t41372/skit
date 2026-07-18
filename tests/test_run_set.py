@@ -326,10 +326,10 @@ def test_interactive_form_skips_set_fields(tmp_path, run_entry_spy, monkeypatch)
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     asked: dict[str, object] = {}
 
-    def fake_collect(entry, plan, prefill, *, plain):
+    def fake_collect(entry, plan, prefill, *, plain, runners=None, runner_default=""):
         asked["keys"] = [f.key for f in plan.fields]
         # The form's answer must win over any prefill for the fields it asked.
-        return {"CITY": "form-city"}
+        return {"CITY": "form-city"}, None
 
     monkeypatch.setattr(cli, "_collect_values", fake_collect)
     result = runner.invoke(cli.app, ["run", "trip", "--set", "TIMES=9"])

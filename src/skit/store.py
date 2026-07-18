@@ -540,6 +540,25 @@ def add_command(template: str, *, name: str, description: str = "") -> Entry:
     return _add_entry(meta, payload=None)
 
 
+def update_template(name_or_slug: str, template: str) -> Entry:
+    """Rewrite a command entry's template — the actual program at the center of the
+    kind, previously frozen forever at add time (the only fix was remove + re-add,
+    destroying presets and history). Placeholders are re-extracted exactly like
+    add_command; declared [[parameters]] rows for names that survive are kept."""
+    entry = resolve(name_or_slug)
+    if entry.meta.kind != "command":
+        raise StoreUsageError(
+            gettext("%(name)s isn't a command entry.") % {"name": entry.meta.name}
+        )
+    if not template.strip():
+        raise StoreError(gettext("Command template must not be empty"))
+    meta = entry.meta
+    meta.template = template
+    meta.params = extract_placeholders(template) or None
+    _write_meta(entry.dir, meta)
+    return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
+
+
 def _add_entry(
     meta: ScriptMeta,
     *,

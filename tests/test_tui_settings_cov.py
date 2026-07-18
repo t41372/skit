@@ -215,7 +215,9 @@ async def test_command_entry_shows_template_hides_storage_and_deps(tmp_path):
         app.push_screen(screen)
         await pilot.pause()
         body = _body(screen)
-        assert "echo {msg} {name}" in body  # the template line (its placeholders are visible here)
+        # The template is EDITABLE now (it is the program; freezing it forced
+        # remove + re-add over a typo).
+        assert screen.query_one("#st-template", Input).value == "echo {msg} {name}"
         assert screen.query("#st-add-param")  # the declared editor's add-a-parameter field
         assert "Storage" not in body  # storage section skipped for a non-python entry
         assert not screen.query("#st-deps")  # dependencies section skipped too
@@ -451,7 +453,7 @@ async def test_command_declared_placeholder_row_has_no_flag_field(tmp_path):
         screen = ScriptSettingsScreen(entry)
         app.push_screen(screen)
         await pilot.pause()
-        assert "convert {size}" in _body(screen)  # template read-only above the editor
+        assert screen.query_one("#st-template", Input).value == "convert {size}"
         row = screen.query(DeclParamRow).first()
         assert not row.query(".d-flag")  # template kinds: no flag field
         assert "placeholder" in str(row.query_one(".d-keep", Checkbox).label)

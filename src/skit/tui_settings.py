@@ -158,6 +158,20 @@ class DeclParamRow(Vertical):
                 placeholder=gettext("default value (optional)"),
                 classes="d-default",
             )
+        with Horizontal():
+            yield Static("  " + gettext("Choices:"), classes="p-meta")
+            yield Input(
+                value=", ".join(str(c) for c in d.choices or []),
+                placeholder=gettext("comma separated (for type: choice)"),
+                classes="d-choices",
+            )
+        with Horizontal():
+            yield Static("  " + gettext("Help:"), classes="p-meta")
+            yield Input(
+                value=d.help,
+                placeholder=gettext("one-line help shown under the field (optional)"),
+                classes="d-help",
+            )
         if self._show_flag:
             with Horizontal():
                 yield Static("  " + gettext("Flag:"), classes="p-meta")
@@ -194,6 +208,10 @@ class DeclParamRow(Vertical):
             return None
         d = self.decl
         d.default = self.query_one(".d-default", Input).value.strip() or None
+        d.choices = tuple(
+            c.strip() for c in self.query_one(".d-choices", Input).value.split(",") if c.strip()
+        )
+        d.help = self.query_one(".d-help", Input).value.strip()
         if self._show_flag:
             d.flag = self.query_one(".d-flag", Input).value.strip()
         d.required = self.query_one(".d-required", Checkbox).value
@@ -525,7 +543,13 @@ class ScriptSettingsScreen(Screen[bool]):
         placeholder's schema or rides along as an env variable."""
         meta = self._entry.meta
         if self._spec is not None and self._spec.family == "template":
-            yield Static(escape(meta.template), classes="hint")
+            # Editable — the template IS the program; freezing it forever while every
+            # other kind's payload has `skit edit` forced remove + re-add over a typo.
+            yield Input(value=meta.template, id="st-template")
+            yield Static(
+                gettext("Saving re-reads the {placeholders} from the template."),
+                classes="hint",
+            )
         # A flag only means something where argv is the interface: every kind whose form
         # is NOT placeholders (binaries AND the interpreted meta-schema kinds), mirroring
         # the CLI's allowed deliveries. The trait — not the family — is the gate, so a
@@ -628,8 +652,7 @@ class ScriptSettingsScreen(Screen[bool]):
         if params.validate_invariants(normalized) is not None:
             self.notify(
                 gettext(
-                    "%(name)s is a choice parameter but has no choices; add them with "
-                    "`skit params` on the command line."
+                    "%(name)s is a choice parameter but has no choices — fill its Choices field."
                 )
                 % {"name": d.name},
                 severity="error",
@@ -764,6 +787,15 @@ class ScriptSettingsScreen(Screen[bool]):
             store.update_description(entry.slug, description)
         if not self._save_launch():
             return  # invalid workdir input; stay on the screen
+        template_box = self.query("#st-template")
+        if template_box:
+            new_template = template_box.first(Input).value
+            if new_template != entry.meta.template:
+                try:
+                    store.update_template(entry.slug, new_template)
+                except store.StoreError as exc:
+                    self.notify(str(exc), severity="error")
+                    return  # an empty template is not a program; stay on the screen
         # One narrowing point: an analyzable kind always carries params_io too (the registry pairs
         # them), and a non-empty text with a live analyzer means reconcile always returns a report —
         # so the capabilities are read straight off the narrowed spec, with no dead None-guards.

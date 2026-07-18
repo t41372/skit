@@ -2594,6 +2594,11 @@ def params(
             "run skit from), or an absolute path"
         ),
     ),
+    template_opt: str = typer.Option(
+        None,
+        "--template",
+        help=gettext("Command only: rewrite the template ({placeholders} are re-read from it)"),
+    ),
     interpreter_opt: str = typer.Option(
         None,
         "--interpreter",
@@ -2633,9 +2638,9 @@ def params(
         # mixing it into the schema-edit pass would make the outcome order-dependent.
         _pin_prompt_runner(entry, runner_pin)
         return
-    if workdir_opt is not None or interpreter_opt is not None:
-        # Launch policy, not schema — its own op for the same order-independence reason.
-        _edit_launch_policy(entry, workdir_opt, interpreter_opt)
+    if workdir_opt is not None or interpreter_opt is not None or template_opt is not None:
+        # Entry policy, not schema — its own op for the same order-independence reason.
+        _edit_entry_policy(entry, workdir_opt, interpreter_opt, template_opt)
         return
     if normalize_opt:
         # A source-idiom rewrite of the user's own stored file — deliberately its own op, not a
@@ -2728,12 +2733,21 @@ def params(
     _show_params(entry, as_json)
 
 
-def _edit_launch_policy(
-    entry: store.Entry, workdir_opt: str | None, interpreter_opt: str | None
+def _edit_entry_policy(
+    entry: store.Entry,
+    workdir_opt: str | None,
+    interpreter_opt: str | None,
+    template_opt: str | None,
 ) -> None:
-    """params --workdir / --interpreter: the launch policies every kind honors but the
-    product previously exposed nowhere outside a hand-edited meta.toml."""
+    """params --workdir / --interpreter / --template: the entry policies the product
+    previously exposed nowhere outside a hand-edited meta.toml (or not at all — a
+    command's template was frozen forever at add time)."""
     try:
+        if template_opt is not None:
+            entry = store.update_template(entry.slug, template_opt)
+            console.print(
+                f"[green]{gettext('Template updated. Placeholders: %(names)s') % {'names': ', '.join(escape(p) for p in entry.meta.params or []) or '—'}}[/green]"
+            )
         if workdir_opt is not None:
             entry = store.write_workdir(entry.slug, workdir_opt)
             console.print(
