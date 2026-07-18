@@ -19,9 +19,8 @@ from textual.screen import Screen
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
-from . import config, flows, launcher, store, tui_footer
+from . import config, healthcheck, launcher, store, tui_footer
 from .i18n import gettext, ngettext
-from .langs.registry import spec_for
 from .paths import scripts_dir
 
 
@@ -71,42 +70,60 @@ class HealthScreen(Screen[str | None]):
                 % {"count": len(entries)},
                 classes="ok",
             )
+            # The SAME collector doctor consumes (healthcheck.collect): the two faces
+            # previously swept separately and disagreed — this screen skipped prompt
+            # drift, runtime resolution, and invalid runner rows entirely.
+            report = healthcheck.collect(entries)
             issues: list[Option] = [
                 Option(
                     f"⚠ {escape(e.meta.name)} — " + gettext("the launch target is gone from disk"),
                     id=e.slug,
                 )
-                for e in entries
-                if launcher.target_missing(e)
+                for e in report.missing
             ]
-            for e in entries:
-                spec = spec_for(e.meta.kind)
-                if spec is None or spec.analyzer is None or not e.script_path.exists():
-                    continue
-                if flows.plan_for_entry(e).drift_lines:
-                    issues.append(
-                        Option(
-                            f"⚠ {escape(e.meta.name)} — "
-                            + gettext(
-                                "form definitions are out of sync (open Script settings → Resync)"
-                            ),
-                            id=e.slug,
+            issues += [
+                Option(
+                    f"⚠ {escape(e.meta.name)} — "
+                    + gettext("form definitions are out of sync (open Script settings → Resync)"),
+                    id=e.slug,
+                )
+                for e in report.drifted
+            ]
+            issues += [
+                Option(
+                    f"⚠ {escape(e.meta.name)} — "
+                    + gettext("missing external command(s): %(tools)s")
+                    % {
+                        "tools": ", ".join(
+                            escape(t) for t in report.needs_missing.get(e.meta.name, [])
                         )
-                    )
-            for e in entries:
-                missing_tools = launcher.missing_needs(e)
-                if missing_tools:
-                    issues.append(
-                        Option(
-                            f"⚠ {escape(e.meta.name)} — "
-                            + gettext("missing external command(s): %(tools)s")
-                            % {"tools": ", ".join(escape(t) for t in missing_tools)},
-                            id=e.slug,
-                        )
-                    )
+                    },
+                    id=e.slug,
+                )
+                for e in report.needs_entries
+            ]
+            issues += [
+                Option(
+                    f"⚠ {escape(e.meta.name)} — "
+                    + gettext("a run would refuse to start — %(reason)s")
+                    % {"reason": escape(report.launch_blocked.get(e.meta.name, ""))},
+                    id=e.slug,
+                )
+                for e in report.blocked_entries
+            ]
             if issues:
                 yield Static(gettext("Issues (Enter jumps to the script):"), classes="warn")
                 yield OptionList(*issues, id="hc-issues")
+            if report.invalid_runner_rows:
+                yield Static(
+                    "⚠ "
+                    + gettext(
+                        "Malformed agent (runner) rows in config: %(rows)s — fix them in "
+                        "Preferences → Manage agents"
+                    )
+                    % {"rows": ", ".join(escape(r) for r in report.invalid_runner_rows)},
+                    classes="warn",
+                )
             mirror = config.load_mirror()
             if mirror.enabled:
                 yield Static(

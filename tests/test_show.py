@@ -30,6 +30,7 @@ PAYLOAD_KEYS = {
     "description",
     "source",
     "workdir",
+    "interpreter",
     "missing",
     "dependencies",
     "requires_python",

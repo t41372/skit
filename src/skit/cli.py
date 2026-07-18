@@ -40,6 +40,7 @@ from . import (
     config,
     editor,
     flows,
+    healthcheck,
     i18n,
     launcher,
     models,
@@ -3420,34 +3421,6 @@ def agent_install(
 # --------------------------------------------------------------------------
 
 
-def _drifted_entries(entries: list[store.Entry]) -> list[str]:
-    """The health check is the one place that batch-reconciles the whole library."""
-    out: list[str] = []
-    for e in entries:
-        spec = spec_for(e.meta.kind)
-        if spec is not None and spec.kind == "prompt":
-            # Prompt drift is a fresh body scan (no analyzer capability, command-kind
-            # parity): a MANAGED placeholder the body no longer contains. An
-            # insertion-off prompt can't drift — nothing is filled.
-            if e.meta.interpolate and e.script_path.exists():
-                fresh = set(_prompt_body_placeholders(e))
-                if any(name not in fresh for name in e.meta.params or []):
-                    out.append(e.meta.name)
-            continue
-        if (
-            spec is None
-            or spec.analyzer is None
-            or spec.params_io is None
-            or not e.script_path.exists()
-        ):
-            continue
-        text = e.script_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
-        specs = spec.params_io.read(text)
-        if specs and spec.analyzer.reconcile(text, specs).has_drift:
-            out.append(e.meta.name)
-    return out
-
-
 def _uv_required(entries: list[store.Entry]) -> bool:
     """Whether a missing uv should fail doctor's exit code. uv is what runs python
     entries, so it's required when any python entry exists — and also for an EMPTY
@@ -3478,10 +3451,13 @@ def doctor(
         for p in problems:
             console.print(f"  [yellow]{escape(p)}[/yellow]")
     entries = store.list_entries()
-    missing = [e.meta.name for e in entries if launcher.target_missing(e)]
-    drifted = _drifted_entries(entries)
-    needs_missing = {e.meta.name: miss for e in entries if (miss := launcher.missing_needs(e))}
-    bad_runners = config.invalid_prompt_runners()
+    # One shared collector with the TUI Health screen (healthcheck.collect) — the two
+    # faces previously swept separately and disagreed about what "healthy" means.
+    report = healthcheck.collect(entries)
+    missing = [e.meta.name for e in report.missing]
+    drifted = [e.meta.name for e in report.drifted]
+    needs_missing = report.needs_missing
+    bad_runners = report.invalid_runner_rows
     mirror = config.load_mirror()
     location = scripts_dir()
     size = store.dir_size(location)
@@ -3494,6 +3470,7 @@ def doctor(
                     "missing": missing,
                     "drift": drifted,
                     "needs_missing": needs_missing,
+                    "launch_blocked": report.launch_blocked,
                     "runner_rows_invalid": bad_runners,
                     "mirror": mirror.pypi if mirror.enabled else "off",
                     "location": str(location),
@@ -3525,6 +3502,12 @@ def doctor(
     for nm_name, tools in needs_missing.items():
         console.print(
             f"  [yellow]⚠ {gettext('%(name)s: missing external command(s): %(tools)s') % {'name': escape(nm_name), 'tools': ', '.join(escape(t) for t in tools)}}[/yellow]"
+        )
+    for bl_name, reason in report.launch_blocked.items():
+        # The runtime sweep the multilang design promised ("doctor warns") but never
+        # shipped: an uninstalled interpreter/JS runtime, a gone pinned agent binary.
+        console.print(
+            f"  [yellow]⚠ {gettext('%(name)s: a run would refuse to start — %(reason)s') % {'name': escape(bl_name), 'reason': escape(reason)}}[/yellow]"
         )
     if bad_runners:
         console.print(

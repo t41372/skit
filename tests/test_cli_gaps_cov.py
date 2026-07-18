@@ -218,16 +218,19 @@ def test_collect_values_inline_form_returns_values(tmp_path, monkeypatch):
     monkeypatch.setenv("TERM", "xterm-256color")  # not "dumb" -> the configured form (tui) wins
     ent = store.add_command("echo {msg}", name="e")
     plan = flows.plan_for_entry(ent)
-    monkeypatch.setattr(inlineform, "collect", lambda entry, plan, prefill: {"msg": "typed"})
-    values = cli._collect_values(ent, plan, {}, plain=False)
+    monkeypatch.setattr(
+        inlineform, "collect", lambda entry, plan, prefill, **kw: ({"msg": "typed"}, None)
+    )
+    values, picked_runner = cli._collect_values(ent, plan, {}, plain=False)
     assert values == {"msg": "typed"}
+    assert picked_runner is None  # no picker requested
 
 
 def test_collect_values_inline_form_cancel_exits_130(tmp_path, monkeypatch):
     monkeypatch.setenv("TERM", "xterm-256color")
     ent = store.add_command("echo {msg}", name="e")
     plan = flows.plan_for_entry(ent)
-    monkeypatch.setattr(inlineform, "collect", lambda entry, plan, prefill: None)
+    monkeypatch.setattr(inlineform, "collect", lambda entry, plan, prefill, **kw: None)
     with pytest.raises(typer.Exit) as exc_info:
         cli._collect_values(ent, plan, {}, plain=False)
     assert exc_info.value.exit_code == 130  # EXIT_CANCELLED — cancelling is not a failure
@@ -262,9 +265,9 @@ def test_run_interactive_uses_collect_values(tmp_path, run_entry_spy, monkeypatc
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     called: dict[str, bool] = {}
 
-    def fake_collect(entry, plan, prefill, *, plain):
+    def fake_collect(entry, plan, prefill, *, plain, runners=None, runner_default=""):
         called["yes"] = True
-        return prefill
+        return prefill, None
 
     monkeypatch.setattr(cli, "_collect_values", fake_collect)
     result = runner.invoke(cli.app, ["run", "j"])  # no --no-input -> interactive path
