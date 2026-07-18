@@ -18,7 +18,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Checkbox, Input, Label, RadioButton, RadioSet, Static
 
-from . import analysis, argstate, config, params, pep723, store, tui_footer
+from . import analysis, argstate, config, params, pep723, store, tui_footer, tui_runner
 from .i18n import gettext
 from .langs.registry import spec_for
 from .models import Entry
@@ -220,6 +220,7 @@ class ScriptSettingsScreen(Screen[bool]):
         Binding("escape", "close", gettext("Back")),
         Binding("ctrl+a", "save", gettext("Save"), priority=True),
         Binding("ctrl+r", "resync", gettext("Resync"), priority=True),
+        Binding("ctrl+n", "new_runner", gettext("New agent"), show=False, priority=True),
         *tui_footer.FIELD_NAV_BINDINGS,
     ]
     # Boot on the name field, not the "*" pick (the body scroll container).
@@ -259,6 +260,9 @@ class ScriptSettingsScreen(Screen[bool]):
         # the declared-params editor rather than the analyzer-driven [tool.skit] flow above.
         self._declared: bool = self._spec is not None and self._spec.params_io is None
         self._is_prompt: bool = entry.meta.kind == "prompt"
+        # Index-aligned values behind the runner radio's options; filled by
+        # _compose_runner and appended by action_new_runner.
+        self._runner_options: list[str] = []
         if self._is_prompt:
             # Every MANAGED placeholder gets an editable row (undeclared ones as their
             # synthesized schema), plus declared env riders — the exact field list the
@@ -351,18 +355,19 @@ class ScriptSettingsScreen(Screen[bool]):
             return
         yield Static(gettext("Runner (the agent this prompt runs with)"), classes="section")
         names = [r.name for r in config.load_prompt_runners()]
-        if not names:
-            yield Static(
-                gettext("No runners configured. Add one with: skit runner add NAME COMMAND…"),
-                classes="hint",
-            )
-            return
         pin = self._entry.meta.runner
         # A pin whose runner row was removed from config still gets an option — and it
         # stays SELECTED, so opening settings and saving something unrelated never
         # silently clears it (an unrequested data change). Picking another option (or
         # "ask on the run form") is the explicit way out.
         stale_pin = pin and all(name != pin for name in names)
+        # Index-aligned option values for the save path — composed here and appended by
+        # action_new_runner, never re-derived from config at save time: a runner list
+        # that changed while the screen was open must not shift the mapping.
+        self._runner_options = [""]
+        if stale_pin:
+            self._runner_options.append(pin)
+        self._runner_options += names
         with RadioSet(id="st-runner-set"):
             yield RadioButton(gettext("ask on the run form"), value=not pin)
             if stale_pin:
@@ -372,6 +377,27 @@ class ScriptSettingsScreen(Screen[bool]):
                 )
             for name in names:
                 yield RadioButton(escape(name), value=(name == pin))
+        # Custom agents are first-class: the picker always carries the door to define
+        # one (footer grammar — the key hint IS the click target), even when the
+        # configured list was deliberately emptied.
+        yield Static(tui_runner.new_runner_chip(), id="st-runner-new", markup=True)
+
+    def action_new_runner(self) -> None:
+        """Ctrl+N / the New agent… chip: define a custom runner right from settings —
+        it lands in config, joins the picker, and is selected, ready to pin on save."""
+        if not self._is_prompt:
+            return
+
+        async def _added(name: str | None) -> None:
+            if not name:
+                return
+            self._runner_options.append(name)
+            radio_set = self.query_one("#st-runner-set", RadioSet)
+            button = RadioButton(escape(name))
+            await radio_set.mount(button)
+            button.value = True
+
+        self.app.push_screen(tui_runner.RunnerAddModal(), _added)
 
     def _compose_params(self) -> ComposeResult:
         yield Static(gettext("Parameters (the run form's fields)"), classes="section")
@@ -697,6 +723,9 @@ class ScriptSettingsScreen(Screen[bool]):
             wants_interpolate = self.query_one("#st-interpolate", Checkbox).value
             if wants_interpolate != entry.meta.interpolate:
                 store.write_prompt_interpolate(entry.slug, wants_interpolate)
+            # The pin save lives HERE, not in the declared branch below: that branch is
+            # skipped when insertion is off, and a pin change must never be dropped for it.
+            self._save_runner_pin()
         if self._declared and not (self._is_prompt and not entry.meta.interpolate):
             decls = self._collect_declared()
             if decls is None:
@@ -769,30 +798,31 @@ class ScriptSettingsScreen(Screen[bool]):
 
     def _save_prompt_managed(self, decls: list[ParamDecl]) -> None:
         """The managed list follows the kept placeholder rows: body order first, then any
-        managed name the body has lost but the user kept (drift stays visible, not grown).
-        Also persists the runner pin from its radio row."""
+        managed name the body has lost but the user kept (drift stays visible, not grown)."""
         entry = self._entry
         keep = [d.name for d in decls if d.delivery == "placeholder"]
         keep_set = set(keep)
         new_managed = [n for n in self._prompt_body_names if n in keep_set]
         new_managed += [n for n in keep if n not in set(self._prompt_body_names)]
         store.write_prompt_managed(entry.slug, new_managed)
-        radio = self.query("#st-runner-set")
-        if radio:
-            names = [r.name for r in config.load_prompt_runners()]
-            current = entry.meta.runner
-            # The options mirror _compose_runner exactly: "ask" first, then a stale
-            # pin's own row (if any), then the configured names.
-            options = [""]
-            if current and current not in names:
-                options.append(current)
-            options += names
-            pressed = radio.first(RadioSet).pressed_index
-            pin = options[pressed] if 0 <= pressed < len(options) else ""
-            if pin != current:
-                store.write_prompt_runner(entry.slug, pin)
-                if pin in names:
-                    argstate.save_last_runner(pin)
+
+    def _save_runner_pin(self) -> None:
+        """Persist the runner radio's pick against the option values recorded at compose
+        time (self._runner_options) — the live truth for a picker action_new_runner may
+        have grown mid-session."""
+        entry = self._entry
+        # The radio always composes for a prompt (even an emptied runner list keeps the
+        # "ask" option), and this only runs for prompts — query_one is safe.
+        radio = self.query_one("#st-runner-set", RadioSet)
+        current = entry.meta.runner
+        pressed = radio.pressed_index
+        pin = self._runner_options[pressed] if 0 <= pressed < len(self._runner_options) else ""
+        if pin != current:
+            store.write_prompt_runner(entry.slug, pin)
+            # A pick of a real configured runner prefills future pickers; re-keeping a
+            # stale pin (or "ask") is not a pick.
+            if pin and config.find_prompt_runner(pin) is not None:
+                argstate.save_last_runner(pin)
 
     def action_close(self) -> None:
         if not self._dirty:

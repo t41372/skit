@@ -28,7 +28,7 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import Checkbox, Input, Label, OptionList, RadioButton, RadioSet, Static
 from textual.widgets.option_list import Option
 
-from . import argstate, flows, tokens, tui_footer
+from . import argstate, flows, tokens, tui_footer, tui_runner
 from .i18n import gettext
 
 if TYPE_CHECKING:
@@ -414,6 +414,7 @@ class RunFormScreen(Screen[FormResult]):
         Binding("enter", "submit", gettext("Run"), priority=True, show=False),
         Binding("ctrl+r", "submit", gettext("Run"), priority=True),
         Binding("ctrl+t", "insert_token", gettext("Insert value")),
+        Binding("ctrl+n", "new_runner", gettext("New agent"), show=False),
         *tui_footer.FIELD_NAV_BINDINGS,
     ]
     # Boot straight into the first control (not the body scroll container, which the
@@ -521,6 +522,9 @@ class RunFormScreen(Screen[FormResult]):
                         )
                         for runner_name in self._runners:
                             yield RadioButton(escape(runner_name), value=(runner_name == default))
+                    # Custom agents are first-class: the picker always carries the door
+                    # to define one (footer grammar — the key hint IS the click target).
+                    yield Static(tui_runner.new_runner_chip(), id="runner-new", markup=True)
             with Horizontal(id="preset-row"):
                 yield Static(gettext("Preset:"), markup=False)
                 if self._presets:
@@ -585,6 +589,23 @@ class RunFormScreen(Screen[FormResult]):
             return None
         pressed = self.query_one("#runner-set", RadioSet).pressed_index
         return self._runners[pressed] if 0 <= pressed < len(self._runners) else None
+
+    def action_new_runner(self) -> None:
+        """Ctrl+N / the New agent… chip: define a custom runner without leaving the
+        form — it lands in config, joins the picker, and is selected immediately."""
+        if not self._runners:
+            return  # no picker on this form (non-prompt entry, or the CLI inline frame)
+
+        async def _added(name: str | None) -> None:
+            if not name:
+                return
+            self._runners.append(name)
+            radio_set = self.query_one("#runner-set", RadioSet)
+            button = RadioButton(escape(name))
+            await radio_set.mount(button)
+            button.value = True
+
+        self.app.push_screen(tui_runner.RunnerAddModal(), _added)
 
     def collect(self) -> tuple[dict[str, str], list[str]]:
         import shlex

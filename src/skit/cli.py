@@ -551,6 +551,12 @@ def _starter_prompt() -> str:
     )
 
 
+def _custom_runner_hint() -> str:
+    """The one-line "you can define your own agent" teaching, shared by every plain-mode
+    runner ask. A function, not a module constant: gettext must run at call time."""
+    return gettext("Custom agents: skit runner add NAME COMMAND… (see skit runner --help)")
+
+
 def _ask_prompt_runner(interactive: bool, runner_opt: str | None) -> str:
     """The runner pin for a new prompt entry: --runner is validated as given; else an
     interactive numbered pick prefilled from the last-picked state; else no pin (the
@@ -573,6 +579,7 @@ def _ask_prompt_runner(interactive: bool, runner_opt: str | None) -> str:
     last = argstate.load_last_runner()
     default = last if last in names else "-"
     console.print(f"[dim]{gettext('- = no pin (the run form asks each time)')}[/dim]")
+    console.print(f"[dim]{_custom_runner_hint()}[/dim]")
     picked = Prompt.ask(
         gettext("Run this prompt with which agent?"),
         choices=[*names, "-"],
@@ -973,15 +980,51 @@ def add(
                 )
                 raise typer.Exit(EXIT_USAGE)
             elif kind == "prompt":
-                entry, summary_managed = _onboard_prompt(
-                    resolved,
-                    name=name,
-                    description=description,
-                    ref=ref,
-                    runner_opt=runner,
-                    no_input=no_input,
-                    interpolate=not no_interpolate,
-                )
+                # Interactive + mini-form style: host the SAME review panel the TUI's
+                # `a` opens for prompts (flags prefill it) — exact python-lane parity.
+                # Pipes/CI/--no-input/form=plain keep the line-prompt path untouched.
+                if (
+                    not no_input
+                    and _is_interactive()
+                    and os.environ.get("TERM") != "dumb"
+                    and config.load_form() == "tui"
+                ):
+                    if runner is not None and config.find_prompt_runner(runner) is None:
+                        # An explicit flag the panel can't honor is refused, never
+                        # dropped — same rule _ask_prompt_runner enforces on its lane.
+                        runner_names = [r.name for r in config.load_prompt_runners()]
+                        err_console.print(
+                            "[red]"
+                            + gettext("Unknown runner: %(runner)s. Configured runners: %(names)s")
+                            % {"runner": escape(runner), "names": ", ".join(runner_names) or "—"}
+                            + _RED_CLOSE
+                        )
+                        raise typer.Exit(EXIT_USAGE)
+                    from .tui_add import run_prompt_review
+
+                    slug = run_prompt_review(
+                        resolved,
+                        name=name,
+                        description=description,
+                        reference=ref,
+                        runner=runner,
+                        interpolate=not no_interpolate,
+                    )
+                    if slug is None:
+                        console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
+                        raise typer.Exit(EXIT_CANCELLED)
+                    entry = store.resolve(slug)
+                    summary_managed = list(entry.meta.params or [])
+                else:
+                    entry, summary_managed = _onboard_prompt(
+                        resolved,
+                        name=name,
+                        description=description,
+                        ref=ref,
+                        runner_opt=runner,
+                        no_input=no_input,
+                        interpolate=not no_interpolate,
+                    )
                 summary_secrets = [n for n in summary_managed if is_secret_name(n)]
             elif kind != "python" and kind_spec is not None and kind_spec.family == "interpreted":
                 # Tier-0 interpreted add (shell/js/ruby/…): copy or reference, comment
@@ -1529,6 +1572,7 @@ def _resolve_run_runner(
     picked = runner_opt is not None
     if not chosen and not no_input and _is_interactive() and names:
         last = argstate.load_last_runner()
+        console.print(f"[dim]{_custom_runner_hint()}[/dim]")
         chosen = Prompt.ask(
             gettext("Run this prompt with which agent?"),
             choices=names,

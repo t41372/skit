@@ -454,6 +454,12 @@ pinning: the interactive flows show the runner picker (prefilled from last-picke
 non-interactive adds pin only when `--runner` is given, else the entry stores no pin and
 `run` resolves per the order above.
 
+A path-based `skit add x.prompt.md` in an interactive terminal with `form = "tui"` hosts
+the **prompt review panel** (see the TUI surface below) — the exact gate the python lane
+uses; an unknown `--runner` is refused before the panel opens (never silently dropped).
+The plain-mode runner asks (add-time and run-time) print a one-line custom-agent teaching
+(`skit runner add NAME COMMAND…`) so the capability is discoverable without the TUI.
+
 `run` passes the runner process's exit code through untouched (docker convention); skit
 errors stay 125/126/127 — a missing/unknown/unresolvable runner is a skit error (126),
 distinct from the agent itself failing.
@@ -464,10 +470,37 @@ A `prompt` entry runs through the **same run form** as every other kind, with on
 addition: a **runner picker** row at the top (chip-consistent, mouse- and
 keyboard-operable per principle #2), prefilled with the entry's pin (or last-picked when
 unpinned). Below it, the placeholders render as ordinary form fields (choices/bool/secret
-all work — via the `placeholder_params` plan path). The add panel gains the same picker,
-plus the bare-`.md` kind ask. Runner management (add/remove) lives in the settings screen
-alongside the other config. Every new string is a static `gettext()` literal; the picker
-wraps/degrades under the existing `tui_layout` size tiers — no per-screen width math.
+all work — via the `placeholder_params` plan path). Every new string is a static
+`gettext()` literal; the picker wraps/degrades under the existing `tui_layout` size
+tiers — no per-screen width math.
+
+**The prompt review panel (`tui_add.PromptReviewScreen`).** Adding a prompt is never a
+blind direct add: the panel is the prompt twin of the python `AddReviewScreen`, with the
+same two faces (pushed from the Library's `a`, and hosted alone when an interactive
+terminal runs `skit add x.prompt.md` with `form = "tui"` — the exact gate the python lane
+uses, so the two kinds cannot drift). Sections: name/description/storage, the **insertion
+master switch** (off folds the tick list away and stores `interpolate = false`), the
+**placeholder tick list** (all pre-ticked under `AUTO_MANAGE_LIMIT`; a flooded prompt
+shows only the `LIST_PREVIEW_LIMIT` preview, pre-ticks nothing, and says so), and the
+**runner picker** ("ask on the run form" + the configured names, prefilled `--runner` >
+last-picked > ask). Ctrl+E opens the user's original in `$EDITOR` and rescans on return,
+preserving everything already set on the panel. Pipes/CI/`--no-input`/`form = "plain"`/
+`TERM=dumb` keep the line-prompt path — the non-interactive contract is untouched.
+
+**Custom agents are first-class in the TUI (`tui_runner.RunnerAddModal`).** Every
+runner-picking surface — the run form's picker row, the prompt review panel, and Script
+settings — carries the same "Ctrl+N New agent…" chip (footer grammar: the visible key
+hint IS the click target). The modal takes a name and ONE command line; the command is
+split into argv tokens with `shlex` **once, here** (quotes group words; posix rules on
+every platform — the config row is the canonical form and stays editable), validated by
+the same `validate_prompt_runner_argv` rule the CLI enforces, and saved through
+`ensure_prompt_runners_seeded()` so the seeds materialize beside it. The new runner joins
+the open picker selected — no restart, no CLI detour. A prompt run with an **emptied**
+runner list opens this modal instead of dead-ending on a `skit runner add` incantation;
+in Script settings the radio's option values are recorded at compose time (and appended
+by the modal), so the save-time index mapping can never shift under a config change, and
+the pin save runs for every prompt — including insertion-off ones, whose declared-params
+branch is skipped.
 
 ## Non-interactive & JSON contracts (additive only)
 

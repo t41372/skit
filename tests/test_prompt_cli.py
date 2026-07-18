@@ -80,6 +80,7 @@ def test_add_prompt_interactive_tick_subset_and_runner_pick(tmp_path):
 
 
 def test_add_prompt_interactive_selection(tmp_path, monkeypatch):
+    config.save_form("plain")  # the line-prompt path (form=tui hosts the review panel)
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     answers = iter(["1,3", "-"])
     monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: next(answers)))
@@ -93,6 +94,7 @@ def test_add_prompt_interactive_selection(tmp_path, monkeypatch):
 
 
 def test_add_prompt_interactive_runner_pick_pins_and_remembers(tmp_path, monkeypatch):
+    config.save_form("plain")  # the line-prompt path (form=tui hosts the review panel)
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     answers = iter(["all", "codex"])
     monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: next(answers)))
@@ -102,6 +104,73 @@ def test_add_prompt_interactive_runner_pick_pins_and_remembers(tmp_path, monkeyp
     assert store.resolve("pinned").meta.runner == "codex"
     assert argstate.load_last_runner() == "codex"
     assert "Runs with codex" in result.output
+
+
+def test_add_prompt_interactive_tui_form_opens_review_panel(tmp_path, monkeypatch):
+    """In a real terminal with form=tui, `skit add x.prompt.md` hosts the SAME review
+    panel the TUI's `a` opens for prompts — exact python-lane parity; the flags ride
+    along as prefills and the panel's slug feeds the printed summary."""
+    src = _write(tmp_path, "Do {{a}}\n")
+    seen: dict[str, object] = {}
+
+    def fake_panel(path, **kwargs):
+        seen["path"] = path
+        seen.update(kwargs)
+        return store.add_prompt(path, name="panelled").slug
+
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr("skit.tui_add.run_prompt_review", fake_panel)
+    result = runner.invoke(
+        cli.app, ["add", str(src), "--runner", "claude", "--no-interpolate", "--ref"]
+    )
+    assert result.exit_code == 0, result.output
+    assert seen["runner"] == "claude"
+    assert seen["interpolate"] is False
+    assert seen["reference"] is True
+    assert "panelled" in result.output  # the summary reflects the panel's entry
+
+
+def test_add_prompt_interactive_panel_cancel_exits_130(tmp_path, monkeypatch):
+    """Esc in the panel = the form-cancel contract: exit 130, nothing added."""
+    src = _write(tmp_path, "Do {{a}}\n")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr("skit.tui_add.run_prompt_review", lambda path, **kw: None)
+    result = runner.invoke(cli.app, ["add", str(src)])
+    assert result.exit_code == 130
+    assert "Cancelled" in result.output
+    assert store.list_entries() == []
+
+
+def test_add_prompt_unknown_runner_refused_before_the_panel(tmp_path, monkeypatch):
+    """An explicit --runner the panel can't honor is refused up front, never dropped —
+    the same rule the line-prompt lane enforces."""
+    src = _write(tmp_path, "Do {{a}}\n")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    hit: dict[str, int] = {}
+    monkeypatch.setattr(
+        "skit.tui_add.run_prompt_review", lambda *a, **kw: hit.setdefault("panel", 1)
+    )
+    result = runner.invoke(cli.app, ["add", str(src), "--runner", "ghost"])
+    assert result.exit_code == 2
+    assert "Unknown runner" in result.output
+    assert "panel" not in hit
+
+
+def test_add_prompt_term_dumb_keeps_line_prompts(tmp_path, monkeypatch):
+    """TERM=dumb can't host a Textual panel — same opt-out as the python lane."""
+    src = _write(tmp_path, "Do {{a}}\n")
+    monkeypatch.setenv("TERM", "dumb")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    answers = iter(["all", "-"])  # manage everything; no runner pin
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: next(answers)))
+    hit: dict[str, int] = {}
+    monkeypatch.setattr(
+        "skit.tui_add.run_prompt_review", lambda *a, **kw: hit.setdefault("panel", 1)
+    )
+    result = runner.invoke(cli.app, ["add", str(src), "-n", "dumbly"])
+    assert result.exit_code == 0, result.output
+    assert "panel" not in hit
+    assert store.resolve("dumbly").meta.params == ["a"]
 
 
 def test_add_prompt_runner_flag_non_interactive(tmp_path):
@@ -153,6 +222,7 @@ def test_add_bare_md_no_input_requires_explicit_prompt(tmp_path):
 
 
 def test_add_bare_md_interactive_ask_yes_and_no(tmp_path, monkeypatch):
+    config.save_form("plain")  # the line-prompt path (form=tui hosts the review panel)
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     monkeypatch.setattr(cli.Confirm, "ask", staticmethod(lambda *a, **k: True))
     monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: "-"))
@@ -727,6 +797,7 @@ def test_add_no_interpolate_through_stdin_lane(tmp_path):
 
 
 def test_add_interactive_off_answer_disables_insertion(tmp_path, monkeypatch):
+    config.save_form("plain")  # the line-prompt path (form=tui hosts the review panel)
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     answers = iter(["off", "-"])
     monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: next(answers)))
@@ -752,6 +823,7 @@ def test_add_flood_cap_manages_nothing_and_says_so(tmp_path):
 def test_add_interactive_flood_defaults_to_none_and_caps_the_listing(tmp_path, monkeypatch):
     from skit.langs.prompt.analyzer import AUTO_MANAGE_LIMIT, LIST_PREVIEW_LIMIT
 
+    config.save_form("plain")  # the line-prompt path (form=tui hosts the review panel)
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     seen: dict[str, object] = {}
 
@@ -774,6 +846,7 @@ def test_add_interactive_flood_defaults_to_none_and_caps_the_listing(tmp_path, m
 def test_add_interactive_explicit_all_beats_the_flood_cap(tmp_path, monkeypatch):
     from skit.langs.prompt.analyzer import AUTO_MANAGE_LIMIT
 
+    config.save_form("plain")  # the line-prompt path (form=tui hosts the review panel)
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     answers = iter(["all", "-"])
     monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: next(answers)))
@@ -874,6 +947,7 @@ def test_params_schema_edits_refused_while_insertion_is_off(tmp_path):
 def test_add_interactive_flooded_numbers_address_the_previewed_names_only(tmp_path, monkeypatch):
     from skit.langs.prompt.analyzer import AUTO_MANAGE_LIMIT, LIST_PREVIEW_LIMIT
 
+    config.save_form("plain")  # the line-prompt path (form=tui hosts the review panel)
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     beyond = str(LIST_PREVIEW_LIMIT + 3)  # an index whose name was never shown
     answers = iter([f"3,{beyond}", "-"])

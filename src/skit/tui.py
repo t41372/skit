@@ -52,6 +52,7 @@ from . import (
     theme,
     tui_footer,
     tui_layout,
+    tui_runner,
 )
 from .i18n import gettext, ngettext
 from .langs.registry import spec_for
@@ -684,9 +685,15 @@ class MenuApp(App[int | PendingRun]):
         is_prompt = entry.meta.kind == "prompt"
         runner_names = [r.name for r in config.load_prompt_runners()] if is_prompt else []
         if is_prompt and not runner_names:
-            self._refresh_status(
-                gettext("No runners configured — add one with: skit runner add NAME COMMAND…")
-            )
+            # A deliberately emptied runner list must not dead-end the mouse-only user
+            # on a CLI incantation: offer to define an agent right here, then re-enter.
+            def _runner_added(new_name: str | None) -> None:
+                if new_name:
+                    self.call_after_refresh(self.action_run)
+                else:
+                    self._refresh_status(gettext("A prompt needs a configured agent to run with."))
+
+            self.push_screen(tui_runner.RunnerAddModal(), _runner_added)
             return
         if not plan.fields and not plan.degraded_reason and not is_prompt:
             self._execute(entry, plan, {}, argstate.load_state(entry.slug)["extra_args"])
