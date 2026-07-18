@@ -188,7 +188,7 @@ def test_onboard_params_framework_message_exact(monkeypatch, tty, capsys):
     out = _norm(capsys.readouterr().out)
     assert (
         "This script parses its own arguments (argparse, click); skit couldn't model them "
-        "statically, so the run form offers a passthrough-arguments field." in out
+        "statically, so the run form offers an extra-arguments field." in out
     )
     assert "XX" not in out
 

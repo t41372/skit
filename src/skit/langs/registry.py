@@ -412,8 +412,9 @@ def kind_for_shebang_text(text: str) -> str | None:
 # fabricate exactly the entry that can only die at run time (the --kind escape applies).
 _VERSIONED_PYTHON = re.compile(r"python(3(\.\d+)*)?")
 # The version half of that signal ("3.12" of python3.12) — honored as a requires-python
-# default, never silently dropped (half-honoring an explicit signal is still a drop).
-_PYTHON_MINOR = re.compile(r"python(3)\.(\d+)(?:\.\d+)*")
+# default, never silently dropped (half-honoring an explicit signal is still a drop —
+# which is why a micro version, python3.12.1, keeps its .1 in the lower bound too).
+_PYTHON_MINOR = re.compile(r"python(3)\.(\d+)((?:\.\d+)*)")
 
 
 def _kind_for_program(program: str) -> str | None:
@@ -429,14 +430,22 @@ def _kind_for_program(program: str) -> str | None:
 
 def kind_for_draft(path: Path) -> str:
     """Kind inference for skit's OWN kept authoring drafts (paths.is_draft): the
-    shebang the user wrote outranks the file's suffix, because mkstemp picked the
-    suffix (.py starter, .prompt.md) BEFORE the user decided what to write — on a
-    draft the suffix is skit's artifact, not a user signal. A registered shebang
-    names its kind; an unregistered one is "unknown" (the caller's --kind /
-    kind-picker escape — never a fabricated python entry); no shebang at all falls
-    back to plain inference, where the suffix is all there is. This is the same
-    verdict the authoring lanes reached before the draft was kept, so a draft
-    crossing the keep/resume seam can never change kind."""
+    shebang the user wrote outranks the script starter's suffix, because mkstemp
+    picked `.py` BEFORE the user decided what to write — on a script draft the
+    suffix is skit's artifact, not a user signal. A registered COMPOUND extension
+    (.prompt.md) is the one exception and outranks the shebang: that suffix encodes
+    the user's own lane choice ("draft a prompt"), and a prompt body may
+    legitimately open with a #! line it describes or transforms — the prompt
+    authoring lanes never read the shebang, so neither may the resume seam. Then: a
+    registered shebang names its kind; an unregistered one is "unknown" (the
+    caller's --kind / kind-picker escape — never a fabricated python entry); no
+    shebang at all falls back to plain inference, where the suffix is all there is.
+    This is the same verdict the authoring lanes reached before the draft was kept,
+    so a draft crossing the keep/resume seam can never change kind."""
+    lowered = path.name.lower()
+    for ext, kind in _compound_extensions():
+        if lowered.endswith(ext):
+            return kind
     program = shebang_program(path)
     if program is None:
         return infer_kind(path)
@@ -454,8 +463,8 @@ def python_version_pin(program: str | None) -> str:
     m = _PYTHON_MINOR.fullmatch(program)
     if m is None:
         return ""
-    major, minor = int(m.group(1)), int(m.group(2))
-    return f">={major}.{minor},<{major}.{minor + 1}"
+    major, minor, micro = int(m.group(1)), int(m.group(2)), m.group(3)
+    return f">={major}.{minor}{micro},<{major}.{minor + 1}"
 
 
 @cache

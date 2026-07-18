@@ -124,7 +124,8 @@ async def test_review_versioned_shebang_shows_and_stores_pin(tmp_path):
         app.push_screen(review)
         await pilot.pause()
         assert review._requires_python == ">=3.12,<3.13"  # derived from the shebang
-        assert "needs Python >=3.12,<3.13" in _statics(review)  # and shown, not invisibly recorded
+        # shown AND editable in the #rv-python field, not invisibly recorded (round-10).
+        assert review.query_one("#rv-python", Input).value == ">=3.12,<3.13"
         review.query_one("#rv-name", Input).value = "vpin"
         review.action_accept()
         await pilot.pause()
@@ -158,7 +159,7 @@ async def test_review_explicit_python_is_not_overwritten_by_the_shebang(tmp_path
         app.push_screen(review)
         await pilot.pause()
         assert review._requires_python == ">=3.9"  # explicit value, not the shebang's 3.12
-        assert "needs Python >=3.9" in _statics(review)
+        assert review.query_one("#rv-python", Input).value == ">=3.9"  # prefilled, editable
 
 
 # ==========================================================================

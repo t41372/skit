@@ -208,10 +208,18 @@ def _resolve_python_metadata(
     else:
         deps_list = pep723.split_requirements(answer)
     # The pin rides in as the ask's visible default — accepting or clearing it is the
-    # user's own move, so no separate announcement is needed on this path.
-    py = Prompt.ask(
-        gettext("Python version (leave empty for automatic)"), default=pin, console=console
+    # user's own move, so no separate announcement is needed on this path. But the
+    # label must not deny what Enter does: with a pin as the default, "leave empty
+    # for automatic" is a lie (Enter records the pin), so the label switches and a
+    # '-' escape (the deps ask's own convention) really means automatic.
+    label = (
+        gettext("Python version (Enter accepts the #! pin, '-' for automatic)")
+        if pin
+        else gettext("Python version (leave empty for automatic)")
     )
+    py = Prompt.ask(label, default=pin, console=console)
+    if py.strip().lower() in ("-", "none"):
+        return deps_list, ""
     return deps_list, py.strip()
 
 
@@ -388,8 +396,11 @@ def _print_candidate(i: int, c: analysis.Candidate) -> None:
 
 
 def _print_add_hints(result: analysis.Analysis, script_name: str) -> None:
-    """The honest, rule-backed hints (UX spec §0): argv passthrough, extractable filenames."""
-    if result.uses_argv:
+    """The honest, rule-backed hints (UX spec §0): argv passthrough, extractable filenames.
+    The argv hint yields to the reader notice: when a framework was detected, the
+    unmodeled variant already named the extra-arguments field — the same fact twice
+    in one breath, under two names, reads as two facts."""
+    if result.uses_argv and not result.uses_cli_framework:
         console.print(
             "[dim]"
             + gettext(
@@ -433,7 +444,7 @@ def _print_reader_notice(kind_spec: LangSpec | None, text: str, frameworks: list
         console.print(
             "[dim]"
             + gettext(
-                "This script parses its own arguments (%(names)s); skit couldn't model them statically, so the run form offers a passthrough-arguments field."
+                "This script parses its own arguments (%(names)s); skit couldn't model them statically, so the run form offers an extra-arguments field."
             )
             % {"names": ", ".join(frameworks)}
             + _DIM_CLOSE
@@ -1460,6 +1471,24 @@ def add(
                 )
                 raise typer.Exit(EXIT_USAGE)
             resolved = Path(path).expanduser().resolve()
+            from .paths import is_draft
+
+            if ref and is_draft(resolved):
+                # A reference entry pointing into drafts/ would leave its script
+                # listed as a resumable draft — a live entry's file offered for
+                # re-adding and for deletion as "the only copy", both lies. A kept
+                # draft is skit's own artifact destined for consumption: resuming
+                # always copies (and the success path then consumes the draft).
+                err_console.print(
+                    "[red]"
+                    + gettext(
+                        "%(file)s is one of skit's own kept drafts — a resumed draft "
+                        "is always added as a copy (and consumed on success). Drop --ref."
+                    )
+                    % {"file": escape(resolved.name)}
+                    + _RED_CLOSE
+                )
+                raise typer.Exit(EXIT_USAGE)
             if prompt_kind:
                 kind = "prompt"  # --prompt forces the kind outright (mirrors --exe)
             elif kind is not None:
@@ -1524,9 +1553,27 @@ def add(
                         ).strip()
                 entry = store.add_exe(Path(path), name=name, description=description or "")
             elif kind == "unknown":
-                err_console.print(
-                    f"[red]{gettext("%(file)s isn't a script or an executable — pass --kind <language> for an extensionless script, --prompt for an AI-agent prompt, --exe for a program, or --cmd for a command template.") % {'file': escape(resolved.name)}}[/red]"
-                )
+                from .langs.registry import shebang_program
+
+                # Two different diagnoses, two different truths: a file WITH a #! is
+                # a script whose interpreter skit doesn't know (the stdin/editor
+                # lanes' message) — telling its author "this isn't a script" while
+                # pointing at "an extensionless script" escape misdescribes both the
+                # file and the fix.
+                if shebang_program(resolved) is not None:
+                    err_console.print(
+                        "[red]"
+                        + gettext(
+                            "The #! in %(file)s names no interpreter skit knows — pass "
+                            "--kind <language> to choose one."
+                        )
+                        % {"file": escape(resolved.name)}
+                        + _RED_CLOSE
+                    )
+                else:
+                    err_console.print(
+                        f"[red]{gettext("%(file)s isn't a script or an executable — pass --kind <language> for an extensionless script, --prompt for an AI-agent prompt, --exe for a program, or --cmd for a command template.") % {'file': escape(resolved.name)}}[/red]"
+                    )
                 raise typer.Exit(EXIT_USAGE)
             elif kind == "prompt":
                 # Interactive + mini-form style: host the SAME review panel the TUI's

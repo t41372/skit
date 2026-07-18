@@ -772,7 +772,14 @@ def test_self_location_warns_when_a_temp_copy_is_written(tmp_path):
     result = inject_src(src, {"WIDTH": "1200"}, tmp_path)
     assert result.path is not None
     assert len(result.warnings) == 1
-    assert "$0" in result.warnings[0]
+    warning = result.warnings[0]
+    assert "$0" in warning
+    # The advice is true in BOTH storage modes now (round-10): it teaches the manual
+    # ${NAME:-value} rewrite and names --normalize as the shortcut ON A STORED COPY,
+    # never the old unconditional "--normalize NAME` delivers" that lied in reference mode.
+    assert 'NAME="${NAME:-value}"' in warning
+    assert "on a stored copy" in warning
+    assert "`skit params <script> --normalize NAME` delivers" not in warning
 
 
 def test_self_location_does_not_warn_for_env_delivery(tmp_path):

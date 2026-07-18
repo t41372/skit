@@ -67,9 +67,13 @@ class KindPickModal(ModalScreen[str | None]):
     KindPickModal.-h-short Static, KindPickModal.-h-tiny Static { margin: 0; }
     """
 
-    def __init__(self, filename: str) -> None:
+    def __init__(self, filename: str, *, has_shebang: bool = False) -> None:
         super().__init__()
         self._filename: str = filename
+        # Two different truths need two different labels: with a #! present, "can't
+        # tell from the name" is false — the name (and the shebang) told skit plenty;
+        # what it can't do is honor an interpreter it doesn't know.
+        self._has_shebang: bool = has_shebang
 
     @override
     def compose(self) -> ComposeResult:
@@ -88,7 +92,11 @@ class KindPickModal(ModalScreen[str | None]):
         )
         with Vertical():
             yield Label(
-                gettext("What is %(file)s? skit can't tell from the name.")
+                (
+                    gettext("The #! in %(file)s names no interpreter skit knows. What is it?")
+                    if self._has_shebang
+                    else gettext("What is %(file)s? skit can't tell from the name.")
+                )
                 % {"file": self._filename}
             )
             from .kindnames import kind_label
@@ -300,25 +308,31 @@ class AddSourceScreen(Screen[str | None]):
             # but name — say so instead of dead-ending (mirrors issue #10's direction).
             kind = "prompt"
 
+        from .paths import is_draft
+
+        # A kept draft is skit's own artifact destined for consumption: resuming it is
+        # fresh authoring (fresh=True — no "Link the original" ask). A reference entry
+        # pointing into drafts/ would leave its script in the resumable list — a live
+        # entry's file offered for re-adding and for "Delete draft… (it is the only
+        # copy)", both lies.
+        draft_resume = is_draft(path)
+
         def _reviewed(slug: str | None) -> None:
             if slug is None:
                 return
-            from .paths import is_draft
-
-            if is_draft(path) and store.resolve(slug).meta.mode == "copy":
+            if draft_resume and store.resolve(slug).meta.mode == "copy":
                 # A resumed draft that reached the store is done accumulating — the
                 # same "success: the store holds the copy" unlink every authoring
-                # lane performs. Only skit's OWN drafts (is_draft: drafts home AND
-                # the skit- prefix); reference mode still points at the file: kept.
+                # lane performs. (fresh always copies; the mode check is the belt.)
                 path.unlink(missing_ok=True)
             self.dismiss(slug)
 
         if kind == "prompt":
-            self.app.push_screen(PromptReviewScreen(path), _reviewed)
+            self.app.push_screen(PromptReviewScreen(path, fresh=draft_resume), _reviewed)
             return
         kind_spec = spec_for(kind)
         if kind_spec is not None and kind_spec.family == "interpreted":
-            self.app.push_screen(AddReviewScreen(path, kind=kind), _reviewed)
+            self.app.push_screen(AddReviewScreen(path, kind=kind, fresh=draft_resume), _reviewed)
             return
         if kind == "exe":
             self.app.push_screen(ExeReviewScreen(path), _reviewed)
@@ -329,13 +343,20 @@ class AddSourceScreen(Screen[str | None]):
             if picked is None:
                 return
             if picked == "prompt":
-                self.app.push_screen(PromptReviewScreen(path), _reviewed)
+                self.app.push_screen(PromptReviewScreen(path, fresh=draft_resume), _reviewed)
             elif picked == "exe":
                 self.app.push_screen(ExeReviewScreen(path), _reviewed)
             else:
-                self.app.push_screen(AddReviewScreen(path, kind=picked), _reviewed)
+                self.app.push_screen(
+                    AddReviewScreen(path, kind=picked, fresh=draft_resume), _reviewed
+                )
 
-        self.app.push_screen(KindPickModal(path.name), _kind_picked)
+        from .langs.registry import shebang_program
+
+        self.app.push_screen(
+            KindPickModal(path.name, has_shebang=shebang_program(path) is not None),
+            _kind_picked,
+        )
 
     @on(Input.Submitted, "#add-template")
     @on(Input.Submitted, "#add-template-name")
@@ -459,7 +480,7 @@ class AddSourceScreen(Screen[str | None]):
                     )
                     self.app.push_screen(chosen, _reviewed)
 
-                self.app.push_screen(KindPickModal(tmp.name), _kind_picked)
+                self.app.push_screen(KindPickModal(tmp.name, has_shebang=True), _kind_picked)
                 return
         review: Screen[str | None] = (
             PromptReviewScreen(tmp, fresh=True)
@@ -672,13 +693,20 @@ class AddReviewScreen(Screen[str | None]):
         reference = bool(mode_box) and mode_box.first(RadioSet).pressed_index == 1
         spec = self._spec
         npm = spec is not None and spec.deps_flavor == "npm"
-        self.query_one("#rv-params-wrap").display = not reference
+        modeled = self._reader_modeled()
+        # A modeled reader form works in reference mode too (plan_for_entry has no
+        # mode gate), so its ✓ notice STAYS visible — hiding it while saying "setup
+        # is skipped" reads as "the form is lost", the exact misreading the CLI's
+        # reference voice was rewritten to correct. Only the tick list is skipped.
+        self.query_one("#rv-params-wrap").display = not reference or modeled
         if npm:
             self.query_one("#rv-deps-wrap").display = not reference
         note = self.query_one("#rv-ref-note", Static)
         if reference:
             lines = [
-                gettext(
+                gettext("Link the original: skit never writes to the file.")
+                if modeled
+                else gettext(
                     "Link the original: parameter setup is skipped — skit never writes to the file."
                 )
             ]
@@ -788,14 +816,22 @@ class AddReviewScreen(Screen[str | None]):
             yield Static(
                 gettext("detected from the script's imports — edit freely"), classes="hint"
             )
-            if self._requires_python:
-                # The recorded constraint is VISIBLE, whether it rode in on --python
-                # or was derived from a versioned shebang — a value the add writes
-                # but no surface shows would be an invisible setting.
-                yield Static(
-                    "· "
-                    + gettext("needs Python %(python)s") % {"python": escape(self._requires_python)}
-                )
+            # The recorded constraint is VISIBLE and EDITABLE, whether it rode in on
+            # --python or was derived from a versioned shebang — a value the add
+            # writes but no surface shows (or shows read-only while the CLI's ask
+            # lets you clear it) would be an invisible setting.
+            yield Input(
+                value=self._overrides.get("python", self._requires_python),
+                placeholder=gettext("(automatic)"),
+                id="rv-python",
+            )
+            yield Static(
+                gettext(
+                    "Python version (requires-python) — prefilled from the #! line when "
+                    "it pins one; empty means automatic"
+                ),
+                classes="hint",
+            )
 
     def _compose_params(self) -> ComposeResult:
         if self._spec is None or self._spec.analyzer is None:
@@ -824,7 +860,7 @@ class AddReviewScreen(Screen[str | None]):
             yield Static(
                 gettext(
                     "This script parses its own arguments (%(names)s); skit couldn't model "
-                    "them statically, so the run form offers a passthrough-arguments field."
+                    "them statically, so the run form offers an extra-arguments field."
                 )
                 % {"names": ", ".join(self._analysis.frameworks)},
                 classes="hint",
@@ -856,7 +892,9 @@ class AddReviewScreen(Screen[str | None]):
                 % {"names": escape(names)},
                 classes="hint",
             )
-        if self._analysis.uses_argv:
+        # Yields to the reader notice above (the CLI's _print_add_hints rule): a
+        # detected framework already named the extra-arguments field.
+        if self._analysis.uses_argv and not self._analysis.uses_cli_framework:
             yield Static(
                 "ℹ "  # noqa: RUF001 — intended info glyph, completing the 💡 tip / ⚠ warning set
                 + gettext(
@@ -876,6 +914,14 @@ class AddReviewScreen(Screen[str | None]):
         deps_box = self.query("#rv-deps")
         if deps_box:
             self._overrides["deps"] = deps_box.first(Input).value
+        py_box = self.query("#rv-python")
+        if py_box:
+            typed = py_box.first(Input).value.strip()
+            if typed != self._requires_python:
+                # The user edited the constraint: theirs wins over any future auto
+                # pin (the rescan-must-never-throw-away-typed-input rule).
+                self._overrides["python"] = typed
+                self._py_pin_auto = False
         with self.app.suspend():
             try:
                 editor.open_in_editor(self._path)
@@ -887,6 +933,13 @@ class AddReviewScreen(Screen[str | None]):
             # The pin came from the shebang, and the shebang may just have changed.
             self._requires_python = self._python_pin()
         self.refresh(recompose=True)
+
+    def _collected_python(self) -> str:
+        """The requires-python the panel records: the editable #rv-python field when
+        it is mounted (uv, no PEP 723 block), else whatever rode in (a block-carrying
+        script owns its constraint; non-python kinds have none)."""
+        boxes = self.query("#rv-python")
+        return boxes.first(Input).value.strip() if boxes else self._requires_python
 
     def _collected_deps(self) -> list[str]:
         flavor = self._spec.deps_flavor if self._spec is not None else ""
@@ -906,7 +959,7 @@ class AddReviewScreen(Screen[str | None]):
                 mode="reference" if reference else "copy",
                 description=desc,
                 dependencies=deps or None,
-                requires_python=self._requires_python,
+                requires_python=self._collected_python(),
             )
         from .langs.registry import shebang_program
 
@@ -934,19 +987,19 @@ class AddReviewScreen(Screen[str | None]):
         except store.StoreError as exc:
             self.notify(str(exc), severity="error")
             return
-        # The candidate checkboxes exist only when _compose_params rendered them, i.e. for
-        # a copy of a NON-cli-framework script with an analyzer. A script that both parses
-        # its own arguments AND defines a managed-looking constant yields
-        # uses_cli_framework=True with a non-empty candidates list; _compose_params returns
-        # before the checkbox loop in that case, so querying #rv-cand-{i} here would raise
-        # NoMatches and crash after the entry was already committed. Gate the collection on
-        # the same condition that mounts them.
+        # The candidate checkboxes exist exactly when _compose_params rendered them:
+        # analyzer present and NO modeled reader form (_reader_modeled — the shared
+        # flows.reader_fields predicate; an unmodeled self-parser gets ticks because
+        # managing there is additive). The collection gate MIRRORS the mount condition:
+        # collecting more would query checkboxes that don't exist and crash after the
+        # entry committed; collecting less silently drops ticks the screen itself
+        # advertised — the drop this panel exists to refuse.
         if (
             entry.meta.mode == "copy"
             and self._spec is not None
             and self._spec.analyzer is not None
             and self._spec.params_io is not None
-            and not self._analysis.uses_cli_framework
+            and not self._reader_modeled()
         ):
             picked = [
                 self._analysis.candidates[i]

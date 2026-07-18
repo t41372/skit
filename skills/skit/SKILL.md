@@ -151,7 +151,7 @@ skit params <name> --secret API_KEY --env-source API_KEY=OPENAI_API_KEY
   (Python argparse/click/typer, shell getopts, JS `util.parseArgs`, fish `argparse`,
   PowerShell `param()`) need no management — skit reads them statically. When the
   parse can't be read statically (a dynamic optstring, docopt/fire), the run form
-  falls back to a passthrough-arguments field, and managed constants add fields
+  falls back to an extra-arguments field, and managed constants add fields
   alongside it rather than replacing anything.
 - **Declared parameters** (for exe, command, and reader-less kinds like ruby/perl/lua/r)
   are defined by hand on the entry, then behave like any other field:

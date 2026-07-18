@@ -72,7 +72,9 @@ def _stored(name: str) -> str:
         ("python", ""),
         ("python3", ""),
         ("python3.12", ">=3.12,<3.13"),
-        ("python3.12.1", ">=3.12,<3.13"),  # a patch-versioned shebang still pins the minor
+        # a micro-versioned shebang keeps its .1 in the lower bound — half-honoring an
+        # explicit signal is still a drop (round-10 fix to the round-9 row that dropped it).
+        ("python3.12.1", ">=3.12.1,<3.13"),
         ("python2", ""),  # unregistered — no pin
         ("python2.7", ""),
         ("bash", ""),
@@ -136,12 +138,15 @@ def test_cli_add_bash_shebang_draft_lands_as_shell_and_unlinks(tmp_path):
 def test_cli_add_awk_shebang_draft_is_unknown_kept_with_kind_escape(tmp_path):
     """An awk shebang is unregistered: the draft is "unknown", refused with exit 2 and the
     --kind escape (never a fabricated entry), and KEPT because the add never reached the
-    consume-on-success unlink."""
+    consume-on-success unlink. The draft carries a #!, so the refusal is the shebang-aware
+    voice ("names no interpreter"), not the shebang-less "isn't a script" line (round-10)."""
     draft = _draft("skit-new-awk.py", "#!/usr/bin/awk -f\nBEGIN{print 1}\n")
     result = runner.invoke(cli.app, ["add", str(draft), "-n", "awky", "--no-input"])
     assert result.exit_code == 2, result.output
     assert "--kind" in result.output  # the escape is named
-    assert "isn't a script or an executable" in _flat(result.output)
+    flat = _flat(result.output)
+    assert "The #! in skit-new-awk.py names no interpreter skit knows" in flat
+    assert "isn't a script or an executable" not in flat  # the shebang-less voice is not used
     assert draft.exists()  # a refused add consumes nothing
     with pytest.raises(store.NotFoundError):
         store.resolve("awky")

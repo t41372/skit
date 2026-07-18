@@ -260,16 +260,21 @@ def test_path_add_of_a_drafts_home_file_unlinks_it_on_copy(tmp_path):
     assert not draft.exists()  # the resumed draft was cleaned up
 
 
-def test_path_add_of_a_drafts_home_file_keeps_it_on_reference(tmp_path):
-    """--ref keeps the source: a reference-mode entry still points at the file, so it must not
-    be unlinked even though it lives under drafts home."""
+def test_path_add_of_a_drafts_home_file_refuses_reference(tmp_path):
+    """--ref on skit's OWN kept draft is refused (round-10): a reference entry pointing into
+    drafts/ would leave a live entry's file listed as a resumable draft — offered for re-adding
+    and for deletion as "the only copy", both lies. Exit 2, the draft is kept (a refused add
+    consumes nothing), and no entry is created."""
     drafts_dir().mkdir(parents=True, exist_ok=True)
     draft = drafts_dir() / "skit-new-keepme.py"
     draft.write_text("print('keep')\n", encoding="utf-8")
     result = runner.invoke(cli.app, ["add", str(draft), "-n", "kep", "--ref", "--no-input"])
-    assert result.exit_code == 0, result.output
-    assert store.resolve("kep").meta.mode == "reference"
-    assert draft.exists()  # reference mode still points at it — kept
+    assert result.exit_code == 2, result.output
+    assert "one of skit's own kept drafts" in " ".join(result.output.split())
+    assert "Drop --ref" in " ".join(result.output.split())
+    assert draft.exists()  # a refused add consumes nothing
+    with pytest.raises(store.NotFoundError):
+        store.resolve("kep")
 
 
 def test_path_add_of_a_normal_file_never_unlinks_the_original(tmp_path):
