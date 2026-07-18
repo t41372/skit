@@ -713,10 +713,15 @@ def update_dependencies(
         script = entry.script_path
         if script.exists():
             text = script.read_text(encoding="utf-8", errors="replace")
+            constraint = meta.requires_python
+            if not constraint:
+                # The block is the source of truth when meta carries no constraint
+                # (deliberately, cli's identity rules) — so a deps edit must PRESERVE
+                # the block's own requires-python, not erase it by passing "".
+                block = pep723.parse_block(text) or {}
+                constraint = str(block.get("requires-python", "") or "")
             script.write_text(
-                pep723.set_dependencies(
-                    text, dependencies, requires_python=meta.requires_python or ""
-                ),
+                pep723.set_dependencies(text, dependencies, requires_python=constraint),
                 encoding="utf-8",
             )
     return Entry(slug=entry.slug, meta=meta, dir=entry.dir)

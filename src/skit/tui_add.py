@@ -300,9 +300,13 @@ class AddSourceScreen(Screen[str | None]):
             return
 
         def _reviewed(slug: str | None) -> None:
-            tmp.unlink(missing_ok=True)  # pragma: no mutate — the panel copied or cancelled
-            if slug is not None:
-                self.dismiss(slug)
+            if slug is None:
+                # The draft is the user's only copy — a cancelled review must never
+                # delete it silently. Keep it and say where it lives.
+                self.notify(gettext("Your draft was kept at %(path)s") % {"path": str(tmp)})
+                return
+            tmp.unlink(missing_ok=True)  # pragma: no mutate — the store holds the copy
+            self.dismiss(slug)
 
         if kind == "python":
             kind = _kind_for_draft(tmp)
@@ -324,7 +328,7 @@ class ExeReviewScreen(Screen[str | None]):
 
     BINDINGS = [
         Binding("escape", "cancel", gettext("Cancel")),
-        Binding("ctrl+a", "accept", gettext("Add"), priority=True),
+        Binding("ctrl+s", "accept", gettext("Add"), priority=True),
         *tui_footer.FIELD_NAV_BINDINGS,
     ]
     AUTO_FOCUS = "Input"
@@ -367,7 +371,7 @@ class ExeReviewScreen(Screen[str | None]):
         yield tui_footer.KeysBar(
             Static(
                 tui_footer.bar(
-                    tui_footer.chip("screen.accept", "Ctrl+A", gettext("Add")),
+                    tui_footer.chip("screen.accept", "Ctrl+S", gettext("Add")),
                     tui_footer.chip("screen.cancel", "Esc", gettext("Cancel")),
                     tui_footer.nav_chip(),
                 ),
@@ -396,7 +400,7 @@ class AddReviewScreen(Screen[str | None]):
     BINDINGS = [
         Binding("escape", "cancel", gettext("Cancel")),
         Binding("ctrl+e", "edit_source", gettext("Edit script"), priority=True),
-        Binding("ctrl+a", "accept", gettext("Add"), priority=True),
+        Binding("ctrl+s", "accept", gettext("Add"), priority=True),
         *tui_footer.FIELD_NAV_BINDINGS,
     ]
     # Boot on the name field, not the "*" pick (the body scroll container): the panel
@@ -546,7 +550,7 @@ class AddReviewScreen(Screen[str | None]):
         yield tui_footer.KeysBar(
             Static(
                 tui_footer.bar(
-                    tui_footer.chip("screen.accept", "Ctrl+A", gettext("Add")),
+                    tui_footer.chip("screen.accept", "Ctrl+S", gettext("Add")),
                     tui_footer.chip("screen.toggle_candidate", "Space", gettext("Toggle")),
                     tui_footer.chip("screen.edit_source", "Ctrl+E", gettext("Edit script")),
                     tui_footer.chip("screen.cancel", "Esc", gettext("Cancel")),
@@ -772,7 +776,7 @@ class PromptReviewScreen(Screen[str | None]):
     BINDINGS = [
         Binding("escape", "cancel", gettext("Cancel")),
         Binding("ctrl+e", "edit_source", gettext("Edit prompt"), priority=True),
-        Binding("ctrl+a", "accept", gettext("Add"), priority=True),
+        Binding("ctrl+s", "accept", gettext("Add"), priority=True),
         Binding("ctrl+n", "new_runner", gettext("New agent"), show=False, priority=True),
         *tui_footer.FIELD_NAV_BINDINGS,
     ]
@@ -880,7 +884,7 @@ class PromptReviewScreen(Screen[str | None]):
         yield tui_footer.KeysBar(
             Static(
                 tui_footer.bar(
-                    tui_footer.chip("screen.accept", "Ctrl+A", gettext("Add")),
+                    tui_footer.chip("screen.accept", "Ctrl+S", gettext("Add")),
                     tui_footer.chip("screen.toggle_candidate", "Space", gettext("Toggle")),
                     tui_footer.chip("screen.edit_source", "Ctrl+E", gettext("Edit prompt")),
                     tui_footer.chip("screen.cancel", "Esc", gettext("Cancel")),

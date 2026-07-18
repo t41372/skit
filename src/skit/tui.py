@@ -137,7 +137,11 @@ class ConfirmRemove(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         lines = [Label(gettext('Remove "%(name)s"?') % {"name": escape(self._entry.meta.name)})]
         spec = spec_for(self._entry.meta.kind)
-        if spec is None or spec.has_original_file:
+        source = self._entry.meta.source
+        if (spec is None or spec.has_original_file) and source and Path(source).exists():
+            # Only when the original actually still exists: for a drafted entry the
+            # "original" was a temp file — reassuring the user about a file that is
+            # already gone would be a lie.
             lines.append(Static(f"[dim]{gettext('Your original file will not be deleted.')}[/dim]"))
         # The verb line IS the button row: y/Esc stay advertised, and each chip is
         # clickable — modals must not be the one place that suddenly demands keys.

@@ -237,7 +237,7 @@ class ScriptSettingsScreen(Screen[bool]):
 
     BINDINGS = [
         Binding("escape", "close", gettext("Back")),
-        Binding("ctrl+a", "save", gettext("Save"), priority=True),
+        Binding("ctrl+s", "save", gettext("Save"), priority=True),
         Binding("ctrl+r", "resync", gettext("Resync"), priority=True),
         Binding("ctrl+n", "new_runner", gettext("New agent"), show=False, priority=True),
         *tui_footer.FIELD_NAV_BINDINGS,
@@ -342,7 +342,7 @@ class ScriptSettingsScreen(Screen[bool]):
         yield tui_footer.KeysBar(
             Static(
                 tui_footer.bar(
-                    tui_footer.chip("screen.save", "Ctrl+A", gettext("Save")),
+                    tui_footer.chip("screen.save", "Ctrl+S", gettext("Save")),
                     tui_footer.chip("screen.resync", "Ctrl+R", gettext("Resync")),
                     tui_footer.chip("screen.close", "Esc", gettext("Back")),
                     tui_footer.nav_chip(),

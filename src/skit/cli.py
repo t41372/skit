@@ -522,6 +522,20 @@ def _create_python_in_editor(
         if not name:
             err_console.print(f"[red]{gettext('A name is required.')}[/red]")
             raise typer.Exit(EXIT_USAGE)
+    try:
+        store.resolve(name)
+    except store.NotFoundError:
+        pass
+    else:
+        # BEFORE the editor opens: discovering the conflict after the user wrote a
+        # whole script (and then deleting their only copy) destroyed authored work.
+        err_console.print(
+            "[red]"
+            + gettext("The name %(name)s is already taken — pick another name.")
+            % {"name": escape(name)}
+            + _RED_CLOSE
+        )
+        raise typer.Exit(1)
     fd, tmp_name = tempfile.mkstemp(suffix=".py", prefix="skit-new-")  # pragma: no mutate
     os.close(fd)
     tmp = Path(tmp_name)
@@ -576,9 +590,13 @@ def _create_python_in_editor(
                 tmp, text, name=name, deps_opt=deps_opt, python_opt=python_opt
             )
     except (editor.EditorError, store.StoreError) as exc:
+        # The draft is the user's ONLY copy of what they just wrote — a failure must
+        # never delete it. Tell them where it lives instead.
+        err_console.print(
+            f"[dim]{gettext('Your draft was kept at %(path)s — fix the problem and add it with: skit add %(path)s') % {'path': escape(str(tmp))}}[/dim]"
+        )
         raise _fail(str(exc), 1) from exc
-    finally:
-        tmp.unlink(missing_ok=True)  # pragma: no mutate — the temp file always exists here
+    tmp.unlink(missing_ok=True)  # pragma: no mutate — success: the store holds the copy
     _print_add_summary(entry, deps, managed, secrets)
 
 
@@ -587,6 +605,7 @@ def _add_from_stdin(
     description: str | None,
     deps_opt: list[str] | None = None,
     python_opt: str | None = None,
+    text: str | None = None,
 ) -> None:
     """`skit add -`: ingest a script from stdin (e.g. `pbpaste | skit add - -n clip`).
     stdin is the script, so there is nobody to prompt: the non-interactive contract
@@ -598,7 +617,8 @@ def _add_from_stdin(
             f"[red]{gettext('Reading the script from stdin needs an explicit --name.')}[/red]"
         )
         raise typer.Exit(EXIT_USAGE)
-    text = sys.stdin.read()
+    if text is None:
+        text = sys.stdin.read()
     if not text.strip():
         err_console.print(
             f"[red]{gettext('Nothing arrived on stdin, so there is nothing to add.')}[/red]"
@@ -625,7 +645,9 @@ def _add_from_stdin(
     _print_add_summary(entry, deps, managed, secrets)
 
 
-def _add_script_from_stdin(kind: str, name: str | None, description: str | None) -> None:
+def _add_script_from_stdin(
+    kind: str, name: str | None, description: str | None, text: str | None = None
+) -> None:
     """`skit add - --kind shell`: the non-python twin of _add_from_stdin. Before this
     lane existed, --kind on stdin was SILENTLY DROPPED and the text became a python
     entry — bash source stored as script.py and fed to `uv run --script` (a corrupted
@@ -639,7 +661,8 @@ def _add_script_from_stdin(kind: str, name: str | None, description: str | None)
             f"[red]{gettext('Reading the script from stdin needs an explicit --name.')}[/red]"
         )
         raise typer.Exit(EXIT_USAGE)
-    text = sys.stdin.read()
+    if text is None:
+        text = sys.stdin.read()
     if not text.strip():
         err_console.print(
             f"[red]{gettext('Nothing arrived on stdin, so there is nothing to add.')}[/red]"
@@ -688,6 +711,15 @@ def _starter_prompt() -> str:
         )
         + "\n"
     )
+
+
+def _maybe_quiet(quiet: bool) -> Console:
+    """The stdout console for human confirmation lines — or a sink under --json, where
+    stdout must be exactly ONE JSON document (SKILL.md's stable-contract rule; the
+    deps write path set the precedent). stderr (err_console) is never silenced."""
+    import io
+
+    return Console(file=io.StringIO()) if quiet else console
 
 
 def _custom_runner_hint() -> str:
@@ -834,6 +866,18 @@ def _create_prompt_in_editor(
         if not name:
             err_console.print(f"[red]{gettext('A name is required.')}[/red]")
             raise typer.Exit(EXIT_USAGE)
+    try:
+        store.resolve(name)
+    except store.NotFoundError:
+        pass
+    else:
+        err_console.print(
+            "[red]"
+            + gettext("The name %(name)s is already taken — pick another name.")
+            % {"name": escape(name)}
+            + _RED_CLOSE
+        )
+        raise typer.Exit(1)
     fd, tmp_name = tempfile.mkstemp(suffix=".prompt.md", prefix="skit-new-")  # pragma: no mutate
     os.close(fd)
     tmp = Path(tmp_name)
@@ -856,9 +900,13 @@ def _create_prompt_in_editor(
             interpolate=interpolate,
         )
     except (editor.EditorError, store.StoreError) as exc:
+        # Same draft-preservation rule as the script editor lane: the temp file is the
+        # user's only copy of what they just wrote.
+        err_console.print(
+            f"[dim]{gettext('Your draft was kept at %(path)s — fix the problem and add it with: skit add %(path)s') % {'path': escape(str(tmp))}}[/dim]"
+        )
         raise _fail(str(exc), 1) from exc
-    finally:
-        tmp.unlink(missing_ok=True)  # pragma: no mutate — the temp file always exists here
+    tmp.unlink(missing_ok=True)  # pragma: no mutate — success: the store holds the copy
     _print_add_summary(entry, [], managed, [n for n in managed if is_secret_name(n)])
 
 
@@ -1061,6 +1109,7 @@ def add(
         if prompt_kind:
             _add_prompt_from_stdin(name, description, runner, interpolate=not no_interpolate)
             return
+        stdin_text = sys.stdin.read()
         if kind is not None:
             _validate_forced_kind(kind)
             if kind == "exe":  # --kind exe: same impossibility as --exe, same refusal
@@ -1068,10 +1117,17 @@ def add(
                     f"[red]{gettext('--exe needs an existing program on disk — stdin and the editor author scripts.')}[/red]"
                 )
                 raise typer.Exit(EXIT_USAGE)
-            if kind != "python":
-                _add_script_from_stdin(kind, name, description)
-                return
-        _add_from_stdin(name, description, deps_opt=dep, python_opt=python)
+        else:
+            # No --kind: the piped text's shebang is the explicit signal, honored by
+            # the SAME registry rule as both draft lanes — `pbpaste | skit add -` of
+            # a bash snippet must never be stored as a broken python entry.
+            from .langs.registry import kind_for_shebang_text
+
+            kind = kind_for_shebang_text(stdin_text) or "python"
+        if kind != "python":
+            _add_script_from_stdin(kind, name, description, stdin_text)
+            return
+        _add_from_stdin(name, description, deps_opt=dep, python_opt=python, text=stdin_text)
         return
     if prompt_kind and not path:
         _create_prompt_in_editor(name, description, runner, interpolate=not no_interpolate)
@@ -2853,7 +2909,7 @@ def params(
     if interpolate_opt is not None:
         # Its own op, like --runner: flipping the master switch changes what the entry
         # IS at run time, so it never mixes into the schema-edit pass.
-        _set_prompt_interpolate(entry, interpolate_opt)
+        _set_prompt_interpolate(entry, interpolate_opt, quiet=as_json)
         if as_json:
             # --json on a write: the final read view (fix #14's rule holds on
             # EVERY write branch of this command, not just the two it touched).
@@ -2862,7 +2918,7 @@ def params(
     if runner_pin is not None:
         # Its own op, like --normalize: re-pinning changes how the entry LAUNCHES, so
         # mixing it into the schema-edit pass would make the outcome order-dependent.
-        _pin_prompt_runner(entry, runner_pin)
+        _pin_prompt_runner(entry, runner_pin, quiet=as_json)
         if as_json:
             # --json on a write: the final read view (fix #14's rule holds on
             # EVERY write branch of this command, not just the two it touched).
@@ -2870,7 +2926,7 @@ def params(
         return
     if workdir_opt is not None or interpreter_opt is not None or template_opt is not None:
         # Entry policy, not schema — its own op for the same order-independence reason.
-        _edit_entry_policy(entry, workdir_opt, interpreter_opt, template_opt)
+        _edit_entry_policy(entry, workdir_opt, interpreter_opt, template_opt, quiet=as_json)
         if as_json:
             # --json on a write: the final read view (fix #14's rule holds on
             # EVERY write branch of this command, not just the two it touched).
@@ -2880,7 +2936,7 @@ def params(
         # A source-idiom rewrite of the user's own stored file — deliberately its own op, not a
         # modifier on the others: it changes what a parameter IS (inject-delivered -> env-delivered),
         # so mixing it into the same pass as --manage/--secret would make the outcome order-dependent.
-        _normalize_params(entry, entry_spec, normalize_opt)
+        _normalize_params(entry, entry_spec, normalize_opt, quiet=as_json)
         if as_json:
             # --json on a write: the final read view (fix #14's rule holds on
             # EVERY write branch of this command, not just the two it touched).
@@ -2952,6 +3008,7 @@ def params(
                 + bad_prompts
                 + bad_env
             ),
+            quiet=as_json,
         )
         if as_json:
             # --json on a write: emit the final state as the machine contract (the
@@ -2970,6 +3027,7 @@ def params(
             prompts=prompts,
             env_sources=env_sources,
             malformed=bad_prompts + bad_env,
+            quiet=as_json,
         )
         if as_json:
             # Same machine contract as the declared branch above.
@@ -2983,10 +3041,13 @@ def _edit_entry_policy(
     workdir_opt: str | None,
     interpreter_opt: str | None,
     template_opt: str | None,
+    *,
+    quiet: bool = False,
 ) -> None:
     """params --workdir / --interpreter / --template: the entry policies the product
     previously exposed nowhere outside a hand-edited meta.toml (or not at all — a
     command's template was frozen forever at add time)."""
+    console = _maybe_quiet(quiet)
     try:
         if template_opt is not None:
             entry = store.update_template(entry.slug, template_opt)
@@ -3012,10 +3073,11 @@ def _edit_entry_policy(
         raise _fail(str(exc), 1) from exc
 
 
-def _pin_prompt_runner(entry: store.Entry, runner_pin: str) -> None:
+def _pin_prompt_runner(entry: store.Entry, runner_pin: str, *, quiet: bool = False) -> None:
     """`skit params <prompt> --runner NAME`: pin (or, with an empty value, clear) the
     agent the entry runs with. Pinning an unknown name would store a run that can only
     exit 126 — validated against the configured list instead."""
+    console = _maybe_quiet(quiet)
     if entry.meta.kind != "prompt":
         raise _fail(gettext("--runner only applies to prompt entries."), 1)
     name = runner_pin.strip()
@@ -3045,9 +3107,10 @@ def _pin_prompt_runner(entry: store.Entry, runner_pin: str) -> None:
         )
 
 
-def _set_prompt_interpolate(entry: store.Entry, interpolate: bool) -> None:
+def _set_prompt_interpolate(entry: store.Entry, interpolate: bool, *, quiet: bool = False) -> None:
     """`skit params <prompt> --interpolate/--no-interpolate`: the per-entry insertion
     master switch. The managed list survives an off/on round trip."""
+    console = _maybe_quiet(quiet)
     if entry.meta.kind != "prompt":
         raise _fail(gettext("--interpolate only applies to prompt entries."), 1)
     try:
@@ -3099,8 +3162,10 @@ def _edit_params(
     prompts: dict[str, str],
     env_sources: dict[str, str],
     malformed: list[str],
+    quiet: bool = False,
 ) -> None:
     """Apply parameter-definition changes to a copy-mode Python entry (rewrites [tool.skit])."""
+    console = _maybe_quiet(quiet)
     entry_spec = spec_for(entry.meta.kind)
     if entry_spec is None or entry_spec.params_io is None or entry_spec.analyzer is None:
         raise _fail(
@@ -3199,10 +3264,13 @@ def _reanchor_as_envdefault(spec: ParamDecl, cand: analysis.Candidate) -> ParamD
     return decl
 
 
-def _normalize_params(entry: store.Entry, entry_spec: LangSpec | None, names: list[str]) -> None:
+def _normalize_params(
+    entry: store.Entry, entry_spec: LangSpec | None, names: list[str], *, quiet: bool = False
+) -> None:
     """`skit params <shell> --normalize NAME`: rewrite `NAME=value` into `NAME="${NAME:-value}"` in
     the STORED COPY, then re-read the analyzer so the parameter becomes an env-delivered one — no
     temporary copy is ever written for it again, and $0 keeps pointing at the real file."""
+    console = _maybe_quiet(quiet)
     if (
         entry_spec is None
         or entry_spec.normalizer is None
@@ -3299,6 +3367,7 @@ def _edit_declared_params(
     prompts: dict[str, str],
     env_sources: dict[str, str],
     malformed: list[str],
+    quiet: bool = False,
 ) -> None:
     """Apply declared-schema changes to a meta-schema entry (rewrites meta.toml [[parameters]]).
 
@@ -3320,6 +3389,7 @@ def _edit_declared_params(
     maintain the MANAGED list (meta `params`) — managing a detected placeholder / unmanaging one
     is exactly the add/remove of its row. An --rm of a managed-but-undeclared name (the common
     synthesized case) is therefore real work for a prompt, not a `not-declared` warning."""
+    console = _maybe_quiet(quiet)
     is_prompt = entry.meta.kind == "prompt"
     if is_prompt and not entry.meta.interpolate:
         # The read view says insertion is off; the edit surface must not silently scan
@@ -3687,13 +3757,18 @@ def doctor(
     from .paths import scripts_dir
 
     uv = launcher.find_uv()
+    rebuilt: tuple[int, list[str]] | None = None
     if rebuild:
-        count, problems = store.doctor_rebuild()
-        console.print(
-            f"[green]{ngettext('Index rebuilt: %(count)s entry', 'Index rebuilt: %(count)s entries', count) % {'count': count}}[/green]"
-        )
-        for p in problems:
-            console.print(f"  [yellow]{escape(p)}[/yellow]")
+        rebuilt = store.doctor_rebuild()
+        count, problems = rebuilt
+        if not as_json:
+            # Under --json stdout is exactly one JSON document — the rebuild report
+            # rides in the payload instead of preceding it as prose.
+            console.print(
+                f"[green]{ngettext('Index rebuilt: %(count)s entry', 'Index rebuilt: %(count)s entries', count) % {'count': count}}[/green]"
+            )
+            for p in problems:
+                console.print(f"  [yellow]{escape(p)}[/yellow]")
     entries = store.list_entries()
     # One shared collector with the TUI Health screen (healthcheck.collect) — the two
     # faces previously swept separately and disagreed about what "healthy" means.
@@ -3716,6 +3791,8 @@ def doctor(
                     "needs_missing": needs_missing,
                     "launch_blocked": report.launch_blocked,
                     "runner_rows_invalid": bad_runners,
+                    "rebuilt": rebuilt[0] if rebuilt else None,
+                    "rebuild_problems": rebuilt[1] if rebuilt else [],
                     "mirror": mirror.pypi if mirror.enabled else "off",
                     "location": str(location),
                     "size_bytes": size,
@@ -3892,9 +3969,17 @@ def config_cmd(
         )
         raise typer.Exit(EXIT_USAGE)
     if value is None:
+        if as_json:
+            console.print_json(json.dumps({key: _config_value(key)}, ensure_ascii=False))
+            return
         console.print(escape(_config_value(key)))
         return
     _config_set(key, value)
+    if as_json:
+        # Under --json stdout is exactly one JSON document: the final state, same
+        # shape as the read (the flag was previously ignored on these two paths).
+        console.print_json(json.dumps({key: _config_value(key)}, ensure_ascii=False))
+        return
     console.print(f"[green]{key} = {escape(_config_value(key))}[/green]")
 
 

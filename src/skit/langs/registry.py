@@ -371,9 +371,15 @@ def shebang_program(path: Path) -> str | None:
             first = f.readline(512)
     except OSError:
         return None
-    if not first.startswith(b"#!"):
+    return shebang_program_from_line(first.decode("utf-8", errors="replace"))
+
+
+def shebang_program_from_line(line: str) -> str | None:
+    """The path-less half of shebang_program, for text that isn't on disk yet (the
+    stdin add lane) — SAME parsing, one rule."""
+    if not line.startswith("#!"):
         return None
-    tokens = first[2:].decode("utf-8", errors="replace").split()
+    tokens = line[2:].split()
     if not tokens:
         return None
     program = Path(tokens[0]).name
@@ -385,6 +391,16 @@ def shebang_program(path: Path) -> str | None:
         else:
             return None
     return program
+
+
+def kind_for_shebang_text(text: str) -> str | None:
+    """The kind a text blob's first line names (None = no/unregistered shebang) — the
+    stdin twin of kind_for_shebang."""
+    first = text.split("\n", 1)[0]
+    program = shebang_program_from_line(first)
+    if program is None:
+        return None
+    return _shebang_map().get(program)
 
 
 @cache

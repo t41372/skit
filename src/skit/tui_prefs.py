@@ -104,7 +104,7 @@ class PreferencesScreen(Screen[bool]):
 
     BINDINGS = [
         Binding("escape", "close", gettext("Back")),
-        Binding("ctrl+a", "save", gettext("Save"), priority=True),
+        Binding("ctrl+s", "save", gettext("Save"), priority=True),
         # Ctrl+O/Ctrl+K, not Ctrl+N/Ctrl+T (those mean "New agent" / "insert value"
         # elsewhere) — and NON-priority: Ctrl+K is every Input's delete-to-end-of-line,
         # and a screen full of text fields must never answer an editing chord with a
@@ -312,7 +312,7 @@ class PreferencesScreen(Screen[bool]):
         yield tui_footer.KeysBar(
             Static(
                 tui_footer.bar(
-                    tui_footer.chip("screen.save", "Ctrl+A", gettext("Save")),
+                    tui_footer.chip("screen.save", "Ctrl+S", gettext("Save")),
                     tui_footer.chip("screen.close", "Esc", gettext("Back")),
                     tui_footer.nav_chip(),
                 ),
