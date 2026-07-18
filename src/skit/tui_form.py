@@ -152,7 +152,7 @@ class FieldRow(Vertical):
     def _compose_control(self) -> ComposeResult:
         f = self.field
         if f.kind == "bool":
-            on = self._prefill.strip().lower() in ("true", "1", "yes")
+            on = flows.truthy(self._prefill)
             yield Checkbox(gettext("on") if on else gettext("off"), value=on)
         elif f.kind == "choice" and f.choices:
             with RadioSet():
@@ -174,7 +174,7 @@ class FieldRow(Vertical):
     def set_value(self, value: str) -> None:
         f = self.field
         if f.kind == "bool":
-            self.query_one(Checkbox).value = value.strip().lower() in ("true", "1", "yes")
+            self.query_one(Checkbox).value = flows.truthy(value)
         elif f.kind == "choice" and f.choices:
             if value in f.choices:
                 buttons = list(self.query(RadioButton))
@@ -598,7 +598,7 @@ class RunFormScreen(Screen[FormResult]):
             yield Static(gettext("Preset:"), markup=False)
             if self._presets:
                 yield Select(
-                    [(gettext("last values"), "")]
+                    [(gettext("↩ last values"), "")]
                     + [(name, name) for name in sorted(self._presets)],
                     value="",
                     allow_blank=False,
@@ -729,7 +729,14 @@ class RunFormScreen(Screen[FormResult]):
                 severity="warning",
             )
             return
-        values, _extra = self.collect()
+        collected, _extra = self.collect()
+        # The CLI opens a REDUCED form when --set fixed some fields: those values ride
+        # in the prefill but have no composed row, and a preset saved here must capture
+        # them too — `--save-preset` on the identical run does (one feature, one rule).
+        values = {
+            **{k: v for k, v in self._prefill.items() if v and k not in collected},
+            **collected,
+        }
 
         def _named(name: str | None) -> None:
             if not name:
@@ -756,7 +763,7 @@ class RunFormScreen(Screen[FormResult]):
         every Changed the refresh emits — including set_options' blank reset — is
         swallowed until the target value lands (see _apply_preset)."""
         self._skip_apply_until = selected
-        options = [(gettext("last values"), "")] + [(n, n) for n in sorted(self._presets)]
+        options = [(gettext("↩ last values"), "")] + [(n, n) for n in sorted(self._presets)]
         existing = self.query("#preset-select")
         if existing:
             select = existing.first(Select)

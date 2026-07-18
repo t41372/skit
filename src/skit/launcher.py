@@ -199,8 +199,9 @@ def run_entry(
     payload = _payload(entry, extra_args, values, script_override, runner)
     cwd = _resolve_workdir(entry, invoke_cwd or Path.cwd())
     _check_workdir(cwd)
-    # Overlay skit's mirror settings onto uv's environment — a no-op unless the user enabled them,
-    # and never clobbering a variable the user set themselves (see config.mirror_env).
+    # Overlay skit's mirror settings onto EVERY child's environment (uv reads the index
+    # vars, npm/bun read the registry var — the overlay exists for both) — a no-op
+    # unless the user enabled them, never clobbering a variable the user set themselves.
     env = {**os.environ, **config.mirror_env(os.environ), **(env_overlay or {})}
     # LaunchPayload is a closed two-member union, so isinstance/else is exhaustive (the
     # else narrows to ArgvLaunch) without the phantom no-match arm a `match` would add.

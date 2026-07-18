@@ -2021,15 +2021,19 @@ def run(
         # Refused BEFORE runner resolution: a refusal must not first ask which agent
         # to use, write last-picked state, or send the caller through a 126 that a
         # later usage error contradicts. Nothing is changed.
-        err_console.print(
-            "[red]"
-            + gettext(
-                "--raw doesn't apply to a %(kind)s entry: its {placeholders} are the "
+        if entry.meta.kind == "prompt":
+            # The prompt kind's real grammar is double-brace — teaching {x} here
+            # would contradict the syntax the user actually writes.
+            message = gettext(
+                "--raw doesn't apply to a prompt entry: its {{placeholders}} are the "
                 "artifact itself — there is no as-is without them."
             )
-            % {"kind": entry.meta.kind}
-            + _RED_CLOSE
-        )
+        else:
+            message = gettext(
+                "--raw doesn't apply to a %(kind)s entry: its {placeholders} are the "
+                "artifact itself — there is no as-is without them."
+            ) % {"kind": entry.meta.kind}
+        err_console.print("[red]" + message + _RED_CLOSE)
         raise typer.Exit(EXIT_USAGE)
     if forget_args:
         # An imperative clear — but placed BELOW every usage gate: an exit-2
@@ -3342,6 +3346,9 @@ def _render_declared_warning(warning: str) -> str:
             "%(name)s: unknown type; skipped (use str, int, float, bool, or choice)."
         ),
         "bad-default": gettext("%(name)s: the default doesn't fit its type; skipped."),
+        "env-source-not-secret": gettext(
+            "%(name)s isn't secret; --env-source only applies to secret parameters (mark it with --secret first)."
+        ),
         "choice-without-choices": gettext(
             "%(name)s: a choice parameter needs choices; set --choices %(name)s=a,b,c."
         ),

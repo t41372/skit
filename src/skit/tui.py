@@ -71,6 +71,17 @@ def _kind_badge(kind: str) -> tuple[str, str]:
     return (spec.glyph if spec is not None else "?"), label
 
 
+def _runner_detail_line(entry: Entry) -> str:
+    """The detail pane's runner line — honest about a pin whose config row is gone
+    (Script settings says "(no longer configured)"; two surfaces, one truth)."""
+    pin = entry.meta.runner
+    if not pin:
+        return gettext("Runner picked on the run form")
+    if config.find_prompt_runner(pin) is None:
+        return gettext("%(runner)s (no longer configured)") % {"runner": escape(pin)}
+    return gettext("Runs with %(runner)s") % {"runner": escape(pin)}
+
+
 def _fuzzy_match(query: str, text: str) -> bool:
     """Subsequence fuzzy match (case-insensitive)."""
     q = query.lower()
@@ -517,9 +528,7 @@ class MenuApp(App[int | PendingRun]):
         if spec is not None and spec.family == "template":
             lines.append(f"[dim]{escape(entry.meta.template)}[/dim]")
         if entry.meta.kind == "prompt":
-            lines.append(
-                f"[dim]🤖 {gettext('Runs with %(runner)s') % {'runner': escape(entry.meta.runner)} if entry.meta.runner else gettext('Runner picked on the run form')}[/dim]"
-            )
+            lines.append(f"[dim]🤖 {_runner_detail_line(entry)}[/dim]")
         lines.append("")
         lines.append(
             escape(entry.meta.description)

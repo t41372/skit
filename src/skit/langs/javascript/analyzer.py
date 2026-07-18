@@ -86,7 +86,11 @@ def analyze(text: str, *, lang: str = "js") -> Analysis:
         if c.name in mutated:
             c.demoted = True
             c.demotion = "accumulator"
-    return Analysis(candidates=consts)
+    # The passthrough hint every sibling analyzer gives (python's sys.argv, shell's
+    # $1/getopts, fish's $argv): a script reading its own arguments gets the run
+    # form's extra-arguments pointer instead of silence.
+    uses_argv = any(marker in text for marker in ("process.argv", "Deno.args", "Bun.argv"))
+    return Analysis(candidates=consts, uses_argv=uses_argv)
 
 
 def reconcile(text: str, specs: list[ParamDecl], *, lang: str = "js") -> Report:

@@ -62,7 +62,14 @@ class KindPickModal(ModalScreen[str | None]):
     KindPickModal > Vertical { border: round $accent; padding: 1 2; width: 56;
         max-width: 100%; height: auto; max-height: 100%; background: $background; }
     KindPickModal OptionList { height: auto; max-height: 10; border: none; }
+    /* Short terminals: cap the list and flatten the chrome so the Esc chip — the
+       modal's mouse path out — stays on screen across the whole tier band; the
+       OptionList scrolls internally (the TokenMenuModal discipline). */
+    KindPickModal.-h-short > Vertical, KindPickModal.-h-tiny > Vertical { padding: 0 2; }
+    KindPickModal.-h-short OptionList { max-height: 4; }
+    KindPickModal.-h-tiny OptionList { max-height: 2; }
     KindPickModal Static { width: auto; margin: 1 0 0 0; }
+    KindPickModal.-h-short Static, KindPickModal.-h-tiny Static { margin: 0; }
     """
 
     def __init__(self, filename: str) -> None:
@@ -547,19 +554,22 @@ class AddReviewScreen(Screen[str | None]):
             with Vertical(id="rv-params-wrap"):
                 yield from self._compose_params()
             yield Static("", id="rv-ref-note", classes="hint", markup=False)
-        yield tui_footer.KeysBar(
-            Static(
-                tui_footer.bar(
-                    tui_footer.chip("screen.accept", "Ctrl+S", gettext("Add")),
-                    tui_footer.chip("screen.toggle_candidate", "Space", gettext("Toggle")),
-                    tui_footer.chip("screen.edit_source", "Ctrl+E", gettext("Edit script")),
-                    tui_footer.chip("screen.cancel", "Esc", gettext("Cancel")),
-                    tui_footer.nav_chip(),
-                ),
-                id="review-keys",
-                markup=True,
-            )
-        )
+        chips = [tui_footer.chip("screen.accept", "Ctrl+S", gettext("Add"))]
+        if (
+            self._spec is not None
+            and self._spec.analyzer is not None
+            and self._analysis.candidates
+            and not self._analysis.uses_cli_framework
+        ):
+            # The same condition that composes the checkboxes: advertising Space with
+            # nothing to toggle teaches a dead key.
+            chips.append(tui_footer.chip("screen.toggle_candidate", "Space", gettext("Toggle")))
+        chips += [
+            tui_footer.chip("screen.edit_source", "Ctrl+E", gettext("Edit script")),
+            tui_footer.chip("screen.cancel", "Esc", gettext("Cancel")),
+            tui_footer.nav_chip(),
+        ]
+        yield tui_footer.KeysBar(Static(tui_footer.bar(*chips), id="review-keys", markup=True))
 
     def action_toggle_candidate(self) -> None:
         """Footer/Space twin: flip the focused candidate checkbox (each checkbox is also

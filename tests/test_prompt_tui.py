@@ -347,7 +347,7 @@ async def test_tui_add_prompt_opens_the_review_panel(tmp_path):
         boxes = [c for c in review.query(Checkbox) if (c.id or "").startswith("pv-hole-")]
         assert len(boxes) == 2
         assert all(b.value for b in boxes)  # under the cap: everything pre-ticked
-        await pilot.press("ctrl+a")  # the advertised Add key
+        await pilot.press("ctrl+s")  # the advertised Add key
         await pilot.pause()
         await pilot.pause()
     entry = store.resolve("task")

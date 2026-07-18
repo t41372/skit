@@ -148,16 +148,14 @@ def drift_lines(report: Report, name: str) -> list[str]:
     lines.extend(
         "  "
         + gettext(
-            "%(name)s: its prompt no longer matches a unique input() call; falling back to "
+            "%(name)s: its prompt no longer matches a unique input/read call; falling back to "
             "position (still injected — double-check this lands on the right question, "
             "especially if it's a secret)"
         )
         % {"name": spec.name}
         for spec, cand in report.rebind
     )
-    lines.append(
-        gettext("To refresh the definitions, re-run `skit add` or edit the [tool.skit] block.")
-    )
+    lines.append(gettext("To refresh the definitions, run: skit params NAME --resync"))
     return lines
 
 

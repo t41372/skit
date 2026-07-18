@@ -29,8 +29,12 @@ class HealthScreen(Screen[str | None]):
 
     BINDINGS = [
         Binding("escape", "close", gettext("Back")),
-        Binding("R", "rebuild", gettext("Rebuild index")),
+        # Ctrl+R per the key grammar: it refreshes the screen's subject everywhere.
+        Binding("ctrl+r", "rebuild", gettext("Rebuild index")),
     ]
+    # The issues list must own the keyboard when it exists, or the advertised
+    # "Enter Jump to script" lands on the scroll container and does nothing.
+    AUTO_FOCUS = "OptionList"
     DEFAULT_CSS = """
     HealthScreen #hc-body {
         padding: 0 1;
@@ -142,12 +146,12 @@ class HealthScreen(Screen[str | None]):
                 },
                 classes="hint",
             )
-            yield Static("", id="hc-rebuilt", classes="ok")
+            yield Static(getattr(self, "_rebuilt_report", ""), id="hc-rebuilt", classes="ok")
         yield tui_footer.KeysBar(
             Static(
                 tui_footer.bar(
                     tui_footer.chip("screen.jump", "Enter", gettext("Jump to script")),
-                    tui_footer.chip("screen.rebuild", "R", gettext("Rebuild index")),
+                    tui_footer.chip("screen.rebuild", "Ctrl+R", gettext("Rebuild index")),
                     tui_footer.chip("screen.close", "Esc", gettext("Back")),
                 ),
                 id="hc-keys",
@@ -171,13 +175,17 @@ class HealthScreen(Screen[str | None]):
 
     def action_rebuild(self) -> None:
         count, problems = store.doctor_rebuild()
-        report = self.query_one("#hc-rebuilt", Static)
         lines = [
             ngettext("Index rebuilt: %(count)s entry", "Index rebuilt: %(count)s entries", count)
             % {"count": count}
         ]
         lines += [escape(p) for p in problems]
-        report.update("\n".join(lines))
+        # The report above must reflect the rebuilt reality — a stale "3 scripts
+        # registered" next to "Index rebuilt: 5 entries" is the screen contradicting
+        # itself. Recompose (the settings resync discipline); the outcome line
+        # survives the recompose via the instance.
+        self._rebuilt_report = "\n".join(lines)
+        self.refresh(recompose=True)
 
     def action_close(self) -> None:
         self.dismiss(None)

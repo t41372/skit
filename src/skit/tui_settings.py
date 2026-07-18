@@ -339,18 +339,20 @@ class ScriptSettingsScreen(Screen[bool]):
             yield from self._compose_presets()
             yield from self._compose_deps()
             yield from self._compose_needs()
-        yield tui_footer.KeysBar(
-            Static(
-                tui_footer.bar(
-                    tui_footer.chip("screen.save", "Ctrl+S", gettext("Save")),
-                    tui_footer.chip("screen.resync", "Ctrl+R", gettext("Resync")),
-                    tui_footer.chip("screen.close", "Esc", gettext("Back")),
-                    tui_footer.nav_chip(),
-                ),
-                id="st-keys",
-                markup=True,
-            )
-        )
+        chips = [tui_footer.chip("screen.save", "Ctrl+S", gettext("Save"))]
+        if (
+            self._spec is not None
+            and self._spec.analyzer is not None
+            and self._entry.meta.mode == "copy"
+        ):
+            # The same guard action_resync applies: advertising a key that silently
+            # no-ops (prompt/exe/command/reference entries) teaches a dead chord.
+            chips.append(tui_footer.chip("screen.resync", "Ctrl+R", gettext("Resync")))
+        chips += [
+            tui_footer.chip("screen.close", "Esc", gettext("Back")),
+            tui_footer.nav_chip(),
+        ]
+        yield tui_footer.KeysBar(Static(tui_footer.bar(*chips), id="st-keys", markup=True))
 
     def _compose_storage(self) -> ComposeResult:
         meta = self._entry.meta

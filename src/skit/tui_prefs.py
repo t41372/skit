@@ -41,7 +41,13 @@ class SkillInstallModal(ModalScreen[str | None]):
     SkillInstallModal { align: center middle; }
     SkillInstallModal > Vertical { border: round $accent; padding: 1 2; width: 76;
         max-width: 100%; height: auto; max-height: 100%; background: $background; }
-    SkillInstallModal OptionList { height: auto; border: none; }
+    SkillInstallModal OptionList { height: auto; max-height: 8; border: none; }
+    /* Same short-terminal discipline as the other pick modals: the Esc chip is the
+       mouse path out and must stay on screen; the list scrolls internally. */
+    SkillInstallModal.-h-short > Vertical, SkillInstallModal.-h-tiny > Vertical { padding: 0 2; }
+    SkillInstallModal.-h-short OptionList { max-height: 3; }
+    SkillInstallModal.-h-tiny OptionList { max-height: 1; }
+    SkillInstallModal.-h-short Static, SkillInstallModal.-h-tiny Static { margin: 0; }
     SkillInstallModal .hint { color: $text-muted; }
     SkillInstallModal Static { width: auto; margin: 1 0 0 0; }
     """

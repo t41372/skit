@@ -339,8 +339,9 @@ class InterpreterLaunch:
         *,
         runner: PromptRunner | None = None,
     ) -> str:
-        # Side-effect-free: the bare interpreter name stands in (no PATH lookup) — the
-        # same stance describe takes on uv.
+        # Side-effect-free by design: the bare interpreter name stands in (no PATH
+        # lookup — resolve_interpreter may raise, and describe must never). UvLaunch
+        # differs deliberately: find_uv() is a cached, non-raising lookup.
         script = script_override or entry.script_path
         return join_for_display([self._interpreter_name(entry), *self._prefix, str(script), *extra])
 

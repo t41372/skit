@@ -501,7 +501,12 @@ def assemble(
         # test_assemble_degraded_empty_omitted_filled_passed (a missing field must not inject).
         raw = values.get(f.key, "")  # pragma: no mutate
         value = _final_value(f, raw, cwd=cwd, env=env, now=now)
-        if value:
+        if value and f.source == "inject":
+            # ONLY inject-delivered values belong under the "→ inject:" transparency
+            # line (its caveat is the temporary-copy rewrite); env values already
+            # render as a VAR=value prefix and flag/placeholder values appear in the
+            # command line itself — listing them here claimed a delivery that never
+            # happens.
             display.append((f.key, "•••" if f.secret else value))
         final[f.key] = value
     # expand_extra=False: the CLI's `-- args` already went through the user's shell —
@@ -648,10 +653,16 @@ def _expand_glob_piece(piece: str, cwd: Path) -> list[str]:
     return matches if matches else [piece]
 
 
-def _coerce_bool_lenient(value: str) -> bool:
-    """Checkbox state from its string form; anything unrecognized counts as unchecked
-    (validate() already rejected typed garbage for bool fields)."""
+def truthy(value: str) -> bool:
+    """THE bool-spelling rule, public and single: every renderer that shows a checkbox
+    state must accept exactly the spellings assembly accepts — "on"/"y" firing the
+    flag at run time while rendering unchecked was two rules pretending to be one.
+    Anything unrecognized counts as unchecked (validate() already rejected typed
+    garbage for bool fields)."""
     return value.strip().lower() in ("true", "1", "yes", "y", "on")
+
+
+_coerce_bool_lenient = truthy  # internal name kept for the assembly call sites
 
 
 # --------------------------------------------------------------------------

@@ -248,7 +248,8 @@ def disable() -> None:
 
 
 def mirror_env(base_env: Mapping[str, str]) -> dict[str, str]:
-    """The env overlay to inject into uv child processes.
+    """The env overlay for skit's child processes (uv reads the index/install vars,
+    npm/bun read the registry var — one overlay, every ecosystem it names).
 
     Returns only the variables the user has NOT already set themselves (their env wins — the "defer"
     rule). Empty when mirrors are disabled.
