@@ -23,8 +23,7 @@ enter — never an internal flag:
     underneath an open screen made an untouched field look like an explicit edit. Now the baseline is
     stashed at compose time — the same open-time clock every other axis diffs against.
 
-These never chdir and never touch the real user dirs (the local SKIT_* fixture); --json is read off
-result.stdout for purity.
+These never chdir and never touch the real user dirs (the local SKIT_* fixture).
 """
 
 from __future__ import annotations

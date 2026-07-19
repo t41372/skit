@@ -262,8 +262,8 @@ def test_deps_python_only_dash_reports_the_dash_placeholder(tmp_path):
 
 
 def test_deps_dep_only_prints_the_deps_line(tmp_path):
-    """--dep alone edited the dependency list, so the confirmation is the deps line — not the
-    constraint line (the else branch of the message selection)."""
+    """--dep alone edited only the dependency axis, so the confirmation is the deps line — the
+    constraint line is absent because its gate (`python is not None`) never fired."""
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     result = runner.invoke(cli.app, ["deps", "a", "--dep", "requests"])
     assert result.exit_code == 0, result.output
@@ -287,8 +287,8 @@ def test_deps_dep_and_python_together_prints_both_axis_lines(tmp_path):
 
 
 def test_deps_clear_prints_the_deps_line(tmp_path):
-    """--clear is a dependency edit (to empty), so it takes the deps line too — the python-only
-    branch is gated on `not clear`, so an emptied list is never mistaken for a constraint edit."""
+    """--clear is a dependency edit (to empty), so it takes the deps line too — and with no
+    --python given, the constraint line's own gate (`python is not None`) stays silent."""
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     store.update_dependencies("a", ["requests"])
     result = runner.invoke(cli.app, ["deps", "a", "--clear"])
