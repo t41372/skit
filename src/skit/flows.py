@@ -148,7 +148,7 @@ class FormField:
         return cls(
             key=d.name,
             label=d.prompt or d.name,
-            kind=d.type if d.type in ("int", "float", "bool", "choice") else "str",
+            kind=d.type if d.type in ("int", "float", "bool", "choice", "path") else "str",
             source="placeholder",
             choices=list(d.choices),
             default="" if d.default is None else _render_default(d.default),

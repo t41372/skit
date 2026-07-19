@@ -163,13 +163,14 @@ branch** — see Deferred.
 
 The Python static reader already *sees* path-ness and discards it. Stop discarding:
 
-- argparse: `type=Path` → `"path"` (today: comment-acknowledged, emitted as str,
-  `argspec.py:186`). `type=argparse.FileType(...)` → `"path"` (today: degrades the whole
-  field to free-text — this is a strict upgrade; the value the user supplies *is* a
-  filename).
-- click: `type=click.Path(...)` / `click.File(...)` → `"path"` (today: degraded).
+- argparse: `type=Path` (bare or dotted `pathlib.Path`) → `"path"` (previously:
+  comment-acknowledged, emitted as str). `type=argparse.FileType(...)` → `"path"`
+  (previously: degraded the whole field to free-text — a strict upgrade; the value the
+  user supplies *is* a filename).
+- click: `type=click.Path(...)` / `click.File(...)` → `"path"` (previously: degraded);
+  a bare `type=Path` conversion callable counts too — the same rule as argparse.
   Keyword arguments (`exists=`, `dir_okay=`, …) are ignored in P1 — deferred.
-- typer: `Path` annotation → `"path"` (today: mapped to `"str"` in
+- typer: `Path` annotation → `"path"` (previously: mapped to `"str"` in
   `_ANNOTATION_KINDS`).
 
 The CLI-reader lane is in-memory per read — nothing is stored, so no drift surface
@@ -182,8 +183,10 @@ a parameter being called `file` is guessing, and skit does not guess. Those lang
 reach `path` via declared `type = "path"`; the universal affordance covers the
 undeclared case regardless.
 
-New golden-corpus inputs cover each detection (argparse `Path`/`FileType`, `click.Path`,
-`click.File`, typer `Path`) — byte-exact, excluded from fixers, like all corpus files.
+Each detection is pinned by reader samples in `tests/test_argspec.py` /
+`tests/test_argspec_click_typer.py` — the CLI-reader lane's existing test home.
+(`tests/corpus/` feeds the const/input analyzer, not the reader; no new corpus files
+are involved, and the existing corpus stays byte-untouched.)
 
 ### 3. Completion roots — three coordinate systems, named honestly
 
@@ -361,10 +364,11 @@ zh_TW to 100% → `compile`), checking each formerly-translated enumeration by h
    their own recognition tests.
 9. **Missing root degrade** — suggester silent, picker at nearest existing ancestor
    with notice (§3), pinned via a vanished-origin reference entry.
-10. **Corpus fidelity** — new analyzer corpus files are byte-exact and fixer-excluded.
+10. **Corpus fidelity** — the golden corpus is untouched by this design; detections
+    are pinned by reader samples (§2).
 11. **Merge-conflict containment** — all new TUI code in `tui_pathpick.py`; the
-    `tui_form.py` diff is hook-sized, and P1b is sequenced after the prompt-kind form
-    work stabilizes.
+    `tui_form.py` diff is hook-sized. (feat/prompt-kind squash-merged as PR #14 on
+    2026-07-19, so the form is stable; the module split remains the right shape.)
 
 The usual hard gates apply: ruff, ty strictest, 100% coverage, mutmut zero survivors,
 i18n 100%, agent-skill sync, golden-corpus byte fidelity.
@@ -375,7 +379,7 @@ i18n 100%, agent-skill sync, golden-corpus byte fidelity.
   `params.py` type axis, the reconcile/resync compatibility predicate, Python analyzer
   detection + corpus, declared/meta/CLI/JSON round-trip, SKILL.md + packaged-copy
   sync, tests.
-- **P1b — TUI (after the prompt-kind form stabilizes)**: `tui_pathpick.py` (suggester +
+- **P1b — TUI**: `tui_pathpick.py` (suggester +
   picker), token-menu row, the per-shape roots of §3, pilot tests, i18n.
 - **P1c — ship polish**: demo-asset regeneration (the run form's visible copy changes),
   README only if screenshots are referenced anew.
