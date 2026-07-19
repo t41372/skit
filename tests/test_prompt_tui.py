@@ -634,6 +634,10 @@ async def _open_settings(app, pilot):
     app.action_settings()
     await pilot.pause()
     assert isinstance(app.screen, ScriptSettingsScreen)
+    # The prompt-field display is hidden on mount via call_after_refresh; a second pause
+    # lets that settle before callers inspect #st-prompt-fields.display (the Windows
+    # py3.12 pilot needs the extra tick — one pause is a timing race there).
+    await pilot.pause()
     return app.screen
 
 
