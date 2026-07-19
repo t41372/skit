@@ -3,7 +3,7 @@
 # CLI command, and config dirs all stay "skit".
 name = "skit-cli"
 version = "0.2.1.dev0"
-description = "Script launcher and parameter manager: all your scripts in one menu, their flags, input() calls, and constants auto-extracted into a run form — no more opening an IDE just to tweak a value."
+description = "Launcher and parameter manager for scripts, prompts, programs, and commands: one library, one run form, nothing to memorize."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
@@ -19,6 +19,7 @@ keywords = [
     "script-runner",
     "automation",
     "ai-agent",
+    "ai-prompt",
     "agent-skills",
 ]
 classifiers = [
@@ -39,6 +40,7 @@ classifiers = [
 dependencies = [
     "typer>=0.26,<1",
     "platformdirs>=4.10,<5",
+    "packaging>=24,<27",
     "tomli-w>=1.2,<2",
     "textual>=8.2,<9",
     "rich>=15,<16",
@@ -66,6 +68,7 @@ dev = [
     "mutmut>=3.6,<4",
     "zizmor>=1.26,<2",
     "babel>=2.18,<3",  # dev-only: extract/update/compile .po↔.mo (runtime uses stdlib gettext)
+    "pytest-rerunfailures>=16.4",
 ]
 
 [build-system]
@@ -196,5 +199,14 @@ pytest_add_cli_args_test_selection = ["tests/"]
 # the packaged copy; mutmut's mutants/ tree only carries src/ + tests/ by default.
 # README.md rides along because pyproject's `readme` references it — without it, uv
 # can't build the project inside mutants/ on a cold cache. scripts/ rides along because
-# the i18n-gate tests (test_js_deps.py) import scripts/i18n_coverage.py by path.
-also_copy = ["skills/", "README.md", "scripts/"]
+# the i18n-gate tests (test_js_deps.py) import scripts/i18n_coverage.py by path. locales/
+# must be explicit too: mutmut never refreshes non-Python files already present under a
+# reused source_paths copy, while also_copy directories are overlaid on every run. That
+# applies to both runtime package-data trees: translation catalogs and the bundled skill.
+also_copy = [
+    "skills/",
+    "README.md",
+    "scripts/",
+    "src/skit/locales/",
+    "src/skit/skills/",
+]

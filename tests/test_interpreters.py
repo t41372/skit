@@ -342,6 +342,53 @@ def test_shebang_env_with_only_flags_is_none(tmp_path: Path):
     assert reg.shebang_program(p) is None  # env, then nothing but a flag
 
 
+def test_kind_for_shebang_maps_the_program_or_none(tmp_path: Path):
+    """The one shebang→kind mapping, shared by the TUI draft lane and the CLI --edit lane
+    (registry.kind_for_shebang). A registered #! program names its kind; an unmapped or
+    absent shebang is None — the caller (never this helper) decides the python fallback."""
+    bash = _write(tmp_path, "a", b"#!/usr/bin/env bash\necho hi\n")
+    assert reg.kind_for_shebang(bash) == "shell"
+
+    node = _write(tmp_path, "b", b"#!/usr/bin/env node\n")
+    assert reg.kind_for_shebang(node) == "js"
+
+    py = _write(tmp_path, "c", b"#!/usr/bin/env python3\n")
+    assert reg.kind_for_shebang(py) == "python"
+
+    unmapped = _write(tmp_path, "d", b"#!/usr/bin/env cobol\n")
+    assert reg.kind_for_shebang(unmapped) is None  # recognized shape, unmapped program
+
+    no_shebang = _write(tmp_path, "e", b"echo hi\n")
+    assert reg.kind_for_shebang(no_shebang) is None  # no #! at all
+
+
+def test_kind_for_shebang_versioned_python_is_python(tmp_path: Path):
+    """A versioned interpreter name (`python3.12`, uv/pyenv-provisioned) is the SAME explicit
+    signal as `python3` — one registry rule (_kind_for_program) so every shebang→kind consumer
+    agrees. `pythonw` is NOT a versioned python (trailing letters), so it stays unmapped."""
+    v = _write(tmp_path, "v", b"#!/usr/bin/env python3.12\nprint(1)\n")
+    assert reg.kind_for_shebang(v) == "python"
+
+    w = _write(tmp_path, "w", b"#!/usr/bin/env pythonw\nprint(1)\n")
+    assert reg.kind_for_shebang(w) is None  # trailing 'w' -> the fullmatch fails, not versioned
+
+
+def test_kind_for_shebang_text_versioned_python_and_non_matches():
+    """The text twin (used by the stdin lane) goes through the same _kind_for_program rule."""
+    assert reg.kind_for_shebang_text("#!/usr/bin/env python3.12\nprint(1)\n") == "python"
+    assert reg.kind_for_shebang_text("#!/usr/bin/env python3\n") == "python"  # already-mapped
+    assert reg.kind_for_shebang_text("#!/usr/bin/env python\n") == "python"  # bare, zero digits
+    assert reg.kind_for_shebang_text("#!/usr/bin/env pythonw\n") is None  # trailing letters
+    assert reg.kind_for_shebang_text("#!/usr/bin/awk -f\nBEGIN { print 1 }\n") is None
+
+
+def test_infer_kind_versioned_python_shebang(tmp_path: Path):
+    """infer_kind's shebang branch also routes through _kind_for_program: an extensionless
+    file whose #! names python3.12 is python (not exe from a +x bit, not unknown)."""
+    p = _write(tmp_path, "runme", b"#!/usr/bin/env python3.12\nprint(1)\n", executable=True)
+    assert reg.infer_kind(p) == "python"
+
+
 def test_infer_extension_beats_shebang(tmp_path: Path):
     # A .py file whose shebang says bash is still python — the extension is authoritative.
     p = _write(tmp_path, "j.py", b"#!/bin/bash\n", executable=True)
@@ -659,7 +706,7 @@ def test_show_interpreted_header_and_source(tmp_path: Path):
     _shell(tmp_path)
     result = runner.invoke(cli.app, ["show", "d"])
     assert result.exit_code == 0
-    assert "shell · copy" in result.output
+    assert "Shell · copy" in result.output  # human header uses the translated kind label
     assert "Source:" in result.output
     assert "skit run d" in result.output
 

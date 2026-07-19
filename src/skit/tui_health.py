@@ -19,9 +19,8 @@ from textual.screen import Screen
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
-from . import config, flows, launcher, store, tui_footer
+from . import config, healthcheck, launcher, store, tui_footer
 from .i18n import gettext, ngettext
-from .langs.registry import spec_for
 from .paths import scripts_dir
 
 
@@ -30,8 +29,12 @@ class HealthScreen(Screen[str | None]):
 
     BINDINGS = [
         Binding("escape", "close", gettext("Back")),
-        Binding("R", "rebuild", gettext("Rebuild index")),
+        # Ctrl+R per the key grammar: it refreshes the screen's subject everywhere.
+        Binding("ctrl+r", "rebuild", gettext("Rebuild index")),
     ]
+    # The issues list must own the keyboard when it exists, or the advertised
+    # "Enter Jump to script" lands on the scroll container and does nothing.
+    AUTO_FOCUS = "OptionList"
     DEFAULT_CSS = """
     HealthScreen #hc-body {
         padding: 0 1;
@@ -66,47 +69,65 @@ class HealthScreen(Screen[str | None]):
             yield Static(
                 "✓ "
                 + ngettext(
-                    "%(count)s script registered", "%(count)s scripts registered", len(entries)
+                    "%(count)s entry registered", "%(count)s entries registered", len(entries)
                 )
                 % {"count": len(entries)},
                 classes="ok",
             )
+            # The SAME collector doctor consumes (healthcheck.collect): the two faces
+            # previously swept separately and disagreed — this screen skipped prompt
+            # drift, runtime resolution, and invalid runner rows entirely.
+            report = healthcheck.collect(entries)
             issues: list[Option] = [
                 Option(
                     f"⚠ {escape(e.meta.name)} — " + gettext("the launch target is gone from disk"),
                     id=e.slug,
                 )
-                for e in entries
-                if launcher.target_missing(e)
+                for e in report.missing
             ]
-            for e in entries:
-                spec = spec_for(e.meta.kind)
-                if spec is None or spec.analyzer is None or not e.script_path.exists():
-                    continue
-                if flows.plan_for_entry(e).drift_lines:
-                    issues.append(
-                        Option(
-                            f"⚠ {escape(e.meta.name)} — "
-                            + gettext(
-                                "form definitions are out of sync (open Script settings → Resync)"
-                            ),
-                            id=e.slug,
+            issues += [
+                Option(
+                    f"⚠ {escape(e.meta.name)} — "
+                    + gettext("form definitions are out of sync (open Entry settings → Resync)"),
+                    id=e.slug,
+                )
+                for e in report.drifted
+            ]
+            issues += [
+                Option(
+                    f"⚠ {escape(e.meta.name)} — "
+                    + gettext("missing external command(s): %(tools)s")
+                    % {
+                        "tools": ", ".join(
+                            escape(t) for t in report.needs_missing.get(e.meta.name, [])
                         )
-                    )
-            for e in entries:
-                missing_tools = launcher.missing_needs(e)
-                if missing_tools:
-                    issues.append(
-                        Option(
-                            f"⚠ {escape(e.meta.name)} — "
-                            + gettext("missing external command(s): %(tools)s")
-                            % {"tools": ", ".join(escape(t) for t in missing_tools)},
-                            id=e.slug,
-                        )
-                    )
+                    },
+                    id=e.slug,
+                )
+                for e in report.needs_entries
+            ]
+            issues += [
+                Option(
+                    f"⚠ {escape(e.meta.name)} — "
+                    + gettext("a run would refuse to start — %(reason)s")
+                    % {"reason": escape(report.launch_blocked.get(e.meta.name, ""))},
+                    id=e.slug,
+                )
+                for e in report.blocked_entries
+            ]
             if issues:
-                yield Static(gettext("Issues (Enter jumps to the script):"), classes="warn")
+                yield Static(gettext("Issues (Enter jumps to the entry):"), classes="warn")
                 yield OptionList(*issues, id="hc-issues")
+            if report.invalid_runner_rows:
+                yield Static(
+                    "⚠ "
+                    + gettext(
+                        "Malformed agent (runner) rows in config: %(rows)s — fix them in "
+                        "Preferences → Manage agents"
+                    )
+                    % {"rows": ", ".join(escape(r) for r in report.invalid_runner_rows)},
+                    classes="warn",
+                )
             yield Static("✓ " + escape(config.mirrors_line(config.load_mirror())), classes="ok")
             location = scripts_dir()
             yield Static(
@@ -118,12 +139,12 @@ class HealthScreen(Screen[str | None]):
                 },
                 classes="hint",
             )
-            yield Static("", id="hc-rebuilt", classes="ok")
+            yield Static(getattr(self, "_rebuilt_report", ""), id="hc-rebuilt", classes="ok")
         yield tui_footer.KeysBar(
             Static(
                 tui_footer.bar(
-                    tui_footer.chip("screen.jump", "Enter", gettext("Jump to script")),
-                    tui_footer.chip("screen.rebuild", "R", gettext("Rebuild index")),
+                    tui_footer.chip("screen.jump", "Enter", gettext("Jump to entry")),
+                    tui_footer.chip("screen.rebuild", "Ctrl+R", gettext("Rebuild index")),
                     tui_footer.chip("screen.close", "Esc", gettext("Back")),
                 ),
                 id="hc-keys",
@@ -147,13 +168,17 @@ class HealthScreen(Screen[str | None]):
 
     def action_rebuild(self) -> None:
         count, problems = store.doctor_rebuild()
-        report = self.query_one("#hc-rebuilt", Static)
         lines = [
             ngettext("Index rebuilt: %(count)s entry", "Index rebuilt: %(count)s entries", count)
             % {"count": count}
         ]
         lines += [escape(p) for p in problems]
-        report.update("\n".join(lines))
+        # The report above must reflect the rebuilt reality — a stale "3 scripts
+        # registered" next to "Index rebuilt: 5 entries" is the screen contradicting
+        # itself. Recompose (the settings resync discipline); the outcome line
+        # survives the recompose via the instance.
+        self._rebuilt_report = "\n".join(lines)
+        self.refresh(recompose=True)
 
     def action_close(self) -> None:
         self.dismiss(None)

@@ -56,6 +56,7 @@ def quiet_run(monkeypatch):
         invoke_cwd=None,
         script_override=None,
         env_overlay=None,
+        runner=None,
     ):
         calls["extra"] = list(extra_args or [])
         calls["values"] = dict(values or {})
@@ -64,7 +65,6 @@ def quiet_run(monkeypatch):
 
     monkeypatch.setattr(launcher, "run_entry", fake_run)
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
-    monkeypatch.setattr("builtins.input", lambda *a: "")
     return calls
 
 
@@ -103,6 +103,21 @@ async def test_remove_modal_command_entry_omits_file_reassurance(tmp_path):
         await pilot.pause()
         body = "".join(str(w.render()) for w in app.screen.query(Static))
         assert "original file" not in body  # a command has no file; the line would be noise
+
+
+async def test_remove_modal_omits_reassurance_when_the_original_is_gone(tmp_path):
+    """The reassurance is a promise about a file that still exists. For a drafted entry (or
+    one whose original was since deleted) meta.source points at a gone path, so the line must
+    NOT show — reassuring the user about an already-gone file would be a lie."""
+    src = _py(tmp_path, "print(1)\n", "gone.py")
+    store.add_python(src, name="a")
+    src.unlink()  # the original is gone from disk
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.action_remove()
+        await pilot.pause()
+        body = "".join(str(w.render()) for w in app.screen.query(Static))
+        assert "original file" not in body  # the original is gone, so no false promise
 
 
 async def test_remove_confirmed_removes_entry(tmp_path):
@@ -184,6 +199,10 @@ async def test_execute_records_failure_code_and_status(tmp_path, quiet_run):
     async with app.run_test() as pilot:
         app.action_run()
         await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        screen.action_submit()
+        await pilot.pause()
         assert argstate.load_state(entry.slug)["last_run"]["exit"] == 3
         status = str(app.query_one("#status", Static).render())
         assert "✗ failed (code 3)" in status
@@ -209,14 +228,21 @@ async def test_run_with_fields_opens_the_form(tmp_path, quiet_run):
         assert isinstance(app.screen, RunFormScreen)
 
 
-async def test_run_without_fields_skips_the_form(tmp_path, quiet_run):
+async def test_run_without_fields_still_opens_the_form(tmp_path, quiet_run):
+    """Even a field-less entry gets the form: it is the TUI's only path to extra
+    arguments, and the one place remembered args are VISIBLE before launch (the old
+    skip-shortcut replayed them invisibly). Enter on the fresh form submits, so the
+    fast path costs exactly one keypress; `r` stays the true form-free rerun."""
     store.add_python(_py(tmp_path, "print(1)\n"), name="plain")
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         app.action_run()
         await pilot.pause()
-        assert not isinstance(app.screen, RunFormScreen)
-        assert "values" in quiet_run  # launched directly
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        await pilot.press("enter")  # the advertised Run key, straight away
+        await pilot.pause()
+        assert "values" in quiet_run  # launched through the form
 
 
 # ---------------------------------------------------------------------------
@@ -306,7 +332,7 @@ async def test_form_escape_cancels_without_running(tmp_path, quiet_run):
         assert "values" not in quiet_run  # nothing launched
 
 
-async def test_form_preset_chips_apply_values(tmp_path, quiet_run):
+async def test_form_preset_dropdown_applies_and_restores(tmp_path, quiet_run):
     entry = _argparse_entry(tmp_path)
     argstate.save_preset(entry.slug, "web", {"output": "web.png"})
     app = tui.MenuApp()
@@ -315,14 +341,17 @@ async def test_form_preset_chips_apply_values(tmp_path, quiet_run):
         await pilot.pause()
         screen = app.screen
         assert isinstance(screen, RunFormScreen)
-        from textual.widgets import RadioSet
+        from textual.widgets import Select
 
-        preset_set = screen.query_one("#preset-set", RadioSet)
-        buttons = list(preset_set.query("RadioButton"))
-        buttons[1].value = True  # click the "web" chip
-        await pilot.pause()
+        preset = screen.query_one("#preset-select", Select)
         rows = {row.field.key: row for row in screen.query(FieldRow)}
+        baseline = rows["output"].query_one(Input).value  # the "last values" state
+        preset.value = "web"  # value-keyed switch onto the preset
+        await pilot.pause()
         assert rows["output"].query_one(Input).value == "web.png"
+        preset.value = ""  # first option: "last values" restores the prefill
+        await pilot.pause()
+        assert rows["output"].query_one(Input).value == baseline
 
 
 async def test_form_secret_field_masks_input(tmp_path, quiet_run):
@@ -388,8 +417,8 @@ async def test_library_footer_rows_stack_without_overlap(tmp_path):
         assert ys["keys-local"] < ys["keys-global"] < ys["status"]  # keys above status
         assert ys["status"] == app.size.height - 1  # the footer is docked at the very bottom
         assert "Run" in footer_text(rows["keys-local"])
-        assert "Add script" in footer_text(rows["keys-global"])
-        assert "script" in str(rows["status"].render())
+        assert "Add entry" in footer_text(rows["keys-global"])
+        assert "entry" in str(rows["status"].render())
 
 
 async def test_inline_run_form_body_takes_auto_height(tmp_path, quiet_run, monkeypatch):
@@ -436,7 +465,7 @@ async def test_library_footer_chips_fire_on_click(tmp_path):
     app = tui.MenuApp()
     async with app.run_test(size=(130, 30)) as pilot:
         await pilot.pause()
-        await click_label(pilot, "#keys-global", "Add script")
+        await click_label(pilot, "#keys-global", "Add entry")
         assert app.screen.__class__.__name__ == "AddSourceScreen"
         await pilot.press("escape")
         await pilot.pause()
@@ -477,19 +506,19 @@ async def test_search_focus_swaps_footer_to_input_mode_and_esc_restores_it(tmp_p
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert "Add script" in footer_text(app.query_one("#keys-global", Static))
+        assert "Add entry" in footer_text(app.query_one("#keys-global", Static))
         app.action_focus_search()
         await pilot.pause()
         local = footer_text(app.query_one("#keys-local", Static))
         assert "Back to list" in local
         assert "Run" in local
-        assert "Script settings" not in local  # the letter chips are gone
+        assert "Entry settings" not in local  # the letter chips are gone
         assert str(app.query_one("#keys-global", Static).render()) == ""
         await pilot.press("escape")
         await pilot.pause()
         assert app.focused is app.query_one(DataTable)
         assert app.return_value is None  # Esc left the search box; it did NOT quit
-        assert "Add script" in footer_text(app.query_one("#keys-global", Static))
+        assert "Add entry" in footer_text(app.query_one("#keys-global", Static))
 
 
 async def test_search_mode_esc_chip_returns_to_table_on_click(tmp_path):
@@ -503,7 +532,7 @@ async def test_search_mode_esc_chip_returns_to_table_on_click(tmp_path):
         await click_label(pilot, "#keys-local", "Back to list")
         assert app.focused is app.query_one(DataTable)
         assert app.return_value is None  # still running
-        assert "Add script" in footer_text(app.query_one("#keys-global", Static))
+        assert "Add entry" in footer_text(app.query_one("#keys-global", Static))
 
 
 async def test_enter_in_search_runs_the_highlighted_match(tmp_path, quiet_run):
@@ -516,8 +545,11 @@ async def test_enter_in_search_runs_the_highlighted_match(tmp_path, quiet_run):
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)  # Enter targets the highlighted match
+        screen.action_submit()
+        await pilot.pause()
         assert "values" in quiet_run  # the highlighted script ran
-        assert app.focused is app.query_one(DataTable)
 
 
 async def test_pushed_screen_footer_chips_fire_on_click(tmp_path, quiet_run):
@@ -794,7 +826,7 @@ async def test_insert_link_shown_only_on_insertable_fields(tmp_path, quiet_run):
 
 
 # ---------------------------------------------------------------------------
-# review fixes: launch-failure honesty, drift on r, dirty check, rescan overrides
+# Launch-failure honesty, rerun drift, dirty checks, and rescan overrides
 # ---------------------------------------------------------------------------
 
 
@@ -809,6 +841,11 @@ async def test_default_after_run_exits_the_tui_before_running(tmp_path, quiet_ru
     async with app.run_test() as pilot:
         await pilot.pause()
         app.action_run()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        screen.action_submit()
+        await pilot.pause()
         pending = app.return_value
         assert isinstance(pending, tui.PendingRun)
         assert pending.entry.meta.name == "a"
@@ -851,15 +888,30 @@ def test_finish_run_launch_failure_uses_docker_codes_and_records_nothing(tmp_pat
     assert any("Error" in line for line in printed)
 
 
-async def test_after_run_stay_returns_to_the_library(tmp_path, quiet_run):
+async def test_after_run_stay_returns_to_the_library_without_reading_stdin(
+    tmp_path, quiet_run, monkeypatch
+):
     """The workbench opt-in: after_run=stay keeps skit open after a run — the status
-    line reports the outcome and the app is still running."""
+    line reports the outcome and the app is still running. Returning is automatic, so
+    the mouse-only path never dead-ends on a raw terminal acknowledgment."""
+    stdin_reads: list[tuple[object, ...]] = []
+
+    def forbid_stdin(*args):
+        stdin_reads.append(args)
+        raise AssertionError("after_run=stay must return without reading stdin")
+
+    monkeypatch.setattr("builtins.input", forbid_stdin)
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         await pilot.pause()
         app.action_run()
         await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        screen.action_submit()
+        await pilot.pause()
+        assert stdin_reads == []
         assert app.return_value is None  # still open
         assert "✓ finished" in str(app.query_one("#status", Static).render())
 
@@ -874,7 +926,6 @@ async def test_launch_failure_records_no_phantom_run(tmp_path, monkeypatch):
         yield
 
     monkeypatch.setattr(tui.MenuApp, "suspend", _noop)
-    monkeypatch.setattr("builtins.input", lambda *a: "")
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         app._execute(entry, flows.FormPlan(source="none"), {}, [])
@@ -955,8 +1006,10 @@ async def test_add_rescan_preserves_user_edits(tmp_path, monkeypatch):
         assert screen.query_one("#rv-desc", Input).value == "my description"
 
 
-async def test_add_panel_rejects_non_executable_file(tmp_path):
-    from skit.tui_add import AddSourceScreen
+async def test_add_panel_asks_kind_for_unclassifiable_file(tmp_path):
+    """An unclassifiable file no longer shows a CLI-flag error — it ASKS: the KindPickModal
+    (the TUI twin of --kind/--exe/--prompt). Esc cancels and adds nothing."""
+    from skit.tui_add import AddSourceScreen, KindPickModal
 
     notes = tmp_path / "notes.txt"
     notes.write_text("hi", encoding="utf-8")
@@ -971,8 +1024,11 @@ async def test_add_panel_rejects_non_executable_file(tmp_path):
 
         screen._path_given(_Input.Submitted(box, str(notes)))
         await pilot.pause()
-        error = str(screen.query_one("#add-error").render())
-        assert "notes.txt" in error
+        modal = app.screen
+        assert isinstance(modal, KindPickModal)  # asked, not errored
+        modal.action_cancel()  # Esc → dismiss(None)
+        await pilot.pause()
+        assert isinstance(app.screen, AddSourceScreen)  # back on the source step
         assert store.list_entries() == []  # nothing was added
 
 
@@ -1120,7 +1176,7 @@ def test_chip_is_one_link_with_pill_background():
 
 
 # ---------------------------------------------------------------------------
-# pre-commit review fixes (add-accept crash, resync report, rescan mode, footer accent)
+# Add acceptance, resync reporting, rescan modes, and footer styling
 # ---------------------------------------------------------------------------
 
 

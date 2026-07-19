@@ -211,17 +211,15 @@ def test_set_dependencies_survives_hand_edited_deps_closer(deps_block: str) -> N
     compile(updated, "<test>", "exec")
 
 
-# --- fix-review finding: bracket-depth tracking must ignore brackets inside TOML strings and
-# inline comments, not just count them naively over the whole line. The earlier fix (see the
-# parametrize block above) replaced the "closer alone on its line" check with a raw
+# --- Bracket-depth tracking must ignore brackets inside TOML strings and inline comments, not
+# just count them naively over the whole line. A raw
 # `line.count("[") - line.count("]")`, which itself desyncs on a `[`/`]` living inside a string
-# value or an inline `#` comment — reproducing the very param-loss the fix was meant to prevent.
+# value or an inline `#` comment and can drop the following parameter block.
 
 
-def test_set_dependencies_reproduces_reported_comment_bracket_finding() -> None:
-    """Exact scenario from the fix-review finding: an in-array comment containing an unbalanced
-    `[` (`#     "requests",  # pin later [`) must not desync the depth counter and swallow the
-    following `# [tool.skit]` params block."""
+def test_set_dependencies_handles_unbalanced_bracket_in_inline_comment() -> None:
+    """An in-array comment containing an unbalanced `[` must not desync the depth counter
+    and swallow the following `# [tool.skit]` params block."""
     src = (
         "# /// script\n"
         "# dependencies = [\n"

@@ -51,6 +51,7 @@ def test_every_known_kind_resolves_to_a_complete_spec():
         "r",
         "exe",
         "command",
+        "prompt",
     } == registry.KNOWN_KINDS
     for kind in registry.KNOWN_KINDS:
         spec = registry.spec_for(kind)

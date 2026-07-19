@@ -1,10 +1,4 @@
-"""Regression tests for four launcher.py bugs found in review (batch3-F):
-
-1. (:126) double-brace unescape ran over the whole command AFTER substitution, corrupting any
-   placeholder value that itself contained "{{" or "}}".
-2. (:226) a child killed by a signal returned subprocess's raw negative returncode verbatim.
-3. (:86) _build_python resolved/downloaded uv before checking the script exists.
-4. (:119) command-template placeholder values were substituted unquoted under shell=True.
+"""Launcher regressions around template substitution, exit codes, uv ordering, and quoting.
 
 conftest.py's autouse _isolate_skit_dirs fixture already points the store at an isolated tmp_path,
 so no per-file isolation fixture is needed here.
@@ -28,7 +22,7 @@ def py_entry(tmp_path: Path):
     return store.add_python(p)
 
 
-# ---------- (1) double-brace unescape must not corrupt substituted values ----------
+# ---------- Double-brace unescape must not corrupt substituted values ----------
 
 
 def test_placeholder_value_with_double_braces_round_trips():
@@ -49,8 +43,7 @@ def test_placeholder_value_with_double_braces_round_trips():
 
 
 def test_placeholder_value_with_double_braces_inside_quoted_template_slot():
-    """Same corruption, reproduced with the exact template shape from the finding: `echo
-    {msg}` where msg embeds its own escape-like braces."""
+    """An `echo {msg}` template must preserve escape-like braces embedded in msg itself."""
     from skit import launcher, store
 
     entry = store.add_command("echo {msg}", name="brace-value-2")
@@ -89,7 +82,7 @@ def test_run_entry_executes_correctly_with_double_brace_value(tmp_path):
     assert outfile.read_text(encoding="utf-8") == "prefix{{inner}}suffix"
 
 
-# ---------- (2) signal-death exit codes must be normalized to 128+N ----------
+# ---------- Signal-death exit codes must be normalized to 128+N ----------
 
 
 def test_normalize_exit_code_maps_negative_returncode_to_128_plus_n():
@@ -112,7 +105,7 @@ def test_run_entry_normalizes_signal_killed_child_to_shell_convention(tmp_path):
     assert code == 143
 
 
-# ---------- (3) _build_python must check the script before touching uv ----------
+# ---------- _build_python must check the script before touching uv ----------
 
 
 def test_build_python_missing_script_raises_before_calling_ensure_uv(py_entry, monkeypatch):
@@ -141,7 +134,7 @@ def test_build_python_healthy_script_still_calls_ensure_uv(py_entry, monkeypatch
     assert cmd[0] == "/fake/uv"
 
 
-# ---------- (4) command-template placeholder values must be shell-quoted ----------
+# ---------- Command-template placeholder values must be shell-quoted ----------
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell quoting")
@@ -169,8 +162,8 @@ def test_placeholder_value_with_shell_metacharacters_cannot_inject():
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell execution")
 def test_run_entry_placeholder_value_with_space_reaches_child_intact(tmp_path):
-    """End-to-end: a value with an embedded space must arrive at the child as ONE argument, not
-    be split into two by the shell — reproducing the ffmpeg scenario from the finding."""
+    """End-to-end: a value with an embedded space must arrive at the child as ONE argument,
+    not be split into two by the shell."""
     from skit import launcher, store
 
     outfile = tmp_path / "out.txt"

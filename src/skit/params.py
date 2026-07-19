@@ -514,8 +514,13 @@ def _apply_declared_tweaks(  # noqa: PLR0912 — one branch per editable field; 
     if name in no_secret:
         decl.secret = False
         decl.env_source = ""
-    if name in env_sources and decl.secret:
-        decl.env_source = env_sources[name].strip()
+    if name in env_sources:
+        if decl.secret:
+            decl.env_source = env_sources[name].strip()
+        else:
+            # An explicit flag that does nothing must never vanish silently — the
+            # in-file lane warns for exactly this case; the declared lane now does too.
+            warnings.append(f"env-source-not-secret:{name}")
 
 
 def _coerce_literal[T: str](value: str, allowed: tuple[T, ...], fallback: T) -> T:

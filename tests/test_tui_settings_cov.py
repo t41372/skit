@@ -1,4 +1,4 @@
-"""Exact-behavior tests for the merged Script settings screen (tui_settings.py).
+"""Exact-behavior tests for the merged Entry settings screen (tui_settings.py).
 
 Behaviour is asserted — the written [tool.skit] copy, store/argstate mutations, the
 rendered section/hint text, resync warnings — never a line executed for its own sake.
@@ -199,6 +199,33 @@ async def test_untick_preset_deletes_it_on_save(tmp_path):
     assert argstate.load_state(entry.slug)["presets"] == {"beta": {"Y": "2"}}  # only alpha gone
 
 
+async def test_untick_preset_is_name_keyed_against_a_concurrent_add(tmp_path):
+    """The delete pass maps checkbox indices through the names captured AT COMPOSE TIME,
+    not a fresh state read. A preset added concurrently (another `skit preset` — the
+    product's own agent-coexistence story) must not shift which name an untick deletes:
+    unticking beta deletes beta, even when a new name sorts ahead of everything shown."""
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="pre")
+    argstate.save_preset(entry.slug, "alpha", {"X": "1"})
+    argstate.save_preset(entry.slug, "beta", {"Y": "2"})
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        beta_box = screen.query_one("#st-preset-1", Checkbox)  # composed order: alpha, beta
+        assert "beta" in str(beta_box.label)
+        # A concurrent add of a name that sorts BEFORE the composed list — the old buggy
+        # save (re-reading + re-sorting state) would have shifted index 1 onto "alpha".
+        argstate.save_preset(entry.slug, "aardvark", {"Z": "3"})
+        beta_box.value = False  # untick beta for deletion
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+
+    survivors = argstate.load_state(entry.slug)["presets"]
+    assert set(survivors) == {"alpha", "aardvark"}  # exactly beta gone; the concurrent add survives
+
+
 # ---------------------------------------------------------------------------
 # Non-python / reference storage: early returns and read-only param views
 # ---------------------------------------------------------------------------
@@ -215,7 +242,9 @@ async def test_command_entry_shows_template_hides_storage_and_deps(tmp_path):
         app.push_screen(screen)
         await pilot.pause()
         body = _body(screen)
-        assert "echo {msg} {name}" in body  # the template line (its placeholders are visible here)
+        # The template is EDITABLE now (it is the program; freezing it forced
+        # remove + re-add over a typo).
+        assert screen.query_one("#st-template", Input).value == "echo {msg} {name}"
         assert screen.query("#st-add-param")  # the declared editor's add-a-parameter field
         assert "Storage" not in body  # storage section skipped for a non-python entry
         assert not screen.query("#st-deps")  # dependencies section skipped too
@@ -230,6 +259,58 @@ async def test_command_entry_shows_template_hides_storage_and_deps(tmp_path):
         assert not isinstance(app.screen, ScriptSettingsScreen)  # saved & dismissed
 
     assert store.resolve("cmd").meta.description == "cmd desc"
+
+
+async def test_ctrl_a_in_a_focused_input_moves_home_without_saving(tmp_path, monkeypatch):
+    """The exact regression that forced Save from Ctrl+A to Ctrl+S: Ctrl+A is every Input's
+    cursor-home, so on a screen full of Inputs it must move the cursor to the start and NOT
+    save/close. The save chord now lives on Ctrl+S, so Ctrl+A belongs entirely to the Input."""
+    shell_src = tmp_path / "s.sh"
+    shell_src.write_text("#!/usr/bin/env bash\necho hi\n", encoding="utf-8")
+    store.add_script(shell_src, kind="shell", name="sh")
+    saved: list[int] = []
+    monkeypatch.setattr(ScriptSettingsScreen, "action_save", lambda self: saved.append(1))
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(store.resolve("sh"))
+        app.push_screen(screen)
+        await pilot.pause()
+        desc = screen.query_one("#st-desc", Input)
+        desc.focus()
+        desc.value = "hello world"
+        desc.cursor_position = len(desc.value)
+        await pilot.pause()
+        await pilot.press("ctrl+a")
+        await pilot.pause()
+        assert desc.cursor_position == 0  # Ctrl+A moved the cursor home (the Input owns it)
+        assert saved == []  # …and did NOT save
+        assert isinstance(app.screen, ScriptSettingsScreen)  # still open, nothing dismissed
+
+
+async def test_resync_chip_only_where_resync_can_act(tmp_path):
+    """The Resync chip renders only where action_resync actually does something — a
+    copy-mode analyzable entry (python/shell). For a command/exe/prompt entry resync is a
+    no-op, so advertising the key would teach a dead chord (the mouse's click path must not
+    point at a no-op)."""
+    # copy-mode shell: the chip is advertised
+    shell_src = tmp_path / "s.sh"
+    shell_src.write_text("#!/usr/bin/env bash\necho hi\n", encoding="utf-8")
+    store.add_script(shell_src, kind="shell", name="sh")
+    # a command entry: resync is a no-op, so no chip
+    store.add_command("echo {msg}", name="cmd")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        shell_screen = ScriptSettingsScreen(store.resolve("sh"))
+        app.push_screen(shell_screen)
+        await pilot.pause()
+        assert "Resync" in str(shell_screen.query_one("#st-keys", Static).render())
+        shell_screen.dismiss(False)
+        await pilot.pause()
+
+        cmd_screen = ScriptSettingsScreen(store.resolve("cmd"))
+        app.push_screen(cmd_screen)
+        await pilot.pause()
+        assert "Resync" not in str(cmd_screen.query_one("#st-keys", Static).render())
 
 
 async def test_exe_entry_shows_the_declared_params_editor(tmp_path):
@@ -451,7 +532,7 @@ async def test_command_declared_placeholder_row_has_no_flag_field(tmp_path):
         screen = ScriptSettingsScreen(entry)
         app.push_screen(screen)
         await pilot.pause()
-        assert "convert {size}" in _body(screen)  # template read-only above the editor
+        assert screen.query_one("#st-template", Input).value == "convert {size}"
         row = screen.query(DeclParamRow).first()
         assert not row.query(".d-flag")  # template kinds: no flag field
         assert "placeholder" in str(row.query_one(".d-keep", Checkbox).label)

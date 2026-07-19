@@ -61,6 +61,35 @@ def test_double_brace_escapes():
     assert _expand("a{{b}}c") == "a{b}c"
 
 
+def test_brace_escapes_false_keeps_double_braces_byte_identical():
+    # Placeholder-delivery mode: `{{`/`}}` pass through untouched (prompt text is
+    # brace-heavy; unmanaged text travels byte-identical).
+    assert tokens.expand("{{cwd}}", cwd=CWD, env={}, now=NOW, brace_escapes=False) == "{{cwd}}"
+    assert tokens.expand("a{{b}}c", cwd=CWD, env={}, now=NOW, brace_escapes=False) == "a{{b}}c"
+
+
+def test_brace_escapes_true_halves_the_pair():
+    assert tokens.expand("{{cwd}}", cwd=CWD, env={}, now=NOW, brace_escapes=True) == "{cwd}"
+
+
+def test_named_tokens_expand_in_both_brace_modes():
+    # The escape-pair policy is orthogonal to the named tokens: {cwd} expands regardless.
+    assert tokens.expand("{cwd}/x", cwd=CWD, env={}, now=NOW, brace_escapes=False) == f"{CWD}/x"
+    assert tokens.expand("{cwd}/x", cwd=CWD, env={}, now=NOW, brace_escapes=True) == f"{CWD}/x"
+
+
+def test_preview_threads_brace_escapes():
+    # The preview must take the SAME brace_escapes the delivery will, or it shows a lie.
+    assert tokens.preview("{{cwd}}", cwd=CWD, env={}, now=NOW, brace_escapes=False) == (
+        "{{cwd}}",
+        None,
+    )
+    assert tokens.preview("{{cwd}}", cwd=CWD, env={}, now=NOW, brace_escapes=True) == (
+        "{cwd}",
+        None,
+    )
+
+
 def test_tilde_expansion_only_at_start(monkeypatch):
     monkeypatch.setenv("HOME", "/home/u")  # POSIX home
     monkeypatch.setenv("USERPROFILE", "/home/u")  # Windows home (os.path.expanduser reads this)

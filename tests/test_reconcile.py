@@ -255,12 +255,12 @@ def test_edit_specs_not_managed_in_prompts_warning():
     assert any("not-managed" in w for w in result.warnings)
 
 
-# ---------- resync must not wipe definitions on a transient syntax error (BLOCKER) ----------
+# ---------- Resync must not wipe definitions on a transient syntax error ----------
 
 
 def test_resync_on_unparseable_script_leaves_definitions_untouched():
-    # Reproduces the finding: a copy-mode script left mid-edit with a syntax error must not have
-    # its entire managed-parameter set dropped by --resync. reconcile() can't distinguish "really
+    # A copy-mode script left mid-edit with a syntax error must not have its entire
+    # managed-parameter set dropped by --resync. reconcile() can't distinguish "really
     # gone" from "can't parse right now", so _apply_resync must consult report.syntax_error itself.
     specs = [
         ParamDecl(name="API_KEY", binding="const", type="str", secret=True),
@@ -293,12 +293,12 @@ def test_render_warning_resync_skipped():
     assert "resync" in msg.lower()
 
 
-# ---------- edit_specs must not crash on duplicate-named specs (major) ----------
+# ---------- edit_specs must not crash on duplicate-named specs ----------
 
 
 def test_edit_specs_remove_with_duplicate_names_does_not_crash():
-    # Reproduces the finding: a duplicate-named const (reachable pre-fix from analyzer emitting two
-    # same-named candidates during "all" onboarding) used to make `order.remove(name)` leave a
+    # A duplicate-named const (reachable from older metadata or analyzers emitting two same-named
+    # candidates during "all" onboarding) used to make `order.remove(name)` leave a
     # dangling name in `order` after `del by_name[name]`, raising KeyError on the final list-comp.
     text = "X = 1\nX = 2\nY = 5\n"
     specs = [spec("X"), spec("X"), spec("Y")]

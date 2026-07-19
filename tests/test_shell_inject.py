@@ -433,8 +433,8 @@ def test_multi_variable_read_refuses_whitespace_when_a_trailing_var_is_unmanaged
 
 
 def test_multi_variable_read_refuses_a_newline_in_a_non_last_field(tmp_path):
-    # The worst case Review A caught: a newline in an earlier value truncates the whole line,
-    # silently discarding EVERY later field. Must be refused, not silently run.
+    # A newline in an earlier value truncates the whole line and silently discards EVERY later
+    # field. It must be refused rather than silently run.
     src = '#!/usr/bin/env bash\nread -p "First and last: " FIRST LAST\n'
     with pytest.raises(InjectSplitError):
         inject_src(src, {"input-1": "a\nb", "input-2": "KEEP"}, tmp_path)
@@ -772,7 +772,14 @@ def test_self_location_warns_when_a_temp_copy_is_written(tmp_path):
     result = inject_src(src, {"WIDTH": "1200"}, tmp_path)
     assert result.path is not None
     assert len(result.warnings) == 1
-    assert "$0" in result.warnings[0]
+    warning = result.warnings[0]
+    assert "$0" in warning
+    # The advice is true in BOTH storage modes: it teaches the manual
+    # ${NAME:-value} rewrite and names --normalize as the shortcut ON A STORED COPY,
+    # never the old unconditional "--normalize NAME` delivers" that lied in reference mode.
+    assert 'NAME="${NAME:-value}"' in warning
+    assert "on a stored copy" in warning
+    assert "`skit params <script> --normalize NAME` delivers" not in warning
 
 
 def test_self_location_does_not_warn_for_env_delivery(tmp_path):
@@ -931,7 +938,16 @@ def test_execute_env_delivery_writes_no_temp_copy(tmp_path, monkeypatch):
 
     seen: dict[str, object] = {}
 
-    def spy(entry, extra, *, values=None, invoke_cwd=None, script_override=None, env_overlay=None):
+    def spy(
+        entry,
+        extra,
+        *,
+        values=None,
+        invoke_cwd=None,
+        script_override=None,
+        env_overlay=None,
+        runner=None,
+    ):
         seen["override"] = script_override
         seen["env"] = dict(env_overlay or {})
         return 0
@@ -1174,15 +1190,18 @@ def test_split_guard_refuses_only_what_the_shell_would_actually_mangle(tmp_path)
 def test_params_warns_when_a_self_locating_script_has_injectable_consts(tmp_path):
     # $0/BASH_SOURCE: an injected const runs from a temp copy, so the script would see THAT path.
     # The user must learn this where they decide to manage the const — not only at run time — and
-    # be pointed at --normalize (env delivery, file untouched).
+    # be pointed at --normalize. The hint now mirrors the run-time warning's sentence shape: the
+    # manual NAME="${NAME:-value}" idiom + "on the stored copy", never the old "file untouched".
     _shell_entry(
         tmp_path,
         '#!/usr/bin/env bash\nHERE=$(dirname "$0")\nREGION=us-east-1\necho "$HERE $REGION"\n',
         name="selfloc",
     )
-    out = runner.invoke(cli.app, ["params", "selfloc"]).output.replace("\n", " ")
+    out = " ".join(runner.invoke(cli.app, ["params", "selfloc"]).output.split())
     assert "locates itself" in out
-    assert "--normalize" in out
+    assert "--normalize NAME` does the rewrite for you on the stored copy" in out
+    assert 'NAME="${NAME:-value}"' in out  # the manual env-default idiom
+    assert "leaves the file untouched" not in out  # the old phrasing is gone
 
 
 def test_params_does_not_warn_when_the_script_never_self_locates(tmp_path):

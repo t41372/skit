@@ -40,8 +40,15 @@ def expand(
     cwd: Path | str,
     env: Mapping[str, str] | None = None,
     now: datetime | None = None,
+    brace_escapes: bool = True,
 ) -> str:
-    """Expand tokens in text and return the final value. Raises TokenError."""
+    """Expand tokens in text and return the final value. Raises TokenError.
+
+    brace_escapes=False is the placeholder-delivery mode (prompt/command field
+    values): `{{`/`}}` pass through byte-identical instead of halving to `{`/`}` —
+    prompt text is brace-heavy by nature, and the body grammar's own promise is
+    "anything you didn't ask skit to manage travels untouched". The named tokens
+    (`{cwd}`, `{today}`, `{now}`, `{env:X}`, leading `~`) still expand."""
     if env is None:
         env = os.environ
     if now is None:
@@ -55,11 +62,13 @@ def expand(
         ch = text[i]
         two = text[i : i + 2]
         if two == "{{":
-            out.append("{")
+            # Escape mode halves to a literal `{`; placeholder mode keeps the pair AND
+            # skips token-matching inside it, so a pasted `{{cwd}}` stays byte-identical.
+            out.append("{" if brace_escapes else "{{")
             i += 2
             continue
         if two == "}}":
-            out.append("}")
+            out.append("}" if brace_escapes else "}}")
             i += 2
             continue
         if ch == "{":
@@ -96,11 +105,13 @@ def preview(
     cwd: Path | str,
     env: Mapping[str, str] | None = None,
     now: datetime | None = None,
+    brace_escapes: bool = True,
 ) -> tuple[str, str | None]:
     """Non-raising expand for live form previews: (expanded, None) on success,
-    (original text, error message) when a token can't be expanded."""
+    (original text, error message) when a token can't be expanded. The preview must
+    take the SAME brace_escapes the delivery will, or it shows a lie."""
     try:
-        return expand(text, cwd=cwd, env=env, now=now), None
+        return expand(text, cwd=cwd, env=env, now=now, brace_escapes=brace_escapes), None
     except TokenError as exc:
         return text, str(exc)
 

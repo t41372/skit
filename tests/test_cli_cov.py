@@ -51,6 +51,7 @@ def run_entry_spy(monkeypatch):
         invoke_cwd=None,
         script_override=None,
         env_overlay=None,
+        runner=None,
     ):
         calls["entry"] = entry
         calls["extra"] = list(extra_args or [])
@@ -322,3 +323,37 @@ def test_doctor_rebuild_reports_problem(monkeypatch, tmp_path):
     assert result.exit_code == 0, result.output
     assert "ref" in result.output
     assert "gone" in result.output
+    # The human "Index rebuilt: …" prose still prints when --json is absent.
+    assert "Index rebuilt" in result.output
+
+
+def test_doctor_rebuild_json_carries_report_in_payload(monkeypatch, tmp_path):
+    """Under --json stdout is exactly one JSON document: the rebuild report rides in the
+    payload (rebuilt count + rebuild_problems) instead of preceding it as prose, so the
+    machine contract never has "Index rebuilt: …" prepended before the `{`."""
+    import json
+
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/usr/bin/uv")
+    src = _py(tmp_path, "print(1)\n")
+    store.add_python(src, name="ref", mode="reference")
+    src.unlink()  # a reference whose source is gone -> a rebuild problem
+    result = runner.invoke(cli.app, ["doctor", "--rebuild", "--json"])
+    assert result.exit_code == 0, result.output
+    assert "Index rebuilt" not in result.output  # no human prose leaked before the JSON
+    payload = json.loads(result.output)  # stdout parses whole
+    assert payload["rebuilt"] == 1  # the ref entry was re-indexed
+    assert any("ref" in p and "gone" in p for p in payload["rebuild_problems"])
+
+
+def test_doctor_json_without_rebuild_has_null_rebuilt(monkeypatch, tmp_path):
+    """Without --rebuild the payload's rebuilt key is null and rebuild_problems empty — the
+    keys are always present (a stable machine contract), only populated when asked."""
+    import json
+
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/usr/bin/uv")
+    store.add_python(_py(tmp_path, "print(1)\n"), name="a")
+    result = runner.invoke(cli.app, ["doctor", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["rebuilt"] is None
+    assert payload["rebuild_problems"] == []

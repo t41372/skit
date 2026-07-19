@@ -591,6 +591,23 @@ def test_params_show_lists_shell_const_and_unmanaged(tmp_path):
     assert "MODE" in result.output
 
 
+def test_params_show_getopts_shell_stops_advertising_manage(tmp_path):
+    """A getopts shell drives its OWN CLI (uses_cli_framework): the read view must NOT
+    advertise --manage — offering to manage a bare constant there would shadow the getopts
+    form (the same gate the add panel and CLI onboarding fire). Reader-driven non-python
+    entries stop advertising it; python argparse is unchanged."""
+    src = tmp_path / "g.sh"
+    src.write_text(
+        '#!/usr/bin/env bash\nOUT=hello\nwhile getopts "n:v" o; do :; done\necho "$OUT"\n'
+    )
+    store.add_script(src, kind="shell", name="gsh")
+    result = runner.invoke(cli.app, ["params", "gsh"])
+    assert result.exit_code == 0, result.output
+    assert "--manage" not in result.output  # its own parser IS the interface
+    assert "Detected but not yet managed" not in result.output
+    assert "gsh has no managed parameters." in result.output  # the plain, --manage-free line
+
+
 def test_params_resync_reports_drift_after_edit(tmp_path):
     src = tmp_path / "drift.sh"
     src.write_text("#!/usr/bin/env bash\nCITY=Taipei\necho $CITY\n")

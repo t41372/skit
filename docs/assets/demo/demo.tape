@@ -26,12 +26,13 @@ Set Height 780
 Set Padding 20
 Set TypingSpeed 60ms
 
-# Hidden setup: just the recording shell + after_run=stay (this demo tells the WORKBENCH story —
-# run, land back in the library, run again). The library starts EMPTY; greet and banner are added
+# Hidden setup: use the default after_run=exit behavior so each short script's output remains
+# readable in the terminal. The choreography explicitly relaunches the Library afterward instead
+# of relying on stay mode's immediate redraw. The library starts EMPTY; greet and banner are added
 # with `skit add` below, one at a time. clear — none of this is recorded.
 Hide
 Type "source ~/.bashrc" Enter
-Type "skit config after_run stay" Enter
+Type "skit config after_run exit" Enter
 Type "clear" Enter
 Show
 
@@ -45,7 +46,7 @@ Sleep 400ms
 
 # 2 — `skit add greet.py` at the shell opens skit's review panel right in the terminal — name,
 #     description and detection prefilled. Walk slowly DOWN the panel (Tab/↓) and back UP
-#     (Shift+Tab/↑) — the footer advertises both — so the whole thing is read, then Ctrl+A adds it.
+#     (Shift+Tab/↑) — the footer advertises both — so the whole thing is read, then Ctrl+S adds it.
 Type "skit add greet.py" Enter
 Sleep 1.8s
 Tab@550ms 3
@@ -56,12 +57,13 @@ Shift+Tab
 Sleep 450ms
 Shift+Tab
 Sleep 1s
-Ctrl+A
+Ctrl+S
 Sleep 2s
 
 # 3 — Launch skit; greet is the only entry, already selected. Run it: the form is generated from
 #     --name / --count / --shout and opens on the FIRST FIELD — a text box, a number box, a
-#     checkbox, nothing hand-written. Fill it unhurriedly, run, read the output, land back home.
+#     checkbox, nothing hand-written. Fill it unhurriedly, run, read the retained output, then
+#     relaunch the Library once so the completed run is visible before moving on.
 Type "clear" Enter
 Type "skit" Enter
 Sleep 2.4s
@@ -83,8 +85,8 @@ Space
 Sleep 1.1s
 Enter
 Sleep 3.5s
-Enter
-Sleep 1.2s
+Type "skit" Enter
+Sleep 2s
 Escape
 Sleep 1.3s
 
@@ -98,7 +100,7 @@ Type "skit add banner.py" Enter
 Sleep 1.8s
 Tab@550ms 4
 Sleep 1.1s
-Tab@550ms 2
+Tab@550ms 3
 Sleep 900ms
 Space
 Sleep 1.3s
@@ -110,7 +112,7 @@ Shift+Tab
 Sleep 450ms
 Shift+Tab
 Sleep 1s
-Ctrl+A
+Ctrl+S
 Sleep 2s
 
 # 5 — Launch skit; banner is selected (freshest add). Peek inside with skit's OWN editor: `e`
@@ -132,7 +134,8 @@ Type ":q" Enter
 Sleep 1.6s
 
 # 6 — Run banner. Same form UI, but the values are INJECTED into a temporary copy — the run
-#     output says so, and your source file is never edited.
+#     output says so, and your source file is never edited. Relaunch the Library after the retained
+#     output, then open the selected entry's settings.
 Enter
 Sleep 1.8s
 Right@20ms 20
@@ -141,8 +144,8 @@ Type "Injected!"
 Sleep 1.1s
 Enter
 Sleep 3.8s
-Enter
-Sleep 1.2s
+Type "skit" Enter
+Sleep 2.2s
 
 # 7 — The constants skit detected became managed settings. banner is still selected, so `p`
 #     opens ITS settings. The panel runs past one screen — Basics · Storage · managed params ·

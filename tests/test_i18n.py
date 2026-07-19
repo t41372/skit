@@ -269,19 +269,37 @@ class TestFormatting:
         i18n.init("zh-CN")
         assert i18n.gettext("Name") == "名称"
 
+    @pytest.mark.parametrize(
+        ("locale", "library", "script_library"),
+        [("zh-CN", "工具库", "脚本库"), ("zh-TW", "工具庫", "腳本庫")],
+    )
+    def test_entry_library_copy_does_not_narrow_the_mixed_library_to_scripts(
+        self, locale, library, script_library
+    ):
+        i18n.init(locale)
+        messages = [
+            i18n.gettext("Library"),
+            i18n.gettext("Library: %(path)s (%(count)s · %(size)s)"),
+            i18n.gettext("(shown in the Library — you can write one line)"),
+            i18n.gettext("Return to the Library immediately"),
+            i18n.gettext("Description (shown in the Library)"),
+        ]
+        assert all(library in message for message in messages)
+        assert all(script_library not in message for message in messages)
+
     def test_en_plural(self):
         i18n.init("en")
-        sing, plur = "%(shown)s/%(total)s script", "%(shown)s/%(total)s scripts"
+        sing, plur = "%(shown)s/%(total)s entry", "%(shown)s/%(total)s entries"
         one = i18n.ngettext(sing, plur, 1)
         many = i18n.ngettext(sing, plur, 5)
-        assert one.endswith("script")
-        assert not one.endswith("scripts")
-        assert many.endswith("scripts")
+        assert one.endswith("entry")
+        assert not one.endswith("entries")
+        assert many.endswith("entries")
 
     def test_zh_plural_single_form(self):
         # Chinese has one plural form (nplurals=1): singular and plural render identically.
         i18n.init("zh-CN")
-        sing, plur = "%(shown)s/%(total)s script", "%(shown)s/%(total)s scripts"
+        sing, plur = "%(shown)s/%(total)s entry", "%(shown)s/%(total)s entries"
         assert i18n.ngettext(sing, plur, 1) == i18n.ngettext(sing, plur, 9)
 
     def test_variable_substitution(self):

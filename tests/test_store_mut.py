@@ -440,7 +440,7 @@ def test_add_entry_name_conflict_exact_message(sample_script):
     other.write_text("print(1)\n", encoding="utf-8")
     with pytest.raises(store.NameConflictError) as exc:
         store.add_python(other, name="dup")
-    assert str(exc.value) == "The name dup is already taken (use --name to pick another)"
+    assert str(exc.value) == "The name dup is already taken — pick another name."
 
 
 def test_add_entry_reuses_preexisting_empty_slug_dir():
@@ -614,6 +614,23 @@ def test_update_dependencies_without_requires_python_writes_none_into_block(tmp_
     text = updated.script_path.read_text(encoding="utf-8")
     assert "httpx" in text
     assert "requires-python" not in text
+
+
+def test_update_dependencies_preserves_block_requires_python_when_meta_has_none(tmp_path):
+    """A copy-mode python entry whose PEP 723 block carries requires-python but whose meta
+    does NOT keeps the block's own constraint across a deps edit — the block is the source
+    of truth, so a deps edit must PRESERVE it, not erase it by passing ""."""
+    script = tmp_path / "pinned.py"
+    script.write_text(
+        '# /// script\n# requires-python = ">=3.12"\n# dependencies = []\n# ///\nprint(1)\n',
+        encoding="utf-8",
+    )
+    entry = store.add_python(script)  # no requires_python passed → meta carries none
+    assert not entry.meta.requires_python  # meta has no constraint…
+    updated = store.update_dependencies(entry.slug, ["httpx"])
+    text = updated.script_path.read_text(encoding="utf-8")
+    assert "httpx" in text
+    assert 'requires-python = ">=3.12"' in text  # …but the block's own constraint survives
 
 
 def test_doctor_rebuild_corrupt_meta_exact_message(tmp_path):

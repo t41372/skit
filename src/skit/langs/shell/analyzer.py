@@ -98,8 +98,15 @@ def analyze(text: str) -> Analysis:
             c.demotion = "accumulator"
     bare = _bare_assigned_names(root)
     candidates = consts + _envdefault_candidates(root, bare) + _read_candidates(root)
+    # The script drives its own CLI: report it, like python does — the guards that stop
+    # add/params from offering to manage constants (which would REPLACE the getopts
+    # form) all key on uses_cli_framework, and a python-only signal left them dead here.
+    from . import cli_reader
+
+    frameworks = ["getopts"] if cli_reader.read_cli(text) is not None else []
     return Analysis(
         candidates=candidates,
+        frameworks=frameworks,
         uses_argv=_uses_argv(root),
         uses_self_location=_uses_self_location(root),
     )

@@ -13,7 +13,9 @@ import os
 import shutil
 import subprocess
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from . import config
 from .i18n import gettext
@@ -23,11 +25,24 @@ from .langs.base import LaunchPayload, ShellLaunch
 from .langs.registry import spec_for
 from .models import Entry
 
+if TYPE_CHECKING:
+    from .config import PromptRunner
+
 # Public re-exports: the exception family is part of launcher's stable surface
 # (flows/cli/tui catch launcher.LaunchError) even though it now lives in langs/base.
 LaunchError = _base.LaunchError
 TargetMissingError = _base.TargetMissingError
 NotExecutableError = _base.NotExecutableError  # raised here too (needs check)
+
+
+@dataclass(frozen=True)
+class PreparedLaunch:
+    """One fully built launch snapshot, ready to spawn without re-reading inputs."""
+
+    payload: LaunchPayload
+    cwd: Path
+    safe_display: str | None = None
+    prompt_runner: PromptRunner | None = None
 
 
 def find_uv() -> str | None:
@@ -68,11 +83,12 @@ def _payload(
     extra_args: list[str] | None,
     values: dict[str, str] | None,
     script_override: Path | None,
+    runner: PromptRunner | None = None,
 ) -> LaunchPayload:
     spec = spec_for(entry.meta.kind)
     if spec is None:
         raise LaunchError(gettext("Unknown entry kind: %(kind)s") % {"kind": entry.meta.kind})
-    return spec.launch.build(entry, extra_args or [], values, script_override)
+    return spec.launch.build(entry, extra_args or [], values, script_override, runner=runner)
 
 
 def build_command(
@@ -81,6 +97,7 @@ def build_command(
     values: dict[str, str] | None = None,
     *,
     script_override: Path | None = None,
+    runner: PromptRunner | None = None,
 ) -> list[str] | str:
     """Return an argv list (python/exe) or a shell string (command).
 
@@ -89,7 +106,7 @@ def build_command(
     script_override: the temporary script path after shim injection (python entries only; A5 leaves
     the original copy untouched).
     """
-    payload = _payload(entry, extra_args, values, script_override)
+    payload = _payload(entry, extra_args, values, script_override, runner)
     if isinstance(payload, ShellLaunch):
         return payload.command
     return payload.argv
@@ -101,6 +118,7 @@ def describe_command(
     values: dict[str, str] | None = None,
     *,
     script_override: Path | None = None,
+    runner: PromptRunner | None = None,
 ) -> str:
     """A purely descriptive command line for transparency output and --dry-run: no uv
     lookup or download, no existence checks, no side effects. Mirrors build_command's
@@ -110,7 +128,7 @@ def describe_command(
         # A kind written by a newer skit: nothing to assemble, but describe must not raise —
         # show the template (the only launch material meta itself carries), usually "".
         return entry.meta.template
-    return spec.launch.describe(entry, extra_args or [], values, script_override)
+    return spec.launch.describe(entry, extra_args or [], values, script_override, runner=runner)
 
 
 def target_missing(entry: Entry) -> bool:
@@ -158,16 +176,77 @@ def missing_needs(entry: Entry) -> list[str]:
     return [tool for tool in entry.meta.needs or [] if shutil.which(tool) is None]
 
 
-def preflight(entry: Entry, invoke_cwd: Path | None = None) -> None:
-    """Validate what can be checked before any values/params are collected: the launch target
-    (script/exe) and the working directory. Raises LaunchError with the same messages the actual
-    build/run would eventually raise, but does none of the actual work (no uv lookup/download, no
-    process spawn) — so the TUI can call this before suspending the terminal."""
+def preflight(
+    entry: Entry,
+    invoke_cwd: Path | None = None,
+    *,
+    runner: PromptRunner | None = None,
+) -> None:
+    """Validate the launch target, selected runtime, declared needs, and workdir.
+
+    ``runner`` is the prompt kind's resolved per-run override.  When omitted, prompt
+    entries validate their pin, preserving the health and form-free rerun contract.
+    The function remains side-effect-free (no download, install, or process spawn),
+    so a TUI can call it after selection but before suspending the terminal.
+    """
     spec = spec_for(entry.meta.kind)
     if spec is not None:
-        spec.launch.preflight(entry)
+        spec.launch.preflight(entry, runner=runner)
     _check_needs(entry)
     _check_workdir(_resolve_workdir(entry, invoke_cwd or Path.cwd()))
+
+
+def prepare_entry(
+    entry: Entry,
+    extra_args: list[str] | None = None,
+    *,
+    values: dict[str, str] | None = None,
+    invoke_cwd: Path | None = None,
+    script_override: Path | None = None,
+    runner: PromptRunner | None = None,
+) -> PreparedLaunch:
+    """Build and validate exactly the payload that a later spawn will consume.
+
+    This is stronger than ``preflight``: it resolves the executable and renders the
+    final argv/body once. Delivery-boundary UI can therefore stay silent until this
+    succeeds, then spawn the same immutable snapshot without a TOCTOU rebuild.
+    """
+    spec = spec_for(entry.meta.kind)
+    if spec is None:
+        raise LaunchError(gettext("Unknown entry kind: %(kind)s") % {"kind": entry.meta.kind})
+    safe_display: str | None = None
+    prompt_runner: PromptRunner | None = None
+    if isinstance(spec.launch, _launch.PromptLaunch):
+        # Prompt preflight and the former execute gate validate the body before
+        # needs/binary failures. build_snapshot preserves that order while also
+        # resolving the runner row only once for argv and transparency.
+        payload, safe_display, prompt_runner = spec.launch.build_snapshot(
+            entry,
+            extra_args or [],
+            values,
+            script_override,
+            runner=runner,
+        )
+        _check_needs(entry)
+    else:
+        # Preserve the established non-prompt run ordering: prerequisites before
+        # strategy build (which may perform more expensive runtime/dependency work).
+        _check_needs(entry)
+        payload = spec.launch.build(
+            entry,
+            extra_args or [],
+            values,
+            script_override,
+            runner=runner,
+        )
+    cwd = _resolve_workdir(entry, invoke_cwd or Path.cwd())
+    _check_workdir(cwd)
+    return PreparedLaunch(
+        payload=payload,
+        cwd=cwd,
+        safe_display=safe_display,
+        prompt_runner=prompt_runner,
+    )
 
 
 def run_entry(
@@ -178,6 +257,8 @@ def run_entry(
     invoke_cwd: Path | None = None,
     script_override: Path | None = None,
     env_overlay: Mapping[str, str] | None = None,
+    runner: PromptRunner | None = None,
+    prepared: PreparedLaunch | None = None,
 ) -> int:
     """Run straight through the terminal and return the exit code.
 
@@ -187,22 +268,29 @@ def run_entry(
 
     The TUI must be suspended before calling this.
     """
-    _check_needs(entry)  # run and preflight agree: a missing tool never reaches spawn
-    payload = _payload(entry, extra_args, values, script_override)
-    cwd = _resolve_workdir(entry, invoke_cwd or Path.cwd())
-    _check_workdir(cwd)
-    # Overlay skit's mirror settings onto uv's environment — a no-op unless the user enabled them,
-    # and never clobbering a variable the user set themselves (see config.mirror_env).
+    launch = prepared or prepare_entry(
+        entry,
+        extra_args,
+        values=values,
+        invoke_cwd=invoke_cwd,
+        script_override=script_override,
+        runner=runner,
+    )
+    # Overlay skit's mirror settings onto EVERY child's environment (uv reads the index
+    # vars, npm/bun read the registry var — the overlay exists for both) — a no-op
+    # unless the user enabled them, never clobbering a variable the user set themselves.
     env = {**os.environ, **config.mirror_env(os.environ), **(env_overlay or {})}
     # LaunchPayload is a closed two-member union, so isinstance/else is exhaustive (the
     # else narrows to ArgvLaunch) without the phantom no-match arm a `match` would add.
-    if isinstance(payload, ShellLaunch):
+    if isinstance(launch.payload, ShellLaunch):
         # A command entry is by definition "a shell command the user registered"; shell=True is a
         # feature, not a hole. The template was written by the user via `skit add`, so the trust
         # boundary is the same as the user's own shell history.
-        proc = subprocess.run(payload.command, shell=True, cwd=cwd, check=False, env=env)  # noqa: S602  # pragma: no mutate — check=None is falsy-equivalent to False; omitting it matches subprocess.run's own default
+        proc = subprocess.run(  # noqa: S602  # pragma: no mutate
+            launch.payload.command, shell=True, cwd=launch.cwd, check=False, env=env
+        )
     else:
-        proc = subprocess.run(payload.argv, cwd=cwd, check=False, env=env)  # noqa: S603 — argv from a user entry  # pragma: no mutate — check=None is falsy-equivalent to False; omitting it matches subprocess.run's own default
+        proc = subprocess.run(launch.payload.argv, cwd=launch.cwd, check=False, env=env)  # noqa: S603 — argv from a user entry  # pragma: no mutate — check=None is falsy-equivalent to False; omitting it matches subprocess.run's own default
     return _normalize_exit_code(proc.returncode)
 
 

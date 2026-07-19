@@ -10,11 +10,13 @@ results, status text) — never a line executed for its own sake.
 from __future__ import annotations
 
 import contextlib
+from types import SimpleNamespace
 
 import pytest
-from textual.widgets import Checkbox, DataTable, Input, Static
+from textual.widgets import Checkbox, DataTable, Input, Select, Static
 
-from skit import argstate, config, flows, launcher, store, tui
+from conftest import footer_text
+from skit import argstate, argv_text, config, flows, launcher, store, tui
 from skit.langs.python import metawriter
 from skit.params import ParamDecl
 from skit.tui_form import (
@@ -71,7 +73,6 @@ def quiet_run(monkeypatch):
 
     monkeypatch.setattr(launcher, "run_entry", fake_run)
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
-    monkeypatch.setattr("builtins.input", lambda *a: "")
     return calls
 
 
@@ -334,26 +335,50 @@ async def test_execute_reports_assembly_error_in_the_status(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-async def test_edit_surfaces_an_editor_error_but_still_recovers(tmp_path, monkeypatch):
-    """If the editor fails to launch, e prints the error and pauses for acknowledgment,
-    then still reloads and reports — the workbench survives a broken $EDITOR."""
+@pytest.mark.parametrize("error_type", [tui.editor.EditorError, tui.editor.EditedSourceError])
+async def test_edit_errors_return_to_the_tui_without_reading_stdin(
+    tmp_path, monkeypatch, error_type
+):
+    """Both editor failure modes resume the workbench and use its persistent status.
+
+    The edit action is also a clickable footer path, so an error must not introduce a
+    hidden keyboard-only ``input()`` gate before Textual regains mouse ownership.
+    """
     store.add_python(_py(tmp_path, "print(1)\n"), name="j")
-    printed: list[str] = []
+    stdin_reads: list[tuple[object, ...]] = []
 
-    def boom(path):
-        raise tui.editor.EditorError("editor exploded")
+    def boom(path, *, kind):
+        raise error_type("editor exploded")
 
-    monkeypatch.setattr(tui.editor, "open_in_editor", boom)
+    def forbid_stdin(*args):
+        stdin_reads.append(args)
+        raise AssertionError("Library edit errors must not wait on stdin")
+
+    monkeypatch.setattr(tui.editor, "open_entry_in_editor", boom)
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
-    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
-    monkeypatch.setattr("builtins.input", lambda *a: "")
+    monkeypatch.setattr("builtins.input", forbid_stdin)
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         await pilot.pause()
         app.action_edit()
         await pilot.pause()
-        assert any("editor exploded" in line for line in printed)
-        assert _static_text(app, "#status") == "Edited j."
+        assert stdin_reads == []
+        assert len(app.screen_stack) == 1
+        assert _static_text(app, "#status") == "Error: editor exploded"
+
+
+async def test_refresh_detail_no_ops_when_the_detail_pane_is_gone(tmp_path):
+    """A queued RowHighlighted can reach _refresh_detail after the detail pane is gone
+    (a layout tier that drops it, or teardown mid-transition). It must no-op, not raise
+    NoMatches out of the event handler — the Windows py3.12 pilot exposed this race."""
+    store.add_python(_py(tmp_path, "print(1)\n"), name="a")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one("#detail-body").remove()
+        await pilot.pause()
+        app._refresh_detail()  # must not raise
+        assert len(app.screen_stack) == 1  # app survived, no crash
 
 
 # ---------------------------------------------------------------------------
@@ -522,6 +547,27 @@ async def test_choice_set_value_ignores_a_value_outside_the_choices(tmp_path, qu
         assert mode.value == "a"  # unchanged
 
 
+async def test_bool_field_reads_checked_state_through_truthy(tmp_path, quiet_run):
+    """A bool field reads its checked state through flows.truthy in the widget lane too —
+    so a stored "on"/"y" checks the box (the same spelling assembly fires --fast on), never
+    unchecked-while-the-run-passes-the-flag. set_value drives the shared rule."""
+    _argparse_entry(tmp_path)
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.action_run()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        fast = next(r for r in screen.query(FieldRow) if r.field.key == "fast")
+        box = fast.query_one(Checkbox)
+        fast.set_value("on")
+        assert box.value is True  # "on" checks the box
+        fast.set_value("y")
+        assert box.value is True  # "y" too
+        fast.set_value("off")
+        assert box.value is False  # and "off" clears it
+
+
 async def test_live_preview_reports_glob_match_count(tmp_path, quiet_run):
     """Typing a glob into a free-text field shows a live match count. Uses an absolute pattern
     (glob ignores the cwd for it) so the count is deterministic WITHOUT chdir'ing — chdir breaks
@@ -545,6 +591,35 @@ async def test_live_preview_reports_glob_match_count(tmp_path, quiet_run):
 # ---------------------------------------------------------------------------
 # tui_form: PresetNameModal branches
 # ---------------------------------------------------------------------------
+
+
+async def test_save_preset_captures_set_fixed_fields_from_prefill(tmp_path, quiet_run):
+    """The CLI opens a REDUCED form when --set fixed some fields: those values ride in the
+    prefill with no composed row. A preset saved here must capture them too (`--save-preset`
+    on the identical run does — one feature, one rule), never silently drop the pinned value."""
+    entry = _argparse_entry(tmp_path)
+    full = flows.plan_for_entry(entry)
+    # Reproduce `--set output=fixed.png`: drop output's row, pin its value in the prefill.
+    reduced = flows.FormPlan(
+        source=full.source,
+        fields=[f for f in full.fields if f.key != "output"],
+        text=full.text,
+    )
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = RunFormScreen(entry, plan=reduced, prefill={"output": "fixed.png"})
+        app.push_screen(screen)
+        await pilot.pause()
+        assert not any(r.field.key == "output" for r in screen.query(FieldRow))  # no row for it
+        screen.action_save_preset()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PresetNameModal)
+        modal.query_one(Input).value = "pinned"
+        modal.action_save_name()
+        await pilot.pause()
+    saved = argstate.load_state(entry.slug)["presets"]["pinned"]
+    assert saved["output"] == "fixed.png"  # the --set-fixed value was captured from prefill
 
 
 async def test_preset_modal_overwrite_hint_and_click_save(tmp_path, quiet_run):
@@ -597,6 +672,216 @@ async def test_preset_modal_cancel_saves_nothing(tmp_path, quiet_run):
         await pilot.pause()
         assert not isinstance(app.screen, PresetNameModal)
         assert argstate.load_state(entry.slug)["presets"] == {}  # nothing saved
+
+
+def _preset_values(select: Select[str]) -> list[str]:
+    # allow_blank=False means no NULL/NoSelection sentinel rides in _options — the
+    # isinstance filter is just the type-narrowing ty needs (it never drops a real row).
+    return [value for _, value in select._options if isinstance(value, str)]
+
+
+async def test_form_save_preset_field_less_notifies_and_opens_no_modal(
+    tmp_path, quiet_run, monkeypatch
+):
+    """A field-less form composes NO preset row at all: the row only ever
+    existed to teach "fill the form and press Ctrl+S", the exact action Ctrl+S refuses here.
+    Ctrl+S still notifies the no-fields sentence (the same one the CLI uses) and opens no modal."""
+    store.add_command("echo hi", name="noargs")
+    entry = store.resolve("noargs")
+    plan = flows.plan_for_entry(entry)
+    assert plan.fields == []  # truly field-less
+    notes: list[str] = []
+    monkeypatch.setattr(RunFormScreen, "notify", lambda self, msg, **kw: notes.append(msg))
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = RunFormScreen(entry, plan, {})
+        app.push_screen(screen)
+        await pilot.pause()
+        # The whole preset row is gone — neither the dropdown nor the empty-state hint composes.
+        assert not screen.query("#preset-row")
+        assert not screen.query("#preset-select")
+        assert not screen.query("#preset-empty")
+        # …and the footer must not advertise Ctrl+S either — the visible key hint IS the
+        # mouse's click path, so it can't teach the exact action Ctrl+S refuses here.
+        keys = footer_text(screen.query_one("#form-keys", Static))
+        assert "Save as preset" not in keys
+        assert "Ctrl+S" not in keys
+        screen.action_save_preset()
+        await pilot.pause()
+        assert app.screen is screen  # NO modal opened
+    assert any("has no form fields, so there's nothing to save." in n for n in notes)
+    assert argstate.load_state(entry.slug)["presets"] == {}  # created nothing
+
+
+async def test_form_footer_advertises_ctrl_s_only_when_fielded(tmp_path, quiet_run):
+    """The twin of the field-less footer: a fielded run form KEEPS the Ctrl+S 'Save as
+    preset' pill (there is a form to save), so the mouse always has a path to the same
+    action the key runs."""
+    _argparse_entry(tmp_path)  # has fields
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.action_run()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        keys = footer_text(screen.query_one("#form-keys", Static))
+        assert "Save as preset" in keys  # fielded → the pill is present
+        assert "Ctrl+S" in keys
+
+
+async def test_form_save_preset_from_empty_state_mounts_a_select(tmp_path, quiet_run):
+    """The first preset save replaces the "none yet — press Ctrl+S" hint with a real
+    dropdown, selected on the just-saved preset."""
+    entry = _argparse_entry(tmp_path)
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = RunFormScreen(entry, plan=flows.plan_for_entry(entry), prefill={})
+        app.push_screen(screen)
+        await pilot.pause()
+        assert screen.query("#preset-empty")  # the teaching hint is showing
+        assert not screen.query("#preset-select")
+        screen.action_save_preset()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PresetNameModal)
+        modal.query_one(Input).value = "quick"
+        modal.action_save_name()
+        await pilot.pause()
+        assert app.screen is screen  # back on the form
+        assert not screen.query("#preset-empty")  # the hint is gone
+        select = screen.query_one("#preset-select", Select)
+        assert select.value == "quick"  # the just-saved preset is selected
+        assert "quick" in _preset_values(select)
+    assert "quick" in argstate.load_state(entry.slug)["presets"]
+
+
+async def test_form_save_preset_existing_select_gains_the_name(tmp_path, quiet_run):
+    """When a dropdown already exists, a new save adds the name and selects it — the row
+    never contradicts the user's own just-made save."""
+    entry = _argparse_entry(tmp_path)
+    argstate.save_preset(entry.slug, "web", {"output": "x"})  # a preset already exists
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = RunFormScreen(entry, plan=flows.plan_for_entry(entry), prefill={})
+        app.push_screen(screen)
+        await pilot.pause()
+        select = screen.query_one("#preset-select", Select)  # dropdown already present
+        assert _preset_values(select) == ["", "web"]
+        screen.action_save_preset()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PresetNameModal)
+        modal.query_one(Input).value = "quick"
+        modal.action_save_name()
+        await pilot.pause()
+        select = screen.query_one("#preset-select", Select)
+        assert select.value == "quick"  # selects the new one
+        # options are the blank row + the presets sorted by name (quick < web)
+        assert _preset_values(select) == ["", "quick", "web"]  # old preset kept, new added
+    assert set(argstate.load_state(entry.slug)["presets"]) == {"web", "quick"}
+
+
+async def test_form_save_preset_does_not_resurrect_a_cleared_field(tmp_path, quiet_run):
+    """Clearing a prefilled field, then Ctrl+S + naming the preset, must not resurrect
+    the field. The refresh swallows EVERY Changed until the just-saved name lands —
+    set_options first resets the picker to "last values", and that intermediate
+    Changed("") is exactly how a single-value one-shot let this bug ship three times
+    (it re-applied the prefill overlay to every field). Hand-picks still apply."""
+    entry = _argparse_entry(tmp_path)
+    argstate.save_preset(entry.slug, "web", {"output": "web.png"})  # a #preset-select exists
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = RunFormScreen(
+            entry, plan=flows.plan_for_entry(entry), prefill={"output": "orig.png"}
+        )
+        app.push_screen(screen)
+        await pilot.pause()
+        rows = {r.field.key: r for r in screen.query(FieldRow)}
+        assert rows["output"].query_one(Input).value == "orig.png"  # prefilled
+        rows["output"].set_value("")  # the user clears it
+        screen.action_save_preset()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PresetNameModal)
+        modal.query_one(Input).value = "clean"
+        modal.action_save_name()
+        await pilot.pause()
+        await pilot.pause()
+        assert "output" not in argstate.load_state(entry.slug)["presets"]["clean"]
+        select = screen.query_one("#preset-select", Select)
+        assert select.value == "clean"
+        # THE headline observable: the cleared field STAYS cleared.
+        assert rows["output"].query_one(Input).value == ""
+        # Hand-picks still apply, including of the just-saved name later.
+        select.value = "web"
+        await pilot.pause()
+        assert rows["output"].query_one(Input).value == "web.png"
+        select.value = "clean"
+        await pilot.pause()
+        assert rows["output"].query_one(Input).value == "orig.png"  # prefill overlay
+
+
+async def test_form_save_preset_while_another_preset_is_selected(tmp_path, quiet_run):
+    """The journey that exercises the one-shot token: hand-pick a preset, EDIT a
+    field, save under a new name — the fields must keep the user's edits (set_options'
+    intermediate blank reset must not re-apply the prefill overlay), and the picker
+    must land on the new name."""
+    entry = _argparse_entry(tmp_path)
+    argstate.save_preset(entry.slug, "web", {"output": "web.png"})
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = RunFormScreen(
+            entry, plan=flows.plan_for_entry(entry), prefill={"output": "orig.png"}
+        )
+        app.push_screen(screen)
+        await pilot.pause()
+        select = screen.query_one("#preset-select", Select)
+        select.value = "web"  # hand-pick: applies web.png
+        await pilot.pause()
+        rows = {r.field.key: r for r in screen.query(FieldRow)}
+        assert rows["output"].query_one(Input).value == "web.png"
+        rows["output"].set_value("final.png")  # the user edits on top
+        screen.action_save_preset()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PresetNameModal)
+        modal.query_one(Input).value = "clean"
+        modal.action_save_name()
+        await pilot.pause()
+        await pilot.pause()
+        assert argstate.load_state(entry.slug)["presets"]["clean"]["output"] == "final.png"
+        assert select.value == "clean"
+        # The field keeps the user's edit — not stomped back to the prefill.
+        assert rows["output"].query_one(Input).value == "final.png"
+
+
+async def test_form_overwrite_selected_preset_keeps_a_cleared_field(tmp_path, quiet_run):
+    """Overwrite variant: hand-pick 'web', clear the field, Ctrl+S under the SAME name
+    — the cleared field stays cleared and the stored preset drops the value."""
+    entry = _argparse_entry(tmp_path)
+    argstate.save_preset(entry.slug, "web", {"output": "web.png"})
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = RunFormScreen(
+            entry, plan=flows.plan_for_entry(entry), prefill={"output": "orig.png"}
+        )
+        app.push_screen(screen)
+        await pilot.pause()
+        select = screen.query_one("#preset-select", Select)
+        select.value = "web"
+        await pilot.pause()
+        rows = {r.field.key: r for r in screen.query(FieldRow)}
+        rows["output"].set_value("")
+        screen.action_save_preset()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PresetNameModal)
+        modal.query_one(Input).value = "web"
+        modal.action_save_name()
+        await pilot.pause()
+        await pilot.pause()
+        assert "output" not in argstate.load_state(entry.slug)["presets"]["web"]
+        assert rows["output"].query_one(Input).value == ""  # not resurrected
 
 
 # ---------------------------------------------------------------------------
@@ -714,6 +999,31 @@ async def test_insert_token_ignores_an_input_outside_any_field(tmp_path, quiet_r
         assert app.screen is screen  # no menu opened
 
 
+async def test_insert_token_ignores_a_stale_field_click_action(tmp_path, quiet_run):
+    """A ▾ chip carries its field key.  If an already-queued click is delivered after
+    that row was replaced, its stale key is a safe no-op: no modal and no mutation of
+    the still-visible field."""
+    _argparse_entry(tmp_path)
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.action_run()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        output = next(r for r in screen.query(FieldRow) if r.field.key == "output")
+        output_input = output.query_one(Input)
+        output_input.value = "keep.png"
+        output_input.focus()
+        await pilot.pause()
+
+        screen.action_insert_token("row-that-no-longer-exists")
+        await pilot.pause()
+
+        assert app.screen is screen
+        assert output_input.value == "keep.png"
+        assert screen.focused is output_input
+
+
 # ---------------------------------------------------------------------------
 # tui_form: RunFormScreen include_extra + collect edges
 # ---------------------------------------------------------------------------
@@ -736,6 +1046,28 @@ async def test_inline_form_without_extra_field_collects_no_extra(tmp_path):
         assert extra == []
 
 
+async def test_extra_argument_labels_name_the_actual_receiver(tmp_path):
+    command = store.add_command("echo ready", name="cmd")
+    prompt_path = tmp_path / "review.prompt.md"
+    prompt_path.write_text("Review this\n", encoding="utf-8")
+    prompt = store.add_prompt(prompt_path, name="review")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        for entry, expected in (
+            (command, "Extra command arguments"),
+            (prompt, "Extra agent arguments"),
+        ):
+            screen = RunFormScreen(entry, flows.plan_for_entry(entry), {})
+            app.push_screen(screen)
+            await pilot.pause()
+            extra_row = next(
+                row for row in screen.query(FieldRow) if row.field.key == "__extra_args__"
+            )
+            assert extra_row.field.label == expected
+            app.pop_screen()
+            await pilot.pause()
+
+
 async def test_collect_keeps_unbalanced_extra_as_one_argument(tmp_path, quiet_run):
     """Extra args with an unbalanced quote can't be shlex-split; collect falls back to
     passing the raw text as a single argument rather than dropping it."""
@@ -750,6 +1082,24 @@ async def test_collect_keeps_unbalanced_extra_as_one_argument(tmp_path, quiet_ru
         extra_row.query_one(Input).value = '"unclosed'
         _values, extra = screen.collect()
         assert extra == ['"unclosed']
+
+
+async def test_extra_args_windows_paths_roundtrip_through_the_form(tmp_path, monkeypatch):
+    entry = _argparse_entry(tmp_path)
+    expected = [r"C:\Program Files\tool\input.txt", "two words"]
+    argstate.save_last(entry.slug, extra_args=expected)
+    monkeypatch.setattr(argv_text, "sys", SimpleNamespace(platform="win32"))
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = RunFormScreen(entry, flows.plan_for_entry(entry), {})
+        app.push_screen(screen)
+        await pilot.pause()
+        extra_row = next(r for r in screen.query(FieldRow) if r.field.key == "__extra_args__")
+        _values, extra = screen.collect()
+        assert extra == expected  # saved argv joined for editing, then split back byte-for-byte
+        extra_row.query_one(Input).value = r"C:\tools\input.txt --fast"
+        _values, extra = screen.collect()
+        assert extra == [r"C:\tools\input.txt", "--fast"]
 
 
 # ---------------------------------------------------------------------------
