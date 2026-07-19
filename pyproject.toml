@@ -68,6 +68,7 @@ dev = [
     "mutmut>=3.6,<4",
     "zizmor>=1.26,<2",
     "babel>=2.18,<3",  # dev-only: extract/update/compile .po↔.mo (runtime uses stdlib gettext)
+    "pytest-rerunfailures>=16.4",
 ]
 
 [build-system]

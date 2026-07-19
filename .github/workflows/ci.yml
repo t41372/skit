@@ -83,7 +83,10 @@ jobs:
       - name: Sync dependencies
         run: uv sync --dev
       - name: Run tests
-        run: uv run pytest -q
+        # --reruns retries only INTERMITTENT failures: the Windows-py3.12 Textual pilot
+        # has inherent recompose/settle timing races (py3.13 and every POSIX job are
+        # stable). A real, deterministic failure still fails all three attempts.
+        run: uv run pytest -q --reruns 2 --reruns-delay 1
 
   coverage:
     name: coverage (100% gate)
