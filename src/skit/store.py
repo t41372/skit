@@ -722,7 +722,10 @@ def update_dependencies(
         requires_python = ""
     _validate_uv_metadata(spec, dependencies, requires_python)
     if spec is not None and spec.deps_flavor == "npm":
-        if requires_python:
+        if requires_python is not None:
+            # `is not None`, not truthiness (_refuse_unusable_add_flags' own
+            # predicate): `--python ''` is a spelling too, and a flag the kind's
+            # doctrine calls inapplicable must not apply for the empty spelling only.
             raise StoreUsageError(
                 gettext("A Python constraint doesn't apply to %(kind)s scripts.")
                 % {"kind": meta.kind}
@@ -760,10 +763,14 @@ def update_dependencies(
         if script.exists():
             text = script.read_text(encoding="utf-8", errors="replace")
             constraint = meta.requires_python
-            if not constraint:
+            if not constraint and requires_python is None:
                 # The block is the source of truth when meta carries no constraint
-                # (deliberately, cli's identity rules) — so a deps edit must PRESERVE
-                # the block's own requires-python, not erase it by passing "".
+                # (deliberately, cli's identity rules) — so a DEPS-ONLY edit must
+                # PRESERVE the block's own requires-python, not erase it by passing
+                # "". But only when the caller didn't touch the constraint: an
+                # explicit unpin (requires_python == "", the '-' token) must reach
+                # the block uv actually reads — "updated: —" while the block still
+                # pins is a specific false statement on three surfaces at once.
                 block = pep723.parse_block(text) or {}
                 constraint = str(block.get("requires-python", "") or "")
             script.write_text(

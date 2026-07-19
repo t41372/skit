@@ -24,6 +24,7 @@ These never chdir and never touch the real user dirs (the local SKIT_* fixture).
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -98,16 +99,37 @@ def test_deps_garbage_python_is_refused_and_nothing_changes(tmp_path):
     assert _stored_block("a") == before_block
 
 
-def test_deps_dash_python_clears_meta_and_preserves_the_blocks_own_rule(tmp_path):
-    """'-' means automatic: meta clears to "", and the block follows the existing
-    preserve/derive rule (a block that already pinned a constraint keeps it — meta
-    being the non-authoritative side when it carries none)."""
+def test_deps_dash_python_clears_meta_and_unpins_the_block(tmp_path):
+    """'-' means automatic AND an explicit unpin. Inverted from the old "preserve on unpin"
+    behavior the round-13 audit named a false statement on three surfaces at once: meta,
+    `--json`, and the visible `run` command all reported "—" while uv still silently enforced
+    the block's own `requires-python`. Now the caller's explicit unpin (requires_python == "",
+    the '-' token) reaches the block uv actually reads: meta clears to "", the `requires-python`
+    line is REMOVED, `--json` agrees, and the dry-run command carries no `--python`."""
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     store.update_dependencies("a", ["requests"], requires_python=">=3.11")
+    assert 'requires-python = ">=3.11"' in _stored_block("a")  # pinned first
     result = runner.invoke(cli.app, ["deps", "a", "--python", "-"])
     assert result.exit_code == 0, result.output
     assert store.resolve("a").meta.requires_python == ""  # meta cleared
-    assert 'requires-python = ">=3.11"' in _stored_block("a")  # block preserved (derive rule)
+    assert "requires-python" not in _stored_block("a")  # block unpinned — the line is gone
+    view = runner.invoke(cli.app, ["deps", "a", "--json"])
+    assert json.loads(view.stdout)["requires_python"] == ""  # --json agrees (no stale pin)
+    dry = runner.invoke(cli.app, ["run", "a", "--dry-run", "--no-input"])
+    assert dry.exit_code == 0, dry.output
+    assert "--python" not in _flat(dry.output)  # the run uv would launch carries no constraint
+
+
+def test_deps_only_edit_still_preserves_the_blocks_own_pin(tmp_path):
+    """The companion the unpin must not break: a DEPS-ONLY edit (no --python flag, so
+    requires_python is None at the chokepoint) still PRESERVES the block's own
+    requires-python — the original derive rule, intact for the case it was written for."""
+    store.add_python(_py(tmp_path, "print(1)\n"), name="a")
+    store.update_dependencies("a", ["requests"], requires_python=">=3.11")
+    result = runner.invoke(cli.app, ["deps", "a", "--dep", "rich"])
+    assert result.exit_code == 0, result.output
+    assert 'requires-python = ">=3.11"' in _stored_block("a")  # block pin preserved
+    assert "rich" in _stored_block("a")  # and the deps edit landed
 
 
 def test_deps_none_python_clears_meta_when_nothing_to_preserve(tmp_path):

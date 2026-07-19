@@ -126,6 +126,21 @@ def test_js_deps_python_none_is_refused_as_inapplicable(tmp_path):
     assert "A Python constraint doesn't apply to js scripts." in _flat(result.output)
 
 
+def test_js_deps_python_empty_string_is_refused_as_inapplicable(tmp_path):
+    """The missing spelling: `--python ''` (empty) is a spelling too, and is REFUSED identically
+    to '-'/'none'/a real constraint (exit 2, "doesn't apply") — nothing is written. The npm
+    predicate keys on `requires_python is not None`, not truthiness, so the empty string can't
+    slip through as a green "Python constraint updated: —"; add and deps answer it the same."""
+    store.add_script(_js(tmp_path), kind="js", name="jsx")
+    store.update_dependencies("jsx", ["chalk"])  # a dep to prove the refusal disturbs nothing
+    result = runner.invoke(cli.app, ["deps", "jsx", "--python", ""])
+    assert result.exit_code == 2, result.output
+    assert "A Python constraint doesn't apply to js scripts." in _flat(result.output)
+    meta = store.resolve("jsx").meta
+    assert meta.requires_python == ""  # untouched
+    assert meta.dependencies == ["chalk"]  # the refusal wrote nothing
+
+
 def test_python_deps_python_dash_is_still_automatic(tmp_path):
     """The regression: on a uv-flavor (python) entry, '-' STILL normalizes to automatic — the
     gate narrows the normalization to uv entries, it does not remove it."""
@@ -151,6 +166,25 @@ def test_store_uv_spec_plus_dash_normalizes(tmp_path):
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     entry = store.update_dependencies("a", ["requests"], requires_python="none")
     assert entry.meta.requires_python == ""
+
+
+def test_store_npm_spec_plus_empty_string_reaches_the_npm_refusal(tmp_path):
+    """The empty branch of the npm predicate `requires_python is not None`: `""` (not None) is a
+    Python constraint spelling and raises StoreUsageError on an npm entry — the branch that used
+    to slip through when the predicate was bare truthiness."""
+    store.add_script(_js(tmp_path), kind="js", name="jsx")
+    with pytest.raises(store.StoreUsageError) as exc:
+        store.update_dependencies("jsx", [], requires_python="")
+    assert "doesn't apply" in str(exc.value)
+
+
+def test_store_npm_spec_plus_none_deps_edit_is_not_refused(tmp_path):
+    """The None branch of the same predicate: a deps-only edit (requires_python is None) on an
+    npm entry is NOT a Python edit, so the constraint refusal is skipped and the dependency
+    lands — the predicate must refuse the empty string WITHOUT catching a plain deps write."""
+    store.add_script(_js(tmp_path), kind="js", name="jsx")
+    entry = store.update_dependencies("jsx", ["chalk"], requires_python=None)
+    assert entry.meta.dependencies == ["chalk"]
 
 
 # ==========================================================================
