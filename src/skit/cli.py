@@ -1968,13 +1968,17 @@ def _print_show_human(entry: store.Entry, plan: flows.FormPlan, presets: list[st
     marker = launcher.missing_marker(entry)
     if marker is not None:
         console.print(f"  [yellow]{escape(marker)}[/yellow]")
-    if meta.dependencies:
+    # EFFECTIVE values, same rule (and same helper) as the --json twin two branches
+    # down: a block-only add-time entry must not show a bare face here while its
+    # own --json reports the deps and pin uv actually enforces.
+    effective_deps, effective_python = store.effective_uv_metadata(entry)
+    if effective_deps:
         console.print(
-            f"  {gettext('Dependencies: %(deps)s') % {'deps': ', '.join(escape(d) for d in meta.dependencies)}}"
+            f"  {gettext('Dependencies: %(deps)s') % {'deps': ', '.join(escape(d) for d in effective_deps)}}"
         )
-    if meta.requires_python:
+    if effective_python:
         console.print(
-            f"  {gettext('Python constraint: %(python)s') % {'python': escape(meta.requires_python)}}"
+            f"  {gettext('Python constraint: %(python)s') % {'python': escape(effective_python)}}"
         )
     if meta.needs:
         console.print(
@@ -4099,15 +4103,16 @@ def deps(
         except store.StoreError as exc:
             raise _fail(str(exc), 1) from exc
         if not as_json:
-            if dep is None and not clear and python is not None:
-                # Only --python was given: saying "Dependencies updated" would
-                # describe an edit that didn't happen.
-                console.print(
-                    f"[green]{gettext('Python constraint of %(name)s updated: %(value)s') % {'name': escape(entry.meta.name), 'value': escape(entry.meta.requires_python) or '—'}}[/green]"
-                )
-            else:
+            # Per-axis confirmations: each line prints exactly when its axis was
+            # edited — "Dependencies updated" for an edit that didn't happen was a
+            # lie, and silence about a constraint that DID move was its mild twin.
+            if dep is not None or clear:
                 console.print(
                     f"[green]{gettext('Dependencies of %(name)s updated: %(deps)s') % {'name': escape(entry.meta.name), 'deps': ', '.join(escape(d) for d in new_deps or []) or '—'}}[/green]"
+                )
+            if python is not None:
+                console.print(
+                    f"[green]{gettext('Python constraint of %(name)s updated: %(value)s') % {'name': escape(entry.meta.name), 'value': escape(entry.meta.requires_python) or '—'}}[/green]"
                 )
     if needs_requested:
         # Drop empty/whitespace values, mirroring the --dep path: an empty command name is junk in

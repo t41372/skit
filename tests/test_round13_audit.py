@@ -272,17 +272,18 @@ def test_deps_dep_only_prints_the_deps_line(tmp_path):
     assert "Python constraint of" not in flat
 
 
-def test_deps_dep_and_python_together_prints_the_deps_line(tmp_path):
-    """--dep AND --python: a dependency edit DID happen, so the deps line is printed (the
-    python-only branch requires `dep is None`) — the constraint rides along in the stored block,
-    not a second line."""
+def test_deps_dep_and_python_together_prints_both_axis_lines(tmp_path):
+    """--dep AND --python moved BOTH axes, so BOTH confirmation lines print — each naming its own
+    axis. The per-axis rule (deps line when `dep is not None or clear`, constraint line when
+    `python is not None`) refuses the old silence about a constraint that DID move: previously the
+    second axis rode along mutely in the stored block, and only the deps line was shown."""
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     result = runner.invoke(cli.app, ["deps", "a", "--dep", "rich", "--python", ">=3.12"])
     assert result.exit_code == 0, result.output
     flat = _flat(result.output)
-    assert "Dependencies of a updated: rich" in flat
-    assert "Python constraint of" not in flat
-    assert store.resolve("a").meta.requires_python == ">=3.12"  # the constraint still landed
+    assert "Dependencies of a updated: rich" in flat  # the deps axis moved
+    assert "Python constraint of a updated: >=3.12" in flat  # and so did the constraint axis
+    assert store.resolve("a").meta.requires_python == ">=3.12"  # the constraint landed
 
 
 def test_deps_clear_prints_the_deps_line(tmp_path):

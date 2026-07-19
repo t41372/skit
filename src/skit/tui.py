@@ -558,10 +558,14 @@ class MenuApp(App[int | PendingRun]):
                 gettext("Presets  %(names)s")
                 % {"names": " · ".join(escape(p) for p in sorted(state["presets"]))}
             )
-        if entry.meta.dependencies:
+        # EFFECTIVE deps (store.effective_uv_metadata), not raw meta: a block-only
+        # add-time python entry showed no line here while its own settings screen
+        # showed the list — two panes of one TUI disagreeing about one record.
+        effective_deps, _ = store.effective_uv_metadata(entry)
+        if effective_deps:
             lines.append(
                 gettext("Depends on  %(deps)s")
-                % {"deps": ", ".join(escape(d) for d in entry.meta.dependencies)}
+                % {"deps": ", ".join(escape(d) for d in effective_deps)}
             )
         last = state["last_run"]
         if last:

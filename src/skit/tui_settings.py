@@ -279,6 +279,10 @@ class ScriptSettingsScreen(Screen[bool]):
         # the declared-params editor rather than the analyzer-driven [tool.skit] flow above.
         self._declared: bool = self._spec is not None and self._spec.params_io is None
         self._is_prompt: bool = entry.meta.kind == "prompt"
+        # The deps/constraint pair the fields were prefilled from (_compose_deps
+        # stashes the effective read here) — the SAVE-time diff baseline, so the
+        # deps axis keeps the same open-time clock as every other axis.
+        self._deps_baseline: tuple[list[str], str] = ([], "")
         # Value-keyed option list behind the workdir radio (kind-aware; "custom" last).
         self._workdir_choices: list[str] = []
         # The preset names as composed — the delete pass maps checkbox indices
@@ -741,8 +745,13 @@ class ScriptSettingsScreen(Screen[bool]):
         # meta showed empty fields for a list uv installs — and made "untouched
         # blank" indistinguishable from "user cleared", so a deps-only save wiped a
         # pin the screen never displayed. What the screen shows is what a save
-        # keeps; what the user clears is what a save clears.
+        # keeps; what the user clears is what a save clears. Stashed as the SAVE
+        # baseline too: like every other axis on this screen, the diff runs against
+        # what the user actually saw at open time — a save-time re-read would
+        # classify an untouched field as an edit whenever a concurrent CLI write
+        # moved the block underneath (the agent-coexistence rule).
         effective_deps, effective_python = store.effective_uv_metadata(self._entry)
+        self._deps_baseline = (effective_deps, effective_python)
         yield Static(gettext("Dependencies"), classes="section")
         yield Input(
             value=", ".join(effective_deps),
@@ -849,13 +858,14 @@ class ScriptSettingsScreen(Screen[bool]):
                 return  # a row is invalid; nothing was written
         pending_deps: tuple[list[str] | None, str | None] | None = None
         if self._deps_editable():
-            # Per-axis change detection against the EFFECTIVE baseline (the values
-            # the fields were prefilled from): an axis equal to its baseline is
-            # UNTOUCHED and travels as None — the chokepoint's "don't touch" — so a
-            # deps-only edit can never unpin, and a python-only edit can never wipe
-            # deps. An axis that differs is the user's explicit edit, cleared-empty
-            # included.
-            effective_deps, effective_python = store.effective_uv_metadata(entry)
+            # Per-axis change detection against the EFFECTIVE baseline stashed at
+            # compose time (the values the fields were prefilled from — the same
+            # open-time clock every other axis diffs against): an axis equal to its
+            # baseline is UNTOUCHED and travels as None — the chokepoint's "don't
+            # touch" — so a deps-only edit can never unpin, and a python-only edit
+            # can never wipe deps. An axis that differs is the user's explicit
+            # edit, cleared-empty included.
+            effective_deps, effective_python = self._deps_baseline
             raw_deps = self.query_one("#st-deps", Input).value
             if self._spec is not None and self._spec.deps_flavor == "uv":
                 deps = pep723.split_requirements(raw_deps)
