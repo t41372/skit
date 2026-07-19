@@ -248,15 +248,50 @@ async def test_draft_unregistered_shebang_pick_shell_lands_as_shell(
     assert not draft.exists()  # committed → the store holds the copy
 
 
-async def test_draft_unregistered_shebang_pick_exe_routes_to_exe_review(
+async def test_draft_unregistered_shebang_modal_omits_the_program_option(
     tmp_path, no_suspend, monkeypatch
 ):
+    """A fresh draft is authored text, never a binary — and an exe entry is
+    reference-by-construction, the one mode the drafts boundary forbids. So the draft
+    lane's KindPickModal offers NO "A program" option (offer_exe=False): there is no
+    ExeReviewScreen route out of a draft at all, only languages and a prompt."""
     app = tui.MenuApp()
     async with app.run_test(size=(100, 40)) as pilot:
         modal, _draft = await _draft_awk(app, pilot, monkeypatch)
-        _select_option(modal.query_one(OptionList), "exe")
+        options = modal.query_one(OptionList)
+        ids = {options.get_option_at_index(i).id for i in range(options.option_count)}
+        assert "exe" not in ids  # the drafts boundary refuses a program entry
+        assert "prompt" in ids  # a prompt is still offered
+        assert "shell" in ids  # and the real languages
+        assert not modal._offer_exe
+
+
+async def test_nondraft_unknown_shebang_modal_offers_program_and_reaches_exe_review(
+    tmp_path, no_suspend, monkeypatch
+):
+    """The complement / regression pin: a NON-draft file with the same unregistered #! (awk)
+    DOES offer 'A program' in its KindPickModal (offer_exe=True), and picking it still reaches
+    ExeReviewScreen — an awk script runs fine as a program, and only the drafts boundary refuses
+    that route."""
+    unknown = tmp_path / "report.awkish"
+    unknown.write_text("#!/usr/bin/awk -f\nBEGIN { print 1 }\n", encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        source = AddSourceScreen()
+        app.push_screen(source)
         await pilot.pause()
-        assert isinstance(app.screen, ExeReviewScreen)
+        source.query_one("#add-path", Input).value = str(unknown)
+        source.action_continue_add()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, KindPickModal)
+        assert modal._offer_exe  # non-draft: the program option is offered
+        options = modal.query_one(OptionList)
+        ids = {options.get_option_at_index(i).id for i in range(options.option_count)}
+        assert "exe" in ids
+        _select_option(options, "exe")
+        await pilot.pause()
+        assert isinstance(app.screen, ExeReviewScreen)  # the program route is still reachable
 
 
 async def test_draft_unregistered_shebang_pick_prompt_routes_to_prompt_review(

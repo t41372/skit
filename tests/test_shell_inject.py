@@ -1190,15 +1190,18 @@ def test_split_guard_refuses_only_what_the_shell_would_actually_mangle(tmp_path)
 def test_params_warns_when_a_self_locating_script_has_injectable_consts(tmp_path):
     # $0/BASH_SOURCE: an injected const runs from a temp copy, so the script would see THAT path.
     # The user must learn this where they decide to manage the const — not only at run time — and
-    # be pointed at --normalize (env delivery, file untouched).
+    # be pointed at --normalize. The hint now mirrors the run-time warning's sentence shape: the
+    # manual NAME="${NAME:-value}" idiom + "on the stored copy", never the old "file untouched".
     _shell_entry(
         tmp_path,
         '#!/usr/bin/env bash\nHERE=$(dirname "$0")\nREGION=us-east-1\necho "$HERE $REGION"\n',
         name="selfloc",
     )
-    out = runner.invoke(cli.app, ["params", "selfloc"]).output.replace("\n", " ")
+    out = " ".join(runner.invoke(cli.app, ["params", "selfloc"]).output.split())
     assert "locates itself" in out
-    assert "--normalize" in out
+    assert "--normalize NAME` does the rewrite for you on the stored copy" in out
+    assert 'NAME="${NAME:-value}"' in out  # the manual env-default idiom
+    assert "leaves the file untouched" not in out  # the old phrasing is gone
 
 
 def test_params_does_not_warn_when_the_script_never_self_locates(tmp_path):

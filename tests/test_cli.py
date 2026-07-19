@@ -1154,12 +1154,15 @@ def test_add_summary_escapes_markup_in_name_and_description(tmp_path):
 
 
 def test_add_deps_summary_escapes_markup(tmp_path):
+    # A dep string that is BOTH a valid PEP 508 requirement (extras syntax) and rich markup:
+    # `demo[bold]` parses (package `demo`, extra `bold`) yet `[bold]` reads as a style tag, so
+    # if the summary failed to escape it the literal `[bold]` would vanish from the output.
     result = runner.invoke(
         cli.app,
-        ["add", str(_py(tmp_path, "print(1)\n")), "--dep", "[red]pkg[/red]", "--no-input"],
+        ["add", str(_py(tmp_path, "print(1)\n")), "--dep", "demo[bold]", "--no-input"],
     )
     assert result.exit_code == 0, result.output
-    assert "[red]pkg[/red]" in result.output
+    assert "demo[bold]" in result.output
 
 
 def test_add_not_py_file_warning_escapes_markup_in_filename(tmp_path):

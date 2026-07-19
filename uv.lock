@@ -1012,6 +1012,7 @@ name = "skit-cli"
 version = "0.2.1.dev0"
 source = { editable = "." }
 dependencies = [
+    { name = "packaging" },
     { name = "platformdirs" },
     { name = "rich" },
     { name = "textual" },
@@ -1038,6 +1039,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "packaging", specifier = ">=24,<27" },
     { name = "platformdirs", specifier = ">=4.10,<5" },
     { name = "rich", specifier = ">=15,<16" },
     { name = "textual", specifier = ">=8.2,<9" },

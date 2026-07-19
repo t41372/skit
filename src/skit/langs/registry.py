@@ -430,22 +430,32 @@ def _kind_for_program(program: str) -> str | None:
 
 def kind_for_draft(path: Path) -> str:
     """Kind inference for skit's OWN kept authoring drafts (paths.is_draft): the
-    shebang the user wrote outranks the script starter's suffix, because mkstemp
-    picked `.py` BEFORE the user decided what to write — on a script draft the
-    suffix is skit's artifact, not a user signal. A registered COMPOUND extension
-    (.prompt.md) is the one exception and outranks the shebang: that suffix encodes
-    the user's own lane choice ("draft a prompt"), and a prompt body may
-    legitimately open with a #! line it describes or transforms — the prompt
-    authoring lanes never read the shebang, so neither may the resume seam. Then: a
-    registered shebang names its kind; an unregistered one is "unknown" (the
-    caller's --kind / kind-picker escape — never a fabricated python entry); no
-    shebang at all falls back to plain inference, where the suffix is all there is.
-    This is the same verdict the authoring lanes reached before the draft was kept,
-    so a draft crossing the keep/resume seam can never change kind."""
+    shebang the user wrote outranks the draft's suffix, because mkstemp picked the
+    suffix BEFORE the user decided what to write — on a script draft the suffix is
+    skit's artifact, not a user signal. The one exception is keyed on the rationale,
+    not on suffix shape: an extension registered to a placeholder-bodied kind
+    (.prompt.md / .prompt — the body is content fired at an agent, never fed to an
+    interpreter) outranks the shebang, because that suffix encodes the user's own
+    lane choice and a prompt body may legitimately open with a #! line it describes
+    or transforms — the prompt authoring lanes never read the shebang, so neither
+    may the resume seam. Then: a registered shebang names its kind; an unregistered
+    one is "unknown" (the caller's --kind / kind-picker escape — never a fabricated
+    python entry); no shebang at all falls back to plain inference, where the
+    suffix is all there is. This is the same verdict the authoring lanes reached
+    before the draft was kept, so a draft crossing the keep/resume seam can never
+    change kind."""
+    by_ext: str | None = None
     lowered = path.name.lower()
     for ext, kind in _compound_extensions():
         if lowered.endswith(ext):
-            return kind
+            by_ext = kind
+            break
+    if by_ext is None:
+        by_ext = _extension_map().get(path.suffix.lower())
+    if by_ext is not None:
+        spec = spec_for(by_ext)
+        if spec is not None and spec.placeholder_params:
+            return by_ext
     program = shebang_program(path)
     if program is None:
         return infer_kind(path)

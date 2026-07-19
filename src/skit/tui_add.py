@@ -67,13 +67,18 @@ class KindPickModal(ModalScreen[str | None]):
     KindPickModal.-h-short Static, KindPickModal.-h-tiny Static { margin: 0; }
     """
 
-    def __init__(self, filename: str, *, has_shebang: bool = False) -> None:
+    def __init__(self, filename: str, *, has_shebang: bool = False, offer_exe: bool = True) -> None:
         super().__init__()
         self._filename: str = filename
         # Two different truths need two different labels: with a #! present, "can't
         # tell from the name" is false — the name (and the shebang) told skit plenty;
         # what it can't do is honor an interpreter it doesn't know.
         self._has_shebang: bool = has_shebang
+        # The draft lanes pass offer_exe=False: a just-authored text file is never a
+        # binary, and an exe entry is reference-by-construction — the one mode the
+        # drafts boundary forbids (the store would hold nothing while the success
+        # path deletes, or the resumable list advertises, the only copy).
+        self._offer_exe: bool = offer_exe
 
     @override
     def compose(self) -> ComposeResult:
@@ -101,11 +106,11 @@ class KindPickModal(ModalScreen[str | None]):
             )
             from .kindnames import kind_label
 
-            yield OptionList(
-                *(Option(kind_label(kind), id=kind) for kind in interpreted),
-                Option(gettext("A program (run it directly)"), id="exe"),
-                Option(gettext("A prompt for an AI agent"), id="prompt"),
-            )
+            options = [Option(kind_label(kind), id=kind) for kind in interpreted]
+            if self._offer_exe:
+                options.append(Option(gettext("A program (run it directly)"), id="exe"))
+            options.append(Option(gettext("A prompt for an AI agent"), id="prompt"))
+            yield OptionList(*options)
             yield Static(
                 tui_footer.bar(tui_footer.chip("screen.cancel", "Esc", gettext("Cancel"))),
                 markup=True,
@@ -327,6 +332,12 @@ class AddSourceScreen(Screen[str | None]):
                 path.unlink(missing_ok=True)
             self.dismiss(slug)
 
+        if kind == "exe" and draft_resume:
+            # A draft is authored text, never a binary — and an exe entry is
+            # reference-by-construction, the one mode the drafts boundary forbids
+            # (a hand-planted executable bit must not smuggle one past the rule).
+            # Fall to the ask; the modal below won't offer "A program" for a draft.
+            kind = "unknown"
         if kind == "prompt":
             self.app.push_screen(PromptReviewScreen(path, fresh=draft_resume), _reviewed)
             return
@@ -354,7 +365,11 @@ class AddSourceScreen(Screen[str | None]):
         from .langs.registry import shebang_program
 
         self.app.push_screen(
-            KindPickModal(path.name, has_shebang=shebang_program(path) is not None),
+            KindPickModal(
+                path.name,
+                has_shebang=shebang_program(path) is not None,
+                offer_exe=not draft_resume,
+            ),
             _kind_picked,
         )
 
@@ -452,7 +467,11 @@ class AddSourceScreen(Screen[str | None]):
                 # delete it silently. Keep it and say where it lives.
                 self.notify(gettext("Your draft was kept at %(path)s") % {"path": str(tmp)})
                 return
-            tmp.unlink(missing_ok=True)  # pragma: no mutate — the store holds the copy
+            if store.resolve(slug).meta.mode == "copy":
+                # Success unlink, MODE-GATED: the store holds the copy — and only a
+                # copy. No lane may ever delete what the store doesn't hold, so a
+                # non-copy entry (however it got here) keeps the file.
+                tmp.unlink(missing_ok=True)  # pragma: no mutate
             self.dismiss(slug)
 
         if kind == "python":
@@ -466,7 +485,10 @@ class AddSourceScreen(Screen[str | None]):
                 # An UNREGISTERED shebang is an explicit signal skit can't honor:
                 # ASK (the same modal an unclassifiable file gets), never fabricate
                 # a python entry that can only die in uv run. Versioned pythons are
-                # the registry's rule now, not a per-lane carve-out.
+                # the registry's rule now, not a per-lane carve-out. No "A program"
+                # option here (offer_exe=False): a just-authored draft is text, and
+                # an exe entry's hardcoded reference mode would leave the store
+                # holding nothing.
                 def _kind_picked(picked: str | None) -> None:
                     if picked is None:
                         self.notify(gettext("Your draft was kept at %(path)s") % {"path": str(tmp)})
@@ -474,13 +496,13 @@ class AddSourceScreen(Screen[str | None]):
                     chosen: Screen[str | None] = (
                         PromptReviewScreen(tmp, fresh=True)
                         if picked == "prompt"
-                        else ExeReviewScreen(tmp)
-                        if picked == "exe"
                         else AddReviewScreen(tmp, kind=picked, fresh=True)
                     )
                     self.app.push_screen(chosen, _reviewed)
 
-                self.app.push_screen(KindPickModal(tmp.name, has_shebang=True), _kind_picked)
+                self.app.push_screen(
+                    KindPickModal(tmp.name, has_shebang=True, offer_exe=False), _kind_picked
+                )
                 return
         review: Screen[str | None] = (
             PromptReviewScreen(tmp, fresh=True)
@@ -636,8 +658,11 @@ class AddReviewScreen(Screen[str | None]):
         if self._py_pin_auto:
             self._requires_python = self._python_pin()
         # Survives the edit→rescan recompose: the rescan refreshes DETECTION, it must
-        # never throw away what the user already typed into the panel.
+        # never throw away what the user already typed into the panel. Candidate
+        # ticks are panel input too — name-keyed, so a candidate that survives the
+        # rescan keeps its tick while genuinely new/removed ones take defaults.
         self._overrides: dict[str, str] = {}
+        self._tick_overrides: dict[str, bool] = {}
         if name:
             self._overrides["name"] = name
         if description:
@@ -874,7 +899,11 @@ class AddReviewScreen(Screen[str | None]):
                 else gettext("input() #%(n)s: %(prompt)s")
                 % {"n": c.order + 1, "prompt": repr(c.prompt)}
             )
-            yield Checkbox(escape(label), value=not c.demoted, id=f"rv-cand-{i}")
+            yield Checkbox(
+                escape(label),
+                value=self._tick_overrides.get(c.name, not c.demoted),
+                id=f"rv-cand-{i}",
+            )
             if c.demoted:
                 yield Static(
                     "  ⚠ " + gettext("looks like a loop accumulator — probably not a parameter"),
@@ -922,6 +951,10 @@ class AddReviewScreen(Screen[str | None]):
                 # pin (the rescan-must-never-throw-away-typed-input rule).
                 self._overrides["python"] = typed
                 self._py_pin_auto = False
+        for i, c in enumerate(self._analysis.candidates):
+            boxes = self.query(f"#rv-cand-{i}")
+            if boxes:
+                self._tick_overrides[c.name] = boxes.first(Checkbox).value
         with self.app.suspend():
             try:
                 editor.open_in_editor(self._path)
@@ -937,9 +970,13 @@ class AddReviewScreen(Screen[str | None]):
     def _collected_python(self) -> str:
         """The requires-python the panel records: the editable #rv-python field when
         it is mounted (uv, no PEP 723 block), else whatever rode in (a block-carrying
-        script owns its constraint; non-python kinds have none)."""
+        script owns its constraint; non-python kinds have none). '-'/'none' mean
+        automatic — the CLI ask's own token, honored on this intake too."""
         boxes = self.query("#rv-python")
-        return boxes.first(Input).value.strip() if boxes else self._requires_python
+        value = boxes.first(Input).value.strip() if boxes else self._requires_python
+        if value.lower() in ("-", "none"):
+            return ""
+        return value
 
     def _collected_deps(self) -> list[str]:
         flavor = self._spec.deps_flavor if self._spec is not None else ""
@@ -982,6 +1019,19 @@ class AddReviewScreen(Screen[str | None]):
         desc = self.query_one("#rv-desc", Input).value.strip()
         reference = not self._fresh and self.query_one("#rv-mode", RadioSet).pressed_index == 1
         deps = self._collected_deps()
+        if self._spec is not None and self._spec.deps_flavor == "uv":
+            # Validate-then-write, same rule as every CLI intake: an unparseable
+            # requirement or constraint written into the PEP 723 block would brick
+            # every subsequent run with uv's raw error. (npm deps are the npm
+            # installer's grammar — not validated here.)
+            for dep in deps:
+                if (error := pep723.requirement_error(dep)) is not None:
+                    self.notify(error, severity="error")
+                    return
+            python = self._collected_python()
+            if python and (error := pep723.requires_python_error(python)) is not None:
+                self.notify(error, severity="error")
+                return
         try:
             entry = self._store_entry(name, desc, reference, deps)
         except store.StoreError as exc:

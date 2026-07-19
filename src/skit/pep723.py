@@ -122,6 +122,41 @@ def _next_nonspace(text: str, pos: int) -> str:
     return ""
 
 
+def requires_python_error(value: str) -> str | None:
+    """A localized refusal when `value` can't be a requires-python constraint, else
+    None. Validation lives at the intakes, never the launch path (validate-then-write):
+    an unparseable constraint written into a block bricks every subsequent run with
+    uv's raw error — the deferred failure no skit surface would ever have named."""
+    from packaging.specifiers import InvalidSpecifier, SpecifierSet
+
+    from .i18n import gettext
+
+    try:
+        SpecifierSet(value)
+    except InvalidSpecifier:
+        return gettext(
+            '%(value)s isn\'t a Python version constraint (e.g. ">=3.11" or ">=3.12,<3.13").'
+        ) % {"value": value}
+    return None
+
+
+def requirement_error(value: str) -> str | None:
+    """The dependency twin of requires_python_error: a PEP 508 check for one
+    requirement string. npm dependencies are NOT routed here — their grammar belongs
+    to the npm installer, which names its own errors at materialization."""
+    from packaging.requirements import InvalidRequirement, Requirement
+
+    from .i18n import gettext
+
+    try:
+        Requirement(value)
+    except InvalidRequirement:
+        return gettext(
+            '%(value)s isn\'t a package requirement (e.g. "requests" or "rich>=13,<16").'
+        ) % {"value": value}
+    return None
+
+
 def split_requirements(text: str) -> list[str]:
     """Split a comma-separated requirement list without shredding PEP 508 internals.
 

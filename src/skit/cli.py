@@ -184,8 +184,8 @@ def _resolve_python_metadata(
     if deps_opt is not None or python_opt is not None:
         # Strip/drop empties, matching the interactive path and _resolve_npm_dependencies: an
         # empty "" requirement makes PEP 508 refuse the whole [tool.uv] block ("Empty field is
-        # not allowed"), and a whitespace-only --python is an unparseable version constraint —
-        # either bricks every subsequent run before the script starts.
+        # not allowed"). The flags were already validated (and '-' normalized) by
+        # _validate_python_flags before any editor opened or a draft materialized.
         if pin:
             _note_python_pin(pin)
         return [d.strip() for d in (deps_opt or []) if d.strip()], (python_opt or "").strip() or pin
@@ -198,15 +198,26 @@ def _resolve_python_metadata(
         if pin:
             _note_python_pin(pin)
         return suggested, pin  # Non-interactive: accept the suggestions as-is
-    answer = Prompt.ask(
-        gettext("Dependencies to install (Enter to accept, edit the list, or '-' for none)"),
-        default=", ".join(suggested),
-        console=console,
-    )
-    if answer.strip().lower() in ("-", "none"):
-        deps_list: list[str] = []
-    else:
+    while True:
+        answer = Prompt.ask(
+            gettext("Dependencies to install (Enter to accept, edit the list, or '-' for none)"),
+            default=", ".join(suggested),
+            console=console,
+        )
+        if answer.strip().lower() in ("-", "none"):
+            deps_list: list[str] = []
+            break
         deps_list = pep723.split_requirements(answer)
+        # Validate-then-write, at the intake: an unparseable requirement stored into
+        # the PEP 723 block bricks every subsequent run with uv's raw error.
+        bad = None
+        for d in deps_list:
+            bad = pep723.requirement_error(d)
+            if bad is not None:
+                break
+        if bad is None:
+            break
+        err_console.print(f"[yellow]{escape(bad)}[/yellow]")
     # The pin rides in as the ask's visible default — accepting or clearing it is the
     # user's own move, so no separate announcement is needed on this path. But the
     # label must not deny what Enter does: with a pin as the default, "leave empty
@@ -217,10 +228,36 @@ def _resolve_python_metadata(
         if pin
         else gettext("Python version (leave empty for automatic)")
     )
-    py = Prompt.ask(label, default=pin, console=console)
-    if py.strip().lower() in ("-", "none"):
-        return deps_list, ""
-    return deps_list, py.strip()
+    while True:
+        py = Prompt.ask(label, default=pin, console=console).strip()
+        if py.lower() in ("-", "none"):
+            return deps_list, ""
+        error = pep723.requires_python_error(py) if py else None
+        if error is None:
+            return deps_list, py
+        err_console.print(f"[yellow]{escape(error)}[/yellow]")
+
+
+def _validate_python_flags(deps_opt: list[str] | None, python_opt: str | None) -> str | None:
+    """Validate --dep/--python for a python (uv) target and normalize --python's
+    '-'/'none' to "" (the interactive ask's own token for "automatic", honored on
+    every intake). Called BEFORE any editor opens or a draft materializes — an
+    unparseable value would otherwise be written into the stored copy's PEP 723
+    block and brick every subsequent run with uv's raw error (validate-then-write).
+    npm --dep is NOT routed here: its grammar belongs to the npm installer."""
+    for d in deps_opt or []:
+        if d.strip() and (error := pep723.requirement_error(d.strip())) is not None:
+            err_console.print(f"[red]{escape(error)}[/red]")
+            raise typer.Exit(EXIT_USAGE)
+    if python_opt is None:
+        return None
+    cleaned = python_opt.strip()
+    if cleaned.lower() in ("-", "none"):
+        return ""
+    if cleaned and (error := pep723.requires_python_error(cleaned)) is not None:
+        err_console.print(f"[red]{escape(error)}[/red]")
+        raise typer.Exit(EXIT_USAGE)
+    return cleaned
 
 
 def _note_python_pin(pin: str) -> None:
@@ -571,6 +608,7 @@ def _onboard_python(
 ) -> tuple[store.Entry, list[str], list[str], list[str]]:
     """Shared add/create pipeline: identity -> dependencies -> store add -> parameter
     onboarding. Returns (entry, deps, managed_names, secret_names) for the summary."""
+    python_opt = _validate_python_flags(deps_opt, python_opt)
     name, description = _prompt_identity(p, text, name, description, no_input)
     final_deps, final_py = _resolve_python_metadata(text, deps_opt, python_opt, no_input)
     entry = store.add_python(
@@ -665,6 +703,9 @@ def _create_python_in_editor(
             f"[red]{gettext('Writing a new script in an editor needs an interactive terminal.')}[/red]"
         )
         raise typer.Exit(EXIT_USAGE)
+    # BEFORE the editor opens (the name-conflict precedent): a bad --dep/--python can
+    # never be honored, so it must not cost an authoring session.
+    python_opt = _validate_python_flags(deps_opt, python_opt)
     if not name:
         name = Prompt.ask(gettext("Name in skit"), console=console).strip()
         if not name:
@@ -769,6 +810,9 @@ def _add_from_stdin(
             f"[red]{gettext('Reading the script from stdin needs an explicit --name.')}[/red]"
         )
         raise typer.Exit(EXIT_USAGE)
+    # BEFORE the pipe is consumed or a draft materializes (the --runner precedent):
+    # a bad --dep/--python is a usage refusal, not a kept-draft fingerprint.
+    python_opt = _validate_python_flags(deps_opt, python_opt)
     if text is None:
         text = sys.stdin.read()
     if not text.strip():
@@ -1473,22 +1517,6 @@ def add(
             resolved = Path(path).expanduser().resolve()
             from .paths import is_draft
 
-            if ref and is_draft(resolved):
-                # A reference entry pointing into drafts/ would leave its script
-                # listed as a resumable draft — a live entry's file offered for
-                # re-adding and for deletion as "the only copy", both lies. A kept
-                # draft is skit's own artifact destined for consumption: resuming
-                # always copies (and the success path then consumes the draft).
-                err_console.print(
-                    "[red]"
-                    + gettext(
-                        "%(file)s is one of skit's own kept drafts — a resumed draft "
-                        "is always added as a copy (and consumed on success). Drop --ref."
-                    )
-                    % {"file": escape(resolved.name)}
-                    + _RED_CLOSE
-                )
-                raise typer.Exit(EXIT_USAGE)
             if prompt_kind:
                 kind = "prompt"  # --prompt forces the kind outright (mirrors --exe)
             elif kind is not None:
@@ -1519,6 +1547,24 @@ def add(
                 else:
                     console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
                     raise typer.Exit(EXIT_CANCELLED)
+            if is_draft(resolved) and (ref or kind == "exe"):
+                # ONE guard, after the kind is final, covering every route to the two
+                # storage shapes the drafts boundary forbids: --ref, --exe, --kind
+                # exe, and an INFERRED exe alike. A reference (and an exe entry,
+                # which is reference-by-construction — the store holds nothing)
+                # pointing into drafts/ would leave a live entry's script listed as
+                # a resumable draft and offered for deletion as "the only copy".
+                err_console.print(
+                    "[red]"
+                    + gettext(
+                        "%(file)s is one of skit's own kept drafts — a resumed draft "
+                        "is always added as a copy (and consumed on success), which a "
+                        "reference or program entry can't be. Drop --ref/--exe."
+                    )
+                    % {"file": escape(resolved.name)}
+                    + _RED_CLOSE
+                )
+                raise typer.Exit(EXIT_USAGE)
             kind_spec = spec_for(kind)
             _refuse_unusable_add_flags(kind, kind_spec, ref, dep, python)
             if runner is not None and kind != "prompt":
@@ -1559,17 +1605,22 @@ def add(
                 # a script whose interpreter skit doesn't know (the stdin/editor
                 # lanes' message) — telling its author "this isn't a script" while
                 # pointing at "an extensionless script" escape misdescribes both the
-                # file and the fix.
+                # file and the fix. An on-disk file gets the --exe escape too (an awk
+                # script runs fine as a program — the KindPickModal offers the same);
+                # a kept draft doesn't, because the drafts boundary refuses --exe.
                 if shebang_program(resolved) is not None:
-                    err_console.print(
-                        "[red]"
-                        + gettext(
+                    hint = (
+                        gettext(
                             "The #! in %(file)s names no interpreter skit knows — pass "
                             "--kind <language> to choose one."
                         )
-                        % {"file": escape(resolved.name)}
-                        + _RED_CLOSE
+                        if is_draft(resolved)
+                        else gettext(
+                            "The #! in %(file)s names no interpreter skit knows — pass "
+                            "--kind <language> to choose one, or --exe to run it directly."
+                        )
                     )
+                    err_console.print("[red]" + hint % {"file": escape(resolved.name)} + _RED_CLOSE)
                 else:
                     err_console.print(
                         f"[red]{gettext("%(file)s isn't a script or an executable — pass --kind <language> for an extensionless script, --prompt for an AI-agent prompt, --exe for a program, or --cmd for a command template.") % {'file': escape(resolved.name)}}[/red]"
@@ -3085,7 +3136,7 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
             )
     if self_locating:
         console.print(
-            f"[dim]{gettext('This script locates itself ($0 / BASH_SOURCE). Injecting a constant runs it from a temporary copy, so it would see that copy path instead. `skit params %(name)s --normalize NAME` converts a constant into the ${NAME:-default} idiom, which is delivered through the environment and leaves the file untouched.') % {'name': escape(entry.meta.name)}}[/dim]"
+            f"[dim]{gettext('This script locates itself ($0 / BASH_SOURCE). Injecting a constant runs it from a temporary copy, so it would see that copy path instead. Rewriting the constant as NAME="${NAME:-value}" delivers the value through the environment with no copy at all — `skit params %(name)s --normalize NAME` does the rewrite for you on the stored copy.') % {'name': escape(entry.meta.name)}}[/dim]"
         )
 
 
