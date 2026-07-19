@@ -62,6 +62,7 @@ def _type_label(kind: str) -> str:
         "float": gettext("number"),
         "str": gettext("text"),
         "bool": gettext("on/off"),
+        "path": gettext("path"),
     }.get(kind, kind)
 
 

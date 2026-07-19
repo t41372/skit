@@ -3625,7 +3625,7 @@ def params(
     type_opt: list[str] = typer.Option(
         None,
         "--type",
-        help=gettext("Set a declared parameter's type, as NAME=str|int|float|bool|choice"),
+        help=gettext("Set a declared parameter's type, as NAME=str|int|float|bool|choice|path"),
     ),
     default_opt: list[str] = typer.Option(
         None, "--default", help=gettext("Set a declared parameter's default, as NAME=VALUE")
@@ -4241,7 +4241,7 @@ def _render_declared_warning(warning: str) -> str:
             "%(name)s isn't a template placeholder, so it can't use placeholder delivery; skipped."
         ),
         "bad-type": gettext(
-            "%(name)s: unknown type; skipped (use str, int, float, bool, or choice)."
+            "%(name)s: unknown type; skipped (use str, int, float, bool, choice, or path)."
         ),
         "bad-default": gettext("%(name)s: the default doesn't fit its type; skipped."),
         "env-source-not-secret": gettext(

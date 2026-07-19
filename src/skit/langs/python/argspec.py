@@ -183,8 +183,21 @@ def _apply_type(f: ParamDecl, node: ast.expr) -> bool:
         if f.type != "choice":  # choices win: the selector already constrains input
             f.type = _SCALAR_TYPES[node.id]
         return True
-    # Path renders as text; anything else is an arbitrary callable we won't execute.
-    return isinstance(node, ast.Name) and node.id == "Path"
+    if _is_path_type(node):
+        if f.type != "choice":
+            f.type = "path"
+        return True
+    # Anything else is an arbitrary conversion callable we won't execute.
+    return False
+
+
+def _is_path_type(node: ast.expr) -> bool:
+    """type= spellings whose supplied value is a filesystem path: bare/dotted ``Path``
+    (pathlib), and ``argparse.FileType(...)`` — the parser opens the file, but what the
+    user types is a filename."""
+    if isinstance(node, ast.Call):
+        return _decorator_name(node) == "FileType"
+    return _decorator_name(node) == "Path"
 
 
 # --------------------------------------------------------------------------
@@ -319,7 +332,19 @@ def _apply_click_type(f: ParamDecl, node: ast.expr) -> bool:
         f.type = "choice"
         f.choices = tuple(choices)
         return True
+    if _click_path_type(node):
+        f.type = "path"
+        return True
     return False
+
+
+def _click_path_type(node: ast.expr) -> bool:
+    """click.Path(...)/click.File(...) calls, or a bare pathlib ``Path`` conversion
+    callable (the same rule as argparse) — the value is a filename either way. Keyword
+    refinements (exists=, dir_okay=, ...) are deliberately not modelled."""
+    if isinstance(node, ast.Call):
+        return _decorator_name(node) in ("Path", "File")
+    return _is_path_type(node)
 
 
 # --------------------------------------------------------------------------
@@ -331,7 +356,7 @@ _ANNOTATION_KINDS: dict[str, ParamType] = {
     "float": "float",
     "str": "str",
     "bool": "bool",
-    "Path": "str",
+    "Path": "path",
 }
 
 
