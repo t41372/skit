@@ -1,6 +1,6 @@
 # Path-aware parameter entry — design
 
-Status: **draft v2** (2026-07-19; one adversarial design review round applied, second
+Status: **draft v3** (2026-07-19; two adversarial design review rounds applied, third
 round pending). Resolves [#7](https://github.com/t41372/skit/issues/7) — "Make file
 selector more intuitive". Read `docs/design/multilang.md` first (the `ParamDecl`
 universal model and the kind registry) and `docs/design/prompt.md` for the run form's
@@ -58,6 +58,45 @@ before being adopted):
   the new strings; SKILL.md enumerates field types (`skills/skit/SKILL.md:46`) so the
   skill sync moves into P1a where `--json` starts emitting `"path"`; the ghost-accept
   `→` gesture's mouse story is argued, not assumed.
+
+Revision notes (v2 → v3, from review round 2 — the round verified each v1 resolution
+against the code instead of rubber-stamping it):
+
+- **Deleted v2's fabricated `--manage`-argparse claim.** There is no operation that
+  manages an argparse param: `--manage` draws exclusively from the analyzer's
+  const/input candidates (`analysis.py:311`, `_apply_add`), never from the CLI-reader
+  lane. The true statement stands alone: the reader lane is in-memory per read — no
+  storage, no drift surface, no predicate needed there.
+- **The picker header shows the absolute current directory, always.** v2's
+  "relative to the path root while inside it" would render `.` at the moment the
+  picker opens — hiding the root in exactly the `origin`/`store`/absolute-workdir
+  cases the header exists for. The header is also the one surface where a user
+  *learns* that this entry's relative paths resolve somewhere other than their cwd.
+- **§3 row 2 is now a two-step rule** (it was incoherent for `{env:X}`): expand the
+  token prefix first — expansion failure, e.g. an unset variable (`tokens.expand`
+  raises `TokenError`, `tokens.py:93-99`), means no suggestion — then complete inside
+  an *absolute* expansion, or hand a *relative* expansion to row 1 (the child resolves
+  it at the workdir, so the path root is the correct base). The glob-feedback
+  agreement claim is scoped to `multiple`/extra-args values — `assemble` never
+  expands a glob typed into a single-value field.
+- **The Backspace "guarded exception" is gone — a no-exception mechanism exists.**
+  The filter is an Input subclass overriding `action_delete_left`: empty value posts
+  an Ascend message, otherwise `super()` — editing is byte-identical *by
+  construction*, and a plain non-priority screen binding covers Backspace while the
+  OptionList has focus. Zero priority bindings; the constitutional rule stays intact
+  instead of bending under a paragraph of justification.
+- **Windows activation:** the path-ish recognition rules gain `\`-containing and
+  drive-letter (`X:\`, `X:/`) forms on Windows — v2 fixed the insert side but left
+  recognition POSIX-only, deadening the universal affordance for Windows typists.
+- **The picker's result is a discriminated type**, not a raw string: three insertion
+  regimes (replace / append-quoted / at-cursor) now flow through the single
+  `action_insert_token` channel (`tui_form.py:713-717`), so the callback must be able
+  to tell a picked path from a token by construction.
+- Factual tightenings: the meta-home kind set is *every* kind without `params_io`
+  (exe, command, prompt, powershell, and the ruby/perl/lua/r long tail —
+  `cli.py:3433`), not the three v2 named; "all copy-mode scripts" → the copy-mode
+  *default* (legacy copy-mode entries persisted with `"origin"` exist and are
+  recovered at `launcher.py:54-61`).
 
 ## Mission
 
@@ -134,8 +173,9 @@ The Python static reader already *sees* path-ness and discards it. Stop discardi
   `_ANNOTATION_KINDS`).
 
 The CLI-reader lane is in-memory per read — nothing is stored, so no drift surface
-exists there; a managed (`--manage`) argparse param re-derives `path` on every
-reconcile and stays consistent.
+exists there. (There is no operation that persists an argparse param into the managed
+schema: `--manage` draws exclusively from the analyzer's const/input candidates,
+`analysis.py:311`.)
 
 Shell, JS/TS, fish, PowerShell get **no name-based heuristics** — inferring "path" from
 a parameter being called `file` is guessing, and skit does not guess. Those languages
@@ -153,20 +193,28 @@ must use the matching root for each — one slogan-root would lie:
 | value shape | who resolves it, when | root the form must use |
 | --- | --- | --- |
 | bare relative path | the **child process**, at its resolved workdir | `launcher._resolve_workdir(entry, Path.cwd())` — the **path root** |
-| `~` / `{cwd}` / `{env:X}` prefix | `tokens.expand` at assemble time, invoke cwd | the token's own expansion (`~` → home, `{cwd}` → invoke cwd) |
+| `~` / `{cwd}` / `{env:X}` prefix | `tokens.expand` at assemble time substitutes text; the child resolves the result | two-step rule below |
 | glob piece in a `multiple`/extra-args field | **skit** at assemble time, `Path.cwd()` | invoke cwd — unchanged |
 
-- The **suggester and picker** root bare input at the path root; a token-prefixed
-  lookup expands the token first and completes inside the directory the *expanded*
-  value will actually denote.
-- The **glob feedback line stays exactly as it is** (evaluated where `assemble` will
-  expand — they agree today and keep agreeing). v1's claim that this design fixes a
+- The **suggester and picker** root bare input at the path root. A token-prefixed
+  lookup follows a **two-step rule**: expand the prefix first (`tokens.expand`; an
+  expansion failure — e.g. an unset `{env:X}`, which raises `TokenError` — means no
+  suggestion); if the expansion is **absolute** (`~`, `{cwd}` always are), complete
+  inside it; if it is **relative** (an env var holding `data/sub`), the child will
+  resolve the substituted text at its workdir, so hand it to row 1 and complete
+  against the path root.
+- The **glob feedback line stays exactly as it is** — for `multiple`/extra-args
+  values it evaluates where `assemble` will expand, and they keep agreeing; a glob
+  typed into a single-value field is never expanded by `assemble` at all
+  (`flows.py:549-578`), so feedback there is a hint either way. v1's claim that this design fixes a
   preview/launch divergence is retracted: the real divergence is that `assemble`
   expands globs at the invoke cwd while a non-`invoke` workdir child resolves the
   resulting relative paths elsewhere — a **pre-existing** behavior this design must
   not silently change. Deferred, with the fix sketched there.
-- For the default `workdir="invoke"` (all copy-mode scripts, command and prompt
-  entries) all three roots coincide with `Path.cwd()` — the common case has one root.
+- For `workdir="invoke"` (the copy-mode default, and pinned for command and prompt
+  entries — legacy copy-mode entries persisted with `"origin"` exist and are recovered
+  at `launcher.py:54-61`) all three roots coincide with `Path.cwd()` — the common case
+  has one root.
 - **Nonexistent path root** (reference-mode entry whose origin vanished; the CLI
   inline form runs no preflight): the suggester suggests nothing; the picker opens at
   the nearest existing ancestor, else the invoke cwd, and says so in its header.
@@ -183,7 +231,9 @@ and it keeps the eventual rebase near-trivial.
 - **Activation**: a `path`-typed field suggests always (a bare prefix completes against
   the path root's listing). Any other free-text field suggests only once the trailing
   token *looks like a path*: starts with `./`, `../`, `/`, `~`, `{cwd}`, or contains a
-  `/`. Secret fields never suggest (they are already non-insertable).
+  `/` — and on Windows additionally when it contains a `\` or starts with a drive
+  letter (`X:\`, `X:/`); completions still insert `/` separators, which every consumer
+  resolves. Secret fields never suggest (they are already non-insertable).
 - **Token-aware**: for `multiple` fields the last shlex piece is completed. Leading
   `~`/`{cwd}`/`{env:NAME}` are expanded (`tokens.expand`) to *find* the directory —
   per §3, at the same root assembly will use — but the ghost text preserves the user's
@@ -205,10 +255,11 @@ and it keeps the eventual rebase near-trivial.
 `OptionList`, height-tiered via `tui_layout` classes, Esc chip) plus directory state,
 with the seams specified where the precedent behaves differently:
 
-- **Header shows the current directory** — relative to the path root while inside it,
-  absolute outside — because on `origin`/`store`/absolute-workdir entries the browse
-  root is *not* the user's cwd, and a browser with an invisible cwd would violate
-  zero-memorization.
+- **Header shows the current directory, absolute, always** — at open the current dir
+  *is* the root, and a relative rendering would show `.` precisely on the
+  `origin`/`store`/absolute-workdir entries the header exists for. This header is the
+  one surface where a user ever *learns* that this entry's relative paths resolve
+  somewhere other than their cwd (§3).
 - **Rows**: a pinned first row *"(use this directory)"* that selects the current dir
   itself — directory selection needs no extra chord and is mouse/keyboard-symmetric by
   being an ordinary row — then subdirectories (trailing `/`), then files,
@@ -221,11 +272,12 @@ with the seams specified where the precedent behaves differently:
     the raw typed text on submit; the picker must not — a half-typed filter is not a
     path.)
   - `Backspace` — ascends to the parent **only when the filter is empty**; while the
-    filter has text it deletes normally. Implemented as a priority binding whose
-    action delegates `delete_left` when the Input is non-empty — the documented,
-    guarded exception to the "never priority-bind an editing chord on a screen full of
-    Inputs" rule: this modal has exactly one Input and the delegation preserves its
-    editing behavior byte-for-byte. At the filesystem root it no-ops.
+    filter has text it deletes normally. Mechanism: the filter is an Input subclass
+    overriding `action_delete_left` — empty value posts an Ascend message, otherwise
+    `super()` — so editing is byte-identical *by construction*; a plain non-priority
+    screen binding covers Backspace while the OptionList has focus. No priority
+    binding, no exception to the editing-chord rule needed. At the filesystem root it
+    no-ops.
   - `Esc` — cancels.
   - The filter **clears on descend** (a sticky filter would land every descend on an
     empty list).
@@ -243,6 +295,10 @@ with the seams specified where the precedent behaves differently:
     piece, `shlex.quote`d (spaces in filenames are the normal case);
   - the token menu's existing rows (`{cwd}`, `~`, env var, …) keep their at-cursor
     insertion — tokens compose into larger values; a picked path *is* the value.
+  - Because three regimes now flow through the single `action_insert_token` channel
+    (`tui_form.py:713-717`), the picker's dismissal result is a **discriminated
+    type** (a picked-path wrapper vs. a plain token string), so the callback can tell
+    them apart by construction rather than by sniffing the text.
 - **Entry points**: `TokenMenuModal` gains a *"File or folder…"* row available to every
   insertable field, chaining into the picker the way *"Environment variable…"* chains
   into `EnvPickerModal`. On a `path`-typed field that row is **first and highlighted**,
@@ -252,7 +308,9 @@ with the seams specified where the precedent behaves differently:
 ## CLI surface (additive only)
 
 - `skit params NAME --type field=path` — an existing operation, one new legal value,
-  on the kinds where `--type` operates today (meta-home kinds); `params_io` kinds keep
+  on the kinds where `--type` operates today: every kind without `params_io` (exe,
+  command, prompt, powershell, and the ruby/perl/lua/r long tail — `cli.py:3433`);
+  `params_io` kinds keep
   their existing routing (schema lives in the script's block, edited there or via
   `--manage`) and the block now carries `path` without drift (§1).
 - Every `--json` face that reports a parameter `type` may now say `"path"` — a new
@@ -277,8 +335,10 @@ zh_TW to 100% → `compile`), checking each formerly-translated enumeration by h
 
 1. **Root confusion** — the three coordinate systems of §3 each get a test: bare
    relative completion on an `origin`-workdir entry roots at the origin dir; a
-   `{cwd}`-prefixed lookup roots at the invoke cwd; glob feedback matches what
-   `assemble` expands.
+   `{cwd}`-prefixed lookup roots at the invoke cwd; an unset `{env:X}` prefix
+   suggests nothing (never a traceback); a relative-valued `{env:X}` completes
+   against the path root; glob feedback matches what `assemble` expands for
+   `multiple`/extra-args values.
 2. **Field corruption** — replace-vs-append semantics per field shape (§5), pinned on
    a prefilled single field and a populated `multiple` field; a picked
    space-containing filename survives `_split_multi` round-trip intact.
@@ -297,7 +357,8 @@ zh_TW to 100% → `compile`), checking each formerly-translated enumeration by h
    by older versions is documented as accepted (§1), not silently claimed away.
 8. **Windows** — inserted values use `/` separators; `~`/token expansion is for lookup
    only and never rewritten into the stored value; the space-and-backslash cases from
-   revision note 3 are pinned.
+   revision note 3 are pinned, and the `\`/drive-letter activation forms (§4) get
+   their own recognition tests.
 9. **Missing root degrade** — suggester silent, picker at nearest existing ancestor
    with notice (§3), pinned via a vanished-origin reference entry.
 10. **Corpus fidelity** — new analyzer corpus files are byte-exact and fixer-excluded.
