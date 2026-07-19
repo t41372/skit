@@ -265,7 +265,7 @@ async def test_kind_pick_lists_interpreted_kinds_plus_exe_and_prompt(tmp_path):
 
 async def test_kind_pick_options_show_translated_labels_ids_stay_raw(tmp_path):
     """The interpreted-kind options render their translated display labels (kindnames.
-    kind_label), while the option ids stay the raw kinds the add flow routes on (finding 5)."""
+    kind_label), while the option ids stay the raw kinds the add flow routes on."""
     from skit.kindnames import kind_label
 
     app = tui.MenuApp()
@@ -585,17 +585,15 @@ async def test_edit_source_on_pep723_script_records_no_deps_override(tmp_path, m
         assert "deps" not in screen._overrides  # deps field skipped, no phantom override
 
 
-async def test_edit_source_prints_editor_launch_failure(tmp_path, monkeypatch):
-    """When the editor can't be launched, action_edit_source prints the error (the run form
-    banner is bypassed on this path) rather than crashing the panel."""
+async def test_edit_source_shows_editor_launch_failure_after_resume(tmp_path, monkeypatch):
+    """A suspended terminal print disappears when Textual resumes; the failure must be
+    delivered through Textual's real notification queue and leave the panel intact."""
 
     def boom(path):
         raise editor.EditorError("cannot launch editor")
 
     monkeypatch.setattr(editor, "open_in_editor", boom)
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: contextlib.nullcontext())
-    printed: list[str] = []
-    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
     p = _py(tmp_path, "print(1)\n", "plain.py")
     app = tui.MenuApp()
     async with app.run_test() as pilot:
@@ -604,8 +602,35 @@ async def test_edit_source_prints_editor_launch_failure(tmp_path, monkeypatch):
         await pilot.pause()
         screen.action_edit_source()
         await pilot.pause()
+        assert app.screen is screen
+        assert any(note.message == "cannot launch editor" for note in app._notifications)
+
+
+async def test_review_surfaces_initial_and_post_editor_os_errors(tmp_path, monkeypatch):
+    missing = tmp_path / "vanished.py"
+    initial = AddReviewScreen(missing)
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(initial)
         await pilot.pause()
-        assert any("cannot launch editor" in line for line in printed)
+        assert "vanished.py" in str(initial.query_one("#rv-text-error", Static).render())
+        initial.action_accept()
+        await pilot.pause()
+        assert app.screen is initial
+
+        source = tmp_path / "edited.py"
+        source.write_text("print(1)\n", encoding="utf-8")
+        review = AddReviewScreen(source)
+        app.pop_screen()
+        app.push_screen(review)
+        await pilot.pause()
+        monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: contextlib.nullcontext())
+        monkeypatch.setattr(editor, "open_in_editor", lambda path: path.unlink())
+        review.action_edit_source()
+        await pilot.pause()
+        error = str(review.query_one("#rv-text-error", Static).render())
+        assert "edited.py" in error
+        assert "No such file" in error
 
 
 async def test_review_ctrl_e_in_input_is_end_of_line_not_editor(tmp_path, monkeypatch):
@@ -862,7 +887,7 @@ async def test_add_review_app_ref_prefill_and_cancel_leaves_store_untouched(tmp_
 
 async def test_add_review_app_forwards_fresh_no_storage_section(tmp_path):
     """AddReviewApp forwards fresh=True to the screen: a freshly-hosted panel has no
-    Storage section (a temp draft has no original to link) — finding 14."""
+    Storage section because a temp draft has no original to link."""
     p = _py(tmp_path, "print(1)\n")
     app = AddReviewApp(p, fresh=True)
     async with app.run_test() as pilot:

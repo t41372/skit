@@ -1,6 +1,6 @@
-"""Round-8 design-audit fixes — real-behavior coverage (exit codes, stored meta, filesystem).
+"""Add-lane contracts — real-behavior coverage (exit codes, stored meta, filesystem).
 
-Every assertion pins an observable contract of the round-7 fixes:
+Every assertion pins an observable add-lane contract:
   * add's lane SELECTORS are mutually exclusive (one-voice refusal, nothing added);
   * versioned-python shebangs are the registry's rule on every lane;
   * --runner is validated BEFORE any editor opens or a draft materializes;
@@ -117,7 +117,7 @@ def test_editor_lane_versioned_python_shebang_onboards_as_python(monkeypatch):
     unregistered interpreter) — the versioned rule reaches the editor lane too."""
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     _editor_writes(monkeypatch, "#!/usr/bin/env python3.12\nprint('hi')\n")
-    result = runner.invoke(cli.app, ["add", "-e", "-n", "vpy"])
+    result = runner.invoke(cli.app, ["add", "-e", "-n", "vpy"], input="\n")
     assert result.exit_code == 0, result.output
     assert store.resolve("vpy").meta.kind == "python"
 
@@ -128,8 +128,8 @@ def test_editor_lane_versioned_python_shebang_onboards_as_python(monkeypatch):
 
 
 def test_stdin_prompt_bogus_runner_refused_before_any_draft(tmp_path):
-    """The round-7 HIGH: a bogus --runner on the stdin prompt lane exits 2 with 'Unknown
-    runner' and materializes NO draft (the old code left a silent, anonymous file behind)."""
+    """A bogus --runner on the stdin prompt lane exits 2 with 'Unknown runner' and
+    materializes NO draft (the old code left a silent, anonymous file behind)."""
     result = runner.invoke(
         cli.app, ["add", "-", "--prompt", "--runner", "bogus", "-n", "p"], input="x {{u}}\n"
     )
@@ -261,7 +261,7 @@ def test_path_add_of_a_drafts_home_file_unlinks_it_on_copy(tmp_path):
 
 
 def test_path_add_of_a_drafts_home_file_refuses_reference(tmp_path):
-    """--ref on skit's OWN kept draft is refused (round-10): a reference entry pointing into
+    """--ref on skit's OWN kept draft is refused: a reference entry pointing into
     drafts/ would leave a live entry's file listed as a resumable draft — offered for re-adding
     and for deletion as "the only copy", both lies. Exit 2, the draft is kept (a refused add
     consumes nothing), and no entry is created."""

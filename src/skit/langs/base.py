@@ -192,8 +192,12 @@ class LaunchStrategy(Protocol):
         """The launch target on disk, or None when the kind has no file target."""
         ...
 
-    def preflight(self, entry: Entry) -> None:
-        """Existence/executability checks that can run before values are collected."""
+    def preflight(self, entry: Entry, *, runner: PromptRunner | None = None) -> None:
+        """Existence/executability checks before launch.
+
+        ``runner`` is the prompt kind's resolved per-run choice.  Other strategies
+        accept and ignore it, just as they do for ``build`` and ``describe``.
+        """
         ...
 
 

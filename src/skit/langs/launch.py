@@ -144,7 +144,7 @@ class UvLaunch:
     def target(self, entry: Entry) -> Path | None:
         return entry.script_path
 
-    def preflight(self, entry: Entry) -> None:
+    def preflight(self, entry: Entry, *, runner: PromptRunner | None = None) -> None:
         _check_script_exists(entry.script_path)
 
 
@@ -178,7 +178,7 @@ class DirectLaunch:
     def target(self, entry: Entry) -> Path | None:
         return Path(entry.meta.source)
 
-    def preflight(self, entry: Entry) -> None:
+    def preflight(self, entry: Entry, *, runner: PromptRunner | None = None) -> None:
         _check_exe_exists(entry.meta.source)
 
 
@@ -263,7 +263,7 @@ class TemplateLaunch:
     def target(self, entry: Entry) -> Path | None:
         return None  # command entries have no file target
 
-    def preflight(self, entry: Entry) -> None:
+    def preflight(self, entry: Entry, *, runner: PromptRunner | None = None) -> None:
         return None  # nothing to check before values are collected
 
 
@@ -348,7 +348,7 @@ class InterpreterLaunch:
     def target(self, entry: Entry) -> Path | None:
         return entry.script_path
 
-    def preflight(self, entry: Entry) -> None:
+    def preflight(self, entry: Entry, *, runner: PromptRunner | None = None) -> None:
         # Both checks are cheap and local (no network, unlike uv), so preflight can
         # afford them — the TUI gets "zsh isn't installed" before the terminal suspends.
         _check_script_exists(entry.script_path)
@@ -462,7 +462,7 @@ class RunnerLaunch:
     def target(self, entry: Entry) -> Path | None:
         return entry.script_path
 
-    def preflight(self, entry: Entry) -> None:
+    def preflight(self, entry: Entry, *, runner: PromptRunner | None = None) -> None:
         _check_script_exists(entry.script_path)
         _, name = self._resolve(entry)
         if entry.meta.dependencies and entry.meta.mode == "copy":
@@ -500,6 +500,13 @@ class PromptLaunch:
 
         pin = entry.meta.runner
         if not pin:
+            if not config.load_prompt_runners():
+                raise NotExecutableError(
+                    gettext(
+                        "No agents are configured. Add one with: "
+                        "skit runner add mycli -- mycli run {{prompt}}"
+                    )
+                )
             raise NotExecutableError(
                 gettext(
                     "No runner selected for %(name)s. Pass --runner NAME, or pin one with: "
@@ -534,6 +541,75 @@ class PromptLaunch:
             )
         return found
 
+    @staticmethod
+    def _read_body(script: Path) -> str:
+        """Read a prompt without universal-newline translation."""
+        from .prompt import text as prompt_text
+
+        try:
+            return prompt_text.read(script)
+        except prompt_text.PromptEncodingError as exc:
+            raise LaunchError(str(exc)) from exc
+        except OSError as exc:
+            raise LaunchError(
+                gettext("Can't read %(path)s: %(error)s")
+                % {"path": str(script), "error": exc.strerror or str(exc)}
+            ) from exc
+
+    def _render_argv(
+        self,
+        entry: Entry,
+        extra: list[str],
+        values: dict[str, str] | None,
+        script_override: Path | None,
+        argv: list[str],
+    ) -> list[str]:
+        """Render and validate argv from an already chosen runner command."""
+        from .prompt import render
+
+        script = script_override or entry.script_path
+        _check_script_exists(script)
+        text = self._read_body(script)
+        managed = list(entry.meta.params or []) if entry.meta.interpolate else []
+        rendered = render.render_body(text, values or {}, managed)
+        filled = render.fill_runner_argv(argv, rendered, extra)
+        render.check_argv_length(filled)
+        return filled
+
+    def validate_argv(
+        self,
+        entry: Entry,
+        extra: list[str],
+        values: dict[str, str] | None,
+        script_override: Path | None,
+        *,
+        runner: PromptRunner | None = None,
+        display_values: dict[str, str] | None = None,
+    ) -> str:
+        """Render the exact configured argv once and return its validated display.
+
+        This is the dry-run/normal-transparency gate: prompt rendering, NUL bytes and
+        platform argv limits fail before anything is printed, while a dry run remains
+        side-effect-free and does not require the agent CLI to be installed.
+        """
+        from .prompt import render
+
+        chosen = self._resolve_runner(entry, runner)
+        script = script_override or entry.script_path
+        _check_script_exists(script)
+        text = self._read_body(script)
+        managed = list(entry.meta.params or []) if entry.meta.interpolate else []
+        rendered = render.render_body(text, values or {}, managed)
+        argv = render.fill_runner_argv(list(chosen.argv), rendered, extra)
+        render.check_argv_length(argv)
+        if display_values is not None:
+            # Render the masked twin from the SAME body snapshot that was validated.
+            # A second read could expose a concurrently edited secret or print bytes
+            # that never passed the argv limits above.
+            display_body = render.render_body(text, display_values, managed)
+            argv = render.fill_runner_argv(list(chosen.argv), display_body, extra)
+        return join_for_display(argv)
+
     def build(
         self,
         entry: Entry,
@@ -543,31 +619,57 @@ class PromptLaunch:
         *,
         runner: PromptRunner | None = None,
     ) -> LaunchPayload:
+        payload, _safe_display, _chosen = self.build_snapshot(
+            entry,
+            extra,
+            values,
+            script_override,
+            runner=runner,
+        )
+        return payload
+
+    def build_snapshot(
+        self,
+        entry: Entry,
+        extra: list[str],
+        values: dict[str, str] | None,
+        script_override: Path | None,
+        *,
+        runner: PromptRunner | None = None,
+    ) -> tuple[ArgvLaunch, str, PromptRunner]:
+        """Build one executable argv plus its body-safe transparency display.
+
+        Both derive from the same resolved runner row. This matters for an unpinned
+        caller: a concurrent config edit must not make transparency describe a
+        different runner than the already-prepared argv.
+        """
         from .prompt import render
 
-        script = script_override or entry.script_path
-        _check_script_exists(script)
         chosen = self._resolve_runner(entry, runner)
+        # Preserve preflight/old execute refusal order: body/render errors precede a
+        # missing runner binary. Render against the configured command first, then
+        # replace only argv[0] with the resolved executable and recheck its real size.
+        argv = self._render_argv(entry, extra, values, script_override, list(chosen.argv))
         binary = self._require_binary(chosen)
-        try:
-            # read_bytes + decode, NOT read_text: universal-newline translation would
-            # quietly rewrite a CRLF body to LF, and the whole point of the no-shell
-            # argv channel is that the body arrives byte-identical (design risk #5).
-            text = script.read_bytes().decode("utf-8", errors="replace")
-        except OSError as exc:
-            raise LaunchError(
-                gettext("Can't read %(path)s: %(error)s")
-                % {"path": str(script), "error": exc.strerror or str(exc)}
-            ) from exc
-        managed = list(entry.meta.params or []) if entry.meta.interpolate else []
-        rendered = render.render_body(text, values or {}, managed)
-        argv = render.fill_runner_argv([binary, *chosen.argv[1:]], rendered)
-        # Extra argv appends after the runner template (TemplateLaunch parity): per-run
-        # agent flags pass through `skit run <prompt> -- --model …`. takes_argv=False
-        # only keeps the reuse-last-args affordance off, exactly like command entries.
-        argv += extra
+        argv[0] = binary
         render.check_argv_length(argv)
-        return ArgvLaunch(argv)
+        omitted = gettext("<rendered prompt omitted; use --dry-run to inspect it>")
+        safe_display = join_for_display(render.fill_runner_argv(list(chosen.argv), omitted, extra))
+        return ArgvLaunch(argv), safe_display, chosen
+
+    def describe_compact(
+        self,
+        entry: Entry,
+        extra: list[str],
+        *,
+        runner: PromptRunner | None = None,
+    ) -> str:
+        """The normal-run command line without copying the prompt into scrollback."""
+        from .prompt import render
+
+        chosen = self._resolve_runner(entry, runner)
+        omitted = gettext("<rendered prompt omitted; use --dry-run to inspect it>")
+        return join_for_display(render.fill_runner_argv(list(chosen.argv), omitted, extra))
 
     def describe(
         self,
@@ -593,24 +695,30 @@ class PromptLaunch:
         argv = list(runner.argv) if runner is not None else [entry.meta.runner or "?", "{{prompt}}"]
         script = script_override or entry.script_path
         try:
-            text = script.read_bytes().decode("utf-8", errors="replace")
-        except OSError:
+            text = self._read_body(script)
+        except LaunchError:
             return join_for_display([*argv, *extra])
         managed = list(entry.meta.params or []) if entry.meta.interpolate else []
         try:
             rendered = render.render_body(text, values or {}, managed)
         except LaunchError:
             return join_for_display([*argv, *extra])
-        return join_for_display([*render.fill_runner_argv(argv, rendered), *extra])
+        return join_for_display(render.fill_runner_argv(argv, rendered, extra))
 
     def target(self, entry: Entry) -> Path | None:
         return entry.script_path
 
-    def preflight(self, entry: Entry) -> None:
-        """The pin-only scope, deliberate: a `--runner`/picker override is resolved by
-        the CLI/TUI layer and validated at build time — preflight's signature has no
-        runner axis, so it checks what the ENTRY declares (body exists; the pinned
-        runner, if any, is configured and its binary installed)."""
+    def preflight(self, entry: Entry, *, runner: PromptRunner | None = None) -> None:
+        """Validate the body and the runner this launch will actually use.
+
+        Headless callers and the form-free rerun path omit ``runner`` and therefore
+        validate the entry's pin.  A run form passes its resolved picker choice so a
+        stale or broken pin cannot veto an explicit per-run override.
+        """
         _check_script_exists(entry.script_path)
-        if entry.meta.runner:
-            self._require_binary(self._resolve_runner(entry, None))
+        # Body validity is independent of runner resolution.  Read it even for an
+        # unpinned prompt so doctor/Health and the TUI's post-picker preflight report
+        # the same launch-blocking corruption as build/--dry-run.
+        self._read_body(entry.script_path)
+        if runner is not None or entry.meta.runner:
+            self._require_binary(self._resolve_runner(entry, runner))

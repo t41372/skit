@@ -1,9 +1,9 @@
-"""Round-10 design-audit fixes — TUI pilot coverage.
+"""Add-review TUI contracts — pilot coverage.
 
 Every assertion pins an observable: the entry that landed, the stored copy's [tool.skit]
 block, a widget's presence/absence or display flag, the #rv-python field value, or a modal's
 label. Covered:
-  * THE ROUND-9 HIGH: on an UNMODELED self-parser (dynamic optstring), ticked candidates are
+  * on an UNMODELED self-parser (dynamic optstring), ticked candidates are
     actually WRITTEN to the stored copy on accept — the collection gate mirrors the mount
     condition (_reader_modeled), and the modeled complement collects nothing without crashing;
   * a .prompt.md kept draft with a #! body resumes into the PromptReviewScreen (not shell);
@@ -72,13 +72,13 @@ MODELED_SH = "#!/usr/bin/env bash\nCITY=Taipei\nwhile getopts 'n:v' o; do :; don
 
 
 # ==========================================================================
-# 1. THE ROUND-9 HIGH: ticked candidates are WRITTEN on an unmodeled self-parser
+# 1. Ticked candidates are WRITTEN on an unmodeled self-parser
 # ==========================================================================
 
 
 async def test_high_unmodeled_self_parser_writes_ticked_candidate(tmp_path):
     """A dynamic-optstring shell self-parses (uses_cli_framework) but can't be modeled, so the
-    candidate ticks render and — the round-9 HIGH — are actually collected on accept: the stored
+    candidate ticks render and are actually collected on accept: the stored
     copy's [tool.skit] block holds the ticked constant. The old gate (not uses_cli_framework)
     dropped it silently."""
     sh = tmp_path / "dyn.sh"

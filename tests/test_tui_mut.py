@@ -65,7 +65,6 @@ def quiet_run(monkeypatch):
 
     monkeypatch.setattr(launcher, "run_entry", fake_run)
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
-    monkeypatch.setattr("builtins.input", lambda *a: "")
     return calls
 
 
@@ -418,8 +417,8 @@ async def test_library_footer_rows_stack_without_overlap(tmp_path):
         assert ys["keys-local"] < ys["keys-global"] < ys["status"]  # keys above status
         assert ys["status"] == app.size.height - 1  # the footer is docked at the very bottom
         assert "Run" in footer_text(rows["keys-local"])
-        assert "Add script" in footer_text(rows["keys-global"])
-        assert "script" in str(rows["status"].render())
+        assert "Add entry" in footer_text(rows["keys-global"])
+        assert "entry" in str(rows["status"].render())
 
 
 async def test_inline_run_form_body_takes_auto_height(tmp_path, quiet_run, monkeypatch):
@@ -466,7 +465,7 @@ async def test_library_footer_chips_fire_on_click(tmp_path):
     app = tui.MenuApp()
     async with app.run_test(size=(130, 30)) as pilot:
         await pilot.pause()
-        await click_label(pilot, "#keys-global", "Add script")
+        await click_label(pilot, "#keys-global", "Add entry")
         assert app.screen.__class__.__name__ == "AddSourceScreen"
         await pilot.press("escape")
         await pilot.pause()
@@ -507,19 +506,19 @@ async def test_search_focus_swaps_footer_to_input_mode_and_esc_restores_it(tmp_p
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        assert "Add script" in footer_text(app.query_one("#keys-global", Static))
+        assert "Add entry" in footer_text(app.query_one("#keys-global", Static))
         app.action_focus_search()
         await pilot.pause()
         local = footer_text(app.query_one("#keys-local", Static))
         assert "Back to list" in local
         assert "Run" in local
-        assert "Script settings" not in local  # the letter chips are gone
+        assert "Entry settings" not in local  # the letter chips are gone
         assert str(app.query_one("#keys-global", Static).render()) == ""
         await pilot.press("escape")
         await pilot.pause()
         assert app.focused is app.query_one(DataTable)
         assert app.return_value is None  # Esc left the search box; it did NOT quit
-        assert "Add script" in footer_text(app.query_one("#keys-global", Static))
+        assert "Add entry" in footer_text(app.query_one("#keys-global", Static))
 
 
 async def test_search_mode_esc_chip_returns_to_table_on_click(tmp_path):
@@ -533,7 +532,7 @@ async def test_search_mode_esc_chip_returns_to_table_on_click(tmp_path):
         await click_label(pilot, "#keys-local", "Back to list")
         assert app.focused is app.query_one(DataTable)
         assert app.return_value is None  # still running
-        assert "Add script" in footer_text(app.query_one("#keys-global", Static))
+        assert "Add entry" in footer_text(app.query_one("#keys-global", Static))
 
 
 async def test_enter_in_search_runs_the_highlighted_match(tmp_path, quiet_run):
@@ -827,7 +826,7 @@ async def test_insert_link_shown_only_on_insertable_fields(tmp_path, quiet_run):
 
 
 # ---------------------------------------------------------------------------
-# review fixes: launch-failure honesty, drift on r, dirty check, rescan overrides
+# Launch-failure honesty, rerun drift, dirty checks, and rescan overrides
 # ---------------------------------------------------------------------------
 
 
@@ -889,9 +888,19 @@ def test_finish_run_launch_failure_uses_docker_codes_and_records_nothing(tmp_pat
     assert any("Error" in line for line in printed)
 
 
-async def test_after_run_stay_returns_to_the_library(tmp_path, quiet_run):
+async def test_after_run_stay_returns_to_the_library_without_reading_stdin(
+    tmp_path, quiet_run, monkeypatch
+):
     """The workbench opt-in: after_run=stay keeps skit open after a run — the status
-    line reports the outcome and the app is still running."""
+    line reports the outcome and the app is still running. Returning is automatic, so
+    the mouse-only path never dead-ends on a raw terminal acknowledgment."""
+    stdin_reads: list[tuple[object, ...]] = []
+
+    def forbid_stdin(*args):
+        stdin_reads.append(args)
+        raise AssertionError("after_run=stay must return without reading stdin")
+
+    monkeypatch.setattr("builtins.input", forbid_stdin)
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     app = tui.MenuApp()
     async with app.run_test() as pilot:
@@ -902,6 +911,7 @@ async def test_after_run_stay_returns_to_the_library(tmp_path, quiet_run):
         assert isinstance(screen, RunFormScreen)
         screen.action_submit()
         await pilot.pause()
+        assert stdin_reads == []
         assert app.return_value is None  # still open
         assert "✓ finished" in str(app.query_one("#status", Static).render())
 
@@ -916,7 +926,6 @@ async def test_launch_failure_records_no_phantom_run(tmp_path, monkeypatch):
         yield
 
     monkeypatch.setattr(tui.MenuApp, "suspend", _noop)
-    monkeypatch.setattr("builtins.input", lambda *a: "")
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         app._execute(entry, flows.FormPlan(source="none"), {}, [])
@@ -1167,7 +1176,7 @@ def test_chip_is_one_link_with_pill_background():
 
 
 # ---------------------------------------------------------------------------
-# pre-commit review fixes (add-accept crash, resync report, rescan mode, footer accent)
+# Add acceptance, resync reporting, rescan modes, and footer styling
 # ---------------------------------------------------------------------------
 
 

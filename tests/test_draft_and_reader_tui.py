@@ -1,4 +1,4 @@
-"""Round-9 design-audit fixes — TUI pilot coverage.
+"""Draft and reader TUI contracts — pilot coverage.
 
 Every advertised key gets a POSITIVE pilot (the AGENTS keyboard-parity rule), and every
 assertion pins an observable: the entry that landed, a widget's presence/absence, a
@@ -84,7 +84,7 @@ def _statics(screen) -> str:
 
 
 # ==========================================================================
-# 1. A bash-shebang kept draft resumes as a SHELL entry (the round-8 HIGH, TUI lane)
+# 1. A bash-shebang kept draft resumes as a SHELL entry
 # ==========================================================================
 
 
@@ -124,7 +124,7 @@ async def test_review_versioned_shebang_shows_and_stores_pin(tmp_path):
         app.push_screen(review)
         await pilot.pause()
         assert review._requires_python == ">=3.12,<3.13"  # derived from the shebang
-        # shown AND editable in the #rv-python field, not invisibly recorded (round-10).
+        # shown AND editable in the #rv-python field, not invisibly recorded.
         assert review.query_one("#rv-python", Input).value == ">=3.12,<3.13"
         review.query_one("#rv-name", Input).value = "vpin"
         review.action_accept()

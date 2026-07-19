@@ -140,7 +140,7 @@ def test_save_preset_on_field_less_entry_refused_saves_nothing(run_entry_spy):
     """A field-less entry has nothing to put in a preset — `--save-preset` is refused
     with the same sentence `skit preset save` uses, and nothing is saved OR run. The
     exit code is USAGE (2), NOT 1: inside `run`, 1-124 belongs to the script (docker
-    convention), so a skit-side refusal must never look like the script ran (finding 1)."""
+    convention), so a skit-side refusal must never look like the script ran."""
     runner.invoke(cli.app, ["add", "--cmd", "echo hi", "--name", "noargs", "--no-input"])
     result = runner.invoke(cli.app, ["run", "noargs", "--save-preset", "nope", "--no-input"])
     assert result.exit_code == 2, result.output
@@ -221,7 +221,7 @@ def test_set_unknown_name_exits_2_and_lists_valid(tmp_path, run_entry_spy):
     assert result.exit_code == 2
     # Line-exact, with two unknown names so their ", " join is exercised too.
     assert (
-        "Unknown parameter for --set: ALSO, NOPE. This script's parameters: CITY, TIMES"
+        "Unknown parameter for --set: ALSO, NOPE. This entry's parameters: CITY, TIMES"
         in result.output.splitlines()
     )
     assert "entry" not in run_entry_spy
@@ -236,7 +236,7 @@ def test_set_on_entry_without_fields_lists_a_dash(tmp_path, run_entry_spy):
     result = runner.invoke(cli.app, ["run", "tool", "--set", "X=1", "--no-input"])
     assert result.exit_code == 2
     assert (
-        "Unknown parameter for --set: X. This script's parameters: —" in result.output.splitlines()
+        "Unknown parameter for --set: X. This entry's parameters: —" in result.output.splitlines()
     )
     assert "entry" not in run_entry_spy
 
@@ -342,7 +342,7 @@ def test_interactive_form_skips_set_fields(tmp_path, run_entry_spy, monkeypatch)
     def fake_collect(entry, plan, prefill, *, plain, runners=None, runner_default=""):
         asked["keys"] = [f.key for f in plan.fields]
         # The form's answer must win over any prefill for the fields it asked.
-        return {"CITY": "form-city"}, None
+        return {"CITY": "form-city"}, None, False
 
     monkeypatch.setattr(cli, "_collect_values", fake_collect)
     result = runner.invoke(cli.app, ["run", "trip", "--set", "TIMES=9"])

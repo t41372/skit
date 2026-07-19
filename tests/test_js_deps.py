@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -667,6 +668,8 @@ def test_resolve_npm_dependencies_interactive_accepts_the_suggestion(
 ):
     src = _js_file(tmp_path)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     monkeypatch.setattr("rich.prompt.Prompt.ask", lambda *a, **k: k.get("default", ""))
     spec = spec_for("js")
     assert spec is not None
@@ -680,6 +683,8 @@ def test_resolve_npm_dependencies_interactive_dash_declines(
 ):
     src = _js_file(tmp_path)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     monkeypatch.setattr("rich.prompt.Prompt.ask", lambda *a, **k: " - ")
     spec = spec_for("js")
     assert spec is not None
@@ -693,6 +698,8 @@ def test_resolve_npm_dependencies_interactive_edit_splits_requirements(
 ):
     src = _js_file(tmp_path)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     monkeypatch.setattr("rich.prompt.Prompt.ask", lambda *a, **k: "chalk@^5, zod")
     spec = spec_for("js")
     assert spec is not None
@@ -704,6 +711,22 @@ def test_resolve_npm_dependencies_interactive_edit_splits_requirements(
 def test_resolve_npm_dependencies_without_scanner_suggests_nothing(tmp_path: Path):
     src = _js_file(tmp_path)
     assert cli._resolve_npm_dependencies(src, None, True, None) == []
+
+
+def test_resolve_npm_dependencies_does_not_prompt_when_stdout_is_piped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    src = _js_file(tmp_path)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False, raising=False)
+    monkeypatch.setattr(cli, "_is_interactive", lambda: False)
+    monkeypatch.setattr(
+        "rich.prompt.Prompt.ask",
+        lambda *_a, **_k: pytest.fail("a redirected command must not ask an invisible question"),
+    )
+    spec = spec_for("js")
+    assert spec is not None
+    assert cli._resolve_npm_dependencies(src, None, False, spec.dep_scanner) == ["chalk"]
 
 
 def test_resolve_npm_dependencies_unreadable_file_suggests_nothing(tmp_path: Path):
@@ -937,7 +960,7 @@ def test_load_mirror_type_hardens_a_hand_edited_npm_value(tmp_path: Path):
 
 
 # ==========================================================================
-# review fixes: npm splitter, module type, lock, loud failures, refusals
+# npm dependency parsing, module type, locking, and failure contracts
 # ==========================================================================
 
 
@@ -959,13 +982,15 @@ def test_split_requirements_keeps_scoped_packages_apart():
 def test_interactive_accept_of_a_scoped_suggestion_round_trips(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """The reviewer's repro: pressing Enter to accept a scanned suggestion that contains a
-    scoped package must record the same list the scanner produced — not a merged blob."""
+    """Accepting a scanned suggestion containing a scoped package must record the same
+    list the scanner produced — not a merged blob."""
     src = _js_file(
         tmp_path,
         'import chalk from "chalk";\nimport { S3Client } from "@aws-sdk/client-s3";\n',
     )
     monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     monkeypatch.setattr("rich.prompt.Prompt.ask", lambda *a, **k: k.get("default", ""))
     spec = spec_for("js")
     assert spec is not None
@@ -1035,32 +1060,89 @@ def test_build_passes_the_original_extensions_module_type(
     assert seen["mtype"] == "module"
 
 
-def test_install_lock_reclaims_a_stale_holder_and_releases(
+def test_install_lock_uses_a_persistent_inode_outside_the_entry(tmp_path: Path):
+    lock = js_deps._install_lock_path(tmp_path)
+    with js_deps._install_lock(tmp_path):
+        assert lock.is_file()
+        assert not lock.is_relative_to(tmp_path)
+    assert lock.is_file()  # kernel ownership released; inode is deliberately retained
+    assert not (tmp_path / ".skit-deps.lock").exists()  # old lease protocol path stays untouched
+
+
+def test_install_lock_waits_for_a_live_holder(tmp_path: Path):
+    holder_entered = threading.Event()
+    release_holder = threading.Event()
+    waiter_entered = threading.Event()
+
+    def holder() -> None:
+        with js_deps._install_lock(tmp_path):
+            holder_entered.set()
+            release_holder.wait(timeout=2)
+
+    def waiter() -> None:
+        with js_deps._install_lock(tmp_path):
+            waiter_entered.set()
+
+    first = threading.Thread(target=holder)
+    second = threading.Thread(target=waiter)
+    first.start()
+    assert holder_entered.wait(timeout=2)
+    second.start()
+    assert not waiter_entered.wait(timeout=0.1)
+    release_holder.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+    assert waiter_entered.is_set()
+    assert not first.is_alive()
+    assert not second.is_alive()
+
+
+def test_store_remove_waits_for_a_live_js_install_lock(tmp_path: Path):
+    entry = _added_js(tmp_path)
+    holder_entered = threading.Event()
+    release_holder = threading.Event()
+    removed: list[str] = []
+
+    def holder() -> None:
+        with js_deps._install_lock(entry.dir):
+            holder_entered.set()
+            release_holder.wait(timeout=2)
+
+    first = threading.Thread(target=holder)
+    remover = threading.Thread(target=lambda: removed.append(store.remove(entry.slug)))
+    first.start()
+    assert holder_entered.wait(timeout=2)
+    remover.start()
+    remover.join(timeout=0.1)
+    assert remover.is_alive()
+    release_holder.set()
+    first.join(timeout=2)
+    remover.join(timeout=2)
+
+    assert removed == [entry.meta.name]
+    assert not entry.dir.exists()
+    assert js_deps._install_lock_path(entry.dir).is_file()
+
+
+def test_store_remove_surfaces_install_lock_failure_without_deleting_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    import os
+    """A JS dependency lock refusal is a clean store error and leaves the entry intact."""
+    entry = _added_js(tmp_path)
 
-    lock = tmp_path / ".skit-deps.lock"
-    lock.write_text("", encoding="utf-8")
-    os.utime(lock, (1, 1))  # a crashed install from eons ago must not wedge the entry
-    with js_deps._install_lock(tmp_path):
-        assert lock.exists()  # (re)taken by us
-    assert not lock.exists()  # released on exit
+    class RefusingLock:
+        def __enter__(self):
+            raise NotExecutableError("dependency lock unavailable")
 
+        def __exit__(self, *_args):
+            return False
 
-def test_install_lock_waits_for_a_live_holder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    lock = tmp_path / ".skit-deps.lock"
-    lock.write_text("", encoding="utf-8")  # fresh mtime: a live install holds it
-    polls: list[float] = []
+    monkeypatch.setattr(js_deps, "_install_lock", lambda _entry_dir: RefusingLock())
 
-    def fake_sleep(seconds: float) -> None:
-        polls.append(seconds)
-        lock.unlink()  # the holder finishes during our wait
+    with pytest.raises(store.StoreError, match="dependency lock unavailable"):
+        store.remove(entry.slug)
 
-    monkeypatch.setattr(js_deps.time, "sleep", fake_sleep)
-    with js_deps._install_lock(tmp_path):
-        pass
-    assert polls  # we waited instead of stealing the live holder's lock
+    assert store.resolve(entry.slug).script_path.is_file()
 
 
 def test_ensure_installed_serializes_under_the_entry_lock(
@@ -1069,14 +1151,14 @@ def test_ensure_installed_serializes_under_the_entry_lock(
     lock_states: list[bool] = []
 
     def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-        lock_states.append((tmp_path / ".skit-deps.lock").exists())
+        lock_states.append(js_deps._install_lock_path(tmp_path).exists())
         return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
 
     monkeypatch.setattr(js_deps.shutil, "which", lambda name: f"/bin/{name}")
     monkeypatch.setattr(js_deps.subprocess, "run", run)
     js_deps.ensure_installed(tmp_path, ["chalk"], "node", {})
     assert lock_states == [True]  # the installer ran while the entry lock was held
-    assert not (tmp_path / ".skit-deps.lock").exists()  # and it was released after
+    assert js_deps._install_lock_path(tmp_path).is_file()
 
 
 def test_clean_failure_is_loud_not_silent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -1176,29 +1258,18 @@ def test_js_and_ts_specs_declare_the_npm_flavor():
     assert python_spec.dep_scanner is None
 
 
-def test_install_lock_handles_the_holder_vanishing_mid_check(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    """The reclaim race: os.open loses to a holder whose lockfile is gone by the time we stat
-    it (it released between our two syscalls). A vanished holder is reclaimable — the retry
-    must acquire, not crash on the failed stat."""
-    calls = {"n": 0}
-    real_open = js_deps.os.open
-
-    def racing_open(path: str, flags: int) -> int:
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise FileExistsError(17, "raced", path)
-        return real_open(path, flags)
-
-    monkeypatch.setattr(js_deps.os, "open", racing_open)
-    with js_deps._install_lock(tmp_path):
-        assert (tmp_path / ".skit-deps.lock").exists()
-    assert calls["n"] == 2  # first attempt lost the race; the retry acquired
+def test_install_lock_path_survives_entry_directory_removal(tmp_path: Path):
+    entry_dir = tmp_path / "entry"
+    entry_dir.mkdir()
+    lock = js_deps._install_lock_path(entry_dir)
+    with js_deps._install_lock(entry_dir):
+        entry_dir.rmdir()
+        assert lock.is_file()  # the held inode lives outside the deletable entry
+    assert lock.is_file()
 
 
 # ==========================================================================
-# round-2 review fixes: real stderr, ANSI, locks on clear, TUI resilience
+# Installer diagnostics, ANSI cleanup, clear locking, and TUI resilience
 # ==========================================================================
 
 # Captured verbatim from `npm install --no-audit --no-fund --ignore-scripts` (npm 11.x) against
@@ -1325,14 +1396,14 @@ def test_clear_takes_the_install_lock(tmp_path: Path, monkeypatch: pytest.Monkey
         js_deps,
         "clean",
         lambda entry_dir: (
-            held.append((entry_dir / ".skit-deps.lock").exists()),
+            held.append(js_deps._install_lock_path(entry_dir).exists()),
             real_clean(entry_dir),
         )[1],
     )
     (tmp_path / "package.json").write_text("{}", encoding="utf-8")
     js_deps.clear(tmp_path)
     assert held == [True]  # clean ran while the entry lock was held
-    assert not (tmp_path / ".skit-deps.lock").exists()  # and it was released after
+    assert js_deps._install_lock_path(tmp_path).is_file()
     assert not (tmp_path / "package.json").exists()
 
 
@@ -1431,7 +1502,7 @@ def test_add_python_still_honors_both_flags(tmp_path: Path):
 
 
 # ==========================================================================
-# round-3 review fixes: stdin/--edit lanes honor flags; wizard covers npm
+# stdin/editor add lanes honor flags and the wizard covers npm dependencies
 # ==========================================================================
 
 
@@ -1472,9 +1543,22 @@ def test_add_edit_honors_explicit_dep_and_python_flags(
         "open_in_editor",
         lambda path: path.write_text('print("made in editor")\n', encoding="utf-8"),
     )
-    monkeypatch.setattr("sys.stdin.isatty", lambda: False, raising=False)  # no param prompts
+    # The editor lane is interactive and reviews every missing identity field. Supply
+    # both fields explicitly so this test isolates --dep/--python propagation.
     result = runner.invoke(
-        cli.app, ["add", "--edit", "--name", "n", "--dep", "rich", "--python", ">=3.12"]
+        cli.app,
+        [
+            "add",
+            "--edit",
+            "--name",
+            "n",
+            "--description",
+            "made in editor",
+            "--dep",
+            "rich",
+            "--python",
+            ">=3.12",
+        ],
     )
     assert result.exit_code == 0
     copy_text = store.resolve("n").script_path.read_text(encoding="utf-8")
@@ -1483,7 +1567,7 @@ def test_add_edit_honors_explicit_dep_and_python_flags(
 
 
 # ==========================================================================
-# round-4 review fixes: lock OSError taxonomy, catalog syntax gate
+# Lock OSError taxonomy and catalog syntax validation
 # ==========================================================================
 
 
@@ -1494,10 +1578,10 @@ def test_install_lock_unwritable_dir_raises_126_family_not_a_traceback(
     never a raw PermissionError at exit 1 — an agent could not tell that from the script
     itself failing."""
 
-    def denied(path: str, flags: int) -> int:
-        raise PermissionError(13, "Read-only file system", path)
+    def denied(path: Path, **_kwargs):
+        raise PermissionError(13, "Read-only file system", str(path))
 
-    monkeypatch.setattr(js_deps.os, "open", denied)
+    monkeypatch.setattr(js_deps, "advisory_file_lock", denied)
     with pytest.raises(NotExecutableError) as exc:
         with js_deps._install_lock(tmp_path):
             pytest.fail("the lock must not be acquired")
@@ -1510,10 +1594,10 @@ def test_run_on_unwritable_entry_dir_exits_126_not_1(
     _runner_env(monkeypatch)
     monkeypatch.setattr(js_deps.shutil, "which", lambda name: f"/bin/{name}")
 
-    def denied(path: str, flags: int) -> int:
-        raise PermissionError(13, "Read-only file system", path)
+    def denied(path: Path, **_kwargs):
+        raise PermissionError(13, "Read-only file system", str(path))
 
-    monkeypatch.setattr(js_deps.os, "open", denied)
+    monkeypatch.setattr(js_deps, "advisory_file_lock", denied)
     entry = _entry(tmp_path, dependencies=["chalk"])
     with pytest.raises(NotExecutableError):
         launch.RunnerLaunch().build(entry, [], None, None)
@@ -1559,59 +1643,31 @@ def test_i18n_gate_passes_the_shipped_catalogs():
 
 
 # ==========================================================================
-# round-5 review fixes: stale-lock starvation, continuation-line gate
+# persistent-lock lifecycle and continuation-line gate
 # ==========================================================================
 
 
-def test_install_lock_unremovable_stale_lock_fails_loud_instead_of_spinning(
+def test_install_lock_never_unlinks_its_persistent_inode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """A stale lock in a dir where the unlink is denied must raise the 126 family, not
-    busy-loop forever at 100% CPU (the round-4 read-only scenario, lock-present variant)."""
-    import os
-
-    lock = tmp_path / ".skit-deps.lock"
-    lock.write_text("", encoding="utf-8")
-    os.utime(lock, (1, 1))  # stale: eligible for reclaim
+    lock = js_deps._install_lock_path(tmp_path)
 
     def denied(self: Path, missing_ok: bool = False) -> None:
-        raise PermissionError(13, "Read-only file system", str(self))
+        if self == lock:
+            pytest.fail("kernel-backed lockfiles must never be unlinked")
 
     monkeypatch.setattr(Path, "unlink", denied)
-    with pytest.raises(NotExecutableError) as exc:
-        with js_deps._install_lock(tmp_path):
-            pytest.fail("the lock must not be acquired")
-    assert "Read-only file system" in str(exc.value)
-
-
-def test_install_lock_stale_reclaim_lost_to_another_waiter_retries(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    """Two waiters race to reclaim the same stale lock: the loser's unlink hits
-    FileNotFoundError and must simply retry the acquisition, not crash."""
-    import os
-
-    lock = tmp_path / ".skit-deps.lock"
-    lock.write_text("", encoding="utf-8")
-    os.utime(lock, (1, 1))
-    real_unlink = Path.unlink
-
-    def racing_unlink(self: Path, missing_ok: bool = False) -> None:
-        real_unlink(self)  # the other waiter got there first...
-        raise FileNotFoundError(2, "No such file or directory", str(self))  # ...we lose
-
-    monkeypatch.setattr(Path, "unlink", racing_unlink)
     with js_deps._install_lock(tmp_path):
-        monkeypatch.setattr(Path, "unlink", real_unlink)
-        assert (tmp_path / ".skit-deps.lock").exists()
+        assert lock.is_file()
+    assert lock.is_file()
 
 
 def test_i18n_gate_catches_an_unquoted_continuation_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """babel silently truncates a wrapped msgstr at an unquoted continuation line — the exact
-    round-4 corruption class one line lower. The gate must flag it, and must NOT flag the
-    header, comments, #~ obsolete entries, or well-quoted wrapped strings."""
+    """Babel silently truncates a wrapped msgstr at an unquoted continuation line. The gate
+    must flag that malformed line without flagging the header, comments, #~ obsolete entries,
+    or well-quoted wrapped strings."""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
@@ -1924,22 +1980,18 @@ def test_failure_detail_survives_invalid_utf8_bytes():
 
 
 # ==========================================================================
-# review round: lock ownership token, needs_install/preflight parity,
+# Persistent lock identity, needs_install/preflight parity,
 # clean() already-gone + symlink handling, empty --dep, --json on write,
 # and the placeholder-parity i18n gate
 # ==========================================================================
 
 
-def test_install_lock_release_leaves_a_successors_lock_alone(tmp_path: Path):
-    """A holder whose over-running install was stale-reclaimed must NOT, on its late release,
-    delete the successor's fresh lockfile — that would admit a third concurrent installer over
-    one directory. The per-acquisition token makes release remove only our own lock."""
-    lock = tmp_path / ".skit-deps.lock"
-    successor = b"successor-11111"
+def test_install_lock_reuses_the_same_persistent_inode(tmp_path: Path):
+    lock = js_deps._install_lock_path(tmp_path)
     with js_deps._install_lock(tmp_path):
-        # Simulate a stale-reclaim replacing our lock with a successor's fresh one.
-        lock.write_bytes(successor)
-    assert lock.read_bytes() == successor  # release saw a foreign token and left it in place
+        first_inode = lock.stat().st_ino
+    with js_deps._install_lock(tmp_path):
+        assert lock.stat().st_ino == first_inode
 
 
 def test_needs_install_true_without_a_marker(tmp_path: Path):

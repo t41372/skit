@@ -176,8 +176,8 @@ def test_promptform_secret_without_env_source_prints_no_hint(monkeypatch):
 def test_promptform_required_choice_field_offers_the_choices(monkeypatch):
     """A REQUIRED (or defaulted) choice shows its choices in the label and defaults to the
     first when nothing is prefilled; the picked choice is returned verbatim. rich's own
-    choices= gate is NOT used — the collector runs its own localized validation loop
-    (round-6), so the choices ride in the label text, not a choices= kwarg."""
+    choices= gate is NOT used — the collector runs its own localized validation loop,
+    so the choices ride in the label text, not a choices= kwarg."""
     plan = flows.FormPlan(
         source="argparse",
         fields=[
@@ -309,15 +309,17 @@ def test_inline_collect_returns_values_when_form_submits(monkeypatch):
     entry = _command_entry()
     plan = flows.FormPlan(source="command", fields=[flows.FormField(key="m", label="m")])
 
-    def fake_run(_self: object, **kwargs: object) -> tuple[dict[str, str], list[str], str | None]:
+    def fake_run(
+        _self: object, **kwargs: object
+    ) -> tuple[dict[str, str], list[str], str | None, bool]:
         assert kwargs.get("inline") is True  # opened in inline mode, not fullscreen
-        return {"m": "hi"}, ["--extra"], None
+        return {"m": "hi"}, ["--extra"], None, False
 
     monkeypatch.setattr(inlineform._InlineFormApp, "run", fake_run)
     result = inlineform.collect(entry, plan, {"m": "seed"})
 
     # values + picked runner returned, the extra list discarded
-    assert result == ({"m": "hi"}, None)
+    assert result == ({"m": "hi"}, None, False)
 
 
 def test_inline_collect_returns_none_when_cancelled(monkeypatch):
@@ -349,7 +351,8 @@ async def test_inline_app_pushes_form_and_submit_exits_with_result(tmp_path):
 
     result = app.return_value
     assert result is not None  # _done forwarded the submit result into app.exit
-    values, extra, picked_runner = result
+    values, extra, picked_runner, runner_was_picked = result
     assert extra == []  # include_extra=False: the inline frame hides the extra-args row
     assert picked_runner is None  # no runner picker on a non-prompt form
+    assert runner_was_picked is False
     assert set(values) == {"width", "fast", "mode"}  # the plan's fields were collected

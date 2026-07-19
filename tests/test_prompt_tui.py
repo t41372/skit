@@ -7,13 +7,23 @@ from __future__ import annotations
 import contextlib
 
 import pytest
-from textual.widgets import Checkbox, Input, OptionList, RadioSet, Select, Static
+from textual.widgets import (
+    Checkbox,
+    DataTable,
+    Input,
+    OptionList,
+    RadioSet,
+    Select,
+    SelectionList,
+    Static,
+)
 
-from skit import argstate, config, flows, launcher, store, tui
-from skit.tui_add import AddSourceScreen, PromptReviewScreen
+from skit import argstate, config, flows, i18n, launcher, paths, store, tui, tui_footer
+from skit.tui_add import AddSourceScreen, KindPickModal, PromptReviewScreen
 from skit.tui_form import RunFormScreen
+from skit.tui_prompt import PromptCandidatePickerModal
 from skit.tui_runner import RunnerAddModal
-from skit.tui_settings import ScriptSettingsScreen
+from skit.tui_settings import DiscardChangesModal, ScriptSettingsScreen
 
 
 def _value(select: Select[str]) -> str:
@@ -35,6 +45,19 @@ async def _click_option(pilot, overlay: OptionList, index: int) -> None:
     """Mouse-click option `index` in an open Select overlay. The overlay draws a one-row
     top border, so option i sits at row i+1 (x=2 lands inside the padded label)."""
     await pilot.click(overlay, offset=(2, index + 1))
+    await pilot.pause()
+
+
+async def _click_chip(pilot, widget: Static, label: str) -> None:
+    """Click the linked span rather than an arbitrary blank cell in its Static."""
+    # Inline chips live in the form's ordinary wheel-scrollable body. Bring this one
+    # into the viewport exactly as a mouse user scrolling to it would.
+    widget.scroll_visible(animate=False)
+    await pilot.pause()
+    plain = str(widget.render()).replace(tui_footer.GLUE, " ")
+    position = plain.find(label)
+    assert position >= 0, plain
+    await pilot.click(widget, offset=(position + 1, 0))
     await pilot.pause()
 
 
@@ -65,14 +88,19 @@ def quiet_run(monkeypatch):
         script_override=None,
         env_overlay=None,
         runner=None,
+        prepared=None,
     ):
         calls["values"] = dict(values or {})
         calls["runner"] = runner
+        calls["prepared"] = prepared
         return calls.get("code", 0)
 
     monkeypatch.setattr(launcher, "run_entry", fake_run)
+    # The fixture replaces the actual spawn, so make preflight agree that the
+    # synthetic runner binaries are launchable.  Individual refusal tests override
+    # this seam with the missing binary they exercise.
+    monkeypatch.setattr("skit.langs.launch._which", lambda name: f"/bin/{name}")
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
-    monkeypatch.setattr("builtins.input", lambda *a: "")
     return calls
 
 
@@ -85,6 +113,56 @@ def _prompt_entry(tmp_path, text="Do {{a}}\n", name="p", pin=""):
     return entry
 
 
+async def test_prompt_only_library_uses_entry_taxonomy_everywhere(tmp_path):
+    entry = _prompt_entry(tmp_path, text="Review this\n")
+    store.update_description(entry.slug, "")
+    app = tui.MenuApp()
+    async with app.run_test(size=(110, 36)) as pilot:
+        await pilot.pause()
+        assert app.query_one(DataTable).border_title == "Library"
+        assert "1/1 entry" in str(app.query_one("#status", Static).render())
+        local = str(app.query_one("#keys-local", Static).render()).replace(tui_footer.GLUE, " ")
+        global_keys = str(app.query_one("#keys-global", Static).render()).replace(
+            tui_footer.GLUE, " "
+        )
+        detail = str(app.query_one("#detail-body", Static).render())
+        assert "Entry settings" in local
+        assert "Edit source" in local
+        assert "Add entry" in global_keys
+        assert "add one in Entry settings" in detail
+
+        await pilot.press("p")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ScriptSettingsScreen)
+        assert screen.query_one("#st-body").border_title == "Entry settings · p"
+
+
+@pytest.mark.parametrize(
+    ("locale", "library", "script_library"),
+    [("zh-CN", "工具库", "脚本库"), ("zh-TW", "工具庫", "腳本庫")],
+)
+async def test_prompt_only_chinese_library_stays_entry_neutral(
+    tmp_path, locale, library, script_library
+):
+    i18n.init(locale)
+    _prompt_entry(tmp_path, text="Review this\n")
+    app = tui.MenuApp()
+    async with app.run_test(size=(110, 36)) as pilot:
+        await pilot.pause()
+        title = str(app.query_one(DataTable).border_title)
+        assert title == library
+        assert script_library not in title
+
+        await pilot.press("p")
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ScriptSettingsScreen)
+        placeholder = screen.query_one("#st-desc", Input).placeholder or ""
+        assert library in placeholder
+        assert script_library not in placeholder
+
+
 # --------------------------------------------------------------------------
 # run form: the runner picker row
 # --------------------------------------------------------------------------
@@ -92,6 +170,7 @@ def _prompt_entry(tmp_path, text="Do {{a}}\n", name="p", pin=""):
 
 async def test_form_picker_defaults_to_the_pin_and_submits_it(tmp_path, quiet_run):
     _prompt_entry(tmp_path, pin="codex")
+    argstate.save_last_runner("opencode")
     app = tui.MenuApp()
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause()
@@ -106,6 +185,30 @@ async def test_form_picker_defaults_to_the_pin_and_submits_it(tmp_path, quiet_ru
         await pilot.pause()
     assert quiet_run["values"] == {"a": "hello"}
     assert quiet_run["runner"] == config.find_prompt_runner("codex")
+    assert argstate.load_last_runner() == "opencode"  # untouched pin is only a default
+
+
+async def test_form_picker_move_away_then_back_to_pin_is_still_remembered(tmp_path, quiet_run):
+    _prompt_entry(tmp_path, pin="codex")
+    argstate.save_last_runner("amp")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.action_run()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        select = screen.query_one("#runner-select", Select)
+        assert _value(select) == "codex"
+        select.value = "claude"
+        await pilot.pause()
+        select.value = "codex"
+        await pilot.pause()
+        screen.query_one(Input).value = "x"
+        screen.action_submit()
+        await pilot.pause()
+    assert quiet_run["runner"] == config.find_prompt_runner("codex")
+    assert argstate.load_last_runner() == "codex"
 
 
 async def test_form_picker_keyboard_pick_runs_and_remembers(tmp_path, quiet_run):
@@ -184,6 +287,22 @@ async def test_prompt_with_no_placeholders_still_shows_the_form_for_the_picker(t
     assert quiet_run["runner"] is not None
 
 
+async def test_unicode_placeholder_is_a_working_tui_field(tmp_path, quiet_run):
+    _prompt_entry(tmp_path, text="审查 {{目标}}\n")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.action_run()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        field = screen.query_one(Input)
+        field.value = "src/app.py"
+        screen.action_submit()
+        await pilot.pause()
+    assert quiet_run["values"] == {"目标": "src/app.py"}
+
+
 async def test_pinned_promptless_prompt_keeps_the_shortcut(tmp_path, quiet_run):
     _prompt_entry(tmp_path, text="No holes here.\n", pin="claude")
     argstate.save_last_runner("")  # ensure the pin, not state, decides
@@ -199,6 +318,89 @@ async def test_pinned_promptless_prompt_keeps_the_shortcut(tmp_path, quiet_run):
         screen.action_submit()
         await pilot.pause()
     assert quiet_run["runner"] == config.find_prompt_runner("claude")
+
+
+async def test_stale_pin_cannot_block_run_form_override(tmp_path, quiet_run, monkeypatch):
+    _prompt_entry(tmp_path, pin="removed")
+    working = config.PromptRunner("working", ("working-bin", "{{prompt}}"))
+    config.save_prompt_runners([working])
+    monkeypatch.setattr("skit.langs.launch._which", lambda name: f"/bin/{name}")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.action_run()
+        await pilot.pause()
+
+        # The stale pin used to fail preflight before this picker could open.  With
+        # only the configured replacement available, the visible form resolves it.
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        assert _value(screen.query_one("#runner-select", Select)) == "working"
+        screen.query_one(Input).value = "hello"
+        screen.action_submit()
+        await pilot.pause()
+    assert quiet_run["runner"] == working
+
+
+async def test_missing_pinned_binary_cannot_block_a_different_pick(
+    tmp_path, quiet_run, monkeypatch
+):
+    broken = config.PromptRunner("broken", ("missing-agent", "{{prompt}}"))
+    working = config.PromptRunner("working", ("working-agent", "{{prompt}}"))
+    config.save_prompt_runners([broken, working])
+    _prompt_entry(tmp_path, pin="broken")
+    monkeypatch.setattr(
+        "skit.langs.launch._which",
+        lambda name: None if name == "missing-agent" else f"/bin/{name}",
+    )
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.action_run()
+        await pilot.pause()
+
+        # The broken pin remains the honest prefill, but it no longer prevents the
+        # user from selecting the installed runner for this one launch.
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        select = screen.query_one("#runner-select", Select)
+        assert _value(select) == "broken"
+        select.value = "working"
+        screen.query_one(Input).value = "hello"
+        screen.action_submit()
+        await pilot.pause()
+    assert quiet_run["runner"] == working
+
+
+async def test_selected_prompt_runner_preflight_failure_returns_to_library(
+    tmp_path, quiet_run, monkeypatch
+):
+    """The prompt runner cannot be checked until the form resolves the user's pick.  If
+    that selected agent is unavailable, submitting the visible form returns to the
+    library with the actionable error and never hands the terminal to a child process."""
+    _prompt_entry(tmp_path)
+
+    def refuse(entry, invoke_cwd=None, *, runner=None):
+        assert entry.meta.kind == "prompt"
+        assert runner is not None
+        raise launcher.LaunchError("agent [missing] cannot run")
+
+    monkeypatch.setattr(launcher, "preflight", refuse)
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.action_run()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        screen.query_one(Input).value = "hello"
+        await pilot.press("ctrl+r")  # the advertised keyboard path submits the form
+        await pilot.pause()
+
+        assert app.screen is app.screen_stack[0]
+        status = str(app.query_one("#status", Static).render())
+        assert status == "Error: agent [missing] cannot run"
+    assert "runner" not in quiet_run  # preflight refused before launcher.run_entry
 
 
 async def test_run_with_zero_runners_offers_the_new_agent_modal(tmp_path, quiet_run):
@@ -322,7 +524,7 @@ async def test_detail_pane_unpinned_prompt_says_the_form_asks(tmp_path):
 
 async def test_detail_pane_stale_pin_says_no_longer_configured(tmp_path):
     """A prompt pinned to a runner whose config row is gone: the detail pane says
-    '(no longer configured)' — the same honesty Script settings gives (two surfaces, one
+    '(no longer configured)' — the same honesty Entry settings gives (two surfaces, one
     truth), never a bare 'Runs with X' that would launch straight into a 126."""
     _prompt_entry(tmp_path, pin="nonesuch-agent")  # not a configured runner
     app = tui.MenuApp()
@@ -370,7 +572,7 @@ async def test_tui_add_prompt_opens_the_review_panel(tmp_path):
     assert entry.meta.runner == ""  # default: ask on the run form
 
 
-async def test_tui_add_bare_md_becomes_a_prompt(tmp_path):
+async def test_tui_add_bare_md_asks_before_becoming_a_prompt(tmp_path):
     src = tmp_path / "notes.md"
     src.write_text("Summarize {{url}}\n", encoding="utf-8")
     app = tui.MenuApp()
@@ -383,11 +585,40 @@ async def test_tui_add_bare_md_becomes_a_prompt(tmp_path):
         screen.query_one("#add-path", Input).value = str(src)
         screen._submit_path()
         await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, KindPickModal)
+        options = picker.query_one(OptionList)
+        prompt_index = next(
+            i for i in range(options.option_count) if options.get_option_at_index(i).id == "prompt"
+        )
+        options.highlighted = prompt_index
+        options.action_select()
+        await pilot.pause()
         review = app.screen
         assert isinstance(review, PromptReviewScreen)
         review.action_accept()
         await pilot.pause()
     assert store.resolve("notes").meta.kind == "prompt"
+
+
+async def test_tui_add_bare_md_kind_ask_can_cancel_without_adding(tmp_path):
+    src = tmp_path / "notes.md"
+    src.write_text("ordinary project notes\n", encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        app.action_add()
+        await pilot.pause()
+        source = app.screen
+        assert isinstance(source, AddSourceScreen)
+        source.query_one("#add-path", Input).value = str(src)
+        source._submit_path()
+        await pilot.pause()
+        assert isinstance(app.screen, KindPickModal)
+        await pilot.press("escape")  # the modal's advertised Cancel key
+        await pilot.pause()
+        assert app.screen is source
+    assert store.list_entries() == []
 
 
 # --------------------------------------------------------------------------
@@ -419,6 +650,7 @@ async def test_settings_prompt_rows_and_no_flag_input(tmp_path):
 
 async def test_settings_runner_radio_pins_and_clears(tmp_path):
     _prompt_entry(tmp_path, text="{{a}}\n")
+    argstate.save_last_runner("opencode")
     app = tui.MenuApp()
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause()
@@ -431,7 +663,7 @@ async def test_settings_runner_radio_pins_and_clears(tmp_path):
         screen.action_save()
         await pilot.pause()
     assert store.resolve("p").meta.runner == names[0]
-    assert argstate.load_last_runner() == names[0]
+    assert argstate.load_last_runner() == "opencode"
 
     # And back to "ask each run".
     app = tui.MenuApp()
@@ -445,6 +677,7 @@ async def test_settings_runner_radio_pins_and_clears(tmp_path):
         screen.action_save()
         await pilot.pause()
     assert store.resolve("p").meta.runner == ""
+    assert argstate.load_last_runner() == "opencode"
 
 
 async def test_settings_runner_section_empty_config_keeps_ask_and_the_door(tmp_path):
@@ -465,6 +698,7 @@ async def test_settings_runner_section_empty_config_keeps_ask_and_the_door(tmp_p
 
 async def test_settings_ctrl_n_adds_a_custom_agent_ready_to_pin(tmp_path):
     _prompt_entry(tmp_path, text="{{a}}\n")
+    argstate.save_last_runner("amp")
     app = tui.MenuApp()
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause()
@@ -482,7 +716,7 @@ async def test_settings_ctrl_n_adds_a_custom_agent_ready_to_pin(tmp_path):
         screen.action_save()
         await pilot.pause()
     assert store.resolve("p").meta.runner == "mycli"  # the value survived the mid-session add
-    assert argstate.load_last_runner() == "mycli"
+    assert argstate.load_last_runner() == "amp"  # defining a settings pin is not a run pick
 
 
 async def test_settings_ctrl_n_add_preserves_a_stale_pin_option(tmp_path):
@@ -615,6 +849,7 @@ async def test_settings_save_preserves_a_stale_pin(tmp_path):
     # The pinned runner's config row is gone: opening settings and saving something
     # unrelated must NOT silently clear the pin — its own radio row holds it selected.
     _prompt_entry(tmp_path, text="{{a}}\n", pin="mine")
+    argstate.save_last_runner("amp")
     config.save_prompt_runners([config.PromptRunner("other", ("other", "{{prompt}}"))])
     app = tui.MenuApp()
     async with app.run_test(size=(110, 40)) as pilot:
@@ -637,7 +872,7 @@ async def test_settings_save_preserves_a_stale_pin(tmp_path):
         screen.action_save()
         await pilot.pause()
     assert store.resolve("p").meta.runner == "other"
-    assert argstate.load_last_runner() == "other"
+    assert argstate.load_last_runner() == "amp"
 
 
 async def test_settings_interpolate_toggle_off_and_back_on(tmp_path):
@@ -656,24 +891,51 @@ async def test_settings_interpolate_toggle_off_and_back_on(tmp_path):
     assert off.meta.interpolate is False
     assert off.meta.params == ["a"]  # the managed list survives underneath
 
-    # Off state: no rows, no candidates, no add-param input — just the toggle + hint.
+    # Off state hides the precomposed rows. Turning it on reveals them immediately,
+    # without the undocumented Save → reopen round trip that used to be required.
     app = tui.MenuApp()
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause()
         screen = await _open_settings(app, pilot)
         from skit.tui_settings import DeclParamRow
 
-        assert not screen.query(DeclParamRow)
-        assert not screen.query("#st-add-param")
+        fields = screen.query_one("#st-prompt-fields")
+        assert fields.display is False
+        assert len(screen.query(DeclParamRow)) == 1  # present but not shown through its parent
         toggle = screen.query_one("#st-interpolate", Checkbox)
         assert toggle.value is False
         toggle.value = True
         await pilot.pause()
+        assert fields.display is True
+        assert screen.query_one(DeclParamRow).decl.name == "a"
+        assert screen.query("#st-add-param")
         screen.action_save()
         await pilot.pause()
     on = store.resolve("p")
     assert on.meta.interpolate is True
     assert on.meta.params == ["a"]  # untouched by the off/on round trip
+
+
+async def test_settings_off_to_on_can_choose_first_parameters_in_the_same_save(tmp_path):
+    entry = _prompt_entry(tmp_path, text="{{a}} {{b}}\n")
+    store.write_prompt_managed(entry.slug, [])
+    store.write_prompt_interpolate(entry.slug, False)
+    app = tui.MenuApp()
+    async with app.run_test(size=(110, 40)) as pilot:
+        await pilot.pause()
+        screen = await _open_settings(app, pilot)
+        assert screen.query_one("#st-prompt-fields").display is False
+
+        screen.query_one("#st-interpolate", Checkbox).value = True
+        await pilot.pause()
+        assert screen.query_one("#st-prompt-fields").display is True
+        screen.query_one("#st-prompt-new-1", Checkbox).value = True
+        screen.action_save()
+        await pilot.pause()
+
+    saved = store.resolve("p")
+    assert saved.meta.interpolate is True
+    assert saved.meta.params == ["b"]
 
 
 async def test_settings_candidate_checkboxes_are_flood_capped(tmp_path):
@@ -688,6 +950,161 @@ async def test_settings_candidate_checkboxes_are_flood_capped(tmp_path):
         screen = await _open_settings(app, pilot)
         boxes = [c for c in screen.query(Checkbox) if (c.id or "").startswith("st-prompt-new-")]
         assert len(boxes) == LIST_PREVIEW_LIMIT
+
+
+async def test_settings_candidate_picker_reaches_a_hidden_name_and_waits_for_outer_save(tmp_path):
+    from skit.langs.prompt.analyzer import LIST_PREVIEW_LIMIT
+
+    names = [f"u{i}" for i in range(LIST_PREVIEW_LIMIT + 9)]
+    entry = _prompt_entry(tmp_path, text="{{a}} " + " ".join(f"{{{{{n}}}}}" for n in names))
+    store.write_prompt_managed(entry.slug, ["a"])
+    app = tui.MenuApp()
+    async with app.run_test(size=(110, 40)) as pilot:
+        await pilot.pause()
+        screen = await _open_settings(app, pilot)
+        await pilot.press("ctrl+o")
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PromptCandidatePickerModal)
+
+        modal.query_one("#prompt-candidate-filter", Input).value = names[-1]
+        await pilot.pause()
+        await pilot.press("enter", "space", "ctrl+s")
+        await pilot.pause()
+        assert app.screen is screen
+        assert store.resolve("p").meta.params == ["a"]  # picker Done is not a write
+
+        screen.action_save()
+        await pilot.pause()
+
+    assert store.resolve("p").meta.params == ["a", names[-1]]
+
+
+async def test_settings_candidate_picker_selection_is_discardable(tmp_path):
+    from skit.langs.prompt.analyzer import LIST_PREVIEW_LIMIT
+
+    names = [f"u{i}" for i in range(LIST_PREVIEW_LIMIT + 2)]
+    entry = _prompt_entry(tmp_path, text="{{a}} " + " ".join(f"{{{{{n}}}}}" for n in names))
+    store.write_prompt_managed(entry.slug, ["a"])
+    app = tui.MenuApp()
+    async with app.run_test(size=(110, 40)) as pilot:
+        await pilot.pause()
+        screen = await _open_settings(app, pilot)
+        await _click_chip(
+            pilot,
+            screen.query_one("#st-choose-candidates", Static),
+            "Choose variables",
+        )
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PromptCandidatePickerModal)
+        modal.query_one("#prompt-candidate-all", Checkbox).value = True
+        await pilot.pause()
+        modal.action_done()
+        await pilot.pause()
+
+        screen.action_close()
+        await pilot.pause()
+        discard = app.screen
+        assert isinstance(discard, DiscardChangesModal)
+        discard.action_discard()
+        await pilot.pause()
+
+    assert store.resolve("p").meta.params == ["a"]
+
+
+async def test_settings_candidate_picker_cancel_and_unchanged_done_are_noops(tmp_path):
+    from skit.langs.prompt.analyzer import LIST_PREVIEW_LIMIT
+
+    names = [f"u{i}" for i in range(LIST_PREVIEW_LIMIT + 2)]
+    entry = _prompt_entry(tmp_path, text=" ".join(f"{{{{{n}}}}}" for n in names))
+    store.write_prompt_managed(entry.slug, [])
+    app = tui.MenuApp()
+    async with app.run_test(size=(110, 40)) as pilot:
+        await pilot.pause()
+        screen = await _open_settings(app, pilot)
+
+        await pilot.press("ctrl+o", "escape")
+        await pilot.pause()
+        assert app.screen is screen
+        assert screen._pending_prompt_candidates == set()
+        assert screen._dirty is False
+
+        await pilot.press("ctrl+o", "ctrl+s")
+        await pilot.pause()
+        assert app.screen is screen
+        assert screen._pending_prompt_candidates == set()
+        assert screen._dirty is False
+        await pilot.press("escape")
+        await pilot.pause()
+
+
+async def test_settings_candidate_picker_tolerates_preview_recompose(tmp_path):
+    """A queued Ctrl+O/Done can straddle a responsive recompose.  Missing old preview
+    widgets are skipped by name while the full modal selection still survives."""
+    from skit.langs.prompt.analyzer import LIST_PREVIEW_LIMIT
+
+    names = [f"u{i}" for i in range(LIST_PREVIEW_LIMIT + 2)]
+    entry = _prompt_entry(tmp_path, text=" ".join(f"{{{{{n}}}}}" for n in names))
+    store.write_prompt_managed(entry.slug, [])
+    app = tui.MenuApp()
+    async with app.run_test(size=(110, 40)) as pilot:
+        await pilot.pause()
+        screen = await _open_settings(app, pilot)
+        await screen.query_one("#st-prompt-new-0", Checkbox).remove()
+        await pilot.press("ctrl+o")
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PromptCandidatePickerModal)
+
+        await screen.query_one("#st-prompt-new-1", Checkbox).remove()
+        await pilot.click("#prompt-candidate-all")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert app.screen is screen
+        assert screen._pending_prompt_candidates == set(names)
+
+
+async def test_settings_choose_variables_key_is_harmless_when_off_or_short(tmp_path):
+    entry = _prompt_entry(tmp_path, text="{{a}} {{b}}")
+    store.write_prompt_managed(entry.slug, ["a"])
+    app = tui.MenuApp()
+    async with app.run_test(size=(110, 40)) as pilot:
+        await pilot.pause()
+        screen = await _open_settings(app, pilot)
+        insertion = screen.query_one("#st-interpolate", Checkbox)
+        insertion.value = False
+        await pilot.pause()
+        await pilot.press("ctrl+o")
+        await pilot.pause()
+        assert app.screen is screen
+
+        insertion.value = True
+        await pilot.pause()
+        await pilot.press("ctrl+o")
+        await pilot.pause()
+        assert app.screen is screen
+        await pilot.press("escape")
+        await pilot.pause()
+
+
+async def test_settings_surfaces_prompt_read_failure_from_open_race(tmp_path, monkeypatch):
+    entry = _prompt_entry(tmp_path)
+
+    def fail_read(_path):
+        raise PermissionError("permission changed")
+
+    monkeypatch.setattr("skit.tui_settings.prompt_text.read", fail_read)
+    screen = ScriptSettingsScreen(entry)
+    app = tui.MenuApp()
+    async with app.run_test(size=(110, 40)) as pilot:
+        await pilot.pause()
+        app.push_screen(screen)
+        await pilot.pause()
+        error = str(screen.query_one("#st-prompt-text-error", Static).render())
+        assert "permission changed" in error
+        await pilot.press("escape")
+        await pilot.pause()
 
 
 async def test_review_flooded_prompt_previews_capped_and_ticks_nothing(tmp_path):
@@ -713,6 +1130,238 @@ async def test_review_flooded_prompt_previews_capped_and_ticks_nothing(tmp_path)
         review.action_accept()
         await pilot.pause()
     assert store.resolve("big").meta.params is None  # nothing was asked for
+
+
+async def test_review_candidate_picker_keyboard_reaches_a_hidden_name(tmp_path):
+    from skit.langs.prompt.analyzer import AUTO_MANAGE_LIMIT
+
+    names = [f"h{i}" for i in range(AUTO_MANAGE_LIMIT + 4)]
+    src = tmp_path / "big.prompt.md"
+    src.write_text(" ".join(f"{{{{{name}}}}}" for name in names), encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        app.push_screen(PromptReviewScreen(src))
+        await pilot.pause()
+        await pilot.press("ctrl+o")  # the advertised full-list keyboard path
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PromptCandidatePickerModal)
+        modal.query_one("#prompt-candidate-filter", Input).value = names[-1]
+        await pilot.pause()
+        listing = modal.query_one("#prompt-candidate-list", SelectionList)
+        assert listing.option_count == 1
+        await pilot.press("enter", "space", "ctrl+s")
+        await pilot.pause()
+
+        review = app.screen
+        assert isinstance(review, PromptReviewScreen)
+        review.action_accept()
+        await pilot.pause()
+
+    assert store.resolve("big").meta.params == [names[-1]]
+
+
+async def test_review_candidate_picker_select_all_and_done_are_mouse_operable(tmp_path):
+    from skit.langs.prompt.analyzer import AUTO_MANAGE_LIMIT
+
+    names = [f"h{i}" for i in range(AUTO_MANAGE_LIMIT + 1)]
+    src = tmp_path / "all.prompt.md"
+    src.write_text(" ".join(f"{{{{{name}}}}}" for name in names), encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        app.push_screen(PromptReviewScreen(src))
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, PromptReviewScreen)
+        await _click_chip(
+            pilot,
+            review.query_one("#pv-choose-candidates", Static),
+            "Choose variables",
+        )
+        modal = app.screen
+        assert isinstance(modal, PromptCandidatePickerModal)
+
+        await pilot.click("#prompt-candidate-all")
+        await pilot.pause()
+        footer = modal.query_one("#prompt-candidate-keys", Static)
+        plain = str(footer.render()).replace("⠀", " ")
+        done_at = plain.find("Done")
+        assert done_at >= 0
+        await pilot.click(footer, offset=(done_at + 1, 0))
+        await pilot.pause()
+        assert app.screen is review
+        review.action_accept()
+        await pilot.pause()
+
+    assert store.resolve("all").meta.params == names
+
+
+async def test_review_candidate_picker_keeps_search_and_footer_usable_on_tiny_screen(tmp_path):
+    from skit.langs.prompt.analyzer import AUTO_MANAGE_LIMIT
+
+    names = [f"h{i}" for i in range(AUTO_MANAGE_LIMIT + 1)]
+    src = tmp_path / "tiny.prompt.md"
+    src.write_text(" ".join(f"{{{{{name}}}}}" for name in names), encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test(size=(42, 10)) as pilot:
+        await pilot.pause()
+        app.push_screen(PromptReviewScreen(src))
+        await pilot.pause()
+        await pilot.press("ctrl+o")
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PromptCandidatePickerModal)
+        footer = modal.query_one("#prompt-candidate-keys", Static)
+        assert footer.region.height >= 1
+        assert footer.region.bottom <= modal.region.bottom
+
+        modal.query_one("#prompt-candidate-filter", Input).value = names[-1]
+        await pilot.pause()
+        assert modal.query_one("#prompt-candidate-list", SelectionList).option_count == 1
+        await pilot.press("enter", "space", "ctrl+s")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, PromptReviewScreen)
+        review.action_cancel()
+        await pilot.pause()
+
+
+async def test_review_candidate_picker_empty_search_and_cancel_are_keyboard_operable(tmp_path):
+    from skit.langs.prompt.analyzer import AUTO_MANAGE_LIMIT, LIST_PREVIEW_LIMIT
+
+    names = [f"h{i}" for i in range(AUTO_MANAGE_LIMIT + 1)]
+    src = tmp_path / "search.prompt.md"
+    src.write_text(" ".join(f"{{{{{name}}}}}" for name in names), encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        app.push_screen(PromptReviewScreen(src))
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, PromptReviewScreen)
+        await pilot.press("ctrl+o")
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PromptCandidatePickerModal)
+
+        await pilot.press("z", "z", "z", "z")
+        await pilot.pause()
+        listing = modal.query_one("#prompt-candidate-list", SelectionList)
+        assert listing.option_count == 0
+        await pilot.press("enter")
+        await pilot.pause()
+        assert modal.query_one("#prompt-candidate-filter", Input).has_focus
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.screen is review
+        assert not any(
+            review.query_one(f"#pv-hole-{i}", Checkbox).value for i in range(LIST_PREVIEW_LIMIT)
+        )
+        await pilot.press("escape")
+        await pilot.pause()
+
+
+async def test_review_candidate_picker_tolerates_preview_recompose(tmp_path):
+    """The modal owns the full selection while the capped preview can recompose behind
+    it; Done must not crash merely because one old preview checkbox was unmounted."""
+    from skit.langs.prompt.analyzer import AUTO_MANAGE_LIMIT
+
+    names = [f"h{i}" for i in range(AUTO_MANAGE_LIMIT + 1)]
+    src = tmp_path / "recompose-picker.prompt.md"
+    src.write_text(" ".join(f"{{{{{name}}}}}" for name in names), encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        review = PromptReviewScreen(src)
+        app.push_screen(review)
+        await pilot.pause()
+        await pilot.press("ctrl+o")
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PromptCandidatePickerModal)
+
+        await review.query_one("#pv-hole-0", Checkbox).remove()
+        await pilot.click("#prompt-candidate-all")
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert app.screen is review
+        assert review._tick_overrides == dict.fromkeys(names, True)
+        await pilot.press("escape")
+        await pilot.pause()
+
+
+async def test_review_choose_variables_key_is_harmless_for_a_short_prompt(tmp_path):
+    src = tmp_path / "short.prompt.md"
+    src.write_text("{{a}} {{b}}", encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        review = PromptReviewScreen(src)
+        app.push_screen(review)
+        await pilot.pause()
+        await pilot.press("ctrl+o")
+        await pilot.pause()
+        assert app.screen is review
+        await pilot.press("escape")
+        await pilot.pause()
+
+
+async def test_prompt_draft_with_invalid_utf8_reaches_strict_review(tmp_path, monkeypatch):
+    monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
+    monkeypatch.setattr(
+        "skit.tui_add.editor.open_in_editor",
+        lambda draft: draft.write_bytes(b"draft:\xff\n"),
+    )
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        source = AddSourceScreen()
+        app.push_screen(source)
+        await pilot.pause()
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, PromptReviewScreen)
+        error = str(review.query_one("#pv-text-error", Static).render())
+        assert "offset 6" in error
+        assert "�" not in error
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.screen is source
+
+    kept = list(paths.drafts_dir().glob("skit-new-*.prompt.md"))
+    assert len(kept) == 1
+    assert kept[0].read_bytes() == b"draft:\xff\n"
+
+
+async def test_prompt_review_surfaces_initial_and_post_editor_os_errors(tmp_path, monkeypatch):
+    missing = tmp_path / "vanished.prompt.md"
+    initial = PromptReviewScreen(missing)
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        app.push_screen(initial)
+        await pilot.pause()
+        assert "vanished.prompt.md" in str(initial.query_one("#pv-text-error", Static).render())
+        await pilot.press("escape")
+        await pilot.pause()
+
+        source = tmp_path / "edited.prompt.md"
+        source.write_text("{{a}}", encoding="utf-8")
+        review = PromptReviewScreen(source)
+        app.push_screen(review)
+        await pilot.pause()
+        monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
+        monkeypatch.setattr("skit.tui_add.editor.open_in_editor", lambda path: path.unlink())
+        await _click_chip(pilot, review.query_one("#pv-keys", Static), "Edit prompt")
+        await pilot.pause()
+        error = str(review.query_one("#pv-text-error", Static).render())
+        assert "edited.prompt.md" in error
+        assert "No such file" in error
+        await pilot.press("escape")
+        await pilot.pause()
 
 
 # --------------------------------------------------------------------------
@@ -806,8 +1455,10 @@ async def test_review_prefills_last_picked_and_explicit_runner_wins(tmp_path):
         select = review.query_one("#pv-runner-select", Select)
         assert _value(select) == "codex"  # the flag wins
         assert review.query_one("#pv-interpolate", Checkbox).value is False
-        review.action_cancel()
+        review.action_accept()
         await pilot.pause()
+    assert store.resolve("l").meta.runner == "codex"
+    assert argstate.load_last_runner() == "amp"  # untouched add-time pin is not a pick
 
 
 async def test_review_escape_adds_nothing(tmp_path):
@@ -1037,6 +1688,95 @@ async def test_review_ctrl_e_keeps_the_runner_pick_and_reports_editor_errors(tmp
         review.action_edit_source()
         await pilot.pause()
         assert isinstance(app.screen, PromptReviewScreen)  # still standing
+        assert any(note.message == "no editor" for note in app._notifications)
+        review.action_cancel()
+        await pilot.pause()
+
+
+async def test_review_ctrl_e_keeps_placeholder_ticks_by_name_across_flood_transitions(
+    tmp_path, monkeypatch
+):
+    from skit.langs.prompt.analyzer import AUTO_MANAGE_LIMIT
+
+    src = tmp_path / "ticks.prompt.md"
+    src.write_text("{{keep_off}} {{removed}}\n", encoding="utf-8")
+    flood_names = ["flood_on", "keep_off"] + [f"new_{i}" for i in range(AUTO_MANAGE_LIMIT - 1)]
+    edits = [
+        " ".join(f"{{{{{name}}}}}" for name in flood_names) + "\n",
+        "{{fresh_below}} {{flood_on}} {{keep_off}}\n",
+    ]
+
+    def edit(path):
+        path.write_text(edits.pop(0), encoding="utf-8")
+
+    monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
+    monkeypatch.setattr("skit.tui_add.editor.open_in_editor", edit)
+
+    def box_for(review: PromptReviewScreen, name: str) -> Checkbox:
+        index = review._shown_names.index(name)
+        return review.query_one(f"#pv-hole-{index}", Checkbox)
+
+    app = tui.MenuApp()
+    async with app.run_test(size=(110, 40)) as pilot:
+        await pilot.pause()
+        app.push_screen(PromptReviewScreen(src))
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, PromptReviewScreen)
+
+        box_for(review, "keep_off").value = False
+        review.action_edit_source()
+        await pilot.pause()
+
+        assert "removed" not in review._shown_names
+        assert box_for(review, "keep_off").value is False  # decision followed the name
+        assert box_for(review, "flood_on").value is False  # genuinely new flood holes default off
+        box_for(review, "flood_on").value = True
+
+        review.action_edit_source()
+        await pilot.pause()
+
+        assert review._shown_names == ["fresh_below", "flood_on", "keep_off"]
+        assert box_for(review, "fresh_below").value is True  # new non-flood holes default on
+        assert box_for(review, "flood_on").value is True  # explicit flood choice survived
+        assert box_for(review, "keep_off").value is False  # reordered survivor stayed off
+        review.action_cancel()
+        await pilot.pause()
+
+
+async def test_review_edit_tolerates_a_placeholder_checkbox_unmounted_during_recompose(
+    tmp_path, monkeypatch
+):
+    """A stale footer/key action can arrive while the placeholder list is being
+    recomposed.  A name whose old checkbox is already unmounted is skipped; the edit
+    still completes and the newly scanned placeholder gets its normal default."""
+    src = tmp_path / "recompose.prompt.md"
+    src.write_text("{{old}}\n", encoding="utf-8")
+    monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
+    monkeypatch.setattr(
+        "skit.tui_add.editor.open_in_editor",
+        lambda path: path.write_text("{{new}}\n", encoding="utf-8"),
+    )
+    app = tui.MenuApp()
+    async with app.run_test(size=(110, 40)) as pilot:
+        await pilot.pause()
+        app.push_screen(PromptReviewScreen(src))
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, PromptReviewScreen)
+        old_box = review.query_one("#pv-hole-0", Checkbox)
+        await old_box.remove()
+        assert review._shown_names == ["old"]
+        assert not review.query("#pv-hole-0")
+
+        review.query_one("#pv-interpolate", Checkbox).focus()
+        await pilot.press("ctrl+e")
+        await pilot.pause()
+
+        assert app.screen is review
+        assert review._shown_names == ["new"]
+        assert review.query_one("#pv-hole-0", Checkbox).value is True
+        assert review._tick_overrides == {}
         review.action_cancel()
         await pilot.pause()
 

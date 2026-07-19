@@ -1,7 +1,7 @@
-"""Round-11 design-audit fixes — real-behavior coverage (exit codes, exact refusal copy,
+"""Add validation contracts (exit codes, exact refusal copy,
 filesystem state, stored PEP 723 text, the two lazy `packaging` validators in isolation).
 
-Every assertion pins an observable contract of the round-11 (round-10 finding) fixes:
+Every assertion pins an observable add-validation contract:
 
   * exe entries can never cross the drafts boundary: --exe / --kind exe / --ref / an
     INFERRED exe on skit's OWN kept draft is refused (exit 2, the message naming ONLY the
@@ -48,6 +48,8 @@ def tmp_store(tmp_path, monkeypatch):
 @pytest.fixture
 def tty(monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
 
 
 def _flat(text: str) -> str:
@@ -239,7 +241,7 @@ def test_inferred_exe_on_a_kept_draft_is_refused_and_keeps_it(tmp_path):
 
 
 def test_ref_flag_on_a_kept_draft_is_refused_naming_only_ref(tmp_path):
-    """--ref alone keeps refusing (the round-8→10 contract), now naming ONLY --ref — --exe
+    """--ref alone keeps refusing, naming ONLY --ref — --exe
     (never passed) stays out of the message."""
     draft = _draft("skit-new-linkme.py", "print('link me')\n")
     result = runner.invoke(cli.app, ["add", str(draft), "-n", "lk", "--ref", "--no-input"])

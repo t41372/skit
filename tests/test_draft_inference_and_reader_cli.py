@@ -1,7 +1,7 @@
-"""Round-9 design-audit fixes — real-behavior coverage (exit codes, stored PEP 723 text,
+"""Draft inference and reader CLI contracts (exit codes, stored PEP 723 text,
 --json, filesystem state).
 
-Every assertion pins an observable contract of the round-8 fixes verified this round:
+Every assertion pins an observable draft-inference or reader contract:
   * skit's OWN kept drafts (paths.is_draft) are classified shebang-first, so a bash-shebang
     draft named `skit-new-*.py` resumes as SHELL, an awk one as "unknown" (--kind escape);
   * is_draft needs BOTH halves — the drafts dir AND the `skit-` prefix — so a user's file
@@ -73,7 +73,7 @@ def _stored(name: str) -> str:
         ("python3", ""),
         ("python3.12", ">=3.12,<3.13"),
         # a micro-versioned shebang keeps its .1 in the lower bound — half-honoring an
-        # explicit signal is still a drop (round-10 fix to the round-9 row that dropped it).
+        # An explicit signal is still a drop; an empty prefix is not.
         ("python3.12.1", ">=3.12.1,<3.13"),
         ("python2", ""),  # unregistered — no pin
         ("python2.7", ""),
@@ -120,7 +120,7 @@ def test_reader_fields_predicate_rows():
 
 
 # ==========================================================================
-# 2. Draft resume reclassification on the CLI path lane (the round-8 HIGH)
+# 2. Draft resume reclassification on the CLI path lane
 # ==========================================================================
 
 
@@ -139,7 +139,7 @@ def test_cli_add_awk_shebang_draft_is_unknown_kept_with_kind_escape(tmp_path):
     """An awk shebang is unregistered: the draft is "unknown", refused with exit 2 and the
     --kind escape (never a fabricated entry), and KEPT because the add never reached the
     consume-on-success unlink. The draft carries a #!, so the refusal is the shebang-aware
-    voice ("names no interpreter"), not the shebang-less "isn't a script" line (round-10)."""
+    voice ("names no interpreter"), not the shebang-less "isn't a script" line."""
     draft = _draft("skit-new-awk.py", "#!/usr/bin/awk -f\nBEGIN{print 1}\n")
     result = runner.invoke(cli.app, ["add", str(draft), "-n", "awky", "--no-input"])
     assert result.exit_code == 2, result.output

@@ -431,7 +431,7 @@ def test_cli_exe_show_without_declared_is_plain_message(tmp_path: Path):
 
 def test_cli_declared_edit_with_json_emits_the_final_read_view(tmp_path: Path):
     """A declared edit with --json emits the final read-view JSON as the WHOLE of stdout,
-    instead of silently dropping the flag — an explicit --json never no-ops (finding 14),
+    instead of silently dropping the flag — an explicit --json never no-ops,
     and under the purity rule the human summary rides stderr, not stdout."""
     _exe(tmp_path)
     result = runner.invoke(
@@ -476,7 +476,7 @@ def test_cli_env_source_on_non_secret_declared_param_warns(tmp_path: Path):
 
 def test_cli_python_manage_with_json_emits_the_final_read_view(tmp_path: Path):
     """The twin on the analyzer branch: `skit params <py> --manage CITY --json` emits the
-    final read-view JSON after managing CITY (finding 14, the analyzer-edit branch)."""
+    final read-view JSON after managing CITY."""
     src = tmp_path / "job.py"
     src.write_text('CITY = "Taipei"\nprint(CITY)\n', encoding="utf-8")
     store.add_python(src, name="job")
@@ -746,7 +746,7 @@ def test_cli_command_show_masks_secret_placeholder_and_undeclared(tmp_path: Path
     assert "other" in result.output  # the undeclared placeholder is still listed (bare)
 
 
-# ---- capability-honesty fixes (review findings) ------------------------------------------------
+# ---- Delivery capability honesty ---------------------------------------------------------------
 
 
 def _ruby(tmp_path: Path, name: str = "rb") -> store.Entry:

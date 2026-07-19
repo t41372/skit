@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import contextlib
 import shlex
+from types import SimpleNamespace
 
 import pytest
 from textual.widgets import Input, OptionList, Select, Static
 
-from skit import config, launcher, store, tui
+from skit import argv_text, config, launcher, store, tui, tui_footer
 from skit.tui_form import RunFormScreen
 from skit.tui_runner import (
     RunnerActionModal,
@@ -78,14 +79,16 @@ def quiet_run(monkeypatch):
         script_override=None,
         env_overlay=None,
         runner=None,
+        prepared=None,
     ):
         calls["values"] = dict(values or {})
         calls["runner"] = runner
+        calls["prepared"] = prepared
         return 0
 
     monkeypatch.setattr(launcher, "run_entry", fake_run)
+    monkeypatch.setattr("skit.langs.launch._which", lambda name: f"/bin/{name}")
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
-    monkeypatch.setattr("builtins.input", lambda *a: "")
     return calls
 
 
@@ -210,7 +213,52 @@ async def test_action_modal_shows_command_and_dismisses_by_verb(tmp_path):
             assert results == [expected]
 
 
+async def test_action_modal_ignores_edit_when_row_is_not_repairable(tmp_path):
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        results: list[str | None] = []
+        app.push_screen(RunnerActionModal("raw scalar", editable=False), results.append)
+        await pilot.pause()
+        modal = _as(app.screen, RunnerActionModal)
+        modal.action_edit()
+        await pilot.pause()
+        assert app.screen is modal
+        assert results == []
+        modal.action_cancel()
+        await pilot.pause()
+    assert results == [None]
+
+
 # ---------------------------------------------------------------- RunnerAddModal edit mode
+
+
+async def test_add_modal_field_navigation_is_visible_keyboard_and_mouse_operable(tmp_path):
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        app.push_screen(RunnerAddModal())
+        await pilot.pause()
+        modal = _as(app.screen, RunnerAddModal)
+        name = modal.query_one("#runner-add-name", Input)
+        command = modal.query_one("#runner-add-command", Input)
+        footer = modal.query_one("#runner-add-footer", Static)
+        plain = str(footer.render()).replace(tui_footer.GLUE, " ")
+        assert "Tab/↓" in plain
+        assert "Shift+Tab/↑" in plain
+        assert name.has_focus
+
+        await pilot.press("down")
+        assert command.has_focus
+        await pilot.press("up")
+        assert name.has_focus
+
+        forward = plain.find("Tab/↓")
+        await pilot.click(footer, offset=(forward + 1, 0))
+        await pilot.pause()
+        assert command.has_focus
+        back = plain.find("Shift+Tab/↑")
+        await pilot.click(footer, offset=(back + 1, 0))
+        await pilot.pause()
+        assert name.has_focus
 
 
 async def test_add_modal_edit_prefills_and_replaces_in_place(tmp_path):
@@ -225,7 +273,7 @@ async def test_add_modal_edit_prefills_and_replaces_in_place(tmp_path):
         assert modal.query_one("#runner-add-name", Input).value == "codex"
         # The command is prefilled shlex-joined (so it round-trips through the same split).
         assert modal.query_one("#runner-add-command", Input).value == shlex.join(
-            ["codex", "{{prompt}}"]
+            ["codex", "--", "{{prompt}}"]
         )
         # Change only the command, save under the same name.
         modal.query_one("#runner-add-command", Input).value = "codex --model o1 {{prompt}}"
@@ -236,23 +284,49 @@ async def test_add_modal_edit_prefills_and_replaces_in_place(tmp_path):
     assert _find_runner("codex").argv == ("codex", "--model", "o1", "{{prompt}}")  # in place
 
 
-async def test_add_modal_edit_rename_onto_another_name_is_refused(tmp_path):
+async def test_add_modal_edit_keeps_the_pin_key_name_immutable(tmp_path):
     config.ensure_prompt_runners_seeded()
+    claude_before = _find_runner("claude")
     app = tui.MenuApp()
     async with app.run_test(size=(100, 32)) as pilot:
         results: list[str | None] = []
         app.push_screen(RunnerAddModal(editing="codex"), results.append)
         await pilot.pause()
         modal = _as(app.screen, RunnerAddModal)
-        modal.query_one("#runner-add-name", Input).value = "claude"  # already taken
+        name_input = modal.query_one("#runner-add-name", Input)
+        assert name_input.disabled  # the visible contract: pins key off this stable name
+        # Defend the persistence path too: a synthetic value change must not rename the key.
+        name_input.value = "claude"
+        modal.query_one("#runner-add-command", Input).value = "codex --new {{prompt}}"
         modal.action_save_runner()
         await pilot.pause()
-        assert isinstance(app.screen, RunnerAddModal)  # not dismissed — error shown
-        assert results == []
-        err = "\n".join(str(s.render()) for s in modal.query(Static))
-        assert "already exists" in err
-    # claude was not overwritten by codex's argv.
-    assert _find_runner("claude").argv == ("claude", "{{prompt}}")
+    assert results == ["codex"]
+    assert _find_runner("codex").argv == ("codex", "--new", "{{prompt}}")
+    assert _find_runner("claude") == claude_before
+
+
+def test_runner_command_windows_paths_preserve_backslashes_and_roundtrip(monkeypatch):
+    monkeypatch.setattr(argv_text, "sys", SimpleNamespace(platform="win32"))
+    cases = [
+        [],
+        [""],
+        [r"C:\Program Files\Agent\agent.exe", "--message", "{{prompt}}"],
+        ['say "hello"', "space and trailing slash\\"],
+        ['one\\"quote', 'two\\\\"quote'],
+        ["", "plain", "\t", "{{prompt}}"],
+    ]
+    for argv in cases:
+        assert argv_text.split(argv_text.join(argv)) == argv
+    assert argv_text.split(r"C:\tools\agent.exe {{prompt}}") == [
+        r"C:\tools\agent.exe",
+        "{{prompt}}",
+    ]
+    assert argv_text.split('"C:\\Program Files\\Agent\\agent.exe" --message="{{prompt}}"') == [
+        r"C:\Program Files\Agent\agent.exe",
+        "--message={{prompt}}",
+    ]
+    with pytest.raises(ValueError, match="closing quotation"):
+        argv_text.split('"C:\\Program Files\\Agent\\agent.exe')
 
 
 async def test_add_modal_edit_save_under_same_name_is_allowed(tmp_path):
@@ -267,6 +341,22 @@ async def test_add_modal_edit_save_under_same_name_is_allowed(tmp_path):
         modal.action_save_runner()
         await pilot.pause()
     assert results == ["amp"]  # dismissed with the saved name
+
+
+async def test_add_modal_reports_malformed_runner_container_without_dismissing(tmp_path):
+    config.save_config({"prompt": "broken"})
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        app.push_screen(RunnerAddModal())
+        await pilot.pause()
+        modal = _as(app.screen, RunnerAddModal)
+        modal.query_one("#runner-add-name", Input).value = "new"
+        modal.query_one("#runner-add-command", Input).value = "new {{prompt}}"
+        modal.action_save_runner()
+        await pilot.pause()
+        assert app.screen is modal
+        assert "isn't a table" in str(modal.query_one("#runner-add-error", Static).render())
+    assert config.load_config()["prompt"] == "broken"
 
 
 # ---------------------------------------------------------------- RunnerManageScreen
@@ -287,7 +377,402 @@ async def test_manage_screen_lists_rows_with_name_and_command(tmp_path):
         options = screen.query_one(OptionList)
         prompts = [str(options.get_option_at_index(i).prompt) for i in range(options.option_count)]
     assert any("claude" in p for p in prompts)
-    assert any("--prompt" in p for p in prompts)  # opencode's command is shown
+    assert any("--prompt=" in p for p in prompts)  # opencode's safe bound value is shown
+
+
+async def test_manage_screen_shows_invalid_rows_with_reason_and_removes_only_selected(tmp_path):
+    untouched = {"name": "anonymous", "argv": "not-a-list"}
+    config.save_config(
+        {
+            "prompt": {
+                "runners_seeded": True,
+                "runners": [
+                    {"name": "good", "argv": ["good", "{{prompt}}"]},
+                    {"name": "broken", "argv": ["broken"]},
+                    untouched,
+                ],
+            }
+        }
+    )
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        screen = await _open_manage(app, pilot)
+        options = screen.query_one(OptionList)
+        prompts = [str(options.get_option_at_index(i).prompt) for i in range(options.option_count)]
+        assert "broken" in prompts[1]
+        assert "exactly once" in prompts[1]
+        assert "list of text arguments" in prompts[2]
+
+        options.highlighted = 1
+        options.action_select()
+        await pilot.pause()
+        _as(app.screen, RunnerActionModal).action_remove()
+        await pilot.pause()
+        confirm_text = "\n".join(str(widget.render()) for widget in app.screen.query(Static))
+        assert "Remove malformed runner row" in confirm_text
+        await pilot.press("y")
+        await pilot.pause()
+
+    assert config.load_config()["prompt"]["runners"] == [
+        {"name": "good", "argv": ["good", "{{prompt}}"]},
+        untouched,
+    ]
+
+
+async def test_manage_screen_can_remove_malformed_container_without_overwriting_other_config(
+    tmp_path,
+):
+    config.save_config({"language": "zh-TW", "prompt": "garbage"})
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        screen = await _open_manage(app, pilot)
+        options = screen.query_one(OptionList)
+        assert options.option_count == 1
+        assert "isn't a table" in str(options.get_option_at_index(0).prompt)
+        options.highlighted = 0
+        options.action_select()
+        await pilot.pause()
+        _as(app.screen, RunnerActionModal).action_remove()
+        await pilot.pause()
+        confirm_text = "\n".join(str(widget.render()) for widget in app.screen.query(Static))
+        assert "Remove the malformed prompt runner container" in confirm_text
+        await pilot.press("y")
+        await pilot.pause()
+
+    assert config.load_config() == {
+        "language": "zh-TW",
+        "prompt": {"runners_seeded": True, "runners": []},
+    }
+
+
+async def test_manage_screen_repairs_a_recognizable_malformed_row_in_place(tmp_path):
+    untouched = "not-a-table"
+    config.save_config(
+        {
+            "prompt": {
+                "runners_seeded": True,
+                "runners": [
+                    {"name": "broken", "argv": ["old"]},
+                    untouched,
+                ],
+            }
+        }
+    )
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        screen = await _open_manage(app, pilot)
+        options = screen.query_one(OptionList)
+        options.highlighted = 0
+        options.action_select()
+        await pilot.pause()
+        action = _as(app.screen, RunnerActionModal)
+        action.action_edit()
+        await pilot.pause()
+        modal = _as(app.screen, RunnerAddModal)
+        assert modal.query_one("#runner-add-name", Input).value == "broken"
+        assert modal.query_one("#runner-add-command", Input).value == "old"
+        modal.query_one("#runner-add-command", Input).value = "fixed {{prompt}}"
+        modal.action_save_runner()
+        await pilot.pause()
+
+    assert config.load_config()["prompt"]["runners"] == [
+        {"name": "broken", "argv": ["fixed", "{{prompt}}"]},
+        untouched,
+    ]
+    assert config.find_prompt_runner("broken") == config.PromptRunner(
+        "broken", ("fixed", "{{prompt}}")
+    )
+
+
+async def test_manage_screen_preserves_and_repairs_anonymous_row_command_by_index(tmp_path):
+    command = ["valuable-agent", "--model", "x", "{{prompt}}"]
+    untouched = {"name": "other", "argv": ["other", "{{prompt}}"]}
+    config.save_config(
+        {
+            "prompt": {
+                "runners_seeded": True,
+                "runners": [{"name": "   ", "argv": command}, untouched],
+            }
+        }
+    )
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        screen = await _open_manage(app, pilot)
+        options = screen.query_one(OptionList)
+        assert "valuable-agent --model x" in str(options.get_option_at_index(0).prompt)
+        options.highlighted = 0
+        options.action_select()
+        await pilot.pause()
+        action = _as(app.screen, RunnerActionModal)
+        assert "valuable-agent --model x" in "\n".join(
+            str(widget.render()) for widget in action.query(Static)
+        )
+        action.action_edit()
+        await pilot.pause()
+        modal = _as(app.screen, RunnerAddModal)
+        name = modal.query_one("#runner-add-name", Input)
+        assert not name.disabled  # no stable key exists yet; repair must let the user create one
+        assert modal.query_one("#runner-add-command", Input).value == shlex.join(command)
+        name.value = "valuable"
+        modal.action_save_runner()
+        await pilot.pause()
+
+    assert config.load_config()["prompt"]["runners"] == [
+        {"name": "valuable", "argv": command},
+        untouched,
+    ]
+    assert config.find_prompt_runner("valuable") == config.PromptRunner("valuable", tuple(command))
+
+
+async def test_manage_screen_user_name_cannot_collide_with_invalid_row_ui_ids(tmp_path):
+    malformed = {"name": "broken", "argv": ["broken"]}
+    config.save_config(
+        {
+            "prompt": {
+                "runners_seeded": True,
+                "runners": [
+                    {"name": "__invalid_runner_1", "argv": ["agent", "{{prompt}}"]},
+                    malformed,
+                ],
+            }
+        }
+    )
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        screen = await _open_manage(app, pilot)  # mounting used to raise DuplicateID
+        options = screen.query_one(OptionList)
+        assert options.option_count == 2
+        assert [options.get_option_at_index(i).id for i in range(2)] == [
+            "runner-row-0",
+            "runner-row-1",
+        ]
+        options.highlighted = 0
+        options.action_select()
+        await pilot.pause()
+        _as(app.screen, RunnerActionModal).action_edit()
+        await pilot.pause()
+        modal = _as(app.screen, RunnerAddModal)
+        modal.query_one("#runner-add-command", Input).value = "agent --fixed {{prompt}}"
+        modal.action_save_runner()
+        await pilot.pause()
+
+    assert config.find_prompt_runner("__invalid_runner_1") == config.PromptRunner(
+        "__invalid_runner_1", ("agent", "--fixed", "{{prompt}}")
+    )
+    assert config.load_config()["prompt"]["runners"][1] == malformed
+
+
+async def test_editing_invalid_duplicate_uses_selected_raw_command_then_coalesces_key(tmp_path):
+    config.save_config(
+        {
+            "prompt": {
+                "runners_seeded": True,
+                "runners": [
+                    {"name": "same", "argv": ["good", "{{prompt}}"]},
+                    {"name": "same", "argv": ["broken"]},
+                    {"name": "other", "argv": ["other", "{{prompt}}"]},
+                ],
+            }
+        }
+    )
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        screen = await _open_manage(app, pilot)
+        options = screen.query_one(OptionList)
+        options.highlighted = 1  # the malformed duplicate, not the valid first row
+        options.action_select()
+        await pilot.pause()
+        action = _as(app.screen, RunnerActionModal)
+        action_text = "\n".join(str(widget.render()) for widget in action.query(Static))
+        assert "broken" in action_text
+        assert "good {{prompt}}" not in action_text
+        action.action_edit()
+        await pilot.pause()
+        modal = _as(app.screen, RunnerAddModal)
+        assert modal.query_one("#runner-add-command", Input).value == "broken"
+        modal.query_one("#runner-add-command", Input).value = "fixed {{prompt}}"
+        modal.action_save_runner()
+        await pilot.pause()
+
+    assert config.load_config()["prompt"]["runners"] == [
+        {"name": "same", "argv": ["fixed", "{{prompt}}"]},
+        {"name": "other", "argv": ["other", "{{prompt}}"]},
+    ]
+
+
+async def test_removing_active_runner_key_cannot_promote_a_duplicate_row(tmp_path):
+    config.save_config(
+        {
+            "prompt": {
+                "runners_seeded": True,
+                "runners": [
+                    {"name": "same", "argv": ["first", "{{prompt}}"]},
+                    {"name": "same", "argv": ["second", "{{prompt}}"]},
+                    {"name": "other", "argv": ["other", "{{prompt}}"]},
+                ],
+            }
+        }
+    )
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        screen = await _open_manage(app, pilot)
+        options = screen.query_one(OptionList)
+        options.highlighted = 0  # the active `same` key
+        options.action_select()
+        await pilot.pause()
+        _as(app.screen, RunnerActionModal).action_remove()
+        await pilot.pause()
+        await pilot.press("y")
+        await pilot.pause()
+
+    assert config.find_prompt_runner("same") is None
+    assert config.load_config()["prompt"]["runners"] == [
+        {"name": "other", "argv": ["other", "{{prompt}}"]}
+    ]
+
+
+async def test_invalid_row_remove_refuses_if_index_shifts_while_confirm_is_open(tmp_path):
+    original = [
+        {"name": "good", "argv": ["good", "{{prompt}}"]},
+        {"name": "target", "argv": ["target"]},
+        {"name": "other", "argv": ["other", "{{prompt}}"]},
+    ]
+    config.save_config({"prompt": {"runners_seeded": True, "runners": original}})
+    inserted = {"name": "inserted", "argv": ["inserted", "{{prompt}}"]}
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        screen = await _open_manage(app, pilot)
+        options = screen.query_one(OptionList)
+        options.highlighted = 1
+        options.action_select()
+        await pilot.pause()
+        _as(app.screen, RunnerActionModal).action_remove()
+        await pilot.pause()
+        assert isinstance(app.screen, RunnerRemoveConfirm)
+
+        # Simulate another process editing config during the destructive-confirmation
+        # window. The old index now points at `good`, never the selected `target`.
+        doc = config.load_config()
+        doc["prompt"]["runners"].insert(0, inserted)
+        config.save_config(doc)
+        await pilot.press("y")
+        await pilot.pause()
+
+        assert isinstance(app.screen, RunnerManageScreen)
+        assert "nothing was removed" in str(screen.query_one("#rm-error", Static).render())
+
+    assert config.load_config()["prompt"]["runners"] == [inserted, *original]
+
+
+async def test_active_name_remove_refuses_if_key_is_replaced_while_confirm_is_open(tmp_path):
+    original = config.PromptRunner("victim", ("old", "{{prompt}}"))
+    replacement = config.PromptRunner("victim", ("new", "--important", "{{prompt}}"))
+    config.save_prompt_runners([original])
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        screen = await _open_manage(app, pilot)
+        options = screen.query_one(OptionList)
+        options.highlighted = 0
+        options.action_select()
+        await pilot.pause()
+        _as(app.screen, RunnerActionModal).action_remove()
+        await pilot.pause()
+        assert isinstance(app.screen, RunnerRemoveConfirm)
+
+        config.set_prompt_runner(replacement, replace_existing=True)
+        await pilot.press("y")
+        await pilot.pause()
+
+        assert isinstance(app.screen, RunnerManageScreen)
+        assert "nothing was removed" in str(screen.query_one("#rm-error", Static).render())
+
+    assert config.find_prompt_runner("victim") == replacement
+
+
+async def test_manage_edit_refuses_stale_target_and_keeps_the_users_modal_open(tmp_path):
+    original = config.PromptRunner("victim", ("old", "{{prompt}}"))
+    external = config.PromptRunner("victim", ("external", "--important", "{{prompt}}"))
+    config.save_prompt_runners([original])
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        screen = await _open_manage(app, pilot)
+        options = screen.query_one(OptionList)
+        options.highlighted = 0
+        options.action_select()
+        await pilot.pause()
+        _as(app.screen, RunnerActionModal).action_edit()
+        await pilot.pause()
+        modal = _as(app.screen, RunnerAddModal)
+        modal.query_one("#runner-add-command", Input).value = "my-edit {{prompt}}"
+
+        config.set_prompt_runner(external, replace_existing=True)
+        modal.action_save_runner()
+        await pilot.pause()
+
+        assert app.screen is modal  # typed work remains visible; no silent dismiss/loss
+        assert "config changed" in str(modal.query_one("#runner-add-error", Static).render())
+    assert config.find_prompt_runner("victim") == external
+
+
+async def test_manage_edit_allows_an_unrelated_concurrent_runner_change(tmp_path):
+    victim = config.PromptRunner("victim", ("old", "{{prompt}}"))
+    other = config.PromptRunner("other", ("other", "{{prompt}}"))
+    external_other = config.PromptRunner("other", ("external", "{{prompt}}"))
+    config.save_prompt_runners([victim, other])
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        screen = await _open_manage(app, pilot)
+        options = screen.query_one(OptionList)
+        options.highlighted = 0
+        options.action_select()
+        await pilot.pause()
+        _as(app.screen, RunnerActionModal).action_edit()
+        await pilot.pause()
+        modal = _as(app.screen, RunnerAddModal)
+        modal.query_one("#runner-add-command", Input).value = "mine {{prompt}}"
+
+        config.set_prompt_runner(external_other, replace_existing=True)
+        modal.action_save_runner()
+        await pilot.pause()
+
+        assert isinstance(app.screen, RunnerManageScreen)
+    assert config.find_prompt_runner("victim") == config.PromptRunner(
+        "victim", ("mine", "{{prompt}}")
+    )
+    assert config.find_prompt_runner("other") == external_other
+
+
+async def test_duplicate_row_removal_does_not_warn_that_active_pins_will_break(tmp_path):
+    config.save_config(
+        {
+            "prompt": {
+                "runners_seeded": True,
+                "runners": [
+                    {"name": "same", "argv": ["first", "{{prompt}}"]},
+                    {"name": "same", "argv": ["second", "{{prompt}}"]},
+                ],
+            }
+        }
+    )
+    entry = _prompt(tmp_path)
+    store.write_prompt_runner(entry.slug, "same")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        screen = await _open_manage(app, pilot)
+        options = screen.query_one(OptionList)
+        options.highlighted = 1
+        options.action_select()
+        await pilot.pause()
+        _as(app.screen, RunnerActionModal).action_remove()
+        await pilot.pause()
+        confirm = _as(app.screen, RunnerRemoveConfirm)
+        warning = "\n".join(str(widget.render()) for widget in confirm.query(Static))
+        assert "pins this runner" not in warning
+        await pilot.press("y")
+        await pilot.pause()
+
+    assert config.find_prompt_runner("same") == config.PromptRunner("same", ("first", "{{prompt}}"))
+    assert store.resolve(entry.slug).meta.runner == "same"
 
 
 async def test_manage_screen_pick_then_edit_replaces_in_place(tmp_path):
@@ -318,6 +803,10 @@ async def test_manage_screen_pick_then_remove_confirms_then_deletes(tmp_path):
     """Removing an agent is destructive config surgery, so it now ASKS first — the
     RunnerRemoveConfirm. Pressing y confirms and deletes the row."""
     config.ensure_prompt_runners_seeded()
+    first = _prompt(tmp_path, name="first")
+    second = _prompt(tmp_path, name="second")
+    store.write_prompt_runner(first.slug, "claude")
+    store.write_prompt_runner(second.slug, "claude")
     app = tui.MenuApp()
     async with app.run_test(size=(100, 32)) as pilot:
         screen = await _open_manage(app, pilot)
@@ -330,14 +819,20 @@ async def test_manage_screen_pick_then_remove_confirms_then_deletes(tmp_path):
         confirm = app.screen
         assert isinstance(confirm, RunnerRemoveConfirm)  # asked before deleting
         assert config.find_prompt_runner("claude") is not None  # not yet gone
+        warning = "\n".join(str(s.render()) for s in confirm.query(Static))
+        assert "2 prompts pin this runner" in warning
         await pilot.press("y")  # confirm
         await pilot.pause()
         assert isinstance(app.screen, RunnerManageScreen)
         # the list reloaded without claude
         remaining = screen.query_one(OptionList)
-        ids = [remaining.get_option_at_index(i).id for i in range(remaining.option_count)]
+        prompts = [
+            str(remaining.get_option_at_index(i).prompt) for i in range(remaining.option_count)
+        ]
     assert config.find_prompt_runner("claude") is None
-    assert "claude" not in ids
+    assert not any("claude" in prompt for prompt in prompts)
+    assert store.resolve(first.slug).meta.runner == "claude"
+    assert store.resolve(second.slug).meta.runner == "claude"
 
 
 async def test_manage_screen_remove_confirm_kept_deletes_nothing(tmp_path):

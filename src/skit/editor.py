@@ -23,6 +23,10 @@ class EditorError(Exception):
     """The editor could not be launched (e.g. the command was not found on PATH)."""
 
 
+class EditedSourceError(Exception):
+    """The editor returned, but the resulting entry source cannot be accepted."""
+
+
 def _platform_default() -> str:
     return "notepad" if sys.platform == "win32" else "vi"
 
@@ -75,3 +79,30 @@ def open_in_editor(path: Path) -> int:
             % {"cmd": " ".join(argv[:-1]), "error": str(exc)}
         ) from exc
     return completed.returncode
+
+
+def open_entry_in_editor(path: Path, *, kind: str) -> int:
+    """Edit an existing entry source, then validate kind-specific payload invariants.
+
+    Prompt bodies are an exact UTF-8 argv payload, so replacement-character decoding
+    is never an acceptable edit result.  The bytes the editor wrote stay at ``path``
+    on refusal: that preserves the user's work (and, in reference mode, never rewrites
+    their original behind their back), while the same edit action remains the recovery
+    path.  New-entry draft flows deliberately keep using :func:`open_in_editor`; their
+    review/onboarding stages already own stricter keep-the-draft behavior.
+    """
+    returncode = open_in_editor(path)
+    if kind != "prompt":
+        return returncode
+    from .langs.prompt import text as prompt_text
+
+    try:
+        prompt_text.read(path)
+    except prompt_text.PromptEncodingError as exc:
+        raise EditedSourceError(str(exc)) from exc
+    except OSError as exc:
+        raise EditedSourceError(
+            gettext("Can't read %(path)s: %(error)s")
+            % {"path": str(path), "error": exc.strerror or str(exc)}
+        ) from exc
+    return returncode

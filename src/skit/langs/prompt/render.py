@@ -14,6 +14,8 @@ render can only ever change the spans the user explicitly manages.
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 from typing import TYPE_CHECKING
 
@@ -24,11 +26,12 @@ from .analyzer import RESERVED_NAME, TOKEN_RE
 if TYPE_CHECKING:
     import re
 
-# The whole assembled command line must stay under the platform's argv ceiling: Windows
-# caps CreateProcess at 32767 UTF-16 units; Linux caps a SINGLE argv string at 128 KiB
-# (MAX_ARG_STRLEN). Both are byte-ish bounds, so the check measures UTF-8 bytes with
-# headroom — the refusal is skit's clean LaunchError, never a raw OS error mid-spawn.
-ARGV_LIMIT = 30_000 if sys.platform == "win32" else 100_000
+# The whole assembled command line must stay under the platform's argv ceiling. Windows
+# caps CreateProcess at 32767 UTF-16 code units INCLUDING its terminator; Python first
+# quotes argv with list2cmdline, which can double backslashes before quotes. Measure that
+# exact UTF-16 byte string with 5534 bytes of headroom. Linux caps a SINGLE argv string
+# at 128 KiB (MAX_ARG_STRLEN); the conservative POSIX total stays at 100 KiB.
+ARGV_LIMIT = 60_000 if sys.platform == "win32" else 100_000
 
 
 def render_body(text: str, values: dict[str, str], managed: list[str]) -> str:
@@ -47,14 +50,14 @@ def render_body(text: str, values: dict[str, str], managed: list[str]) -> str:
 
     def repl(m: re.Match[str]) -> str:
         name = m.group(1)
-        if name not in managed_set:
+        if not name.isidentifier() or name not in managed_set:
             return m.group(0)
         return values[name]
 
     return TOKEN_RE.sub(repl, text)
 
 
-def fill_runner_argv(argv: list[str], rendered: str) -> list[str]:
+def fill_runner_argv(argv: list[str], rendered: str, extra: list[str] | None = None) -> list[str]:
     """Stage 2: substitute the rendered prompt into the runner argv's one ``{{prompt}}``
     token, raw, inside its token — the result is real argv, no shell ever sees it. Any
     other brace shape in a runner token is a literal and stays byte-identical."""
@@ -64,17 +67,42 @@ def fill_runner_argv(argv: list[str], rendered: str) -> list[str]:
             return rendered
         return m.group(0)
 
-    return [TOKEN_RE.sub(repl, token) for token in argv]
+    filled = [TOKEN_RE.sub(repl, token) for token in argv]
+    if not extra:
+        return filled
+    delimiter = next((i for i, piece in enumerate(argv) if piece == "--"), None)
+    if delimiter is None:
+        return [*filled, *extra]
+    # A positional prompt needs `--` to prevent its first word being parsed as an
+    # agent option. Per-run flags still belong to the option side of that boundary.
+    return [*filled[:delimiter], *extra, *filled[delimiter:]]
 
 
 def check_argv_length(argv: list[str]) -> None:
     """Refuse an over-long assembled command line before spawn (exit 125 via LaunchError).
 
-    Measured in UTF-8 BYTES, not characters: the OS limits (MAX_ARG_STRLEN, the Windows
-    command line) are byte/UTF-16-unit bounds, and a CJK/emoji-heavy prompt is 3-4 bytes
-    per character — a character count would wave through an argv the kernel then rejects
-    with a raw E2BIG at spawn."""
-    total = sum(len(token.encode("utf-8")) for token in argv) + len(argv)
+    Measured in the bytes the platform will actually receive: UTF-8 argv bytes on
+    POSIX; on Windows, Python's quoted command line encoded as UTF-16LE plus its NUL
+    terminator. A raw character/argv count can miss both non-ASCII expansion and
+    list2cmdline's backslash doubling."""
+    if any("\x00" in token for token in argv):
+        raise LaunchError(
+            gettext(
+                "The rendered prompt contains a NUL byte, which can't be passed in a process argument."
+            )
+        )
+    try:
+        total = (
+            len(subprocess.list2cmdline(argv).encode("utf-16-le")) + 2
+            if sys.platform == "win32"
+            else sum(len(os.fsencode(token)) for token in argv) + len(argv)
+        )
+    except UnicodeEncodeError as exc:
+        raise LaunchError(
+            gettext(
+                "The rendered prompt contains text this platform can't encode as a process argument."
+            )
+        ) from exc
     if total > ARGV_LIMIT:
         raise LaunchError(
             gettext(

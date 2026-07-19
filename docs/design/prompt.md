@@ -1,6 +1,6 @@
 # Prompts as first-class entries — final design
 
-Status: **approved** (v3, 2026-07-17; two design + two code adversarial review rounds). Resolves
+Status: **approved** (v3, 2026-07-17). Resolves
 [#6](https://github.com/t41372/skit/issues/6) — "Make prompts a part of skit?". This
 document is the single source of truth for the design, and supersedes the v1 proposal.
 Read `docs/design/multilang.md` first — this design is an additive layer on the kind
@@ -13,11 +13,13 @@ Revision notes (v1 → v2, all maintainer-decided):
   plaintext — into its own session logs (`~/.claude/`, Codex session files, …). Shuffling
   the same text between argv and stdin protects nothing; it is security theater. The
   honest stance replaces it (see "Delivery & limits").
-- **v1 launches the agent's interactive session** (the prompt as opening message); the v1
-  proposal had print/exec seeds (`claude -p`, `codex exec`) and deferred interactive as
-  "session management". That framing was wrong: skit already hands the terminal to every
+- **v1 normally launches the agent's interactive session** (the prompt as opening
+  message); Amp is the deliberate exception because its CLI has no
+  interactive-with-initial-prompt form, so `amp -x` runs once. The v1 proposal had
+  print/exec seeds (`claude -p`, `codex exec`) and deferred interactive as "session
+  management". That framing was wrong: skit already hands the terminal to every
   interactive TUI script it launches — an interactive agent needs no more "management"
-  than `htop` does. Print mode is now the deferred half.
+  than `htop` does.
 - **Runners are argv token lists executed without a shell** (`ArgvLaunch`), not shell
   command strings. Eliminates the quoting-injection surface by construction and makes
   multi-line prompts (the norm) safe on Windows, where `shell=True` means cmd.exe and
@@ -48,13 +50,19 @@ against the code before being adopted):
   Without a change, a prompt entry gets an **empty form** and the launch gets no values.
   This — not the runner kwarg — is the load-bearing integration point. Specified below
   (`LangSpec.placeholder_params`).
-- **The two-stage render gets a new no-quote renderer**: `TemplateLaunch._render`
-  shell-quotes every substituted value (`quote_for_shell`, `launch.py:216`) — correct for
-  `ShellLaunch`, corrupting for prompt text. Only the token regex is shared.
-- **The runner-threading surface is stated honestly**: the optional kwarg touches all five
-  existing strategies (build + describe), `flows.execute`, `launcher.run_entry` /
-  `_payload` / `describe_command`, and `flows.transparency_lines`; the interactive ask
-  lives in the CLI/TUI, never in headless launcher code; `preflight` checks the pin only.
+- **Historical v2.1 decision (superseded by v3's independent grammar):** the two-stage
+  render gets a new no-quote renderer because `TemplateLaunch._render` shell-quotes every
+  substituted value (`quote_for_shell`, `launch.py:216`) — correct for `ShellLaunch`,
+  corrupting for prompt text. v2.1 proposed sharing its token regex; v3 explicitly does
+  not (see `langs.prompt.analyzer.TOKEN_RE` below).
+- **The runner/preparation surface is stated honestly**: the optional kwarg touches all
+  five existing strategies (`build` + `describe` + `preflight`). Normal prompt delivery
+  additionally crosses `flows.execute` → `launcher.prepare_entry` →
+  `PromptLaunch.build_snapshot` and hands the resulting `PreparedLaunch` to
+  `launcher.run_entry`; dry-run crosses `flows.validate_prompt_argv` →
+  `PromptLaunch.validate_argv`. The interactive ask lives only in CLI/TUI, while the
+  launch strategy deterministically resolves a durable entry pin for headless/form-free
+  callers; `preflight` checks the supplied override when present and otherwise the pin.
 - **Reference-mode workdir**: `store.add_script` force-sets `workdir="origin"` for
   reference mode (`store.py:319`), which would land the agent in the prompt file's
   directory. An explicit-override amendment is specified.
@@ -62,7 +70,8 @@ against the code before being adopted):
   `[[prompt.runners]]`, `load_prompt_runners`); a seed marker so an emptied runner list
   stays empty; `runner add` parses flag-bearing argv; body text gets **no** `{cwd}`/
   `{today}` expansion (value tokens work inside field values, as everywhere); extra argv
-  appends to the rendered runner argv (mirroring `TemplateLaunch`); P1 ships a stub
+  stays on the option side of a runner's `--` delimiter (or appends when there is none);
+  P1 ships a stub
   launch strategy.
 
 Revision notes (v2.2 → v3, maintainer-decided after using the shipped v2.2):
@@ -81,7 +90,7 @@ Revision notes (v2.2 → v3, maintainer-decided after using the shipped v2.2):
 - **A per-prompt insertion master switch** (`meta.interpolate`, default on): off = no
   scanning, no fields, no drift, verbatim delivery. `skit add --no-interpolate`,
   `skit params NAME --interpolate/--no-interpolate`, an "off" answer in the interactive
-  add, and a single checkbox in TUI Script settings. The managed list survives an
+  add, and a single checkbox in TUI Entry settings. The managed list survives an
   off/on round trip.
 - **Flood guards** for prompts never written with insertion in mind: above
   AUTO_MANAGE_LIMIT (30) detections the auto path manages NOTHING (an explicit
@@ -89,7 +98,7 @@ Revision notes (v2.2 → v3, maintainer-decided after using the shipped v2.2):
   (CLI add, params view, settings checkboxes) previews at most LIST_PREVIEW_LIMIT (20)
   names plus a "+N more" tail.
 
-Round-2 verification additions (v2.1 → v2.2):
+Cross-surface verification requirements (v2.1 → v2.2):
 
 - **The trait migration covers all five `family == "template"` decision sites**, not just
   `flows._declared_plan` — the same test recurs in `skit params`' human view, the
@@ -114,8 +123,9 @@ The feature composes two shapes skit already has:
   parameter-form machinery is reused through **one bounded, specified change**
   (`placeholder_params`, below);
 - a **runner** is a named *argv template* with one reserved `{{prompt}}` slot
-  (`["claude", "{{prompt}}"]`) → reuses the `TemplateLaunch` token grammar for the fill,
-  and `ArgvLaunch` for the spawn.
+  (`["claude", "--", "{{prompt}}"]`) → uses the prompt surface's independent
+  `langs.prompt.analyzer.TOKEN_RE` grammar for validation/fill, and `ArgvLaunch` for the
+  spawn.
 
 Running a prompt is a **two-stage render**: fill the prompt's own placeholders from the
 form/`--set` values → substitute the rendered text into the chosen runner's `{{prompt}}`
@@ -138,9 +148,11 @@ re-litigation):
 - **The prompt is a document, not a one-liner.** It lives as an editable payload file
   (`prompt.md`), so `skit edit`, `skit show`, multi-line authoring, and copy-into-library
   come for free. This is the whole increment over the existing `command` kind.
-- **v1 is interactive.** The seeds open the agent's own session with the rendered prompt
-  as the opening message — the issue's "quick command to launch the task". Non-interactive
-  print/exec runners are deferred (they are just *more argv templates* when they come).
+- **v1 is interactive, with one explicit seed exception.** Claude, Codex, OpenCode and
+  Antigravity open the agent's own session with the rendered prompt as the opening
+  message — the issue's "quick command to launch the task". Amp has no such CLI form;
+  its `amp -x` seed is deliberately one-shot, and both `runner list` and execution say so.
+  Other non-interactive print/exec runners remain ordinary user-defined argv templates.
 - **No secret special-casing.** See "Delivery & limits".
 - Long-term-optimal choices; reuse existing machinery over new subsystems.
 
@@ -173,7 +185,7 @@ def _prompt_spec() -> LangSpec:
         # langs/prompt/analyzer.py as plain functions consumed directly by the
         # add/params/plan surfaces.
         supports_modes=True,
-        takes_argv=False,           # reuse-last-args stays off; extra argv still appends (below)
+        takes_argv=False,           # reuse-last-args stays off; extra argv follows rule below
         placeholder_params=True,    # opens the placeholder form path (see flows amendment)
     )
 ```
@@ -195,10 +207,11 @@ the family test to a new spec trait: `LangSpec.placeholder_params: bool = False`
 `True` by the `command` kind (whose behavior is unchanged — same branch, same
 `params.declared_for_template` call, fields in body order via the `meta.params` cache) and
 by `prompt`. Placeholder-delivered values then flow exactly as they do for command
-entries: `FormField.from_decl` → `asm.command_values` → `run_entry(values=…)` → `build` →
-stage-1 render. The plan's `source` tag stays `"command"` — it names the delivery family,
-not the kind. This is the design's load-bearing integration point and gets its own tests
-(form fields appear, in body order; `--set`/`--no-input` reach the render; mutation-tested).
+entries: `FormField.from_decl` → `asm.command_values` → `flows.execute` →
+`launcher.prepare_entry` → `PromptLaunch.build_snapshot` → stage-1 render. The plan's
+`source` tag stays `"command"` — it names the delivery family, not the kind. This is the
+design's load-bearing integration point and gets its own tests (form fields appear, in
+body order; `--set`/`--no-input` reach the render; mutation-tested).
 
 The same template/non-template decision recurs at **four more sites**, and the trait
 migration covers all of them in P1 — leaving any one behind splits the read/run
@@ -223,7 +236,7 @@ remaining `family == "template"` sites (`tui_settings.py`/`tui.py` rendering
 Param storage: **`[[parameters]]` in `meta.toml`** (the exe/command path, `params_io=None`).
 Markdown has no comment syntax that survives rendering, so v1 does not invent an in-body
 `[tool.skit]` convention; the placeholder *cache* (`meta.params`, the write-through list of
-`{names}` found in the body) keeps the form populated and ordered, and rich per-param data
+`{{names}}` found in the body) keeps the form populated and ordered, and rich per-param data
 is opt-in via `skit params`. Revisit an in-body block only if users ask.
 
 New meta fields: `runner: str = ""` (the entry's pinned runner name, serialized only when
@@ -250,7 +263,7 @@ add-flow change, not two.
 
 ### Placeholder detection (the analyzer)
 
-The prompt body is scanned for `{{name}}` tokens (double braces, identifier body, not
+The prompt body is scanned for `{{name}}` tokens (double braces, Unicode identifier body, not
 brace-adjacent — a Handlebars `{{{raw}}}` is someone else's syntax and stays quiet). The
 grammar is deliberately INDEPENDENT of `TemplateLaunch`'s single-brace pattern (v3): code
 snippets full of `{x}`/`${VAR}`/JSON braces are never candidates. Each distinct `{{name}}`
@@ -270,10 +283,10 @@ contains it).
 
 Value tokens: `{cwd}`/`{today}` expand **inside field values** (the existing
 `flows._final_value` pipeline), same as every kind. The body itself gets **no** token
-expansion — a literal `{today}` in a prompt body is just another placeholder candidate,
-and an unticked one passes through to the agent verbatim.
+expansion — a literal `{today}` in a prompt body is literal text, not a double-brace
+placeholder candidate, and passes through to the agent verbatim.
 
-Reconcile mirrors the command path: if the user removes a `{hole}` from the body, the
+Reconcile mirrors the command path: if the user removes a `{{hole}}` from the body, the
 matching declared param drifts and `skit params`/doctor report it.
 
 ### The runner registry (config, `[[prompt.runners]]`)
@@ -288,15 +301,15 @@ runners_seeded = true   # written once at seed time; an emptied list stays empty
 
 [[prompt.runners]]
 name = "claude"
-argv = ["claude", "{{prompt}}"]
+argv = ["claude", "--", "{{prompt}}"]
 
 [[prompt.runners]]
 name = "codex"
-argv = ["codex", "{{prompt}}"]
+argv = ["codex", "--", "{{prompt}}"]
 
 [[prompt.runners]]
 name = "opencode"
-argv = ["opencode", "{{prompt}}"]
+argv = ["opencode", "--prompt={{prompt}}"]
 
 [[prompt.runners]]
 name = "amp"
@@ -304,12 +317,14 @@ argv = ["amp", "-x", "{{prompt}}"]
 
 [[prompt.runners]]
 name = "antigravity"
-argv = ["antigravity", "{{prompt}}"]
+argv = ["agy", "--prompt-interactive", "{{prompt}}"]
 ```
 
-(Seed argv shapes above are illustrative; each is pinned during implementation against the
-CLI's actual interactive-with-initial-prompt invocation, and any that has none is seeded
-with its closest equivalent and a comment in the seeded config.)
+(These are the shipped seeds. Amp's CLI has no interactive-with-initial-prompt invocation,
+so `amp -x` is the deliberate one-shot exception; the human `runner list` view and the
+run path make that behavior explicit. OpenCode binds the value in the `--prompt=…` token
+because its yargs parser would treat a separate option-looking value such as `--help` or
+`--version` as a CLI option instead of prompt text. Config rows remain plain editable data.)
 
 - **Argv, not a shell string.** Each element is one argv token; substitution happens
   *within* a token, so a multi-line prompt is one `execve` argument — no shell, no
@@ -331,34 +346,65 @@ with its closest equivalent and a comment in the seeded config.)
   row is skipped (doctor reports it); a missing section with no marker seeds the presets.
 - **Last-picked state**: the most recently *picked* runner name (add-time picker or
   `--runner` on a run) is remembered under `state_dir()` (beside the existing `values/`
-  last-used store — state, not config). It has exactly one job: prefill the picker for
-  the *next* prompt added. It never silently decides a run.
+  last-used store — state, not config). It has exactly one job: prefill the *next runner
+  picker* (add review or an unpinned interactive run). It never silently decides a run.
 
-### PromptLaunch, the render, and the runner-threading seam
+### PromptLaunch, the render, and the prepared-launch seam
 
-**The render (stage 1 and stage 2) is a new, no-quote function** in `langs/prompt/`,
-sharing only `_TEMPLATE_TOKEN_RE` with `TemplateLaunch`. It must NOT reuse
-`TemplateLaunch._render`: that body wraps every substituted value in `quote_for_shell`
-(`launch.py:216`) — correct for a `ShellLaunch` command string, corrupting for prompt text
-(the agent would read literal `'…'` quotes) and fatal to risk-test #1's byte-identity
-assertion. The new renderer substitutes raw values in one pass, honors `{{`/`}}`, and
-raises `LaunchError` for a managed placeholder with no value (checked against the entry's
-managed names, mirroring — not calling — the `_render` missing-check).
+**The render (stage 1 and stage 2) is a new, no-quote function** in `langs/prompt/` and
+uses `langs.prompt.analyzer.TOKEN_RE`, deliberately independent of `TemplateLaunch`'s
+single-brace grammar. It must NOT reuse `TemplateLaunch._render`: that body wraps every
+substituted value in `quote_for_shell` (`launch.py:216`) — correct for a `ShellLaunch`
+command string, corrupting for prompt text (the agent would read literal `'…'` quotes)
+and fatal to risk-test #1's byte-identity assertion. The new renderer substitutes raw
+values in one pass and implements **no escape sequences**: unmanaged double-brace holes,
+single braces, and triple-stache text pass through unchanged. It raises `LaunchError`
+for a managed placeholder with no value (checked against the entry's managed names,
+mirroring — not calling — the `_render` missing-check).
 
-`PromptLaunch.build`:
+`PromptLaunch.build_snapshot` is the canonical preparation path for a real prompt run:
 
-1. Read the prompt body (the stored `prompt.md`, or the referenced original).
-2. Stage 1: substitute the body's managed `{{placeholder}}` holes from `values`
+1. Resolve the supplied runner object, or the entry's durable `meta.runner` pin, to one
+   configured `PromptRunner` row. No runner ranking or interactive ask occurs here.
+2. Read the prompt body once (the stored `prompt.md`, or the referenced original).
+3. Stage 1: substitute the body's managed `{{placeholder}}` holes from `values`
    (`asm.command_values`, delivered per the flows amendment above). Unmanaged braces pass
    through verbatim.
-3. Stage 2: substitute the rendered text into the runner argv's `{{prompt}}` token — plain
+4. Stage 2: substitute the rendered text into the runner argv's `{{prompt}}` token — plain
    string substitution inside one token, **no quoting of any kind**.
-4. Append `extra` argv (anything after `--` on `skit run`) to the rendered runner argv —
-   mirroring `TemplateLaunch`'s append (`launch.py:219-226`), so per-run agent flags
-   (`skit run review -- --model opus`) pass through. `takes_argv=False` still keeps the
-   reuse-last-args affordance off, exactly like command entries.
-5. Return `ArgvLaunch(rendered_argv)`. The child inherits the terminal exactly as every
-   interactive script already does; skit's after-run behavior applies unchanged.
+5. Place `extra` argv (anything after `--` on `skit run`) on the option side of a
+   runner template's end-of-options delimiter, when it has one; otherwise append it.
+   Thus per-run agent flags (`skit run review -- --model opus`) keep working while a
+   positional prompt beginning with `--help` cannot turn into an agent option.
+   `takes_argv=False` still keeps the reuse-last-args affordance off.
+6. Validate the configured argv, resolve its executable, replace only `argv[0]` with that
+   resolved binary, and validate the real argv again. Body/render/length failures therefore
+   still precede a missing-binary refusal.
+7. Return the `ArgvLaunch`, a compact safe-display string made from that **same runner
+   row** with an omitted-prompt sentinel, and the chosen `PromptRunner`. The child inherits
+   the terminal exactly as every interactive script already does; skit's after-run behavior
+   applies unchanged.
+
+`PromptLaunch.build` delegates to `build_snapshot` and returns only its payload for the
+generic `LaunchStrategy` protocol. `launcher.prepare_entry` adds the validated working
+directory to the snapshot, checks `meta.needs`, and freezes all of it in an immutable
+`PreparedLaunch`. For prompts, `flows.execute` must complete that preparation **before**
+emitting the Amp one-shot note, the plaintext-secret warning, or transparency. It then
+passes the same object to `launcher.run_entry(prepared=…)`, which spawns it without
+re-reading the body, reloading a runner row, or rebuilding argv. The transparency line
+uses the prepared object's compact display, and the Amp note keys off its chosen runner;
+a concurrent body/config edit therefore cannot make the UI describe different delivery
+semantics from the argv already prepared for spawn. If preparation fails, none of those
+delivery-semantic lines are emitted.
+
+Dry-run deliberately has a different, PATH-independent boundary: the CLI calls
+`flows.validate_prompt_argv`, which calls `PromptLaunch.validate_argv`. That method
+resolves one configured row, reads the body once, renders and length-checks the real argv,
+and derives any secret-masked display from that same body/runner snapshot. The returned
+validated display is passed directly to `flows.transparency_lines`; transparency never
+calls `describe` to re-read a prompt that already passed validation. `describe` remains a
+side-effect-free fallback/general descriptive surface, not the second half of the prompt
+dry-run path.
 
 **Threading the runner (the honest surface).** A prompt's runner can be overridden at run
 time, so the selection must reach the strategy — and `values` must not smuggle it (it
@@ -371,13 +417,19 @@ would collide with a real param key). The protocol change:
   `config`; `base.py` (a LEAF module) and `launch.py` annotate it under `TYPE_CHECKING`
   only — `config` imports neither, so there is no runtime cycle, and the annotation must
   not be written as a runtime import.
-- The runner threads through the call chain that exists today: CLI/TUI →
-  `flows.execute(runner=…)` → `launcher.run_entry(runner=…)` → `_payload` →
-  `build(runner=…)`; and on the transparency side `flows.transparency_lines(runner=…)` →
-  `launcher.describe_command(runner=…)` → `describe(runner=…)`, so `--dry-run` prints the
-  real resolved argv.
-- **Resolution happens in the CLI/TUI layer, never in launcher/flows**: the interactive
-  ask (below) is UI, and headless code must stay headless.
+- For a normal run, a supplied CLI/TUI choice threads through `flows.execute(runner=…)` →
+  `launcher.prepare_entry(runner=…)` → `PromptLaunch.build_snapshot(runner=…)` →
+  `PreparedLaunch` → `launcher.run_entry(prepared=…)`. Normal transparency uses the
+  snapshot's omitted-payload display instead of dumping an entire document into
+  scrollback. For dry-run, the chosen override follows `flows.validate_prompt_argv` →
+  `PromptLaunch.validate_argv`, whose returned display goes straight to
+  `transparency_lines`.
+- **Interactive resolution happens only in CLI/TUI.** Those layers resolve an explicit
+  option/picker and may resolve the pin before calling flows. Form-free and other headless
+  call paths may pass `runner=None`; `PromptLaunch._resolve_runner` then performs the same
+  deterministic lookup of `entry.meta.runner`, or raises exit 126. It never prompts,
+  ranks, or consults last-picked state. This keeps launch code headless without making a
+  durable pin unusable outside the run form.
 
 Runner resolution order (deterministic; the non-interactive contract):
 
@@ -393,13 +445,17 @@ There is deliberately **no global default runner and no detection ranking**: unl
 runtimes, the runner choice changes the *result*, so skit never ranks agents. The
 last-picked state only prefills pickers; it never resolves a non-interactive run.
 
-`target()` returns the prompt path (so peek/edit resolve it). `preflight(entry)` keeps its
-runner-less signature and **checks the pin only**: registry lookup of `meta.runner` (if
-set) and `shutil.which(argv[0])` — a missing binary is the usual `NotExecutableError` →
-exit 126 ("claude isn't installed…", naming `skit runner` as the fix) — plus the entry's
-own `meta.needs`. A `--runner`/picker override is validated at build time (same errors,
-same codes); preflight simply cannot see it, and that scope is deliberate rather than
-accidental.
+`target()` returns the prompt path (so peek/edit resolve it). `PromptLaunch.preflight`
+reads and validates the body, then checks the runner the launch will actually use: an
+explicit picker choice when supplied, otherwise the entry's pin. Its runner check resolves
+the configured row and calls `shutil.which(argv[0])`; `launcher.preflight` then checks the
+entry's `meta.needs` and workdir. A missing binary is the usual `NotExecutableError` → exit
+126. The TUI calls preflight after the form resolves its picker but before suspending the
+terminal, so a stale or broken pin cannot block a valid per-run override; health and
+form-free rerun omit the override and continue to validate the pin. Preflight is an early
+readiness check only: `prepare_entry` creates the authoritative, single-use delivery
+snapshot for a real run, in body/render → binary → needs → workdir order after the runner
+row has resolved.
 
 ### Delivery & limits (the honest stance on secrets)
 
@@ -413,11 +469,16 @@ the docs rather than papered over:
   secrecy. A prompt placeholder *may* still be marked secret — the generic promise (skit
   never persists the value in last-used/presets, masks it in transparency output) holds
   like any kind — but the user docs for the prompt kind state explicitly that the value's
-  confidentiality ends at the runner boundary.
-- **Length.** argv has platform limits (Windows ≈32k; Linux caps one argument at 128 KiB —
-  both BYTE bounds, so the check measures UTF-8 bytes, never characters). Rendering checks
-  the assembled command line against a conservative platform bound and
-  refuses with a clean `LaunchError` (exit 125) naming the size — an honest refusal today;
+  confidentiality ends at the runner boundary. Add summary states both halves, and a real
+  run with a non-empty secret-marked value warns immediately before delivery; dry-run does
+  not warn because it sends nothing.
+- **Length.** argv has platform limits, but their serialization differs. On Windows,
+  `CreateProcess` caps the command line at roughly 32k UTF-16 code units, so skit measures
+  Python's exact `subprocess.list2cmdline(argv)` result encoded as UTF-16LE plus its NUL
+  terminator, with a conservative 60,000-byte ceiling. On POSIX, skit sums each token's
+  `os.fsencode` byte length plus its terminating NUL and uses a conservative 100,000-byte
+  ceiling (below Linux's 128 KiB single-argument limit). A NUL or unencodable token is
+  refused too. Every refusal is a clean `LaunchError` (exit 125) naming the measured size;
   stdin/file delivery can arrive later *per-runner* when a seed CLI actually supports it
   (deferred, see below).
 
@@ -428,7 +489,7 @@ skit add notes/review.prompt.md            # add an existing prompt file (kind i
 skit add notes/review.md                   # bare .md: interactive ask; --no-input requires --prompt
 skit add --prompt -n review                # author a new prompt: $EDITOR on a blank prompt.md
 skit runner list                           # configured runners (seeds materialized on first need)
-skit runner add mycli mycli run {{prompt}}   # variadic: the USER'S shell does the word splitting
+skit runner add mycli -- mycli run {{prompt}} # variadic: the USER'S shell does the word splitting
 skit runner remove mycli
 skit run review --set target=src/foo.py            # runs with the entry's pinned runner
 skit run review --runner codex --set target=...    # per-run override
@@ -474,7 +535,7 @@ the entry's pin (or last-picked when unpinned). The form's priority Enter bindin
 ("Enter runs from any field") coexists with dropdowns via a shim in `action_submit`:
 Enter on a focused Select toggles its overlay, Enter inside the open overlay chooses
 the highlighted option, everything else submits. The preset row and every other runner
-picker (Script settings pin, the prompt review panel) use the same dropdown; reads are
+picker (Entry settings pin, the prompt review panel) use the same dropdown; reads are
 value-keyed, so a runner list that changes mid-session can never shift an index
 mapping. Below it, the placeholders render as ordinary form fields (choices/bool/secret
 all work — via the `placeholder_params` plan path). Every new string is a static
@@ -497,16 +558,21 @@ preserving everything already set on the panel. Pipes/CI/`--no-input`/`form = "p
 runner-picking surface — the run form's picker row, the prompt review panel, and Script
 settings — carries the same "Ctrl+N New agent…" chip (footer grammar: the visible key
 hint IS the click target). The modal takes a name and ONE command line; the command is
-split into argv tokens with `shlex` **once, here** (quotes group words; posix rules on
-every platform — the config row is the canonical form and stays editable), validated by
-the same `validate_prompt_runner_argv` rule the CLI enforces, and saved through
-`ensure_prompt_runners_seeded()` so the seeds materialize beside it. The new runner joins
-the open picker selected — no restart, no CLI detour. A prompt run with an **emptied**
-runner list opens this modal instead of dead-ending on a `skit runner add` incantation;
-in Script settings the radio's option values are recorded at compose time (and appended
-by the modal), so the save-time index mapping can never shift under a config change, and
-the pin save runs for every prompt — including insertion-off ones, whose declared-params
-branch is skipped.
+split into argv tokens with `shlex` **once, here** (quotes group words; native Windows
+rules preserve path backslashes), validated by the same `validate_prompt_runner_argv`
+rule the CLI enforces, and saved through `ensure_prompt_runners_seeded()` so the seeds
+materialize beside it. The run form's extra-argument field uses the same platform-aware
+argv text codec, so agent flags and ordinary script arguments have identical Windows
+path behavior. Names are stable config keys because prompt pins persist them:
+editing a runner changes its argv in place, not its name. The new runner joins the open
+picker selected — no restart, no CLI detour. A prompt run with an **emptied** runner list
+opens this modal instead of dead-ending on a `skit runner add` incantation; in Script
+settings the value-keyed `Select` is rebuilt after the modal and save reads its selected
+value directly, so there is no index mapping that can shift under a config change. The
+pin save runs for every prompt — including insertion-off ones, whose declared-params
+branch is skipped. Removing a runner deliberately retains prompt pins (re-adding the row restores
+them), but both management surfaces count and warn about the prompts that will need a new
+choice before confirming the removal; Health reports the resulting blocked pins too.
 
 ## Non-interactive & JSON contracts (additive only)
 
@@ -568,6 +634,12 @@ translated.
 10. **Last-picked state** → corrupt/absent state file degrades to "no prefill", never an
     error; the state value is a picker default only — a `--no-input` run must be provably
     unaffected by it (mutation-tested).
+11. **Single delivery snapshot** → a normal run resolves its runner row and body once,
+    prepares the executable argv before any delivery warning/transparency, and spawns that
+    exact `PreparedLaunch`; a dry-run validates and displays one body/runner snapshot.
+    Concurrent reference-body or runner-config edits cannot produce validate-A/display-B
+    or display-A/spawn-B behavior, and a preparation failure emits no delivery-semantic
+    lines.
 
 ## Phases
 
@@ -587,9 +659,10 @@ translated.
 - **P2 — runners & execution.** `PromptRunner` model + `[[prompt.runners]]` loaders +
   seed materialization with the `runners_seeded` marker + `skit runner add/list/remove`
   (variadic argv, `ignore_unknown_options`); the `build`/`describe` `runner=` protocol
-  extension across all five strategies + the threading through
-  `execute`/`run_entry`/`_payload`/`describe_command`/`transparency_lines`; the no-quote
-  renderer + `PromptLaunch` (two-stage render, extra-argv append, `ArgvLaunch`);
+  extension across all five strategies + `PromptLaunch.build_snapshot`/`validate_argv` +
+  the `flows.execute`/`validate_prompt_argv` → `launcher.prepare_entry`/
+  `PreparedLaunch` delivery boundaries; the no-quote renderer + `PromptLaunch`
+  (two-stage render, delimiter-aware extra-argv placement, `ArgvLaunch`);
   resolution order + preflight-pin scope + last-picked state; the length bound;
   `--runner` CLI; TUI runner picker + settings management; JSON additions; SKILL.md sync;
   i18n to 100%.

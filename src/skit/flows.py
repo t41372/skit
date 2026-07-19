@@ -36,7 +36,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import analysis, argstate, launcher, params, tokens
+from . import analysis, argstate, config, launcher, params, tokens
 from .i18n import gettext
 from .langs.base import (
     InjectError,
@@ -47,6 +47,7 @@ from .langs.base import (
     InjectValueError,
     LangSpec,
 )
+from .langs.launch import PromptLaunch
 from .langs.launch import quote_for_shell as launch_quote
 from .langs.python.shim import _coerce
 from .langs.registry import spec_for
@@ -249,8 +250,15 @@ def _placeholder_body_plan(entry: Entry) -> FormPlan:
         # picker. (The managed list survives underneath for a later switch-on.)
         return FormPlan(source="command")
     managed = list(entry.meta.params or [])
+    from .langs.prompt import text as prompt_text
+
     try:
-        text = entry.script_path.read_text(encoding="utf-8", errors="replace")
+        text = prompt_text.read(entry.script_path)
+    except prompt_text.PromptEncodingError:
+        # Never build fields or drift facts from replacement characters.  The launch
+        # boundary's strict preflight/render returns the user-facing exit-125 refusal;
+        # the form layer stays total and invents no schema from unreadable bytes.
+        return FormPlan(source="none")
     except OSError:
         return FormPlan(source="none")
     from .langs.prompt import analyzer as prompt_analyzer
@@ -293,7 +301,7 @@ def reader_fields(lang: LangSpec | None, text: str) -> int:
     is no modeled reader form (no reader, unreadable, dynamic/unmodelable parsing).
 
     THE predicate for the manage-a-constant trap, shared by every surface that decides
-    whether to offer managing (add ticks, `params` advice, Script settings, the flip
+    whether to offer managing (add ticks, `params` advice, Entry settings, the flip
     note): managing REPLACES the run form only when a modeled reader form exists to be
     replaced (plan_for_entry prefers managed specs). A script that self-parses but
     couldn't be modeled (docopt/fire, a dynamic optstring) runs on the passthrough
@@ -758,6 +766,8 @@ def transparency_lines(
     injected: Path | None,
     *,
     runner: PromptRunner | None = None,
+    exact_prompt: bool = False,
+    validated_prompt_command: str | None = None,
 ) -> list[str]:
     """The plain what-actually-runs lines (trust through transparency; also how users
     passively learn their scripts' own flags). Secret values are already masked in
@@ -778,18 +788,62 @@ def transparency_lines(
     # honest picture of what actually happens: the child process env is overlaid, the
     # script itself is never rewritten for these.
     env_prefix = "".join(f"{k}={launch_quote(v)} " for k, v in asm.masked_env.items())
-    lines.append(
-        "→ "
-        + env_prefix
-        + launcher.describe_command(
+    spec = spec_for(entry.meta.kind)
+    if validated_prompt_command is not None:
+        # --dry-run must display the exact body snapshot that passed prompt argv
+        # validation, never re-read a reference or concurrently edited copy here.
+        described = validated_prompt_command
+    elif not exact_prompt and spec is not None and isinstance(spec.launch, PromptLaunch):
+        described = spec.launch.describe_compact(entry, asm.masked_args, runner=runner)
+    else:
+        described = launcher.describe_command(
             entry,
             asm.masked_args,
             asm.masked_command_values,
             script_override=injected,
             runner=runner,
         )
-    )
+    lines.append("→ " + env_prefix + described)
     return lines
+
+
+def validate_prompt_argv(
+    entry: Entry,
+    asm: Assembly,
+    *,
+    runner: PromptRunner | None = None,
+) -> str | None:
+    """Validate prompt rendering/argv limits without looking up the runner on PATH.
+
+    Non-prompt kinds are a no-op.  The CLI calls this before --dry-run output; execute
+    calls it before normal transparency, so an impossible prompt is never dumped into
+    terminal scrollback immediately before skit refuses it.
+    """
+    spec = spec_for(entry.meta.kind)
+    if spec is None or not isinstance(spec.launch, PromptLaunch):
+        return None
+    return spec.launch.validate_argv(
+        entry,
+        asm.args,
+        asm.command_values,
+        None,
+        runner=runner,
+        display_values=asm.masked_command_values,
+    )
+
+
+def _prompt_secret_warning(plan: FormPlan, asm: Assembly) -> str:
+    """The delivery-boundary warning, only when plaintext will actually be sent."""
+    sends_secret = any(
+        f.source == "placeholder" and f.secret and bool(asm.command_values.get(f.key))
+        for f in plan.fields
+    )
+    if not sends_secret:
+        return ""
+    return gettext(
+        "Secret-marked values are never saved by skit, but this prompt sends them to the "
+        "selected agent as plaintext; the agent may log or sync them."
+    )
 
 
 def _split_message(exc: InjectSplitError) -> str:
@@ -838,12 +892,42 @@ def execute(  # noqa: PLR0911, PLR0912 — one early return/branch per injection
     an inject plan only exists where an analyzer does.
     """
     injected: Path | None = None
+    prepared: launcher.PreparedLaunch | None = None
     try:
         # The injector's env overlay rides ON TOP of the assembled env-delivered values:
         # both are "set this variable on the child", and a shell entry can legitimately
         # produce both at once (a declared env rider plus an envdefault param).
         env_overlay = dict(asm.env_values)
         spec = spec_for(entry.meta.kind)
+        if spec is not None and isinstance(spec.launch, PromptLaunch):
+            try:
+                # Cross the delivery boundary only after the exact runner/body argv,
+                # executable, needs and cwd have all succeeded. run_entry consumes
+                # this same snapshot below; it never re-reads or rebuilds the prompt.
+                prepared = launcher.prepare_entry(
+                    entry,
+                    asm.args,
+                    values=asm.command_values,
+                    invoke_cwd=invoke_cwd,
+                    runner=runner,
+                )
+            except launcher.TargetMissingError as exc:
+                return RunOutcome(None, FAIL_MISSING, str(exc))
+            except launcher.NotExecutableError as exc:
+                return RunOutcome(None, FAIL_NOT_EXECUTABLE, str(exc))
+            except launcher.LaunchError as exc:
+                return RunOutcome(None, FAIL_LAUNCH, str(exc))
+            amp_seed = next(r for r in config.PROMPT_RUNNER_SEEDS if r.name == "amp")
+            if prepared.prompt_runner == amp_seed:
+                emit(
+                    gettext(
+                        "The built-in amp runner is one-shot: amp -x runs this prompt once "
+                        "and does not open an interactive session."
+                    )
+                )
+            secret_warning = _prompt_secret_warning(plan, asm)
+            if secret_warning:
+                emit(secret_warning)
         if (
             plan.source == "inject"
             and asm.inject_values
@@ -925,18 +1009,38 @@ def execute(  # noqa: PLR0911, PLR0912 — one early return/branch per injection
             env_overlay.update(result.env)
             for line in result.warnings:
                 emit(line)
-        for line in transparency_lines(entry, asm, injected, runner=runner):
+        for line in transparency_lines(
+            entry,
+            asm,
+            injected,
+            runner=runner,
+            validated_prompt_command=(prepared.safe_display if prepared is not None else None),
+        ):
             emit(line)
         try:
-            code = launcher.run_entry(
-                entry,
-                asm.args,
-                values=asm.command_values,
-                invoke_cwd=invoke_cwd,
-                script_override=injected,
-                env_overlay=env_overlay,
-                runner=runner,
-            )
+            if prepared is None:
+                # Keep the established non-prompt call seam unchanged; many callers
+                # replace run_entry with a narrow adapter that knows no prepared kwarg.
+                code = launcher.run_entry(
+                    entry,
+                    asm.args,
+                    values=asm.command_values,
+                    invoke_cwd=invoke_cwd,
+                    script_override=injected,
+                    env_overlay=env_overlay,
+                    runner=runner,
+                )
+            else:
+                code = launcher.run_entry(
+                    entry,
+                    asm.args,
+                    values=asm.command_values,
+                    invoke_cwd=invoke_cwd,
+                    script_override=injected,
+                    env_overlay=env_overlay,
+                    runner=runner,
+                    prepared=prepared,
+                )
         except launcher.TargetMissingError as exc:
             return RunOutcome(None, FAIL_MISSING, str(exc))
         except launcher.NotExecutableError as exc:

@@ -433,8 +433,8 @@ def test_multi_variable_read_refuses_whitespace_when_a_trailing_var_is_unmanaged
 
 
 def test_multi_variable_read_refuses_a_newline_in_a_non_last_field(tmp_path):
-    # The worst case Review A caught: a newline in an earlier value truncates the whole line,
-    # silently discarding EVERY later field. Must be refused, not silently run.
+    # A newline in an earlier value truncates the whole line and silently discards EVERY later
+    # field. It must be refused rather than silently run.
     src = '#!/usr/bin/env bash\nread -p "First and last: " FIRST LAST\n'
     with pytest.raises(InjectSplitError):
         inject_src(src, {"input-1": "a\nb", "input-2": "KEEP"}, tmp_path)
@@ -774,7 +774,7 @@ def test_self_location_warns_when_a_temp_copy_is_written(tmp_path):
     assert len(result.warnings) == 1
     warning = result.warnings[0]
     assert "$0" in warning
-    # The advice is true in BOTH storage modes now (round-10): it teaches the manual
+    # The advice is true in BOTH storage modes: it teaches the manual
     # ${NAME:-value} rewrite and names --normalize as the shortcut ON A STORED COPY,
     # never the old unconditional "--normalize NAME` delivers" that lied in reference mode.
     assert 'NAME="${NAME:-value}"' in warning

@@ -32,6 +32,32 @@ def test_wheel_excludes_catalog_sources() -> None:
     assert any(pattern.endswith("*.pot") for pattern in excludes)
 
 
+def test_mutmut_refreshes_all_runtime_package_data_in_a_reused_worktree() -> None:
+    """mutmut only regenerates Python files inside an existing ``mutants/`` source
+    tree.  Runtime package data would otherwise remain at the version copied when that
+    tree was first created, so updated translations or the bundled skill could fail the
+    baseline before any mutant runs.  ``also_copy`` directories are refreshed on every
+    run with ``dirs_exist_ok=True``.  Discover the data files instead of naming today's
+    two directories here, so future package data cannot silently acquire the same bug."""
+    also_copy = PYPROJECT["tool"]["mutmut"]["also_copy"]
+    refreshed = [ROOT / path for path in also_copy]
+    package = ROOT / "src" / "skit"
+    data_files = [
+        path
+        for path in package.rglob("*")
+        if path.is_file()
+        and path.suffix not in {".meta", ".py", ".pyc"}
+        and "__pycache__" not in path.parts
+    ]
+    stale = [
+        str(path.relative_to(ROOT))
+        for path in data_files
+        if not any(path.is_relative_to(root) for root in refreshed)
+    ]
+    assert data_files
+    assert not stale, f"mutmut does not refresh runtime package data: {stale}"
+
+
 def test_version_is_single_sourced_from_the_distribution() -> None:
     """skit.__version__ mirrors the installed skit-cli metadata, which in turn comes
     from pyproject.toml at build time — one source, no drift (the old hand-synced

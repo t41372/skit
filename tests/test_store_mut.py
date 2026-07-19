@@ -619,7 +619,7 @@ def test_update_dependencies_without_requires_python_writes_none_into_block(tmp_
 def test_update_dependencies_preserves_block_requires_python_when_meta_has_none(tmp_path):
     """A copy-mode python entry whose PEP 723 block carries requires-python but whose meta
     does NOT keeps the block's own constraint across a deps edit — the block is the source
-    of truth, so a deps edit must PRESERVE it, not erase it by passing "" (finding R5)."""
+    of truth, so a deps edit must PRESERVE it, not erase it by passing ""."""
     script = tmp_path / "pinned.py"
     script.write_text(
         '# /// script\n# requires-python = ">=3.12"\n# dependencies = []\n# ///\nprint(1)\n',

@@ -81,12 +81,12 @@ def collect(
     prefill: dict[str, str],
     runners: list[str] | None = None,
     runner_default: str = "",
-) -> tuple[dict[str, str], str | None] | None:
-    """Run the inline form; returns (raw values, picked runner name or None when the
-    form had no picker), or None when the user cancelled."""
+) -> tuple[dict[str, str], str | None, bool] | None:
+    """Run the inline form; returns raw values, selected runner, and whether the user
+    actually changed the runner picker; or None when the user cancelled."""
     app = _InlineFormApp(entry, plan, prefill, runners, runner_default)
     result = app.run(inline=True)
     if result is None:
         return None
-    values, _extra, runner = result
-    return values, runner
+    values, _extra, runner, runner_was_picked = result
+    return values, runner, runner_was_picked

@@ -771,7 +771,7 @@ def test_assemble_none_plan_only_carries_extras(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# review fixes (B3/B4/B5/B6 + transparency masking)
+# Placeholder requiredness, persisted clearing, and transparency masking
 # --------------------------------------------------------------------------
 
 
@@ -893,8 +893,8 @@ def test_transparency_lines_inject_source_shows_masked_and_temp_note(tmp_path):
 def test_assemble_display_lists_only_inject_delivered_values(tmp_path):
     """The "→ inject:" transparency line lists ONLY inject-delivered values: env values
     already render as a VAR=value prefix and flag values appear in the command line itself,
-    so listing them under "inject" claimed a temporary-copy rewrite that never happens
-    (finding R2/M2). One mixed plan, three deliveries, one honest inject line."""
+    so listing them under "inject" claimed a temporary-copy rewrite that never happens.
+    One mixed plan, three deliveries, one honest inject line."""
     plan = flows.FormPlan(
         source="inject",
         fields=[
@@ -938,6 +938,64 @@ def test_execute_runs_and_returns_the_scripts_exit_code(tmp_path, monkeypatch):
     assert outcome.launched is True
     assert outcome.failure == ""
     assert lines  # the command line was emitted
+
+
+def test_command_template_secret_does_not_get_prompt_agent_warning(tmp_path, monkeypatch):
+    """The prompt boundary warning must never be inferred from placeholder delivery alone."""
+    from skit import launcher
+
+    entry = Entry(
+        slug="cmd-secret",
+        meta=ScriptMeta(
+            name="cmd-secret",
+            kind="command",
+            template="send {api_key}",
+            params=["api_key"],
+        ),
+        dir=tmp_path,
+    )
+    plan = flows.FormPlan(
+        source="command",
+        fields=[
+            flows.FormField(
+                key="api_key",
+                label="api_key",
+                source="placeholder",
+                secret=True,
+                required=True,
+            )
+        ],
+    )
+    asm = flows.Assembly(
+        command_values={"api_key": "hunter2"},
+        masked_command_values={"api_key": "•••"},
+    )
+    monkeypatch.setattr(launcher, "run_entry", lambda *a, **k: 0)
+    lines, emit = _emit_sink()
+    outcome = flows.execute(entry, plan, asm, emit=emit)
+    assert outcome.code == 0
+    assert "selected agent as plaintext" not in "\n".join(lines)
+
+
+def test_pinned_amp_prompt_warns_on_runner_none_shared_execution_path(tmp_path, monkeypatch):
+    """Form-free TUI reruns rely on PromptLaunch resolving the pin inside the strategy."""
+    from skit import launcher, store
+
+    source = tmp_path / "amp.prompt.md"
+    source.write_text("Do it\n", encoding="utf-8")
+    entry = store.add_prompt(source, name="amp-task", runner="amp")
+    monkeypatch.setattr("skit.langs.launch._which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(launcher, "run_entry", lambda *a, **k: 0)
+    lines, emit = _emit_sink()
+    outcome = flows.execute(
+        entry,
+        flows.plan_for_entry(entry),
+        flows.Assembly(),
+        emit=emit,
+        runner=None,
+    )
+    assert outcome.code == 0
+    assert "amp -x runs this prompt once" in "\n".join(lines)
 
 
 def test_execute_injects_then_cleans_up_the_temp_copy(tmp_path, monkeypatch):
@@ -1012,6 +1070,49 @@ def test_execute_classifies_not_executable(tmp_path, monkeypatch):
         emit=emit,
     )
     assert outcome.failure == flows.FAIL_NOT_EXECUTABLE
+
+
+def test_prompt_validation_classifies_missing_body_before_transparency(tmp_path):
+    from skit import config, store
+
+    source = tmp_path / "gone.prompt.md"
+    source.write_text("Do it\n", encoding="utf-8")
+    entry = store.add_prompt(source, name="gone")
+    entry.script_path.unlink()
+    lines, emit = _emit_sink()
+    outcome = flows.execute(
+        entry,
+        flows.plan_for_entry(entry),
+        flows.Assembly(),
+        emit=emit,
+        runner=config.find_prompt_runner("claude"),
+    )
+    assert outcome.code is None
+    assert outcome.failure == flows.FAIL_MISSING
+    assert "doesn't exist" in outcome.message
+    assert lines == []
+
+
+def test_prompt_validation_classifies_empty_runner_config_before_transparency(tmp_path):
+    from skit import config, store
+
+    source = tmp_path / "unrunnable.prompt.md"
+    source.write_text("Do it\n", encoding="utf-8")
+    entry = store.add_prompt(source, name="unrunnable")
+    config.save_prompt_runners([])
+    lines, emit = _emit_sink()
+    outcome = flows.execute(
+        entry,
+        flows.plan_for_entry(entry),
+        flows.Assembly(),
+        emit=emit,
+        runner=None,
+    )
+    assert outcome.code is None
+    assert outcome.failure == flows.FAIL_NOT_EXECUTABLE
+    assert "No agents are configured" in outcome.message
+    assert "skit runner add mycli -- mycli run {{prompt}}" in outcome.message
+    assert lines == []
 
 
 def test_execute_classifies_injection_drift(tmp_path, monkeypatch):
@@ -1124,6 +1225,31 @@ def test_transparency_command_source_masks_secret_placeholder(tmp_path):
     assert "sk-SUPERSECRET-123" not in line  # not leaked to the shown command line
     assert "•••" in line
     assert asm.command_values["api_key"] == "sk-SUPERSECRET-123"  # real value still runs
+
+
+def test_normal_prompt_transparency_is_compact_and_never_reads_the_body(tmp_path):
+    """Normal runs name the agent/flags without copying a whole prompt into scrollback."""
+    from skit import config, store
+
+    source = tmp_path / "review.prompt.md"
+    body_text = "DO-NOT-COPY-THIS-BODY {{api_key}}\n"
+    source.write_text(body_text, encoding="utf-8")
+    entry = store.add_prompt(source, name="review")
+    prompt_runner = config.PromptRunner("agent", ("agent", "--", "{{prompt}}"))
+    asm = flows.Assembly(
+        args=["--model", "fast"],
+        masked_args=["--model", "fast"],
+        command_values={"api_key": "plaintext"},
+        masked_command_values={"api_key": "•••"},
+    )
+    entry.script_path.unlink()  # compact display is snapshot metadata, not a second body read
+
+    line = flows.transparency_lines(entry, asm, None, runner=prompt_runner)[-1]
+
+    assert "agent --model fast --" in line
+    assert "rendered prompt omitted" in line
+    assert body_text.strip() not in line
+    assert "plaintext" not in line
 
 
 def test_execute_not_executable_message_carries_the_error(tmp_path, monkeypatch):

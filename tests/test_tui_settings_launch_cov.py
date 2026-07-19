@@ -1,4 +1,4 @@
-"""Script settings' launch section (workdir radio, interpreter pin, editable command
+"""Entry settings' launch section (workdir radio, interpreter pin, editable command
 template) and the declared editor's Choices/Help fields.
 
 Every test asserts the persisted meta / ParamDecl or the stay-on-error contract, never a
@@ -120,7 +120,7 @@ def _exe(tmp_path, name="ex"):
 
 
 async def _workdir_shape(entry):
-    """Open Script settings for an entry and read back the workdir radio's value-keyed
+    """Open Entry settings for an entry and read back the workdir radio's value-keyed
     choices and the number of buttons rendered."""
     app = tui.MenuApp()
     async with app.run_test(size=(100, 40)) as pilot:

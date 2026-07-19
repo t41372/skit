@@ -218,6 +218,24 @@ def test_open_in_editor_launch_failure_message_exact(monkeypatch, tmp_path):
     assert "XX" not in msg
 
 
+def test_open_entry_prompt_removed_by_editor_is_a_clean_edited_source_error(monkeypatch, tmp_path):
+    """Editors may rename/delete their target; post-edit validation must report that cleanly."""
+    path = tmp_path / "review.prompt.md"
+    path.write_text("Review this\n", encoding="utf-8")
+
+    def remove_target(opened: Path) -> int:
+        opened.unlink()
+        return 0
+
+    monkeypatch.setattr(editor, "open_in_editor", remove_target)
+    with pytest.raises(editor.EditedSourceError) as exc_info:
+        editor.open_entry_in_editor(path, kind="prompt")
+
+    assert "Can't read" in str(exc_info.value)
+    assert str(path) in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, FileNotFoundError)
+
+
 # --------------------------------------------------------------------------
 # config editor read/write
 # --------------------------------------------------------------------------
@@ -323,7 +341,7 @@ def test_edit_unknown_confirmed_creates(monkeypatch):
         return 0
 
     monkeypatch.setattr(cli.editor, "open_in_editor", write_script)
-    result = runner.invoke(cli.app, ["edit", "newscript"])
+    result = runner.invoke(cli.app, ["edit", "newscript"], input="\n\n\n")
     assert result.exit_code == 0, result.output
     ent = store.resolve("newscript")
     assert ent.meta.kind == "python"
@@ -360,7 +378,7 @@ def test_add_edit_creates_in_editor(monkeypatch):
         return 0
 
     monkeypatch.setattr(cli.editor, "open_in_editor", write_script)
-    result = runner.invoke(cli.app, ["add", "-e", "--name", "fresh"])
+    result = runner.invoke(cli.app, ["add", "-e", "--name", "fresh"], input="\n\n\n")
     assert result.exit_code == 0, result.output
     ent = store.resolve("fresh")
     assert ent.meta.kind == "python"
@@ -370,7 +388,7 @@ def test_add_edit_creates_in_editor(monkeypatch):
 def test_add_edit_bash_shebang_draft_becomes_a_shell_entry(monkeypatch):
     """A changed shebang in the draft is honored exactly like the TUI draft lane: writing a
     #!/usr/bin/env bash body makes the entry SHELL via store.add_script, never a broken
-    python entry with a bash body (finding 7)."""
+    python entry with a bash body."""
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
 
     def write_script(p):
@@ -387,7 +405,7 @@ def test_add_edit_bash_shebang_draft_becomes_a_shell_entry(monkeypatch):
 
 def test_add_edit_js_shebang_draft_scans_npm_deps(monkeypatch):
     """A node-shebang draft lands as a js entry and its declared npm imports are scanned
-    into the entry's dependencies (the deps branch of the changed-shebang lane, finding 7)."""
+    into the entry's dependencies."""
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
 
     def write_script(p):
@@ -473,8 +491,8 @@ def test_add_edit_dep_flag_on_non_python_draft_is_refused(monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# draft preservation (finding R2): refuse a taken name BEFORE the editor; keep the
-# draft on a post-edit failure
+# Draft preservation: refuse a taken name BEFORE the editor; keep the draft on a
+# post-edit failure.
 # --------------------------------------------------------------------------
 
 
@@ -670,11 +688,11 @@ def test_add_edit_writes_and_reports_managed_and_secret(monkeypatch, tmp_path):
         return 0
 
     monkeypatch.setattr(cli.editor, "open_in_editor", write_script)
-    result = runner.invoke(cli.app, ["add", "-e", "--name", "fresh"])
+    result = runner.invoke(cli.app, ["add", "-e", "--name", "fresh"], input="\n")
     assert result.exit_code == 0, result.output
     # kills _print_add_summary(entry, deps, None, secrets) / (.., None) at the create call site
     assert "Managed parameters: API" in result.output
-    assert "Secret parameter values are never saved to disk: API" in result.output
+    assert "Secret parameter values are never saved by skit: API" in result.output
 
 
 def test_params_edit_command_entry_refused():

@@ -1,6 +1,6 @@
-"""Round-11 TUI coverage — the drafts boundary and validate-then-write on the add panel.
+"""TUI coverage for the drafts boundary and validate-then-write on the add panel.
 
-Every assertion pins an OBSERVABLE contract of the round-11 (round-10 finding) TUI fixes:
+Every assertion pins an observable add-review contract:
 
   * an INFERRED exe on a resumed draft is remapped to the ASK (KindPickModal), which for a
     draft offers NO "A program" option — the drafts boundary forbids a reference-mode entry;

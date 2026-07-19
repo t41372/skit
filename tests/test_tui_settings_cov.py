@@ -1,4 +1,4 @@
-"""Exact-behavior tests for the merged Script settings screen (tui_settings.py).
+"""Exact-behavior tests for the merged Entry settings screen (tui_settings.py).
 
 Behaviour is asserted — the written [tool.skit] copy, store/argstate mutations, the
 rendered section/hint text, resync warnings — never a line executed for its own sake.

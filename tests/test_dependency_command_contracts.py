@@ -1,7 +1,7 @@
-"""Round-13 design-audit fixes — real-behavior coverage (exit codes, exact refusal/confirmation
+"""Dependency-command contracts (exit codes, exact refusal/confirmation
 copy, meta + stored PEP 723 text, the store chokepoints in isolation).
 
-Every assertion pins an OBSERVABLE contract of the three round-13 (round-12 LOW) fixes:
+Every assertion pins an observable dependency-command contract:
 
   * the drafts-boundary refusal names ONLY the flags actually typed — "Drop --ref." /
     "Drop --exe." / "Drop --kind exe.", joined with "/" when more than one is passed —

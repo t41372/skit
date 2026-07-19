@@ -18,11 +18,13 @@ from __future__ import annotations
 
 import re
 
-# The one insertion-marker grammar for the prompt surface (bodies AND runner argv
-# slots): {{identifier}}, not brace-adjacent. Command templates keep their own {name}
-# grammar in langs/launch.py — that surface shipped first and is shell-quoted, a
-# different world.
-TOKEN_RE = re.compile(r"(?<!\{)\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}(?!\})")
+# The one double-brace token SHAPE for prompt bodies and runner argv. Whether the
+# contents are a manageable name is decided with str.isidentifier(), which gives a
+# localized prompt the same natural identifier vocabulary Python does (``{{任务}}``,
+# ``{{café}}``, …). Matching the broader shape is deliberate: runner validation must
+# reject an unsupported ``{{not-a-name}}`` instead of overlooking it as literal data.
+# Triple-stache remains excluded by the brace-adjacency guards.
+TOKEN_RE = re.compile(r"(?<!\{)\{\{([^{}]*)\}\}(?!\})")
 
 # `prompt` is reserved: it names the runner template's own slot, and a form field called
 # "prompt" on a prompt entry would be endless confusion (an ergonomic guard, not a
@@ -42,19 +44,23 @@ LIST_PREVIEW_LIMIT = 20
 def placeholder_names(text: str) -> list[str]:
     """Every manageable ``{{name}}`` in a prompt body, deduped in order of first
     appearance. The reserved name is excluded outright (see RESERVED_NAME)."""
-    seen: list[str] = []
+    names: list[str] = []
+    seen: set[str] = set()
     for m in TOKEN_RE.finditer(text):
         name = m.group(1)
-        if name != RESERVED_NAME and name not in seen:
-            seen.append(name)
-    return seen
+        if name != RESERVED_NAME and name.isidentifier() and name not in seen:
+            seen.add(name)
+            names.append(name)
+    return names
 
 
-def preview_names(names: list[str]) -> str:
-    """A flood-safe, comma-joined rendering of candidate names: the first
-    LIST_PREVIEW_LIMIT, then a "+N more" tail. Pure formatting (no i18n — names are
-    data; callers wrap the sentence around it)."""
-    if len(names) <= LIST_PREVIEW_LIMIT:
-        return ", ".join(names)
-    shown = ", ".join(names[:LIST_PREVIEW_LIMIT])
-    return f"{shown} … +{len(names) - LIST_PREVIEW_LIMIT}"
+def preview_names(names: list[str]) -> tuple[str, int]:
+    """Flood-safe preview data: comma-joined visible names and the hidden count.
+
+    Names are data, but a truncation tail is user-interface grammar (``and N more``)
+    and belongs at the caller's i18n boundary.  Keeping the count separate lets a
+    human surface translate the whole sentence while a machine surface keeps returning
+    the complete list unchanged.
+    """
+    shown = names[:LIST_PREVIEW_LIMIT]
+    return ", ".join(shown), len(names) - len(shown)

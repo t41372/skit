@@ -161,7 +161,7 @@ class PreferencesScreen(Screen[bool]):
     @on(RadioSet.Changed)
     @on(Select.Changed)
     def _mark_dirty(self) -> None:
-        # Same guard Script settings has: eight sections of unsaved edits must not
+        # Same guard Entry settings has: eight sections of unsaved edits must not
         # vanish on a stray Esc while its sibling screen asks first.
         if self._dirt_armed:
             self._dirty = True
@@ -246,11 +246,11 @@ class PreferencesScreen(Screen[bool]):
             yield Static(gettext("After a run (from this menu)"), classes="section")
             with RadioSet(id="pf-after"):
                 yield RadioButton(
-                    gettext("Quit skit — leave the script's output in the terminal"),
+                    gettext("Quit skit — leave the run's output in the terminal"),
                     value=config.load_after_run() == "exit",
                 )
                 yield RadioButton(
-                    gettext("Return to the Library"),
+                    gettext("Return to the Library immediately"),
                     value=config.load_after_run() == "stay",
                 )
 
@@ -311,7 +311,7 @@ class PreferencesScreen(Screen[bool]):
 
     def _compose_mirror(self) -> ComposeResult:
         """The three-axis mirror section (master switch + PyPI / GitHub-releases / npm),
-        one cohesive block — split out of compose for the same reason Script settings
+        one cohesive block — split out of compose for the same reason Entry settings
         splits _compose_deps: one section, one function."""
         yield Static(gettext("Download mirrors (mainland-China acceleration)"), classes="section")
         yield Static(
@@ -446,7 +446,7 @@ class PreferencesScreen(Screen[bool]):
     def action_save(self) -> None:
         # VALIDATE EVERYTHING FIRST, write only after all checks pass: a refusal that
         # lands after half the sections are persisted makes the Esc guard's "unsaved
-        # changes" a lie (Script settings' own contract: nothing is saved half-way).
+        # changes" a lie (Entry settings' own contract: nothing is saved half-way).
         # The mirror block resolves (and validates all three axes) through
         # _resolve_mirror; bash-path keeps the CLI door's no-such-file rule.
         mirror_cfg = self._resolve_mirror()

@@ -4,16 +4,16 @@ the management screen.
 Every surface that picks a runner (the run form, the prompt add review, Script
 settings) uses a value-keyed Select dropdown and mounts the same Ctrl+N chip that
 opens RunnerAddModal — the zero-memorization twin of `skit runner add NAME COMMAND…`. The
-command is typed as one line and split into argv with shlex (quotes group words); no
-shell is ever involved at launch, the split happens exactly once, here, and the tokens
-go into config verbatim. RunnerManageScreen (reached from Preferences) is where the
-whole registry is visible: list, edit, remove — never an add-only door.
+command is typed as one line and split into argv with platform-appropriate shlex rules
+(quotes group words; Windows backslashes stay literal); no shell is ever involved at
+launch, the split happens exactly once, here, and the tokens go into config verbatim.
+RunnerManageScreen (reached from Preferences) is where the whole registry is visible:
+list, edit, remove — never an add-only door.
 """
 
 from __future__ import annotations
 
-import shlex
-from typing import override
+from typing import cast, override
 
 from rich.markup import escape
 from textual import on
@@ -24,8 +24,8 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import Input, Label, OptionList, Static
 from textual.widgets.option_list import Option
 
-from . import config, tui_footer
-from .i18n import gettext
+from . import argv_text, config, store, tui_footer
+from .i18n import gettext, ngettext
 
 
 def _reason_text(code: str) -> str:
@@ -48,6 +48,11 @@ def _reason_text(code: str) -> str:
     }[code]
 
 
+def _row_reason_text(row: config.PromptRunnerRow) -> str:
+    """Explain one raw invalid config row in the management surface."""
+    return config.prompt_runner_row_reason(row)
+
+
 class RunnerAddModal(ModalScreen[str | None]):
     """Register (or edit) a custom agent from any runner-picking surface.
 
@@ -55,11 +60,14 @@ class RunnerAddModal(ModalScreen[str | None]):
     presets first, so the row lands next to visible, editable ones), or None on
     cancel. Validation is the same rule the CLI enforces — the two doors write the
     same config rows. Pass ``editing`` to open prefilled on an existing runner: the
-    save then replaces that row in place (renaming allowed), instead of refusing the
-    name as a duplicate."""
+    stable name is read-only (prompt pins key off it), and saving replaces that row's
+    command in place."""
 
     AUTO_FOCUS = "Input"
-    BINDINGS = [Binding("escape", "cancel", gettext("Cancel"))]
+    BINDINGS = [
+        *tui_footer.FIELD_NAV_BINDINGS,
+        Binding("escape", "cancel", gettext("Cancel")),
+    ]
     DEFAULT_CSS = """
     RunnerAddModal { align: center middle; }
     RunnerAddModal > Vertical {
@@ -73,24 +81,42 @@ class RunnerAddModal(ModalScreen[str | None]):
     RunnerAddModal.-h-short Static, RunnerAddModal.-h-tiny Static { margin: 0; }
     """
 
-    def __init__(self, editing: str | None = None) -> None:
+    def __init__(
+        self,
+        editing: str | None = None,
+        *,
+        initial_argv: tuple[str, ...] | None = None,
+        selected_raw: bool = False,
+        expected_rows: list[config.PromptRunnerRow] | None = None,
+        repair_row: config.PromptRunnerRow | None = None,
+    ) -> None:
         super().__init__()
         self._editing: str | None = editing
+        self._initial_argv: tuple[str, ...] | None = initial_argv
+        self._selected_raw: bool = selected_raw
+        self._expected_rows: list[config.PromptRunnerRow] | None = expected_rows
+        self._repair_row: config.PromptRunnerRow | None = repair_row
 
     @override
     def compose(self) -> ComposeResult:
-        original = config.find_prompt_runner(self._editing) if self._editing else None
+        original = (
+            config.find_prompt_runner(self._editing)
+            if self._editing and not self._selected_raw
+            else None
+        )
+        editing = self._editing is not None or self._repair_row is not None
         with Vertical():
             yield Label(
-                gettext("Edit agent (runner)") if original else gettext("New agent (runner)")
+                gettext("Edit agent (runner)") if editing else gettext("New agent (runner)")
             )
             yield Input(
-                value=original.name if original else "",
+                value=original.name if original else (self._editing or ""),
                 placeholder=gettext("Name, e.g. aider"),
                 id="runner-add-name",
+                disabled=self._editing is not None,
             )
             yield Input(
-                value=shlex.join(original.argv) if original else "",
+                value=argv_text.join(original.argv if original else (self._initial_argv or ())),
                 placeholder=gettext("Command, e.g. aider --message {{prompt}}"),
                 id="runner-add-command",
             )
@@ -106,7 +132,9 @@ class RunnerAddModal(ModalScreen[str | None]):
                 tui_footer.bar(
                     tui_footer.chip("screen.save_runner", "Enter", gettext("Save")),
                     tui_footer.chip("screen.cancel", "Esc", gettext("Cancel")),
+                    tui_footer.nav_chip(),
                 ),
+                id="runner-add-footer",
                 markup=True,
             )
 
@@ -119,14 +147,21 @@ class RunnerAddModal(ModalScreen[str | None]):
 
     def action_save_runner(self) -> None:
         """Enter / the Save chip: validate, persist, dismiss with the saved name."""
-        name = self.query_one("#runner-add-name", Input).value.strip()
+        # Runner names are stable config keys: prompt entries persist the name as their
+        # pin. The disabled input is the visible contract; preferring `_editing` here is
+        # the defensive half, so a synthetic event cannot orphan every existing pin.
+        name = (
+            self._editing
+            if self._editing is not None
+            else self.query_one("#runner-add-name", Input).value.strip()
+        )
         command = self.query_one("#runner-add-command", Input).value.strip()
         if not name:
             self._error(gettext("A name is required."))
             self.query_one("#runner-add-name", Input).focus()
             return
         try:
-            argv = shlex.split(command)
+            argv = argv_text.split(command)
         except ValueError:
             self._error(gettext("Unbalanced quotes in the command."))
             return
@@ -134,22 +169,33 @@ class RunnerAddModal(ModalScreen[str | None]):
         if reason is not None:
             self._error(_reason_text(reason))
             return
-        # Seed first so the presets stay visible next to the new row, then re-load:
-        # the duplicate check must see exactly what will be written back.
-        config.ensure_prompt_runners_seeded()
-        runners = config.load_prompt_runners()
-        if any(r.name == name for r in runners if r.name != self._editing):
+        new_row = config.PromptRunner(name, tuple(argv))
+        try:
+            if self._repair_row is not None:
+                config.replace_prompt_runner_row(
+                    cast(int, self._repair_row.index), new_row, expected=self._repair_row
+                )
+            else:
+                config.set_prompt_runner(
+                    new_row,
+                    replace_existing=self._editing is not None,
+                    expected=self._expected_rows,
+                )
+        except config.PromptRunnerExistsError:
             self._error(
                 gettext("The runner %(name)s already exists — pick another name.") % {"name": name}
             )
             return
-        new_row = config.PromptRunner(name, tuple(argv))
-        if self._editing and any(r.name == self._editing for r in runners):
-            # Replace in place — an edit (or rename) keeps the row's position.
-            runners = [new_row if r.name == self._editing else r for r in runners]
-        else:
-            runners = [*runners, new_row]
-        config.save_prompt_runners(runners)
+        except config.PromptRunnerChangedError:
+            self._error(
+                gettext(
+                    "Runner config changed; this edit was not saved. Cancel and select the row again."
+                )
+            )
+            return
+        except config.PromptRunnerConfigError as exc:
+            self._error(str(exc))
+            return
         self.dismiss(name)
 
     def action_cancel(self) -> None:
@@ -174,28 +220,57 @@ class RunnerActionModal(ModalScreen[str | None]):
     RunnerActionModal > Vertical > Static:last-of-type { margin: 1 0 0 0; }
     """
 
-    def __init__(self, name: str) -> None:
+    def __init__(
+        self,
+        name: str,
+        *,
+        row_index: int | None = None,
+        invalid_reason: str | None = None,
+        argv: tuple[str, ...] | None = None,
+        editable: bool = True,
+        selected_raw: bool = False,
+    ) -> None:
         super().__init__()
         self._name: str = name
+        self._row_index: int | None = row_index
+        self._invalid_reason: str | None = invalid_reason
+        self._argv: tuple[str, ...] | None = argv
+        self._editable: bool = editable
+        self._selected_raw: bool = selected_raw
 
     @override
     def compose(self) -> ComposeResult:
-        runner = config.find_prompt_runner(self._name)
-        command = shlex.join(list(runner.argv)) if runner else ""
+        runner = None if self._selected_raw else config.find_prompt_runner(self._name)
+        command = argv_text.join(runner.argv if runner else (self._argv or ()))
         with Vertical():
             yield Label(escape(self._name))
             yield Static(escape(command))
-            yield Static(
-                tui_footer.bar(
-                    tui_footer.chip("screen.edit", "e", gettext("Edit")),
+            if self._invalid_reason:
+                row = config.PromptRunnerRow(
+                    self._row_index,
+                    self._name,
+                    self._argv,
+                    self._invalid_reason,
+                    self._name,
+                )
+                yield Static(f"[red]⚠ {escape(_row_reason_text(row))}[/red]", markup=True)
+            chips = []
+            if self._editable:
+                chips.append(tui_footer.chip("screen.edit", "e", gettext("Edit")))
+            chips.extend(
+                (
                     tui_footer.chip("screen.remove", "d", gettext("Remove")),
                     tui_footer.chip("screen.cancel", "Esc", gettext("Back")),
-                ),
+                )
+            )
+            yield Static(
+                tui_footer.bar(*chips),
                 markup=True,
             )
 
     def action_edit(self) -> None:
-        self.dismiss("edit")
+        if self._editable:
+            self.dismiss("edit")
 
     def action_remove(self) -> None:
         self.dismiss("remove")
@@ -219,14 +294,41 @@ class RunnerRemoveConfirm(ModalScreen[bool]):
     RunnerRemoveConfirm Static { width: auto; margin: 1 0 0 0; }
     """
 
-    def __init__(self, name: str) -> None:
+    def __init__(
+        self,
+        name: str,
+        pinned_count: int = 0,
+        *,
+        invalid_row: bool = False,
+        container: bool = False,
+    ) -> None:
         super().__init__()
         self._name: str = name
+        self._pinned_count: int = pinned_count
+        self._invalid_row: bool = invalid_row
+        self._container: bool = container
 
     @override
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Label(gettext('Remove the agent "%(name)s"?') % {"name": self._name})
+            if self._container:
+                question = gettext("Remove the malformed prompt runner container?")
+            elif self._invalid_row:
+                question = gettext('Remove malformed runner row "%(name)s"?') % {
+                    "name": escape(self._name)
+                }
+            else:
+                question = gettext('Remove the agent "%(name)s"?') % {"name": escape(self._name)}
+            yield Label(question)
+            if self._pinned_count:
+                yield Static(
+                    ngettext(
+                        "%(count)d prompt pins this runner and will need another runner before it can run again.",
+                        "%(count)d prompts pin this runner and will need another runner before they can run again.",
+                        self._pinned_count,
+                    )
+                    % {"count": self._pinned_count}
+                )
             yield Static(
                 tui_footer.bar(
                     tui_footer.chip("screen.confirm", "y", gettext("Remove")),
@@ -261,10 +363,15 @@ class RunnerManageScreen(Screen[None]):
         border-title-style: bold;
     }
     RunnerManageScreen .hint { color: $text-muted; }
+    RunnerManageScreen #rm-error { height: auto; color: $error; }
     RunnerManageScreen OptionList { height: auto; border: none; }
     RunnerManageScreen KeysBar { dock: bottom; }
     RunnerManageScreen #rm-keys { color: $text-muted; }
     """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._rows_by_id: dict[str, config.PromptRunnerRow] = {}
 
     def on_mount(self) -> None:
         # The management surface is where the seeds materialize into the user's
@@ -277,16 +384,26 @@ class RunnerManageScreen(Screen[None]):
     def _reload(self) -> None:
         option_list = self.query_one(OptionList)
         option_list.clear_options()
-        runners = config.load_prompt_runners()
-        for runner in runners:
-            option_list.add_option(
-                Option(
-                    f"{escape(runner.name)}  [dim]{escape(shlex.join(list(runner.argv)))}[/dim]",
-                    id=runner.name,
+        rows = config.prompt_runner_rows()
+        self._rows_by_id = {}
+        for display_index, row in enumerate(rows):
+            # Textual ids live entirely in the UI's namespace.  A runner name is
+            # user-controlled data and may legally equal any prefix we invent, so it
+            # must never double as a widget/option id.
+            option_id = f"runner-row-{display_index}"
+            if row.invalid_reason is None:
+                prompt = f"{escape(row.name)}  [dim]{escape(argv_text.join(row.argv or ()))}[/dim]"
+            else:
+                label = row.name or row.descriptor
+                command = argv_text.join(row.argv) if row.argv is not None else ""
+                command_text = f"  [dim]{escape(command)}[/dim]" if command else ""
+                prompt = (
+                    f"⚠ {escape(label)}  [red]{escape(_row_reason_text(row))}[/red]{command_text}"
                 )
-            )
+            self._rows_by_id[option_id] = row
+            option_list.add_option(Option(prompt, id=option_id))
         empty = self.query_one("#rm-empty", Static)
-        empty.display = not runners
+        empty.display = not rows
 
     @override
     def compose(self) -> ComposeResult:
@@ -296,6 +413,7 @@ class RunnerManageScreen(Screen[None]):
                 classes="hint",
             )
             yield OptionList()
+            yield Static("", id="rm-error")
             yield Static(gettext("No agents configured yet."), id="rm-empty", classes="hint")
         yield tui_footer.KeysBar(
             Static(
@@ -311,23 +429,79 @@ class RunnerManageScreen(Screen[None]):
 
     @on(OptionList.OptionSelected)
     def _picked(self, event: OptionList.OptionSelected) -> None:
-        name = str(event.option.id)
+        row = self._rows_by_id[str(event.option.id)]
+        name = row.name or row.descriptor
+        key_rows = [
+            candidate for candidate in self._rows_by_id.values() if candidate.name == row.name
+        ]
 
         def _decided(action: str | None) -> None:
             if action == "edit":
-                self.app.push_screen(RunnerAddModal(editing=name), lambda _: self._reload())
+                modal = (
+                    RunnerAddModal(
+                        editing=row.name,
+                        initial_argv=row.argv,
+                        selected_raw=True,
+                        expected_rows=key_rows,
+                    )
+                    if row.name
+                    else RunnerAddModal(
+                        initial_argv=row.argv,
+                        selected_raw=True,
+                        repair_row=row,
+                    )
+                )
+                self.app.push_screen(modal, lambda _: self._reload())
             elif action == "remove":
 
                 def _confirmed(really: bool | None) -> None:
                     if really:
-                        config.save_prompt_runners(
-                            [r for r in config.load_prompt_runners() if r.name != name]
-                        )
+                        if row.invalid_reason is None:
+                            # The valid row represents the stable runner-name key.  A
+                            # hand-edited duplicate must not spring to life immediately
+                            # after the user removes that agent, so key removal coalesces
+                            # every raw row for the name. Invalid-row removal below stays
+                            # exact: it is config repair, not removal of the active key.
+                            removed = config.remove_prompt_runner(row.name, expected=key_rows)
+                        else:
+                            removed = config.remove_prompt_runner_row(row.index, expected=row)
+                        error = self.query_one("#rm-error", Static)
+                        if removed:
+                            error.update("")
+                        else:
+                            error.update(
+                                gettext(
+                                    "Runner config changed; nothing was removed. Select the row again."
+                                )
+                            )
                         self._reload()
 
-                self.app.push_screen(RunnerRemoveConfirm(name), _confirmed)
+                pinned_count = (
+                    len(store.prompt_entries_pinned_to(row.name))
+                    if row.invalid_reason is None
+                    else 0
+                )
+                self.app.push_screen(
+                    RunnerRemoveConfirm(
+                        name,
+                        pinned_count,
+                        invalid_row=row.invalid_reason is not None,
+                        container=row.index is None,
+                    ),
+                    _confirmed,
+                )
 
-        self.app.push_screen(RunnerActionModal(name), _decided)
+        self.app.push_screen(
+            RunnerActionModal(
+                name,
+                row_index=row.index,
+                invalid_reason=row.invalid_reason,
+                argv=row.argv,
+                editable=row.argv is not None and row.index is not None,
+                selected_raw=True,
+            ),
+            _decided,
+        )
 
     def action_new_runner(self) -> None:
         self.app.push_screen(RunnerAddModal(), lambda _: self._reload())

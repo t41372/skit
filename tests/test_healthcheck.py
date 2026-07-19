@@ -63,7 +63,7 @@ def test_entry_drifted_true_for_managed_placeholder_gone_from_prompt(tmp_path):
 
 
 def test_entry_drifted_false_when_prompt_body_unreadable(tmp_path, monkeypatch):
-    # An unreadable body is the target/preflight sweeps' finding, not drift's — the
+    # An unreadable body belongs to the target/preflight sweeps, not drift — the
     # read guard must swallow the OSError and report no drift.
     entry = _prompt(tmp_path, "Do {{a}} {{gone}}\n", "pr")
     target = entry.script_path

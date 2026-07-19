@@ -4,7 +4,7 @@ the Health screen's launch-blocked / malformed-runner rows.
 The contract under test: a placeholder-source value travels byte-identical (`{{x}}` kept),
 an inject/flag-source value halves the escape pair (`{{x}}` → `{x}`), and the form's live
 preview shows exactly what delivery will produce. Plus: both health faces share one
-collector, so the TUI screen renders the same launch_blocked / invalid-runner findings
+collector, so the TUI screen renders the same launch_blocked / invalid-runner issues
 doctor does.
 """
 
@@ -43,7 +43,6 @@ def quiet_run(monkeypatch):
     config.save_after_run("stay")
     monkeypatch.setattr(launcher, "run_entry", lambda *a, **k: 0)
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
-    monkeypatch.setattr("builtins.input", lambda *a: "")
 
 
 # ---------------------------------------------------------------- flows.assemble delivery

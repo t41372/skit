@@ -1,7 +1,7 @@
-"""Round-10 design-audit fixes — real-behavior coverage (exit codes, stored PEP 723 text,
+"""Add feedback contracts (exit codes, stored PEP 723 text,
 prompt-ask labels, filesystem state, notice counts).
 
-Every assertion pins an observable contract of the round-10 fixes:
+Every assertion pins an observable add-feedback contract:
   * --ref on skit's OWN kept draft is REFUSED (exit 2, draft kept, no entry) — a reference
     entry into drafts/ would leave a live entry's file listed as a resumable draft;
   * an unknown-kind refusal is shebang-AWARE: a file with a #! is "names no interpreter",
@@ -45,6 +45,8 @@ def tmp_store(tmp_path, monkeypatch):
 @pytest.fixture
 def tty(monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
 
 
 def _flat(text: str) -> str:
@@ -74,8 +76,7 @@ def _capture_ask(
 
 
 # ==========================================================================
-# 1. --ref on a kept draft is refused (round-10; the round-8 test that pinned it
-#    as ALLOWED lived in test_round8_audit and was rewritten to the refusal).
+# 1. --ref on a kept draft is refused
 # ==========================================================================
 
 
@@ -170,8 +171,7 @@ def test_python_ask_label_is_leave_empty_without_a_pin(tty, monkeypatch):
 
 
 # ==========================================================================
-# 4. A micro-versioned shebang keeps its .1 (unit row is in test_round9_audit;
-#    here: the constraint actually lands in the stored PEP 723 block)
+# 4. A micro-versioned shebang keeps its .1 in the stored PEP 723 block
 # ==========================================================================
 
 
@@ -199,7 +199,7 @@ def test_micro_versioned_shebang_lands_in_stored_pep723(tmp_path):
 
 def test_shebangless_unknown_uses_the_isnt_a_script_voice(tmp_path):
     """A shebang-LESS unknown file keeps the original 'isn't a script or an executable' message
-    (the awk-shebang complement lives in test_round9_audit)."""
+    (the registered-shebang complement has its own test)."""
     f = tmp_path / "mystery"
     f.write_text("just some text, no shebang\n", encoding="utf-8")
     result = runner.invoke(cli.app, ["add", str(f), "-n", "mys", "--no-input"])

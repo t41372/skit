@@ -1,8 +1,8 @@
-"""Round-12 design-audit fixes — real-behavior coverage (exit codes, exact refusal copy,
+"""Dependency-write validation and draft-refusal contracts (exit codes, exact refusal copy,
 filesystem/meta state, stored PEP 723 text, the store's validate-then-write chokepoint, the
 suggest-dependencies self-fabrication filter).
 
-Every assertion pins an OBSERVABLE contract of the round-12 fixes:
+Every assertion pins an observable dependency-write or draft-refusal contract:
 
   * validate-then-write now covers EVERY uv-metadata writer, not just `skit add`: `skit deps`
     routes through store.update_dependencies, whose new `_validate_uv_metadata` refuses an
@@ -101,7 +101,7 @@ def test_deps_garbage_python_is_refused_and_nothing_changes(tmp_path):
 
 def test_deps_dash_python_clears_meta_and_unpins_the_block(tmp_path):
     """'-' means automatic AND an explicit unpin. Inverted from the old "preserve on unpin"
-    behavior the round-13 audit named a false statement on three surfaces at once: meta,
+    behavior that otherwise creates a false statement on three surfaces at once: meta,
     `--json`, and the visible `run` command all reported "—" while uv still silently enforced
     the block's own `requires-python`. Now the caller's explicit unpin (requires_python == "",
     the '-' token) reaches the block uv actually reads: meta clears to "", the `requires-python`

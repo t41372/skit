@@ -410,7 +410,7 @@ def test_drift_lines_exact_messages():
         "  GONE: injection target no longer exists (dropped from this run's form)",
         "  RETRIES: type changed from int to str in the source"
         " (still injected — double-check the value)",
-        # The remedy interpolates the real entry name (round-6), not a literal "NAME".
+        # The remedy interpolates the real entry name, not a literal "NAME".
         "To refresh the definitions, run: skit params myscript --resync",
     ]
 

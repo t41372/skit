@@ -25,14 +25,14 @@ script, and (with your OK) saving the good ones back, so they outlive the chat.
 
 ## What it does
 
-- **One home for your scripts.** `skit add` collects scattered scripts into a searchable library — keep a copy in the library, or reference the original file.
+- **One home for your scripts and prompts.** `skit add` collects scattered scripts and prompts into a searchable library — keep a copy in the library, or reference the original file.
 - **Parameters without the pain.** Flags, `input()` calls, and the constants you tick become form fields (choices → pickers, booleans → checkboxes, types enforced).
 - **It remembers.** Last-used values come back automatically; save favorites as named presets. Parameters marked secret never touch disk. Tokens like `{cwd}` and `{today}` keep presets portable.
 - **No environment mess.** Python scripts declare their dependencies inline (PEP 723) and run via uv in isolated environments; JS/TS scripts get a per-script `node_modules`, installed from their declared packages on first run. Nothing global either way. Other languages use the tools already on your machine — skit checks that declared external commands are on your `PATH` before running.
 - **Mouse or keyboard.** Plain `skit` opens the full TUI; every key hint on screen is also a clickable button.
 - **Automation-ready.** Every TUI action is also a CLI command with `--json` output and meaningful exit codes — for shell scripts, CI, and AI agents.
-- **Prompts are scripts too.** Store a parameterized prompt (`{{placeholders}}` become form fields) and fire it at your coding agent — claude, codex, opencode, and friends are preconfigured runners, and any CLI is one `skit runner add` away.
-- **Your agent's script library too.** The official [Agent Skill](https://agentskills.io) teaches Claude Code, Codex, Cursor, Gemini CLI, and friends the whole drill: discover scripts with `skit list`, read a parameter schema with `skit show`, run with `skit run --set … --no-input`. One `skit agent install` away — see [Works with your AI agent](#works-with-your-ai-agent).
+- **Prompts are first-class library entries.** Store a parameterized prompt (managed `{{placeholders}}` become form fields) and fire it at your coding agent — claude, codex, opencode, and friends are preconfigured runners, and any CLI is one `skit runner add` away.
+- **Your agent's library too.** The official [Agent Skill](https://agentskills.io) teaches Claude Code, Codex, Cursor, Gemini CLI, and friends the whole drill: discover entries with `skit list`, read a parameter schema with `skit show`, run with `skit run --set … --no-input`. One `skit agent install` away — see [Works with your AI agent](#works-with-your-ai-agent).
 - **Speaks your language.** English, 繁體中文, and 简体中文, with more to come. See [Languages](#languages).
 
 | Problem | What skit does |
@@ -75,10 +75,10 @@ You can also declare parameters by hand for any kind — so even plain executabl
 
 ### Prompts
 
-A prompt entry is a reusable, parameterized piece of text for an AI coding agent. Add a `.prompt.md` file (or draft one with `skit add --prompt`), and every `{{placeholder}}` (double braces, so code snippets full of single braces stay quiet) becomes a form field with the full preset / last-values / `--set` experience. There are no escape sequences to learn: anything that isn't a placeholder you manage — unmanaged `{{holes}}` included — travels to the agent byte-for-byte as written, and a per-prompt switch (`--no-interpolate`, or one checkbox in Script settings) turns insertion off entirely for prompts that were never written with it in mind. Running one renders the text and opens your agent's own interactive session with it — the **runner** is picked on the run form (or pinned per prompt), claude / codex / opencode / amp / antigravity come preconfigured, and `skit runner add mycli -- mycli run {{prompt}}` registers anything else. The rendered prompt travels as a single process argument — no shell in between. One honest caveat: prompts are not a secrets channel — whatever the rendered text contains ends up in the receiving agent's own session logs.
+A prompt entry is a reusable, parameterized piece of text for an AI coding agent. Add a `.prompt.md` file (or draft one with `skit add --prompt`); in interactive add review, choose which detected `{{placeholders}}` become form fields. Up to 30 are selected by default; when detection exceeds 30, none are selected by default, so code samples are not mistaken for variables. Managed fields get the full preset / last-values / `--set` experience. There are no escape sequences to learn: anything that isn't a placeholder you manage — unmanaged `{{holes}}` included — travels to the agent byte-for-byte as written, and a per-prompt switch (`--no-interpolate`, or one checkbox in Entry settings) turns insertion off entirely for prompts that were never written with it in mind. Running one renders the text and invokes the selected runner's configured argv command with it. The bundled Claude, Codex, OpenCode, and Antigravity commands open their interactive sessions; Amp is the deliberate exception, using its official `amp -x` one-shot mode to execute the prompt and return. The **runner** is picked on the run form (or pinned per prompt), claude / codex / opencode / amp / antigravity come preconfigured, and `skit runner add mycli -- mycli run {{prompt}}` registers anything else. The rendered prompt travels as a single process argument — no shell in between. One honest caveat: prompts are not a secrets channel — whatever the rendered text contains ends up in the receiving agent's own session logs.
 
 ```bash
-skit add review.prompt.md            # placeholders become form fields
+skit add review.prompt.md            # managed placeholders become form fields
 skit run review                      # pick the agent, fill the form, go
 skit run review --runner codex --set target=src/app.py --no-input
 ```
@@ -130,7 +130,7 @@ That removes skit and its `PATH` shim. Your library and settings live **outside*
 | **Linux** | `~/.local/share/skit` · `~/.local/state/skit` · `~/.config/skit` |
 | **Windows** | `%LOCALAPPDATA%\skit` |
 
-They hold your script library, config, presets, and last-used values — plus, if skit ever bootstrapped its own uv, the private `uv` binary (in `…/skit/bin`, deleted along with the rest).
+They hold your tool library, config, presets, and last-used values — plus, if skit ever bootstrapped its own uv, the private `uv` binary (in `…/skit/bin`, deleted along with the rest).
 
 ```bash
 # macOS

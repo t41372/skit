@@ -37,16 +37,16 @@ from textual.widgets import (
 )
 from textual.widgets.option_list import Option
 
-from . import argstate, flows, tokens, tui_footer, tui_runner
+from . import argstate, argv_text, flows, tokens, tui_footer, tui_runner
 from .i18n import gettext
 
 if TYPE_CHECKING:
     from .models import Entry
 
-# The submit result: (raw field values, extra passthrough args, picked runner name)
-# or None on cancel. The runner element is None unless the form showed a runner picker
-# (prompt entries in the TUI workbench); the CLI resolves its runner before the form.
-FormResult = tuple[dict[str, str], list[str], str | None] | None
+# The submit result: raw field values, extra passthrough args, selected runner name,
+# and whether the runner picker was actually changed; or None on cancel. The runner
+# is None unless the form showed that picker.
+FormResult = tuple[dict[str, str], list[str], str | None, bool] | None
 
 _EXTRA_KEY = "__extra_args__"
 
@@ -106,9 +106,11 @@ class FieldRow(Vertical):
     """
 
     def __init__(self, field: flows.FormField, prefill: str) -> None:
-        # Field keys are identifiers (argparse dests, [tool.skit] names, placeholders),
-        # so they are valid Textual ids; the ▾ link targets the row through this id.
-        super().__init__(id=f"fr-{field.key}")
+        # Textual ids are ASCII-only, while prompt placeholders deliberately accept
+        # Unicode identifiers. Keep the historical queryable id for ASCII fields and
+        # leave localized rows anonymous; actions resolve rows by their actual field
+        # key below, never by squeezing user data into a CSS identifier.
+        super().__init__(id=f"fr-{field.key}" if field.key.isascii() else None)
         self.field: flows.FormField = field
         self._prefill: str = prefill
 
@@ -499,6 +501,11 @@ class RunFormScreen(Screen[FormResult]):
         # frame passes none — it resolved the runner before opening the form.
         self._runners: list[str] = runners or []
         self._runner_default: str = runner_default
+        # A selected value alone cannot prove a pick: a pin may be left untouched,
+        # or a user may deliberately move away and then back to that same pin. Track
+        # the picker event itself, after initial composition has settled.
+        self._runner_pick_armed: bool = False
+        self._runner_was_picked: bool = False
         self._presets: dict[str, dict[str, str]] = argstate.load_state(entry.slug)["presets"]
         # Armed during the programmatic post-save picker refresh: while set, EVERY
         # Select.Changed is ignored until the one carrying this value arrives (it is
@@ -513,6 +520,12 @@ class RunFormScreen(Screen[FormResult]):
         self.query_one("#form-panel").border_title = gettext("Run %(name)s") % {
             "name": escape(self._entry.meta.name)
         }
+        self.call_after_refresh(setattr, self, "_runner_pick_armed", True)
+
+    @on(Select.Changed, "#runner-select")
+    def _runner_changed(self, _event: Select.Changed) -> None:
+        if self._runner_pick_armed:
+            self._runner_was_picked = True
 
     @override
     def compose(self) -> ComposeResult:
@@ -556,15 +569,17 @@ class RunFormScreen(Screen[FormResult]):
 
                     spec = spec_for(self._entry.meta.kind)
                     takes_argv = spec is None or spec.takes_argv
+                    if self._entry.meta.kind == "prompt":
+                        extra_label = gettext("Extra agent arguments")
+                    elif self._entry.meta.kind == "command":
+                        extra_label = gettext("Extra command arguments")
+                    else:
+                        extra_label = gettext("Extra arguments (passed to the script as-is)")
                     extra_field = flows.FormField(
                         key=_EXTRA_KEY,
-                        # Prompts: the extra args go to the AGENT's command line, not a
-                        # script — the label must not lie about where they land.
-                        label=(
-                            gettext("Extra arguments (passed to the script as-is)")
-                            if takes_argv
-                            else gettext("Extra agent arguments (appended to the runner command)")
-                        ),
+                        # Delivery owns the noun: prompt args go to an agent, command
+                        # args extend the command, and program args reach the script.
+                        label=extra_label,
                         source="flag",
                     )
                     # Replay semantics mirror the CLI's takes_argv rule: a kind whose
@@ -574,11 +589,9 @@ class RunFormScreen(Screen[FormResult]):
                     last_extra = (
                         argstate.load_state(self._entry.slug)["extra_args"] if takes_argv else []
                     )
-                    # shlex.join, because collect() shlex.split()s: an argument that
-                    # contains spaces must survive the round trip as ONE argument.
-                    import shlex
-
-                    yield FieldRow(extra_field, shlex.join(last_extra))
+                    # The matching split in collect() keeps one argument with spaces
+                    # intact and preserves Windows path backslashes.
+                    yield FieldRow(extra_field, argv_text.join(last_extra))
         chips = [
             tui_footer.chip("screen.submit", "Enter", gettext("Run")),
             tui_footer.chip("screen.insert_token", "Ctrl+T", gettext("Insert value")),
@@ -657,14 +670,12 @@ class RunFormScreen(Screen[FormResult]):
         self.app.push_screen(tui_runner.RunnerAddModal(), _added)
 
     def collect(self) -> tuple[dict[str, str], list[str]]:
-        import shlex
-
         values = {row.field.key: row.value for row in self._rows()}
         extra_row = next((row for row in self.query(FieldRow) if row.field.key == _EXTRA_KEY), None)
         if extra_row is None:
             return values, []
         try:
-            extra = shlex.split(extra_row.value)
+            extra = argv_text.split(extra_row.value)
         except ValueError:
             extra = [extra_row.value] if extra_row.value else []
         return values, extra
@@ -688,7 +699,7 @@ class RunFormScreen(Screen[FormResult]):
             for row in self._rows():
                 row.show_error(errors.get(row.field.key))
             return
-        self.dismiss((values, extra, self.picked_runner()))
+        self.dismiss((values, extra, self.picked_runner(), self._runner_was_picked))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -698,7 +709,12 @@ class RunFormScreen(Screen[FormResult]):
         cursor of the focused text field. Secrets are excluded — their values skip
         token expansion by design."""
         if key:
-            row = self.query_one(f"#fr-{key}", FieldRow)
+            row = next(
+                (candidate for candidate in self.query(FieldRow) if candidate.field.key == key),
+                None,
+            )
+            if row is None:
+                return
         else:
             focused = self.focused
             if not isinstance(focused, Input):

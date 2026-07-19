@@ -127,6 +127,9 @@ class ScriptMeta:
             )
         invalid = [key for key in ("name", "kind") if not isinstance(d[key], str)]
         invalid += [
+            key for key in ("runner",) if d.get(key) is not None and not isinstance(d[key], str)
+        ]
+        invalid += [
             key
             for key in ("dependencies", "needs", "params", "parameters")
             if d.get(key) is not None and not isinstance(d[key], list)

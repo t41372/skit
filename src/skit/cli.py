@@ -26,7 +26,7 @@ import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast, overload
 
 import typer
 from rich.console import Console
@@ -63,7 +63,8 @@ if TYPE_CHECKING:
 app = typer.Typer(
     name="skit",
     help=gettext(
-        "skit — a script launcher and parameter manager. Run it without a subcommand to open the main menu."
+        "skit — a launcher and parameter manager for scripts, prompts, programs, and commands. "
+        "Run it without a subcommand to open the main menu."
     ),
     add_completion=True,
     no_args_is_help=False,
@@ -128,7 +129,7 @@ def _complete_runner(incomplete: str) -> list[str]:
 
 
 _SCRIPT_ARG = typer.Argument(
-    ..., help=gettext("Script name or slug"), autocompletion=_complete_script
+    ..., help=gettext("Entry name or slug"), autocompletion=_complete_script
 )
 
 
@@ -195,7 +196,7 @@ def _resolve_python_metadata(
         if pin:
             _note_python_pin(pin)
         return [], pin  # No dependencies: nothing to ask
-    if no_input or not sys.stdin.isatty():
+    if no_input or not _is_interactive():
         if pin:
             _note_python_pin(pin)
         return suggested, pin  # Non-interactive: accept the suggestions as-is
@@ -299,7 +300,7 @@ def _resolve_npm_dependencies(
     suggested = scanner(text) if text else []
     if not suggested:
         return []
-    if no_input or not sys.stdin.isatty():
+    if no_input or not _is_interactive():
         return suggested  # Non-interactive: accept the suggestions as-is
     answer = Prompt.ask(
         gettext("Dependencies to install (Enter to accept, edit the list, or '-' for none)"),
@@ -344,17 +345,33 @@ def _refuse_unusable_add_flags(
 
 
 def _prompt_identity(
-    p: Path, text: str, name: str | None, description: str | None, no_input: bool
+    p: Path,
+    text: str,
+    name: str | None,
+    description: str | None,
+    no_input: bool,
+    *,
+    name_default: str | None = None,
+    description_default: str | None = None,
 ) -> tuple[str | None, str | None]:
     """Interactive name + description prompts for `add`. `None` means "let the store derive it"."""
-    if no_input or not sys.stdin.isatty():
+    if no_input or not _is_interactive():
         return name, description
     if name is None:
-        name = Prompt.ask(gettext("Name in skit"), default=p.stem, console=console).strip() or None
+        name = (
+            Prompt.ask(
+                gettext("Name in skit"), default=name_default or p.stem, console=console
+            ).strip()
+            or None
+        )
     if description is None:
         description = Prompt.ask(
             gettext("Description (optional)"),
-            default=store.suggest_description(text),
+            default=(
+                store.suggest_description(text)
+                if description_default is None
+                else description_default
+            ),
             console=console,
         ).strip()
     return name, description
@@ -372,8 +389,10 @@ def _drafts_home() -> str:
 
 
 def _require_file(resolved: Path) -> None:
-    if not resolved.is_file():
+    if not resolved.exists():
         raise store.StoreError(gettext("File not found: %(path)s") % {"path": str(resolved)})
+    if not resolved.is_file():
+        raise store.StoreError(gettext("Not a file: %(path)s") % {"path": str(resolved)})
 
 
 def _require_exists(resolved: Path) -> None:
@@ -504,7 +523,7 @@ def _onboard_params(text: str, script_name: str, no_input: bool) -> list[ParamDe
         if flows.reader_fields(spec_for("python"), text):
             return []
     _print_add_hints(result, script_name)
-    if not result.candidates or no_input or not sys.stdin.isatty():
+    if not result.candidates or no_input or not _is_interactive():
         return []
     console.print(
         ngettext(
@@ -543,7 +562,7 @@ def _print_reference_add_notice(
 def _onboard_script_params(entry: store.Entry, kind_spec: LangSpec, no_input: bool) -> list[str]:
     """Line-mode parameter onboarding for analyzable interpreted kinds (shell/js/ts/
     fish) — the same candidate tick python gets. The analyzers shipped a whole PR
-    without any add lane ever surfacing their findings; users concluded the language
+    without any add lane ever surfacing their results; users concluded the language
     support was fake. Ticks are copy mode only (reference never writes the original,
     A7 — the reference voice says so); non-interactive selects nothing (python's
     rule: honesty beats clever)."""
@@ -562,7 +581,7 @@ def _onboard_script_params(entry: store.Entry, kind_spec: LangSpec, no_input: bo
         if flows.reader_fields(kind_spec, text):
             return []
     _print_add_hints(result, entry.meta.name)
-    if not result.candidates or no_input or not sys.stdin.isatty():
+    if not result.candidates or no_input or not _is_interactive():
         return []
     console.print(
         ngettext(
@@ -735,7 +754,15 @@ def _create_python_in_editor(
     try:
         console.print(f"[dim]{gettext('Opening your editor…')}[/dim]")
         editor.open_in_editor(tmp)
-        text = tmp.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate — utf-8 equiv
+        try:
+            text = tmp.read_text(
+                encoding="utf-8", errors="replace"
+            )  # pragma: no mutate — utf-8 equiv
+        except OSError as exc:
+            raise store.StoreError(
+                gettext("Can't read %(path)s: %(error)s")
+                % {"path": str(tmp), "error": exc.strerror or str(exc)}
+            ) from exc
         if text.strip() in ("", _STARTER_SCRIPT.strip()):
             tmp.unlink(missing_ok=True)  # pragma: no mutate — no user content: pure litter
             console.print(gettext("Nothing was written, so no script was added."))
@@ -909,18 +936,14 @@ def _add_script_from_stdin(
 
 
 def _starter_prompt() -> str:
-    """The drafted-prompt starter body — user-visible prose in $EDITOR, so it goes
-    through gettext like every other UI string (resolved at call time, never import)."""
-    return (
-        gettext(
-            "# New prompt\n"
-            "\n"
-            "Describe the task for the agent. Mark the parts that change per run as "
-            "{{placeholders}} — each becomes a form field. Everything else travels to "
-            "the agent exactly as written."
-        )
-        + "\n"
-    )
+    """A minimal drafted-prompt scaffold, localized at call time.
+
+    The starter is payload, not editor chrome: teaching ``{{placeholders}}`` inside it
+    created a real required field when users kept the helper paragraph. The docs and
+    review panel teach insertion; the editable artifact starts with only an obvious
+    title the user can replace or keep.
+    """
+    return gettext("# New prompt") + "\n\n"
 
 
 def _maybe_quiet(quiet: bool) -> Console:
@@ -935,24 +958,37 @@ def _maybe_quiet(quiet: bool) -> Console:
 def _custom_runner_hint() -> str:
     """The one-line "you can define your own agent" teaching, shared by every plain-mode
     runner ask. A function, not a module constant: gettext must run at call time."""
-    return gettext("Custom agents: skit runner add NAME COMMAND… (see skit runner --help)")
+    return gettext(
+        "Custom agents: skit runner add mycli -- mycli run {{prompt}} (see skit runner --help)"
+    )
 
 
-def _validate_prompt_runner_opt(runner_opt: str | None) -> None:
+@overload
+def _validate_prompt_runner_opt(runner_opt: None) -> None: ...
+
+
+@overload
+def _validate_prompt_runner_opt(runner_opt: str) -> str: ...
+
+
+def _validate_prompt_runner_opt(runner_opt: str | None) -> str | None:
     """--runner names static config, so it is validated BEFORE any editor opens or a
     draft materializes (the name-conflict precedent): a refusal must not cost authored
-    work or leave a silent state fingerprint behind."""
+    work or leave a silent state fingerprint behind. Names normalize at every CLI
+    boundary, matching the TUI intake and config loader."""
     if runner_opt is None:
-        return
+        return None
+    runner_name = runner_opt.strip()
     names = [r.name for r in config.load_prompt_runners()]
-    if runner_opt not in names:
+    if runner_name not in names:
         err_console.print(
             "[red]"
             + gettext("Unknown runner: %(runner)s. Configured runners: %(names)s")
-            % {"runner": escape(runner_opt), "names": ", ".join(names) or "—"}
+            % {"runner": escape(runner_name), "names": ", ".join(names) or "—"}
             + _RED_CLOSE
         )
         raise typer.Exit(EXIT_USAGE)
+    return runner_name
 
 
 def _announce_kept_draft(tmp: Path, *, resumable: bool) -> None:
@@ -960,7 +996,11 @@ def _announce_kept_draft(tmp: Path, *, resumable: bool) -> None:
     `resumable=True` (mid-operation failures) adds the plain re-add command;
     usage refusals pass False — their own message already names the fix, and
     advertising a bare `skit add %(path)s` there would replay the refusal."""
-    if resumable:
+    if not tmp.exists():
+        err_console.print(
+            f"[dim]{gettext('The draft is no longer at %(path)s, so nothing was added.') % {'path': escape(str(tmp))}}[/dim]"
+        )
+    elif resumable:
         err_console.print(
             f"[dim]{gettext('Your draft was kept at %(path)s — fix the problem and add it with: skit add %(path)s') % {'path': escape(str(tmp))}}[/dim]"
         )
@@ -977,9 +1017,8 @@ def _ask_prompt_runner(interactive: bool, runner_opt: str | None) -> str:
     runners = config.load_prompt_runners()
     names = [r.name for r in runners]
     if runner_opt is not None:
-        _validate_prompt_runner_opt(runner_opt)
-        argstate.save_last_runner(runner_opt)
-        return runner_opt
+        runner_name = _validate_prompt_runner_opt(runner_opt)
+        return runner_name
     if not interactive or not names:
         return ""
     last = argstate.load_last_runner()
@@ -1007,14 +1046,19 @@ def _onboard_prompt(
     runner_opt: str | None,
     no_input: bool,
     interpolate: bool = True,
+    review_identity: bool = False,
 ) -> tuple[store.Entry, list[str]]:
     """Prompt onboarding at add time: detected placeholders are candidates (prompts
     contain code snippets, so false positives are expected) — interactive adds pick the
     kept subset (or answer "off" to switch insertion off for the whole entry),
     non-interactive adds manage them all up to the flood cap; unmanaged ones stay
     verbatim in the body. Returns (entry, managed names)."""
+    from .langs.prompt import text as prompt_text
+
     try:
-        text = resolved.read_text(encoding="utf-8", errors="replace")
+        text = prompt_text.read(resolved)
+    except prompt_text.PromptEncodingError as exc:
+        raise store.StoreError(str(exc)) from exc
     except OSError as exc:
         raise store.StoreError(
             gettext("Can't read %(path)s: %(error)s")
@@ -1022,6 +1066,16 @@ def _onboard_prompt(
         ) from exc
     from .langs.prompt import analyzer as prompt_analyzer
 
+    if review_identity:
+        name, description = _prompt_identity(
+            resolved,
+            text,
+            name,
+            description,
+            no_input,
+            name_default=resolved.stem.removesuffix(".prompt"),
+            description_default=store.prompt_description(text),
+        )
     detected = prompt_analyzer.placeholder_names(text) if interpolate else []
     interactive = not no_input and _is_interactive()
     managed: list[str] | None = None  # None = keep every detected candidate (capped)
@@ -1096,7 +1150,7 @@ def _create_prompt_in_editor(
     there is no body to read from a keyboard-attached stdin."""
     import tempfile
 
-    _validate_prompt_runner_opt(runner_opt)
+    runner_opt = _validate_prompt_runner_opt(runner_opt)
     if not _is_interactive():
         _add_prompt_from_stdin(name, description, runner_opt, interpolate=interpolate)
         return
@@ -1134,13 +1188,21 @@ def _create_prompt_in_editor(
     tmp = Path(tmp_name)
     starter = _starter_prompt()
     tmp.write_text(starter, encoding="utf-8")  # pragma: no mutate
+    from .langs.prompt import text as prompt_text
+
     try:
         console.print(f"[dim]{gettext('Opening your editor…')}[/dim]")
         editor.open_in_editor(tmp)
-        text = tmp.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate — utf-8 equiv
+        try:
+            text = prompt_text.read(tmp)
+        except OSError as exc:
+            raise store.StoreError(
+                gettext("Can't read %(path)s: %(error)s")
+                % {"path": str(tmp), "error": exc.strerror or str(exc)}
+            ) from exc
         if text.strip() in ("", starter.strip()):
             tmp.unlink(missing_ok=True)  # pragma: no mutate — no user content: pure litter
-            console.print(gettext("Nothing was written, so no script was added."))
+            console.print(gettext("Nothing was written, so no prompt was added."))
             return
         entry, managed = _onboard_prompt(
             tmp,
@@ -1151,7 +1213,7 @@ def _create_prompt_in_editor(
             no_input=False,
             interpolate=interpolate,
         )
-    except (editor.EditorError, store.StoreError) as exc:
+    except (editor.EditorError, store.StoreError, prompt_text.PromptEncodingError) as exc:
         # Same draft-preservation rule as the script editor lane: the temp file is the
         # user's only copy of what they just wrote. (No typer.Exit twin here on
         # purpose: --runner was validated before the editor opened, and nothing else
@@ -1180,8 +1242,19 @@ def _add_prompt_from_stdin(
         raise typer.Exit(EXIT_USAGE)
     # BEFORE the pipe is consumed or a draft materializes: --runner is static config,
     # and refusing it after mkstemp left a silent, anonymous fingerprint in drafts/.
-    _validate_prompt_runner_opt(runner_opt)
-    text = sys.stdin.read()
+    runner_opt = _validate_prompt_runner_opt(runner_opt)
+    from .langs.prompt import text as prompt_text
+
+    # Read the pipe as bytes.  TextIOWrapper would decode first with its ambient
+    # locale/error policy, so malformed UTF-8 could either traceback before skit owns
+    # the error or arrive with replacement characters.  Validate the exact payload
+    # before mkstemp: an invalid pipe must leave no anonymous zero-byte draft behind.
+    binary_stdin = getattr(sys.stdin, "buffer", None)
+    raw = binary_stdin.read() if binary_stdin is not None else sys.stdin.read().encode("utf-8")
+    try:
+        text = prompt_text.decode(raw, Path("<stdin>"))
+    except prompt_text.PromptEncodingError as exc:
+        raise _fail(str(exc), 1) from exc
     if not text.strip():
         err_console.print(
             f"[red]{gettext('Nothing arrived on stdin, so there is nothing to add.')}[/red]"
@@ -1192,7 +1265,7 @@ def _add_prompt_from_stdin(
     )  # pragma: no mutate
     os.close(fd)
     tmp = Path(tmp_name)
-    tmp.write_text(text, encoding="utf-8")  # pragma: no mutate
+    tmp.write_bytes(raw)  # pragma: no mutate — preserve the validated pipe byte-for-byte
     try:
         entry, managed = _onboard_prompt(
             tmp,
@@ -1241,14 +1314,15 @@ def _validate_forced_kind(value: str) -> None:
 
 
 @app.command(
-    help=gettext("Add a script, executable, or command to skit."),
+    help=gettext("Add a script, executable, prompt, or command to skit."),
     epilog=gettext(
         "Examples:  skit add tools/resize.py  ·  skit add --cmd 'ffmpeg -i {input}' -n convert  ·  pbpaste | skit add - -n clip"
     ),
 )
 def add(
     path: str = typer.Argument(
-        None, help=gettext("Path to a script or executable, or '-' to read a script from stdin")
+        None,
+        help=gettext("Path to a script, executable, or prompt, or '-' to read one from stdin"),
     ),
     name: str = typer.Option(
         None, "--name", "-n", help=gettext("Name / alias (defaults to the file name)")
@@ -1257,7 +1331,7 @@ def add(
         None,
         "--description",
         "-d",
-        help=gettext("Description (defaults to the first line of the docstring)"),
+        help=gettext("Description (inferred from the source when possible)"),
     ),
     edit_new: bool = typer.Option(
         False, "--edit", "-e", help=gettext("Write a brand-new script in your editor, then add it")
@@ -1312,10 +1386,9 @@ def add(
     ),
 ) -> None:
     """Add a script / executable / command to skit."""
-    # ONE lane x flag matrix, validated up front — five rounds of pairwise guards each
-    # stopped at the lane a finding was filed against, and the unfiled pairs silently
-    # dropped (or scanner-overrode) explicit flags. Refuse-never-drop applies to the
-    # whole table, not to whichever cell last got a bug report.
+    # Validate the whole lane x flag matrix up front. Pairwise, lane-local guards leave
+    # unchecked combinations able to drop (or scanner-override) explicit flags.
+    # Refuse-never-drop therefore applies to every cell in the table.
     if prompt_kind and (edit_new or exe or cmd is not None or kind is not None):
         err_console.print(
             f"[red]{gettext('--prompt names the kind outright — drop --edit/--exe/--kind/--cmd.')}[/red]"
@@ -1428,7 +1501,17 @@ def add(
         )
         return
     if lane == "stdin":
-        if prompt_kind:
+        if kind is not None:
+            _validate_forced_kind(kind)
+            if kind == "exe":  # --kind exe: same impossibility as --exe, same refusal
+                err_console.print(
+                    f"[red]{gettext('--exe needs an existing program on disk — stdin and the editor author scripts.')}[/red]"
+                )
+                raise typer.Exit(EXIT_USAGE)
+        # --prompt and --kind prompt are two explicit spellings of the SAME kind.
+        # Route both through prompt onboarding; add_script() also refuses prompt as a
+        # defense against future callers bypassing this dispatch.
+        if prompt_kind or kind == "prompt":
             if dep or python is not None:
                 err_console.print(
                     f"[red]{gettext('--dep/--python are script flags — a prompt has no dependencies.')}[/red]"
@@ -1444,14 +1527,7 @@ def add(
             )
             raise typer.Exit(EXIT_USAGE)
         stdin_text = sys.stdin.read()
-        if kind is not None:
-            _validate_forced_kind(kind)
-            if kind == "exe":  # --kind exe: same impossibility as --exe, same refusal
-                err_console.print(
-                    f"[red]{gettext('--exe needs an existing program on disk — stdin and the editor author scripts.')}[/red]"
-                )
-                raise typer.Exit(EXIT_USAGE)
-        else:
+        if kind is None:
             # No --kind: the piped text's shebang is the explicit signal, honored by
             # the SAME registry rule as both draft lanes — `pbpaste | skit add -` of
             # a bash snippet must never be stored as a broken python entry. An
@@ -1512,7 +1588,7 @@ def add(
         else:
             if not path:
                 err_console.print(
-                    f"[red]{gettext('Provide a script path, or use --cmd to register a command template')}[/red]"
+                    f"[red]{gettext('Provide a source path, or use --cmd to register a command template')}[/red]"
                 )
                 raise typer.Exit(EXIT_USAGE)
             resolved = Path(path).expanduser().resolve()
@@ -1530,6 +1606,15 @@ def add(
                     raise typer.Exit(EXIT_USAGE)
             else:
                 kind = _infer_add_kind(resolved, exe)
+            # Resolve the intake shape before ANY question or panel opens. Every
+            # source kind needs a regular file; program entries deliberately keep
+            # add_exe's broader "existing path" contract (directories included).
+            # In particular, a typo'd bare .md must not ask "looks like a prompt?"
+            # and only then admit that there was never a file to inspect.
+            if kind == "exe":
+                _require_exists(resolved)
+            else:
+                _require_file(resolved)
             if is_draft(resolved) and (ref or kind == "exe"):
                 # ONE guard, BEFORE any interactive ask (a refusal must not follow
                 # answered questions) and after "exe" is decided — the .md ask below
@@ -1602,10 +1687,6 @@ def add(
                 )
                 raise typer.Exit(EXIT_USAGE)
             if kind == "exe":
-                # The same check add_exe performs, hoisted BEFORE the identity asks —
-                # two answered questions followed by "File not found" is the ordering
-                # the prompt lane's _require_file discipline forbids.
-                _require_exists(resolved)
                 if not no_input and _is_interactive():
                     # The one add lane that asked NOTHING while every sibling reviews
                     # identity — "nothing to detect inside a binary" justifies no tick
@@ -1680,7 +1761,7 @@ def add(
                     _require_file(resolved)
                     # An explicit flag the panel can't honor is refused, never
                     # dropped — the same validator every prompt lane calls.
-                    _validate_prompt_runner_opt(runner)
+                    runner = _validate_prompt_runner_opt(runner)
                     from .tui_add import run_prompt_review
 
                     slug = run_prompt_review(
@@ -1705,6 +1786,7 @@ def add(
                         runner_opt=runner,
                         no_input=no_input,
                         interpolate=not no_interpolate,
+                        review_identity=True,
                     )
                 summary_secrets = [n for n in summary_managed if is_secret_name(n)]
             elif kind != "python" and kind_spec is not None and kind_spec.family == "interpreted":
@@ -1842,8 +1924,17 @@ def _print_add_summary(
     console.print(f"  {gettext('Run it: skit run %(name)s') % {'name': escape(entry.meta.name)}}")
     if secrets:
         console.print(
-            f"[dim]{gettext('Secret parameter values are never saved to disk: %(names)s') % {'names': ', '.join(escape(n) for n in secrets)}}[/dim]"
+            f"[dim]{gettext('Secret parameter values are never saved by skit: %(names)s') % {'names': ', '.join(escape(n) for n in secrets)}}[/dim]"
         )
+        if entry.meta.kind == "prompt":
+            console.print(
+                "[yellow]"
+                + gettext(
+                    "When this prompt runs, the selected agent receives those values as "
+                    "plaintext and may log or sync them."
+                )
+                + "[/yellow]"
+            )
 
 
 # --------------------------------------------------------------------------
@@ -1851,11 +1942,11 @@ def _print_add_summary(
 # --------------------------------------------------------------------------
 
 
-@app.command("list", help=gettext("List every registered script."))
+@app.command("list", help=gettext("List every registered entry."))
 def list_cmd(
     as_json: bool = typer.Option(False, "--json", help=gettext("Output as JSON")),
 ) -> None:
-    """List every registered script."""
+    """List every registered entry."""
     entries = store.list_entries()
     if as_json:
         rows = []
@@ -1876,7 +1967,7 @@ def list_cmd(
         console.print_json(json.dumps(rows, ensure_ascii=False))
         return
     if not entries:
-        console.print(gettext("No scripts yet. Add one with: skit add <path>"))
+        console.print(gettext("No entries yet. Add one with: skit add <path>"))
         return
     from rich.table import Table
 
@@ -2003,9 +2094,15 @@ def _print_show_human(entry: store.Entry, plan: flows.FormPlan, presets: list[st
     if plan.fields:
         _print_show_fields(plan)
     else:
-        console.print(
-            f"  {gettext('No form fields — arguments after -- pass straight through to the script.')}"
-        )
+        if meta.kind == "prompt":
+            no_fields = gettext("No form fields — arguments after -- go to the selected agent.")
+        elif meta.kind == "command":
+            no_fields = gettext("No form fields — arguments after -- are appended to the command.")
+        else:
+            no_fields = gettext(
+                "No form fields — arguments after -- pass straight through to the script."
+            )
+        console.print(f"  {no_fields}")
     if presets:
         console.print(
             f"  {gettext('Presets: %(names)s') % {'names': ', '.join(escape(p) for p in presets)}}"
@@ -2046,7 +2143,7 @@ def _print_show_fields(plan: flows.FormPlan) -> None:
 
 
 @app.command(
-    help=gettext("Show everything about one script: metadata, dependencies, parameters, presets."),
+    help=gettext("Show everything about one entry: metadata, dependencies, parameters, presets."),
     epilog=gettext("Examples:  skit show resize  ·  skit show resize --json"),
 )
 def show(
@@ -2059,6 +2156,12 @@ def show(
         entry = store.resolve(name)
     except store.NotFoundError as exc:
         raise _fail(str(exc), 1) from exc
+    if entry.meta.kind == "prompt":
+        # plan_for_entry deliberately stays total for TUI composition and degrades an
+        # unreadable prompt to no fields.  `show` is a read contract, however: reporting
+        # fields=[] for corrupt bytes is false healthy state.  Scan through the strict
+        # boundary first so both human and JSON faces refuse before emitting output.
+        _prompt_body_placeholders(entry)
     plan = flows.plan_for_entry(entry)
     state = argstate.load_state(entry.slug)
     presets = sorted(state["presets"])
@@ -2102,7 +2205,7 @@ def show(
     console.print_json(json.dumps(payload, ensure_ascii=False))
 
 
-@app.command(help=gettext("Remove a registered script (the original file is left untouched)."))
+@app.command(help=gettext("Remove a registered entry (an original source file is left untouched)."))
 def remove(
     name: str = _SCRIPT_ARG,
     yes: bool = typer.Option(False, "--yes", "-y", help=gettext("Skip confirmation")),
@@ -2125,7 +2228,7 @@ def remove(
     console.print(f"[green]{gettext('Removed: %(name)s') % {'name': escape(removed)}}[/green]")
 
 
-@app.command(help=gettext("Rename a script (presets, remembered values and history survive)."))
+@app.command(help=gettext("Rename an entry (presets, remembered values and history survive)."))
 def rename(
     name: str = _SCRIPT_ARG,
     new_name: str = typer.Argument(..., help=gettext("The new name")),
@@ -2141,7 +2244,7 @@ def rename(
     )
 
 
-@app.command(help=gettext("Set a script's description (shown in the Library and skit list)."))
+@app.command(help=gettext("Set an entry's description (shown in the Library and skit list)."))
 def describe(
     name: str = _SCRIPT_ARG,
     text: str = typer.Argument(..., help=gettext("The description (empty text clears it)")),
@@ -2166,11 +2269,12 @@ def _offer_create_in_editor(name: str) -> None:
     """`skit edit <unknown>`: offer to create a brand-new script under that name."""
     if not _is_interactive():
         err_console.print(
-            f"[red]{gettext('No script named %(name)s.') % {'name': escape(name)}}[/red]"
+            f"[red]{gettext('No editable entry named %(name)s.') % {'name': escape(name)}}[/red]"
         )
         raise typer.Exit(1)
     if not Confirm.ask(
-        gettext('No script named "%(name)s". Create it now?') % {"name": escape(name)},
+        gettext('No editable entry named "%(name)s". Create a script now?')
+        % {"name": escape(name)},
         default=True,
         console=console,
     ):
@@ -2179,11 +2283,13 @@ def _offer_create_in_editor(name: str) -> None:
 
 
 @app.command(
-    help=gettext("Open a script's source in your editor (offers to create it if the name is new)."),
+    help=gettext(
+        "Open a script or prompt source in your editor (offers to create a script if the name is new)."
+    ),
     epilog=gettext("Example:  skit edit resize"),
 )
 def edit(name: str = _SCRIPT_ARG) -> None:
-    """Open a registered script's source in your editor."""
+    """Open a registered script or prompt source in your editor."""
     try:
         entry = store.resolve(name)
     except store.NotFoundError:
@@ -2215,8 +2321,8 @@ def edit(name: str = _SCRIPT_ARG) -> None:
                 gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}, 1
             )
     try:
-        editor.open_in_editor(target)
-    except editor.EditorError as exc:
+        editor.open_entry_in_editor(target, kind=entry.meta.kind)
+    except (editor.EditorError, editor.EditedSourceError) as exc:
         raise _fail(str(exc), 1) from exc
     console.print(
         f"[green]{gettext('Saved %(name)s.') % {'name': escape(entry.meta.name)}}[/green]"
@@ -2278,7 +2384,7 @@ def _parse_set_opts(plan: flows.FormPlan, raw: list[str]) -> dict[str, str]:
     if unknown:
         err_console.print(
             "[red]"
-            + gettext("Unknown parameter for --set: %(names)s. This script's parameters: %(valid)s")
+            + gettext("Unknown parameter for --set: %(names)s. This entry's parameters: %(valid)s")
             % {
                 "names": ", ".join(escape(k) for k in unknown),
                 "valid": ", ".join(escape(k) for k in sorted(fields_by_key)) or "—",
@@ -2301,13 +2407,13 @@ def _collect_values(
     plain: bool,
     runners: list[str] | None = None,
     runner_default: str = "",
-) -> tuple[dict[str, str], str | None]:
+) -> tuple[dict[str, str], str | None, bool]:
     """Interactive collection through the configured renderer. The inline mini-form is
     the default; "plain" (--plain / form=plain / TERM=dumb) is the line-prompt fallback.
 
-    Returns (values, picked runner name). The runner element is non-None only when
-    `runners` was passed AND the inline form actually rendered its picker row — the
-    line-prompt fallback never answers the runner question (the caller line-asks)."""
+    Returns values, selected runner name, and whether the user actually changed the
+    runner picker. The runner is non-None only when `runners` was passed AND the inline
+    form rendered its picker row; the line fallback never answers that question."""
     style = "plain" if plain or os.environ.get("TERM") == "dumb" else config.load_form()
     if style == "tui":
         import importlib
@@ -2327,12 +2433,35 @@ def _collect_values(
         gettext("Parameters for %(name)s (press Enter to keep the value shown):")
         % {"name": escape(entry.meta.name)}
     )
-    return promptform.collect(plan, prefill, console=console), None
+    return promptform.collect(plan, prefill, console=console), None, False
 
 
 # How a flows.RunOutcome failure maps to skit's exit-code contract (docker convention).
 # The numbers live in flows so the TUI's exit-after-run path shares them.
 _FAILURE_EXIT = flows.FAILURE_EXIT_CODES
+
+
+def _headless_validation_errors(
+    plan: flows.FormPlan,
+    values: dict[str, str],
+    extra: list[str],
+) -> dict[str, str]:
+    """Validation errors that remain after the explicit argv escape is considered.
+
+    Extra argv can stand in only for an actually empty REQUIRED field reflected from
+    the target's own parser (``source == "flag"``).  It cannot repair a mistyped
+    filled flag, and it is never an alternative delivery channel for placeholders,
+    injected constants, or environment fields.
+    """
+    errors = flows.validate(plan, values)
+    if not extra:
+        return errors
+    bypassed = {
+        field.key
+        for field in plan.fields
+        if field.source == "flag" and field.required and not values.get(field.key, "").strip()
+    }
+    return {key: message for key, message in errors.items() if key not in bypassed}
 
 
 def _resolve_run_runner(
@@ -2349,7 +2478,7 @@ def _resolve_run_runner(
         return None
     runners = config.load_prompt_runners()
     names = [r.name for r in runners]
-    chosen = runner_opt or entry.meta.runner
+    chosen = runner_opt.strip() if runner_opt is not None else entry.meta.runner
     picked = runner_opt is not None
     if not chosen and not no_input and _is_interactive() and names:
         last = argstate.load_last_runner()
@@ -2361,6 +2490,14 @@ def _resolve_run_runner(
             console=console,
         )
         picked = True
+    if not chosen and not runners:
+        raise _fail(
+            gettext(
+                "No agents are configured. Add one with: "
+                "skit runner add mycli -- mycli run {{prompt}}"
+            ),
+            EXIT_NOT_EXECUTABLE,
+        )
     if not chosen:
         raise _fail(
             gettext(
@@ -2386,16 +2523,14 @@ def _resolve_run_runner(
 
 
 @app.command(
-    help=gettext("Run a registered script or command in the terminal."),
+    help=gettext("Run a registered entry in the terminal."),
     epilog=gettext(
         "Examples:  skit run stitch  ·  skit run stitch -p web -- extra.png  ·  skit run stitch --set width=800 --no-input  ·  skit run stitch --dry-run"
     ),
 )
 def run(
     name: str = _SCRIPT_ARG,
-    args: list[str] = typer.Argument(
-        None, help=gettext("Arguments passed through to the script (after --)")
-    ),
+    args: list[str] = typer.Argument(None, help=gettext("Arguments passed through after --")),
     no_input: bool = typer.Option(
         False, "--no-input", help=gettext("Never prompt; reuse last values and defaults")
     ),
@@ -2448,8 +2583,8 @@ def run(
         ),
     ),
 ) -> None:
-    """Run a script (straight through the terminal). skit's own failures exit 125/126/127;
-    the script's exit code passes through untouched."""
+    """Run an entry straight through the terminal. skit's own failures exit 125/126/127;
+    the launched process's exit code passes through untouched."""
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
@@ -2531,13 +2666,17 @@ def run(
         # form_hosts_runner opens the form even field-less: the picker row is the
         # question (exactly the TUI workbench's rule for prompt entries).
         ask_plan = dataclasses.replace(plan, fields=remaining)
-        collected, picked_runner = _collect_values(
+        collected, picked_runner, runner_was_picked = _collect_values(
             entry,
             ask_plan,
             prefilled,
             plain=plain,
             runners=runner_names if form_hosts_runner else None,
-            runner_default=entry.meta.runner or argstate.load_last_runner(),
+            runner_default=(
+                entry.meta.runner
+                if entry.meta.runner in runner_names
+                else argstate.load_last_runner()
+            ),
         )
         values = {**prefilled, **collected}
         if form_hosts_runner:
@@ -2559,17 +2698,15 @@ def run(
                         },
                         EXIT_NOT_EXECUTABLE,
                     )
-                if picked_runner != entry.meta.runner:
-                    # A PIN left untouched is not a pick — only a real choice
-                    # prefills future pickers (argstate's own contract).
+                if runner_was_picked:
+                    # Track the interaction, not final-value inequality: moving away
+                    # and back to the pin is still a deliberate pick, while an
+                    # untouched pin never writes last-picked state.
                     argstate.save_last_runner(picked_runner)
     else:
         values = prefilled
-        errors = flows.validate(plan, values)
-        # Passthrough args are the legitimate manual escape (skit run x -- <args>):
-        # when the user supplies them, the script's own parser is in charge and an
-        # unfilled required *field* is not a hole to refuse over.
-        if errors and not extra:
+        errors = _headless_validation_errors(plan, values, extra)
+        if errors:
             for msg in errors.values():
                 err_console.print(f"[red]{escape(msg)}[/red]")
             raise typer.Exit(EXIT_SKIT)
@@ -2612,9 +2749,25 @@ def run(
             f"[green]{gettext('Preset "%(preset)s" saved for %(name)s.') % {'preset': escape(save_preset), 'name': escape(entry.meta.name)}}[/green]"
         )
     if dry_run:
+        # runner_obj was resolved before form assembly, and this validation deliberately
+        # does no PATH lookup.  Its remaining failures are therefore body/render failures;
+        # all 126 runner refusals have already exited through _resolve_run_runner above.
+        try:
+            validated_prompt_command = flows.validate_prompt_argv(entry, asm, runner=runner_obj)
+        except launcher.TargetMissingError as exc:
+            raise _fail(str(exc), EXIT_NOT_FOUND) from exc
+        except launcher.LaunchError as exc:
+            raise _fail(str(exc), EXIT_SKIT) from exc
         # No temp copy is written for a dry run, so the command line shows the original
         # script path — the shape, not a doomed-to-be-deleted temp file.
-        for line in flows.transparency_lines(entry, asm, None, runner=runner_obj):
+        for line in flows.transparency_lines(
+            entry,
+            asm,
+            None,
+            runner=runner_obj,
+            exact_prompt=True,
+            validated_prompt_command=validated_prompt_command,
+        ):
             console.print(f"[dim]{escape(line)}[/dim]")
         raise typer.Exit(0)
     outcome = flows.execute(
@@ -2636,7 +2789,7 @@ def run(
         flows.save_after_run(entry.slug, plan, values, extra, code, at=models.now_iso())
     if code != 0:
         err_console.print(
-            f"[yellow]{gettext('Script exited with code %(code)s') % {'code': code}}[/yellow]"
+            f"[yellow]{gettext('Run exited with code %(code)s') % {'code': code}}[/yellow]"
         )
     raise typer.Exit(code)
 
@@ -2657,10 +2810,59 @@ app.add_typer(runner_app, name="runner")
 )
 def runner_list(
     as_json: bool = typer.Option(False, "--json", help=gettext("Output as JSON")),
+    all_rows: bool = typer.Option(
+        False,
+        "--all",
+        help=gettext("Include malformed raw rows and their repair indexes"),
+    ),
 ) -> None:
     # The management surface is where the seeds materialize into the user's config —
     # visible and editable, never a hidden built-in list.
     config.ensure_prompt_runners_seeded()
+    if all_rows:
+        rows = config.prompt_runner_rows()
+        if as_json:
+            console.print_json(
+                json.dumps(
+                    [
+                        {
+                            "row": row.index,
+                            "name": row.name or None,
+                            "argv": list(row.argv) if row.argv is not None else None,
+                            "reason": row.invalid_reason,
+                            "descriptor": row.descriptor,
+                            "valid": row.invalid_reason is None,
+                        }
+                        for row in rows
+                    ],
+                    ensure_ascii=False,
+                )
+            )
+            return
+        if not rows:
+            console.print(
+                gettext(
+                    "No agents are configured. Add one with: "
+                    "skit runner add mycli -- mycli run {{prompt}}"
+                )
+            )
+            return
+        from rich.table import Table
+
+        table = Table(show_header=True, header_style="bold")
+        table.add_column(gettext("Row"))
+        table.add_column(gettext("Runner"))
+        table.add_column(gettext("Command"))
+        table.add_column(gettext("Status"))
+        for row in rows:
+            table.add_row(
+                str(row.index) if row.index is not None else gettext("container"),
+                escape(row.name or row.descriptor),
+                escape(_join_runner_argv(list(row.argv or ()))),
+                escape(config.prompt_runner_row_reason(row)),
+            )
+        console.print(table)
+        return
     runners = config.load_prompt_runners()
     if as_json:
         console.print_json(
@@ -2670,7 +2872,12 @@ def runner_list(
         )
         return
     if not runners:
-        console.print(gettext("No runners configured. Add one with: skit runner add NAME COMMAND…"))
+        console.print(
+            gettext(
+                "No agents are configured. Add one with: "
+                "skit runner add mycli -- mycli run {{prompt}}"
+            )
+        )
         return
     from rich.table import Table
 
@@ -2680,6 +2887,11 @@ def runner_list(
     for r in runners:
         table.add_row(escape(r.name), escape(_join_runner_argv(list(r.argv))))
     console.print(table)
+    amp_seed = next(r for r in config.PROMPT_RUNNER_SEEDS if r.name == "amp")
+    if amp_seed in runners:
+        console.print(
+            f"[dim]{gettext('The built-in amp preset uses amp -x and runs the prompt once; it does not open an interactive session.')}[/dim]"
+        )
 
 
 def _join_runner_argv(argv: list[str]) -> str:
@@ -2733,25 +2945,24 @@ def runner_add(
         help=gettext("Replace the runner if the name already exists (the edit path)"),
     ),
 ) -> None:
-    config.ensure_prompt_runners_seeded()
+    name = name.strip()
+    if not name:
+        raise _fail(gettext("A name is required."), EXIT_USAGE)
     reason = config.validate_prompt_runner_argv(list(argv or []))
     if reason is not None:
         err_console.print(f"[red]{escape(_runner_reason(reason))}[/red]")
         raise typer.Exit(EXIT_USAGE)
-    runners = config.load_prompt_runners()
-    exists = any(r.name == name for r in runners)
-    if exists and not force:
+    new_row = config.PromptRunner(name, tuple(argv))
+    try:
+        exists = config.set_prompt_runner(new_row, replace_existing=force)
+    except config.PromptRunnerExistsError:
         raise _fail(
             gettext("The runner %(name)s already exists — pass --force to replace its command.")
             % {"name": name},
             1,
-        )
-    new_row = config.PromptRunner(name, tuple(argv))
-    if exists:
-        # Replace in place: an edit keeps the row's position in every picker.
-        config.save_prompt_runners([new_row if r.name == name else r for r in runners])
-    else:
-        config.save_prompt_runners([*runners, new_row])
+        ) from None
+    except config.PromptRunnerConfigError as exc:
+        raise _fail(str(exc), 1) from exc
     if exists:
         console.print(
             f"[green]{gettext('Runner %(name)s updated: %(command)s') % {'name': escape(name), 'command': escape(_join_runner_argv(list(argv)))}}[/green]"
@@ -2764,23 +2975,124 @@ def runner_add(
 
 @runner_app.command("remove", help=gettext("Remove a configured runner."))
 def runner_remove(
-    name: str = typer.Argument(..., help=gettext("Runner name"), autocompletion=_complete_runner),
+    name: str | None = typer.Argument(
+        None, help=gettext("Runner name"), autocompletion=_complete_runner
+    ),
+    row_opt: str | None = typer.Option(
+        None,
+        "--row",
+        help=gettext("Remove one raw row index from 'runner list --all' (or 'container')"),
+    ),
     yes: bool = typer.Option(False, "--yes", "-y", help=gettext("Skip confirmation")),
+    no_input: bool = typer.Option(False, "--no-input", help=gettext("Never prompt")),
 ) -> None:
+    if (name is None) == (row_opt is None):
+        raise _fail(gettext("Pass exactly one runner name or --row INDEX."), EXIT_USAGE)
+    if name is not None and not name.strip():
+        # Before seeding or projecting rows: an empty stable key would otherwise match
+        # every nameless/scalar malformed row and batch-delete them through the name path.
+        raise _fail(gettext("A name is required."), EXIT_USAGE)
     config.ensure_prompt_runners_seeded()
-    runners = config.load_prompt_runners()
-    if not any(r.name == name for r in runners):
+    rows = config.prompt_runner_rows()
+    row_index: int | None = None
+    target: config.PromptRunnerRow | None = None
+    targets: list[config.PromptRunnerRow]
+    target_name = ""
+    if row_opt is not None:
+        row_ref = row_opt.strip()
+        if row_ref == "container":
+            targets = [row for row in rows if row.index is None]
+        else:
+            try:
+                row_index = int(row_ref)
+            except ValueError:
+                raise _fail(
+                    gettext("--row must be a non-negative index or 'container'."), EXIT_USAGE
+                ) from None
+            if row_index < 0:
+                raise _fail(
+                    gettext("--row must be a non-negative index or 'container'."), EXIT_USAGE
+                )
+            targets = [row for row in rows if row.index == row_index]
+        if not targets:
+            raise _fail(
+                gettext("Unknown runner row: %(row)s. Inspect with: skit runner list --all")
+                % {"row": row_ref},
+                1,
+            )
+        target = targets[0]
+        if target.invalid_reason is None:
+            raise _fail(
+                gettext(
+                    "Runner row %(row)s is valid. Remove the agent by name instead: "
+                    'skit runner remove "%(name)s"'
+                )
+                % {"row": row_ref, "name": target.name},
+                EXIT_USAGE,
+            )
+        row_index = target.index
+        target_name = target.name
+        question = (
+            gettext("Remove the malformed prompt runner container?")
+            if row_index is None
+            else gettext('Remove runner row %(row)d ("%(name)s")?')
+            % {"row": row_index, "name": target.name or target.descriptor}
+        )
+    else:
+        target_name = (name or "").strip()
+        targets = [row for row in rows if row.name == target_name]
+        if not targets:
+            configured = [row.name for row in rows if row.invalid_reason is None]
+            raise _fail(
+                gettext("Unknown runner: %(runner)s. Configured runners: %(names)s")
+                % {"runner": target_name, "names": ", ".join(configured) or "—"},
+                1,
+            )
+        question = gettext('Remove the agent "%(name)s"?') % {"name": target_name}
+    # Exact-row mode repairs one malformed row; it does not remove the active stable
+    # key, so its prompts remain runnable and a pin warning would be false.
+    pinned_count = (
+        len(store.prompt_entries_pinned_to(target_name)) if row_opt is None and target_name else 0
+    )
+    if pinned_count:
+        console.print(
+            "[yellow]"
+            + ngettext(
+                "%(count)d prompt pins this runner and will need another runner before it can run again.",
+                "%(count)d prompts pin this runner and will need another runner before they can run again.",
+                pinned_count,
+            )
+            % {"count": pinned_count}
+            + "[/yellow]"
+        )
+    if not yes and (no_input or not _is_interactive()):
         raise _fail(
-            gettext("Unknown runner: %(runner)s. Configured runners: %(names)s")
-            % {"runner": name, "names": ", ".join(r.name for r in runners) or "—"},
-            1,
+            gettext("Confirmation is required; pass --yes to remove the runner."), EXIT_USAGE
         )
     if not yes:
         # The same ask its two siblings give: skit remove confirms unless -y, and the
         # TUI's agent removal confirms — deleting config rows is not a one-keystroke act.
-        typer.confirm(gettext('Remove the agent "%(name)s"?') % {"name": name}, abort=True)
-    config.save_prompt_runners([r for r in runners if r.name != name])
-    console.print(f"[green]{gettext('Runner %(name)s removed.') % {'name': escape(name)}}[/green]")
+        typer.confirm(question, abort=True)
+    if row_opt is not None:
+        # The row branch assigns target after its non-empty lookup; cast carries that
+        # proven invariant without an unreachable defensive branch that can never fire.
+        removed = config.remove_prompt_runner_row(
+            row_index, expected=cast(config.PromptRunnerRow, target)
+        )
+    else:
+        removed = config.remove_prompt_runner(target_name, expected=targets)
+    if not removed:  # changed concurrently after the read above
+        raise _fail(gettext("The runner row changed before it could be removed; inspect again."), 1)
+    if row_opt is None:
+        console.print(
+            f"[green]{gettext('Runner %(name)s removed.') % {'name': escape(target_name)}}[/green]"
+        )
+    elif row_index is None:
+        console.print(f"[green]{gettext('Malformed prompt runner container removed.')}[/green]")
+    else:
+        console.print(
+            f"[green]{gettext('Malformed runner row %(row)d removed.') % {'row': row_index}}[/green]"
+        )
 
 
 # --------------------------------------------------------------------------
@@ -2788,7 +3100,7 @@ def runner_remove(
 # --------------------------------------------------------------------------
 
 preset_app = typer.Typer(
-    help=gettext("Manage named parameter presets for a script."), no_args_is_help=True
+    help=gettext("Manage named parameter presets for an entry."), no_args_is_help=True
 )
 app.add_typer(preset_app, name="preset")
 
@@ -2845,7 +3157,7 @@ def preset_save(
     )
 
 
-@preset_app.command("list", help=gettext("List a script's saved presets."))
+@preset_app.command("list", help=gettext("List an entry's saved presets."))
 def preset_list(
     name: str = _SCRIPT_ARG,
     as_json: bool = typer.Option(False, "--json", help=gettext("Output as JSON")),
@@ -2872,7 +3184,7 @@ def preset_list(
         console.print(f"  [bold]{escape(pname)}[/bold]: {pairs}")
 
 
-@preset_app.command("delete", help=gettext("Delete a named preset from a script."))
+@preset_app.command("delete", help=gettext("Delete a named preset from an entry."))
 def preset_delete(
     name: str = _SCRIPT_ARG,
     preset_name: str = typer.Argument(..., help=gettext("Preset name")),
@@ -2973,8 +3285,12 @@ def _print_declared_table(decls: list[ParamDecl], last: dict[str, str]) -> None:
 def _prompt_body_placeholders(entry: store.Entry) -> list[str]:
     """A prompt entry's placeholders, scanned fresh from the body ("" list when the body
     is unreadable — preflight owns existence errors)."""
+    from .langs.prompt import text as prompt_text
+
     try:
-        text = entry.script_path.read_text(encoding="utf-8", errors="replace")
+        text = prompt_text.read(entry.script_path)
+    except prompt_text.PromptEncodingError as exc:
+        raise _fail(str(exc), 1) from exc
     except OSError:
         return []
     from .langs.prompt import analyzer as prompt_analyzer
@@ -3029,10 +3345,20 @@ def _show_command_params(
     if unmanaged:
         from .langs.prompt import analyzer as prompt_analyzer
 
-        console.print(
-            gettext("Detected but not yet managed: %(names)s (use --add to manage them)")
-            % {"names": escape(prompt_analyzer.preview_names(unmanaged))}
-        )
+        names, remaining = prompt_analyzer.preview_names(unmanaged)
+        if remaining:
+            message = ngettext(
+                "Detected but not yet managed: %(names)s … and %(count)d more candidate "
+                "(use --add to manage them)",
+                "Detected but not yet managed: %(names)s … and %(count)d more candidates "
+                "(use --add to manage them)",
+                remaining,
+            ) % {"names": escape(names), "count": remaining}
+        else:
+            message = gettext(
+                "Detected but not yet managed: %(names)s (use --add to manage them)"
+            ) % {"names": escape(names)}
+        console.print(message)
     if gone:
         console.print(
             f"[yellow]{gettext('No longer in the prompt (the value would be ignored): %(names)s — remove with --rm, or edit the body.') % {'names': ', '.join(escape(n) for n in gone)}}[/yellow]"
@@ -3200,7 +3526,7 @@ def _parse_kv_opts(raw: list[str], flag: str) -> tuple[dict[str, str], list[str]
 
 
 @app.command(
-    help=gettext("Show or edit a script's managed or declared parameters."),
+    help=gettext("Show or edit an entry's managed or declared parameters."),
     epilog=gettext(
         "Examples:  skit params resize --manage WIDTH  ·  skit params conv --add size --type size=int --deliver size=flag --flag size=--size"
     ),
@@ -3398,8 +3724,8 @@ def params(
         # IS at run time, so it never mixes into the schema-edit pass.
         _set_prompt_interpolate(entry, interpolate_opt, quiet=as_json)
         if as_json:
-            # --json on a write: the final read view (fix #14's rule holds on
-            # EVERY write branch of this command, not just the two it touched).
+            # --json on every write returns the final read view, just like the
+            # command's read-only JSON form.
             _show_params(store.resolve(entry.slug), as_json=True)
         return
     if runner_pin is not None:
@@ -3407,16 +3733,16 @@ def params(
         # mixing it into the schema-edit pass would make the outcome order-dependent.
         _pin_prompt_runner(entry, runner_pin, quiet=as_json)
         if as_json:
-            # --json on a write: the final read view (fix #14's rule holds on
-            # EVERY write branch of this command, not just the two it touched).
+            # --json on every write returns the final read view, just like the
+            # command's read-only JSON form.
             _show_params(store.resolve(entry.slug), as_json=True)
         return
     if workdir_opt is not None or interpreter_opt is not None or template_opt is not None:
         # Entry policy, not schema — its own op for the same order-independence reason.
         _edit_entry_policy(entry, workdir_opt, interpreter_opt, template_opt, quiet=as_json)
         if as_json:
-            # --json on a write: the final read view (fix #14's rule holds on
-            # EVERY write branch of this command, not just the two it touched).
+            # --json on every write returns the final read view, just like the
+            # command's read-only JSON form.
             _show_params(store.resolve(entry.slug), as_json=True)
         return
     if normalize_opt:
@@ -3425,8 +3751,8 @@ def params(
         # so mixing it into the same pass as --manage/--secret would make the outcome order-dependent.
         _normalize_params(entry, entry_spec, normalize_opt, quiet=as_json)
         if as_json:
-            # --json on a write: the final read view (fix #14's rule holds on
-            # EVERY write branch of this command, not just the two it touched).
+            # --json on every write returns the final read view, just like the
+            # command's read-only JSON form.
             _show_params(store.resolve(entry.slug), as_json=True)
         return
     has_params_io = entry_spec is not None and entry_spec.params_io is not None
@@ -3536,18 +3862,21 @@ def _edit_entry_policy(
     command's template was frozen forever at add time)."""
     console = _maybe_quiet(quiet)
     try:
+        entry = store.update_launch_policy(
+            entry.slug,
+            workdir=workdir_opt,
+            interpreter=interpreter_opt,
+            template=template_opt,
+        )
         if template_opt is not None:
-            entry = store.update_template(entry.slug, template_opt)
             console.print(
                 f"[green]{gettext('Template updated. Placeholders: %(names)s') % {'names': ', '.join(escape(p) for p in entry.meta.params or []) or '—'}}[/green]"
             )
         if workdir_opt is not None:
-            entry = store.write_workdir(entry.slug, workdir_opt)
             console.print(
                 f"[green]{gettext('%(name)s now runs in: %(dir)s') % {'name': escape(entry.meta.name), 'dir': escape(entry.meta.workdir)}}[/green]"
             )
         if interpreter_opt is not None:
-            entry = store.write_interpreter(entry.slug, interpreter_opt)
             if entry.meta.interpreter:
                 console.print(
                     f"[green]{gettext('%(name)s now runs with: %(program)s') % {'name': escape(entry.meta.name), 'program': escape(entry.meta.interpreter)}}[/green]"
@@ -3579,7 +3908,6 @@ def _pin_prompt_runner(entry: store.Entry, runner_pin: str, *, quiet: bool = Fal
                 % {"runner": name, "names": ", ".join(names) or "—"},
                 1,
             )
-        argstate.save_last_runner(name)
     try:
         store.write_prompt_runner(entry.slug, name)
     except store.StoreError as exc:
@@ -4021,7 +4349,9 @@ def _deps_read_view(entry: store.Entry, *, supports_deps: bool, as_json: bool) -
 
 
 @app.command(
-    help=gettext("View or update a script's dependencies, Python constraint, and needed commands."),
+    help=gettext(
+        "View or update an entry's package dependencies, Python constraint, and needed commands."
+    ),
     epilog=gettext(
         'Examples:  skit deps tool --dep "requests>=2,<3" --dep rich  ·  skit deps clip --need jq'
     ),
@@ -4039,7 +4369,7 @@ def deps(
         None,
         "--need",
         help=gettext(
-            "An external command the script needs on PATH (repeat; replaces the whole list)"
+            "An external command the entry needs on PATH (repeat; replaces the whole list)"
         ),
     ),
     clear_needs: bool = typer.Option(
@@ -4267,10 +4597,10 @@ def _uv_required(entries: list[store.Entry]) -> bool:
     return any(e.meta.kind == "python" for e in entries)
 
 
-@app.command(help=gettext("Check that uv is available and the script store is intact."))
+@app.command(help=gettext("Check that uv is available and the entry library is intact."))
 def doctor(
     rebuild: bool = typer.Option(
-        False, "--rebuild", help=gettext("Rebuild the index from each script's meta.toml")
+        False, "--rebuild", help=gettext("Rebuild the index from each entry's meta.toml")
     ),
     as_json: bool = typer.Option(False, "--json", help=gettext("Output as JSON")),
 ) -> None:
@@ -4339,7 +4669,7 @@ def doctor(
         )
     console.print(
         "✓ "
-        + ngettext("%(count)s script registered", "%(count)s scripts registered", len(entries))
+        + ngettext("%(count)s entry registered", "%(count)s entries registered", len(entries))
         % {"count": len(entries)}
     )
     for m in missing:
@@ -4362,7 +4692,7 @@ def doctor(
         )
     if bad_runners:
         console.print(
-            f"  [yellow]⚠ {gettext('Ignored malformed runner row(s) in config: %(rows)s (fix config.toml or re-add with skit runner add)') % {'rows': ', '.join(escape(r) for r in bad_runners)}}[/yellow]"
+            f"  [yellow]⚠ {gettext('Ignored malformed runner row(s) in config: %(rows)s. Inspect and repair with: skit runner list --all') % {'rows': ', '.join(escape(r) for r in bad_runners)}}[/yellow]"
         )
     console.print("✓ " + escape(config.mirrors_line(mirror)))
     console.print(

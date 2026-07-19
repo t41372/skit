@@ -1,4 +1,4 @@
-"""CLI surfaces added in the audit round: curation (rename/describe), launch policy
+"""CLI coverage for curation (rename/describe), launch policy
 (params --workdir/--interpreter/--template), stdin --kind, run --forget-args, the raw
 no-op notice, show's interpreter key, doctor's launch_blocked, runner add --force, the
 interpreted-add review routing, the line-mode script onboarding, and the prompt-run
@@ -52,14 +52,20 @@ def spawn_spy(monkeypatch):
         script_override=None,
         env_overlay=None,
         runner=None,
+        prepared=None,
     ):
         calls["entry"] = entry
         calls["extra"] = list(extra_args or [])
         calls["values"] = dict(values or {})
         calls["runner"] = runner
+        calls["prepared"] = prepared
         return calls.get("code", 0)
 
     monkeypatch.setattr(cli.launcher, "run_entry", fake)
+    # Prompt execution resolves the selected runner before crossing the delivery
+    # boundary.  This fixture replaces the eventual process spawn, so keep that
+    # earlier lookup hermetic as well instead of depending on the developer's PATH.
+    monkeypatch.setattr("skit.langs.launch._which", lambda name: f"/bin/{name}")
     return calls
 
 
@@ -180,7 +186,7 @@ def test_params_workdir_relative_is_clean_error(tmp_path):
 
 def test_params_workdir_origin_on_a_command_fails_cleanly(tmp_path):
     """`skit params <command> --workdir origin` fails cleanly (exit 1, StoreUsageError
-    surfaced) — a command has no original file for "origin" to mean (finding 8)."""
+    surfaced) — a command has no original file for "origin" to mean."""
     runner.invoke(cli.app, ["add", "--cmd", "echo hi", "--name", "c", "--no-input"])
     result = runner.invoke(cli.app, ["params", "c", "--workdir", "origin"])
     assert result.exit_code == 1
@@ -370,6 +376,67 @@ def test_params_launch_policy_group_stays_combinable(tmp_path):
     assert meta.interpreter == "zsh"
 
 
+def test_params_command_policy_group_is_atomic_when_interpreter_is_invalid(tmp_path):
+    """Every supplied policy is validated before any is written: a command can't accept
+    an interpreter, so its otherwise-valid template and workdir must not partially land."""
+    entry = store.add_command("echo {old}", name="cmd")
+    meta_path = entry.dir / "meta.toml"
+    before_bytes = meta_path.read_bytes()
+    before_meta = store.resolve("cmd").meta
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "params",
+            "cmd",
+            "--template",
+            "echo {new}",
+            "--workdir",
+            "/opt/new",
+            "--interpreter",
+            "zsh",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "pinnable interpreter" in result.output
+    assert "Template updated" not in result.output
+    assert "now runs in" not in result.output
+    assert "now runs with" not in result.output
+    assert meta_path.read_bytes() == before_bytes
+    assert store.resolve("cmd").meta == before_meta
+
+
+def test_params_shell_policy_group_is_atomic_when_template_is_invalid(tmp_path):
+    """A template on a shell is refused before its valid workdir/interpreter can land."""
+    entry = _shell(tmp_path, name="sh")
+    meta_path = entry.dir / "meta.toml"
+    before_bytes = meta_path.read_bytes()
+    before_meta = store.resolve("sh").meta
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "params",
+            "sh",
+            "--workdir",
+            "invoke",
+            "--interpreter",
+            "zsh",
+            "--template",
+            "echo {value}",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "isn't a command entry" in result.output
+    assert "Template updated" not in result.output
+    assert "now runs in" not in result.output
+    assert "now runs with" not in result.output
+    assert meta_path.read_bytes() == before_bytes
+    assert store.resolve("sh").meta == before_meta
+
+
 # ============================================================ show interpreter key
 
 
@@ -548,7 +615,7 @@ def test_add_script_from_stdin_reads_stdin_when_text_is_none(tmp_path, monkeypat
     assert store.resolve("directsh").meta.kind == "shell"
 
 
-# ============================================================ add-lane flag matrix (round 6)
+# ============================================================ add-lane flag matrix
 
 
 def _drafts():
@@ -649,7 +716,7 @@ def test_add_js_stdin_without_scanner_still_adds_no_deps(tmp_path, monkeypatch):
     assert store.resolve("jd").meta.dependencies in (None, [])  # no scanner -> no deps
 
 
-# ---- unregistered shebang: stdin refuses with the --kind escape (round 6) ----
+# ---- unregistered shebang: stdin refuses with the --kind escape ----
 
 
 def test_add_stdin_unregistered_shebang_refused(tmp_path):
@@ -749,6 +816,8 @@ def test_add_shell_interactive_panel_cancel_exits_130(tmp_path, monkeypatch):
 
 def _fake_tty(monkeypatch, isatty=True):
     monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: isatty, read=lambda: ""))
+    monkeypatch.setattr("sys.stdout.isatty", lambda: isatty, raising=False)
+    monkeypatch.setattr(cli, "_is_interactive", lambda: isatty)
 
 
 def test_onboard_script_params_writes_picked_shell_params(tmp_path, monkeypatch):
@@ -779,6 +848,21 @@ def test_onboard_script_params_no_input_selects_nothing(tmp_path, monkeypatch):
     assert cli._onboard_script_params(store.resolve("d"), _spec("shell"), no_input=True) == []
 
 
+def test_onboard_script_params_does_not_prompt_when_stdout_is_piped(tmp_path, monkeypatch):
+    entry = _shell(tmp_path, body="#!/usr/bin/env bash\nCITY=Taipei\necho $CITY\n", name="d")
+    _fake_tty(monkeypatch)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False, raising=False)
+    monkeypatch.setattr(cli, "_is_interactive", lambda: False)
+    before = entry.script_path.read_text(encoding="utf-8")
+
+    def _boom(*_a, **_k):
+        raise AssertionError("a redirected command must not ask an invisible question")
+
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(_boom))
+    assert cli._onboard_script_params(entry, _spec("shell"), no_input=False) == []
+    assert entry.script_path.read_text(encoding="utf-8") == before
+
+
 def test_onboard_script_params_skips_reference_entries(tmp_path, monkeypatch):
     src = tmp_path / "d.sh"
     src.write_text("#!/usr/bin/env bash\nCITY=Taipei\necho $CITY\n", encoding="utf-8")
@@ -789,7 +873,7 @@ def test_onboard_script_params_skips_reference_entries(tmp_path, monkeypatch):
 
 
 def test_onboard_script_params_skips_when_reader_models_the_form(tmp_path, monkeypatch, capsys):
-    # Round-8 rule: onboarding skips (manages nothing, never asks) ONLY when the entry's own
+    # Onboarding skips (manages nothing, never asks) ONLY when the entry's own
     # reader MODELS a form — that form IS the interface, and a managed constant would replace
     # it. The python analyzer models argparse fields, so drive it directly. The ✓ read notice
     # prints even though nothing is managed.
@@ -904,7 +988,7 @@ def test_run_raw_runs_an_exe_with_the_skip_notice(tmp_path, spawn_spy):
 def test_run_raw_on_unpinned_prompt_refuses_before_runner_resolution(tmp_path, spawn_spy):
     """--raw on a prompt (its {placeholders} ARE the artifact) is refused with exit 2 BEFORE
     runner resolution: the refusal never first asks which agent (nor sends the caller through
-    the unpinned 126), and last-picked state is NOT written by a refused run (finding 2)."""
+    the unpinned 126), and last-picked state is NOT written by a refused run."""
     _prompt(tmp_path, name="p")  # no pin, no --runner
     result = runner.invoke(cli.app, ["run", "p", "--raw", "--no-input"])
     assert result.exit_code == 2, result.output  # usage, NOT the unpinned 126
@@ -922,7 +1006,7 @@ def test_run_raw_on_unpinned_prompt_refuses_before_runner_resolution(tmp_path, s
 
 def test_run_raw_on_unpinned_prompt_refuses_without_asking_when_interactive(tmp_path, monkeypatch):
     """Even in an interactive terminal with agents configured, the raw refusal fires
-    before the runner ask — Prompt.ask is never reached (finding 2)."""
+    before the runner ask — Prompt.ask is never reached."""
     _prompt(tmp_path, name="p")
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
 
@@ -997,7 +1081,7 @@ def test_run_prompt_inline_picker_resolves_the_runner(tmp_path, spawn_spy, monke
     def fake_collect(entry, plan, prefill, runners=None, runner_default=""):
         seen["runners"] = list(runners or [])
         seen["default"] = runner_default
-        return {"a": "hi"}, "codex"
+        return {"a": "hi"}, "codex", True
 
     monkeypatch.setattr("skit.inlineform.collect", fake_collect)
     ask_hit = {"n": 0}
@@ -1016,7 +1100,7 @@ def test_run_prompt_inline_picker_resolves_the_runner(tmp_path, spawn_spy, monke
 def test_run_prompt_inline_picker_none_falls_back(tmp_path, spawn_spy, monkeypatch):
     _prompt(tmp_path)
     _prompt_run_interactive(monkeypatch)
-    monkeypatch.setattr("skit.inlineform.collect", lambda *a, **k: ({"a": "hi"}, None))
+    monkeypatch.setattr("skit.inlineform.collect", lambda *a, **k: ({"a": "hi"}, None, False))
     called: dict[str, object] = {}
 
     def fake_resolve(entry, runner_flag, no_input):
@@ -1033,7 +1117,9 @@ def test_run_prompt_inline_picker_none_falls_back(tmp_path, spawn_spy, monkeypat
 def test_run_prompt_inline_picker_removed_runner_is_126(tmp_path, spawn_spy, monkeypatch):
     _prompt(tmp_path)
     _prompt_run_interactive(monkeypatch)
-    monkeypatch.setattr("skit.inlineform.collect", lambda *a, **k: ({"a": "hi"}, "ghostrunner"))
+    monkeypatch.setattr(
+        "skit.inlineform.collect", lambda *a, **k: ({"a": "hi"}, "ghostrunner", True)
+    )
     result = runner.invoke(cli.app, ["run", "p"])
     assert result.exit_code == 126
     assert "ghostrunner" in result.output
@@ -1046,7 +1132,7 @@ def test_run_prompt_inline_pin_left_untouched_is_not_a_pick(tmp_path, spawn_spy,
     contract: using a pin is not a pick)."""
     _prompt(tmp_path, pin="claude")
     _prompt_run_interactive(monkeypatch)
-    monkeypatch.setattr("skit.inlineform.collect", lambda *a, **k: ({"a": "hi"}, "claude"))
+    monkeypatch.setattr("skit.inlineform.collect", lambda *a, **k: ({"a": "hi"}, "claude", False))
     result = runner.invoke(cli.app, ["run", "p"])
     assert result.exit_code == 0, result.output
     assert spawn_spy["runner"] == config.find_prompt_runner("claude")  # ran with the pin
@@ -1058,16 +1144,29 @@ def test_run_prompt_inline_pick_differing_from_pin_is_saved(tmp_path, spawn_spy,
     remembered for the next picker."""
     _prompt(tmp_path, pin="claude")
     _prompt_run_interactive(monkeypatch)
-    monkeypatch.setattr("skit.inlineform.collect", lambda *a, **k: ({"a": "hi"}, "codex"))
+    monkeypatch.setattr("skit.inlineform.collect", lambda *a, **k: ({"a": "hi"}, "codex", True))
     result = runner.invoke(cli.app, ["run", "p"])
     assert result.exit_code == 0, result.output
     assert spawn_spy["runner"] == config.find_prompt_runner("codex")
     assert argstate.load_last_runner() == "codex"  # a real change is remembered
 
 
+def test_run_prompt_inline_move_away_then_back_to_pin_is_saved(tmp_path, spawn_spy, monkeypatch):
+    """Final-value comparison loses an actual interaction when the user explores a
+    runner and returns to the pin. The form's event bit, not inequality, is authoritative."""
+    _prompt(tmp_path, pin="claude")
+    argstate.save_last_runner("opencode")
+    _prompt_run_interactive(monkeypatch)
+    monkeypatch.setattr("skit.inlineform.collect", lambda *a, **k: ({"a": "hi"}, "claude", True))
+    result = runner.invoke(cli.app, ["run", "p"])
+    assert result.exit_code == 0, result.output
+    assert spawn_spy["runner"] == config.find_prompt_runner("claude")
+    assert argstate.load_last_runner() == "claude"
+
+
 def test_run_prompt_dry_run_still_hosts_the_runner_picker(tmp_path, spawn_spy, monkeypatch):
     """--dry-run no longer forces a bare line ask: an interactive tui prompt dry-run hosts
-    the runner picker in the form exactly like a real run (finding 5), then prints the
+    the runner picker in the form exactly like a real run, then prints the
     resolved command instead of launching."""
     _prompt(tmp_path)
     _prompt_run_interactive(monkeypatch)
@@ -1075,7 +1174,7 @@ def test_run_prompt_dry_run_still_hosts_the_runner_picker(tmp_path, spawn_spy, m
 
     def fake_collect(entry, plan, prefill, runners=None, runner_default=""):
         seen["runners"] = list(runners or [])
-        return {"a": "hi"}, "codex"
+        return {"a": "hi"}, "codex", True
 
     monkeypatch.setattr("skit.inlineform.collect", fake_collect)
     ask_hit = {"n": 0}

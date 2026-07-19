@@ -69,7 +69,7 @@ class HealthScreen(Screen[str | None]):
             yield Static(
                 "✓ "
                 + ngettext(
-                    "%(count)s script registered", "%(count)s scripts registered", len(entries)
+                    "%(count)s entry registered", "%(count)s entries registered", len(entries)
                 )
                 % {"count": len(entries)},
                 classes="ok",
@@ -88,7 +88,7 @@ class HealthScreen(Screen[str | None]):
             issues += [
                 Option(
                     f"⚠ {escape(e.meta.name)} — "
-                    + gettext("form definitions are out of sync (open Script settings → Resync)"),
+                    + gettext("form definitions are out of sync (open Entry settings → Resync)"),
                     id=e.slug,
                 )
                 for e in report.drifted
@@ -116,7 +116,7 @@ class HealthScreen(Screen[str | None]):
                 for e in report.blocked_entries
             ]
             if issues:
-                yield Static(gettext("Issues (Enter jumps to the script):"), classes="warn")
+                yield Static(gettext("Issues (Enter jumps to the entry):"), classes="warn")
                 yield OptionList(*issues, id="hc-issues")
             if report.invalid_runner_rows:
                 yield Static(
@@ -143,7 +143,7 @@ class HealthScreen(Screen[str | None]):
         yield tui_footer.KeysBar(
             Static(
                 tui_footer.bar(
-                    tui_footer.chip("screen.jump", "Enter", gettext("Jump to script")),
+                    tui_footer.chip("screen.jump", "Enter", gettext("Jump to entry")),
                     tui_footer.chip("screen.rebuild", "Ctrl+R", gettext("Rebuild index")),
                     tui_footer.chip("screen.close", "Esc", gettext("Back")),
                 ),

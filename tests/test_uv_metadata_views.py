@@ -1,8 +1,7 @@
-"""Round-16 design-audit fixes — the read-path stragglers the round-15 audit named the "last
-two panes" of the round-14/15 rule: *the record every DISPLAY surface shows must be the effective
-metadata a run enforces, and the deps save-diff must run on the same open-time clock as every other
-axis*. Round-15 fixed the `deps` command and the settings prefill; round-16 completes it for the
-two remaining display faces and the compose-time save baseline.
+"""UV metadata read-view and compose-time-baseline contracts.
+
+Every display surface must show the effective metadata a run enforces, and the dependency
+save diff must use the same open-time snapshot as every other settings axis.
 
 Every assertion pins an OBSERVABLE contract — the human `show` a user reads, the library detail
 pane a user sees, the confirmation lines `deps` prints, the deps chokepoint a save does or does not
@@ -17,7 +16,7 @@ enter — never an internal flag:
     one TUI disagreeing about one record). Now it reads the effective deps.
   * per-axis deps confirmations (LOW): `skit deps x --dep … --python …` moved BOTH axes but printed
     only the deps line — silence about a constraint that DID move. Now each line prints exactly when
-    its axis was edited (the both-axes case is pinned in test_round13_audit alongside its siblings).
+    its axis was edited (the both-axes case is pinned with the other command contracts).
   * compose-time save baseline (LOW): the settings save diffed the deps/constraint fields against a
     SAVE-time re-read of effective_uv_metadata, so a concurrent CLI write that moved the block
     underneath an open screen made an untouched field look like an explicit edit. Now the baseline is

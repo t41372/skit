@@ -102,7 +102,10 @@ async def test_draft_script_unchanged_starter_adds_nothing(tmp_path, no_suspend,
     assert not seen["path"].exists()  # temp unlinked
 
 
-async def test_draft_script_editor_error_is_reported_not_crashed(tmp_path, no_suspend, monkeypatch):
+@pytest.mark.parametrize("key", ["ctrl+n", "ctrl+p"])
+async def test_draft_editor_error_is_visible_after_resume_for_both_authoring_lanes(
+    tmp_path, no_suspend, monkeypatch, key
+):
     def boom(path):
         raise editor.EditorError("no editor configured")
 
@@ -112,10 +115,28 @@ async def test_draft_script_editor_error_is_reported_not_crashed(tmp_path, no_su
         source = AddSourceScreen()
         app.push_screen(source)
         await pilot.pause()
-        await pilot.press("ctrl+n")
+        await pilot.press(key)
         await pilot.pause()
-        # The editor never wrote → the starter is unchanged → nothing is added, no crash.
         assert isinstance(app.screen, AddSourceScreen)
+        assert any(note.message == "no editor configured" for note in app._notifications)
+    assert store.list_entries() == []
+
+
+@pytest.mark.parametrize("key", ["ctrl+n", "ctrl+p"])
+async def test_draft_deleted_by_editor_is_a_clean_visible_error(
+    tmp_path, no_suspend, monkeypatch, key
+):
+    monkeypatch.setattr(editor, "open_in_editor", lambda path: path.unlink())
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        source = AddSourceScreen()
+        app.push_screen(source)
+        await pilot.pause()
+        await pilot.press(key)
+        await pilot.pause()
+        assert app.screen is source
+        messages = [note.message for note in app._notifications]
+        assert any("Can't read" in message and "skit-new-" in message for message in messages)
     assert store.list_entries() == []
 
 
@@ -124,7 +145,7 @@ async def test_draft_script_cancelled_review_keeps_the_draft_and_notifies(
 ):
     """A cancelled review must NEVER silently delete the draft — it is the user's only copy
     of what they just wrote. The temp file is kept and a notification says where it lives;
-    nothing lands in the store (finding R2, the TUI lane)."""
+    nothing lands in the store."""
     seen = _editor_writes(monkeypatch, "import sys\nprint('drafted')\n")
     notes: list[str] = []
     monkeypatch.setattr(
@@ -150,7 +171,7 @@ async def test_draft_script_cancelled_review_keeps_the_draft_and_notifies(
 async def test_draft_bash_shebang_becomes_a_shell_entry(tmp_path, no_suspend, monkeypatch):
     """The draft lane honors a changed shebang: writing a #!/usr/bin/env bash body into
     the python starter re-infers the kind, so the entry lands as SHELL — never a broken
-    python entry with a bash body (finding 6)."""
+    python entry with a bash body."""
     seen = _editor_writes(monkeypatch, "#!/usr/bin/env bash\n# Ship it\necho drafted\n")
     app = tui.MenuApp()
     async with app.run_test(size=(100, 40)) as pilot:
@@ -200,7 +221,7 @@ async def test_draft_prompt_opens_fresh_prompt_review_and_copies(tmp_path, no_su
     assert not seen["path"].exists()
 
 
-# ------------------------------------------- draft with an UNREGISTERED shebang: ASK (round 6)
+# ------------------------------------------- draft with an UNREGISTERED shebang: ASK
 
 
 def _select_option(option_list: OptionList, option_id: str) -> None:
@@ -325,7 +346,7 @@ async def test_draft_unregistered_shebang_cancel_keeps_the_draft_and_notifies(
     draft.unlink(missing_ok=True)
 
 
-# ------------------------------------------- the add screen lists resumable drafts (round 6)
+# ------------------------------------------- the add screen lists resumable drafts
 
 
 async def test_add_source_lists_and_resumes_a_kept_draft(tmp_path, monkeypatch):

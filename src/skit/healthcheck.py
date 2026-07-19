@@ -44,11 +44,12 @@ def entry_drifted(entry: store.Entry) -> bool:
         if not entry.meta.interpolate or not entry.script_path.exists():
             return False
         from .langs.prompt import analyzer as prompt_analyzer
+        from .langs.prompt import text as prompt_text
 
         try:
-            text = entry.script_path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return False  # unreadable body is the target/preflight sweeps' finding
+            text = prompt_text.read(entry.script_path)
+        except (OSError, prompt_text.PromptEncodingError):
+            return False  # unreadable bodies belong to the target/preflight sweeps
         fresh = set(prompt_analyzer.placeholder_names(text))
         return any(name not in fresh for name in entry.meta.params or [])
     if (
@@ -81,7 +82,7 @@ def collect(entries: list[store.Entry]) -> HealthReport:
         # Everything else preflight would refuse a run over (runtime binaries, pinned
         # agents, workdir existence) — the SAME code path a real run takes, so the two
         # can never disagree. Entries already reported above are skipped: their
-        # preflight failure would just repeat the finding in different words.
+        # preflight failure would just repeat the same issue in different words.
         if (
             entry in report.missing
             or entry.meta.name in report.needs_missing

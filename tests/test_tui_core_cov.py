@@ -10,12 +10,13 @@ results, status text) — never a line executed for its own sake.
 from __future__ import annotations
 
 import contextlib
+from types import SimpleNamespace
 
 import pytest
 from textual.widgets import Checkbox, DataTable, Input, Select, Static
 
 from conftest import footer_text
-from skit import argstate, config, flows, launcher, store, tui
+from skit import argstate, argv_text, config, flows, launcher, store, tui
 from skit.langs.python import metawriter
 from skit.params import ParamDecl
 from skit.tui_form import (
@@ -72,7 +73,6 @@ def quiet_run(monkeypatch):
 
     monkeypatch.setattr(launcher, "run_entry", fake_run)
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
-    monkeypatch.setattr("builtins.input", lambda *a: "")
     return calls
 
 
@@ -335,26 +335,36 @@ async def test_execute_reports_assembly_error_in_the_status(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-async def test_edit_surfaces_an_editor_error_but_still_recovers(tmp_path, monkeypatch):
-    """If the editor fails to launch, e prints the error and pauses for acknowledgment,
-    then still reloads and reports — the workbench survives a broken $EDITOR."""
+@pytest.mark.parametrize("error_type", [tui.editor.EditorError, tui.editor.EditedSourceError])
+async def test_edit_errors_return_to_the_tui_without_reading_stdin(
+    tmp_path, monkeypatch, error_type
+):
+    """Both editor failure modes resume the workbench and use its persistent status.
+
+    The edit action is also a clickable footer path, so an error must not introduce a
+    hidden keyboard-only ``input()`` gate before Textual regains mouse ownership.
+    """
     store.add_python(_py(tmp_path, "print(1)\n"), name="j")
-    printed: list[str] = []
+    stdin_reads: list[tuple[object, ...]] = []
 
-    def boom(path):
-        raise tui.editor.EditorError("editor exploded")
+    def boom(path, *, kind):
+        raise error_type("editor exploded")
 
-    monkeypatch.setattr(tui.editor, "open_in_editor", boom)
+    def forbid_stdin(*args):
+        stdin_reads.append(args)
+        raise AssertionError("Library edit errors must not wait on stdin")
+
+    monkeypatch.setattr(tui.editor, "open_entry_in_editor", boom)
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
-    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
-    monkeypatch.setattr("builtins.input", lambda *a: "")
+    monkeypatch.setattr("builtins.input", forbid_stdin)
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         await pilot.pause()
         app.action_edit()
         await pilot.pause()
-        assert any("editor exploded" in line for line in printed)
-        assert _static_text(app, "#status") == "Edited j."
+        assert stdin_reads == []
+        assert len(app.screen_stack) == 1
+        assert _static_text(app, "#status") == "Error: editor exploded"
 
 
 # ---------------------------------------------------------------------------
@@ -659,7 +669,7 @@ def _preset_values(select: Select[str]) -> list[str]:
 async def test_form_save_preset_field_less_notifies_and_opens_no_modal(
     tmp_path, quiet_run, monkeypatch
 ):
-    """A field-less form composes NO preset row at all (finding 13): the row only ever
+    """A field-less form composes NO preset row at all: the row only ever
     existed to teach "fill the form and press Ctrl+S", the exact action Ctrl+S refuses here.
     Ctrl+S still notifies the no-fields sentence (the same one the CLI uses) and opens no modal."""
     store.add_command("echo hi", name="noargs")
@@ -707,7 +717,7 @@ async def test_form_footer_advertises_ctrl_s_only_when_fielded(tmp_path, quiet_r
 
 async def test_form_save_preset_from_empty_state_mounts_a_select(tmp_path, quiet_run):
     """The first preset save replaces the "none yet — press Ctrl+S" hint with a real
-    dropdown, selected on the just-saved preset (finding 13, the empty→select path)."""
+    dropdown, selected on the just-saved preset."""
     entry = _argparse_entry(tmp_path)
     app = tui.MenuApp()
     async with app.run_test() as pilot:
@@ -733,7 +743,7 @@ async def test_form_save_preset_from_empty_state_mounts_a_select(tmp_path, quiet
 
 async def test_form_save_preset_existing_select_gains_the_name(tmp_path, quiet_run):
     """When a dropdown already exists, a new save adds the name and selects it — the row
-    never contradicts the user's own just-made save (finding 13, the existing-select path)."""
+    never contradicts the user's own just-made save."""
     entry = _argparse_entry(tmp_path)
     argstate.save_preset(entry.slug, "web", {"output": "x"})  # a preset already exists
     app = tui.MenuApp()
@@ -798,7 +808,7 @@ async def test_form_save_preset_does_not_resurrect_a_cleared_field(tmp_path, qui
 
 
 async def test_form_save_preset_while_another_preset_is_selected(tmp_path, quiet_run):
-    """The round-4 journey that broke the one-shot token: hand-pick a preset, EDIT a
+    """The journey that exercises the one-shot token: hand-pick a preset, EDIT a
     field, save under a new name — the fields must keep the user's edits (set_options'
     intermediate blank reset must not re-apply the prefill overlay), and the picker
     must land on the new name."""
@@ -975,6 +985,31 @@ async def test_insert_token_ignores_an_input_outside_any_field(tmp_path, quiet_r
         assert app.screen is screen  # no menu opened
 
 
+async def test_insert_token_ignores_a_stale_field_click_action(tmp_path, quiet_run):
+    """A ▾ chip carries its field key.  If an already-queued click is delivered after
+    that row was replaced, its stale key is a safe no-op: no modal and no mutation of
+    the still-visible field."""
+    _argparse_entry(tmp_path)
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.action_run()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        output = next(r for r in screen.query(FieldRow) if r.field.key == "output")
+        output_input = output.query_one(Input)
+        output_input.value = "keep.png"
+        output_input.focus()
+        await pilot.pause()
+
+        screen.action_insert_token("row-that-no-longer-exists")
+        await pilot.pause()
+
+        assert app.screen is screen
+        assert output_input.value == "keep.png"
+        assert screen.focused is output_input
+
+
 # ---------------------------------------------------------------------------
 # tui_form: RunFormScreen include_extra + collect edges
 # ---------------------------------------------------------------------------
@@ -997,6 +1032,28 @@ async def test_inline_form_without_extra_field_collects_no_extra(tmp_path):
         assert extra == []
 
 
+async def test_extra_argument_labels_name_the_actual_receiver(tmp_path):
+    command = store.add_command("echo ready", name="cmd")
+    prompt_path = tmp_path / "review.prompt.md"
+    prompt_path.write_text("Review this\n", encoding="utf-8")
+    prompt = store.add_prompt(prompt_path, name="review")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        for entry, expected in (
+            (command, "Extra command arguments"),
+            (prompt, "Extra agent arguments"),
+        ):
+            screen = RunFormScreen(entry, flows.plan_for_entry(entry), {})
+            app.push_screen(screen)
+            await pilot.pause()
+            extra_row = next(
+                row for row in screen.query(FieldRow) if row.field.key == "__extra_args__"
+            )
+            assert extra_row.field.label == expected
+            app.pop_screen()
+            await pilot.pause()
+
+
 async def test_collect_keeps_unbalanced_extra_as_one_argument(tmp_path, quiet_run):
     """Extra args with an unbalanced quote can't be shlex-split; collect falls back to
     passing the raw text as a single argument rather than dropping it."""
@@ -1011,6 +1068,24 @@ async def test_collect_keeps_unbalanced_extra_as_one_argument(tmp_path, quiet_ru
         extra_row.query_one(Input).value = '"unclosed'
         _values, extra = screen.collect()
         assert extra == ['"unclosed']
+
+
+async def test_extra_args_windows_paths_roundtrip_through_the_form(tmp_path, monkeypatch):
+    entry = _argparse_entry(tmp_path)
+    expected = [r"C:\Program Files\tool\input.txt", "two words"]
+    argstate.save_last(entry.slug, extra_args=expected)
+    monkeypatch.setattr(argv_text, "sys", SimpleNamespace(platform="win32"))
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = RunFormScreen(entry, flows.plan_for_entry(entry), {})
+        app.push_screen(screen)
+        await pilot.pause()
+        extra_row = next(r for r in screen.query(FieldRow) if r.field.key == "__extra_args__")
+        _values, extra = screen.collect()
+        assert extra == expected  # saved argv joined for editing, then split back byte-for-byte
+        extra_row.query_one(Input).value = r"C:\tools\input.txt --fast"
+        _values, extra = screen.collect()
+        assert extra == [r"C:\tools\input.txt", "--fast"]
 
 
 # ---------------------------------------------------------------------------

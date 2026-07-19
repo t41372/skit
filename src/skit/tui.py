@@ -10,7 +10,7 @@ the list, narrow+short hides it with the Tab chip as the way back, search flatte
 when short, and the footer key rows shrink to a scrollable sliver when short/tiny —
 the caps trim what is visible, never what the mouse can reach).
 
-Keys: Enter run · r rerun (after a first run) · p script settings · e edit script ·
+Keys: Enter run · r rerun (after a first run) · p entry settings · e edit source ·
 Del remove · a add script · s presets · , preferences · D health check · / search ·
 Tab detail pane · double Ctrl+C / Esc quit.
 
@@ -25,7 +25,6 @@ so both key rows swap to the input-mode hints (Enter run · Esc back to list).
 
 from __future__ import annotations
 
-import contextlib
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -73,7 +72,7 @@ def _kind_badge(kind: str) -> tuple[str, str]:
 
 def _runner_detail_line(entry: Entry) -> str:
     """The detail pane's runner line — honest about a pin whose config row is gone
-    (Script settings says "(no longer configured)"; two surfaces, one truth)."""
+    (Entry settings says "(no longer configured)"; two surfaces, one truth)."""
     pin = entry.meta.runner
     if not pin:
         return gettext("Runner picked on the run form")
@@ -198,11 +197,11 @@ class HelpScreen(ModalScreen[None]):
         rows = [
             ("Enter", gettext("Run")),
             ("r", gettext("Rerun with last values")),
-            ("p", gettext("Script settings")),
+            ("p", gettext("Entry settings")),
             ("s", gettext("Presets")),
-            ("e", gettext("Edit script")),
+            ("e", gettext("Edit source")),
             ("Del", gettext("Remove")),
-            ("a", gettext("Add script")),
+            ("a", gettext("Add entry")),
             ("/", gettext("Search")),
             ("Tab", gettext("Detail pane")),
             (",", gettext("Preferences")),
@@ -328,13 +327,13 @@ class MenuApp(App[int | PendingRun]):
         # delete-left (closer in the focus chain than this non-priority app binding), so
         # backspace only reaches "remove" when the table has focus.
         Binding("delete,backspace", "remove", gettext("Remove")),
-        Binding("ctrl+e", "edit", gettext("Edit script")),
-        Binding("e", "edit", gettext("Edit script"), show=False),
+        Binding("ctrl+e", "edit", gettext("Edit source")),
+        Binding("e", "edit", gettext("Edit source"), show=False),
         Binding("enter", "run", gettext("Run")),
         Binding("r", "rerun", gettext("Rerun"), show=False),
-        Binding("p", "settings", gettext("Script settings"), show=False),
+        Binding("p", "settings", gettext("Entry settings"), show=False),
         Binding("s", "presets", gettext("Presets"), show=False),
-        Binding("a", "add", gettext("Add script"), show=False),
+        Binding("a", "add", gettext("Add entry"), show=False),
         Binding("comma", "preferences", gettext("Preferences"), show=False),
         Binding("D", "health", gettext("Health check"), show=False),
         Binding("question_mark", "help", gettext("Help"), show=False),
@@ -368,7 +367,7 @@ class MenuApp(App[int | PendingRun]):
         self.theme = "skit-claude"
         table = self.query_one(DataTable)
         table.add_columns(gettext("Name"), gettext("Kind"), " ")
-        table.border_title = gettext("Scripts")
+        table.border_title = gettext("Library")
         self.query_one("#detail").border_title = gettext("Detail pane")
         self._reload()
         # The table owns the keyboard: that's what makes the advertised single-letter
@@ -432,12 +431,10 @@ class MenuApp(App[int | PendingRun]):
             status.update(message)
             return
         if not self._entries:
-            status.update(gettext("Your scripts will appear here."))
+            status.update(gettext("Your entries will appear here."))
             return
         status.update(
-            ngettext(
-                "%(shown)s/%(total)s script", "%(shown)s/%(total)s scripts", len(self._entries)
-            )
+            ngettext("%(shown)s/%(total)s entry", "%(shown)s/%(total)s entries", len(self._entries))
             % {"shown": len(self._visible), "total": len(self._entries)}
         )
 
@@ -461,11 +458,11 @@ class MenuApp(App[int | PendingRun]):
             local.append(tui_footer.chip("app.run", "Enter", gettext("Run")))
             if argstate.load_state(entry.slug)["last_run"]:
                 local.append(tui_footer.chip("app.rerun", "r", gettext("Rerun")))
-            local.append(tui_footer.chip("app.settings", "p", gettext("Script settings")))
-            local.append(tui_footer.chip("app.edit", "e", gettext("Edit script")))
+            local.append(tui_footer.chip("app.settings", "p", gettext("Entry settings")))
+            local.append(tui_footer.chip("app.edit", "e", gettext("Edit source")))
             local.append(tui_footer.chip("app.remove", "Del", gettext("Remove")))
         globals_row = [
-            tui_footer.chip("app.add", "a", gettext("Add script")),
+            tui_footer.chip("app.add", "a", gettext("Add entry")),
             tui_footer.chip("app.presets", "s", gettext("Presets")),
             tui_footer.chip("app.focus_search", "/", gettext("Search")),
             # The detail pane must be recoverable without memorizing Tab: when a size
@@ -500,7 +497,7 @@ class MenuApp(App[int | PendingRun]):
                 body.update(
                     "\n".join(
                         (
-                            f"[bold]{gettext('Your scripts will appear here.')}[/bold]",
+                            f"[bold]{gettext('Your entries will appear here.')}[/bold]",
                             "",
                             gettext("Press a to add the first one,"),
                             gettext("or run: skit add <path> in a terminal."),
@@ -533,7 +530,7 @@ class MenuApp(App[int | PendingRun]):
         lines.append(
             escape(entry.meta.description)
             if entry.meta.description
-            else f"[dim]{gettext('(no description — add one in Script settings)')}[/dim]"
+            else f"[dim]{gettext('(no description — add one in Entry settings)')}[/dim]"
         )
         lines.append("")
         lines.extend(self._detail_state_lines(entry))
@@ -679,13 +676,19 @@ class MenuApp(App[int | PendingRun]):
         entry = self._selected()
         if entry is None:
             return
-        try:
-            launcher.preflight(entry)
-        except launcher.LaunchError as exc:
-            self._refresh_status(gettext("Error: %(error)s") % {"error": escape(str(exc))})
-            return
-        plan = flows.plan_for_entry(entry)
         is_prompt = entry.meta.kind == "prompt"
+        # A prompt's actual executable is selected on the run form.  Checking its
+        # entry pin here would let a stale/broken pin block the very picker that can
+        # override it.  Prompt preflight therefore runs in _submitted, once the
+        # picker has resolved the real launch choice; every other kind still fails
+        # fast before its form opens.
+        if not is_prompt:
+            try:
+                launcher.preflight(entry)
+            except launcher.LaunchError as exc:
+                self._refresh_status(gettext("Error: %(error)s") % {"error": escape(str(exc))})
+                return
+        plan = flows.plan_for_entry(entry)
         runner_names = [r.name for r in config.load_prompt_runners()] if is_prompt else []
         if is_prompt and not runner_names:
             # A deliberately emptied runner list must not dead-end the mouse-only user
@@ -708,7 +711,7 @@ class MenuApp(App[int | PendingRun]):
         def _submitted(result: FormResult) -> None:
             if result is None:
                 return
-            values, extra, runner_name = result
+            values, extra, runner_name, runner_was_picked = result
             runner = None
             if runner_name is not None:
                 runner = config.find_prompt_runner(runner_name)
@@ -718,10 +721,16 @@ class MenuApp(App[int | PendingRun]):
                         % {"error": gettext("The runner is no longer configured.")}
                     )
                     return
-                if runner_name != entry.meta.runner:
-                    # A PIN left untouched is not a pick — only a real choice prefills
-                    # future pickers (argstate's contract; settings enforces the same).
+                if runner_was_picked:
+                    # The event is the truth: a user may move away and back to the
+                    # pin, while an untouched pin merely supplies a default.
                     argstate.save_last_runner(runner_name)
+            if is_prompt:
+                try:
+                    launcher.preflight(entry, runner=runner)
+                except launcher.LaunchError as exc:
+                    self._refresh_status(gettext("Error: %(error)s") % {"error": escape(str(exc))})
+                    return
             self._execute(entry, plan, values, extra, show_drift=False, runner=runner)
 
         self.push_screen(
@@ -730,7 +739,11 @@ class MenuApp(App[int | PendingRun]):
                 plan,
                 prefill,
                 runners=runner_names,
-                runner_default=entry.meta.runner or argstate.load_last_runner(),
+                runner_default=(
+                    entry.meta.runner
+                    if entry.meta.runner in runner_names
+                    else argstate.load_last_runner()
+                ),
             ),
             _submitted,
         )
@@ -802,8 +815,6 @@ class MenuApp(App[int | PendingRun]):
             if outcome.code is None:
                 print(gettext("Error: %(error)s") % {"error": outcome.message}, flush=True)
             print(f"\n{self._run_banner(outcome)}", flush=True)
-            with contextlib.suppress(EOFError):
-                input()
         code = outcome.code
         if code is None:
             # The script never ran: recording it would light up r-rerun and stamp a
@@ -825,12 +836,10 @@ class MenuApp(App[int | PendingRun]):
     @staticmethod
     def _run_banner(outcome: flows.RunOutcome) -> str:
         if outcome.code == 0:
-            return gettext("✓ finished — press Enter to return")
+            return gettext("✓ finished")
         if outcome.launched:
-            return gettext("✗ failed (code %(code)s) — press Enter to return") % {
-                "code": outcome.code
-            }
-        return gettext("✗ couldn't launch — press Enter to return")
+            return gettext("✗ failed (code %(code)s)") % {"code": outcome.code}
+        return gettext("✗ couldn't launch")
 
     # --------------------------------------------------------------- actions
 
@@ -849,16 +858,18 @@ class MenuApp(App[int | PendingRun]):
                 % {"name": escape(entry.meta.name)}
             )
             return
+        edit_error: str | None = None
         with self.suspend():
             try:
-                editor.open_in_editor(target)
-            except editor.EditorError as exc:
-                print(str(exc), flush=True)
-                with contextlib.suppress(EOFError):
-                    input(gettext("Press Enter to return"))
+                editor.open_entry_in_editor(target, kind=entry.meta.kind)
+            except (editor.EditorError, editor.EditedSourceError) as exc:
+                edit_error = str(exc)
         self._drift_cache.pop(entry.slug, None)
         self._reload()
-        self._refresh_status(gettext("Edited %(name)s.") % {"name": escape(entry.meta.name)})
+        if edit_error is not None:
+            self._refresh_status(gettext("Error: %(error)s") % {"error": escape(edit_error)})
+        else:
+            self._refresh_status(gettext("Edited %(name)s.") % {"name": escape(entry.meta.name)})
 
     def _editable_source(self, entry: Entry) -> Path | None:
         spec = spec_for(entry.meta.kind)
@@ -969,7 +980,7 @@ class MenuApp(App[int | PendingRun]):
         headers = [gettext("Name"), gettext("Kind"), " "]
         for column, label in zip(self.query_one(DataTable).ordered_columns, headers, strict=False):
             column.label = Text(label)
-        self.query_one(DataTable).border_title = gettext("Scripts")
+        self.query_one(DataTable).border_title = gettext("Library")
         self.query_one("#detail").border_title = gettext("Detail pane")
         self.query_one(DataTable).refresh()
 

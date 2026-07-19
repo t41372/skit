@@ -53,6 +53,8 @@ def _py(tmp_path: Path, body: str, name: str = "job.py") -> Path:
 @pytest.fixture
 def tty(monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
 
 
 def _norm(text: str) -> str:
@@ -110,6 +112,22 @@ def test_resolve_metadata_no_input_tty_still_non_interactive(tty):
     )
     assert deps == ["requests"]
     assert py == ""
+
+
+def test_python_line_onboarding_does_not_prompt_when_stdout_is_piped(monkeypatch):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False, raising=False)
+    monkeypatch.setattr(cli, "_is_interactive", lambda: False)
+
+    def _boom(*_a, **_k):
+        raise AssertionError("a redirected command must not ask an invisible question")
+
+    monkeypatch.setattr(cli.Prompt, "ask", _boom)
+    deps, py = cli._resolve_python_metadata(
+        "import requests\nprint(requests)\n", None, None, no_input=False
+    )
+    assert (deps, py) == (["requests"], "")
+    assert cli._onboard_params('CITY = "Taipei"\nprint(CITY)\n', "x", no_input=False) == []
 
 
 def test_resolve_metadata_interactive_prompts_exact_text_and_defaults(monkeypatch, tty):
@@ -839,7 +857,9 @@ def test_prompt_identity_no_input_passes_through(tmp_path):
 
 
 def test_prompt_identity_non_tty_passes_through(monkeypatch, tmp_path):
-    monkeypatch.setattr("sys.stdin.isatty", lambda: False, raising=False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False, raising=False)
+    monkeypatch.setattr(cli, "_is_interactive", lambda: False)
 
     def _boom(*_a, **_k):
         raise AssertionError("must not prompt on a non-tty")
@@ -871,7 +891,7 @@ def test_print_add_summary_full_block_exact(tmp_path, capsys):
     assert "Dependencies: Pillow, rich" in out
     assert "Managed parameters: CITY, PORT" in out
     assert "Run it: skit run job" in out
-    assert "Secret parameter values are never saved to disk: API, TOKEN" in out
+    assert "Secret parameter values are never saved by skit: API, TOKEN" in out
     assert "XX" not in out  # kills every whole-string-wrap and "XX, XX"-join mutant
 
 
@@ -1094,7 +1114,7 @@ def test_create_in_editor_opening_and_added_message(monkeypatch):
         return 0
 
     monkeypatch.setattr(cli.editor, "open_in_editor", write)
-    result = runner.invoke(cli.app, ["add", "-e", "--name", "fresh"])
+    result = runner.invoke(cli.app, ["add", "-e", "--name", "fresh"], input="\n\n\n")
     assert result.exit_code == 0, result.output
     out = _norm(result.output)
     assert "Opening your editor…" in out
@@ -1128,6 +1148,24 @@ def test_create_in_editor_emptied_file_adds_nothing(monkeypatch):
     assert "Nothing was written" in _norm(result.output)
     with pytest.raises(store.NotFoundError):
         store.resolve("e")
+
+
+def test_create_in_editor_deleted_draft_is_a_clean_honest_failure(monkeypatch):
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    seen: dict[str, Path] = {}
+
+    def delete(path: Path):
+        seen["path"] = path
+        path.unlink()
+
+    monkeypatch.setattr(cli.editor, "open_in_editor", delete)
+    result = runner.invoke(cli.app, ["add", "-e", "--name", "gone"])
+    assert result.exit_code == 1
+    output = _norm(result.output)
+    assert "Can't read" in output
+    assert "The draft is no longer at" in output
+    assert "Your draft was kept at" not in output
+    assert not seen["path"].exists()
 
 
 # --- _show_params ----------------------------------------------------------
@@ -1175,8 +1213,7 @@ def test_show_params_python_argparse_does_not_advertise_manage(tmp_path, capsys)
     """A python entry that parses its own arguments (argparse) is reader-driven exactly like
     every other kind: its own parser IS the run form, so managed params REPLACE it rather than
     ride alongside — plan_for_entry prefers them. The read view must NOT advertise --manage
-    (following it would silently shadow the argparse form); the round-6 "python manages
-    constants alongside argparse" rationale was false. Plain "has no managed parameters." with
+    (following it would silently shadow the argparse form). Plain "has no managed parameters." with
     no --manage advice, and --json reports unmanaged == [] (no candidate offered)."""
     import json
 
@@ -1459,7 +1496,7 @@ def test_offer_create_non_interactive_message(monkeypatch):
     result = runner.invoke(cli.app, ["edit", "ghost"])
     assert result.exit_code == 1
     out = _norm(result.output)
-    assert "No script named ghost." in out
+    assert "No editable entry named ghost." in out
     assert "XX" not in out
 
 
@@ -1474,6 +1511,8 @@ def test_offer_create_confirm_prompt_exact_and_declined(monkeypatch):
     result = runner.invoke(cli.app, ["edit", "newname"])
     assert result.exit_code == 0
     (msg,), kw = calls[0]
-    assert msg == gettext('No script named "%(name)s". Create it now?') % {"name": "newname"}
+    assert msg == gettext('No editable entry named "%(name)s". Create a script now?') % {
+        "name": "newname"
+    }
     assert kw["default"] is True
     assert kw["console"] is cli.console

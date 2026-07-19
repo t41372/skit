@@ -1,7 +1,9 @@
-"""Round-15 design-audit fixes — the two round-14 HIGH findings the auditor named the
-"last caller / last axis" of one rule: *meta blank + block truthy → the block is the truth;
-untouched and cleared are different inputs*. Round-14 taught it to the constraint axis and the
-`deps --python` caller; round-15 completes it for the DEPENDENCIES axis and the settings screen.
+"""Effective UV metadata contracts for the two independently editable axes.
+
+The central rule is:
+*meta blank + block truthy → the block is the truth; untouched and cleared are different
+inputs*. It applies equally to dependencies and the Python constraint, and to both the
+`deps` command and the settings screen.
 
 Every assertion pins an OBSERVABLE contract — the stored PEP 723 block uv actually reads, the
 `--json` machine contract, the Input a user sees prefilled — never an internal flag:
@@ -74,7 +76,7 @@ def _block(slug: str) -> str:
 
 
 def test_add_dep_then_python_pin_keeps_block_deps_end_to_end(tmp_path):
-    """The exact round-14 HIGH-2 regression, driven through the real CLI: `skit add --dep`
+    """The dependency-axis regression, driven through the real CLI: `skit add --dep`
     injects the dep into the copy's PEP 723 block and leaves meta blank; `skit deps --python`
     then adds the pin WITHOUT erasing the block's dep. Both live in the block uv reads, and
     `deps --json` reports both — the old code's blank-meta reconstruction dropped `requests`
@@ -135,7 +137,7 @@ async def test_settings_prefills_deps_and_python_from_the_block(tmp_path):
 
 
 async def test_settings_deps_only_edit_preserves_the_block_pin(tmp_path):
-    """The round-14 HIGH-1 regression pilot: editing ONLY the deps field on a block-only pinned
+    """Editing ONLY the deps field on a block-only pinned
     entry must not unpin. Because #st-python was prefilled from the block, it now equals its
     baseline and travels as None (don't-touch) — so the pin survives while the new dep lands."""
     store.add_python(_py(tmp_path), name="x", dependencies=["requests"], requires_python=">=3.11")
@@ -155,7 +157,7 @@ async def test_settings_deps_only_edit_preserves_the_block_pin(tmp_path):
 
 
 async def test_settings_clearing_python_on_block_only_entry_unpins(tmp_path):
-    """The block-only twin of round-14's meta-carried unpin: clearing #st-python (now visibly
+    """The block-only twin of the meta-carried unpin: clearing #st-python (now visibly
     prefilled from the block) differs from its baseline, so it travels explicitly and the save
     removes the block's requires-python line. Clearing what you SEE clears it for real."""
     store.add_python(_py(tmp_path), name="x", dependencies=["requests"], requires_python=">=3.11")
@@ -290,7 +292,7 @@ def test_update_dependencies_none_python_lands_pin_and_preserves_block_deps(tmp_
 
 def test_update_dependencies_clear_deps_preserves_the_pin(tmp_path):
     """([], None) on a pinned python entry: an EXPLICIT deps clear empties the deps in meta AND the
-    block, but leaves the untouched constraint axis pinned — the deps-twin of round-14's unpin."""
+    block, but leaves the untouched constraint axis pinned — the dependency-axis twin of unpin."""
     store.add_python(_py(tmp_path), name="x", dependencies=["requests"], requires_python=">=3.11")
     store.update_dependencies("x", [], requires_python=None)
     assert store.resolve("x").meta.dependencies is None  # cleared in meta

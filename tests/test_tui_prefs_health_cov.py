@@ -161,6 +161,23 @@ async def test_prefs_selecting_custom_reveals_only_that_axis_inputs(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+async def test_after_run_choices_state_the_output_visibility_tradeoff(tmp_path):
+    """The preference copy must not imply that both modes retain child output.
+
+    Exit leaves the primary terminal visible; stay deliberately resumes the Library
+    immediately instead of adding a keyboard-only acknowledgment pause.
+    """
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesScreen())
+        await pilot.pause()
+        buttons = list(app.screen.query_one("#pf-after", RadioSet).query(RadioButton))
+        assert [str(button.label) for button in buttons] == [
+            "Quit skit — leave the run's output in the terminal",
+            "Return to the Library immediately",
+        ]
+
+
 async def test_prefs_save_off_persists_editor_form_and_disables_mirror(tmp_path):
     """Saving with the default "off" mirror writes editor + form, clears the language
     (still "auto"), disables the mirror, and dismisses True."""
@@ -217,7 +234,7 @@ async def test_prefs_save_is_atomic_a_bad_github_base_persists_nothing(tmp_path)
     derives the DOWNLOADED-AND-EXECUTED uv binary) refuses BEFORE any section is
     persisted, so editor/form/after-run/js — all edited in this same save — stay
     unchanged on disk. A half-written save would make the Esc "unsaved changes" guard a
-    lie (finding 9, the uv arm — now the github axis of the three-axis mirror UI)."""
+    lie."""
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         app.push_screen(PreferencesScreen())
@@ -601,7 +618,7 @@ async def test_health_lists_drift_issue_and_mirror_on(tmp_path):
         app.push_screen(HealthScreen())
         await pilot.pause()
         text = _screen_text(app.screen)
-        assert "Issues (Enter jumps to the script):" in text
+        assert "Issues (Enter jumps to the entry):" in text
         assert "Mirrors: pypi=tsinghua" in text
         assert "github=nju" in text
         assert "npm=npmmirror" in text
@@ -693,13 +710,13 @@ async def test_health_rebuild_recomposes_entry_count_and_keeps_report(tmp_path):
         screen = HealthScreen()
         app.push_screen(screen)
         await pilot.pause()
-        assert "1 script registered" in _screen_text(screen)
+        assert "1 entry registered" in _screen_text(screen)
         # A second entry lands AFTER the screen composed — the displayed count is now stale.
         store.add_python(_py(tmp_path, "print(2)\n", "two.py"), name="second")
         screen.action_rebuild()
         await pilot.pause()
         text = _screen_text(screen)
-        assert "2 scripts registered" in text  # the count updated via the recompose
+        assert "2 entries registered" in text  # the count updated via the recompose
         assert "Index rebuilt: 2 entries" in text  # the report survived the recompose
 
 

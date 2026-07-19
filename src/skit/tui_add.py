@@ -35,16 +35,29 @@ from . import (
     theme,
     tui_footer,
     tui_layout,
+    tui_prompt,
     tui_runner,
 )
 from .i18n import gettext, ngettext
 from .langs.prompt import analyzer as prompt_analyzer
+from .langs.prompt import text as prompt_text
 from .params import ParamDecl, is_secret_name
 from .paths import is_draft
 
 # How many kept drafts the add screen lists at once; anything past the cap is counted
 # out loud by the overflow line, never silently hidden.
 _DRAFTS_LISTED = 20
+
+
+def _read_authored_draft(path: Path, kind: str) -> str | None:
+    """Read a returned editor draft. ``None`` means invalid prompt bytes: authored
+    content that the prompt review screen must preserve and explain."""
+    if kind != "prompt":
+        return path.read_text(encoding="utf-8", errors="replace")
+    try:
+        return prompt_text.read(path)
+    except prompt_text.PromptEncodingError:
+        return None
 
 
 class KindPickModal(ModalScreen[str | None]):
@@ -200,7 +213,7 @@ class AddSourceScreen(Screen[str | None]):
     """
 
     def on_mount(self) -> None:
-        self.query_one("#add-body").border_title = gettext("Add a script")
+        self.query_one("#add-body").border_title = gettext("Add an entry")
 
     @override
     def compose(self) -> ComposeResult:
@@ -308,11 +321,6 @@ class AddSourceScreen(Screen[str | None]):
             )
             return
         kind = infer_kind(path)
-        if kind == "unknown" and path.suffix.lower() == ".md":
-            # The TUI twin of the CLI's bare-.md ask: the user explicitly picked this
-            # file, and a .md that is neither script nor executable is a prompt in all
-            # but name — say so instead of dead-ending (mirrors issue #10's direction).
-            kind = "prompt"
 
         # A kept draft is skit's own artifact destined for consumption: resuming it is
         # fresh authoring (fresh=True — no "Link the original" ask). A reference entry
@@ -449,15 +457,32 @@ class AddSourceScreen(Screen[str | None]):
         os.close(fd)
         tmp = Path(tmp_name)
         tmp.write_text(starter, encoding="utf-8")  # pragma: no mutate
+        edit_error: editor.EditorError | None = None
         with self.app.suspend():
             try:
                 editor.open_in_editor(tmp)
             except editor.EditorError as exc:
-                print(str(exc), flush=True)
-        text = tmp.read_text(encoding="utf-8", errors="replace")
-        if text.strip() in ("", starter.strip()):
+                edit_error = exc
+        if edit_error is not None:
+            # EditorError means the process never launched, so the starter is still
+            # disposable scaffolding. Report after resume (printing while suspended
+            # disappears with the alternate screen) and stop before the unchanged-
+            # starter path can replace the real failure with "Nothing was written".
+            tmp.unlink(missing_ok=True)
+            self.notify(str(edit_error), severity="error")
+            return
+        try:
+            text = _read_authored_draft(tmp, kind)
+        except OSError as exc:
+            self.notify(
+                gettext("Can't read %(path)s: %(error)s")
+                % {"path": str(tmp), "error": exc.strerror or str(exc)},
+                severity="error",
+            )
+            return
+        if text is not None and text.strip() in ("", starter.strip()):
             tmp.unlink(missing_ok=True)  # pragma: no mutate
-            self.notify(gettext("Nothing was written, so no script was added."))
+            self.notify(gettext("Nothing was written, so nothing was added."))
             return
 
         def _reviewed(slug: str | None) -> None:
@@ -630,9 +655,8 @@ class AddReviewScreen(Screen[str | None]):
         """The keyword arguments prefill the panel (the CLI face passes `skit add`'s
         flags through them); everything stays editable on screen.
 
-        Kind-parametric (the audit's worst finding): the panel was python-only while
-        shell/js/ts/fish shipped full analyzers that no add lane ever showed — the same
-        verb gave python a review panel and shell a toast. Identity/storage are
+        The panel is kind-parametric: shell/js/ts/fish analyzers must be surfaced by the
+        same add review that Python receives. Identity/storage are
         universal; deps render per deps_flavor; candidates come from the entry's OWN
         analyzer capability (None → no tick list, identity still reviewed)."""
         super().__init__()
@@ -648,7 +672,15 @@ class AddReviewScreen(Screen[str | None]):
         from .langs.registry import spec_for
 
         self._spec = spec_for(kind)
-        self._text: str = path.read_text(encoding="utf-8", errors="replace")
+        self._text_error: str = ""
+        try:
+            self._text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            self._text = ""
+            self._text_error = gettext("Can't read %(path)s: %(error)s") % {
+                "path": str(path),
+                "error": exc.strerror or str(exc),
+            }
         self._analysis: analysis.Analysis = self._analyze()
         # A versioned shebang (python3.12) is ONE signal: the kind half and the
         # version half. With no explicit --python and no PEP 723 block, the version
@@ -747,6 +779,12 @@ class AddReviewScreen(Screen[str | None]):
     @override
     def compose(self) -> ComposeResult:
         with tui_footer.FormBody(id="review-body"):
+            if self._text_error:
+                yield Static(
+                    f"[red]{escape(self._text_error)}[/red]",
+                    id="rv-text-error",
+                    markup=True,
+                )
             yield Static(gettext("Name"), classes="section")
             yield Input(value=self._overrides.get("name", self._path.stem), id="rv-name")
             yield Static(gettext("Description"), classes="section")
@@ -957,12 +995,26 @@ class AddReviewScreen(Screen[str | None]):
             boxes = self.query(f"#rv-cand-{i}")
             if boxes:
                 self._tick_overrides[c.name] = boxes.first(Checkbox).value
+        edit_error: editor.EditorError | None = None
         with self.app.suspend():
             try:
                 editor.open_in_editor(self._path)
             except editor.EditorError as exc:
-                print(str(exc), flush=True)
-        self._text = self._path.read_text(encoding="utf-8", errors="replace")
+                edit_error = exc
+        if edit_error is not None:
+            self.notify(str(edit_error), severity="error")
+            return
+        try:
+            self._text = self._path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            self._text_error = gettext("Can't read %(path)s: %(error)s") % {
+                "path": str(self._path),
+                "error": exc.strerror or str(exc),
+            }
+            self.notify(self._text_error, severity="error")
+            self.refresh(recompose=True)
+            return
+        self._text_error = ""
         self._analysis = self._analyze()
         if self._py_pin_auto:
             # The pin came from the shebang, and the shebang may just have changed.
@@ -1017,6 +1069,9 @@ class AddReviewScreen(Screen[str | None]):
         return entry
 
     def action_accept(self) -> None:
+        if self._text_error:
+            self.notify(self._text_error, severity="error")
+            return
         name = self.query_one("#rv-name", Input).value.strip() or None
         desc = self.query_one("#rv-desc", Input).value.strip()
         reference = not self._fresh and self.query_one("#rv-mode", RadioSet).pressed_index == 1
@@ -1083,6 +1138,12 @@ class PromptReviewScreen(Screen[str | None]):
         Binding("ctrl+e", "edit_source", gettext("Edit prompt")),
         Binding("ctrl+s", "accept", gettext("Add"), priority=True),
         Binding("ctrl+n", "new_runner", gettext("New agent"), show=False, priority=True),
+        Binding(
+            "ctrl+o",
+            "choose_prompt_candidates",
+            gettext("Choose variables…"),
+            show=False,
+        ),
         *tui_footer.FIELD_NAV_BINDINGS,
     ]
     # Boot on the name field, not the "*" pick (the body scroll container).
@@ -1122,12 +1183,29 @@ class PromptReviewScreen(Screen[str | None]):
         super().__init__()
         self._path: Path = path
         self._fresh: bool = fresh or is_draft(path)
-        self._text: str = path.read_text(encoding="utf-8", errors="replace")
+        self._text_error: str = ""
+        try:
+            self._text = prompt_text.read(path)
+        except prompt_text.PromptEncodingError as exc:
+            self._text = ""
+            self._text_error = str(exc)
+        except OSError as exc:
+            self._text = ""
+            self._text_error = gettext("Can't read %(path)s: %(error)s") % {
+                "path": str(path),
+                "error": exc.strerror or str(exc),
+            }
         self._detected: list[str] = prompt_analyzer.placeholder_names(self._text)
         self._runner_names: list[str] = []
+        self._runner_pick_armed: bool = False
+        self._runner_was_picked: bool = False
         # The names behind the tick checkboxes, in compose order (flooded lists show
         # only a preview, so index math must go through this, never self._detected).
         self._shown_names: list[str] = []
+        # Checkbox decisions survive edit -> rescan by placeholder NAME. A rescan may
+        # reorder holes, cross the flood threshold, add new names, or remove old ones;
+        # positional state would silently transfer a decision to the wrong placeholder.
+        self._tick_overrides: dict[str, bool] = {}
         # Survives the edit→rescan recompose: the rescan refreshes DETECTION, it must
         # never throw away what the user already set on the panel.
         self._overrides: dict[str, str] = {}
@@ -1147,6 +1225,18 @@ class PromptReviewScreen(Screen[str | None]):
             "name": escape(self._path.name)
         }
         self.query_one("#pv-holes").display = self.query_one("#pv-interpolate", Checkbox).value
+        self.call_after_refresh(setattr, self, "_runner_pick_armed", True)
+
+    @on(Select.Changed, "#pv-runner-select")
+    def _runner_changed(self, _event: Select.Changed) -> None:
+        if self._runner_pick_armed:
+            self._runner_was_picked = True
+
+    def _refresh_after_source_edit(self) -> None:
+        """Recompose without mistaking the new Select's initial value for a user pick."""
+        self._runner_pick_armed = False
+        self.refresh(recompose=True)
+        self.call_after_refresh(setattr, self, "_runner_pick_armed", True)
 
     def _default_runner(self) -> str:
         """Prefill: the CLI's --runner (or the pick kept across a rescan), else the
@@ -1158,6 +1248,12 @@ class PromptReviewScreen(Screen[str | None]):
     def compose(self) -> ComposeResult:
         self._runner_names = [r.name for r in config.load_prompt_runners()]
         with tui_footer.FormBody(id="pv-body"):
+            if self._text_error:
+                yield Static(
+                    f"[red]{escape(self._text_error)}[/red]",
+                    id="pv-text-error",
+                    markup=True,
+                )
             yield Static(gettext("Name"), classes="section")
             yield Input(
                 value=self._overrides.get("name", self._path.stem.removesuffix(".prompt")),
@@ -1246,12 +1342,25 @@ class PromptReviewScreen(Screen[str | None]):
             yield Static(gettext("Tick the ones the run form should ask for:"), classes="hint")
         for i, hole_name in enumerate(self._shown_names):
             mark = gettext(" (secret)") if is_secret_name(hole_name) else ""
-            yield Checkbox(escape(hole_name) + mark, value=not flooded, id=f"pv-hole-{i}")
+            yield Checkbox(
+                escape(hole_name) + mark,
+                value=self._tick_overrides.get(hole_name, not flooded),
+                id=f"pv-hole-{i}",
+            )
         if len(detected) > len(self._shown_names):
             yield Static(
-                gettext("…and %(count)s more (manage them later in Script settings)")
-                % {"count": len(detected) - len(self._shown_names)},
+                gettext("…and %(count)s more") % {"count": len(detected) - len(self._shown_names)},
                 classes="hint",
+            )
+            yield Static(
+                tui_footer.chip(
+                    "screen.choose_prompt_candidates",
+                    "Ctrl+O",
+                    gettext("Choose variables…"),
+                ),
+                id="pv-choose-candidates",
+                classes="hint",
+                markup=True,
             )
 
     @on(Checkbox.Changed, "#pv-interpolate")
@@ -1269,6 +1378,46 @@ class PromptReviewScreen(Screen[str | None]):
         """The runner dropdown's pick ("" = no pin). Value-keyed — no index math."""
         value = self.query_one("#pv-runner-select", Select).value
         return "" if value is Select.NULL else str(value)
+
+    def _remember_visible_ticks(self) -> None:
+        """Snapshot the preview's checkboxes by name before a modal or recompose.
+
+        Flooded prompts deliberately render only a prefix.  The complete choice lives
+        in ``_tick_overrides``; reading by name prevents filtering, edits, or a body
+        reorder from transferring a decision to another placeholder.
+        """
+        for i, hole_name in enumerate(self._shown_names):
+            boxes = self.query(f"#pv-hole-{i}")
+            if boxes:
+                self._tick_overrides[hole_name] = boxes.first(Checkbox).value
+
+    def _selected_names(self) -> set[str]:
+        flooded = len(self._detected) > prompt_analyzer.AUTO_MANAGE_LIMIT
+        return {name for name in self._detected if self._tick_overrides.get(name, not flooded)}
+
+    def action_choose_prompt_candidates(self) -> None:
+        """Open the complete searchable choice when the inline preview is capped."""
+        if len(self._detected) <= prompt_analyzer.LIST_PREVIEW_LIMIT:
+            return
+        self._remember_visible_ticks()
+
+        def _chosen(selected: set[str] | None) -> None:
+            if selected is None:
+                return
+            for name in self._detected:
+                self._tick_overrides[name] = name in selected
+            for i, hole_name in enumerate(self._shown_names):
+                boxes = self.query(f"#pv-hole-{i}")
+                if boxes:
+                    boxes.first(Checkbox).value = hole_name in selected
+
+        self.app.push_screen(
+            tui_prompt.PromptCandidatePickerModal(
+                self._detected,
+                self._selected_names(),
+            ),
+            _chosen,
+        )
 
     def action_new_runner(self) -> None:
         """Ctrl+N / the New agent… chip: define a custom runner without leaving the
@@ -1302,16 +1451,40 @@ class PromptReviewScreen(Screen[str | None]):
             self._overrides["runner"] = picked
         else:
             self._overrides.pop("runner", None)
+        self._remember_visible_ticks()
+        edit_error: editor.EditorError | None = None
         with self.app.suspend():
             try:
                 editor.open_in_editor(self._path)
             except editor.EditorError as exc:
-                print(str(exc), flush=True)
-        self._text = self._path.read_text(encoding="utf-8", errors="replace")
+                edit_error = exc
+        if edit_error is not None:
+            self.notify(str(edit_error), severity="error")
+            return
+        try:
+            text = prompt_text.read(self._path)
+        except prompt_text.PromptEncodingError as exc:
+            self._text_error = str(exc)
+            self.notify(self._text_error, severity="error")
+            self._refresh_after_source_edit()
+            return
+        except OSError as exc:
+            self._text_error = gettext("Can't read %(path)s: %(error)s") % {
+                "path": str(self._path),
+                "error": exc.strerror or str(exc),
+            }
+            self.notify(self._text_error, severity="error")
+            self._refresh_after_source_edit()
+            return
+        self._text_error = ""
+        self._text = text
         self._detected = prompt_analyzer.placeholder_names(self._text)
-        self.refresh(recompose=True)
+        self._refresh_after_source_edit()
 
     def action_accept(self) -> None:
+        if self._text_error:
+            self.notify(self._text_error, severity="error")
+            return
         name = self.query_one("#pv-name", Input).value.strip() or None
         desc = self.query_one("#pv-desc", Input).value.strip()
         reference = not self._fresh and self.query_one("#pv-mode", RadioSet).pressed_index == 1
@@ -1320,11 +1493,9 @@ class PromptReviewScreen(Screen[str | None]):
         if interpolate:
             # The EXPLICIT kept subset — including the honest empty list. Flooded
             # panels tick nothing by default, and add_prompt honors what was asked.
-            managed = [
-                self._shown_names[i]
-                for i in range(len(self._shown_names))
-                if self.query_one(f"#pv-hole-{i}", Checkbox).value
-            ]
+            self._remember_visible_ticks()
+            selected = self._selected_names()
+            managed = [name for name in self._detected if name in selected]
         runner = self._picked_runner()
         try:
             entry = store.add_prompt(
@@ -1339,7 +1510,7 @@ class PromptReviewScreen(Screen[str | None]):
         except store.StoreError as exc:
             self.notify(str(exc), severity="error")
             return
-        if runner:
+        if runner and self._runner_was_picked:
             # A real pick prefills the next picker (never a non-interactive resolve).
             argstate.save_last_runner(runner)
         self.dismiss(entry.slug)

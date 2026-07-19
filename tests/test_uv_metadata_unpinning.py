@@ -1,5 +1,6 @@
-"""Round-14 design-audit fixes — the two round-13 findings the auditor named "stop-short":
-the store's copy-mode PEP 723 python block-sync now tracks an explicit unpin instead of
+"""UV metadata unpinning and preservation contracts.
+
+The store's copy-mode PEP 723 python block-sync tracks an explicit unpin instead of
 silently preserving it, and the npm --python refusal keys on `is not None` (the empty spelling
 is refused too). Every assertion pins an OBSERVABLE contract end to end:
 
@@ -70,7 +71,7 @@ def test_pin_unpin_repin_block_line_tracks_the_constraint_end_to_end(tmp_path):
     """The whole arc through the CLI: a pin writes the block's requires-python AND puts --python
     on the launch command; an explicit unpin removes both (and clears --json); a re-pin restores
     both. The stored block is what uv actually enforces, so the visible command and the block
-    must never disagree — the exact drift the round-13 audit found (unpin cleared the command
+    must never disagree — the exact drift this guards against (unpin cleared the command
     while the block stayed pinned)."""
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
 

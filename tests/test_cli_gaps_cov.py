@@ -221,11 +221,14 @@ def test_collect_values_inline_form_returns_values(tmp_path, monkeypatch):
     ent = store.add_command("echo {msg}", name="e")
     plan = flows.plan_for_entry(ent)
     monkeypatch.setattr(
-        inlineform, "collect", lambda entry, plan, prefill, **kw: ({"msg": "typed"}, None)
+        inlineform,
+        "collect",
+        lambda entry, plan, prefill, **kw: ({"msg": "typed"}, None, False),
     )
-    values, picked_runner = cli._collect_values(ent, plan, {}, plain=False)
+    values, picked_runner, runner_was_picked = cli._collect_values(ent, plan, {}, plain=False)
     assert values == {"msg": "typed"}
     assert picked_runner is None  # no picker requested
+    assert runner_was_picked is False
 
 
 def test_collect_values_inline_form_cancel_exits_130(tmp_path, monkeypatch):
@@ -269,7 +272,7 @@ def test_run_interactive_uses_collect_values(tmp_path, run_entry_spy, monkeypatc
 
     def fake_collect(entry, plan, prefill, *, plain, runners=None, runner_default=""):
         called["yes"] = True
-        return prefill, None
+        return prefill, None, False
 
     monkeypatch.setattr(cli, "_collect_values", fake_collect)
     result = runner.invoke(cli.app, ["run", "j"])  # no --no-input -> interactive path

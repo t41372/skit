@@ -89,7 +89,7 @@ def test_write_workdir_rejects_empty(tmp_path):
 
 def test_write_workdir_origin_refused_on_a_command(tmp_path):
     """A command template has no original file, so "origin" can't resolve to one — it's
-    refused (StoreUsageError), not silently persisted to resolve as something else (finding 8)."""
+    refused (StoreUsageError), not silently persisted to resolve as something else."""
     _command()
     before = store.resolve("cmd").meta.workdir
     with pytest.raises(store.StoreUsageError, match="no original file — origin doesn't apply"):
@@ -98,7 +98,7 @@ def test_write_workdir_origin_refused_on_a_command(tmp_path):
 
 
 def test_write_workdir_store_refused_on_a_command(tmp_path):
-    """A command has no stored copy either — "store" is refused too (finding 8)."""
+    """A command has no stored copy either, so "store" is refused too."""
     _command()
     with pytest.raises(store.StoreUsageError, match="no stored copy — store doesn't apply"):
         store.write_workdir("cmd", "store")
@@ -106,7 +106,7 @@ def test_write_workdir_store_refused_on_a_command(tmp_path):
 
 def test_write_workdir_store_refused_on_an_exe(tmp_path):
     """A program (exe) launches its original binary directly with no stored copy — "store"
-    is refused, while "origin" (its real file) still applies (finding 8)."""
+    is refused, while "origin" (its real file) still applies."""
     _exe(tmp_path)
     with pytest.raises(store.StoreUsageError, match="no stored copy — store doesn't apply"):
         store.write_workdir("prog", "store")
@@ -116,7 +116,7 @@ def test_write_workdir_store_refused_on_an_exe(tmp_path):
 
 def test_write_workdir_command_still_accepts_invoke_and_paths(tmp_path):
     """The refusals are surgical: a command still accepts the literals it CAN honor
-    (invoke) and an absolute path (finding 8)."""
+    (invoke) and an absolute path."""
     _command()
     assert store.write_workdir("cmd", "invoke").meta.workdir == "invoke"
     assert store.write_workdir("cmd", "/opt/data").meta.workdir == "/opt/data"

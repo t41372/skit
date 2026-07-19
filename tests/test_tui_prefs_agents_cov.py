@@ -119,7 +119,7 @@ async def test_prefs_bash_bad_path_shows_error_and_does_not_save(tmp_path, monke
 async def test_prefs_save_is_atomic_a_bad_bash_path_persists_nothing(tmp_path, monkeypatch):
     """action_save validates the bash path BEFORE persisting anything: a bad path refuses
     the whole save, so editor/form/after-run/js edited in the same pass stay unchanged on
-    disk (finding 9, the win32 bash arm)."""
+    disk."""
     monkeypatch.setattr("skit.tui_prefs.sys.platform", "win32")
     app = tui.MenuApp()
     async with app.run_test() as pilot:
@@ -223,7 +223,7 @@ async def test_prefs_dirty_esc_discard_closes(tmp_path):
 
 
 async def test_prefs_ctrl_k_in_an_input_edits_the_field_not_a_modal(tmp_path):
-    """Ctrl+O/Ctrl+K are NON-priority (finding 3): with focus in a prefs Input, Ctrl+K
+    """Ctrl+O/Ctrl+K are NON-priority: with focus in a prefs Input, Ctrl+K
     is the Input's own delete-to-end-of-line — the screen must NOT answer a text-editing
     chord with a modal on a screen full of text fields."""
     app = tui.MenuApp()
@@ -260,7 +260,7 @@ async def test_prefs_ctrl_k_from_non_input_focus_opens_the_skill_modal(tmp_path,
 
 
 async def test_prefs_ctrl_o_from_non_input_focus_opens_manage_runners(tmp_path):
-    """Ctrl+O from a non-Input focus opens the Manage agents screen (finding 3, twin)."""
+    """Ctrl+O from a non-Input focus opens the Manage agents screen."""
     from skit.tui_runner import RunnerManageScreen
 
     app = tui.MenuApp()

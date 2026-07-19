@@ -1,17 +1,17 @@
 ---
 name: skit
-description: Run, inspect, and manage scripts in the user's skit library — their personal hub, manager, and launcher for scripts in many languages (Python, shell, JS/TS, and more), executables, command templates, and AI-agent prompts, each with a typed parameter form, saved presets, and per-script dependencies. Use when the user asks to run/list/add their scripts or prompts, mentions skit or "my script", or before writing a new one-off script (the library may already have one that does the job).
+description: Run, inspect, and manage entries in the user's skit library — their personal hub, manager, and launcher for scripts in many languages (Python, shell, JS/TS, and more), executables, command templates, and AI-agent prompts, with typed parameter forms, saved presets, and per-entry launch policy. Use when the user asks to run/list/add their scripts or prompts, mentions skit or "my script", or before writing a new one-off script (the library may already have one that does the job).
 license: MIT
 compatibility: Requires the skit CLI on PATH (install with `uv tool install skit-cli`)
 ---
 
-# skit — the user's script library
+# skit — the user's entry library
 
 skit stores the user's scripts in one searchable library and makes them runnable
 without remembering flags. It runs many languages — Python, shell (bash/sh/zsh),
 JS/TS, fish, PowerShell, Ruby/Perl/Lua/R — plus executables, command templates, and
 prompts (parameterized text fired at an AI-agent CLI such as claude or codex).
-For every script it knows the parameter schema (extracted statically — flags,
+For every entry it knows the parameter schema (extracted statically — flags,
 prompts, and marked constants all become typed fields), remembers last-used values,
 and saves named presets. Python runs through `uv run --script` in an isolated
 environment (dependencies declared per script, PEP 723); JS/TS scripts get per-script
@@ -26,7 +26,7 @@ is *the user's curated space*: treat it like their dotfiles.
 2. **Trust exit codes, never output text.** skit's human output is localized (English,
    繁體中文, 简体中文, …) — string-matching it will break on other machines. The exit
    code and `--json` payloads are the stable contract.
-3. **Before a script's first run, `--dry-run` it** and show the user the exact command.
+3. **Before an entry's first run, `--dry-run` it** and show the user the exact command.
 4. **Never add, remove, or overwrite library entries without asking the user first.**
    Propose `skit add` when you've written something reusable; don't add it silently.
 5. **Pass `--no-input` on every `skit run` and `skit add`.** It guarantees those never
@@ -34,11 +34,11 @@ is *the user's curated space*: treat it like their dotfiles.
    instead. `skit remove` confirms instead of taking `--no-input` — pass `-y`. The
    read commands (`list`, `show`, `params`, …) never prompt and don't take the flag.
 
-## Discover scripts
+## Discover entries
 
 ```bash
-skit list                 # every script: name, kind, description
-skit show <name>          # one script: parameters, types, defaults, presets
+skit list                 # every entry: name, kind, description
+skit show <name>          # one entry: parameters, types, defaults, presets
 skit list --json          # same data, machine-readable (only if you're scripting over it)
 skit show <name> --json   # full parameter schema as JSON
 ```
@@ -47,13 +47,13 @@ skit show <name> --json   # full parameter schema as JSON
 `default`, `choices`, and `source` — where the value goes: `flag` (passed as a real
 CLI flag), `inject` (a managed constant or prompt answer, rewritten into a temporary
 copy at run time), `env` (delivered as an environment variable), or `placeholder`
-(fills the registered command template). The top-level `param_origin`
+(fills a registered command template or prompt body). The top-level `param_origin`
 (`declared`/`reader`/`managed`/`command`/`none`) says where the whole schema came
 from. `degraded_reason` non-empty means skit could not model the script's own parser
 (subcommands, dynamic args) — pass arguments through after `--` instead. `needs` lists
-the external commands the script requires on PATH.
+the external commands the entry requires on PATH.
 
-## Run scripts
+## Run entries
 
 ```bash
 skit run <name> --no-input                          # defaults + the user's last-used values
@@ -70,14 +70,14 @@ skit run <name> --forget-args --no-input            # erase the remembered extra
   validated against the field's type (exit 125 on mismatch). Values may use tokens —
   `{cwd}`, `{today}`, `{now}`, `{env:VAR}`, a leading `~` — and multi-value fields
   also expand globs.
-- Unset fields fall back to: preset > last-used value > the script's own default.
+- Unset fields fall back to: preset > last-used value > the field's declared default.
   A required field with no value fails fast (exit 125) rather than prompting.
 - **Reuse warning:** with no `--` args given, a script or exe run reuses the *last
   run's* extra args (it says so on stderr). Pass your own `--` args, use `--raw` (which
   never replays old arguments), or `--forget-args` (erases the remembered tail up front,
   then runs) when you need a clean slate; `--dry-run` shows exactly what would happen.
 - `--raw` runs a script's stored copy as-is, skipping the parameter form and injection.
-  It applies to every kind EXCEPT prompt and command, whose `{placeholders}` ARE the
+  It applies to every kind EXCEPT prompt and command, whose placeholders ARE the
   artifact — there is no "as-is" without them, so `--raw` is refused there (exit 2). (exe
   and the interpreted kinds run as-is exactly like python.) It also refuses
   `--set`/`-p`/`--save-preset`.
@@ -86,18 +86,18 @@ skit run <name> --forget-args --no-input            # erase the remembered extra
 
 ### Exit codes (docker convention)
 
-When the script actually ran, its exit code passes through **untouched** (even if the
-script itself exits 125–127 — check stderr when in doubt). When it never launched:
+When the entry's target process actually ran, its exit code passes through **untouched**
+(even if it exits 125–127 — check stderr when in doubt). When it never launched:
 
 | code | meaning |
 | --- | --- |
 | 2 | usage error (bad flags, unknown `--set` name, unknown preset) |
 | 125 | skit-side failure: missing/invalid parameter value, drift, launch failure |
 | 126 | target exists but is not executable |
-| 127 | no such script in the library (or launch target missing) |
+| 127 | no such entry in the library (or launch target missing) |
 | 130 | user cancelled the interactive form |
 
-## Add scripts to the library
+## Add entries to the library
 
 Always confirm with the user before adding. From a file or stdin:
 
@@ -163,7 +163,7 @@ skit params <name> --rm OUTPUT
 ```
 
   `--deliver` picks how the value reaches the program: `flag` (exe), `env` (any kind),
-  or `placeholder` (command templates).
+  or `placeholder` (command templates and prompt bodies).
 - **Shell only:** `skit params <name> --normalize WIDTH` rewrites a bare `WIDTH=800`
   constant into the `${WIDTH:-800}` idiom in skit's *stored copy* (never the user's
   original), so the value is delivered as an environment variable rather than by
@@ -175,11 +175,12 @@ Launch policy lives on the entry and is editable without remove + re-add:
 
 ```bash
 skit params <name> --workdir origin      # run in: origin | store | invoke | an /absolute/path
-skit params <name> --interpreter zsh     # pin the interpreter/runtime (interpreted kinds only; empty clears it)
+skit params <name> --interpreter zsh     # pin the interpreter/runtime (interpreted kinds only)
+skit params <name> --interpreter ''      # clear the interpreter pin (automatic detection)
 skit params <name> --template 'ffmpeg -i {input} {output}'  # command kind: rewrite the template ({holes} re-read)
 ```
 
-- `--workdir` sets where the process starts: `origin` (the script's own folder),
+- `--workdir` sets where the process starts: `origin` (the source file's folder),
   `store` (skit's stored copy), `invoke` (where skit was run from), or an absolute path.
 - `--interpreter` pins the binary an interpreted entry (shell/js/ts/fish/…) launches
   with; refused on python and prompt kinds — they don't run through a pinnable
@@ -189,7 +190,7 @@ skit params <name> --template 'ffmpeg -i {input} {output}'  # command kind: rewr
 
 ## Presets
 
-Named value sets per script, ideal for recurring jobs:
+Named value sets per entry, ideal for recurring jobs:
 
 ```bash
 skit run <name> --set a=1 --set b=2 --save-preset nightly --dry-run --no-input  # create without running
@@ -217,7 +218,8 @@ skit add notes/review.prompt.md --runner claude --no-input        # pin the agen
 skit add big.prompt.md --prompt --no-interpolate --no-input       # no insertion at all
 skit show <name> --json           # adds "runner", "runners_available", "interpolate"
 skit run <name> --runner claude --set target=src/app.py --no-input
-skit params <name> --runner claude   # pin the agent (empty value clears the pin)
+skit params <name> --runner claude   # pin the agent
+skit params <name> --runner ''       # clear the pin (ask on the run form)
 skit params <name> --add extra_hole  # manage a {{hole}} typed into the body later
 skit params <name> --rm noise        # unmanage a false positive (it stays verbatim text)
 skit params <name> --no-interpolate  # switch insertion off; --interpolate turns it back on
@@ -270,5 +272,5 @@ Note: doctor's EXIT CODE reflects uv availability only — per-entry warnings (m
 targets, drift, launch_blocked) do not change it. Read `--json` for health, never the
 exit code.
 
-If `show`/`run` reports drift (the script changed and its managed parameter
+If `show`/`run` reports drift (the source changed and its managed parameter
 definitions no longer match), `skit params <name> --resync` refreshes them.

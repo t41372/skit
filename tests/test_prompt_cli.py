@@ -4,14 +4,65 @@ the `skit runner` tree, and doctor's prompt sweeps (docs/design/prompt.md)."""
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
-from skit import argstate, cli, config, store
+from skit import argstate, cli, config, i18n, store
+from skit.langs.prompt import analyzer as prompt_analyzer
 
 runner = CliRunner()
+
+
+_HELP_SURFACE_PROBE = """
+import json
+
+from typer.testing import CliRunner
+
+from skit import cli
+
+commands = {
+    "main": ["--help"],
+    "list": ["list", "--help"],
+    "show": ["show", "--help"],
+    "remove": ["remove", "--help"],
+    "rename": ["rename", "--help"],
+    "describe": ["describe", "--help"],
+    "params": ["params", "--help"],
+    "deps": ["deps", "--help"],
+    "doctor": ["doctor", "--help"],
+}
+runner = CliRunner()
+payload = {}
+for name, args in commands.items():
+    result = runner.invoke(cli.app, args)
+    payload[name] = {"exit_code": result.exit_code, "output": result.output}
+print(json.dumps(payload, ensure_ascii=False))
+"""
+
+
+def _help_surfaces_in_fresh_locale(locale):
+    """Import cli.app after selecting the locale, exactly like the real console script.
+
+    Typer freezes command help while cli.py is imported, so changing SKIT_LANG around an
+    already-imported CliRunner cannot test localized help.  A child process is the product
+    boundary and also keeps this assertion independent of the developer's saved language.
+    """
+    env = os.environ.copy()
+    env["SKIT_LANG"] = locale
+    completed = subprocess.run(
+        [sys.executable, "-c", _HELP_SURFACE_PROBE],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return json.loads(completed.stdout)
 
 
 def _json(result):
@@ -42,20 +93,58 @@ def spawn_spy(monkeypatch):
         script_override=None,
         env_overlay=None,
         runner=None,
+        prepared=None,
     ):
         calls["entry"] = entry
         calls["extra"] = list(extra_args or [])
         calls["values"] = dict(values or {})
         calls["runner"] = runner
+        calls["prepared"] = prepared
         return calls.get("code", 0)
 
     monkeypatch.setattr(cli.launcher, "run_entry", fake)
+    monkeypatch.setattr("skit.langs.launch._which", lambda name: f"/bin/{name}")
     return calls
 
 
 # --------------------------------------------------------------------------
 # add
 # --------------------------------------------------------------------------
+
+
+def test_add_prompt_read_oserror_is_a_clean_store_error(tmp_path, monkeypatch):
+    """A present prompt that becomes unreadable during onboarding must not traceback."""
+    source = _write(tmp_path, "Review this\n")
+
+    def denied(_path):
+        raise PermissionError(13, "permission denied", str(source))
+
+    monkeypatch.setattr("skit.langs.prompt.text.read", denied)
+    result = runner.invoke(cli.app, ["add", str(source), "--prompt", "--no-input"])
+
+    assert result.exit_code == 1
+    assert "Can't read" in result.output
+    assert str(source) in result.output.replace("\n", "")
+    assert "permission denied" in result.output
+    assert store.list_entries() == []
+
+
+def test_localized_starter_is_minimal_and_never_creates_its_own_field():
+    try:
+        for locale, title in (
+            ("en", "# New prompt"),
+            ("zh_CN", "# 新提示词"),
+            ("zh_TW", "# 新提示詞"),
+        ):
+            i18n.init(locale)
+            starter = cli._starter_prompt()
+            assert starter == title + "\n\n"
+            assert prompt_analyzer.placeholder_names(starter) == []
+            # A normal partial edit may leave the harmless title in place, but only
+            # the user's own token becomes a field.
+            assert prompt_analyzer.placeholder_names(starter + "Review {{目标}}\n") == ["目标"]
+    finally:
+        i18n.init("en")
 
 
 def test_add_prompt_file_no_input_manages_everything(tmp_path):
@@ -67,6 +156,15 @@ def test_add_prompt_file_no_input_manages_everything(tmp_path):
     assert entry.meta.params == ["target", "focus"]
     assert entry.meta.runner == ""
     assert "Managed parameters: target, focus" in result.output
+
+
+def test_add_prompt_secret_summary_states_both_sides_of_boundary(tmp_path):
+    src = _write(tmp_path, "Use {{api_key}}\n")
+    result = runner.invoke(cli.app, ["add", str(src), "--no-input"])
+    assert result.exit_code == 0, result.output
+    assert "never saved by skit: api_key" in result.output
+    assert "selected agent receives those values as plaintext" in result.output
+    assert "may log or sync them" in result.output
 
 
 def test_add_prompt_interactive_tick_subset_and_runner_pick(tmp_path):
@@ -90,7 +188,7 @@ def test_add_prompt_interactive_tick_subset_and_runner_pick(tmp_path):
 def test_add_prompt_interactive_selection(tmp_path, monkeypatch):
     config.save_form("plain")  # the line-prompt path (form=tui hosts the review panel)
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
-    answers = iter(["1,3", "-"])
+    answers = iter(["", "1,3", "-"])
     monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: next(answers)))
     src = _write(tmp_path, "{{a}} {{b}} {{c}}\n")
     result = runner.invoke(cli.app, ["add", str(src), "-n", "picky"])
@@ -101,10 +199,40 @@ def test_add_prompt_interactive_selection(tmp_path, monkeypatch):
     assert argstate.load_last_runner() == ""  # skipping is not a pick
 
 
+def test_add_prompt_plain_identity_defaults_drop_compound_suffix(tmp_path, monkeypatch):
+    config.save_form("plain")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+
+    def accept_defaults(question, **kwargs):
+        if "Run this prompt" in question:
+            return "-"
+        return kwargs.get("default", "")
+
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(accept_defaults))
+    src = _write(tmp_path, "# Review pull requests\n", name="review.prompt.md")
+    result = runner.invoke(cli.app, ["add", str(src)])
+    assert result.exit_code == 0, result.output
+    entry = store.resolve("review")
+    assert entry.meta.name == "review"
+    assert entry.meta.description == "Review pull requests"
+
+
+def test_add_prompt_plain_identity_accepts_user_overrides(tmp_path, monkeypatch):
+    config.save_form("plain")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    answers = iter(["pr-review", "Team review prompt", "-"])
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: next(answers)))
+    src = _write(tmp_path, "Review this change\n", name="review.prompt.md")
+    result = runner.invoke(cli.app, ["add", str(src)])
+    assert result.exit_code == 0, result.output
+    entry = store.resolve("pr-review")
+    assert entry.meta.description == "Team review prompt"
+
+
 def test_add_prompt_interactive_runner_pick_pins_and_remembers(tmp_path, monkeypatch):
     config.save_form("plain")  # the line-prompt path (form=tui hosts the review panel)
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
-    answers = iter(["all", "codex"])
+    answers = iter(["", "all", "codex"])
     monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: next(answers)))
     src = _write(tmp_path, "{{a}}\n")
     result = runner.invoke(cli.app, ["add", str(src), "-n", "pinned"])
@@ -169,7 +297,7 @@ def test_add_prompt_term_dumb_keeps_line_prompts(tmp_path, monkeypatch):
     src = _write(tmp_path, "Do {{a}}\n")
     monkeypatch.setenv("TERM", "dumb")
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
-    answers = iter(["all", "-"])  # manage everything; no runner pin
+    answers = iter(["", "all", "-"])  # description; manage everything; no runner pin
     monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: next(answers)))
     hit: dict[str, int] = {}
     monkeypatch.setattr(
@@ -195,13 +323,14 @@ def test_add_prompt_missing_file_is_clean_on_the_panel_face(tmp_path, monkeypatc
 
 
 def test_add_prompt_runner_flag_non_interactive(tmp_path):
+    argstate.save_last_runner("opencode")
     src = _write(tmp_path, "{{a}}\n")
     result = runner.invoke(
-        cli.app, ["add", str(src), "-n", "auto", "--runner", "claude", "--no-input"]
+        cli.app, ["add", str(src), "-n", "auto", "--runner", " claude ", "--no-input"]
     )
     assert result.exit_code == 0, result.output
     assert store.resolve("auto").meta.runner == "claude"
-    assert argstate.load_last_runner() == "claude"
+    assert argstate.load_last_runner() == "opencode"  # an add-time pin is not a picker choice
 
 
 def test_add_prompt_unknown_runner_flag_is_usage_error(tmp_path):
@@ -242,11 +371,39 @@ def test_add_bare_md_no_input_requires_explicit_prompt(tmp_path):
     assert "--prompt" in result.output
 
 
+def test_missing_bare_md_is_refused_before_the_prompt_confirmation(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+
+    def asked(*_args, **_kwargs):
+        pytest.fail("a path that does not exist must never reach the prompt-kind question")
+
+    monkeypatch.setattr(cli.Confirm, "ask", staticmethod(asked))
+    missing = tmp_path / "missing.md"
+    result = runner.invoke(cli.app, ["add", str(missing)])
+    assert result.exit_code == 1
+    assert "File not found:" in result.output
+    assert "missing.md" in result.output
+
+
+def test_executable_lane_preserves_the_existing_non_file_contract(tmp_path):
+    directory = tmp_path / "tool-dir"
+    directory.mkdir()
+    result = runner.invoke(cli.app, ["add", str(directory), "--exe", "--no-input"])
+    assert result.exit_code == 0, result.output
+    entry = store.resolve("tool-dir")
+    assert entry.meta.kind == "exe"
+    assert entry.meta.source_hash == ""
+
+
 def test_add_bare_md_interactive_ask_yes_and_no(tmp_path, monkeypatch):
     config.save_form("plain")  # the line-prompt path (form=tui hosts the review panel)
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     monkeypatch.setattr(cli.Confirm, "ask", staticmethod(lambda *a, **k: True))
-    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: "-"))
+
+    def accept_identity_defaults(question, **kwargs):
+        return "-" if "Run this prompt" in question else kwargs.get("default", "")
+
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(accept_identity_defaults))
     src = _write(tmp_path, "hello {{x}}\n", name="notes.md")
     result = runner.invoke(cli.app, ["add", str(src)])
     assert result.exit_code == 0, result.output
@@ -277,6 +434,33 @@ def test_add_prompt_from_stdin(tmp_path):
     assert entry.meta.params == ["url"]
     assert entry.meta.runner == "amp"
     assert entry.script_path.read_text() == "Summarize {{url}} briefly.\n"
+
+
+def test_add_kind_prompt_from_stdin_uses_the_prompt_contract(tmp_path):
+    result = runner.invoke(
+        cli.app,
+        [
+            "add",
+            "-",
+            "--kind",
+            "prompt",
+            "-n",
+            "kind-clip",
+            "--runner",
+            "amp",
+            "--no-interpolate",
+        ],
+        input="Keep {{url}} literal.\r\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    entry = store.resolve("kind-clip")
+    assert entry.meta.kind == "prompt"
+    assert entry.meta.runner == "amp"
+    assert entry.meta.interpolate is False
+    assert entry.meta.params is None
+    assert entry.meta.workdir == "invoke"
+    assert entry.script_path.read_bytes() == b"Keep {{url}} literal.\r\n"
 
 
 def test_add_prompt_from_stdin_empty_body(tmp_path):
@@ -346,7 +530,7 @@ def test_add_prompt_editor_lane_name_taken_refuses_before_the_editor(tmp_path, m
 
 def test_add_prompt_editor_lane_post_edit_failure_keeps_the_draft(tmp_path, monkeypatch):
     """A failure AFTER the prompt edit keeps the temp draft (the user's only copy) and names
-    where it lives — nothing is added (finding R2, the prompt lane)."""
+    where it lives — nothing is added."""
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     seen: dict[str, Path] = {}
 
@@ -367,6 +551,23 @@ def test_add_prompt_editor_lane_post_edit_failure_keeps_the_draft(tmp_path, monk
         assert store.list_entries() == []  # nothing added
     finally:
         seen["path"].unlink(missing_ok=True)
+
+
+def test_add_prompt_editor_lane_deleted_draft_is_a_clean_honest_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    seen: dict[str, Path] = {}
+
+    def delete(path: Path):
+        seen["path"] = path
+        path.unlink()
+
+    monkeypatch.setattr(cli.editor, "open_in_editor", delete)
+    result = runner.invoke(cli.app, ["add", "--prompt", "-n", "gone"])
+    assert result.exit_code == 1
+    assert "Can't read" in result.output
+    assert "The draft is no longer at" in result.output
+    assert "Your draft was kept at" not in result.output
+    assert not seen["path"].exists()
 
 
 def test_add_prompt_ref_mode_keeps_original_and_pins_invoke(tmp_path):
@@ -396,6 +597,64 @@ def _added(tmp_path, text="Do {{a}}\n", name="p", pin=""):
     return entry
 
 
+@pytest.mark.parametrize(
+    ("locale", "expected"),
+    [
+        (
+            "en",
+            {
+                "main": "scripts, prompts, programs, and commands",
+                "list": "registered entry",
+                "show": "one entry",
+                "remove": "registered entry",
+                "rename": "Rename an entry",
+                "describe": "entry's description",
+                "params": "an entry's managed or declared parameters",
+                "deps": "an entry's package dependencies",
+                "doctor": "entry library",
+            },
+        ),
+        (
+            "zh-TW",
+            {
+                "main": "腳本、提示詞、程式和命令",
+                "list": "已登記的條目",
+                "show": "一個條目",
+                "remove": "已登記的條目",
+                "rename": "重新命名條目",
+                "describe": "條目的說明",
+                "params": "條目的納管參數或宣告參數",
+                "deps": "條目的套件依賴",
+                "doctor": "工具庫",
+            },
+        ),
+    ],
+)
+def test_umbrella_cli_help_uses_entry_taxonomy_in_the_requested_locale(locale, expected):
+    surfaces = _help_surfaces_in_fresh_locale(locale)
+    for command, phrase in expected.items():
+        result = surfaces[command]
+        assert result["exit_code"] == 0, result["output"]
+        assert phrase in " ".join(result["output"].split())
+
+
+def test_prompt_only_library_uses_entry_taxonomy_on_dynamic_cli_surfaces(tmp_path, monkeypatch):
+    _added(tmp_path, text="Review this\n")
+    monkeypatch.setattr(cli.launcher, "find_uv", lambda: "/bin/uv")
+
+    result = runner.invoke(cli.app, ["doctor"])
+    assert result.exit_code == 0, result.output
+    assert "1 entry registered" in result.output
+    assert "script registered" not in result.output
+
+
+def test_empty_library_does_not_claim_it_only_accepts_scripts():
+    result = runner.invoke(cli.app, ["list"])
+    assert result.exit_code == 0, result.output
+    assert "No entries yet" in result.output
+    assert "No scripts yet" not in result.output
+
+
 def test_run_prompt_no_input_without_pin_is_126(tmp_path):
     _added(tmp_path)
     result = runner.invoke(cli.app, ["run", "p", "--set", "a=1", "--no-input"])
@@ -416,12 +675,21 @@ def test_run_no_input_is_provably_unaffected_by_last_picked_state(tmp_path):
 def test_run_prompt_runner_flag_threads_through(tmp_path, spawn_spy):
     _added(tmp_path)
     result = runner.invoke(
-        cli.app, ["run", "p", "--runner", "claude", "--set", "a=1", "--no-input"]
+        cli.app, ["run", "p", "--runner", " claude ", "--set", "a=1", "--no-input"]
     )
     assert result.exit_code == 0, result.output
     assert spawn_spy["runner"] == config.find_prompt_runner("claude")
     assert spawn_spy["values"] == {"a": "1"}
     assert argstate.load_last_runner() == "claude"  # --runner is a pick
+
+
+def test_run_prompt_unicode_placeholder_threads_through_set(tmp_path, spawn_spy):
+    _added(tmp_path, text="审查 {{目标}}\n")
+    result = runner.invoke(
+        cli.app, ["run", "p", "--runner", "claude", "--set", "目标=src/app.py", "--no-input"]
+    )
+    assert result.exit_code == 0, result.output
+    assert spawn_spy["values"] == {"目标": "src/app.py"}
 
 
 def test_run_prompt_pin_resolves_without_touching_last_picked(tmp_path, spawn_spy):
@@ -446,6 +714,15 @@ def test_run_prompt_pinned_but_removed_runner_is_126(tmp_path):
     result = runner.invoke(cli.app, ["run", "p", "--set", "a=1", "--no-input"])
     assert result.exit_code == 126
     assert "mine" in result.output
+
+
+def test_run_unpinned_prompt_with_empty_runner_list_teaches_a_copyable_recovery(tmp_path):
+    _added(tmp_path)
+    config.save_prompt_runners([])
+    result = runner.invoke(cli.app, ["run", "p", "--set", "a=1", "--no-input"])
+    assert result.exit_code == 126
+    assert "No agents are configured" in result.output
+    assert "skit runner add mycli -- mycli run {{prompt}}" in " ".join(result.output.split())
 
 
 def test_run_runner_flag_on_non_prompt_is_usage_error(tmp_path):
@@ -473,6 +750,33 @@ def test_run_prompt_interactive_ask_prefilled_from_last_picked(tmp_path, spawn_s
     assert seen["default"] == "opencode"
     assert spawn_spy["runner"] == config.find_prompt_runner("amp")
     assert argstate.load_last_runner() == "amp"
+    assert "amp -x runs this prompt once" in result.output
+
+
+def test_run_prompt_inline_stale_pin_prefills_last_configured_pick(
+    tmp_path, spawn_spy, monkeypatch
+):
+    _added(tmp_path, pin="removed")
+    config.save_prompt_runners(
+        [
+            config.PromptRunner("first", ("first", "{{prompt}}")),
+            config.PromptRunner("remembered", ("remembered", "{{prompt}}")),
+        ]
+    )
+    argstate.save_last_runner("remembered")
+    config.save_form("tui")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    seen: dict[str, object] = {}
+
+    def fake_collect(entry, plan, prefill, runners=None, runner_default=""):
+        seen["default"] = runner_default
+        return {"a": "1"}, "remembered", False
+
+    monkeypatch.setattr("skit.inlineform.collect", fake_collect)
+    result = runner.invoke(cli.app, ["run", "p"])
+    assert result.exit_code == 0, result.output
+    assert seen["default"] == "remembered"
+    assert spawn_spy["runner"] == config.find_prompt_runner("remembered")
 
 
 def test_run_prompt_dry_run_prints_the_resolved_argv(tmp_path):
@@ -486,6 +790,92 @@ def test_run_prompt_dry_run_prints_the_resolved_argv(tmp_path):
     assert "hello world" in result.output
 
 
+def test_run_prompt_dry_run_missing_body_is_127_before_output(tmp_path):
+    entry = _added(tmp_path, text="Say it\n", pin="claude")
+    entry.script_path.unlink()
+    result = runner.invoke(cli.app, ["run", "p", "--no-input", "--dry-run"])
+    assert result.exit_code == 127
+    assert "doesn't exist" in result.output
+    assert "→" not in result.output
+
+
+def test_normal_prompt_transparency_omits_body_but_keeps_agent_flags(tmp_path, spawn_spy):
+    body = "PRIVATE-DOCUMENT-START\n" + ("detail " * 2_000) + "{{a}}\n"
+    _added(tmp_path, text=body, pin="claude")
+    result = runner.invoke(
+        cli.app,
+        ["run", "p", "--set", "a=done", "--no-input", "--", "--model", "opus"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "PRIVATE-DOCUMENT-START" not in result.output
+    assert "rendered prompt omitted" in result.output
+    assert "claude" in result.output
+    assert "--model" in result.output
+    assert "opus" in result.output
+    assert spawn_spy["values"] == {"a": "done"}
+
+
+def test_overlong_prompt_refuses_before_normal_transparency(tmp_path, spawn_spy):
+    from skit.langs.prompt import render
+
+    marker = "MUST-NOT-REACH-SCROLLBACK"
+    _added(tmp_path, text=marker + ("x" * (render.ARGV_LIMIT + 1)), pin="claude")
+    result = runner.invoke(cli.app, ["run", "p", "--no-input"])
+    assert result.exit_code == 125
+    assert marker not in result.output
+    assert "over this platform" in result.output
+    assert "entry" not in spawn_spy
+
+
+def test_dry_run_refuses_nul_without_looking_up_agent_binary(tmp_path, monkeypatch):
+    from skit.langs import launch as langs_launch
+
+    _added(tmp_path, text="before\x00after", pin="claude")
+    monkeypatch.setattr(
+        langs_launch,
+        "_which",
+        lambda _name: pytest.fail("dry-run must not look up the runner on PATH"),
+    )
+    result = runner.invoke(cli.app, ["run", "p", "--no-input", "--dry-run"])
+    assert result.exit_code == 125
+    assert "NUL byte" in result.output
+
+
+def test_dry_run_refuses_overlong_prompt_without_printing_it(tmp_path):
+    from skit.langs.prompt import render
+
+    marker = "DRY-RUN-TOO-LONG"
+    _added(tmp_path, text=marker + ("x" * (render.ARGV_LIMIT + 1)), pin="claude")
+    result = runner.invoke(cli.app, ["run", "p", "--no-input", "--dry-run"])
+    assert result.exit_code == 125
+    assert marker not in result.output
+    assert "over this platform" in result.output
+
+
+def test_dry_run_prints_the_same_prompt_snapshot_it_validated(tmp_path, monkeypatch):
+    from skit.langs import launch as langs_launch
+    from skit.langs.prompt import render
+
+    _added(tmp_path, text="stored body\n", pin="claude")
+    monkeypatch.setattr(render, "ARGV_LIMIT", 64)
+    marker = "UNVALIDATED-SECOND-SNAPSHOT"
+    bodies = iter(["VALIDATED-SNAPSHOT", marker + ("x" * (render.ARGV_LIMIT + 1))])
+    reads = 0
+
+    def changing_body(_path):
+        nonlocal reads
+        reads += 1
+        return next(bodies)
+
+    monkeypatch.setattr(langs_launch.PromptLaunch, "_read_body", staticmethod(changing_body))
+    result = runner.invoke(cli.app, ["run", "p", "--no-input", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert "VALIDATED-SNAPSHOT" in result.output
+    assert marker not in result.output
+    assert reads == 1
+
+
 def test_run_prompt_extra_args_pass_through_after_dashes(tmp_path, spawn_spy):
     _added(tmp_path, pin="claude")
     result = runner.invoke(
@@ -494,6 +884,33 @@ def test_run_prompt_extra_args_pass_through_after_dashes(tmp_path, spawn_spy):
     )
     assert result.exit_code == 0, result.output
     assert spawn_spy["extra"] == ["--model", "opus"]
+
+
+def test_prompt_extra_agent_args_do_not_fill_required_placeholders(tmp_path, spawn_spy):
+    _added(tmp_path, pin="claude")
+    result = runner.invoke(cli.app, ["run", "p", "--no-input", "--", "--model", "opus"])
+    assert result.exit_code == 125
+    assert "a is required" in result.output
+    assert "entry" not in spawn_spy
+
+
+def test_extra_argv_does_not_hide_a_filled_flag_type_error(tmp_path, spawn_spy):
+    source = tmp_path / "count.py"
+    source.write_text(
+        "import argparse\n"
+        "p = argparse.ArgumentParser()\n"
+        "p.add_argument('--count', type=int, required=True)\n"
+        "p.parse_args()\n",
+        encoding="utf-8",
+    )
+    store.add_python(source, name="count")
+    result = runner.invoke(
+        cli.app,
+        ["run", "count", "--set", "count=nope", "--no-input", "--", "--count", "2"],
+    )
+    assert result.exit_code == 125
+    assert "whole number" in result.output
+    assert "entry" not in spawn_spy
 
 
 def test_run_prompt_secret_placeholder_masked_in_dry_run(tmp_path):
@@ -505,6 +922,89 @@ def test_run_prompt_secret_placeholder_masked_in_dry_run(tmp_path):
     assert result.exit_code == 0, result.output
     assert "hunter2" not in result.output
     assert "•••" in result.output
+    assert "receives" not in result.output  # dry-run sends nothing
+
+
+def test_real_prompt_run_warns_before_sending_a_nonempty_secret(tmp_path, spawn_spy):
+    _added(tmp_path, text="Use {{api_key}}\n", name="sec", pin="claude")
+    result = runner.invoke(cli.app, ["run", "sec", "--set", "api_key=hunter2", "--no-input"])
+    assert result.exit_code == 0, result.output
+    assert "never saved by skit" in result.output
+    assert "selected agent as plaintext" in result.output
+    assert "may log or sync" in result.output
+    assert "hunter2" not in result.output
+    assert spawn_spy["values"] == {"api_key": "hunter2"}
+
+
+def test_missing_runner_binary_refuses_before_any_delivery_output(tmp_path, monkeypatch):
+    from skit.langs import launch as langs_launch
+
+    missing = config.PromptRunner("missing", ("definitely-not-installed", "{{prompt}}"))
+    config.save_prompt_runners([missing])
+    _added(tmp_path, text="Use {{api_key}}\n", name="sec", pin="missing")
+    monkeypatch.setattr(langs_launch, "_which", lambda _name: None)
+
+    result = runner.invoke(
+        cli.app,
+        ["run", "sec", "--set", "api_key=hunter2", "--no-input"],
+    )
+
+    assert result.exit_code == 126
+    assert "definitely-not-installed" in result.output
+    assert "selected agent as plaintext" not in result.output
+    assert "→" not in result.output
+    assert "hunter2" not in result.output
+
+
+def test_real_run_spawns_the_same_prompt_snapshot_it_validated(tmp_path, monkeypatch, spawn_spy):
+    from skit.langs.base import ArgvLaunch
+
+    _added(tmp_path, text="stored body\n", pin="claude")
+    bodies = iter(["ONE-PREPARED-BODY", "SECOND-BODY-MUST-NOT-BE-READ"])
+    reads = 0
+
+    def changing_body(_path):
+        nonlocal reads
+        reads += 1
+        return next(bodies)
+
+    monkeypatch.setattr("skit.langs.launch.PromptLaunch._read_body", staticmethod(changing_body))
+    result = runner.invoke(cli.app, ["run", "p", "--no-input"])
+
+    assert result.exit_code == 0, result.output
+    assert reads == 1
+    prepared = spawn_spy["prepared"]
+    assert isinstance(prepared, cli.launcher.PreparedLaunch)
+    assert isinstance(prepared.payload, ArgvLaunch)
+    assert "ONE-PREPARED-BODY" in prepared.payload.argv
+    assert all("SECOND-BODY" not in token for token in prepared.payload.argv)
+
+
+def test_real_run_transparency_and_amp_note_use_the_prepared_runner_row(
+    tmp_path, monkeypatch, spawn_spy
+):
+    amp_seed = next(row for row in config.PROMPT_RUNNER_SEEDS if row.name == "amp")
+    config.save_prompt_runners([amp_seed])
+    _added(tmp_path, text="Do it\n", pin="amp")
+    real_prepare = cli.launcher.prepare_entry
+
+    def prepare_then_replace_runner(*args, **kwargs):
+        prepared = real_prepare(*args, **kwargs)
+        config.save_prompt_runners(
+            [config.PromptRunner("amp", ("replacement-agent", "{{prompt}}"))]
+        )
+        return prepared
+
+    monkeypatch.setattr(cli.launcher, "prepare_entry", prepare_then_replace_runner)
+    result = runner.invoke(cli.app, ["run", "p", "--no-input"])
+
+    assert result.exit_code == 0, result.output
+    assert "amp -x runs this prompt once" in result.output
+    assert "amp -x" in result.output
+    assert "replacement-agent" not in result.output
+    prepared = spawn_spy["prepared"]
+    assert isinstance(prepared, cli.launcher.PreparedLaunch)
+    assert prepared.prompt_runner == amp_seed
 
 
 # --------------------------------------------------------------------------
@@ -579,13 +1079,15 @@ def ParamDeclFactory(name: str):
 
 def test_params_runner_pin_and_clear(tmp_path):
     _added(tmp_path)
+    argstate.save_last_runner("opencode")
     result = runner.invoke(cli.app, ["params", "p", "--runner", "claude"])
     assert result.exit_code == 0, result.output
     assert store.resolve("p").meta.runner == "claude"
-    assert argstate.load_last_runner() == "claude"
+    assert argstate.load_last_runner() == "opencode"  # a settings pin is not a run pick
     result = runner.invoke(cli.app, ["params", "p", "--runner", ""])
     assert result.exit_code == 0, result.output
     assert store.resolve("p").meta.runner == ""
+    assert argstate.load_last_runner() == "opencode"
     assert "asks at run time" in result.output
 
 
@@ -652,6 +1154,7 @@ def test_show_json_prompt_additions(tmp_path):
     assert "claude" in payload["runners_available"]
     assert payload["workdir"] == "invoke"
     assert [f["key"] for f in payload["fields"]] == ["a"]
+    assert [f["source"] for f in payload["fields"]] == ["placeholder"]
 
 
 def test_show_json_non_prompt_has_no_runner_keys(tmp_path):
@@ -670,6 +1173,17 @@ def test_show_human_prints_the_runner_line(tmp_path):
     assert "asks at run time" in result.output
 
 
+def test_show_human_no_fields_names_prompt_and_command_receivers(tmp_path):
+    _added(tmp_path, text="No fields\n", name="plain")
+    prompt_view = runner.invoke(cli.app, ["show", "plain"])
+    assert "arguments after -- go to the selected agent" in prompt_view.output
+    assert "pass straight through to the script" not in prompt_view.output
+
+    store.add_command("echo ready", name="cmd")
+    command_view = runner.invoke(cli.app, ["show", "cmd"])
+    assert "arguments after -- are appended to the command" in command_view.output
+
+
 # --------------------------------------------------------------------------
 # skit runner …
 # --------------------------------------------------------------------------
@@ -682,29 +1196,162 @@ def test_runner_list_materializes_the_seeds(tmp_path):
     assert config.prompt_runners_seeded()  # first management need seeded the config
     for name in ("claude", "codex", "opencode", "amp", "antigravity"):
         assert name in result.output
+    assert "amp -x" in result.output
+    assert "does not open an interactive session" in " ".join(result.output.split())
 
 
 def test_runner_list_json(tmp_path):
     payload = json.loads(runner.invoke(cli.app, ["runner", "list", "--json"]).output)
-    assert {"name": "claude", "argv": ["claude", "{{prompt}}"]} in payload
+    assert {"name": "claude", "argv": ["claude", "--", "{{prompt}}"]} in payload
+    assert {"name": "opencode", "argv": ["opencode", "--prompt={{prompt}}"]} in payload
+
+
+def test_runner_list_all_json_exposes_stable_raw_indexes_and_reasons(tmp_path):
+    config.save_config(
+        {
+            "prompt": {
+                "runners_seeded": True,
+                "runners": [
+                    {"name": "good", "argv": ["good", "{{prompt}}"]},
+                    {"name": "broken", "argv": ["broken"]},
+                    "not-a-table",
+                ],
+            }
+        }
+    )
+    result = runner.invoke(cli.app, ["runner", "list", "--all", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload == [
+        {
+            "row": 0,
+            "name": "good",
+            "argv": ["good", "{{prompt}}"],
+            "reason": None,
+            "descriptor": "good",
+            "valid": True,
+        },
+        {
+            "row": 1,
+            "name": "broken",
+            "argv": ["broken"],
+            "reason": "prompt-slot-count",
+            "descriptor": "broken",
+            "valid": False,
+        },
+        {
+            "row": 2,
+            "name": None,
+            "argv": None,
+            "reason": "row-not-table",
+            "descriptor": "not-a-table",
+            "valid": False,
+        },
+    ]
+
+
+def test_runner_list_all_preserves_anonymous_argv_and_localizes_human_status(tmp_path, monkeypatch):
+    command = ["valuable-agent", "--model", "x", "{{prompt}}"]
+    config.save_config(
+        {
+            "prompt": {
+                "runners_seeded": True,
+                "runners": [
+                    {"name": "   ", "argv": command},
+                    {"name": "broken", "argv": ["broken"]},
+                ],
+            }
+        }
+    )
+    payload = json.loads(runner.invoke(cli.app, ["runner", "list", "--all", "--json"]).output)
+    assert payload[0]["name"] is None
+    assert payload[0]["argv"] == command
+    assert payload[0]["reason"] == "name"  # JSON keeps the stable machine code
+
+    monkeypatch.setattr(config, "gettext", lambda message: f"XX{message}XX")
+    human = runner.invoke(cli.app, ["runner", "list", "--all"])
+    flat = " ".join(human.output.split())
+    assert "valuable-agent" in flat
+    assert "--model x" in flat
+    assert "'{{prompt}}'" in flat
+    assert "XXA name is" in flat
+    assert "required.XX" in flat
+    assert "XXThe command needs" in flat
+    assert "prompt lands.XX" in flat
+    assert "prompt-slot-count" not in flat
 
 
 def test_runner_list_empty_state(tmp_path):
     config.save_prompt_runners([])
     result = runner.invoke(cli.app, ["runner", "list"])
     assert result.exit_code == 0
-    assert "No runners configured" in result.output
+    assert "No agents are configured" in result.output
+    assert "skit runner add mycli -- mycli run {{prompt}}" in " ".join(result.output.split())
+    all_rows = runner.invoke(cli.app, ["runner", "list", "--all"])
+    assert all_rows.exit_code == 0
+    assert "No agents are configured" in all_rows.output
+
+
+def test_runner_list_without_amp_omits_the_one_shot_note(tmp_path):
+    config.save_prompt_runners([config.PromptRunner("mycli", ("mycli", "run", "{{prompt}}"))])
+    result = runner.invoke(cli.app, ["runner", "list"])
+    assert result.exit_code == 0, result.output
+    assert "mycli" in result.output
+    assert "one-shot" not in result.output
 
 
 def test_runner_add_with_flag_bearing_argv(tmp_path):
     result = runner.invoke(
         cli.app,
-        ["runner", "add", "sonnet", "claude", "--model", "sonnet", "{{prompt}}"],
+        ["runner", "add", " sonnet ", "claude", "--model", "sonnet", "{{prompt}}"],
     )
     assert result.exit_code == 0, result.output
     assert config.find_prompt_runner("sonnet") == config.PromptRunner(
         "sonnet", ("claude", "--model", "sonnet", "{{prompt}}")
     )
+    assert config.load_config()["prompt"]["runners"][-1]["name"] == "sonnet"
+    assert config.find_prompt_runner(" sonnet ") is None
+
+
+def test_runner_add_preserves_bad_rows_and_force_repairs_matching_name(tmp_path):
+    anonymous = "not-a-table"
+    config.save_config(
+        {
+            "prompt": {
+                "runners_seeded": True,
+                "runners": [
+                    {"name": "typo", "argv": ["old"]},
+                    anonymous,
+                ],
+            }
+        }
+    )
+    added = runner.invoke(cli.app, ["runner", "add", "new", "new", "{{prompt}}"])
+    assert added.exit_code == 0, added.output
+    assert config.load_config()["prompt"]["runners"][:2] == [
+        {"name": "typo", "argv": ["old"]},
+        anonymous,
+    ]
+
+    refused = runner.invoke(cli.app, ["runner", "add", "typo", "fixed", "{{prompt}}"])
+    assert refused.exit_code == 1
+    repaired = runner.invoke(
+        cli.app,
+        ["runner", "add", "typo", "--force", "--", "fixed", "{{prompt}}"],
+    )
+    assert repaired.exit_code == 0, repaired.output
+    assert config.load_config()["prompt"]["runners"] == [
+        {"name": "typo", "argv": ["fixed", "{{prompt}}"]},
+        anonymous,
+        {"name": "new", "argv": ["new", "{{prompt}}"]},
+    ]
+
+
+def test_runner_add_blank_name_is_refused_before_seeding(tmp_path):
+    result = runner.invoke(cli.app, ["runner", "add", "   ", "x", "{{prompt}}"])
+    assert result.exit_code == 2
+    assert "A name is required" in result.output
+    assert not config.prompt_runners_seeded()
 
 
 def test_runner_add_validation_errors(tmp_path):
@@ -728,13 +1375,53 @@ def test_runner_add_duplicate_name_refused(tmp_path):
     assert "already exists" in result.output
 
 
+@pytest.mark.parametrize(
+    ("prompt_value", "needle"),
+    [
+        ("broken", "isn't a table"),
+        ({"runners": "broken"}, "isn't a list"),
+    ],
+)
+def test_runner_add_reports_malformed_config_container(tmp_path, prompt_value, needle):
+    config.save_config({"prompt": prompt_value})
+    result = runner.invoke(cli.app, ["runner", "add", "new", "new", "{{prompt}}"])
+    assert result.exit_code == 1
+    assert needle in result.output
+    assert config.load_config()["prompt"] == prompt_value
+
+
 def test_runner_remove_and_unknown(tmp_path):
-    # -y skips the confirm (finding 11); the unknown-name refusal is checked before the ask.
-    assert runner.invoke(cli.app, ["runner", "remove", "amp", "-y"]).exit_code == 0
+    # -y skips confirmation; an unknown name is refused before any confirmation prompt.
+    assert runner.invoke(cli.app, ["runner", "remove", " amp ", "-y"]).exit_code == 0
     assert config.find_prompt_runner("amp") is None
     result = runner.invoke(cli.app, ["runner", "remove", "amp", "-y"])
     assert result.exit_code == 1
     assert "Unknown runner" in result.output
+
+
+def test_runner_remove_blank_name_is_usage_error_before_seeding(tmp_path):
+    result = runner.invoke(cli.app, ["runner", "remove", "   ", "--yes"])
+    assert result.exit_code == 2
+    assert "A name is required" in result.output
+    assert not config.prompt_runners_seeded()
+
+
+@pytest.mark.parametrize(
+    ("args", "needle"),
+    [
+        ([], "exactly one"),
+        (["amp", "--row", "0"], "exactly one"),
+        (["--row", "not-an-index"], "non-negative index"),
+        (["--row", "-1"], "non-negative index"),
+    ],
+)
+def test_runner_remove_rejects_ambiguous_or_invalid_targets_before_writing(tmp_path, args, needle):
+    config.save_prompt_runners([])
+    before = config.load_config()
+    result = runner.invoke(cli.app, ["runner", "remove", *args, "--yes"])
+    assert result.exit_code == 2
+    assert needle in result.output
+    assert config.load_config() == before
 
 
 def test_removing_every_runner_stays_empty(tmp_path):
@@ -745,9 +1432,10 @@ def test_removing_every_runner_stays_empty(tmp_path):
     assert runner.invoke(cli.app, ["runner", "list"]).output.count("claude") == 0
 
 
-def test_runner_remove_confirms_unless_yes(tmp_path):
+def test_runner_remove_confirms_unless_yes(tmp_path, monkeypatch):
     """Deleting a configured agent is not a one-keystroke act: without -y the CLI asks
-    (typer.confirm, abort=True) and a "y" answer goes through (finding 11)."""
+    (typer.confirm, abort=True) and a "y" answer goes through."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     result = runner.invoke(cli.app, ["runner", "remove", "amp"], input="y\n")
     assert result.exit_code == 0, result.output
     assert 'Remove the agent "amp"?' in result.output
@@ -755,12 +1443,148 @@ def test_runner_remove_confirms_unless_yes(tmp_path):
     assert "Runner amp removed." in result.output
 
 
-def test_runner_remove_abort_keeps_the_runner(tmp_path):
+def test_runner_remove_abort_keeps_the_runner(tmp_path, monkeypatch):
     """Answering "n" (or EOF) aborts: exit 1, nothing removed — the confirm really guards."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     result = runner.invoke(cli.app, ["runner", "remove", "amp"], input="n\n")
     assert result.exit_code == 1  # typer.confirm(abort=True) → Abort → exit 1
     assert config.find_prompt_runner("amp") is not None  # still configured
     assert "Runner amp removed." not in result.output
+
+
+def test_runner_remove_warns_and_preserves_affected_prompt_pins(tmp_path):
+    _added(tmp_path, pin="amp")
+    result = runner.invoke(cli.app, ["runner", "remove", "amp", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "1 prompt pins this runner" in result.output
+    assert store.resolve("p").meta.runner == "amp"
+    assert config.find_prompt_runner("amp") is None
+
+
+def test_runner_remove_raw_row_is_targeted_and_requires_yes_noninteractively(tmp_path):
+    config.save_config(
+        {
+            "prompt": {
+                "runners_seeded": True,
+                "runners": [
+                    {"name": "good", "argv": ["good", "{{prompt}}"]},
+                    {"name": "broken", "argv": ["broken"]},
+                    "untouched",
+                ],
+            }
+        }
+    )
+    refused = runner.invoke(cli.app, ["runner", "remove", "--row", "1", "--no-input"])
+    assert refused.exit_code == 2
+    assert "pass --yes" in refused.output
+    assert len(config.load_config()["prompt"]["runners"]) == 3
+
+    removed = runner.invoke(cli.app, ["runner", "remove", "--row", "1", "--yes"])
+    assert removed.exit_code == 0, removed.output
+    assert "Malformed runner row 1 removed" in removed.output
+    assert "Runner broken removed" not in removed.output
+    assert config.load_config()["prompt"]["runners"] == [
+        {"name": "good", "argv": ["good", "{{prompt}}"]},
+        "untouched",
+    ]
+    unknown = runner.invoke(cli.app, ["runner", "remove", "--row", "9", "--yes"])
+    assert unknown.exit_code == 1
+    assert "runner list --all" in unknown.output
+
+
+def test_runner_remove_raw_duplicate_has_no_false_pin_warning_or_key_removed_claim(tmp_path):
+    config.save_config(
+        {
+            "prompt": {
+                "runners_seeded": True,
+                "runners": [
+                    {"name": "same", "argv": ["first", "{{prompt}}"]},
+                    {"name": "same", "argv": ["second", "{{prompt}}"]},
+                ],
+            }
+        }
+    )
+    _added(tmp_path, pin="same")
+
+    result = runner.invoke(cli.app, ["runner", "remove", "--row", "1", "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert "pins this runner" not in result.output
+    assert "Runner same removed" not in result.output
+    assert "Malformed runner row 1 removed" in result.output
+    assert config.find_prompt_runner("same") == config.PromptRunner("same", ("first", "{{prompt}}"))
+    assert store.resolve("p").meta.runner == "same"
+
+
+def test_runner_remove_raw_valid_row_requires_stable_name_path(tmp_path):
+    rows = [
+        {"name": "same", "argv": ["first", "{{prompt}}"]},
+        {"name": "same", "argv": ["second", "{{prompt}}"]},
+    ]
+    config.save_config({"prompt": {"runners_seeded": True, "runners": rows}})
+
+    result = runner.invoke(cli.app, ["runner", "remove", "--row", "0", "--yes"])
+
+    assert result.exit_code == 2
+    assert 'skit runner remove "same"' in " ".join(result.output.split())
+    assert config.load_config()["prompt"]["runners"] == rows
+
+
+def test_runner_remove_raw_row_refuses_if_index_shifted_during_confirmation(tmp_path, monkeypatch):
+    original = [
+        {"name": "good", "argv": ["good", "{{prompt}}"]},
+        {"name": "target", "argv": ["target"]},
+        {"name": "other", "argv": ["other", "{{prompt}}"]},
+    ]
+    config.save_config({"prompt": {"runners_seeded": True, "runners": original}})
+    inserted = {"name": "inserted", "argv": ["inserted", "{{prompt}}"]}
+
+    def shift_before_confirm(*_args, **_kwargs):
+        doc = config.load_config()
+        doc["prompt"]["runners"].insert(0, inserted)
+        config.save_config(doc)
+        return True
+
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr(cli.typer, "confirm", shift_before_confirm)
+    result = runner.invoke(cli.app, ["runner", "remove", "--row", "1"])
+
+    assert result.exit_code == 1
+    assert "changed before it could be removed" in result.output
+    assert config.load_config()["prompt"]["runners"] == [inserted, *original]
+
+
+def test_runner_remove_name_refuses_if_key_is_replaced_during_confirmation(tmp_path, monkeypatch):
+    config.save_prompt_runners([config.PromptRunner("victim", ("old", "{{prompt}}"))])
+    replacement = config.PromptRunner("victim", ("new", "--important", "{{prompt}}"))
+
+    def replace_during_confirm(*_args, **_kwargs):
+        config.set_prompt_runner(replacement, replace_existing=True)
+        return True
+
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr(cli.typer, "confirm", replace_during_confirm)
+    result = runner.invoke(cli.app, ["runner", "remove", "victim"])
+
+    assert result.exit_code == 1
+    assert "changed before it could be removed" in result.output
+    assert config.find_prompt_runner("victim") == replacement
+
+
+def test_runner_remove_container_repairs_only_targeted_prompt_value(tmp_path):
+    config.save_config({"language": "zh-TW", "prompt": "garbage"})
+    inspected = json.loads(runner.invoke(cli.app, ["runner", "list", "--all", "--json"]).output)
+    assert inspected[0]["row"] is None
+    assert inspected[0]["reason"] == "prompt-section-not-table"
+
+    result = runner.invoke(cli.app, ["runner", "remove", "--row", "container", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "Malformed prompt runner container removed" in result.output
+    assert "Runner container removed" not in result.output
+    assert config.load_config() == {
+        "language": "zh-TW",
+        "prompt": {"runners_seeded": True, "runners": []},
+    }
 
 
 # --------------------------------------------------------------------------
@@ -785,6 +1609,7 @@ def test_doctor_reports_prompt_drift_and_bad_runner_rows(tmp_path):
     assert payload["runner_rows_invalid"] == ["broken"]
     human = runner.invoke(cli.app, ["doctor"])
     assert "broken" in human.output
+    assert "Inspect and repair with: skit runner list --all" in " ".join(human.output.split())
 
 
 def test_doctor_healthy_prompt_reports_no_drift(tmp_path):
@@ -818,7 +1643,7 @@ def test_add_prompt_unreadable_file_is_a_store_error(tmp_path):
     trap.mkdir()  # read_text raises IsADirectoryError (an OSError) while it "exists"
     result = runner.invoke(cli.app, ["add", str(trap), "--no-input"])
     assert result.exit_code == 1
-    assert "Can't read" in result.output
+    assert "Not a file" in result.output
 
 
 def test_add_runner_flag_refused_on_cmd_edit_exe_lanes(tmp_path):
@@ -937,7 +1762,7 @@ def test_add_no_interpolate_through_stdin_lane(tmp_path):
 def test_add_interactive_off_answer_disables_insertion(tmp_path, monkeypatch):
     config.save_form("plain")  # the line-prompt path (form=tui hosts the review panel)
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
-    answers = iter(["off", "-"])
+    answers = iter(["", "off", "-"])
     monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: next(answers)))
     src = _write(tmp_path, "{{a}} {{b}}\n")
     result = runner.invoke(cli.app, ["add", str(src), "-n", "quiet"])
@@ -986,7 +1811,7 @@ def test_add_interactive_explicit_all_beats_the_flood_cap(tmp_path, monkeypatch)
 
     config.save_form("plain")  # the line-prompt path (form=tui hosts the review panel)
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
-    answers = iter(["all", "-"])
+    answers = iter(["", "all", "-"])
     monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: next(answers)))
     many = " ".join("{{h" + str(i) + "}}" for i in range(AUTO_MANAGE_LIMIT + 2))
     src = _write(tmp_path, many + "\n")
@@ -1030,15 +1855,43 @@ def test_params_interpolate_refused_on_non_prompt(tmp_path):
     assert "--interpolate only applies to prompt entries" in result.output
 
 
-def test_params_unmanaged_listing_is_flood_capped(tmp_path):
+@pytest.mark.parametrize(
+    ("extra", "tail"), [(1, "and 1 more candidate"), (7, "and 7 more candidates")]
+)
+def test_params_unmanaged_listing_is_flood_capped_and_localizable(tmp_path, extra, tail):
     from skit.langs.prompt.analyzer import LIST_PREVIEW_LIMIT
 
     entry = _added(tmp_path)
-    many = " ".join("{{u" + str(i) + "}}" for i in range(LIST_PREVIEW_LIMIT + 7))
+    names = [f"u{i}" for i in range(LIST_PREVIEW_LIMIT + extra)]
+    many = " ".join("{{" + name + "}}" for name in names)
     entry.script_path.write_text("{{a}} " + many + "\n", encoding="utf-8")
     result = runner.invoke(cli.app, ["params", "p"])
     assert result.exit_code == 0, result.output
-    assert "+7" in result.output
+    flat = " ".join(result.output.split())
+    assert tail in flat
+    assert names[LIST_PREVIEW_LIMIT - 1] in flat
+    assert names[LIST_PREVIEW_LIMIT] not in flat
+
+    payload = json.loads(runner.invoke(cli.app, ["params", "p", "--json"]).output)
+    assert payload["unmanaged"] == names  # machine contract is full data, never a preview
+
+
+def test_params_unmanaged_tail_passes_through_the_i18n_boundary(tmp_path, monkeypatch):
+    from skit.langs.prompt.analyzer import LIST_PREVIEW_LIMIT
+
+    monkeypatch.setenv("SKIT_LANG", "x-pseudo")
+    entry = _added(tmp_path)
+    names = [f"u{i}" for i in range(LIST_PREVIEW_LIMIT + 3)]
+    entry.script_path.write_text(
+        "{{a}} " + " ".join("{{" + name + "}}" for name in names), encoding="utf-8"
+    )
+
+    result = runner.invoke(cli.app, ["params", "p"])
+
+    assert result.exit_code == 0, result.output
+    assert "⟦" in result.output
+    assert "möré" in result.output  # pseudo-transformed tail, not hard-coded English
+    assert "and 3 more" not in result.output
 
 
 def test_show_reports_the_interpolate_switch(tmp_path):
@@ -1088,7 +1941,7 @@ def test_add_interactive_flooded_numbers_address_the_previewed_names_only(tmp_pa
     config.save_form("plain")  # the line-prompt path (form=tui hosts the review panel)
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     beyond = str(LIST_PREVIEW_LIMIT + 3)  # an index whose name was never shown
-    answers = iter([f"3,{beyond}", "-"])
+    answers = iter(["", f"3,{beyond}", "-"])
     monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: next(answers)))
     many = " ".join("{{h" + str(i) + "}}" for i in range(AUTO_MANAGE_LIMIT + 5))
     src = _write(tmp_path, many + "\n")

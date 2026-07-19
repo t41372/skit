@@ -1,9 +1,9 @@
-"""Script settings (p): the merged per-script management screen — basics, parameters,
-presets, dependencies in one place.
+"""Entry settings (p): the merged per-entry management screen — basics, parameters,
+presets, dependencies and launch policy in one place.
 
-Enter saves everything in one atomic [tool.skit] rewrite; Esc asks when there are
-unsaved changes. Reference-mode entries show the parameters read-only (skit never
-writes the original file, A7); command entries show the template and placeholders.
+Enter validates the complete form before saving its independent files; Esc asks when
+there are unsaved changes. Reference-mode entries show the parameters read-only (skit
+never writes the original file, A7); command entries show the template and placeholders.
 """
 
 from __future__ import annotations
@@ -19,8 +19,19 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Checkbox, Input, Label, RadioButton, RadioSet, Select, Static
 
-from . import analysis, argstate, config, params, pep723, store, tui_footer, tui_runner
+from . import (
+    analysis,
+    argstate,
+    config,
+    params,
+    pep723,
+    store,
+    tui_footer,
+    tui_prompt,
+    tui_runner,
+)
 from .i18n import gettext
+from .langs.prompt import text as prompt_text
 from .langs.registry import spec_for
 from .models import Entry
 from .params import ParamDecl
@@ -240,6 +251,12 @@ class ScriptSettingsScreen(Screen[bool]):
         Binding("ctrl+s", "save", gettext("Save"), priority=True),
         Binding("ctrl+r", "resync", gettext("Resync"), priority=True),
         Binding("ctrl+n", "new_runner", gettext("New agent"), show=False, priority=True),
+        Binding(
+            "ctrl+o",
+            "choose_prompt_candidates",
+            gettext("Choose variables…"),
+            show=False,
+        ),
         *tui_footer.FIELD_NAV_BINDINGS,
     ]
     # Boot on the name field, not the "*" pick (the body scroll container).
@@ -253,6 +270,7 @@ class ScriptSettingsScreen(Screen[bool]):
     }
     ScriptSettingsScreen .section { color: $accent; margin: 1 0 0 0; }
     ScriptSettingsScreen .hint { color: $text-muted; }
+    ScriptSettingsScreen #st-prompt-fields { height: auto; }
     ScriptSettingsScreen KeysBar { dock: bottom; }
     ScriptSettingsScreen #st-keys { color: $text-muted; }
     """
@@ -266,7 +284,9 @@ class ScriptSettingsScreen(Screen[bool]):
         # settling); only user edits after mount count as dirt.
         self._dirt_armed: bool = False
         self._text: str = ""
+        self._prompt_text_error: str = ""
         self._spec = spec_for(entry.meta.kind)
+        self._is_prompt: bool = entry.meta.kind == "prompt"
         params_io = self._spec.params_io if self._spec is not None else None
         if params_io is not None and entry.script_path.exists():
             self._text = entry.script_path.read_text(encoding="utf-8", errors="replace")
@@ -278,7 +298,6 @@ class ScriptSettingsScreen(Screen[bool]):
         # interpreted kinds with no in-file block (ruby/perl/lua/r/powershell) — is edited through
         # the declared-params editor rather than the analyzer-driven [tool.skit] flow above.
         self._declared: bool = self._spec is not None and self._spec.params_io is None
-        self._is_prompt: bool = entry.meta.kind == "prompt"
         # The deps/constraint pair the fields were prefilled from (_compose_deps
         # stashes the effective read here) — the SAVE-time diff baseline, so the
         # deps axis keeps the same open-time clock as every other axis.
@@ -301,14 +320,24 @@ class ScriptSettingsScreen(Screen[bool]):
                 params.declared_from_meta(entry.meta.parameters) if self._declared else []
             )
         self._prompt_body_names: list[str] = []
-        if self._is_prompt and not entry.meta.interpolate:
-            self._declared_decls = []
-        elif self._is_prompt and entry.script_path.exists():
+        # Full candidate state behind the capped inline preview.  This remains local
+        # until the screen's outer Save, so Done in the picker is still reversible by
+        # Back/Discard and cannot partially update meta.toml.
+        self._pending_prompt_candidates: set[str] = set()
+        if self._is_prompt and entry.script_path.exists():
             from .langs.prompt import analyzer as prompt_analyzer
 
-            self._prompt_body_names = prompt_analyzer.placeholder_names(
-                entry.script_path.read_text(encoding="utf-8", errors="replace")
-            )
+            try:
+                self._text = prompt_text.read(entry.script_path)
+            except prompt_text.PromptEncodingError as exc:
+                self._prompt_text_error = str(exc)
+            except OSError as exc:
+                self._prompt_text_error = gettext("Can't read %(path)s: %(error)s") % {
+                    "path": str(entry.script_path),
+                    "error": exc.strerror or str(exc),
+                }
+            else:
+                self._prompt_body_names = prompt_analyzer.placeholder_names(self._text)
         # The resync outcome (incl. safety-rebind warnings) must survive the recompose that
         # action_resync triggers — a widget updated in place would be thrown away and rebuilt
         # empty. Kept on the instance so compose can re-emit it. Already escape()'d for markup.
@@ -392,7 +421,7 @@ class ScriptSettingsScreen(Screen[bool]):
         # that reads as one thing and silently resolves as another.
         choices: list[tuple[str, str]] = []
         if self._spec.has_original_file:
-            choices.append((gettext("The script's own folder"), "origin"))
+            choices.append((gettext("The source file's folder"), "origin"))
         if self._spec.stored_name:
             choices.append((gettext("skit's stored-copy folder"), "store"))
         choices.append((gettext("Wherever skit is run from"), "invoke"))
@@ -608,12 +637,25 @@ class ScriptSettingsScreen(Screen[bool]):
                 value=meta.interpolate,
                 id="st-interpolate",
             )
-            if not meta.interpolate:
+            if self._prompt_text_error:
                 yield Static(
-                    gettext("Off — the body travels to the agent exactly as written."),
-                    classes="hint",
+                    f"[red]{escape(self._prompt_text_error)}[/red]",
+                    id="st-prompt-text-error",
+                    markup=True,
                 )
-                return
+            yield Static(
+                gettext("Off — the body travels to the agent exactly as written."),
+                id="st-interpolate-off",
+                classes="hint",
+            )
+            with Vertical(id="st-prompt-fields"):
+                yield from self._compose_declared_fields(show_flag)
+            return
+        yield from self._compose_declared_fields(show_flag)
+
+    def _compose_declared_fields(self, show_flag: bool) -> ComposeResult:
+        """Rows shared by declared kinds and the prompt toggle's revealable body."""
+        meta = self._entry.meta
         for d in self._declared_decls:
             yield DeclParamRow(d, show_flag=show_flag)
         if self._is_prompt:
@@ -625,17 +667,26 @@ class ScriptSettingsScreen(Screen[bool]):
                     gettext("Detected but not yet managed — tick to manage:"), classes="hint"
                 )
                 for i, candidate in enumerate(unmanaged[: prompt_analyzer.LIST_PREVIEW_LIMIT]):
-                    yield Checkbox(escape(candidate), value=False, id=f"st-prompt-new-{i}")
+                    yield Checkbox(
+                        escape(candidate),
+                        value=candidate in self._pending_prompt_candidates,
+                        id=f"st-prompt-new-{i}",
+                    )
                 if len(unmanaged) > prompt_analyzer.LIST_PREVIEW_LIMIT:
                     yield Static(
-                        gettext(
-                            "…and %(count)s more (manage them with: skit params %(name)s --add NAME)"
-                        )
-                        % {
-                            "count": len(unmanaged) - prompt_analyzer.LIST_PREVIEW_LIMIT,
-                            "name": escape(meta.name),
-                        },
+                        gettext("…and %(count)s more")
+                        % {"count": len(unmanaged) - prompt_analyzer.LIST_PREVIEW_LIMIT},
                         classes="hint",
+                    )
+                    yield Static(
+                        tui_footer.chip(
+                            "screen.choose_prompt_candidates",
+                            "Ctrl+O",
+                            gettext("Choose variables…"),
+                        ),
+                        id="st-choose-candidates",
+                        classes="hint",
+                        markup=True,
                     )
         yield Static(gettext("Add a parameter — type a name, then Save:"), classes="hint")
         yield Input(placeholder=gettext("new parameter name"), id="st-add-param")
@@ -787,10 +838,11 @@ class ScriptSettingsScreen(Screen[bool]):
         )
 
     def on_mount(self) -> None:
-        self.query_one("#st-body").border_title = gettext("Script settings · %(name)s") % {
+        self.query_one("#st-body").border_title = gettext("Entry settings · %(name)s") % {
             "name": escape(self._entry.meta.name)
         }
         self._toggle_workdir_path()
+        self.call_after_refresh(self._toggle_prompt_fields)
         self.call_after_refresh(setattr, self, "_dirt_armed", True)
         if self._initial == "presets":
             # `s` in the Library deep-links here: land the eye on the Presets section.
@@ -809,6 +861,18 @@ class ScriptSettingsScreen(Screen[bool]):
         # pin-only change followed by Esc was discarded with no unsaved-changes ask.
         if self._dirt_armed:
             self._dirty = True
+
+    @on(Checkbox.Changed, "#st-interpolate")
+    def _prompt_interpolate_changed(self) -> None:
+        """Reveal the real rows immediately; Save/reopen is never a hidden step."""
+        self._toggle_prompt_fields()
+
+    def _toggle_prompt_fields(self) -> None:
+        if not self._is_prompt or not self.is_mounted:
+            return
+        enabled = self.query_one("#st-interpolate", Checkbox).value
+        self.query_one("#st-prompt-fields").display = enabled
+        self.query_one("#st-interpolate-off").display = not enabled
 
     # ----------------------------------------------------------------- save
 
@@ -832,12 +896,14 @@ class ScriptSettingsScreen(Screen[bool]):
             self._resync_report = gettext("Everything still matches the script.")
         self.refresh(recompose=True)
 
-    def action_save(self) -> None:  # noqa: PLR0911, PLR0912, PLR0915 — one atomic save across every section
-        """VALIDATE EVERYTHING FIRST, write only after every check passes: a refusal
-        that lands after earlier sections were persisted makes both the Esc guard's
-        "unsaved changes" and this method's own "nothing saved half-way" a lie (the
-        exact half-commit Preferences was cured of; the rename write goes first, so
-        even its unpre-checkable name-conflict failure aborts with zero prior writes)."""
+    def action_save(self) -> None:  # noqa: PLR0911, PLR0912, PLR0915 — one validated save across every section
+        """Validate every predictable refusal before writing. An explicit npm clear
+        then runs first because its filesystem cleanup is the one operational failure
+        handled here: if clearing ``node_modules`` fails, no other form edit lands.
+
+        This is deliberately not described as a cross-file transaction. A process
+        failure, unexpected I/O error, or a name collision created after the precheck
+        can still interrupt the later independent atomic replacements."""
         entry = self._entry
         new_name = self.query_one("#st-name", Input).value.strip()
         # ---- validation pass: no writes below may run unless ALL of these pass ----
@@ -851,8 +917,11 @@ class ScriptSettingsScreen(Screen[bool]):
             if new_template != entry.meta.template and not new_template.strip():
                 self.notify(gettext("Command template must not be empty"), severity="error")
                 return  # an empty template is not a program; nothing was written
+        wants_interpolate = (
+            self.query_one("#st-interpolate", Checkbox).value if self._is_prompt else False
+        )
         pending_decls: list[ParamDecl] | None = None
-        if self._declared and not (self._is_prompt and not entry.meta.interpolate):
+        if self._declared and not (self._is_prompt and not wants_interpolate):
             pending_decls = self._collect_declared()
             if pending_decls is None:
                 return  # a row is invalid; nothing was written
@@ -899,13 +968,50 @@ class ScriptSettingsScreen(Screen[bool]):
             )
             if deps_arg is not None or python_arg is not None:
                 pending_deps = (deps_arg, python_arg)
+        # Resolve the same name collision rename() would refuse, but do it while this
+        # is still the read-only validation pass. The write path repeats the check to
+        # close the normal race as far as it can without a cross-file transaction.
+        if new_name and new_name != entry.meta.name:
+            try:
+                other = store.resolve(new_name)
+            except store.NotFoundError:
+                other = None
+            except store.StoreError as exc:
+                self.notify(str(exc), severity="error")
+                return
+            if other is not None and other.slug != entry.slug:
+                self.notify(
+                    gettext("The name %(name)s is already taken.") % {"name": new_name},
+                    severity="error",
+                )
+                return
         # ---- write pass ----
+        # Only an explicit npm clear has a caught, fallible filesystem cleanup.
+        # Run that one operation first. Other dependency edits retain their normal
+        # late position: notably, a Python dependency sync updates the script text
+        # and must follow the parameter-block rewrite built from self._text.
+        early_npm_clear = (
+            pending_deps is not None
+            and self._spec is not None
+            and self._spec.deps_flavor == "npm"
+            and pending_deps[0] == []
+        )
+        if early_npm_clear and pending_deps is not None:
+            deps_changed, python_changed = pending_deps
+            try:
+                store.update_dependencies(entry.slug, deps_changed, requires_python=python_changed)
+            except store.StoreError as exc:
+                # Explicit npm clear sweeps node_modules before its metadata write.
+                # Running that caught failure before every other write keeps the
+                # screen retryable without committing unrelated form edits.
+                self.notify(str(exc), severity="error")
+                return
         if new_name and new_name != entry.meta.name:
             try:
                 store.rename(entry.slug, new_name)
             except store.StoreError as exc:
                 self.notify(str(exc), severity="error")
-                return  # first write failed; nothing else was saved
+                return
         description = self.query_one("#st-desc", Input).value.strip()
         if description != entry.meta.description:
             store.update_description(entry.slug, description)
@@ -940,7 +1046,6 @@ class ScriptSettingsScreen(Screen[bool]):
                 )
         if self._is_prompt:
             # The toggle is composed unconditionally for prompts, so query_one is safe.
-            wants_interpolate = self.query_one("#st-interpolate", Checkbox).value
             if wants_interpolate != entry.meta.interpolate:
                 store.write_prompt_interpolate(entry.slug, wants_interpolate)
             # The pin save lives HERE, not in the declared branch below: that branch is
@@ -958,14 +1063,11 @@ class ScriptSettingsScreen(Screen[bool]):
                     gettext("Deleted previously remembered value(s): %(names)s")
                     % {"names": ", ".join(sorted(purged))}
                 )
-        if pending_deps is not None:
+        if pending_deps is not None and not early_npm_clear:
             deps_changed, python_changed = pending_deps
             try:
                 store.update_dependencies(entry.slug, deps_changed, requires_python=python_changed)
             except store.StoreError as exc:
-                # Clearing npm deps also sweeps node_modules from disk, which can fail
-                # (a held-open file, a read-only remnant) — same treatment as a failed
-                # rename: report and stay, never crash the app out from under the user.
                 self.notify(str(exc), severity="error")
                 return
         needs = [
@@ -984,22 +1086,69 @@ class ScriptSettingsScreen(Screen[bool]):
     def _ticked_prompt_candidates(self, taken: set[str]) -> list[ParamDecl]:
         """The tick-to-manage checkboxes' yield: each ticked, still-unclaimed candidate
         becomes a synthesized placeholder row (required, like every managed placeholder)."""
-        managed = self._entry.meta.params or []
-        unmanaged = [n for n in self._prompt_body_names if n not in managed]
-        out: list[ParamDecl] = []
-        for i, candidate in enumerate(unmanaged):
-            box = self.query(f"#st-prompt-new-{i}")
-            if box and box.first(Checkbox).value and candidate not in taken:
-                out.append(
-                    ParamDecl(
-                        name=candidate,
-                        binding="none",
-                        delivery="placeholder",
-                        required=True,
-                        secret=params.is_secret_name(candidate),
-                    )
-                )
-        return out
+        self._remember_prompt_candidate_ticks()
+        unmanaged = self._unmanaged_prompt_names()
+        return [
+            ParamDecl(
+                name=candidate,
+                binding="none",
+                delivery="placeholder",
+                required=True,
+                secret=params.is_secret_name(candidate),
+            )
+            for candidate in unmanaged
+            if candidate in self._pending_prompt_candidates and candidate not in taken
+        ]
+
+    def _unmanaged_prompt_names(self) -> list[str]:
+        managed = set(self._entry.meta.params or [])
+        return [name for name in self._prompt_body_names if name not in managed]
+
+    def _remember_prompt_candidate_ticks(self) -> None:
+        """Merge the mounted inline preview into the full name-keyed pending set."""
+        from .langs.prompt import analyzer as prompt_analyzer
+
+        for i, candidate in enumerate(
+            self._unmanaged_prompt_names()[: prompt_analyzer.LIST_PREVIEW_LIMIT]
+        ):
+            boxes = self.query(f"#st-prompt-new-{i}")
+            if not boxes:
+                continue
+            if boxes.first(Checkbox).value:
+                self._pending_prompt_candidates.add(candidate)
+            else:
+                self._pending_prompt_candidates.discard(candidate)
+
+    def action_choose_prompt_candidates(self) -> None:
+        """Open all unmanaged prompt variables without teaching a CLI escape hatch."""
+        from .langs.prompt import analyzer as prompt_analyzer
+
+        unmanaged = self._unmanaged_prompt_names()
+        if not self.query_one("#st-interpolate", Checkbox).value:
+            return
+        if len(unmanaged) <= prompt_analyzer.LIST_PREVIEW_LIMIT:
+            return
+        self._remember_prompt_candidate_ticks()
+        before = set(self._pending_prompt_candidates)
+
+        def _chosen(selected: set[str] | None) -> None:
+            if selected is None:
+                return
+            self._pending_prompt_candidates = set(selected)
+            for i, candidate in enumerate(unmanaged[: prompt_analyzer.LIST_PREVIEW_LIMIT]):
+                boxes = self.query(f"#st-prompt-new-{i}")
+                if boxes:
+                    boxes.first(Checkbox).value = candidate in selected
+            if selected != before:
+                self._dirty = True
+
+        self.app.push_screen(
+            tui_prompt.PromptCandidatePickerModal(
+                unmanaged,
+                self._pending_prompt_candidates,
+            ),
+            _chosen,
+        )
 
     def _save_prompt_managed(self, decls: list[ParamDecl]) -> None:
         """The managed list follows the kept placeholder rows: body order first, then any
@@ -1022,10 +1171,6 @@ class ScriptSettingsScreen(Screen[bool]):
         pin = "" if value is Select.NULL else str(value)
         if pin != current:
             store.write_prompt_runner(entry.slug, pin)
-            # A pick of a real configured runner prefills future pickers; re-keeping a
-            # stale pin (or "ask") is not a pick.
-            if pin and config.find_prompt_runner(pin) is not None:
-                argstate.save_last_runner(pin)
 
     def action_close(self) -> None:
         if not self._dirty:
