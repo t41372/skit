@@ -187,21 +187,36 @@ class PreferencesScreen(Screen[bool]):
         self._toggle_custom()
 
     def _axis_choice(self, selector: str, choices: list[str]) -> str:
-        index = self.query_one(selector, RadioSet).pressed_index
-        return choices[index] if 0 <= index < len(choices) else "off"
+        # query_one(selector, Type) is a tautological guard: the id fixes the widget and
+        # its type, so the type argument carries no behaviour to mutate — pinned.
+        axis_set = self.query_one(selector, RadioSet)  # pragma: no mutate
+        index = axis_set.pressed_index
+        # pressed_index is a live button index (0..len-1) or -1; the "< len" upper bound is
+        # never reached, so the comparison is pinned while the "off" fallback stays mutated.
+        if 0 <= index < len(choices):  # pragma: no mutate
+            return choices[index]
+        return "off"
 
     def _toggle_custom(self) -> None:
         """Each axis unhides its own URL input only while that axis sits on "custom"."""
         pypi = self._axis_choice("#pf-mirror-pypi", _PYPI_CHOICES) == "custom"
         github = self._axis_choice("#pf-mirror-github", _GITHUB_CHOICES) == "custom"
         npm = self._axis_choice("#pf-mirror-npm", _NPM_CHOICES) == "custom"
-        self.query_one("#pf-pypi", Input).display = pypi
-        self.query_one("#pf-github", Input).display = github
-        self.query_one("#pf-npm", Input).display = npm
-        self.query_one("#pf-mirror-error", Static).display = pypi or github or npm
+        # Each query_one("#id", Type) below is a tautological guard (see _axis_choice),
+        # isolated onto its own line so the display logic stays mutation-tested.
+        pypi_input = self.query_one("#pf-pypi", Input)  # pragma: no mutate
+        pypi_input.display = pypi
+        github_input = self.query_one("#pf-github", Input)  # pragma: no mutate
+        github_input.display = github
+        npm_input = self.query_one("#pf-npm", Input)  # pragma: no mutate
+        npm_input.display = npm
+        error_slot = self.query_one("#pf-mirror-error", Static)  # pragma: no mutate
+        error_slot.display = pypi or github or npm
 
     def _mirror_error(self, message: str) -> None:
-        self.query_one("#pf-mirror-error", Static).update(message)
+        # query_one — tautological guard (see _axis_choice).
+        error_slot = self.query_one("#pf-mirror-error", Static)  # pragma: no mutate
+        error_slot.update(message)
 
     def _resolve_mirror(self) -> config.MirrorConfig | None:
         """Resolve the whole mirror block from the form, or None after showing an inline
@@ -215,7 +230,9 @@ class PreferencesScreen(Screen[bool]):
             if choice == "off":
                 urls[key] = ""
             elif choice == "custom":
-                value = self.query_one(input_id, Input).value.strip()
+                # query_one — tautological guard (see _axis_choice).
+                axis_input = self.query_one(input_id, Input)  # pragma: no mutate
+                value = axis_input.value.strip()
                 # Same URL gate as the CLI axis keys and the wizard: an empty custom must
                 # not silently save as off (the radio would lie), and a non-URL typo must
                 # not persist to surface later as a broken UV_DEFAULT_INDEX.
@@ -243,7 +260,9 @@ class PreferencesScreen(Screen[bool]):
             return ("", "")
         if github != "custom":
             return config.github_release_urls(config.GITHUB_RELEASE_PRESETS[github])
-        base = self.query_one("#pf-github", Input).value.strip()
+        # query_one — tautological guard (see _axis_choice).
+        github_input = self.query_one("#pf-github", Input)  # pragma: no mutate
+        base = github_input.value.strip()
         stored = config.load_mirror()
         if (
             not base
@@ -277,7 +296,10 @@ class PreferencesScreen(Screen[bool]):
         mirror_cfg = self._resolve_mirror()
         if mirror_cfg is None:
             return
-        lang_value = self.query_one("#pf-lang", Select).value
+        # Each query_one("#id", Type) below is a tautological guard (see _axis_choice),
+        # isolated onto its own line so the surrounding save logic stays mutation-tested.
+        lang_select = self.query_one("#pf-lang", Select)  # pragma: no mutate
+        lang_value = lang_select.value
         i18n.set_language("" if lang_value in ("auto", Select.BLANK) else str(lang_value))
         editor_input = self.query_one("#pf-editor", Input)  # pragma: no mutate
         config.save_editor(editor_input.value)

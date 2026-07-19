@@ -13,7 +13,7 @@ throughout, so the message assertions read against the original msgids.
 from __future__ import annotations
 
 import pytest
-from textual.widgets import Input, RadioButton, RadioSet
+from textual.widgets import Input, RadioButton, RadioSet, Static
 
 from conftest import click_label
 from skit import config, i18n, tui
@@ -80,6 +80,28 @@ async def test_axis_choice_falls_back_to_off_when_no_button_pressed(tmp_path):
     assert mirror.enabled is False  # the "off" fallback paused the mirror
     assert mirror.pypi == config.PYPI_PRESETS["tsinghua"]  # pause, don't destroy
     assert results == [True]
+
+
+# ---------------------------------------------------------------------------
+# _toggle_custom: the shared error slot reveals for ANY single custom axis
+# ---------------------------------------------------------------------------
+
+
+async def test_error_slot_appears_for_a_lone_github_custom(tmp_path):
+    """The error slot's display is an or-chain over the three axes. The cov suite's
+    pypi-first flow never shows the slot for a lone github custom, which leaves the
+    `github and npm` collapse of the chain alive — this pins the middle axis alone."""
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = await _open_prefs(app)
+        await pilot.pause()
+        assert isinstance(screen, PreferencesScreen)
+        error_slot = screen.query_one("#pf-mirror-error", Static)
+        assert error_slot.display is False  # nothing custom yet
+        gh = list(screen.query_one("#pf-mirror-github", RadioSet).query(RadioButton))
+        gh[len(config.GITHUB_RELEASE_PRESETS)].value = True  # github "custom", alone
+        await pilot.pause()
+        assert error_slot.display is True
 
 
 # ---------------------------------------------------------------------------

@@ -198,3 +198,14 @@ pytest_add_cli_args_test_selection = ["tests/"]
 # can't build the project inside mutants/ on a cold cache. scripts/ rides along because
 # the i18n-gate tests (test_js_deps.py) import scripts/i18n_coverage.py by path.
 also_copy = ["skills/", "README.md", "scripts/"]
+# mutmut's native pragma scan only sees statement-level comments: a trailing pragma on a
+# multi-line statement marks the first line only, so an equivalent mutant on a later line
+# of the same statement can't be pinned natively. This pattern makes any line that carries
+# the pragma text skip the expression starting there, so a pragma can sit exactly on the
+# equivalent-mutant line (e.g. one branch of a wrapped ternary) without silencing its
+# siblings — mutants on the statement's other lines stay live. (Note the anchor is the
+# expression's FIRST line: call-argument mutants belong to the whole Call node, so they
+# can't be pinned per-argument this way — kill those with a forwarding test instead.) No
+# existing pragma line opens a multi-line expression, so for every other site this is a
+# no-op.
+do_not_mutate_patterns = ['pragma: no mutate']

@@ -115,6 +115,27 @@ def test_add_stdin_summary_lists_dependencies():
     assert "requests" in result.output
 
 
+def test_add_stdin_forwards_summary_args_verbatim(monkeypatch):
+    """The summary call forwards exactly what _onboard_python returned — all four slots,
+    unfiltered. managed/secrets happen to be empty on this path today (no_input skips
+    parameter onboarding), but that is _onboard_python's business: the call site forwards,
+    it does not assume, so a mutant nulling or dropping any slot is observable here."""
+
+    class FakeStdin:
+        def read(self) -> str:
+            return "print('hi')\n"
+
+    monkeypatch.setattr(sys, "stdin", FakeStdin())
+    sentinel = object()
+    monkeypatch.setattr(
+        cli, "_onboard_python", lambda *_a, **_k: (sentinel, ["req"], ["CITY"], ["TOKEN"])
+    )
+    calls: list[tuple[object, ...]] = []
+    monkeypatch.setattr(cli, "_print_add_summary", lambda *a: calls.append(a))
+    cli._add_from_stdin("clip", None)
+    assert calls == [(sentinel, ["req"], ["CITY"], ["TOKEN"])]
+
+
 # --------------------------------------------------------------------------
 # _apply_env_sources — warning text + continue-not-break control flow
 # --------------------------------------------------------------------------
@@ -238,6 +259,30 @@ def test_config_lang_value_auto_when_unset(monkeypatch):
     monkeypatch.setattr(cli.config, "load_config", lambda: {})
     # No override -> the "auto (locale)" fallback, never an empty string.
     assert cli._config_lang_value().startswith("auto")
+
+
+def test_config_lang_value_empty_override_reads_auto():
+    # An explicit `language = ""` in config.toml means "no override": the value face must
+    # show the same auto label as a missing key. The guard is isinstance AND truthy — an
+    # or-mutant would leak the raw "" straight into the listing.
+    config.save_config({"language": ""})
+    empty_value = cli._config_lang_value()
+    config.save_config({})
+    assert empty_value == cli._config_lang_value()  # empty ≡ missing -> the auto label
+    assert empty_value.startswith("auto")
+
+
+# --------------------------------------------------------------------------
+# _mirror_master_value — every axis alone flips the master to "on"
+# --------------------------------------------------------------------------
+
+
+def test_mirror_master_value_on_with_only_uv_binary():
+    # "on" = enabled AND any single axis URL. A config holding only the uv-binary vector
+    # must read "on": each `or` in the any-axis chain is load-bearing, and this axis sits
+    # in the associativity spot where an and-mutant collapses the chain to "off".
+    config.save_mirror(config.MirrorConfig(enabled=True, uv_binary="https://m.example/uv"))
+    assert cli._mirror_master_value() == "on"
 
 
 # --------------------------------------------------------------------------

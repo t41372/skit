@@ -235,8 +235,10 @@ def _refuse_unusable_add_flags(
     the guessing it forbids). The uv flavor honors both flags; npm honors --dep on copies
     only; every other kind honors neither."""
     flavor = (
-        kind_spec.deps_flavor if kind_spec is not None else ""
-    )  # pragma: no mutate — the "" sentinel is only ever compared to "uv"/"npm"; any other empty-branch value is unobservable
+        kind_spec.deps_flavor
+        if kind_spec is not None
+        else ""  # pragma: no mutate — only ever compared to "uv"/"npm"; any other value is unobservable
+    )
     if flavor == "uv":
         return
     if dep is not None and (flavor != "npm" or ref):
@@ -528,16 +530,7 @@ def _add_from_stdin(
         raise _fail(str(exc), 1) from exc
     finally:
         tmp.unlink(missing_ok=True)  # pragma: no mutate
-    _print_add_summary(
-        entry,
-        deps,
-        # managed/secrets are always empty on the stdin path (no_input=True skips parameter
-        # onboarding), so a None in these two positions is behaviorally identical.
-        # pragma: no mutate start
-        managed,
-        secrets,
-        # pragma: no mutate end
-    )
+    _print_add_summary(entry, deps, managed, secrets)
 
 
 def _infer_add_kind(resolved: Path, exe_flag: bool) -> str:
@@ -2563,7 +2556,10 @@ def _config_lang_value() -> str:
 
 
 def _lang_override() -> str:
-    override = config.load_config().get("language", "")
+    # No `.get(..., "")` default: the isinstance guard below already maps a missing key
+    # (None) to "", so an explicit "" is redundant (dropping it also retires the equivalent
+    # default-value mutant — same construct as _config_lang_value above).
+    override = config.load_config().get("language")
     return override if isinstance(override, str) else ""
 
 
