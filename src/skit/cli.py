@@ -2061,6 +2061,9 @@ def show(
         _print_show_human(entry, plan, presets)
         return
     last = state["last_run"]
+    # Effective values (meta, else the copy's own PEP 723 block) — the same rule as
+    # the deps read view: the record must describe what a run actually does.
+    effective_deps, effective_python = store.effective_uv_metadata(entry)
     payload = {
         "name": entry.meta.name,
         "slug": entry.slug,
@@ -2071,8 +2074,8 @@ def show(
         "workdir": str(entry.meta.workdir),
         "interpreter": entry.meta.interpreter or None,
         "missing": launcher.target_missing(entry),
-        "dependencies": list(entry.meta.dependencies or []),
-        "requires_python": entry.meta.requires_python,
+        "dependencies": effective_deps,
+        "requires_python": effective_python,
         "needs": list(entry.meta.needs or []),
         "template": entry.meta.template or None,
         "param_source": plan.source,
@@ -3979,14 +3982,17 @@ def _edit_declared_params(
 
 def _deps_read_view(entry: store.Entry, *, supports_deps: bool, as_json: bool) -> None:
     """The bare `skit deps NAME` view: dependencies + Python constraint (python entries
-    only) and the needed external commands (every kind)."""
+    only) and the needed external commands (every kind). EFFECTIVE values, never raw
+    meta: add-time injected deps live in the stored copy's PEP 723 block with meta
+    deliberately blank — reporting "—" for a list uv installs would be a lie."""
     needs = list(entry.meta.needs or [])
+    deps, constraint = store.effective_uv_metadata(entry)
     if as_json:
         console.print_json(
             json.dumps(
                 {
-                    "dependencies": list(entry.meta.dependencies or []),
-                    "requires_python": entry.meta.requires_python,
+                    "dependencies": deps,
+                    "requires_python": constraint,
                     "needs": needs,
                 },
                 ensure_ascii=False,
@@ -3998,14 +4004,11 @@ def _deps_read_view(entry: store.Entry, *, supports_deps: bool, as_json: bool) -
             gettext("Dependencies of %(name)s: %(deps)s")
             % {
                 "name": escape(entry.meta.name),
-                "deps": ", ".join(escape(d) for d in (entry.meta.dependencies or [])) or "—",
+                "deps": ", ".join(escape(d) for d in deps) or "—",
             }
         )
-        if entry.meta.requires_python:
-            console.print(
-                gettext("Python constraint: %(python)s")
-                % {"python": escape(entry.meta.requires_python)}
-            )
+        if constraint:
+            console.print(gettext("Python constraint: %(python)s") % {"python": escape(constraint)})
     console.print(
         gettext("External commands needed by %(name)s: %(needs)s")
         % {"name": escape(entry.meta.name), "needs": ", ".join(escape(n) for n in needs) or "—"}
@@ -4078,13 +4081,17 @@ def deps(
     # exit 2 on the deps refusal, a partial application a --json/CI caller couldn't detect.
     if deps_requested:
         if clear:
-            new_deps: list[str] = []
+            new_deps: list[str] | None = []
         elif dep is not None:
             # Drop empty/whitespace values so `--dep ''` clears (and sweeps) rather than
             # recording a junk "" package the --json contract would then carry.
             new_deps = [d.strip() for d in dep if d.strip()]
         else:
-            new_deps = list(entry.meta.dependencies or [])
+            # --python only: the deps axis is UNTOUCHED (None), never reconstructed
+            # from meta — meta is deliberately blank for add-time injected deps, and
+            # "replace with what meta says" erased the block's list under a green
+            # constraint line.
+            new_deps = None
         try:
             entry = store.update_dependencies(entry.slug, new_deps, requires_python=python)
         except store.StoreUsageError as exc:
@@ -4100,7 +4107,7 @@ def deps(
                 )
             else:
                 console.print(
-                    f"[green]{gettext('Dependencies of %(name)s updated: %(deps)s') % {'name': escape(entry.meta.name), 'deps': ', '.join(escape(d) for d in new_deps) or '—'}}[/green]"
+                    f"[green]{gettext('Dependencies of %(name)s updated: %(deps)s') % {'name': escape(entry.meta.name), 'deps': ', '.join(escape(d) for d in new_deps or []) or '—'}}[/green]"
                 )
     if needs_requested:
         # Drop empty/whitespace values, mirroring the --dep path: an empty command name is junk in

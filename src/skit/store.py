@@ -673,6 +673,31 @@ def remove(name_or_slug: str) -> str:
     return entry.meta.name
 
 
+def effective_uv_metadata(entry: Entry) -> tuple[list[str], str]:
+    """The dependencies and requires-python that actually govern a run: meta when it
+    carries them, else — copy-mode python only — the stored copy's own PEP 723 block
+    (the add-time deps_injected path deliberately leaves meta blank and makes the
+    block the source of truth). Every surface that DISPLAYS or BASELINES the record
+    must read this, never raw meta: showing "—" for a pin uv enforces is a lie, and
+    treating a blank-reflected-from-meta field as user-cleared executes unpins and
+    dependency wipes nobody asked for."""
+    deps = list(entry.meta.dependencies or [])
+    constraint = entry.meta.requires_python
+    if (
+        entry.meta.kind == "python"
+        and entry.meta.mode == "copy"
+        and (not deps or not constraint)
+        and entry.script_path.exists()
+    ):
+        text = entry.script_path.read_text(encoding="utf-8", errors="replace")
+        block = pep723.parse_block(text) or {}
+        if not deps:
+            deps = [str(d) for d in (block.get("dependencies") or [])]
+        if not constraint:
+            constraint = str(block.get("requires-python", "") or "")
+    return deps, constraint
+
+
 def _validate_uv_metadata(
     spec: registry.LangSpec | None, dependencies: list[str], requires_python: str | None
 ) -> None:
@@ -692,7 +717,7 @@ def _validate_uv_metadata(
 
 def update_dependencies(
     name_or_slug: str,
-    dependencies: list[str],
+    dependencies: list[str] | None,
     requires_python: str | None = None,
 ) -> Entry:
     """Update an entry's dependency record (meta.toml). Python copy mode also syncs the copy's
@@ -700,15 +725,22 @@ def update_dependencies(
     and passes it via --with at run time. An npm-flavor entry (js/ts) is copy-mode only — the
     engine materializes node_modules next to the stored copy, and a reference entry's script
     lives in its own project, whose node_modules already serves it — and a Python constraint
-    is meaningless there, so both are refused loudly rather than recorded and ignored."""
+    is meaningless there, so both are refused loudly rather than recorded and ignored.
+
+    BOTH axes distinguish untouched from cleared: None = don't touch (a python-only
+    edit must not wipe deps; a deps-only edit must not unpin), [] / "" = explicitly
+    clear. One rule, stated twice — the constraint axis learned it first, and leaving
+    the deps axis on always-replace let `skit deps x --python …` erase block-only
+    add-time dependencies under a green line."""
     entry = resolve(name_or_slug)
     meta = entry.meta
     spec = registry.spec_for(meta.kind)
-    # Strip-and-drop empty entries BEFORE validating or writing: a whitespace-only
-    # requirement is "nothing", not an error — and written verbatim it would brick
-    # every run with uv's raw "Empty field" error (every shipped caller filters
-    # already; the chokepoint must not rely on that).
-    dependencies = [d.strip() for d in dependencies if d.strip()]
+    if dependencies is not None:
+        # Strip-and-drop empty entries BEFORE validating or writing: a whitespace-only
+        # requirement is "nothing", not an error — and written verbatim it would brick
+        # every run with uv's raw "Empty field" error (every shipped caller filters
+        # already; the chokepoint must not rely on that).
+        dependencies = [d.strip() for d in dependencies if d.strip()]
     uv_flavor = spec is None or spec.deps_flavor != "npm"
     if (
         uv_flavor
@@ -720,7 +752,7 @@ def update_dependencies(
         # normalizing '-' first would make acceptance value-dependent (the refusal
         # says the flag "doesn't apply"; it must not apply for some spellings only).
         requires_python = ""
-    _validate_uv_metadata(spec, dependencies, requires_python)
+    _validate_uv_metadata(spec, dependencies or [], requires_python)
     if spec is not None and spec.deps_flavor == "npm":
         if requires_python is not None:
             # `is not None`, not truthiness (_refuse_unusable_add_flags' own
@@ -738,7 +770,13 @@ def update_dependencies(
                 )
                 % {"name": meta.name}
             )
-    if spec is not None and spec.deps_flavor == "npm" and not dependencies:
+    if (
+        spec is not None
+        and spec.deps_flavor == "npm"
+        and dependencies is not None
+        and not dependencies
+    ):
+        # Sweep node_modules only on an EXPLICIT clear ([]), never on None (untouched).
         # Sweep node_modules BEFORE writing meta. The disk cleanup is the step that can fail (a
         # locked file), so doing it first means a failure leaves BOTH the record and the tree
         # untouched — genuinely retryable, the "leave the entry unchanged" contract the TUI
@@ -752,32 +790,47 @@ def update_dependencies(
             js_deps.clear(entry.dir)
         except NotExecutableError as exc:
             raise StoreError(str(exc)) from exc
-    meta.dependencies = dependencies or None
+    if dependencies is not None:
+        meta.dependencies = dependencies or None
     if requires_python is not None:
         # Strip: a whitespace-only constraint ("   ") is truthy but an unparseable version
         # specifier that bricks every run — store "" (omitted) instead.
         meta.requires_python = (requires_python or "").strip()
     _write_meta(entry.dir, meta)
     if meta.kind == "python" and meta.mode == "copy":  # pragma: no mutate — and/or equivalent
-        script = entry.script_path
-        if script.exists():
-            text = script.read_text(encoding="utf-8", errors="replace")
-            constraint = meta.requires_python
-            if not constraint and requires_python is None:
-                # The block is the source of truth when meta carries no constraint
-                # (deliberately, cli's identity rules) — so a DEPS-ONLY edit must
-                # PRESERVE the block's own requires-python, not erase it by passing
-                # "". But only when the caller didn't touch the constraint: an
-                # explicit unpin (requires_python == "", the '-' token) must reach
-                # the block uv actually reads — "updated: —" while the block still
-                # pins is a specific false statement on three surfaces at once.
-                block = pep723.parse_block(text) or {}
-                constraint = str(block.get("requires-python", "") or "")
-            script.write_text(
-                pep723.set_dependencies(text, dependencies, requires_python=constraint),
-                encoding="utf-8",
-            )
+        _sync_python_block(entry.script_path, meta, dependencies, requires_python)
     return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
+
+
+def _sync_python_block(
+    script: Path,
+    meta: ScriptMeta,
+    dependencies: list[str] | None,
+    requires_python: str | None,
+) -> None:
+    """Sync a copy-mode python entry's PEP 723 block after a metadata edit. BOTH axes
+    share one derive rule: an untouched axis (None) whose meta carries nothing keeps
+    the block's own value — the block is the source of truth for the add-time
+    deps_injected split state (meta deliberately blank). An explicitly edited axis
+    reaches the block uv actually reads: an unpin ("" via the '-' token) that left
+    the block pinned was "updated: —" as a specific false statement on three
+    surfaces at once, and a deps clear that left the block's list would be its twin."""
+    if not script.exists():
+        return
+    text = script.read_text(encoding="utf-8", errors="replace")
+    block = pep723.parse_block(text) or {}
+    constraint = meta.requires_python
+    if not constraint and requires_python is None:
+        constraint = str(block.get("requires-python", "") or "")
+    block_deps = dependencies
+    if block_deps is None:
+        block_deps = list(meta.dependencies or []) or [
+            str(d) for d in (block.get("dependencies") or [])
+        ]
+    script.write_text(
+        pep723.set_dependencies(text, block_deps, requires_python=constraint),
+        encoding="utf-8",
+    )
 
 
 def update_needs(name_or_slug: str, needs: list[str]) -> Entry:

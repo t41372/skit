@@ -734,12 +734,18 @@ class ScriptSettingsScreen(Screen[bool]):
             )
 
     def _compose_deps(self) -> ComposeResult:
-        meta = self._entry.meta
         if not self._deps_editable():
             return
+        # EFFECTIVE values, never raw meta: add-time injected deps/pins live in the
+        # stored copy's PEP 723 block with meta deliberately blank. Prefilling from
+        # meta showed empty fields for a list uv installs — and made "untouched
+        # blank" indistinguishable from "user cleared", so a deps-only save wiped a
+        # pin the screen never displayed. What the screen shows is what a save
+        # keeps; what the user clears is what a save clears.
+        effective_deps, effective_python = store.effective_uv_metadata(self._entry)
         yield Static(gettext("Dependencies"), classes="section")
         yield Input(
-            value=", ".join(meta.dependencies or []),
+            value=", ".join(effective_deps),
             placeholder=gettext("comma separated, e.g. requests>=2,<3, rich")
             if self._spec is not None and self._spec.deps_flavor == "uv"
             else gettext("comma separated, e.g. chalk@^5, zod"),
@@ -747,7 +753,7 @@ class ScriptSettingsScreen(Screen[bool]):
         )
         if self._spec is not None and self._spec.deps_flavor == "uv":
             yield Input(
-                value=meta.requires_python,
+                value=effective_python,
                 placeholder=gettext('Python constraint, e.g. ">=3.11" (empty = automatic)'),
                 id="st-python",
             )
@@ -841,8 +847,15 @@ class ScriptSettingsScreen(Screen[bool]):
             pending_decls = self._collect_declared()
             if pending_decls is None:
                 return  # a row is invalid; nothing was written
-        pending_deps: tuple[list[str], str | None] | None = None
+        pending_deps: tuple[list[str] | None, str | None] | None = None
         if self._deps_editable():
+            # Per-axis change detection against the EFFECTIVE baseline (the values
+            # the fields were prefilled from): an axis equal to its baseline is
+            # UNTOUCHED and travels as None — the chokepoint's "don't touch" — so a
+            # deps-only edit can never unpin, and a python-only edit can never wipe
+            # deps. An axis that differs is the user's explicit edit, cleared-empty
+            # included.
+            effective_deps, effective_python = store.effective_uv_metadata(entry)
             raw_deps = self.query_one("#st-deps", Input).value
             if self._spec is not None and self._spec.deps_flavor == "uv":
                 deps = pep723.split_requirements(raw_deps)
@@ -870,7 +883,12 @@ class ScriptSettingsScreen(Screen[bool]):
 
                 deps = js_deps.split_requirements(raw_deps)
                 python = None
-            pending_deps = (deps, python)
+            deps_arg: list[str] | None = deps if deps != effective_deps else None
+            python_arg: str | None = (
+                python if python is not None and python != effective_python else None
+            )
+            if deps_arg is not None or python_arg is not None:
+                pending_deps = (deps_arg, python_arg)
         # ---- write pass ----
         if new_name and new_name != entry.meta.name:
             try:
@@ -931,18 +949,15 @@ class ScriptSettingsScreen(Screen[bool]):
                     % {"names": ", ".join(sorted(purged))}
                 )
         if pending_deps is not None:
-            deps, python = pending_deps
-            if deps != (entry.meta.dependencies or []) or (
-                python is not None and python != entry.meta.requires_python
-            ):
-                try:
-                    store.update_dependencies(entry.slug, deps, requires_python=python)
-                except store.StoreError as exc:
-                    # Clearing npm deps also sweeps node_modules from disk, which can fail
-                    # (a held-open file, a read-only remnant) — same treatment as a failed
-                    # rename: report and stay, never crash the app out from under the user.
-                    self.notify(str(exc), severity="error")
-                    return
+            deps_changed, python_changed = pending_deps
+            try:
+                store.update_dependencies(entry.slug, deps_changed, requires_python=python_changed)
+            except store.StoreError as exc:
+                # Clearing npm deps also sweeps node_modules from disk, which can fail
+                # (a held-open file, a read-only remnant) — same treatment as a failed
+                # rename: report and stay, never crash the app out from under the user.
+                self.notify(str(exc), severity="error")
+                return
         needs = [
             n.strip() for n in self.query_one("#st-needs", Input).value.split(",") if n.strip()
         ]
