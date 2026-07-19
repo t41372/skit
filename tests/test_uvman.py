@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import full_mirror
 from skit import uvman
 
 # The installed binary's name is platform-native: `_extract_uv`/`ensure_uv_downloaded` look for
@@ -322,7 +323,7 @@ def test_download_url_uses_configured_mirror(monkeypatch, tmp_path):
     monkeypatch.setenv("SKIT_CONFIG_DIR", str(tmp_path))
     from skit import config
 
-    config.save_mirror(config.preset("tsinghua"))
+    config.save_mirror(full_mirror())
     url = uvman.download_url("aarch64-apple-darwin")
     assert url.startswith(config.UV_BINARY_MIRROR)
     assert f"{uvman.UV_VERSION}/uv-aarch64-apple-darwin.tar.gz" in url

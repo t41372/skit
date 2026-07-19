@@ -334,19 +334,21 @@ async def test_run_form_stacks_preset_row_and_choices_when_narrow(tmp_path):
         assert app.screen.query_one(tui_footer.KeysBar).region.height == 1
 
 
-async def test_prefs_mirror_row_is_horizontal_until_narrow_and_sentences_always_stack(tmp_path):
+async def test_prefs_mirror_rows_are_horizontal_until_narrow_and_sentences_always_stack(tmp_path):
     app = tui.MenuApp()
-    async with app.run_test(size=(120, 30)) as pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         app.push_screen(PreferencesScreen())
         await pilot.pause()
-        mirror = list(app.screen.query_one("#pf-mirror").query(RadioButton))
-        assert mirror[0].region.y == mirror[1].region.y  # single words, side by side
+        # All three axis rows share the .pf-mirror-row layout contract.
+        for row in ("#pf-mirror-pypi", "#pf-mirror-github", "#pf-mirror-npm"):
+            buttons = list(app.screen.query_one(row).query(RadioButton))
+            assert buttons[0].region.y == buttons[1].region.y, row  # side by side
         form = list(app.screen.query_one("#pf-form").query(RadioButton))
         assert form[0].region.y < form[1].region.y  # sentence options always stack
-        await pilot.resize_terminal(60, 30)
+        await pilot.resize_terminal(60, 40)
         await pilot.pause()
-        mirror = list(app.screen.query_one("#pf-mirror").query(RadioButton))
-        assert mirror[0].region.y < mirror[1].region.y  # narrow stacks the mirror row too
+        mirror = list(app.screen.query_one("#pf-mirror-pypi").query(RadioButton))
+        assert mirror[0].region.y < mirror[1].region.y  # narrow stacks the mirror rows too
 
 
 # ---------------------------------------------------------------------------

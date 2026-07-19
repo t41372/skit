@@ -128,14 +128,7 @@ class HealthScreen(Screen[str | None]):
                     % {"rows": ", ".join(escape(r) for r in report.invalid_runner_rows)},
                     classes="warn",
                 )
-            mirror = config.load_mirror()
-            if mirror.enabled:
-                yield Static(
-                    "✓ " + gettext("Mirror: on (%(pypi)s)") % {"pypi": escape(mirror.pypi)},
-                    classes="ok",
-                )
-            else:
-                yield Static("✓ " + gettext("Mirror: off"), classes="ok")
+            yield Static("✓ " + escape(config.mirrors_line(config.load_mirror())), classes="ok")
             location = scripts_dir()
             yield Static(
                 gettext("Library: %(path)s (%(count)s · %(size)s)")

@@ -253,7 +253,8 @@ skit runner remove mycli -y   # confirms without -y, like skit remove
 ## Maintenance
 
 ```bash
-skit doctor --json     # health: uv, location, drift/missing, needs_missing, launch_blocked, mirror
+skit doctor --json     # health: uv, location, drift/missing, needs_missing, launch_blocked,
+                       # mirror {enabled + stored URLs; an axis applies iff enabled and its URL is set}
 skit rename <name> <new-name>       # rename; presets, remembered values and history follow
 skit describe <name> "Nightly dump" # set/replace the description (an empty string clears it)
 skit remove <name> -y  # remove an entry (the user's original file is never deleted) — ask first

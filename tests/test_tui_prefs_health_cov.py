@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 from textual.widgets import Input, OptionList, RadioButton, RadioSet, Select, Static
 
+from conftest import full_mirror
 from skit import config, store, tui
 from skit.langs.python import metawriter
 from skit.params import ParamDecl
@@ -56,7 +57,7 @@ def _rich_health_setup(tmp_path) -> str:
     (the one issue) + an enabled mirror. Returns the drifted entry's slug."""
     store.add_command("echo hi", name="cmd")
     drifted = store.add_python(_py(tmp_path, _DRIFTED, "drifty.py"), name="drifty")
-    config.save_mirror(config.preset("tsinghua"))
+    config.save_mirror(full_mirror())
     return drifted.slug
 
 
@@ -76,28 +77,33 @@ async def test_prefs_editor_fallback_hint_names_visual_editor(tmp_path, monkeypa
         assert "Empty means: vim (from $VISUAL / $EDITOR)" in text
 
 
-async def test_prefs_enabled_preset_preselects_its_radio(tmp_path):
-    """A saved preset mirror pre-selects the matching radio (not "custom"/"off"), and the
-    custom URL inputs stay hidden because the selection isn't custom."""
-    config.save_mirror(config.preset("tsinghua"))
+async def test_prefs_enabled_presets_preselect_each_axis_radio(tmp_path):
+    """A saved full mirror pre-selects the matching preset radio on EACH axis row (never
+    "custom"/"off"), and every custom URL input stays hidden."""
+    config.save_mirror(full_mirror())
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         app.push_screen(PreferencesScreen())
         await pilot.pause()
-        rs = app.screen.query_one("#pf-mirror", RadioSet)
-        assert rs.pressed_index == 0  # "tsinghua" is _MIRROR_CHOICES[0]
-        button = rs.pressed_button
-        assert button is not None
-        assert str(button.label) == "tsinghua"
-        assert app.screen.query_one("#pf-pypi", Input).display is False
+        for row, label in (
+            ("#pf-mirror-pypi", "tsinghua"),
+            ("#pf-mirror-github", "nju"),
+            ("#pf-mirror-npm", "npmmirror"),
+        ):
+            rs = app.screen.query_one(row, RadioSet)
+            assert rs.pressed_index == 0, row  # each axis's preset is its choice list's head
+            button = rs.pressed_button
+            assert button is not None
+            assert str(button.label) == label
+        for wid in ("#pf-pypi", "#pf-github", "#pf-npm"):
+            assert app.screen.query_one(wid, Input).display is False, wid
 
 
-async def test_prefs_enabled_custom_url_preselects_custom(tmp_path):
-    """An enabled mirror whose pypi matches no preset resolves to "custom", and the custom
-    URL inputs are revealed and prefilled with the saved values."""
+async def test_prefs_enabled_custom_url_preselects_custom_only_on_its_axis(tmp_path):
+    """Axes resolve independently: custom pypi/github URLs select "custom" on those rows
+    and reveal their inputs, while the untouched npm axis stays "off" and hidden."""
     config.save_mirror(
-        config.MirrorConfig(
-            enabled=True,
+        config.compose(
             pypi="https://corp.internal/simple",
             python_install="https://corp.internal/py/",
             uv_binary="https://corp.internal/uv/",
@@ -107,27 +113,47 @@ async def test_prefs_enabled_custom_url_preselects_custom(tmp_path):
     async with app.run_test() as pilot:
         app.push_screen(PreferencesScreen())
         await pilot.pause()
-        rs = app.screen.query_one("#pf-mirror", RadioSet)
-        assert rs.pressed_index == 3  # "custom"
+        rs = app.screen.query_one("#pf-mirror-pypi", RadioSet)
+        assert rs.pressed_index == len(config.PYPI_PRESETS)  # "custom"
         pypi = app.screen.query_one("#pf-pypi", Input)
         assert pypi.display is True
         assert pypi.value == "https://corp.internal/simple"
+        assert app.screen.query_one("#pf-mirror-github", RadioSet).pressed_index == len(
+            config.GITHUB_RELEASE_PRESETS
+        )
+        assert app.screen.query_one("#pf-github", Input).display is True
+        npm_rs = app.screen.query_one("#pf-mirror-npm", RadioSet)
+        assert npm_rs.pressed_index == len(config.NPM_PRESETS) + 1  # "off"
+        assert app.screen.query_one("#pf-npm", Input).display is False
 
 
-async def test_prefs_selecting_custom_reveals_url_inputs(tmp_path):
-    """Switching the mirror radio to "custom" fires the change handler, which unhides the
-    three URL inputs live (they start hidden under the default "off")."""
+async def test_prefs_selecting_custom_reveals_only_that_axis_inputs(tmp_path):
+    """Switching ONE axis to "custom" unhides only that axis's URL input; the other axes'
+    inputs stay hidden until their own rows go custom. The single error slot is shared and
+    appears as soon as any axis is custom."""
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         app.push_screen(PreferencesScreen())
         await pilot.pause()
         pypi = app.screen.query_one("#pf-pypi", Input)
+        github = app.screen.query_one("#pf-github", Input)
+        npm = app.screen.query_one("#pf-npm", Input)
+        error = app.screen.query_one("#pf-mirror-error", Static)
         assert pypi.display is False  # off → hidden
-        buttons = list(app.screen.query_one("#pf-mirror", RadioSet).query(RadioButton))
-        buttons[3].value = True  # click "custom"
+        assert error.display is False  # nothing custom yet → the error slot is hidden
+        buttons = list(app.screen.query_one("#pf-mirror-pypi", RadioSet).query(RadioButton))
+        buttons[len(config.PYPI_PRESETS)].value = True  # click pypi "custom"
         await pilot.pause()
         assert pypi.display is True
-        assert app.screen.query_one("#pf-uv-error", Static).display is True
+        # Only the pypi input revealed; the github/npm inputs stay hidden under their own rows.
+        assert github.display is False
+        assert npm.display is False
+        # The shared error slot appears as soon as ANY axis is custom.
+        assert error.display is True
+        gh_buttons = list(app.screen.query_one("#pf-mirror-github", RadioSet).query(RadioButton))
+        gh_buttons[len(config.GITHUB_RELEASE_PRESETS)].value = True  # github "custom"
+        await pilot.pause()
+        assert github.display is True
 
 
 # ---------------------------------------------------------------------------
@@ -160,8 +186,8 @@ async def test_prefs_save_off_persists_editor_form_and_disables_mirror(tmp_path)
 
 
 async def test_prefs_save_custom_non_https_uv_is_blocked(tmp_path):
-    """The uv binary is downloaded and executed, so a non-https uv mirror is refused: the
-    save shows the https error, saves no mirror, and does not dismiss."""
+    """The github base derives the uv binary (downloaded and executed), so a non-https base is
+    refused: the save shows the https error, saves no mirror, and does not dismiss."""
     results: list[bool | None] = []
     app = tui.MenuApp()
     async with app.run_test() as pilot:
@@ -169,37 +195,44 @@ async def test_prefs_save_custom_non_https_uv_is_blocked(tmp_path):
         await pilot.pause()
         screen = app.screen
         assert isinstance(screen, PreferencesScreen)
-        list(screen.query_one("#pf-mirror", RadioSet).query(RadioButton))[3].value = True  # custom
+        gh = list(screen.query_one("#pf-mirror-github", RadioSet).query(RadioButton))
+        gh[len(config.GITHUB_RELEASE_PRESETS)].value = True  # github "custom"
         await pilot.pause()
-        screen.query_one("#pf-uv", Input).value = "http://mirror.example/uv"
+        screen.query_one("#pf-github", Input).value = "http://mirror.example/gh"
         screen.action_save()
         await pilot.pause()
-        error = str(app.screen.query_one("#pf-uv-error", Static).render())
-    assert "https://" in error
-    assert "http://mirror.example/uv" in error
+        error = str(app.screen.query_one("#pf-mirror-error", Static).render())
+    # Letter-exact: the security rationale is the message — a mangled version must fail.
+    assert (
+        "The uv binary is downloaded and executed, so the github-release base URL must "
+        "use https:// (got: http://mirror.example/gh)." in error
+    )
+    assert "XX" not in error  # an XX-wrapped msgid contains the original as a substring
     assert results == []  # blocked, not dismissed
     assert config.load_mirror().enabled is False  # nothing persisted for the mirror
 
 
-async def test_prefs_save_is_atomic_a_bad_uv_url_persists_nothing(tmp_path):
-    """action_save is validate-then-write: a bad custom uv URL refuses BEFORE any section
-    is persisted, so editor/form/after-run/js — all edited in this same save — stay
-    unchanged on disk. A half-written save would make the Esc "unsaved changes" guard a lie
-    (finding 9, the uv arm)."""
+async def test_prefs_save_is_atomic_a_bad_github_base_persists_nothing(tmp_path):
+    """action_save is validate-then-write: an http:// github-release base (the axis that
+    derives the DOWNLOADED-AND-EXECUTED uv binary) refuses BEFORE any section is
+    persisted, so editor/form/after-run/js — all edited in this same save — stay
+    unchanged on disk. A half-written save would make the Esc "unsaved changes" guard a
+    lie (finding 9, the uv arm — now the github axis of the three-axis mirror UI)."""
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         app.push_screen(PreferencesScreen())
         await pilot.pause()
         screen = app.screen
         assert isinstance(screen, PreferencesScreen)
-        # Edit every persisted section, THEN break the uv URL so the save must refuse.
+        # Edit every persisted section, THEN break the github base so the save must refuse.
         screen.query_one("#pf-editor", Input).value = "micro"
         list(screen.query_one("#pf-form", RadioSet).query(RadioButton))[1].value = True  # plain
         list(screen.query_one("#pf-after", RadioSet).query(RadioButton))[1].value = True  # stay
         list(screen.query_one("#pf-js", RadioSet).query(RadioButton))[2].value = True  # bun
-        list(screen.query_one("#pf-mirror", RadioSet).query(RadioButton))[3].value = True  # custom
+        gh_rb = list(screen.query_one("#pf-mirror-github", RadioSet).query(RadioButton))
+        gh_rb[len(config.GITHUB_RELEASE_PRESETS)].value = True  # github "custom"
         await pilot.pause()
-        screen.query_one("#pf-uv", Input).value = "http://mirror.example/uv"  # not https → refuse
+        screen.query_one("#pf-github", Input).value = "http://mirror.example/gh"  # not https
         screen.action_save()
         await pilot.pause()
         assert isinstance(app.screen, PreferencesScreen)  # refused → stayed open
@@ -212,7 +245,8 @@ async def test_prefs_save_is_atomic_a_bad_uv_url_persists_nothing(tmp_path):
 
 
 async def test_prefs_save_custom_https_urls_persist(tmp_path):
-    """A valid custom mirror (https uv) persists all three URLs and dismisses True."""
+    """Custom pypi + github axes (https uv) persist their URLs and dismiss True — and the
+    npm axis, left "off", stays empty rather than inheriting anyone's vendor."""
     results: list[bool | None] = []
     app = tui.MenuApp()
     async with app.run_test() as pilot:
@@ -220,24 +254,28 @@ async def test_prefs_save_custom_https_urls_persist(tmp_path):
         await pilot.pause()
         screen = app.screen
         assert isinstance(screen, PreferencesScreen)
-        list(screen.query_one("#pf-mirror", RadioSet).query(RadioButton))[3].value = True  # custom
+        pypi_rb = list(screen.query_one("#pf-mirror-pypi", RadioSet).query(RadioButton))
+        pypi_rb[len(config.PYPI_PRESETS)].value = True  # pypi "custom"
+        gh_rb = list(screen.query_one("#pf-mirror-github", RadioSet).query(RadioButton))
+        gh_rb[len(config.GITHUB_RELEASE_PRESETS)].value = True  # github "custom"
         await pilot.pause()
         screen.query_one("#pf-pypi", Input).value = "https://my.index/simple"
-        screen.query_one("#pf-pyinstall", Input).value = "https://my.pyinstall/"
-        screen.query_one("#pf-uv", Input).value = "https://my.uv/"
+        screen.query_one("#pf-github", Input).value = "https://my.gh/"  # one base, both vectors
         screen.action_save()
         await pilot.pause()
     mirror = config.load_mirror()
     assert mirror.enabled is True
     assert mirror.pypi == "https://my.index/simple"
-    assert mirror.python_install == "https://my.pyinstall/"
-    assert mirror.uv_binary == "https://my.uv/"
+    # The single github base expands to both github-release vectors.
+    assert mirror.python_install == "https://my.gh/astral-sh/python-build-standalone/"
+    assert mirror.uv_binary == "https://my.gh/astral-sh/uv"
+    assert mirror.npm == ""  # the off axis saved nothing
     assert results == [True]
 
 
-async def test_prefs_save_preset_and_explicit_language(tmp_path):
-    """Selecting a preset radio saves that preset verbatim, and a non-"auto" language
-    selection is written to config."""
+async def test_prefs_save_presets_and_explicit_language(tmp_path):
+    """Selecting each axis's preset radio saves that axis's URLs verbatim, and a
+    non-"auto" language selection is written to config."""
     results: list[bool | None] = []
     app = tui.MenuApp()
     async with app.run_test() as pilot:
@@ -245,16 +283,282 @@ async def test_prefs_save_preset_and_explicit_language(tmp_path):
         await pilot.pause()
         screen = app.screen
         assert isinstance(screen, PreferencesScreen)
-        next(
-            iter(screen.query_one("#pf-mirror", RadioSet).query(RadioButton))
-        ).value = True  # tsinghua
+        for row in ("#pf-mirror-pypi", "#pf-mirror-github", "#pf-mirror-npm"):
+            next(iter(screen.query_one(row, RadioSet).query(RadioButton))).value = True
         screen.query_one("#pf-lang", Select).value = "en"
         await pilot.pause()
         screen.action_save()
         await pilot.pause()
-    assert config.load_mirror() == config.preset("tsinghua")
+    assert config.load_mirror() == full_mirror()
     assert config.load_config().get("language") == "en"
     assert results == [True]
+
+
+async def test_prefs_save_single_axis_preset_leaves_others_off(tmp_path):
+    """The regression this design fix exists for, at the TUI level: picking a PyPI vendor
+    configures the PyPI axis and NOTHING else."""
+    results: list[bool | None] = []
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesScreen(), results.append)
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, PreferencesScreen)
+        next(iter(screen.query_one("#pf-mirror-pypi", RadioSet).query(RadioButton))).value = True
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+    m = config.load_mirror()
+    assert m.enabled
+    assert m.pypi == config.PYPI_PRESETS["tsinghua"]
+    assert (m.python_install, m.uv_binary, m.npm) == ("", "", "")
+    assert results == [True]
+
+
+async def test_prefs_paused_config_language_only_save_keeps_mirror_intact(tmp_path):
+    """F1: a paused config (custom pypi URL saved, then master off) opened in Preferences,
+    with ONLY the language changed and saved, leaves the [mirror] block intact — the paused
+    URL survives and enabled stays False (the master row is pre-selected "off")."""
+    config.save_mirror(config.compose(pypi="https://corp.internal/simple"))
+    config.disable()  # now paused: URL kept, enabled False
+    before = config.load_mirror()
+    assert not before.enabled
+    assert before.pypi == "https://corp.internal/simple"
+    results: list[bool | None] = []
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesScreen(), results.append)
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, PreferencesScreen)
+        master = screen.query_one("#pf-mirror-master", RadioSet)
+        assert master.pressed_button is not None
+        assert str(master.pressed_button.label) == "off"  # paused reflects as master "off"
+        screen.query_one("#pf-lang", Select).value = "en"  # change ONLY the language
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+    after = config.load_mirror()
+    assert after == before  # the whole [mirror] block is byte-for-byte untouched
+    assert not after.enabled
+    assert after.pypi == "https://corp.internal/simple"
+    assert config.load_config().get("language") == "en"
+    assert results == [True]
+
+
+async def test_prefs_github_http_save_writes_nothing_not_even_language(tmp_path):
+    """F7: a github custom base that isn't https:// is refused BEFORE any write, so the
+    language and editor edits queued in the same save must not persist (no half-apply)."""
+    results: list[bool | None] = []
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesScreen(), results.append)
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, PreferencesScreen)
+        gh = list(screen.query_one("#pf-mirror-github", RadioSet).query(RadioButton))
+        gh[len(config.GITHUB_RELEASE_PRESETS)].value = True  # github "custom"
+        screen.query_one("#pf-editor", Input).value = "micro"
+        screen.query_one("#pf-lang", Select).value = "en"
+        await pilot.pause()
+        screen.query_one("#pf-github", Input).value = "http://evil/gh"
+        screen.action_save()
+        await pilot.pause()
+        assert isinstance(app.screen, PreferencesScreen)  # not dismissed
+    assert results == []  # blocked
+    assert config.load_editor() == ""  # editor NOT written
+    assert config.load_config().get("language") is None  # language NOT written
+    assert config.load_mirror().enabled is False
+
+
+async def test_prefs_custom_left_empty_blocks_save_with_no_writes(tmp_path):
+    """F8: a custom axis with an empty URL must not silently save as "off" (the radio would
+    then lie). The save shows "A custom choice needs a URL." and writes nothing at all."""
+    results: list[bool | None] = []
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesScreen(), results.append)
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, PreferencesScreen)
+        npm = list(screen.query_one("#pf-mirror-npm", RadioSet).query(RadioButton))
+        npm[len(config.NPM_PRESETS)].value = True  # npm "custom"
+        screen.query_one("#pf-editor", Input).value = "micro"
+        await pilot.pause()
+        # #pf-npm is left empty on purpose.
+        screen.action_save()
+        await pilot.pause()
+        error = str(app.screen.query_one("#pf-mirror-error", Static).render())
+        assert isinstance(app.screen, PreferencesScreen)  # not dismissed
+    assert "A custom choice needs a URL." in error
+    assert "XX" not in error  # an XX-wrapped msgid contains the original as a substring
+    assert results == []
+    assert config.load_editor() == ""  # no half-apply
+    assert config.load_mirror().enabled is False
+
+
+@pytest.mark.parametrize("bad", ["tsinghua", "https://a b/simple"])
+async def test_prefs_custom_non_url_value_blocks_save(tmp_path, bad):
+    """R2-4: the TUI custom inputs share the CLI/wizard is_url_token gate — a vendor-name
+    typo or display prose in a custom URL input blocks the save with the same inline error
+    and writes nothing (it must not persist to surface later as a broken registry)."""
+    results: list[bool | None] = []
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesScreen(), results.append)
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, PreferencesScreen)
+        npm = list(screen.query_one("#pf-mirror-npm", RadioSet).query(RadioButton))
+        npm[len(config.NPM_PRESETS)].value = True  # npm "custom"
+        screen.query_one("#pf-editor", Input).value = "micro"
+        await pilot.pause()
+        screen.query_one("#pf-npm", Input).value = bad
+        screen.action_save()
+        await pilot.pause()
+        error = str(app.screen.query_one("#pf-mirror-error", Static).render())
+        assert isinstance(app.screen, PreferencesScreen)  # not dismissed
+    assert "A custom choice needs a URL." in error
+    assert "XX" not in error  # an XX-wrapped msgid contains the original as a substring
+    assert results == []
+    assert config.load_editor() == ""  # no half-apply
+    assert config.load_mirror().npm == ""  # the typo never landed on disk
+
+
+async def test_prefs_github_base_with_whitespace_blocks_save(tmp_path):
+    """R3-1: the github base input shares the SAME is_url_token gate as the CLI and wizard
+    — an https:// base with a space would pass the https check, persist, and blow up much
+    later inside the uv bootstrap. It must be refused inline with nothing written."""
+    results: list[bool | None] = []
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesScreen(), results.append)
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, PreferencesScreen)
+        gh = list(screen.query_one("#pf-mirror-github", RadioSet).query(RadioButton))
+        gh[len(config.GITHUB_RELEASE_PRESETS)].value = True  # github "custom"
+        screen.query_one("#pf-editor", Input).value = "micro"
+        await pilot.pause()
+        screen.query_one("#pf-github", Input).value = "https://my mirror/gh"
+        screen.action_save()
+        await pilot.pause()
+        error = str(app.screen.query_one("#pf-mirror-error", Static).render())
+        assert isinstance(app.screen, PreferencesScreen)  # not dismissed
+    assert "A custom choice needs a URL." in error
+    assert "XX" not in error
+    assert results == []
+    assert config.load_editor() == ""  # no half-apply
+    assert config.load_mirror().uv_binary == ""  # the garbage base never expanded to disk
+
+
+async def test_prefs_underivable_github_pair_survives_a_language_only_save(tmp_path):
+    """R2-1: a hand-edited github pair no base derives prefills the base input EMPTY (there
+    is no base to show). An untouched save — e.g. changing only the language — must pass the
+    stored pair through as-is instead of refusing the whole form over an axis the user never
+    touched."""
+    config.save_mirror(
+        config.compose(python_install="https://weird/pbs/", uv_binary="https://other/uv")
+    )
+    before = config.load_mirror()
+    results: list[bool | None] = []
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesScreen(), results.append)
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, PreferencesScreen)
+        # The underivable pair reads "custom" with an empty base prefill.
+        gh_rs = screen.query_one("#pf-mirror-github", RadioSet)
+        assert gh_rs.pressed_index == len(config.GITHUB_RELEASE_PRESETS)  # "custom"
+        assert screen.query_one("#pf-github", Input).value == ""
+        screen.query_one("#pf-lang", Select).value = "en"  # change ONLY the language
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+    after = config.load_mirror()
+    assert after == before  # the pair passed through byte-for-byte, still enabled
+    assert after.python_install == "https://weird/pbs/"
+    assert after.uv_binary == "https://other/uv"
+    assert config.load_config().get("language") == "en"  # and the save DID land
+    assert results == [True]
+
+
+async def test_prefs_half_set_github_pair_also_passes_through(tmp_path):
+    """R2-1 (edge): a HALF-set hand-edited pair (only one github vector stored) is just as
+    underivable — each half stands alone in the passthrough guard (an or, never an and), so
+    a language-only save preserves it too."""
+    config.save_mirror(config.compose(python_install="https://weird/pbs/"))
+    before = config.load_mirror()
+    results: list[bool | None] = []
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesScreen(), results.append)
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, PreferencesScreen)
+        screen.query_one("#pf-lang", Select).value = "en"  # change ONLY the language
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+    after = config.load_mirror()
+    assert after == before  # the half-pair survived the save
+    assert after.python_install == "https://weird/pbs/"
+    assert after.uv_binary == ""
+    assert results == [True]
+
+
+async def test_prefs_derivable_base_cleared_still_blocks_save(tmp_path):
+    """R2-1 (guard): the passthrough is ONLY for underivable pairs. When the stored pair
+    derives from a base (the input prefills it), clearing that input is a real user action
+    and must error out, not silently pass the old pair through."""
+    python_install, uv_binary = config.github_release_urls("https://my.gh")
+    config.save_mirror(config.compose(python_install=python_install, uv_binary=uv_binary))
+    before = config.load_mirror()
+    results: list[bool | None] = []
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesScreen(), results.append)
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, PreferencesScreen)
+        base_input = screen.query_one("#pf-github", Input)
+        assert base_input.value == "https://my.gh"  # derivable pair prefills its base
+        screen.query_one("#pf-lang", Select).value = "en"
+        await pilot.pause()
+        base_input.value = ""  # the user explicitly clears the base
+        screen.action_save()
+        await pilot.pause()
+        error = str(app.screen.query_one("#pf-mirror-error", Static).render())
+        assert isinstance(app.screen, PreferencesScreen)  # not dismissed
+    assert "A custom choice needs a URL." in error
+    assert "XX" not in error  # an XX-wrapped msgid contains the original as a substring
+    assert results == []
+    assert config.load_mirror() == before  # disk untouched
+    assert config.load_config().get("language") is None  # the language write was refused too
+
+
+async def test_prefs_github_custom_empty_base_blocks_save(tmp_path):
+    """The github axis's own empty-custom guard: custom selected with the base left empty
+    hits 'A custom choice needs a URL.' too, and nothing is saved."""
+    results: list[bool | None] = []
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesScreen(), results.append)
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, PreferencesScreen)
+        gh = list(screen.query_one("#pf-mirror-github", RadioSet).query(RadioButton))
+        gh[len(config.GITHUB_RELEASE_PRESETS)].value = True  # github "custom", base left empty
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+        error = str(app.screen.query_one("#pf-mirror-error", Static).render())
+        assert isinstance(app.screen, PreferencesScreen)  # not dismissed
+    assert "A custom choice needs a URL." in error
+    assert "XX" not in error  # an XX-wrapped msgid contains the original as a substring
+    assert results == []
+    assert config.load_mirror().enabled is False
 
 
 async def test_prefs_close_dismisses_false(tmp_path):
@@ -290,7 +594,7 @@ async def test_health_uv_missing_shows_install_hint(tmp_path, monkeypatch):
 
 async def test_health_lists_drift_issue_and_mirror_on(tmp_path):
     """A drifted python entry becomes one selectable issue (command entries are skipped),
-    and an enabled mirror renders its "on" line with the index URL."""
+    and an enabled mirror renders the per-axis summary line."""
     slug = _rich_health_setup(tmp_path)
     app = tui.MenuApp()
     async with app.run_test() as pilot:
@@ -298,8 +602,9 @@ async def test_health_lists_drift_issue_and_mirror_on(tmp_path):
         await pilot.pause()
         text = _screen_text(app.screen)
         assert "Issues (Enter jumps to the script):" in text
-        assert "Mirror: on" in text
-        assert "pypi.tuna.tsinghua.edu.cn" in text
+        assert "Mirrors: pypi=tsinghua" in text
+        assert "github=nju" in text
+        assert "npm=npmmirror" in text
         issues = app.screen.query_one("#hc-issues", OptionList)
         assert issues.option_count == 1  # only the drifted python entry, not the command
         option = issues.get_option_at_index(0)
