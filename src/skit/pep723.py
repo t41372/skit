@@ -111,7 +111,15 @@ def suggest_dependencies(text: str) -> list[str]:
     third_party = (m for m in found if m not in stdlib and not m.startswith("_"))
     # Map known import names to their real PyPI distribution names, then dedupe again in case two
     # imports collapse to the same package (e.g. `Crypto` and its submodules -> pycryptodome).
-    return sorted({_IMPORT_TO_PACKAGE.get(m, m) for m in third_party})
+    # A name PEP 508 refuses (`import café` — a legal Python identifier, an illegal
+    # distribution name) is not a suggestion: the non-interactive add accepts
+    # suggestions as-is, and validate-then-write applies to skit's own fabrications
+    # hardest of all.
+    return sorted(
+        n
+        for n in {_IMPORT_TO_PACKAGE.get(m, m) for m in third_party}
+        if requirement_error(n) is None
+    )
 
 
 def _next_nonspace(text: str, pos: int) -> str:

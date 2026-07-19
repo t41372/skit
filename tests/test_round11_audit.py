@@ -212,12 +212,17 @@ def test_kind_exe_on_a_kept_draft_is_refused_and_keeps_it(tmp_path):
 
 def test_inferred_exe_on_a_kept_draft_is_refused_and_keeps_it(tmp_path):
     """A hand-planted +x bit on an extensionless draft INFERS exe — the widened guard
-    covers the inferred route just like the explicit flags (no smuggling one past)."""
+    covers the inferred route just like the explicit flags (no smuggling one past). The
+    INFERRED route (the user passed no flag) gets the --kind message, not the Drop-flags
+    one: there is no flag to drop, so it points at the escape a draft can actually take."""
     draft = _draft("skit-new-binish", "opaque program bytes\n")
     os.chmod(draft, 0o755)  # noqa: S103 — POSIX infer_kind classifies +x as exe
     result = runner.invoke(cli.app, ["add", str(draft), "-n", "b1", "--no-input"])
     assert result.exit_code == 2, result.output
-    assert _DRAFT_DROP in _flat(result.output)
+    flat = _flat(result.output)
+    assert _DRAFT_HEAD in flat  # still names the drafts boundary
+    assert "pass --kind <language> to name its language" in flat  # the inferred-route variant
+    assert _DRAFT_DROP not in flat  # NOT the flag-route message — nothing was passed to drop
     assert draft.exists()
     with pytest.raises(store.NotFoundError):
         store.resolve("b1")

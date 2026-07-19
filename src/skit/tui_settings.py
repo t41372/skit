@@ -817,7 +817,7 @@ class ScriptSettingsScreen(Screen[bool]):
             self._resync_report = gettext("Everything still matches the script.")
         self.refresh(recompose=True)
 
-    def action_save(self) -> None:  # noqa: PLR0912, PLR0915 — one atomic save across every section
+    def action_save(self) -> None:  # noqa: PLR0911, PLR0912, PLR0915 — one atomic save across every section
         """VALIDATE EVERYTHING FIRST, write only after every check passes: a refusal
         that lands after earlier sections were persisted makes both the Esc guard's
         "unsaved changes" and this method's own "nothing saved half-way" a lie (the
@@ -841,6 +841,36 @@ class ScriptSettingsScreen(Screen[bool]):
             pending_decls = self._collect_declared()
             if pending_decls is None:
                 return  # a row is invalid; nothing was written
+        pending_deps: tuple[list[str], str | None] | None = None
+        if self._deps_editable():
+            raw_deps = self.query_one("#st-deps", Input).value
+            if self._spec is not None and self._spec.deps_flavor == "uv":
+                deps = pep723.split_requirements(raw_deps)
+                python: str | None = self.query_one("#st-python", Input).value.strip()
+                if python and python.lower() in ("-", "none"):
+                    # The add ask's token for "automatic", honored on this intake too.
+                    python = ""
+                # Validate HERE, in the validation pass — the store chokepoint would
+                # refuse too, but only after rename/description/params had already
+                # persisted, breaking this screen's own write-nothing-on-invalid
+                # contract. Same validators as every other uv intake.
+                for d in deps:
+                    if (error := pep723.requirement_error(d)) is not None:
+                        self.notify(error, severity="error")
+                        return  # invalid requirement; nothing was written
+                if python and (error := pep723.requires_python_error(python)) is not None:
+                    self.notify(error, severity="error")
+                    return  # invalid constraint; nothing was written
+            else:
+                # npm-shaped split — the PEP 508 splitter would merge a scoped package into
+                # its neighbor ("chalk, @scope/pkg" -> one bogus requirement). No Python
+                # constraint either (and no #st-python widget to read), and no PEP 508
+                # validation: npm grammar belongs to the npm installer.
+                from .langs.javascript import deps as js_deps
+
+                deps = js_deps.split_requirements(raw_deps)
+                python = None
+            pending_deps = (deps, python)
         # ---- write pass ----
         if new_name and new_name != entry.meta.name:
             try:
@@ -900,19 +930,8 @@ class ScriptSettingsScreen(Screen[bool]):
                     gettext("Deleted previously remembered value(s): %(names)s")
                     % {"names": ", ".join(sorted(purged))}
                 )
-        if self._deps_editable():
-            raw_deps = self.query_one("#st-deps", Input).value
-            if self._spec is not None and self._spec.deps_flavor == "uv":
-                deps = pep723.split_requirements(raw_deps)
-                python = self.query_one("#st-python", Input).value.strip()
-            else:
-                # npm-shaped split — the PEP 508 splitter would merge a scoped package into
-                # its neighbor ("chalk, @scope/pkg" -> one bogus requirement). No Python
-                # constraint either (and no #st-python widget to read).
-                from .langs.javascript import deps as js_deps
-
-                deps = js_deps.split_requirements(raw_deps)
-                python = None
+        if pending_deps is not None:
+            deps, python = pending_deps
             if deps != (entry.meta.dependencies or []) or (
                 python is not None and python != entry.meta.requires_python
             ):

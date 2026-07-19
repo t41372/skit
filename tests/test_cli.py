@@ -1257,19 +1257,23 @@ def test_validate_preset_unknown_escapes_markup(tmp_path):
 
 
 def test_deps_view_escapes_markup(tmp_path):
+    # A dependency that is BOTH a valid PEP 508 requirement (extras syntax) and rich
+    # markup (`[bold]` is a style tag): the store now validates deps, so the fake must
+    # parse — but `demo[bold]` still exercises the escape (unescaped, rich would eat the
+    # `[bold]` tag and the literal brackets would vanish from the view).
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
-    runner.invoke(cli.app, ["deps", "a", "--dep", "[red]pkg[/red]", "--python", "[b]>=3[/b]"])
+    result = runner.invoke(cli.app, ["deps", "a", "--dep", "demo[bold]"])
+    assert result.exit_code == 0, result.output
     result = runner.invoke(cli.app, ["deps", "a"])
     assert result.exit_code == 0
-    assert "[red]pkg[/red]" in result.output
-    assert "[b]>=3[/b]" in result.output
+    assert "demo[bold]" in result.output  # brackets survive → the view escaped the markup
 
 
 def test_deps_set_summary_escapes_markup(tmp_path):
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
-    result = runner.invoke(cli.app, ["deps", "a", "--dep", "[red]pkg[/red]"])
+    result = runner.invoke(cli.app, ["deps", "a", "--dep", "demo[bold]"])
     assert result.exit_code == 0
-    assert "[red]pkg[/red]" in result.output
+    assert "demo[bold]" in result.output
 
 
 def test_doctor_rebuild_problem_line_escapes_markup(monkeypatch, tmp_path):

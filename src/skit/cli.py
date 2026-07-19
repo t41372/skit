@@ -1517,6 +1517,7 @@ def add(
             resolved = Path(path).expanduser().resolve()
             from .paths import is_draft
 
+            flag_kind = kind  # the --kind value as typed, before inference overwrites it
             if prompt_kind:
                 kind = "prompt"  # --prompt forces the kind outright (mirrors --exe)
             elif kind is not None:
@@ -1528,6 +1529,33 @@ def add(
                     raise typer.Exit(EXIT_USAGE)
             else:
                 kind = _infer_add_kind(resolved, exe)
+            if is_draft(resolved) and (ref or kind == "exe"):
+                # ONE guard, BEFORE any interactive ask (a refusal must not follow
+                # answered questions) and after "exe" is decided — the .md ask below
+                # can only produce "prompt", never "exe". It covers every route to
+                # the two storage shapes the drafts boundary forbids: --ref, --exe,
+                # --kind exe, and an INFERRED exe alike. A reference (and an exe
+                # entry, which is reference-by-construction — the store holds
+                # nothing) pointing into drafts/ would leave a live entry's script
+                # listed as a resumable draft and offered for deletion as "the only
+                # copy". The message matches the route: flags are told to drop the
+                # flags; an inferred program (a hand-planted executable bit — the
+                # user passed nothing) is pointed at the --kind escape instead.
+                message = (
+                    gettext(
+                        "%(file)s is one of skit's own kept drafts — a resumed draft "
+                        "is always added as a copy (and consumed on success), which a "
+                        "reference or program entry can't be. Drop --ref/--exe."
+                    )
+                    if ref or exe or flag_kind == "exe"
+                    else gettext(
+                        "%(file)s is one of skit's own kept drafts, and a draft is "
+                        "always added as a script or prompt copy — pass --kind "
+                        "<language> to name its language."
+                    )
+                )
+                err_console.print("[red]" + message % {"file": escape(resolved.name)} + _RED_CLOSE)
+                raise typer.Exit(EXIT_USAGE)
             # A bare .md is too ambiguous to claim outright, and too likely a prompt
             # to refuse outright: interactively, ask; under --no-input/pipe, an
             # explicit --prompt is required — never a guess.
@@ -1547,24 +1575,6 @@ def add(
                 else:
                     console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
                     raise typer.Exit(EXIT_CANCELLED)
-            if is_draft(resolved) and (ref or kind == "exe"):
-                # ONE guard, after the kind is final, covering every route to the two
-                # storage shapes the drafts boundary forbids: --ref, --exe, --kind
-                # exe, and an INFERRED exe alike. A reference (and an exe entry,
-                # which is reference-by-construction — the store holds nothing)
-                # pointing into drafts/ would leave a live entry's script listed as
-                # a resumable draft and offered for deletion as "the only copy".
-                err_console.print(
-                    "[red]"
-                    + gettext(
-                        "%(file)s is one of skit's own kept drafts — a resumed draft "
-                        "is always added as a copy (and consumed on success), which a "
-                        "reference or program entry can't be. Drop --ref/--exe."
-                    )
-                    % {"file": escape(resolved.name)}
-                    + _RED_CLOSE
-                )
-                raise typer.Exit(EXIT_USAGE)
             kind_spec = spec_for(kind)
             _refuse_unusable_add_flags(kind, kind_spec, ref, dep, python)
             if runner is not None and kind != "prompt":
@@ -1621,6 +1631,20 @@ def add(
                         )
                     )
                     err_console.print("[red]" + hint % {"file": escape(resolved.name)} + _RED_CLOSE)
+                elif is_draft(resolved):
+                    # The shebang-less twin of the draft variant above: no --exe (the
+                    # drafts boundary refuses it) and no --cmd (a template needs no
+                    # file) — only the escapes a draft can actually take.
+                    err_console.print(
+                        "[red]"
+                        + gettext(
+                            "%(file)s is a kept draft skit can't classify — pass "
+                            "--kind <language> to add it as a script, or --prompt "
+                            "for an AI-agent prompt."
+                        )
+                        % {"file": escape(resolved.name)}
+                        + _RED_CLOSE
+                    )
                 else:
                     err_console.print(
                         f"[red]{gettext("%(file)s isn't a script or an executable — pass --kind <language> for an extensionless script, --prompt for an AI-agent prompt, --exe for a program, or --cmd for a command template.") % {'file': escape(resolved.name)}}[/red]"

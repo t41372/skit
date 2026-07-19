@@ -667,6 +667,23 @@ def remove(name_or_slug: str) -> str:
     return entry.meta.name
 
 
+def _validate_uv_metadata(
+    spec: registry.LangSpec | None, dependencies: list[str], requires_python: str | None
+) -> None:
+    """Validate-then-write at the ONE chokepoint every editing surface calls (`skit
+    add`'s intakes validate earlier for their own refusal timing; `skit deps` and the
+    settings screen land here): an unparseable requirement or constraint written into
+    meta / the PEP 723 block bricks every subsequent run with uv's raw error. npm
+    grammar belongs to the npm installer, so npm-flavor entries are not routed here."""
+    if spec is not None and spec.deps_flavor == "npm":
+        return
+    for d in dependencies:
+        if d.strip() and (error := pep723.requirement_error(d.strip())) is not None:
+            raise StoreUsageError(error)
+    if requires_python and (error := pep723.requires_python_error(requires_python)) is not None:
+        raise StoreUsageError(error)
+
+
 def update_dependencies(
     name_or_slug: str,
     dependencies: list[str],
@@ -681,6 +698,12 @@ def update_dependencies(
     entry = resolve(name_or_slug)
     meta = entry.meta
     spec = registry.spec_for(meta.kind)
+    if requires_python is not None and requires_python.strip().lower() in ("-", "none"):
+        # The add ask's own token for "automatic", honored on EVERY intake that can
+        # carry a constraint — a literal "-" is no PEP 440 specifier and would brick
+        # the entry it was meant to unpin.
+        requires_python = ""
+    _validate_uv_metadata(spec, dependencies, requires_python)
     if spec is not None and spec.deps_flavor == "npm":
         if requires_python:
             raise StoreUsageError(
@@ -716,8 +739,6 @@ def update_dependencies(
         meta.requires_python = (requires_python or "").strip()
     _write_meta(entry.dir, meta)
     if meta.kind == "python" and meta.mode == "copy":  # pragma: no mutate — and/or equivalent
-        from . import pep723
-
         script = entry.script_path
         if script.exists():
             text = script.read_text(encoding="utf-8", errors="replace")

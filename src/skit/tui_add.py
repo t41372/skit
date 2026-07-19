@@ -40,6 +40,7 @@ from . import (
 from .i18n import gettext, ngettext
 from .langs.prompt import analyzer as prompt_analyzer
 from .params import ParamDecl, is_secret_name
+from .paths import is_draft
 
 # How many kept drafts the add screen lists at once; anything past the cap is counted
 # out loud by the overflow line, never silently hidden.
@@ -312,8 +313,6 @@ class AddSourceScreen(Screen[str | None]):
             # file, and a .md that is neither script nor executable is a prompt in all
             # but name — say so instead of dead-ending (mirrors issue #10's direction).
             kind = "prompt"
-
-        from .paths import is_draft
 
         # A kept draft is skit's own artifact destined for consumption: resuming it is
         # fresh authoring (fresh=True — no "Link the original" ask). A reference entry
@@ -641,8 +640,11 @@ class AddReviewScreen(Screen[str | None]):
         self._kind: str = kind
         # A freshly-drafted temp file has no original to link — the storage section is
         # skipped and accept always copies (the CLI refuses --ref there for the same
-        # reason).
-        self._fresh: bool = fresh
+        # reason). DERIVED, never only trusted from the caller: a kept draft opened
+        # through ANY face (the CLI-hosted panel included) must not offer "Link the
+        # original" — the radio was a fourth route to a reference entry pointing
+        # into drafts/, committed by the one face that didn't pass the flag.
+        self._fresh: bool = fresh or is_draft(path)
         from .langs.registry import spec_for
 
         self._spec = spec_for(kind)
@@ -1114,10 +1116,12 @@ class PromptReviewScreen(Screen[str | None]):
         """The keyword arguments prefill the panel (the CLI face passes `skit add`'s
         flags through them); everything stays editable on screen. fresh=True is the
         drafted-in-$EDITOR lane: a temp file with no original to link, so the storage
-        section is skipped and accept always copies."""
+        section is skipped and accept always copies. Like AddReviewScreen, fresh is
+        DERIVED for kept drafts — no face may offer "Link the original" on a file
+        the success path consumes."""
         super().__init__()
         self._path: Path = path
-        self._fresh: bool = fresh
+        self._fresh: bool = fresh or is_draft(path)
         self._text: str = path.read_text(encoding="utf-8", errors="replace")
         self._detected: list[str] = prompt_analyzer.placeholder_names(self._text)
         self._runner_names: list[str] = []
