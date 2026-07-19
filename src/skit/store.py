@@ -220,6 +220,12 @@ def add_python(
     source = source.expanduser().resolve()
     if not source.is_file():
         raise StoreError(gettext("File not found: %(path)s") % {"path": str(source)})
+    # The chokepoint belt (update_dependencies' rule, applied to the add-time writer
+    # too): strip-and-drop empty entries, then refuse anything unparseable before a
+    # block is built. Every shipped intake validates earlier — this line is what a
+    # future caller can't forget.
+    dependencies = [d.strip() for d in dependencies if d.strip()] if dependencies else None
+    _validate_uv_metadata(registry.spec_for("python"), dependencies or [], requires_python)
     text = source.read_text(encoding="utf-8", errors="replace")
     final_name = name or source.stem
     desc = description if description is not None else _extract_description(text)
@@ -678,7 +684,7 @@ def _validate_uv_metadata(
     if spec is not None and spec.deps_flavor == "npm":
         return
     for d in dependencies:
-        if d.strip() and (error := pep723.requirement_error(d.strip())) is not None:
+        if (error := pep723.requirement_error(d)) is not None:
             raise StoreUsageError(error)
     if requires_python and (error := pep723.requires_python_error(requires_python)) is not None:
         raise StoreUsageError(error)
@@ -698,10 +704,21 @@ def update_dependencies(
     entry = resolve(name_or_slug)
     meta = entry.meta
     spec = registry.spec_for(meta.kind)
-    if requires_python is not None and requires_python.strip().lower() in ("-", "none"):
-        # The add ask's own token for "automatic", honored on EVERY intake that can
-        # carry a constraint — a literal "-" is no PEP 440 specifier and would brick
-        # the entry it was meant to unpin.
+    # Strip-and-drop empty entries BEFORE validating or writing: a whitespace-only
+    # requirement is "nothing", not an error — and written verbatim it would brick
+    # every run with uv's raw "Empty field" error (every shipped caller filters
+    # already; the chokepoint must not rely on that).
+    dependencies = [d.strip() for d in dependencies if d.strip()]
+    uv_flavor = spec is None or spec.deps_flavor != "npm"
+    if (
+        uv_flavor
+        and requires_python is not None
+        and requires_python.strip().lower() in ("-", "none")
+    ):
+        # The add ask's own token for "automatic" — but only where a constraint can
+        # exist at all: on an npm entry EVERY --python spelling is inapplicable, and
+        # normalizing '-' first would make acceptance value-dependent (the refusal
+        # says the flag "doesn't apply"; it must not apply for some spellings only).
         requires_python = ""
     _validate_uv_metadata(spec, dependencies, requires_python)
     if spec is not None and spec.deps_flavor == "npm":

@@ -1538,23 +1538,36 @@ def add(
                 # entry, which is reference-by-construction — the store holds
                 # nothing) pointing into drafts/ would leave a live entry's script
                 # listed as a resumable draft and offered for deletion as "the only
-                # copy". The message matches the route: flags are told to drop the
-                # flags; an inferred program (a hand-planted executable bit — the
-                # user passed nothing) is pointed at the --kind escape instead.
+                # copy". The message matches the route AND names only what was
+                # actually typed: a refusal that commands dropping flags the user
+                # never passed is its own small lie. An inferred program (a
+                # hand-planted executable bit — the user passed nothing) is pointed
+                # at the --kind escape instead.
+                passed = [
+                    flag
+                    for flag, present in (
+                        ("--ref", ref),
+                        ("--exe", exe),
+                        ("--kind exe", flag_kind == "exe"),
+                    )
+                    if present
+                ]
                 message = (
                     gettext(
                         "%(file)s is one of skit's own kept drafts — a resumed draft "
                         "is always added as a copy (and consumed on success), which a "
-                        "reference or program entry can't be. Drop --ref/--exe."
+                        "reference or program entry can't be. Drop %(flags)s."
                     )
-                    if ref or exe or flag_kind == "exe"
+                    % {"file": escape(resolved.name), "flags": "/".join(passed)}
+                    if passed
                     else gettext(
                         "%(file)s is one of skit's own kept drafts, and a draft is "
                         "always added as a script or prompt copy — pass --kind "
                         "<language> to name its language."
                     )
+                    % {"file": escape(resolved.name)}
                 )
-                err_console.print("[red]" + message % {"file": escape(resolved.name)} + _RED_CLOSE)
+                err_console.print("[red]" + message + _RED_CLOSE)
                 raise typer.Exit(EXIT_USAGE)
             # A bare .md is too ambiguous to claim outright, and too likely a prompt
             # to refuse outright: interactively, ask; under --no-input/pipe, an
@@ -4079,9 +4092,16 @@ def deps(
         except store.StoreError as exc:
             raise _fail(str(exc), 1) from exc
         if not as_json:
-            console.print(
-                f"[green]{gettext('Dependencies of %(name)s updated: %(deps)s') % {'name': escape(entry.meta.name), 'deps': ', '.join(escape(d) for d in new_deps) or '—'}}[/green]"
-            )
+            if dep is None and not clear and python is not None:
+                # Only --python was given: saying "Dependencies updated" would
+                # describe an edit that didn't happen.
+                console.print(
+                    f"[green]{gettext('Python constraint of %(name)s updated: %(value)s') % {'name': escape(entry.meta.name), 'value': escape(entry.meta.requires_python) or '—'}}[/green]"
+                )
+            else:
+                console.print(
+                    f"[green]{gettext('Dependencies of %(name)s updated: %(deps)s') % {'name': escape(entry.meta.name), 'deps': ', '.join(escape(d) for d in new_deps) or '—'}}[/green]"
+                )
     if needs_requested:
         # Drop empty/whitespace values, mirroring the --dep path: an empty command name is junk in
         # the --json contract AND bricks the entry — `shutil.which("")` is None, so every run then

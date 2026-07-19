@@ -4,9 +4,10 @@ filesystem state, stored PEP 723 text, the two lazy `packaging` validators in is
 Every assertion pins an observable contract of the round-11 (round-10 finding) fixes:
 
   * exe entries can never cross the drafts boundary: --exe / --kind exe / --ref / an
-    INFERRED exe on skit's OWN kept draft is refused (exit 2, the widened message naming
-    Drop --ref/--exe, the draft kept, no entry) — a program entry is reference-by-construction
-    and the store would hold nothing;
+    INFERRED exe on skit's OWN kept draft is refused (exit 2, the message naming ONLY the
+    flags actually passed — "Drop --exe." / "Drop --ref." / "Drop --kind exe." — the draft
+    kept, no entry) — a program entry is reference-by-construction and the store would hold
+    nothing;
   * --dep / --python are validated (PEP 440/508 via `packaging`) at the intake, BEFORE the
     pipe is read or the editor opens or a draft materializes — validate-then-write, so an
     unparseable value never bricks a future run and never costs an authoring session; and
@@ -184,27 +185,36 @@ def test_interactive_valid_deps_accepted_first_try(tty, monkeypatch):
 # ==========================================================================
 
 _DRAFT_HEAD = "one of skit's own kept drafts"
-_DRAFT_DROP = "Drop --ref/--exe"
 
 
-def test_exe_flag_on_a_kept_draft_is_refused_and_keeps_it(tmp_path):
+def test_exe_flag_on_a_kept_draft_is_refused_naming_only_exe(tmp_path):
+    """--exe alone → the refusal tells the user to drop --exe and NOTHING else: naming a flag
+    the user never passed (--ref) would be its own small lie. The honest-naming rule is the
+    point, so the other flag names must be absent."""
     draft = _draft("skit-new-prog.py", "print('run me')\n")
     assert is_draft(draft)
     result = runner.invoke(cli.app, ["add", str(draft), "-n", "p1", "--exe", "--no-input"])
     assert result.exit_code == 2, result.output
     flat = _flat(result.output)
     assert _DRAFT_HEAD in flat
-    assert _DRAFT_DROP in flat
+    assert "Drop --exe." in flat
+    assert "--ref" not in flat  # never passed — never named
+    assert "--kind" not in flat
     assert draft.exists()  # a refused add consumes nothing
     with pytest.raises(store.NotFoundError):
         store.resolve("p1")
 
 
-def test_kind_exe_on_a_kept_draft_is_refused_and_keeps_it(tmp_path):
+def test_kind_exe_on_a_kept_draft_is_refused_naming_only_kind_exe(tmp_path):
+    """--kind exe alone → the refusal names only "--kind exe"; --ref and --exe (neither passed)
+    stay out of the message."""
     draft = _draft("skit-new-prog2.py", "print('run me')\n")
     result = runner.invoke(cli.app, ["add", str(draft), "-n", "p2", "--kind", "exe", "--no-input"])
     assert result.exit_code == 2, result.output
-    assert _DRAFT_DROP in _flat(result.output)
+    flat = _flat(result.output)
+    assert "Drop --kind exe." in flat
+    assert "--ref" not in flat  # never passed — never named
+    assert "--exe" not in flat  # "--kind exe" is not the "--exe" flag literal
     assert draft.exists()
     with pytest.raises(store.NotFoundError):
         store.resolve("p2")
@@ -222,21 +232,23 @@ def test_inferred_exe_on_a_kept_draft_is_refused_and_keeps_it(tmp_path):
     flat = _flat(result.output)
     assert _DRAFT_HEAD in flat  # still names the drafts boundary
     assert "pass --kind <language> to name its language" in flat  # the inferred-route variant
-    assert _DRAFT_DROP not in flat  # NOT the flag-route message — nothing was passed to drop
+    assert "Drop" not in flat  # NOT the flag-route message — nothing was passed to drop
     assert draft.exists()
     with pytest.raises(store.NotFoundError):
         store.resolve("b1")
 
 
-def test_ref_flag_on_a_kept_draft_still_refused_with_the_widened_message(tmp_path):
-    """--ref keeps refusing (the round-8→10 contract), now under the widened message that
-    also names --exe."""
+def test_ref_flag_on_a_kept_draft_is_refused_naming_only_ref(tmp_path):
+    """--ref alone keeps refusing (the round-8→10 contract), now naming ONLY --ref — --exe
+    (never passed) stays out of the message."""
     draft = _draft("skit-new-linkme.py", "print('link me')\n")
     result = runner.invoke(cli.app, ["add", str(draft), "-n", "lk", "--ref", "--no-input"])
     assert result.exit_code == 2, result.output
     flat = _flat(result.output)
     assert _DRAFT_HEAD in flat
-    assert _DRAFT_DROP in flat
+    assert "Drop --ref." in flat
+    assert "--exe" not in flat  # never passed — never named
+    assert "--kind" not in flat
     assert draft.exists()
 
 

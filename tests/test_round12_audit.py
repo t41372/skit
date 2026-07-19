@@ -179,13 +179,31 @@ def test_update_dependencies_uv_invalid_python_raises_usage_error(tmp_path):
     assert "isn't a Python version constraint" in str(exc.value)
 
 
-def test_update_dependencies_skips_empty_dep_strings_at_the_validator(tmp_path):
-    """The validator guards on `d.strip()`: a whitespace-only entry is skipped (not routed to
-    requirement_error), so a valid neighbour still commits. Kills the mutant that drops the
-    empty-skip guard (which would raise on the "" entry)."""
+def test_update_dependencies_drops_a_whitespace_only_dep_at_the_chokepoint(tmp_path):
+    """The chokepoint strip-and-drops empty entries BEFORE validating or writing: a
+    whitespace-only requirement is "nothing", never recorded — the valid neighbour commits
+    alone. Exact-equality pins the DROP (a tolerated "  " would leave a 2-element list and,
+    written verbatim, brick every run with uv's raw "Empty field" error); and it never reaches
+    the block either. Without the strip-and-drop the "  " would instead reach requirement_error
+    and RAISE, so a clean commit is itself the proof."""
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     entry = store.update_dependencies("a", ["  ", "requests"])
-    assert "requests" in (entry.meta.dependencies or [])
+    assert entry.meta.dependencies == ["requests"]  # dropped, not tolerated
+    block = _stored_block("a")
+    assert "requests" in block
+    assert '"  "' not in block  # the whitespace entry never reached the PEP 723 block
+
+
+def test_update_dependencies_all_whitespace_list_clears_deps(tmp_path):
+    """The degenerate case: a list of nothing-but-whitespace strip-and-drops to empty, which
+    clears the record — meta.dependencies back to None and the block's dependencies emptied."""
+    store.add_python(_py(tmp_path, "print(1)\n"), name="a")
+    store.update_dependencies("a", ["requests"])
+    entry = store.update_dependencies("a", ["   ", "\t"])
+    assert entry.meta.dependencies is None  # cleared
+    block = _stored_block("a")
+    assert "dependencies = []" in block
+    assert "requests" not in block
 
 
 def test_update_dependencies_npm_flavor_skips_uv_validation(tmp_path):
@@ -239,7 +257,7 @@ _DRAFT_HEAD = "one of skit's own kept drafts"
 
 def test_inferred_exe_draft_gets_the_kind_variant(tmp_path):
     """A hand-planted +x on an extensionless draft INFERS exe with no flag passed — the refusal
-    points at --kind (there is nothing to drop), not the Drop --ref/--exe message."""
+    points at --kind (there is nothing to drop), not the flag-drop message."""
     draft = _draft("skit-new-binish", "opaque program bytes\n")
     os.chmod(draft, 0o755)  # noqa: S103 — POSIX infer_kind classifies +x as exe
     assert is_draft(draft)
@@ -248,18 +266,21 @@ def test_inferred_exe_draft_gets_the_kind_variant(tmp_path):
     flat = _flat(result.output)
     assert _DRAFT_HEAD in flat
     assert "pass --kind <language> to name its language" in flat
-    assert "Drop --ref/--exe" not in flat  # not the flag-route message
+    assert "Drop" not in flat  # not the flag-route message — nothing was passed to drop
     assert draft.exists()  # a refused add consumes nothing
 
 
-def test_exe_flag_on_the_same_draft_gets_the_drop_variant(tmp_path):
+def test_exe_flag_on_the_same_draft_gets_the_drop_variant_naming_only_exe(tmp_path):
     """The flag route on the same kind of file: --exe WAS passed, so the message tells the user
-    to drop it (the other branch of the message conditional)."""
+    to drop it (the other branch of the message conditional) — and names ONLY --exe, since that
+    is the only flag passed."""
     draft = _draft("skit-new-binish2", "opaque program bytes\n")
     result = runner.invoke(cli.app, ["add", str(draft), "-n", "b2", "--exe", "--no-input"])
     assert result.exit_code == 2, result.output
     flat = _flat(result.output)
-    assert "Drop --ref/--exe" in flat
+    assert "Drop --exe." in flat
+    assert "--ref" not in flat  # never passed — never named
+    assert "--kind" not in flat
     assert "to name its language" not in flat  # not the inferred-route message
     assert draft.exists()
 
@@ -315,5 +336,6 @@ def test_ref_on_an_md_draft_is_refused_before_the_prompt_ask(monkeypatch):
     assert result.exit_code == 2, result.output
     flat = _flat(result.output)
     assert _DRAFT_HEAD in flat
-    assert "Drop --ref/--exe" in flat
+    assert "Drop --ref." in flat  # only --ref was passed — only --ref is named
+    assert "--exe" not in flat
     assert draft.exists()  # nothing consumed
