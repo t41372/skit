@@ -491,7 +491,13 @@ class MenuApp(App[int | PendingRun]):
         return drift
 
     def _refresh_detail(self) -> None:
-        body = self.query_one("#detail-body", Static)
+        # A queued RowHighlighted can reach this after the detail pane is gone — a
+        # layout tier that drops it, or teardown mid-transition — so no-op instead of
+        # letting NoMatches escape the event handler and crash the app.
+        detail = self.query("#detail-body")
+        if not detail:
+            return
+        body = detail.first(Static)
         entry = self._selected()
         if entry is None:
             if not self._entries:

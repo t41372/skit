@@ -367,6 +367,20 @@ async def test_edit_errors_return_to_the_tui_without_reading_stdin(
         assert _static_text(app, "#status") == "Error: editor exploded"
 
 
+async def test_refresh_detail_no_ops_when_the_detail_pane_is_gone(tmp_path):
+    """A queued RowHighlighted can reach _refresh_detail after the detail pane is gone
+    (a layout tier that drops it, or teardown mid-transition). It must no-op, not raise
+    NoMatches out of the event handler — the Windows py3.12 pilot exposed this race."""
+    store.add_python(_py(tmp_path, "print(1)\n"), name="a")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one("#detail-body").remove()
+        await pilot.pause()
+        app._refresh_detail()  # must not raise
+        assert len(app.screen_stack) == 1  # app survived, no crash
+
+
 # ---------------------------------------------------------------------------
 # add / preferences / health callbacks + slug selection
 # ---------------------------------------------------------------------------
