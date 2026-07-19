@@ -21,6 +21,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
+from conftest import full_mirror
 from skit import analysis, argstate, cli, flows, inlineform, launcher, store
 from skit.langs.python import metawriter
 from skit.params import ParamDecl
@@ -487,9 +488,43 @@ def test_doctor_mirror_on_line(monkeypatch, tmp_path):
     from skit import config
 
     monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/usr/bin/uv")
-    config.save_mirror(config.preset("tsinghua"))
+    config.save_mirror(full_mirror())
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 0, result.output
     out = " ".join(result.output.split())
-    assert "Mirror: on" in out
-    assert config.PYPI_PRESETS["tsinghua"] in out
+    assert "Mirrors: pypi=tsinghua" in out
+    assert "github=nju" in out
+    assert "npm=npmmirror" in out
+
+
+def test_doctor_json_mirror_reports_stored_axes_and_master(monkeypatch, tmp_path):
+    import json as jsonlib
+
+    from skit import config
+
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/usr/bin/uv")
+    config.save_mirror(config.compose(npm=config.NPM_REGISTRY_MIRROR))
+    result = runner.invoke(cli.app, ["doctor", "--json"])
+    assert result.exit_code == 0, result.output
+    doc = jsonlib.loads(result.output)
+    # STORED per-axis URLs plus the master switch: all three states (on / paused / empty) are
+    # distinguishable for an agent (an axis applies iff enabled AND its URL is non-empty).
+    assert doc["mirror"] == {
+        "enabled": True,
+        "pypi": "",
+        "python_install": "",
+        "uv_binary": "",
+        "npm": config.NPM_REGISTRY_MIRROR,
+    }
+    # Pausing flips only the master — the stored URLs stay put (NOT folded to ""), so a
+    # paused config is legible as "would restore npm" rather than masquerading as empty.
+    config.disable()
+    result = runner.invoke(cli.app, ["doctor", "--json"])
+    doc = jsonlib.loads(result.output)
+    assert doc["mirror"] == {
+        "enabled": False,
+        "pypi": "",
+        "python_install": "",
+        "uv_binary": "",
+        "npm": config.NPM_REGISTRY_MIRROR,
+    }

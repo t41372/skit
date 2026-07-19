@@ -1,22 +1,23 @@
 """Mutation-hardening tests for the Preferences (,) screen (skit.tui_prefs).
 
 These pin the OBSERVABLE contracts the existing coverage left un-nailed: the panel's
-English border title, the "nothing selected -> off" mirror fallback, the exact string
-the save writes for the *default* (else-branch) form/after choices, the verbatim https
-error copy, and the widget each save actually reads (the after-run radio must be
-`#pf-after`, not merely the first RadioSet on screen). Every footer chip/key the screen
-advertises also gets a positive pilot test. English catalog throughout, so the message
-assertions read against the original msgids.
+English border title, the "nothing selected -> off" per-axis fallback, the exact string
+the save writes for the *default* (else-branch) form/after choices, and the widget each
+save actually reads (the after-run radio must be `#pf-after`, not merely the first
+RadioSet on screen). Every footer chip/key the screen advertises also gets a positive
+pilot test. The verbatim https error copy and the per-axis custom reveal are already
+letter-exact in test_tui_prefs_health_cov.py and are not repeated here. English catalog
+throughout, so the message assertions read against the original msgids.
 """
 
 from __future__ import annotations
 
 import pytest
-from textual.widgets import Input, RadioButton, RadioSet, Static
+from textual.widgets import Input, RadioButton, RadioSet
 
 from conftest import click_label
 from skit import config, i18n, tui
-from skit.tui_prefs import PreferencesScreen
+from skit.tui_prefs import _MASTER_CHOICES, PreferencesScreen
 
 
 @pytest.fixture(autouse=True)
@@ -51,30 +52,33 @@ async def test_on_mount_sets_english_border_title(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# _mirror_choice: the "nothing pressed -> off" fallback
+# _axis_choice: the "nothing pressed -> off" fallback
 # ---------------------------------------------------------------------------
 
 
-async def test_mirror_choice_falls_back_to_off_when_no_button_pressed(tmp_path):
+async def test_axis_choice_falls_back_to_off_when_no_button_pressed(tmp_path):
     """RadioSet.pressed_index is -1 when no button is pressed (its documented "none
-    selected" state), which is outside the choices range, so _mirror_choice must return
-    the safe "off". A live preset is deselected to reach that state; saving from it then
-    disables the mirror (the caller that depends on the exact "off" literal)."""
-    config.save_mirror(config.preset("tsinghua"))
+    selected" state), which is outside the choices range, so _axis_choice must return
+    the safe "off". The master row of a live preset config is deselected to reach that
+    state; saving from it then takes the master-off branch — the mirror pauses (enabled
+    False) while the stored pypi URL survives, exactly as if "off" had been pressed."""
+    config.save_mirror(config.compose(pypi=config.PYPI_PRESETS["tsinghua"]))
     results: list[bool | None] = []
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         screen = await _open_prefs(app, results.append)
         await pilot.pause()
         assert isinstance(screen, PreferencesScreen)
-        mirror_set = screen.query_one("#pf-mirror", RadioSet)
-        assert mirror_set.pressed_index == 0  # the preset starts pressed
-        mirror_set._pressed_button = None  # documented "none pressed" state -> index -1
-        assert mirror_set.pressed_index == -1
-        assert screen._mirror_choice() == "off"
+        master_set = screen.query_one("#pf-mirror-master", RadioSet)
+        assert master_set.pressed_index == 0  # an enabled config starts on "on"
+        master_set._pressed_button = None  # documented "none pressed" state -> index -1
+        assert master_set.pressed_index == -1
+        assert screen._axis_choice("#pf-mirror-master", _MASTER_CHOICES) == "off"
         screen.action_save()
         await pilot.pause()
-    assert config.load_mirror().enabled is False  # the "off" fallback disabled the mirror
+    mirror = config.load_mirror()
+    assert mirror.enabled is False  # the "off" fallback paused the mirror
+    assert mirror.pypi == config.PYPI_PRESETS["tsinghua"]  # pause, don't destroy
     assert results == [True]
 
 
@@ -120,54 +124,6 @@ async def test_save_reads_after_run_from_pf_after_radioset(tmp_path):
         await pilot.pause()
     assert config.load_after_run() == "stay"
     assert config.load_config()["form"] == "tui"  # form still read from its own radio
-
-
-# ---------------------------------------------------------------------------
-# action_save: the verbatim https error copy
-# ---------------------------------------------------------------------------
-
-
-async def test_save_custom_non_https_uv_shows_verbatim_error(tmp_path):
-    """A non-https custom uv mirror is refused with the exact English message, formatted
-    with the offending URL. Pins the full msgid (case, wording, the trailing clause) so
-    any character-level mutation of the copy is caught."""
-    app = tui.MenuApp()
-    async with app.run_test() as pilot:
-        screen = await _open_prefs(app)
-        await pilot.pause()
-        assert isinstance(screen, PreferencesScreen)
-        list(screen.query_one("#pf-mirror", RadioSet).query(RadioButton))[3].value = True  # custom
-        await pilot.pause()
-        screen.query_one("#pf-uv", Input).value = "http://mirror.example/uv"
-        screen.action_save()
-        await pilot.pause()
-        error = str(screen.query_one("#pf-uv-error", Static).render())
-    assert (
-        "The uv binary is downloaded and executed, so its mirror URL must "
-        "use https:// (got: http://mirror.example/uv)."
-    ) in error
-
-
-# ---------------------------------------------------------------------------
-# _toggle_custom: the uv-error Static is the one hidden off-custom
-# ---------------------------------------------------------------------------
-
-
-async def test_toggle_custom_hides_the_uv_error_static_when_not_custom(tmp_path):
-    """_toggle_custom must set the display of `#pf-uv-error` specifically. Under the
-    default "off" selection the error Static is hidden; a query that fell back to the
-    first Static on screen would toggle the wrong widget and leave `#pf-uv-error` at its
-    visible default. Then switching to custom reveals it — both directions pinned."""
-    app = tui.MenuApp()
-    async with app.run_test() as pilot:
-        screen = await _open_prefs(app)
-        await pilot.pause()
-        assert isinstance(screen, PreferencesScreen)
-        uv_error = screen.query_one("#pf-uv-error", Static)
-        assert uv_error.display is False  # off state -> hidden
-        list(screen.query_one("#pf-mirror", RadioSet).query(RadioButton))[3].value = True  # custom
-        await pilot.pause()
-        assert uv_error.display is True  # custom -> revealed
 
 
 # ---------------------------------------------------------------------------

@@ -5,10 +5,12 @@ skit keeps its own settings in its config dir (`config.toml`, next to the i18n `
 overlaying environment variables onto the `uv` child processes skit spawns — and only when the user
 hasn't already set the corresponding variable themselves (their explicit env always wins).
 
-Three GFW-facing download vectors are covered:
-- `pypi`           -> `UV_DEFAULT_INDEX`          (PEP 723 script deps resolved by `uv run`)
-- `python_install` -> `UV_PYTHON_INSTALL_MIRROR`  (CPython fetched by uv for a script's requires-python)
-- `uv_binary`      -> skit's own uv bootstrap download (see uvman)
+Four GFW-facing download vectors are covered, grouped into three *independent* axes — each
+ecosystem has its own mirror-vendor landscape, so no single vendor choice may span them:
+- pypi axis:   `pypi`           -> `UV_DEFAULT_INDEX`          (PEP 723 script deps resolved by `uv run`)
+- github axis: `python_install` -> `UV_PYTHON_INSTALL_MIRROR`  (CPython fetched by uv for a script's requires-python)
+               `uv_binary`      -> skit's own uv bootstrap download (see uvman)
+- npm axis:    `npm`            -> `NPM_CONFIG_REGISTRY`       (js/ts per-script deps, see langs/javascript/deps)
 """
 
 from __future__ import annotations
@@ -24,21 +26,52 @@ from .atomic import atomic_write_toml, load_toml_recoverable
 from .i18n import gettext
 from .paths import config_dir
 
-# NJU mirrors GitHub release assets; uv/skit just swap the github.com download prefix for these.
-_GITHUB_RELEASE = "https://mirror.nju.edu.cn/github-release"
-PYTHON_INSTALL_MIRROR = f"{_GITHUB_RELEASE}/astral-sh/python-build-standalone/"
-UV_BINARY_MIRROR = f"{_GITHUB_RELEASE}/astral-sh/uv"
+# Each axis has its own preset table because each ecosystem has its own mirror vendors: the
+# PyPI providers don't run npm registries, the npm mirror (npmmirror, Alibaba's successor to
+# the taobao registry) isn't a PyPI vendor, and github-release mirroring is a third, separate
+# service class. New vendors join the axis they actually serve — never another axis's table.
 
-# The domestic npm registry (js/ts per-script deps). npmmirror is the successor of the old
-# taobao registry and the one mirror all three PyPI preset providers share.
-NPM_REGISTRY_MIRROR = "https://registry.npmmirror.com"
-
-# PyPI index presets (the part users pick between; the GitHub mirrors above are shared).
+# PyPI index presets (Python deps resolved by `uv run`).
 PYPI_PRESETS: dict[str, str] = {
     "tsinghua": "https://pypi.tuna.tsinghua.edu.cn/simple",
     "aliyun": "https://mirrors.aliyun.com/pypi/simple",
     "ustc": "https://pypi.mirrors.ustc.edu.cn/simple",
 }
+
+# GitHub-release mirror presets: a base prefix that swaps for github.com's download prefix.
+# One choice covers both github-release vectors (Python builds and the uv binary) because
+# they are the same service, not because "everything follows the PyPI vendor".
+GITHUB_RELEASE_PRESETS: dict[str, str] = {
+    "nju": "https://mirror.nju.edu.cn/github-release",
+}
+
+# npm registry presets (js/ts per-script deps).
+NPM_PRESETS: dict[str, str] = {
+    "npmmirror": "https://registry.npmmirror.com",
+}
+
+
+def github_release_urls(base: str) -> tuple[str, str]:
+    """The concrete (python_install, uv_binary) URLs a github-release mirror base expands to."""
+    base = base.removesuffix("/")
+    return (f"{base}/astral-sh/python-build-standalone/", f"{base}/astral-sh/uv")
+
+
+def is_url_token(value: str) -> bool:
+    """A pastable one-token http(s) URL: has a scheme, no whitespace, no "·" (the display
+    separator). THE shared gate for every custom-URL entrance — CLI, TUI, and wizard must
+    reject the same garbage, or a value one door refuses walks in through another and
+    surfaces later as a mysteriously broken `UV_DEFAULT_INDEX`."""
+    return (
+        value.startswith(("https://", "http://"))
+        and not any(ch.isspace() for ch in value)
+        and "·" not in value
+    )
+
+
+# The recommended per-axis defaults (first-run wizard prompts, custom-URL placeholders).
+PYTHON_INSTALL_MIRROR, UV_BINARY_MIRROR = github_release_urls(GITHUB_RELEASE_PRESETS["nju"])
+NPM_REGISTRY_MIRROR = NPM_PRESETS["npmmirror"]
 
 # uv env vars that REPLACE uv's default index — if the user set one of these (to a non-empty value)
 # they've already chosen their PyPI vector, so skit defers. UV_INDEX / UV_EXTRA_INDEX_URL are
@@ -230,21 +263,169 @@ def save_mirror(mirror: MirrorConfig) -> None:
     save_config(doc)
 
 
-def preset(name: str) -> MirrorConfig:
-    """Build an enabled MirrorConfig for a PyPI provider, sharing the NJU GitHub-release mirrors
-    (and npmmirror — the one domestic npm registry every preset agrees on)."""
+def compose(
+    *, pypi: str = "", python_install: str = "", uv_binary: str = "", npm: str = ""
+) -> MirrorConfig:
+    """Build a MirrorConfig from per-axis URLs ("" = that axis off); enabled iff any axis is on.
+
+    This is the only constructor the UI surfaces go through: each axis (pypi / github-release /
+    npm) is chosen independently — there is deliberately no "vendor" that spans axes, because
+    the mirror-provider landscape of each ecosystem is its own.
+    """
     return MirrorConfig(
-        enabled=True,
-        pypi=PYPI_PRESETS[name],
-        python_install=PYTHON_INSTALL_MIRROR,
-        uv_binary=UV_BINARY_MIRROR,
-        npm=NPM_REGISTRY_MIRROR,
+        enabled=bool(pypi or python_install or uv_binary or npm),
+        pypi=pypi,
+        python_install=python_install,
+        uv_binary=uv_binary,
+        npm=npm,
     )
+
+
+def pypi_choice(m: MirrorConfig) -> str:
+    """How the STORED PyPI axis reads: a PYPI_PRESETS name, "custom", or "off".
+
+    Deliberately blind to the master switch: the stored config has three states
+    (on / paused-with-URLs / empty), and the per-axis readers report the stored axis so
+    a paused config stays *visible* — whether it is applied is the master's business
+    (`m.enabled`, folded in by mirror_env / mirrors_line, never hidden here).
+    """
+    if not m.pypi:
+        return "off"
+    return next((k for k, v in PYPI_PRESETS.items() if v == m.pypi), "custom")
+
+
+def github_choice(m: MirrorConfig) -> str:
+    """How the STORED github-release axis (Python builds + the uv binary) reads."""
+    if not (m.python_install or m.uv_binary):
+        return "off"
+    urls = (m.python_install, m.uv_binary)
+    return next(
+        (k for k, base in GITHUB_RELEASE_PRESETS.items() if github_release_urls(base) == urls),
+        "custom",
+    )
+
+
+def npm_choice(m: MirrorConfig) -> str:
+    """How the STORED npm axis reads: an NPM_PRESETS name, "custom", or "off"."""
+    if not m.npm:
+        return "off"
+    return next((k for k, v in NPM_PRESETS.items() if v == m.npm), "custom")
+
+
+def github_base(m: MirrorConfig) -> str:
+    """The single base prefix the stored github pair derives from, or "" when the pair
+    was hand-edited into URLs no base expands to (skit's own UIs only ever write
+    base-derived pairs).
+
+    Recovering the base from the uv-binary suffix alone is sufficient: a pair is
+    base-derivable only when BOTH vectors share that base, and the round-trip equality
+    below pins the python-install half — so a second, python-install-derived candidate
+    would be redundant (it can only ever agree with this one or fail alongside it)."""
+    base = m.uv_binary.removesuffix("/astral-sh/uv")
+    if base and github_release_urls(base) == (m.python_install, m.uv_binary):
+        return base
+    return ""
+
+
+def pypi_display(m: MirrorConfig) -> str:
+    """The stored PyPI axis for display: its preset name, "off", or (custom) the URL."""
+    choice = pypi_choice(m)
+    return m.pypi if choice == "custom" else choice
+
+
+def github_display(m: MirrorConfig) -> str:
+    """The stored github-release axis for display: preset name, "off", the custom base
+    URL, or — only for a hand-edited underivable pair — both URLs joined with " + "
+    (never " · ", which is the axes_summary separator and must stay unambiguous)."""
+    choice = github_choice(m)
+    if choice != "custom":
+        return choice
+    base = github_base(m)
+    if base:
+        return base
+    return f"{m.python_install or 'off'} + {m.uv_binary or 'off'}"
+
+
+def npm_display(m: MirrorConfig) -> str:
+    """The stored npm axis for display: its preset name, "off", or (custom) the URL."""
+    choice = npm_choice(m)
+    return m.npm if choice == "custom" else choice
+
+
+def axes_summary(m: MirrorConfig) -> str:
+    """The STORED per-axis state as data tokens (`pypi=… · github=… · npm=…`), or "off"
+    when nothing is saved. Blind to the master switch by design — mirrors_line() is the
+    one place that folds it in, so a paused config never becomes invisible."""
+    if all(c == "off" for c in (pypi_choice(m), github_choice(m), npm_choice(m))):
+        return "off"
+    return f"pypi={pypi_display(m)} · github={github_display(m)} · npm={npm_display(m)}"
+
+
+def mirrors_line(m: MirrorConfig) -> str:
+    """The one-line human mirror status (doctor, TUI health): stored axes + the master
+    switch, three states honestly told apart — a paused config shows what `mirror on`
+    would bring back instead of masquerading as unconfigured."""
+    body = axes_summary(m)
+    if body == "off":
+        return gettext("Mirrors: off")
+    if m.enabled:
+        return gettext("Mirrors: %(axes)s") % {"axes": body}
+    return gettext("Mirrors: off (saved: %(axes)s)") % {"axes": body}
+
+
+def update_mirror_axes(
+    *,
+    pypi: str | None = None,
+    python_install: str | None = None,
+    uv_binary: str | None = None,
+    npm: str | None = None,
+) -> MirrorConfig:
+    """Edit the STORED per-axis URLs and save (None = leave that URL alone, "" = clear
+    it). Returns what was saved.
+
+    A writer never destroys state it wasn't asked to change, so the other axes' URLs
+    always survive, and the master switch follows three rules:
+    - already on: stays on while any URL remains (clearing the last one turns it off);
+    - fresh (off, nothing saved): a first URL turns it on — one-command setup;
+    - paused (off with URLs saved, i.e. `mirror off`): stays paused — silently flipping
+      the master would resurrect every other saved axis behind the user's back, so the
+      caller *tells* the user how to re-enable instead of skit guessing.
+    """
+    m = load_mirror()
+    paused = not m.enabled and any((m.pypi, m.python_install, m.uv_binary, m.npm))
+    updates = {
+        key: value
+        for key, value in {
+            "pypi": pypi,
+            "python_install": python_install,
+            "uv_binary": uv_binary,
+            "npm": npm,
+        }.items()
+        if value is not None
+    }
+    updated = replace(m, **updates)
+    any_urls = any((updated.pypi, updated.python_install, updated.uv_binary, updated.npm))
+    updated = replace(updated, enabled=any_urls if m.enabled else (any_urls and not paused))
+    save_mirror(updated)
+    return updated
 
 
 def disable() -> None:
     """Turn mirrors off (e.g. travelling abroad) without discarding the saved URLs."""
     save_mirror(replace(load_mirror(), enabled=False))
+
+
+def enable() -> bool:
+    """Re-enable the saved mirror URLs (the return trip after disable()).
+
+    False when no URLs are saved — there is nothing to enable, and pretending otherwise
+    would report an "on" state that overlays no environment at all.
+    """
+    m = load_mirror()
+    if not (m.pypi or m.python_install or m.uv_binary or m.npm):
+        return False
+    save_mirror(replace(m, enabled=True))
+    return True
 
 
 def mirror_env(base_env: Mapping[str, str]) -> dict[str, str]:

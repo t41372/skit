@@ -191,14 +191,19 @@ Four downloads tend to fail in mainland China: PyPI packages, npm packages, the 
 
 Mirror settings live inside skit only: your global uv config is never touched, and existing mirror settings (`UV_DEFAULT_INDEX`, `uv.toml`, …) are respected. The npm registry rides `NPM_CONFIG_REGISTRY`: an existing value of that variable in your environment still wins, but note npm itself ranks it above `~/.npmrc`.
 
-- **First run**: if PyPI/GitHub look unreachable, skit offers to turn mirrors on — just press Enter.
-- **Any time**: TUI Preferences → mirror, or:
+Each ecosystem is its own, independent choice — mirror vendors differ per ecosystem, so no single vendor name spans them:
+
+- **First run**: if PyPI/GitHub look unreachable, skit offers mirror setup — one question per ecosystem, Enter accepts each one's recommended preset.
+- **Any time**: TUI Preferences → mirrors, or:
 
 ```bash
-skit config mirror tsinghua   # or: aliyun / ustc / off
+skit config mirror.pypi tsinghua    # Python packages: tsinghua / aliyun / ustc / a URL / off
+skit config mirror.github nju       # Python builds + the uv binary: nju / an https:// base URL / off
+skit config mirror.npm npmmirror    # JS/TS packages: npmmirror / a URL / off
+skit config mirror off              # master switch: off keeps the URLs; `on` restores them
 ```
 
-Defaults: PyPI via Tsinghua / Aliyun / USTC; npm via npmmirror; Python builds and the uv binary via NJU. Custom URLs: pick `custom` in TUI Preferences (or the first-run wizard) to swap any of them.
+Custom URLs: pick `custom` in TUI Preferences (or the first-run wizard), or pass a URL to the axis key directly.
 
 ## Why skit exists
 

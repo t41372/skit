@@ -107,14 +107,7 @@ class HealthScreen(Screen[str | None]):
             if issues:
                 yield Static(gettext("Issues (Enter jumps to the script):"), classes="warn")
                 yield OptionList(*issues, id="hc-issues")
-            mirror = config.load_mirror()
-            if mirror.enabled:
-                yield Static(
-                    "✓ " + gettext("Mirror: on (%(pypi)s)") % {"pypi": escape(mirror.pypi)},
-                    classes="ok",
-                )
-            else:
-                yield Static("✓ " + gettext("Mirror: off"), classes="ok")
+            yield Static("✓ " + escape(config.mirrors_line(config.load_mirror())), classes="ok")
             location = scripts_dir()
             yield Static(
                 gettext("Library: %(path)s (%(count)s · %(size)s)")

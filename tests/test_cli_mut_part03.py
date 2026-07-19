@@ -1,8 +1,8 @@
 """Behavioural tests targeting mutation survivors in skit/cli.py (chunk 3/6).
 
 Covers the parameter-editing helpers (`_edit_params`, `_edit_declared_params`,
-`_normalize_params`), add-time hints/onboarding (`_print_add_hints`, `_onboard_params`) and
-the mirror wizard's npm prompt. Style follows tests/test_cli.py / tests/test_cli_mut.py:
+`_normalize_params`) and add-time hints/onboarding (`_print_add_hints`, `_onboard_params`).
+Style follows tests/test_cli.py / tests/test_cli_mut.py:
 CliRunner for the non-interactive command path, direct calls for the pure helpers, exact
 message text (English catalog) so string mutants can't hide, and on-disk/param assertions so
 dropped or nulled keyword arguments are observable.
@@ -17,8 +17,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from skit import argstate, cli, config, i18n, store
-from skit.i18n import gettext
+from skit import argstate, cli, i18n, store
 from skit.langs import registry
 from skit.langs.base import LangSpec
 from skit.langs.python import analyzer, metawriter
@@ -68,18 +67,6 @@ def _exe(tmp_path: Path, name: str = "prog") -> store.Entry:
 
 def _norm(text: str) -> str:
     return " ".join(text.split())
-
-
-def _capture_ask(monkeypatch, module, attr, answers):
-    it = iter(answers)
-    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
-
-    def fake(*a, **kw):
-        calls.append((a, kw))
-        return next(it)
-
-    monkeypatch.setattr(module, attr, fake)
-    return calls
 
 
 # --------------------------------------------------------------------------
@@ -444,25 +431,3 @@ def test_normalize_capability_guard_refuses_when_analyzer_missing(tmp_path, caps
         cli._normalize_params(entry, degraded, ["WIDTH"])
     assert ei.value.exit_code == 1
     assert "has no --normalize" in _norm(capsys.readouterr().err)
-
-
-# --------------------------------------------------------------------------
-# _mirror_wizard — the npm registry prompt
-# --------------------------------------------------------------------------
-
-
-def test_mirror_wizard_npm_prompt_passes_console(monkeypatch):
-    # The npm prompt must be rendered on skit's console, like every other custom-URL prompt.
-    # Kills console=None and the dropped console kwarg on the npm Prompt.ask.
-    assert not config.load_mirror().enabled
-    calls = _capture_ask(
-        monkeypatch,
-        cli.Prompt,
-        "ask",
-        ["custom", "https://x/pypi", "https://x/py", "https://x/npm"],
-    )
-    monkeypatch.setattr(cli, "_prompt_uv_binary", lambda default: "https://x/uv")
-    cli._mirror_wizard()
-    (msg,), kw = calls[3]
-    assert msg == gettext("npm registry URL")
-    assert kw["console"] is cli.console

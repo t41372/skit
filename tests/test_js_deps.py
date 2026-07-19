@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
+from conftest import full_mirror
 from skit import cli, config, store
 from skit.langs import launch
 from skit.langs.base import ArgvLaunch, InjectRequest, NotExecutableError
@@ -417,7 +418,7 @@ def test_build_installs_declared_deps_with_the_resolved_runner(
 
     monkeypatch.setattr(js_deps, "ensure_installed", fake_ensure)
     monkeypatch.setenv("NPM_CONFIG_REGISTRY", "")  # defer rule: empty means unset
-    config.save_mirror(config.preset("tsinghua"))
+    config.save_mirror(full_mirror())
     entry = _entry(tmp_path, dependencies=["chalk"])
     launch.RunnerLaunch().build(entry, [], None, None)
     assert seen["dir"] == entry.dir
@@ -862,19 +863,19 @@ async def test_prefs_custom_mirror_saves_the_npm_registry(tmp_path: Path):
         screen = PreferencesScreen()
         app.push_screen(screen)
         await pilot.pause()
-        radio = screen.query_one("#pf-mirror", RadioSet)
+        radio = screen.query_one("#pf-mirror-npm", RadioSet)
         buttons = list(radio.query(RadioButton))
         custom_index = next(i for i, b in enumerate(buttons) if str(b.label) == "custom")
-        buttons[custom_index].value = True  # click "custom"
+        buttons[custom_index].value = True  # click the npm axis's "custom"
         await pilot.pause()
-        assert screen.query_one("#pf-npm", TInput).display is True  # revealed with the others
-        screen.query_one("#pf-pypi", TInput).value = "https://pypi.example/simple"
+        assert screen.query_one("#pf-npm", TInput).display is True  # its own axis reveals it
         screen.query_one("#pf-npm", TInput).value = "https://npm.example"
         screen.action_save()
         await pilot.pause()
     mirror = config.load_mirror()
     assert mirror.enabled
     assert mirror.npm == "https://npm.example"
+    assert mirror.pypi == ""  # the npm axis alone enables nothing PyPI-side
 
 
 # ==========================================================================
@@ -882,9 +883,16 @@ async def test_prefs_custom_mirror_saves_the_npm_registry(tmp_path: Path):
 # ==========================================================================
 
 
-def test_mirror_preset_carries_the_npm_registry():
-    for name in config.PYPI_PRESETS:
-        assert config.preset(name).npm == config.NPM_REGISTRY_MIRROR
+def test_npm_axis_is_independent_of_the_pypi_axis():
+    """The npm registry is its own mirror axis: setting only the PyPI axis must NOT drag a
+    (differently-vendored) npm registry along, and the npm axis works alone."""
+    config.save_mirror(config.compose(pypi=config.PYPI_PRESETS["tsinghua"]))
+    assert config.load_mirror().npm == ""
+    config.save_mirror(config.compose(npm=config.NPM_PRESETS["npmmirror"]))
+    m = config.load_mirror()
+    assert m.enabled
+    assert m.npm == config.NPM_REGISTRY_MIRROR
+    assert m.pypi == ""
 
 
 def test_mirror_npm_round_trips_through_save_and_load():
@@ -895,7 +903,7 @@ def test_mirror_npm_round_trips_through_save_and_load():
 
 
 def test_mirror_env_sets_npm_registry_and_defers_to_the_user(monkeypatch: pytest.MonkeyPatch):
-    config.save_mirror(config.preset("tsinghua"))
+    config.save_mirror(full_mirror())
     assert config.mirror_env({})["NPM_CONFIG_REGISTRY"] == config.NPM_REGISTRY_MIRROR
     for var in ("NPM_CONFIG_REGISTRY", "npm_config_registry"):
         overlay = config.mirror_env({var: "https://user.registry"})

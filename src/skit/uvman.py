@@ -267,7 +267,7 @@ def ensure_uv_downloaded(*, quiet: bool = False) -> str:
             archive = Path(tmp) / url.rsplit("/", 1)[-1]  # pragma: no mutate — [1]==[-1]
             # A timeout is mandatory: urlretrieve has no timeout parameter, and a hung network would
             # stall the first run forever.
-            with urllib.request.urlopen(url, timeout=60) as resp, open(archive, "wb") as f:  # noqa: S310 — url is always https: the GitHub default/presets are https, the wizard rejects a non-https custom mirror (cli._prompt_uv_binary), and config.load_mirror blanks a non-https hand-edited uv_binary (falling back to the GitHub default)
+            with urllib.request.urlopen(url, timeout=60) as resp, open(archive, "wb") as f:  # noqa: S310 — url is always https: the GitHub default/presets are https, every custom entrance rejects a non-https github-release base (cli._prompt_github_base, cli._set_mirror_github, tui_prefs._resolve_mirror), and config.load_mirror blanks a non-https hand-edited uv_binary (falling back to the GitHub default)
                 shutil.copyfileobj(resp, f)
             # Verify integrity BEFORE extraction/execution: a compromised mirror or corrupt transfer
             # must fail closed here, never reach _extract_uv + chmod +x. The UvDownloadError raised on
