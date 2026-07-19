@@ -1948,7 +1948,10 @@ async def test_runner_modal_validation_covers_every_refusal(tmp_path):
         cmd_box.value = "mycli {{prompt}} {{extra}}"  # a stray hole
         modal.action_save_runner()
         assert "only the {{prompt}} slot" in str(error.render())
-        cmd_box.value = "mycli 'run {{prompt}}"  # unbalanced quote
+        # A DOUBLE quote is the one both splitters treat as special: POSIX shlex and the
+        # Windows CRT parser both raise on this unbalanced command (a single quote is
+        # literal on Windows, so it would parse cleanly there and skip this refusal).
+        cmd_box.value = 'mycli "run {{prompt}}'  # unbalanced quote
         modal.action_save_runner()
         assert "Unbalanced quotes" in str(error.render())
         modal.action_cancel()

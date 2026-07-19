@@ -63,8 +63,9 @@ def test_write_workdir_accepts_each_literal(tmp_path, literal):
 
 def test_write_workdir_accepts_an_absolute_path(tmp_path):
     _shell(tmp_path)
-    entry = store.write_workdir("sh", "/opt/data")
-    assert entry.meta.workdir == "/opt/data"
+    wd = str(tmp_path / "wd")  # absolute on every platform (a Unix "/opt" is not, on Windows)
+    entry = store.write_workdir("sh", wd)
+    assert entry.meta.workdir == wd
 
 
 def test_write_workdir_expands_a_leading_tilde_to_absolute(tmp_path):
@@ -118,8 +119,9 @@ def test_write_workdir_command_still_accepts_invoke_and_paths(tmp_path):
     """The refusals are surgical: a command still accepts the literals it CAN honor
     (invoke) and an absolute path."""
     _command()
+    wd = str(tmp_path / "wd")  # absolute on every platform (a Unix "/opt" is not, on Windows)
     assert store.write_workdir("cmd", "invoke").meta.workdir == "invoke"
-    assert store.write_workdir("cmd", "/opt/data").meta.workdir == "/opt/data"
+    assert store.write_workdir("cmd", wd).meta.workdir == wd
 
 
 # ---------------------------------------------------------------- write_interpreter

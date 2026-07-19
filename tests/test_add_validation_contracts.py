@@ -222,6 +222,7 @@ def test_kind_exe_on_a_kept_draft_is_refused_naming_only_kind_exe(tmp_path):
         store.resolve("p2")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX +x bit infers exe; Windows has no such bit")
 def test_inferred_exe_on_a_kept_draft_is_refused_and_keeps_it(tmp_path):
     """A hand-planted +x bit on an extensionless draft INFERS exe — the widened guard
     covers the inferred route just like the explicit flags (no smuggling one past). The

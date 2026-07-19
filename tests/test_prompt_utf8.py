@@ -322,7 +322,9 @@ def test_cli_add_params_run_and_doctor_refuse_corrupt_prompt_cleanly(tmp_path, m
     added = runner.invoke(cli.app, ["add", str(path), "--prompt", "--no-input"])
     assert added.exit_code == 1
     assert str(path.resolve()) in added.output.replace("\n", "")
-    assert f"offset {offset}" in added.output
+    # rich wraps the long (absolute) path, so the "offset N" phrase can straddle a line
+    # break on a narrow/Windows path — collapse whitespace runs before the substring check.
+    assert f"offset {offset}" in " ".join(added.output.split())
     assert "�" not in added.output
     assert store.list_entries() == []
 

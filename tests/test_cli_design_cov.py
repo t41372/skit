@@ -172,9 +172,10 @@ def test_params_workdir_literals(tmp_path, literal):
 
 def test_params_workdir_absolute_path(tmp_path):
     _shell(tmp_path)
-    result = runner.invoke(cli.app, ["params", "sh", "--workdir", "/opt/data"])
+    wd = str(tmp_path / "wd")  # absolute on every platform (a Unix "/opt" is not, on Windows)
+    result = runner.invoke(cli.app, ["params", "sh", "--workdir", wd])
     assert result.exit_code == 0, result.output
-    assert store.resolve("sh").meta.workdir == "/opt/data"
+    assert store.resolve("sh").meta.workdir == wd
 
 
 def test_params_workdir_relative_is_clean_error(tmp_path):
@@ -384,6 +385,8 @@ def test_params_command_policy_group_is_atomic_when_interpreter_is_invalid(tmp_p
     before_bytes = meta_path.read_bytes()
     before_meta = store.resolve("cmd").meta
 
+    # An absolute workdir on every platform, so the interpreter — not a Windows-invalid
+    # "/opt" path — is the refusal this atomicity test is about.
     result = runner.invoke(
         cli.app,
         [
@@ -392,7 +395,7 @@ def test_params_command_policy_group_is_atomic_when_interpreter_is_invalid(tmp_p
             "--template",
             "echo {new}",
             "--workdir",
-            "/opt/new",
+            str(tmp_path / "new"),
             "--interpreter",
             "zsh",
         ],

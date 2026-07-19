@@ -35,7 +35,10 @@ CORPUS = Path(__file__).parent / "corpus" / "prompt"
 
 def _write_prompt(tmp_path: Path, text: str, name: str = "p.prompt.md") -> Path:
     path = tmp_path / name
-    path.write_text(text, encoding="utf-8")
+    # write_bytes, not write_text: text mode rewrites "\n" -> "\r\n" on Windows, which
+    # the strict byte-fidelity reader then delivers verbatim — the body must be the
+    # exact bytes the test names, on every platform.
+    path.write_bytes(text.encode("utf-8"))
     return path
 
 
@@ -195,10 +198,11 @@ def test_check_argv_length_refuses_over_limit():
         render.check_argv_length(["x" * (render.ARGV_LIMIT + 1)])
 
 
-def test_check_argv_length_measures_utf8_bytes_not_characters():
-    # A CJK prompt is 3 bytes per character: the OS limits are byte bounds, so a
-    # character count would wave through an argv the kernel rejects with raw E2BIG.
-    cjk = "中" * (render.ARGV_LIMIT // 3 + 10)
+def test_check_argv_length_measures_bytes_not_characters():
+    # A CJK char is multiple bytes on every platform's measure (3 in UTF-8 on POSIX, 2
+    # in UTF-16 on Windows), so the OS byte bound is what matters. //2 + 10 chars stays
+    # under the character count on both while its byte measure overflows both.
+    cjk = "中" * (render.ARGV_LIMIT // 2 + 10)
     assert len(cjk) < render.ARGV_LIMIT  # passes a character count…
     with pytest.raises(LaunchError):  # …but not the byte count
         render.check_argv_length([cjk])

@@ -254,7 +254,9 @@ def test_advisory_lock_native_failure_closes_fd_and_releases_mutex(
             pytest.fail("a failed native lock cannot be acquired")
 
     assert attempted_fd >= 0
-    with pytest.raises(OSError, match=re.escape(os.strerror(errno.EBADF))) as exc_info:
+    # A closed fd's strerror text is OS-specific ("Bad file descriptor" on POSIX,
+    # "The handle is invalid" on Windows); the errno below is the portable assertion.
+    with pytest.raises(OSError) as exc_info:  # noqa: PT011 — asserted on errno, not the OS message
         os.fstat(attempted_fd)
     assert exc_info.value.errno == errno.EBADF
 

@@ -68,10 +68,11 @@ async def test_workdir_custom_path_reveals_input_and_saves(tmp_path):
         await pilot.pause()
         path_input = screen.query_one("#st-workdir-path", Input)
         assert path_input.display is True  # the 4th option reveals the path field
-        path_input.value = "/opt/data"
+        wd = str(tmp_path / "wd")  # absolute on every platform (a Unix "/opt" is not, on Windows)
+        path_input.value = wd
         screen.action_save()
         await pilot.pause()
-    assert store.resolve("sh").meta.workdir == "/opt/data"
+    assert store.resolve("sh").meta.workdir == wd
 
 
 async def test_workdir_custom_empty_keeps_stored(tmp_path):
@@ -170,15 +171,17 @@ async def test_command_workdir_saves_custom_path_from_index_one(tmp_path):
         buttons[1].value = True  # "A fixed folder" — index 1 for a command
         await pilot.pause()
         assert screen.query_one("#st-workdir-path", Input).display is True
-        screen.query_one("#st-workdir-path", Input).value = "/opt/cmd"
+        wd = str(tmp_path / "wd")  # absolute on every platform (a Unix "/opt" is not, on Windows)
+        screen.query_one("#st-workdir-path", Input).value = wd
         screen.action_save()
         await pilot.pause()
-    assert store.resolve("cmd").meta.workdir == "/opt/cmd"
+    assert store.resolve("cmd").meta.workdir == wd
 
 
 async def test_command_workdir_saves_invoke_from_index_zero(tmp_path):
     store.add_command("echo hi", name="cmd")
-    store.write_workdir(store.resolve("cmd").slug, "/tmp/x")  # start off "invoke"
+    # A non-invoke seed to switch away from; absolute on every platform.
+    store.write_workdir(store.resolve("cmd").slug, str(tmp_path / "seed"))
     app = tui.MenuApp()
     async with app.run_test(size=(100, 40)) as pilot:
         screen = ScriptSettingsScreen(store.resolve("cmd"))
@@ -206,10 +209,11 @@ async def test_exe_workdir_saves_custom_from_index_two(tmp_path):
         buttons[2].value = True  # custom is index 2 for an exe
         await pilot.pause()
         assert screen.query_one("#st-workdir-path", Input).display is True
-        screen.query_one("#st-workdir-path", Input).value = "/opt/exe"
+        wd = str(tmp_path / "wd")  # absolute on every platform (a Unix "/opt" is not, on Windows)
+        screen.query_one("#st-workdir-path", Input).value = wd
         screen.action_save()
         await pilot.pause()
-    assert store.resolve("ex").meta.workdir == "/opt/exe"
+    assert store.resolve("ex").meta.workdir == wd
 
 
 # ---------------------------------------------------------------- interpreter pin

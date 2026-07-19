@@ -171,6 +171,9 @@ async def test_prefs_clean_esc_closes_without_asking(tmp_path):
         app.push_screen(PreferencesScreen())
         await pilot.pause()
         screen = _as(app.screen, PreferencesScreen)
+        # _dirt_armed is set via call_after_refresh (arms on the next repaint); a second
+        # pause lets that callback run before we assert — the Windows pilot needs the tick.
+        await pilot.pause()
         assert screen._dirt_armed is True  # armed after the mount settle
         screen.action_close()
         await pilot.pause()

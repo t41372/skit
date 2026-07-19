@@ -9,7 +9,6 @@ widget merely mounted.
 from __future__ import annotations
 
 import contextlib
-import shlex
 from types import SimpleNamespace
 
 import pytest
@@ -271,8 +270,9 @@ async def test_add_modal_edit_prefills_and_replaces_in_place(tmp_path):
         modal = app.screen
         assert isinstance(modal, RunnerAddModal)
         assert modal.query_one("#runner-add-name", Input).value == "codex"
-        # The command is prefilled shlex-joined (so it round-trips through the same split).
-        assert modal.query_one("#runner-add-command", Input).value == shlex.join(
+        # The command is prefilled via argv_text.join (the split's inverse) — list2cmdline
+        # on Windows, shlex.join on POSIX — so it round-trips through the same split.
+        assert modal.query_one("#runner-add-command", Input).value == argv_text.join(
             ["codex", "--", "{{prompt}}"]
         )
         # Change only the command, save under the same name.
@@ -512,7 +512,7 @@ async def test_manage_screen_preserves_and_repairs_anonymous_row_command_by_inde
         modal = _as(app.screen, RunnerAddModal)
         name = modal.query_one("#runner-add-name", Input)
         assert not name.disabled  # no stable key exists yet; repair must let the user create one
-        assert modal.query_one("#runner-add-command", Input).value == shlex.join(command)
+        assert modal.query_one("#runner-add-command", Input).value == argv_text.join(command)
         name.value = "valuable"
         modal.action_save_runner()
         await pilot.pause()

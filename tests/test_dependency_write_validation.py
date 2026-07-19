@@ -277,6 +277,7 @@ def test_no_input_add_of_an_illegally_named_import_writes_no_block(tmp_path):
 _DRAFT_HEAD = "one of skit's own kept drafts"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX +x bit infers exe; Windows has no such bit")
 def test_inferred_exe_draft_gets_the_kind_variant(tmp_path):
     """A hand-planted +x on an extensionless draft INFERS exe with no flag passed — the refusal
     points at --kind (there is nothing to drop), not the flag-drop message."""
