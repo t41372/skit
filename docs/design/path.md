@@ -1,7 +1,7 @@
 # Path-aware parameter entry — design
 
-Status: **draft v3** (2026-07-19; two adversarial design review rounds applied, third
-round pending). Resolves [#7](https://github.com/t41372/skit/issues/7) — "Make file
+Status: **review-clean** (v4, 2026-07-19; three adversarial design review rounds —
+round 3 signed CLEAN with the two final line edits applied). Resolves [#7](https://github.com/t41372/skit/issues/7) — "Make file
 selector more intuitive". Read `docs/design/multilang.md` first (the `ParamDecl`
 universal model and the kind registry) and `docs/design/prompt.md` for the run form's
 current shape — this design is an additive layer on both. Ships from
@@ -149,7 +149,7 @@ branch** — see Deferred.
 - Routing is unchanged: declared-schema CLI ops remain refused on `params_io` kinds
   (`cli.py:3456`) — the documented route there is `--manage` / editing the block, which
   now works. `skit params NAME --type field=path` works where `--type` works today
-  (meta-home kinds: exe, command, prompt).
+  (every meta-home kind — see CLI surface).
 - **Forward compat, both halves:** an older skit *reading* `type = "path"` degrades it
   to `"str"` via `_coerce_literal` (`params.py:154` block, `:205` meta) — graceful,
   pinned by a test. An older skit that *writes* the schema (any `edit_declared` op, a
@@ -236,7 +236,7 @@ and it keeps the eventual rebase near-trivial.
   resolves. Secret fields never suggest (they are already non-insertable).
 - **Token-aware**: for `multiple` fields the last shlex piece is completed. Leading
   `~`/`{cwd}`/`{env:NAME}` are expanded (`tokens.expand`) to *find* the directory —
-  per §3, at the same root assembly will use — but the ghost text preserves the user's
+  per §3's two-step rule — but the ghost text preserves the user's
   typed prefix verbatim; the stored value stays intent, exactly as today.
 - Directories complete with a trailing `/` (all platforms — see §5 on separators) so
   completion chains; hidden entries appear only when the typed segment starts with
