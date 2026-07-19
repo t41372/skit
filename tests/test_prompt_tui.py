@@ -479,6 +479,10 @@ async def test_rerun_pinned_prompt_skips_the_form_and_uses_the_pin(
 async def test_exit_mode_pending_run_carries_the_runner(tmp_path, monkeypatch):
     _prompt_entry(tmp_path, pin="codex")
     config.save_after_run("exit")
+    # The submit path preflights the resolved runner's binary; stub the PATH lookup so
+    # the test exercises the PendingRun handoff, not whether codex happens to be
+    # installed on the CI runner (quiet_run stubs the same seam for the stay-mode tests).
+    monkeypatch.setattr("skit.langs.launch._which", lambda name: f"/bin/{name}")
     app = tui.MenuApp()
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause()
