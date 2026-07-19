@@ -623,7 +623,7 @@ def _added(tmp_path, text="Do {{a}}\n", name="p", pin=""):
                 "remove": "已登記的條目",
                 "rename": "重新命名條目",
                 "describe": "條目的說明",
-                "params": "條目的納管參數或宣告參數",
+                "params": "條目的管理參數或宣告參數",
                 "deps": "條目的套件依賴",
                 "doctor": "工具庫",
             },
@@ -1949,3 +1949,125 @@ def test_add_interactive_flooded_numbers_address_the_previewed_names_only(tmp_pa
     assert result.exit_code == 0, result.output
     # Only the previewed index landed; the blind one was ignored, not guessed.
     assert store.resolve("blind").meta.params == ["h2"]
+
+
+# --------------------------------------------------------------------------
+# edit — the placeholder a body edit introduces is offered for management
+# --------------------------------------------------------------------------
+
+
+def _editor_appending(text: str):
+    """A fake editor: append `text` to the stored body and report success."""
+
+    def fake(path, *, kind):
+        path.write_text(path.read_text(encoding="utf-8") + text, encoding="utf-8")
+        return 0
+
+    return fake
+
+
+def test_edit_prompt_interactive_offers_and_manages_a_new_placeholder(tmp_path, monkeypatch):
+    slug = store.add_prompt(_write(tmp_path, "Say hello.\n"), name="greet").slug
+    monkeypatch.setattr(
+        cli.editor, "open_entry_in_editor", _editor_appending("\nUser is {{username}}\n")
+    )
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: "all"))
+    result = runner.invoke(cli.app, ["edit", "greet"])
+    assert result.exit_code == 0, result.output
+    assert store.resolve(slug).meta.params == ["username"]
+    assert "Now managed: username" in result.output
+
+
+def test_edit_prompt_interactive_none_leaves_the_placeholder_literal(tmp_path, monkeypatch):
+    slug = store.add_prompt(_write(tmp_path, "Say hello.\n"), name="greet").slug
+    monkeypatch.setattr(cli.editor, "open_entry_in_editor", _editor_appending("\n{{username}}\n"))
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: "none"))
+    result = runner.invoke(cli.app, ["edit", "greet"])
+    assert result.exit_code == 0, result.output
+    assert store.resolve(slug).meta.params is None  # nothing managed
+    assert "Now managed" not in result.output
+
+
+def test_edit_prompt_interactive_numbers_manage_the_named_ones(tmp_path, monkeypatch):
+    slug = store.add_prompt(_write(tmp_path, "Base.\n"), name="greet").slug
+    monkeypatch.setattr(
+        cli.editor, "open_entry_in_editor", _editor_appending("\n{{a}} {{b}} {{c}}\n")
+    )
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: "1,3"))
+    result = runner.invoke(cli.app, ["edit", "greet"])
+    assert result.exit_code == 0, result.output
+    assert store.resolve(slug).meta.params == ["a", "c"]
+
+
+def test_edit_prompt_preserves_existing_managed_and_adds_the_new_one(tmp_path, monkeypatch):
+    entry = store.add_prompt(_write(tmp_path, "{{kept}}\n"), name="greet", managed=["kept"])
+    monkeypatch.setattr(cli.editor, "open_entry_in_editor", _editor_appending("\n{{added}}\n"))
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: "all"))
+    result = runner.invoke(cli.app, ["edit", "greet"])
+    assert result.exit_code == 0, result.output
+    assert store.resolve(entry.slug).meta.params == ["kept", "added"]
+
+
+def test_edit_prompt_non_interactive_names_the_unmanaged_variable(tmp_path, monkeypatch):
+    slug = store.add_prompt(_write(tmp_path, "Say hello.\n"), name="greet").slug
+    monkeypatch.setattr(cli.editor, "open_entry_in_editor", _editor_appending("\n{{username}}\n"))
+    monkeypatch.setattr(cli, "_is_interactive", lambda: False)
+    result = runner.invoke(cli.app, ["edit", "greet"])
+    assert result.exit_code == 0, result.output
+    assert store.resolve(slug).meta.params is None  # non-interactive manages nothing
+    assert "Detected but not yet managed: username" in result.output
+
+
+def test_edit_prompt_non_interactive_flood_previews_with_a_tail(tmp_path, monkeypatch):
+    from skit.langs.prompt.analyzer import LIST_PREVIEW_LIMIT
+
+    store.add_prompt(_write(tmp_path, "Base.\n"), name="greet")
+    holes = " ".join("{{h" + str(i) + "}}" for i in range(LIST_PREVIEW_LIMIT + 4))
+    monkeypatch.setattr(cli.editor, "open_entry_in_editor", _editor_appending("\n" + holes + "\n"))
+    monkeypatch.setattr(cli, "_is_interactive", lambda: False)
+    result = runner.invoke(cli.app, ["edit", "greet"])
+    assert result.exit_code == 0, result.output
+    assert "and 4 more candidates" in result.output
+
+
+def test_edit_prompt_interactive_flood_previews_secret_mark_and_tail(tmp_path, monkeypatch):
+    from skit.langs.prompt.analyzer import LIST_PREVIEW_LIMIT
+
+    store.add_prompt(_write(tmp_path, "Base.\n"), name="greet")
+    holes = "{{token}} " + " ".join("{{h" + str(i) + "}}" for i in range(LIST_PREVIEW_LIMIT + 3))
+    monkeypatch.setattr(cli.editor, "open_entry_in_editor", _editor_appending("\n" + holes + "\n"))
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: "all"))
+    result = runner.invoke(cli.app, ["edit", "greet"])
+    assert result.exit_code == 0, result.output
+    assert "token (secret)" in result.output  # a secret-named variable is flagged in the preview
+    assert "…and 4 more" in result.output  # 24 new, 20 previewed → a 4-name tail
+    # "all" takes every new name, preview cap or not.
+    assert store.resolve("greet").meta.params == ["token"] + [
+        f"h{i}" for i in range(LIST_PREVIEW_LIMIT + 3)
+    ]
+
+
+def test_edit_prompt_with_no_new_placeholders_is_silent(tmp_path, monkeypatch):
+    slug = store.add_prompt(_write(tmp_path, "{{a}}\n"), name="greet", managed=["a"]).slug
+    monkeypatch.setattr(cli.editor, "open_entry_in_editor", _editor_appending("\nmore prose\n"))
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    result = runner.invoke(cli.app, ["edit", "greet"])
+    assert result.exit_code == 0, result.output
+    assert "Now managed" not in result.output
+    assert "Detected but not yet managed" not in result.output
+    assert store.resolve(slug).meta.params == ["a"]
+
+
+def test_edit_non_prompt_keeps_the_generic_drift_hint(tmp_path, monkeypatch):
+    script = tmp_path / "s.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+    store.add_python(script, name="job")
+    monkeypatch.setattr(cli.editor, "open_entry_in_editor", lambda p, *, kind: 0)
+    result = runner.invoke(cli.app, ["edit", "job"])
+    assert result.exit_code == 0, result.output
+    assert "skit reconciles parameter drift at run time" in result.output

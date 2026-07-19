@@ -1459,3 +1459,33 @@ def test_preview_names_caps_the_list():
     assert remaining == 5
     assert f"n{LIST_PREVIEW_LIMIT - 1}" in shown
     assert f"n{LIST_PREVIEW_LIMIT}" not in shown
+
+
+def test_unmanaged_prompt_placeholders_is_body_minus_managed_in_order(tmp_path):
+    entry = store.add_prompt(_write_prompt(tmp_path, "{{a}} {{b}} {{c}}\n"), managed=["b"])
+    # First appearance order, managed removed — the one rule params/settings/edit share.
+    assert store.unmanaged_prompt_placeholders(store.resolve(entry.slug)) == ["a", "c"]
+
+
+def test_unmanaged_prompt_placeholders_empty_when_insertion_off(tmp_path):
+    entry = store.add_prompt(_write_prompt(tmp_path, "{{a}}\n"))
+    store.write_prompt_interpolate(entry.slug, False)
+    # Insertion off: the body travels verbatim, so nothing is a candidate.
+    assert store.unmanaged_prompt_placeholders(store.resolve(entry.slug)) == []
+
+
+def test_unmanaged_prompt_placeholders_empty_for_non_prompt(tmp_path):
+    script = tmp_path / "s.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+    entry = store.add_python(script, name="notaprompt")
+    assert store.unmanaged_prompt_placeholders(entry) == []
+
+
+def test_unmanaged_prompt_placeholders_empty_when_body_missing_or_undecodable(tmp_path):
+    entry = store.add_prompt(_write_prompt(tmp_path, "{{a}}\n"))
+    fresh = store.resolve(entry.slug)
+    fresh.script_path.write_bytes(b"\xff\xfe not utf-8 {{a}}")
+    # Undecodable body → no schema invented from replacement bytes (preflight owns it).
+    assert store.unmanaged_prompt_placeholders(fresh) == []
+    fresh.script_path.unlink()
+    assert store.unmanaged_prompt_placeholders(fresh) == []

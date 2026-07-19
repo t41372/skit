@@ -286,8 +286,26 @@ Value tokens: `{cwd}`/`{today}` expand **inside field values** (the existing
 expansion — a literal `{today}` in a prompt body is literal text, not a double-brace
 placeholder candidate, and passes through to the agent verbatim.
 
-Reconcile mirrors the command path: if the user removes a `{{hole}}` from the body, the
-matching declared param drifts and `skit params`/doctor report it.
+Reconcile runs in both directions, so a body edit is as placeholder-aware as the add
+review:
+
+- **Removed** — if the user removes a managed `{{hole}}` from the body, the matching
+  declared param drifts and `skit params`/doctor/the run form's drift banner report it
+  (the value would be ignored). The managed record is kept, not silently dropped.
+- **Added** — a `{{hole}}` typed into the body through skit's own editor (`skit edit`,
+  the Library `e`) is offered for management right after the editor closes: the CLI lists
+  the new names and asks which to manage (the add onboarding's `all / none / numbers`
+  interaction), the TUI opens the searchable candidate picker. This is the one primitive,
+  `store.unmanaged_prompt_placeholders` (body detections minus the managed list), that
+  `skit params` and Script settings already surface. Management stays an explicit choice —
+  an unmanaged `{{hole}}` is still literal by design (a prompt documenting brace syntax
+  must travel verbatim), so nothing is auto-managed and a non-interactive edit only names
+  what it found and points at `--add`.
+
+The asymmetry this removes: analyzable kinds fall back to a live-reflected form when
+nothing is managed (an edited-in `--flag` appears for free), while a prompt's unmanaged
+placeholder is literal and yields no field — so without the added-direction offer, a
+`{{name}}` typed into a prompt body would silently do nothing on the run form.
 
 ### The runner registry (config, `[[prompt.runners]]`)
 

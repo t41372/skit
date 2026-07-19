@@ -754,6 +754,31 @@ def prompt_entries_pinned_to(runner: str) -> list[Entry]:
     ]
 
 
+def unmanaged_prompt_placeholders(entry: Entry) -> list[str]:
+    """A prompt body's detected ``{{placeholders}}`` that are not yet managed, in order
+    of first appearance. This is the ONE rule the surfaces agree on for "you typed a
+    variable that isn't a field yet": `skit params` and Script settings already show it;
+    the edit path uses it so a placeholder added by editing the body is offered for
+    management, not silently dropped into the body as literal text.
+
+    Empty for non-prompt kinds, an insertion-off prompt (its body travels verbatim, so
+    nothing is a candidate), and an unreadable or missing body (existence/decoding
+    refusals belong to preflight, never to a schema invented from replacement bytes)."""
+    if entry.meta.kind != "prompt" or not entry.meta.interpolate:
+        return []
+    if not entry.script_path.exists():
+        return []
+    from .langs.prompt import analyzer as prompt_analyzer
+    from .langs.prompt import text as prompt_text
+
+    try:
+        text = prompt_text.read(entry.script_path)
+    except (OSError, prompt_text.PromptEncodingError):
+        return []
+    managed = set(entry.meta.params or [])
+    return [name for name in prompt_analyzer.placeholder_names(text) if name not in managed]
+
+
 def resolve(name_or_slug: str) -> Entry:
     entries = _load_registry()
     slug = None

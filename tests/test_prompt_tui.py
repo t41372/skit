@@ -1950,3 +1950,127 @@ async def test_runner_modal_validation_covers_every_refusal(tmp_path):
         modal.action_cancel()
         await pilot.pause()
     assert config.find_prompt_runner("mycli") is None  # nothing was written
+
+
+# --------------------------------------------------------------------------
+# Library edit → offer to manage the placeholders a body edit introduced
+# --------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def _noop_suspend():
+    yield
+
+
+def _editor_appending(text: str):
+    """A fake $EDITOR: append `text` to the stored body and report success."""
+
+    def fake(path, *, kind):
+        path.write_text(path.read_text(encoding="utf-8") + text, encoding="utf-8")
+        return 0
+
+    return fake
+
+
+async def test_library_edit_prompt_offers_picker_and_manages_the_selection(tmp_path, monkeypatch):
+    entry = _prompt_entry(tmp_path, text="Say hello.\n", name="greet")
+    monkeypatch.setattr(tui.editor, "open_entry_in_editor", _editor_appending("\n{{username}}\n"))
+    monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_edit()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PromptCandidatePickerModal)
+        # The single new variable is pre-ticked (not flooded), so Done alone manages it —
+        # the exact {{username}}-typed-into-the-body flow the fix is for.
+        modal.action_done()
+        await pilot.pause()
+        assert store.resolve(entry.slug).meta.params == ["username"]
+        assert "Now managed: username" in str(app.query_one("#status", Static).render())
+
+
+async def test_library_edit_prompt_picker_cancel_leaves_it_literal(tmp_path, monkeypatch):
+    entry = _prompt_entry(tmp_path, text="Say hello.\n", name="greet")
+    monkeypatch.setattr(tui.editor, "open_entry_in_editor", _editor_appending("\n{{username}}\n"))
+    monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_edit()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PromptCandidatePickerModal)
+        modal.action_cancel()
+        await pilot.pause()
+        assert store.resolve(entry.slug).meta.params is None  # unmanaged
+        assert "Edited greet." in str(app.query_one("#status", Static).render())
+
+
+async def test_library_edit_prompt_picker_done_with_no_ticks_manages_nothing(tmp_path, monkeypatch):
+    entry = _prompt_entry(tmp_path, text="Say hello.\n", name="greet")
+    monkeypatch.setattr(tui.editor, "open_entry_in_editor", _editor_appending("\n{{username}}\n"))
+    monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_edit()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PromptCandidatePickerModal)
+        modal.query_one("#prompt-candidate-all", Checkbox).value = False  # untick everything
+        await pilot.pause()
+        modal.action_done()
+        await pilot.pause()
+        assert store.resolve(entry.slug).meta.params is None
+        assert "Edited greet." in str(app.query_one("#status", Static).render())
+
+
+async def test_library_edit_prompt_preserves_existing_managed(tmp_path, monkeypatch):
+    entry = _prompt_entry(tmp_path, text="{{kept}}\n", name="greet")
+    store.write_prompt_managed(entry.slug, ["kept"])
+    monkeypatch.setattr(tui.editor, "open_entry_in_editor", _editor_appending("\n{{added}}\n"))
+    monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_edit()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PromptCandidatePickerModal)
+        modal.query_one("#prompt-candidate-all", Checkbox).value = True
+        await pilot.pause()
+        modal.action_done()
+        await pilot.pause()
+        assert store.resolve(entry.slug).meta.params == ["kept", "added"]
+
+
+async def test_library_edit_prompt_no_new_placeholder_shows_no_picker(tmp_path, monkeypatch):
+    entry = _prompt_entry(tmp_path, text="{{a}}\n", name="greet")
+    store.write_prompt_managed(entry.slug, ["a"])
+    monkeypatch.setattr(tui.editor, "open_entry_in_editor", _editor_appending("\nmore prose\n"))
+    monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_edit()
+        await pilot.pause()
+        assert len(app.screen_stack) == 1  # no picker
+        assert "Edited greet." in str(app.query_one("#status", Static).render())
+        assert store.resolve(entry.slug).meta.params == ["a"]
+
+
+async def test_library_edit_non_prompt_never_offers_the_picker(tmp_path, monkeypatch):
+    script = tmp_path / "job.py"
+    script.write_text("print(1)\n", encoding="utf-8")
+    store.add_python(script, name="job")
+    monkeypatch.setattr(tui.editor, "open_entry_in_editor", lambda p, *, kind: 0)
+    monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_edit()
+        await pilot.pause()
+        assert len(app.screen_stack) == 1
+        assert "Edited job." in str(app.query_one("#status", Static).render())

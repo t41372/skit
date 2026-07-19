@@ -2282,6 +2282,69 @@ def _offer_create_in_editor(name: str) -> None:
     _create_python_in_editor(name)
 
 
+def _reconcile_prompt_after_edit(entry: store.Entry) -> None:
+    """After a skit-driven edit of a prompt body, offer to manage the placeholders the
+    edit introduced — the edit flow made as placeholder-aware as the add review, so a
+    `{{name}}` typed into the body becomes a form field instead of silently traveling to
+    the agent as literal text. This ADDS only: a managed placeholder deleted from the
+    body keeps its existing run-time drift banner, owned by the form layer. Non-
+    interactive names the new placeholders and points at the `--add` escape."""
+    from .langs.prompt import analyzer as prompt_analyzer
+
+    new = store.unmanaged_prompt_placeholders(store.resolve(entry.slug))
+    if not new:
+        return
+    if not _is_interactive():
+        # The exact wording `skit params` prints — one rule, two surfaces, so an
+        # automated `skit edit` reports unmanaged variables the same way the inspector
+        # does (and points at the same `--add` escape).
+        names, remaining = prompt_analyzer.preview_names(new)
+        if remaining:
+            message = ngettext(
+                "Detected but not yet managed: %(names)s … and %(count)d more candidate "
+                "(use --add to manage them)",
+                "Detected but not yet managed: %(names)s … and %(count)d more candidates "
+                "(use --add to manage them)",
+                remaining,
+            ) % {"names": escape(names), "count": remaining}
+        else:
+            message = gettext(
+                "Detected but not yet managed: %(names)s (use --add to manage them)"
+            ) % {"names": escape(names)}
+        console.print(f"[dim]{message}[/dim]")
+        return
+    console.print(gettext("Detected placeholders (each becomes a form field):"))
+    for i, placeholder in enumerate(new[: prompt_analyzer.LIST_PREVIEW_LIMIT], start=1):
+        mark = gettext(" (secret)") if is_secret_name(placeholder) else ""
+        console.print(f"  {i}. {escape(placeholder)}{mark}")
+    if len(new) > prompt_analyzer.LIST_PREVIEW_LIMIT:
+        console.print(
+            "  "
+            + gettext("…and %(count)s more")
+            % {"count": len(new) - prompt_analyzer.LIST_PREVIEW_LIMIT}
+        )
+    flooded = len(new) > prompt_analyzer.AUTO_MANAGE_LIMIT
+    answer = Prompt.ask(
+        gettext("Manage which? (all / none / numbers like 1,3)"),
+        default="none" if flooded else "all",
+        console=console,
+    )
+    if answer.strip().lower() == "all":
+        picked = list(new)  # an explicit "all" takes every new name, preview or not
+    else:
+        # Numbers address only the PREVIEWED names — picking an index whose name was
+        # never shown would be a blind selection (the add onboarding's rule).
+        selectable = new[: prompt_analyzer.LIST_PREVIEW_LIMIT]
+        picked = [selectable[i] for i in _parse_selection(answer, len(selectable))]
+    if not picked:
+        return
+    existing = list(entry.meta.params or [])
+    store.write_prompt_managed(entry.slug, existing + [n for n in picked if n not in existing])
+    console.print(
+        f"[green]{gettext('Now managed: %(names)s') % {'names': ', '.join(escape(n) for n in picked)}}[/green]"
+    )
+
+
 @app.command(
     help=gettext(
         "Open a script or prompt source in your editor (offers to create a script if the name is new)."
@@ -2327,9 +2390,14 @@ def edit(name: str = _SCRIPT_ARG) -> None:
     console.print(
         f"[green]{gettext('Saved %(name)s.') % {'name': escape(entry.meta.name)}}[/green]"
     )
-    console.print(
-        f"[dim]{gettext('skit reconciles parameter drift at run time; review managed parameters with: skit params %(name)s') % {'name': escape(entry.meta.name)}}[/dim]"
-    )
+    if entry.meta.kind == "prompt":
+        # A placeholder typed into the body is offered for management here (the add
+        # review's twin), so editing is as variable-aware as adding.
+        _reconcile_prompt_after_edit(entry)
+    else:
+        console.print(
+            f"[dim]{gettext('skit reconciles parameter drift at run time; review managed parameters with: skit params %(name)s') % {'name': escape(entry.meta.name)}}[/dim]"
+        )
 
 
 # --------------------------------------------------------------------------

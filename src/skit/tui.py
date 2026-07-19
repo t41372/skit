@@ -52,6 +52,7 @@ from . import (
     theme,
     tui_footer,
     tui_layout,
+    tui_prompt,
     tui_runner,
 )
 from .i18n import gettext, ngettext
@@ -868,8 +869,41 @@ class MenuApp(App[int | PendingRun]):
         self._reload()
         if edit_error is not None:
             self._refresh_status(gettext("Error: %(error)s") % {"error": escape(edit_error)})
-        else:
-            self._refresh_status(gettext("Edited %(name)s.") % {"name": escape(entry.meta.name)})
+            return
+        if entry.meta.kind == "prompt" and self._offer_prompt_reconcile(entry):
+            return  # the picker owns the status line once it is dismissed
+        self._refresh_status(gettext("Edited %(name)s.") % {"name": escape(entry.meta.name)})
+
+    def _offer_prompt_reconcile(self, entry: Entry) -> bool:
+        """After a prompt body edit, offer to manage the placeholders the edit added —
+        the Library twin of the add review's tick list, so an edited-in ``{{name}}``
+        becomes a field instead of silent literal text. Returns True when a picker was
+        shown (it then owns the closing status line). ADD-only: a managed placeholder
+        deleted from the body keeps its run-form drift banner, owned by the form layer."""
+        from .langs.prompt import analyzer as prompt_analyzer
+
+        new = store.unmanaged_prompt_placeholders(store.resolve(entry.slug))
+        if not new:
+            return False
+        flooded = len(new) > prompt_analyzer.AUTO_MANAGE_LIMIT
+        preselected: set[str] = set() if flooded else set(new)
+
+        def _picked(selected: set[str] | None) -> None:
+            chosen = [name for name in new if selected and name in selected]
+            if not chosen:
+                self._refresh_status(
+                    gettext("Edited %(name)s.") % {"name": escape(entry.meta.name)}
+                )
+                return
+            existing = list(entry.meta.params or [])
+            store.write_prompt_managed(
+                entry.slug, existing + [n for n in chosen if n not in existing]
+            )
+            self._reload()
+            self._refresh_status(gettext("Now managed: %(names)s") % {"names": ", ".join(chosen)})
+
+        self.push_screen(tui_prompt.PromptCandidatePickerModal(new, preselected), _picked)
+        return True
 
     def _editable_source(self, entry: Entry) -> Path | None:
         spec = spec_for(entry.meta.kind)
