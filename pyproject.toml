@@ -232,7 +232,8 @@ pytest_add_cli_args_test_selection = ["tests/"]
 # the i18n-gate tests (test_js_deps.py) import scripts/i18n_coverage.py by path.
 # benchmarks/ rides along because tests/test_benchmarks_tooling.py imports the
 # benchmarks package (pytest's inifile-relative pythonpath resolves it inside
-# mutants/). locales/
+# mutants/). .github/workflows/ rides along because the same file's contract-sync
+# tests read the benchmark workflows (hyperfine pin, BENCH_CI_RUNNER label). locales/
 # must be explicit too: mutmut never refreshes non-Python files already present under a
 # reused source_paths copy, while also_copy directories are overlaid on every run. That
 # applies to both runtime package-data trees: translation catalogs and the bundled skill.
@@ -241,6 +242,7 @@ also_copy = [
     "README.md",
     "scripts/",
     "benchmarks/",
+    ".github/workflows/",
     "src/skit/locales/",
     "src/skit/skills/",
 ]
