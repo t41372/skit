@@ -37,23 +37,11 @@ jobs:
         run: uv sync --dev
       - name: Run mutation tests
         run: uv run mutmut run
-      # `mutmut run` records results but exits 0 even when mutants survive, so on its own it is
-      # not a gate — a survivor would sail through as a green run. Make the recorded outcome
-      # enforceable: log the survivors, export the machine-readable summary, and fail the job
-      # if any mutant lived through the suite (the "zero surviving mutants" floor in AGENTS.md).
-      - name: Fail if any mutant survived
+      # `mutmut run` records results but exits 0 for unsuccessful mutant states, so on its own it
+      # is not a gate. Validate the exported summary: survivors, missing tests, timeouts, crashes,
+      # interruptions, suspicious results, and incomplete accounting all fail the job.
+      - name: Validate mutation results
         run: |
           uv run mutmut results || true
           uv run mutmut export-cicd-stats
-          uv run python - <<'PY'
-          import json
-          import sys
-
-          with open("mutants/mutmut-cicd-stats.json") as f:
-              stats = json.load(f)
-          print("mutation summary:", json.dumps(stats, sort_keys=True))
-          if stats.get("survived", 0):
-              print(f"::error::{stats['survived']} mutant(s) survived the test suite (see 'mutmut results' above)")
-              sys.exit(1)
-          print("All mutants killed — mutation gate passed.")
-          PY
+          uv run python scripts/check_mutation_stats.py
