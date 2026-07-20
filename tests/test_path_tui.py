@@ -4,7 +4,8 @@ positive pilot test here), and the per-shape insertion semantics."""
 
 from __future__ import annotations
 
-import shlex
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,7 @@ from textual.message import Message
 from textual.suggester import SuggestionReady
 from textual.widgets import Input, OptionList, Static
 
-from skit import flows, store, tui, tui_footer, tui_pathpick
+from skit import argv_text, flows, store, tui, tui_footer, tui_pathpick
 from skit.tui_form import _EXTRA_KEY, FieldRow, RunFormScreen, TokenMenuModal
 from skit.tui_pathpick import FilePickerModal, PathContext, PathSuggester, PickedPath
 
@@ -595,9 +596,12 @@ async def test_picker_appends_quoted_to_the_extra_args_row(tmp_path, monkeypatch
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
-        # Appended as ONE quoted piece: shlex re-parsing keeps the filename whole.
-        assert extra_row.value == "--verbose 'a b.txt'"
-        assert shlex.split(extra_row.value) == ["--verbose", "a b.txt"]
+        # Appended as ONE quoted piece in the extra-args row's OWN dialect (argv_text:
+        # CRT double quotes on Windows, shlex single quotes on POSIX), so re-parsing
+        # with the row's actual splitter keeps the filename whole.
+        quoted = '"a b.txt"' if sys.platform == "win32" else "'a b.txt'"
+        assert extra_row.value == f"--verbose {quoted}"
+        assert argv_text.split(extra_row.value) == ["--verbose", "a b.txt"]
 
 
 async def test_picker_appends_quoted_to_a_multiple_field(tmp_path, monkeypatch):
@@ -846,7 +850,8 @@ async def test_brace_escapes_off_on_a_placeholder_field_keeps_doubled_braces(tmp
 async def test_shlexy_trailing_piece_refuses_either_quote(tmp_path):
     root = _tree(tmp_path)
     (root / "'q.txt").write_text("x", encoding="utf-8")
-    (root / '"q.txt').write_text("x", encoding="utf-8")
+    if os.name != "nt":  # a double quote can't appear in a Windows filename
+        (root / '"q.txt').write_text("x", encoding="utf-8")
     s = _sugg(root, shlexy=True)
     # A trailing piece bearing EITHER quote refuses to complete (appended ghost text
     # can't be re-quoted honestly); without that, it would complete these odd names.
