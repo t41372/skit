@@ -534,11 +534,16 @@ def test_record_run_zero_exit_survives_save(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_coerce_bool_lenient_accepts_every_truthy_spelling():
+def test_truthy_accepts_every_truthy_spelling():
+    """flows.truthy is THE single public bool-spelling rule every renderer shares — the
+    same spellings assembly fires the flag on, so "on"/"y" render checked, never a second
+    rule pretending to be one."""
     for spelling in ("true", "1", "yes", "y", "on", " TRUE ", "On"):
-        assert flows._coerce_bool_lenient(spelling) is True, spelling
+        assert flows.truthy(spelling) is True, spelling
     for spelling in ("false", "0", "no", "n", "off", "", "garbage"):
-        assert flows._coerce_bool_lenient(spelling) is False, spelling
+        assert flows.truthy(spelling) is False, spelling
+    # The internal assembly alias IS the public function (never a divergent second copy).
+    assert flows._coerce_bool_lenient is flows.truthy
 
 
 def test_expand_glob_piece_globs_only_when_glob_chars_present(tmp_path):
@@ -766,7 +771,7 @@ def test_assemble_none_plan_only_carries_extras(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# review fixes (B3/B4/B5/B6 + transparency masking)
+# Placeholder requiredness, persisted clearing, and transparency masking
 # --------------------------------------------------------------------------
 
 
@@ -885,6 +890,33 @@ def test_transparency_lines_inject_source_shows_masked_and_temp_note(tmp_path):
     assert "•••" in joined
 
 
+def test_assemble_display_lists_only_inject_delivered_values(tmp_path):
+    """The "→ inject:" transparency line lists ONLY inject-delivered values: env values
+    already render as a VAR=value prefix and flag values appear in the command line itself,
+    so listing them under "inject" claimed a temporary-copy rewrite that never happens.
+    One mixed plan, three deliveries, one honest inject line."""
+    plan = flows.FormPlan(
+        source="inject",
+        fields=[
+            flows.FormField(key="OUT", label="OUT", source="inject"),
+            flows.FormField(key="CITY", label="CITY", source="env"),
+            flows.FormField(key="name", label="name", source="flag", flag="--name"),
+        ],
+    )
+    asm = flows.assemble(
+        plan,
+        {"OUT": "out.jpg", "CITY": "Taipei", "name": "ada"},
+        [],
+        cwd=tmp_path,
+        env={},
+    )
+    # Only the inject field appears in the inject display; env/flag deliver elsewhere.
+    assert asm.display == [("OUT", "out.jpg")]
+    assert asm.masked_env == {"CITY": "Taipei"}  # env renders as its own VAR=value prefix
+    assert "--name" in asm.args  # the flag rides the command line…
+    assert "ada" in asm.args  # …with its value
+
+
 def test_transparency_lines_flag_source_is_single_command_line(tmp_path):
     plan = flows.plan_for_entry(_python_entry(tmp_path, ARGPARSE_SCRIPT, slug="tlf"))
     asm = flows.assemble(plan, _values_ok(), [], cwd=tmp_path, env={}, now=NOW)
@@ -908,13 +940,78 @@ def test_execute_runs_and_returns_the_scripts_exit_code(tmp_path, monkeypatch):
     assert lines  # the command line was emitted
 
 
+def test_command_template_secret_does_not_get_prompt_agent_warning(tmp_path, monkeypatch):
+    """The prompt boundary warning must never be inferred from placeholder delivery alone."""
+    from skit import launcher
+
+    entry = Entry(
+        slug="cmd-secret",
+        meta=ScriptMeta(
+            name="cmd-secret",
+            kind="command",
+            template="send {api_key}",
+            params=["api_key"],
+        ),
+        dir=tmp_path,
+    )
+    plan = flows.FormPlan(
+        source="command",
+        fields=[
+            flows.FormField(
+                key="api_key",
+                label="api_key",
+                source="placeholder",
+                secret=True,
+                required=True,
+            )
+        ],
+    )
+    asm = flows.Assembly(
+        command_values={"api_key": "hunter2"},
+        masked_command_values={"api_key": "•••"},
+    )
+    monkeypatch.setattr(launcher, "run_entry", lambda *a, **k: 0)
+    lines, emit = _emit_sink()
+    outcome = flows.execute(entry, plan, asm, emit=emit)
+    assert outcome.code == 0
+    assert "selected agent as plaintext" not in "\n".join(lines)
+
+
+def test_pinned_amp_prompt_warns_on_runner_none_shared_execution_path(tmp_path, monkeypatch):
+    """Form-free TUI reruns rely on PromptLaunch resolving the pin inside the strategy."""
+    from skit import launcher, store
+
+    source = tmp_path / "amp.prompt.md"
+    source.write_text("Do it\n", encoding="utf-8")
+    entry = store.add_prompt(source, name="amp-task", runner="amp")
+    monkeypatch.setattr("skit.langs.launch._which", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(launcher, "run_entry", lambda *a, **k: 0)
+    lines, emit = _emit_sink()
+    outcome = flows.execute(
+        entry,
+        flows.plan_for_entry(entry),
+        flows.Assembly(),
+        emit=emit,
+        runner=None,
+    )
+    assert outcome.code == 0
+    assert "amp -x runs this prompt once" in "\n".join(lines)
+
+
 def test_execute_injects_then_cleans_up_the_temp_copy(tmp_path, monkeypatch):
     from skit import launcher
 
     captured: dict[str, object] = {}
 
     def fake_run(
-        entry, extra, *, values=None, invoke_cwd=None, script_override=None, env_overlay=None
+        entry,
+        extra,
+        *,
+        values=None,
+        invoke_cwd=None,
+        script_override=None,
+        env_overlay=None,
+        runner=None,
     ):
         assert script_override is not None
         captured["override"] = script_override
@@ -973,6 +1070,49 @@ def test_execute_classifies_not_executable(tmp_path, monkeypatch):
         emit=emit,
     )
     assert outcome.failure == flows.FAIL_NOT_EXECUTABLE
+
+
+def test_prompt_validation_classifies_missing_body_before_transparency(tmp_path):
+    from skit import config, store
+
+    source = tmp_path / "gone.prompt.md"
+    source.write_text("Do it\n", encoding="utf-8")
+    entry = store.add_prompt(source, name="gone")
+    entry.script_path.unlink()
+    lines, emit = _emit_sink()
+    outcome = flows.execute(
+        entry,
+        flows.plan_for_entry(entry),
+        flows.Assembly(),
+        emit=emit,
+        runner=config.find_prompt_runner("claude"),
+    )
+    assert outcome.code is None
+    assert outcome.failure == flows.FAIL_MISSING
+    assert "doesn't exist" in outcome.message
+    assert lines == []
+
+
+def test_prompt_validation_classifies_empty_runner_config_before_transparency(tmp_path):
+    from skit import config, store
+
+    source = tmp_path / "unrunnable.prompt.md"
+    source.write_text("Do it\n", encoding="utf-8")
+    entry = store.add_prompt(source, name="unrunnable")
+    config.save_prompt_runners([])
+    lines, emit = _emit_sink()
+    outcome = flows.execute(
+        entry,
+        flows.plan_for_entry(entry),
+        flows.Assembly(),
+        emit=emit,
+        runner=None,
+    )
+    assert outcome.code is None
+    assert outcome.failure == flows.FAIL_NOT_EXECUTABLE
+    assert "No agents are configured" in outcome.message
+    assert "skit runner add mycli -- mycli run {{prompt}}" in outcome.message
+    assert lines == []
 
 
 def test_execute_classifies_injection_drift(tmp_path, monkeypatch):
@@ -1087,6 +1227,31 @@ def test_transparency_command_source_masks_secret_placeholder(tmp_path):
     assert asm.command_values["api_key"] == "sk-SUPERSECRET-123"  # real value still runs
 
 
+def test_normal_prompt_transparency_is_compact_and_never_reads_the_body(tmp_path):
+    """Normal runs name the agent/flags without copying a whole prompt into scrollback."""
+    from skit import config, store
+
+    source = tmp_path / "review.prompt.md"
+    body_text = "DO-NOT-COPY-THIS-BODY {{api_key}}\n"
+    source.write_text(body_text, encoding="utf-8")
+    entry = store.add_prompt(source, name="review")
+    prompt_runner = config.PromptRunner("agent", ("agent", "--", "{{prompt}}"))
+    asm = flows.Assembly(
+        args=["--model", "fast"],
+        masked_args=["--model", "fast"],
+        command_values={"api_key": "plaintext"},
+        masked_command_values={"api_key": "•••"},
+    )
+    entry.script_path.unlink()  # compact display is snapshot metadata, not a second body read
+
+    line = flows.transparency_lines(entry, asm, None, runner=prompt_runner)[-1]
+
+    assert "agent --model fast --" in line
+    assert "rendered prompt omitted" in line
+    assert body_text.strip() not in line
+    assert "plaintext" not in line
+
+
 def test_execute_not_executable_message_carries_the_error(tmp_path, monkeypatch):
     from skit import launcher
 
@@ -1130,7 +1295,14 @@ def test_execute_forwards_invoke_cwd(tmp_path, monkeypatch):
     captured: dict[str, object] = {}
 
     def fake_run(
-        entry, extra, *, values=None, invoke_cwd=None, script_override=None, env_overlay=None
+        entry,
+        extra,
+        *,
+        values=None,
+        invoke_cwd=None,
+        script_override=None,
+        env_overlay=None,
+        runner=None,
     ):
         captured["cwd"] = invoke_cwd
         return 0
@@ -1169,7 +1341,14 @@ def test_execute_inject_falls_back_to_entry_dir(tmp_path, monkeypatch):
     landed: dict[str, object] = {}
 
     def fake_run(
-        entry, extra, *, values=None, invoke_cwd=None, script_override=None, env_overlay=None
+        entry,
+        extra,
+        *,
+        values=None,
+        invoke_cwd=None,
+        script_override=None,
+        env_overlay=None,
+        runner=None,
     ):
         landed["path"] = script_override
         return 0

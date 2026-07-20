@@ -36,7 +36,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import analysis, argstate, launcher, params, tokens
+from . import analysis, argstate, config, launcher, params, tokens
 from .i18n import gettext
 from .langs.base import (
     InjectError,
@@ -47,6 +47,7 @@ from .langs.base import (
     InjectValueError,
     LangSpec,
 )
+from .langs.launch import PromptLaunch
 from .langs.launch import quote_for_shell as launch_quote
 from .langs.python.shim import _coerce
 from .langs.registry import spec_for
@@ -56,6 +57,7 @@ from .params import ParamDecl
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from .config import PromptRunner
     from .langs.base import CliReader
 
 _GLOB_CHARS = ("*", "?", "[")
@@ -201,13 +203,18 @@ class Assembly:
 
 
 def _declared_plan(entry: Entry, lang: LangSpec) -> FormPlan | None:
-    """The declared-schema plans (no source analysis involved): command templates and
-    program entries with [[parameters]] rows. None means "not this path — keep going"."""
-    if lang.family == "template":
-        # The template's placeholder list IS the field list; a declared [[parameters]]
-        # row supplies a placeholder's schema (type/default/optional/secret override),
-        # an undeclared one synthesizes the historical required-free-text field, and
-        # declared env params ride along (see params.declared_for_template).
+    """The declared-schema plans (no source analysis involved): placeholder kinds
+    (command templates and prompts) and program entries with [[parameters]] rows.
+    None means "not this path — keep going"."""
+    if lang.placeholder_params:
+        # The placeholder list IS the field list; a declared [[parameters]] row supplies
+        # a placeholder's schema (type/default/optional/secret override), an undeclared
+        # one synthesizes the historical required-free-text field, and declared env
+        # params ride along (see params.declared_for_template). The trait — not the
+        # family — gates this: a prompt is family "interpreted" (it has an original
+        # file) yet its form interface is placeholders, exactly like a command's.
+        if lang.stored_name:
+            return _placeholder_body_plan(entry)
         decls = params.declared_for_template(entry.meta.parameters, entry.meta.params or [])
         return FormPlan(source="command", fields=[FormField.from_decl(d) for d in decls])
     if lang.params_io is None and lang.cli_reader is None and entry.meta.parameters:
@@ -229,6 +236,55 @@ def _declared_plan(entry: Entry, lang: LangSpec) -> FormPlan | None:
     return None
 
 
+def _placeholder_body_plan(entry: Entry) -> FormPlan:
+    """The prompt kind's plan: a command-template plan whose placeholder list is the
+    entry's MANAGED names (`meta.params` — what the user kept at add time), with the
+    body itself consulted fresh for drift. A managed hole the body no longer contains
+    still renders as a field (the declared schema is the user's record), but the banner
+    says its value would be ignored — the same honesty the in-file kinds get from
+    reconcile. An unreadable/missing body degrades to the extra-args-only plan;
+    preflight owns existence errors (the form layer never invents fields)."""
+    if not entry.meta.interpolate:
+        # Insertion is switched off for this prompt: no fields, no candidate scanning,
+        # no drift — the body travels verbatim and the run form is just the runner
+        # picker. (The managed list survives underneath for a later switch-on.)
+        return FormPlan(source="command")
+    managed = list(entry.meta.params or [])
+    from .langs.prompt import text as prompt_text
+
+    try:
+        text = prompt_text.read(entry.script_path)
+    except prompt_text.PromptEncodingError:
+        # Never build fields or drift facts from replacement characters.  The launch
+        # boundary's strict preflight/render returns the user-facing exit-125 refusal;
+        # the form layer stays total and invents no schema from unreadable bytes.
+        return FormPlan(source="none")
+    except OSError:
+        return FormPlan(source="none")
+    from .langs.prompt import analyzer as prompt_analyzer
+
+    fresh = prompt_analyzer.placeholder_names(text)
+    gone = [name for name in managed if name not in fresh]
+    drift = (
+        [
+            gettext(
+                "No longer in the prompt (the value would be ignored): %(names)s — "
+                "edit the body or update parameters with: skit params %(name)s"
+            )
+            % {"names": ", ".join(gone), "name": entry.meta.name}
+        ]
+        if gone
+        else []
+    )
+    decls = params.declared_for_template(entry.meta.parameters, managed)
+    return FormPlan(
+        source="command",
+        fields=[FormField.from_decl(d) for d in decls],
+        drift_lines=drift,
+        text=text,
+    )
+
+
 def _declared_riders(entry: Entry, taken: set[str]) -> list[FormField]:
     """Declared [[parameters]] flag/env rows to merge into an analyzable kind's plan, minus any
     name already fielded from the in-file block. Flag rows assemble real argv, env rows overlay the
@@ -238,6 +294,24 @@ def _declared_riders(entry: Entry, taken: set[str]) -> list[FormField]:
         for d in params.declared_from_meta(entry.meta.parameters)
         if d.delivery in ("flag", "env") and d.name not in taken
     ]
+
+
+def reader_fields(lang: LangSpec | None, text: str) -> int:
+    """How many form fields the kind's own CLI reader models from `text` — 0 when there
+    is no modeled reader form (no reader, unreadable, dynamic/unmodelable parsing).
+
+    THE predicate for the manage-a-constant trap, shared by every surface that decides
+    whether to offer managing (add ticks, `params` advice, Entry settings, the flip
+    note): managing REPLACES the run form only when a modeled reader form exists to be
+    replaced (plan_for_entry prefers managed specs). A script that self-parses but
+    couldn't be modeled (docopt/fire, a dynamic optstring) runs on the passthrough
+    field either way — there, managed constants are additive and the offer is honest."""
+    if lang is None or lang.cli_reader is None or not text:
+        return 0
+    spec = lang.cli_reader.read_cli(text)
+    if spec is None or not spec.ok:
+        return 0
+    return len(spec.fields)
 
 
 def _reader_plan(entry: Entry, reader: CliReader) -> FormPlan | None:
@@ -453,7 +527,12 @@ def assemble(
         # test_assemble_degraded_empty_omitted_filled_passed (a missing field must not inject).
         raw = values.get(f.key, "")  # pragma: no mutate
         value = _final_value(f, raw, cwd=cwd, env=env, now=now)
-        if value:
+        if value and f.source == "inject":
+            # ONLY inject-delivered values belong under the "→ inject:" transparency
+            # line (its caveat is the temporary-copy rewrite); env values already
+            # render as a VAR=value prefix and flag/placeholder values appear in the
+            # command line itself — listing them here claimed a delivery that never
+            # happens.
             display.append((f.key, "•••" if f.secret else value))
         final[f.key] = value
     # expand_extra=False: the CLI's `-- args` already went through the user's shell —
@@ -520,7 +599,14 @@ def _final_value(
     if f.secret:
         return _resolve_secret(f, raw, env)
     try:
-        value = tokens.expand(raw, cwd=cwd, env=env, now=now) if raw else ""
+        # Placeholder-delivery values keep `{{`/`}}` literal (prompt text is
+        # brace-heavy; the body promise is "unmanaged text travels untouched") —
+        # the escape pair belongs to inject/flag values only.
+        value = (
+            tokens.expand(raw, cwd=cwd, env=env, now=now, brace_escapes=f.source != "placeholder")
+            if raw
+            else ""
+        )
     except tokens.TokenError as exc:
         raise FormError(str(exc)) from exc
     if raw and tokens.has_tokens(raw):
@@ -593,10 +679,16 @@ def _expand_glob_piece(piece: str, cwd: Path) -> list[str]:
     return matches if matches else [piece]
 
 
-def _coerce_bool_lenient(value: str) -> bool:
-    """Checkbox state from its string form; anything unrecognized counts as unchecked
-    (validate() already rejected typed garbage for bool fields)."""
+def truthy(value: str) -> bool:
+    """THE bool-spelling rule, public and single: every renderer that shows a checkbox
+    state must accept exactly the spellings assembly accepts — "on"/"y" firing the
+    flag at run time while rendering unchecked was two rules pretending to be one.
+    Anything unrecognized counts as unchecked (validate() already rejected typed
+    garbage for bool fields)."""
     return value.strip().lower() in ("true", "1", "yes", "y", "on")
+
+
+_coerce_bool_lenient = truthy  # internal name kept for the assembly call sites
 
 
 # --------------------------------------------------------------------------
@@ -668,12 +760,21 @@ class RunOutcome:
         return self.code is not None
 
 
-def transparency_lines(entry: Entry, asm: Assembly, injected: Path | None) -> list[str]:
+def transparency_lines(
+    entry: Entry,
+    asm: Assembly,
+    injected: Path | None,
+    *,
+    runner: PromptRunner | None = None,
+    exact_prompt: bool = False,
+    validated_prompt_command: str | None = None,
+) -> list[str]:
     """The plain what-actually-runs lines (trust through transparency; also how users
     passively learn their scripts' own flags). Secret values are already masked in
     asm.masked_args / asm.display. The renderer applies its own styling/escaping — these
     are semantic plain text, identical across CLI and TUI (the one place they used to
-    drift: `k = v` vs `k = 'v'`)."""
+    drift: `k = v` vs `k = 'v'`). `runner` is the prompt kind's resolved per-run pick,
+    threaded through to describe so --dry-run prints the real argv."""
     lines: list[str] = []
     if asm.inject_values:
         pairs = ", ".join(f"{k} = {v}" for k, v in asm.display)
@@ -687,14 +788,62 @@ def transparency_lines(entry: Entry, asm: Assembly, injected: Path | None) -> li
     # honest picture of what actually happens: the child process env is overlaid, the
     # script itself is never rewritten for these.
     env_prefix = "".join(f"{k}={launch_quote(v)} " for k, v in asm.masked_env.items())
-    lines.append(
-        "→ "
-        + env_prefix
-        + launcher.describe_command(
-            entry, asm.masked_args, asm.masked_command_values, script_override=injected
+    spec = spec_for(entry.meta.kind)
+    if validated_prompt_command is not None:
+        # --dry-run must display the exact body snapshot that passed prompt argv
+        # validation, never re-read a reference or concurrently edited copy here.
+        described = validated_prompt_command
+    elif not exact_prompt and spec is not None and isinstance(spec.launch, PromptLaunch):
+        described = spec.launch.describe_compact(entry, asm.masked_args, runner=runner)
+    else:
+        described = launcher.describe_command(
+            entry,
+            asm.masked_args,
+            asm.masked_command_values,
+            script_override=injected,
+            runner=runner,
         )
-    )
+    lines.append("→ " + env_prefix + described)
     return lines
+
+
+def validate_prompt_argv(
+    entry: Entry,
+    asm: Assembly,
+    *,
+    runner: PromptRunner | None = None,
+) -> str | None:
+    """Validate prompt rendering/argv limits without looking up the runner on PATH.
+
+    Non-prompt kinds are a no-op.  The CLI calls this before --dry-run output; execute
+    calls it before normal transparency, so an impossible prompt is never dumped into
+    terminal scrollback immediately before skit refuses it.
+    """
+    spec = spec_for(entry.meta.kind)
+    if spec is None or not isinstance(spec.launch, PromptLaunch):
+        return None
+    return spec.launch.validate_argv(
+        entry,
+        asm.args,
+        asm.command_values,
+        None,
+        runner=runner,
+        display_values=asm.masked_command_values,
+    )
+
+
+def _prompt_secret_warning(plan: FormPlan, asm: Assembly) -> str:
+    """The delivery-boundary warning, only when plaintext will actually be sent."""
+    sends_secret = any(
+        f.source == "placeholder" and f.secret and bool(asm.command_values.get(f.key))
+        for f in plan.fields
+    )
+    if not sends_secret:
+        return ""
+    return gettext(
+        "Secret-marked values are never saved by skit, but this prompt sends them to the "
+        "selected agent as plaintext; the agent may log or sync them."
+    )
 
 
 def _split_message(exc: InjectSplitError) -> str:
@@ -725,6 +874,7 @@ def execute(  # noqa: PLR0911, PLR0912 — one early return/branch per injection
     *,
     emit: Callable[[str], None],
     invoke_cwd: Path | None = None,
+    runner: PromptRunner | None = None,
 ) -> RunOutcome:
     """Deliver an assembled run: inject (if the source calls for it) -> emit the
     transparency lines -> run straight through the terminal -> clean up the temp copy.
@@ -742,12 +892,42 @@ def execute(  # noqa: PLR0911, PLR0912 — one early return/branch per injection
     an inject plan only exists where an analyzer does.
     """
     injected: Path | None = None
+    prepared: launcher.PreparedLaunch | None = None
     try:
         # The injector's env overlay rides ON TOP of the assembled env-delivered values:
         # both are "set this variable on the child", and a shell entry can legitimately
         # produce both at once (a declared env rider plus an envdefault param).
         env_overlay = dict(asm.env_values)
         spec = spec_for(entry.meta.kind)
+        if spec is not None and isinstance(spec.launch, PromptLaunch):
+            try:
+                # Cross the delivery boundary only after the exact runner/body argv,
+                # executable, needs and cwd have all succeeded. run_entry consumes
+                # this same snapshot below; it never re-reads or rebuilds the prompt.
+                prepared = launcher.prepare_entry(
+                    entry,
+                    asm.args,
+                    values=asm.command_values,
+                    invoke_cwd=invoke_cwd,
+                    runner=runner,
+                )
+            except launcher.TargetMissingError as exc:
+                return RunOutcome(None, FAIL_MISSING, str(exc))
+            except launcher.NotExecutableError as exc:
+                return RunOutcome(None, FAIL_NOT_EXECUTABLE, str(exc))
+            except launcher.LaunchError as exc:
+                return RunOutcome(None, FAIL_LAUNCH, str(exc))
+            amp_seed = next(r for r in config.PROMPT_RUNNER_SEEDS if r.name == "amp")
+            if prepared.prompt_runner == amp_seed:
+                emit(
+                    gettext(
+                        "The built-in amp runner is one-shot: amp -x runs this prompt once "
+                        "and does not open an interactive session."
+                    )
+                )
+            secret_warning = _prompt_secret_warning(plan, asm)
+            if secret_warning:
+                emit(secret_warning)
         if (
             plan.source == "inject"
             and asm.inject_values
@@ -829,17 +1009,38 @@ def execute(  # noqa: PLR0911, PLR0912 — one early return/branch per injection
             env_overlay.update(result.env)
             for line in result.warnings:
                 emit(line)
-        for line in transparency_lines(entry, asm, injected):
+        for line in transparency_lines(
+            entry,
+            asm,
+            injected,
+            runner=runner,
+            validated_prompt_command=(prepared.safe_display if prepared is not None else None),
+        ):
             emit(line)
         try:
-            code = launcher.run_entry(
-                entry,
-                asm.args,
-                values=asm.command_values,
-                invoke_cwd=invoke_cwd,
-                script_override=injected,
-                env_overlay=env_overlay,
-            )
+            if prepared is None:
+                # Keep the established non-prompt call seam unchanged; many callers
+                # replace run_entry with a narrow adapter that knows no prepared kwarg.
+                code = launcher.run_entry(
+                    entry,
+                    asm.args,
+                    values=asm.command_values,
+                    invoke_cwd=invoke_cwd,
+                    script_override=injected,
+                    env_overlay=env_overlay,
+                    runner=runner,
+                )
+            else:
+                code = launcher.run_entry(
+                    entry,
+                    asm.args,
+                    values=asm.command_values,
+                    invoke_cwd=invoke_cwd,
+                    script_override=injected,
+                    env_overlay=env_overlay,
+                    runner=runner,
+                    prepared=prepared,
+                )
         except launcher.TargetMissingError as exc:
             return RunOutcome(None, FAIL_MISSING, str(exc))
         except launcher.NotExecutableError as exc:

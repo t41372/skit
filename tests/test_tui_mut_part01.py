@@ -90,6 +90,8 @@ def fake_launch(monkeypatch):
         invoke_cwd=None,
         script_override=None,
         env_overlay=None,
+        runner=None,
+        prepared=None,
     ):
         state["ran"] = True
         return state.get("code", 0)

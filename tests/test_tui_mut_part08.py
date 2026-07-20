@@ -35,28 +35,28 @@ async def test_refresh_status_shows_placeholder_when_empty() -> None:
         await pilot.pause()
         assert not store.list_entries()
         status = str(app.query_one("#status", Static).render())
-        assert status == "Your scripts will appear here."
+        assert status == "Your entries will appear here."
 
 
 async def test_refresh_status_counts_singular(tmp_path: Path) -> None:
-    """One script uses the singular ngettext form: '1/1 script'."""
+    """One entry uses the singular ngettext form: '1/1 entry'."""
     store.add_python(_py(tmp_path, name="a.py"), name="alpha")
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         await pilot.pause()
         status = str(app.query_one("#status", Static).render())
-        assert status == "1/1 script"
+        assert status == "1/1 entry"
 
 
 async def test_refresh_status_counts_plural(tmp_path: Path) -> None:
-    """Two scripts use the plural ngettext form: '2/2 scripts'."""
+    """Two entries use the plural ngettext form: '2/2 entries'."""
     store.add_python(_py(tmp_path, name="a.py"), name="alpha")
     store.add_python(_py(tmp_path, name="b.py"), name="beta")
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         await pilot.pause()
         status = str(app.query_one("#status", Static).render())
-        assert status == "2/2 scripts"
+        assert status == "2/2 entries"
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +133,7 @@ async def test_retranslate_updates_border_titles(tmp_path: Path) -> None:
     async with app.run_test() as pilot:
         await pilot.pause()
         app._retranslate_chrome()
-        assert app.query_one(DataTable).border_title == "Scripts"
+        assert app.query_one(DataTable).border_title == "Library"
         assert app.query_one("#detail").border_title == "Detail pane"
 
 
@@ -143,20 +143,15 @@ async def test_retranslate_updates_border_titles(tmp_path: Path) -> None:
 
 
 def test_run_banner_finished() -> None:
-    assert tui.MenuApp._run_banner(flows.RunOutcome(0)) == "✓ finished — press Enter to return"
+    assert tui.MenuApp._run_banner(flows.RunOutcome(0)) == "✓ finished"
 
 
 def test_run_banner_failed_carries_exit_code() -> None:
-    assert (
-        tui.MenuApp._run_banner(flows.RunOutcome(3)) == "✗ failed (code 3) — press Enter to return"
-    )
+    assert tui.MenuApp._run_banner(flows.RunOutcome(3)) == "✗ failed (code 3)"
 
 
 def test_run_banner_couldnt_launch() -> None:
-    assert (
-        tui.MenuApp._run_banner(flows.RunOutcome(None))
-        == "✗ couldn't launch — press Enter to return"
-    )
+    assert tui.MenuApp._run_banner(flows.RunOutcome(None)) == "✗ couldn't launch"
 
 
 # ---------------------------------------------------------------------------

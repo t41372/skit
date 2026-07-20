@@ -20,6 +20,17 @@ hint *is* the click target, and every modal's key hints use the same chips — t
 has a path. The keyboard side is enforced policy: every key a footer advertises must have a
 positive pilot test.
 
+Key grammar: a chord keeps one meaning per context class — Ctrl+E always opens `$EDITOR`
+on the screen's current subject, Ctrl+N always creates the screen's primary object (a
+script on the add step, an agent on a runner picker), Ctrl+T always inserts a value,
+Ctrl+R re-runs/refreshes the screen's subject (the run form runs it; Script settings
+resyncs its definitions from the script), and Ctrl+S saves/commits the screen's work
+(the run form's save-as-preset included). Ctrl+A (cursor-home) and — while an Input has focus —
+Ctrl+E (end-of-line) belong to the Input: screen chords for them are never
+priority-bound; the chip is the path mid-edit.
+Never bind a text-editing chord (Ctrl+K and friends) with `priority=True` on a screen
+full of Inputs — the Input's own editing wins there, and the chip stays the mouse path.
+
 The TUI is also responsive: `tui_layout.py` defines the shared size tiers (`-w-narrow`,
 `-h-short`, `-h-tiny`, …) that Textual sets as classes on every screen, and all size
 adaptation is CSS keyed off those classes — never per-screen width/height math in Python.
@@ -69,6 +80,17 @@ installed by the resolved runner's own installer (npm/bun/deno). Two contributor
   it rewrites a bare `NAME=value` constant into the `${NAME:-value}` env-default idiom. A real
   semantic edit — but only to skit's **stored copy**, never the user's original, and only when
   asked.
+- **Prompts are entries too (docs/design/prompt.md).** The `prompt` kind stores a parameterized
+  text body fired at a configured agent CLI (a **PromptRunner** — `[[prompt.runners]]` in config;
+  never plain "runner" in code, which is the JS-runtime vocabulary). Contributor rules that
+  follow: template/non-template decisions key off `LangSpec.placeholder_params`, never
+  `family == "template"`; the render path is raw substitution with NO shell and NO quoting
+  (`langs/prompt/render.py` — `quote_for_shell` must never touch it); `LaunchStrategy.build`/
+  `describe` carry an accept-and-ignore `runner=` keyword on every strategy; runner resolution:
+  non-interactive is `--runner` > the entry's pin > exit 126 — no ranking, no guessing;
+  interactive runs host the form's runner picker (prefilled pin > last pick), and the last
+  *pick* (never a pin left untouched) prefills the next picker from state. Prompts are not a
+  secrets channel and no delivery mechanism pretends otherwise.
 
 Golden corpus: `tests/corpus/<lang>/` (and the Python files directly under `tests/corpus/`) are
 **byte-exact** analyzer inputs — deliberate CRLF, missing trailing newlines, odd whitespace,

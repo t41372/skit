@@ -131,8 +131,9 @@ def test_add_interactive_plain_form_keeps_line_prompts(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     hit = {}
     monkeypatch.setattr("skit.tui_add.run_add_review", lambda *a, **kw: hit.setdefault("panel", 1))
-    result = runner.invoke(cli.app, ["add", str(p), "--name", "plainly"])
+    result = runner.invoke(cli.app, ["add", str(p), "--name", "plainly"], input="\n")
     assert result.exit_code == 0, result.output
+    assert "Description (optional)" in result.output
     assert "panel" not in hit
     assert store.resolve("plainly").meta.mode == "copy"
 
@@ -144,8 +145,9 @@ def test_add_term_dumb_keeps_line_prompts(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     hit = {}
     monkeypatch.setattr("skit.tui_add.run_add_review", lambda *a, **kw: hit.setdefault("panel", 1))
-    result = runner.invoke(cli.app, ["add", str(p), "--name", "dumbly"])
+    result = runner.invoke(cli.app, ["add", str(p), "--name", "dumbly"], input="\n")
     assert result.exit_code == 0, result.output
+    assert "Description (optional)" in result.output
     assert "panel" not in hit
     assert store.resolve("dumbly").meta.mode == "copy"
 
@@ -161,6 +163,10 @@ def test_add_rejects_non_py(tmp_path):
     p = _py(tmp_path, "data", name="notes.txt")
     result = runner.invoke(cli.app, ["add", str(p)])
     assert result.exit_code == 2
+    # Lead with the extensionless-script escape hatch: a file
+    # skit can't classify might still be a real script that just lacks an extension.
+    flat = " ".join(result.output.split())
+    assert "pass --kind <language> for an extensionless script" in flat
 
 
 def test_add_needs_path():
@@ -179,6 +185,82 @@ def test_add_exe(tmp_path):
     result = runner.invoke(cli.app, ["add", str(exe), "--exe", "--name", "tool"])
     assert result.exit_code == 0, result.output
     assert store.resolve("tool").meta.kind == "exe"
+
+
+def test_add_exe_interactive_line_asks_name_and_description(tmp_path, monkeypatch):
+    """The exe add lane no longer asks NOTHING while every sibling reviews identity: in a
+    terminal it line-asks the name (default: the file stem) and a description."""
+    exe = tmp_path / "backup"
+    exe.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    asked: list[str] = []
+
+    def fake_ask(prompt, **kwargs):
+        asked.append(str(prompt))
+        return {"Name in skit": "nightly", "Description (optional)": "runs the backup"}.get(
+            str(prompt), kwargs.get("default", "")
+        )
+
+    monkeypatch.setattr(cli.Prompt, "ask", fake_ask)
+    result = runner.invoke(cli.app, ["add", str(exe), "--exe"])
+    assert result.exit_code == 0, result.output
+    assert any("Name in skit" in a for a in asked)
+    assert any("Description (optional)" in a for a in asked)
+    entry = store.resolve("nightly")
+    assert entry.meta.kind == "exe"
+    assert entry.meta.description == "runs the backup"
+
+
+def test_add_exe_interactive_skips_asks_when_name_and_description_given(tmp_path, monkeypatch):
+    """Interactive, but --name and --description already supplied: each ask is skipped (a
+    flag already answered it), so no line prompt fires and both flags stand."""
+
+    def _boom(*a, **k):
+        raise AssertionError("no ask should fire when the flag already provided the value")
+
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr(cli.Prompt, "ask", _boom)
+    exe = tmp_path / "backup"
+    exe.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    result = runner.invoke(
+        cli.app, ["add", str(exe), "--exe", "--name", "given", "--description", "prewritten"]
+    )
+    assert result.exit_code == 0, result.output
+    entry = store.resolve("given")
+    assert entry.meta.kind == "exe"
+    assert entry.meta.description == "prewritten"
+
+
+def test_add_exe_no_input_never_asks(tmp_path, monkeypatch):
+    """--no-input keeps the deterministic contract: no line prompts at all (a pipe/CI run
+    must never block on Prompt.ask), so the file stem becomes the name."""
+
+    def _boom(*a, **k):
+        raise AssertionError("Prompt.ask must not run under --no-input")
+
+    monkeypatch.setattr(cli.Prompt, "ask", _boom)
+    exe = tmp_path / "archiver"
+    exe.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    result = runner.invoke(cli.app, ["add", str(exe), "--exe", "--no-input"])
+    assert result.exit_code == 0, result.output
+    assert store.resolve("archiver").meta.kind == "exe"  # stem became the name, no ask
+
+
+def test_add_exe_missing_path_errors_before_any_ask(tmp_path, monkeypatch):
+    """The exe existence check is hoisted BEFORE the identity asks: adding a missing path
+    with --exe interactively asks NOTHING (no name/description prompt lands, then a late
+    "File not found") and errors exit 1 — the ordering the prompt lane's _require_file
+    discipline forbids."""
+
+    def _boom(*a, **k):
+        raise AssertionError("the identity asks must not run before the existence check")
+
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr(cli.Prompt, "ask", _boom)
+    missing = tmp_path / "ghost.bin"  # never created
+    result = runner.invoke(cli.app, ["add", str(missing), "--exe"])
+    assert result.exit_code == 1, result.output
+    assert "File not found" in result.output
 
 
 def test_add_cmd_needs_name():
@@ -219,14 +301,14 @@ def test_add_missing_path_clean_error_not_traceback(tmp_path):
 
 
 def test_add_directory_path_clean_error_not_traceback(tmp_path):
-    # A directory raises IsADirectoryError from read_text; must be reported the same clean way
-    # as a missing file, not crash with a traceback.
+    # A directory is present but is not an acceptable source file. Report that truthfully,
+    # without letting read_text raise a traceback or claiming the path is missing.
     d = tmp_path / "adir.py"
     d.mkdir()
     result = runner.invoke(cli.app, ["add", str(d)])
     assert result.exit_code == 1
     assert result.exception is None or isinstance(result.exception, SystemExit)
-    assert "File not found" in result.output
+    assert "Not a file" in result.output
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
@@ -339,6 +421,36 @@ def test_list_description_exact_marker_when_no_description(tmp_path):
     assert cli._list_description(entry) == f"[dim]⚠ missing: {entry.script_path}[/dim]"
 
 
+def test_list_and_show_human_faces_use_translated_kind_labels(tmp_path):
+    """The human list/show faces show the kind's translated LABEL, not its raw registry id:
+    under SKIT_LANG=en, python/prompt/exe render as Python/Prompt/Program. --json is the
+    machine contract and keeps the raw ids untouched."""
+    import json
+
+    store.add_python(_py(tmp_path, "print(1)\n", name="pyjob.py"), name="pyjob")
+    pr = tmp_path / "p.prompt.md"
+    pr.write_text("Do {{a}}\n", encoding="utf-8")
+    store.add_prompt(pr, name="pr")
+    exe = tmp_path / "tool"
+    exe.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    store.add_exe(exe, name="prog")
+    listed = runner.invoke(cli.app, ["list"]).output
+    for label in ("Python", "Prompt", "Program"):
+        assert label in listed  # the Kind column renders the label…
+    assert "python" not in listed  # …and never the raw id (the label is capitalized)
+    # show's (kind · mode) header uses the label too.
+    assert "Python ·" in runner.invoke(cli.app, ["show", "pyjob"]).output
+    assert "Prompt ·" in runner.invoke(cli.app, ["show", "pr"]).output
+    assert "Program ·" in runner.invoke(cli.app, ["show", "prog"]).output
+    # --json keeps the raw registry ids as a stable machine contract, never the labels.
+    payload = json.loads(runner.invoke(cli.app, ["list", "--json"]).output)
+    assert {row["name"]: row["kind"] for row in payload} == {
+        "pyjob": "python",
+        "pr": "prompt",
+        "prog": "exe",
+    }
+
+
 def test_list_description_appends_marker_after_description(tmp_path):
     p = _py(tmp_path, '"""My job."""\nprint(1)\n')
     entry = store.add_python(p, name="gone2", description="My job.")
@@ -437,11 +549,13 @@ def run_entry_spy(monkeypatch):
         invoke_cwd=None,
         script_override=None,
         env_overlay=None,
+        runner=None,
     ):
         calls["entry"] = entry
         calls["extra"] = list(extra_args or [])
         calls["values"] = dict(values or {})
         calls["override"] = script_override
+        calls["runner"] = runner
         return calls.get("code", 0)
 
     monkeypatch.setattr(launcher, "run_entry", fake)
@@ -623,13 +737,15 @@ def test_preset_save_not_found():
 def test_preset_save_python_no_params(tmp_path):
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     result = runner.invoke(cli.app, ["preset", "save", "a", "p"], input="\n")
-    assert result.exit_code == 1  # no managed parameters
+    # A field-less entry has nothing to save: USAGE (2), the same code `run --save-preset`
+    # now uses for this refusal — not 1, which docker-convention reserves for the script.
+    assert result.exit_code == 2  # no managed parameters
 
 
 def test_preset_save_command_no_params(tmp_path):
     store.add_command("echo hi", name="e")  # no placeholders
     result = runner.invoke(cli.app, ["preset", "save", "e", "p"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
 
 
 def test_preset_save_command_with_params(tmp_path, tty, monkeypatch):
@@ -844,6 +960,8 @@ def test_doctor_reports_missing_reference(monkeypatch, tmp_path):
 @pytest.fixture
 def tty(monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
 
 
 def test_parse_selection_variants():
@@ -1065,12 +1183,15 @@ def test_add_summary_escapes_markup_in_name_and_description(tmp_path):
 
 
 def test_add_deps_summary_escapes_markup(tmp_path):
+    # A dep string that is BOTH a valid PEP 508 requirement (extras syntax) and rich markup:
+    # `demo[bold]` parses (package `demo`, extra `bold`) yet `[bold]` reads as a style tag, so
+    # if the summary failed to escape it the literal `[bold]` would vanish from the output.
     result = runner.invoke(
         cli.app,
-        ["add", str(_py(tmp_path, "print(1)\n")), "--dep", "[red]pkg[/red]", "--no-input"],
+        ["add", str(_py(tmp_path, "print(1)\n")), "--dep", "demo[bold]", "--no-input"],
     )
     assert result.exit_code == 0, result.output
-    assert "[red]pkg[/red]" in result.output
+    assert "demo[bold]" in result.output
 
 
 def test_add_not_py_file_warning_escapes_markup_in_filename(tmp_path):
@@ -1165,19 +1286,23 @@ def test_validate_preset_unknown_escapes_markup(tmp_path):
 
 
 def test_deps_view_escapes_markup(tmp_path):
+    # A dependency that is BOTH a valid PEP 508 requirement (extras syntax) and rich
+    # markup (`[bold]` is a style tag): the store now validates deps, so the fake must
+    # parse — but `demo[bold]` still exercises the escape (unescaped, rich would eat the
+    # `[bold]` tag and the literal brackets would vanish from the view).
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
-    runner.invoke(cli.app, ["deps", "a", "--dep", "[red]pkg[/red]", "--python", "[b]>=3[/b]"])
+    result = runner.invoke(cli.app, ["deps", "a", "--dep", "demo[bold]"])
+    assert result.exit_code == 0, result.output
     result = runner.invoke(cli.app, ["deps", "a"])
     assert result.exit_code == 0
-    assert "[red]pkg[/red]" in result.output
-    assert "[b]>=3[/b]" in result.output
+    assert "demo[bold]" in result.output  # brackets survive → the view escaped the markup
 
 
 def test_deps_set_summary_escapes_markup(tmp_path):
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
-    result = runner.invoke(cli.app, ["deps", "a", "--dep", "[red]pkg[/red]"])
+    result = runner.invoke(cli.app, ["deps", "a", "--dep", "demo[bold]"])
     assert result.exit_code == 0
-    assert "[red]pkg[/red]" in result.output
+    assert "demo[bold]" in result.output
 
 
 def test_doctor_rebuild_problem_line_escapes_markup(monkeypatch, tmp_path):

@@ -1,7 +1,7 @@
 """Behavioural tests targeting mutation-testing survivors in skit/cli.py (chunk 5/6).
 
 Covers four helpers: `_render_normalize_warning` (the shell --normalize refusal renderer),
-`_require_py_file` (the add-path existence guard), `_resolve_npm_dependencies` (the js/ts
+`_require_file` (the add-path existence guard), `_resolve_npm_dependencies` (the js/ts
 copy-add dependency resolver), and `_show_command_params` (the command-template read view).
 
 Style matches tests/test_cli.py / tests/test_cli_mut.py: CliRunner is not needed here because
@@ -106,23 +106,23 @@ def test_render_normalize_splits_code_on_first_colon():
 
 
 # ==========================================================================
-# _require_py_file — the add-path existence guard
+# _require_file — the add-path existence guard (kind-neutral since the prompt kind)
 # ==========================================================================
 
 
-def test_require_py_file_missing_names_the_path(tmp_path: Path):
+def test_require_file_missing_names_the_path(tmp_path: Path):
     missing = tmp_path / "ghost.py"
     with pytest.raises(store.StoreError) as excinfo:
-        cli._require_py_file(missing)
+        cli._require_file(missing)
     msg = str(excinfo.value)
     assert "XX" not in msg  # kills the XX-wrapped msgid mutant
     assert msg == f"File not found: {missing}"  # kills str(None) — the real path must be named
 
 
-def test_require_py_file_existing_does_not_raise(tmp_path: Path):
+def test_require_file_existing_does_not_raise(tmp_path: Path):
     present = tmp_path / "real.py"
     present.write_text("print(1)\n", encoding="utf-8")
-    cli._require_py_file(present)  # must not raise for an existing file
+    cli._require_file(present)  # must not raise for an existing file
 
 
 # ==========================================================================
@@ -144,9 +144,10 @@ def test_resolve_npm_no_input_skips_prompt_even_on_a_tty(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     # no_input short-circuits to the scanned suggestions WITHOUT prompting, even on a tty
-    # (the `no_input or not isatty` gate). An `and` mutant would fall through to Prompt.ask.
+    # (the `no_input or not _is_interactive()` gate). An `and` mutant would fall through to Prompt.ask.
     src = _js_file(tmp_path)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
 
     def boom(*a: object, **k: object) -> object:
         raise AssertionError("Prompt.ask must not run under no_input")
@@ -160,6 +161,7 @@ def test_resolve_npm_interactive_prompt_wiring(tmp_path: Path, monkeypatch: pyte
     # suggestion default, and the shared console — and that accepting the default records it.
     src = _js_file(tmp_path)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
     calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
 
     def spy(*a: object, **k: object) -> object:
@@ -184,6 +186,7 @@ def test_resolve_npm_interactive_none_declines(tmp_path: Path, monkeypatch: pyte
     # and try to install a package literally named "none".
     src = _js_file(tmp_path)
     monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
     monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: "none")
     assert cli._resolve_npm_dependencies(src, None, False, _js_scanner()) == []
 

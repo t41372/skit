@@ -103,17 +103,19 @@ def test_params_self_location_hint_exact_text(tmp_path):
     # Exact-case, exact tokens — kills the lowercased-msgid mutant.
     assert "This script locates itself ($0 / BASH_SOURCE)." in out
     assert "skit params loc --normalize NAME" in out
-    assert "${NAME:-default}" in out
+    assert 'NAME="${NAME:-value}"' in out
     # Clean i18n rendering — kills the XX-wrapped-msgid mutant.
     assert "XX" not in result.output
 
 
 def test_params_reference_mode_shell_omits_self_location_hint(tmp_path):
-    """Reference mode skips reconcile (mode != "copy"), so `self_locating` keeps its init.
+    """A reference entry gets the same honest read, but never the --normalize hint.
 
-    The hint must NOT appear — it would if the init flag defaulted to True (init `= True`
-    mutant). The same shell in copy mode DOES show the hint (test above), so this pins the
-    init value, not the absence of self-location in the script.
+    Since #14 both modes run the analyzer, so `self_locating` is COMPUTED here:
+    `not ref_mode and injector and uses_self_location`. The hint must NOT appear —
+    it would if the `not ref_mode` arm flipped or dropped. The same shell in copy
+    mode DOES show the hint (test above), so this pins that arm, not the absence
+    of self-location in the script.
     """
     _shell(tmp_path, _SELF_LOCATING, "refloc", mode="reference")
     result = runner.invoke(cli.app, ["params", "refloc"])

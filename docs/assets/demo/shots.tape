@@ -11,7 +11,7 @@
 # The library holds ONLY Python scripts (skit's exe / command-template support is still thin,
 # so the demo never shows those kinds). greet is pre-added silently; banner is added LIVE in
 # shot 1, which both captures the add panel AND populates the library for shot 2 — and a live
-# Ctrl+A is what gives banner the managed constants the settings shot needs (an interactive
+# Ctrl+S is what gives banner the managed constants the settings shot needs (an interactive
 # `skit add x.py --no-input` deliberately manages nothing).
 #
 # The mp4 Output is mandatory for VHS; record_demo.sh deletes it.
@@ -40,7 +40,7 @@ Show
 
 # 1 — Add review panel: `a` → banner.py → the panel opens with the constants (Message / Times
 #     / Width) detected and pre-ticked. Tab down so the checklist is in view, screenshot, then
-#     Ctrl+A commits banner (managed constants and all) — which also fills the library for shot 2.
+#     Ctrl+S commits banner (managed constants and all) — which also fills the library for shot 2.
 Type "a"
 Sleep 1.5s
 Type "banner.py"
@@ -54,7 +54,7 @@ Screenshot "/out/shot-add.png"
 # settle Sleep — otherwise the frame shows the NEXT interaction (this shipped a library shot
 # with the search-focused footer once).
 Sleep 2s
-Ctrl+A
+Ctrl+S
 Sleep 2s
 
 # 2 — Library workbench: two Python scripts (banner · greet), list + detail + two-line footer.

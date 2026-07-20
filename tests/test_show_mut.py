@@ -52,7 +52,7 @@ def test_show_minimal_output_exact(tmp_path):
     result = runner.invoke(cli.app, ["show", "job"])
     assert result.exit_code == 0, result.output
     assert result.output == (
-        "job  (python · copy)\n"
+        "job  (Python · copy)\n"
         f"  Source: {p}\n"
         "  No form fields — arguments after -- pass straight through to the script.\n"
         "  Run it: skit run job\n"
@@ -81,7 +81,7 @@ def test_show_argparse_output_exact(tmp_path):
     result = runner.invoke(cli.app, ["show", "resize"])
     assert result.exit_code == 0, result.output
     assert result.output == (
-        "resize  (python · copy)\n"
+        "resize  (Python · copy)\n"
         "  resize images\n"
         f"  Source: {p}\n"
         "  Dependencies: pillow>=10,<12, rich>=15,<16\n"
@@ -124,7 +124,7 @@ def test_show_inject_secret_output_exact(tmp_path):
     assert result.exit_code == 0, result.output
     # Pins: masked secret default, env-source arrow, bare-secret "yes", prompt as Help.
     assert result.output == (
-        "api  (python · copy)\n"
+        "api  (Python · copy)\n"
         f"  Source: {p}\n"
         "┏━━━━━━━━━━━┳━━━━━━┳━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━┓\n"
         "┃ Parameter ┃ Type ┃ Required ┃ Default ┃ Choices ┃ Secret         ┃ Help        ┃\n"
@@ -145,7 +145,7 @@ def test_show_command_output_exact():
     result = runner.invoke(cli.app, ["show", "dep"])
     assert result.exit_code == 0, result.output
     assert result.output == (
-        "dep  (command · reference)\n"
+        "dep  (Command · reference)\n"
         "  Working directory: invoke\n"
         "  Command template: echo deploy {target}\n"
         "┏━━━━━━━━━━━┳━━━━━━┳━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━┳━━━━━━┓\n"

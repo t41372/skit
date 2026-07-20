@@ -111,7 +111,15 @@ def suggest_dependencies(text: str) -> list[str]:
     third_party = (m for m in found if m not in stdlib and not m.startswith("_"))
     # Map known import names to their real PyPI distribution names, then dedupe again in case two
     # imports collapse to the same package (e.g. `Crypto` and its submodules -> pycryptodome).
-    return sorted({_IMPORT_TO_PACKAGE.get(m, m) for m in third_party})
+    # A name PEP 508 refuses (`import café` — a legal Python identifier, an illegal
+    # distribution name) is not a suggestion: the non-interactive add accepts
+    # suggestions as-is, and validate-then-write applies to skit's own fabrications
+    # hardest of all.
+    return sorted(
+        n
+        for n in {_IMPORT_TO_PACKAGE.get(m, m) for m in third_party}
+        if requirement_error(n) is None
+    )
 
 
 def _next_nonspace(text: str, pos: int) -> str:
@@ -120,6 +128,41 @@ def _next_nonspace(text: str, pos: int) -> str:
         if not ch.isspace():
             return ch
     return ""
+
+
+def requires_python_error(value: str) -> str | None:
+    """A localized refusal when `value` can't be a requires-python constraint, else
+    None. Validation lives at the intakes, never the launch path (validate-then-write):
+    an unparseable constraint written into a block bricks every subsequent run with
+    uv's raw error — the deferred failure no skit surface would ever have named."""
+    from packaging.specifiers import InvalidSpecifier, SpecifierSet
+
+    from .i18n import gettext
+
+    try:
+        SpecifierSet(value)
+    except InvalidSpecifier:
+        return gettext(
+            '%(value)s isn\'t a Python version constraint (e.g. ">=3.11" or ">=3.12,<3.13").'
+        ) % {"value": value}
+    return None
+
+
+def requirement_error(value: str) -> str | None:
+    """The dependency twin of requires_python_error: a PEP 508 check for one
+    requirement string. npm dependencies are NOT routed here — their grammar belongs
+    to the npm installer, which names its own errors at materialization."""
+    from packaging.requirements import InvalidRequirement, Requirement
+
+    from .i18n import gettext
+
+    try:
+        Requirement(value)
+    except InvalidRequirement:
+        return gettext(
+            '%(value)s isn\'t a package requirement (e.g. "requests" or "rich>=13,<16").'
+        ) % {"value": value}
+    return None
 
 
 def split_requirements(text: str) -> list[str]:

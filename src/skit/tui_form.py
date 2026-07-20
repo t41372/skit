@@ -25,17 +25,28 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Checkbox, Input, Label, OptionList, RadioButton, RadioSet, Static
+from textual.widgets import (
+    Checkbox,
+    Input,
+    Label,
+    OptionList,
+    RadioButton,
+    RadioSet,
+    Select,
+    Static,
+)
 from textual.widgets.option_list import Option
 
-from . import argstate, flows, tokens, tui_footer
+from . import argstate, argv_text, flows, tokens, tui_footer, tui_runner
 from .i18n import gettext
 
 if TYPE_CHECKING:
     from .models import Entry
 
-# The submit result: (raw field values, extra passthrough args) or None on cancel.
-FormResult = tuple[dict[str, str], list[str]] | None
+# The submit result: raw field values, extra passthrough args, selected runner name,
+# and whether the runner picker was actually changed; or None on cancel. The runner
+# is None unless the form showed that picker.
+FormResult = tuple[dict[str, str], list[str], str | None, bool] | None
 
 _EXTRA_KEY = "__extra_args__"
 
@@ -95,9 +106,11 @@ class FieldRow(Vertical):
     """
 
     def __init__(self, field: flows.FormField, prefill: str) -> None:
-        # Field keys are identifiers (argparse dests, [tool.skit] names, placeholders),
-        # so they are valid Textual ids; the ▾ link targets the row through this id.
-        super().__init__(id=f"fr-{field.key}")
+        # Textual ids are ASCII-only, while prompt placeholders deliberately accept
+        # Unicode identifiers. Keep the historical queryable id for ASCII fields and
+        # leave localized rows anonymous; actions resolve rows by their actual field
+        # key below, never by squeezing user data into a CSS identifier.
+        super().__init__(id=f"fr-{field.key}" if field.key.isascii() else None)
         self.field: flows.FormField = field
         self._prefill: str = prefill
 
@@ -141,7 +154,7 @@ class FieldRow(Vertical):
     def _compose_control(self) -> ComposeResult:
         f = self.field
         if f.kind == "bool":
-            on = self._prefill.strip().lower() in ("true", "1", "yes")
+            on = flows.truthy(self._prefill)
             yield Checkbox(gettext("on") if on else gettext("off"), value=on)
         elif f.kind == "choice" and f.choices:
             with RadioSet():
@@ -163,7 +176,7 @@ class FieldRow(Vertical):
     def set_value(self, value: str) -> None:
         f = self.field
         if f.kind == "bool":
-            self.query_one(Checkbox).value = value.strip().lower() in ("true", "1", "yes")
+            self.query_one(Checkbox).value = flows.truthy(value)
         elif f.kind == "choice" and f.choices:
             if value in f.choices:
                 buttons = list(self.query(RadioButton))
@@ -194,8 +207,11 @@ class FieldRow(Vertical):
             return
         lines: list[str] = []
         if tokens.has_tokens(value):
-            expanded, error = tokens.preview(value, cwd=Path.cwd())
-            lines.append(f"→ {escape(error if error else expanded)}")
+            expanded, error = tokens.preview(
+                value, cwd=Path.cwd(), brace_escapes=self.field.source != "placeholder"
+            )
+            if expanded != value or error:
+                lines.append(f"→ {escape(error if error else expanded)}")
         count = flows.glob_feedback(value, Path.cwd())
         if count is not None:
             lines.append(
@@ -412,6 +428,7 @@ class RunFormScreen(Screen[FormResult]):
         Binding("enter", "submit", gettext("Run"), priority=True, show=False),
         Binding("ctrl+r", "submit", gettext("Run"), priority=True),
         Binding("ctrl+t", "insert_token", gettext("Insert value")),
+        Binding("ctrl+n", "new_runner", gettext("New agent"), show=False),
         *tui_footer.FIELD_NAV_BINDINGS,
     ]
     # Boot straight into the first control (not the body scroll container, which the
@@ -429,24 +446,22 @@ class RunFormScreen(Screen[FormResult]):
         border-title-style: bold;
     }
     RunFormScreen #drift-banner, RunFormScreen #degraded-notice { color: $warning; padding: 0 1; }
-    RunFormScreen #preset-row { height: auto; padding: 0 1; }
-    /* Narrow terminals: the caption-beside-chips row and horizontal option sets overflow
-       a Horizontal (it never wraps) — stack them vertically instead. The tier class gives
-       these rules higher specificity than the class-less horizontal rules they override. */
-    RunFormScreen.-w-narrow #preset-row { layout: vertical; }
-    RunFormScreen.-w-narrow #preset-row RadioSet { layout: vertical; }
+    RunFormScreen #preset-row, RunFormScreen #runner-row { height: auto; padding: 0 1; }
+    /* Narrow terminals: the caption-beside-list row overflows a Horizontal (it never
+       wraps) — stack caption above the list instead. The pickers themselves are
+       dropdowns collapse to one row and their overlays scale on their own. */
+    RunFormScreen.-w-narrow #preset-row, RunFormScreen.-w-narrow #runner-row { layout: vertical; }
     RunFormScreen.-w-narrow FieldRow RadioSet { layout: vertical; }
     /* Widgets default to width:1fr; in a Horizontal that lets the "Preset:" caption
-       swallow the whole row and push the chips (or the empty-state hint) clean off the
+       swallow the whole row and push the list (or the empty-state hint) clean off the
        screen. Everything in this row hugs its content. */
-    RunFormScreen #preset-row Static { width: auto; margin: 0 1 0 0; }
-    RunFormScreen #preset-row RadioSet { width: auto; }
+    RunFormScreen #preset-row Static, RunFormScreen #runner-row Static {
+        width: auto; margin: 0 1 0 0;
+    }
     /* The empty-state hint is a long sentence: let it take the row's remaining width and
        wrap, rather than width:auto (its full content width) which overflows a narrow form.
        Two ids outrank the `#preset-row Static` width:auto rule above. */
     RunFormScreen #preset-row #preset-empty { color: $text-muted; width: 1fr; height: auto; }
-    RunFormScreen #preset-row RadioSet { layout: horizontal; height: auto; border: none; }
-    RunFormScreen #preset-row RadioSet > RadioButton { width: auto; margin: 0 2 0 0; }
     RunFormScreen #form-body { padding: 0 1; }
     /* Chips wrap pill-by-pill; visible lines follow the height tier and anything
        past the cap stays wheel-reachable — see tui_footer.KeysBar. */
@@ -471,6 +486,8 @@ class RunFormScreen(Screen[FormResult]):
         plan: flows.FormPlan,
         prefill: dict[str, str],
         include_extra: bool = True,
+        runners: list[str] | None = None,
+        runner_default: str = "",
     ) -> None:
         super().__init__()
         self._entry: Entry = entry
@@ -479,12 +496,36 @@ class RunFormScreen(Screen[FormResult]):
         # The inline (CLI) frame hides the extra-args row: argv already owns passthrough
         # args there, and two sources for the same thing would fight.
         self._include_extra: bool = include_extra
+        # Prompt entries: the runner picker row (mouse- and keyboard-operable, like the
+        # preset chips). The workbench passes the configured names; the CLI's inline
+        # frame passes none — it resolved the runner before opening the form.
+        self._runners: list[str] = runners or []
+        self._runner_default: str = runner_default
+        # A selected value alone cannot prove a pick: a pin may be left untouched,
+        # or a user may deliberately move away and then back to that same pin. Track
+        # the picker event itself, after initial composition has settled.
+        self._runner_pick_armed: bool = False
+        self._runner_was_picked: bool = False
         self._presets: dict[str, dict[str, str]] = argstate.load_state(entry.slug)["presets"]
+        # Armed during the programmatic post-save picker refresh: while set, EVERY
+        # Select.Changed is ignored until the one carrying this value arrives (it is
+        # consumed and the guard clears). Not a single-value one-shot: set_options
+        # first RESETS the value to the blank option, so a refresh performed while a
+        # preset was selected emits an intermediate Changed("") that a one-shot token
+        # would let through — which is how this bug shipped three times. Not a timing
+        # flag either: frame-based guards raced the compositor.
+        self._skip_apply_until: str | None = None
 
     def on_mount(self) -> None:
         self.query_one("#form-panel").border_title = gettext("Run %(name)s") % {
             "name": escape(self._entry.meta.name)
         }
+        self.call_after_refresh(setattr, self, "_runner_pick_armed", True)
+
+    @on(Select.Changed, "#runner-select")
+    def _runner_changed(self, _event: Select.Changed) -> None:
+        if self._runner_pick_armed:
+            self._runner_was_picked = True
 
     @override
     def compose(self) -> ComposeResult:
@@ -495,57 +536,109 @@ class RunFormScreen(Screen[FormResult]):
                 )
             if self._plan.degraded_reason:
                 yield Static(_degraded_notice(self._plan.degraded_reason), id="degraded-notice")
-            with Horizontal(id="preset-row"):
-                yield Static(gettext("Preset:"), markup=False)
-                if self._presets:
-                    with RadioSet(id="preset-set"):
-                        yield RadioButton(gettext("last values"), value=True)
-                        for name in sorted(self._presets):
-                            yield RadioButton(escape(name))
-                else:
-                    # Empty state teaches the Ctrl+S affordance precisely when the user
-                    # has no presets and most needs to learn it (spec §2).
-                    yield Static(
-                        gettext("none yet — fill the form and press Ctrl+S to save one"),
-                        id="preset-empty",
+            if self._runners:
+                with Horizontal(id="runner-row"):
+                    yield Static(gettext("Runner:"), markup=False)
+                    default = (
+                        self._runner_default
+                        if self._runner_default in self._runners
+                        else self._runners[0]
                     )
+                    # A dropdown, deliberately: the runner is a SECONDARY control (the
+                    # pin or last pick is usually right) — collapsed it costs one row
+                    # instead of pushing the actual parameter fields down the screen,
+                    # and the overlay scales to any number of agents.
+                    yield Select(
+                        [(name, name) for name in self._runners],
+                        value=default,
+                        allow_blank=False,
+                        id="runner-select",
+                    )
+                    # Custom agents are first-class: the picker always carries the door
+                    # to define one (footer grammar — the key hint IS the click target).
+                    yield Static(tui_runner.new_runner_chip(), id="runner-new", markup=True)
+            if self._plan.fields:
+                # Field-less forms get no preset row: it existed to teach "fill the
+                # form and press Ctrl+S", the exact action Ctrl+S refuses there.
+                yield from self._compose_preset_row()
             with tui_footer.FormBody(id="form-body"):
                 for f in self._plan.fields:
                     yield FieldRow(f, self._prefill.get(f.key, ""))
                 if self._include_extra:
+                    from .langs.registry import spec_for
+
+                    spec = spec_for(self._entry.meta.kind)
+                    takes_argv = spec is None or spec.takes_argv
+                    if self._entry.meta.kind == "prompt":
+                        extra_label = gettext("Extra agent arguments")
+                    elif self._entry.meta.kind == "command":
+                        extra_label = gettext("Extra command arguments")
+                    else:
+                        extra_label = gettext("Extra arguments (passed to the script as-is)")
                     extra_field = flows.FormField(
                         key=_EXTRA_KEY,
-                        label=gettext("Extra arguments (passed to the script as-is)"),
+                        # Delivery owns the noun: prompt args go to an agent, command
+                        # args extend the command, and program args reach the script.
+                        label=extra_label,
                         source="flag",
                     )
-                    last_extra = argstate.load_state(self._entry.slug)["extra_args"]
-                    # shlex.join, because collect() shlex.split()s: an argument that
-                    # contains spaces must survive the round trip as ONE argument.
-                    import shlex
+                    # Replay semantics mirror the CLI's takes_argv rule: a kind whose
+                    # "arguments" are its placeholders never gets a remembered argv tail
+                    # prefilled — the CLI deliberately refuses to replay there, and the
+                    # form must not resurrect the same surprise.
+                    last_extra = (
+                        argstate.load_state(self._entry.slug)["extra_args"] if takes_argv else []
+                    )
+                    # The matching split in collect() keeps one argument with spaces
+                    # intact and preserves Windows path backslashes.
+                    yield FieldRow(extra_field, argv_text.join(last_extra))
+        chips = [
+            tui_footer.chip("screen.submit", "Enter", gettext("Run")),
+            tui_footer.chip("screen.insert_token", "Ctrl+T", gettext("Insert value")),
+        ]
+        if self._plan.fields:
+            # Advertising Ctrl+S on a field-less form would teach the exact action
+            # it refuses there — same rationale that removed the preset row.
+            chips.append(tui_footer.chip("screen.save_preset", "Ctrl+S", gettext("Save as preset")))
+        chips += [
+            tui_footer.chip("screen.cancel", "Esc", gettext("Cancel")),
+            tui_footer.nav_chip(),
+        ]
+        yield tui_footer.KeysBar(Static(tui_footer.bar(*chips), id="form-keys", markup=True))
 
-                    yield FieldRow(extra_field, shlex.join(last_extra))
-        yield tui_footer.KeysBar(
-            Static(
-                tui_footer.bar(
-                    tui_footer.chip("screen.submit", "Enter", gettext("Run")),
-                    tui_footer.chip("screen.insert_token", "Ctrl+T", gettext("Insert value")),
-                    tui_footer.chip("screen.save_preset", "Ctrl+S", gettext("Save as preset")),
-                    tui_footer.chip("screen.cancel", "Esc", gettext("Cancel")),
-                    tui_footer.nav_chip(),
-                ),
-                id="form-keys",
-                markup=True,
-            )
-        )
+    def _compose_preset_row(self) -> ComposeResult:
+        with Horizontal(id="preset-row"):
+            yield Static(gettext("Preset:"), markup=False)
+            if self._presets:
+                yield Select(
+                    [(gettext("↩ last values"), "")]
+                    + [(name, name) for name in sorted(self._presets)],
+                    value="",
+                    allow_blank=False,
+                    id="preset-select",
+                )
+            else:
+                # Empty state teaches the Ctrl+S affordance precisely when the user
+                # has no presets and most needs to learn it (spec §2).
+                yield Static(
+                    gettext("none yet — fill the form and press Ctrl+S to save one"),
+                    id="preset-empty",
+                )
 
-    @on(RadioSet.Changed, "#preset-set")
-    def _apply_preset(self, event: RadioSet.Changed) -> None:
-        """Chip switch: overlay the whole preset onto the fields ("last values" restores)."""
-        index = event.radio_set.pressed_index
-        names = sorted(self._presets)
-        chosen = (
-            self._prefill if index == 0 else {**self._prefill, **self._presets[names[index - 1]]}
-        )
+    @on(Select.Changed, "#preset-select")
+    def _apply_preset(self, event: Select.Changed) -> None:
+        """Dropdown switch: overlay the whole preset onto the fields ("last values"
+        restores). Value-keyed, so a preset list that changed since compose can never
+        shift the mapping. Suppressed during the post-save picker refresh — reapplying
+        the just-saved preset would resurrect values the user explicitly cleared
+        (empty values are never stored in a preset, so they'd fall back to prefill)."""
+        name = str(event.value)
+        if self._skip_apply_until is not None:
+            if name == self._skip_apply_until:
+                self._skip_apply_until = None  # target seen; later hand-picks apply
+            return
+        preset_values = self._presets.get(name, {})
+        chosen = self._prefill if not name else {**self._prefill, **preset_values}
         for row in self.query(FieldRow):
             if row.field.key != _EXTRA_KEY:
                 row.set_value(chosen.get(row.field.key, ""))
@@ -553,27 +646,60 @@ class RunFormScreen(Screen[FormResult]):
     def _rows(self) -> list[FieldRow]:
         return [row for row in self.query(FieldRow) if row.field.key != _EXTRA_KEY]
 
-    def collect(self) -> tuple[dict[str, str], list[str]]:
-        import shlex
+    def picked_runner(self) -> str | None:
+        """The runner picker's selection, or None when the form has no picker."""
+        if not self._runners:
+            return None
+        value = self.query_one("#runner-select", Select).value
+        return None if value is Select.NULL else str(value)
 
+    def action_new_runner(self) -> None:
+        """Ctrl+N / the New agent… chip: define a custom runner without leaving the
+        form — it lands in config, joins the picker, and is selected immediately."""
+        if not self._runners:
+            return  # no picker on this form (non-prompt entry, or the CLI inline frame)
+
+        def _added(name: str | None) -> None:
+            if not name:
+                return
+            self._runners.append(name)
+            select = self.query_one("#runner-select", Select)
+            select.set_options([(n, n) for n in self._runners])
+            select.value = name
+
+        self.app.push_screen(tui_runner.RunnerAddModal(), _added)
+
+    def collect(self) -> tuple[dict[str, str], list[str]]:
         values = {row.field.key: row.value for row in self._rows()}
         extra_row = next((row for row in self.query(FieldRow) if row.field.key == _EXTRA_KEY), None)
         if extra_row is None:
             return values, []
         try:
-            extra = shlex.split(extra_row.value)
+            extra = argv_text.split(extra_row.value)
         except ValueError:
             extra = [extra_row.value] if extra_row.value else []
         return values, extra
 
     def action_submit(self) -> None:
+        # Enter is priority-bound to submit-from-any-field; when a dropdown owns the
+        # focus, Enter must keep operating the dropdown instead (open it, or choose
+        # the highlighted option in its overlay) — the shim that lets Select coexist
+        # with the submit muscle memory.
+        focused = self.focused
+        if isinstance(focused, Select):
+            focused.expanded = not focused.expanded
+            return
+        if focused is not None and any(isinstance(a, Select) for a in focused.ancestors):
+            if isinstance(focused, OptionList) and focused.highlighted is not None:
+                focused.action_select()
+            return
         values, extra = self.collect()
         errors = flows.validate(self._plan, values)
         if errors:
             for row in self._rows():
                 row.show_error(errors.get(row.field.key))
             return
-        self.dismiss((values, extra))
+        self.dismiss((values, extra, self.picked_runner(), self._runner_was_picked))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -583,7 +709,12 @@ class RunFormScreen(Screen[FormResult]):
         cursor of the focused text field. Secrets are excluded — their values skip
         token expansion by design."""
         if key:
-            row = self.query_one(f"#fr-{key}", FieldRow)  # pragma: no mutate — expect_type is a pure runtime assertion; None/omitted return the same unique #fr-<key> match (equivalents); the selector-drop variant stays pinned by test_insert_token_opens_menu_for_the_named_field  # fmt: skip
+            row = next(
+                (candidate for candidate in self.query(FieldRow) if candidate.field.key == key),
+                None,
+            )
+            if row is None:
+                return
         else:
             focused = self.focused
             if not isinstance(focused, Input):
@@ -604,7 +735,24 @@ class RunFormScreen(Screen[FormResult]):
         self.app.push_screen(TokenMenuModal(), _insert)
 
     def action_save_preset(self) -> None:
-        values, _extra = self.collect()
+        if not self._plan.fields:
+            # The always-open form shows this row on field-less entries too — saving
+            # there would create an EMPTY preset (the `skit preset save` CLI refuses
+            # the same thing with the same sentence).
+            self.notify(
+                gettext("%(name)s has no form fields, so there's nothing to save.")
+                % {"name": self._entry.meta.name},
+                severity="warning",
+            )
+            return
+        collected, _extra = self.collect()
+        # The CLI opens a REDUCED form when --set fixed some fields: those values ride
+        # in the prefill but have no composed row, and a preset saved here must capture
+        # them too — `--save-preset` on the identical run does (one feature, one rule).
+        values = {
+            **{k: v for k, v in self._prefill.items() if v and k not in collected},
+            **collected,
+        }
 
         def _named(name: str | None) -> None:
             if not name:
@@ -616,6 +764,32 @@ class RunFormScreen(Screen[FormResult]):
                 secret_names=self._plan.secret_names,
             )
             self._presets = argstate.load_state(self._entry.slug)["presets"]
-            self.notify(gettext('Preset "%(preset)s" saved.') % {"preset": name})
+            self._refresh_preset_picker(name)
+            self.notify(
+                gettext('Preset "%(preset)s" saved.') % {"preset": name}, severity="information"
+            )
 
         self.app.push_screen(PresetNameModal(set(self._presets)), _named)
+
+    def _refresh_preset_picker(self, selected: str) -> None:
+        """After Ctrl+S the dropdown must show the preset that was just saved — a row
+        still reading "none yet — press Ctrl+S" right after the user did exactly that
+        is the UI contradicting the user's own action. The refresh must NOT touch the
+        FIELDS at all (the form already holds exactly what the user typed/cleared):
+        every Changed the refresh emits — including set_options' blank reset — is
+        swallowed until the target value lands (see _apply_preset)."""
+        self._skip_apply_until = selected
+        options = [(gettext("↩ last values"), "")] + [(n, n) for n in sorted(self._presets)]
+        existing = self.query("#preset-select")
+        if existing:
+            select = existing.first(Select)
+            select.set_options(options)
+            select.value = selected
+            return
+        # No #preset-select means the row still holds the empty-state hint (the two are
+        # mutually exclusive at compose, and the branch above owns the other case) — swap
+        # it for a real dropdown, selected on the just-saved preset.
+        self.query_one("#preset-empty", Static).remove()
+        self.query_one("#preset-row").mount(
+            Select(options, value=selected, allow_blank=False, id="preset-select")
+        )

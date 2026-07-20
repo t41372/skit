@@ -29,9 +29,9 @@ Staleness is a content hash: `node_modules/.skit-deps-ok` records the sha256 of 
 manifest plus the installer's name. Deps edited → hash mismatch → reinstall; node_modules deleted
 → marker gone → reinstall; nothing changed → one file read, no subprocess. The marker lives
 *inside* node_modules so wiping the tree can never leave a stale "ok" behind. The whole
-check-clean-install-stamp cycle runs under a per-entry advisory lock (same O_CREAT|O_EXCL +
-stale-reclaim discipline as store._registry_lock), so two concurrent runs of one entry can't
-race their installers over the same directory.
+check-clean-install-stamp cycle runs under the same persistent OS-backed advisory lock primitive
+as config/store metadata, so two concurrent runs of one entry can't race their installers over
+the same directory and a crashed installer releases ownership in the kernel.
 """
 
 from __future__ import annotations
@@ -39,7 +39,6 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -47,6 +46,7 @@ import sys
 import time
 from typing import TYPE_CHECKING
 
+from ...atomic import advisory_file_lock
 from ...i18n import gettext
 from ..base import NotExecutableError
 
@@ -56,14 +56,12 @@ if TYPE_CHECKING:
 
 _UTF8 = "utf-8"  # pragma: no mutate — "utf-8"/"UTF-8" codec alias
 _MARKER = ".skit-deps-ok"
-_LOCK_NAME = ".skit-deps.lock"
-# An install holding the lock longer than this is presumed crashed and reclaimed. Generous:
-# a cold-cache install of a heavy tree can legitimately take minutes. Accepted trade-off
-# (documented, like the live-run race): an install genuinely exceeding this has its lock
-# reclaimed by a concurrent run — the lock mtime is set once at creation, and a refresh
-# heartbeat would need a thread the launch path doesn't otherwise carry.
-_LOCK_STALE_SECONDS = 600.0
-_LOCK_POLL_SECONDS = 0.1
+_LOCK_SUFFIX = ".skit-deps.native.lock"
+
+
+def _install_lock_path(entry_dir: Path) -> Path:
+    return entry_dir.parent.parent / ".locks" / f"{entry_dir.name}{_LOCK_SUFFIX}"
+
 
 # argv tail per installer (the program path is resolved separately). npm's flags cut the advisory
 # noise (audit/fund chatter) and disable lifecycle scripts; bun needs its own --ignore-scripts
@@ -238,65 +236,20 @@ def require_installer(runner: str) -> str:
 
 @contextlib.contextmanager
 def _install_lock(entry_dir: Path) -> Iterator[None]:
-    """Serialize install/clean for ONE entry across processes — same portable advisory-lock
-    discipline as store._registry_lock (O_CREAT|O_EXCL lockfile, stale-age reclaim so a crashed
-    holder can't wedge the entry forever). Without it, two concurrent first runs both see a
-    stale marker and race two installers over one directory."""
-    lock_path = entry_dir / _LOCK_NAME
-    # A unique per-acquisition token, written into the lockfile, so release removes OUR lock and
-    # not a successor's. Without it, a holder whose over-running install was stale-reclaimed would,
-    # on its late release, blindly unlink the successor's fresh lockfile — admitting a THIRD
-    # concurrent installer over one directory and a marker stamped atop the wreckage.
-    token = f"{os.getpid()}-{os.urandom(8).hex()}".encode()
-    while True:
-        try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
-            # Contention: a holder exists — reclaim if it looks crashed (age-based, not token: a
-            # presumed-dead holder's token is meaningless), else wait our turn. Two waiters both
-            # reclaiming inside the stale window can briefly double-install — the same accepted
-            # >_LOCK_STALE_SECONDS reclaim trade-off documented above, not a wedge.
-            try:
-                age = time.time() - lock_path.stat().st_mtime
-            except OSError:
-                age = _LOCK_STALE_SECONDS + 1  # vanished mid-check; treat as reclaimable
-            if age > _LOCK_STALE_SECONDS:
-                try:
-                    lock_path.unlink()
-                except FileNotFoundError:
-                    pass  # another waiter reclaimed it first — retry the acquisition
-                except OSError as exc:
-                    # A stale lock we CANNOT remove (read-only dir, permissions mishap):
-                    # retrying would busy-loop forever, so fail with the same 126-family
-                    # message the unwritable-dir creation path uses.
-                    raise NotExecutableError(
-                        gettext("Couldn't prepare the dependency environment: %(error)s")
-                        % {"error": exc.strerror or str(exc)}
-                    ) from exc
-            else:
-                time.sleep(_LOCK_POLL_SECONDS)
-            continue
-        except OSError as exc:
-            # Not contention — the lock file can't be created at all (read-only entry dir,
-            # permissions mishap). Report it as the 126 family every other dependency
-            # prerequisite uses, not a raw traceback at the script's own exit code.
-            raise NotExecutableError(
-                gettext("Couldn't prepare the dependency environment: %(error)s")
-                % {"error": exc.strerror or str(exc)}
-            ) from exc
-        else:
-            with contextlib.suppress(OSError):  # a failed token write degrades to reclaim-only
-                os.write(fd, token)
-            os.close(fd)
-            break
+    """Serialize install/clean for one entry across threads and processes.
+
+    The persistent lock is a sibling of ``entry_dir`` so removing the entry cannot
+    unlink a live lock and admit a waiter on a replacement inode.
+    """
+    lock_path = _install_lock_path(entry_dir)
     try:
-        yield
-    finally:
-        # Release only our own lock: if a stale-reclaim already replaced it with a successor's
-        # fresh lockfile, the token won't match and we leave that one alone.
-        with contextlib.suppress(OSError):
-            if lock_path.read_bytes() == token:
-                lock_path.unlink()
+        with advisory_file_lock(lock_path, poll_seconds=0.1):
+            yield
+    except OSError as exc:
+        raise NotExecutableError(
+            gettext("Couldn't prepare the dependency environment: %(error)s")
+            % {"error": exc.strerror or str(exc)}
+        ) from exc
 
 
 # CSI/SGR escape sequences: deno colorizes stderr even into a pipe, and raw escape bytes must

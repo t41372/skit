@@ -216,7 +216,7 @@ def test_detail_lines_surround_description_with_blank_separators(tmp_path):
 
 def test_detail_lines_no_description_placeholder_is_verbatim(tmp_path):
     """With no description the placeholder renders exactly. Kills its ``gettext(None)``,
-    "XX...XX" wrap, "Script settings" -> "script settings", and full-uppercase mutants."""
+    "XX...XX" wrap, "Entry settings" -> "entry settings", and full-uppercase mutants."""
     entry = store.add_python(_py(tmp_path, "print(1)\n"), name="a", description="")
     lines = tui.MenuApp()._detail_lines(entry)
-    assert "[dim](no description — add one in Script settings)[/dim]" in lines
+    assert "[dim](no description — add one in Entry settings)[/dim]" in lines

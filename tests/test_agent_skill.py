@@ -136,3 +136,15 @@ def test_the_skill_never_mentions_json_free_surfaces_wrongly():
         command, _ = _resolve(root, tokens)
         allowed = {opt for param in command.params for opt in param.opts}
         assert "--json" in allowed, f"--json documented but not offered: {line}"
+
+
+def test_skill_describes_placeholder_delivery_for_both_real_entry_kinds():
+    text = ROOT_SKILL.read_text(encoding="utf-8")
+    assert "registered command template or prompt body" in text
+    assert "placeholder` (command templates and prompt bodies)" in text
+
+
+def test_skill_teaches_executable_empty_value_spellings_for_clearing_pins():
+    commands = [shlex.split(line, comments=True) for line in _skill_command_lines()]
+    assert ["skit", "params", "<name>", "--runner", ""] in commands
+    assert ["skit", "params", "<name>", "--interpreter", ""] in commands

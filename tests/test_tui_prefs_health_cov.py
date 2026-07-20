@@ -161,6 +161,23 @@ async def test_prefs_selecting_custom_reveals_only_that_axis_inputs(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+async def test_after_run_choices_state_the_output_visibility_tradeoff(tmp_path):
+    """The preference copy must not imply that both modes retain child output.
+
+    Exit leaves the primary terminal visible; stay deliberately resumes the Library
+    immediately instead of adding a keyboard-only acknowledgment pause.
+    """
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesScreen())
+        await pilot.pause()
+        buttons = list(app.screen.query_one("#pf-after", RadioSet).query(RadioButton))
+        assert [str(button.label) for button in buttons] == [
+            "Quit skit — leave the run's output in the terminal",
+            "Return to the Library immediately",
+        ]
+
+
 async def test_prefs_save_off_persists_editor_form_and_disables_mirror(tmp_path):
     """Saving with the default "off" mirror writes editor + form, clears the language
     (still "auto"), disables the mirror, and dismisses True."""
@@ -210,6 +227,38 @@ async def test_prefs_save_custom_non_https_uv_is_blocked(tmp_path):
     assert "XX" not in error  # an XX-wrapped msgid contains the original as a substring
     assert results == []  # blocked, not dismissed
     assert config.load_mirror().enabled is False  # nothing persisted for the mirror
+
+
+async def test_prefs_save_is_atomic_a_bad_github_base_persists_nothing(tmp_path):
+    """action_save is validate-then-write: an http:// github-release base (the axis that
+    derives the DOWNLOADED-AND-EXECUTED uv binary) refuses BEFORE any section is
+    persisted, so editor/form/after-run/js — all edited in this same save — stay
+    unchanged on disk. A half-written save would make the Esc "unsaved changes" guard a
+    lie."""
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(PreferencesScreen())
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, PreferencesScreen)
+        # Edit every persisted section, THEN break the github base so the save must refuse.
+        screen.query_one("#pf-editor", Input).value = "micro"
+        list(screen.query_one("#pf-form", RadioSet).query(RadioButton))[1].value = True  # plain
+        list(screen.query_one("#pf-after", RadioSet).query(RadioButton))[1].value = True  # stay
+        list(screen.query_one("#pf-js", RadioSet).query(RadioButton))[2].value = True  # bun
+        gh_rb = list(screen.query_one("#pf-mirror-github", RadioSet).query(RadioButton))
+        gh_rb[len(config.GITHUB_RELEASE_PRESETS)].value = True  # github "custom"
+        await pilot.pause()
+        screen.query_one("#pf-github", Input).value = "http://mirror.example/gh"  # not https
+        screen.action_save()
+        await pilot.pause()
+        assert isinstance(app.screen, PreferencesScreen)  # refused → stayed open
+    # NOTHING was persisted — the refusal fired before the first config write.
+    assert config.load_editor() == ""
+    assert config.load_form() == "tui"
+    assert config.load_after_run() == "exit"
+    assert config.load_js_runner() == ""
+    assert config.load_mirror().enabled is False
 
 
 async def test_prefs_save_custom_https_urls_persist(tmp_path):
@@ -569,7 +618,7 @@ async def test_health_lists_drift_issue_and_mirror_on(tmp_path):
         app.push_screen(HealthScreen())
         await pilot.pause()
         text = _screen_text(app.screen)
-        assert "Issues (Enter jumps to the script):" in text
+        assert "Issues (Enter jumps to the entry):" in text
         assert "Mirrors: pypi=tsinghua" in text
         assert "github=nju" in text
         assert "npm=npmmirror" in text
@@ -617,6 +666,58 @@ async def test_health_selecting_issue_jumps_to_that_script(tmp_path):
         issues.action_select()
         await pilot.pause()
     assert results == [slug]
+
+
+async def test_health_enter_jumps_via_auto_focus(tmp_path):
+    """AUTO_FOCUS puts the keyboard on the issues list, so the advertised Enter lands on a
+    row (not the scroll container) and dismisses with its slug — pressing the real key, not
+    calling the action, proves the focus wiring."""
+    slug = _rich_health_setup(tmp_path)
+    results: list[str | None] = []
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(HealthScreen(), results.append)
+        await pilot.pause()
+        issues = app.screen.query_one("#hc-issues", OptionList)
+        assert issues.has_focus  # AUTO_FOCUS parked the keyboard on the list
+        issues.highlighted = 0
+        await pilot.press("enter")
+        await pilot.pause()
+    assert results == [slug]
+
+
+async def test_health_ctrl_r_rebuilds(tmp_path):
+    """Rebuild is Ctrl+R per the key grammar (it refreshes the screen's subject): pressing
+    the real chord runs the rebuild and the report line appears."""
+    store.add_python(_py(tmp_path, "print(1)\n"), name="ok")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(HealthScreen())
+        await pilot.pause()
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+        report = str(app.screen.query_one("#hc-rebuilt", Static).render())
+    assert "Index rebuilt" in report
+
+
+async def test_health_rebuild_recomposes_entry_count_and_keeps_report(tmp_path):
+    """A rebuild recomposes the whole screen (the settings-resync discipline), so the entry
+    count reflects the rebuilt reality instead of a stale snapshot contradicting the "Index
+    rebuilt: N" line — and the outcome report survives the recompose via the instance."""
+    store.add_python(_py(tmp_path, "print(1)\n"), name="ok")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = HealthScreen()
+        app.push_screen(screen)
+        await pilot.pause()
+        assert "1 entry registered" in _screen_text(screen)
+        # A second entry lands AFTER the screen composed — the displayed count is now stale.
+        store.add_python(_py(tmp_path, "print(2)\n", "two.py"), name="second")
+        screen.action_rebuild()
+        await pilot.pause()
+        text = _screen_text(screen)
+        assert "2 entries registered" in text  # the count updated via the recompose
+        assert "Index rebuilt: 2 entries" in text  # the report survived the recompose
 
 
 async def test_health_action_jump_dismisses_to_highlighted(tmp_path):

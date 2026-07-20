@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import tomllib
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,6 +24,101 @@ import tomli_w
 # POSIX replaces open files freely, so this path never fires there.
 _REPLACE_RETRIES = 7  # sleeps: 0.01 · 0.02 · 0.04 · 0.08 · 0.16 · 0.32 · 0.64 s
 _REPLACE_BACKOFF_START = 0.01
+
+_LOCK_POLL_SECONDS = 0.05
+_WINDOWS = sys.platform == "win32"
+_THREAD_LOCKS: dict[str, threading.Lock] = {}
+_THREAD_LOCKS_GUARD = threading.Lock()
+
+
+def _thread_lock_for(lock_path: Path) -> threading.Lock:
+    """One in-process mutex per absolute path; OS locks provide cross-process exclusion."""
+    key = os.path.abspath(os.fspath(lock_path))
+    with _THREAD_LOCKS_GUARD:
+        return _THREAD_LOCKS.setdefault(key, threading.Lock())
+
+
+def _windows_lock_module() -> Any:
+    import msvcrt
+
+    return msvcrt
+
+
+def _posix_lock_module() -> Any:
+    import fcntl
+
+    return fcntl
+
+
+def _try_native_lock(fd: int) -> bool:
+    if _WINDOWS:
+        msvcrt = _windows_lock_module()
+        os.lseek(fd, 0, os.SEEK_SET)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        except OSError as exc:
+            if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                return False
+            raise
+        return True
+    fcntl = _posix_lock_module()
+    exclusive_nonblocking = fcntl.LOCK_EX | fcntl.LOCK_NB
+    try:
+        fcntl.flock(fd, exclusive_nonblocking)
+    except OSError as exc:
+        if exc.errno in {errno.EACCES, errno.EAGAIN}:
+            return False
+        raise
+    return True
+
+
+def _unlock_native(fd: int) -> None:
+    if _WINDOWS:
+        msvcrt = _windows_lock_module()
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        return
+    fcntl = _posix_lock_module()
+    fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+@contextlib.contextmanager
+def advisory_file_lock(
+    lock_path: Path,
+    *,
+    poll_seconds: float = _LOCK_POLL_SECONDS,
+) -> Iterator[None]:
+    """Serialize a filesystem transaction across processes and threads.
+
+    Atomic replacement protects a single write from torn contents; callers still need
+    this lock around the whole read-modify-write transaction to prevent last-writer-wins
+    data loss. The lockfile is persistent and never unlinked: POSIX ``flock`` and
+    Windows' one-byte ``msvcrt.locking`` are released by the kernel when a process
+    exits, so crash recovery needs no racy age/stat/unlink lease. A per-path thread lock
+    supplies the same exclusion within one process on every supported OS.
+    """
+    process_lock = _thread_lock_for(lock_path)
+    process_lock.acquire()
+    fd = -1
+    native_locked = False
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        if os.fstat(fd).st_size == 0:
+            os.write(fd, b"\0")  # Windows locks one real byte; concurrent initialization is benign.
+        while not _try_native_lock(fd):
+            time.sleep(poll_seconds)
+        native_locked = True
+        yield
+    finally:
+        try:
+            if fd >= 0:
+                if native_locked:
+                    with contextlib.suppress(OSError):
+                        _unlock_native(fd)
+                os.close(fd)
+        finally:
+            process_lock.release()
 
 
 def _replace_with_retry(src: str, dst: Path) -> None:

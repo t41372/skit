@@ -135,8 +135,8 @@ def test_duplicate_top_level_const_mixed_ann_assign():
 
 
 def test_duplicate_const_injection_no_longer_corrupts_source():
-    # End-to-end regression for the finding: a valid script with a duplicate top-level const used
-    # to become unparseable (str case) or silently run with the wrong value (int case) once
+    # A valid script with a duplicate top-level const used to become unparseable (str case) or
+    # silently run with the wrong value (int case) once
     # injected. With a single deduped candidate/spec, shim replaces every same-named occurrence
     # exactly once and the result stays valid and correct.
     from skit.langs.python import shim
@@ -153,7 +153,7 @@ def test_duplicate_const_injection_no_longer_corrupts_source():
     ast.parse(injected)  # must still be valid Python (used to raise SyntaxError)
 
 
-# ---------- callmatch.match_calls: prompt-keyed input matching (3a) ----------
+# ---------- callmatch.match_calls: prompt-keyed input matching ----------
 
 
 def test_match_inputs_prompt_survives_position_shift():
@@ -168,8 +168,8 @@ def test_match_inputs_prompt_survives_position_shift():
 
 def test_match_inputs_falls_back_to_position_when_no_prompt_recorded():
     # Legacy/dynamic-prompt entries (prompt="") have no stronger signal than position, and that's
-    # not a NEW risk introduced by 3a, so it must resolve silently (ambiguous=False), same as
-    # pre-3a behaviour.
+    # not a newly introduced risk, so it resolves silently (ambiguous=False), matching the
+    # previous positional behavior.
     stored = [(0, "")]
     current = [(0, "Anything: ")]
     assert callmatch.match_calls(stored, current) == {0: (0, False)}
@@ -178,8 +178,7 @@ def test_match_inputs_falls_back_to_position_when_no_prompt_recorded():
 def test_match_inputs_flags_ambiguous_when_prompt_renamed_but_position_still_exists():
     # The stored prompt no longer appears anywhere in the current source (renamed), but a call
     # still exists at the stored position: fall back to position, but flag it -- the caller must
-    # surface a warning rather than silently trusting it (this is the rebind risk 3a exists to
-    # catch).
+    # surface a warning rather than silently trusting it.
     stored = [(0, "Old prompt: ")]
     current = [(0, "New prompt: ")]
     bindings = callmatch.match_calls(stored, current)

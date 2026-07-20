@@ -103,6 +103,12 @@ def _isolate_skit_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # matter how deep the tmp path is (pytest's counter climbs across a session and under mutmut).
     monkeypatch.setenv("COLUMNS", "200")
 
+    # Hermetic terminal capabilities: several CLI tests force `_is_interactive()` true to
+    # exercise the Textual form path.  Their result must not depend on whether the shell that
+    # launched pytest exported TERM=dumb (which deliberately selects the plain fallback in
+    # production).  Tests for that fallback set TERM=dumb explicitly after this fixture runs.
+    monkeypatch.setenv("TERM", "xterm-256color")
+
     # Hermetic color, second layer: the import-time scrub above already cleaned the
     # process env; this keeps any subprocess a test spawns clean too, even if a test
     # setenv'd something exotic in between.

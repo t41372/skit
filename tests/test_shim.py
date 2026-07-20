@@ -340,8 +340,8 @@ def test_const_injection_survives_u2028_inside_earlier_string_literal():
 
 
 def test_preamble_insertion_survives_form_feed_inside_docstring():
-    """Reproduces the silent-failure half of the finding: a form feed embedded inside the module
-    docstring makes str.splitlines() split the docstring into two entries, so the *_insert_preamble*
+    """A form feed embedded inside the module docstring makes str.splitlines() split the
+    docstring into two entries, so the *_insert_preamble*
     index (computed from the true, 1-entry-per-docstring AST line count) lands one entry early --
     squarely inside the docstring's text. The result still compiles (it's still valid Python), but
     input() is never actually overridden, and the queued value is silently dropped with no error at
@@ -356,12 +356,12 @@ def test_preamble_insertion_survives_form_feed_inside_docstring():
     assert "Bob" in _run_injected(out)  # the value actually reaches the script, not stdin
 
 
-# ---------- 3a: input values are bound to their prompt/call site, not runtime call order ----------
+# ---------- Input values are bound to their prompt/call site, not runtime call order ----------
 
 
 def test_input_value_follows_prompt_despite_runtime_call_order_diverging_from_source_order():
-    """Reproduces the major finding at shim.py:233: a function's input() is defined ABOVE a
-    top-level input() in source order, but only invoked (at runtime) AFTER it runs. The old design
+    """A function's input() is defined ABOVE a top-level input() in source order, but only
+    invoked (at runtime) AFTER it runs. The old design
     queued/consumed values by a single global runtime counter keyed to *source* order, so the
     top-level call (which actually runs first) stole the function's queued value and vice versa --
     silently swapping a secret into the wrong variable. Binding by call site (not a shared counter)

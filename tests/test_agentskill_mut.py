@@ -22,7 +22,7 @@ def test_skill_text_returns_the_bundled_skill_content() -> None:
     assert "\nname: skit\n" in text
     assert "\nlicense: MIT\n" in text
     # Body: the document's own H1 heading, unique to the real SKILL.md.
-    assert "# skit — the user's script library" in text
+    assert "# skit — the user's entry library" in text
 
 
 def test_skill_text_matches_the_file_on_disk() -> None:

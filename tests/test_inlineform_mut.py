@@ -42,11 +42,11 @@ def test_collect_wires_entry_plan_and_prefill_into_the_app(monkeypatch):
 
     def fake_run(
         app_self: inlineform._InlineFormApp, **kwargs: object
-    ) -> tuple[dict[str, str], list[str]]:
+    ) -> tuple[dict[str, str], list[str], str | None, bool]:
         captured["entry"] = app_self._entry
         captured["plan"] = app_self._plan
         captured["prefill"] = app_self._prefill
-        return {"m": "x"}, []
+        return {"m": "x"}, [], None, False
 
     monkeypatch.setattr(inlineform._InlineFormApp, "run", fake_run)
     inlineform.collect(entry, plan, prefill)

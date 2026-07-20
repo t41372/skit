@@ -12,14 +12,15 @@ import contextlib
 import hashlib
 import os
 import shutil
-import time
+import stat
 import tomllib
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from . import argstate, pep723
-from .atomic import atomic_write_toml
+from . import argstate, paths, pep723
+from .atomic import advisory_file_lock, atomic_write_toml
 from .i18n import gettext
 from .langs import registry
 from .langs.registry import stored_name
@@ -31,14 +32,6 @@ from .paths import registry_path, scripts_dir
 # invalid TOML, or valid TOML missing a required key are all "this entry is corrupt" — never a bare
 # KeyError/OSError escaping to a caller that only handles store errors (models.py:64, store.py:210).
 _META_CORRUPTION = (OSError, tomllib.TOMLDecodeError, ScriptMetaError)
-
-# Registry read-modify-write lock (concurrency, store.py:181): a portable advisory lockfile via
-# O_CREAT|O_EXCL, with retry + a stale-lock timeout so a crashed holder can't wedge the store
-# forever. skit is a single-user CLI/TUI tool, so contention is rare and short-lived; this closes
-# the remaining race left after the filesystem-truth fix below (_fs_truth) already prevents the
-# worst case (a silent overwrite) even without a lock.
-_LOCK_STALE_SECONDS = 30
-_LOCK_POLL_SECONDS = 0.05
 
 
 class StoreError(Exception):
@@ -67,6 +60,11 @@ def _hash_file(path: Path) -> str:
     return f"sha256:{h.hexdigest()}"
 
 
+def _hash_bytes(data: bytes) -> str:
+    """Hash the exact payload snapshot already used for decoding and analysis."""
+    return f"sha256:{hashlib.sha256(data).hexdigest()}"
+
+
 def _read_meta(entry_dir: Path) -> ScriptMeta:
     with open(entry_dir / "meta.toml", "rb") as f:
         return ScriptMeta.from_toml_dict(tomllib.load(f))
@@ -74,6 +72,28 @@ def _read_meta(entry_dir: Path) -> ScriptMeta:
 
 def _write_meta(entry_dir: Path, meta: ScriptMeta) -> None:
     atomic_write_toml(entry_dir / "meta.toml", meta.to_toml_dict())
+
+
+def _entry_lock_path(slug: str) -> Path:
+    # Outside scripts/, never a child of the directory remove() deletes. Keeping the lock in
+    # entry.dir would let rmtree unlink a live lock and a waiter acquire a replacement while
+    # deletion is still in progress. doctor only scans scripts/ directories, so the
+    # persistent lock directory is not an apparent entry either.
+    return scripts_dir().parent / ".locks" / f"{slug}.meta.lock"
+
+
+@contextlib.contextmanager
+def _locked_entry(name_or_slug: str) -> Iterator[Entry]:
+    """Yield fresh metadata while holding this entry's cross-process RMW lock.
+
+    ``atomic_write_toml`` prevents torn TOML, but it cannot stop two setters from
+    replacing each other's unrelated fields after both resolved the same old snapshot.
+    Resolve once to locate the stable slug directory, acquire its lock, then resolve
+    again so every writer mutates the latest committed metadata.
+    """
+    initial = resolve(name_or_slug)
+    with advisory_file_lock(_entry_lock_path(initial.slug)):
+        yield resolve(initial.slug)
 
 
 def _load_registry() -> dict[str, dict[str, Any]]:
@@ -103,34 +123,15 @@ def _save_registry(entries: dict[str, dict[str, Any]]) -> None:
 def _registry_lock() -> Iterator[None]:
     """Serialize the registry read-modify-write + slug allocation across processes.
 
-    A portable advisory lock (no fcntl/msvcrt split needed): an exclusive lockfile created with
-    O_CREAT|O_EXCL. A holder that never releases it (crashed mid-operation) is reclaimed once the
-    lockfile is older than _LOCK_STALE_SECONDS, so a dead process can't wedge the store forever.
+    The persistent OS-backed lock is shared with config, per-entry metadata and JS
+    installs; a crashed process releases it in the kernel without unlink races.
     """
-    lock_path = registry_path().with_suffix(".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    while True:
-        try:
-            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
-            try:
-                age = time.time() - lock_path.stat().st_mtime
-            except OSError:
-                age = _LOCK_STALE_SECONDS + 1  # vanished mid-check; treat as reclaimable
-            if age > _LOCK_STALE_SECONDS:
-                with contextlib.suppress(OSError):
-                    lock_path.unlink()
-            else:
-                time.sleep(_LOCK_POLL_SECONDS)
-            continue
-        else:
-            os.close(fd)
-            break
-    try:
+    # Version the protocol path: released skit builds used registry.lock as an
+    # O_EXCL lease and would stall for 30s then unlink a persistent native inode.
+    # Different protocol versions cannot safely synchronize, but they must not
+    # sabotage or impose a guaranteed delay on each other during a downgrade.
+    with advisory_file_lock(registry_path().with_suffix(".native.lock")):
         yield
-    finally:
-        with contextlib.suppress(OSError):
-            lock_path.unlink()
 
 
 def _unique_slug(base: str, existing: set[str]) -> str:
@@ -189,7 +190,15 @@ def infer_kind(path: Path, force_exe: bool = False) -> str:
     """What kind of entry a path should become. Delegates to the language registry
     (langs.registry.infer_kind) — kept as a store-level name because the CLI and the
     TUI add panel both resolve inference through the store, so the two paths can't
-    drift apart."""
+    drift apart.
+
+    Skit's own kept drafts are the one exception: their suffix is mkstemp's artifact
+    (a bash draft is still named skit-new-*.py), so a resumed draft is classified
+    shebang-first (registry.kind_for_draft) — otherwise the SAME bytes were shell
+    when authored and python when resumed, and the kept-draft advice ("add it with:
+    skit add <path>") was itself the corrupting command."""
+    if not force_exe and paths.is_draft(path):
+        return registry.kind_for_draft(path)
     return registry.infer_kind(path, force_exe=force_exe)
 
 
@@ -212,6 +221,12 @@ def add_python(
     source = source.expanduser().resolve()
     if not source.is_file():
         raise StoreError(gettext("File not found: %(path)s") % {"path": str(source)})
+    # The chokepoint belt (update_dependencies' rule, applied to the add-time writer
+    # too): strip-and-drop empty entries, then refuse anything unparseable before a
+    # block is built. Every shipped intake validates earlier — this line is what a
+    # future caller can't forget.
+    dependencies = [d.strip() for d in dependencies if d.strip()] if dependencies else None
+    _validate_uv_metadata(registry.spec_for("python"), dependencies or [], requires_python)
     text = source.read_text(encoding="utf-8", errors="replace")
     final_name = name or source.stem
     desc = description if description is not None else _extract_description(text)
@@ -308,6 +323,13 @@ def add_script(
     touches the original. The interpreter is recorded from the argument (usually the
     shebang's program via registry.shebang_program) so a #!/bin/zsh script keeps
     running under zsh even though the kind's default is bash."""
+    # Prompts are stored files, but their onboarding is not the generic interpreted-
+    # script contract: it strictly decodes UTF-8, derives placeholder schema, pins the
+    # prompt workdir and records runner/interpolation policy.  Keep that distinction at
+    # the store chokepoint so a future CLI/TUI lane cannot silently create a malformed
+    # prompt entry by calling the superficially compatible API.
+    if kind == "prompt":
+        raise StoreUsageError(gettext("Prompt entries must be added with add_prompt()."))
     spec = registry.spec_for(kind)
     # The or→and mutation of the next line is equivalent: no registered kind is non-interpreted
     # with a truthy stored_name (nor interpreted with a falsy one), so the three disjuncts can
@@ -322,10 +344,14 @@ def add_script(
     # CommentSyntax, so `spec.comment is not None` is always true here.
     prefix = spec.comment.prefix if spec.comment is not None else "#"  # pragma: no mutate
     desc = description if description is not None else extract_comment_description(text, prefix)
-    if mode == "reference":
-        resolved_workdir = "origin"
-    elif workdir is not None:
+    # An EXPLICIT workdir wins in both modes (the docs/design/prompt.md amendment): the
+    # prompt add path must pin "invoke" even for a reference-mode entry, or the agent
+    # would launch in the prompt file's directory. No existing caller passes workdir at
+    # all, so the reference default below is byte-for-byte preserved for them.
+    if workdir is not None:
         resolved_workdir = workdir
+    elif mode == "reference":
+        resolved_workdir = "origin"
     else:
         resolved_workdir = "invoke"  # same decoupling rationale as add_python's copy mode
     meta = ScriptMeta(
@@ -340,6 +366,257 @@ def add_script(
         interpreter=interpreter,
     )
     return _add_entry(meta, payload=source if mode == "copy" else None)
+
+
+_PROMPT_DESCRIPTION_LIMIT = 120
+
+
+def prompt_description(text: str) -> str:
+    """A prompt body's suggested description: its first non-empty line, minus markdown
+    heading markers — the docstring analogue for markdown. Descriptions are discovery
+    metadata, not a second copy of the prompt body, so cap an unusually long first line
+    before it can flood add/list/Library surfaces."""
+    for line in text.splitlines():
+        stripped = line.strip().lstrip("#").strip()
+        if stripped:
+            if len(stripped) <= _PROMPT_DESCRIPTION_LIMIT:
+                return stripped
+            return stripped[: _PROMPT_DESCRIPTION_LIMIT - 1].rstrip() + "…"
+    return ""
+
+
+def add_prompt(
+    source: Path,
+    *,
+    name: str | None = None,
+    mode: Mode = "copy",
+    description: str | None = None,
+    managed: list[str] | None = None,
+    runner: str = "",
+    interpolate: bool = True,
+) -> Entry:
+    """Add a prompt entry (docs/design/prompt.md). Mirrors add_script's copy/reference
+    semantics with the prompt kind's own defaults: workdir is PINNED to "invoke" in both
+    modes (agents work on the repo the user is standing in, never the prompt file's
+    directory), `managed` is the placeholder names the form asks for (None = every
+    detected candidate — the CLI's tick step passes the kept subset), `runner` is the
+    optional pinned PromptRunner name, and `interpolate=False` turns variable insertion
+    off outright (nothing scanned, nothing managed, the body travels verbatim).
+
+    Flood guard: `managed=None` (the auto path — `--no-input`, the TUI direct lane) caps
+    at AUTO_MANAGE_LIMIT detections. A long prompt that trips more was clearly not
+    written for insertion, and auto-managing hundreds of required fields would make the
+    entry unrunnable; nothing is managed instead (an EXPLICIT `managed` list is always
+    honored — the user asked)."""
+    source = source.expanduser().resolve()
+    if not source.is_file():
+        raise StoreError(gettext("File not found: %(path)s") % {"path": str(source)})
+    from .langs.prompt import analyzer as prompt_analyzer
+    from .langs.prompt import text as prompt_text
+
+    try:
+        # Bytes and permissions belong to one open-file snapshot.  Reopening the path
+        # for copy/stat would let an editor replacement change either fact between the
+        # strict decode/hash and storage.
+        with source.open("rb") as stream:
+            raw = stream.read()
+            source_mode = stat.S_IMODE(os.fstat(stream.fileno()).st_mode) & 0o777
+        text = prompt_text.decode(raw, source)
+    except prompt_text.PromptEncodingError as exc:
+        # Validate before hashing, allocating an entry directory, or touching the
+        # registry: invalid payload bytes are a clean all-or-nothing add refusal.
+        raise StoreError(str(exc)) from exc
+    except OSError as exc:
+        raise StoreError(
+            gettext("Can't read %(path)s: %(error)s")
+            % {"path": str(source), "error": exc.strerror or str(exc)}
+        ) from exc
+
+    detected = prompt_analyzer.placeholder_names(text) if interpolate else []
+    if not interpolate or (managed is None and len(detected) > prompt_analyzer.AUTO_MANAGE_LIMIT):
+        resolved_managed: list[str] = []
+    elif managed is None:
+        resolved_managed = detected
+    else:
+        unknown = [n for n in managed if n not in detected]
+        if unknown:
+            raise StoreError(
+                gettext("Not a placeholder in this prompt: %(names)s")
+                % {"names": ", ".join(unknown)}
+            )
+        resolved_managed = [n for n in detected if n in set(managed)]  # body order, always
+    desc = description if description is not None else prompt_description(text)
+    meta = ScriptMeta(
+        name=name or source.stem.removesuffix(".prompt"),
+        kind="prompt",
+        mode=mode,
+        source=str(source),
+        source_hash=_hash_bytes(raw),
+        added_at=now_iso(),
+        workdir="invoke",
+        description=desc,
+        params=resolved_managed or None,
+        runner=runner,
+        interpolate=interpolate,
+    )
+    return _add_entry(
+        meta,
+        payload=None,
+        payload_bytes=raw if mode == "copy" else None,
+        payload_mode=source_mode if mode == "copy" else None,
+    )
+
+
+def write_prompt_managed(name_or_slug: str, managed: list[str]) -> Entry:
+    """Persist a prompt entry's MANAGED placeholder list (meta `params`) — the names the
+    run form asks for and the renderer fills; everything else in the body stays verbatim.
+    Prompt-only: a command template's placeholder list comes from the template itself and
+    is never written through here."""
+    with _locked_entry(name_or_slug) as entry:
+        if entry.meta.kind != "prompt":
+            raise StoreUsageError(
+                gettext("%(name)s isn't a prompt entry.") % {"name": entry.meta.name}
+            )
+        meta = entry.meta
+        meta.params = managed or None
+        _write_meta(entry.dir, meta)
+        return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
+
+
+def write_prompt_interpolate(name_or_slug: str, interpolate: bool) -> Entry:
+    """Flip a prompt entry's insertion master switch. The managed list is deliberately
+    NOT cleared on off — switching back on restores exactly what was managed before."""
+    with _locked_entry(name_or_slug) as entry:
+        if entry.meta.kind != "prompt":
+            raise StoreUsageError(
+                gettext("%(name)s isn't a prompt entry.") % {"name": entry.meta.name}
+            )
+        meta = entry.meta
+        meta.interpolate = interpolate
+        _write_meta(entry.dir, meta)
+        return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
+
+
+def write_prompt_runner(name_or_slug: str, runner: str) -> Entry:
+    """Persist (or clear, when empty) a prompt entry's pinned runner name."""
+    with _locked_entry(name_or_slug) as entry:
+        if entry.meta.kind != "prompt":
+            raise StoreUsageError(
+                gettext("%(name)s isn't a prompt entry.") % {"name": entry.meta.name}
+            )
+        meta = entry.meta
+        meta.runner = runner
+        _write_meta(entry.dir, meta)
+        return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
+
+
+_WORKDIR_LITERALS = ("origin", "store", "invoke")
+
+
+def _normalized_workdir(entry: Entry, workdir: str) -> str:
+    """Validate and normalize a workdir without mutating the entry."""
+    value = workdir.strip()
+    spec = registry.spec_for(entry.meta.kind)
+    # Kind-aware, same rule as the settings radio: a command template has no "origin"
+    # (no file) and a reference-only kind has no stored copy — confirming a policy
+    # that silently resolves as something else is a label that lies.
+    if value == "origin" and spec is not None and not spec.has_original_file:
+        raise StoreUsageError(
+            gettext("%(name)s has no original file — origin doesn't apply to its kind.")
+            % {"name": entry.meta.name}
+        )
+    if value == "store" and spec is not None and not spec.stored_name:
+        raise StoreUsageError(
+            gettext("%(name)s has no stored copy — store doesn't apply to its kind.")
+            % {"name": entry.meta.name}
+        )
+    if value not in _WORKDIR_LITERALS:
+        expanded = Path(value).expanduser()
+        if not value or not expanded.is_absolute():
+            raise StoreUsageError(
+                gettext("The working directory must be origin, store, invoke, or an absolute path.")
+            )
+        value = str(expanded)
+    return value
+
+
+def _normalized_interpreter(entry: Entry, interpreter: str) -> str:
+    """Validate and normalize an interpreter pin without mutating the entry."""
+    from .langs.registry import spec_for
+
+    spec = spec_for(entry.meta.kind)
+    if (
+        spec is None
+        or spec.family != "interpreted"
+        # Kinds whose launch never reads meta.interpreter: python goes through uv's
+        # PEP 723 machinery, prompts through a PromptRunner — a pin must not be
+        # recorded where nothing reads it.
+        or entry.meta.kind in ("python", "prompt")
+    ):
+        raise StoreUsageError(
+            gettext("%(name)s doesn't run through a pinnable interpreter.")
+            % {"name": entry.meta.name}
+        )
+    return interpreter.strip()
+
+
+def update_launch_policy(
+    name_or_slug: str,
+    *,
+    workdir: str | None = None,
+    interpreter: str | None = None,
+    template: str | None = None,
+) -> Entry:
+    """Validate every supplied launch-policy axis, then persist them in one meta write.
+
+    The CLI deliberately permits these axes in one invocation. Treating them as one
+    transaction prevents a later inapplicable value from leaving earlier values applied
+    even though the command reports failure.
+    """
+    with _locked_entry(name_or_slug) as entry:
+        template_value = entry.meta.template
+        params_value = entry.meta.params
+        if template is not None:
+            if entry.meta.kind != "command":
+                raise StoreUsageError(
+                    gettext("%(name)s isn't a command entry.") % {"name": entry.meta.name}
+                )
+            if not template.strip():
+                raise StoreError(gettext("Command template must not be empty"))
+            template_value = template
+            params_value = extract_placeholders(template) or None
+
+        workdir_value = entry.meta.workdir
+        if workdir is not None:
+            workdir_value = _normalized_workdir(entry, workdir)
+
+        interpreter_value = entry.meta.interpreter
+        if interpreter is not None:
+            interpreter_value = _normalized_interpreter(entry, interpreter)
+
+        meta = replace(
+            entry.meta,
+            template=template_value,
+            params=params_value,
+            workdir=workdir_value,
+            interpreter=interpreter_value,
+        )
+        _write_meta(entry.dir, meta)
+        return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
+
+
+def write_workdir(name_or_slug: str, workdir: str) -> Entry:
+    """Persist an entry's working-directory policy: origin | store | invoke | an
+    absolute path — the launch policy every kind honors (launcher._resolve_workdir),
+    previously writable only by hand-editing meta.toml."""
+    return update_launch_policy(name_or_slug, workdir=workdir)
+
+
+def write_interpreter(name_or_slug: str, interpreter: str) -> Entry:
+    """Persist (or clear, when empty) an interpreted entry's interpreter/runtime pin
+    (shell → the binary, js/ts → deno/bun/node). Refused for kinds that launch some
+    other way — a pin must never be recorded where nothing reads it."""
+    return update_launch_policy(name_or_slug, interpreter=interpreter)
 
 
 def add_exe(source: Path, *, name: str | None = None, description: str = "") -> Entry:
@@ -388,18 +665,32 @@ def add_command(template: str, *, name: str, description: str = "") -> Entry:
     return _add_entry(meta, payload=None)
 
 
+def update_template(name_or_slug: str, template: str) -> Entry:
+    """Rewrite a command entry's template — the actual program at the center of the
+    kind, previously frozen forever at add time (the only fix was remove + re-add,
+    destroying presets and history). Placeholders are re-extracted exactly like
+    add_command; declared [[parameters]] rows for names that survive are kept."""
+    return update_launch_policy(name_or_slug, template=template)
+
+
 def _add_entry(
     meta: ScriptMeta,
     *,
     payload: Path | None,
+    payload_bytes: bytes | None = None,
+    payload_mode: int | None = None,
     after_copy: Callable[[Path], None] | None = None,
 ) -> Entry:
+    if payload is not None and payload_bytes is not None:
+        raise ValueError("payload and payload_bytes are mutually exclusive")
+    if payload_mode is not None and payload_bytes is None:
+        raise ValueError("payload_mode requires payload_bytes")
     with _registry_lock():
         entries = _load_registry()
         existing_slugs, existing_names = _fs_truth(entries)
         if meta.name in existing_names:
             raise NameConflictError(
-                gettext("The name %(name)s is already taken (use --name to pick another)")
+                gettext("The name %(name)s is already taken — pick another name.")
                 % {"name": meta.name}
             )
         slug = _unique_slug(slugify(meta.name), existing_slugs)
@@ -414,7 +705,21 @@ def _add_entry(
             )
         entry_dir.mkdir(parents=True, exist_ok=True)
         try:
-            if payload is not None:
+            if payload_bytes is not None:
+                # Prompt copy mode writes the same snapshot that was strictly decoded,
+                # analyzed and hashed.  Create it no broader than the source snapshot:
+                # os.open applies umask (which can only narrow), then chmod restores the
+                # exact ordinary permission bits.  At no point does a private 0600 body
+                # become the Path.write_bytes default 0666/0644.
+                target = entry_dir / stored_name(meta.kind)
+                if payload_mode is None:
+                    target.write_bytes(payload_bytes)
+                else:
+                    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, payload_mode)
+                    with os.fdopen(fd, "wb") as stream:
+                        stream.write(payload_bytes)
+                    os.chmod(target, payload_mode)
+            elif payload is not None:
                 # copy mode: copy the original verbatim (A5: never land a processed script)
                 shutil.copy2(payload, entry_dir / stored_name(meta.kind))
             _write_meta(entry_dir, meta)
@@ -441,6 +746,45 @@ def list_entries() -> list[Entry]:
     return out
 
 
+def prompt_entries_pinned_to(runner: str) -> list[Entry]:
+    """Prompt entries whose durable runner pin names ``runner``.
+
+    Runner removal deliberately does not clear these references: a temporarily removed
+    config row can be restored without losing the user's choice. Management surfaces use
+    this query to warn about the launches the removal will block.
+    """
+    return [
+        entry
+        for entry in list_entries()
+        if entry.meta.kind == "prompt" and entry.meta.runner == runner
+    ]
+
+
+def unmanaged_prompt_placeholders(entry: Entry) -> list[str]:
+    """A prompt body's detected ``{{placeholders}}`` that are not yet managed, in order
+    of first appearance. This is the ONE rule the surfaces agree on for "you typed a
+    variable that isn't a field yet": `skit params` and Script settings already show it;
+    the edit path uses it so a placeholder added by editing the body is offered for
+    management, not silently dropped into the body as literal text.
+
+    Empty for non-prompt kinds, an insertion-off prompt (its body travels verbatim, so
+    nothing is a candidate), and an unreadable or missing body (existence/decoding
+    refusals belong to preflight, never to a schema invented from replacement bytes)."""
+    if entry.meta.kind != "prompt" or not entry.meta.interpolate:
+        return []
+    if not entry.script_path.exists():
+        return []
+    from .langs.prompt import analyzer as prompt_analyzer
+    from .langs.prompt import text as prompt_text
+
+    try:
+        text = prompt_text.read(entry.script_path)
+    except (OSError, prompt_text.PromptEncodingError):
+        return []
+    managed = set(entry.meta.params or [])
+    return [name for name in prompt_analyzer.placeholder_names(text) if name not in managed]
+
+
 def resolve(name_or_slug: str) -> Entry:
     entries = _load_registry()
     slug = None
@@ -464,7 +808,25 @@ def resolve(name_or_slug: str) -> Entry:
 
 
 def remove(name_or_slug: str) -> str:
-    entry = resolve(name_or_slug)
+    with _locked_entry(name_or_slug) as entry:
+        spec = registry.spec_for(entry.meta.kind)
+        if spec is not None and spec.deps_flavor == "npm":
+            from .langs.base import NotExecutableError
+            from .langs.javascript import deps as js_deps
+
+            try:
+                with js_deps._install_lock(entry.dir):
+                    return _remove_locked_entry(entry)
+            except NotExecutableError as exc:
+                raise StoreError(str(exc)) from exc
+        return _remove_locked_entry(entry)
+
+
+def _remove_locked_entry(entry: Entry) -> str:
+    # Lock order is entry → registry, matching rename/update_description. The
+    # durable registry removal happens before rmtree, so a later waiter re-resolves
+    # to NotFound instead of resurrecting an orphan meta.toml. npm entries additionally
+    # hold their install lock before reaching this helper.
     with _registry_lock():
         entries = _load_registry()
         entries.pop(entry.slug, None)  # pragma: no mutate — TOCTOU defense, kept deliberately
@@ -474,9 +836,51 @@ def remove(name_or_slug: str) -> str:
     return entry.meta.name
 
 
+def effective_uv_metadata(entry: Entry) -> tuple[list[str], str]:
+    """The dependencies and requires-python that actually govern a run: meta when it
+    carries them, else — copy-mode python only — the stored copy's own PEP 723 block
+    (the add-time deps_injected path deliberately leaves meta blank and makes the
+    block the source of truth). Every surface that DISPLAYS or BASELINES the record
+    must read this, never raw meta: showing "—" for a pin uv enforces is a lie, and
+    treating a blank-reflected-from-meta field as user-cleared executes unpins and
+    dependency wipes nobody asked for."""
+    deps = list(entry.meta.dependencies or [])
+    constraint = entry.meta.requires_python
+    if (
+        entry.meta.kind == "python"
+        and entry.meta.mode == "copy"
+        and (not deps or not constraint)
+        and entry.script_path.exists()
+    ):
+        text = entry.script_path.read_text(encoding="utf-8", errors="replace")
+        block = pep723.parse_block(text) or {}
+        if not deps:
+            deps = [str(d) for d in (block.get("dependencies") or [])]
+        if not constraint:
+            constraint = str(block.get("requires-python", "") or "")
+    return deps, constraint
+
+
+def _validate_uv_metadata(
+    spec: registry.LangSpec | None, dependencies: list[str], requires_python: str | None
+) -> None:
+    """Validate-then-write at the ONE chokepoint every editing surface calls (`skit
+    add`'s intakes validate earlier for their own refusal timing; `skit deps` and the
+    settings screen land here): an unparseable requirement or constraint written into
+    meta / the PEP 723 block bricks every subsequent run with uv's raw error. npm
+    grammar belongs to the npm installer, so npm-flavor entries are not routed here."""
+    if spec is not None and spec.deps_flavor == "npm":
+        return
+    for d in dependencies:
+        if (error := pep723.requirement_error(d)) is not None:
+            raise StoreUsageError(error)
+    if requires_python and (error := pep723.requires_python_error(requires_python)) is not None:
+        raise StoreUsageError(error)
+
+
 def update_dependencies(
     name_or_slug: str,
-    dependencies: list[str],
+    dependencies: list[str] | None,
     requires_python: str | None = None,
 ) -> Entry:
     """Update an entry's dependency record (meta.toml). Python copy mode also syncs the copy's
@@ -484,12 +888,47 @@ def update_dependencies(
     and passes it via --with at run time. An npm-flavor entry (js/ts) is copy-mode only — the
     engine materializes node_modules next to the stored copy, and a reference entry's script
     lives in its own project, whose node_modules already serves it — and a Python constraint
-    is meaningless there, so both are refused loudly rather than recorded and ignored."""
-    entry = resolve(name_or_slug)
+    is meaningless there, so both are refused loudly rather than recorded and ignored.
+
+    BOTH axes distinguish untouched from cleared: None = don't touch (a python-only
+    edit must not wipe deps; a deps-only edit must not unpin), [] / "" = explicitly
+    clear. One rule, stated twice — the constraint axis learned it first, and leaving
+    the deps axis on always-replace let `skit deps x --python …` erase block-only
+    add-time dependencies under a green line."""
+    with _locked_entry(name_or_slug) as entry:
+        return _update_dependencies_entry(entry, dependencies, requires_python)
+
+
+def _update_dependencies_entry(
+    entry: Entry,
+    dependencies: list[str] | None,
+    requires_python: str | None,
+) -> Entry:
     meta = entry.meta
     spec = registry.spec_for(meta.kind)
+    if dependencies is not None:
+        # Strip-and-drop empty entries BEFORE validating or writing: a whitespace-only
+        # requirement is "nothing", not an error — and written verbatim it would brick
+        # every run with uv's raw "Empty field" error (every shipped caller filters
+        # already; the chokepoint must not rely on that).
+        dependencies = [d.strip() for d in dependencies if d.strip()]
+    uv_flavor = spec is None or spec.deps_flavor != "npm"
+    if (
+        uv_flavor
+        and requires_python is not None
+        and requires_python.strip().lower() in ("-", "none")
+    ):
+        # The add ask's own token for "automatic" — but only where a constraint can
+        # exist at all: on an npm entry EVERY --python spelling is inapplicable, and
+        # normalizing '-' first would make acceptance value-dependent (the refusal
+        # says the flag "doesn't apply"; it must not apply for some spellings only).
+        requires_python = ""
+    _validate_uv_metadata(spec, dependencies or [], requires_python)
     if spec is not None and spec.deps_flavor == "npm":
-        if requires_python:
+        if requires_python is not None:
+            # `is not None`, not truthiness (_refuse_unusable_add_flags' own
+            # predicate): `--python ''` is a spelling too, and a flag the kind's
+            # doctrine calls inapplicable must not apply for the empty spelling only.
             raise StoreUsageError(
                 gettext("A Python constraint doesn't apply to %(kind)s scripts.")
                 % {"kind": meta.kind}
@@ -502,7 +941,13 @@ def update_dependencies(
                 )
                 % {"name": meta.name}
             )
-    if spec is not None and spec.deps_flavor == "npm" and not dependencies:
+    if (
+        spec is not None
+        and spec.deps_flavor == "npm"
+        and dependencies is not None
+        and not dependencies
+    ):
+        # Sweep node_modules only on an EXPLICIT clear ([]), never on None (untouched).
         # Sweep node_modules BEFORE writing meta. The disk cleanup is the step that can fail (a
         # locked file), so doing it first means a failure leaves BOTH the record and the tree
         # untouched — genuinely retryable, the "leave the entry unchanged" contract the TUI
@@ -516,25 +961,47 @@ def update_dependencies(
             js_deps.clear(entry.dir)
         except NotExecutableError as exc:
             raise StoreError(str(exc)) from exc
-    meta.dependencies = dependencies or None
+    if dependencies is not None:
+        meta.dependencies = dependencies or None
     if requires_python is not None:
         # Strip: a whitespace-only constraint ("   ") is truthy but an unparseable version
         # specifier that bricks every run — store "" (omitted) instead.
         meta.requires_python = (requires_python or "").strip()
     _write_meta(entry.dir, meta)
     if meta.kind == "python" and meta.mode == "copy":  # pragma: no mutate — and/or equivalent
-        from . import pep723
-
-        script = entry.script_path
-        if script.exists():
-            text = script.read_text(encoding="utf-8", errors="replace")
-            script.write_text(
-                pep723.set_dependencies(
-                    text, dependencies, requires_python=meta.requires_python or ""
-                ),
-                encoding="utf-8",
-            )
+        _sync_python_block(entry.script_path, meta, dependencies, requires_python)
     return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
+
+
+def _sync_python_block(
+    script: Path,
+    meta: ScriptMeta,
+    dependencies: list[str] | None,
+    requires_python: str | None,
+) -> None:
+    """Sync a copy-mode python entry's PEP 723 block after a metadata edit. BOTH axes
+    share one derive rule: an untouched axis (None) whose meta carries nothing keeps
+    the block's own value — the block is the source of truth for the add-time
+    deps_injected split state (meta deliberately blank). An explicitly edited axis
+    reaches the block uv actually reads: an unpin ("" via the '-' token) that left
+    the block pinned was "updated: —" as a specific false statement on three
+    surfaces at once, and a deps clear that left the block's list would be its twin."""
+    if not script.exists():
+        return
+    text = script.read_text(encoding="utf-8", errors="replace")
+    block = pep723.parse_block(text) or {}
+    constraint = meta.requires_python
+    if not constraint and requires_python is None:
+        constraint = str(block.get("requires-python", "") or "")
+    block_deps = dependencies
+    if block_deps is None:
+        block_deps = list(meta.dependencies or []) or [
+            str(d) for d in (block.get("dependencies") or [])
+        ]
+    script.write_text(
+        pep723.set_dependencies(text, block_deps, requires_python=constraint),
+        encoding="utf-8",
+    )
 
 
 def update_needs(name_or_slug: str, needs: list[str]) -> Entry:
@@ -542,11 +1009,11 @@ def update_needs(name_or_slug: str, needs: list[str]) -> Entry:
     Mirrors update_dependencies' meta write, but applies to every kind — a shell script
     or a command template can need `ffmpeg` just as a python script can. An empty list
     clears the key (stored as None so the meta stays minimal)."""
-    entry = resolve(name_or_slug)
-    meta = entry.meta
-    meta.needs = needs or None
-    _write_meta(entry.dir, meta)
-    return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
+    with _locked_entry(name_or_slug) as entry:
+        meta = entry.meta
+        meta.needs = needs or None
+        _write_meta(entry.dir, meta)
+        return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
 def write_parameters(name_or_slug: str, decls: list[ParamDecl]) -> Entry:
@@ -556,11 +1023,11 @@ def write_parameters(name_or_slug: str, decls: list[ParamDecl]) -> Entry:
     WHICH placeholders exist (extract_placeholders at add time), and keeping it
     untouched is what lets an older skit still prompt for every placeholder
     (downgrade safety) even when only some carry declared schema."""
-    entry = resolve(name_or_slug)
-    meta = entry.meta
-    meta.parameters = [d.to_meta_dict() for d in decls] or None
-    _write_meta(entry.dir, meta)
-    return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
+    with _locked_entry(name_or_slug) as entry:
+        meta = entry.meta
+        meta.parameters = [d.to_meta_dict() for d in decls] or None
+        _write_meta(entry.dir, meta)
+        return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
 def read_parameters(name_or_slug: str) -> list[ParamDecl]:
@@ -573,42 +1040,42 @@ def rename(name_or_slug: str, new_name: str) -> Entry:
     """Rename an entry's display name. The slug is immutable after add — it keys the
     entry directory and the argstate values file, so keeping it means nothing moves on
     disk and remembered values/presets survive the rename."""
-    entry = resolve(name_or_slug)
     new_name = new_name.strip()
     if not new_name:
         raise StoreError(gettext("A name is required."))
-    try:
-        other = resolve(new_name)
-    except NotFoundError:
-        other = None
-    if other is not None and other.slug != entry.slug:
-        raise StoreError(gettext("The name %(name)s is already taken.") % {"name": new_name})
-    meta = entry.meta
-    meta.name = new_name
-    _write_meta(entry.dir, meta)
-    with _registry_lock():
-        entries = _load_registry()
-        row = entries.get(entry.slug)
-        if row is not None:
-            row["name"] = new_name
-            _save_registry(entries)
-    return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
+    with _locked_entry(name_or_slug) as entry:
+        try:
+            other = resolve(new_name)
+        except NotFoundError:
+            other = None
+        if other is not None and other.slug != entry.slug:
+            raise StoreError(gettext("The name %(name)s is already taken.") % {"name": new_name})
+        meta = entry.meta
+        meta.name = new_name
+        _write_meta(entry.dir, meta)
+        with _registry_lock():
+            entries = _load_registry()
+            row = entries.get(entry.slug)
+            if row is not None:
+                row["name"] = new_name
+                _save_registry(entries)
+        return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
 def update_description(name_or_slug: str, description: str) -> Entry:
     """Update an entry's description (meta.toml is the truth; the registry index row is
     refreshed too so `list` doesn't need a rebuild to show it)."""
-    entry = resolve(name_or_slug)
-    meta = entry.meta
-    meta.description = description
-    _write_meta(entry.dir, meta)
-    with _registry_lock():
-        entries = _load_registry()
-        row = entries.get(entry.slug)
-        if row is not None:
-            row["description"] = description
-            _save_registry(entries)
-    return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
+    with _locked_entry(name_or_slug) as entry:
+        meta = entry.meta
+        meta.description = description
+        _write_meta(entry.dir, meta)
+        with _registry_lock():
+            entries = _load_registry()
+            row = entries.get(entry.slug)
+            if row is not None:
+                row["description"] = description
+                _save_registry(entries)
+        return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
 def doctor_rebuild() -> tuple[int, list[str]]:

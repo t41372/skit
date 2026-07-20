@@ -10,7 +10,7 @@ the list, narrow+short hides it with the Tab chip as the way back, search flatte
 when short, and the footer key rows shrink to a scrollable sliver when short/tiny —
 the caps trim what is visible, never what the mouse can reach).
 
-Keys: Enter run · r rerun (after a first run) · p script settings · e edit script ·
+Keys: Enter run · r rerun (after a first run) · p entry settings · e edit source ·
 Del remove · a add script · s presets · , preferences · D health check · / search ·
 Tab detail pane · double Ctrl+C / Esc quit.
 
@@ -25,7 +25,6 @@ so both key rows swap to the input-mode hints (Enter run · Esc back to list).
 
 from __future__ import annotations
 
-import contextlib
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -46,12 +45,15 @@ from . import (
     config,
     editor,
     flows,
+    kindnames,
     launcher,
     models,
     store,
     theme,
     tui_footer,
     tui_layout,
+    tui_prompt,
+    tui_runner,
 )
 from .i18n import gettext, ngettext
 from .langs.registry import spec_for
@@ -60,28 +62,24 @@ from .theme import CLAUDE_THEME
 from .tui_form import FormResult, RunFormScreen
 
 
-# Glyphs are locale-independent and live on each kind's LangSpec; the labels are
-# translated at render time here. The labels must be gettext() literals (not values fed
-# to gettext(kind)) or Babel can't extract them — see scripts/i18n_coverage.py's
-# dynamic-gettext check — which is exactly why the label map does NOT live in the
-# registry: every new kind adds one literal line here, gated by the i18n coverage test.
+# Glyphs are locale-independent and live on each kind's LangSpec; the translated
+# labels live in kindnames.kind_label — ONE map for every surface that shows a kind
+# to a person (this badge, the add flow's kind ask).
 def _kind_badge(kind: str) -> tuple[str, str]:
-    label = {
-        "python": gettext("Python"),
-        "shell": gettext("Shell"),
-        "fish": gettext("fish"),
-        "js": gettext("JavaScript"),
-        "ts": gettext("TypeScript"),
-        "powershell": gettext("PowerShell"),
-        "ruby": gettext("Ruby"),
-        "perl": gettext("Perl"),
-        "lua": gettext("Lua"),
-        "r": gettext("R"),
-        "exe": gettext("Program"),
-        "command": gettext("Command"),
-    }.get(kind, kind)
+    label = kindnames.kind_label(kind)
     spec = spec_for(kind)
     return (spec.glyph if spec is not None else "?"), label
+
+
+def _runner_detail_line(entry: Entry) -> str:
+    """The detail pane's runner line — honest about a pin whose config row is gone
+    (Entry settings says "(no longer configured)"; two surfaces, one truth)."""
+    pin = entry.meta.runner
+    if not pin:
+        return gettext("Runner picked on the run form")
+    if config.find_prompt_runner(pin) is None:
+        return gettext("%(runner)s (no longer configured)") % {"runner": escape(pin)}
+    return gettext("Runs with %(runner)s") % {"runner": escape(pin)}
 
 
 def _fuzzy_match(query: str, text: str) -> bool:
@@ -150,7 +148,11 @@ class ConfirmRemove(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         lines = [Label(gettext('Remove "%(name)s"?') % {"name": escape(self._entry.meta.name)})]
         spec = spec_for(self._entry.meta.kind)
-        if spec is None or spec.has_original_file:
+        source = self._entry.meta.source
+        if (spec is None or spec.has_original_file) and source and Path(source).exists():
+            # Only when the original actually still exists: for a drafted entry the
+            # "original" was a temp file — reassuring the user about a file that is
+            # already gone would be a lie.
             lines.append(Static(f"[dim]{gettext('Your original file will not be deleted.')}[/dim]"))
         # The verb line IS the button row: y/Esc stay advertised, and each chip is
         # clickable — modals must not be the one place that suddenly demands keys.
@@ -196,11 +198,11 @@ class HelpScreen(ModalScreen[None]):
         rows = [
             ("Enter", gettext("Run")),
             ("r", gettext("Rerun with last values")),
-            ("p", gettext("Script settings")),
+            ("p", gettext("Entry settings")),
             ("s", gettext("Presets")),
-            ("e", gettext("Edit script")),
+            ("e", gettext("Edit source")),
             ("Del", gettext("Remove")),
-            ("a", gettext("Add script")),
+            ("a", gettext("Add entry")),
             ("/", gettext("Search")),
             ("Tab", gettext("Detail pane")),
             (",", gettext("Preferences")),
@@ -234,6 +236,7 @@ class PendingRun:
     values: dict[str, str]
     extra: list[str]
     show_drift: bool
+    runner: config.PromptRunner | None = None
 
 
 class _LibraryScreen(Screen[None]):
@@ -325,13 +328,13 @@ class MenuApp(App[int | PendingRun]):
         # delete-left (closer in the focus chain than this non-priority app binding), so
         # backspace only reaches "remove" when the table has focus.
         Binding("delete,backspace", "remove", gettext("Remove")),
-        Binding("ctrl+e", "edit", gettext("Edit script")),
-        Binding("e", "edit", gettext("Edit script"), show=False),
+        Binding("ctrl+e", "edit", gettext("Edit source")),
+        Binding("e", "edit", gettext("Edit source"), show=False),
         Binding("enter", "run", gettext("Run")),
         Binding("r", "rerun", gettext("Rerun"), show=False),
-        Binding("p", "settings", gettext("Script settings"), show=False),
+        Binding("p", "settings", gettext("Entry settings"), show=False),
         Binding("s", "presets", gettext("Presets"), show=False),
-        Binding("a", "add", gettext("Add script"), show=False),
+        Binding("a", "add", gettext("Add entry"), show=False),
         Binding("comma", "preferences", gettext("Preferences"), show=False),
         Binding("D", "health", gettext("Health check"), show=False),
         Binding("question_mark", "help", gettext("Help"), show=False),
@@ -365,7 +368,7 @@ class MenuApp(App[int | PendingRun]):
         self.theme = "skit-claude"
         table = self.query_one(DataTable)
         table.add_columns(gettext("Name"), gettext("Kind"), " ")
-        table.border_title = gettext("Scripts")
+        table.border_title = gettext("Library")
         self.query_one("#detail").border_title = gettext("Detail pane")
         self._reload()
         # The table owns the keyboard: that's what makes the advertised single-letter
@@ -430,12 +433,10 @@ class MenuApp(App[int | PendingRun]):
             status.update(message)
             return
         if not self._entries:
-            status.update(gettext("Your scripts will appear here."))
+            status.update(gettext("Your entries will appear here."))
             return
         status.update(
-            ngettext(
-                "%(shown)s/%(total)s script", "%(shown)s/%(total)s scripts", len(self._entries)
-            )
+            ngettext("%(shown)s/%(total)s entry", "%(shown)s/%(total)s entries", len(self._entries))
             % {"shown": len(self._visible), "total": len(self._entries)}
         )
 
@@ -460,11 +461,11 @@ class MenuApp(App[int | PendingRun]):
             local.append(tui_footer.chip("app.run", "Enter", gettext("Run")))
             if argstate.load_state(entry.slug)["last_run"]:
                 local.append(tui_footer.chip("app.rerun", "r", gettext("Rerun")))
-            local.append(tui_footer.chip("app.settings", "p", gettext("Script settings")))
-            local.append(tui_footer.chip("app.edit", "e", gettext("Edit script")))
+            local.append(tui_footer.chip("app.settings", "p", gettext("Entry settings")))
+            local.append(tui_footer.chip("app.edit", "e", gettext("Edit source")))
             local.append(tui_footer.chip("app.remove", "Del", gettext("Remove")))
         globals_row = [
-            tui_footer.chip("app.add", "a", gettext("Add script")),
+            tui_footer.chip("app.add", "a", gettext("Add entry")),
             tui_footer.chip("app.presets", "s", gettext("Presets")),
             tui_footer.chip("app.focus_search", "/", gettext("Search")),
             # The detail pane must be recoverable without memorizing Tab: when a size
@@ -492,14 +493,20 @@ class MenuApp(App[int | PendingRun]):
         return drift
 
     def _refresh_detail(self) -> None:
-        body = self.query_one("#detail-body", Static)  # pragma: no mutate — expect_type is a pure runtime assertion; None/omitted return the same unique #detail-body match (equivalents); the selector/assignment variants stay pinned by test_empty_library_detail_shows_exact_placeholder  # fmt: skip
+        # A queued RowHighlighted can reach this after the detail pane is gone — a
+        # layout tier that drops it, or teardown mid-transition — so no-op instead of
+        # letting NoMatches escape the event handler and crash the app.
+        detail = self.query("#detail-body")
+        if not detail:
+            return
+        body = detail.first(Static)
         entry = self._selected()
         if entry is None:
             if not self._entries:
                 body.update(
                     "\n".join(
                         (
-                            f"[bold]{gettext('Your scripts will appear here.')}[/bold]",
+                            f"[bold]{gettext('Your entries will appear here.')}[/bold]",
                             "",
                             gettext("Press a to add the first one,"),
                             gettext("or run: skit add <path> in a terminal."),
@@ -526,11 +533,13 @@ class MenuApp(App[int | PendingRun]):
                 )
         if spec is not None and spec.family == "template":
             lines.append(f"[dim]{escape(entry.meta.template)}[/dim]")
+        if entry.meta.kind == "prompt":
+            lines.append(f"[dim]🤖 {_runner_detail_line(entry)}[/dim]")
         lines.append("")
         lines.append(
             escape(entry.meta.description)
             if entry.meta.description
-            else f"[dim]{gettext('(no description — add one in Script settings)')}[/dim]"
+            else f"[dim]{gettext('(no description — add one in Entry settings)')}[/dim]"
         )
         lines.append("")
         lines.extend(self._detail_state_lines(entry))
@@ -555,10 +564,14 @@ class MenuApp(App[int | PendingRun]):
                 gettext("Presets  %(names)s")
                 % {"names": " · ".join(escape(p) for p in sorted(state["presets"]))}
             )
-        if entry.meta.dependencies:
+        # EFFECTIVE deps (store.effective_uv_metadata), not raw meta: a block-only
+        # add-time python entry showed no line here while its own settings screen
+        # showed the list — two panes of one TUI disagreeing about one record.
+        effective_deps, _ = store.effective_uv_metadata(entry)
+        if effective_deps:
             lines.append(
                 gettext("Depends on  %(deps)s")
-                % {"deps": ", ".join(escape(d) for d in entry.meta.dependencies)}
+                % {"deps": ", ".join(escape(d) for d in effective_deps)}
             )
         last = state["last_run"]
         if last:
@@ -676,24 +689,77 @@ class MenuApp(App[int | PendingRun]):
         entry = self._selected()
         if entry is None:
             return
-        try:
-            launcher.preflight(entry)
-        except launcher.LaunchError as exc:
-            self._refresh_status(gettext("Error: %(error)s") % {"error": escape(str(exc))})
-            return
+        is_prompt = entry.meta.kind == "prompt"
+        # A prompt's actual executable is selected on the run form.  Checking its
+        # entry pin here would let a stale/broken pin block the very picker that can
+        # override it.  Prompt preflight therefore runs in _submitted, once the
+        # picker has resolved the real launch choice; every other kind still fails
+        # fast before its form opens.
+        if not is_prompt:
+            try:
+                launcher.preflight(entry)
+            except launcher.LaunchError as exc:
+                self._refresh_status(gettext("Error: %(error)s") % {"error": escape(str(exc))})
+                return
         plan = flows.plan_for_entry(entry)
-        if not plan.fields and not plan.degraded_reason:
-            self._execute(entry, plan, {}, argstate.load_state(entry.slug)["extra_args"])
+        runner_names = [r.name for r in config.load_prompt_runners()] if is_prompt else []
+        if is_prompt and not runner_names:
+            # A deliberately emptied runner list must not dead-end the mouse-only user
+            # on a CLI incantation: offer to define an agent right here, then re-enter.
+            def _runner_added(new_name: str | None) -> None:
+                if new_name:
+                    self.call_after_refresh(self.action_run)
+                else:
+                    self._refresh_status(gettext("A prompt needs a configured agent to run with."))
+
+            self.push_screen(tui_runner.RunnerAddModal(), _runner_added)
             return
+        # The form ALWAYS opens — even field-less. It is the TUI's only path to extra
+        # arguments, and the one place remembered args become VISIBLE before launch
+        # (the old skip-shortcut replayed them invisibly, forever). Enter on the fresh
+        # form submits immediately, so the fast path costs one keypress; the truly
+        # form-free rerun is the explicit `r` key.
         prefill = flows.prefill(plan, entry.slug)
 
         def _submitted(result: FormResult) -> None:
             if result is None:
                 return
-            values, extra = result
-            self._execute(entry, plan, values, extra, show_drift=False)
+            values, extra, runner_name, runner_was_picked = result
+            runner = None
+            if runner_name is not None:
+                runner = config.find_prompt_runner(runner_name)
+                if runner is None:  # removed while the form was open — honest, not silent
+                    self._refresh_status(
+                        gettext("Error: %(error)s")
+                        % {"error": gettext("The runner is no longer configured.")}
+                    )
+                    return
+                if runner_was_picked:
+                    # The event is the truth: a user may move away and back to the
+                    # pin, while an untouched pin merely supplies a default.
+                    argstate.save_last_runner(runner_name)
+            if is_prompt:
+                try:
+                    launcher.preflight(entry, runner=runner)
+                except launcher.LaunchError as exc:
+                    self._refresh_status(gettext("Error: %(error)s") % {"error": escape(str(exc))})
+                    return
+            self._execute(entry, plan, values, extra, show_drift=False, runner=runner)
 
-        self.push_screen(RunFormScreen(entry, plan, prefill), _submitted)
+        self.push_screen(
+            RunFormScreen(
+                entry,
+                plan,
+                prefill,
+                runners=runner_names,
+                runner_default=(
+                    entry.meta.runner
+                    if entry.meta.runner in runner_names
+                    else argstate.load_last_runner()
+                ),
+            ),
+            _submitted,
+        )
 
     def action_rerun(self) -> None:
         """r: skip the form, rerun with the last values — but never skip the checks."""
@@ -705,6 +771,11 @@ class MenuApp(App[int | PendingRun]):
                 gettext("%(name)s hasn't run yet — press Enter to fill the form first.")
                 % {"name": escape(entry.meta.name)}
             )
+            return
+        if entry.meta.kind == "prompt" and not entry.meta.runner:
+            # No pin means the runner question is open — rerun must never answer it
+            # silently (the picker in the form does, prefilled from last-picked).
+            self.action_run()
             return
         try:
             launcher.preflight(entry)
@@ -728,6 +799,7 @@ class MenuApp(App[int | PendingRun]):
         extra: list[str],
         *,
         show_drift: bool = True,
+        runner: config.PromptRunner | None = None,
     ) -> None:
         """Suspend, deliver (inject/flags/template), pass the terminal through, record.
 
@@ -741,7 +813,7 @@ class MenuApp(App[int | PendingRun]):
             # A launcher hands the terminal back: quit the TUI FIRST, run after
             # (_finish_run). Running under suspend() and exiting would repaint the
             # whole app for one frame on resume — a visible flash.
-            self.exit(PendingRun(entry, plan, asm, dict(values), list(extra), show_drift))
+            self.exit(PendingRun(entry, plan, asm, dict(values), list(extra), show_drift, runner))
             return
         with self.suspend():
             print(f"\n── {gettext('Run %(name)s') % {'name': entry.meta.name}} ──\n", flush=True)
@@ -750,12 +822,12 @@ class MenuApp(App[int | PendingRun]):
                     print(line, flush=True)
             # The shared delivery pipeline: inject, transparency, run, cleanup. The TUI
             # just prints what it emits (bare, inside the suspend) and shows a banner.
-            outcome = flows.execute(entry, plan, asm, emit=lambda line: print(line, flush=True))
+            outcome = flows.execute(
+                entry, plan, asm, emit=lambda line: print(line, flush=True), runner=runner
+            )
             if outcome.code is None:
                 print(gettext("Error: %(error)s") % {"error": outcome.message}, flush=True)
             print(f"\n{self._run_banner(outcome)}", flush=True)
-            with contextlib.suppress(EOFError):
-                input()
         code = outcome.code
         if code is None:
             # The script never ran: recording it would light up r-rerun and stamp a
@@ -777,12 +849,10 @@ class MenuApp(App[int | PendingRun]):
     @staticmethod
     def _run_banner(outcome: flows.RunOutcome) -> str:
         if outcome.code == 0:
-            return gettext("✓ finished — press Enter to return")
+            return gettext("✓ finished")
         if outcome.launched:
-            return gettext("✗ failed (code %(code)s) — press Enter to return") % {
-                "code": outcome.code
-            }
-        return gettext("✗ couldn't launch — press Enter to return")
+            return gettext("✗ failed (code %(code)s)") % {"code": outcome.code}
+        return gettext("✗ couldn't launch")
 
     # --------------------------------------------------------------- actions
 
@@ -801,19 +871,51 @@ class MenuApp(App[int | PendingRun]):
                 % {"name": escape(entry.meta.name)}
             )
             return
+        edit_error: str | None = None
         with self.suspend():
             try:
-                editor.open_in_editor(target)
-            except editor.EditorError as exc:
-                # str(exc) stays on its own line so its str(None) mutant keeps being tested;
-                # flush= only toggles stdout buffering, never the printed text — equivalent.
-                error_text = str(exc)
-                print(error_text, flush=True)  # pragma: no mutate
-                with contextlib.suppress(EOFError):
-                    input(gettext("Press Enter to return"))
+                editor.open_entry_in_editor(target, kind=entry.meta.kind)
+            except (editor.EditorError, editor.EditedSourceError) as exc:
+                edit_error = str(exc)
         self._drift_cache.pop(entry.slug, None)
         self._reload()
+        if edit_error is not None:
+            self._refresh_status(gettext("Error: %(error)s") % {"error": escape(edit_error)})
+            return
+        if entry.meta.kind == "prompt" and self._offer_prompt_reconcile(entry):
+            return  # the picker owns the status line once it is dismissed
         self._refresh_status(gettext("Edited %(name)s.") % {"name": escape(entry.meta.name)})
+
+    def _offer_prompt_reconcile(self, entry: Entry) -> bool:
+        """After a prompt body edit, offer to manage the placeholders the edit added —
+        the Library twin of the add review's tick list, so an edited-in ``{{name}}``
+        becomes a field instead of silent literal text. Returns True when a picker was
+        shown (it then owns the closing status line). ADD-only: a managed placeholder
+        deleted from the body keeps its run-form drift banner, owned by the form layer."""
+        from .langs.prompt import analyzer as prompt_analyzer
+
+        new = store.unmanaged_prompt_placeholders(store.resolve(entry.slug))
+        if not new:
+            return False
+        flooded = len(new) > prompt_analyzer.AUTO_MANAGE_LIMIT
+        preselected: set[str] = set() if flooded else set(new)
+
+        def _picked(selected: set[str] | None) -> None:
+            chosen = [name for name in new if selected and name in selected]
+            if not chosen:
+                self._refresh_status(
+                    gettext("Edited %(name)s.") % {"name": escape(entry.meta.name)}
+                )
+                return
+            existing = list(entry.meta.params or [])
+            store.write_prompt_managed(
+                entry.slug, existing + [n for n in chosen if n not in existing]
+            )
+            self._reload()
+            self._refresh_status(gettext("Now managed: %(names)s") % {"names": ", ".join(chosen)})
+
+        self.push_screen(tui_prompt.PromptCandidatePickerModal(new, preselected), _picked)
+        return True
 
     def _editable_source(self, entry: Entry) -> Path | None:
         spec = spec_for(entry.meta.kind)
@@ -931,7 +1033,7 @@ class MenuApp(App[int | PendingRun]):
         headers = [gettext("Name"), gettext("Kind"), " "]
         for column, label in zip(self.query_one(DataTable).ordered_columns, headers, strict=False):  # pragma: no mutate — always 3 columns and 3 headers, so strict False/True/None/omitted are all equivalent  # fmt: skip
             column.label = Text(label)
-        self.query_one(DataTable).border_title = gettext("Scripts")
+        self.query_one(DataTable).border_title = gettext("Library")
         self.query_one("#detail").border_title = gettext("Detail pane")
         self.query_one(DataTable).refresh()
 
@@ -946,7 +1048,11 @@ def _finish_run(pending: PendingRun) -> int:
         for line in pending.plan.drift_lines:
             print(line, flush=True)
     outcome = flows.execute(
-        pending.entry, pending.plan, pending.asm, emit=lambda line: print(line, flush=True)
+        pending.entry,
+        pending.plan,
+        pending.asm,
+        emit=lambda line: print(line, flush=True),
+        runner=pending.runner,
     )
     if outcome.code is None:
         # Nothing ran: no phantom history, and the process exit code follows the same

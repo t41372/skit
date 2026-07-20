@@ -154,7 +154,7 @@ async def test_save_reads_after_run_from_pf_after_radioset(tmp_path):
 
 
 async def test_footer_save_chip_saves_and_dismisses(tmp_path):
-    """The "Ctrl+A Save" footer chip is a button: clicking it fires screen.save, which
+    """The "Ctrl+S Save" footer chip is a button: clicking it fires screen.save, which
     persists and dismisses True (mouse-only operability of the advertised action)."""
     results: list[bool | None] = []
     app = tui.MenuApp()
@@ -179,9 +179,10 @@ async def test_footer_back_chip_dismisses_false(tmp_path):
     assert results == [False]
 
 
-async def test_ctrl_a_key_saves_and_escape_closes(tmp_path):
-    """Keyboard twins of the two chips: Ctrl+A (priority binding) saves and dismisses
-    True; on a fresh screen Esc closes and dismisses False."""
+async def test_ctrl_s_key_saves_and_escape_closes(tmp_path):
+    """Keyboard twins of the two chips: Ctrl+S (priority binding — the key grammar's
+    save chord) saves and dismisses True; on a fresh screen Esc closes and dismisses
+    False."""
     saved: list[bool | None] = []
     app = tui.MenuApp()
     async with app.run_test() as pilot:
@@ -189,7 +190,7 @@ async def test_ctrl_a_key_saves_and_escape_closes(tmp_path):
         await pilot.pause()
         screen.query_one("#pf-editor", Input).value = "nvim"
         await pilot.pause()
-        await pilot.press("ctrl+a")
+        await pilot.press("ctrl+s")
         await pilot.pause()
     assert config.load_editor() == "nvim"
     assert saved == [True]

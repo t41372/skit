@@ -59,6 +59,8 @@ def quiet_run(monkeypatch):
         invoke_cwd=None,
         script_override=None,
         env_overlay=None,
+        runner=None,
+        prepared=None,
     ):
         calls["extra"] = list(extra_args or [])
         calls["values"] = dict(values or {})
@@ -154,48 +156,22 @@ async def test_edit_command_entry_reports_exact_no_source_message(tmp_path):
         assert not status.startswith("XX")
 
 
-async def test_edit_editor_error_prints_message_and_prompts_return(tmp_path, monkeypatch):
-    """When $EDITOR won't launch, e prints the error and pauses on the exact
-    'Press Enter to return' prompt before recovering."""
+async def test_edit_editor_error_lands_on_the_status_line(tmp_path, monkeypatch):
+    """When $EDITOR won't launch the failure surfaces AFTER resume on the exact
+    'Error: …' status line (#14 retired the in-suspend print and its Enter-wait —
+    a suspended Textual app repaints over raw writes), and the early return means
+    the screen never claims 'Edited j.' for an edit that never happened."""
     store.add_python(_py(tmp_path, "print(1)\n"), name="j")
     monkeypatch.setattr(tui.editor, "open_in_editor", _raise_editor_error)
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
-    printed: list[str] = []
-    prompts: list[object] = []
-    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
-
-    def fake_input(prompt=""):
-        prompts.append(prompt)
-        return ""
-
-    monkeypatch.setattr("builtins.input", fake_input)
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         await pilot.pause()
         app.action_edit()
         await pilot.pause()
-        assert any("editor exploded" in line for line in printed)
-        assert prompts == ["Press Enter to return"]
-
-
-async def test_edit_editor_error_suppresses_eof_and_recovers(tmp_path, monkeypatch):
-    """A ^D (EOFError) at the acknowledge prompt is swallowed: the workbench still
-    reloads and reports, rather than crashing out of action_edit."""
-    store.add_python(_py(tmp_path, "print(1)\n"), name="j")
-    monkeypatch.setattr(tui.editor, "open_in_editor", _raise_editor_error)
-    monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
-    monkeypatch.setattr("builtins.print", lambda *a, **k: None)
-
-    def raise_eof(*_a):
-        raise EOFError
-
-    monkeypatch.setattr("builtins.input", raise_eof)
-    app = tui.MenuApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app.action_edit()  # must NOT propagate the EOFError
-        await pilot.pause()
-        assert "Edited j." in _status_text(app)
+        status = _status_text(app)
+    assert status == "Error: editor exploded"
+    assert "Edited" not in status
 
 
 async def test_edit_invalidates_fresh_drift_cache_entry(tmp_path, monkeypatch):
@@ -353,8 +329,12 @@ async def test_run_preflight_error_shows_the_real_message(tmp_path, quiet_run):
         assert status != "Error: None"
 
 
-async def test_run_without_fields_forwards_saved_extra_args(tmp_path, quiet_run):
-    """The no-fields fast path launches with THIS slug's remembered extra args."""
+async def test_run_without_fields_opens_the_form_with_visible_extra_args(tmp_path, quiet_run):
+    """Even a field-less entry opens the run form (#14: the TUI's only path to extra
+    arguments, and the one place remembered args become VISIBLE before launch — the
+    old skip-shortcut replayed them invisibly, forever). The remembered tail prefills
+    the extra-args row, and submitting forwards exactly it — never [] from a None
+    slug."""
     entry = store.add_python(_py(tmp_path, "print(1)\n"), name="plain")
     argstate.save_last(entry.slug, extra_args=["--foo", "bar"])
     app = tui.MenuApp()
@@ -362,7 +342,14 @@ async def test_run_without_fields_forwards_saved_extra_args(tmp_path, quiet_run)
         await pilot.pause()
         app.action_run()
         await pilot.pause()
-        assert quiet_run["extra"] == ["--foo", "bar"]  # not [] from load_state(None)
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)  # the form ALWAYS opens, even field-less
+        row = next(r for r in screen.query(FieldRow) if r.field.key == "__extra_args__")
+        assert row.query_one(Input).value == "--foo bar"  # remembered args, visible
+        screen.action_submit()
+        await pilot.pause()
+        await pilot.pause()
+    assert quiet_run["extra"] == ["--foo", "bar"]
 
 
 async def test_run_form_prefills_from_this_slugs_saved_values(tmp_path, quiet_run):

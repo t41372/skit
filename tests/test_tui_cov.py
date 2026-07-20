@@ -75,7 +75,7 @@ async def test_empty_state_welcomes_and_points_at_add():
     app = tui.MenuApp()
     async with app.run_test():
         detail = _static_text(app, "#detail-body")
-        assert "Your scripts will appear here." in detail
+        assert "Your entries will appear here." in detail
         assert "Press a to add the first one," in detail
         assert "skit add <path>" in detail
 
@@ -163,7 +163,7 @@ async def test_footer_global_row_lists_every_surface(tmp_path):
     async with app.run_test():
         row = _static_text(app, "#keys-global")
         for label in (
-            "Add script",
+            "Add entry",
             "Presets",
             "Search",
             "Detail pane",
@@ -203,9 +203,9 @@ async def test_letters_type_as_text_inside_the_search_box(tmp_path, monkeypatch)
 
 
 # ---------------------------------------------------------------------------
-# Every advertised footer key must actually fire from the default focus (the
-# review lesson behind B2: the old always-focused search box ate all of them,
-# and only negative-direction tests existed).
+# Every advertised footer key must actually fire from the default focus. The old
+# always-focused search box ate all of them, while negative-direction tests alone
+# could not prove that the advertised actions were reachable.
 # ---------------------------------------------------------------------------
 
 

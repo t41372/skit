@@ -53,6 +53,8 @@ def _py(tmp_path: Path, body: str, name: str = "job.py") -> Path:
 @pytest.fixture
 def tty(monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
 
 
 def _norm(text: str) -> str:
@@ -110,6 +112,22 @@ def test_resolve_metadata_no_input_tty_still_non_interactive(tty):
     )
     assert deps == ["requests"]
     assert py == ""
+
+
+def test_python_line_onboarding_does_not_prompt_when_stdout_is_piped(monkeypatch):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False, raising=False)
+    monkeypatch.setattr(cli, "_is_interactive", lambda: False)
+
+    def _boom(*_a, **_k):
+        raise AssertionError("a redirected command must not ask an invisible question")
+
+    monkeypatch.setattr(cli.Prompt, "ask", _boom)
+    deps, py = cli._resolve_python_metadata(
+        "import requests\nprint(requests)\n", None, None, no_input=False
+    )
+    assert (deps, py) == (["requests"], "")
+    assert cli._onboard_params('CITY = "Taipei"\nprint(CITY)\n', "x", no_input=False) == []
 
 
 def test_resolve_metadata_interactive_prompts_exact_text_and_defaults(monkeypatch, tty):
@@ -189,7 +207,7 @@ def test_onboard_params_framework_message_exact(monkeypatch, tty, capsys):
     out = _norm(capsys.readouterr().out)
     assert (
         "This script parses its own arguments (argparse, click); skit couldn't model them "
-        "statically, so the run form offers a passthrough-arguments field." in out
+        "statically, so the run form offers an extra-arguments field." in out
     )
     assert "XX" not in out
 
@@ -274,7 +292,14 @@ def test_run_no_input_never_prompts_even_on_tty(tty, monkeypatch):
     captured: dict[str, object] = {}
 
     def fake_run(
-        entry, extra, *, values=None, invoke_cwd=None, script_override=None, env_overlay=None
+        entry,
+        extra,
+        *,
+        values=None,
+        invoke_cwd=None,
+        script_override=None,
+        env_overlay=None,
+        runner=None,
     ):
         captured["values"] = values
         return 0
@@ -317,7 +342,14 @@ def test_run_threads_slug_and_preset_into_prefill(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
 
     def fake_run(
-        entry, extra, *, values=None, invoke_cwd=None, script_override=None, env_overlay=None
+        entry,
+        extra,
+        *,
+        values=None,
+        invoke_cwd=None,
+        script_override=None,
+        env_overlay=None,
+        runner=None,
     ):
         captured["values"] = values
         return 0
@@ -825,7 +857,9 @@ def test_prompt_identity_no_input_passes_through(tmp_path):
 
 
 def test_prompt_identity_non_tty_passes_through(monkeypatch, tmp_path):
-    monkeypatch.setattr("sys.stdin.isatty", lambda: False, raising=False)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False, raising=False)
+    monkeypatch.setattr(cli, "_is_interactive", lambda: False)
 
     def _boom(*_a, **_k):
         raise AssertionError("must not prompt on a non-tty")
@@ -857,7 +891,7 @@ def test_print_add_summary_full_block_exact(tmp_path, capsys):
     assert "Dependencies: Pillow, rich" in out
     assert "Managed parameters: CITY, PORT" in out
     assert "Run it: skit run job" in out
-    assert "Secret parameter values are never saved to disk: API, TOKEN" in out
+    assert "Secret parameter values are never saved by skit: API, TOKEN" in out
     assert "XX" not in out  # kills every whole-string-wrap and "XX, XX"-join mutant
 
 
@@ -1080,7 +1114,7 @@ def test_create_in_editor_opening_and_added_message(monkeypatch):
         return 0
 
     monkeypatch.setattr(cli.editor, "open_in_editor", write)
-    result = runner.invoke(cli.app, ["add", "-e", "--name", "fresh"])
+    result = runner.invoke(cli.app, ["add", "-e", "--name", "fresh"], input="\n\n\n")
     assert result.exit_code == 0, result.output
     out = _norm(result.output)
     assert "Opening your editor…" in out
@@ -1114,6 +1148,24 @@ def test_create_in_editor_emptied_file_adds_nothing(monkeypatch):
     assert "Nothing was written" in _norm(result.output)
     with pytest.raises(store.NotFoundError):
         store.resolve("e")
+
+
+def test_create_in_editor_deleted_draft_is_a_clean_honest_failure(monkeypatch):
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    seen: dict[str, Path] = {}
+
+    def delete(path: Path):
+        seen["path"] = path
+        path.unlink()
+
+    monkeypatch.setattr(cli.editor, "open_in_editor", delete)
+    result = runner.invoke(cli.app, ["add", "-e", "--name", "gone"])
+    assert result.exit_code == 1
+    output = _norm(result.output)
+    assert "Can't read" in output
+    assert "The draft is no longer at" in output
+    assert "Your draft was kept at" not in output
+    assert not seen["path"].exists()
 
 
 # --- _show_params ----------------------------------------------------------
@@ -1155,6 +1207,27 @@ def test_show_params_python_no_managed_exact(tmp_path, capsys):
         " management." in out
     )
     assert "XX" not in out
+
+
+def test_show_params_python_argparse_does_not_advertise_manage(tmp_path, capsys):
+    """A python entry that parses its own arguments (argparse) is reader-driven exactly like
+    every other kind: its own parser IS the run form, so managed params REPLACE it rather than
+    ride alongside — plan_for_entry prefers them. The read view must NOT advertise --manage
+    (following it would silently shadow the argparse form). Plain "has no managed parameters." with
+    no --manage advice, and --json reports unmanaged == [] (no candidate offered)."""
+    import json
+
+    text = "import argparse\nOUT = 'hi'\np = argparse.ArgumentParser()\np.add_argument('--n')\np.parse_args()\nprint(OUT)\n"
+    entry = store.add_python(_py(tmp_path, text), name="gpy")
+    cli._show_params(entry, as_json=False)
+    out = _norm(capsys.readouterr().out)
+    assert "gpy has no managed parameters." in out
+    assert "--manage" not in out  # reader-driven: --manage would shadow the argparse form
+    assert "OUT" not in out  # the constant is NOT offered as a candidate here
+    # --json agrees: no unmanaged candidate is advertised for a reader-driven python entry.
+    cli._show_params(entry, as_json=True)
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["unmanaged"] == []
 
 
 def test_show_params_python_table_all_cells_and_hint(tmp_path, capsys):
@@ -1215,9 +1288,11 @@ def test_show_params_secret_masks_recorded_last_value(tmp_path, capsys):
     assert "XX" not in out
 
 
-def test_show_params_reference_entry_suppresses_add_hint(tmp_path, capsys):
-    # A reference entry's source can hold unmanaged candidates, but you can't --add to it, so the
-    # hint must be suppressed (kills the `mode == "copy"` guard and its and/or mutants).
+def test_show_params_reference_entry_names_unmanaged_with_ref_teaching(tmp_path, capsys):
+    # A reference entry now gets the SAME honest read as a copy entry — its unmanaged candidate
+    # (RETRIES) is named — but the `(use --manage to manage them)` ADVICE is dropped, because
+    # skit never writes the original file; the reference-mode teaching replaces it. Kills the
+    # ref-branch selection (names-only vs names + --manage advice) and the teaching-line print.
     text = metawriter.write_params(
         "CITY = 'x'\nRETRIES = 3\nprint(CITY, RETRIES)\n",
         [ParamDecl(name="CITY", binding="const", type="str", default="x")],
@@ -1225,7 +1300,9 @@ def test_show_params_reference_entry_suppresses_add_hint(tmp_path, capsys):
     store.add_python(_py(tmp_path, text, "ref.py"), name="r", mode="reference")
     cli._show_params(store.resolve("r"), as_json=False)
     out = _norm(capsys.readouterr().out)
-    assert "Detected but not yet managed" not in out  # reference mode: no --manage hint
+    assert "Detected but not yet managed: RETRIES" in out  # named honestly
+    assert "use --manage to manage them" not in out  # ...but no --manage advice on a ref entry
+    assert "skit never writes the original file" in out  # the reference-mode teaching instead
 
 
 # --- _edit_params (via `params --...`) -------------------------------------
@@ -1328,7 +1405,7 @@ def test_edit_params_non_python_message_exact():
     result = runner.invoke(cli.app, ["params", "c", "--resync"])
     assert result.exit_code == 1
     out = _norm(result.output)
-    assert "c isn't a Python script; only Python entries have managed parameters." in out
+    assert "c has no managed parameters — its kind has no analyzer to read them from." in out
     assert "XX" not in out
 
 
@@ -1419,7 +1496,7 @@ def test_offer_create_non_interactive_message(monkeypatch):
     result = runner.invoke(cli.app, ["edit", "ghost"])
     assert result.exit_code == 1
     out = _norm(result.output)
-    assert "No script named ghost." in out
+    assert "No editable entry named ghost." in out
     assert "XX" not in out
 
 
@@ -1434,6 +1511,8 @@ def test_offer_create_confirm_prompt_exact_and_declined(monkeypatch):
     result = runner.invoke(cli.app, ["edit", "newname"])
     assert result.exit_code == 0
     (msg,), kw = calls[0]
-    assert msg == gettext('No script named "%(name)s". Create it now?') % {"name": "newname"}
+    assert msg == gettext('No editable entry named "%(name)s". Create a script now?') % {
+        "name": "newname"
+    }
     assert kw["default"] is True
     assert kw["console"] is cli.console

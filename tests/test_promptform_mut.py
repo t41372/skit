@@ -159,8 +159,12 @@ def test_non_choice_field_with_choices_uses_plain_text_prompt(monkeypatch):
 
 
 def test_choice_prompt_gets_label_choices_and_our_console(monkeypatch):
-    """A choice field is asked with the escaped ``  label`` positional, its choices, and the
-    caller's console — none of them dropped or nulled."""
+    """A choice field is asked with the choices rendered INTO the ``  label (a/b)``
+    positional (validation moved to promptform's own localized loop, so rich's
+    ``choices=`` kwarg must NOT ride along and re-introduce hardcoded English), and
+    the caller's console — none of them dropped or nulled. Optional with no default:
+    the Enter-means-omit contract pins ``default=""``, never a silently-picked first
+    choice."""
     plan = flows.FormPlan(
         source="argparse",
         fields=[flows.FormField(key="mode", label="mode", kind="choice", choices=["a", "b"])],
@@ -171,6 +175,7 @@ def test_choice_prompt_gets_label_choices_and_our_console(monkeypatch):
 
     assert values == {"mode": "b"}
     (args, kwargs) = calls[0]
-    assert args == ("  mode",)  # label positional (not None, not omitted)
-    assert kwargs["choices"] == ["a", "b"]
+    assert args == ("  mode (a/b)",)  # label positional carries the choices (not None)
+    assert "choices" not in kwargs  # validation is ours (localized), not rich's
+    assert kwargs.get("default") == ""  # optional + no default: Enter means "leave it out"
     assert kwargs.get("console") is console  # our console forwarded (not None, not omitted)

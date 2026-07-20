@@ -9,8 +9,13 @@ independent of either caller.
 
 from __future__ import annotations
 
+import errno
 import os
+import re
+import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -64,6 +69,200 @@ def test_load_toml_recoverable_reports_none_when_backup_itself_fails(
     assert result.corrupt is True
     assert result.backup_path is None
     assert not path.with_name("config.toml.bak").exists()
+
+
+# ---- advisory_file_lock: persistent kernel-backed transaction serialization ----
+
+
+def test_advisory_file_lock_keeps_a_persistent_one_byte_inode(tmp_path: Path) -> None:
+    lock = tmp_path / "config.lock"
+    with atomic.advisory_file_lock(lock):
+        assert lock.is_file()
+        assert lock.stat().st_size >= 1
+    # Never unlink a lock inode: path replacement is what made the old lease design
+    # admit two owners. Kernel ownership, not path existence, is the lock state.
+    assert lock.is_file()
+
+
+def test_advisory_file_lock_serializes_two_waiting_threads(tmp_path: Path) -> None:
+    lock = tmp_path / "config.lock"
+    entered: list[str] = []
+    active = 0
+    state_lock = threading.Lock()
+    start = threading.Event()
+
+    def waiter(name: str) -> None:
+        nonlocal active
+        start.wait(timeout=1)
+        with atomic.advisory_file_lock(lock, poll_seconds=0.005):
+            with state_lock:
+                assert active == 0
+                active += 1
+                entered.append(name)
+            time.sleep(0.02)
+            with state_lock:
+                active -= 1
+
+    with atomic.advisory_file_lock(lock):
+        threads = [threading.Thread(target=waiter, args=(name,)) for name in ("a", "b")]
+        for thread in threads:
+            thread.start()
+        start.set()
+        time.sleep(0.03)
+        assert entered == []
+    for thread in threads:
+        thread.join(timeout=1)
+    assert sorted(entered) == ["a", "b"]
+    assert active == 0
+    assert not any(thread.is_alive() for thread in threads)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX subprocess exercises flock")
+def test_advisory_file_lock_is_released_by_kernel_after_process_crash(tmp_path: Path) -> None:
+    lock = tmp_path / "crash.lock"
+    code = (
+        "import os, sys; from pathlib import Path; from skit.atomic import advisory_file_lock; "
+        "lock=Path(sys.argv[1]); "
+        "ctx=advisory_file_lock(lock); ctx.__enter__(); "
+        "print('locked', flush=True); os._exit(23)"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", code, str(lock)],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert proc.stdout is not None
+    assert proc.stdout.readline().strip() == "locked"
+    assert proc.wait(timeout=3) == 23
+
+    # No stale timeout/reclaim: close-on-crash released flock immediately.
+    with atomic.advisory_file_lock(lock, poll_seconds=0.005):
+        assert lock.is_file()
+
+
+def test_windows_locking_uses_one_byte_seek_retry_and_unlock(tmp_path: Path, monkeypatch) -> None:
+    lock = tmp_path / "windows.lock"
+
+    class FakeMsvcrt:
+        LK_NBLCK = 10
+        LK_UNLCK = 20
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[int, int, int]] = []
+            self.busy_once = True
+
+        def locking(self, fd: int, mode: int, length: int) -> None:
+            self.calls.append((os.lseek(fd, 0, os.SEEK_CUR), mode, length))
+            if mode == self.LK_NBLCK and self.busy_once:
+                self.busy_once = False
+                raise OSError(errno.EACCES, "busy")
+
+    fake = FakeMsvcrt()
+    sleeps: list[float] = []
+    monkeypatch.setattr(atomic, "_WINDOWS", True)
+    # Exercise the deferred platform import too: importing atomic on POSIX must not
+    # require msvcrt, while the Windows path must consume the real module seam.
+    monkeypatch.setitem(sys.modules, "msvcrt", fake)
+    monkeypatch.setattr(atomic.time, "sleep", sleeps.append)
+
+    with atomic.advisory_file_lock(lock, poll_seconds=0.007):
+        assert lock.stat().st_size >= 1
+
+    assert fake.calls == [(0, fake.LK_NBLCK, 1), (0, fake.LK_NBLCK, 1), (0, fake.LK_UNLCK, 1)]
+    assert sleeps == [0.007]
+    assert lock.is_file()
+
+
+def test_native_lock_distinguishes_contention_from_unexpected_os_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the documented busy errno values are retryable; disk/fd failures stay loud."""
+
+    class FakeFcntl:
+        LOCK_EX = 1
+        LOCK_NB = 2
+
+        def __init__(self, error: int) -> None:
+            self.error = error
+
+        def flock(self, _fd: int, _flags: int) -> None:
+            raise OSError(self.error, os.strerror(self.error))
+
+    monkeypatch.setattr(atomic, "_WINDOWS", False)
+    monkeypatch.setattr(atomic, "_posix_lock_module", lambda: FakeFcntl(errno.EAGAIN))
+    assert atomic._try_native_lock(0) is False
+
+    monkeypatch.setattr(atomic, "_posix_lock_module", lambda: FakeFcntl(errno.EBADF))
+    with pytest.raises(OSError, match=re.escape(os.strerror(errno.EBADF))) as exc_info:
+        atomic._try_native_lock(0)
+    assert exc_info.value.errno == errno.EBADF
+
+    class FakeMsvcrt:
+        LK_NBLCK = 1
+
+        @staticmethod
+        def locking(_fd: int, _mode: int, _length: int) -> None:
+            raise OSError(errno.ENOSPC, "disk full")
+
+    fd = os.open(tmp_path / "windows.lock", os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        monkeypatch.setattr(atomic, "_WINDOWS", True)
+        monkeypatch.setitem(sys.modules, "msvcrt", FakeMsvcrt())
+        with pytest.raises(OSError, match="disk full") as exc_info:
+            atomic._try_native_lock(fd)
+        assert exc_info.value.errno == errno.ENOSPC
+    finally:
+        os.close(fd)
+
+
+def test_advisory_lock_open_failure_releases_its_thread_mutex(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed lockfile open must not permanently deadlock later callers in-process."""
+    lock = tmp_path / "locks" / "entry.lock"
+    real_open = atomic.os.open
+
+    def denied(*_args, **_kwargs):
+        raise PermissionError(errno.EACCES, "permission denied", str(lock))
+
+    monkeypatch.setattr(atomic.os, "open", denied)
+    with pytest.raises(PermissionError):
+        with atomic.advisory_file_lock(lock):
+            pytest.fail("an unopened lockfile cannot be acquired")
+
+    monkeypatch.setattr(atomic.os, "open", real_open)
+    with atomic.advisory_file_lock(lock):
+        assert lock.is_file()
+
+
+def test_advisory_lock_native_failure_closes_fd_and_releases_mutex(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unexpected native-lock failure cleans up both resources before propagating."""
+    lock = tmp_path / "entry.lock"
+    attempted_fd = -1
+
+    def broken_native(fd: int) -> bool:
+        nonlocal attempted_fd
+        attempted_fd = fd
+        raise OSError(errno.EBADF, "bad lock descriptor")
+
+    real_try = atomic._try_native_lock
+    monkeypatch.setattr(atomic, "_try_native_lock", broken_native)
+    with pytest.raises(OSError, match="bad lock descriptor"):
+        with atomic.advisory_file_lock(lock):
+            pytest.fail("a failed native lock cannot be acquired")
+
+    assert attempted_fd >= 0
+    # A closed fd's strerror text is OS-specific ("Bad file descriptor" on POSIX,
+    # "The handle is invalid" on Windows); the errno below is the portable assertion.
+    with pytest.raises(OSError) as exc_info:  # noqa: PT011 — asserted on errno, not the OS message
+        os.fstat(attempted_fd)
+    assert exc_info.value.errno == errno.EBADF
+
+    monkeypatch.setattr(atomic, "_try_native_lock", real_try)
+    with atomic.advisory_file_lock(lock):
+        assert lock.is_file()
 
 
 # ---- atomic_write_*: durability (fsync temp file before replace, fsync dir after replace) ----

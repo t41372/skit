@@ -184,7 +184,7 @@ class TestMetawriterAdversarial:
 
 
 # =====================================================================================
-# pep723: adversarial malformed-block probing (112->114 investigated as a finding, see report)
+# pep723: adversarial malformed-block handling
 # =====================================================================================
 
 

@@ -23,6 +23,8 @@ runner = CliRunner()
 @pytest.fixture
 def tty(monkeypatch):
     monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
 
 
 def _py(tmp_path: Path, body: str) -> Path:

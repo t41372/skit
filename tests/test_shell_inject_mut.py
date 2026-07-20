@@ -294,8 +294,9 @@ def test_self_location_warning_is_the_full_normalize_guidance(tmp_path):
     assert result.warnings == [
         "⚠ This script reads its own location ($0 / $BASH_SOURCE), and the injected values "
         "run from a temporary copy — so it sees the copy's path, not the original's. "
-        "`skit params <script> --normalize NAME` delivers a value through the environment "
-        "instead, with no copy at all."
+        'Rewriting a constant as NAME="${NAME:-value}" delivers the value through the '
+        "environment instead, with no copy at all (`skit params <script> --normalize NAME` "
+        "does the rewrite for you on a stored copy)."
     ]
     assert result.path is not None
     result.path.unlink()

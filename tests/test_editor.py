@@ -7,6 +7,8 @@ patch editor.subprocess.run.
 
 from __future__ import annotations
 
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -216,6 +218,24 @@ def test_open_in_editor_launch_failure_message_exact(monkeypatch, tmp_path):
     assert "XX" not in msg
 
 
+def test_open_entry_prompt_removed_by_editor_is_a_clean_edited_source_error(monkeypatch, tmp_path):
+    """Editors may rename/delete their target; post-edit validation must report that cleanly."""
+    path = tmp_path / "review.prompt.md"
+    path.write_text("Review this\n", encoding="utf-8")
+
+    def remove_target(opened: Path) -> int:
+        opened.unlink()
+        return 0
+
+    monkeypatch.setattr(editor, "open_in_editor", remove_target)
+    with pytest.raises(editor.EditedSourceError) as exc_info:
+        editor.open_entry_in_editor(path, kind="prompt")
+
+    assert "Can't read" in str(exc_info.value)
+    assert str(path) in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, FileNotFoundError)
+
+
 # --------------------------------------------------------------------------
 # config editor read/write
 # --------------------------------------------------------------------------
@@ -321,7 +341,7 @@ def test_edit_unknown_confirmed_creates(monkeypatch):
         return 0
 
     monkeypatch.setattr(cli.editor, "open_in_editor", write_script)
-    result = runner.invoke(cli.app, ["edit", "newscript"])
+    result = runner.invoke(cli.app, ["edit", "newscript"], input="\n\n\n")
     assert result.exit_code == 0, result.output
     ent = store.resolve("newscript")
     assert ent.meta.kind == "python"
@@ -358,11 +378,164 @@ def test_add_edit_creates_in_editor(monkeypatch):
         return 0
 
     monkeypatch.setattr(cli.editor, "open_in_editor", write_script)
-    result = runner.invoke(cli.app, ["add", "-e", "--name", "fresh"])
+    result = runner.invoke(cli.app, ["add", "-e", "--name", "fresh"], input="\n\n\n")
     assert result.exit_code == 0, result.output
     ent = store.resolve("fresh")
     assert ent.meta.kind == "python"
     assert "rich" in (ent.dir / "script.py").read_text(encoding="utf-8")
+
+
+def test_add_edit_bash_shebang_draft_becomes_a_shell_entry(monkeypatch):
+    """A changed shebang in the draft is honored exactly like the TUI draft lane: writing a
+    #!/usr/bin/env bash body makes the entry SHELL via store.add_script, never a broken
+    python entry with a bash body."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+
+    def write_script(p):
+        p.write_text("#!/usr/bin/env bash\n# Ship it\necho drafted\n", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(cli.editor, "open_in_editor", write_script)
+    result = runner.invoke(cli.app, ["add", "-e", "--name", "deploy"])
+    assert result.exit_code == 0, result.output
+    entry = store.resolve("deploy")
+    assert entry.meta.kind == "shell"  # re-inferred from the shebang, not the .py temp suffix
+    assert "echo drafted" in entry.script_path.read_text(encoding="utf-8")
+
+
+def test_add_edit_js_shebang_draft_scans_npm_deps(monkeypatch):
+    """A node-shebang draft lands as a js entry and its declared npm imports are scanned
+    into the entry's dependencies."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+
+    def write_script(p):
+        p.write_text(
+            "#!/usr/bin/env node\nimport chalk from 'chalk'\nconsole.log(chalk)\n", encoding="utf-8"
+        )
+        return 0
+
+    monkeypatch.setattr(cli.editor, "open_in_editor", write_script)
+    result = runner.invoke(cli.app, ["add", "-e", "--name", "colorized"])
+    assert result.exit_code == 0, result.output
+    entry = store.resolve("colorized")
+    assert entry.meta.kind == "js"
+    assert "chalk" in (entry.meta.dependencies or [])  # npm scan materialized the dep
+
+
+def test_add_edit_zsh_draft_records_interpreter_and_dry_run_names_zsh(monkeypatch):
+    """Full parity, part 1 — the interpreter is recorded from the shebang program: a
+    #!/usr/bin/env zsh draft lands with interpreter='zsh' (not the shell kind's default
+    bash), so it keeps running under zsh and the dry-run command line names zsh."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+
+    def write_script(p):
+        p.write_text("#!/usr/bin/env zsh\necho hi\n", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(cli.editor, "open_in_editor", write_script)
+    result = runner.invoke(cli.app, ["add", "-e", "--name", "zjob"])
+    assert result.exit_code == 0, result.output
+    entry = store.resolve("zjob")
+    assert entry.meta.kind == "shell"
+    assert entry.meta.interpreter == "zsh"  # recorded from the shebang, not left blank
+    dry = runner.invoke(cli.app, ["run", "zjob", "--dry-run", "--no-input"])
+    assert dry.exit_code == 0, dry.output
+    assert "zsh" in dry.output  # the dry-run command names the pinned interpreter
+
+
+def test_add_edit_shell_draft_onboards_picked_constants(monkeypatch):
+    """Full parity, part 2 — the candidate ask runs on a non-python draft exactly as the
+    python lane's does: the shell analyzer's constants are offered, and "all" writes them
+    as managed params into the stored copy (direct call: CliRunner replaces sys.stdin, so
+    the interactive onboarding gate can't be reached through invoke())."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    # _onboard_script_params gates on sys.stdin.isatty(); fake a tty like the onboarding
+    # unit tests do (a plain SimpleNamespace, not click's non-tty invoke stream).
+    monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: True, read=lambda: ""))
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: "all"))
+
+    def write_script(p):
+        p.write_text(
+            "#!/usr/bin/env bash\nCITY=Taipei\nAPI_KEY=secret\necho $CITY\n", encoding="utf-8"
+        )
+        return 0
+
+    monkeypatch.setattr(cli.editor, "open_in_editor", write_script)
+    cli._create_python_in_editor(name="deploy")
+    entry = store.resolve("deploy")
+    assert entry.meta.kind == "shell"
+    spec = cli.spec_for("shell")
+    assert spec is not None
+    assert spec.params_io is not None
+    managed = {d.name for d in spec.params_io.read(entry.script_path.read_text(encoding="utf-8"))}
+    assert managed == {"CITY", "API_KEY"}  # both constants picked and written to the copy
+
+
+def test_add_edit_dep_flag_on_non_python_draft_is_refused(monkeypatch):
+    """Full parity, part 3 — --dep/--python are python-only flags: riding them on a draft
+    whose shebang names another kind is REFUSED (exit 2), never silently dropped, and
+    nothing is added."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+
+    def write_script(p):
+        p.write_text("#!/usr/bin/env bash\necho drafted\n", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(cli.editor, "open_in_editor", write_script)
+    result = runner.invoke(cli.app, ["add", "-e", "--name", "d", "--dep", "rich"])
+    assert result.exit_code == 2, result.output
+    assert "python flags" in result.output  # the refusal names the flags…
+    assert "shell" in result.output  # …and the draft's actual kind
+    with pytest.raises(store.NotFoundError):
+        store.resolve("d")  # nothing was added
+
+
+# --------------------------------------------------------------------------
+# Draft preservation: refuse a taken name BEFORE the editor; keep the draft on a
+# post-edit failure.
+# --------------------------------------------------------------------------
+
+
+def test_add_edit_python_name_taken_refuses_before_the_editor(tmp_path, monkeypatch):
+    """The name conflict is caught BEFORE $EDITOR opens — discovering it after the user
+    authored a whole script (then deleting their only copy) destroyed real work. The editor
+    is never launched."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    store.add_python(_py(tmp_path, "print(1)\n", "orig.py"), name="taken")
+    monkeypatch.setattr(cli.editor, "open_in_editor", _boom)  # must NOT be launched
+    result = runner.invoke(cli.app, ["add", "-e", "--name", "taken"])
+    assert result.exit_code == 1
+    assert "already taken" in result.output
+    # _boom raises AssertionError if the editor is launched — a clean SystemExit means it
+    # was refused before the editor ever opened.
+    assert not isinstance(result.exception, AssertionError)
+
+
+def test_add_edit_python_post_edit_failure_keeps_the_draft(monkeypatch):
+    """A failure AFTER the edit must never delete the temp draft — it is the user's only
+    copy of what they just wrote. The error names where the draft lives and nothing is
+    added."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    seen: dict[str, Path] = {}
+
+    def write_script(p):
+        seen["path"] = p
+        p.write_text("import sys\nprint('drafted')\n", encoding="utf-8")
+        return 0
+
+    def onboard_boom(*_a, **_k):
+        raise store.StoreError("disk full")
+
+    monkeypatch.setattr(cli.editor, "open_in_editor", write_script)
+    monkeypatch.setattr(cli, "_onboard_python", onboard_boom)
+    result = runner.invoke(cli.app, ["add", "-e", "--name", "keptpy"])
+    try:
+        assert result.exit_code == 1
+        assert "Your draft was kept at" in result.output
+        assert seen["path"].exists()  # the draft survived the failure
+        assert store.list_entries() == []  # nothing added
+    finally:
+        seen["path"].unlink(missing_ok=True)
 
 
 def test_add_edit_rejects_path(tmp_path):
@@ -386,6 +559,67 @@ def test_add_edit_empty_content_adds_nothing(monkeypatch):
     assert "Nothing was written" in result.output
     with pytest.raises(store.NotFoundError):
         store.resolve("ghost")
+
+
+def test_add_edit_unregistered_shebang_refused_keeps_draft(monkeypatch):
+    """A draft whose shebang names an UNREGISTERED interpreter (awk, sed -f, …) can't be
+    honored: the CLI draft lane refuses (exit 2) with the --kind escape and KEEPS the temp
+    (the user's only copy) under data_dir/drafts/ — never fabricates a python entry."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    seen: dict[str, Path] = {}
+
+    def write_awk(p):
+        seen["path"] = p
+        p.write_text("#!/usr/bin/awk -f\nBEGIN { print 1 }\n", encoding="utf-8")
+        return 0
+
+    monkeypatch.setattr(cli.editor, "open_in_editor", write_awk)
+    result = runner.invoke(cli.app, ["add", "-e", "--name", "aw"])
+    try:
+        assert result.exit_code == 2, result.output
+        assert "names no interpreter skit knows" in result.output
+        assert "--kind" in result.output  # the escape hatch
+        assert seen["path"].exists()  # the draft survived the refusal
+        from skit.paths import drafts_dir
+
+        assert seen["path"].parent == drafts_dir()  # kept under data_dir/drafts/
+        assert store.list_entries() == []  # nothing fabricated
+    finally:
+        seen["path"].unlink(missing_ok=True)
+
+
+def test_add_edit_untouched_starter_unlinks_the_draft(monkeypatch):
+    """The untouched-starter cancel is pure litter (no user content): the CLI python editor
+    lane now unlinks it, like the TUI always did — the temp is gone after 'Nothing was
+    written'."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    seen: dict[str, Path] = {}
+
+    def leave_starter(p):
+        seen["path"] = p  # editor opens but writes nothing
+        return 0
+
+    monkeypatch.setattr(cli.editor, "open_in_editor", leave_starter)
+    result = runner.invoke(cli.app, ["add", "-e", "--name", "ghost"])
+    assert result.exit_code == 0, result.output
+    assert "Nothing was written" in result.output
+    assert not seen["path"].exists()  # the litter was cleaned up
+
+
+def test_add_prompt_editor_untouched_starter_unlinks_the_draft(monkeypatch):
+    """Same for the prompt editor lane: an untouched starter is unlinked, not left behind."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    seen: dict[str, Path] = {}
+
+    def leave_starter(p):
+        seen["path"] = p
+        return 0
+
+    monkeypatch.setattr(cli.editor, "open_in_editor", leave_starter)
+    result = runner.invoke(cli.app, ["add", "--prompt", "--name", "ghostp"])
+    assert result.exit_code == 0, result.output
+    assert "Nothing was written" in result.output
+    assert not seen["path"].exists()
 
 
 def test_add_edit_prompts_for_name_when_omitted(monkeypatch):
@@ -454,11 +688,11 @@ def test_add_edit_writes_and_reports_managed_and_secret(monkeypatch, tmp_path):
         return 0
 
     monkeypatch.setattr(cli.editor, "open_in_editor", write_script)
-    result = runner.invoke(cli.app, ["add", "-e", "--name", "fresh"])
+    result = runner.invoke(cli.app, ["add", "-e", "--name", "fresh"], input="\n")
     assert result.exit_code == 0, result.output
     # kills _print_add_summary(entry, deps, None, secrets) / (.., None) at the create call site
     assert "Managed parameters: API" in result.output
-    assert "Secret parameter values are never saved to disk: API" in result.output
+    assert "Secret parameter values are never saved by skit: API" in result.output
 
 
 def test_params_edit_command_entry_refused():

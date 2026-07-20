@@ -3,7 +3,8 @@
 Pins observable behaviour of the read-view render helpers (`_declared_default_cell`,
 `_declared_last_value`, `_declared_schema_suffix`), the onboarding default-selection
 string (`_default_selection`), the `skit deps NAME` read view (`_deps_read_view`, via the
-real CLI), and the doctor drift scan (`_drifted_entries`).
+real CLI), and the skip arms of the doctor drift predicate (healthcheck.entry_drifted —
+where cli._drifted_entries moved when doctor and TUI Health merged into one pipeline).
 
 Render helpers are pure functions the read table/command-view render through, so they are
 called directly (mirroring test_cli.py's "call the module functions directly" convention);
@@ -19,7 +20,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from skit import analysis, cli, i18n, store
+from skit import analysis, cli, healthcheck, i18n, store
 from skit.langs.python import metawriter
 from skit.langs.registry import spec_for
 from skit.params import ParamDecl
@@ -182,7 +183,9 @@ def test_deps_read_view_json_preserves_unicode(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# _drifted_entries  (the doctor batch reconcile)
+# healthcheck.entry_drifted  (cli._drifted_entries moved into the one shared
+# doctor/Health pipeline; the drift-detection and prompt-side contracts are
+# pinned by tests/test_healthcheck.py — these pin the skip arms it left open)
 # --------------------------------------------------------------------------
 
 
@@ -194,50 +197,30 @@ def _ok_entry(tmp_path: Path) -> store.Entry:
     return store.add_python(_py(tmp_path, text, name="ok.py"), name="okentry")
 
 
-def _drift_entry(tmp_path: Path) -> store.Entry:
-    # A declared param for a variable that isn't in the source -> reconcile reports drift.
-    text = metawriter.write_params(
-        "print(1)\n", [ParamDecl(name="GHOST", binding="const", type="str", default="x")]
-    )
-    return store.add_python(_py(tmp_path, text, name="drift.py"), name="driftentry")
+def test_entry_drifted_false_with_specs_and_no_drift(tmp_path):
+    # An entry WITH specs but NO drift must not be reported (kills `bool(specs) and` ->
+    # `or`, which would flag every entry that merely has specs).
+    assert healthcheck.entry_drifted(_ok_entry(tmp_path)) is False
 
 
-def test_drifted_entries_reports_only_drifting_entries(tmp_path):
-    # An entry WITH specs but NO drift must not be reported (kills `specs and` -> `specs or`,
-    # which would append every entry that merely has specs).
-    assert cli._drifted_entries([_ok_entry(tmp_path)]) == []
-
-
-def test_drifted_entries_detects_actual_drift(tmp_path):
-    assert cli._drifted_entries([_drift_entry(tmp_path)]) == ["driftentry"]
-
-
-def test_drifted_entries_skips_and_continues_past_skippable(tmp_path):
-    # A skippable entry (command: no analyzer/params_io) precedes a drifting one. The loop must
-    # `continue` past it and still reach the drift (kills `continue` -> `break`).
-    skip = store.add_command("echo hi", name="cmdentry")
-    drift = _drift_entry(tmp_path)
-    assert cli._drifted_entries([skip, drift]) == ["driftentry"]
-
-
-def test_drifted_entries_skips_unknown_kind_without_crashing(tmp_path):
+def test_entry_drifted_unknown_kind_is_false(tmp_path):
     # An entry of a kind this skit doesn't know (spec_for -> None) is skipped cleanly. The
-    # short-circuit on `spec is None` must stay an OR (kills `spec is None and spec.analyzer...`,
-    # which dereferences None.analyzer and crashes).
+    # short-circuit on `spec is None` must stay an OR (kills `spec is not None or ...` /
+    # `... and ...` inversions, which dereference None.analyzer and crash).
     real = _ok_entry(tmp_path)
     unknown = dataclasses.replace(real, meta=dataclasses.replace(real.meta, kind="future-kind"))
     assert spec_for("future-kind") is None
-    assert cli._drifted_entries([unknown]) == []
+    assert healthcheck.entry_drifted(unknown) is False
 
 
-def test_drifted_entries_skips_analyzer_degraded_spec(tmp_path, monkeypatch):
+def test_entry_drifted_analyzer_degraded_spec_is_false(tmp_path, monkeypatch):
     # The documented grammar-degraded state: analyzer is None but params_io still reads specs.
-    # The guard must skip on `analyzer is None` alone (kills `analyzer is None and params_io is
-    # None`, which would proceed to call None.reconcile and crash).
+    # The guard must skip on `analyzer is None` alone (kills the arm's inversion, which would
+    # proceed to call None.reconcile and crash).
     entry = _ok_entry(tmp_path)
     py_spec = spec_for("python")
     assert py_spec is not None
     degraded = dataclasses.replace(py_spec, analyzer=None)
     assert degraded.params_io is not None
-    monkeypatch.setattr(cli, "spec_for", lambda kind: degraded)
-    assert cli._drifted_entries([entry]) == []
+    monkeypatch.setattr(healthcheck, "spec_for", lambda kind: degraded)
+    assert healthcheck.entry_drifted(entry) is False

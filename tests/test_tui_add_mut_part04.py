@@ -16,7 +16,6 @@ so the pragma never masks a real regression (the maintainer's tui_form.py conven
 
 from __future__ import annotations
 
-import builtins
 import contextlib
 
 import pytest
@@ -217,31 +216,34 @@ async def test_edit_source_opens_original_and_rescans_new_content(tmp_path, monk
         assert "NEWCONST" in str(screen.query_one("#rv-cand-0", Checkbox).label)
 
 
-async def test_edit_source_prints_editor_error_flushed(tmp_path, monkeypatch):
-    """When the editor can't be launched the error text is printed and FLUSHED immediately, so
-    it lands on the terminal skit briefly handed back under ``suspend()`` (an unflushed write
-    would hide behind the app's repaint on return). Kills flush=None / dropped-flush /
-    flush=False."""
+async def test_edit_source_editor_error_notifies_and_skips_rescan(tmp_path, monkeypatch):
+    """When the editor can't be launched the failure surfaces AFTER resume as an
+    error-severity notification (#14 retired the in-suspend print — a suspended Textual
+    app repaints over raw writes), and the early return skips the rescan. The file is
+    deleted before the action: a dropped return would fall through to the re-read and
+    toast a second, "Can't read" error — the single-toast assertion pins both."""
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: contextlib.nullcontext())
 
     def boom(path):
         raise editor.EditorError("no editor configured")
 
     monkeypatch.setattr("skit.tui_add.editor.open_in_editor", boom)
-    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
-    monkeypatch.setattr(builtins, "print", lambda *a, **kw: calls.append((a, kw)))
+    toasts: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        tui.MenuApp,
+        "notify",
+        lambda self, message, **kw: toasts.append((str(message), str(kw.get("severity")))),
+    )
     p = _py(tmp_path, "print(1)\n", "s.py")
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         screen = AddReviewScreen(p)
         app.push_screen(screen)
         await pilot.pause()
+        p.unlink()  # a rescan would now fail loudly — the early return must prevent it
         screen.action_edit_source()
         await pilot.pause()
-    assert any(
-        "no editor configured" in " ".join(str(x) for x in a) and kw.get("flush") is True
-        for a, kw in calls
-    )
+    assert toasts == [("no editor configured", "error")]
 
 
 async def test_edit_source_rescans_non_utf8_original_with_replace(tmp_path, monkeypatch):

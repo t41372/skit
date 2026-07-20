@@ -56,12 +56,11 @@ class _PrintRecorder:
 
 @pytest.fixture
 def stay_suspend(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The in-TUI (after_run=stay) run path with the terminal-ownership pieces neutralized:
-    a no-op suspend and an EOF-safe input, so _execute runs its print/record body headless.
-    Individual tests add the run_entry stub (or unlink the target) and the print recorder."""
+    """The in-TUI (after_run=stay) run path with the terminal ownership neutralized:
+    a no-op suspend, so _execute runs its print/record body headless. Individual tests
+    add the run_entry stub (or unlink the target) and the print recorder."""
     config.save_after_run("stay")
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: contextlib.nullcontext())
-    monkeypatch.setattr("builtins.input", lambda *a, **k: "")
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +102,8 @@ async def test_success_run_prints_flushed_banners_and_records_finished(
 ):
     """The suspend body prints, in order and each flushed: the `── Run <name> ──` header,
     the drift banner lines (show_drift=True), the delivery transparency lines (via the emit
-    lambda), and the `✓ finished — press Enter to return` outcome banner; a clean run then
+    lambda), and the `✓ finished` outcome banner (the stay path repaints immediately —
+    no Enter-wait since #14); a clean run then
     stamps the exact `Last: <name> ✓ finished` status."""
     monkeypatch.setattr(launcher, "run_entry", lambda *a, **k: 0)
     rec = _PrintRecorder()
@@ -128,8 +128,8 @@ async def test_success_run_prints_flushed_banners_and_records_finished(
     assert any("→" in line for line in lines)
     assert rec.flush_for("→") is True  # (mutmut_68/70/71)
     # outcome banner (mutmut_85/87 value)
-    assert any("✓ finished — press Enter to return" in line for line in lines)
-    assert rec.flush_for("✓ finished — press Enter to return") is True  # (mutmut_86/88/90)
+    assert any("✓ finished" in line for line in lines)
+    assert rec.flush_for("✓ finished") is True  # (mutmut_86/88/90)
     # recorded status, exact so an XX-wrapped / lowercased msgid is caught (mutmut_118/119)
     assert status == "Last: a ✓ finished"
 
@@ -177,27 +177,6 @@ async def test_launch_failure_prints_flushed_error_and_couldnt_launch_status(
     assert any(line.startswith("Error: ") for line in lines)
     assert rec.flush_for("Error: ") is True  # (mutmut_74/76/84)
     assert status == "Last: a ✗ couldn't launch"  # (mutmut_97/98)
-
-
-async def test_eof_at_return_prompt_is_suppressed(tmp_path, stay_suspend, monkeypatch):
-    """Pressing Ctrl-D (EOF) at the `press Enter to return` prompt must be swallowed by the
-    contextlib.suppress(EOFError) guard, so the workbench records the run and returns rather
-    than crashing (mutmut_91 swaps EOFError for None, which turns the EOF into a TypeError)."""
-    monkeypatch.setattr(launcher, "run_entry", lambda *a, **k: 0)
-
-    def _eof(*a, **k):
-        raise EOFError
-
-    monkeypatch.setattr("builtins.input", _eof)  # last-set wins over the fixture's no-op
-    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="a")
-    plan = flows.FormPlan(source="none")
-    app = tui.MenuApp()
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app._execute(entry, plan, {}, [])  # must not raise despite EOF at input()
-        await pilot.pause()
-        status = str(app.query_one("#status", Static).render())
-    assert status == "Last: a ✓ finished"
 
 
 # ---------------------------------------------------------------------------

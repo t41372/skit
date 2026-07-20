@@ -1,9 +1,6 @@
-"""Behavioral tests for the batch1-B fixes: missing-key meta.toml no longer crashes list/resolve/
-doctor (models.py:64, store.py:210), the registry-as-truth ghost-entry hazard (store.py:187), the
-copy-mode workdir default (the store<->launcher gap), the corrupt-registry backup (store.py:58),
-the non-UTF-8 copy-mode inject path (store.py:130), and the registry lock (store.py:181).
+"""Behavioral tests for metadata validation, registry recovery, copy-mode defaults and locking.
 
-Each test asserts the CORRECTED, user-observable behavior — not just that a line executed.
+Each test asserts user-observable behavior rather than merely executing a branch.
 """
 
 from __future__ import annotations
@@ -33,7 +30,7 @@ def sample_script(tmp_path: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Finding 1 (models.py:64 + store.py:210): valid-TOML-but-missing-key meta.toml
+# Required metadata keys in otherwise valid TOML
 # ---------------------------------------------------------------------------
 
 
@@ -214,7 +211,7 @@ def test_from_toml_dict_invalid_type_message_is_gettext_wrapped():
 
 
 # ---------------------------------------------------------------------------
-# Finding 2 (store.py:187): registry-as-truth ghost-entry overwrite
+# Lost-registry name collisions must not overwrite stored entries
 # ---------------------------------------------------------------------------
 
 
@@ -341,7 +338,7 @@ def test_add_python_copy_mode_explicit_workdir_override_still_respected(sample_s
 
 
 # ---------------------------------------------------------------------------
-# Finding 4 (store.py:58): corrupt registry.toml
+# Corrupt registry quarantine and reconstruction
 # ---------------------------------------------------------------------------
 
 
@@ -378,7 +375,7 @@ def test_corrupt_registry_recovers_fully_via_doctor_rebuild(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Finding 5 (store.py:130): non-UTF-8 source corrupted by lossy inject round-trip
+# Non-UTF-8 copy fidelity when dependency injection is unavailable
 # ---------------------------------------------------------------------------
 
 
@@ -437,7 +434,7 @@ def test_add_python_injected_write_failure_rolls_back_entire_entry(tmp_path, mon
 
 
 # ---------------------------------------------------------------------------
-# Finding 6 (store.py:181): registry lock
+# Registry mutation serialization
 # ---------------------------------------------------------------------------
 
 
@@ -463,50 +460,19 @@ def test_registry_lock_serializes_concurrent_holders():
     assert order.index("A-exit") < order.index("B-enter")
 
 
-def test_registry_lock_reclaims_a_stale_lock(monkeypatch, tmp_path):
+def test_registry_lock_uses_a_versioned_persistent_native_inode(tmp_path):
     from skit import store
     from skit.paths import registry_path
 
-    monkeypatch.setattr(store, "_LOCK_STALE_SECONDS", 0.01)
-    lock_path = registry_path().with_suffix(".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path.touch()
-    old = time.time() - 10
-    os.utime(lock_path, (old, old))
-
-    with store._registry_lock():  # must not hang or raise: the stale lock is reclaimed
-        pass
-    assert not lock_path.exists()
-
-
-def test_registry_lock_treats_a_stat_race_as_reclaimable(monkeypatch):
-    """If the lock file vanishes between the FileExistsError and the staleness stat() (another
-    holder released it right then), the race must not crash or wedge — it's treated as reclaimable
-    on the next loop instead of propagating the OSError."""
-    from pathlib import Path
-
-    from skit import store
-    from skit.paths import registry_path
-
-    lock_path = registry_path().with_suffix(".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path.touch()  # pre-existing lock -> the first os.open() raises FileExistsError
-    monkeypatch.setattr(store, "_LOCK_STALE_SECONDS", 0)  # any reclaimed age counts as stale
-
-    real_stat = Path.stat
-    raised = {"done": False}
-
-    def flaky_stat(self, *a, **kw):
-        if self == lock_path and not raised["done"]:
-            raised["done"] = True
-            raise OSError("vanished mid-check (simulated)")
-        return real_stat(self, *a, **kw)
-
-    monkeypatch.setattr(Path, "stat", flaky_stat)
-
-    with store._registry_lock():  # must not hang or raise
-        pass
-    assert raised["done"]
+    old_protocol = registry_path().with_suffix(".lock")
+    native = registry_path().with_suffix(".native.lock")
+    with store._registry_lock():
+        assert native.is_file()
+        first_inode = native.stat().st_ino
+    assert native.is_file()
+    assert not old_protocol.exists()  # released O_EXCL builds must not stall on our inode
+    with store._registry_lock():
+        assert native.stat().st_ino == first_inode
 
 
 def test_concurrent_add_python_both_succeed_with_distinct_slugs(tmp_path):

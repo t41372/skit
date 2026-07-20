@@ -46,7 +46,7 @@ async def test_on_mount_sets_the_table_border_title(tmp_path):
     app = tui.MenuApp()
     async with app.run_test(size=(100, 24)) as pilot:
         await pilot.pause()
-        assert app.query_one(DataTable).border_title == "Scripts"
+        assert app.query_one(DataTable).border_title == "Library"
 
 
 async def test_on_mount_sets_the_detail_border_title(tmp_path):
@@ -116,15 +116,15 @@ async def test_footer_switches_to_search_chips_when_focus_moves_to_search(tmp_pa
     async with app.run_test(size=(100, 24)) as pilot:
         await pilot.pause()
         local = app.query_one("#keys-local", Static)
-        assert "Edit script" in footer_text(local)  # table-focus: full row chips
+        assert "Edit source" in footer_text(local)  # table-focus: full row chips
         app.query_one("#search", Input).focus()
         await pilot.pause()
         search_bar = footer_text(local)
         assert "Back to list" in search_bar  # watcher fired: search-mode chips
-        assert "Edit script" not in search_bar
+        assert "Edit source" not in search_bar
         app.query_one(DataTable).focus()
         await pilot.pause()
-        assert "Edit script" in footer_text(local)  # watcher fired again on the way back
+        assert "Edit source" in footer_text(local)  # watcher fired again on the way back
 
 
 # ---------------------------------------------------------------------------

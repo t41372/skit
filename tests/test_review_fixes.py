@@ -1,4 +1,4 @@
-"""Regression tests for bugs caught during the 2026-07-04 code review (one test per real bug)."""
+"""Regression tests for launch, rewrite, metadata, i18n, and environment edge cases."""
 
 from __future__ import annotations
 

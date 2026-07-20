@@ -31,21 +31,29 @@ if TYPE_CHECKING:
 
 
 def read_cli(text: str) -> ArgSpec | None:
-    """Read the script's `getopts` surface. None when the script doesn't parse, has no getopts
-    call, or builds its optstring dynamically — every one a "no readable surface" case."""
+    """Read the script's `getopts` surface. None when the script doesn't parse or has no
+    getopts call at all; a getopts whose optstring is DYNAMIC (`getopts "$OPTS" opt`) is a
+    detected-but-unmodelable parser and degrades honestly (`ok=False, "dynamic"`) — the
+    same distinction the python and JS readers draw, so the form says "couldn't model
+    this script's own arguments" instead of silently pretending there is no CLI."""
     data = text.encode("utf-8")  # pragma: no mutate — utf-8 equivalence
     root = Parser(_LANGUAGE).parse(data).root_node
     if root.has_error:
         return None
-    optstring = _find_getopts_optstring(root)
-    if optstring is None:
+    found = _find_getopts_optstring(root)
+    if found is None:
         return None
+    optstring, literal = found
+    if not literal:
+        return ArgSpec(ok=False, reason="dynamic")
     return ArgSpec(fields=_parse_optstring(optstring))
 
 
-def _find_getopts_optstring(root: Node) -> str | None:
-    """The literal optstring of the first `getopts` command, or None (no getopts, or its optstring
-    is dynamic / absent). The optstring is getopts' FIRST argument; the second is the loop variable."""
+def _find_getopts_optstring(root: Node) -> tuple[str, bool] | None:
+    """(optstring, is-literal) for the first `getopts` command, or None when there is no
+    getopts (or it has no optstring argument at all). The optstring is getopts' FIRST
+    argument; the second is the loop variable. A non-literal first argument returns
+    ("", False) — detected, but dynamic."""
     for node in _walk(root):
         if node.type != "command":
             continue
@@ -55,7 +63,10 @@ def _find_getopts_optstring(root: Node) -> str | None:
         args = _arguments(node)
         if not args:
             return None  # `getopts` with no optstring — nothing to read
-        return _literal_text(args[0])  # None when the optstring isn't a plain literal (dynamic)
+        literal = _literal_text(args[0])
+        if literal is None:
+            return ("", False)
+        return (literal, True)
     return None
 
 

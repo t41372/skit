@@ -173,20 +173,114 @@ def test_promptform_secret_without_env_source_prints_no_hint(monkeypatch):
     assert "environment variable" not in console.export_text()  # no source -> no hint
 
 
-def test_promptform_choice_field_offers_the_choices(monkeypatch):
-    """A choice field is asked with its choices and defaults to the first when nothing is
-    prefilled; the picked choice is returned verbatim."""
+def test_promptform_required_choice_field_offers_the_choices(monkeypatch):
+    """A REQUIRED (or defaulted) choice shows its choices in the label and defaults to the
+    first when nothing is prefilled; the picked choice is returned verbatim. rich's own
+    choices= gate is NOT used — the collector runs its own localized validation loop,
+    so the choices ride in the label text, not a choices= kwarg."""
     plan = flows.FormPlan(
         source="argparse",
-        fields=[flows.FormField(key="mode", label="mode", kind="choice", choices=["a", "b"])],
+        fields=[
+            flows.FormField(
+                key="mode", label="mode", kind="choice", choices=["a", "b"], required=True
+            )
+        ],
     )
     console = _console()
     calls = _script_ask(monkeypatch, promptform.Prompt, ["b"])
     values = promptform.collect(plan, {}, console=console)
 
     assert values == {"mode": "b"}
-    assert calls[0][1]["choices"] == ["a", "b"]
+    assert "choices" not in calls[0][1]  # own loop, not rich's hardcoded-English choices= gate
     assert calls[0][1]["default"] == "a"  # no prefill -> first choice is the default
+    assert "(a/b)" in calls[0][0][0]  # the choices ride in the prompt label
+
+
+def test_promptform_required_choice_reasks_localized_until_valid(monkeypatch):
+    """A garbage answer to a REQUIRED choice re-asks with the LOCALIZED "Choose one of"
+    hint (no rich hardcoded English), then the valid choice is returned. The required
+    branch's hint has NO "(or Enter to skip)" tail — that belongs to the optional sibling."""
+    plan = flows.FormPlan(
+        source="argparse",
+        fields=[
+            flows.FormField(
+                key="mode", label="mode", kind="choice", choices=["a", "b"], required=True
+            )
+        ],
+    )
+    console = _console()
+    _script_ask(monkeypatch, promptform.Prompt, ["nope", "b"])
+    values = promptform.collect(plan, {}, console=console)
+
+    assert values == {"mode": "b"}
+    export = console.export_text()
+    assert "Choose one of: a, b" in export
+    assert "(or Enter to skip)" not in export  # required != optional
+
+
+def test_promptform_required_choice_default_enter_accepts(monkeypatch):
+    """Enter on a prefilled REQUIRED choice submits the default (a real choice) on the
+    first ask — no re-prompt, no hint."""
+    plan = flows.FormPlan(
+        source="argparse",
+        fields=[
+            flows.FormField(
+                key="mode", label="mode", kind="choice", choices=["a", "b"], required=True
+            )
+        ],
+    )
+    console = _console()
+    calls = _script_ask(monkeypatch, promptform.Prompt, ["b"])  # rich returns the default on Enter
+    values = promptform.collect(plan, {"mode": "b"}, console=console)
+
+    assert values == {"mode": "b"}
+    assert len(calls) == 1  # accepted first try, never re-asked
+    assert calls[0][1]["default"] == "b"  # the prefill seeds the default
+    assert "Choose one of" not in console.export_text()
+
+
+def test_promptform_optional_choice_enter_leaves_it_out(monkeypatch):
+    """An optional choice with no default: Enter (empty answer) means "leave it out" — the
+    prompt is asked WITHOUT rich's choices= (so "" is accepted), matching the TUI RadioSet
+    that returns "" and assembly then omits the flag. The first choice is never forced."""
+    plan = flows.FormPlan(
+        source="argparse",
+        fields=[flows.FormField(key="mode", label="mode", kind="choice", choices=["a", "b"])],
+    )
+    console = _console()
+    calls = _script_ask(monkeypatch, promptform.Prompt, [""])
+    values = promptform.collect(plan, {}, console=console)
+
+    assert values == {"mode": ""}  # empty stays empty (the flag is omitted at assembly)
+    assert calls[0][1]["default"] == ""  # asked with an empty default, not the first choice
+    assert "choices" not in calls[0][1]  # rich's choices= gate is off so "" is allowed
+
+
+def test_promptform_optional_choice_reasks_until_a_real_choice(monkeypatch):
+    """A typed answer must still be a real choice: garbage re-asks (with the hint), and a
+    valid choice is then returned."""
+    plan = flows.FormPlan(
+        source="argparse",
+        fields=[flows.FormField(key="mode", label="mode", kind="choice", choices=["a", "b"])],
+    )
+    console = _console()
+    _script_ask(monkeypatch, promptform.Prompt, ["nope", "b"])
+    values = promptform.collect(plan, {}, console=console)
+
+    assert values == {"mode": "b"}
+    assert "Choose one of: a, b (or Enter to skip)" in console.export_text()
+
+
+def test_promptform_bool_default_accepts_on_and_y_spellings(monkeypatch):
+    """The bool default is read through flows.truthy, so a stored "on"/"y" renders as a
+    CHECKED default in the line form (the same spelling rule assembly fires on)."""
+    plan = flows.FormPlan(
+        source="argparse", fields=[flows.FormField(key="flag", label="flag", kind="bool")]
+    )
+    console = _console()
+    calls = _script_ask(monkeypatch, promptform.Confirm, [True])
+    promptform.collect(plan, {"flag": "on"}, console=console)
+    assert calls[0][1]["default"] is True  # "on" seeds a checked default, not unchecked
 
 
 def test_promptform_degraded_field_prints_leave_empty_hint(monkeypatch):
@@ -215,14 +309,17 @@ def test_inline_collect_returns_values_when_form_submits(monkeypatch):
     entry = _command_entry()
     plan = flows.FormPlan(source="command", fields=[flows.FormField(key="m", label="m")])
 
-    def fake_run(_self: object, **kwargs: object) -> tuple[dict[str, str], list[str]]:
+    def fake_run(
+        _self: object, **kwargs: object
+    ) -> tuple[dict[str, str], list[str], str | None, bool]:
         assert kwargs.get("inline") is True  # opened in inline mode, not fullscreen
-        return {"m": "hi"}, ["--extra"]
+        return {"m": "hi"}, ["--extra"], None, False
 
     monkeypatch.setattr(inlineform._InlineFormApp, "run", fake_run)
     result = inlineform.collect(entry, plan, {"m": "seed"})
 
-    assert result == {"m": "hi"}  # values returned, the extra list discarded
+    # values + picked runner returned, the extra list discarded
+    assert result == ({"m": "hi"}, None, False)
 
 
 def test_inline_collect_returns_none_when_cancelled(monkeypatch):
@@ -254,6 +351,8 @@ async def test_inline_app_pushes_form_and_submit_exits_with_result(tmp_path):
 
     result = app.return_value
     assert result is not None  # _done forwarded the submit result into app.exit
-    values, extra = result
+    values, extra, picked_runner, runner_was_picked = result
     assert extra == []  # include_extra=False: the inline frame hides the extra-args row
+    assert picked_runner is None  # no runner picker on a non-prompt form
+    assert runner_was_picked is False
     assert set(values) == {"width", "fast", "mode"}  # the plan's fields were collected

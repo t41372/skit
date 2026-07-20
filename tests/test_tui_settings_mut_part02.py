@@ -60,17 +60,27 @@ def _prev_sibling(widget):
 
 
 async def test_declared_editor_command_template_and_add_field(tmp_path):
-    """A command (template family) entry renders its template line as a muted "hint",
-    and the add-a-parameter hint + input carry their exact copy, class, and placeholder."""
+    """A command (template family) entry renders its template EDITABLE (#14: the
+    template IS the program — freezing it read-only forever while every other kind
+    can edit its source was a rule with no reason), with the re-read hint's exact
+    copy, and the add-a-parameter hint + input carry their exact copy, class, and
+    placeholder."""
     entry = store.add_command("convert {size}", name="conv")
     async with tui.MenuApp().run_test() as pilot:
         screen = ScriptSettingsScreen(entry)
         pilot.app.push_screen(screen)
         await pilot.pause()
 
-        # The template line above the rows is styled as a hint (kills classes None/drop/case).
-        template_line = next(w for w in screen.query(Static) if "convert {size}" in str(w.render()))
-        assert template_line.has_class("hint")
+        # The template rides in the editable input, prefilled verbatim (kills value
+        # None/drop), and the re-read hint keeps its exact copy and hint class.
+        assert screen.query_one("#st-template", Input).value == "convert {size}"
+        reread_hint = next(
+            w for w in screen.query(Static) if "re-reads the {placeholders}" in str(w.render())
+        )
+        assert str(reread_hint.render()).strip() == (
+            "Saving re-reads the {placeholders} from the template."
+        )
+        assert reread_hint.has_class("hint")
 
         add_input = screen.query_one("#st-add-param", Input)
         add_hint = _prev_sibling(add_input)

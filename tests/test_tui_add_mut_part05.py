@@ -15,7 +15,7 @@ from textual.widgets import Input, Static
 
 from skit import i18n, store, tui
 from skit.langs import registry
-from skit.tui_add import AddReviewScreen, AddSourceScreen
+from skit.tui_add import AddReviewScreen, AddSourceScreen, KindPickModal
 
 
 @pytest.fixture(autouse=True)
@@ -50,37 +50,49 @@ async def _mounted(app, pilot, capture: dict[str, str | None] | None = None):
 
 
 async def test_on_mount_sets_border_title(tmp_path):
-    """on_mount stamps the panel border with the exact, translated 'Add a script'."""
+    """on_mount stamps the panel border with the exact, translated 'Add an entry'."""
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         screen = await _mounted(app, pilot)
-        assert screen.query_one("#add-body").border_title == "Add a script"
+        assert screen.query_one("#add-body").border_title == "Add an entry"
 
 
 # ---------------------------------------------------------------------------
-# _add_non_python: interpreter, deps scan, toast, dismiss, rejection
+# the unified add lane: every scripty kind rides the SAME review panel (#14
+# retired _add_non_python's direct lane), so these drive submit -> review ->
+# accept and pin what the panel records for non-python kinds
 # ---------------------------------------------------------------------------
 
 
-async def test_non_python_no_shebang_records_empty_interpreter(tmp_path):
-    """A JS file with no recognizable shebang falls into the else branch: the recorded
-    interpreter is the empty string (skit uses the kind's default runner), not a literal."""
+async def _submit_and_review(app, pilot, screen, path):
+    """Type the path, submit, and hand back the review panel the source screen pushed."""
+    screen.query_one("#add-path", Input).value = str(path)
+    screen._submit_path()
+    await pilot.pause()
+    assert isinstance(app.screen, AddReviewScreen)
+    return app.screen
+
+
+async def test_js_no_shebang_records_empty_interpreter(tmp_path):
+    """A JS file with no recognizable shebang falls into _store_entry's else branch: the
+    recorded interpreter is the empty string (skit uses the kind's default runner), not a
+    literal."""
     js = _write(tmp_path, "plain.js", "const x = 1\nconsole.log(x)\n")
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         screen = await _mounted(app, pilot)
-        screen.query_one("#add-path", Input).value = str(js)
-        screen._submit_path()
+        review = await _submit_and_review(app, pilot, screen, js)
+        review.action_accept()
         await pilot.pause()
     (entry,) = store.list_entries()
     assert entry.meta.kind == "js"
     assert entry.meta.interpreter == ""
 
 
-async def test_non_python_scans_deps_and_toasts(tmp_path):
-    """An npm-flavor copy add scans the script's own imports, records them on the entry,
-    and surfaces the exact toast (the direct lane's only visible receipt for something that
-    will download packages)."""
+async def test_js_review_prefills_scanned_deps_and_accept_records_them(tmp_path):
+    """An npm-flavor add scans the script's own imports INTO the visible #rv-deps field
+    (the panel is the receipt for something that will download packages — never an
+    invisible recording), and accepting records exactly that list on the copy entry."""
     js = _write(
         tmp_path,
         "tool.js",
@@ -89,37 +101,38 @@ async def test_non_python_scans_deps_and_toasts(tmp_path):
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         screen = await _mounted(app, pilot)
-        screen.query_one("#add-path", Input).value = str(js)
-        screen._submit_path()
+        review = await _submit_and_review(app, pilot, screen, js)
+        assert review.query_one("#rv-deps", Input).value == "express, lodash"
+        review.action_accept()
         await pilot.pause()
-        messages = [n.message for n in app._notifications]
     (entry,) = store.list_entries()
     assert entry.meta.mode == "copy"
     assert entry.meta.interpreter == "node"
     assert entry.meta.dependencies == ["express", "lodash"]
-    assert messages == ["Dependencies recorded: express, lodash (edit in Script settings)"]
 
 
-async def test_non_python_dismisses_with_new_slug(tmp_path):
-    """The direct lane hands the new entry's slug back to the Library (so it can select the
-    freshly-added row) — never None."""
+async def test_js_accept_dismisses_with_new_slug(tmp_path):
+    """The review lane hands the new entry's slug back to the Library (so it can select
+    the freshly-added row) — never None."""
     js = _write(tmp_path, "widget.js", "const x = 1\n")
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         captured: dict[str, str | None] = {}
         screen = await _mounted(app, pilot, captured)
-        screen.query_one("#add-path", Input).value = str(js)
-        screen._submit_path()
+        review = await _submit_and_review(app, pilot, screen, js)
+        review.action_accept()
+        await pilot.pause()
         await pilot.pause()
     (entry,) = store.list_entries()
     assert captured["result"] == entry.slug
     assert entry.slug is not None
 
 
-async def test_non_python_degraded_scanner_skips_deps_block(tmp_path, monkeypatch):
+async def test_js_degraded_scanner_leaves_deps_empty(tmp_path, monkeypatch):
     """When the JS grammar wheel is absent the kind keeps deps_flavor='npm' but its
-    dep_scanner degrades to None; the `and dep_scanner is not None` guard must still hold, so
-    the add completes without recording deps (and without calling None(text))."""
+    dep_scanner degrades to None; _compose_deps' `if spec.dep_scanner` guard must hold,
+    so the field prefills empty and the accepted entry records no deps (and nothing
+    calls None(text))."""
     real = registry.spec_for
 
     def degraded(kind):
@@ -133,33 +146,35 @@ async def test_non_python_degraded_scanner_skips_deps_block(tmp_path, monkeypatc
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         screen = await _mounted(app, pilot)
-        screen.query_one("#add-path", Input).value = str(js)
-        screen._submit_path()
+        review = await _submit_and_review(app, pilot, screen, js)
+        assert review.query_one("#rv-deps", Input).value == ""  # no scan ran
+        review.action_accept()
         await pilot.pause()
     (entry,) = store.list_entries()
     assert entry.meta.mode == "copy"
-    assert entry.meta.dependencies is None  # deps block correctly skipped
+    assert entry.meta.dependencies is None  # deps recording correctly skipped
 
 
-async def test_non_python_tolerates_non_utf8_bytes(tmp_path):
-    """A script carrying a stray non-UTF-8 byte must still add cleanly: the read uses
-    errors='replace' so a rogue byte degrades to U+FFFD instead of crashing the add. The
-    ASCII import line still scans, so deps are recorded."""
+async def test_js_add_tolerates_non_utf8_bytes(tmp_path):
+    """A script carrying a stray non-UTF-8 byte must still add cleanly: the panel's read
+    uses errors='replace' so a rogue byte degrades to U+FFFD instead of crashing the
+    submit. The ASCII import line still scans, so deps are recorded."""
     js = tmp_path / "latin.js"
     js.write_bytes(b'#!/usr/bin/env node\nimport express from "express"\nconst s = "caf\xe9"\n')
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         screen = await _mounted(app, pilot)
-        screen.query_one("#add-path", Input).value = str(js)
-        screen._submit_path()
+        review = await _submit_and_review(app, pilot, screen, js)
+        review.action_accept()
         await pilot.pause()
     (entry,) = store.list_entries()
     assert entry.meta.dependencies == ["express"]
 
 
-async def test_non_python_rejects_unknown_kind(tmp_path):
-    """A plain data file is neither a known script kind nor an executable: the screen shows
-    the exact guidance line pointing at --exe / --cmd, and adds nothing."""
+async def test_unknown_kind_asks_instead_of_adding(tmp_path):
+    """A plain data file is unclassifiable: the screen ASKS (the KindPickModal — the TUI
+    twin of --kind/--exe) instead of erroring or silently storing; declining the ask adds
+    nothing."""
     notes = _write(tmp_path, "notes.txt", "just prose\n")
     app = tui.MenuApp()
     async with app.run_test() as pilot:
@@ -167,11 +182,9 @@ async def test_non_python_rejects_unknown_kind(tmp_path):
         screen.query_one("#add-path", Input).value = str(notes)
         screen._submit_path()
         await pilot.pause()
-        rendered = str(screen.query_one("#add-error", Static).render())
-    assert rendered == (
-        "notes.txt isn't a script or an executable — pass --exe for a program, "
-        "or --cmd for a command template."
-    )
+        assert isinstance(app.screen, KindPickModal)  # ask, don't teach CLI flags
+        app.screen.dismiss(None)
+        await pilot.pause()
     assert store.list_entries() == []
 
 

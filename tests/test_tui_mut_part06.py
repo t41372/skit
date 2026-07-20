@@ -39,7 +39,7 @@ async def test_empty_library_detail_shows_exact_placeholder() -> None:
         lines = _detail(app).split("\n")
 
     assert lines == [
-        "Your scripts will appear here.",
+        "Your entries will appear here.",
         "",
         "Press a to add the first one,",
         "or run: skit add <path> in a terminal.",

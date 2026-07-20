@@ -50,7 +50,7 @@ def test_drift_lines_rebind_line_is_verbatim():
     )
     lines = pyrec.drift_lines(report, "myscript")
     expected = (
-        "  input-1: its prompt no longer matches a unique input() call; falling back to "
+        "  input-1: its prompt no longer matches a unique input/read call; falling back to "
         "position (still injected — double-check this lands on the right question, "
         "especially if it's a secret)"
     )

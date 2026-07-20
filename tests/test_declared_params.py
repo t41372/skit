@@ -27,6 +27,14 @@ from skit.params import (
 runner = CliRunner()
 
 
+def _json(result):
+    """The --json contract: stdout is EXACTLY one JSON document (SKILL.md's stable
+    contract). Parse the WHOLE of stdout — never slice from the first `{`, which would
+    mask a human line leaking onto stdout. Warnings ride stderr, which CliRunner keeps
+    separate, so this stays pure."""
+    return json.loads(result.output)
+
+
 @pytest.fixture
 def run_entry_spy(monkeypatch):
     """Capture the delivery-ready material handed to launcher.run_entry (nothing runs)."""
@@ -40,6 +48,7 @@ def run_entry_spy(monkeypatch):
         invoke_cwd=None,
         script_override=None,
         env_overlay=None,
+        runner=None,
     ):
         calls["extra"] = list(extra_args or [])
         calls["values"] = dict(values or {})
@@ -291,7 +300,14 @@ def test_execute_passes_env_values_to_run_entry(tmp_path: Path, monkeypatch):
     seen: dict[str, object] = {}
 
     def fake_run_entry(
-        entry, extra, *, values=None, invoke_cwd=None, script_override=None, env_overlay=None
+        entry,
+        extra,
+        *,
+        values=None,
+        invoke_cwd=None,
+        script_override=None,
+        env_overlay=None,
+        runner=None,
     ):
         seen["env_overlay"] = env_overlay
         return 0
@@ -411,6 +427,64 @@ def test_cli_exe_show_without_declared_is_plain_message(tmp_path: Path):
     result = runner.invoke(cli.app, ["params", "prog"])
     assert result.exit_code == 0
     assert "has no managed parameters" in result.output
+
+
+def test_cli_declared_edit_with_json_emits_the_final_read_view(tmp_path: Path):
+    """A declared edit with --json emits the final read-view JSON as the WHOLE of stdout,
+    instead of silently dropping the flag — an explicit --json never no-ops,
+    and under the purity rule the human summary rides stderr, not stdout."""
+    _exe(tmp_path)
+    result = runner.invoke(
+        cli.app,
+        [
+            "params",
+            "prog",
+            "--add",
+            "width",
+            "--deliver",
+            "width=flag",
+            "--flag",
+            "width=--width",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # Under --json stdout is EXACTLY the read-view JSON — the human "Updated prog" summary
+    # is silenced (it would break the one-document contract), so parse the whole output.
+    payload = _json(result)
+    assert payload["declared"][0]["name"] == "width"  # the just-added row is in the JSON
+    assert payload["declared"][0]["delivery"] == "flag"
+
+
+def test_cli_env_source_on_non_secret_declared_param_warns(tmp_path: Path):
+    """--env-source on a DECLARED non-secret param warns (it only applies to secrets) instead
+    of vanishing — the in-file lane's rule, now on the declared lane too. The warning rides
+    stderr, so under --json stdout stays exactly one read-view document."""
+    entry = _exe(tmp_path)
+    store.write_parameters(entry.slug, [ParamDecl(name="WIDTH", delivery="env")])
+    result = runner.invoke(cli.app, ["params", "prog", "--env-source", "WIDTH=COLS"])
+    assert result.exit_code == 0, result.output
+    assert "WIDTH isn't secret" in result.stderr  # the no-op flag is surfaced, not dropped
+    # --json: stdout is exactly one JSON document; the warning stays on stderr, so the
+    # STDOUT stream (not the mixed .output) parses whole.
+    jr = runner.invoke(cli.app, ["params", "prog", "--env-source", "WIDTH=COLS", "--json"])
+    assert jr.exit_code == 0, jr.output
+    payload = json.loads(jr.stdout)  # stdout alone is pure JSON
+    assert any(p["name"] == "WIDTH" for p in payload["declared"])
+    assert "WIDTH isn't secret" in jr.stderr  # the warning rode stderr, not stdout
+
+
+def test_cli_python_manage_with_json_emits_the_final_read_view(tmp_path: Path):
+    """The twin on the analyzer branch: `skit params <py> --manage CITY --json` emits the
+    final read-view JSON after managing CITY."""
+    src = tmp_path / "job.py"
+    src.write_text('CITY = "Taipei"\nprint(CITY)\n', encoding="utf-8")
+    store.add_python(src, name="job")
+    result = runner.invoke(cli.app, ["params", "job", "--manage", "CITY", "--json"])
+    assert result.exit_code == 0, result.output
+    # --json purity: the human "Updated job" summary is silenced; stdout is the read view.
+    payload = _json(result)
+    assert [p["name"] for p in payload["params"]] == ["CITY"]  # CITY is now managed in the JSON
 
 
 def test_cli_add_choice_placeholder_on_command_then_run(tmp_path: Path, run_entry_spy):
@@ -672,7 +746,7 @@ def test_cli_command_show_masks_secret_placeholder_and_undeclared(tmp_path: Path
     assert "other" in result.output  # the undeclared placeholder is still listed (bare)
 
 
-# ---- capability-honesty fixes (review findings) ------------------------------------------------
+# ---- Delivery capability honesty ---------------------------------------------------------------
 
 
 def _ruby(tmp_path: Path, name: str = "rb") -> store.Entry:

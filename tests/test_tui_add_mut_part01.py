@@ -58,6 +58,7 @@ def test_run_add_review_forwards_every_arg_to_the_screen(
 
     assert result == "the-slug"  # .run()'s slug is returned untouched
     screen = captured["app"]._screen
+    assert isinstance(screen, tui_add.AddReviewScreen)  # the host generalized in #14
     assert screen._overrides["name"] == "chosen-name"
     assert screen._overrides["desc"] == "chosen desc"
     assert screen._overrides["mode"] == "1"  # reference=True → the "link the original" radio
@@ -81,6 +82,7 @@ def test_run_add_review_defaults_to_copy_mode_and_no_python_pin(
     tui_add.run_add_review(p)
 
     screen = captured["app"]._screen
+    assert isinstance(screen, tui_add.AddReviewScreen)  # the host generalized in #14
     assert "mode" not in screen._overrides  # reference defaults False → no override
     assert screen._requires_python == ""  # requires_python defaults to the empty string
 
@@ -94,7 +96,9 @@ def test_add_review_app_defaults_requires_python_to_empty(tmp_path: Path) -> Non
     """AddReviewApp() with no requires_python builds a screen carrying "" — a non-empty
     default would pin every interactive add to a phantom Python version."""
     app = tui_add.AddReviewApp(_py(tmp_path))
-    assert app._screen._requires_python == ""
+    screen = app._screen
+    assert isinstance(screen, tui_add.AddReviewScreen)  # the host generalized in #14
+    assert screen._requires_python == ""
 
 
 def test_add_review_screen_defaults_requires_python_to_empty(tmp_path: Path) -> None:

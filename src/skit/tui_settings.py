@@ -1,13 +1,14 @@
-"""Script settings (p): the merged per-script management screen — basics, parameters,
-presets, dependencies in one place.
+"""Entry settings (p): the merged per-entry management screen — basics, parameters,
+presets, dependencies and launch policy in one place.
 
-Enter saves everything in one atomic [tool.skit] rewrite; Esc asks when there are
-unsaved changes. Reference-mode entries show the parameters read-only (skit never
-writes the original file, A7); command entries show the template and placeholders.
+Enter validates the complete form before saving its independent files; Esc asks when
+there are unsaved changes. Reference-mode entries show the parameters read-only (skit
+never writes the original file, A7); command entries show the template and placeholders.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import override
 
 from rich.markup import escape
@@ -16,10 +17,21 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Checkbox, Input, Label, Static
+from textual.widgets import Checkbox, Input, Label, RadioButton, RadioSet, Select, Static
 
-from . import analysis, argstate, params, pep723, store, tui_footer
+from . import (
+    analysis,
+    argstate,
+    config,
+    params,
+    pep723,
+    store,
+    tui_footer,
+    tui_prompt,
+    tui_runner,
+)
 from .i18n import gettext
+from .langs.prompt import text as prompt_text
 from .langs.registry import spec_for
 from .models import Entry
 from .params import ParamDecl
@@ -158,6 +170,20 @@ class DeclParamRow(Vertical):
                 placeholder=gettext("default value (optional)"),
                 classes="d-default",
             )
+        with Horizontal():
+            yield Static("  " + gettext("Choices:"), classes="p-meta")
+            yield Input(
+                value=", ".join(str(c) for c in d.choices or []),
+                placeholder=gettext("comma separated (for type: choice)"),
+                classes="d-choices",
+            )
+        with Horizontal():
+            yield Static("  " + gettext("Help:"), classes="p-meta")
+            yield Input(
+                value=d.help,
+                placeholder=gettext("one-line help shown under the field (optional)"),
+                classes="d-help",
+            )
         if self._show_flag:
             with Horizontal():
                 yield Static("  " + gettext("Flag:"), classes="p-meta")
@@ -194,6 +220,10 @@ class DeclParamRow(Vertical):
             return None
         d = self.decl
         d.default = self.query_one(".d-default", Input).value.strip() or None
+        d.choices = tuple(
+            c.strip() for c in self.query_one(".d-choices", Input).value.split(",") if c.strip()
+        )
+        d.help = self.query_one(".d-help", Input).value.strip()
         if self._show_flag:
             d.flag = self.query_one(".d-flag", Input).value.strip()
         d.required = self.query_one(".d-required", Checkbox).value
@@ -218,8 +248,15 @@ class ScriptSettingsScreen(Screen[bool]):
 
     BINDINGS = [
         Binding("escape", "close", gettext("Back")),
-        Binding("ctrl+a", "save", gettext("Save"), priority=True),
+        Binding("ctrl+s", "save", gettext("Save"), priority=True),
         Binding("ctrl+r", "resync", gettext("Resync"), priority=True),
+        Binding("ctrl+n", "new_runner", gettext("New agent"), show=False, priority=True),
+        Binding(
+            "ctrl+o",
+            "choose_prompt_candidates",
+            gettext("Choose variables…"),
+            show=False,
+        ),
         *tui_footer.FIELD_NAV_BINDINGS,
     ]
     # Boot on the name field, not the "*" pick (the body scroll container).
@@ -233,6 +270,7 @@ class ScriptSettingsScreen(Screen[bool]):
     }
     ScriptSettingsScreen .section { color: $accent; margin: 1 0 0 0; }
     ScriptSettingsScreen .hint { color: $text-muted; }
+    ScriptSettingsScreen #st-prompt-fields { height: auto; }
     ScriptSettingsScreen KeysBar { dock: bottom; }
     ScriptSettingsScreen #st-keys { color: $text-muted; }
     """
@@ -246,7 +284,9 @@ class ScriptSettingsScreen(Screen[bool]):
         # settling); only user edits after mount count as dirt.
         self._dirt_armed: bool = False
         self._text: str = ""
+        self._prompt_text_error: str = ""
         self._spec = spec_for(entry.meta.kind)
+        self._is_prompt: bool = entry.meta.kind == "prompt"
         params_io = self._spec.params_io if self._spec is not None else None
         if params_io is not None and entry.script_path.exists():
             self._text = entry.script_path.read_text(encoding="utf-8", errors="replace")
@@ -258,9 +298,46 @@ class ScriptSettingsScreen(Screen[bool]):
         # interpreted kinds with no in-file block (ruby/perl/lua/r/powershell) — is edited through
         # the declared-params editor rather than the analyzer-driven [tool.skit] flow above.
         self._declared: bool = self._spec is not None and self._spec.params_io is None
-        self._declared_decls: list[ParamDecl] = (
-            params.declared_from_meta(entry.meta.parameters) if self._declared else []
-        )
+        # The deps/constraint pair the fields were prefilled from (_compose_deps
+        # stashes the effective read here) — the SAVE-time diff baseline, so the
+        # deps axis keeps the same open-time clock as every other axis.
+        self._deps_baseline: tuple[list[str], str] = ([], "")
+        # Value-keyed option list behind the workdir radio (kind-aware; "custom" last).
+        self._workdir_choices: list[str] = []
+        # The preset names as composed — the delete pass maps checkbox indices
+        # through THIS list, never a fresh state read (a preset added/deleted
+        # mid-session must not shift which name an untick deletes).
+        self._preset_names: list[str] = []
+        if self._is_prompt:
+            # Every MANAGED placeholder gets an editable row (undeclared ones as their
+            # synthesized schema), plus declared env riders — the exact field list the
+            # run form serves, so what you edit is what you get.
+            self._declared_decls: list[ParamDecl] = params.declared_for_template(
+                entry.meta.parameters, entry.meta.params or []
+            )
+        else:
+            self._declared_decls = (
+                params.declared_from_meta(entry.meta.parameters) if self._declared else []
+            )
+        self._prompt_body_names: list[str] = []
+        # Full candidate state behind the capped inline preview.  This remains local
+        # until the screen's outer Save, so Done in the picker is still reversible by
+        # Back/Discard and cannot partially update meta.toml.
+        self._pending_prompt_candidates: set[str] = set()
+        if self._is_prompt and entry.script_path.exists():
+            from .langs.prompt import analyzer as prompt_analyzer
+
+            try:
+                self._text = prompt_text.read(entry.script_path)
+            except prompt_text.PromptEncodingError as exc:
+                self._prompt_text_error = str(exc)
+            except OSError as exc:
+                self._prompt_text_error = gettext("Can't read %(path)s: %(error)s") % {
+                    "path": str(entry.script_path),
+                    "error": exc.strerror or str(exc),
+                }
+            else:
+                self._prompt_body_names = prompt_analyzer.placeholder_names(self._text)
         # The resync outcome (incl. safety-rebind warnings) must survive the recompose that
         # action_resync triggers — a widget updated in place would be thrown away and rebuilt
         # empty. Kept on the instance so compose can re-emit it. Already escape()'d for markup.
@@ -293,22 +370,26 @@ class ScriptSettingsScreen(Screen[bool]):
                 id="st-desc",
             )
             yield from self._compose_storage()
+            yield from self._compose_launch()
+            yield from self._compose_runner()
             yield from self._compose_params()
             yield from self._compose_presets()
             yield from self._compose_deps()
             yield from self._compose_needs()
-        yield tui_footer.KeysBar(
-            Static(
-                tui_footer.bar(
-                    tui_footer.chip("screen.save", "Ctrl+A", gettext("Save")),
-                    tui_footer.chip("screen.resync", "Ctrl+R", gettext("Resync")),
-                    tui_footer.chip("screen.close", "Esc", gettext("Back")),
-                    tui_footer.nav_chip(),
-                ),
-                id="st-keys",
-                markup=True,
-            )
-        )
+        chips = [tui_footer.chip("screen.save", "Ctrl+S", gettext("Save"))]
+        if (
+            self._spec is not None
+            and self._spec.analyzer is not None
+            and self._entry.meta.mode == "copy"
+        ):
+            # The same guard action_resync applies: advertising a key that silently
+            # no-ops (prompt/exe/command/reference entries) teaches a dead chord.
+            chips.append(tui_footer.chip("screen.resync", "Ctrl+R", gettext("Resync")))
+        chips += [
+            tui_footer.chip("screen.close", "Esc", gettext("Back")),
+            tui_footer.nav_chip(),
+        ]
+        yield tui_footer.KeysBar(Static(tui_footer.bar(*chips), id="st-keys", markup=True))
 
     def _compose_storage(self) -> ComposeResult:
         meta = self._entry.meta
@@ -326,6 +407,154 @@ class ScriptSettingsScreen(Screen[bool]):
                 gettext("Linked to the original: %(path)s") % {"path": escape(meta.source)},
                 classes="hint",
             )
+
+    def _compose_launch(self) -> ComposeResult:
+        """Where the entry runs, and (for interpreted kinds) what runs it — launcher
+        policies the product previously implemented in full but exposed NOWHERE: the
+        only way to change them was hand-editing meta.toml."""
+        meta = self._entry.meta
+        if self._spec is None:
+            return  # unknown kind: don't offer policies a newer skit defined
+        yield Static(gettext("Run in (working directory)"), classes="section")
+        # Kind-aware options: a command template has no "own folder" (no file), and a
+        # reference-only exe has no stored copy — offering either would be a label
+        # that reads as one thing and silently resolves as another.
+        choices: list[tuple[str, str]] = []
+        if self._spec.has_original_file:
+            choices.append((gettext("The source file's folder"), "origin"))
+        if self._spec.stored_name:
+            choices.append((gettext("skit's stored-copy folder"), "store"))
+        choices.append((gettext("Wherever skit is run from"), "invoke"))
+        choices.append((gettext("A fixed folder (type it below)"), "custom"))
+        self._workdir_choices = [value for _, value in choices]
+        known_values = {value for _, value in choices if value != "custom"}
+        custom = meta.workdir not in known_values
+        with RadioSet(id="st-workdir"):
+            for label, value in choices:
+                yield RadioButton(
+                    label, value=(meta.workdir == value if value != "custom" else custom)
+                )
+        yield Input(
+            value=meta.workdir if custom else "",
+            placeholder=gettext("/absolute/path"),
+            id="st-workdir-path",
+        )
+        if self._spec.family == "interpreted" and meta.kind not in ("python", "prompt"):
+            yield Static(gettext("Interpreter / runtime"), classes="section")
+            yield Input(
+                value=meta.interpreter,
+                placeholder=gettext("empty = automatic (shebang, then detection order)"),
+                id="st-interpreter",
+            )
+
+    @on(RadioSet.Changed, "#st-workdir")
+    def _workdir_changed(self, event: RadioSet.Changed) -> None:
+        self._toggle_workdir_path()
+
+    def _toggle_workdir_path(self) -> None:
+        box = self.query("#st-workdir")
+        if box:
+            pressed = box.first(RadioSet).pressed_index
+            is_custom = (
+                0 <= pressed < len(self._workdir_choices)
+                and self._workdir_choices[pressed] == "custom"
+            )
+            self.query_one("#st-workdir-path", Input).display = is_custom
+
+    def _validated_launch(self) -> tuple[str, str] | None:
+        """The validation half: (workdir, interpreter) to persist, or None on invalid
+        input — computed and CHECKED before any write anywhere in the save."""
+        box = self.query("#st-workdir")
+        if not box:
+            return ("", "")
+        pressed = box.first(RadioSet).pressed_index
+        picked = (
+            self._workdir_choices[pressed]
+            if 0 <= pressed < len(self._workdir_choices)
+            else "custom"
+        )
+        if picked != "custom":
+            new_workdir = picked
+        else:
+            new_workdir = self.query_one("#st-workdir-path", Input).value.strip()
+            if not new_workdir:
+                # "Fixed folder" picked but nothing typed: keep what is stored rather
+                # than guessing (an empty path is not a policy).
+                new_workdir = self._entry.meta.workdir
+            if new_workdir not in ("origin", "store", "invoke") and not (
+                Path(new_workdir).expanduser().is_absolute()
+            ):
+                # The same rule store.write_workdir enforces, checked BEFORE any write.
+                self.notify(
+                    gettext(
+                        "The working directory must be origin, store, invoke, or an absolute path."
+                    ),
+                    severity="error",
+                )
+                return None
+        interp = ""
+        interp_box = self.query("#st-interpreter")
+        if interp_box:
+            interp = interp_box.first(Input).value.strip()
+        return (new_workdir, interp)
+
+    def _write_launch(self, launch: tuple[str, str]) -> None:
+        """The write half — inputs already validated."""
+        new_workdir, new_interp = launch
+        box = self.query("#st-workdir")
+        if not box:
+            return
+        if new_workdir != self._entry.meta.workdir:
+            store.write_workdir(self._entry.slug, new_workdir)
+        if self.query("#st-interpreter") and new_interp != self._entry.meta.interpreter:
+            store.write_interpreter(self._entry.slug, new_interp)
+
+    def _compose_runner(self) -> ComposeResult:
+        if not self._is_prompt:
+            return
+        yield Static(gettext("Runner (the agent this prompt runs with)"), classes="section")
+        names = [r.name for r in config.load_prompt_runners()]
+        pin = self._entry.meta.runner
+        # A pin whose runner row was removed from config still gets an option — and it
+        # stays SELECTED, so opening settings and saving something unrelated never
+        # silently clears it (an unrequested data change). Picking another option (or
+        # "ask on the run form") is the explicit way out.
+        stale_pin = pin and all(name != pin for name in names)
+        # A VALUE-keyed dropdown: the save path reads Select.value, so a runner list
+        # that changed while the screen was open can never shift an index mapping.
+        options: list[tuple[str, str]] = [(gettext("ask on the run form"), "")]
+        if stale_pin:
+            options.append((gettext("%(runner)s (no longer configured)") % {"runner": pin}, pin))
+        options += [(name, name) for name in names]
+        yield Select(options, value=pin, allow_blank=False, id="st-runner-select")
+        # Custom agents are first-class: the picker always carries the door to define
+        # one (footer grammar — the key hint IS the click target), even when the
+        # configured list was deliberately emptied.
+        yield Static(tui_runner.new_runner_chip(), id="st-runner-new", markup=True)
+
+    def action_new_runner(self) -> None:
+        """Ctrl+N / the New agent… chip: define a custom runner right from settings —
+        it lands in config, joins the picker, and is selected, ready to pin on save."""
+        if not self._is_prompt:
+            return
+
+        def _added(name: str | None) -> None:
+            if not name:
+                return
+            # Rebuild exactly as compose does — the new runner is in config now.
+            names = [r.name for r in config.load_prompt_runners()]
+            pin = self._entry.meta.runner
+            options: list[tuple[str, str]] = [(gettext("ask on the run form"), "")]
+            if pin and pin not in names:
+                options.append(
+                    (gettext("%(runner)s (no longer configured)") % {"runner": pin}, pin)
+                )
+            options += [(n, n) for n in names]
+            select = self.query_one("#st-runner-select", Select)
+            select.set_options(options)
+            select.value = name
+
+        self.app.push_screen(tui_runner.RunnerAddModal(), _added)
 
     def _compose_params(self) -> ComposeResult:
         yield Static(gettext("Parameters (the run form's fields)"), classes="section")
@@ -387,12 +616,78 @@ class ScriptSettingsScreen(Screen[bool]):
         placeholder's schema or rides along as an env variable."""
         meta = self._entry.meta
         if self._spec is not None and self._spec.family == "template":
-            yield Static(escape(meta.template), classes="hint")
-        # A flag only means something where argv is the interface: every non-template kind
-        # (binaries AND the interpreted meta-schema kinds), mirroring the CLI's allowed deliveries.
-        show_flag = self._spec is not None and self._spec.family != "template"
+            # Editable — the template IS the program; freezing it forever while every
+            # other kind's payload has `skit edit` forced remove + re-add over a typo.
+            yield Input(value=meta.template, id="st-template")
+            yield Static(
+                gettext("Saving re-reads the {placeholders} from the template."),
+                classes="hint",
+            )
+        # A flag only means something where argv is the interface: every kind whose form
+        # is NOT placeholders (binaries AND the interpreted meta-schema kinds), mirroring
+        # the CLI's allowed deliveries. The trait — not the family — is the gate, so a
+        # prompt (family "interpreted") never grows a meaningless flag input.
+        show_flag = self._spec is not None and not self._spec.placeholder_params
+        if self._is_prompt:
+            # The per-prompt master switch: one click + Save turns insertion off outright
+            # (the escape hatch for long prompts full of {{lookalikes}}); the managed
+            # list survives underneath for a later switch-on.
+            yield Checkbox(
+                gettext("Variable insertion ({{name}} placeholders become form fields)"),
+                value=meta.interpolate,
+                id="st-interpolate",
+            )
+            if self._prompt_text_error:
+                yield Static(
+                    f"[red]{escape(self._prompt_text_error)}[/red]",
+                    id="st-prompt-text-error",
+                    markup=True,
+                )
+            yield Static(
+                gettext("Off — the body travels to the agent exactly as written."),
+                id="st-interpolate-off",
+                classes="hint",
+            )
+            with Vertical(id="st-prompt-fields"):
+                yield from self._compose_declared_fields(show_flag)
+            return
+        yield from self._compose_declared_fields(show_flag)
+
+    def _compose_declared_fields(self, show_flag: bool) -> ComposeResult:
+        """Rows shared by declared kinds and the prompt toggle's revealable body."""
+        meta = self._entry.meta
         for d in self._declared_decls:
             yield DeclParamRow(d, show_flag=show_flag)
+        if self._is_prompt:
+            from .langs.prompt import analyzer as prompt_analyzer
+
+            unmanaged = [n for n in self._prompt_body_names if n not in (meta.params or [])]
+            if unmanaged:
+                yield Static(
+                    gettext("Detected but not yet managed — tick to manage:"), classes="hint"
+                )
+                for i, candidate in enumerate(unmanaged[: prompt_analyzer.LIST_PREVIEW_LIMIT]):
+                    yield Checkbox(
+                        escape(candidate),
+                        value=candidate in self._pending_prompt_candidates,
+                        id=f"st-prompt-new-{i}",
+                    )
+                if len(unmanaged) > prompt_analyzer.LIST_PREVIEW_LIMIT:
+                    yield Static(
+                        gettext("…and %(count)s more")
+                        % {"count": len(unmanaged) - prompt_analyzer.LIST_PREVIEW_LIMIT},
+                        classes="hint",
+                    )
+                    yield Static(
+                        tui_footer.chip(
+                            "screen.choose_prompt_candidates",
+                            "Ctrl+O",
+                            gettext("Choose variables…"),
+                        ),
+                        id="st-choose-candidates",
+                        classes="hint",
+                        markup=True,
+                    )
         yield Static(gettext("Add a parameter — type a name, then Save:"), classes="hint")
         yield Input(placeholder=gettext("new parameter name"), id="st-add-param")
 
@@ -400,8 +695,8 @@ class ScriptSettingsScreen(Screen[bool]):
         """A freshly-added declared parameter's default shape. A template placeholder stays
         required (an empty slot silently assembles a broken command); everything else is an
         optional env/flag value that falls back to the program's own default."""
-        placeholders = self._entry.meta.params or []
-        if self._spec is not None and self._spec.family == "template":
+        placeholders = self._prompt_body_names if self._is_prompt else self._entry.meta.params or []
+        if self._spec is not None and self._spec.placeholder_params:
             if name in placeholders:
                 return ParamDecl(name=name, binding="none", delivery="placeholder", required=True)
             return ParamDecl(name=name, binding="none", delivery="env")
@@ -452,8 +747,7 @@ class ScriptSettingsScreen(Screen[bool]):
         if params.validate_invariants(normalized) is not None:
             self.notify(
                 gettext(
-                    "%(name)s is a choice parameter but has no choices; add them with "
-                    "`skit params` on the command line."
+                    "%(name)s is a choice parameter but has no choices — fill its Choices field."
                 )
                 % {"name": d.name},
                 severity="error",
@@ -462,18 +756,17 @@ class ScriptSettingsScreen(Screen[bool]):
         return normalized
 
     def _cli_driven(self) -> bool:
-        """Whether the run form currently comes from the script's own CLI surface — i.e.
-        nothing is managed yet AND the script parses its own arguments. (Once anything is
-        managed, plan_for_entry already serves the injected form, so there's no trap.)"""
+        """Whether the run form currently comes from a MODELED read of the script's own
+        CLI surface — i.e. nothing is managed yet AND the entry's own reader models a
+        form (flows.reader_fields, the one trap predicate every surface shares). Once
+        anything is managed, plan_for_entry already serves the injected form; and for
+        self-parsing skit couldn't model (docopt/fire, a dynamic optstring) the form is
+        passthrough-only, so managed constants are additive — no trap, offer stays."""
         if self._specs or not self._text:
             return False
-        # The ENTRY'S OWN reader: shell getopts, JS util.parseArgs, fish argparse — Python's
-        # argspec would see none of them and wrongly offer the manage-a-constant checkboxes on a
-        # script that already drives its own CLI.
-        reader = self._spec.cli_reader if self._spec is not None else None
-        if reader is None:
-            return False
-        return reader.read_cli(self._text) is not None
+        from . import flows
+
+        return flows.reader_fields(self._spec, self._text) > 0
 
     def _compose_presets(self) -> ComposeResult:
         yield Static(gettext("Presets"), classes="section", id="st-presets-section")
@@ -485,19 +778,34 @@ class ScriptSettingsScreen(Screen[bool]):
             )
             return
         yield Static(gettext("Untick a preset to delete it on save:"), classes="hint")
-        for i, (name, values) in enumerate(sorted(presets.items())):
-            summary = ", ".join(f"{k}={v}" for k, v in values.items())
+        # NAME-keyed via the list captured here (the runner Select's rule): a preset
+        # added or deleted mid-session (a concurrent skit preset save — the product's
+        # own agent-coexistence story) must never shift which name an untick deletes.
+        self._preset_names = sorted(presets)
+        for i, name in enumerate(self._preset_names):
+            summary = ", ".join(f"{k}={v}" for k, v in presets[name].items())
             yield Checkbox(
                 f"{escape(name)}  [dim]{escape(summary)}[/dim]", value=True, id=f"st-preset-{i}"
             )
 
     def _compose_deps(self) -> ComposeResult:
-        meta = self._entry.meta
         if not self._deps_editable():
             return
+        # EFFECTIVE values, never raw meta: add-time injected deps/pins live in the
+        # stored copy's PEP 723 block with meta deliberately blank. Prefilling from
+        # meta showed empty fields for a list uv installs — and made "untouched
+        # blank" indistinguishable from "user cleared", so a deps-only save wiped a
+        # pin the screen never displayed. What the screen shows is what a save
+        # keeps; what the user clears is what a save clears. Stashed as the SAVE
+        # baseline too: like every other axis on this screen, the diff runs against
+        # what the user actually saw at open time — a save-time re-read would
+        # classify an untouched field as an edit whenever a concurrent CLI write
+        # moved the block underneath (the agent-coexistence rule).
+        effective_deps, effective_python = store.effective_uv_metadata(self._entry)
+        self._deps_baseline = (effective_deps, effective_python)
         yield Static(gettext("Dependencies"), classes="section")
         yield Input(
-            value=", ".join(meta.dependencies or []),
+            value=", ".join(effective_deps),
             placeholder=gettext("comma separated, e.g. requests>=2,<3, rich")
             if self._spec is not None and self._spec.deps_flavor == "uv"
             else gettext("comma separated, e.g. chalk@^5, zod"),
@@ -505,7 +813,7 @@ class ScriptSettingsScreen(Screen[bool]):
         )
         if self._spec is not None and self._spec.deps_flavor == "uv":
             yield Input(
-                value=meta.requires_python,
+                value=effective_python,
                 placeholder=gettext('Python constraint, e.g. ">=3.11" (empty = automatic)'),
                 id="st-python",
             )
@@ -530,9 +838,11 @@ class ScriptSettingsScreen(Screen[bool]):
         )
 
     def on_mount(self) -> None:
-        self.query_one("#st-body").border_title = gettext("Script settings · %(name)s") % {
+        self.query_one("#st-body").border_title = gettext("Entry settings · %(name)s") % {
             "name": escape(self._entry.meta.name)
         }
+        self._toggle_workdir_path()
+        self.call_after_refresh(self._toggle_prompt_fields)
         self.call_after_refresh(setattr, self, "_dirt_armed", True)
         if self._initial == "presets":
             # `s` in the Library deep-links here: land the eye on the Presets section.
@@ -544,9 +854,25 @@ class ScriptSettingsScreen(Screen[bool]):
 
     @on(Input.Changed)
     @on(Checkbox.Changed)
+    @on(RadioSet.Changed)
+    @on(Select.Changed)
     def _mark_dirty(self) -> None:
+        # RadioSet included: the runner pin radio is a real edit — without it, a
+        # pin-only change followed by Esc was discarded with no unsaved-changes ask.
         if self._dirt_armed:
             self._dirty = True
+
+    @on(Checkbox.Changed, "#st-interpolate")
+    def _prompt_interpolate_changed(self) -> None:
+        """Reveal the real rows immediately; Save/reopen is never a hidden step."""
+        self._toggle_prompt_fields()
+
+    def _toggle_prompt_fields(self) -> None:
+        if not self._is_prompt or not self.is_mounted:
+            return
+        enabled = self.query_one("#st-interpolate", Checkbox).value
+        self.query_one("#st-prompt-fields").display = enabled
+        self.query_one("#st-interpolate-off").display = not enabled
 
     # ----------------------------------------------------------------- save
 
@@ -570,18 +896,128 @@ class ScriptSettingsScreen(Screen[bool]):
             self._resync_report = gettext("Everything still matches the script.")
         self.refresh(recompose=True)
 
-    def action_save(self) -> None:  # noqa: PLR0912 — one atomic save across every section
+    def action_save(self) -> None:  # noqa: PLR0911, PLR0912, PLR0915 — one validated save across every section
+        """Validate every predictable refusal before writing. An explicit npm clear
+        then runs first because its filesystem cleanup is the one operational failure
+        handled here: if clearing ``node_modules`` fails, no other form edit lands.
+
+        This is deliberately not described as a cross-file transaction. A process
+        failure, unexpected I/O error, or a name collision created after the precheck
+        can still interrupt the later independent atomic replacements."""
         entry = self._entry
         new_name = self.query_one("#st-name", Input).value.strip()
+        # ---- validation pass: no writes below may run unless ALL of these pass ----
+        launch = self._validated_launch()
+        if launch is None:
+            return  # invalid workdir input; nothing was written
+        new_template: str | None = None
+        template_box = self.query("#st-template")
+        if template_box:
+            new_template = template_box.first(Input).value
+            if new_template != entry.meta.template and not new_template.strip():
+                self.notify(gettext("Command template must not be empty"), severity="error")
+                return  # an empty template is not a program; nothing was written
+        wants_interpolate = (
+            self.query_one("#st-interpolate", Checkbox).value if self._is_prompt else False
+        )
+        pending_decls: list[ParamDecl] | None = None
+        if self._declared and not (self._is_prompt and not wants_interpolate):
+            pending_decls = self._collect_declared()
+            if pending_decls is None:
+                return  # a row is invalid; nothing was written
+        pending_deps: tuple[list[str] | None, str | None] | None = None
+        if self._deps_editable():
+            # Per-axis change detection against the EFFECTIVE baseline stashed at
+            # compose time (the values the fields were prefilled from — the same
+            # open-time clock every other axis diffs against): an axis equal to its
+            # baseline is UNTOUCHED and travels as None — the chokepoint's "don't
+            # touch" — so a deps-only edit can never unpin, and a python-only edit
+            # can never wipe deps. An axis that differs is the user's explicit
+            # edit, cleared-empty included.
+            effective_deps, effective_python = self._deps_baseline
+            raw_deps = self.query_one("#st-deps", Input).value
+            if self._spec is not None and self._spec.deps_flavor == "uv":
+                deps = pep723.split_requirements(raw_deps)
+                python: str | None = self.query_one("#st-python", Input).value.strip()
+                if python and python.lower() in ("-", "none"):
+                    # The add ask's token for "automatic", honored on this intake too.
+                    python = ""
+                # Validate HERE, in the validation pass — the store chokepoint would
+                # refuse too, but only after rename/description/params had already
+                # persisted, breaking this screen's own write-nothing-on-invalid
+                # contract. Same validators as every other uv intake.
+                for d in deps:
+                    if (error := pep723.requirement_error(d)) is not None:
+                        self.notify(error, severity="error")
+                        return  # invalid requirement; nothing was written
+                if python and (error := pep723.requires_python_error(python)) is not None:
+                    self.notify(error, severity="error")
+                    return  # invalid constraint; nothing was written
+            else:
+                # npm-shaped split — the PEP 508 splitter would merge a scoped package into
+                # its neighbor ("chalk, @scope/pkg" -> one bogus requirement). No Python
+                # constraint either (and no #st-python widget to read), and no PEP 508
+                # validation: npm grammar belongs to the npm installer.
+                from .langs.javascript import deps as js_deps
+
+                deps = js_deps.split_requirements(raw_deps)
+                python = None
+            deps_arg: list[str] | None = deps if deps != effective_deps else None
+            python_arg: str | None = (
+                python if python is not None and python != effective_python else None
+            )
+            if deps_arg is not None or python_arg is not None:
+                pending_deps = (deps_arg, python_arg)
+        # Resolve the same name collision rename() would refuse, but do it while this
+        # is still the read-only validation pass. The write path repeats the check to
+        # close the normal race as far as it can without a cross-file transaction.
+        if new_name and new_name != entry.meta.name:
+            try:
+                other = store.resolve(new_name)
+            except store.NotFoundError:
+                other = None
+            except store.StoreError as exc:
+                self.notify(str(exc), severity="error")
+                return
+            if other is not None and other.slug != entry.slug:
+                self.notify(
+                    gettext("The name %(name)s is already taken.") % {"name": new_name},
+                    severity="error",
+                )
+                return
+        # ---- write pass ----
+        # Only an explicit npm clear has a caught, fallible filesystem cleanup.
+        # Run that one operation first. Other dependency edits retain their normal
+        # late position: notably, a Python dependency sync updates the script text
+        # and must follow the parameter-block rewrite built from self._text.
+        early_npm_clear = (
+            pending_deps is not None
+            and self._spec is not None
+            and self._spec.deps_flavor == "npm"
+            and pending_deps[0] == []
+        )
+        if early_npm_clear and pending_deps is not None:
+            deps_changed, python_changed = pending_deps
+            try:
+                store.update_dependencies(entry.slug, deps_changed, requires_python=python_changed)
+            except store.StoreError as exc:
+                # Explicit npm clear sweeps node_modules before its metadata write.
+                # Running that caught failure before every other write keeps the
+                # screen retryable without committing unrelated form edits.
+                self.notify(str(exc), severity="error")
+                return
         if new_name and new_name != entry.meta.name:
             try:
                 store.rename(entry.slug, new_name)
             except store.StoreError as exc:
                 self.notify(str(exc), severity="error")
-                return  # stay on the screen; nothing else is saved half-way
+                return
         description = self.query_one("#st-desc", Input).value.strip()
         if description != entry.meta.description:
             store.update_description(entry.slug, description)
+        self._write_launch(launch)
+        if new_template is not None and new_template != entry.meta.template:
+            store.update_template(entry.slug, new_template)
         # One narrowing point: an analyzable kind always carries params_io too (the registry pairs
         # them), and a non-empty text with a live analyzer means reconcile always returns a report —
         # so the capabilities are read straight off the narrowed spec, with no dead None-guards.
@@ -608,10 +1044,18 @@ class ScriptSettingsScreen(Screen[bool]):
                     gettext("Deleted previously remembered value(s): %(names)s")
                     % {"names": ", ".join(sorted(purged))}
                 )
-        if self._declared:
-            decls = self._collect_declared()
-            if decls is None:
-                return  # a row is invalid; stay on the screen, nothing saved half-way
+        if self._is_prompt:
+            # The toggle is composed unconditionally for prompts, so query_one is safe.
+            if wants_interpolate != entry.meta.interpolate:
+                store.write_prompt_interpolate(entry.slug, wants_interpolate)
+            # The pin save lives HERE, not in the declared branch below: that branch is
+            # skipped when insertion is off, and a pin change must never be dropped for it.
+            self._save_runner_pin()
+        if pending_decls is not None:
+            decls = pending_decls
+            if self._is_prompt:
+                decls += self._ticked_prompt_candidates({d.name for d in decls})
+                self._save_prompt_managed(decls)
             store.write_parameters(entry.slug, decls)
             purged = argstate.purge_secret(entry.slug, {d.name for d in decls if d.secret})
             if purged:
@@ -619,41 +1063,114 @@ class ScriptSettingsScreen(Screen[bool]):
                     gettext("Deleted previously remembered value(s): %(names)s")
                     % {"names": ", ".join(sorted(purged))}
                 )
-        if self._deps_editable():
-            raw_deps = self.query_one("#st-deps", Input).value
-            if self._spec is not None and self._spec.deps_flavor == "uv":
-                deps = pep723.split_requirements(raw_deps)
-                python = self.query_one("#st-python", Input).value.strip()
-            else:
-                # npm-shaped split — the PEP 508 splitter would merge a scoped package into
-                # its neighbor ("chalk, @scope/pkg" -> one bogus requirement). No Python
-                # constraint either (and no #st-python widget to read).
-                from .langs.javascript import deps as js_deps
-
-                deps = js_deps.split_requirements(raw_deps)
-                python = None
-            if deps != (entry.meta.dependencies or []) or (
-                python is not None and python != entry.meta.requires_python
-            ):
-                try:
-                    store.update_dependencies(entry.slug, deps, requires_python=python)
-                except store.StoreError as exc:
-                    # Clearing npm deps also sweeps node_modules from disk, which can fail
-                    # (a held-open file, a read-only remnant) — same treatment as a failed
-                    # rename: report and stay, never crash the app out from under the user.
-                    self.notify(str(exc), severity="error")
-                    return
+        if pending_deps is not None and not early_npm_clear:
+            deps_changed, python_changed = pending_deps
+            try:
+                store.update_dependencies(entry.slug, deps_changed, requires_python=python_changed)
+            except store.StoreError as exc:
+                self.notify(str(exc), severity="error")
+                return
         needs = [
             n.strip() for n in self.query_one("#st-needs", Input).value.split(",") if n.strip()
         ]
         if needs != (entry.meta.needs or []):
             store.update_needs(entry.slug, needs)
-        presets = argstate.load_state(entry.slug)["presets"]
-        for i, name in enumerate(sorted(presets)):
+        for i, name in enumerate(self._preset_names):
+            # The compose-time names, not a fresh state read: index i belongs to the
+            # checkbox the user actually saw.
             box = self.query(f"#st-preset-{i}")
             if box and not box.first(Checkbox).value:
                 argstate.delete_preset(entry.slug, name)
         self.dismiss(True)
+
+    def _ticked_prompt_candidates(self, taken: set[str]) -> list[ParamDecl]:
+        """The tick-to-manage checkboxes' yield: each ticked, still-unclaimed candidate
+        becomes a synthesized placeholder row (required, like every managed placeholder)."""
+        self._remember_prompt_candidate_ticks()
+        unmanaged = self._unmanaged_prompt_names()
+        return [
+            ParamDecl(
+                name=candidate,
+                binding="none",
+                delivery="placeholder",
+                required=True,
+                secret=params.is_secret_name(candidate),
+            )
+            for candidate in unmanaged
+            if candidate in self._pending_prompt_candidates and candidate not in taken
+        ]
+
+    def _unmanaged_prompt_names(self) -> list[str]:
+        managed = set(self._entry.meta.params or [])
+        return [name for name in self._prompt_body_names if name not in managed]
+
+    def _remember_prompt_candidate_ticks(self) -> None:
+        """Merge the mounted inline preview into the full name-keyed pending set."""
+        from .langs.prompt import analyzer as prompt_analyzer
+
+        for i, candidate in enumerate(
+            self._unmanaged_prompt_names()[: prompt_analyzer.LIST_PREVIEW_LIMIT]
+        ):
+            boxes = self.query(f"#st-prompt-new-{i}")
+            if not boxes:
+                continue
+            if boxes.first(Checkbox).value:
+                self._pending_prompt_candidates.add(candidate)
+            else:
+                self._pending_prompt_candidates.discard(candidate)
+
+    def action_choose_prompt_candidates(self) -> None:
+        """Open all unmanaged prompt variables without teaching a CLI escape hatch."""
+        from .langs.prompt import analyzer as prompt_analyzer
+
+        unmanaged = self._unmanaged_prompt_names()
+        if not self.query_one("#st-interpolate", Checkbox).value:
+            return
+        if len(unmanaged) <= prompt_analyzer.LIST_PREVIEW_LIMIT:
+            return
+        self._remember_prompt_candidate_ticks()
+        before = set(self._pending_prompt_candidates)
+
+        def _chosen(selected: set[str] | None) -> None:
+            if selected is None:
+                return
+            self._pending_prompt_candidates = set(selected)
+            for i, candidate in enumerate(unmanaged[: prompt_analyzer.LIST_PREVIEW_LIMIT]):
+                boxes = self.query(f"#st-prompt-new-{i}")
+                if boxes:
+                    boxes.first(Checkbox).value = candidate in selected
+            if selected != before:
+                self._dirty = True
+
+        self.app.push_screen(
+            tui_prompt.PromptCandidatePickerModal(
+                unmanaged,
+                self._pending_prompt_candidates,
+            ),
+            _chosen,
+        )
+
+    def _save_prompt_managed(self, decls: list[ParamDecl]) -> None:
+        """The managed list follows the kept placeholder rows: body order first, then any
+        managed name the body has lost but the user kept (drift stays visible, not grown)."""
+        entry = self._entry
+        keep = [d.name for d in decls if d.delivery == "placeholder"]
+        keep_set = set(keep)
+        new_managed = [n for n in self._prompt_body_names if n in keep_set]
+        new_managed += [n for n in keep if n not in set(self._prompt_body_names)]
+        store.write_prompt_managed(entry.slug, new_managed)
+
+    def _save_runner_pin(self) -> None:
+        """Persist the runner dropdown's pick. Value-keyed — no index mapping exists
+        to shift, however the runner list changed while the screen was open."""
+        entry = self._entry
+        # The dropdown always composes for a prompt (even an emptied runner list keeps
+        # the "ask" option), and this only runs for prompts — query_one is safe.
+        current = entry.meta.runner
+        value = self.query_one("#st-runner-select", Select).value
+        pin = "" if value is Select.NULL else str(value)
+        if pin != current:
+            store.write_prompt_runner(entry.slug, pin)
 
     def action_close(self) -> None:
         if not self._dirty:

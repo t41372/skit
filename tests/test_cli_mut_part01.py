@@ -187,8 +187,10 @@ def test_collect_values_term_dumb_forces_plain_promptform(monkeypatch):
     monkeypatch.setattr(
         cli.promptform, "collect", lambda plan, prefill, console: {"msg": "plainval"}
     )
-    values = cli._collect_values(ent, plan, {}, plain=False)
+    values, runner, picked = cli._collect_values(ent, plan, {}, plain=False)
     assert values == {"msg": "plainval"}
+    assert runner is None  # the line fallback never answers the picker
+    assert picked is False
     assert "x" not in inline_hit  # the tui/inline renderer was never entered
 
 
@@ -200,15 +202,15 @@ def test_collect_values_inline_receives_real_entry_plan_prefill(monkeypatch):
     plan = flows.plan_for_entry(ent)
     seen: dict[str, object] = {}
 
-    def fake_collect(entry, plan_, prefill):
+    def fake_collect(entry, plan_, prefill, runners=None, runner_default=""):
         seen["entry"] = entry
         seen["plan"] = plan_
         seen["prefill"] = prefill
-        return {"msg": "v"}
+        return {"msg": "v"}, None, False
 
     monkeypatch.setattr(inlineform, "collect", fake_collect)
     prefill = {"msg": "pre"}
-    values = cli._collect_values(ent, plan, prefill, plain=False)
+    values, _runner, _picked = cli._collect_values(ent, plan, prefill, plain=False)
     assert values == {"msg": "v"}
     assert seen["entry"] is ent
     assert seen["plan"] is plan

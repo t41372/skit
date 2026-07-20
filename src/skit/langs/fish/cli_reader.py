@@ -43,8 +43,14 @@ def read_cli(text: str) -> ArgSpec | None:
     words = _find_argparse(text)
     if words is None:
         return None
+    tokens = _spec_tokens(words)
+    if any("$" in t or "(" in t for t in tokens):
+        # A dynamic spec (`argparse $specs -- $argv`, command substitution): the real
+        # option set is unknowable statically. Degrade honestly like the python and JS
+        # readers — never fabricate a phantom `$specs` flag out of the variable name.
+        return ArgSpec(ok=False, reason="dynamic")
     fields: list[ParamDecl] = []
-    for token in _spec_tokens(words):
+    for token in tokens:
         decl = _read_spec(token)
         if decl is not None:
             fields.append(decl)

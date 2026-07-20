@@ -48,8 +48,8 @@ async def test_normal_local_footer_pins_every_chip(tmp_path):
         local = _content(app, "keys-local")
         assert tui_footer.chip("app.run", "Enter", "Run") in local
         assert tui_footer.chip("app.rerun", "r", "Rerun") in local
-        assert tui_footer.chip("app.settings", "p", "Script settings") in local
-        assert tui_footer.chip("app.edit", "e", "Edit script") in local
+        assert tui_footer.chip("app.settings", "p", "Entry settings") in local
+        assert tui_footer.chip("app.edit", "e", "Edit source") in local
         assert tui_footer.chip("app.remove", "Del", "Remove") in local
 
 
@@ -73,7 +73,7 @@ async def test_normal_global_footer_pins_every_chip(tmp_path):
     async with app.run_test(size=(160, 40)) as pilot:
         await pilot.pause()
         g = _content(app, "keys-global")
-        assert tui_footer.chip("app.add", "a", "Add script") in g
+        assert tui_footer.chip("app.add", "a", "Add entry") in g
         assert tui_footer.chip("app.presets", "s", "Presets") in g
         assert tui_footer.chip("app.focus_search", "/", "Search") in g
         assert tui_footer.chip("app.toggle_detail", "Tab", "Detail pane") in g
@@ -96,5 +96,5 @@ async def test_search_mode_footer_pins_its_two_chips_and_blanks_global(tmp_path)
         assert tui_footer.chip("app.run", "Enter", "Run") in local
         assert tui_footer.chip("app.leave_search", "Esc", "Back to list") in local
         # The letter chips are gone while typing, and the global row is empty.
-        assert tui_footer.chip("app.settings", "p", "Script settings") not in local
+        assert tui_footer.chip("app.settings", "p", "Entry settings") not in local
         assert _content(app, "keys-global") == ""

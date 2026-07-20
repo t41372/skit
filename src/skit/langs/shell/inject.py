@@ -539,11 +539,17 @@ def _warnings(root: Node) -> list[str]:
     env-delivery path returns before this, which is exactly why normalization is worth offering."""
     if not _uses_self_location(root):
         return []
+    # The advice must be true in BOTH storage modes without this layer knowing the
+    # mode (injection is language machinery, not entry policy): the manual
+    # ${NAME:-default} spelling works everywhere, and --normalize is named as the
+    # shortcut that performs it — on a stored copy; a reference entry's refusal
+    # already redirects to the manual edit.
     return [
         gettext(
             "⚠ This script reads its own location ($0 / $BASH_SOURCE), and the injected values "
             "run from a temporary copy — so it sees the copy's path, not the original's. "
-            "`skit params <script> --normalize NAME` delivers a value through the environment "
-            "instead, with no copy at all."
+            'Rewriting a constant as NAME="${NAME:-value}" delivers the value through the '
+            "environment instead, with no copy at all (`skit params <script> --normalize NAME` "
+            "does the rewrite for you on a stored copy)."
         )
     ]

@@ -116,7 +116,7 @@ def test_onboard_params_reader_ok_message_exact(capsys):
     assert specs == []
     out = _norm(capsys.readouterr().out)
     assert (
-        "✓ skit read this script's own arguments (1 fields). Running it opens a form — "
+        "✓ skit read this script's own arguments (1 field). Running it opens a form — "
         "nothing to memorize." in out
     )
     assert "XX" not in out
@@ -171,7 +171,9 @@ def test_edit_params_degraded_shell_spec_refuses_instead_of_crashing(tmp_path, m
             malformed=[],
         )
     assert ei.value.exit_code == 1
-    assert "isn't a Python script" in _norm(capsys.readouterr().err)
+    assert "has no managed parameters — its kind has no analyzer to read them from." in _norm(
+        capsys.readouterr().err
+    )
 
 
 def test_edit_params_none_spec_refuses_before_attribute_access(tmp_path, monkeypatch, capsys):
@@ -194,7 +196,9 @@ def test_edit_params_none_spec_refuses_before_attribute_access(tmp_path, monkeyp
             malformed=[],
         )
     assert ei.value.exit_code == 1
-    assert "isn't a Python script" in _norm(capsys.readouterr().err)
+    assert "has no managed parameters — its kind has no analyzer to read them from." in _norm(
+        capsys.readouterr().err
+    )
 
 
 # --------------------------------------------------------------------------

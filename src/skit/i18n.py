@@ -28,7 +28,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from .atomic import atomic_write_toml, load_toml_recoverable
+from .atomic import advisory_file_lock, atomic_write_toml, load_toml_recoverable
 from .paths import config_dir
 
 _LOCALES_DIR = Path(__file__).parent / "locales"
@@ -295,30 +295,33 @@ def set_language(tag: str) -> str:
     the neutral atomic module is what both safely share.
     """
     path = config_dir() / "config.toml"  # pragma: no mutate — fs-case-dependent
-    recovery = load_toml_recoverable(path)
-    doc = recovery.doc
-    if recovery.corrupt:
-        if recovery.backup_path is not None:
-            print(
-                gettext(
-                    "%(path)s is corrupt and could not be parsed. It has been backed up to "
-                    "%(backup)s before this change; recover any lost settings from that file."
+    # This module cannot import config._config_update (config imports gettext from us),
+    # so both faces share the neutral lock primitive and the same config.lock path.
+    with advisory_file_lock(path.with_suffix(".lock")):
+        recovery = load_toml_recoverable(path)
+        doc = recovery.doc
+        if recovery.corrupt:
+            if recovery.backup_path is not None:
+                print(
+                    gettext(
+                        "%(path)s is corrupt and could not be parsed. It has been backed up to "
+                        "%(backup)s before this change; recover any lost settings from that file."
+                    )
+                    % {"path": str(path), "backup": str(recovery.backup_path)},
+                    file=sys.stderr,
                 )
-                % {"path": str(path), "backup": str(recovery.backup_path)},
-                file=sys.stderr,
-            )
+            else:
+                print(
+                    gettext(
+                        "%(path)s is corrupt and could not be parsed, and it could not be backed up "
+                        "either; the settings it contained will be lost when this change is saved."
+                    )
+                    % {"path": str(path)},
+                    file=sys.stderr,
+                )
+        if tag:
+            doc["language"] = _normalize(tag)
         else:
-            print(
-                gettext(
-                    "%(path)s is corrupt and could not be parsed, and it could not be backed up "
-                    "either; the settings it contained will be lost when this change is saved."
-                )
-                % {"path": str(path)},
-                file=sys.stderr,
-            )
-    if tag:
-        doc["language"] = _normalize(tag)
-    else:
-        doc.pop("language", None)
-    atomic_write_toml(path, doc)
+            doc.pop("language", None)
+        atomic_write_toml(path, doc)
     return init(tag or None)

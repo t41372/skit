@@ -67,7 +67,8 @@ async def test_parameters_header_text_and_section_class(tmp_path):
 
 async def test_cli_framework_readable_shows_field_count_notice(tmp_path):
     """argparse the panel could read statically: the success notice reports the field count
-    and reassures the run form is generated."""
+    (ngettext SINGULAR branch for exactly one field) and reassures the run form is
+    generated."""
     p = _py(
         tmp_path,
         "import argparse\nap = argparse.ArgumentParser()\nap.add_argument('--foo')\nap.parse_args()\n",
@@ -76,7 +77,7 @@ async def test_cli_framework_readable_shows_field_count_notice(tmp_path):
     async with app.run_test() as pilot:
         screen = await _review(app, pilot, p)
         assert (
-            "✓ skit read this script's own arguments (1 fields). Running it "
+            "✓ skit read this script's own arguments (1 field). Running it "
             "opens a form — nothing to memorize." in _statics_text(screen)
         )
 
@@ -95,12 +96,12 @@ async def test_cli_framework_unmodellable_lists_frameworks_as_hint(tmp_path):
         screen = await _review(app, pilot, p)
         assert (
             "This script parses its own arguments (click, docopt); skit couldn't model "
-            "them statically, so the run form offers a passthrough-arguments field."
+            "them statically, so the run form offers an extra-arguments field."
             in _statics_text(screen)
         )
         # the comma separator between the two framework names is load-bearing copy
         assert "(click, docopt)" in _statics_text(screen)
-        assert _static_with(screen, "passthrough-arguments").has_class("hint")
+        assert _static_with(screen, "extra-arguments").has_class("hint")
 
 
 # ---------------------------------------------------------------------------
