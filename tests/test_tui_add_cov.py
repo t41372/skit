@@ -909,6 +909,120 @@ def test_run_add_review_returns_the_apps_result(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# ExeReviewApp: the CLI face of the program identity review (`skit add ./tool
+# --exe`, or an unclassifiable file picked as "A program", in a terminal)
+# ---------------------------------------------------------------------------
+
+
+async def test_exe_review_app_prefills_flags_and_accepts(tmp_path):
+    """`skit add`'s --name/--description land in the panel prefilled (still editable);
+    accepting commits the exe entry and exits with its slug — parity with the script and
+    prompt panels, so a mouse can finish the add the kind modal started."""
+    from skit.tui_add import ExeReviewApp, ExeReviewScreen
+
+    prog = tmp_path / "tool"
+    prog.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    app = ExeReviewApp(prog, name="flagged", description="from flags")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ExeReviewScreen)
+        # The panel titles itself with the source FILE name (not the prefilled skit name).
+        assert screen.query_one("#xv-body").border_title == "Add tool"
+        assert screen.query_one("#xv-name", Input).value == "flagged"
+        assert screen.query_one("#xv-desc", Input).value == "from flags"
+        screen.action_accept()
+        await pilot.pause()
+    entry = store.resolve("flagged")
+    assert app.return_value == entry.slug
+    assert entry.meta.kind == "exe"
+    assert entry.meta.description == "from flags"
+
+
+async def test_exe_review_app_duplicate_name_notifies_error_and_stays(tmp_path, monkeypatch):
+    """A name collision keeps the panel open: accept surfaces the StoreError as an error
+    notification (message AND severity) and does NOT dismiss — nothing is stored twice."""
+    from skit.tui_add import ExeReviewApp, ExeReviewScreen
+
+    store.add_command("echo hi", name="taken")  # the exe accept will collide on this name
+    prog = tmp_path / "tool"
+    prog.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    seen: list[tuple[str, object]] = []
+    monkeypatch.setattr(
+        ExeReviewScreen,
+        "notify",
+        lambda self, message, **kw: seen.append((message, kw.get("severity"))),
+    )
+    app = ExeReviewApp(prog, name="taken")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ExeReviewScreen)
+        screen.action_accept()
+        await pilot.pause()
+        assert app.screen is screen  # the error kept the panel open (no dismiss)
+    assert len(seen) == 1
+    message, severity = seen[0]
+    assert "taken" in message
+    assert "already" in message.lower()
+    assert severity == "error"
+
+
+async def test_exe_review_app_no_flags_defaults_to_stem_and_empty_desc(tmp_path):
+    """No flags: the name field defaults to the file stem (not the whole name) and the
+    description starts blank — the same defaults the in-app ExeReviewScreen shows."""
+    from skit.tui_add import ExeReviewApp, ExeReviewScreen
+
+    prog = tmp_path / "backup.sh"
+    prog.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    app = ExeReviewApp(prog)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ExeReviewScreen)
+        assert screen.query_one("#xv-name", Input).value == "backup"  # stem, not "backup.sh"
+        assert screen.query_one("#xv-desc", Input).value == ""
+
+
+async def test_exe_review_app_cancel_leaves_store_untouched(tmp_path):
+    """Cancelling exits None and adds nothing — the panel's Esc, hosted alone."""
+    from skit.tui_add import ExeReviewApp
+
+    prog = tmp_path / "tool"
+    prog.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    app = ExeReviewApp(prog)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ExeReviewScreen)
+        screen.action_cancel()
+        await pilot.pause()
+    assert app.return_value is None
+    assert store.list_entries() == []
+
+
+def test_run_exe_review_forwards_flags_and_returns_the_apps_result(tmp_path, monkeypatch):
+    """The blocking CLI entry builds ExeReviewApp with path/name/description verbatim
+    (no arg dropped) and hands back run()'s slug (run() itself needs a terminal)."""
+    from skit import tui_add
+
+    prog = tmp_path / "tool"
+    prog.write_text("hi\n", encoding="utf-8")
+    seen: dict[str, object] = {}
+
+    class _FakeApp:
+        def __init__(self, path, *, name=None, description=None):
+            seen.update(path=path, name=name, description=description)
+
+        def run(self):
+            return "slug-sentinel"
+
+    monkeypatch.setattr(tui_add, "ExeReviewApp", _FakeApp)
+    assert tui_add.run_exe_review(prog, name="n", description="d") == "slug-sentinel"
+    assert seen == {"path": prog, "name": "n", "description": "d"}
+
+
+# ---------------------------------------------------------------------------
 # AddSourceApp / KindPickApp: the bare `skit add` (no path) CLI faces (issue #10)
 # ---------------------------------------------------------------------------
 

@@ -599,9 +599,16 @@ class ExeReviewScreen(Screen[str | None]):
     ExeReviewScreen #xv-keys { color: $text-muted; }
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self, path: Path, *, name: str | None = None, description: str | None = None
+    ) -> None:
+        """`name`/`description` prefill the two fields — the CLI face passes `skit add`'s
+        flags through them, exactly as the script/prompt panels do — and both stay
+        editable on screen."""
         super().__init__()
         self._path: Path = path
+        self._name: str | None = name
+        self._description: str | None = description
 
     def on_mount(self) -> None:
         self.query_one("#xv-body").border_title = gettext("Add %(name)s") % {
@@ -612,9 +619,10 @@ class ExeReviewScreen(Screen[str | None]):
     def compose(self) -> ComposeResult:
         with tui_footer.FormBody(id="xv-body"):
             yield Static(gettext("Name"), classes="section")
-            yield Input(value=self._path.stem, id="xv-name")
+            yield Input(value=self._name or self._path.stem, id="xv-name")
             yield Static(gettext("Description"), classes="section")
             yield Input(
+                value=self._description or "",
                 placeholder=gettext("(shown in the Library — you can write one line)"),
                 id="xv-desc",
             )
@@ -635,8 +643,8 @@ class ExeReviewScreen(Screen[str | None]):
         )
 
     def action_accept(self) -> None:
-        name = self.query_one("#xv-name", Input).value.strip() or None
-        desc = self.query_one("#xv-desc", Input).value.strip()
+        name = self.query_one("#xv-name", Input).value.strip() or None  # pragma: no mutate — expect_type/type-selector equivalent (unique first #xv-name Input); pinned by test_exe_review_app_prefills_flags_and_accepts  # fmt: skip
+        desc = self.query_one("#xv-desc", Input).value.strip()  # pragma: no mutate — expect_type equivalent (unique #xv-desc Input); pinned by test_exe_review_app_prefills_flags_and_accepts  # fmt: skip
         try:
             entry = store.add_exe(self._path, name=name, description=desc)
         except store.StoreError as exc:
@@ -1640,6 +1648,17 @@ class AddReviewApp(_ReviewHost):
         )
 
 
+class ExeReviewApp(_ReviewHost):
+    """`skit add ./tool --exe` (or an unclassifiable file picked as "A program") in an
+    interactive terminal: the SAME identity review the Library's `a` opens for a program,
+    so a mouse can finish the add — never a line prompt glued to the kind modal."""
+
+    def __init__(
+        self, path: Path, *, name: str | None = None, description: str | None = None
+    ) -> None:
+        super().__init__(ExeReviewScreen(path, name=name, description=description))
+
+
 class PromptReviewApp(_ReviewHost):
     """`skit add x.prompt.md` in an interactive terminal."""
 
@@ -1706,6 +1725,13 @@ def run_add_review(
         deps=deps,
         requires_python=requires_python,
     ).run()
+
+
+def run_exe_review(
+    path: Path, *, name: str | None = None, description: str | None = None
+) -> str | None:
+    """Blocking CLI entry to the program identity review. Returns the new slug, or None."""
+    return ExeReviewApp(path, name=name, description=description).run()
 
 
 def run_prompt_review(

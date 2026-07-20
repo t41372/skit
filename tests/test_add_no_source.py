@@ -495,6 +495,71 @@ def test_md_tui_form_passes_suggested_prompt(tmp_path, monkeypatch):
     assert seen["suggested"] == "prompt"
 
 
+def test_unknown_tui_form_pick_exe_hosts_the_review_panel(tmp_path, monkeypatch):
+    """Picking "A program" from the TUI kind modal hosts the SAME ExeReviewScreen the
+    Library's `a` opens — NOT a line prompt glued to the just-closed modal (the `run`
+    rule; mouse-only operability). Prompt.ask must never fire on this path."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr(
+        cli.Prompt, "ask", staticmethod(lambda *a, **k: pytest.fail("no line prompt on form=tui"))
+    )
+    monkeypatch.setattr("skit.tui_add.run_kind_pick", lambda *a, **k: "exe")
+    seen: dict[str, object] = {}
+
+    def fake_exe_review(path, *, name=None, description=None):
+        seen.update(path=path, name=name, description=description)
+        return store.add_exe(path, name="mystery").slug
+
+    monkeypatch.setattr("skit.tui_add.run_exe_review", fake_exe_review)
+    result = runner.invoke(cli.app, ["add", str(_unknown(tmp_path))], env=_TERM)
+    assert result.exit_code == 0, result.output
+    assert store.resolve("mystery").meta.kind == "exe"
+    forwarded = seen["path"]
+    assert isinstance(forwarded, Path)
+    assert forwarded.name == "mystery.xyz"  # the resolved source, forwarded intact
+
+
+def test_unknown_tui_form_pick_exe_cancel_exits_130(tmp_path, monkeypatch):
+    """Cancelling the hosted ExeReviewScreen (it returns None) cancels the add — exit 130,
+    nothing stored — exactly as the script/prompt panels do."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr("skit.tui_add.run_kind_pick", lambda *a, **k: "exe")
+    monkeypatch.setattr("skit.tui_add.run_exe_review", lambda *a, **k: None)
+    result = runner.invoke(cli.app, ["add", str(_unknown(tmp_path))], env=_TERM)
+    assert result.exit_code == 130
+    assert "nothing was added" in result.output.lower()
+    assert store.list_entries() == []
+
+
+def test_exe_flag_tui_form_hosts_the_panel_and_prefills_flags(tmp_path, monkeypatch):
+    """The explicit --exe lane joins the same rule: under form=tui it hosts the review
+    panel too (not line prompts), and --name/--description prefill it — exact parity with
+    the kind-pick route, so the two spellings of "add a program" can't drift."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr(
+        cli.Prompt, "ask", staticmethod(lambda *a, **k: pytest.fail("no line prompt on form=tui"))
+    )
+    seen: dict[str, object] = {}
+
+    def fake_exe_review(path, *, name=None, description=None):
+        seen.update(name=name, description=description)
+        return store.add_exe(path, name=name or path.stem, description=description or "").slug
+
+    monkeypatch.setattr("skit.tui_add.run_exe_review", fake_exe_review)
+    prog = tmp_path / "tool"
+    prog.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    result = runner.invoke(
+        cli.app,
+        ["add", str(prog), "--exe", "--name", "given", "--description", "prewritten"],
+        env=_TERM,
+    )
+    assert result.exit_code == 0, result.output
+    assert seen == {"name": "given", "description": "prewritten"}
+    entry = store.resolve("given")
+    assert entry.meta.kind == "exe"
+    assert entry.meta.description == "prewritten"
+
+
 def _shell_with_secret(path: Path, *, name: str) -> str:
     """Add a real shell entry, then write a secret-marked decl into its stored copy —
     the trace a review panel leaves — and return its slug."""

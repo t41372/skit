@@ -1916,22 +1916,41 @@ def add(
                 )
                 raise typer.Exit(EXIT_USAGE)
             if kind == "exe":
-                if not no_input and _is_interactive():
-                    # The one add lane that asked NOTHING while every sibling reviews
-                    # identity — "nothing to detect inside a binary" justifies no tick
-                    # list, not skipping the name and the discovery-surface description.
-                    if not name:
-                        name = (
-                            Prompt.ask(
-                                gettext("Name in skit"), default=resolved.stem, console=console
+                # Interactive + mini-form style: host the SAME identity review the TUI's
+                # `a` opens for a program (flags prefill it), so a mouse can finish the add
+                # it started in the kind modal — the `run` rule (one paradigm per form),
+                # exact parity with the prompt/script lanes. Pipes/CI/--no-input/form=plain
+                # keep the line-prompt path untouched.
+                if (
+                    not no_input
+                    and _is_interactive()
+                    and os.environ.get("TERM") != "dumb"
+                    and config.load_form() == "tui"
+                ):
+                    from .tui_add import run_exe_review
+
+                    slug = run_exe_review(resolved, name=name, description=description)
+                    if slug is None:
+                        console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
+                        raise typer.Exit(EXIT_CANCELLED)
+                    entry = store.resolve(slug)
+                else:
+                    if not no_input and _is_interactive():
+                        # The one add lane that asked NOTHING while every sibling reviews
+                        # identity — "nothing to detect inside a binary" justifies no tick
+                        # list, not skipping the name and the discovery-surface description.
+                        if not name:
+                            name = (
+                                Prompt.ask(
+                                    gettext("Name in skit"), default=resolved.stem, console=console
+                                ).strip()
+                                or None
+                            )
+                        if description is None:
+                            description = Prompt.ask(
+                                gettext("Description (optional)"), default="", console=console
                             ).strip()
-                            or None
-                        )
-                    if description is None:
-                        description = Prompt.ask(
-                            gettext("Description (optional)"), default="", console=console
-                        ).strip()
-                entry = store.add_exe(Path(path), name=name, description=description or "")
+                    entry = store.add_exe(Path(path), name=name, description=description or "")
             elif kind == "unknown":
                 from .langs.registry import shebang_program
 

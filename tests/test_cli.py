@@ -190,6 +190,7 @@ def test_add_exe(tmp_path):
 def test_add_exe_interactive_line_asks_name_and_description(tmp_path, monkeypatch):
     """The exe add lane no longer asks NOTHING while every sibling reviews identity: in a
     terminal it line-asks the name (default: the file stem) and a description."""
+    config.save_form("plain")  # the line-prompt path (form=tui hosts the review panel)
     exe = tmp_path / "backup"
     exe.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
@@ -214,6 +215,8 @@ def test_add_exe_interactive_line_asks_name_and_description(tmp_path, monkeypatc
 def test_add_exe_interactive_skips_asks_when_name_and_description_given(tmp_path, monkeypatch):
     """Interactive, but --name and --description already supplied: each ask is skipped (a
     flag already answered it), so no line prompt fires and both flags stand."""
+
+    config.save_form("plain")  # the line-prompt path (form=tui hosts the review panel)
 
     def _boom(*a, **k):
         raise AssertionError("no ask should fire when the flag already provided the value")
