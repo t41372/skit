@@ -7,6 +7,7 @@ the picked-kind-rejoins-dispatch property.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -206,7 +207,10 @@ def test_plain_menu_choice4_stores_the_description(tmp_path, monkeypatch):
 def test_plain_menu_choice1_path_continues_into_a_real_add(tmp_path, monkeypatch):
     config.save_form("plain")
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
-    exe = tmp_path / "tool"
+    # A file skit infers as exe on every platform: POSIX reads the exec bit, Windows has
+    # none, so there it must wear a PATHEXT extension (the _is_executable_file rule). The
+    # slug is the stem either way, so "tool" resolves on both.
+    exe = tmp_path / ("tool.exe" if sys.platform == "win32" else "tool")
     exe.write_text("opaque bytes\n", encoding="utf-8")
     exe.chmod(0o755)
 
@@ -831,7 +835,9 @@ def test_cli_plain_choice4_prompt_labels_and_choices(tmp_path, monkeypatch):
 def test_cli_plain_choice1_path_label(tmp_path, monkeypatch):
     config.save_form("plain")
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
-    exe = tmp_path / "tool"
+    # Inferred exe on every platform (see the choice-1 continue test): a bare extensionless
+    # file is unknown on Windows and would divert into the kind ask.
+    exe = tmp_path / ("tool.exe" if sys.platform == "win32" else "tool")
     exe.write_text("bytes\n", encoding="utf-8")
     exe.chmod(0o755)
     result = runner.invoke(cli.app, ["add"], input=f"1\n{exe}\n\n\n", env=_WIDE)
