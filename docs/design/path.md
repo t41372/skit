@@ -1,7 +1,7 @@
 # Path-aware parameter entry — design
 
-Status: **review-clean** (v4, 2026-07-19; three adversarial design review rounds —
-round 3 signed CLEAN with the two final line edits applied). Resolves [#7](https://github.com/t41372/skit/issues/7) — "Make file
+Status: **review-clean** (v5, 2026-07-19; three adversarial design review rounds, then
+implementation review round 1 applied — see the v4 → v5 revision notes). Resolves [#7](https://github.com/t41372/skit/issues/7) — "Make file
 selector more intuitive". Read `docs/design/multilang.md` first (the `ParamDecl`
 universal model and the kind registry) and `docs/design/prompt.md` for the run form's
 current shape — this design is an additive layer on both. Ships from
@@ -58,6 +58,42 @@ before being adopted):
   the new strings; SKILL.md enumerates field types (`skills/skit/SKILL.md:46`) so the
   skill sync moves into P1a where `--json` starts emitting `"path"`; the ghost-accept
   `→` gesture's mouse story is argued, not assumed.
+
+Revision notes (v4 → v5, from implementation review round 1 — findings against the
+CODE, folded back into the spec):
+
+- **The two parsed field shapes use different quoting dialects; v2-v4 conflated
+  them.** A `multiple` field is re-split with POSIX `shlex.split`
+  (`flows._split_multi`); the **extra-args row is not** — it is split by
+  `argv_text.split`, which on Windows is the CRT convention where a single quote is
+  a literal character. `shlex.quote` appended there would shatter `a b.txt` into two
+  mangled arguments on Windows. A picked path is now quoted in the FIELD'S own
+  dialect (`insert_picked` modes: replace / shlex / argv), pinned in both dialects.
+- **Casing, honestly split by mechanism:** the GHOST matches exact-case prefixes —
+  append-only text cannot re-case what the user already typed — while the PICKER
+  redraws whole rows and filters **case-insensitive substring**, like its
+  `EnvPickerModal` precedent (`re` must find `README.md`). This replaces v2's
+  "case sensitivity follows the filesystem", which no mechanism implemented.
+- **Arrow steering:** `↑`/`↓`/`PgUp`/`PgDn` move the picker's highlight while the
+  filter keeps focus (non-priority screen bindings; the Input binds none of them) —
+  without this, "Enter acts on the highlighted row" had no keyboard way to move the
+  highlight short of an unadvertised Tab.
+- **Beyond-doc implementation decisions, now recorded** (§4/§5): an empty piece
+  never suggests (a ghost extends what the user started, it never opens the
+  bidding); the shlexy trailing piece is whitespace-split and a quote-in-progress
+  piece refuses to complete (appended ghost text can't be re-quoted honestly); the
+  pinned *"(use this directory)"* row appears only while the filter is empty, and
+  the highlight lands on the first real entry (unfiltered) or the first match
+  (filtered) so Enter never surprises; the picked spelling of the browse root
+  itself is `.`.
+- **Risk-list truth pass:** the cap is pinned by shrinking `SCAN_CAP` and asserting
+  an entry beyond it is never offered; risk 5 is structural, not test-pinned (the
+  suggester holds no reference to any Input and only returns strings; acceptance is
+  the stock Textual gesture); risk 8's Windows pins now exist (`\`/drive-letter
+  recognition under a forced `os.name`, and the CRT-dialect append); risk 9 is
+  pinned by an actual vanished-origin reference entry (launcher deliberately does
+  not recover reference mode); `picker_start`'s final invoke-cwd fallback is real on
+  Windows (a vanished drive's anchor) and pinned portably.
 
 Revision notes (v2 → v3, from review round 2 — the round verified each v1 resolution
 against the code instead of rubber-stamping it):
@@ -237,14 +273,19 @@ and it keeps the eventual rebase near-trivial.
   `/` — and on Windows additionally when it contains a `\` or starts with a drive
   letter (`X:\`, `X:/`); completions still insert `/` separators, which every consumer
   resolves. Secret fields never suggest (they are already non-insertable).
-- **Token-aware**: for `multiple` fields the last shlex piece is completed. Leading
+- **Token-aware**: for `multiple` fields and the extra-args row the trailing piece is
+  completed — whitespace-split, and a quote-in-progress piece refuses to complete
+  (appended ghost text cannot be re-quoted honestly). An empty piece (empty field, or
+  a fresh space) never suggests: a ghost extends what the user started, it never
+  opens the bidding. Leading
   `~`/`{cwd}`/`{env:NAME}` are expanded (`tokens.expand`) to *find* the directory —
   per §3's two-step rule — but the ghost text preserves the user's
   typed prefix verbatim; the stored value stays intent, exactly as today.
 - Directories complete with a trailing `/` (all platforms — see §5 on separators) so
   completion chains; hidden entries appear only when the typed segment starts with
   `.`; listings are capped at a stated constant so a node_modules-sized directory
-  cannot stall the loop. Case sensitivity follows the filesystem.
+  cannot stall the loop. The ghost matches **exact-case prefixes** — append-only
+  text cannot re-case what was typed; case-forgiving lookup belongs to the picker.
 - **Mouse story, argued**: `→`-to-accept is keyboard sugar over typing, not a
   mouse-orphaned capability — the *action* ("get this path into the field") is fully
   mouse-operable via the `▾ insert` link / footer chip → *"File or folder…"* → picker
@@ -266,8 +307,13 @@ with the seams specified where the precedent behaves differently:
 - **Rows**: a pinned first row *"(use this directory)"* that selects the current dir
   itself — directory selection needs no extra chord and is mouse/keyboard-symmetric by
   being an ordinary row — then subdirectories (trailing `/`), then files,
-  alphabetical. Typing filters; hidden entries only when the filter starts with `.`;
-  listings capped at the same constant as the suggester.
+  alphabetical. The pinned row appears **only while the filter is empty** (a typed
+  filter means "find me a named entry", and Enter must then act on the first match);
+  the highlight lands on the first real entry unfiltered, the first match filtered.
+  Typing filters **case-insensitive substring**, like `EnvPickerModal` (`re` finds
+  `README.md`); hidden entries only when the filter starts with `.`; listings capped
+  at the same constant as the suggester. `↑`/`↓`/`PgUp`/`PgDn` steer the highlight
+  while the filter keeps focus (non-priority screen bindings).
 - **Keys** (each a footer chip, each with a positive pilot test):
   - `Enter` — acts on the **highlighted row** (descend into a directory / insert a
     file), including when fired from the focused filter Input: the `Input.Submitted`
@@ -286,16 +332,20 @@ with the seams specified where the precedent behaves differently:
     empty list).
 - **Inserted value**: relative to the path root when the selection is inside it,
   absolute otherwise; separators are `/` on every platform (Windows accepts them
-  everywhere skit or a child will resolve the value, and POSIX `shlex.split` — which
-  re-parses `multiple`/extra-args values, `flows.py:654-664` — eats backslashes).
+  everywhere skit or a child will resolve the value, and POSIX `shlex.split` — the
+  `multiple` fields' splitter, `flows._split_multi` — eats backslashes outright).
   Navigating above the root is allowed — this is the user's machine and their own run;
   the picker is a convenience, not a sandbox, and no security boundary is claimed.
 - **Insertion semantics, per field shape** (the flagship journey must survive a
   prefilled field):
   - single-value free-text/path field → the picked value **replaces** the field's
     text;
-  - `multiple` field / extra-args row → the picked value is **appended** as a new
-    piece, `shlex.quote`d (spaces in filenames are the normal case);
+  - `multiple` field → the picked value is **appended** as a new piece,
+    `shlex.quote`d — POSIX shlex is that shape's splitter (`flows._split_multi`);
+  - extra-args row → **appended** too, but quoted with `argv_text.join` — that row's
+    splitter is `argv_text.split` (the CRT convention on Windows, where a single
+    quote is a literal character and shlex quoting would shatter `a b.txt`); spaces
+    in filenames are the normal case either way;
   - the token menu's existing rows (`{cwd}`, `~`, env var, …) keep their at-cursor
     insertion — tokens compose into larger values; a picked path *is* the value.
   - Because three regimes now flow through the single `action_insert_token` channel

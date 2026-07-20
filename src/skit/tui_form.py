@@ -123,10 +123,20 @@ class FieldRow(Vertical):
 
     @property
     def shlexy(self) -> bool:
-        """Whether the field's text is re-parsed with shlex at assembly (multi-value
-        fields and the extra-args row) — the shapes a picked path must be APPENDED to
-        as a quoted piece rather than replacing the value (path.md §5)."""
+        """Whether the field's text is re-split into pieces at collection/assembly
+        (multi-value fields and the extra-args row) — the shapes whose ghost completes
+        only the trailing piece and whose picked paths append rather than replace."""
         return self.field.multiple or self.field.key == _EXTRA_KEY
+
+    @property
+    def insert_mode(self) -> tui_pathpick.InsertMode:
+        """How a picked path lands here (path.md §5). The two parsed shapes use
+        DIFFERENT dialects: a multiple field is re-split with POSIX shlex
+        (flows._split_multi), the extra-args row with argv_text (CRT rules on
+        Windows) — each appends a piece quoted for its own splitter."""
+        if self.field.key == _EXTRA_KEY:
+            return "argv"
+        return "shlex" if self.field.multiple else "replace"
 
     @property
     def insertable(self) -> bool:
@@ -388,7 +398,7 @@ class TokenMenuModal(ModalScreen["str | tui_pathpick.PickedPath | None"]):
             return
         if event.option.id == self._FILE_SENTINEL:
             browse = self._browse
-            if browse is None:  # the row only composes with a context
+            if browse is None:  # pragma: no cover — the row only composes with a context
                 self.dismiss(None)
                 return
 
@@ -784,14 +794,14 @@ class RunFormScreen(Screen[FormResult]):
             return
         target = row.query_one(Input)
         target.focus()
-        shlexy = row.shlexy
+        insert_mode = row.insert_mode
 
         def _insert(result: str | tui_pathpick.PickedPath | None) -> None:
             if isinstance(result, tui_pathpick.PickedPath):
                 # A picked path IS the value: replace a single-value field, append a
-                # quoted piece to a shlex-parsed one — at-cursor insertion would
+                # dialect-quoted piece to a parsed one — at-cursor insertion would
                 # corrupt a prefilled value (path.md §5).
-                tui_pathpick.insert_picked(target, result, shlexy=shlexy)
+                tui_pathpick.insert_picked(target, result, mode=insert_mode)
                 target.focus()
             elif result:
                 target.insert_text_at_cursor(result)

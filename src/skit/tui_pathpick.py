@@ -9,8 +9,11 @@ completes against the entry's resolved workdir — the directory the child will 
 it in — while a token prefix ({cwd}/~/{env:X}) expands first and completes inside the
 directory the expanded value denotes (a relative expansion falls back to the workdir
 rule; an unexpandable one suggests nothing). Ghost text only ever APPENDS to what the
-user typed, so prefix matching is exact-case by construction, and a suggestion is
-never a value until the user accepts it.
+user typed, so the GHOST matches exact-case prefixes by construction (appended text
+cannot re-case what was typed); the PICKER redraws whole rows and filters
+case-insensitively by substring, like its EnvPickerModal precedent. A suggestion is
+never a value until the user accepts it — the suggester holds no reference to any
+Input and only returns strings.
 """
 
 from __future__ import annotations
@@ -32,14 +35,23 @@ from textual.suggester import Suggester
 from textual.widgets import Input, Label, OptionList, Static
 from textual.widgets.option_list import Option
 
-from . import tokens, tui_footer
+from . import argv_text, tokens, tui_footer
 from .i18n import gettext
 from .launcher import _resolve_workdir
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from typing import Literal
+
     from textual.app import ComposeResult
 
     from .models import Entry
+
+    # How a picked path lands in a field (path.md §5): replace a single-value field;
+    # append one quoted piece to a parsed field — quoted in the FIELD'S own dialect:
+    # multiple fields are re-split with POSIX shlex, the extra-args row with
+    # argv_text (CRT rules on Windows). One quoting for both would corrupt one of them.
+    InsertMode = Literal["replace", "shlex", "argv"]
 
 # Entries examined per directory before the scan stops — a node_modules-sized
 # directory must never stall the event loop (path.md risk 4).
@@ -81,7 +93,9 @@ class PathContext:
 
     def picker_start(self) -> tuple[Path, bool]:
         """The picker's opening directory: the workdir, else its nearest existing
-        ancestor, else the invoke cwd; True when the workdir itself was missing."""
+        ancestor, else the invoke cwd; True when the workdir itself was missing.
+        The final fallback is real on Windows — a vanished drive's anchor (X:\\)
+        leaves the whole ancestor chain nonexistent."""
         if self.workdir.is_dir():
             return self.workdir, False
         for ancestor in self.workdir.parents:
@@ -108,19 +122,20 @@ def looks_pathy(piece: str) -> bool:
     return os.name == "nt" and ("\\" in piece or _NT_PATHY_RE.match(piece) is not None)
 
 
-def _list_matches(base: Path, prefix: str) -> list[tuple[str, bool]]:
-    """Directory entries under base whose names start with prefix (exact case —
-    ghost text can only append), as (name, is_dir), sorted; hidden entries only when
-    the prefix itself starts with a dot; at most SCAN_CAP entries examined."""
+def _scan(base: Path, keep: Callable[[str], bool], *, show_hidden: bool) -> list[tuple[str, bool]]:
+    """Directory entries under base that `keep` accepts, as (name, is_dir), sorted;
+    hidden entries only when asked for; at most SCAN_CAP entries examined so a
+    node_modules-sized directory cannot stall the event loop (path.md risk 4).
+    Unreadable directories and unstatable entries degrade, never raise."""
     matches: list[tuple[str, bool]] = []
     try:
         with os.scandir(base) as entries:
             for scanned, entry in enumerate(entries):
                 if scanned >= SCAN_CAP:
                     break
-                if entry.name.startswith(".") and not prefix.startswith("."):
+                if entry.name.startswith(".") and not show_hidden:
                     continue
-                if entry.name.startswith(prefix):
+                if keep(entry.name):
                     try:
                         is_dir = entry.is_dir()
                     except OSError:
@@ -129,6 +144,20 @@ def _list_matches(base: Path, prefix: str) -> list[tuple[str, bool]]:
     except OSError:
         return []
     return sorted(matches)
+
+
+def _list_matches(base: Path, prefix: str) -> list[tuple[str, bool]]:
+    """The ghost's listing: exact-case prefix matches — appended ghost text cannot
+    re-case what the user already typed."""
+    return _scan(base, lambda name: name.startswith(prefix), show_hidden=prefix.startswith("."))
+
+
+def _list_filtered(base: Path, needle: str) -> list[tuple[str, bool]]:
+    """The picker's listing: case-insensitive substring, like EnvPickerModal — the
+    picker redraws whole rows with their true names, so no casing constraint applies,
+    and `re` must find README.md."""
+    low = needle.lower()
+    return _scan(base, lambda name: low in name.lower(), show_hidden=needle.startswith("."))
 
 
 class PathSuggester(Suggester):
@@ -235,6 +264,15 @@ class FilePickerModal(ModalScreen[PickedPath | None]):
         # Non-priority: while the filter Input has focus its own delete runs (see
         # _FilterInput); this covers Backspace when the OptionList holds focus.
         Binding("backspace", "ascend", gettext("Up"), show=False),
+        # Type-to-filter with arrow steering: Input binds no up/down, so these
+        # non-priority screen bindings move the list highlight while the filter keeps
+        # focus — Enter's "acts on the highlighted row" contract needs a way to move
+        # the highlight without leaving the filter. When the OptionList itself has
+        # focus its own cursor bindings win, unchanged.
+        Binding("up", "list_cursor('up')", show=False),
+        Binding("down", "list_cursor('down')", show=False),
+        Binding("pageup", "list_cursor('page_up')", show=False),
+        Binding("pagedown", "list_cursor('page_down')", show=False),
     ]
     DEFAULT_CSS = """
     FilePickerModal { align: center middle; }
@@ -300,8 +338,9 @@ class FilePickerModal(ModalScreen[PickedPath | None]):
             options.append(
                 Option(f"[dim]📂[/dim] {gettext('(use this directory)')}", id=self._USE_DIR)
             )
-        dirs = [(n, d) for n, d in _list_matches(self._dir, needle) if d]
-        files = [(n, d) for n, d in _list_matches(self._dir, needle) if not d]
+        listing = _list_filtered(self._dir, needle)
+        dirs = [(n, d) for n, d in listing if d]
+        files = [(n, d) for n, d in listing if not d]
         for name, _ in dirs:
             options.append(Option(f"▸ {escape(name)}/", id=f"d:{name}"))
         for name, _ in files:
@@ -336,6 +375,10 @@ class FilePickerModal(ModalScreen[PickedPath | None]):
             option = option_list.get_option_at_index(option_list.highlighted)
             self._act(str(option.id))
 
+    def action_list_cursor(self, direction: str) -> None:
+        option_list = self.query_one(OptionList)
+        getattr(option_list, f"action_cursor_{direction}")()
+
     def action_ascend(self) -> None:
         parent = self._dir.parent
         if parent == self._dir:
@@ -352,7 +395,7 @@ class FilePickerModal(ModalScreen[PickedPath | None]):
         elif option_id.startswith("d:"):
             self._dir = self._dir / option_id[2:]
             self._after_move()
-        elif option_id.startswith("f:"):
+        else:  # "f:<name>" — _populate constructs exactly these three id shapes
             self.dismiss(PickedPath(self._ctx.value_for(self._dir / option_id[2:])))
 
     def _after_move(self) -> None:
@@ -367,14 +410,17 @@ class FilePickerModal(ModalScreen[PickedPath | None]):
         filter_input.focus()
 
 
-def insert_picked(target: Input, picked: PickedPath, *, shlexy: bool) -> None:
+def insert_picked(target: Input, picked: PickedPath, *, mode: InsertMode) -> None:
     """Apply a picked path to a field per its shape (path.md §5): a single-value field
-    is REPLACED (at-cursor insertion corrupts a prefilled value); a shlex-parsed field
-    appends the pick as one quoted piece at the end."""
-    if shlexy:
-        piece = shlex.quote(picked.text)
+    is REPLACED (at-cursor insertion corrupts a prefilled value); a parsed field
+    appends the pick as one piece at the end, quoted in the FIELD'S own dialect —
+    `multiple` fields are re-split with POSIX shlex (`flows._split_multi`), while the
+    extra-args row is split by argv_text (CRT rules on Windows, where a single quote
+    is a literal character and shlex quoting would shatter the filename)."""
+    if mode == "replace":
+        target.value = picked.text
+    else:
+        piece = shlex.quote(picked.text) if mode == "shlex" else argv_text.join([picked.text])
         existing = target.value.strip()
         target.value = f"{existing} {piece}" if existing else piece
-    else:
-        target.value = picked.text
     target.cursor_position = len(target.value)
