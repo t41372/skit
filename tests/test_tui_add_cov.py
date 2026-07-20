@@ -1069,6 +1069,22 @@ async def test_kind_pick_suggested_none_keeps_stable_order(tmp_path):
     assert ids[-2] == "exe"
 
 
+async def test_kind_pick_default_has_shebang_asks_the_cant_tell_question(tmp_path):
+    """Constructed with the DEFAULT has_shebang (False), the modal asks the can't-tell
+    question, never the shebang variant. Every production caller passes has_shebang
+    explicitly, so only a default-relying construction can pin the default itself."""
+    from textual.widgets import Label
+
+    from skit.tui_add import _ScreenHost
+
+    host = _ScreenHost(KindPickModal("x.xyz"))
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(host.screen, KindPickModal)
+        label = str(host.screen.query(Label).first().render())
+    assert label == "What is x.xyz? skit can't tell from the name."
+
+
 # ---------------------------------------------------------------------------
 # AddSourceScreen._submit_path: bare .md, directory, and description round-trip
 # ---------------------------------------------------------------------------
@@ -1094,13 +1110,15 @@ async def test_bare_md_path_asks_with_prompt_pre_highlighted(tmp_path):
 
 async def test_directory_path_routes_to_the_exe_review(tmp_path):
     """An existing DIRECTORY (an .app bundle, a dir-shaped tool) is a valid exe target:
-    it goes straight to the ExeReviewScreen, not a 'File not found' lie."""
+    it goes straight to the ExeReviewScreen — wired to _reviewed, so accepting forwards
+    the slug out of the source step — not a 'File not found' lie."""
     d = tmp_path / "Tool.app"
     d.mkdir()
     app = tui.MenuApp()
     async with app.run_test() as pilot:
+        captured: dict[str, str | None] = {}
         source = AddSourceScreen()
-        app.push_screen(source)
+        app.push_screen(source, lambda v: captured.__setitem__("result", v))
         await pilot.pause()
         source.query_one("#add-path", Input).value = str(d)
         source.action_continue_add()
@@ -1110,8 +1128,10 @@ async def test_directory_path_routes_to_the_exe_review(tmp_path):
         review.query_one("#xv-name", Input).value = "tool"
         review.action_accept()
         await pilot.pause()
+        await pilot.pause()
     entry = store.resolve("tool")
     assert entry.meta.kind == "exe"
+    assert captured["result"] == entry.slug  # _reviewed forwarded it, not dropped
 
 
 async def test_template_description_round_trips(tmp_path):
@@ -1168,7 +1188,22 @@ async def test_run_candidate_picker_escape_returns_none(tmp_path):
 
 
 def test_run_candidate_picker_returns_the_apps_result(tmp_path, monkeypatch):
-    from skit import tui_add
+    """run_candidate_picker hosts a PromptCandidatePickerModal built from names/selected
+    verbatim (no arg dropped or replaced on the way in) and hands back run()'s result."""
+    from skit import tui_add, tui_prompt
 
-    monkeypatch.setattr(tui_add._ScreenHost, "run", lambda self: {"a"})
+    seen: dict[str, object] = {}
+
+    class _FakeHost:
+        def __init__(self, screen):
+            seen["screen"] = screen
+
+        def run(self):
+            return {"a"}
+
+    monkeypatch.setattr(tui_add, "_ScreenHost", _FakeHost)
     assert tui_add.run_candidate_picker(["a", "b"], {"a"}) == {"a"}
+    modal = seen["screen"]
+    assert isinstance(modal, tui_prompt.PromptCandidatePickerModal)
+    assert modal._names == ["a", "b"]
+    assert modal._selected == {"a"}

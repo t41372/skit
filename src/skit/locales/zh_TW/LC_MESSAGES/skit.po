@@ -343,7 +343,7 @@ msgstr "給 AI agent 的提示詞"
 #: src/skit/cli.py:1340 src/skit/tui_add.py:126
 #, python-format
 msgid "The #! in %(file)s names no interpreter skit knows. What is it?"
-msgstr "%(file)s 的 #! 指定了 skit 不認識的直譯器。這是什麼?"
+msgstr "%(file)s 的 #! 指定了 skit 不認識的直譯器。這是什麼？"
 
 #: src/skit/cli.py:1342 src/skit/tui_add.py:128
 #, python-format
@@ -3855,4 +3855,3 @@ msgstr "uv 已安裝:%(path)s"
 
 #~ msgid "Provide a source path, or use --cmd to register a command template"
 #~ msgstr "請提供來源路徑，或用 --cmd 登記命令範本"
-
