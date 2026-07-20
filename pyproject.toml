@@ -70,6 +70,15 @@ dev = [
     "babel>=2.18,<3",  # dev-only: extract/update/compile .po↔.mo (runtime uses stdlib gettext)
     "pytest-rerunfailures>=16.4",
 ]
+# The benchmark pipeline's only extra dependency (benchmarks/ — never a runtime dep).
+# Kept as its own group for clarity, but default-installed (see [tool.uv]) so ty's
+# strictest mode resolves `import pyperf` in every environment, not just bench CI.
+bench = [
+    "pyperf>=2.9,<3",
+]
+
+[tool.uv]
+default-groups = ["dev", "bench"]
 
 [build-system]
 requires = ["uv_build>=0.11,<0.12"]
@@ -90,11 +99,25 @@ asyncio_mode = "auto"
 addopts = "--strict-markers --strict-config"
 xfail_strict = true
 filterwarnings = ["error::DeprecationWarning:skit"]
+# Puts the repo root on sys.path so tests can `import benchmarks` (the top-level
+# benchmark pipeline package). Resolved relative to this inifile, which mutmut copies
+# into mutants/, so the import keeps working there too (benchmarks/ is in also_copy).
+pythonpath = ["."]
 
 [tool.coverage.run]
-source = ["skit"]
+source = ["skit", "benchmarks"]
 branch = true
 parallel = true
+# The benchmark pipeline's trust split (docs/design/benchmarks.md): everything that
+# computes, decides, or persuades is covered at the same 100% floor as src/skit; the
+# ONLY exemptions are spawn-and-wait orchestration around external binaries and the
+# benchmark subjects themselves.
+omit = [
+    "benchmarks/suites/*",         # subprocess orchestration around hyperfine/strace/uv/probes
+    "benchmarks/micro/*",          # pyperf scripts re-exec'd as worker processes
+    "benchmarks/__main__.py",      # thin argparse shim; all logic lives in covered modules
+    "benchmarks/fixtures/noop.py", # benchmark subject (a script the benchmarks run), not harness code
+]
 
 [tool.coverage.paths]
 source = ["src/skit", "*/site-packages/skit"]
@@ -180,6 +203,13 @@ ignore = [
     "PLR0912", # the sink-dispatch scan is inherently branchy
     "PERF401", # explicit append loops read clearer than comprehensions in the AST walk
 ]
+"benchmarks/__main__.py" = [
+    "PLR0911", # subcommand dispatcher returns once per command (same as scripts/i18n.py)
+]
+"benchmarks/budgets.py" = [
+    "PLR0911", # the outcome evaluator returns exactly once per decay channel by design
+    "PLR0912", # the row validator checks one field per branch; collapsing them hides errors
+]
 "tests/**" = [
     "S101",    # assert is the point of tests
     "S108",    # tests use fixed /tmp fixtures as opaque path strings
@@ -199,7 +229,10 @@ pytest_add_cli_args_test_selection = ["tests/"]
 # the packaged copy; mutmut's mutants/ tree only carries src/ + tests/ by default.
 # README.md rides along because pyproject's `readme` references it — without it, uv
 # can't build the project inside mutants/ on a cold cache. scripts/ rides along because
-# the i18n-gate tests (test_js_deps.py) import scripts/i18n_coverage.py by path. locales/
+# the i18n-gate tests (test_js_deps.py) import scripts/i18n_coverage.py by path.
+# benchmarks/ rides along because tests/test_benchmarks_tooling.py imports the
+# benchmarks package (pytest's inifile-relative pythonpath resolves it inside
+# mutants/). locales/
 # must be explicit too: mutmut never refreshes non-Python files already present under a
 # reused source_paths copy, while also_copy directories are overlaid on every run. That
 # applies to both runtime package-data trees: translation catalogs and the bundled skill.
@@ -207,6 +240,7 @@ also_copy = [
     "skills/",
     "README.md",
     "scripts/",
+    "benchmarks/",
     "src/skit/locales/",
     "src/skit/skills/",
 ]

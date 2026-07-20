@@ -1,0 +1,90 @@
+name: benchmark
+
+# The performance evaluation pipeline's PR-path job (docs/design/benchmarks.md): runs
+# the pr profile, gates the enforced budget tier, and publishes the results table +
+# artifacts. ADVISORY BY POLICY: this job must never be configured as a required
+# status check while path-filtered — GitHub leaves path-skipped required checks
+# "Pending" forever, which would block every docs-only PR. A red job here is visible
+# shame, not a merge lock.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'benchmarks/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/benchmark*.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'benchmarks/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/benchmark*.yml'
+
+# Grant no permissions by default; each job requests the minimum it needs.
+permissions: {}
+
+concurrency:
+  group: benchmark-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUTF8: "1"
+  # No GitHub-provided variable carries the `runs-on` label; envinfo reads this to
+  # stamp meta.host.ci_runner, which the budget predicates key on.
+  BENCH_CI_RUNNER: ubuntu-24.04
+
+jobs:
+  bench-pr:
+    name: pr profile (advisory)
+    # Pinned image, not -latest: hosted-runner numbers are only comparable to
+    # themselves, and a silent image change is a history discontinuity.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - name: Sync dependencies
+        run: uv sync --dev
+      # Version-pinned release tarball with a hardcoded digest (upstream publishes no
+      # checksum assets; this one was computed at pin time — benchmarks/hyperfine.py
+      # carries the same constants).
+      - name: Install hyperfine (pinned)
+        run: |
+          curl -sSfL -o hyperfine.tgz \
+            "https://github.com/sharkdp/hyperfine/releases/download/v1.20.0/hyperfine-v1.20.0-x86_64-unknown-linux-gnu.tar.gz"
+          echo "63ad53934062118f5b0be11785e0bb1603d4b91667d1921f2fd8df9a8712040a  hyperfine.tgz" | sha256sum -c -
+          tar xzf hyperfine.tgz
+          install -m 0755 hyperfine-v1.20.0-x86_64-unknown-linux-gnu/hyperfine /usr/local/bin/hyperfine
+          rm -rf hyperfine.tgz hyperfine-v1.20.0-x86_64-unknown-linux-gnu
+          hyperfine --version
+      - name: Run pr profile
+        run: uv run python -m benchmarks run --profile pr --out .bench
+      - name: Check budgets (enforced tier gates this job)
+        run: uv run python -m benchmarks check .bench/results.json --require-enforced
+      - name: Publish step summary
+        if: ${{ !cancelled() }}
+        run: cat .bench/results.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload results artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: benchmark-results-pr
+          path: |
+            .bench/results.json
+            .bench/results.md
+            .bench/run.json
+            .bench/suites/
+            .bench/artifacts/
+          retention-days: 30

@@ -25,6 +25,9 @@ mutants/
 .mutmut-cache
 .mutmut-results.txt
 
+# Benchmark pipeline artifacts (results are CI artifacts, never committed)
+.bench/
+
 # Environment variables
 .env*.local
 

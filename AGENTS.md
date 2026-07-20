@@ -115,6 +115,8 @@ uv run mutmut run                   # mutation testing (surviving mutants fail C
 uv run python scripts/i18n_coverage.py   # i18n coverage gate (also enforced by test_i18n.py)
 uv run zizmor .github/workflows     # GitHub Actions security audit
 uv run python scripts/serve_preview.py   # TUI web preview via textual-serve (localhost:8000)
+uv run python -m benchmarks run --profile pr --out .bench   # performance pipeline (benchmarks/README.md)
+uv run python -m benchmarks check .bench/results.json       # performance budget contract
 ```
 
 Full pre-PR gate (run before declaring any change done):
@@ -122,6 +124,27 @@ Full pre-PR gate (run before declaring any change done):
 ```bash
 uv run ruff format --check && uv run ruff check && uv run ty check && uv run pytest --cov && uv run mutmut run
 ```
+
+## Performance pipeline
+
+`benchmarks/` (design: docs/design/benchmarks.md · manual: benchmarks/README.md) is the
+measurement side of a contract:
+
+- **Pipeline PRs measure; they never change runtime behavior.** Optimization PRs must
+  attach `benchmark-compare` workflow evidence (base vs head), not hand-run numbers.
+- **README performance claims must be generated from a `results.json` artifact** —
+  commit, date, host, run counts — never hand-written prose.
+- `benchmarks/budgets.toml` is two-tier: `enforced` rows fail `benchmarks check` (CI
+  runs it with `--require-enforced`); `target` rows are the aspirational contract,
+  reported but never gating. Ratchet bounds refresh ONLY from CI artifacts via
+  `check --propose` (module censuses are python-version-dependent), in the same PR
+  that moves the metric.
+- The bench CI job is advisory by policy: never make it a required status check while
+  path-filtered.
+- The pipeline's own logic (results/budgets/parsers/pipeline/datasets/envinfo/compare/
+  hyperfine builders) sits under the same 100% coverage floor as src/skit; only
+  spawn-and-wait orchestration (`suites/`, `micro/`, `__main__.py`) and benchmark
+  subjects are exempt, each exemption commented in pyproject's coverage `omit`.
 
 ## i18n workflow
 

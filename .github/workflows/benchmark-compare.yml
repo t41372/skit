@@ -1,0 +1,105 @@
+name: benchmark (compare)
+
+# On-demand A/B: the evidence tool optimization PRs cite (docs/design/benchmarks.md).
+# Semantics are pinned: the HARNESS is always this invoking ref's benchmarks/ package;
+# base and head supply only built venvs (each synced from its own ref's uv.lock —
+# dependency changes are part of the measured diff — except pyperf, which is harness
+# infrastructure installed into both sides so a pre-pipeline base ref doesn't blank
+# the micro lane). Runs the `compare` profile (pr minus footprint: the wheel would be
+# built from the harness checkout, measuring the wrong ref). Warn-only by design.
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Base ref (branch, tag, or SHA)"
+        required: true
+      head:
+        description: "Head ref (branch, tag, or SHA)"
+        required: true
+
+# Grant no permissions by default; the job requests the minimum it needs.
+permissions: {}
+
+concurrency:
+  group: benchmark-compare-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUTF8: "1"
+  BENCH_CI_RUNNER: ubuntu-24.04
+  # Micro scripts import skit internals; against an older side they may fail to
+  # import. Under compare that side records a per-script skip carrying the actual
+  # error instead of failing the run (benchmarks/suites/micro.py).
+  BENCH_COMPARE: "1"
+
+jobs:
+  compare:
+    name: A/B (${{ inputs.base }} vs ${{ inputs.head }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout harness (this ref)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Checkout base
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.base }}
+          path: side-base
+          persist-credentials: false
+      - name: Checkout head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.head }}
+          path: side-head
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - name: Sync harness dependencies
+        run: uv sync --dev
+      - name: Install hyperfine (pinned)
+        run: |
+          curl -sSfL -o hyperfine.tgz \
+            "https://github.com/sharkdp/hyperfine/releases/download/v1.20.0/hyperfine-v1.20.0-x86_64-unknown-linux-gnu.tar.gz"
+          echo "63ad53934062118f5b0be11785e0bb1603d4b91667d1921f2fd8df9a8712040a  hyperfine.tgz" | sha256sum -c -
+          tar xzf hyperfine.tgz
+          install -m 0755 hyperfine-v1.20.0-x86_64-unknown-linux-gnu/hyperfine /usr/local/bin/hyperfine
+          rm -rf hyperfine.tgz hyperfine-v1.20.0-x86_64-unknown-linux-gnu
+      # Each side: its own venv from its own lockfile (runtime deps only — groups are
+      # dev tooling and old refs may not have today's groups), plus pyperf as harness
+      # infrastructure. The harness then runs UNDER the side's python, so
+      # sys.executable's venv — the thing the suites benchmark — is that side's skit,
+      # while the benchmarks/ package resolves from this checkout's cwd.
+      - name: Build base venv + run
+        run: |
+          uv sync --directory side-base --no-default-groups
+          uv pip install --python side-base/.venv/bin/python pyperf
+          side-base/.venv/bin/python -m benchmarks run --profile compare --out .bench-base
+      - name: Build head venv + run
+        run: |
+          uv sync --directory side-head --no-default-groups
+          uv pip install --python side-head/.venv/bin/python pyperf
+          side-head/.venv/bin/python -m benchmarks run --profile compare --out .bench-head
+      - name: Render comparison
+        if: ${{ !cancelled() }}
+        run: |
+          uv run python -m benchmarks compare .bench-base/results.json .bench-head/results.json \
+            | tee comparison.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload artifacts
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: benchmark-compare
+          path: |
+            comparison.md
+            .bench-base/results.json
+            .bench-base/results.md
+            .bench-head/results.json
+            .bench-head/results.md
+          retention-days: 90
