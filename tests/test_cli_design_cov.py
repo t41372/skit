@@ -1023,8 +1023,7 @@ def test_onboard_script_params_reference_forwards_frameworks_to_notice(tmp_path,
 
 def test_onboard_script_params_reads_and_writes_the_copy_as_utf8(tmp_path, monkeypatch):
     """Both stored-copy reads (analyzer input + write-back) and the write use encoding="utf-8",
-    errors="replace" — pinning the literal codec/handler strings kills every encoding=None/UTF-8
-    and errors=None/REPLACE call-argument mutant on the read and write."""
+    while the write-back half uses surrogateescape so arbitrary source bytes round-trip."""
     _two_const_shell(tmp_path)
     entry = store.resolve("d")  # resolve before spying, so only the copy read/write are captured
     _fake_tty(monkeypatch)
@@ -1046,8 +1045,26 @@ def test_onboard_script_params_reads_and_writes_the_copy_as_utf8(tmp_path, monke
     monkeypatch.setattr(Path, "write_text", write_spy)
     assert cli._onboard_script_params(entry, _spec("shell"), no_input=False) == ["WIDTH"]
     assert [r["encoding"] for r in reads] == ["utf-8", "utf-8"]  # analyzer read + write-back read
-    assert [r["errors"] for r in reads] == ["replace", "replace"]
+    assert [r["errors"] for r in reads] == ["replace", "surrogateescape"]
     assert [w["encoding"] for w in writes] == ["utf-8"]  # the single copy write
+    assert [w["errors"] for w in writes] == ["surrogateescape"]
+
+
+def test_onboard_script_params_preserves_non_utf8_source_bytes(tmp_path, monkeypatch):
+    """Managing a candidate only inserts comments; it must not rewrite an unrelated raw byte."""
+    source = tmp_path / "raw.sh"
+    original = b"#!/bin/sh\nWIDTH=800\nprintf '\xff\\n'\n"
+    source.write_bytes(original)
+    entry = store.add_script(source, kind="shell", name="raw")
+    _fake_tty(monkeypatch)
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: "1"))
+
+    assert cli._onboard_script_params(entry, _spec("shell"), no_input=False) == ["WIDTH"]
+
+    rewritten = entry.script_path.read_bytes()
+    assert b"\xff" in rewritten
+    assert b"\xef\xbf\xbd" not in rewritten  # UTF-8 encoding of U+FFFD
+    assert b"[tool.skit]" in rewritten
 
 
 # ============================================================ run --forget-args

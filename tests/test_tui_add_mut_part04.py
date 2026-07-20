@@ -137,6 +137,24 @@ async def test_accept_writes_only_checked_candidate_params(tmp_path):
     assert {s.name for s in specs} == {"AREA"}
 
 
+async def test_accept_preserves_non_utf8_source_bytes(tmp_path):
+    """The review panel's comment insertion must round-trip bytes outside UTF-8."""
+    p = tmp_path / "raw.sh"
+    p.write_bytes(b"#!/bin/sh\nWIDTH=800\nprintf '\xff\\n'\n")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = AddReviewScreen(p, kind="shell")
+        app.push_screen(screen)
+        await pilot.pause()
+        assert screen.query_one("#rv-cand-0", Checkbox).value
+        screen.action_accept()
+        await pilot.pause()
+
+    rewritten = store.list_entries()[0].script_path.read_bytes()
+    assert b"\xff" in rewritten
+    assert b"\xef\xbf\xbd" not in rewritten
+
+
 # ---------------------------------------------------------------------------
 # action_edit_source — overrides survive the edit→rescan recompose
 # ---------------------------------------------------------------------------

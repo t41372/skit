@@ -1123,11 +1123,10 @@ class AddReviewScreen(Screen[str | None]):
             if picked:
                 specs = [ParamDecl.from_candidate(c) for c in picked]
                 copy_path = entry.script_path
-                # errors="replace", like the Script settings write path: the stored copy is
-                # skit's own artifact, and a stray invalid byte must not crash the accept
-                # AFTER the entry committed (the byte degrades to U+FFFD in the copy).
-                current = copy_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate — utf-8 equivalence  # fmt: skip
-                copy_path.write_text(self._spec.params_io.write(current, specs), encoding="utf-8")  # pragma: no mutate — utf-8 equivalence  # fmt: skip
+                # This is a write-back path, so preserve arbitrary shell/fish bytes while
+                # inserting the comment-only metadata block.
+                current = copy_path.read_text(encoding="utf-8", errors="surrogateescape")  # pragma: no mutate — utf-8 equivalence  # fmt: skip
+                copy_path.write_text(self._spec.params_io.write(current, specs), encoding="utf-8", errors="surrogateescape")  # pragma: no mutate — utf-8 equivalence  # fmt: skip
         self.dismiss(entry.slug)
 
     def action_cancel(self) -> None:

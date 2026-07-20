@@ -607,12 +607,12 @@ def _onboard_script_params(entry: store.Entry, kind_spec: LangSpec, no_input: bo
     if not specs:
         return []
     copy_path = entry.script_path
-    # errors="replace", like the Script settings write path: the stored copy is skit's own
-    # artifact, and a stray invalid byte must not crash the onboarding write after the add
-    # committed (the byte degrades to U+FFFD in the copy).
-    current = copy_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate — utf-8 equivalence  # fmt: skip
+    # This is a write-back path, so the decode must be lossless. Shell/fish scripts may
+    # legitimately contain arbitrary bytes; surrogateescape lets the comment-only metadata
+    # edit round-trip them instead of silently replacing each one with U+FFFD.
+    current = copy_path.read_text(encoding="utf-8", errors="surrogateescape")  # pragma: no mutate — utf-8 equivalence  # fmt: skip
     copy_path.write_text(
-        kind_spec.params_io.write(current, specs), encoding="utf-8"
+        kind_spec.params_io.write(current, specs), encoding="utf-8", errors="surrogateescape"
     )  # pragma: no mutate
     return [s.name for s in specs]
 
