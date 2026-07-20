@@ -15,7 +15,13 @@ from textual.widgets import Input, Static
 
 from skit import i18n, store, tui
 from skit.langs import registry
-from skit.tui_add import AddReviewScreen, AddSourceScreen, KindPickModal
+from skit.tui_add import (
+    AddReviewScreen,
+    AddSourceScreen,
+    ExeReviewScreen,
+    KindPickModal,
+    PromptReviewScreen,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -294,3 +300,198 @@ async def test_continue_add_falls_back_to_template(tmp_path):
     (entry,) = store.list_entries()
     assert entry.meta.name == "hello"
     assert entry.meta.kind == "command"
+
+
+# ---------------------------------------------------------------------------
+# _reviewed: the success-unlink guard `draft_resume and mode=="copy"`
+# ---------------------------------------------------------------------------
+
+
+async def test_normal_copy_add_keeps_the_original_file(tmp_path):
+    """A NORMAL (non-draft) copy add must NEVER delete the user's source file. The success
+    unlink is gated on `draft_resume and store.resolve(slug).meta.mode == "copy"`; the
+    and->or mutant would fire on every copy add (draft_resume False OR mode "copy" True →
+    True) and unlink the original the user still owns. Pins the guard behaviorally."""
+    py = tmp_path / "keep.py"
+    py.write_text("print(1)\n", encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        captured: dict[str, str | None] = {}
+        screen = await _mounted(app, pilot, captured)
+        review = await _submit_and_review(app, pilot, screen, py)
+        review.action_accept()
+        await pilot.pause()
+        await pilot.pause()
+    assert py.exists()  # a copy add leaves the user's original untouched
+    (entry,) = store.list_entries()
+    assert entry.meta.mode == "copy"
+    assert captured["result"] == entry.slug
+
+
+async def test_resume_prompt_draft_unlinks_and_dismisses(tmp_path):
+    """Resuming a kept PROMPT draft rides _submit_path's prompt branch: accepting the review
+    hands the new slug back to the source screen (the _reviewed callback wiring) AND unlinks
+    the draft (draft_resume True + copy → the success unlink)."""
+    from skit.paths import drafts_dir
+
+    drafts_dir().mkdir(parents=True, exist_ok=True)
+    draft = drafts_dir() / "skit-new-p.prompt.md"
+    draft.write_text("Summarize {{url}} briefly\n", encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        captured: dict[str, str | None] = {}
+        screen = await _mounted(app, pilot, captured)
+        screen.query_one("#add-path", Input).value = str(draft)
+        screen._submit_path()
+        await pilot.pause()
+        assert isinstance(app.screen, PromptReviewScreen)
+        app.screen.action_accept()
+        await pilot.pause()
+        await pilot.pause()
+    (entry,) = store.list_entries()
+    assert entry.meta.kind == "prompt"
+    assert captured["result"] == entry.slug
+    assert not draft.exists()  # the resumed draft reached the store → unlinked
+
+
+async def test_resume_exe_inferring_draft_demotes_to_kind_ask(tmp_path):
+    """A kept draft that would infer as a program (executable bit, no known extension or
+    shebang) is NOT sent to ExeReviewScreen: an exe entry is reference-by-construction,
+    forbidden for a draft the success path consumes. It is demoted (kind -> "unknown") to
+    the kind ask, whose modal offers no 'A program' route out (offer_exe=False)."""
+    import os
+
+    from skit.paths import drafts_dir
+
+    drafts_dir().mkdir(parents=True, exist_ok=True)
+    draft = drafts_dir() / "skit-new-blob"
+    draft.write_bytes(b"\x7fELF not really\n")
+    os.chmod(draft, 0o755)  # noqa: S103 — a deliberately-executable fixture: the exe inference is the point
+    assert store.infer_kind(draft) == "exe"  # the draft really would infer as a program
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = await _mounted(app, pilot)
+        screen.query_one("#add-path", Input).value = str(draft)
+        screen._submit_path()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, KindPickModal)  # demoted to the ask, NOT ExeReviewScreen
+        assert modal._offer_exe is False  # a draft can never become a program entry
+    draft.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# _kind_picked: the KindPickModal routes each pick to its review, wired to _reviewed
+# ---------------------------------------------------------------------------
+
+
+async def _modal_for(app, pilot, path, capture):
+    """Submit an unclassifiable path and return the KindPickModal it raises."""
+    screen = await _mounted(app, pilot, capture)
+    screen.query_one("#add-path", Input).value = str(path)
+    screen._submit_path()
+    await pilot.pause()
+    assert isinstance(app.screen, KindPickModal)
+    return app.screen
+
+
+async def test_modal_pick_exe_dismisses_with_slug(tmp_path):
+    """Picking 'A program' in the ask routes to ExeReviewScreen wired to _reviewed: accepting
+    it forwards the new slug to the source screen. The dropped-callback mutant would leave the
+    source screen hanging (no dismiss)."""
+    src = _write(tmp_path, "report.awkish", "#!/usr/bin/awk -f\nBEGIN { print 1 }\n")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        captured: dict[str, str | None] = {}
+        modal = await _modal_for(app, pilot, src, captured)
+        modal.dismiss("exe")
+        await pilot.pause()
+        assert isinstance(app.screen, ExeReviewScreen)
+        app.screen.action_accept()
+        await pilot.pause()
+        await pilot.pause()
+    (entry,) = store.list_entries()
+    assert entry.meta.kind == "exe"
+    assert captured["result"] == entry.slug
+
+
+async def test_modal_pick_kind_dismisses_with_slug(tmp_path):
+    """Picking a language routes to AddReviewScreen(kind=picked) wired to _reviewed: accepting
+    forwards the slug. Pins the outer push_screen callback on the multi-line _kind_picked push."""
+    src = _write(tmp_path, "report.awkish", "#!/usr/bin/awk -f\nputs 1\n")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        captured: dict[str, str | None] = {}
+        modal = await _modal_for(app, pilot, src, captured)
+        modal.dismiss("ruby")
+        await pilot.pause()
+        assert isinstance(app.screen, AddReviewScreen)
+        assert app.screen._kind == "ruby"
+        app.screen.action_accept()
+        await pilot.pause()
+        await pilot.pause()
+    (entry,) = store.list_entries()
+    assert entry.meta.kind == "ruby"
+    assert captured["result"] == entry.slug
+
+
+async def test_modal_pick_prompt_dismisses_with_slug(tmp_path):
+    """Picking 'A prompt for an AI agent' routes to PromptReviewScreen wired to _reviewed:
+    accepting forwards the slug. Pins the callback on the modal-branch prompt push."""
+    src = _write(tmp_path, "report.awkish", "#!/usr/bin/awk -f\nSummarize {{url}}\n")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        captured: dict[str, str | None] = {}
+        modal = await _modal_for(app, pilot, src, captured)
+        modal.dismiss("prompt")
+        await pilot.pause()
+        assert isinstance(app.screen, PromptReviewScreen)
+        app.screen.action_accept()
+        await pilot.pause()
+        await pilot.pause()
+    (entry,) = store.list_entries()
+    assert entry.meta.kind == "prompt"
+    assert captured["result"] == entry.slug
+
+
+# ---------------------------------------------------------------------------
+# KindPickModal(filename, has_shebang=…): the question label
+# ---------------------------------------------------------------------------
+
+
+async def test_kind_pick_modal_label_names_the_file_and_shebang(tmp_path):
+    """An unclassifiable file WITH an unrecognized #! gets the shebang-variant question,
+    naming the file verbatim. Kills the filename=None arg, the dropped has_shebang kwarg
+    (defaults False → the wrong sentence), and the `is not None`->`is None` inversion."""
+    from textual.widgets import Label
+
+    src = _write(tmp_path, "report.awkish", "#!/usr/bin/awk -f\nBEGIN { print 1 }\n")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = await _mounted(app, pilot)
+        screen.query_one("#add-path", Input).value = str(src)
+        screen._submit_path()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, KindPickModal)
+        label = str(modal.query(Label).first().render())
+    assert label == "The #! in report.awkish names no interpreter skit knows. What is it?"
+
+
+async def test_kind_pick_modal_label_when_no_shebang(tmp_path):
+    """An unclassifiable file with NO shebang gets the can't-tell question (has_shebang False).
+    Kills the filename=None arg and the `is not None`->`is None` inversion the other way (a
+    no-#! file must not claim to have one)."""
+    from textual.widgets import Label
+
+    src = _write(tmp_path, "notes.dat", "just data\n")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = await _mounted(app, pilot)
+        screen.query_one("#add-path", Input).value = str(src)
+        screen._submit_path()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, KindPickModal)
+        label = str(modal.query(Label).first().render())
+    assert label == "What is notes.dat? skit can't tell from the name."

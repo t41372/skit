@@ -82,6 +82,42 @@ async def test_cli_framework_readable_shows_field_count_notice(tmp_path):
         )
 
 
+async def test_cli_framework_readable_two_fields_uses_plural_notice(tmp_path):
+    """Two argparse arguments the panel could read statically exercise the ngettext PLURAL
+    branch: '(2 fields)', still ending in the 'opens a form — nothing to memorize.' reassurance.
+    Pins the plural msgid and its 'opens a form…' tail (verbatim, not XX-wrapped/uppercased)."""
+    p = _py(
+        tmp_path,
+        "import argparse\nap = argparse.ArgumentParser()\n"
+        "ap.add_argument('--foo')\nap.add_argument('--bar')\nap.parse_args()\n",
+    )
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = await _review(app, pilot, p)
+        assert (
+            "✓ skit read this script's own arguments (2 fields). Running it "
+            "opens a form — nothing to memorize." in _statics_text(screen)
+        )
+
+
+# ---------------------------------------------------------------------------
+# the guard: spec present but NO analyzer capability → identity only, no ticks
+# ---------------------------------------------------------------------------
+
+
+async def test_analyzerless_kind_yields_no_parameters_section(tmp_path):
+    """A kind with a spec but NO analyzer (ruby) reviews identity only: _compose_params returns
+    BEFORE the 'Parameters' header. The `or`->`and` mutant stops short-circuiting on
+    spec-not-None and falls through to render the header — so no Static may read 'Parameters'."""
+    rb = _py(tmp_path, "puts 1\n", "t.rb")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = AddReviewScreen(rb, kind="ruby")
+        app.push_screen(screen)
+        await pilot.pause()
+        assert not any(str(w.render()) == "Parameters" for w in screen.query(Static))
+
+
 # ---------------------------------------------------------------------------
 # uses_cli_framework, spec NOT modellable (passthrough hint)
 # ---------------------------------------------------------------------------

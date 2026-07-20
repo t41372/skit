@@ -52,3 +52,19 @@ def test_shebang_reads_only_first_512_bytes(tmp_path: Path):
     """
     p = _write(tmp_path, "s", b"#!" + b"x" * 600 + b"\n")
     assert reg.shebang_program(p) == "x" * 510
+
+
+# ---- shebang_program_from_line: the path-less half, called directly ---------------
+
+
+def test_shebang_from_line_strips_exactly_the_bang_prefix():
+    """``line[2:]`` drops exactly ``#!`` — one byte more (``line[3:]``) would read a
+    no-space ``#!python3`` shebang as ``ython3``. Direct call, no file needed."""
+    assert reg.shebang_program_from_line("#!python3") == "python3"
+
+
+def test_shebang_from_line_skips_env_dash_flags():
+    """``#!/usr/bin/env -S deno run`` names deno: the ``-S`` (and any leading-dash token)
+    is skipped by ``not tok.startswith("-")``. Mutating the prefix to a never-matching
+    string would take ``-S`` itself as the program."""
+    assert reg.shebang_program_from_line("#!/usr/bin/env -S deno run --allow-net") == "deno"

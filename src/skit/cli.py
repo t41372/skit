@@ -3458,7 +3458,7 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
     self_locating = False  # pragma: no mutate — =None is a true equivalent (falsy, read only via `if self_locating`); the also-suppressed =True is observable only on paths that skip the analyze block (no analyzer / vanished text)
     reader_driven = False  # pragma: no mutate — =None is a true equivalent (falsy, read only through the or-chain below); the also-suppressed =True is observable solely on an analyzer kind whose stored file vanished
     ref_mode = entry.meta.mode == "reference"
-    if entry_spec is not None and entry_spec.analyzer is not None and text:
+    if entry_spec is not None and entry_spec.analyzer is not None and text:  # pragma: no mutate — the `and text` third operand is a true equivalent: text is non-empty only when an analyzable file was read, and params_io is not None iff analyzer is not None (registry invariant), so `or text` diverges only on empty text — where analyze/reconcile/reader_fields are all no-ops — leaving reader_driven/unmanaged/self_locating at their initial values, so output is identical  # fmt: skip
         # BOTH modes: the text is readable either way, and a reference entry deserves
         # the same honest read (its reader form runs fine; its candidates are real —
         # only the WRITE ops differ, and the advice below switches voice on that).

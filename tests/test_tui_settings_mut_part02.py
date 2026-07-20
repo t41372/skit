@@ -12,9 +12,9 @@ text can't hide from the lookup.
 from __future__ import annotations
 
 import pytest
-from textual.widgets import Input, Static
+from textual.widgets import Checkbox, Input, Static
 
-from skit import i18n, store, tui
+from skit import i18n, store, tui, tui_settings
 from skit.tui_settings import ScriptSettingsScreen
 
 
@@ -38,6 +38,12 @@ def _exe(tmp_path, name: str = "prog"):
     tool.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
     tool.chmod(0o755)
     return store.add_exe(tool, name=name)
+
+
+def _prompt_md(tmp_path, text: str = "Do {{a}}\n", name: str = "p"):
+    p = tmp_path / f"{name}.prompt.md"
+    p.write_text(text, encoding="utf-8")
+    return p
 
 
 def _body(screen) -> str:
@@ -103,7 +109,8 @@ async def test_declared_editor_exe_has_no_template_line(tmp_path):
         pilot.app.push_screen(screen)
         await pilot.pause()
         assert screen.query("#st-add-param")  # the declared editor is what's showing
-        assert "ZZZ-TEMPLATE-SENTINEL" not in _body(screen)  # but never the template line
+        assert not screen.query("#st-template")  # the template Input never composes (kills and->or)
+        assert "ZZZ-TEMPLATE-SENTINEL" not in _body(screen)  # nor its value anywhere
 
 
 # ---------------------------------------------------------------------------
@@ -184,3 +191,81 @@ async def test_compose_needs_header_value_and_placeholder(tmp_path):
 
         assert needs_input.value == "ffmpeg, jq"  # kills the "XX, XX" separator
         assert needs_input.placeholder == "comma separated, e.g. ffmpeg, jq"  # kills drop/XX/upper
+
+
+# ---------------------------------------------------------------------------
+# _compose_declared_editor: the prompt branch (interpolate master switch, the
+# insertion-off hint, and the show_flag forwarded to the revealable body)
+# ---------------------------------------------------------------------------
+
+
+async def test_prompt_declared_editor_toggle_off_hint_and_show_flag_forwarding(
+    tmp_path, monkeypatch
+):
+    """A prompt entry's declared editor: the master interpolate Checkbox keeps its exact
+    label, the "insertion off" hint keeps its exact copy + hint class, and the prompt
+    branch forwards show_flag (False for prompts, since placeholder_params is True) into
+    the revealable body — passed, never nulled."""
+    entry = store.add_prompt(_prompt_md(tmp_path), name="p")
+    seen: dict[str, object] = {}
+    real_fields = ScriptSettingsScreen._compose_declared_fields
+
+    def spy(self, show_flag):
+        seen["show_flag"] = show_flag
+        yield from real_fields(self, show_flag)
+
+    monkeypatch.setattr(ScriptSettingsScreen, "_compose_declared_fields", spy)
+    async with tui.MenuApp().run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+
+        toggle = screen.query_one("#st-interpolate", Checkbox)
+        # exact label (kills dropped label / XX-wrap / lower / upper)
+        assert str(toggle.label) == "Variable insertion ({{name}} placeholders become form fields)"
+
+        off = screen.query_one("#st-interpolate-off", Static)
+        # exact copy (kills dropped text / XX-wrap / lower / upper)
+        assert str(off.render()).strip() == (
+            "Off — the body travels to the agent exactly as written."
+        )
+        assert off.has_class("hint")  # kills classes None / drop / XXhintXX / HINT
+
+    # the prompt branch forwarded show_flag itself (False), never None
+    assert seen["show_flag"] is False
+
+
+async def test_prompt_body_read_error_static_is_built_with_markup(tmp_path, monkeypatch):
+    """When the body read fails, the error line is a Static built with markup=True so its
+    [red] wrapper renders as colour, not literal text. Both the rendered output AND the
+    explicit markup=True kwarg (via a Static spy) are pinned, so =None/=False and the
+    dropped-kwarg fallback all die."""
+    entry = store.add_prompt(_prompt_md(tmp_path), name="p")
+
+    def boom(_path):
+        raise PermissionError("permission changed")
+
+    monkeypatch.setattr("skit.tui_settings.prompt_text.read", boom)
+
+    seen: dict[str, object] = {}
+    real_static = tui_settings.Static
+
+    class RecStatic(real_static):
+        def __init__(self, *args, **kwargs):
+            if kwargs.get("id") == "st-prompt-text-error":
+                seen["markup"] = kwargs.get("markup", "ABSENT")
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(tui_settings, "Static", RecStatic)
+    async with tui.MenuApp().run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        pilot.app.push_screen(screen)
+        await pilot.pause()
+        rendered = str(screen.query_one("#st-prompt-text-error", Static).render())
+        assert "permission changed" in rendered  # the real error text is shown
+        assert (
+            "[red]" not in rendered
+        )  # markup rendered as colour, not literal (kills =None/=False)
+
+    # markup=True was passed explicitly (kills =None, =False, and the dropped kwarg default)
+    assert seen["markup"] is True

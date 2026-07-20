@@ -372,7 +372,7 @@ def shebang_program(path: Path) -> str | None:
             first = f.readline(512)
     except OSError:
         return None
-    return shebang_program_from_line(first.decode("utf-8", errors="replace"))
+    return shebang_program_from_line(first.decode("utf-8", errors="replace"))  # pragma: no mutate — bytes.decode() defaults to utf-8 and codec names are case-insensitive, so dropping the "utf-8" positional / upper-casing it are true equivalents; unpatchable (bytes.decode is a C builtin) so not forwarding-testable. The errors="replace" contract stays pinned by test_shebang_invalid_utf8_replaces_and_stays_total.  # fmt: skip
 
 
 def shebang_program_from_line(line: str) -> str | None:

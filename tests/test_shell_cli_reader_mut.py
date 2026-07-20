@@ -66,3 +66,16 @@ def test_bool_flag_shape_from_a_bare_letter():
     fs = fields('while getopts "n:v" opt; do :; done\n')
     assert (fs["v"].type, fs["v"].action, fs["v"].default) == ("bool", "store_true", False)
     assert (fs["n"].type, fs["n"].action) == ("str", "")
+
+
+def _root(src):
+    return sc.Parser(sc._LANGUAGE).parse(src.encode("utf-8")).root_node
+
+
+def test_find_getopts_dynamic_optstring_returns_empty_literal_marker():
+    # A non-literal first argument (`getopts "$OPTS" opt`) is DETECTED but dynamic: the finder
+    # returns exactly ("", False). read_cli discards the string once literal is False (it just
+    # reports reason="dynamic"), so the empty-string marker is only observable by calling the
+    # finder directly — pin it, or the ("", False) -> ("XXXX", False) mutant slips through.
+    got = sc._find_getopts_optstring(_root('while getopts "$OPTS" opt; do :; done\n'))
+    assert got == ("", False)

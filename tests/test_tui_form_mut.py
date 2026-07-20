@@ -15,7 +15,7 @@ from typing import override
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.widgets import Checkbox, Input, OptionList, RadioButton, Static
+from textual.widgets import Checkbox, Input, OptionList, RadioButton, Select, Static
 
 from skit import argstate, config, flows, i18n, launcher, store, tui, tui_form
 from skit.langs.python import metawriter
@@ -349,3 +349,88 @@ async def test_save_preset_strips_secret_values_from_disk(tmp_path, quiet_run):
                 break
         preset = argstate.load_state(entry.slug)["presets"]["vault"]
         assert "API_KEY" not in preset  # secret_names kept the secret off disk
+
+
+async def test_save_preset_field_less_warns_with_exact_message_and_severity(
+    tmp_path, quiet_run, monkeypatch
+):
+    """A field-less form has nothing to save: Ctrl+S refuses with the CLI's exact sentence
+    at WARNING severity (not information, not None, not a dropped kwarg) and opens no modal.
+    The notify call is captured whole so the exact msgid AND severity are both pinned."""
+    store.add_command("echo hi", name="noargs")
+    entry = store.resolve("noargs")
+    plan = flows.plan_for_entry(entry)
+    assert plan.fields == []  # truly field-less
+    calls: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        RunFormScreen, "notify", lambda self, message, **kw: calls.append((message, kw))
+    )
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = RunFormScreen(entry, plan, {})
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.action_save_preset()
+        await pilot.pause()
+        assert app.screen is screen  # no modal opened
+    assert calls == [
+        ("noargs has no form fields, so there's nothing to save.", {"severity": "warning"})
+    ]
+
+
+async def test_save_preset_saved_notify_carries_information_severity(
+    tmp_path, quiet_run, monkeypatch
+):
+    """The save confirmation toast is the exact sentence at INFORMATION severity. Capturing
+    the notify call (not the rendered toast) pins the severity kwarg was passed explicitly —
+    a dropped kwarg would fall back to the same default and hide otherwise."""
+    _argparse_entry(tmp_path)
+    calls: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        RunFormScreen, "notify", lambda self, message, **kw: calls.append((message, kw))
+    )
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.action_run()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        rows = {r.field.key: r for r in screen.query(FieldRow)}
+        rows["output"].query_one(Input).value = "keep.png"
+        screen.action_save_preset()
+        await pilot.pause()
+        app.screen.query_one(Input).value = "web"
+        await pilot.press("enter")
+        for _ in range(20):
+            await pilot.pause()
+            if calls:
+                break
+    assert calls == [('Preset "web" saved.', {"severity": "information"})]
+
+
+async def test_first_preset_save_mounts_select_with_last_values_row_and_no_blank(
+    tmp_path, quiet_run
+):
+    """The first save swaps the empty-state hint for a real dropdown whose leading row is
+    skit's localized "↩ last values" restore option (exact copy) and whose allow_blank is
+    False — no synthetic NoSelection row rides in."""
+    entry = _argparse_entry(tmp_path)
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = RunFormScreen(entry, plan=flows.plan_for_entry(entry), prefill={})
+        app.push_screen(screen)
+        await pilot.pause()
+        assert screen.query("#preset-empty")  # empty-state hint is showing
+        screen.action_save_preset()
+        await pilot.pause()
+        app.screen.query_one(Input).value = "web"
+        await pilot.press("enter")
+        for _ in range(20):
+            await pilot.pause()
+            if screen.query("#preset-select"):
+                break
+        select = screen.query_one("#preset-select", Select)
+        # the localized "last values" restore row leads the options, verbatim (kills XX / case)
+        assert select._options[0] == ("↩ last values", "")
+        # allow_blank stays False — no synthetic NoSelection row (kills None / True / dropped)
+        assert select._allow_blank is False

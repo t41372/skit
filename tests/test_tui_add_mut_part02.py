@@ -131,3 +131,47 @@ async def test_deps_hint_label(tmp_path):
         app.push_screen(screen)
         await pilot.pause()
         assert _has_static(screen, "detected from the script's imports — edit freely", "hint")
+
+
+# ---------------------------------------------------------------------------
+# npm-flavor deps: the #rv-deps Input placeholder + the detected-imports hint
+# ---------------------------------------------------------------------------
+
+
+async def test_npm_deps_input_placeholder_and_hint(tmp_path):
+    """A js (npm-flavor) add renders the deps Input with the npm example placeholder and the
+    detected-imports hint below it — the npm branch's own copy, verbatim and classed .hint."""
+    p = _py(tmp_path, "const x = 1\n", "w.js")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = AddReviewScreen(p, kind="js")
+        app.push_screen(screen)
+        await pilot.pause()
+        field = screen.query_one("#rv-deps", Input)
+        assert field.placeholder == "comma separated, e.g. chalk, @scope/pkg"
+        assert _has_static(screen, "detected from the script's imports — edit freely", "hint")
+
+
+# ---------------------------------------------------------------------------
+# uv-flavor requires-python: the #rv-python Input placeholder + its guidance hint
+# ---------------------------------------------------------------------------
+
+
+async def test_uv_requires_python_input_placeholder_and_hint(tmp_path):
+    """A python add with no PEP 723 block mounts the editable #rv-python field: its placeholder
+    reads '(automatic)' and the guidance hint below it explains the #!-line prefill — both
+    verbatim, the hint classed .hint."""
+    p = _py(tmp_path, "print(1)\n", "s.py")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = AddReviewScreen(p)
+        app.push_screen(screen)
+        await pilot.pause()
+        field = screen.query_one("#rv-python", Input)
+        assert field.placeholder == "(automatic)"
+        assert _has_static(
+            screen,
+            "Python version (requires-python) — prefilled from the #! line when "
+            "it pins one; empty means automatic",
+            "hint",
+        )

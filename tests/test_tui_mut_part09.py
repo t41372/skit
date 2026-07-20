@@ -20,6 +20,7 @@ from skit import argstate, config, launcher, store, tui
 from skit.langs.python import metawriter
 from skit.params import ParamDecl
 from skit.tui_form import FieldRow, RunFormScreen
+from skit.tui_runner import RunnerAddModal
 
 
 @pytest.fixture(autouse=True)
@@ -65,6 +66,7 @@ def quiet_run(monkeypatch):
         calls["extra"] = list(extra_args or [])
         calls["values"] = dict(values or {})
         calls["override"] = script_override
+        calls["runner"] = runner
         return calls.get("code", 0)
 
     monkeypatch.setattr(launcher, "run_entry", fake_run)
@@ -350,6 +352,9 @@ async def test_run_without_fields_opens_the_form_with_visible_extra_args(tmp_pat
         await pilot.pause()
         await pilot.pause()
     assert quiet_run["extra"] == ["--foo", "bar"]
+    # A non-prompt run resolves NO runner: _submitted seeds `runner = None` (not ""), and
+    # that None flows untouched to the launch (kills the `runner = None` -> `""` mutant).
+    assert quiet_run["runner"] is None
 
 
 async def test_run_form_prefills_from_this_slugs_saved_values(tmp_path, quiet_run):
@@ -386,6 +391,54 @@ async def test_run_form_submit_marks_drift_already_shown(tmp_path):
         pending = app.return_value
         assert isinstance(pending, tui.PendingRun)
         assert pending.show_drift is False
+
+
+def _prompt(tmp_path, text: str = "Do {{a}}\n", name: str = "p"):
+    p = tmp_path / f"{name}.prompt.md"
+    p.write_text(text, encoding="utf-8")
+    return store.add_prompt(p, name=name)
+
+
+async def test_run_prompt_zero_runners_dismiss_shows_exact_message(tmp_path, quiet_run):
+    """A prompt with an emptied runner list opens the New-agent modal instead of dead-ending;
+    dismissing it lands the exact honest status (not a substring — the XX-msgid and
+    lower-case mutants embed/contain it, so only the whole sentence catches them)."""
+    _prompt(tmp_path)
+    config.save_prompt_runners([])
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.action_run()
+        await pilot.pause()
+        assert isinstance(app.screen, RunnerAddModal)  # offered, not dead-ended
+        await pilot.press("escape")  # dismissed -> _runner_added(None)
+        await pilot.pause()
+        status = _status_text(app)
+    assert status == "A prompt needs a configured agent to run with."
+    assert "runner" not in quiet_run  # nothing launched
+
+
+async def test_run_prompt_runner_removed_mid_flight_shows_exact_error(tmp_path, quiet_run):
+    """The pinned runner is yanked from config while the form is open: submit reports the
+    exact wrapped error and launches nothing. Pinning the WHOLE 'Error: The runner is no
+    longer configured.' kills both the outer 'Error: %(error)s' and the inner sentence's
+    XX-msgid / case mutants that a 'no longer configured' substring check would survive."""
+    entry = _prompt(tmp_path)
+    store.write_prompt_runner(entry.slug, "codex")  # pin a configured runner
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.action_run()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        screen.query_one(Input).value = "x"
+        config.save_prompt_runners([])  # yanked while the form was open
+        screen.action_submit()
+        await pilot.pause()
+        status = _status_text(app)
+    assert status == "Error: The runner is no longer configured."
+    assert "runner" not in quiet_run  # nothing launched
 
 
 # ---------------------------------------------------------------------------

@@ -202,10 +202,11 @@ def test_collect_values_inline_receives_real_entry_plan_prefill(monkeypatch):
     plan = flows.plan_for_entry(ent)
     seen: dict[str, object] = {}
 
-    def fake_collect(entry, plan_, prefill, runners=None, runner_default=""):
+    def fake_collect(entry, plan_, prefill, runners=None, runner_default="SENTINEL"):
         seen["entry"] = entry
         seen["plan"] = plan_
         seen["prefill"] = prefill
+        seen["runner_default"] = runner_default
         return {"msg": "v"}, None, False
 
     monkeypatch.setattr(inlineform, "collect", fake_collect)
@@ -215,6 +216,9 @@ def test_collect_values_inline_receives_real_entry_plan_prefill(monkeypatch):
     assert seen["entry"] is ent
     assert seen["plan"] is plan
     assert seen["prefill"] is prefill
+    # _collect_values' own runner_default default is the empty string; called without it, the
+    # inline renderer must receive "" (kills the `runner_default: str = "XXXX"` default mutant).
+    assert seen["runner_default"] == ""
 
 
 def test_collect_values_plain_forwards_module_console(monkeypatch):

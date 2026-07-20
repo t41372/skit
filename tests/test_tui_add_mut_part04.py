@@ -261,3 +261,255 @@ async def test_edit_source_rescans_non_utf8_original_with_replace(tmp_path, monk
         screen.action_edit_source()  # must not raise
         await pilot.pause()
         assert "�" in screen._text  # the bad byte decoded via the replacement char
+
+
+def _capture_toasts(monkeypatch):
+    """Capture every (message, severity) the screen toasts through the app."""
+    toasts: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        tui.MenuApp,
+        "notify",
+        lambda self, message, **kw: toasts.append((str(message), str(kw.get("severity")))),
+    )
+    return toasts
+
+
+# ---------------------------------------------------------------------------
+# action_accept — refuse a Ctrl+S while the source text is unreadable
+# ---------------------------------------------------------------------------
+
+
+async def test_accept_refuses_when_source_unreadable(tmp_path, monkeypatch):
+    """A panel whose source couldn't be read must refuse Ctrl+S: it toasts the exact read
+    error at severity 'error' and stores nothing (never a half-known entry). Kills notify(None),
+    the nulled/garbled/omitted severity, and would catch a dropped early return."""
+    toasts = _capture_toasts(monkeypatch)
+    bad = tmp_path / "adir"
+    bad.mkdir()  # reading a directory raises OSError → __init__ records _text_error
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = AddReviewScreen(bad)
+        app.push_screen(screen)
+        await pilot.pause()
+        assert screen._text_error  # the panel opened in the read-error state
+        expected = screen._text_error
+        screen.action_accept()
+        await pilot.pause()
+    assert toasts == [(expected, "error")]
+    assert store.list_entries() == []  # nothing stored
+
+
+# ---------------------------------------------------------------------------
+# action_edit_source — the rescan read-error path (distinct from the editor-launch error)
+# ---------------------------------------------------------------------------
+
+
+async def test_edit_source_rescan_read_error_toasts_and_records(tmp_path, monkeypatch):
+    """When the post-edit rescan can't read the file, the panel records the exact 'Can't read
+    <path>: <error>' message and toasts it at severity 'error'. The error text comes from
+    ``exc.strerror or str(exc)``; forcing a strerror-less OSError('boom') pins that the message
+    is the exception text, not 'None' (the ``or``->``and`` and ``str(None)`` mutants), and pins
+    the msgid, the notify target and the severity."""
+    from pathlib import Path
+
+    monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: contextlib.nullcontext())
+    toasts = _capture_toasts(monkeypatch)
+    state = {"raise": False}
+    real_read = Path.read_text
+
+    def fake_read(self, *a, **k):
+        if state["raise"]:
+            raise OSError("boom")  # strerror is None → falls back to str(exc) == "boom"
+        return real_read(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", fake_read)
+
+    def fake_open(path):
+        state["raise"] = True  # the very next read (the rescan) fails
+
+    monkeypatch.setattr("skit.tui_add.editor.open_in_editor", fake_open)
+    p = _py(tmp_path, "print(1)\n", "s.py")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = AddReviewScreen(p)
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.action_edit_source()
+        state["raise"] = False  # let the recompose read normally
+        await pilot.pause()
+        recorded = screen._text_error
+    assert recorded == f"Can't read {p}: boom"
+    assert (f"Can't read {p}: boom", "error") in toasts
+
+
+async def test_edit_source_clears_text_error_on_clean_rescan(tmp_path, monkeypatch):
+    """A rescan that reads cleanly resets ``_text_error`` to the empty string (never None): the
+    panel returns to a no-error state so Ctrl+S is unblocked."""
+    _quiet_editor(monkeypatch)
+    p = _py(tmp_path, "print(1)\n", "s.py")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = AddReviewScreen(p)
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.action_edit_source()
+        await pilot.pause()
+        assert screen._text_error == ""  # cleared to "", not None
+
+
+# ---------------------------------------------------------------------------
+# action_edit_source — the python-pin typed-wins rule and tick survival
+# ---------------------------------------------------------------------------
+
+
+async def test_edit_source_python_typed_wins_over_auto_pin(tmp_path, monkeypatch):
+    """A versioned shebang auto-fills requires-python, but a value the user typed into #rv-python
+    must win over that auto pin across the edit→rescan (the typed override survives, and the auto
+    pin no longer overwrites it)."""
+    _quiet_editor(monkeypatch)
+    p = _py(tmp_path, "#!/usr/bin/env python3.12\nprint(1)\n", "pinned.py")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = AddReviewScreen(p)
+        app.push_screen(screen)
+        await pilot.pause()
+        assert screen.query_one("#rv-python", Input).value == ">=3.12,<3.13"  # auto pin
+        screen.query_one("#rv-python", Input).value = ">=3.10"
+        await pilot.pause()
+        screen.action_edit_source()
+        await pilot.pause()
+        assert screen.query_one("#rv-python", Input).value == ">=3.10"  # the typed value won
+
+
+async def test_edit_source_tick_override_survives_rescan(tmp_path, monkeypatch):
+    """A candidate the user unticked keeps that decision across the edit→rescan recompose (the
+    name-keyed tick_overrides), so a rescan of unchanged text never silently re-ticks it."""
+    _quiet_editor(monkeypatch)
+    p = _py(tmp_path, "CITY = 'x'\nprint(CITY)\n", "c.py")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = AddReviewScreen(p)
+        app.push_screen(screen)
+        await pilot.pause()
+        assert screen.query_one("#rv-cand-0", Checkbox).value is True  # ticked by default
+        screen.query_one("#rv-cand-0", Checkbox).value = False
+        await pilot.pause()
+        screen.action_edit_source()
+        await pilot.pause()
+        assert screen.query_one("#rv-cand-0", Checkbox).value is False  # decision survived
+
+
+# ---------------------------------------------------------------------------
+# _collected_python — the '-'/'none' → "" automatic token
+# ---------------------------------------------------------------------------
+
+
+async def test_collected_python_none_token_means_automatic(tmp_path):
+    """The #rv-python field collects verbatim, except the CLI's automatic tokens: '-' and any
+    case of 'none' collapse to "" (automatic). Kills the .upper() case-fold and both 'none'
+    garbles, and pins that a real constraint passes through."""
+    p = _py(tmp_path, "print(1)\n", "s.py")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = AddReviewScreen(p)
+        app.push_screen(screen)
+        await pilot.pause()
+        field = screen.query_one("#rv-python", Input)
+        field.value = "none"
+        assert screen._collected_python() == ""
+        field.value = "NONE"
+        assert screen._collected_python() == ""
+        field.value = "-"
+        assert screen._collected_python() == ""
+        field.value = ">=3.13"
+        assert screen._collected_python() == ">=3.13"  # a real constraint is kept verbatim
+
+
+# ---------------------------------------------------------------------------
+# _collected_deps — the npm vs uv split branches
+# ---------------------------------------------------------------------------
+
+
+async def test_collected_deps_uv_splits_on_the_pep723_grammar(tmp_path):
+    """A python (uv) entry collects deps through the PEP 508-aware splitter, so a single
+    requirement carrying an internal comma (requests>=2,<3) stays one item."""
+    p = _py(tmp_path, "print(1)\n", "s.py")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = AddReviewScreen(p)
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.query_one("#rv-deps", Input).value = "requests>=2,<3, rich"
+        assert screen._collected_deps() == ["requests>=2,<3", "rich"]
+
+
+async def test_collected_deps_npm_splits_on_the_npm_grammar(tmp_path):
+    """A js (npm) entry collects deps through the npm splitter — a scoped package name and a
+    plain one, comma separated."""
+    js = tmp_path / "w.js"
+    js.write_text("const x = 1\n", encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = AddReviewScreen(js, kind="js")
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.query_one("#rv-deps", Input).value = "chalk, @scope/pkg"
+        assert screen._collected_deps() == ["chalk", "@scope/pkg"]
+
+
+# ---------------------------------------------------------------------------
+# _store_entry — non-python interpreter-from-shebang, description, npm update gate
+# ---------------------------------------------------------------------------
+
+
+async def test_store_entry_records_empty_interpreter_for_unregistered_shebang(tmp_path):
+    """The recorded interpreter is the shebang's program ONLY when that program is one the kind
+    knows (`spec is not None and program in spec.shebangs`). An unregistered program (customruby,
+    not in ruby's shebangs) records "" — the ``and``->``or`` mutant would record 'customruby'
+    instead. The typed description also lands (kills description=None / dropped kwarg)."""
+    rb = tmp_path / "tool.rb"
+    rb.write_text("#!/usr/bin/env customruby\nputs 1\n", encoding="utf-8")  # no leading comment
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = AddReviewScreen(rb, kind="ruby")
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.query_one("#rv-name", Input).value = "rubytool"
+        screen.query_one("#rv-desc", Input).value = "does a ruby thing"
+        await pilot.pause()
+        screen.action_accept()
+        await pilot.pause()
+    entry = store.resolve("rubytool")
+    assert entry.meta.kind == "ruby"
+    assert entry.meta.interpreter == ""  # unregistered program → the kind's default runner
+    assert entry.meta.description == "does a ruby thing"  # typed desc, not the (empty) extract
+
+
+async def test_store_entry_npm_reference_records_no_dependencies(tmp_path, monkeypatch):
+    """The deps→copy update gate (`deps and mode == "copy"`) must NOT fire on a reference add:
+    an npm reference records nothing (its script lives in its own project). The ``and``->``or``
+    mutant fires update_dependencies on the reference entry — npm reference is refused loudly, so
+    the add errors out instead of completing. Pinned by the clean dismiss + no error toast (the
+    reference entry is created by add_script either way, so entry count alone can't tell them
+    apart)."""
+    toasts = _capture_toasts(monkeypatch)
+    js = tmp_path / "ref.js"
+    js.write_text('import express from "express"\nconsole.log(1)\n', encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        captured: dict[str, str | None] = {}
+        screen = AddReviewScreen(js, kind="js")
+        app.push_screen(screen, lambda v: captured.__setitem__("result", v))
+        await pilot.pause()
+        assert screen.query_one("#rv-deps", Input).value  # scanned deps are present in the field
+        list(screen.query_one("#rv-mode", RadioSet).query(RadioButton))[1].value = True  # link it
+        await pilot.pause()
+        assert screen.query_one("#rv-mode", RadioSet).pressed_index == 1
+        screen.action_accept()
+        await pilot.pause()
+        await pilot.pause()
+    (entry,) = store.list_entries()
+    assert entry.meta.mode == "reference"
+    assert entry.meta.dependencies is None  # nothing recorded on the reference
+    assert captured["result"] == entry.slug  # accept completed and dismissed (no update failure)
+    assert toasts == []  # no error toast — update_dependencies was never called

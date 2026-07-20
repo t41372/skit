@@ -10,15 +10,17 @@ or the exact user-facing wording — never that a line merely ran.
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
 import sys
 import types
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
-from skit import argstate, cli, config, store
+from skit import argstate, cli, config, i18n, store
 from skit.langs.registry import spec_for
 
 runner = CliRunner()
@@ -919,6 +921,133 @@ def test_onboard_script_params_offers_candidates_when_reader_unmodeled(tmp_path,
     managed = cli._onboard_script_params(entry, _spec("shell"), no_input=False)
     assert calls["n"] == 1  # the candidate offer was reached — a dynamic optstring is not modeled
     assert managed == ["OUTDIR"]  # candidate #1 managed on top of the passthrough form
+
+
+# ---- _onboard_script_params: the exact candidate listing, numbering and prompt ------------
+
+
+def _two_const_shell(tmp_path):
+    return _shell(
+        tmp_path,
+        body='#!/usr/bin/env bash\nWIDTH=800\nHEIGHT=600\necho "$WIDTH $HEIGHT"\n',
+        name="d",
+    )
+
+
+def test_onboard_script_params_plural_listing_numbering_and_prompt(tmp_path, monkeypatch, capsys):
+    """Two candidates: the plural header, 1-based numbering, and the exact ask (text/default/
+    console) are all pinned. Kills the ngettext-plural string mutants, the `console.print(None)`
+    arg-drop, the `enumerate(..., start=1)` / `_print_candidate(i, …)` numbering mutants, and every
+    nulled/dropped Prompt.ask argument (prompt text, default, console)."""
+    i18n.init("en")
+    _two_const_shell(tmp_path)
+    _fake_tty(monkeypatch)
+    ask_args: list[tuple[object, ...]] = []
+    ask_kwargs: list[dict[str, object]] = []
+
+    def spy_ask(*args, **kwargs):
+        ask_args.append(args)
+        ask_kwargs.append(kwargs)
+        return "none"  # decline, so nothing is written — this test only reads the prompt surface
+
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(spy_ask))
+    assert cli._onboard_script_params(store.resolve("d"), _spec("shell"), no_input=False) == []
+    out = capsys.readouterr().out
+    # plural header (kills the console.print(None) arg-drop and the plural-msgid case-flip); the
+    # XX-wrap can't move the visible substring, so pin it separately.
+    assert "Found 2 parameter candidates (constants / input() calls):" in out
+    assert "XX" not in out
+    # 1-based numbering AND the right candidate per row (kills start=0 / start=2 / _print_candidate
+    # index-null): row 1 is WIDTH, row 2 is HEIGHT.
+    assert "  1. WIDTH" in out
+    assert "  2. HEIGHT" in out
+    # exactly one ask, with the exact prompt text, default and skit's own console.
+    assert ask_args == [("Which ones should skit manage? (e.g. 1,3 / all / none)",)]
+    assert ask_kwargs[0].get("default") == "all"  # both candidates clean -> "all"
+    assert ask_kwargs[0].get("console") is cli.console
+
+
+def test_onboard_script_params_singular_listing_copy(tmp_path, monkeypatch, capsys):
+    """One candidate selects the SINGULAR ngettext form; pin its exact text (kills the singular
+    XX-wrap and case-flip)."""
+    i18n.init("en")
+    _shell(tmp_path, body='#!/usr/bin/env bash\nWIDTH=800\necho "$WIDTH"\n', name="d")
+    _fake_tty(monkeypatch)
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: "none"))
+    assert cli._onboard_script_params(store.resolve("d"), _spec("shell"), no_input=False) == []
+    out = capsys.readouterr().out
+    assert "Found 1 parameter candidate (constants / input() calls):" in out
+    assert "parameter candidates" not in out  # the singular msgid was chosen, not the plural
+    assert "XX" not in out
+
+
+def test_onboard_script_params_or_guard_returns_early_without_analyzer(tmp_path, monkeypatch):
+    """The `analyzer is None OR params_io is None` guard must short-circuit on the FIRST truthy
+    half: a spec whose analyzer is None (but params_io intact) returns [] and never touches
+    `analyzer.analyze`. The `and` mutant would fall through and crash on None.analyze."""
+    _shell(tmp_path, name="d")
+    _fake_tty(monkeypatch)
+    faceless = dataclasses.replace(_spec("shell"), analyzer=None)  # analyzer None, params_io kept
+    assert cli._onboard_script_params(store.resolve("d"), faceless, no_input=False) == []
+
+
+def test_onboard_script_params_forwards_entry_name_to_add_hints(tmp_path, monkeypatch):
+    """The add-hints call must carry the ENTRY's name (the filename-literal hint prints
+    `skit edit <name>`); a nulled name argument would advertise `skit edit None`."""
+    entry = _shell(tmp_path, name="d")
+    _fake_tty(monkeypatch)
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(cli, "_print_add_hints", lambda result, name: seen.update(name=name))
+    # no_input=True returns right after the hints print, so the forwarding is still observed.
+    assert cli._onboard_script_params(entry, _spec("shell"), no_input=True) == []
+    assert seen["name"] == entry.meta.name
+
+
+def test_onboard_script_params_reference_forwards_frameworks_to_notice(tmp_path, monkeypatch):
+    """A reference-mode entry prints the reference add-notice with the REAL detected frameworks
+    list (not None): pin the third argument so the nulled-frameworks mutant dies."""
+    src = tmp_path / "d.sh"
+    src.write_text("#!/usr/bin/env bash\necho hi\n", encoding="utf-8")
+    entry = store.add_script(src, kind="shell", name="d", mode="reference")
+    text = entry.script_path.read_text(encoding="utf-8")
+    expected_fw = _spec("shell").analyzer.analyze(text).frameworks
+    _fake_tty(monkeypatch)
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(
+        cli, "_print_reference_add_notice", lambda spec, txt, fw: seen.update(fw=fw)
+    )
+    assert cli._onboard_script_params(entry, _spec("shell"), no_input=False) == []
+    assert seen["fw"] == expected_fw
+    assert seen["fw"] is not None  # the nulled-frameworks mutant passes None
+
+
+def test_onboard_script_params_reads_and_writes_the_copy_as_utf8(tmp_path, monkeypatch):
+    """Both stored-copy reads (analyzer input + write-back) and the write use encoding="utf-8",
+    errors="replace" — pinning the literal codec/handler strings kills every encoding=None/UTF-8
+    and errors=None/REPLACE call-argument mutant on the read and write."""
+    _two_const_shell(tmp_path)
+    entry = store.resolve("d")  # resolve before spying, so only the copy read/write are captured
+    _fake_tty(monkeypatch)
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: "1"))  # pick one -> writes
+    reads: list[dict[str, object]] = []
+    writes: list[dict[str, object]] = []
+    real_read = Path.read_text
+    real_write = Path.write_text
+
+    def read_spy(self, encoding=None, errors=None, *a, **k):
+        reads.append({"encoding": encoding, "errors": errors})
+        return real_read(self, *a, encoding=encoding, errors=errors, **k)
+
+    def write_spy(self, data, encoding=None, errors=None, *a, **k):
+        writes.append({"encoding": encoding, "errors": errors})
+        return real_write(self, data, *a, encoding=encoding, errors=errors, **k)
+
+    monkeypatch.setattr(Path, "read_text", read_spy)
+    monkeypatch.setattr(Path, "write_text", write_spy)
+    assert cli._onboard_script_params(entry, _spec("shell"), no_input=False) == ["WIDTH"]
+    assert [r["encoding"] for r in reads] == ["utf-8", "utf-8"]  # analyzer read + write-back read
+    assert [r["errors"] for r in reads] == ["replace", "replace"]
+    assert [w["encoding"] for w in writes] == ["utf-8"]  # the single copy write
 
 
 # ============================================================ run --forget-args

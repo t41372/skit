@@ -168,7 +168,7 @@ class PreferencesScreen(Screen[bool]):
 
     def _refresh_runner_count(self) -> None:
         names = [r.name for r in config.load_prompt_runners()]
-        self.query_one("#pf-runner-count", Static).update(
+        self.query_one("#pf-runner-count", Static).update(  # pragma: no mutate — id fixes the type
             ngettext(
                 "%(count)s agent configured: %(names)s",
                 "%(count)s agents configured: %(names)s",
@@ -352,7 +352,7 @@ class PreferencesScreen(Screen[bool]):
             for choice in _NPM_CHOICES:
                 yield RadioButton(choice, value=(choice == config.npm_choice(mirror)))
         yield Input(value=mirror.npm, placeholder=gettext("npm registry URL"), id="pf-npm")
-        yield Static("", id="pf-mirror-error", classes="error")
+        yield Static("", id="pf-mirror-error", classes="error")  # pragma: no mutate — empty Static("") == Static() (default renderable), so the dropped-literal mutant is equivalent; this line-anchored pragma also suppresses the same-line id/classes siblings, whose behavior the mirror-walk test still pins  # fmt: skip
 
     @on(RadioSet.Changed, ".pf-mirror-row")
     def _mirror_changed(self, event: RadioSet.Changed) -> None:
@@ -472,7 +472,7 @@ class PreferencesScreen(Screen[bool]):
         if mirror_cfg is None:
             return
         bash_box = self.query("#pf-bash")
-        bash_value = bash_box.first(Input).value if bash_box else ""
+        bash_value = bash_box.first(Input).value if bash_box else ""  # pragma: no mutate — .first(Input) type is a tautological guard; the else "" is never read unless bash_box is truthy, so its value is unobservable  # fmt: skip
         if bash_box and bash_value.strip() and not Path(bash_value).expanduser().is_file():
             # Same rule as `skit config shell.bash_path` — a typo'd path must not
             # ride into config through this door when the CLI door refuses it.
@@ -493,7 +493,7 @@ class PreferencesScreen(Screen[bool]):
         after_set = self.query_one("#pf-after", RadioSet)  # pragma: no mutate
         after_index = after_set.pressed_index
         config.save_after_run("stay" if after_index == 1 else "exit")
-        js_index = self.query_one("#pf-js", RadioSet).pressed_index
+        js_index = self.query_one("#pf-js", RadioSet).pressed_index  # pragma: no mutate — query_one type — tautological guard (see _axis_choice)  # fmt: skip
         config.save_js_runner("" if js_index <= 0 else config.JS_RUNNERS[js_index - 1])
         if bash_box:
             config.save_bash_path(bash_value)

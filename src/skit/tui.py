@@ -499,7 +499,7 @@ class MenuApp(App[int | PendingRun]):
         detail = self.query("#detail-body")
         if not detail:
             return
-        body = detail.first(Static)
+        body = detail.first(Static)  # pragma: no mutate — expect_type is a pure runtime assertion; #detail-body is only ever the Static body, so first(Static)/first(None) return the identical node (equivalents); the body lookup + update stays pinned by test_selected_entry_detail_joins_lines_by_newline  # fmt: skip
         entry = self._selected()
         if entry is None:
             if not self._entries:

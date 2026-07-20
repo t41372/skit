@@ -179,3 +179,67 @@ def test_choice_prompt_gets_label_choices_and_our_console(monkeypatch):
     assert "choices" not in kwargs  # validation is ours (localized), not rich's
     assert kwargs.get("default") == ""  # optional + no default: Enter means "leave it out"
     assert kwargs.get("console") is console  # our console forwarded (not None, not omitted)
+
+
+# ---------------------------------------------------------------------------
+# choice re-prompt loops: skit's OWN localized "Choose one of" retry (not rich's),
+# and the re-ask rebuilds the identical prompt
+# ---------------------------------------------------------------------------
+
+
+def test_choice_required_reprompts_with_localized_message_and_rebuilt_prompt(monkeypatch):
+    """A required choice whose first answer is invalid loops on skit's own localized
+    re-prompt (delegating to rich would speak hardcoded English inside a translated
+    form), then re-asks with the SAME rebuilt prompt: the label carries the choices,
+    the default is the first choice (required + no prefill), our console rides along."""
+    plan = flows.FormPlan(
+        source="argparse",
+        fields=[
+            flows.FormField(
+                key="mode", label="mode", kind="choice", choices=["a", "b"], required=True
+            )
+        ],
+    )
+    console, printed = _recording_console(monkeypatch)
+    calls = _record_ask(monkeypatch, promptform.Prompt, ["z", "a"])  # invalid, then valid
+    values = promptform.collect(plan, {}, console=console)
+
+    assert values == {"mode": "a"}
+    # first ask forwarded our console (not None, not dropped)
+    assert calls[0][1].get("console") is console
+    # the retry line is skit's own message, verbatim including its red markup (a substring
+    # check would miss the XX-msgid mutation that embeds the original text)
+    assert printed == ["[red]Choose one of: a, b[/red]"]
+    # the re-ask rebuilds the identical prompt
+    (args, kwargs) = calls[1]
+    assert args == (
+        "  mode (a/b)",
+    )  # label positional carries the choices (kills None / drop / XX-sep)
+    assert kwargs.get("default") == "a"  # required + no prefill -> `default or choices[0]` == "a"
+    assert kwargs.get("console") is console  # our console forwarded (not None, not dropped)
+
+
+def test_choice_optional_reprompts_with_skip_hint_and_rebuilt_prompt(monkeypatch):
+    """An optional choice whose first answer is a non-empty non-member loops on skit's
+    own localized "(or Enter to skip)" retry, then re-asks the SAME prompt: label carries
+    the choices, default stays "" (Enter still means "leave it out"), our console rides."""
+    plan = flows.FormPlan(
+        source="argparse",
+        fields=[flows.FormField(key="mode", label="mode", kind="choice", choices=["a", "b"])],
+    )
+    console, printed = _recording_console(monkeypatch)
+    calls = _record_ask(monkeypatch, promptform.Prompt, ["z", "a"])  # invalid, then valid
+    values = promptform.collect(plan, {}, console=console)
+
+    assert values == {"mode": "a"}
+    # the retry line is skit's localized skip-hint message, verbatim (kills the XX-msgid)
+    assert printed == ["[red]Choose one of: a, b (or Enter to skip)[/red]"]
+    # the re-ask rebuilds the identical optional prompt
+    (args, kwargs) = calls[1]
+    assert args == (
+        "  mode (a/b)",
+    )  # label positional carries the choices (kills None / drop / XX-sep)
+    assert (
+        kwargs.get("default") == ""
+    )  # optional -> Enter still means "leave it out" (kills None / "XXXX" / drop)
+    assert kwargs.get("console") is console  # our console forwarded (not None, not dropped)

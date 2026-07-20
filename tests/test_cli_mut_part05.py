@@ -125,6 +125,36 @@ def test_require_file_existing_does_not_raise(tmp_path: Path):
     cli._require_file(present)  # must not raise for an existing file
 
 
+def test_require_file_directory_names_the_path_in_not_a_file(tmp_path: Path):
+    # The second arm (exists but isn't a file — a directory) has its own msgid; exact
+    # match kills the XX-wrap and the str(None) path substitution.
+    with pytest.raises(store.StoreError) as excinfo:
+        cli._require_file(tmp_path)
+    assert str(excinfo.value) == f"Not a file: {tmp_path}"
+
+
+# ==========================================================================
+# _require_exists — the exe lane's existence guard (any existing path, dirs included)
+# ==========================================================================
+
+
+def test_require_exists_missing_names_the_path(tmp_path: Path):
+    # The exe twin of _require_file: only the "not found" arm exists. Exact whole-message
+    # match kills the XX-wrapped msgid and the str(None) path substitution.
+    missing = tmp_path / "ghost.bin"
+    with pytest.raises(store.StoreError) as excinfo:
+        cli._require_exists(missing)
+    msg = str(excinfo.value)
+    assert "XX" not in msg
+    assert msg == f"File not found: {missing}"
+
+
+def test_require_exists_accepts_a_directory(tmp_path: Path):
+    # add_exe's broader contract: any existing path passes, directories included — the guard
+    # must NOT raise here (it has no "is_file" arm, unlike _require_file).
+    cli._require_exists(tmp_path)
+
+
 # ==========================================================================
 # _resolve_npm_dependencies — js/ts copy-add dependency resolution
 # ==========================================================================

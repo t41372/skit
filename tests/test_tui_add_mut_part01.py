@@ -138,3 +138,50 @@ def test_add_review_screen_joins_deps_override_with_comma_space(tmp_path: Path) 
     (and edits)."""
     screen = tui_add.AddReviewScreen(_py(tmp_path), deps=["requests", "rich"])
     assert screen._overrides["deps"] == "requests, rich"
+
+
+# ---------------------------------------------------------------------------
+# AddReviewScreen.__init__ — the read-error fallback (_text / _text_error)
+# ---------------------------------------------------------------------------
+
+
+def test_init_clean_read_leaves_no_text_error(tmp_path: Path) -> None:
+    """A source that reads cleanly leaves ``_text_error`` as the empty string, never None: the
+    panel opens in the no-error state (the ``= ""`` init vs the ``= None`` mutant)."""
+    screen = tui_add.AddReviewScreen(_py(tmp_path))
+    assert screen._text_error == ""
+
+
+def test_init_unreadable_source_records_the_read_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the source can't be read, __init__ degrades ``_text`` to the empty string (not
+    "XXXX") and records the exact 'Can't read <path>: <error>' message. Forcing a strerror-less
+    OSError('boom') pins that the message text is ``exc.strerror or str(exc)`` == 'boom' (the
+    ``or``->``and`` and ``str(None)`` mutants both yield 'None'), plus the msgid and its case."""
+    p = _py(tmp_path)
+
+    def boom(self: Path, *a: object, **k: object) -> str:
+        raise OSError("boom")  # no errno/strerror → str(exc) == "boom"
+
+    monkeypatch.setattr(Path, "read_text", boom)
+    screen = tui_add.AddReviewScreen(p)  # must not raise
+    assert screen._text == ""  # the empty fallback, not "XXXX"
+    assert screen._text_error == f"Can't read {p}: boom"
+
+
+def test_init_read_error_uses_strerror_not_the_errno_repr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With a real errno-bearing OSError the message uses ``exc.strerror`` (the clean phrase),
+    never ``str(exc)`` (which carries the '[Errno N]' prefix) — the ``or``->``and`` mutant would
+    swap to the latter."""
+    p = _py(tmp_path)
+
+    def boom(self: Path, *a: object, **k: object) -> str:
+        raise OSError(21, "Is a directory")
+
+    monkeypatch.setattr(Path, "read_text", boom)
+    screen = tui_add.AddReviewScreen(p)
+    assert screen._text_error == f"Can't read {p}: Is a directory"
+    assert "[Errno" not in screen._text_error  # str(exc)'s errno prefix must not leak in

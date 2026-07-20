@@ -13,6 +13,11 @@ A few init-line mutants in `_show_params` are provable equivalents and are resol
                             test_params_reference_mode_shell_omits_self_location_hint.
   * `ensure_ascii=False` -> True / None / dropped: inert, because `console.print_json`
                             re-parses then re-serializes the string, normalizing any escaping.
+  * `and text` -> `or text` (the analyze-gate's third operand): a provable equivalent, pinned by
+                            `# pragma: no mutate` in the source. `text` is non-empty only when an
+                            analyzable file was read, and (registry invariant) params_io is not
+                            None iff analyzer is not None; so `or text` differs only on empty text,
+                            where analyze/reconcile/reader_fields are all no-ops.
 """
 
 from __future__ import annotations
@@ -145,3 +150,52 @@ def test_params_json_unmanaged_is_empty_list_not_null(tmp_path):
     assert result.exit_code == 0, result.output
     data = json.loads(result.output)
     assert data["unmanaged"] == []
+
+
+# --------------------------------------------------------------------------
+# _show_params — the "no managed parameters" arm-selection and the reference voice
+# --------------------------------------------------------------------------
+
+
+def test_params_copy_analyzerless_kind_no_managed_has_no_manage_suffix(tmp_path):
+    """A COPY-mode, analyzer-less kind (ruby) with nothing managed prints exactly
+    "<name> has no managed parameters." and RETURNS — no "Use --manage …" suffix.
+
+    Pins the first arm of the `not specs` split (`entry_spec is None or analyzer is None or
+    reader_driven`): the `or`->`and` mutant falls through to the copy-mode else-branch, which
+    appends the "Use --manage to bring a detected candidate under management." tail. exe can't
+    reach this (it's reference-by-construction), so drive a real copy-mode ruby entry.
+    """
+    rb = tmp_path / "j.rb"
+    rb.write_text("puts 1\n", encoding="utf-8")
+    store.add_script(rb, kind="ruby", name="rb", mode="copy")
+    result = runner.invoke(cli.app, ["params", "rb"])
+    assert result.exit_code == 0, result.output
+    assert _norm(result.output) == "rb has no managed parameters."
+
+
+def test_params_reference_shell_no_managed_and_detected_use_reference_voice(tmp_path):
+    """A reference shell with unmanaged candidates renders three things in the reference voice:
+    the "<name> has no managed parameters." line (reached via the ref_mode arm, NOT the first
+    arm), the comma-joined "Detected but not yet managed: …" line, and the "Reference mode: …"
+    editing hint. Exact copy + no "XX" leakage kills the msgid XX-wraps, the case-flips, the
+    "[dim]" wrap and the ", "->"XX, XX" join separator.
+    """
+    _shell(
+        tmp_path,
+        '#!/usr/bin/env bash\nWIDTH=800\nHEIGHT=600\necho "$WIDTH $HEIGHT"\n',
+        "refsh",
+        mode="reference",
+    )
+    result = runner.invoke(cli.app, ["params", "refsh"])
+    assert result.exit_code == 0, result.output
+    out = _norm(result.output)
+    assert "refsh has no managed parameters." in out
+    # comma-joined, in order — kills both the msgid XX-wrap and the 'XX, XX'.join separator.
+    assert "Detected but not yet managed: WIDTH, HEIGHT" in out
+    # the reference-mode editing hint, exact and whole (spans two source msgid lines).
+    assert (
+        "Reference mode: skit never writes the original file — manage parameters by "
+        "editing its [tool.skit] block in the source directly." in out
+    )
+    assert "XX" not in result.output  # kills every XX-wrapped msgid and the "XX[dim]XX" wrap
