@@ -8,10 +8,12 @@ import shlex
 from pathlib import Path
 
 import pytest
+from textual.message import Message
+from textual.suggester import SuggestionReady
 from textual.widgets import Input, OptionList, Static
 
-from skit import store, tui, tui_footer, tui_pathpick
-from skit.tui_form import FieldRow, RunFormScreen, TokenMenuModal
+from skit import flows, store, tui, tui_footer, tui_pathpick
+from skit.tui_form import _EXTRA_KEY, FieldRow, RunFormScreen, TokenMenuModal
 from skit.tui_pathpick import FilePickerModal, PathContext, PathSuggester, PickedPath
 
 
@@ -522,8 +524,6 @@ def _path_entry(tmp_path):
 
 
 async def _open_form(app, pilot, tmp_path, monkeypatch):
-    from skit import flows
-
     root = _tree(tmp_path)
     monkeypatch.setattr(
         tui_pathpick.PathContext, "for_entry", classmethod(lambda cls, entry: _ctx(root))
@@ -603,8 +603,6 @@ async def test_picker_appends_quoted_to_the_extra_args_row(tmp_path, monkeypatch
 async def test_picker_appends_quoted_to_a_multiple_field(tmp_path, monkeypatch):
     """The nargs='*' path field: append as one shlex-quoted piece, and the value
     survives the ACTUAL splitter of multiple fields (flows._split_multi)."""
-    from skit import flows
-
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         screen, root = await _open_form(app, pilot, tmp_path, monkeypatch)
@@ -649,6 +647,29 @@ async def test_token_rows_still_insert_at_cursor(tmp_path, monkeypatch):
         assert src_row.value == "out-{today}.csv"
 
 
+def test_fieldrow_shlexy_and_insert_mode_all_branches():
+    """FieldRow.shlexy and .insert_mode are @property methods, which mutmut cannot
+    mutate — so their every branch is pinned directly here: a single-value field
+    replaces; a `multiple` field appends in the POSIX-shlex dialect; the extra-args row
+    appends in the argv/CRT dialect (path.md §5)."""
+
+    def _row(*, key: str = "x", multiple: bool = False) -> FieldRow:
+        field = flows.FormField(key=key, label="x", source="flag", multiple=multiple)
+        return FieldRow(field, "")
+
+    single = _row()
+    assert single.shlexy is False
+    assert single.insert_mode == "replace"
+
+    multiple = _row(multiple=True)
+    assert multiple.shlexy is True
+    assert multiple.insert_mode == "shlex"
+
+    extra = _row(key=_EXTRA_KEY)
+    assert extra.shlexy is True
+    assert extra.insert_mode == "argv"
+
+
 async def test_insert_picked_shapes(monkeypatch):
     app = tui.MenuApp()
     async with app.run_test() as pilot:
@@ -661,19 +682,22 @@ async def test_insert_picked_shapes(monkeypatch):
         box.value = ""
         tui_pathpick.insert_picked(box, PickedPath("a b.txt"), mode="shlex")
         assert box.value == "'a b.txt'"  # a lone piece: no leading space invented
-        # The extra-args dialect on Windows: CRT quoting (double quotes), where the
-        # POSIX spelling 'a b.txt' would shatter into two literal-quoted arguments.
-        box.value = "--verbose"
+        # The two append dialects diverge only off-POSIX, so pin them under a win32
+        # patch: "shlex" mode uses shlex.quote (single quotes, platform-agnostic),
+        # "argv" mode uses argv_text/CRT (double quotes) — where the POSIX spelling
+        # 'a b.txt' would shatter into two literal-quoted arguments.
         with monkeypatch.context() as m:
             m.setattr(tui_pathpick.argv_text.sys, "platform", "win32")
+            box.value = ""
+            tui_pathpick.insert_picked(box, PickedPath("a b.txt"), mode="shlex")
+            assert box.value == "'a b.txt'"  # shlex, not the CRT dialect
+            box.value = "--verbose"
             tui_pathpick.insert_picked(box, PickedPath("a b.txt"), mode="argv")
             assert box.value == '--verbose "a b.txt"'
             assert tui_pathpick.argv_text.split(box.value) == ["--verbose", "a b.txt"]
 
 
 async def test_secret_field_never_gets_a_suggester(tmp_path):
-    from skit import flows
-
     src = tmp_path / "job.py"
     src.write_text("print('hi')\n", encoding="utf-8")
     entry = store.add_python(src, name="job")
@@ -713,3 +737,209 @@ def test_looks_pathy_windows_recognition(monkeypatch):
     assert tui_pathpick.looks_pathy(r"C:\Users") is True
     assert tui_pathpick.looks_pathy("C:/Users") is True
     assert tui_pathpick.looks_pathy("data") is False  # a bare word stays a bare word
+
+
+def test_looks_pathy_token_and_separator_spellings():
+    # The two prefixes that carry no separator of their own must each be recognized,
+    # and the token match is case-sensitive ({cwd}, not {CWD}); a slash anywhere
+    # (which covers ./, ../, /) activates on its own.
+    assert tui_pathpick.looks_pathy("~") is True
+    assert tui_pathpick.looks_pathy("~project") is True
+    assert tui_pathpick.looks_pathy("{cwd}") is True
+    assert tui_pathpick.looks_pathy("{CWD}") is False
+    assert tui_pathpick.looks_pathy("a/b") is True
+    assert tui_pathpick.looks_pathy("./x") is True
+    assert tui_pathpick.looks_pathy("plain") is False
+
+
+# ---------------------------------------------------------------------------
+# PathSuggester constructor contract, observed through Textual's _get_suggestion
+# ---------------------------------------------------------------------------
+
+
+async def _record_suggestions(app, pilot, monkeypatch):
+    """A mounted Input whose posted SuggestionReady values are captured synchronously
+    (Suggester._get_suggestion calls requester.post_message inline), so the suggester's
+    real Textual entry point is observable without worker-timing flake."""
+    inp = Input()
+    await app.screen.mount(inp)
+    await pilot.pause()
+    recorded: list[str] = []
+    original = inp.post_message
+
+    def _capture(message: Message) -> bool:
+        if isinstance(message, SuggestionReady):
+            recorded.append(message.suggestion)
+        return original(message)
+
+    monkeypatch.setattr(inp, "post_message", _capture)
+    return inp, recorded
+
+
+async def test_suggester_is_case_sensitive_query_not_casefolded(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "DATA.csv").write_text("x", encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        inp, recorded = await _record_suggestions(app, pilot, monkeypatch)
+        # case_sensitive=True: "DA" reaches get_suggestion verbatim and matches the
+        # uppercase file. Casefolding (case_sensitive False) would send "da", which the
+        # exact-case matcher rejects — no suggestion.
+        await _sugg(root)._get_suggestion(inp, "DA")
+        assert recorded == ["DATA.csv"]
+
+
+async def test_suggester_does_not_cache_stale_results(tmp_path, monkeypatch):
+    root = _tree(tmp_path)
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        inp, recorded = await _record_suggestions(app, pilot, monkeypatch)
+        sugg = _sugg(root)
+        await sugg._get_suggestion(inp, "da")
+        assert recorded == ["data.csv"]
+        (root / "data.csv").unlink()
+        recorded.clear()
+        # use_cache=False: the second identical query re-scans and finds the file gone.
+        # A cache would replay the stale "data.csv".
+        await sugg._get_suggestion(inp, "da")
+        assert recorded == []
+
+
+# ---------------------------------------------------------------------------
+# PathSuggester internals: brace-escape flag, quote refusal, token-without-sep
+# ---------------------------------------------------------------------------
+
+
+def _brace_dir(tmp_path) -> Path:
+    """A workdir holding a directory literally named ``{x}`` with a file inside — so a
+    doubled-brace head (`{{x}}`) that expands to `{x}` can be told apart from one kept
+    literal."""
+    root = tmp_path / "root"
+    (root / "{x}").mkdir(parents=True)
+    (root / "{x}" / "data.csv").write_text("x", encoding="utf-8")
+    return root
+
+
+async def test_brace_escapes_on_a_normal_field_halves_doubled_braces(tmp_path):
+    # A normal field has brace_escapes=True: `{{x}}` in the head expands to the real
+    # directory `{x}`, so the completion resolves.
+    root = _brace_dir(tmp_path)
+    assert await _sugg(root).get_suggestion("{{x}}/da") == "{{x}}/data.csv"
+
+
+async def test_brace_escapes_off_on_a_placeholder_field_keeps_doubled_braces(tmp_path):
+    # A placeholder-source field has brace_escapes=False: `{{x}}` stays literal, points
+    # at no directory, and the completion is silent — proving the flag is threaded
+    # through (not defaulted).
+    root = _brace_dir(tmp_path)
+    sugg = PathSuggester(kind="path", shlexy=False, placeholder_braces=True, ctx=_ctx(root))
+    assert await sugg.get_suggestion("{{x}}/da") is None
+
+
+async def test_shlexy_trailing_piece_refuses_either_quote(tmp_path):
+    root = _tree(tmp_path)
+    (root / "'q.txt").write_text("x", encoding="utf-8")
+    (root / '"q.txt').write_text("x", encoding="utf-8")
+    s = _sugg(root, shlexy=True)
+    # A trailing piece bearing EITHER quote refuses to complete (appended ghost text
+    # can't be re-quoted honestly); without that, it would complete these odd names.
+    assert await s.get_suggestion("done.txt 'q") is None
+    assert await s.get_suggestion('done.txt "q') is None
+    # A clean trailing piece still completes, so the refusal isn't blanket.
+    assert await s.get_suggestion("done.txt dr") == "done.txt draft.txt"
+
+
+async def test_bare_token_prefix_without_separator_is_silent(tmp_path):
+    root = _tree(tmp_path)
+    (root / "~data.txt").write_text("x", encoding="utf-8")
+    (root / "{data.txt").write_text("x", encoding="utf-8")
+    s = _sugg(root)
+    # A "~" or "{" that hasn't reached a separator yet completes nothing — even when a
+    # file literally starting with that character sits in the workdir.
+    assert await s.get_suggestion("~da") is None
+    assert await s.get_suggestion("{da") is None
+
+
+# ---------------------------------------------------------------------------
+# _list_filtered ranking and hidden-entry rules (picker only)
+# ---------------------------------------------------------------------------
+
+
+def test_list_filtered_reveals_hidden_only_behind_a_dot_filter(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / ".env").write_text("x", encoding="utf-8")
+    (root / "readme").write_text("x", encoding="utf-8")
+    assert tui_pathpick._list_filtered(root, "en") == []  # substring "en" ⊄ visible names
+    assert tui_pathpick._list_filtered(root, ".en") == [(".env", False)]  # dot filter reveals it
+
+
+def test_list_filtered_dir_sorts_before_an_earlier_file_within_a_rank(tmp_path):
+    root = tmp_path / "root"
+    (root / "xz").mkdir(parents=True)  # a directory
+    (root / "xa").write_text("x", encoding="utf-8")  # an alphabetically-earlier file
+    # Both prefix-match "x" (same rank); the directory wins regardless of the later name.
+    assert tui_pathpick._list_filtered(root, "x") == [("xz", True), ("xa", False)]
+
+
+def test_list_filtered_tiebreak_is_case_insensitive(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    # "_z.txt" and "a.txt" are both files, both prefix-rank equal under an empty needle.
+    # ASCII '_' (95) sits between 'Z' (90) and 'a' (97): a case-insensitive tiebreak
+    # keeps '_' before 'a'; an upper() tiebreak would flip them.
+    (root / "_z.txt").write_text("x", encoding="utf-8")
+    (root / "a.txt").write_text("x", encoding="utf-8")
+    assert tui_pathpick._list_filtered(root, "") == [("_z.txt", False), ("a.txt", False)]
+
+
+# ---------------------------------------------------------------------------
+# FilePickerModal display + navigation refresh
+# ---------------------------------------------------------------------------
+
+
+async def test_picker_pinned_row_shows_its_label(tmp_path):
+    root = _tree(tmp_path)
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(FilePickerModal(_ctx(root)))
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, FilePickerModal)
+        first = modal.query_one(OptionList).get_option_at_index(0)
+        assert first.id == "__use_dir__"
+        # endswith, not `in`: a corrupted msgid ("XX(use this directory)XX") would still
+        # CONTAIN the phrase — the exact tail is what proves the real label rendered.
+        assert str(first.prompt).endswith("(use this directory)")
+
+
+async def test_picker_empty_directory_highlights_the_pinned_row(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(FilePickerModal(_ctx(empty)))
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, FilePickerModal)
+        option_list = modal.query_one(OptionList)
+        assert option_list.option_count == 1  # only the pinned row
+        assert option_list.highlighted == 0
+
+
+async def test_picker_ascend_repopulates_the_parent_listing(tmp_path):
+    root = _tree(tmp_path)
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(FilePickerModal(PathContext(workdir=root / "sub", invoke_cwd=root)))
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, FilePickerModal)
+        await pilot.press("backspace")  # empty filter → ascend to root
+        await pilot.pause()
+        option_list = modal.query_one(OptionList)
+        ids = [str(option_list.get_option_at_index(i).id) for i in range(option_list.option_count)]
+        # The parent's real entries are shown (not an empty filtered-to-nothing list).
+        assert "d:sub" in ids
+        assert "f:data.csv" in ids

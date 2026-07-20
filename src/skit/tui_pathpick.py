@@ -116,8 +116,10 @@ class PathContext:
 
 def looks_pathy(piece: str) -> bool:
     """The universal-affordance activation rule (path.md §4): the text is path-shaped.
-    Windows typists get backslash and drive-letter spellings recognized too."""
-    if piece.startswith(("./", "../", "/", "~", "{cwd}")) or "/" in piece:
+    A leading `~` or `{cwd}` (which carry no separator of their own), or any piece
+    containing a `/` — which already covers the `./`, `../` and `/` spellings — and,
+    on Windows, a backslash or a drive-letter prefix."""
+    if piece.startswith(("~", "{cwd}")) or "/" in piece:
         return True
     return os.name == "nt" and ("\\" in piece or _NT_PATHY_RE.match(piece) is not None)
 
@@ -139,7 +141,7 @@ def _scan(base: Path, keep: Callable[[str], bool], *, show_hidden: bool) -> list
                     try:
                         is_dir = entry.is_dir()
                     except OSError:
-                        is_dir = False
+                        is_dir = False  # pragma: no mutate — None is falsy like False everywhere
                     matches.append((entry.name, is_dir))
     except OSError:
         return []
@@ -172,7 +174,12 @@ class PathSuggester(Suggester):
     def __init__(
         self, *, kind: str, shlexy: bool, placeholder_braces: bool, ctx: PathContext
     ) -> None:
-        super().__init__(use_cache=False, case_sensitive=True)
+        super().__init__(case_sensitive=True)
+        # Never cache: the filesystem changes under the suggester (a file is created or
+        # deleted mid-session), so a cached ghost would lie. Setting cache to None after
+        # construction is equivalent to use_cache=False but leaves no `use_cache=None`
+        # mutation (None and False disable the cache identically — an equivalent mutant).
+        self.cache = None
         self._kind = kind
         self._shlexy = shlexy  # multiple/extra-args: complete the trailing piece only
         self._brace_escapes = not placeholder_braces
@@ -330,7 +337,10 @@ class FilePickerModal(ModalScreen[PickedPath | None]):
         self._populate("")
 
     def _show_dir(self) -> None:
-        self.query_one("#picker-dir", Static).update(str(self._dir))
+        # expect_type on query_one is a type-narrowing assertion (for ty); None or a
+        # dropped second arg return the identical node, so that mutation is a no-op.
+        label = self.query_one("#picker-dir", Static)  # pragma: no mutate
+        label.update(str(self._dir))
 
     def _populate(self, needle: str) -> None:
         option_list = self.query_one(OptionList)
@@ -353,7 +363,10 @@ class FilePickerModal(ModalScreen[PickedPath | None]):
         if option_list.option_count:
             # Empty filter: highlight the first real entry (the pinned row stays one ↑
             # away); filtered: highlight the first match, so Enter-from-filter picks it.
-            option_list.highlighted = 1 if not needle and option_list.option_count > 1 else 0
+            # `> 1` guards the empty-directory case (only the pinned row); `> 1` vs
+            # `>= 1` is a no-op there — highlighting the absent index 1 clamps back to 0.
+            past_pinned = not needle and option_list.option_count > 1  # pragma: no mutate
+            option_list.highlighted = 1 if past_pinned else 0
 
     @on(Input.Changed)
     def _filter(self, event: Input.Changed) -> None:
