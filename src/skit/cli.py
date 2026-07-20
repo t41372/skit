@@ -4228,11 +4228,10 @@ def _normalize_params(
     copy_path = entry.script_path
     if not copy_path.exists():
         raise _fail(gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}, 1)
-    # Bytes in, bytes out: --normalize rewrites the script's own text through a parse-and-splice
-    # pipeline that is strict UTF-8 end to end, so a lossy read (errors="replace") would bake
-    # U+FFFD over every non-UTF-8 byte on write-back, and read_text's universal-newline mode
-    # would rewrite every CRLF — both breaking A5's byte-minimal promise. A script that doesn't
-    # decode is refused whole instead, leaving the stored copy byte-for-byte untouched.
+    # Bytes in, bytes out: --normalize rewrites the script's own text, and the whole
+    # parse-and-splice pipeline is strict UTF-8 end to end — a lossy read (errors="replace")
+    # would bake U+FFFD over every non-UTF-8 byte on write-back. A script that doesn't decode
+    # is refused whole instead, leaving the stored copy byte-for-byte untouched.
     try:
         text = copy_path.read_bytes().decode("utf-8")  # pragma: no mutate — codec alias
     except UnicodeDecodeError:
@@ -4244,6 +4243,12 @@ def _normalize_params(
             % {"name": entry.meta.name},
             1,
         ) from None
+    # The comment-block engine below is LF-based (its block regex never matches "# ///\r"), so
+    # fold CRLF exactly like the universal-newline read this replaced; the write-back then
+    # persists the LF form on every platform (write_text used to re-expand to os.linesep,
+    # CRLF-ifying the whole copy on Windows). A Windows-authored stored copy — CRLF everywhere
+    # after any write_text-based edit — would otherwise skip the re-anchor half silently.
+    text = text.replace("\r\n", "\n")
     result = entry_spec.normalizer.normalize(text, list(names))
     for warning in result.refused:
         err_console.print(f"[yellow]{escape(_render_normalize_warning(warning))}[/yellow]")

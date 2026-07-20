@@ -397,23 +397,40 @@ def test_normalize_refuses_a_non_utf8_script_untouched(tmp_path):
     assert entry.script_path.read_bytes() == original
 
 
-def test_normalize_splices_bytes_minimally_on_a_crlf_cjk_script(tmp_path):
-    # The A5 byte-minimal promise, byte-for-byte: only WIDTH's value span changes. A
-    # universal-newline read_text would rewrite every CRLF on write-back; CJK + emoji pin the
-    # multibyte byte offsets through the strict encode/decode pair.
-    src = tmp_path / "win.sh"
+def test_normalize_splices_bytes_minimally_on_a_cjk_script(tmp_path):
+    # The A5 byte-minimal promise, byte-for-byte: only WIDTH's value span changes. CJK + emoji
+    # pin the multibyte byte offsets through the strict encode/decode pair.
+    src = tmp_path / "cjk.sh"
     original = (
-        b"#!/usr/bin/env bash\r\n"
-        b"WIDTH=800\r\n"
-        b"# \xe5\xaf\xac\xe5\xba\xa6 \xf0\x9f\x8e\xaf\r\n"
-        b'echo "$WIDTH"\r\n'
+        b"#!/usr/bin/env bash\n"
+        b"WIDTH=800\n"
+        b"# \xe5\xaf\xac\xe5\xba\xa6 \xf0\x9f\x8e\xaf\n"
+        b'echo "$WIDTH"\n'
     )
     src.write_bytes(original)
-    entry = store.add_script(src, kind="shell", name="win")
-    result = runner.invoke(cli.app, ["params", "win", "--normalize", "WIDTH"])
+    entry = store.add_script(src, kind="shell", name="cjk")
+    result = runner.invoke(cli.app, ["params", "cjk", "--normalize", "WIDTH"])
     assert result.exit_code == 0, result.output
     expected = original.replace(b"WIDTH=800", b'WIDTH="${WIDTH:-800}"')
     assert entry.script_path.read_bytes() == expected
+
+
+def test_normalize_folds_a_crlf_copy_and_reanchors_its_managed_definition(tmp_path):
+    # A Windows-authored stored copy is CRLF everywhere — block included (write_text expands
+    # to os.linesep there). The strict-decoded text must be folded to LF before it reaches the
+    # LF-based comment-block engine, or params_io.read finds nothing and the re-anchor half is
+    # skipped silently (the lane Windows CI caught); the write-back persists the LF form.
+    entry = _shell(tmp_path, '#!/usr/bin/env bash\nWIDTH=800\necho "$WIDTH"\n', name="crlf")
+    assert runner.invoke(cli.app, ["params", "crlf", "--manage", "WIDTH"]).exit_code == 0
+    raw = entry.script_path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    entry.script_path.write_bytes(raw)
+    result = runner.invoke(cli.app, ["params", "crlf", "--normalize", "WIDTH"])
+    assert result.exit_code == 0, result.output
+    rewritten = entry.script_path.read_bytes()
+    assert b"\r" not in rewritten
+    text = rewritten.decode("utf-8")
+    assert 'WIDTH="${WIDTH:-800}"' in text
+    assert 'kind = "envdefault"' in text  # the managed definition followed the source
 
 
 def test_normalize_success_message_two_names_exact(tmp_path):
