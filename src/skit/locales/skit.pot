@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: skit 0.2.1.dev0\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-07-19 16:45-0700\n"
+"POT-Creation-Date: 2026-07-19 16:58-0700\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -934,7 +934,7 @@ msgstr ""
 msgid "Reusing your last arguments: %(args)s"
 msgstr ""
 
-#: src/skit/cli.py:2805 src/skit/cli.py:3195 src/skit/tui_form.py:744
+#: src/skit/cli.py:2805 src/skit/cli.py:3195 src/skit/tui_form.py:810
 #, python-format
 msgid "%(name)s has no form fields, so there's nothing to save."
 msgstr ""
@@ -1117,7 +1117,7 @@ msgstr ""
 msgid "Save a set of parameter values as a named preset."
 msgstr ""
 
-#: src/skit/cli.py:3179 src/skit/cli.py:3258 src/skit/tui_form.py:249
+#: src/skit/cli.py:3179 src/skit/cli.py:3258 src/skit/tui_form.py:272
 msgid "Preset name"
 msgstr ""
 
@@ -2206,7 +2206,7 @@ msgstr ""
 msgid "%(value)s isn't a package requirement (e.g. \"requests\" or \"rich>=13,<16\")."
 msgstr ""
 
-#: src/skit/promptform.py:32 src/skit/tui_form.py:144
+#: src/skit/promptform.py:32 src/skit/tui_form.py:157
 msgid "Leave empty to use the script's own default."
 msgstr ""
 
@@ -2367,8 +2367,8 @@ msgid "Close"
 msgstr ""
 
 #: src/skit/tui.py:199 src/skit/tui.py:333 src/skit/tui.py:450
-#: src/skit/tui.py:459 src/skit/tui_form.py:429 src/skit/tui_form.py:430
-#: src/skit/tui_form.py:597
+#: src/skit/tui.py:459 src/skit/tui_form.py:483 src/skit/tui_form.py:484
+#: src/skit/tui_form.py:654
 msgid "Run"
 msgstr ""
 
@@ -2527,7 +2527,7 @@ msgstr ""
 msgid "%(name)s hasn't run yet — press Enter to fill the form first."
 msgstr ""
 
-#: src/skit/tui.py:813 src/skit/tui.py:1031 src/skit/tui_form.py:521
+#: src/skit/tui.py:813 src/skit/tui.py:1031 src/skit/tui_form.py:578
 #, python-format
 msgid "Run %(name)s"
 msgstr ""
@@ -2572,9 +2572,10 @@ msgstr ""
 #: src/skit/tui_add.py:68 src/skit/tui_add.py:129 src/skit/tui_add.py:187
 #: src/skit/tui_add.py:287 src/skit/tui_add.py:548 src/skit/tui_add.py:593
 #: src/skit/tui_add.py:619 src/skit/tui_add.py:833 src/skit/tui_add.py:1136
-#: src/skit/tui_add.py:1293 src/skit/tui_form.py:232 src/skit/tui_form.py:254
-#: src/skit/tui_form.py:292 src/skit/tui_form.py:333 src/skit/tui_form.py:356
-#: src/skit/tui_form.py:386 src/skit/tui_form.py:422 src/skit/tui_form.py:605
+#: src/skit/tui_add.py:1293 src/skit/tui_form.py:255 src/skit/tui_form.py:277
+#: src/skit/tui_form.py:321 src/skit/tui_form.py:376 src/skit/tui_form.py:410
+#: src/skit/tui_form.py:440 src/skit/tui_form.py:476 src/skit/tui_form.py:662
+#: src/skit/tui_pathpick.py:232 src/skit/tui_pathpick.py:279
 #: src/skit/tui_prefs.py:47 src/skit/tui_prefs.py:92 src/skit/tui_prompt.py:35
 #: src/skit/tui_prompt.py:93 src/skit/tui_runner.py:69
 #: src/skit/tui_runner.py:134
@@ -2793,7 +2794,7 @@ msgstr ""
 msgid "Edit prompt"
 msgstr ""
 
-#: src/skit/tui_add.py:1140 src/skit/tui_form.py:432 src/skit/tui_runner.py:355
+#: src/skit/tui_add.py:1140 src/skit/tui_form.py:486 src/skit/tui_runner.py:355
 #: src/skit/tui_settings.py:253
 msgid "New agent"
 msgstr ""
@@ -2873,124 +2874,129 @@ msgstr ""
 msgid "skit couldn't read this script's argument declarations — type everything into the extra-arguments field."
 msgstr ""
 
-#: src/skit/tui_form.py:129 src/skit/tui_settings.py:195
+#: src/skit/tui_form.py:142 src/skit/tui_settings.py:195
 msgid "required"
 msgstr ""
 
-#: src/skit/tui_form.py:133
+#: src/skit/tui_form.py:146
 msgid "never saved to disk"
 msgstr ""
 
-#: src/skit/tui_form.py:136
+#: src/skit/tui_form.py:149
 msgid "insert"
 msgstr ""
 
-#: src/skit/tui_form.py:148
+#: src/skit/tui_form.py:161
 #, python-format
 msgid "Leave empty to read it from the environment variable %(env)s."
 msgstr ""
 
-#: src/skit/tui_form.py:159 src/skit/tui_form.py:197
+#: src/skit/tui_form.py:172 src/skit/tui_form.py:220
 msgid "on"
 msgstr ""
 
-#: src/skit/tui_form.py:159 src/skit/tui_form.py:197
+#: src/skit/tui_form.py:172 src/skit/tui_form.py:220
 msgid "off"
 msgstr ""
 
-#: src/skit/tui_form.py:219
+#: src/skit/tui_form.py:242
 #, python-format
 msgid "✓ matches %(count)s file(s)"
 msgstr ""
 
-#: src/skit/tui_form.py:221
+#: src/skit/tui_form.py:244
 msgid "⚠ matches no files yet"
 msgstr ""
 
-#: src/skit/tui_form.py:248 src/skit/tui_form.py:423 src/skit/tui_form.py:603
+#: src/skit/tui_form.py:271 src/skit/tui_form.py:477 src/skit/tui_form.py:660
 msgid "Save as preset"
 msgstr ""
 
-#: src/skit/tui_form.py:253 src/skit/tui_prefs.py:121 src/skit/tui_prefs.py:303
+#: src/skit/tui_form.py:276 src/skit/tui_prefs.py:121 src/skit/tui_prefs.py:303
 #: src/skit/tui_runner.py:133 src/skit/tui_settings.py:251
 #: src/skit/tui_settings.py:379
 msgid "Save"
 msgstr ""
 
-#: src/skit/tui_form.py:264
+#: src/skit/tui_form.py:287
 #, python-format
 msgid "This overwrites the existing preset %(name)s."
 msgstr ""
 
-#: src/skit/tui_form.py:313
+#: src/skit/tui_form.py:350
 msgid "Directory at run time (changes with where you run)"
 msgstr ""
 
-#: src/skit/tui_form.py:314
+#: src/skit/tui_form.py:351
 msgid "This directory, as a fixed path"
 msgstr ""
 
-#: src/skit/tui_form.py:315
+#: src/skit/tui_form.py:352
 msgid "Today's date"
 msgstr ""
 
-#: src/skit/tui_form.py:316
+#: src/skit/tui_form.py:353
 msgid "Current time"
 msgstr ""
 
-#: src/skit/tui_form.py:317
+#: src/skit/tui_form.py:354
 msgid "Home directory"
 msgstr ""
 
-#: src/skit/tui_form.py:325
+#: src/skit/tui_form.py:362
 msgid "Environment variable…"
 msgstr ""
 
-#: src/skit/tui_form.py:330
+#: src/skit/tui_form.py:367
+msgid "File or folder…"
+msgstr ""
+
+#: src/skit/tui_form.py:373
 msgid "Insert a run-time value"
 msgstr ""
 
-#: src/skit/tui_form.py:382
+#: src/skit/tui_form.py:436
 msgid "Environment variable"
 msgstr ""
 
-#: src/skit/tui_form.py:383 src/skit/tui_prompt.py:81
+#: src/skit/tui_form.py:437 src/skit/tui_pathpick.py:273
+#: src/skit/tui_prompt.py:81
 msgid "type to filter…"
 msgstr ""
 
-#: src/skit/tui_form.py:431 src/skit/tui_form.py:598
+#: src/skit/tui_form.py:485 src/skit/tui_form.py:655
 msgid "Insert value"
 msgstr ""
 
-#: src/skit/tui_form.py:542
+#: src/skit/tui_form.py:599
 msgid "Runner:"
 msgstr ""
 
-#: src/skit/tui_form.py:574
+#: src/skit/tui_form.py:631
 msgid "Extra agent arguments"
 msgstr ""
 
-#: src/skit/tui_form.py:576
+#: src/skit/tui_form.py:633
 msgid "Extra command arguments"
 msgstr ""
 
-#: src/skit/tui_form.py:578
+#: src/skit/tui_form.py:635
 msgid "Extra arguments (passed to the script as-is)"
 msgstr ""
 
-#: src/skit/tui_form.py:612
+#: src/skit/tui_form.py:669
 msgid "Preset:"
 msgstr ""
 
-#: src/skit/tui_form.py:615 src/skit/tui_form.py:783
+#: src/skit/tui_form.py:672 src/skit/tui_form.py:849
 msgid "↩ last values"
 msgstr ""
 
-#: src/skit/tui_form.py:625
+#: src/skit/tui_form.py:682
 msgid "none yet — fill the form and press Ctrl+S to save one"
 msgstr ""
 
-#: src/skit/tui_form.py:770
+#: src/skit/tui_form.py:836
 #, python-format
 msgid "Preset \"%(preset)s\" saved."
 msgstr ""
@@ -3036,6 +3042,26 @@ msgstr ""
 
 #: src/skit/tui_health.py:146
 msgid "Jump to entry"
+msgstr ""
+
+#: src/skit/tui_pathpick.py:235 src/skit/tui_pathpick.py:278
+msgid "Up"
+msgstr ""
+
+#: src/skit/tui_pathpick.py:265
+msgid "Insert a file or folder"
+msgstr ""
+
+#: src/skit/tui_pathpick.py:269
+msgid "The entry's working directory is missing — starting here instead."
+msgstr ""
+
+#: src/skit/tui_pathpick.py:277
+msgid "Select"
+msgstr ""
+
+#: src/skit/tui_pathpick.py:299
+msgid "(use this directory)"
 msgstr ""
 
 #: src/skit/tui_prefs.py:71

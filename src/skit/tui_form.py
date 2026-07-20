@@ -37,7 +37,7 @@ from textual.widgets import (
 )
 from textual.widgets.option_list import Option
 
-from . import argstate, argv_text, flows, tokens, tui_footer, tui_runner
+from . import argstate, argv_text, flows, tokens, tui_footer, tui_pathpick, tui_runner
 from .i18n import gettext
 
 if TYPE_CHECKING:
@@ -106,7 +106,12 @@ class FieldRow(Vertical):
     FieldRow Checkbox:focus { border: none; }
     """
 
-    def __init__(self, field: flows.FormField, prefill: str) -> None:
+    def __init__(
+        self,
+        field: flows.FormField,
+        prefill: str,
+        path_ctx: tui_pathpick.PathContext | None = None,
+    ) -> None:
         # Textual ids are ASCII-only, while prompt placeholders deliberately accept
         # Unicode identifiers. Keep the historical queryable id for ASCII fields and
         # leave localized rows anonymous; actions resolve rows by their actual field
@@ -114,6 +119,14 @@ class FieldRow(Vertical):
         super().__init__(id=f"fr-{field.key}" if field.key.isascii() else None)
         self.field: flows.FormField = field
         self._prefill: str = prefill
+        self._path_ctx: tui_pathpick.PathContext | None = path_ctx
+
+    @property
+    def shlexy(self) -> bool:
+        """Whether the field's text is re-parsed with shlex at assembly (multi-value
+        fields and the extra-args row) — the shapes a picked path must be APPENDED to
+        as a quoted piece rather than replacing the value (path.md §5)."""
+        return self.field.multiple or self.field.key == _EXTRA_KEY
 
     @property
     def insertable(self) -> bool:
@@ -127,7 +140,7 @@ class FieldRow(Vertical):
         pieces = [escape(f.label)]
         if f.required:
             pieces.append(f"[$accent]{gettext('required')}[/]")
-        if f.kind in ("int", "float", "bool"):
+        if f.kind in ("int", "float", "bool", "path"):
             pieces.append(f"[dim]{_type_label(f.kind)}[/dim]")
         if f.secret:
             pieces.append(f"[dim]🔒 {gettext('never saved to disk')}[/dim]")
@@ -162,7 +175,17 @@ class FieldRow(Vertical):
                 for choice in f.choices:
                     yield RadioButton(escape(choice), value=(choice == self._prefill))
         else:
-            yield Input(value=self._prefill, password=f.secret)
+            suggester = None
+            if self._path_ctx is not None and not f.secret:
+                # Universal affordance (path.md §4): every free-text field gets the
+                # path suggester; its activation rule decides when to speak.
+                suggester = tui_pathpick.PathSuggester(
+                    kind=f.kind,
+                    shlexy=self.shlexy,
+                    placeholder_braces=f.source == "placeholder",
+                    ctx=self._path_ctx,
+                )
+            yield Input(value=self._prefill, password=f.secret, suggester=suggester)
 
     @property
     def value(self) -> str:
@@ -282,11 +305,17 @@ class PresetNameModal(ModalScreen[str | None]):
         self.dismiss(None)
 
 
-class TokenMenuModal(ModalScreen[str | None]):
+class TokenMenuModal(ModalScreen["str | tui_pathpick.PickedPath | None"]):
     """The ▾insert menu: run-time value tokens, spelled out so users learn the syntax
     passively (the same philosophy as showing the assembled command). The first two
     entries ARE the design's intent-vs-frozen fork: "wherever I run from" ({cwd}) sits
-    right next to "this directory, as a fixed path"."""
+    right next to "this directory, as a fixed path".
+
+    "File or folder…" chains into the file picker the way "Environment variable…"
+    chains into the env picker; on a path-typed field it sits FIRST and highlighted,
+    so Ctrl+T, Enter is the two-keystroke browse path — Ctrl+T keeps its one grammar
+    meaning and no per-type chord exists (path.md §5). A picked path dismisses as a
+    PickedPath (a discriminated type), never a bare token string."""
 
     AUTO_FOCUS = "OptionList"
     BINDINGS = [Binding("escape", "cancel", gettext("Cancel"))]
@@ -306,6 +335,14 @@ class TokenMenuModal(ModalScreen[str | None]):
     """
 
     _ENV_SENTINEL = "__env__"
+    _FILE_SENTINEL = "__file__"
+
+    def __init__(
+        self, browse: tui_pathpick.PathContext | None = None, path_first: bool = False
+    ) -> None:
+        super().__init__()
+        self._browse: tui_pathpick.PathContext | None = browse
+        self._path_first: bool = path_first
 
     @override
     def compose(self) -> ComposeResult:
@@ -326,6 +363,12 @@ class TokenMenuModal(ModalScreen[str | None]):
                 id=self._ENV_SENTINEL,
             )
         )
+        if self._browse is not None:
+            file_row = Option(gettext("File or folder…"), id=self._FILE_SENTINEL)
+            # Path-typed fields browse first (the OptionList highlights row 0, so
+            # Ctrl+T, Enter opens the picker); other fields keep the token order and
+            # find it next to the env picker, its sibling chained chooser.
+            options.insert(0, file_row) if self._path_first else options.append(file_row)
         with Vertical():
             yield Label(gettext("Insert a run-time value"))
             yield OptionList(*options)
@@ -342,6 +385,17 @@ class TokenMenuModal(ModalScreen[str | None]):
                 self.dismiss(token)
 
             self.app.push_screen(EnvPickerModal(), _env_done)
+            return
+        if event.option.id == self._FILE_SENTINEL:
+            browse = self._browse
+            if browse is None:  # the row only composes with a context
+                self.dismiss(None)
+                return
+
+            def _file_done(picked: tui_pathpick.PickedPath | None) -> None:
+                self.dismiss(picked)
+
+            self.app.push_screen(tui_pathpick.FilePickerModal(browse), _file_done)
             return
         self.dismiss(str(event.option.id))
 
@@ -508,6 +562,9 @@ class RunFormScreen(Screen[FormResult]):
         self._runner_pick_armed: bool = False
         self._runner_was_picked: bool = False
         self._presets: dict[str, dict[str, str]] = argstate.load_state(entry.slug)["presets"]
+        # The completion roots, computed once per form (path.md §3): bare relative
+        # paths complete where the child resolves them; tokens expand at the invoke cwd.
+        self._path_ctx: tui_pathpick.PathContext = tui_pathpick.PathContext.for_entry(entry)
         # Armed during the programmatic post-save picker refresh: while set, EVERY
         # Select.Changed is ignored until the one carrying this value arrives (it is
         # consumed and the guard clears). Not a single-value one-shot: set_options
@@ -564,7 +621,7 @@ class RunFormScreen(Screen[FormResult]):
                 yield from self._compose_preset_row()
             with tui_footer.FormBody(id="form-body"):
                 for f in self._plan.fields:
-                    yield FieldRow(f, self._prefill.get(f.key, ""))
+                    yield FieldRow(f, self._prefill.get(f.key, ""), path_ctx=self._path_ctx)
                 if self._include_extra:
                     from .langs.registry import spec_for
 
@@ -592,7 +649,7 @@ class RunFormScreen(Screen[FormResult]):
                     )
                     # The matching split in collect() keeps one argument with spaces
                     # intact and preserves Windows path backslashes.
-                    yield FieldRow(extra_field, argv_text.join(last_extra))
+                    yield FieldRow(extra_field, argv_text.join(last_extra), path_ctx=self._path_ctx)
         chips = [
             tui_footer.chip("screen.submit", "Enter", gettext("Run")),
             tui_footer.chip("screen.insert_token", "Ctrl+T", gettext("Insert value")),
@@ -727,13 +784,22 @@ class RunFormScreen(Screen[FormResult]):
             return
         target = row.query_one(Input)
         target.focus()
+        shlexy = row.shlexy
 
-        def _insert(token: str | None) -> None:
-            if token:
-                target.insert_text_at_cursor(token)
+        def _insert(result: str | tui_pathpick.PickedPath | None) -> None:
+            if isinstance(result, tui_pathpick.PickedPath):
+                # A picked path IS the value: replace a single-value field, append a
+                # quoted piece to a shlex-parsed one — at-cursor insertion would
+                # corrupt a prefilled value (path.md §5).
+                tui_pathpick.insert_picked(target, result, shlexy=shlexy)
+                target.focus()
+            elif result:
+                target.insert_text_at_cursor(result)
                 target.focus()
 
-        self.app.push_screen(TokenMenuModal(), _insert)
+        self.app.push_screen(
+            TokenMenuModal(browse=self._path_ctx, path_first=row.field.kind == "path"), _insert
+        )
 
     def action_save_preset(self) -> None:
         if not self._plan.fields:
