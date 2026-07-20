@@ -200,7 +200,7 @@ def test_render_declared_warning_exact_line_per_code() -> None:
         "not-a-placeholder": (
             "w isn't a template placeholder, so it can't use placeholder delivery; skipped."
         ),
-        "bad-type": "w: unknown type; skipped (use str, int, float, bool, or choice).",
+        "bad-type": "w: unknown type; skipped (use str, int, float, bool, choice, or path).",
         "bad-default": "w: the default doesn't fit its type; skipped.",
         "choice-without-choices": "w: a choice parameter needs choices; set --choices w=a,b,c.",
     }
@@ -213,7 +213,7 @@ def test_render_declared_warning_splits_on_first_colon() -> None:
     that itself contains a colon must round-trip whole (partition, not rpartition, which
     would misread the code and raise KeyError)."""
     assert cli._render_declared_warning("bad-type:na:me") == (
-        "na:me: unknown type; skipped (use str, int, float, bool, or choice)."
+        "na:me: unknown type; skipped (use str, int, float, bool, choice, or path)."
     )
 
 
