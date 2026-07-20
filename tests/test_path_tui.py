@@ -648,10 +648,16 @@ async def test_token_rows_still_insert_at_cursor(tmp_path, monkeypatch):
 
 
 def test_fieldrow_shlexy_and_insert_mode_all_branches():
-    """FieldRow.shlexy and .insert_mode are @property methods, which mutmut cannot
-    mutate — so their every branch is pinned directly here: a single-value field
+    """FieldRow.shlexy and .insert_mode are @property methods, whose bodies mutmut does
+    not mutate — so their every branch is pinned directly here: a single-value field
     replaces; a `multiple` field appends in the POSIX-shlex dialect; the extra-args row
-    appends in the argv/CRT dialect (path.md §5)."""
+    appends in the argv/CRT dialect (path.md §5).
+
+    The same blind spot covers any DECORATED class body — mutmut skips the whole
+    ClassDef — so tui_pathpick's `@dataclass PathContext`/`PickedPath` generate zero
+    mutants too; their §3 logic is likewise carried by direct tests (value_for,
+    picker_start, bare_root, for_entry above), never by the mutation gate. New logic
+    added to a decorated class needs its own direct pins."""
 
     def _row(*, key: str = "x", multiple: bool = False) -> FieldRow:
         field = flows.FormField(key=key, label="x", source="flag", multiple=multiple)
