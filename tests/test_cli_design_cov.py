@@ -1067,6 +1067,54 @@ def test_onboard_script_params_preserves_non_utf8_source_bytes(tmp_path, monkeyp
     assert b"[tool.skit]" in rewritten
 
 
+# ---- _edit_params: the write-back half must be byte-lossless (the onboard idiom) ----------
+
+
+def test_edit_params_write_back_uses_the_surrogateescape_pair(tmp_path, monkeypatch):
+    """`params --manage`'s write-back mirrors the onboard idiom: the analysis read stays
+    errors="replace", but the text that is WRITTEN comes from a surrogateescape re-read and
+    goes back with surrogateescape — so a manage edit can't bake U+FFFD over raw bytes."""
+    entry = _two_const_shell(tmp_path)
+    reads: list[dict[str, object]] = []
+    writes: list[dict[str, object]] = []
+    real_read = Path.read_text
+    real_write = Path.write_text
+
+    def read_spy(self, encoding=None, errors=None, *a, **k):
+        if self == entry.script_path:
+            reads.append({"encoding": encoding, "errors": errors})
+        return real_read(self, *a, encoding=encoding, errors=errors, **k)
+
+    def write_spy(self, data, encoding=None, errors=None, *a, **k):
+        if self == entry.script_path:
+            writes.append({"encoding": encoding, "errors": errors})
+        return real_write(self, data, *a, encoding=encoding, errors=errors, **k)
+
+    monkeypatch.setattr(Path, "read_text", read_spy)
+    monkeypatch.setattr(Path, "write_text", write_spy)
+    result = runner.invoke(cli.app, ["params", "d", "--manage", "WIDTH"])
+    assert result.exit_code == 0, result.output
+    assert [r["encoding"] for r in reads] == ["utf-8", "utf-8"]  # analysis read + write-back read
+    assert [r["errors"] for r in reads] == ["replace", "surrogateescape"]
+    assert [w["encoding"] for w in writes] == ["utf-8"]  # the single copy write
+    assert [w["errors"] for w in writes] == ["surrogateescape"]
+
+
+def test_edit_params_preserves_non_utf8_source_bytes(tmp_path):
+    """A --manage edit only inserts the comment block: an unrelated raw byte elsewhere in the
+    script must round-trip, never become U+FFFD (same guarantee as onboarding)."""
+    source = tmp_path / "rawedit.sh"
+    original = b"#!/bin/sh\nWIDTH=800\nprintf '\xff\\n'\n"
+    source.write_bytes(original)
+    entry = store.add_script(source, kind="shell", name="rawedit")
+    result = runner.invoke(cli.app, ["params", "rawedit", "--manage", "WIDTH"])
+    assert result.exit_code == 0, result.output
+    rewritten = entry.script_path.read_bytes()
+    assert b"\xff" in rewritten
+    assert b"\xef\xbf\xbd" not in rewritten  # UTF-8 encoding of U+FFFD
+    assert b"[tool.skit]" in rewritten
+
+
 # ============================================================ run --forget-args
 
 

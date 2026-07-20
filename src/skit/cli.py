@@ -4121,8 +4121,16 @@ def _edit_params(
         err_console.print(f"[yellow]{escape(analysis.render_warning(w))}[/yellow]")
     for w in _apply_env_sources(result.specs, env_sources):
         err_console.print(f"[yellow]{escape(w)}[/yellow]")
-    new_text = entry_spec.params_io.write(text, result.specs)
-    copy_path.write_text(new_text, encoding="utf-8")  # pragma: no mutate — utf-8 equivalence
+    # This is a write-back path, so the decode must be lossless (same discipline as
+    # _onboard_script_params): `text` above was read with errors="replace" for the analyzer,
+    # but writing THAT text back would bake U+FFFD over every non-UTF-8 byte. Re-read with
+    # surrogateescape — params_io.write only touches the comment block, so raw bytes round-trip.
+    current = copy_path.read_text(encoding="utf-8", errors="surrogateescape")  # pragma: no mutate — utf-8 equivalence  # fmt: skip
+    copy_path.write_text(
+        entry_spec.params_io.write(current, result.specs),
+        encoding="utf-8",
+        errors="surrogateescape",
+    )  # pragma: no mutate
     secret_now = {s.name for s in result.specs if s.secret}
     purged = argstate.purge_secret(entry.slug, secret_now)
     if purged:
@@ -4220,7 +4228,22 @@ def _normalize_params(
     copy_path = entry.script_path
     if not copy_path.exists():
         raise _fail(gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}, 1)
-    text = copy_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
+    # Bytes in, bytes out: --normalize rewrites the script's own text through a parse-and-splice
+    # pipeline that is strict UTF-8 end to end, so a lossy read (errors="replace") would bake
+    # U+FFFD over every non-UTF-8 byte on write-back, and read_text's universal-newline mode
+    # would rewrite every CRLF — both breaking A5's byte-minimal promise. A script that doesn't
+    # decode is refused whole instead, leaving the stored copy byte-for-byte untouched.
+    try:
+        text = copy_path.read_bytes().decode("utf-8")  # pragma: no mutate — codec alias
+    except UnicodeDecodeError:
+        raise _fail(
+            gettext(
+                "%(name)s isn't valid UTF-8, so --normalize can't rewrite it safely; nothing "
+                "was changed — its constants keep being injected into a temporary copy."
+            )
+            % {"name": entry.meta.name},
+            1,
+        ) from None
     result = entry_spec.normalizer.normalize(text, list(names))
     for warning in result.refused:
         err_console.print(f"[yellow]{escape(_render_normalize_warning(warning))}[/yellow]")
@@ -4242,7 +4265,7 @@ def _normalize_params(
         for s in entry_spec.params_io.read(result.text)
     ]
     new_text = entry_spec.params_io.write(result.text, specs)
-    copy_path.write_text(new_text, encoding="utf-8")  # pragma: no mutate — utf-8 equivalence
+    copy_path.write_bytes(new_text.encode("utf-8"))  # pragma: no mutate — codec alias
     console.print(
         f"[green]{gettext('Normalized %(names)s in %(name)s: delivered as environment variables from now on (no temporary copy, and $0 stays your real file).') % {'names': ', '.join(escape(n) for n in result.normalized), 'name': escape(entry.meta.name)}}[/green]"
     )

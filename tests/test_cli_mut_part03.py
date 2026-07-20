@@ -378,6 +378,44 @@ def test_normalize_no_stored_copy_message_exact(tmp_path):
     assert "XX" not in out
 
 
+def test_normalize_refuses_a_non_utf8_script_untouched(tmp_path):
+    # A stored copy that isn't valid UTF-8 can't round-trip through the strict parse-and-splice
+    # pipeline, so --normalize refuses the whole file (exit 1) and leaves it byte-for-byte
+    # untouched — the errors="replace" read would have baked U+FFFD over the raw byte instead.
+    src = tmp_path / "raw.sh"
+    original = b"#!/usr/bin/env bash\nWIDTH=800\nprintf '\xff\\n'\necho \"$WIDTH\"\n"
+    src.write_bytes(original)
+    entry = store.add_script(src, kind="shell", name="raw")
+    result = runner.invoke(cli.app, ["params", "raw", "--normalize", "WIDTH"])
+    assert result.exit_code == 1
+    out = _norm(result.output)
+    assert (
+        "raw isn't valid UTF-8, so --normalize can't rewrite it safely; nothing was changed "
+        "— its constants keep being injected into a temporary copy." in out
+    )
+    assert "XX" not in out
+    assert entry.script_path.read_bytes() == original
+
+
+def test_normalize_splices_bytes_minimally_on_a_crlf_cjk_script(tmp_path):
+    # The A5 byte-minimal promise, byte-for-byte: only WIDTH's value span changes. A
+    # universal-newline read_text would rewrite every CRLF on write-back; CJK + emoji pin the
+    # multibyte byte offsets through the strict encode/decode pair.
+    src = tmp_path / "win.sh"
+    original = (
+        b"#!/usr/bin/env bash\r\n"
+        b"WIDTH=800\r\n"
+        b"# \xe5\xaf\xac\xe5\xba\xa6 \xf0\x9f\x8e\xaf\r\n"
+        b'echo "$WIDTH"\r\n'
+    )
+    src.write_bytes(original)
+    entry = store.add_script(src, kind="shell", name="win")
+    result = runner.invoke(cli.app, ["params", "win", "--normalize", "WIDTH"])
+    assert result.exit_code == 0, result.output
+    expected = original.replace(b"WIDTH=800", b'WIDTH="${WIDTH:-800}"')
+    assert entry.script_path.read_bytes() == expected
+
+
 def test_normalize_success_message_two_names_exact(tmp_path):
     # Two consts normalized in one call: the success line names them ", "-joined. Kills the
     # message-is-None, the msgid wrap, the lowercase, and the "XX, XX".join mutants.
