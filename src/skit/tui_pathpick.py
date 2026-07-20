@@ -155,9 +155,13 @@ def _list_matches(base: Path, prefix: str) -> list[tuple[str, bool]]:
 def _list_filtered(base: Path, needle: str) -> list[tuple[str, bool]]:
     """The picker's listing: case-insensitive substring, like EnvPickerModal — the
     picker redraws whole rows with their true names, so no casing constraint applies,
-    and `re` must find README.md."""
+    and `re` must find README.md. Ranked so Enter never surprises: case-insensitive
+    PREFIX matches ahead of mere substring hits (the user who typed `da` means
+    data.csv, not Anaconda), directories before files within each rank, then
+    case-insensitive alphabetical."""
     low = needle.lower()
-    return _scan(base, lambda name: low in name.lower(), show_hidden=needle.startswith("."))
+    matches = _scan(base, lambda name: low in name.lower(), show_hidden=needle.startswith("."))
+    return sorted(matches, key=lambda m: (not m[0].lower().startswith(low), not m[1], m[0].lower()))
 
 
 class PathSuggester(Suggester):
@@ -269,8 +273,8 @@ class FilePickerModal(ModalScreen[PickedPath | None]):
         # focus — Enter's "acts on the highlighted row" contract needs a way to move
         # the highlight without leaving the filter. When the OptionList itself has
         # focus its own cursor bindings win, unchanged.
-        Binding("up", "list_cursor('up')", show=False),
-        Binding("down", "list_cursor('down')", show=False),
+        Binding("up", "list_cursor('cursor_up')", show=False),
+        Binding("down", "list_cursor('cursor_down')", show=False),
         Binding("pageup", "list_cursor('page_up')", show=False),
         Binding("pagedown", "list_cursor('page_down')", show=False),
     ]
@@ -338,13 +342,13 @@ class FilePickerModal(ModalScreen[PickedPath | None]):
             options.append(
                 Option(f"[dim]📂[/dim] {gettext('(use this directory)')}", id=self._USE_DIR)
             )
-        listing = _list_filtered(self._dir, needle)
-        dirs = [(n, d) for n, d in listing if d]
-        files = [(n, d) for n, d in listing if not d]
-        for name, _ in dirs:
-            options.append(Option(f"▸ {escape(name)}/", id=f"d:{name}"))
-        for name, _ in files:
-            options.append(Option(escape(name), id=f"f:{name}"))
+        for name, is_dir in _list_filtered(self._dir, needle):
+            # _list_filtered's rank order IS the row order — re-grouping dirs first
+            # across ranks would put Anaconda/ back above data.csv on filter "da".
+            if is_dir:
+                options.append(Option(f"▸ {escape(name)}/", id=f"d:{name}"))
+            else:
+                options.append(Option(escape(name), id=f"f:{name}"))
         option_list.add_options(options)
         if option_list.option_count:
             # Empty filter: highlight the first real entry (the pinned row stays one ↑
@@ -376,8 +380,9 @@ class FilePickerModal(ModalScreen[PickedPath | None]):
             self._act(str(option.id))
 
     def action_list_cursor(self, direction: str) -> None:
+        # OptionList's own action names: cursor_up/cursor_down but page_up/page_down.
         option_list = self.query_one(OptionList)
-        getattr(option_list, f"action_cursor_{direction}")()
+        getattr(option_list, f"action_{direction}")()
 
     def action_ascend(self) -> None:
         parent = self._dir.parent

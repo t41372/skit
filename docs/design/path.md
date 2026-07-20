@@ -311,9 +311,13 @@ with the seams specified where the precedent behaves differently:
   filter means "find me a named entry", and Enter must then act on the first match);
   the highlight lands on the first real entry unfiltered, the first match filtered.
   Typing filters **case-insensitive substring**, like `EnvPickerModal` (`re` finds
-  `README.md`); hidden entries only when the filter starts with `.`; listings capped
+  `README.md`), ranked prefix-first — a case-insensitive *prefix* match outranks a
+  mere substring hit (typing `da` means `data.csv`, never a descend into
+  `Anaconda/`), dirs before files within each rank, case-insensitive alphabetical
+  within that; hidden entries only when the filter starts with `.`; listings capped
   at the same constant as the suggester. `↑`/`↓`/`PgUp`/`PgDn` steer the highlight
-  while the filter keeps focus (non-priority screen bindings).
+  while the filter keeps focus (non-priority screen bindings; OptionList's own
+  cursor bindings win when it holds focus).
 - **Keys** (each a footer chip, each with a positive pilot test):
   - `Enter` — acts on the **highlighted row** (descend into a directory / insert a
     file), including when fired from the focused filter Input: the `Input.Submitted`
@@ -400,8 +404,10 @@ zh_TW to 100% → `compile`), checking each formerly-translated enumeration by h
 4. **Event-loop stalls** — the suggester and picker listings are async/capped; a test
    exercises the cap. (The synchronous glob feedback is unchanged by this design and
    keeps its current cost profile.)
-5. **A suggestion is never a value** — ghost text uncommitted until explicitly
-   accepted; the assembled command uses the Input's actual text only.
+5. **A suggestion is never a value** — structural rather than test-pinned: the
+   suggester holds no reference to any Input and only returns strings; acceptance is
+   the stock Textual gesture, and the assembled command uses the Input's actual text
+   only.
 6. **Secrets stay dark** — no suggestions, no picker, no history: secret fields are
    excluded at the same gate as `insertable`, and `argstate` already strips secret
    values structurally.

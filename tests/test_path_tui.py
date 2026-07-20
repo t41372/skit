@@ -320,6 +320,40 @@ async def test_picker_arrows_steer_highlight_without_leaving_the_filter(tmp_path
         await pilot.pause()
         assert option_list.highlighted == (start or 0) + 1
         assert isinstance(app.focused, Input)  # focus never moved
+        # All four advertised steering keys must actually run (OptionList spells its
+        # actions cursor_up/cursor_down but page_up/page_down — a name mismatch here
+        # was an app crash, not a no-op).
+        await pilot.press("pagedown")
+        await pilot.pause()
+        assert option_list.highlighted == option_list.option_count - 1
+        await pilot.press("pageup")
+        await pilot.pause()
+        assert option_list.highlighted == 0
+        assert app.screen is modal  # still alive
+
+
+async def test_picker_prefix_matches_outrank_substring_hits(tmp_path):
+    """Filter `da`: data.csv (prefix match, a file) must sit above Anaconda/ (a
+    substring-matching directory that ASCII sort would float to the top) — Enter
+    picks what the user typed, it never surprise-descends."""
+    root = _tree(tmp_path)
+    (root / "Anaconda").mkdir()
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        picked: list[PickedPath | None] = []
+        app.push_screen(FilePickerModal(_ctx(root)), picked.append)
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, FilePickerModal)
+        modal.query_one(Input).value = "da"
+        await pilot.pause()
+        option_list = modal.query_one(OptionList)
+        ids = [str(option_list.get_option_at_index(i).id) for i in range(option_list.option_count)]
+        assert ids == ["f:data.csv", "d:Anaconda"]
+        assert option_list.highlighted == 0
+        await pilot.press("enter")
+        await pilot.pause()
+    assert picked == [PickedPath("data.csv")]
 
 
 async def test_picker_filter_is_case_insensitive_substring(tmp_path):
