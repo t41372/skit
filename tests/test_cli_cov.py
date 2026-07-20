@@ -30,7 +30,9 @@ def tmp_store(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 @pytest.fixture
 def tty(monkeypatch):
+    # _is_interactive() now checks stdin AND stdout, so both must look like a tty.
     monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True, raising=False)
 
 
 def _py(tmp_path: Path, body: str, name: str = "job.py") -> Path:
@@ -215,7 +217,45 @@ def test_preset_save_python_with_params_non_interactive_prefill(tmp_path):
     assert argstate.load_state(ent.slug)["presets"]["prod"] == {"CITY": "Taipei"}
 
 
-def test_preset_save_python_secret_param_excluded_with_notice(monkeypatch, tty, tmp_path, capsys):
+def test_preset_save_piped_stdout_takes_prefill_not_the_prompt(tmp_path, monkeypatch):
+    """The interactive predicate is now _is_interactive() (stdin AND stdout): a tty stdin
+    with a PIPED stdout must NOT prompt — it takes the non-interactive prefill path."""
+    text = metawriter.write_params(
+        'CITY = "Taipei"\nprint(CITY)\n',
+        [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
+    )
+    ent = store.add_python(_py(tmp_path, text), name="a")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False, raising=False)  # piped
+    monkeypatch.setattr(
+        cli.promptform,
+        "collect",
+        lambda *a, **k: pytest.fail("piped stdout must not open the form"),
+    )
+    cli.preset_save("a", "prod", from_last=False)
+    assert argstate.load_state(ent.slug)["presets"]["prod"] == {"CITY": "Taipei"}
+
+
+def test_preset_save_interactive_collects_the_form(tmp_path, monkeypatch):
+    """Both stdin and stdout a tty (interactive): the form is collected."""
+    text = metawriter.write_params(
+        'CITY = "Taipei"\nprint(CITY)\n',
+        [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
+    )
+    ent = store.add_python(_py(tmp_path, text), name="a")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    called: dict[str, object] = {}
+    monkeypatch.setattr(
+        cli.promptform,
+        "collect",
+        lambda plan, prefill, console: called.setdefault("v", {"CITY": "Kyoto"}),
+    )
+    cli.preset_save("a", "prod", from_last=False)
+    assert called["v"] == {"CITY": "Kyoto"}  # the form ran
+    assert argstate.load_state(ent.slug)["presets"]["prod"] == {"CITY": "Kyoto"}
+
+
+def test_preset_save_python_secret_param_excluded_with_notice(monkeypatch, tmp_path, capsys):
     # Direct call (CliRunner swaps sys.stdin, hiding the tty): a secret value typed into
     # the preset form must be skipped with the notice, never persisted (C3).
     text = metawriter.write_params(
@@ -223,6 +263,7 @@ def test_preset_save_python_secret_param_excluded_with_notice(monkeypatch, tty, 
         [ParamDecl(name="API", binding="const", type="str", default="x", secret=True)],
     )
     ent = store.add_python(_py(tmp_path, text), name="a")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)  # take the form path
     monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: "typed-secret")
     cli.preset_save("a", "prod", from_last=False)
     assert "never stored in presets" in capsys.readouterr().out

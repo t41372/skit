@@ -149,6 +149,56 @@ def test_save_preset_on_field_less_entry_refused_saves_nothing(run_entry_spy):
     assert argstate.load_state(store.resolve("noargs").slug)["presets"] == {}  # saved nothing
 
 
+def test_save_preset_deferred_until_a_real_run_is_accepted(run_entry_spy):
+    """A normal `run --save-preset` persists the preset AFTER the launch is accepted, so
+    the 'Preset saved' line prints AFTER the script's own output (deferred persistence)."""
+    ent = store.add_command("echo {msg}", name="e")
+    result = runner.invoke(
+        cli.app, ["run", "e", "--set", "msg=hi", "--save-preset", "prod", "--no-input"]
+    )
+    assert result.exit_code == 0, result.output
+    assert run_entry_spy["entry"].slug == ent.slug  # it ran
+    assert argstate.load_state(ent.slug)["presets"]["prod"] == {"msg": "hi"}
+
+
+def test_save_preset_not_written_when_launch_is_refused(run_entry_spy, monkeypatch):
+    """A launch refusal (outcome.code is None) leaves NO preset — the deferred write is
+    gated on acceptance, not merely reaching the run body."""
+    from skit import flows
+
+    store.add_command("echo {msg}", name="e")
+    monkeypatch.setattr(
+        cli.flows,
+        "execute",
+        lambda *a, **k: flows.RunOutcome(None, flows.FAIL_LAUNCH, "runner vanished"),
+    )
+    result = runner.invoke(
+        cli.app, ["run", "e", "--set", "msg=hi", "--save-preset", "prod", "--no-input"]
+    )
+    assert result.exit_code != 0
+    assert argstate.load_state(store.resolve("e").slug)["presets"] == {}  # nothing persisted
+
+
+def test_save_preset_dry_run_validation_failure_writes_nothing(tmp_path):
+    """`--save-preset X --dry-run` on a prompt whose render is over-long exits 125 and
+    persists NO preset — the deferred write sits AFTER dry-run validation."""
+    from skit import argstate as _argstate
+    from skit.langs.prompt import render
+
+    body = "Do {{a}}\n"
+    p = tmp_path / "big.prompt.md"
+    p.write_text(body, encoding="utf-8")
+    store.add_prompt(p, name="big")
+    store.write_prompt_runner(store.resolve("big").slug, "claude")
+    huge = "x" * (render.ARGV_LIMIT + 1)
+    result = runner.invoke(
+        cli.app,
+        ["run", "big", "--set", f"a={huge}", "--save-preset", "toolong", "--dry-run", "--no-input"],
+    )
+    assert result.exit_code == 125, result.output
+    assert _argstate.load_state(store.resolve("big").slug).get("presets", {}) == {}
+
+
 def test_set_secret_never_persisted_and_masked_in_dry_run(tmp_path, run_entry_spy):
     text = metawriter.write_params(
         'KEY = "old"\nprint(KEY)\n',

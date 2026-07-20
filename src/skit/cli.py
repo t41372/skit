@@ -1320,6 +1320,138 @@ def _validate_forced_kind(value: str) -> None:
         raise typer.Exit(EXIT_USAGE)
 
 
+def _ask_kind_plain(filename: str, *, has_shebang: bool, offer_exe: bool) -> str | None:
+    """The line-prompt twin of the TUI's KindPickModal (same question, same options,
+    same msgids): an unclassifiable file gets an ASK, not an error message that
+    teaches CLI flags. Returns the picked kind, or None on '-' (cancel). No
+    `suggested` twin on purpose: in plain mode the .md fast path is the Confirm ask
+    that runs BEFORE this menu — if that Confirm ever grows another suggested kind,
+    thread `suggested` through here too or the twins diverge."""
+    from .kindnames import kind_label
+    from .langs.registry import KNOWN_KINDS, spec_for
+
+    # "prompt" gets its own dedicated option below, same as the modal.
+    interpreted = sorted(
+        k
+        for k in KNOWN_KINDS
+        if (spec := spec_for(k)) is not None and spec.family == "interpreted" and k != "prompt"
+    )
+    kinds = list(interpreted)
+    labels = [kind_label(k) for k in interpreted]
+    if offer_exe:
+        kinds.append("exe")
+        labels.append(gettext("A program (run it directly)"))
+    kinds.append("prompt")
+    labels.append(gettext("A prompt for an AI agent"))
+    question = (
+        gettext("The #! in %(file)s names no interpreter skit knows. What is it?")
+        if has_shebang
+        else gettext("What is %(file)s? skit can't tell from the name.")
+    )
+    console.print(question % {"file": escape(filename)})
+    for i, label in enumerate(labels, start=1):
+        console.print(f"  {i}. {escape(label)}")
+    console.print(f"[dim]{gettext('- = cancel')}[/dim]")
+    answer = Prompt.ask(
+        gettext("Which one?"),
+        choices=[*(str(i) for i in range(1, len(kinds) + 1)), "-"],
+        console=console,
+    )
+    if answer == "-":
+        return None
+    return kinds[int(answer) - 1]
+
+
+def _report_command_params(entry: store.Entry) -> None:
+    """The post-add note a --cmd template gets when its {holes} were detected."""
+    if entry.meta.params:
+        console.print(
+            gettext(
+                "Detected parameters: %(names)s (the run form asks for them; your last values are remembered)"
+            )
+            % {"names": ", ".join(escape(p) for p in entry.meta.params)}
+        )
+
+
+def _hosted_add_summary(entry: store.Entry) -> tuple[list[str], list[str], list[str]]:
+    """(deps, managed, secrets) for the post-add summary of a panel-hosted add — the
+    same trace the line-prompt onboarding leaves. Deps come from effective_uv_metadata
+    (display never reads raw meta — store's rule). Managed params live in two places
+    by kind: the review panel writes a script's ticked candidates into the stored
+    copy's own [tool.skit] block (params_io), while prompt/command entries keep theirs
+    in meta.params — reading only meta here would report every script add as
+    parameter-free."""
+    deps, _ = store.effective_uv_metadata(entry)
+    entry_spec = spec_for(entry.meta.kind)
+    if entry_spec is not None and entry_spec.params_io is not None and entry.script_path.exists():
+        text = entry.script_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
+        decls = entry_spec.params_io.read(text)
+        return deps, [d.name for d in decls], [d.name for d in decls if d.secret]
+    managed = list(entry.meta.params or [])
+    return deps, managed, [n for n in managed if is_secret_name(n)]
+
+
+def _add_no_source_ask() -> str | None:
+    """Bare `skit add` in an interactive terminal: ASK what to add instead of erroring
+    (zero-memorization — the editor/prompt/template lanes must be discoverable without
+    --help, which is exactly issue #10). Takes no flags on purpose: the caller refuses
+    every flag while nothing is picked yet (refuse-never-drop), so each lane here
+    starts from the same blank slate the TUI source step does. Returns a path for the
+    caller to continue the path lane with, or None when the add was handled (or
+    cancelled) here."""
+    if os.environ.get("TERM") != "dumb" and config.load_form() == "tui":
+        # The SAME source step the Library's `a` pushes — path, command template,
+        # kept drafts, and both blank-page authoring lanes.
+        from .tui_add import run_add_source
+
+        slug = run_add_source()
+        if slug is None:
+            console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
+            raise typer.Exit(EXIT_CANCELLED)
+        entry = store.resolve(slug)
+        summary_deps, summary_managed, summary_secrets = _hosted_add_summary(entry)
+        _print_add_summary(entry, summary_deps, summary_managed, summary_secrets)
+        return None
+    # form = "plain" / TERM=dumb: the line-prompt twin of the source step.
+    console.print(gettext("What would you like to add?"))
+    console.print("  1. " + gettext("A file you already have — a script, program, or prompt"))
+    console.print("  2. " + gettext("A new script, written in your editor"))
+    console.print("  3. " + gettext("A new AI-agent prompt, written in your editor"))
+    console.print("  4. " + gettext("A command template (e.g. ffmpeg -i {input})"))
+    choice = Prompt.ask(
+        gettext("Which one?"), choices=["1", "2", "3", "4"], default="1", console=console
+    )
+    if choice == "2":
+        _create_python_in_editor(None, None, deps_opt=None, python_opt=None, no_input=False)
+        return None
+    if choice == "3":
+        _create_prompt_in_editor(None, None, None, interpolate=True, no_input=False)
+        return None
+    if choice == "4":
+        # ONE cancellation rule for the whole menu: an empty answer cancels — the
+        # template, name, and path asks all behave alike.
+        template = Prompt.ask(gettext("Command template"), console=console).strip()
+        if not template:
+            console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
+            raise typer.Exit(EXIT_CANCELLED)
+        cmd_name = Prompt.ask(gettext("Name for the command"), console=console).strip()
+        if not cmd_name:
+            console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
+            raise typer.Exit(EXIT_CANCELLED)
+        description = Prompt.ask(
+            gettext("Description (optional)"), default="", console=console
+        ).strip()
+        entry = store.add_command(template, name=cmd_name, description=description)
+        _report_command_params(entry)
+        _print_add_summary(entry, [], [], [])
+        return None
+    path = Prompt.ask(gettext("Path to the file"), console=console).strip()
+    if not path:
+        console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
+        raise typer.Exit(EXIT_CANCELLED)
+    return path
+
+
 @app.command(
     help=gettext("Add a script, executable, prompt, or command to skit."),
     epilog=gettext(
@@ -1329,7 +1461,10 @@ def _validate_forced_kind(value: str) -> None:
 def add(
     path: str = typer.Argument(
         None,
-        help=gettext("Path to a script, executable, or prompt, or '-' to read one from stdin"),
+        help=gettext(
+            "Path to a script, executable, or prompt, or '-' to read one from stdin "
+            "(omit it in a terminal and skit asks what to add)"
+        ),
     ),
     name: str = typer.Option(
         None, "--name", "-n", help=gettext("Name / alias (defaults to the file name)")
@@ -1585,19 +1720,51 @@ def add(
                 raise typer.Exit(EXIT_USAGE)
             _refuse_unusable_add_flags("command", spec_for("command"), ref, dep, python)
             entry = store.add_command(cmd, name=name, description=description or "")
-            if entry.meta.params:
-                console.print(
-                    gettext(
-                        "Detected parameters: %(names)s (the run form asks for them; your last values are remembered)"
-                    )
-                    % {"names": ", ".join(escape(p) for p in entry.meta.params)}
-                )
+            _report_command_params(entry)
         else:
             if not path:
-                err_console.print(
-                    f"[red]{gettext('Provide a source path, or use --cmd to register a command template')}[/red]"
-                )
-                raise typer.Exit(EXIT_USAGE)
+                # Bare `skit add`: pipes/CI get the honest lane list; a terminal gets
+                # an ASK (zero-memorization — the editor/prompt/template lanes must
+                # be discoverable without --help, which is exactly issue #10).
+                if no_input or not _is_interactive():
+                    # Name ONLY the lanes that work right here: --edit (and --prompt
+                    # with no path) open an editor, which a pipe/--no-input refuses —
+                    # recommending them from this branch would be a guaranteed second
+                    # refusal. The stdin spellings are the non-interactive authoring
+                    # story.
+                    err_console.print(
+                        "[red]"
+                        + gettext(
+                            "Provide a source path — or pipe the text in "
+                            "(skit add - -n NAME; add --prompt for an AI-agent "
+                            "prompt), or register a command template with --cmd."
+                        )
+                        + _RED_CLOSE
+                    )
+                    raise typer.Exit(EXIT_USAGE)
+                withheld = [flag for flag, present in given.items() if present]
+                if name:
+                    withheld.append("--name")
+                if description is not None:
+                    withheld.append("--description")
+                if withheld:
+                    # Refuse-never-drop: nothing is picked yet, so the ask below has
+                    # nothing these could apply to (and can't carry them along).
+                    err_console.print(
+                        "[red]"
+                        + gettext(
+                            "%(flags)s need a source — pass the path in the same "
+                            "command (skit add PATH …), or pick a lane outright with "
+                            "--edit, --prompt, or --cmd (nothing was added)."
+                        )
+                        % {"flags": ", ".join(withheld)}
+                        + _RED_CLOSE
+                    )
+                    raise typer.Exit(EXIT_USAGE)
+                asked = _add_no_source_ask()
+                if asked is None:
+                    return
+                path = asked
             resolved = Path(path).expanduser().resolve()
             from .paths import is_draft
 
@@ -1621,6 +1788,23 @@ def add(
             if kind == "exe":
                 _require_exists(resolved)
             else:
+                if resolved.is_dir() and kind == "unknown":
+                    # A bare directory CAN be added — as a program (add_exe
+                    # deliberately accepts any existing path; the TUI's path lane
+                    # routes one to the exe review) — so "Not a file" without the
+                    # escape would teach a dead end. Only for unclaimed names: a
+                    # directory wearing a script extension (x.prompt.md/) is a typo,
+                    # and suggesting --exe for it would be its own little lie.
+                    err_console.print(
+                        "[red]"
+                        + gettext(
+                            "%(file)s is a directory — pass --exe to add it as a "
+                            "program that runs directly."
+                        )
+                        % {"file": escape(resolved.name)}
+                        + _RED_CLOSE
+                    )
+                    raise typer.Exit(EXIT_USAGE)
                 _require_file(resolved)
             if is_draft(resolved) and (ref or kind == "exe"):
                 # ONE guard, BEFORE any interactive ask (a refusal must not follow
@@ -1665,22 +1849,60 @@ def add(
             # A bare .md is too ambiguous to claim outright, and too likely a prompt
             # to refuse outright: interactively, ask; under --no-input/pipe, an
             # explicit --prompt is required — never a guess.
+            interactive_ask = kind == "unknown" and not no_input and _is_interactive()
+            tui_ask = (
+                interactive_ask and os.environ.get("TERM") != "dumb" and config.load_form() == "tui"
+            )
+            looks_prompt = resolved.suffix.lower() == ".md"
+            # One interaction paradigm per form (the `run` rule — never a bare line
+            # prompt glued to a Textual app): under form=tui the .md fast path IS the
+            # kind modal with prompt pre-highlighted; the line Confirm belongs to the
+            # plain form only. "No" there answers the prompt question, not the add:
+            # it falls through to the generic kind ask instead of cancelling.
             if (
-                kind == "unknown"
-                and resolved.suffix.lower() == ".md"
-                and not no_input
-                and _is_interactive()
-            ):
-                if Confirm.ask(
+                interactive_ask
+                and looks_prompt
+                and not tui_ask
+                and Confirm.ask(
                     gettext("%(file)s looks like a prompt. Add it as one?")
                     % {"file": escape(resolved.name)},
                     default=True,
                     console=console,
-                ):
-                    kind = "prompt"
+                )
+            ):
+                kind = "prompt"
+            if kind == "unknown" and interactive_ask:
+                # The unclassifiable file gets the same ASK the TUI's add step gives
+                # it, then the picked kind rejoins the ordinary per-kind dispatch —
+                # every flag refusal and review panel behaves exactly as if the user
+                # had typed --kind/--exe/--prompt themselves. That rejoin is also why
+                # the ask and the review panel are two separate app runs: one app
+                # hosting both would have to duplicate the per-kind flag refusals
+                # inside the TUI (the drift this dispatch exists to prevent), so the
+                # brief repaint between them is the cheaper price.
+                from .langs.registry import shebang_program
+
+                ask_shebang = shebang_program(resolved) is not None
+                # No "A program" option for kept drafts: authored text is never a
+                # binary, and the drafts boundary refuses exe entries outright.
+                ask_exe = not is_draft(resolved)
+                if tui_ask:
+                    from .tui_add import run_kind_pick
+
+                    picked = run_kind_pick(
+                        resolved.name,
+                        has_shebang=ask_shebang,
+                        offer_exe=ask_exe,
+                        suggested="prompt" if looks_prompt else None,
+                    )
                 else:
+                    picked = _ask_kind_plain(
+                        resolved.name, has_shebang=ask_shebang, offer_exe=ask_exe
+                    )
+                if picked is None:
                     console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
                     raise typer.Exit(EXIT_CANCELLED)
+                kind = picked
             kind_spec = spec_for(kind)
             _refuse_unusable_add_flags(kind, kind_spec, ref, dep, python)
             if runner is not None and kind != "prompt":
@@ -1822,7 +2044,10 @@ def add(
                         console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
                         raise typer.Exit(EXIT_CANCELLED)
                     entry = store.resolve(slug)
-                    summary_deps = list(entry.meta.dependencies or [])
+                    # Same trace as the line-prompt onboarding — deps AND managed
+                    # params with secrets, not a thinner report because a nicer
+                    # form collected them.
+                    summary_deps, summary_managed, summary_secrets = _hosted_add_summary(entry)
                 else:
                     from .langs.registry import shebang_program
 
@@ -1876,6 +2101,11 @@ def add(
                         console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
                         raise typer.Exit(EXIT_CANCELLED)
                     entry = store.resolve(slug)
+                    # Same trace as the line-prompt onboarding (deps via
+                    # effective_uv_metadata — the add-time deps_injected path leaves
+                    # meta blank and makes the PEP 723 block the truth — plus managed
+                    # params and secrets).
+                    summary_deps, summary_managed, summary_secrets = _hosted_add_summary(entry)
                 else:
                     entry, summary_deps, summary_managed, summary_secrets = _onboard_python(
                         Path(path),
@@ -2320,29 +2550,38 @@ def _reconcile_prompt_after_edit(entry: store.Entry) -> None:
             ) % {"names": escape(names)}
         console.print(f"[dim]{message}[/dim]")
         return
-    console.print(gettext("Detected placeholders (each becomes a form field):"))
-    for i, placeholder in enumerate(new[: prompt_analyzer.LIST_PREVIEW_LIMIT], start=1):
-        mark = gettext(" (secret)") if is_secret_name(placeholder) else ""
-        console.print(f"  {i}. {escape(placeholder)}{mark}")
-    if len(new) > prompt_analyzer.LIST_PREVIEW_LIMIT:
-        console.print(
-            "  "
-            + gettext("…and %(count)s more")
-            % {"count": len(new) - prompt_analyzer.LIST_PREVIEW_LIMIT}
-        )
     flooded = len(new) > prompt_analyzer.AUTO_MANAGE_LIMIT
-    answer = Prompt.ask(
-        gettext("Manage which? (all / none / numbers like 1,3)"),
-        default="none" if flooded else "all",
-        console=console,
-    )
-    if answer.strip().lower() == "all":
-        picked = list(new)  # an explicit "all" takes every new name, preview or not
+    if os.environ.get("TERM") != "dumb" and config.load_form() == "tui":
+        # form=tui hosts the panel, plain keeps the line prompts — the add flow's
+        # rule, applied here too: this is the SAME searchable picker the Library's
+        # `e` reconcile opens, same preselection (everything, unless flooded).
+        from .tui_add import run_candidate_picker
+
+        selected = run_candidate_picker(new, set() if flooded else set(new))
+        picked = [n for n in new if selected and n in selected]
     else:
-        # Numbers address only the PREVIEWED names — picking an index whose name was
-        # never shown would be a blind selection (the add onboarding's rule).
-        selectable = new[: prompt_analyzer.LIST_PREVIEW_LIMIT]
-        picked = [selectable[i] for i in _parse_selection(answer, len(selectable))]
+        console.print(gettext("Detected placeholders (each becomes a form field):"))
+        for i, placeholder in enumerate(new[: prompt_analyzer.LIST_PREVIEW_LIMIT], start=1):
+            mark = gettext(" (secret)") if is_secret_name(placeholder) else ""
+            console.print(f"  {i}. {escape(placeholder)}{mark}")
+        if len(new) > prompt_analyzer.LIST_PREVIEW_LIMIT:
+            console.print(
+                "  "
+                + gettext("…and %(count)s more")
+                % {"count": len(new) - prompt_analyzer.LIST_PREVIEW_LIMIT}
+            )
+        answer = Prompt.ask(
+            gettext("Manage which? (all / none / numbers like 1,3)"),
+            default="none" if flooded else "all",
+            console=console,
+        )
+        if answer.strip().lower() == "all":
+            picked = list(new)  # an explicit "all" takes every new name, preview or not
+        else:
+            # Numbers address only the PREVIEWED names — picking an index whose name was
+            # never shown would be a blind selection (the add onboarding's rule).
+            selectable = new[: prompt_analyzer.LIST_PREVIEW_LIMIT]
+            picked = [selectable[i] for i in _parse_selection(answer, len(selectable))]
     if not picked:
         return
     existing = list(entry.meta.params or [])
@@ -2807,27 +3046,38 @@ def run(
         asm = flows.assemble(plan, values, extra, cwd=Path.cwd(), expand_extra=False)
     except flows.FormError as exc:
         raise _fail(str(exc), EXIT_SKIT) from exc
-    if save_preset:
-        if not plan.fields:
-            # Same rule (and sentence) as `skit preset save` — but NOT its exit code:
-            # inside `run`, 1-124 belongs to the script (docker convention), so a
-            # skit-side refusal must be usage-shaped, never look like the script ran.
-            err_console.print(
-                "[red]"
-                + gettext("%(name)s has no form fields, so there's nothing to save.")
-                % {"name": entry.meta.name}
-                + _RED_CLOSE
-            )
-            raise typer.Exit(EXIT_USAGE)
+    if save_preset and not plan.fields:
+        # Same rule (and sentence) as `skit preset save` — but NOT its exit code:
+        # inside `run`, 1-124 belongs to the script (docker convention), so a
+        # skit-side refusal must be usage-shaped, never look like the script ran.
+        err_console.print(
+            "[red]"
+            + gettext("%(name)s has no form fields, so there's nothing to save.")
+            % {"name": entry.meta.name}
+            + _RED_CLOSE
+        )
+        raise typer.Exit(EXIT_USAGE)
+
+    def _persist_preset() -> None:
+        # Deferred until validation/launch has ACCEPTED the invocation: a refusal
+        # leaves no fingerprints (the --forget-args rule ten lines up), and a preset
+        # written by a run that then exited 125 would be exactly such a fingerprint.
+        if not save_preset:
+            return
         argstate.save_preset(
             entry.slug,
             save_preset,
             {k: v for k, v in values.items() if v},
             secret_names=plan.secret_names,
         )
-        console.print(
+        # stderr, like every run-adjacent skit line ("Reusing your last arguments",
+        # the drift banner): the script owns stdout, and on a normal run this prints
+        # after the script's output — appending green chrome to a piped stream would
+        # corrupt the very output the run exists to produce.
+        err_console.print(
             f"[green]{gettext('Preset "%(preset)s" saved for %(name)s.') % {'preset': escape(save_preset), 'name': escape(entry.meta.name)}}[/green]"
         )
+
     if dry_run:
         # runner_obj was resolved before form assembly, and this validation deliberately
         # does no PATH lookup.  Its remaining failures are therefore body/render failures;
@@ -2838,6 +3088,7 @@ def run(
             raise _fail(str(exc), EXIT_NOT_FOUND) from exc
         except launcher.LaunchError as exc:
             raise _fail(str(exc), EXIT_SKIT) from exc
+        _persist_preset()
         # No temp copy is written for a dry run, so the command line shows the original
         # script path — the shape, not a doomed-to-be-deleted temp file.
         for line in flows.transparency_lines(
@@ -2860,6 +3111,9 @@ def run(
     code = outcome.code
     if code is None:
         raise _fail(outcome.message, _FAILURE_EXIT[outcome.failure])
+    # The launch was accepted (the script's own exit code is the script's business —
+    # its values are still the values the user asked to keep).
+    _persist_preset()
     if raw:
         # The escape hatch leaves no fingerprints: it consulted no form memory, so it
         # must not rewrite it either (values/extra args survive for the next real run).
@@ -3218,7 +3472,7 @@ def preset_save(
                 % {"name": entry.meta.name},
                 1,
             )
-    elif sys.stdin.isatty():
+    elif _is_interactive():
         values = promptform.collect(plan, flows.prefill(plan, entry.slug), console=console)
     else:
         # Non-interactive contract: don't prompt — save what the prefill already knows.

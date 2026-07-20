@@ -303,12 +303,37 @@ def test_add_missing_path_clean_error_not_traceback(tmp_path):
 def test_add_directory_path_clean_error_not_traceback(tmp_path):
     # A directory is present but is not an acceptable source file. Report that truthfully,
     # without letting read_text raise a traceback or claiming the path is missing.
+    # The NAME claims a kind (adir.py -> python), so it keeps the "Not a file" exit 1 —
+    # a directory wearing a script extension is a typo, not a program to run directly.
     d = tmp_path / "adir.py"
     d.mkdir()
     result = runner.invoke(cli.app, ["add", str(d)])
     assert result.exit_code == 1
     assert result.exception is None or isinstance(result.exception, SystemExit)
     assert "Not a file" in result.output
+    assert "--exe" not in result.output  # a claimed-name dir is NOT offered the exe escape
+
+
+def test_add_unknown_directory_suggests_exe_and_exits_usage(tmp_path):
+    # A bare directory whose name claims no kind infers "unknown" — it CAN be added as a
+    # program (add_exe accepts any existing path), so the error teaches --exe (exit 2),
+    # never the "Not a file" dead end.
+    d = tmp_path / "plainbundle"
+    d.mkdir()
+    result = runner.invoke(cli.app, ["add", str(d)])
+    assert result.exit_code == 2
+    assert "is a directory" in result.output
+    assert "--exe" in result.output
+    assert "Not a file" not in result.output
+
+
+def test_add_unknown_directory_with_exe_is_accepted(tmp_path):
+    # The escape the message advertises actually works: --exe adds the directory.
+    d = tmp_path / "plainbundle2"
+    d.mkdir()
+    result = runner.invoke(cli.app, ["add", str(d), "--exe", "--name", "bundled"])
+    assert result.exit_code == 0, result.output
+    assert store.resolve("bundled").meta.kind == "exe"
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")

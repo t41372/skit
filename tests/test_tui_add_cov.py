@@ -906,3 +906,269 @@ def test_run_add_review_returns_the_apps_result(tmp_path, monkeypatch):
     p = _py(tmp_path, "print(1)\n")
     monkeypatch.setattr(tui_add.AddReviewApp, "run", lambda self: "slug-sentinel")
     assert tui_add.run_add_review(p, name="n") == "slug-sentinel"
+
+
+# ---------------------------------------------------------------------------
+# AddSourceApp / KindPickApp: the bare `skit add` (no path) CLI faces (issue #10)
+# ---------------------------------------------------------------------------
+
+
+async def test_add_source_app_command_lane_returns_slug(tmp_path):
+    """Bare `skit add` in a terminal hosts the SAME source step the Library's `a`
+    pushes; the command-template lane commits and the app exits with the new slug."""
+    from skit.tui_add import AddSourceApp
+
+    app = AddSourceApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        source = app.screen
+        assert isinstance(source, AddSourceScreen)
+        source.query_one("#add-template", Input).value = "echo {msg}"
+        source.query_one("#add-template-name", Input).value = "greet"
+        source.action_continue_add()
+        await pilot.pause()
+    entry = store.resolve("greet")
+    assert app.return_value == entry.slug
+    assert entry.meta.kind == "command"
+
+
+async def test_add_source_app_escape_returns_none(tmp_path):
+    from skit.tui_add import AddSourceApp
+
+    app = AddSourceApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(app.screen, AddSourceScreen)
+        app.screen.action_cancel()
+        await pilot.pause()
+    assert app.return_value is None
+    assert store.list_entries() == []
+
+
+async def test_kind_pick_app_pick_returns_the_kind_string(tmp_path):
+    """KindPickApp returns the picked KIND (not a slug): the CLI feeds it back into the
+    ordinary per-kind dispatch. The constructor forwards filename/has_shebang/offer_exe
+    into the hosted modal verbatim."""
+    from skit.tui_add import KindPickApp
+
+    app = KindPickApp("weird.xyz", has_shebang=False, offer_exe=True)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, KindPickModal)
+        assert modal._filename == "weird.xyz"
+        assert modal._has_shebang is False
+        assert modal._offer_exe is True
+        _select_kind(modal, "shell")
+        await pilot.pause()
+    assert app.return_value == "shell"
+
+
+async def test_kind_pick_app_escape_returns_none(tmp_path):
+    from skit.tui_add import KindPickApp
+
+    app = KindPickApp("weird.xyz", has_shebang=True, offer_exe=False)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, KindPickModal)
+        # The other end of the has_shebang / offer_exe flags: a shebang'd draft.
+        assert modal._has_shebang is True
+        assert modal._offer_exe is False
+        modal.action_cancel()
+        await pilot.pause()
+    assert app.return_value is None
+
+
+def test_run_add_source_returns_the_apps_result(tmp_path, monkeypatch):
+    from skit import tui_add
+
+    monkeypatch.setattr(tui_add.AddSourceApp, "run", lambda self: "slug-sentinel")
+    assert tui_add.run_add_source() == "slug-sentinel"
+
+
+def test_run_kind_pick_returns_the_apps_result(tmp_path, monkeypatch):
+    from skit import tui_add
+
+    monkeypatch.setattr(tui_add.KindPickApp, "run", lambda self: "shell")
+    assert tui_add.run_kind_pick("x.xyz", has_shebang=False, offer_exe=True) == "shell"
+
+
+def test_run_kind_pick_forwards_every_arg_into_the_app(tmp_path, monkeypatch):
+    """run_kind_pick builds KindPickApp with filename/has_shebang/offer_exe and hands
+    back run()'s result — no arg dropped or defaulted on the way in."""
+    from skit import tui_add
+
+    seen: dict[str, object] = {}
+
+    class _FakeApp:
+        def __init__(self, filename, *, has_shebang, offer_exe, suggested=None):
+            seen.update(
+                filename=filename, has_shebang=has_shebang, offer_exe=offer_exe, suggested=suggested
+            )
+
+        def run(self):
+            return "picked-kind"
+
+    monkeypatch.setattr(tui_add, "KindPickApp", _FakeApp)
+    assert (
+        tui_add.run_kind_pick("f.xyz", has_shebang=True, offer_exe=False, suggested="prompt")
+        == "picked-kind"
+    )
+    assert seen == {
+        "filename": "f.xyz",
+        "has_shebang": True,
+        "offer_exe": False,
+        "suggested": "prompt",
+    }
+
+
+# ---------------------------------------------------------------------------
+# KindPickModal: suggested-option ordering (the pre-highlighted likely answer)
+# ---------------------------------------------------------------------------
+
+
+def _kind_ids(modal: KindPickModal) -> list[str | None]:
+    options = modal.query_one(OptionList)
+    return [options.get_option_at_index(i).id for i in range(options.option_count)]
+
+
+async def test_kind_pick_suggested_moves_the_option_to_first(tmp_path):
+    """suggested='prompt' lifts the prompt option to FIRST position (so it is
+    pre-highlighted); the rest keep their stable order."""
+    from skit.tui_add import _ScreenHost
+
+    plain = _ScreenHost(KindPickModal("notes.md", suggested=None))
+    async with plain.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(plain.screen, KindPickModal)
+        base = _kind_ids(plain.screen)
+    assert base[-1] == "prompt"  # without a suggestion, prompt is the last catch-all
+
+    picked = _ScreenHost(KindPickModal("notes.md", suggested="prompt"))
+    async with picked.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(picked.screen, KindPickModal)
+        suggested = _kind_ids(picked.screen)
+    assert suggested[0] == "prompt"  # suggested is moved to first (pre-highlighted)
+    # Same membership, only the prompt entry relocated to the front.
+    assert set(suggested) == set(base)
+    assert suggested[1:] == [i for i in base if i != "prompt"]
+
+
+async def test_kind_pick_suggested_none_keeps_stable_order(tmp_path):
+    """suggested=None (default) leaves the option order untouched."""
+    from skit.tui_add import _ScreenHost
+
+    host = _ScreenHost(KindPickModal("x.xyz"))
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        assert isinstance(host.screen, KindPickModal)
+        ids = _kind_ids(host.screen)
+    assert ids[-1] == "prompt"  # unmoved
+    assert ids[-2] == "exe"
+
+
+# ---------------------------------------------------------------------------
+# AddSourceScreen._submit_path: bare .md, directory, and description round-trip
+# ---------------------------------------------------------------------------
+
+
+async def test_bare_md_path_asks_with_prompt_pre_highlighted(tmp_path):
+    """A bare .md (no shebang, name gives no interpreter) opens the kind ask with the
+    prompt option lifted to first — the TUI twin of the plain 'looks like a prompt?'."""
+    md = tmp_path / "notes.md"
+    md.write_text("just some prose\n", encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        source = AddSourceScreen()
+        app.push_screen(source)
+        await pilot.pause()
+        source.query_one("#add-path", Input).value = str(md)
+        source.action_continue_add()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, KindPickModal)
+        assert _kind_ids(modal)[0] == "prompt"  # suggested, pre-highlighted
+
+
+async def test_directory_path_routes_to_the_exe_review(tmp_path):
+    """An existing DIRECTORY (an .app bundle, a dir-shaped tool) is a valid exe target:
+    it goes straight to the ExeReviewScreen, not a 'File not found' lie."""
+    d = tmp_path / "Tool.app"
+    d.mkdir()
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        source = AddSourceScreen()
+        app.push_screen(source)
+        await pilot.pause()
+        source.query_one("#add-path", Input).value = str(d)
+        source.action_continue_add()
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, ExeReviewScreen)
+        review.query_one("#xv-name", Input).value = "tool"
+        review.action_accept()
+        await pilot.pause()
+    entry = store.resolve("tool")
+    assert entry.meta.kind == "exe"
+
+
+async def test_template_description_round_trips(tmp_path):
+    """The template lane's #add-template-desc value lands as the command's description;
+    Input.Submitted on the description input also submits the whole form."""
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        source = AddSourceScreen()
+        app.push_screen(source)
+        await pilot.pause()
+        source.query_one("#add-template", Input).value = "echo {msg}"
+        source.query_one("#add-template-name", Input).value = "greet"
+        desc = source.query_one("#add-template-desc", Input)
+        desc.value = "shout a message"
+        source._template_given(Input.Submitted(desc, "shout a message"))  # submit from desc
+        await pilot.pause()
+        assert not isinstance(app.screen, AddSourceScreen)  # dismissed
+    entry = store.resolve("greet")
+    assert entry.meta.kind == "command"
+    assert entry.meta.description == "shout a message"
+
+
+# ---------------------------------------------------------------------------
+# run_candidate_picker: the terminal-hosted prompt-variable picker (skit edit)
+# ---------------------------------------------------------------------------
+
+
+async def test_run_candidate_picker_done_returns_the_selection(tmp_path):
+    from skit.tui_add import _ScreenHost
+    from skit.tui_prompt import PromptCandidatePickerModal
+
+    host = _ScreenHost(PromptCandidatePickerModal(["a", "b", "c"], {"a", "c"}))
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        modal = host.screen
+        assert isinstance(modal, PromptCandidatePickerModal)
+        modal.action_done()  # Ctrl+S
+        await pilot.pause()
+    assert host.return_value == {"a", "c"}
+
+
+async def test_run_candidate_picker_escape_returns_none(tmp_path):
+    from skit.tui_add import _ScreenHost
+    from skit.tui_prompt import PromptCandidatePickerModal
+
+    host = _ScreenHost(PromptCandidatePickerModal(["a", "b"], {"a"}))
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        modal = host.screen
+        assert isinstance(modal, PromptCandidatePickerModal)
+        modal.action_cancel()  # Esc
+        await pilot.pause()
+    assert host.return_value is None
+
+
+def test_run_candidate_picker_returns_the_apps_result(tmp_path, monkeypatch):
+    from skit import tui_add
+
+    monkeypatch.setattr(tui_add._ScreenHost, "run", lambda self: {"a"})
+    assert tui_add.run_candidate_picker(["a", "b"], {"a"}) == {"a"}
