@@ -355,16 +355,20 @@ async def test_resume_prompt_draft_unlinks_and_dismisses(tmp_path):
 
 
 async def test_resume_exe_inferring_draft_demotes_to_kind_ask(tmp_path):
-    """A kept draft that would infer as a program (executable bit, no known extension or
-    shebang) is NOT sent to ExeReviewScreen: an exe entry is reference-by-construction,
-    forbidden for a draft the success path consumes. It is demoted (kind -> "unknown") to
-    the kind ask, whose modal offers no 'A program' route out (offer_exe=False)."""
+    """A kept draft that would infer as a program (an executable bit on POSIX and a PATHEXT
+    suffix on Windows, with no shebang) is NOT sent to ExeReviewScreen: an exe entry is
+    reference-by-construction, forbidden for a draft the success path consumes. It is demoted
+    (kind -> "unknown") to the kind ask, whose modal offers no 'A program' route out
+    (offer_exe=False)."""
     import os
 
     from skit.paths import drafts_dir
 
     drafts_dir().mkdir(parents=True, exist_ok=True)
-    draft = drafts_dir() / "skit-new-blob"
+    # Windows has no executable bit: skit correctly uses PATHEXT there, while POSIX uses the
+    # chmod below. The .exe suffix makes the same platform-native "this is runnable" signal on
+    # both families without mocking the inference this integration test is meant to exercise.
+    draft = drafts_dir() / "skit-new-blob.exe"
     draft.write_bytes(b"\x7fELF not really\n")
     os.chmod(draft, 0o755)  # noqa: S103 — a deliberately-executable fixture: the exe inference is the point
     assert store.infer_kind(draft) == "exe"  # the draft really would infer as a program
