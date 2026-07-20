@@ -172,6 +172,10 @@ its noise distribution is measured.
 ## Adding a suite
 
 1. Decide the metric IDs (dotted, stable — they are budget keys and history names).
+   IDs read `<suite>.<case>[.<subcase>].<stat>`: statistical stats carry their unit
+   suffix (`median_ms`, `peak_kib`), deterministic counts don't (`modules`,
+   `file_ops`, `distributions`). The headline set is `pipeline.HEADLINE_METRICS` —
+   in code, so it can't drift.
 2. Pure parsing/derivation goes in `parsers.py` (covered, tested against fixture
    output); spawning goes in a new `suites/<name>.py` exposing
    `run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput`.

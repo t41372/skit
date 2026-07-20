@@ -73,6 +73,8 @@ dev = [
 # The benchmark pipeline's only extra dependency (benchmarks/ — never a runtime dep).
 # Kept as its own group for clarity, but default-installed (see [tool.uv]) so ty's
 # strictest mode resolves `import pyperf` in every environment, not just bench CI.
+# (pyperf itself is small; its closure includes psutil, a C extension — still never
+# a runtime dependency of skit.)
 bench = [
     "pyperf>=2.9,<3",
 ]

@@ -530,8 +530,9 @@ orchestration that needs external binaries is exempt, each exemption commented.*
 - `benchmarks/README.md`: full methodology — cold/warm definitions (process-cold = fresh
   process; fs-warm = post-warmup; cold-import vs warm-parse split; warm-uv-cache
   definition), profile grid (the table above), dataset definition + seed + generator
-  versioning, the metric-ID grammar (`<suite>.<case>.<stat>_<unit>`; the headline
-  set is `pipeline.HEADLINE_METRICS` — in code, so it can't drift), budget tiers + ratchet protocol + `--propose` workflow,
+  versioning, the metric-ID grammar (`<suite>.<case>[.<subcase>].<stat>`, unit
+  suffixes on statistical stats only; the headline set is
+  `pipeline.HEADLINE_METRICS` — in code, so it can't drift), budget tiers + ratchet protocol + `--propose` workflow,
   hosted-runner noise policy, exact lane argvs for run_overhead, how to run locally
   (including "non-Linux hosts see skips; the skip budget applies only to reference CI"),
   how to add a suite, the gh-pages one-time setup checklist, and what would move

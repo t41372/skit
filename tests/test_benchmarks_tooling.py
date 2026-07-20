@@ -1422,12 +1422,19 @@ class TestHarnessImportSurface:
         import sys
 
         allowed_anywhere = set(sys.stdlib_module_names) | {"skit", "benchmarks", "tomli_w"}
-        per_file_extra = {"micro": {"pyperf"}, "tui_probe.py": {"textual"}}
+        # micro scripts and the tui probe are re-exec'd/spawned by PATH from a scratch
+        # cwd, where `import benchmarks` is unresolvable — their documented contract
+        # is self-containment (skit + tool + stdlib), so hold them to it.
+        self_contained = set(sys.stdlib_module_names) | {"skit"}
+        per_file = {
+            "micro": self_contained | {"pyperf"},
+            "tui_probe.py": self_contained | {"textual"},
+        }
         for path in sorted((REPO_ROOT / "benchmarks").rglob("*.py")):
-            extra: set[str] = set()
-            for key, names in per_file_extra.items():
+            allowed = allowed_anywhere
+            for key, names in per_file.items():
                 if key in path.parts or path.name == key:
-                    extra = names
+                    allowed = names
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 tops: list[str] = []
@@ -1436,7 +1443,7 @@ class TestHarnessImportSurface:
                 elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                     tops = [node.module.split(".")[0]]
                 for top in tops:
-                    assert top in allowed_anywhere | extra, (
+                    assert top in allowed, (
                         f"{path.relative_to(REPO_ROOT)} imports {top!r} — outside the "
                         "A/B harness surface (runtime deps + pyperf + stdlib)"
                     )
