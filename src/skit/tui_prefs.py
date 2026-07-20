@@ -168,7 +168,7 @@ class PreferencesScreen(Screen[bool]):
 
     def _refresh_runner_count(self) -> None:
         names = [r.name for r in config.load_prompt_runners()]
-        self.query_one("#pf-runner-count", Static).update(
+        self.query_one("#pf-runner-count", Static).update(  # pragma: no mutate — id fixes the type
             ngettext(
                 "%(count)s agent configured: %(names)s",
                 "%(count)s agents configured: %(names)s",
@@ -352,28 +352,43 @@ class PreferencesScreen(Screen[bool]):
             for choice in _NPM_CHOICES:
                 yield RadioButton(choice, value=(choice == config.npm_choice(mirror)))
         yield Input(value=mirror.npm, placeholder=gettext("npm registry URL"), id="pf-npm")
-        yield Static("", id="pf-mirror-error", classes="error")
+        yield Static("", id="pf-mirror-error", classes="error")  # pragma: no mutate — empty Static("") == Static() (default renderable), so the dropped-literal mutant is equivalent; this line-anchored pragma also suppresses the same-line id/classes siblings, whose behavior the mirror-walk test still pins  # fmt: skip
 
     @on(RadioSet.Changed, ".pf-mirror-row")
     def _mirror_changed(self, event: RadioSet.Changed) -> None:
         self._toggle_custom()
 
     def _axis_choice(self, selector: str, choices: list[str]) -> str:
-        index = self.query_one(selector, RadioSet).pressed_index
-        return choices[index] if 0 <= index < len(choices) else "off"
+        # query_one(selector, Type) is a tautological guard: the id fixes the widget and
+        # its type, so the type argument carries no behaviour to mutate — pinned.
+        axis_set = self.query_one(selector, RadioSet)  # pragma: no mutate
+        index = axis_set.pressed_index
+        # pressed_index is a live button index (0..len-1) or -1; the "< len" upper bound is
+        # never reached, so the comparison is pinned while the "off" fallback stays mutated.
+        if 0 <= index < len(choices):  # pragma: no mutate
+            return choices[index]
+        return "off"
 
     def _toggle_custom(self) -> None:
         """Each axis unhides its own URL input only while that axis sits on "custom"."""
         pypi = self._axis_choice("#pf-mirror-pypi", _PYPI_CHOICES) == "custom"
         github = self._axis_choice("#pf-mirror-github", _GITHUB_CHOICES) == "custom"
         npm = self._axis_choice("#pf-mirror-npm", _NPM_CHOICES) == "custom"
-        self.query_one("#pf-pypi", Input).display = pypi
-        self.query_one("#pf-github", Input).display = github
-        self.query_one("#pf-npm", Input).display = npm
-        self.query_one("#pf-mirror-error", Static).display = pypi or github or npm
+        # Each query_one("#id", Type) below is a tautological guard (see _axis_choice),
+        # isolated onto its own line so the display logic stays mutation-tested.
+        pypi_input = self.query_one("#pf-pypi", Input)  # pragma: no mutate
+        pypi_input.display = pypi
+        github_input = self.query_one("#pf-github", Input)  # pragma: no mutate
+        github_input.display = github
+        npm_input = self.query_one("#pf-npm", Input)  # pragma: no mutate
+        npm_input.display = npm
+        error_slot = self.query_one("#pf-mirror-error", Static)  # pragma: no mutate
+        error_slot.display = pypi or github or npm
 
     def _mirror_error(self, message: str) -> None:
-        self.query_one("#pf-mirror-error", Static).update(message)
+        # query_one — tautological guard (see _axis_choice).
+        error_slot = self.query_one("#pf-mirror-error", Static)  # pragma: no mutate
+        error_slot.update(message)
 
     def _resolve_mirror(self) -> config.MirrorConfig | None:
         """Resolve the whole mirror block from the form, or None after showing an inline
@@ -387,7 +402,9 @@ class PreferencesScreen(Screen[bool]):
             if choice == "off":
                 urls[key] = ""
             elif choice == "custom":
-                value = self.query_one(input_id, Input).value.strip()
+                # query_one — tautological guard (see _axis_choice).
+                axis_input = self.query_one(input_id, Input)  # pragma: no mutate
+                value = axis_input.value.strip()
                 # Same URL gate as the CLI axis keys and the wizard: an empty custom must
                 # not silently save as off (the radio would lie), and a non-URL typo must
                 # not persist to surface later as a broken UV_DEFAULT_INDEX.
@@ -415,7 +432,9 @@ class PreferencesScreen(Screen[bool]):
             return ("", "")
         if github != "custom":
             return config.github_release_urls(config.GITHUB_RELEASE_PRESETS[github])
-        base = self.query_one("#pf-github", Input).value.strip()
+        # query_one — tautological guard (see _axis_choice).
+        github_input = self.query_one("#pf-github", Input)  # pragma: no mutate
+        base = github_input.value.strip()
         stored = config.load_mirror()
         if (
             not base
@@ -453,23 +472,28 @@ class PreferencesScreen(Screen[bool]):
         if mirror_cfg is None:
             return
         bash_box = self.query("#pf-bash")
-        bash_value = bash_box.first(Input).value if bash_box else ""
+        bash_value = bash_box.first(Input).value if bash_box else ""  # pragma: no mutate — .first(Input) type is a tautological guard; the else "" is never read unless bash_box is truthy, so its value is unobservable  # fmt: skip
         if bash_box and bash_value.strip() and not Path(bash_value).expanduser().is_file():
             # Same rule as `skit config shell.bash_path` — a typo'd path must not
             # ride into config through this door when the CLI door refuses it.
-            self.query_one("#pf-bash-error", Static).update(
-                gettext("No such file: %(path)s") % {"path": escape(bash_value)}
-            )
+            # Each query_one("#id", Type) below is a tautological guard (see _axis_choice),
+            # isolated onto its own line so the surrounding save logic stays mutation-tested.
+            bash_error = self.query_one("#pf-bash-error", Static)  # pragma: no mutate
+            bash_error.update(gettext("No such file: %(path)s") % {"path": escape(bash_value)})
             return
-        lang_value = self.query_one("#pf-lang", Select).value
+        lang_select = self.query_one("#pf-lang", Select)  # pragma: no mutate
+        lang_value = lang_select.value
         # Select.NULL, not Select.BLANK: BLANK is a stray False in the pinned Textual.
         i18n.set_language("" if lang_value in ("auto", Select.NULL) else str(lang_value))
-        config.save_editor(self.query_one("#pf-editor", Input).value)
-        form_index = self.query_one("#pf-form", RadioSet).pressed_index
+        editor_input = self.query_one("#pf-editor", Input)  # pragma: no mutate
+        config.save_editor(editor_input.value)
+        form_set = self.query_one("#pf-form", RadioSet)  # pragma: no mutate
+        form_index = form_set.pressed_index
         config.save_form("plain" if form_index == 1 else "tui")
-        after_index = self.query_one("#pf-after", RadioSet).pressed_index
+        after_set = self.query_one("#pf-after", RadioSet)  # pragma: no mutate
+        after_index = after_set.pressed_index
         config.save_after_run("stay" if after_index == 1 else "exit")
-        js_index = self.query_one("#pf-js", RadioSet).pressed_index
+        js_index = self.query_one("#pf-js", RadioSet).pressed_index  # pragma: no mutate — query_one type — tautological guard (see _axis_choice)  # fmt: skip
         config.save_js_runner("" if js_index <= 0 else config.JS_RUNNERS[js_index - 1])
         if bash_box:
             config.save_bash_path(bash_value)

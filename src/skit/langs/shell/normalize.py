@@ -59,7 +59,9 @@ def normalize_idiom(text: str, names: list[str]) -> Normalization:
 
     Pure: returns the new text plus the names rewritten and the coded refusals; the caller decides
     whether to persist and how to word the refusals."""
-    root = Parser(_LANGUAGE).parse(text.encode("utf-8")).root_node
+    # "utf-8"/"UTF-8" name the same codec (byte-identical output), so a case-swap of this literal
+    # is an equivalent mutant; the parse expression itself is exercised by every normalize test.
+    root = Parser(_LANGUAGE).parse(text.encode("utf-8")).root_node  # pragma: no mutate
     if root.has_error:
         return Normalization(text=text, refused=[f"syntax-error:{name}" for name in names])
     assignments = _by_name(root)
@@ -67,7 +69,9 @@ def normalize_idiom(text: str, names: list[str]) -> Normalization:
     normalized: list[str] = []
     refused: list[str] = []
     for name in names:
-        span = _span_for(name, assignments.get(name, []), refused)
+        # A missing name yields the get-default; [] and None are both falsy at _span_for's
+        # "if not found", so mutating that default (-> None, or dropped) is an equivalent mutant.
+        span = _span_for(name, assignments.get(name, []), refused)  # pragma: no mutate
         if span is not None:
             spans.append(span)
             normalized.append(name)
@@ -94,7 +98,9 @@ def _span_for(name: str, found: list[tuple[Node, bool]], refused: list[str]) -> 
     """The one value-span rewrite for `name`, or None with a coded refusal appended. A single
     refusal chain with one success exit: every branch below is a distinct, tested reason the
     `${NAME:-…}` form would not mean exactly what the plain assignment meant."""
-    code = ""
+    # Dead initial value: every path that reaches refused.append reassigns `code` first, so a
+    # mutation of this literal (-> None, "XXXX") can never be observed — an equivalent mutant.
+    code = ""  # pragma: no mutate
     if not found:
         code = "not-a-const"
     elif len(found) > 1:

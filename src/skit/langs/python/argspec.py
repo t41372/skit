@@ -134,8 +134,6 @@ def _read_call(call: ast.Call) -> ParamDecl | None:
 
     f = ParamDecl(
         name=dest,
-        binding="none",
-        delivery="flag",
         flag=flag,
         required=required,
         help=_literal_str(kwargs.get("help")),
@@ -282,8 +280,6 @@ def _read_click_param(call: ast.Call, positional: bool) -> ParamDecl | None:
     nargs = _literal_value(kwargs["nargs"])[1] if "nargs" in kwargs else None
     f = ParamDecl(
         name=dest,
-        binding="none",
-        delivery="flag",
         flag=flag,
         # click arguments are required by default; nargs=-1 (variadic) is not.
         required=(positional and nargs != -1) or _is_true_kwarg(kwargs.get("required")),
@@ -447,8 +443,6 @@ def _read_typer_param(arg: ast.arg, default: ast.expr | None) -> ParamDecl:
     looked_up = _ANNOTATION_KINDS.get(annotation.id) if isinstance(annotation, ast.Name) else None
     f = ParamDecl(
         name=name,
-        binding="none",
-        delivery="flag",
         flag=f"--{name.replace('_', '-')}",
         type=looked_up if looked_up is not None else "str",
         secret=is_secret_name(name),

@@ -117,8 +117,11 @@ def _drop_synthetic_separator(base: str, original: str, leader: str = "#") -> st
     `original`'s own content did not already start with a blank line at that point — inject_block
     itself skips the separator in that case, to avoid a double blank line).
     """
-    block_only = pep723.build_block([], leader=leader)
-    idx = base.index(block_only)
+    # build_block only checks truthiness of dependencies, so [] and None yield the identical block;
+    # and block_only appears exactly once in `base` (source already carrying a block never reaches
+    # this no-block path), so index == rindex. Both are equivalent mutants.
+    block_only = pep723.build_block([], leader=leader)  # pragma: no mutate
+    idx = base.index(block_only)  # pragma: no mutate
     prefix = base[:idx]
     rest = base[idx + len(block_only) :]
     suffix = original[len(prefix) :]

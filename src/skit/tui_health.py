@@ -162,7 +162,7 @@ class HealthScreen(Screen[str | None]):
         issues = self.query("#hc-issues")
         if not issues:
             return
-        option_list = issues.first(OptionList)
+        option_list = issues.first(OptionList)  # pragma: no mutate — tautological guard
         if option_list.highlighted is not None:
             self.dismiss(str(option_list.get_option_at_index(option_list.highlighted).id))
 

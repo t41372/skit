@@ -264,8 +264,28 @@ def test_unparseable_json_returns_none(monkeypatch):
 
 
 def test_timeout_returns_none(monkeypatch):
-    _fake_subprocess(monkeypatch, raises=subprocess.TimeoutExpired(cmd="pwsh", timeout=10.0))
+    _fake_subprocess(
+        monkeypatch, raises=subprocess.TimeoutExpired(cmd="pwsh", timeout=cli_reader._TIMEOUT)
+    )
     assert cli_reader.read_cli("param()\n") is None
+
+
+def test_extract_passes_the_configured_timeout(monkeypatch):
+    # _fake_subprocess ignores kwargs, so nothing else pins the run()'s timeout — a mutant that
+    # dropped or rewrote `timeout=_TIMEOUT` on the subprocess.run call would sail through. Capture
+    # the real call and assert the guard is wired through.
+    monkeypatch.setattr(
+        cli_reader.shutil, "which", lambda name: "/usr/bin/pwsh" if name == "pwsh" else None
+    )
+    seen = {}
+
+    def capturing_run(argv, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, stdout=b'{"status":"no-params"}', stderr=b"")
+
+    monkeypatch.setattr(cli_reader.subprocess, "run", capturing_run)
+    cli_reader.read_cli("param()\n")
+    assert seen["timeout"] == cli_reader._TIMEOUT
 
 
 def test_oserror_returns_none(monkeypatch):

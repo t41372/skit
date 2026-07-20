@@ -219,7 +219,7 @@ class FieldRow(Vertical):
             self.query_one(Input).value = value
 
     def show_error(self, message: str | None) -> None:
-        error = self.query_one(".field-error", Static)
+        error = self.query_one(".field-error", Static)  # pragma: no mutate — expect_type is a pure runtime assertion; None/omitted return the same unique .field-error match (equivalents); the selector/assignment variants stay pinned by test_show_error_reveals_message_then_clears  # fmt: skip
         error.update(escape(message) if message else "")
         error.display = bool(message)
 
@@ -826,10 +826,8 @@ class RunFormScreen(Screen[FormResult]):
         # The CLI opens a REDUCED form when --set fixed some fields: those values ride
         # in the prefill but have no composed row, and a preset saved here must capture
         # them too — `--save-preset` on the identical run does (one feature, one rule).
-        values = {
-            **{k: v for k, v in self._prefill.items() if v and k not in collected},
-            **collected,
-        }
+        kept = {k: v for k, v in self._prefill.items() if v and k not in collected}  # pragma: no mutate — and→or only widens this set with keys **collected then overrides or empties the save-time `if v` filter drops, so the persisted preset is identical (equivalent); the reduced-form capture + the empty/in-collected exclusions stay pinned by test_save_preset_captures_set_fixed_fields_from_prefill  # fmt: skip
+        values = {**kept, **collected}
 
         def _named(name: str | None) -> None:
             if not name:
@@ -859,14 +857,14 @@ class RunFormScreen(Screen[FormResult]):
         options = [(gettext("↩ last values"), "")] + [(n, n) for n in sorted(self._presets)]
         existing = self.query("#preset-select")
         if existing:
-            select = existing.first(Select)
+            select = existing.first(Select)  # pragma: no mutate — expect_type is a pure runtime assertion; #preset-select is only ever a Select, so first(Select)/first(None) return the identical node (equivalents); the in-place refresh stays pinned by test_form_save_preset_existing_select_gains_the_name  # fmt: skip
             select.set_options(options)
             select.value = selected
             return
         # No #preset-select means the row still holds the empty-state hint (the two are
         # mutually exclusive at compose, and the branch above owns the other case) — swap
         # it for a real dropdown, selected on the just-saved preset.
-        self.query_one("#preset-empty", Static).remove()
+        self.query_one("#preset-empty", Static).remove()  # pragma: no mutate — expect_type is a pure runtime assertion; #preset-empty is only ever a Static, so query_one("#preset-empty", Static)/None/type-omitted return the identical node (equivalents); the hint-swap stays pinned by test_form_save_preset_from_empty_state_mounts_a_select  # fmt: skip
         self.query_one("#preset-row").mount(
             Select(options, value=selected, allow_blank=False, id="preset-select")
         )

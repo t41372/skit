@@ -51,9 +51,14 @@ def default_roots() -> tuple[Path, Path]:
 def skill_text() -> str:
     """The bundled SKILL.md, read from the installed package (single source: the repo's
     skills/skit/SKILL.md is a test-enforced byte-identical copy of this file)."""
-    res = resources.files("skit").joinpath("skills", SKILL_DIR_NAME, SKILL_FILE_NAME)
+    package = "skit"
+    # files(None) infers this module's own package, and agentskill lives directly in `skit`, so
+    # anchor→None resolves to the identical package root — an equivalent mutant. Scoped to this one
+    # line so the killable anchor-string ("skit"→…) and joinpath mutants below stay mutation-tested.
+    root = resources.files(package)  # pragma: no mutate
+    res = root.joinpath("skills", SKILL_DIR_NAME, SKILL_FILE_NAME)
     # I/O kwarg mutants ("utf-8"→"UTF-8"/None) are equivalent aliases here; content is
-    # pinned by test_skill_text_is_the_bundled_skill (see docs/mutation-ledger.md).
+    # pinned by test_skill_ships_inside_the_package (see docs/mutation-ledger.md).
     return res.read_text(encoding="utf-8")  # pragma: no mutate
 
 

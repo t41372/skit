@@ -127,6 +127,8 @@ def test_collect_reports_every_category_and_excludes_double_reports(tmp_path, mo
     assert names(report.missing) == {"gone"}
     assert names(report.drifted) == {"drift_py", "drift_pr"}
     assert report.needs_missing.get("needs_sh") == ["ffmpeg"]
+    # needs_entries carries the ENTRY object itself, not None (the TUI/doctor renders it)
+    assert names(report.needs_entries) == {"needs_sh"}
     # launch_blocked names the two truly-blocked entries with a real reason...
     assert set(report.launch_blocked) == {"blocked_sh", "blocked_pr"}
     assert names(report.blocked_entries) == {"blocked_sh", "blocked_pr"}
@@ -136,6 +138,26 @@ def test_collect_reports_every_category_and_excludes_double_reports(tmp_path, mo
     assert "needs_sh" not in report.launch_blocked
     # (e) the malformed runner row is surfaced, the valid one is not.
     assert report.invalid_runner_rows == ["bad"]
+
+
+def test_collect_double_report_exclusion_continues_not_breaks(tmp_path, monkeypatch):
+    # The preflight loop skips entries already reported above (missing/needs/no-spec) with
+    # `continue` — just that one entry, so LATER entries are still swept. A `break` mutant
+    # would abandon the whole rest of the list at the first excluded entry. Ordering makes
+    # it observable: list_entries sorts by slug, so an excluded "aaa" precedes a blocked
+    # "zzz" — `break` at aaa would leave zzz unreported.
+    early = _py(tmp_path, "print(1)\n", "aaa_excluded")
+    early.script_path.unlink()  # target-missing -> excluded via `continue`
+    _shell(tmp_path, "zzz_blocked")  # sorts AFTER; interpreter absent -> should be blocked
+    monkeypatch.setattr("skit.langs.launch._which", lambda _name: None)
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+
+    report = healthcheck.collect(store.list_entries())
+
+    assert "aaa_excluded" in {e.meta.name for e in report.missing}
+    # The later entry was still reached and reported — a `break` would have skipped it.
+    assert "zzz_blocked" in report.launch_blocked
+    assert "zzz_blocked" in {e.meta.name for e in report.blocked_entries}
 
 
 def test_collect_clean_library_reports_nothing(tmp_path):

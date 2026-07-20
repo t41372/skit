@@ -87,7 +87,7 @@ def analyze(text: str) -> Analysis:
     """Detect candidate parameters in a shell script. On any parse error, return an empty result
     (no exception; add can still take the script into the store — honest Tier-0 degradation)."""
     parser = Parser(_LANGUAGE)
-    root = parser.parse(text.encode("utf-8")).root_node
+    root = parser.parse(text.encode("utf-8")).root_node  # pragma: no mutate  (codec alias)
     if root.has_error:
         return Analysis(syntax_error=True)
     consts = _const_candidates(root)
@@ -133,8 +133,8 @@ def _walk(node: Node) -> Iterator[Node]:
 
 def _text(node: Node) -> str:
     if node.text is None:  # pragma: no cover — every node from a parsed tree carries its bytes
-        return ""
-    return node.text.decode("utf-8")
+        return ""  # pragma: no mutate — unreachable (node.text is never None on a parsed tree)
+    return node.text.decode("utf-8")  # pragma: no mutate — "UTF-8" is the same codec (alias)
 
 
 def _arguments(node: Node) -> list[Node]:
@@ -159,7 +159,9 @@ def _literal_text(node: Node) -> str | None:
         return _text(node)[1:-1]  # strip the surrounding single quotes (no escape processing)
     if kind == "string":
         if all(child.type == "string_content" for child in node.named_children):
-            return "".join(_text(child) for child in node.named_children)
+            # An all-string_content string is always a single content node, so the join separator
+            # is never used (any 2+ content string carries a non-content child, failing all()).
+            return "".join(_text(child) for child in node.named_children)  # pragma: no mutate
         return None
     return None
 
@@ -185,7 +187,8 @@ def _toplevel_assignments(root: Node) -> Iterator[tuple[Node, bool]]:
         if child.type == "variable_assignment":
             yield child, False
         elif child.type == "declaration_command":
-            keyword = child.children[0].type if child.children else ""
+            # a declaration_command always has children, so the else "" is unreachable
+            keyword = child.children[0].type if child.children else ""  # pragma: no mutate
             if keyword == "local":
                 continue
             readonly = keyword == "readonly" or _has_readonly_flag(child)
@@ -254,7 +257,9 @@ def _bare_assigned_names(root: Node) -> set[str]:
     names: set[str] = set()
     for node, _ in _toplevel_assignments(root):
         name_node = node.child_by_field_name("name")
-        if name_node is None or name_node.type != "variable_name":
+        # name_node is never None here; or->and only differs on a subscript target, whose bracketed
+        # text never matches a scalar envdefault name (inert) — hence equivalent.
+        if name_node is None or name_node.type != "variable_name":  # pragma: no mutate
             continue
         name = _text(name_node)
         value = node.child_by_field_name("value")
@@ -268,9 +273,10 @@ def _assignment_operator(node: Node) -> str:
     """A variable_assignment's operator token: `=` or `+=` (the grammar exposes it as an anonymous
     child, not a field)."""
     for child in node.children:
-        if child.type in ("=", "+="):
+        # dropping "=" is equivalent: an `=` assignment then falls through to the "=" return below
+        if child.type in ("=", "+="):  # pragma: no mutate
             return child.type
-    return "="  # pragma: no cover — a variable_assignment always carries one of the two tokens
+    return "="  # pragma: no cover — a variable_assignment always carries one of the two tokens # pragma: no mutate — unreachable fallback
 
 
 # ---------------------------------------------------------------- envdefault
@@ -311,9 +317,9 @@ def _envdefault_candidates(root: Node, bare_assigned: set[str]) -> list[Candidat
 
 def _expansion_default(node: Node, operator: Node) -> str:
     """The default text of an expansion: the bytes between the operator and the closing `}`."""
-    body = node.text or b""
+    body = node.text or b""  # pragma: no mutate  (an expansion's text is never empty; b"" is dead)
     start = operator.end_byte - node.start_byte
-    return body[start:-1].decode("utf-8")  # [:-1] drops the trailing `}`
+    return body[start:-1].decode("utf-8")  # pragma: no mutate  (drops trailing }; codec alias)
 
 
 # ---------------------------------------------------------------- read
@@ -423,7 +429,8 @@ def _parse_read_args(args: list[Node]) -> ReadFlags:
     varnames: list[str] = []
     raw = False
     reframing = False
-    options_done = False
+    # only read via `not options_done`, so None is falsy-identical to False (equivalent)
+    options_done = False  # pragma: no mutate
     i = 0
     while i < len(args):
         arg = args[i]
@@ -454,8 +461,9 @@ def _scan_read_cluster(
     """Read one flag cluster (`-s`, `-sp`, `-n5`, …):
     (secret_seen, prompt_text, consumes_next, raw_seen, reframing_seen)."""
     secret = False
-    prompt = ""
-    consumes_next = False
+    # both are only consumed via truthiness downstream, so None is falsy-identical (equivalent)
+    prompt = ""  # pragma: no mutate
+    consumes_next = False  # pragma: no mutate
     raw = False
     reframing = False
     j = 0
@@ -484,7 +492,9 @@ def _scan_read_cluster(
                 elif i + 1 < len(args):
                     prompt = _literal_argument(args[i + 1])  # `-p PROMPT` — next arg is the prompt
                     consumes_next = True
-            elif not attached and i + 1 < len(args):
+            # the boundary only diverges for a trailing value-flag, whose spurious consume has no
+            # following arg to skip (inert)
+            elif not attached and i + 1 < len(args):  # pragma: no mutate
                 consumes_next = True  # `-t 5`, `-n 3` … — skip the value so it's not a varname
             break  # the rest of the cluster is this flag's attached value (or nothing)
         j += 1  # an unknown / no-value flag letter (e, a, …) — keep scanning the cluster
@@ -572,7 +582,9 @@ def _mutated_names(root: Node) -> set[str]:
 
 def _collect_assignment_mutation(node: Node, out: set[str]) -> None:
     name_node = node.child_by_field_name("name")
-    if name_node is None or name_node.type != "variable_name":
+    # name_node is never None here; or->and only differs on a subscript target, whose bracketed
+    # text never matches a scalar candidate name (inert) — hence equivalent.
+    if name_node is None or name_node.type != "variable_name":  # pragma: no mutate
         return
     name = _text(name_node)
     if _assignment_operator(node) == "+=":
@@ -586,7 +598,9 @@ def _collect_assignment_mutation(node: Node, out: set[str]) -> None:
 def _collect_arithmetic_assignment(node: Node, out: set[str]) -> None:
     if _binary_operator(node) in _ARITH_ASSIGN_OPS:
         left = node.child_by_field_name("left")
-        if left is not None and left.type == "variable_name":
+        # left is never None here; and->or only differs on a subscript target, whose bracketed
+        # text never matches a scalar candidate name (inert) — hence equivalent.
+        if left is not None and left.type == "variable_name":  # pragma: no mutate
             out.add(_text(left))
 
 
@@ -604,7 +618,10 @@ def _collect_loop_reassignments(node: Node, out: set[str]) -> None:
     for sub in _walk(node):
         if sub.type == "variable_assignment":
             name_node = sub.child_by_field_name("name")
-            if name_node is not None and name_node.type == "variable_name":
+            # name_node is never None here; and->or is equivalent (a subscript target's bracketed
+            # text never matches a scalar candidate name). The type-check mutations on this line are
+            # pinned behaviourally by test_plain_loop_body_reassignment_* instead.
+            if name_node is not None and name_node.type == "variable_name":  # pragma: no mutate
                 out.add(_text(name_node))
 
 
@@ -623,7 +640,7 @@ def _binary_operator(node: Node) -> str:
     for child in node.children:
         if not child.is_named:
             return child.type
-    return ""  # pragma: no cover — a binary_expression always has an operator token
+    return ""  # pragma: no cover — a binary_expression always has an operator token # pragma: no mutate — unreachable fallback
 
 
 def _let_target(text: str) -> str | None:

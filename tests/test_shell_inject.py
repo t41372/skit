@@ -1078,6 +1078,8 @@ def test_execute_without_an_injector_does_not_crash(tmp_path):
 
 @posix_only
 def test_cli_dry_run_shows_the_command(tmp_path):
+    # The transparency line prints the script's absolute path; the shared conftest pins a wide
+    # COLUMNS so rich never soft-wraps that path token ("script.sh") on a long tmp_path.
     _shell_entry(tmp_path, '#!/usr/bin/env bash\nWIDTH=800\necho "$WIDTH"\n', name="cln1")
     assert runner.invoke(cli.app, ["params", "cln1", "--manage", "WIDTH"]).exit_code == 0
     result = runner.invoke(
@@ -1086,6 +1088,7 @@ def test_cli_dry_run_shows_the_command(tmp_path):
     assert result.exit_code == 0, result.output
     assert "WIDTH = 1200" in result.output
     assert "script.sh" in result.output  # the ORIGINAL path: a dry run writes no temp copy
+    assert ".injected-" not in result.output  # …and not an injected temp copy
 
 
 def test_cli_normalize_turns_a_const_into_an_env_param(tmp_path):
