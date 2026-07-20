@@ -17,6 +17,7 @@ import socket
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import override
 
 import pytest
 
@@ -661,3 +662,314 @@ def test_doctor_rebuild_registry_index_has_correct_keys(sample_script):
     reg = store._load_registry()
     assert reg[entry.slug] == {"name": "hi", "kind": "python", "description": "desc here"}
     assert store.resolve("hi").slug == entry.slug
+
+
+# ===========================================================================
+# Second wave — additional surviving-mutant kills for store.py:
+# _fs_truth scan logic, _add_entry's reuse guard, _load_registry's suppressed
+# cleanup, add_python's strict-UTF-8 gate, add_script messages/encoding,
+# remove/rename/resolve messages, update_dependencies' npm gating, and the
+# Entry-return fields of the meta-updating helpers.
+# ===========================================================================
+
+
+def _force_sorted_root_iterdir(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make scripts_dir().iterdir() deterministic (name-sorted).
+
+    _fs_truth loops over scripts_dir().iterdir(), whose order is filesystem-defined.
+    Several mutants turn a `continue` (skip this dir, keep scanning) into a `break`
+    (abandon the whole scan). That divergence is only observable when a dir that must
+    still be visited is iterated AFTER the one that triggers the branch, so the tests
+    below pin the order: the branch-triggering dir is named to sort first, and the dir
+    whose name must still be collected sorts last."""
+    real_iterdir = Path.iterdir
+    root = scripts_dir()
+
+    def ordered(self: Path):
+        if self == root:
+            return iter(sorted(real_iterdir(self), key=lambda p: p.name))
+        return real_iterdir(self)
+
+    monkeypatch.setattr(Path, "iterdir", ordered)
+
+
+def _orphan_with_name(slug: str, name: str) -> None:
+    """A non-empty, UNREGISTERED entry directory under scripts_dir() whose meta names `name`."""
+    d = scripts_dir() / slug
+    d.mkdir(parents=True)
+    store._write_meta(d, ScriptMeta(name=name, kind="python"))
+
+
+def test_fs_truth_registered_entry_name_comes_from_registry_not_meta():
+    """A registered entry's name is accounted for from the registry index, WITHOUT re-reading
+    its meta.toml (the `if in_registry: continue` fast path). If that flag collapsed to a falsy
+    constant, _fs_truth would re-read every registered meta — so a name that drifted only in
+    meta.toml would wrongly count as taken and block an unrelated add."""
+    entry = store.add_command("echo hi", name="alpha")
+    meta = store._read_meta(entry.dir)
+    meta.name = "beta"
+    store._write_meta(entry.dir, meta)  # meta now says "beta"; the registry row still says "alpha"
+
+    new = store.add_command("echo bye", name="beta")  # must NOT conflict with the drifted meta
+    assert new.meta.name == "beta"
+
+
+def test_fs_truth_keeps_scanning_past_an_empty_leftover_dir(monkeypatch):
+    """An empty, unregistered leftover directory is skipped (continue), never a reason to abandon
+    the whole scan (break): a real orphan iterated after it must still have its name protected."""
+    (scripts_dir() / "aaa-empty").mkdir(parents=True)  # empty leftover, sorts first
+    _orphan_with_name("zzz-orphan", "ghostname")  # real orphan, sorts last
+    _force_sorted_root_iterdir(monkeypatch)
+
+    with pytest.raises(store.NameConflictError):
+        store.add_command("echo x", name="ghostname")
+
+
+def test_fs_truth_keeps_scanning_past_a_stray_non_directory(monkeypatch):
+    """A stray non-directory entry is skipped (continue), not a reason to abandon the scan."""
+    scripts_dir().mkdir(parents=True, exist_ok=True)
+    (scripts_dir() / "aaa-stray").write_text("not a dir", encoding="utf-8")  # sorts first
+    _orphan_with_name("zzz-orphan", "ghostname")
+    _force_sorted_root_iterdir(monkeypatch)
+
+    with pytest.raises(store.NameConflictError):
+        store.add_command("echo x", name="ghostname")
+
+
+def test_fs_truth_keeps_scanning_past_a_registered_dir(monkeypatch):
+    """After a registered dir's name is accounted for, the scan continues to later dirs — a
+    `break` there would leave an unregistered orphan's name unprotected."""
+    store.add_command("echo hi", name="aaa")  # registered, slug "aaa", sorts first
+    _orphan_with_name("zzz-orphan", "ghostname")
+    _force_sorted_root_iterdir(monkeypatch)
+
+    with pytest.raises(store.NameConflictError):
+        store.add_command("echo x", name="ghostname")
+
+
+def test_fs_truth_keeps_scanning_past_a_corrupt_orphan_meta(monkeypatch):
+    """An orphan whose meta.toml is unreadable is skipped (continue), and the scan continues:
+    a later orphan's name must still be collected."""
+    corrupt = scripts_dir() / "aaa-corrupt"
+    corrupt.mkdir(parents=True)
+    (corrupt / "meta.toml").write_text("[[[bad", encoding="utf-8")  # unreadable, sorts first
+    _orphan_with_name("zzz-orphan", "ghostname")
+    _force_sorted_root_iterdir(monkeypatch)
+
+    with pytest.raises(store.NameConflictError):
+        store.add_command("echo x", name="ghostname")
+
+
+def test_add_entry_refuse_reuse_nonempty_dir_exact_message(monkeypatch, sample_script, tmp_path):
+    """The defense-in-depth guard against overwriting an existing non-empty entry dir must raise
+    with the exact path it refused — verifying both the message text and that the real entry_dir
+    (not a str(None)) is interpolated in."""
+    entry = store.add_python(sample_script, name="first")
+    monkeypatch.setattr(store, "_unique_slug", lambda base, existing: entry.slug)
+
+    other = tmp_path / "other.py"
+    other.write_text("print(1)\n", encoding="utf-8")
+    with pytest.raises(store.StoreError) as exc:
+        store.add_python(other, name="second")
+    assert str(exc.value) == (
+        f"Refusing to reuse the existing, non-empty entry directory: {entry.dir}"
+    )
+
+
+def test_load_registry_corrupt_suppresses_replace_failure(monkeypatch):
+    """A corrupt registry.toml degrades to an empty registry even if the best-effort rename of
+    the bad file fails (e.g. a permission error): the OSError from os.replace is suppressed, so
+    _load_registry still returns {} rather than propagating. contextlib.suppress(None) would
+    instead let the error escape (a TypeError from its __exit__)."""
+    reg = registry_path()
+    reg.parent.mkdir(parents=True, exist_ok=True)
+    reg.write_text("not valid toml [[[", encoding="utf-8")
+
+    def boom(_src, _dst):
+        raise OSError("cannot rename")
+
+    monkeypatch.setattr(os, "replace", boom)
+    assert store._load_registry() == {}
+
+
+def test_add_python_strict_decode_requests_utf8(tmp_path, monkeypatch):
+    """The copy-injection safety gate re-decodes the source STRICTLY as UTF-8 (a lossy
+    errors='replace' round-trip back to disk would corrupt a non-UTF-8 byte). Pin the exact
+    codec name that gate asks for."""
+    src = tmp_path / "s.py"
+    src.write_text("print(1)\n", encoding="utf-8")
+
+    seen: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    class _RecBytes(bytes):
+        @override
+        def decode(self, *a, **kw):
+            seen.append((a, kw))
+            return bytes.decode(self, *a, **kw)
+
+    real_read_bytes = Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes", lambda self: _RecBytes(real_read_bytes(self)))
+    store.add_python(src, dependencies=["httpx"])
+
+    # Exactly one decode, positional "utf-8", NO errors= handler: a lossy errors="replace"
+    # (or any other handler) must fail this test, since that is the corruption the gate prevents.
+    assert seen == [(("utf-8",), {})]
+
+
+def test_add_script_unknown_kind_exact_message(tmp_path):
+    src = tmp_path / "x.sh"
+    src.write_text("echo hi\n", encoding="utf-8")
+    with pytest.raises(store.StoreError) as exc:
+        store.add_script(src, kind="martian")
+    assert str(exc.value) == "Unknown entry kind: martian"
+
+
+def test_add_script_missing_file_exact_message(tmp_path):
+    ghost = tmp_path / "ghost.sh"
+    with pytest.raises(store.StoreError) as exc:
+        store.add_script(ghost, kind="shell")
+    assert str(exc.value) == f"File not found: {ghost.resolve()}"
+
+
+def test_add_script_reads_source_as_utf8_replace(tmp_path, monkeypatch):
+    """add_script must read its source with encoding="utf-8", errors="replace" — same lenient
+    decode add_python uses. Pins the exact kwargs (dropping either, nulling either, or passing a
+    differently-cased/typo'd literal are all distinct surviving mutants)."""
+    src = tmp_path / "deploy.sh"
+    src.write_text("#!/bin/bash\n# Deploy\necho hi\n", encoding="utf-8")
+
+    calls: list[tuple[Path, dict[str, object]]] = []
+    real_read_text = Path.read_text
+
+    def spy(self, *a, **kw):
+        calls.append((self, kw))
+        return real_read_text(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "read_text", spy)
+    store.add_script(src, kind="shell")
+
+    matched = [kw for p, kw in calls if p == src.resolve()]
+    assert matched, "expected a read_text call on the source file"
+    assert matched[0].get("encoding") == "utf-8"
+    assert matched[0].get("errors") == "replace"
+
+
+def test_add_script_records_added_at_timestamp(tmp_path):
+    src = tmp_path / "deploy.sh"
+    src.write_text("#!/bin/bash\necho hi\n", encoding="utf-8")
+    entry = store.add_script(src, kind="shell")
+    assert entry.meta.added_at != ""
+    datetime.fromisoformat(entry.meta.added_at)  # must parse
+
+
+def test_remove_forgets_the_removed_slugs_saved_values(sample_script):
+    """remove() drops the entry's remembered parameter values too, keyed by the entry's OWN slug
+    (argstate.forget(entry.slug)). A wrong key (None) would leave the values file orphaned."""
+    entry = store.add_python(sample_script, name="hi")
+    argstate.save_last(entry.slug, values={"A": "1"})
+    values_file = values_dir() / f"{entry.slug}.toml"
+    assert values_file.exists()
+
+    store.remove("hi")
+    assert not values_file.exists()
+
+
+def test_rename_to_taken_name_exact_message():
+    store.add_command("echo a", name="alpha")
+    e2 = store.add_command("echo b", name="beta")
+    with pytest.raises(store.StoreError) as exc:
+        store.rename(e2.slug, "alpha")
+    assert str(exc.value) == "The name alpha is already taken."
+
+
+def test_rename_empty_name_exact_message():
+    entry = store.add_command("echo a", name="alpha")
+    with pytest.raises(store.StoreError) as exc:
+        store.rename(entry.slug, "   ")
+    assert str(exc.value) == "A name is required."
+
+
+def test_resolve_corrupt_meta_exact_message():
+    import tomllib
+
+    entry = store.add_command("echo hi", name="x")
+    bad = "[[[bad"
+    (entry.dir / "meta.toml").write_text(bad, encoding="utf-8")
+
+    with pytest.raises(tomllib.TOMLDecodeError) as parse_exc:
+        tomllib.loads(bad)
+    expected_error = str(parse_exc.value)
+
+    with pytest.raises(store.NotFoundError) as exc:
+        store.resolve(entry.slug)
+    assert str(exc.value) == (
+        f"{entry.slug}: metadata is corrupt ({expected_error}); run skit doctor --rebuild"
+    )
+
+
+def test_update_dependencies_python_constraint_on_npm_kind_exact_message(tmp_path):
+    src = tmp_path / "s.js"
+    src.write_text("console.log(1)\n", encoding="utf-8")
+    entry = store.add_script(src, kind="js")
+    with pytest.raises(store.StoreUsageError) as exc:
+        store.update_dependencies(entry.slug, [], requires_python=">=3.11")
+    assert str(exc.value) == "A Python constraint doesn't apply to js scripts."
+
+
+def test_update_dependencies_reference_npm_exact_message(tmp_path):
+    src = tmp_path / "s.js"
+    src.write_text("console.log(1)\n", encoding="utf-8")
+    entry = store.add_script(src, kind="js", mode="reference", name="refjs")
+    with pytest.raises(store.StoreUsageError) as exc:
+        store.update_dependencies(entry.slug, ["chalk"])
+    assert str(exc.value) == (
+        "refjs is a reference-mode entry: it runs from its own project, which already "
+        "provides its packages. Dependency management applies to copies."
+    )
+
+
+def test_update_dependencies_python_empty_deps_does_not_sweep_node_modules(sample_script):
+    """The npm node_modules sweep runs ONLY for npm-flavor entries with an empty dep list. A
+    python entry (uv flavor) must never have its dir swept, even when its deps are cleared."""
+    entry = store.add_python(sample_script)
+    nm = entry.dir / "node_modules"
+    nm.mkdir()
+    (nm / "keep.txt").write_text("x", encoding="utf-8")
+
+    store.update_dependencies(entry.slug, [])  # clear deps on a python entry
+    assert nm.exists()
+
+
+def test_update_dependencies_python_nonempty_deps_does_not_sweep_node_modules(sample_script):
+    """Same npm-sweep gate, from the other side: a python entry with a non-empty dep list must
+    also never be swept (the guard's first `and`, not the last, is what excludes it)."""
+    entry = store.add_python(sample_script)
+    nm = entry.dir / "node_modules"
+    nm.mkdir()
+    (nm / "keep.txt").write_text("x", encoding="utf-8")
+
+    store.update_dependencies(entry.slug, ["httpx"])  # set deps on a python entry
+    assert nm.exists()
+
+
+def test_update_description_returns_entry_with_correct_dir(sample_script):
+    entry = store.add_python(sample_script, name="hi")
+    updated = store.update_description(entry.slug, "new desc")
+    assert updated.dir == entry.dir
+    assert updated.meta.description == "new desc"
+
+
+def test_update_needs_returns_entry_with_correct_slug_and_dir(sample_script):
+    entry = store.add_python(sample_script, name="hi")
+    updated = store.update_needs(entry.slug, ["ffmpeg"])
+    assert updated.slug == entry.slug
+    assert updated.dir == entry.dir
+    assert updated.meta.needs == ["ffmpeg"]
+
+
+def test_write_parameters_returns_entry_with_correct_dir(sample_script):
+    entry = store.add_python(sample_script, name="hi")
+    decls = [ParamDecl(name="a", binding="const", type="str", default=None, secret=False)]
+    updated = store.write_parameters(entry.slug, decls)
+    assert updated.dir == entry.dir
+    assert updated.slug == entry.slug

@@ -37,3 +37,11 @@ jobs:
         run: uv sync --dev
       - name: Run mutation tests
         run: uv run mutmut run
+      # `mutmut run` records results but exits 0 for unsuccessful mutant states, so on its own it
+      # is not a gate. Validate the exported summary: survivors, missing tests, timeouts, crashes,
+      # interruptions, suspicious results, and incomplete accounting all fail the job.
+      - name: Validate mutation results
+        run: |
+          uv run mutmut results || true
+          uv run mutmut export-cicd-stats
+          uv run python scripts/check_mutation_stats.py

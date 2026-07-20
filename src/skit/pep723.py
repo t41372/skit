@@ -257,7 +257,8 @@ def _structural_bracket_delta(s: str) -> int:
     them structural TOML array syntax.
     """
     delta = 0
-    quote: str | None = None
+    quote = ""  # the active quote char, or "" when outside a string (a real quote is non-empty,
+    # so `if quote` distinguishes the two and a "" -> non-empty mutant misreads structural brackets)
     i = 0
     n = len(s)
     while i < n:
@@ -267,7 +268,7 @@ def _structural_bracket_delta(s: str) -> int:
                 i += 2  # pragma: no mutate — skip the escaped char; only reachable via `"` strings
                 continue
             if ch == quote:
-                quote = None
+                quote = ""  # closing quote — back outside a string
             i += 1
             continue
         if ch in ("'", '"'):
@@ -293,7 +294,7 @@ def set_dependencies(
     body_lines = m.group("body").splitlines()
     kept: list[str] = []
     in_deps_array = False  # pragma: no mutate — only read via truthiness (`if in_deps_array`)
-    depth = 0
+    depth = 0  # pragma: no mutate — dead init; read only after `depth = net` reassigns
     for line in body_lines:
         stripped = _strip_comment_prefix(line, leader)
         if in_deps_array:

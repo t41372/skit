@@ -205,7 +205,7 @@ def test_invalid_utf8_prompt_stdin_cli_boundary_maps_decode_error_to_clean_exit(
 
     assert result.exit_code == 1
     assert "<stdin>" in result.output
-    assert "offset 7" in result.output
+    assert "offset 7" in " ".join(result.output.split())
     assert isinstance(result.exception, SystemExit)
     assert "Traceback" not in result.output
     assert store.list_entries() == []
@@ -265,7 +265,7 @@ def test_cli_edit_refuses_invalid_prompt_bytes_and_the_next_edit_can_repair_them
     refused = runner.invoke(cli.app, ["edit", entry.meta.name])
 
     assert refused.exit_code == 1
-    assert "offset 7" in refused.output
+    assert "offset 7" in " ".join(refused.output.split())
     assert "Saved" not in refused.output
     assert target.read_bytes() == invalid  # authored bytes are kept for a corrective edit
     if mode == "copy":
@@ -335,7 +335,7 @@ def test_cli_add_params_run_and_doctor_refuse_corrupt_prompt_cleanly(tmp_path, m
     for args in (["show", entry.meta.name], ["show", entry.meta.name, "--json"]):
         shown = runner.invoke(cli.app, args)
         assert shown.exit_code == 1
-        assert "offset 7" in shown.output
+        assert "offset 7" in " ".join(shown.output.split())
         assert "fields" not in shown.output
         assert "No form fields" not in shown.output
         assert "�" not in shown.output

@@ -294,9 +294,9 @@ def _resolve_npm_dependencies(
     if scanner is None:
         return []
     try:
-        text = script.read_text(encoding="utf-8", errors="replace")
+        text = script.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate — encoding None/utf-8/UTF-8 decode identically under skit's UTF-8-mode runtime (equivalent); the errors="replace" handler stays behaviourally pinned by test_resolve_npm_invalid_utf8_reads_with_replace  # fmt: skip
     except OSError:
-        text = ""
+        text = ""  # pragma: no mutate — an OSError fallback consumed only as `scanner(text) if text else []`; every spelling ("" / None / any garbage the scanner finds no import in) yields no suggestions, so the value is unobservable
     suggested = scanner(text) if text else []
     if not suggested:
         return []
@@ -323,7 +323,11 @@ def _refuse_unusable_add_flags(
     contract — silently assembling an entry that ignores what the caller asked for is exactly
     the guessing it forbids). The uv flavor honors both flags; npm honors --dep on copies
     only; every other kind honors neither."""
-    flavor = kind_spec.deps_flavor if kind_spec is not None else ""
+    flavor = (
+        kind_spec.deps_flavor
+        if kind_spec is not None
+        else ""  # pragma: no mutate — only ever compared to "uv"/"npm"; any other value is unobservable
+    )
     if flavor == "uv":
         return
     if dep is not None and (flavor != "npm" or ref):
@@ -603,9 +607,12 @@ def _onboard_script_params(entry: store.Entry, kind_spec: LangSpec, no_input: bo
     if not specs:
         return []
     copy_path = entry.script_path
-    current = copy_path.read_text(encoding="utf-8")  # pragma: no mutate — utf-8 equivalence
+    # This is a write-back path, so the decode must be lossless. Shell/fish scripts may
+    # legitimately contain arbitrary bytes; surrogateescape lets the comment-only metadata
+    # edit round-trip them instead of silently replacing each one with U+FFFD.
+    current = copy_path.read_text(encoding="utf-8", errors="surrogateescape")  # pragma: no mutate — utf-8 equivalence  # fmt: skip
     copy_path.write_text(
-        kind_spec.params_io.write(current, specs), encoding="utf-8"
+        kind_spec.params_io.write(current, specs), encoding="utf-8", errors="surrogateescape"
     )  # pragma: no mutate
     return [s.name for s in specs]
 
@@ -2467,6 +2474,11 @@ def _parse_set_opts(plan: flows.FormPlan, raw: list[str]) -> dict[str, str]:
     return pairs
 
 
+# A non-"tui" sentinel: `style` below is only ever compared against "tui", so this value's exact
+# spelling is behaviorally irrelevant (kept mutation-inert while the TERM/"dumb" reads stay tested).
+_PLAIN_STYLE = "plain"  # pragma: no mutate
+
+
 def _collect_values(
     entry: store.Entry,
     plan: flows.FormPlan,
@@ -2482,7 +2494,7 @@ def _collect_values(
     Returns values, selected runner name, and whether the user actually changed the
     runner picker. The runner is non-None only when `runners` was passed AND the inline
     form rendered its picker row; the line fallback never answers that question."""
-    style = "plain" if plain or os.environ.get("TERM") == "dumb" else config.load_form()
+    style = _PLAIN_STYLE if plain or os.environ.get("TERM") == "dumb" else config.load_form()
     if style == "tui":
         import importlib
 
@@ -3438,33 +3450,41 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
     last = argstate.load_state(entry.slug)["values"]
     entry_spec = spec_for(entry.meta.kind)
     specs: list[ParamDecl] = []
-    text = ""
+    text = ""  # pragma: no mutate — sentinel only reached when no file is read: None stays falsy like "" (reconcile skipped), and "XXXX" reconciles to the same empty result, so no output differs
     if entry_spec is not None and entry_spec.params_io is not None and entry.script_path.exists():
         text = entry.script_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
         specs = entry_spec.params_io.read(text)
     unmanaged: list[str] = []
-    self_locating = False
-    reader_driven = False
+    # One tuple assignment avoids two equivalent ``False -> None`` assignment mutants while
+    # keeping each behaviour-changing ``False -> True`` name mutant live. In particular, a
+    # vanished analyzable script must not invent either signal (test_cli_mut_part06 pins it).
+    self_locating, reader_driven = False, False
     ref_mode = entry.meta.mode == "reference"
-    if entry_spec is not None and entry_spec.analyzer is not None and text:
-        # BOTH modes: the text is readable either way, and a reference entry deserves
-        # the same honest read (its reader form runs fine; its candidates are real —
-        # only the WRITE ops differ, and the advice below switches voice on that).
-        report = entry_spec.analyzer.reconcile(text, specs)
-        an = entry_spec.analyzer.analyze(text)
-        # A MODELED reader form (flows.reader_fields — the one trap predicate every
-        # surface shares) is the entry's real interface: plan_for_entry prefers managed
-        # params, so a --manage advice here would sell REPLACING that form. Self-parsing
-        # skit couldn't model (docopt/fire, a dynamic optstring) runs on the passthrough
-        # field either way — managed constants are additive there, so candidates stay.
-        reader_driven = flows.reader_fields(entry_spec, text) > 0
-        unmanaged = [] if reader_driven else [c.name for c in report.new]
-        # $0/BASH_SOURCE: an injected constant runs from a temp copy, so the script would see the
-        # temp path instead of its own. Say so HERE — where the user decides whether to manage it —
-        # not only in the run-time warning, and point at the fix. Only meaningful for a kind that
-        # actually rewrites a copy (an injector, copy mode — the hint advises --normalize, a
-        # stored-copy write); env delivery never moves the file.
-        self_locating = not ref_mode and entry_spec.injector is not None and an.uses_self_location
+    if entry_spec is not None and entry_spec.analyzer is not None:  # noqa: SIM102
+        # Keep the text gate nested instead of pragma-suppressing a three-way BooleanOperation:
+        # changing ``and text`` to ``or text`` is equivalent under the registry invariant, but a
+        # line-level pragma also hides the behaviour-bearing spec/analyzer guards.
+        if text:
+            # BOTH modes: the text is readable either way, and a reference entry deserves
+            # the same honest read (its reader form runs fine; its candidates are real —
+            # only the WRITE ops differ, and the advice below switches voice on that).
+            report = entry_spec.analyzer.reconcile(text, specs)
+            an = entry_spec.analyzer.analyze(text)
+            # A MODELED reader form (flows.reader_fields — the one trap predicate every
+            # surface shares) is the entry's real interface: plan_for_entry prefers managed
+            # params, so a --manage advice here would sell REPLACING that form. Self-parsing
+            # skit couldn't model (docopt/fire, a dynamic optstring) runs on the passthrough
+            # field either way — managed constants are additive there, so candidates stay.
+            reader_driven = flows.reader_fields(entry_spec, text) > 0
+            unmanaged = [] if reader_driven else [c.name for c in report.new]
+            # $0/BASH_SOURCE: an injected constant runs from a temp copy, so the script would see the
+            # temp path instead of its own. Say so HERE — where the user decides whether to manage it —
+            # not only in the run-time warning, and point at the fix. Only meaningful for a kind that
+            # actually rewrites a copy (an injector, copy mode — the hint advises --normalize, a
+            # stored-copy write); env delivery never moves the file.
+            self_locating = (
+                not ref_mode and entry_spec.injector is not None and an.uses_self_location
+            )
     if entry_spec is not None and entry_spec.kind == "prompt" and entry.meta.interpolate:
         # The prompt's "detected but unmanaged" sweep is a fresh body scan, not the
         # analyzer/reconcile machinery (command-kind parity: spec.analyzer is None).
@@ -3482,7 +3502,9 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
         if entry.meta.kind == "prompt":
             payload["runner"] = entry.meta.runner or None
             payload["interpolate"] = entry.meta.interpolate
-        console.print_json(json.dumps(payload, ensure_ascii=False))
+        # ensure_ascii is inert here: console.print_json re-parses then re-serializes the
+        # string, normalizing any escaping (True/False/None/omitted all render identically).
+        console.print_json(json.dumps(payload, ensure_ascii=False))  # pragma: no mutate
         return
     if entry_spec is not None and entry_spec.placeholder_params:
         # The trait, not the family: a prompt (family "interpreted") reads exactly like
@@ -4219,10 +4241,8 @@ def _normalize_params(
         else s
         for s in entry_spec.params_io.read(result.text)
     ]
-    copy_path.write_text(
-        entry_spec.params_io.write(result.text, specs),
-        encoding="utf-8",  # pragma: no mutate — utf-8 equivalence
-    )
+    new_text = entry_spec.params_io.write(result.text, specs)
+    copy_path.write_text(new_text, encoding="utf-8")  # pragma: no mutate — utf-8 equivalence
     console.print(
         f"[green]{gettext('Normalized %(names)s in %(name)s: delivered as environment variables from now on (no temporary copy, and $0 stays your real file).') % {'names': ', '.join(escape(n) for n in result.normalized), 'name': escape(entry.meta.name)}}[/green]"
     )
@@ -4389,16 +4409,14 @@ def _deps_read_view(entry: store.Entry, *, supports_deps: bool, as_json: bool) -
     needs = list(entry.meta.needs or [])
     deps, constraint = store.effective_uv_metadata(entry)
     if as_json:
-        console.print_json(
-            json.dumps(
-                {
-                    "dependencies": deps,
-                    "requires_python": constraint,
-                    "needs": needs,
-                },
-                ensure_ascii=False,
-            )
-        )
+        payload = {
+            "dependencies": deps,
+            "requires_python": constraint,
+            "needs": needs,
+        }
+        # ensure_ascii is equivalent here (rich's print_json re-serializes the string, so True/
+        # False/dropped all render identically) — pragma the one-liner so those mutants aren't born.
+        console.print_json(json.dumps(payload, ensure_ascii=False))  # pragma: no mutate
         return
     if supports_deps:
         console.print(
@@ -4776,14 +4794,20 @@ def doctor(
 
 
 def _config_lang_value() -> str:
-    override = config.load_config().get("language", "")
+    # No `.get(..., "")` default: the isinstance-and-truthy guard below treats a missing key
+    # (None) and an empty string identically, so an explicit "" is redundant (dropping it also
+    # retires the equivalent default-value mutant while the "language" key stays mutation-tested).
+    override = config.load_config().get("language")
     if isinstance(override, str) and override:
         return override
     return gettext("auto (%(locale)s)") % {"locale": i18n.current_locale()}
 
 
 def _lang_override() -> str:
-    override = config.load_config().get("language", "")
+    # No `.get(..., "")` default: the isinstance guard below already maps a missing key
+    # (None) to "", so an explicit "" is redundant (dropping it also retires the equivalent
+    # default-value mutant — same construct as _config_lang_value above).
+    override = config.load_config().get("language")
     return override if isinstance(override, str) else ""
 
 

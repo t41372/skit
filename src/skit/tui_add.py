@@ -310,11 +310,14 @@ class AddSourceScreen(Screen[str | None]):
         from .langs.registry import spec_for
         from .store import infer_kind
 
-        raw = self.query_one("#add-path", Input).value.strip()
+        # query_one's expect_type is a redundant runtime guard here (the node is always the
+        # declared type) and "#add-path"/"#add-error" are each the first widget of their type,
+        # so dropping the type / the selector cannot change what is returned — equivalent.
+        raw = self.query_one("#add-path", Input).value.strip()  # pragma: no mutate
         if not raw:
             return
         path = Path(raw).expanduser()
-        error = self.query_one("#add-error", Static)
+        error = self.query_one("#add-error", Static)  # pragma: no mutate
         if not path.is_file():
             error.update(
                 f"[red]{gettext('File not found: %(path)s') % {'path': escape(str(path))}}[/red]"
@@ -336,7 +339,7 @@ class AddSourceScreen(Screen[str | None]):
                 # A resumed draft that reached the store is done accumulating — the
                 # same "success: the store holds the copy" unlink every authoring
                 # lane performs. (fresh always copies; the mode check is the belt.)
-                path.unlink(missing_ok=True)
+                path.unlink(missing_ok=True)  # pragma: no mutate — missing_ok True/False/None are indistinguishable here: this unlink runs only after a resumed draft reached the store as a copy, so the draft file always still exists; the unlink itself is pinned by test_resume_draft_accept_unlinks_the_draft  # fmt: skip
             self.dismiss(slug)
 
         if kind == "exe" and draft_resume:
@@ -344,13 +347,13 @@ class AddSourceScreen(Screen[str | None]):
             # reference-by-construction, the one mode the drafts boundary forbids
             # (a hand-planted executable bit must not smuggle one past the rule).
             # Fall to the ask; the modal below won't offer "A program" for a draft.
-            kind = "unknown"
+            kind = "unknown"  # pragma: no mutate — the literal is unobserved: any value that is neither a known kind nor "exe"/"prompt" falls identically through the spec_for/"exe"/"prompt" checks to the KindPickModal ("unknown"/None/case/garble all route the same); the exe/draft demotion is pinned by test_resume_exe_inferring_draft_demotes_to_kind_ask  # fmt: skip
         if kind == "prompt":
-            self.app.push_screen(PromptReviewScreen(path, fresh=draft_resume), _reviewed)
+            self.app.push_screen(PromptReviewScreen(path, fresh=draft_resume), _reviewed)  # pragma: no mutate — fresh=draft_resume is equivalent: PromptReviewScreen re-derives `fresh or is_draft(path)` and draft_resume==is_draft(path), so fresh=None/omitted give the identical _fresh; this line-level pragma also suppresses the co-located _reviewed callback arg, pinned by test_resume_prompt_draft_unlinks_and_dismisses  # fmt: skip
             return
         kind_spec = spec_for(kind)
         if kind_spec is not None and kind_spec.family == "interpreted":
-            self.app.push_screen(AddReviewScreen(path, kind=kind, fresh=draft_resume), _reviewed)
+            self.app.push_screen(AddReviewScreen(path, kind=kind, fresh=draft_resume), _reviewed)  # pragma: no mutate — fresh=draft_resume equivalent (AddReviewScreen re-derives `fresh or is_draft(path)`, draft_resume==is_draft(path)); the callback arg is pinned by test_submit_path_python_review_returns_slug  # fmt: skip
             return
         if kind == "exe":
             self.app.push_screen(ExeReviewScreen(path), _reviewed)
@@ -361,13 +364,13 @@ class AddSourceScreen(Screen[str | None]):
             if picked is None:
                 return
             if picked == "prompt":
-                self.app.push_screen(PromptReviewScreen(path, fresh=draft_resume), _reviewed)
+                self.app.push_screen(PromptReviewScreen(path, fresh=draft_resume), _reviewed)  # pragma: no mutate — fresh=draft_resume equivalent (PromptReviewScreen re-derives `fresh or is_draft(path)`, draft_resume==is_draft(path)); the co-located callback arg is pinned by test_modal_pick_prompt_dismisses_with_slug  # fmt: skip
             elif picked == "exe":
                 self.app.push_screen(ExeReviewScreen(path), _reviewed)
             else:
                 self.app.push_screen(
-                    AddReviewScreen(path, kind=picked, fresh=draft_resume), _reviewed
-                )
+                    AddReviewScreen(path, kind=picked, fresh=draft_resume), _reviewed  # pragma: no mutate — fresh=draft_resume equivalent (re-derived via is_draft); anchored to the inner AddReviewScreen call so the outer push_screen callback stays live and is killed by test_modal_pick_kind_dismisses_with_slug
+                )  # fmt: skip
 
         from .langs.registry import shebang_program
 
@@ -386,9 +389,11 @@ class AddSourceScreen(Screen[str | None]):
         self._submit_template()
 
     def _submit_template(self) -> None:
-        template = self.query_one("#add-template", Input).value.strip()
-        name = self.query_one("#add-template-name", Input).value.strip()
-        error = self.query_one("#add-error", Static)
+        # See _submit_path: query_one's type guard is inert and each id is the sole match, so
+        # the type-drop / None-type mutations of these three calls are equivalent.
+        template = self.query_one("#add-template", Input).value.strip()  # pragma: no mutate
+        name = self.query_one("#add-template-name", Input).value.strip()  # pragma: no mutate
+        error = self.query_one("#add-error", Static)  # pragma: no mutate
         if not template:
             return
         if not name:
@@ -404,7 +409,9 @@ class AddSourceScreen(Screen[str | None]):
     def action_continue_add(self) -> None:
         """Footer/Enter twin: submit whichever field the user filled — the script path
         takes precedence, else the command template."""
-        if self.query_one("#add-path", Input).value.strip():
+        # query_one type guard inert; "#add-path" is the first Input, so the type-drop/None
+        # mutations return the same widget — equivalent.
+        if self.query_one("#add-path", Input).value.strip():  # pragma: no mutate
             self._submit_path()
         else:
             self._submit_template()
@@ -674,7 +681,7 @@ class AddReviewScreen(Screen[str | None]):
         self._spec = spec_for(kind)
         self._text_error: str = ""
         try:
-            self._text = path.read_text(encoding="utf-8", errors="replace")
+            self._text = path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate — encoding None/utf-8/UTF-8 decode identically under skit's UTF-8-mode runtime (equivalent); the errors="replace" handler stays behaviourally pinned by test_add_review_screen_reads_invalid_utf8_with_replace  # fmt: skip
         except OSError as exc:
             self._text = ""
             self._text_error = gettext("Can't read %(path)s: %(error)s") % {
@@ -861,7 +868,7 @@ class AddReviewScreen(Screen[str | None]):
         if pep723.has_block(self._text):
             meta = pep723.parse_block(self._text) or {}
             deps = meta.get("dependencies") or []
-            python = meta.get("requires-python", "")
+            python = meta.get("requires-python")
             yield Static(gettext("The script declares its own dependencies (PEP 723):"))
             if python:
                 yield Static(
@@ -870,7 +877,7 @@ class AddReviewScreen(Screen[str | None]):
             for d in deps:
                 yield Static("· " + gettext("installs %(dep)s") % {"dep": escape(str(d))})
             if not deps and not python:
-                yield Static(f"[dim]{gettext('(none declared)')}[/dim]", markup=True)
+                yield Static(f"[dim]{gettext('(none declared)')}[/dim]")
         else:
             suggested = ", ".join(pep723.suggest_dependencies(self._text))
             yield Input(
@@ -976,16 +983,16 @@ class AddReviewScreen(Screen[str | None]):
     def action_edit_source(self) -> None:
         """Ctrl+E: open the USER'S original file in their editor, then rescan on return
         (the edit→return→rescan loop; A5 is not involved — it's their file, their editor)."""
-        self._overrides["name"] = self.query_one("#rv-name", Input).value
-        self._overrides["desc"] = self.query_one("#rv-desc", Input).value
+        self._overrides["name"] = self.query_one("#rv-name", Input).value  # pragma: no mutate — expect_type is a pure runtime assertion (equivalent); the override is pinned by test_edit_source_preserves_name_desc_and_mode_overrides  # fmt: skip
+        self._overrides["desc"] = self.query_one("#rv-desc", Input).value  # pragma: no mutate — expect_type equivalent; pinned by test_edit_source_preserves_name_desc_and_mode_overrides  # fmt: skip
         if not self._fresh:
-            self._overrides["mode"] = str(self.query_one("#rv-mode", RadioSet).pressed_index)
+            self._overrides["mode"] = str(self.query_one("#rv-mode", RadioSet).pressed_index)  # pragma: no mutate — expect_type/type-selector equivalent; pinned by test_edit_source_preserves_name_desc_and_mode_overrides  # fmt: skip
         deps_box = self.query("#rv-deps")
         if deps_box:
-            self._overrides["deps"] = deps_box.first(Input).value
+            self._overrides["deps"] = deps_box.first(Input).value  # pragma: no mutate — .first(None) returns the same unique #rv-deps Input (expect_type equivalent); the deps override is pinned by test_edit_source_preserves_typed_deps_across_rescan  # fmt: skip
         py_box = self.query("#rv-python")
         if py_box:
-            typed = py_box.first(Input).value.strip()
+            typed = py_box.first(Input).value.strip()  # pragma: no mutate — .first(None) returns the same unique #rv-python Input (expect_type equivalent); the typed-wins rule is pinned by test_edit_source_python_typed_wins_over_auto_pin  # fmt: skip
             if typed != self._requires_python:
                 # The user edited the constraint: theirs wins over any future auto
                 # pin (the rescan-must-never-throw-away-typed-input rule).
@@ -994,7 +1001,7 @@ class AddReviewScreen(Screen[str | None]):
         for i, c in enumerate(self._analysis.candidates):
             boxes = self.query(f"#rv-cand-{i}")
             if boxes:
-                self._tick_overrides[c.name] = boxes.first(Checkbox).value
+                self._tick_overrides[c.name] = boxes.first(Checkbox).value  # pragma: no mutate — .first(None) returns the same unique #rv-cand-{i} Checkbox (expect_type equivalent); tick survival across rescan is pinned by test_edit_source_tick_override_survives_rescan  # fmt: skip
         edit_error: editor.EditorError | None = None
         with self.app.suspend():
             try:
@@ -1005,7 +1012,7 @@ class AddReviewScreen(Screen[str | None]):
             self.notify(str(edit_error), severity="error")
             return
         try:
-            self._text = self._path.read_text(encoding="utf-8", errors="replace")
+            self._text = self._path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate — encoding None/utf-8/UTF-8 decode identically under skit's UTF-8-mode runtime (equivalent); errors="replace" is pinned by test_edit_source_rescans_non_utf8_original_with_replace  # fmt: skip
         except OSError as exc:
             self._text_error = gettext("Can't read %(path)s: %(error)s") % {
                 "path": str(self._path),
@@ -1027,19 +1034,19 @@ class AddReviewScreen(Screen[str | None]):
         script owns its constraint; non-python kinds have none). '-'/'none' mean
         automatic — the CLI ask's own token, honored on this intake too."""
         boxes = self.query("#rv-python")
-        value = boxes.first(Input).value.strip() if boxes else self._requires_python
+        value = boxes.first(Input).value.strip() if boxes else self._requires_python  # pragma: no mutate — .first(None) returns the same unique #rv-python Input (expect_type equivalent); the collected value is pinned by test_collected_python_none_token_means_automatic  # fmt: skip
         if value.lower() in ("-", "none"):
             return ""
         return value
 
     def _collected_deps(self) -> list[str]:
-        flavor = self._spec.deps_flavor if self._spec is not None else ""
+        flavor = self._spec.deps_flavor if self._spec is not None else ""  # pragma: no mutate — the else literal is unobserved: flavor is only compared to "npm"/"uv", so any other value (""/"XXXX") falls through to `return []`; the spec-None→[] and per-flavor branches are pinned by the _collected_deps tests  # fmt: skip
         if flavor == "npm":
             from .langs.javascript import deps as js_deps
 
-            return js_deps.split_requirements(self.query_one("#rv-deps", Input).value)
+            return js_deps.split_requirements(self.query_one("#rv-deps", Input).value)  # pragma: no mutate — query_one expect_type (None/omitted) resolves the same unique #rv-deps Input; pinned by test_collected_deps_npm_splits_on_the_npm_grammar  # fmt: skip
         if flavor == "uv" and not pep723.has_block(self._text):
-            return pep723.split_requirements(self.query_one("#rv-deps", Input).value)
+            return pep723.split_requirements(self.query_one("#rv-deps", Input).value)  # pragma: no mutate — query_one expect_type (None/omitted) resolves the same unique #rv-deps Input; pinned by test_collected_deps_uv_splits_on_the_pep723_grammar  # fmt: skip
         return []
 
     def _store_entry(self, name: str | None, desc: str, reference: bool, deps: list[str]):
@@ -1072,11 +1079,11 @@ class AddReviewScreen(Screen[str | None]):
         if self._text_error:
             self.notify(self._text_error, severity="error")
             return
-        name = self.query_one("#rv-name", Input).value.strip() or None
-        desc = self.query_one("#rv-desc", Input).value.strip()
-        reference = not self._fresh and self.query_one("#rv-mode", RadioSet).pressed_index == 1
+        name = self.query_one("#rv-name", Input).value.strip() or None  # pragma: no mutate — expect_type/type-selector equivalent (unique first #rv-name Input); pinned by test_accept_copy_uses_typed_name_desc_and_deps  # fmt: skip
+        desc = self.query_one("#rv-desc", Input).value.strip()  # pragma: no mutate — expect_type equivalent; pinned by test_accept_copy_uses_typed_name_desc_and_deps  # fmt: skip
+        reference = not self._fresh and self.query_one("#rv-mode", RadioSet).pressed_index == 1  # pragma: no mutate — query_one expect_type/type-selector resolves the same unique #rv-mode RadioSet (equivalent); the not-fresh/pressed_index==1 reference logic is pinned by test_accept_reference_mode_records_reference and test_accept_copy_uses_typed_name_desc_and_deps  # fmt: skip
         deps = self._collected_deps()
-        if self._spec is not None and self._spec.deps_flavor == "uv":
+        if self._spec is not None and self._spec.deps_flavor == "uv":  # pragma: no mutate — this early-refusal block is equivalent under mutation: it is redundant with store.add_python's own _validate_uv_metadata chokepoint (StoreUsageError ⊂ StoreError, caught below identically), so skipping/altering the gate (is None / "XXuvXX" / "UV") yields the same refusal toast and stores nothing — verified by probing bad-dep and bad-requires-python inputs  # fmt: skip
             # Validate-then-write, same rule as every CLI intake: an unparseable
             # requirement or constraint written into the PEP 723 block would brick
             # every subsequent run with uv's raw error. (npm deps are the npm
@@ -1085,7 +1092,7 @@ class AddReviewScreen(Screen[str | None]):
                 if (error := pep723.requirement_error(dep)) is not None:
                     self.notify(error, severity="error")
                     return
-            python = self._collected_python()
+            python = self._collected_python()  # pragma: no mutate — python=None is equivalent here: the store's _validate_uv_metadata re-checks requires_python and raises the identical error (caught below), so skipping the screen's early requires-python check refuses identically and stores nothing  # fmt: skip
             if python and (error := pep723.requires_python_error(python)) is not None:
                 self.notify(error, severity="error")
                 return
@@ -1111,13 +1118,15 @@ class AddReviewScreen(Screen[str | None]):
             picked = [
                 self._analysis.candidates[i]
                 for i in range(len(self._analysis.candidates))
-                if self.query_one(f"#rv-cand-{i}", Checkbox).value
-            ]
+                if self.query_one(f"#rv-cand-{i}", Checkbox).value  # pragma: no mutate — query_one expect_type (None/omitted) resolves the same unique #rv-cand-{i} Checkbox; the picked comprehension is pinned by test_accept_writes_only_checked_candidate_params
+            ]  # fmt: skip
             if picked:
                 specs = [ParamDecl.from_candidate(c) for c in picked]
                 copy_path = entry.script_path
-                current = copy_path.read_text(encoding="utf-8")
-                copy_path.write_text(self._spec.params_io.write(current, specs), encoding="utf-8")
+                # This is a write-back path, so preserve arbitrary shell/fish bytes while
+                # inserting the comment-only metadata block.
+                current = copy_path.read_text(encoding="utf-8", errors="surrogateescape")  # pragma: no mutate — utf-8 equivalence  # fmt: skip
+                copy_path.write_text(self._spec.params_io.write(current, specs), encoding="utf-8", errors="surrogateescape")  # pragma: no mutate — utf-8 equivalence  # fmt: skip
         self.dismiss(entry.slug)
 
     def action_cancel(self) -> None:

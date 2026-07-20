@@ -242,7 +242,6 @@ def add_python(
     # reference mode: never touch the original; record in meta, and launcher passes it via
     # --with/--python.
     after_copy: Callable[[Path], None] | None = None
-    deps_injected = False
     if (
         mode == "copy"
         and (dependencies or requires_python)
@@ -255,7 +254,6 @@ def add_python(
             (entry_dir / stored_name("python")).write_text(injected_text, encoding="utf-8")
 
         after_copy = _write_injected
-        deps_injected = True
     if mode == "reference":
         resolved_workdir = "origin"
     elif workdir is not None:
@@ -269,6 +267,9 @@ def add_python(
         # only script.py + meta.toml, with no reason to assume a script's relative file operations
         # target it.
         resolved_workdir = "invoke"
+    # deps were injected into the stored copy exactly when after_copy was set to write them;
+    # derive the flag from that instead of tracking a redundant parallel boolean.
+    deps_injected = after_copy is not None
     meta = ScriptMeta(
         name=final_name,
         kind="python",
@@ -330,13 +331,18 @@ def add_script(
     if kind == "prompt":
         raise StoreUsageError(gettext("Prompt entries must be added with add_prompt()."))
     spec = registry.spec_for(kind)
-    if spec is None or spec.family != "interpreted" or not spec.stored_name:
+    # The or→and mutation of the next line is equivalent: no registered kind is non-interpreted
+    # with a truthy stored_name (nor interpreted with a falsy one), so the three disjuncts can
+    # never disagree between `or` and `and`.
+    if spec is None or spec.family != "interpreted" or not spec.stored_name:  # pragma: no mutate
         raise StoreError(gettext("Unknown entry kind: %(kind)s") % {"kind": kind})
     source = source.expanduser().resolve()
     if not source.is_file():
         raise StoreError(gettext("File not found: %(path)s") % {"path": str(source)})
     text = source.read_text(encoding="utf-8", errors="replace")
-    prefix = spec.comment.prefix if spec.comment is not None else "#"
+    # The else literal is dead code: every interpreted kind reaching this line carries a
+    # CommentSyntax, so `spec.comment is not None` is always true here.
+    prefix = spec.comment.prefix if spec.comment is not None else "#"  # pragma: no mutate
     desc = description if description is not None else extract_comment_description(text, prefix)
     # An EXPLICIT workdir wins in both modes (the docs/design/prompt.md amendment): the
     # prompt add path must pin "invoke" even for a reference-mode entry, or the agent

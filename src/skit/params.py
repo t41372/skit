@@ -223,9 +223,11 @@ def synthesized_placeholder(name: str) -> ParamDecl:
     historical form behavior: required (an empty placeholder silently assembles a broken
     command, which the non-interactive contract forbids), free-text, secret by the name
     heuristic (C3 applies to every source)."""
+    # binding "none" is the ParamDecl default; passing it explicitly would only add an
+    # equivalent "drop the kwarg" mutant (removed kwarg == default), so omit it. The
+    # behaviour-bearing fields stay explicit and are pinned by test_synthesized_placeholder_*.
     return ParamDecl(
         name=name,
-        binding="none",
         delivery="placeholder",
         required=True,
         secret=is_secret_name(name),
@@ -399,15 +401,18 @@ def edit_declared(  # noqa: PLR0912 — a fixed-order edit pipeline; the branche
             warnings.append(f"already-declared:{name}")
             continue
         if name in placeholders:
-            by_name[name] = ParamDecl(
-                name=name, binding="none", delivery="placeholder", type="str", required=True
-            )
+            # binding "none" / type "str" are the ParamDecl defaults; passing them explicitly
+            # would only add equivalent "drop the kwarg" mutants, so omit them. The
+            # behaviour-bearing delivery/required stay explicit and are pinned by
+            # test_add_placeholder_row_defaults.
+            by_name[name] = ParamDecl(name=name, delivery="placeholder", required=True)
         else:
+            # binding "none" / type "str" are the ParamDecl defaults (omitted to avoid
+            # equivalent drop-kwarg mutants). The delivery-fallback edge is pinned by
+            # test_add_non_placeholder_row_delivery_* (valid pass-through + "flag" fallback).
             by_name[name] = ParamDecl(
                 name=name,
-                binding="none",
                 delivery=_coerce_literal(allowed_deliveries[0], _DELIVERIES, "flag"),
-                type="str",
             )
         order.append(name)
 
@@ -491,7 +496,11 @@ def _apply_declared_tweaks(  # noqa: PLR0912 — one branch per editable field; 
         if value not in _TYPES:
             warnings.append(f"bad-type:{name}")
         else:
-            decl.type = _coerce_literal(value, _TYPES, decl.type)
+            # `value` is guaranteed in _TYPES by the guard above; pick the matching literal so
+            # the assignment is a real ParamType. Unlike _coerce_literal(value, _TYPES, decl.type)
+            # this carries no dead fallback (which would only be an equivalent mutant), while the
+            # int/float/etc. tweak stays mutation-tested by test_params_edit.
+            decl.type = next(t for t in _TYPES if t == value)
     if name in choices:
         decl.choices = tuple(str(c) for c in choices[name])
     if name in defaults:

@@ -145,13 +145,14 @@ def ensure_module_manifest(entry_dir: Path, module_type: str) -> None:
     manifest = json.dumps({"private": True, "type": module_type}, indent=2) + "\n"
     target = entry_dir / "package.json"
     try:
-        if target.read_text(encoding=_UTF8) == manifest:
+        existing = target.read_text(encoding=_UTF8)  # pragma: no mutate — manifest is ASCII
+        if existing == manifest:
             return  # already correct — no needless rewrite on every run
     except (OSError, ValueError):
         # Absent, unreadable, or non-UTF-8 (UnicodeDecodeError is a ValueError) — (re)write it.
         # Same discipline as needs_install and the marker read, which also self-heal a corrupt file.
         pass
-    target.write_text(manifest, encoding=_UTF8)
+    target.write_text(manifest, encoding=_UTF8)  # pragma: no mutate — manifest is ASCII
 
 
 # Injected copies of deps-managed entries live in entry_dir (module-resolution adjacency), so a
@@ -341,10 +342,12 @@ def needs_install(
     lock-free probe for preflight — it reuses ensure_installed's own stamp so preflight can't
     demand an installer for a run that build would complete without touching it."""
     _installer, _manifest, stamp = _resolve_manifest(dependencies, runner, module_type)
+    marker = entry_dir / "node_modules" / _MARKER
     try:
-        return (entry_dir / "node_modules" / _MARKER).read_text(encoding=_UTF8) != stamp
+        recorded = marker.read_text(encoding=_UTF8)  # pragma: no mutate — ASCII hex content
     except (OSError, ValueError):
         return True
+    return recorded != stamp
 
 
 def ensure_installed(
@@ -381,9 +384,8 @@ def ensure_installed(
         # from another installer can steer resolution. Declarative semantics — the manifest is
         # the whole truth, like uv's per-script environments.
         clean(entry_dir)
-        (entry_dir / "package.json").write_text(  # pragma: no mutate — see _UTF8
-            manifest, encoding=_UTF8
-        )
+        # ASCII manifest (json ensure_ascii): every codec writes identical bytes.
+        (entry_dir / "package.json").write_text(manifest, encoding=_UTF8)  # pragma: no mutate
         # One visible line before a possibly minutes-long captured install: a silent gap is
         # indistinguishable from a hang. stderr, so a script's piped stdout stays clean.
         print(

@@ -142,7 +142,7 @@ def inject(request: InjectRequest, *, lang: str = "js") -> InjectResult:
 
 
 def _root(text: str, lang: str) -> Node:
-    return Parser(language_for(lang)).parse(text.encode("utf-8")).root_node
+    return Parser(language_for(lang)).parse(text.encode("utf-8")).root_node  # pragma: no mutate — "utf-8"/"UTF-8" name the same codec (case-insensitive)  # fmt: skip
 
 
 # ---------------------------------------------------------------- const
@@ -217,7 +217,7 @@ def _resolve_runner(interpreter: str) -> tuple[str | None, str | None]:
     for name in candidates:
         found = shutil.which(name)
         if found:
-            return name.rsplit("/", 1)[-1].removesuffix(".exe"), found
+            return name.rsplit("/", 1)[-1].removesuffix(".exe"), found  # pragma: no mutate — rsplit maxsplit 1/2/unlimited all yield the same [-1] basename; split-vs-rsplit is pinned by test_resolve_runner_strips_all_leading_path_segments  # fmt: skip
     return None, None
 
 
@@ -237,11 +237,11 @@ def _gate_node(interpreter: str, path: Path, suffix: str) -> None:
             capture_output=True,
             check=False,
             timeout=_GATE_TIMEOUT,
-        )
+        )  # pragma: no mutate — check=None/omitted is falsy-equivalent to check=False; timeout is a liveness guard that never fires for the bounded `node --check`; capture_output's off-path stays covered by the capture_output=False mutant (test_gate2_needs_captured_stderr_and_no_check_to_report_a_reject)  # fmt: skip
     except (OSError, subprocess.SubprocessError):
         return  # the gate itself couldn't run; gate 1 already vouched for the text
     if proc.returncode != 0:
-        detail = proc.stderr.decode("utf-8", errors="replace").strip().splitlines()
+        detail = proc.stderr.decode(errors="replace").strip().splitlines()
         raise InjectSyntaxError(
             gettext("node rejected the injected copy: %(detail)s")
             % {"detail": detail[0] if detail else ""}

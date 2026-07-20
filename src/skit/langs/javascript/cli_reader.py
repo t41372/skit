@@ -31,13 +31,11 @@ if TYPE_CHECKING:
     from tree_sitter import Node
 
 
-def read_cli(  # noqa: PLR0911 — one early return per unreadable/degrade path; a flat dispatch
-    text: str, *, lang: str = "js"
-) -> ArgSpec | None:
+def read_cli(text: str, *, lang: str = "js") -> ArgSpec | None:  # noqa: PLR0911  # pragma: no mutate — default-lang mutants equivalent: lang only feeds language_for(), which maps js/JS/XXjsXX all to _JS  # fmt: skip
     """Read the script's `util.parseArgs` surface. None when there's nothing parseArgs-shaped (so
     callers fall back to the other form sources); an ArgSpec with ok=False when the surface exists
-    but can't be modeled (whole-spec degrade)."""
-    root = Parser(language_for(lang)).parse(text.encode("utf-8")).root_node
+    but can't be modeled (whole-spec degrade). One early return per unreadable/degrade path."""
+    root = Parser(language_for(lang)).parse(text.encode("utf-8")).root_node  # pragma: no mutate — "utf-8"/"UTF-8" name the same codec (case-insensitive)  # fmt: skip
     if root.has_error:
         return None
     call = _find_parseargs(root)
@@ -78,7 +76,7 @@ def _find_parseargs(root: Node) -> Node | None:
             continue
         fn = node.child_by_field_name("function")
         if fn is None:  # pragma: no cover — a call_expression always has a function
-            continue
+            continue  # pragma: no mutate — unreachable: fn is never None for a call_expression (see no-cover above), so continue/break can't differ
         if fn.type == "identifier" and _text(fn) == "parseArgs":
             return node
         if fn.type == "member_expression":
@@ -127,15 +125,16 @@ def _read_option(pair: Node) -> ParamDecl | None:
     """One `name: { type, short, default, multiple }` option → a flag-delivery ParamDecl, or None
     for a computed (dynamic) key that can't name a field."""
     key = pair.child_by_field_name("key")
-    if key is None or key.type == "computed_property_name":
+    if key is None or key.type == "computed_property_name":  # pragma: no mutate — surviving mutants equivalent: key is never None for a pair in an error-free tree, and a computed key yields _property_name()=="" so `if not name` below skips it anyway (the killable != / is-not-None mutations of this line stay covered by test_js_analyzer's computed-key + member-inline tests)  # fmt: skip
         return None  # `[flag]: …` — a dynamic key, unnameable; skip just this field
     name = _property_name(key)
     if not name:
         return None  # an empty-string key (`"": {…}`) can't name a field — skip it
+    # binding "none" / delivery "flag" are the ParamDecl defaults; passing them explicitly would
+    # only add equivalent "drop the kwarg" mutants (removed kwarg == default). Omit them — the
+    # values are pinned by test_read_option_defaults_binding_none_delivery_flag.
     field = ParamDecl(
         name=name,
-        binding="none",
-        delivery="flag",
         flag=f"--{name}",
         secret=is_secret_name(name),
     )
@@ -157,7 +156,7 @@ def _apply_option_spec(field: ParamDecl, spec: Node) -> None:
             continue
         key = pair.child_by_field_name("key")
         value = pair.child_by_field_name("value")
-        if key is None or value is None or key.type == "computed_property_name":
+        if key is None or value is None or key.type == "computed_property_name":  # pragma: no mutate — surviving mutants equivalent: key/value are never None for a pair in an error-free tree, and a computed key yields _property_name()=="" so `if name` below drops it anyway (the killable != / is-not-None mutations of this line stay covered by test_js_analyzer's spec tests)  # fmt: skip
             continue
         name = _property_name(key)
         if name:

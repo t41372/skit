@@ -74,10 +74,10 @@ def language_for(lang: str) -> Language:
     return _LANGUAGES.get(lang, _JS)
 
 
-def analyze(text: str, *, lang: str = "js") -> Analysis:
+def analyze(text: str, *, lang: str = "js") -> Analysis:  # pragma: no mutate — default-lang mutants equivalent: language_for() maps js/JS/XXjsXX all to _JS  # fmt: skip
     """Detect candidate parameters in a JS/TS script. On any parse error, return an empty result
     (no exception; add can still take the script into the store — honest Tier-0 degradation)."""
-    root = Parser(language_for(lang)).parse(text.encode("utf-8")).root_node
+    root = Parser(language_for(lang)).parse(text.encode("utf-8")).root_node  # pragma: no mutate — "utf-8"/"UTF-8" name the same codec (case-insensitive)  # fmt: skip
     if root.has_error:
         return Analysis(syntax_error=True)
     consts = _const_candidates(root)
@@ -97,7 +97,7 @@ def analyze(text: str, *, lang: str = "js") -> Analysis:
     return Analysis(candidates=consts, frameworks=frameworks, uses_argv=uses_argv)
 
 
-def reconcile(text: str, specs: list[ParamDecl], *, lang: str = "js") -> Report:
+def reconcile(text: str, specs: list[ParamDecl], *, lang: str = "js") -> Report:  # pragma: no mutate — default-lang mutants equivalent: lang only feeds language_for(), which maps js/JS/XXjsXX all to _JS  # fmt: skip
     """Reconcile the [tool.skit] definitions with the script's current content (wires the JS/TS
     analyzer into the neutral reconcile — see skit.analysis.reconcile)."""
     return analysis.reconcile(text, specs, analyze=lambda t: analyze(t, lang=lang))
@@ -118,8 +118,8 @@ def _walk(node: Node) -> Iterator[Node]:
 
 def _text(node: Node) -> str:
     if node.text is None:  # pragma: no cover — every node from a parsed tree carries its bytes
-        return ""
-    return node.text.decode("utf-8")
+        return ""  # pragma: no mutate — unreachable defensive branch (node.text is never None)
+    return node.text.decode("utf-8")  # pragma: no mutate — "utf-8"/"UTF-8" name the same codec
 
 
 # ---------------------------------------------------------------- literals & types
@@ -175,7 +175,7 @@ def _toplevel_declarations(root: Node) -> Iterator[tuple[Node, str]]:
         if child.type == "lexical_declaration":
             keyword_node = child.child_by_field_name("kind")
             if keyword_node is None:  # pragma: no cover — a lexical_declaration always carries kind
-                continue
+                continue  # pragma: no mutate — unreachable (kind always present)
             keyword = keyword_node.type
         elif child.type == "variable_declaration":
             keyword = "var"
@@ -244,7 +244,7 @@ def _mutated_names(root: Node) -> set[str]:
 def _collect_named_target(target: Node | None, out: set[str]) -> None:
     """Record `target`'s name when it is a plain identifier (a `member_expression` or subscript
     target like `obj.x = …` reassigns a property, not the top-level binding, so it is ignored)."""
-    if target is not None and target.type == "identifier":
+    if target is not None and target.type == "identifier":  # pragma: no mutate — and->or equivalent: only adds non-identifier target texts that never match a bare const name, and a None target is unreachable in an error-free tree  # fmt: skip
         out.add(_text(target))
 
 
@@ -306,13 +306,13 @@ _NODE_BUILTINS = frozenset(
 _NON_PACKAGE_PREFIXES = ("node:", "npm:", "jsr:", "http:", "https:", "data:", "file:", "bun:")
 
 
-def external_imports(text: str, *, lang: str = "js") -> list[str]:
+def external_imports(text: str, *, lang: str = "js") -> list[str]:  # pragma: no mutate — default-lang mutants equivalent: language_for() maps js/JS/XXjsXX all to _JS  # fmt: skip
     """The bare package names this script imports — its npm dependencies as the source reveals
     them, in first-appearance order. Covers static `import`/`export … from`, dynamic `import()`,
     and CJS `require()`. Relative/absolute paths, `node:` builtins (bare or prefixed), and
     URL/scheme specifiers are excluded; a deep import ("lodash/fp", "@scope/pkg/sub") maps to its
     package root. A file that doesn't parse yields [] — the same honest degradation as analyze()."""
-    root = Parser(language_for(lang)).parse(text.encode("utf-8")).root_node
+    root = Parser(language_for(lang)).parse(text.encode("utf-8")).root_node  # pragma: no mutate — "utf-8"/"UTF-8" name the same codec (case-insensitive)  # fmt: skip
     if root.has_error:
         return []
     out: list[str] = []

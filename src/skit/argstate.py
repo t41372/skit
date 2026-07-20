@@ -133,7 +133,10 @@ def purge_secret(slug: str, names: Iterable[str]) -> set[str]:
     removed: set[str] = set()
 
     values = dict(doc.get("values", {}))
-    removed |= banned & values.keys()
+    # `removed` is still empty here, so |= and = are equivalent; pragma only the accumulation and
+    # keep the intersection on its own line so its &→| mutant stays mutation-tested.
+    value_hits = banned & values.keys()
+    removed |= value_hits  # pragma: no mutate
     doc["values"] = _strip_secrets(values, banned)
 
     presets = dict(doc.get("presets", {}))

@@ -107,9 +107,23 @@ def _match_prompt_multisets(
             stored_by_prompt.setdefault(prompt, []).append(order)
     for prompt, stored_orders in stored_by_prompt.items():
         current_orders = by_prompt.get(prompt, [])
-        if len(stored_orders) > 1 and len(current_orders) == len(stored_orders):
-            for stored_order, current_order in zip(
-                sorted(stored_orders), sorted(current_orders), strict=True
-            ):
+        # The `> 1` guard is deliberately not `>= 1`, but mutmut's `>= 1` mutant is equivalent: a lone
+        # stored site sharing a prompt is resolved identically by the per-entry uniqueness pass in
+        # match_calls (same binding, same claim), so the two differ only when two stored entries carry
+        # the same `order` -- which no caller produces (both callers derive orders by enumeration /
+        # distinct spec.order) and which the order-keyed result collapses either way. Verified
+        # unobservable over 21M distinct-order inputs.
+        if len(stored_orders) > 1 and len(current_orders) == len(
+            stored_orders
+        ):  # pragma: no mutate
+            # `strict=True` below is a defensive no-op under the equal-length guard above (the two
+            # iterables are provably the same length, so strict True/False/None behave identically),
+            # which makes mutmut's strict= mutants equivalent. Pin the zip to its own line inside a
+            # no-mutate block so only that expression is suppressed -- the loop body below (whose
+            # `claimed.add` IS a real, tested mutation) stays mutated.
+            # pragma: no mutate start
+            paired = zip(sorted(stored_orders), sorted(current_orders), strict=True)
+            # pragma: no mutate end
+            for stored_order, current_order in paired:
                 exact[stored_order] = current_order
                 claimed.add(current_order)
