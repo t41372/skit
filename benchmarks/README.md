@@ -14,6 +14,11 @@ uv run python -m benchmarks check .bench/results.json    # budget contract (see 
 cat .bench/results.md
 ```
 
+Datasets under `.bench/datasets/` are reused across runs when every generation input
+matches (including the writing skit's version). When switching between branches that
+share a version string, delete `.bench/datasets` — the stamp can't see same-version
+store-layout changes.
+
 Requirements: a POSIX host (Windows is not supported — the venv layout and
 `resource`-based harnesses assume POSIX); Linux x86_64 is the reference platform;
 `hyperfine` on PATH for the macro suites (CI installs a pinned 1.20.0 — the pin's

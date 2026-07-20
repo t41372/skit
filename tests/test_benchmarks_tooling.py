@@ -958,9 +958,11 @@ class TestDatasets:
 
             entries = {e.slug: e for e in store.list_entries()}
             assert set(entries) == set(manifest.slugs)
-            # The search-probe invariant: entry 0's searchable text carries no "x".
+            # The search-probe invariant: entry 0 never matches the probe char.
+            from benchmarks.datasets import SEARCH_PROBE_CHAR
+
             first = entries[manifest.slugs[0]]
-            assert "x" not in f"{first.meta.name} {first.meta.description}"
+            assert SEARCH_PROBE_CHAR not in f"{first.meta.name} {first.meta.description}"
         finally:
             for key, value in saved.items():
                 if value is None:
@@ -1339,10 +1341,16 @@ class TestSourceValidity:
 
 
 class TestSearchProbeInvariant:
-    def test_dataset_guarantees_both_sides_of_the_filter_assertion(self, tmp_path: Path) -> None:
+    # n=3 is the documented boundary (the matching-entry guarantee starts at n >= 3
+    # and the probe asserts survivors from there) — pin the boundary itself, not just
+    # a comfortable larger n.
+    @pytest.mark.parametrize("n", [3, 9])
+    def test_dataset_guarantees_both_sides_of_the_filter_assertion(
+        self, tmp_path: Path, n: int
+    ) -> None:
         from benchmarks.datasets import SEARCH_PROBE_CHAR
 
-        manifest = generate(tmp_path / "ds", 9)
+        manifest = generate(tmp_path / "ds", n)
         saved = {k: os.environ.get(k) for k in skit_dirs(manifest.root)}
         os.environ.update(skit_dirs(manifest.root))
         try:
@@ -1401,3 +1409,34 @@ class TestReviewFixes:
         budgets = budgets_from("[[budget]]\nmetric = 'ratio'\nmax = 0.5\ntier = 'target'")
         text = render_report(evaluate(budgets, make_results({"ratio": Metric(0.25, "x", 1)})))
         assert "0.25 x ≤ 0.5" in text
+
+
+class TestHarnessImportSurface:
+    def test_benchmarks_imports_stay_on_runtime_deps(self) -> None:
+        """benchmark-compare runs the harness on a side venv holding only skit's
+        RUNTIME dependencies + pyperf — a dev-only import anywhere in benchmarks/
+        would kill every A/B run at startup, discovered only on dispatch. Enforce the
+        surface: stdlib, skit, benchmarks-internal, tomli_w (a skit runtime dep);
+        pyperf only in micro/ scripts; textual only in the tui probe."""
+        import ast
+        import sys
+
+        allowed_anywhere = set(sys.stdlib_module_names) | {"skit", "benchmarks", "tomli_w"}
+        per_file_extra = {"micro": {"pyperf"}, "tui_probe.py": {"textual"}}
+        for path in sorted((REPO_ROOT / "benchmarks").rglob("*.py")):
+            extra: set[str] = set()
+            for key, names in per_file_extra.items():
+                if key in path.parts or path.name == key:
+                    extra = names
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                tops: list[str] = []
+                if isinstance(node, ast.Import):
+                    tops = [alias.name.split(".")[0] for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                    tops = [node.module.split(".")[0]]
+                for top in tops:
+                    assert top in allowed_anywhere | extra, (
+                        f"{path.relative_to(REPO_ROOT)} imports {top!r} — outside the "
+                        "A/B harness surface (runtime deps + pyperf + stdlib)"
+                    )

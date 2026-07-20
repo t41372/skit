@@ -129,10 +129,11 @@ class Manifest:
 
 def check_reusable(manifest: Manifest, n: int) -> None:
     """Whether an on-disk dataset may be reused for this run. Every generation input
-    must match — including the skit version that WROTE the store (a reused dataset
-    across a branch switch could otherwise carry a store layout the current code
-    would not produce). Mismatch is an error to fix, never a silent apples-to-oranges
-    comparison."""
+    must match — including the skit version that WROTE the store, so a
+    version-changing branch switch can't reuse a stale store layout. (Same-version
+    branches share the stamp; when switching between such branches locally, delete
+    .bench/datasets — benchmarks/README.md says so.) Mismatch is an error to fix,
+    never a silent apples-to-oranges comparison."""
     import skit
 
     inputs = (

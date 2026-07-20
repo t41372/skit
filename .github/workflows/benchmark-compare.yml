@@ -75,7 +75,9 @@ jobs:
       # dev tooling and old refs may not have today's groups), plus pyperf as harness
       # infrastructure. The harness then runs UNDER the side's python, so
       # sys.executable's venv — the thing the suites benchmark — is that side's skit,
-      # while the benchmarks/ package resolves from this checkout's cwd.
+      # while the benchmarks/ package resolves from this checkout's cwd. The harness
+      # therefore imports only runtime deps + pyperf + stdlib — enforced by
+      # tests/test_benchmarks_tooling.py's import-surface test.
       # --measured-repo makes the results carry the SIDE's git identity, never the
       # harness ref's. Compatibility floor: sides must be ≥ 725f11d (the dataset
       # generator uses the prompt-kind store API) — older refs fail dataset

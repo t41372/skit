@@ -63,7 +63,10 @@ benchmarks/
 ├── results.py           # typed result model; (de)serialization + validation — THE schema
 ├── budgets.py           # budgets.toml loader + evaluator (tiers, predicates, propose)
 ├── compare.py           # A/B delta report with noise thresholds
-├── hyperfine.py         # pure command-set builder + JSON parser (no subprocess here)
+├── hyperfine.py         # pure command-set builder + JSON parser + metric-ID minting
+│                        #   (no subprocess here)
+├── envspec.py           # the constructed-environment contract (built, never inherited)
+│                        #   and the pyperf inherit list — covered gate code
 ├── parsers.py           # pure parse/derive layer: sys.modules census, importtime top-20,
 │                        #   strace -c tables, rss unit normalization, VmHWM, pyperf JSON —
 │                        #   everything that turns tool output into metric values
@@ -73,8 +76,8 @@ benchmarks/
 ├── budgets.toml         # the performance contract (see Budgets)
 ├── fixtures/            # noop.py/.sh/.js (benchmark subjects) + sources.py (seeded
 │                        #   per-language analyzer-input generators — covered code)
-├── suites/              # orchestration: spawns subprocesses, applies the env contract
-│   ├── _env.py          # the constructed-environment contract (one place, see below)
+├── suites/              # orchestration: spawns subprocesses under the env contract
+│   ├── _env.py          # binary discovery + spawn wrappers (envspec applies here)
 │   ├── startup.py       # hyperfine: python -c pass, import skit, import skit.cli,
 │   │                    #   skit --version / --help / list / list --json (N=0)
 │   ├── scale.py         # hyperfine: list/list --json/show --json at N ∈ profile grid
@@ -93,7 +96,7 @@ benchmarks/
     └── bench_render.py
 ```
 
-### The environment contract (`suites/_env.py`)
+### The environment contract (`benchmarks/envspec.py`, applied by `suites/_env.py`)
 
 Benchmarked processes never inherit the developer's or runner's ambient environment; the
 suite runner **constructs** the env dict and passes it to every child (hyperfine, probes,
@@ -446,8 +449,8 @@ violations — visible shame, no merge lock.
    `profile = "full"` enforced rows evaluate green — schedule-only workflows first run
    post-merge, so their first evaluation must be deliberate, not whenever the cron gets
    around to it.
-3. **`benchmark-compare.yml`** — `workflow_dispatch(base, head)`; inputs passed via
-   `env`, never interpolated into `run:`. A/B semantics pinned: **the harness is always
+3. **`benchmark-compare.yml`** — `workflow_dispatch(base, head)`; inputs reach only
+   checkout `ref:` parameters and the job name, never `run:` interpolation. A/B semantics pinned: **the harness is always
    the invoking ref's `benchmarks/`; base and head supply only built+installed skit
    venvs** (each synced from its own ref's `uv.lock` — dependency changes are part of the
    measured diff, and the log says so — except pyperf, which the workflow installs into
@@ -456,8 +459,8 @@ violations — visible shame, no merge lock.
    compare via the CLI surface only (valid against any skit); micro (which imports skit
    internals) runs best-effort per side — an import failure records a skip carrying the
    actual exception text (never a canned label that misattributes the cause) for that
-   side's benchmark instead of failing the workflow. `pyperf compare_to` provides
-   significance testing for micro; `compare` flags |Δ| > max(5%, 2 ms) as notable —
+   side's benchmark instead of failing the workflow. `compare` flags |Δ| > max(5%, 2 ms) as notable
+   (raw sample lists ship in each side's results.json for any deeper statistics) —
    warn-only. Compatibility floor: sides must postdate the prompt-kind store API
    (`725f11d`) — the dataset generator uses it, so older refs fail dataset generation
    before any suite runs; the workflow says so where it would bite. Results carry each
@@ -527,7 +530,8 @@ orchestration that needs external binaries is exempt, each exemption commented.*
 - `benchmarks/README.md`: full methodology — cold/warm definitions (process-cold = fresh
   process; fs-warm = post-warmup; cold-import vs warm-parse split; warm-uv-cache
   definition), profile grid (the table above), dataset definition + seed + generator
-  versioning, metric ID catalog, budget tiers + ratchet protocol + `--propose` workflow,
+  versioning, the metric-ID grammar (`<suite>.<case>.<stat>_<unit>`; the headline
+  set is `pipeline.HEADLINE_METRICS` — in code, so it can't drift), budget tiers + ratchet protocol + `--propose` workflow,
   hosted-runner noise policy, exact lane argvs for run_overhead, how to run locally
   (including "non-Linux hosts see skips; the skip budget applies only to reference CI"),
   how to add a suite, the gh-pages one-time setup checklist, and what would move
