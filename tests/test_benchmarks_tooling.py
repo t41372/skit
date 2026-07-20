@@ -11,10 +11,11 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 from benchmarks import compare as bcompare
-from benchmarks import envinfo, hyperfine, parsers, pipeline
+from benchmarks import datasets, envinfo, hyperfine, parsers, pipeline
 from benchmarks.budgets import (
     Budget,
     BudgetsError,
@@ -88,6 +89,19 @@ def make_results(
         skipped=skipped or [],
         raw={},
     )
+
+
+def _results_doc() -> dict[str, Any]:
+    doc: dict[str, Any] = json.loads(make_results({}).to_json())
+    return doc
+
+
+def _set_path(doc: dict[str, Any], path: tuple[str, ...], value: object) -> str:
+    node: Any = doc
+    for key in path[:-1]:
+        node = node[key]
+    node[path[-1]] = value
+    return json.dumps(doc)
 
 
 # ================================================================ results model
@@ -175,6 +189,60 @@ class TestResultsModel:
         with pytest.raises(ResultsError, match="duration_s"):
             SuiteOutput.from_json(json.dumps(doc))
 
+    def test_suite_output_rejects_non_object_raw(self) -> None:
+        doc = json.loads(SuiteOutput(suite="s").to_json())
+        doc["raw"] = []
+        with pytest.raises(ResultsError, match="raw: expected an object"):
+            SuiteOutput.from_json(json.dumps(doc))
+
+    @pytest.mark.parametrize(
+        ("path", "value", "fragment"),
+        [
+            (("metrics",), [1], "metrics: expected an object"),
+            (("metrics",), {"m.x": 5}, r"metrics\.m\.x: expected an object"),
+            (("skipped",), {}, "skipped: expected an array"),
+            (("skipped",), [5], r"skipped\[0\]: expected an object"),
+            (("raw",), [], "raw: expected an object"),
+            (("meta",), None, "meta: expected an object"),
+            (("meta", "git"), 5, "meta.git: expected an object"),
+            (("meta", "git", "dirty"), "yes", "meta.git.dirty: expected a boolean"),
+            (("meta", "host"), 5, "meta.host: expected an object"),
+            (("meta", "host", "cpu_count"), 0, "meta.host.cpu_count: expected a positive integer"),
+            (
+                ("meta", "host", "cpu_count"),
+                True,
+                "meta.host.cpu_count: expected a positive integer",
+            ),
+            (
+                ("meta", "host", "cpu_count"),
+                "8",
+                "meta.host.cpu_count: expected a positive integer",
+            ),
+            (
+                ("meta", "host", "mem_total_mib"),
+                -1,
+                "meta.host.mem_total_mib: expected a non-negative integer",
+            ),
+            (
+                ("meta", "host", "mem_total_mib"),
+                True,
+                "meta.host.mem_total_mib: expected a non-negative integer",
+            ),
+            (
+                ("meta", "host", "mem_total_mib"),
+                "x",
+                "meta.host.mem_total_mib: expected a non-negative integer",
+            ),
+            (("meta", "host", "ci_runner"), 5, "meta.host.ci_runner: expected a string or null"),
+        ],
+    )
+    def test_rejects_bad_results_structure(
+        self, path: tuple[str, ...], value: object, fragment: str
+    ) -> None:
+        text = _set_path(_results_doc(), path, value)
+        with pytest.raises(ResultsError, match=fragment):
+            Results.from_json(text)
+
 
 # ================================================================ budgets
 
@@ -225,6 +293,27 @@ class TestBudgetLoader:
                 "headroom",
             ),
             ("not toml [", "not valid TOML"),
+            ("budget = [1]", "expected a table"),
+            (
+                "[[budget]]\nmetric = 'm'\nmax = 1\ntier = 'target'\nratchet = 1",
+                "ratchet must be a boolean",
+            ),
+            (
+                "[[budget]]\nmetric = 'm'\nmax = 1\ntier = 'target'\nheadroom = 'big'",
+                "headroom must be a number",
+            ),
+            (
+                "[[budget]]\nmetric = 'm'\nmax = 1\ntier = 'target'\nci_only = 1",
+                "ci_only must be a boolean",
+            ),
+            (
+                "[[budget]]\nmetric = 'm'\nmax = 1\ntier = 'target'\ncontext = { python = 1 }",
+                "context must be a table of strings",
+            ),
+            (
+                "[[budget]]\nmetric = 'm'\nmax = 1\ntier = 'target'\nnote = 5",
+                "note must be a string",
+            ),
         ],
     )
     def test_rejects_malformed_rows(self, toml_text: str, fragment: str) -> None:
@@ -592,6 +681,19 @@ class TestCompare:
         empty = bcompare.render_markdown(base, base, bcompare.compare(base, base))
         assert "### Notable (none)" in empty
 
+    def test_render_only_in_sections(self) -> None:
+        base = make_results(
+            {"shared.ms": Metric(100.0, "ms", 5), "gone.metric": Metric(1, "count", 1)}
+        )
+        head = make_results(
+            {"shared.ms": Metric(100.0, "ms", 5), "new.metric": Metric(2, "count", 1)}
+        )
+        text = bcompare.render_markdown(base, head, bcompare.compare(base, head))
+        assert "### Only in base" in text
+        assert "- `gone.metric`" in text
+        assert "### Only in head" in text
+        assert "- `new.metric`" in text
+
 
 # ================================================================ envinfo
 
@@ -830,6 +932,13 @@ class TestSources:
         assert "process.argv" in sources.generate("js", 20)
         assert ": number" in sources.generate("ts", 20)
 
+    def test_generate_asserts_generator_line_count(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A generator that lies about its line count must be caught, not silently
+        # emitted — the analyzer cost curves are plotted against the requested count.
+        monkeypatch.setattr(sources, "_shell", lambda lines, rng: ["one", "two"])
+        with pytest.raises(AssertionError, match="generator produced 2 lines, wanted 20"):
+            sources.generate("shell", 20)
+
 
 # ================================================================ datasets
 
@@ -961,6 +1070,41 @@ class TestDatasets:
                     os.environ.pop(key, None)
                 else:
                     os.environ[key] = value
+
+    def test_scoped_skit_dirs_restores_previously_unset_var(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # When a SKIT_* var was unset before the scope, leaving it must remove it again
+        # (pop), not resurrect it with an empty/stale value.
+        monkeypatch.delenv("SKIT_DATA_DIR", raising=False)
+        want = skit_dirs(tmp_path)
+        with datasets.scoped_skit_dirs(tmp_path):
+            assert os.environ["SKIT_DATA_DIR"] == want["SKIT_DATA_DIR"]
+        assert "SKIT_DATA_DIR" not in os.environ
+
+    def test_source_text_rejects_unknown_kind(self) -> None:
+        with pytest.raises(DatasetError, match="no source template for kind 'cobol'"):
+            datasets._source_text("cobol", 0)
+
+    def test_generate_refuses_silent_store_undercount(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The generator self-checks the store's own count instead of trusting it: if the
+        # store reports the wrong number of entries, generation fails loudly.
+        from skit import store
+
+        monkeypatch.setattr(store, "list_entries", lambda: [])
+        with pytest.raises(DatasetError, match="generated 0 entries, expected 3"):
+            generate(tmp_path / "ds", 3)
+
+    def test_runover_refuses_silent_store_undercount(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from skit import store
+
+        monkeypatch.setattr(store, "list_entries", lambda: [])
+        with pytest.raises(DatasetError, match="runover library has 0 entries, expected 3"):
+            generate_runover(tmp_path / "ro", FIXTURES_DIR)
 
 
 # ================================================================ front door
