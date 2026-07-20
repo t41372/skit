@@ -1176,3 +1176,228 @@ class TestFrontDoor:
         b.write_text(make_results({"x.ms": Metric(300.0, "ms", 5)}).to_json())
         assert main(["compare", str(a), str(b)]) == 0
         assert "Notable (1)" in capsys.readouterr().out
+
+
+# ================================================================ contract sync
+# The repo's precedent (tests/test_agent_skill.py) is that duplicated artifacts get
+# byte-level sync enforcement — free-floating copies drift and then lie.
+
+
+class TestContractSync:
+    def test_budgets_file_is_canonical(self) -> None:
+        """The committed contract must be exactly what its own regenerator emits, or
+        the first `check --propose` diff drowns the value change in format churn."""
+        text = (REPO_ROOT / "benchmarks" / "budgets.toml").read_text(encoding="utf-8")
+        assert render_budgets(load_budgets(text)) == text
+
+    @pytest.mark.parametrize(
+        "workflow",
+        ["benchmark.yml", "benchmark-nightly.yml", "benchmark-compare.yml"],
+    )
+    def test_hyperfine_pin_synced_to_workflows(self, workflow: str) -> None:
+        """hyperfine.py's pinned version + sha256 are the single source of truth; every
+        workflow's install block must carry the same pin."""
+        text = (REPO_ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+        assert f"v{hyperfine.HYPERFINE_VERSION}/hyperfine-v{hyperfine.HYPERFINE_VERSION}" in text
+        assert hyperfine.HYPERFINE_SHA256 in text
+
+    @pytest.mark.parametrize(
+        "workflow",
+        ["benchmark.yml", "benchmark-nightly.yml", "benchmark-compare.yml"],
+    )
+    def test_ci_runner_label_matches_runs_on(self, workflow: str) -> None:
+        """BENCH_CI_RUNNER (what envinfo stamps into results, what budget predicates
+        match) must equal the runner the job actually runs on — a drifted label makes
+        meta.host.ci_runner lie to the enforced tier."""
+        import re
+
+        text = (REPO_ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+        runs_on = set(re.findall(r"runs-on:\s*(\S+)", text))
+        declared = set(re.findall(r"BENCH_CI_RUNNER:\s*(\S+)", text))
+        assert declared, f"{workflow} must export BENCH_CI_RUNNER"
+        assert runs_on == declared
+
+
+# ================================================================ envspec
+
+
+class TestEnvspec:
+    def test_build_env_composes_path_and_pins_locale(self, tmp_path: Path) -> None:
+        from benchmarks import envspec
+
+        manifest = generate(tmp_path / "ds", 3)
+        env = envspec.build_env(
+            skit="/venv/bin/skit",
+            uv="/tools/uv/uv",
+            node="/usr/bin/node",
+            workdir=tmp_path / "work",
+            dataset_root=manifest.root,
+        )
+        assert env["PATH"] == "/venv/bin:/tools/uv:/usr/bin:/bin"
+        assert env["SKIT_DATA_DIR"] == str((tmp_path / "ds" / "data").resolve())
+        assert env["SKIT_LANG"] == "en"
+        assert env["TERM"] == "dumb"
+        assert env["UV_CACHE_DIR"] == str(tmp_path / "work" / "uv-cache")
+        assert (tmp_path / "work" / "home").is_dir()
+        # Constructed, never inherited: no ambient variable can leak in.
+        assert "PYTHONPATH" not in env
+        assert "FORCE_COLOR" not in env
+
+    def test_build_env_dedupes_and_tolerates_missing_tools(self, tmp_path: Path) -> None:
+        from benchmarks import envspec
+
+        env = envspec.build_env(
+            skit="/usr/bin/skit", uv=None, node=None, workdir=tmp_path, dataset_root=None
+        )
+        assert env["PATH"] == "/usr/bin:/bin"
+        # None dataset → a real (empty) library dir, still absolute.
+        assert env["SKIT_DATA_DIR"].startswith(str(tmp_path))
+        assert (tmp_path / "empty-library").is_dir()
+
+    def test_build_env_refuses_non_dataset_roots(self, tmp_path: Path) -> None:
+        from benchmarks import envspec
+
+        bogus = tmp_path / "not-a-dataset"
+        bogus.mkdir()
+        with pytest.raises(RuntimeError, match="not a generated dataset"):
+            envspec.build_env(
+                skit="/usr/bin/skit", uv=None, node=None, workdir=tmp_path, dataset_root=bogus
+            )
+
+    def test_pyperf_inherit_covers_the_fixture_vars(self) -> None:
+        from benchmarks import envspec
+
+        assert {"SKIT_DATA_DIR", "SKIT_STATE_DIR", "SKIT_CONFIG_DIR"} <= set(envspec.PYPERF_INHERIT)
+        assert {"BENCH_N", "BENCH_SOURCES_DIR"} <= set(envspec.PYPERF_INHERIT)
+
+
+# ================================================================ dataset reuse
+
+
+class TestDatasetReuse:
+    def test_check_reusable_accepts_a_fresh_dataset(self, tmp_path: Path) -> None:
+        from benchmarks.datasets import check_reusable
+
+        manifest = generate(tmp_path / "ds", 3)
+        check_reusable(Manifest.load(manifest.root), 3)
+
+    def test_check_reusable_rejects_any_drift(self, tmp_path: Path) -> None:
+        import dataclasses
+
+        from benchmarks.datasets import check_reusable
+
+        manifest = generate(tmp_path / "ds", 3)
+        with pytest.raises(DatasetError, match="different inputs"):
+            check_reusable(manifest, 4)  # wrong n
+        stale = dataclasses.replace(manifest, skit_version="0.0.0+other")
+        with pytest.raises(DatasetError, match="different inputs"):
+            check_reusable(stale, 3)  # written by a different skit (branch switch)
+
+    def test_manifest_stamps_the_writing_skit(self, tmp_path: Path) -> None:
+        import skit
+
+        manifest = generate(tmp_path / "ds", 3)
+        assert manifest.skit_version == skit.__version__
+        assert Manifest.load(manifest.root).skit_version == skit.__version__
+
+
+# ================================================================ source validity
+
+
+class TestSourceValidity:
+    """The analyzer corpus must PARSE — a truncated brace hands tree-sitter an
+    error-recovery tree and silently under-reports analyze times ~5x (this
+    happened; these tests pin it)."""
+
+    @pytest.mark.parametrize("lang", ["js", "ts"])
+    @pytest.mark.parametrize("lines", [20, 200, 2000])
+    def test_js_ts_braces_balance(self, lang: str, lines: int) -> None:
+        text = sources.generate(lang, lines)
+        assert text.count("{") == text.count("}")
+
+    @pytest.mark.parametrize("lines", [20, 200, 2000])
+    def test_python_compiles(self, lines: int) -> None:
+        compile(sources.generate("python", lines), "<bench-source>", "exec")
+
+    @pytest.mark.parametrize(
+        ("lang", "grammar"),
+        [("js", "tree_sitter_javascript"), ("ts", "tree_sitter_typescript")],
+    )
+    def test_tree_sitter_parses_without_errors(self, lang: str, grammar: str) -> None:
+        tree_sitter = pytest.importorskip("tree_sitter")
+        grammar_mod = pytest.importorskip(grammar)
+        language = tree_sitter.Language(
+            grammar_mod.language() if lang == "js" else grammar_mod.language_typescript()
+        )
+        parser = tree_sitter.Parser(language)
+        for lines in (20, 200, 2000):
+            tree = parser.parse(sources.generate(lang, lines).encode())
+            assert not tree.root_node.has_error, f"{lang} @ {lines} lines parses with errors"
+
+
+# ================================================================ probe-char invariant
+
+
+class TestSearchProbeInvariant:
+    def test_dataset_guarantees_both_sides_of_the_filter_assertion(self, tmp_path: Path) -> None:
+        from benchmarks.datasets import SEARCH_PROBE_CHAR
+
+        manifest = generate(tmp_path / "ds", 9)
+        saved = {k: os.environ.get(k) for k in skit_dirs(manifest.root)}
+        os.environ.update(skit_dirs(manifest.root))
+        try:
+            from skit import store
+
+            texts = [f"{e.meta.name} {e.meta.description}" for e in store.list_entries()]
+            assert any(SEARCH_PROBE_CHAR not in t for t in texts), "a non-match must exist"
+            assert any(SEARCH_PROBE_CHAR in t for t in texts), "a match must survive"
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
+
+# ================================================================ round 1 review fixes
+
+
+class TestReviewFixes:
+    def test_compare_excludes_pipeline_self_timings(self) -> None:
+        base = make_results(
+            {
+                "pipeline.duration_s": Metric(100.0, "s", 1),
+                "pipeline.suite.tui.duration_s": Metric(10.0, "s", 1),
+                "startup.version.median_ms": Metric(100.0, "ms", 5),
+            }
+        )
+        head = make_results(
+            {
+                "pipeline.duration_s": Metric(300.0, "s", 1),
+                "startup.version.median_ms": Metric(100.0, "ms", 5),
+            }
+        )
+        comparison = bcompare.compare(base, head)
+        assert [d.metric for d in comparison.deltas] == ["startup.version.median_ms"]
+        assert comparison.only_base == []
+
+    def test_budget_bounds_render_as_plain_numbers(self) -> None:
+        budgets = budgets_from(
+            "[[budget]]\nmetric = 'footprint.wheel_bytes'\nmax = 1048576\n"
+            "tier = 'enforced'\ncontext = { commit = 'abc' }"
+        )
+        text = render_report(
+            evaluate(budgets, make_results({"footprint.wheel_bytes": Metric(461803, "bytes", 1)}))
+        )
+        assert "1048576" in text
+        assert "e+06" not in text
+
+    def test_hyperfine_metrics_from_export_mints_ids(self) -> None:
+        metrics = hyperfine.metrics_from_export({"scale.list.n100": [0.1, 0.2, 0.3]})
+        assert set(metrics) == {"scale.list.n100.median_ms"}
+        assert metrics["scale.list.n100.median_ms"].value == pytest.approx(200.0)
+
+    def test_fractional_bounds_render_compactly(self) -> None:
+        budgets = budgets_from("[[budget]]\nmetric = 'ratio'\nmax = 0.5\ntier = 'target'")
+        text = render_report(evaluate(budgets, make_results({"ratio": Metric(0.25, "x", 1)})))
+        assert "0.25 x ≤ 0.5" in text

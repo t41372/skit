@@ -53,14 +53,23 @@ class Comparison:
 
 
 def compare(base: Results, head: Results) -> Comparison:
+    """`pipeline.*` self-timings (suite durations, skip counts) are excluded: they
+    measure the harness, not skit, and their wobble would intermittently pollute the
+    "Notable" section of A/B evidence."""
     deltas: list[Delta] = []
     for metric_id in sorted(set(base.metrics) & set(head.metrics)):
+        if metric_id.startswith("pipeline."):
+            continue
         b, h = base.metrics[metric_id], head.metrics[metric_id]
         deltas.append(Delta(metric=metric_id, unit=h.unit, base=b.value, head=h.value))
     return Comparison(
         deltas=deltas,
-        only_base=sorted(set(base.metrics) - set(head.metrics)),
-        only_head=sorted(set(head.metrics) - set(base.metrics)),
+        only_base=sorted(
+            m for m in set(base.metrics) - set(head.metrics) if not m.startswith("pipeline.")
+        ),
+        only_head=sorted(
+            m for m in set(head.metrics) - set(base.metrics) if not m.startswith("pipeline.")
+        ),
     )
 
 

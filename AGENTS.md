@@ -141,8 +141,8 @@ measurement side of a contract:
   that moves the metric.
 - The bench CI job is advisory by policy: never make it a required status check while
   path-filtered.
-- The pipeline's own logic (results/budgets/parsers/pipeline/datasets/envinfo/compare/
-  hyperfine builders) sits under the same 100% coverage floor as src/skit; only
+- The pipeline's own logic (results/budgets/parsers/pipeline/datasets/envinfo/envspec/
+  compare/hyperfine builders) sits under the same 100% coverage floor as src/skit; only
   spawn-and-wait orchestration (`suites/`, `micro/`, `__main__.py`) and benchmark
   subjects are exempt, each exemption commented in pyproject's coverage `omit`.
 

@@ -68,9 +68,13 @@ def _js(lines: int, rng: random.Random) -> list[str]:
         "const args = process.argv.slice(2);",
         f"let {rng.choice(_WORDS)} = {rng.randrange(9)};",
     ]
-    while len(body) < lines - 2:
+    # Emit only WHOLE function chunks, then pad — truncating a chunk would cut its
+    # closing brace and hand the analyzer an error-recovery parse tree, silently
+    # under-reporting analyze times ~5x (this actually happened; the validity test
+    # in tests/test_benchmarks_tooling.py now pins it).
+    while len(body) + 3 <= lines:
         body += [f"function fn{len(body)}(x) {{", f"  return x + {len(body)};", "}"]
-    return _pad(body[: lines - 1], lines, "//")
+    return _pad(body, lines, "//")
 
 
 def _ts(lines: int, rng: random.Random) -> list[str]:
@@ -78,10 +82,11 @@ def _ts(lines: int, rng: random.Random) -> list[str]:
         "const args: string[] = process.argv.slice(2);",
         f"let {rng.choice(_WORDS)}: number = {rng.randrange(9)};",
     ]
-    while len(body) < lines - 2:
+    # Whole chunks only — see _js.
+    while len(body) + 3 <= lines:
         body += [
             f"function fn{len(body)}(x: number): number {{",
             f"  return x + {len(body)};",
             "}",
         ]
-    return _pad(body[: lines - 1], lines, "//")
+    return _pad(body, lines, "//")

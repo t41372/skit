@@ -1,10 +1,11 @@
-"""The constructed-environment contract (docs/design/benchmarks.md) — one place.
+"""Binary discovery and process spawning for the suites — genuinely spawn-and-wait.
 
-Benchmarked processes never inherit the ambient environment: this module builds the
-env dict (dataset-pointed SKIT dirs, scratch HOME/XDG, composed PATH, pinned locale
-and terminal geometry, per-session UV cache) and every suite passes it to its
-children. The harness cwd lives OUTSIDE any uv project (a system temp dir), so
-`uv run --script` lanes can never attach to the skit checkout.
+The decisions live in covered modules: the environment contract in
+`benchmarks/envspec.py`, hyperfine argv/parsing/metric-keying in
+`benchmarks/hyperfine.py`, dataset reuse rules in `benchmarks/datasets.py`. What
+remains here is finding tools and waiting on children. The harness cwd lives OUTSIDE
+any uv project (a system temp dir), so `uv run --script` lanes can never attach to the
+skit checkout.
 """
 
 from __future__ import annotations
@@ -16,26 +17,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..hyperfine import Case, build_argv, metric_from_times, parse_export
-from ..results import Metric
+from ..envspec import PYPERF_INHERIT, build_env
+from ..hyperfine import Case, build_argv, metrics_from_export, parse_export
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from ..datasets import Manifest
+    from ..results import Metric
 
-# What pyperf workers must inherit on top of their purified environment (pyperf drops
-# everything but PATH/HOME/locale/PYTHONPATH), plus the per-script fixture vars.
-PYPERF_INHERIT = (
-    "SKIT_DATA_DIR",
-    "SKIT_STATE_DIR",
-    "SKIT_CONFIG_DIR",
-    "SKIT_LANG",
-    "PYTHONUTF8",
-    "LC_ALL",
-    "BENCH_N",
-    "BENCH_SOURCES_DIR",
-)
+__all__ = ["PYPERF_INHERIT", "RunCtx", "bench_env", "discover", "run_hyperfine"]
 
 
 @dataclass(frozen=True)
@@ -86,44 +77,15 @@ def discover(
 
 
 def bench_env(ctx: RunCtx, dataset_root: Path | None) -> dict[str, str]:
-    """The constructed env dict — built, not scrubbed: composed PATH (venv, uv, node,
-    system), dataset-pointed SKIT dirs, scratch HOME/XDG, per-session UV cache, pinned
-    locale/terminal. Ambient PYTHONPATH, color vars, UV_* mirrors never leak in."""
-    from ..datasets import skit_dirs
-
-    path_parts: list[str] = [str(Path(ctx.skit).parent)]
-    path_parts.extend(str(Path(tool).parent) for tool in (ctx.uv, ctx.node) if tool)
-    path_parts += ["/usr/bin", "/bin"]
-    seen: dict[str, None] = {}
-    for part in path_parts:
-        seen.setdefault(part, None)
-
-    home = ctx.workdir / "home"
-    home.mkdir(parents=True, exist_ok=True)
-    env: dict[str, str] = {
-        "PATH": ":".join(seen),
-        "HOME": str(home),
-        "XDG_DATA_HOME": str(ctx.workdir / "xdg-data"),
-        "XDG_STATE_HOME": str(ctx.workdir / "xdg-state"),
-        "XDG_CONFIG_HOME": str(ctx.workdir / "xdg-config"),
-        "XDG_CACHE_HOME": str(ctx.workdir / "xdg-cache"),
-        "UV_CACHE_DIR": str(ctx.workdir / "uv-cache"),
-        "SKIT_LANG": "en",
-        "PYTHONUTF8": "1",
-        "LC_ALL": "C.UTF-8",
-        "TERM": "dumb",
-        "COLUMNS": "100",
-        "LINES": "40",
-    }
-    if dataset_root is None:
-        dataset_root = ctx.workdir / "empty-library"
-        dataset_root.mkdir(parents=True, exist_ok=True)
-    elif not (dataset_root / "manifest.json").exists():
-        # Wrong-but-plausible defense: a dataset root that doesn't hold a generated
-        # library would make every child benchmark an empty one. Die here, loudly.
-        raise RuntimeError(f"{dataset_root} is not a generated dataset (no manifest.json)")
-    env.update(skit_dirs(dataset_root))
-    return env
+    """The constructed env for this run's children (envspec.build_env, applied to the
+    discovered binaries and this run's workdir)."""
+    return build_env(
+        skit=ctx.skit,
+        uv=ctx.uv,
+        node=ctx.node,
+        workdir=ctx.workdir,
+        dataset_root=dataset_root,
+    )
 
 
 def run_hyperfine(
@@ -161,10 +123,7 @@ def run_hyperfine(
             f"single-shot diagnosis: {diagnose_cases(ctx, cases, env)}"
         )
     times_by_case = parse_export(export.read_text(encoding="utf-8"))
-    metrics = {
-        f"{name}.median_ms": metric_from_times(times) for name, times in times_by_case.items()
-    }
-    return metrics, {"times_s": times_by_case}
+    return metrics_from_export(times_by_case), {"times_s": times_by_case}
 
 
 def diagnose_cases(ctx: RunCtx, cases: list[Case], env: Mapping[str, str]) -> str:

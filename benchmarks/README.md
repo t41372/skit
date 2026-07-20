@@ -14,11 +14,13 @@ uv run python -m benchmarks check .bench/results.json    # budget contract (see 
 cat .bench/results.md
 ```
 
-Requirements: Linux x86_64 is the reference platform; `hyperfine` on PATH for the
-macro suites (CI installs a pinned 1.20.0 — same version/sha256 as
-`benchmarks/hyperfine.py`), `strace` for the nightly syscalls suite. Non-Linux hosts
-and missing tools produce **recorded skips**, never crashes — but the numbers that
-matter are the reference platform's.
+Requirements: a POSIX host (Windows is not supported — the venv layout and
+`resource`-based harnesses assume POSIX); Linux x86_64 is the reference platform;
+`hyperfine` on PATH for the macro suites (CI installs a pinned 1.20.0 — the pin's
+single source of truth is `benchmarks/hyperfine.py`, and a sync test holds every
+workflow to it), `strace` for the nightly syscalls suite. macOS and missing tools
+produce **recorded skips**, never crashes — but the numbers that matter are the
+reference platform's.
 
 ## Layout
 
@@ -27,6 +29,7 @@ matter are the reference platform's.
 | `results.py` | THE schema (typed dataclasses; deliberately no schema.json twin) |
 | `budgets.py` + `budgets.toml` | the two-tier performance contract |
 | `parsers.py` | everything that turns tool output into metric values |
+| `envspec.py` | the constructed-environment contract (built, never inherited) |
 | `pipeline.py` | profiles, merge, derived metrics, results.md, history export |
 | `datasets.py` | deterministic library generator (public store API only) |
 | `hyperfine.py` | hyperfine argv building + export parsing (no subprocess) |
@@ -54,9 +57,11 @@ the exact list, with reasons, is in `pyproject.toml`'s coverage `omit`).
   (`ceil(0.95·n)`); raw samples ship in `results.json` under `raw`.
 - **TUI spans are proxies** — headless Textual (`run_test`, 120×40), not terminal
   paint: span 1 `import skit.tui`, span 2 App() → first `pilot.pause()` returns,
-  span 3 focus search (`/`), settle, then measure `press("x")` → settle. The probe
-  asserts the row count matches the library and that the filter really dropped rows
-  (the dataset guarantees an entry without the letter `x`).
+  span 3 focus search (`/`), settle, then measure `press(<probe char>)` → settle
+  (the char is `datasets.SEARCH_PROBE_CHAR`). The probe asserts the row count matches
+  the library, that the filter really dropped rows (the dataset guarantees a
+  probe-char-free entry), and — at 3+ entries — that some rows survive (a matching
+  entry is guaranteed too), so the span never degenerates to filter-to-zero.
 - **run overhead** — lane A `python noop.py`; lane B `uv run --no-project --script
   noop.py` (the EXACT argv skit builds — `src/skit/langs/launch.py`); lane C
   `skit run noop-py --no-input`. Core overhead = C − B. C legitimately includes
@@ -135,8 +140,11 @@ bootstrap bounds carry hand-written `context.python = "3.13"` (the workflow's pi
   harness is ALWAYS the invoking ref's `benchmarks/`; each side is its own
   built venv from its own lockfile (pyperf injected as harness infrastructure), and
   the harness runs *under that side's python*, so the benchmarked venv is the side's
-  while the harness code is fixed. Micro scripts that can't import an older side's
-  API record per-script skips carrying the actual error (`BENCH_COMPARE=1`).
+  while the harness code is fixed. Results carry each side's own git identity
+  (`--measured-repo`). Micro scripts that can't import an older side's API record
+  per-script skips carrying the actual error (`BENCH_COMPARE=1`). Compatibility
+  floor: sides must postdate the prompt-kind store API (`725f11d`) — the dataset
+  generator uses it, so older refs fail dataset generation before any suite runs.
 
 Hosted-runner wall clock is **advisory**: medians move with the neighbors' noisy
 workloads. Trend lines and A/B-on-one-runner are meaningful; single absolute numbers

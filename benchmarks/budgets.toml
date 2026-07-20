@@ -16,8 +16,11 @@
 metric = "footprint.wheel_bytes"
 max = 1048576
 tier = "enforced"
-context = { commit = "366d6d4", date = "2026-07-20" }
 note = "1 MiB hand-set contract bound (wheel is ~451 KiB); catches accidental data shipping"
+
+[budget.context]
+commit = "366d6d4"
+date = "2026-07-20"
 
 [[budget]]
 metric = "imports.version.modules"
@@ -25,8 +28,12 @@ max = 400
 tier = "enforced"
 ratchet = true
 headroom = 0.1
-context = { python = "3.13", commit = "366d6d4", date = "2026-07-20" }
 note = "ratchet: the fast path may not get importier before the fast-path PR lands (provisional bootstrap bound; tighten from the CI artifact via check --propose)"
+
+[budget.context]
+python = "3.13"
+commit = "366d6d4"
+date = "2026-07-20"
 
 [[budget]]
 metric = "imports.list_json.modules"
@@ -34,8 +41,12 @@ max = 400
 tier = "enforced"
 ratchet = true
 headroom = 0.1
-context = { python = "3.13", commit = "366d6d4", date = "2026-07-20" }
 note = "ratchet: list's import graph may not grow before the fast-path PR lands (provisional bootstrap bound; tighten from the CI artifact via check --propose)"
+
+[budget.context]
+python = "3.13"
+commit = "366d6d4"
+date = "2026-07-20"
 
 [[budget]]
 metric = "pipeline.skipped_count"
@@ -44,8 +55,11 @@ tier = "enforced"
 profile = "pr"
 platform = "linux-x86_64"
 ci_only = true
-context = { commit = "366d6d4", date = "2026-07-20" }
 note = "the pr profile may not silently decay on the reference CI platform"
+
+[budget.context]
+commit = "366d6d4"
+date = "2026-07-20"
 
 [[budget]]
 metric = "pipeline.skipped_count"
@@ -54,8 +68,11 @@ tier = "enforced"
 profile = "full"
 platform = "linux-x86_64"
 ci_only = true
-context = { commit = "366d6d4", date = "2026-07-20" }
 note = "the skip-prone suites (JS lane, syscalls, closure) run only nightly; the full profile may not silently decay either"
+
+[budget.context]
+commit = "366d6d4"
+date = "2026-07-20"
 
 [[budget]]
 metric = "startup.version.over_python_ms"
@@ -88,7 +105,7 @@ tier = "target"
 note = "CLI peak RSS at most 64 MiB, even at 1000 entries"
 
 [[budget]]
-metric = "tui.peak.n1000.kib"
+metric = "tui.rss.n1000.peak_kib"
 max = 98304
 tier = "target"
 note = "TUI peak RSS at most 96 MiB at 1000 entries"
@@ -97,6 +114,7 @@ note = "TUI peak RSS at most 96 MiB at 1000 entries"
 metric = "footprint.closure_bytes"
 max = 67108864
 tier = "target"
+profile = "full"
 note = "full dependency closure at most 64 MiB (excludes interpreter, uv, caches, per-script deps)"
 
 [[budget]]
@@ -127,4 +145,5 @@ note = "fast-path acceptance: --version imports no tree-sitter"
 metric = "syscalls.list_json.network"
 max = 0
 tier = "target"
+profile = "full"
 note = "warm read-only paths do zero network syscalls"

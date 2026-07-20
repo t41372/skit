@@ -52,22 +52,31 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
         _run_script(ctx, "bench_store.py", env, plan.fast, output, f"store_n{n}")
 
     # Analyzer availability is a property of the installed grammars: record what can't
-    # run instead of letting it silently vanish from the numbers.
-    from skit.langs.registry import spec_for
-
+    # run instead of letting it silently vanish from the numbers. Under compare, the
+    # harness itself runs on the side's (possibly older) skit — the availability
+    # probe must degrade like everything else, not kill the run.
     available = []
-    for lang in sources.LANGS:
-        spec = spec_for(lang if lang != "python" else "python")
-        if spec is None or spec.analyzer is None:
-            output.skipped.append(
-                Skip(
-                    suite="micro",
-                    case=f"analyze.{lang}",
-                    reason="analyzer unavailable (grammar failed to import)",
+    try:
+        from skit.langs.registry import spec_for
+    except ImportError as exc:
+        if not os.environ.get("BENCH_COMPARE"):
+            raise
+        output.skipped.append(
+            Skip(suite="micro", case="analyzers", reason=f"harness import failed: {exc}")
+        )
+    else:
+        for lang in sources.LANGS:
+            spec = spec_for(lang)
+            if spec is None or spec.analyzer is None:
+                output.skipped.append(
+                    Skip(
+                        suite="micro",
+                        case=f"analyze.{lang}",
+                        reason="analyzer unavailable (grammar failed to import)",
+                    )
                 )
-            )
-        else:
-            available.append(lang)
+            else:
+                available.append(lang)
 
     if available:
         env = bench_env(ctx, ctx.datasets[plan.ns[0]].root)
@@ -160,8 +169,24 @@ def _cold_parse(ctx: RunCtx, lang: str, sources_dir: Path, output: SuiteOutput) 
             env=env,
             capture_output=True,
             text=True,
-            check=True,
+            check=False,
         )
+        if proc.returncode != 0:
+            # Same compare-mode degradation as _run_script: an older side's probe
+            # failure records what broke; a normal run treats it as a pipeline bug.
+            if os.environ.get("BENCH_COMPARE"):
+                output.skipped.append(
+                    Skip(
+                        suite="micro",
+                        case=f"analyze_cold.{lang}",
+                        reason=f"exit {proc.returncode}: "
+                        f"{proc.stderr.strip()[-300:] or 'no stderr'}",
+                    )
+                )
+                return
+            raise RuntimeError(
+                f"cold-parse probe for {lang} failed ({proc.returncode}): {proc.stderr[-500:]}"
+            )
         text = proc.stdout.strip()
         if text == "SKIP":
             # The orchestrator already checked availability; a worker-side SKIP means

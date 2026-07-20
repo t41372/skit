@@ -90,3 +90,9 @@ def metric_from_times(times_s: list[float]) -> Metric:
     """Times in seconds → the standard statistical Metric in milliseconds."""
     ms = [t * 1000 for t in times_s]
     return Metric(value=median(ms), unit="ms", n=len(ms), p95=p95(ms), stddev=stddev(ms))
+
+
+def metrics_from_export(times_by_case: dict[str, list[float]]) -> dict[str, Metric]:
+    """The metric-ID minting rule for every hyperfine suite: case name → the
+    `<case>.median_ms` ID budgets and history key on. One place, covered."""
+    return {f"{name}.median_ms": metric_from_times(times) for name, times in times_by_case.items()}

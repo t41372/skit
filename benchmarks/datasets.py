@@ -31,6 +31,13 @@ GENERATOR_VERSION = 1
 DEFAULT_SEED = 20260720
 DEFAULT_STATE_FRACTION = 0.5
 
+# The tui probe filters on this character and asserts real row movement. The generator
+# guarantees BOTH sides of that assertion: entry 0's searchable text never contains it
+# (so a full match can't mask a dead filter), and — for n >= 3 — at least one long
+# description does contain it (the word "description"), so the filtered subset is
+# never empty either. Changing it is a probe+generator change, made here once.
+SEARCH_PROBE_CHAR = "o"
+
 # Sums to exactly 100; expanded into a shuffled 100-slot pattern so any N gets the mix.
 KIND_MIX: tuple[tuple[str, int], ...] = (
     ("python", 30),
@@ -77,6 +84,7 @@ class Manifest:
     seed: int
     state_fraction: float
     generator_version: int
+    skit_version: str
     slugs: tuple[str, ...]
     kinds: dict[str, str]
 
@@ -91,6 +99,7 @@ class Manifest:
             json.dumps(
                 {
                     "generator_version": self.generator_version,
+                    "skit_version": self.skit_version,
                     "n": self.n,
                     "seed": self.seed,
                     "state_fraction": self.state_fraction,
@@ -112,8 +121,32 @@ class Manifest:
             seed=doc["seed"],
             state_fraction=doc["state_fraction"],
             generator_version=doc["generator_version"],
+            skit_version=doc.get("skit_version", ""),
             slugs=tuple(doc["slugs"]),
             kinds=doc["kinds"],
+        )
+
+
+def check_reusable(manifest: Manifest, n: int) -> None:
+    """Whether an on-disk dataset may be reused for this run. Every generation input
+    must match — including the skit version that WROTE the store (a reused dataset
+    across a branch switch could otherwise carry a store layout the current code
+    would not produce). Mismatch is an error to fix, never a silent apples-to-oranges
+    comparison."""
+    import skit
+
+    inputs = (
+        manifest.n,
+        manifest.seed,
+        manifest.state_fraction,
+        manifest.generator_version,
+        manifest.skit_version,
+    )
+    wanted = (n, DEFAULT_SEED, DEFAULT_STATE_FRACTION, GENERATOR_VERSION, skit.__version__)
+    if inputs != wanted:
+        raise DatasetError(
+            f"dataset {manifest.root} was generated with different inputs "
+            f"{inputs} (wanted {wanted}) — delete it and rerun"
         )
 
 
@@ -156,8 +189,9 @@ def kind_slots(rng: Random) -> list[str]:
 
 def entry_name(i: int, rng: Random) -> str:
     """Deterministic name variety: short/long ASCII with CJK and emoji sprinkled.
-    Entry 0 is the search-probe invariant: its searchable text carries no letter `x`
-    (the tui probe filters on `x` and asserts the row count drops)."""
+    Entry 0 is the search-probe invariant: its searchable text never contains
+    SEARCH_PROBE_CHAR (the tui probe filters on it and asserts the row count drops).
+    """
     if i == 0:
         return "alpha-seed-0"
     if i % 7 == 3:
@@ -171,7 +205,7 @@ def entry_name(i: int, rng: Random) -> str:
 
 def entry_description(i: int, rng: Random) -> str:
     if i == 0:
-        return ""  # keeps entry 0's searchable text x-free by construction
+        return ""  # keeps entry 0's searchable text SEARCH_PROBE_CHAR-free by construction
     phase = i % 3
     if phase == 0:
         return ""
@@ -287,12 +321,15 @@ def generate(
         if found != n:
             raise DatasetError(f"generated {found} entries, expected {n}")
 
+    import skit
+
     manifest = Manifest(
         root=root,
         n=n,
         seed=seed,
         state_fraction=state_fraction,
         generator_version=GENERATOR_VERSION,
+        skit_version=skit.__version__,
         slugs=tuple(slugs),
         kinds=kinds,
     )
@@ -344,12 +381,15 @@ def generate_runover(root: Path, fixtures_dir: Path) -> Manifest:
         if found != 3:
             raise DatasetError(f"runover library has {found} entries, expected 3")
 
+    import skit
+
     manifest = Manifest(
         root=root,
         n=3,
         seed=0,
         state_fraction=0.0,
         generator_version=GENERATOR_VERSION,
+        skit_version=skit.__version__,
         slugs=tuple(slugs),
         kinds={slugs[0]: "python", slugs[1]: "shell", slugs[2]: "js"},
     )

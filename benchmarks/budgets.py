@@ -250,16 +250,24 @@ def _evaluate_row(budget: Budget, results: Results) -> RowResult:
             budget,
             "violated",
             value=metric.value,
-            detail=f"{metric.value:g} {metric.unit} > {budget.max_value:g}",
+            detail=f"{_fmt(metric.value)} {metric.unit} > {_fmt(budget.max_value)}",
         )
     stale = budget.ratchet and metric.value < STALE_FRACTION * budget.max_value
     return RowResult(
         budget,
         "passed",
         value=metric.value,
-        detail=f"{metric.value:g} {metric.unit} ≤ {budget.max_value:g}",
+        detail=f"{_fmt(metric.value)} {metric.unit} ≤ {_fmt(budget.max_value)}",
         stale=stale,
     )
+
+
+def _fmt(value: float) -> str:
+    """Bounds and measurements print as plain numbers — a byte contract that renders
+    as 1.04858e+06 is unreadable exactly where readability is the point."""
+    if value == int(value):
+        return str(int(value))
+    return f"{value:g}"
 
 
 _SYMBOLS: dict[Outcome, str] = {
@@ -288,8 +296,8 @@ def render_report(report: Report) -> str:
         )
         if row.stale:
             lines.append(
-                f"[enforced] note  {row.budget.metric}: measured {row.value:g} sits below "
-                f"{STALE_FRACTION:.0%} of the bound {row.budget.max_value:g} — "
+                f"[enforced] note  {row.budget.metric}: measured {_fmt(row.value or 0)} sits below "
+                f"{STALE_FRACTION:.0%} of the bound {_fmt(row.budget.max_value)} — "
                 "ceiling is stale, tighten it (check --propose)"
             )
     enforced = [r for r in report.rows if r.budget.tier == "enforced"]

@@ -13,13 +13,7 @@ from importlib import import_module
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..datasets import (
-    DEFAULT_SEED,
-    DEFAULT_STATE_FRACTION,
-    GENERATOR_VERSION,
-    Manifest,
-    generate,
-)
+from ..datasets import Manifest, check_reusable, generate
 from ..envinfo import collect_meta
 from ..pipeline import build_plan, dataset_ns, summarize_dir
 from ._env import discover
@@ -30,25 +24,15 @@ if TYPE_CHECKING:
 
 
 def prepare_datasets(bench_dir: Path, ns: tuple[int, ...]) -> dict[int, Manifest]:
-    """Generate (or reuse) the shared libraries. Reuse only when the on-disk manifest
-    matches every generation input — a mismatched dataset is an error to fix, never a
-    silent apples-to-oranges comparison."""
+    """Generate (or reuse) the shared libraries. The reuse rules live in
+    datasets.check_reusable (covered): every generation input, including the version
+    of the skit that WROTE the store, must match — else the run refuses."""
     out: dict[int, Manifest] = {}
     for n in ns:
         root = bench_dir / "datasets" / f"n{n}"
         if (root / "manifest.json").exists():
             manifest = Manifest.load(root)
-            inputs = (
-                manifest.n,
-                manifest.seed,
-                manifest.state_fraction,
-                manifest.generator_version,
-            )
-            if inputs != (n, DEFAULT_SEED, DEFAULT_STATE_FRACTION, GENERATOR_VERSION):
-                raise RuntimeError(
-                    f"dataset {root} was generated with different inputs {inputs} — "
-                    "delete it and rerun"
-                )
+            check_reusable(manifest, n)
             out[n] = manifest
         else:
             if root.exists():
@@ -60,16 +44,29 @@ def prepare_datasets(bench_dir: Path, ns: tuple[int, ...]) -> dict[int, Manifest
 
 
 def execute(
-    profile: str, bench_dir: Path, repo_root: Path, budgets: list[Budget] | None
+    profile: str,
+    bench_dir: Path,
+    repo_root: Path,
+    budgets: list[Budget] | None,
+    *,
+    measured_root: Path | None = None,
 ) -> Results:
+    """Run a profile end to end. `repo_root` is the harness checkout (fixtures, wheel
+    builds); `measured_root` is where the benchmarked skit's git identity lives — the
+    compare workflow points it at each side's checkout so the results name what they
+    measured, never the harness ref."""
     t0 = time.monotonic()
     plans = build_plan(profile)
     bench_dir.mkdir(parents=True, exist_ok=True)
+    # A crashed run must not leave a previous run's outputs for summarize/check to
+    # merge with fresh partial data — that would stamp old provenance on new numbers.
+    for stale in ("run.json", "results.json", "results.md"):
+        (bench_dir / stale).unlink(missing_ok=True)
     datasets = prepare_datasets(bench_dir, dataset_ns(plans))
     suites_dir = bench_dir / "suites"
     suites_dir.mkdir(exist_ok=True)
-    for stale in suites_dir.glob("*.json"):
-        stale.unlink()  # a fresh run must not summarize a previous run's leftovers
+    for stale_suite in suites_dir.glob("*.json"):
+        stale_suite.unlink()  # a fresh run must not summarize a previous run's leftovers
 
     workdir = Path(tempfile.mkdtemp(prefix="skit-bench-"))  # OUTSIDE any uv project
     try:
@@ -83,7 +80,7 @@ def execute(
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
-    meta = collect_meta(profile, repo_root)
+    meta = collect_meta(profile, measured_root or repo_root)
     (bench_dir / "run.json").write_text(
         json.dumps(
             {"meta": dataclasses.asdict(meta), "total_duration_s": time.monotonic() - t0},

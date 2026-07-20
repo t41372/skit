@@ -44,6 +44,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--profile", choices=PROFILES, required=True)
     p.add_argument("--out", type=Path, default=Path(".bench"))
     p.add_argument("--budgets", type=Path, default=_DEFAULT_BUDGETS)
+    p.add_argument(
+        "--measured-repo",
+        type=Path,
+        default=None,
+        help="checkout whose git identity the results carry (A/B: the side's checkout,"
+        " while the harness stays this one); default: the harness checkout",
+    )
 
     p = sub.add_parser("summarize", help="re-merge a run directory into results.json/md")
     p.add_argument("bench_dir", type=Path)
@@ -83,7 +90,9 @@ def main(argv: list[str] | None = None) -> int:
         from .suites._run import execute
 
         budgets = load_budgets(args.budgets.read_text(encoding="utf-8"))
-        results = execute(args.profile, args.out, _REPO_ROOT, budgets)
+        results = execute(
+            args.profile, args.out, _REPO_ROOT, budgets, measured_root=args.measured_repo
+        )
         print(f"results: {args.out / 'results.json'} ({len(results.metrics)} metrics)")
         return 0
     if args.command == "summarize":

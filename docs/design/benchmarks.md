@@ -191,8 +191,8 @@ ride on the scale grid's N:
 
 Shell lane: `bash noop.sh` vs `skit run noop-sh --no-input`. JS lane (nightly; skip
 recorded if node is absent): `node noop.js` vs `skit run noop-js --no-input`. All lanes
-warmed in prepare (uv env cache hot; prepare commands are single argvs or explicit
-`bash -c` — under `--shell=none` there is no shell to parse `&&`). Methodology note in
+are warmed by hyperfine's `--warmup` runs executing the real command (which also warms
+the per-session `UV_CACHE_DIR`); there is no separate prepare step. Methodology note in
 README: **C legitimately includes skit's post-run state persistence** (`save_last` +
 `record_run`, two fsync'd atomic writes — a real per-run user cost; constant-size
 rewrites, so iterations don't grow state), and warmup absorbs first-write file creation.
@@ -221,14 +221,18 @@ stderr and summarizes the top-20 cumulative offenders (3.12/3.13-compatible;
 `run_test(size=(120, 40))` → first `pilot.pause()` returns (mount + initial `_reload` +
 message queue drained), span 3 = search: the table owns focus after mount and plain
 letters are action keys (`a` opens Add), so the probe presses `/` (focus search) and
-settles *first*, then measures `press("x")` → `pause()`, and **asserts the filter
-actually ran**: the search input's value is `"x"` always, and — at N > 0 only, since an
-empty library has no rows to change — the visible row count strictly drops (the dataset
-generator guarantees at least one entry whose searchable text contains no `x`, so a full
-match can't mask a dead filter; at N = 0 the value assertion alone stands). A silent
-no-op must die, not get recorded as a fast search. Then read `VmHWM` from
-`/proc/self/status` (absent → skip recorded). Documented as *proxies* (headless Textual,
-not terminal paint) — stable, comparable, honest about what they are.
+settles *first*, then measures `press(<probe char>)` → `pause()` (the char is
+`datasets.SEARCH_PROBE_CHAR` — one definition, shared by probe and generator), and
+**asserts the filter actually ran**: the search input's value is the probe char, and —
+at N > 0, since an empty library has no rows to change — the visible row count strictly
+drops (the generator guarantees a probe-char-free entry, so a full match can't mask a
+dead filter) while at N ≥ 3 some rows must also SURVIVE (the generator guarantees a
+matching long description), so the span measures a real filtered repaint, never the
+degenerate filter-to-zero path. A silent no-op must die, not get recorded as a fast
+search. Peak RSS needs `/proc/self/status`: its absence is a PRE-SPAWN skip recorded
+once per run; a parse failure on a host where the file exists crashes. Documented as
+*proxies* (headless Textual, not terminal paint) — stable, comparable, honest about
+what they are.
 
 **syscalls** (Linux, nightly; workflow apt-installs strace — it is not preinstalled on
 runner images) — `strace -f -c` around `skit list --json` N=1000: counts of `openat`/
@@ -272,8 +276,9 @@ fidelity by construction; the per-add registry rewrite is O(N²) but fine at N �
 - **Discontinuity clause:** the kind mix, `state_fraction`, and the missing-target
   fraction are all load-bearing inputs to every scale/tui metric; changing ANY of them
   bumps the generator version and is a history discontinuity.
-- Search-probe invariant: every dataset contains at least one entry whose searchable
-  text (name + description) has no letter `x` (see the tui suite's filter assertion).
+- Search-probe invariant (both sides): every dataset contains at least one entry
+  whose searchable text (name + description) lacks `SEARCH_PROBE_CHAR`, and — for
+  n ≥ 3 — at least one that contains it (see the tui suite's filter assertions).
 - Post-generate self-check: `store.list_entries()` must count exactly n, else the
   generator fails loudly.
 
@@ -411,7 +416,8 @@ Three workflows, matching house rules (SHA-pinned actions, `permissions: {}` top
 minimal per-job grants, `persist-credentials: false`, concurrency groups, `PYTHONUTF8`,
 zizmor-clean). Runner: `ubuntu-24.04` pinned (not `-latest`) for comparability — a future
 label change is a history discontinuity and gets annotated. Python pinned 3.13.
-`timeout-minutes: 20` on every bench job; the job's own duration is a recorded metric.
+`timeout-minutes` on every bench job (20 for the pr job, 45 for nightly and
+compare); the job's own duration is a recorded metric.
 
 **The bench job is advisory by policy: it is never configured as a required status check
 while path-filtered** (GitHub leaves path-skipped required checks "Pending", which would
@@ -452,7 +458,11 @@ violations — visible shame, no merge lock.
    actual exception text (never a canned label that misattributes the cause) for that
    side's benchmark instead of failing the workflow. `pyperf compare_to` provides
    significance testing for micro; `compare` flags |Δ| > max(5%, 2 ms) as notable —
-   warn-only. This is the evidence tool future optimization PRs cite.
+   warn-only. Compatibility floor: sides must postdate the prompt-kind store API
+   (`725f11d`) — the dataset generator uses it, so older refs fail dataset generation
+   before any suite runs; the workflow says so where it would bite. Results carry each
+   SIDE's git identity (`--measured-repo`), never the harness ref's. This is the
+   evidence tool future optimization PRs cite.
 
 hyperfine is installed from a version-pinned GitHub release tarball; upstream publishes no
 checksum assets, so the workflow hardcodes a sha256 computed once at pin time and verifies
@@ -474,7 +484,10 @@ orchestration that needs external binaries is exempt, each exemption commented.*
   `hyperfine.py` (pure builder/parser by design: no subprocess calls in it),
   `parsers.py` (every function that turns tool output — census dumps, strace tables,
   importtime stderr, VmHWM lines, pyperf JSON — into metric values; enforced metrics
-  like the import ratchets are computed here, so this code IS gate code), `pipeline.py`
+  like the import ratchets are computed here, so this code IS gate code),
+  `envspec.py` (the constructed-environment contract and the pyperf inherit list —
+  a wrong environment produces wrong-but-plausible numbers, so building it is a
+  decision, not orchestration), `pipeline.py`
   (plan/merge/derive/render/export logic), `fixtures/sources.py` (the seeded
   per-language analyzer-input generators — pure compute whose output the micro numbers
   stand on), and `envinfo.py` (budget predicates key on its `platform_key`/`ci_runner`
@@ -483,7 +496,7 @@ orchestration that needs external binaries is exempt, each exemption commented.*
   `# pragma: no cover` — the same statement-level mechanism the repo already uses. A
   repo whose identity is "everything is gated" does not grow an ungated gate.
 - **Tests:** `tests/test_benchmarks_tooling.py` — hermetic, no hyperfine/pyperf binaries:
-  dataset generation (small N; kind mix; state fraction; missing targets; the x-free
+  dataset generation (small N; kind mix; state fraction; missing targets; the
   search-probe invariant; determinism under fixed seed; post-generate count check),
   results model round-trip + validation failures, budget evaluation (tiers, predicates,
   propose, stale-ceiling warning, context-python mismatch, enforced violation → failure
