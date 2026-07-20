@@ -4,20 +4,18 @@ Scope: `_show_params` (the `skit params` read view, human + --json) and
 `_validate_forced_kind` (the `skit add --kind` guard). Real CLI via CliRunner, English
 catalog, assertions on observable output / exit codes — style matches tests/test_cli_mut.py.
 
-A few init-line mutants in `_show_params` are provable equivalents and are resolved by
+A few `_show_params` mutants are provable equivalents and are resolved structurally or by
 `# pragma: no mutate` in the source rather than a test (see the module for justifications):
   * `text = ""`          -> None / "XXXX": the sentinel is read only via `and text`, and is
                             overwritten whenever a file is actually read.
-  * `self_locating = ""` -> None: read only via `if self_locating`. The observable `= True`
-                            variant IS pinned here, by
-                            test_params_reference_mode_shell_omits_self_location_hint.
+  * the two False signal initializers live in one tuple assignment, so mutmut can no longer
+                            replace either whole assignment with an equivalent None; each
+                            observable False -> True mutation remains live and is pinned here.
   * `ensure_ascii=False` -> True / None / dropped: inert, because `console.print_json`
                             re-parses then re-serializes the string, normalizing any escaping.
-  * `and text` -> `or text` (the analyze-gate's third operand): a provable equivalent, pinned by
-                            `# pragma: no mutate` in the source. `text` is non-empty only when an
-                            analyzable file was read, and (registry invariant) params_io is not
-                            None iff analyzer is not None; so `or text` differs only on empty text,
-                            where analyze/reconcile/reader_fields are all no-ops.
+  * the text truthiness gate is nested below the spec/analyzer guard, so the former's equivalent
+                            BooleanOperation mutant no longer requires a pragma that would also
+                            hide behaviour-bearing mutations in the latter.
 """
 
 from __future__ import annotations
@@ -126,6 +124,41 @@ def test_params_reference_mode_shell_omits_self_location_hint(tmp_path):
     result = runner.invoke(cli.app, ["params", "refloc"])
     assert result.exit_code == 0, result.output
     assert "locates itself" not in result.output
+
+
+def test_params_vanished_analyzable_copy_invents_no_analysis_signals(tmp_path):
+    """A missing stored copy never looks reader-driven or self-locating.
+
+    This is the path where the two signal initializers reach rendering unchanged. It kills each
+    ``False -> True`` mutation independently: reader_driven=True removes the actionable --manage
+    suffix, while self_locating=True appends the unrelated $0/BASH_SOURCE normalization advice.
+    """
+    entry = _shell(tmp_path, "#!/bin/sh\nWIDTH=800\n", "gone")
+    entry.script_path.unlink()
+
+    result = runner.invoke(cli.app, ["params", "gone"])
+
+    assert result.exit_code == 0, result.output
+    assert _norm(result.output) == (
+        "gone has no managed parameters. "
+        "Use --manage to bring a detected candidate under management."
+    )
+    assert "locates itself" not in result.output
+
+
+def test_params_unknown_kind_does_not_dereference_missing_spec(tmp_path, monkeypatch):
+    """A registry entry from a newer skit version degrades instead of crashing.
+
+    The spec/analyzer guard must remain an AND: its OR mutant dereferences
+    ``entry_spec.analyzer`` after the first operand establishes that entry_spec is None.
+    """
+    _shell(tmp_path, "#!/bin/sh\necho hi\n", "future")
+    monkeypatch.setattr(cli, "spec_for", lambda _kind: None)
+
+    result = runner.invoke(cli.app, ["params", "future"])
+
+    assert result.exit_code == 0, result.output
+    assert _norm(result.output) == "future has no managed parameters."
 
 
 # --------------------------------------------------------------------------

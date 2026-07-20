@@ -3455,28 +3455,36 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
         text = entry.script_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
         specs = entry_spec.params_io.read(text)
     unmanaged: list[str] = []
-    self_locating = False  # pragma: no mutate — =None is a true equivalent (falsy, read only via `if self_locating`); the also-suppressed =True is observable only on paths that skip the analyze block (no analyzer / vanished text)
-    reader_driven = False  # pragma: no mutate — =None is a true equivalent (falsy, read only through the or-chain below); the also-suppressed =True is observable solely on an analyzer kind whose stored file vanished
+    # One tuple assignment avoids two equivalent ``False -> None`` assignment mutants while
+    # keeping each behaviour-changing ``False -> True`` name mutant live. In particular, a
+    # vanished analyzable script must not invent either signal (test_cli_mut_part06 pins it).
+    self_locating, reader_driven = False, False
     ref_mode = entry.meta.mode == "reference"
-    if entry_spec is not None and entry_spec.analyzer is not None and text:  # pragma: no mutate — the `and text` third operand is a true equivalent: text is non-empty only when an analyzable file was read, and params_io is not None iff analyzer is not None (registry invariant), so `or text` diverges only on empty text — where analyze/reconcile/reader_fields are all no-ops — leaving reader_driven/unmanaged/self_locating at their initial values, so output is identical  # fmt: skip
-        # BOTH modes: the text is readable either way, and a reference entry deserves
-        # the same honest read (its reader form runs fine; its candidates are real —
-        # only the WRITE ops differ, and the advice below switches voice on that).
-        report = entry_spec.analyzer.reconcile(text, specs)
-        an = entry_spec.analyzer.analyze(text)
-        # A MODELED reader form (flows.reader_fields — the one trap predicate every
-        # surface shares) is the entry's real interface: plan_for_entry prefers managed
-        # params, so a --manage advice here would sell REPLACING that form. Self-parsing
-        # skit couldn't model (docopt/fire, a dynamic optstring) runs on the passthrough
-        # field either way — managed constants are additive there, so candidates stay.
-        reader_driven = flows.reader_fields(entry_spec, text) > 0
-        unmanaged = [] if reader_driven else [c.name for c in report.new]
-        # $0/BASH_SOURCE: an injected constant runs from a temp copy, so the script would see the
-        # temp path instead of its own. Say so HERE — where the user decides whether to manage it —
-        # not only in the run-time warning, and point at the fix. Only meaningful for a kind that
-        # actually rewrites a copy (an injector, copy mode — the hint advises --normalize, a
-        # stored-copy write); env delivery never moves the file.
-        self_locating = not ref_mode and entry_spec.injector is not None and an.uses_self_location
+    if entry_spec is not None and entry_spec.analyzer is not None:  # noqa: SIM102
+        # Keep the text gate nested instead of pragma-suppressing a three-way BooleanOperation:
+        # changing ``and text`` to ``or text`` is equivalent under the registry invariant, but a
+        # line-level pragma also hides the behaviour-bearing spec/analyzer guards.
+        if text:
+            # BOTH modes: the text is readable either way, and a reference entry deserves
+            # the same honest read (its reader form runs fine; its candidates are real —
+            # only the WRITE ops differ, and the advice below switches voice on that).
+            report = entry_spec.analyzer.reconcile(text, specs)
+            an = entry_spec.analyzer.analyze(text)
+            # A MODELED reader form (flows.reader_fields — the one trap predicate every
+            # surface shares) is the entry's real interface: plan_for_entry prefers managed
+            # params, so a --manage advice here would sell REPLACING that form. Self-parsing
+            # skit couldn't model (docopt/fire, a dynamic optstring) runs on the passthrough
+            # field either way — managed constants are additive there, so candidates stay.
+            reader_driven = flows.reader_fields(entry_spec, text) > 0
+            unmanaged = [] if reader_driven else [c.name for c in report.new]
+            # $0/BASH_SOURCE: an injected constant runs from a temp copy, so the script would see the
+            # temp path instead of its own. Say so HERE — where the user decides whether to manage it —
+            # not only in the run-time warning, and point at the fix. Only meaningful for a kind that
+            # actually rewrites a copy (an injector, copy mode — the hint advises --normalize, a
+            # stored-copy write); env delivery never moves the file.
+            self_locating = (
+                not ref_mode and entry_spec.injector is not None and an.uses_self_location
+            )
     if entry_spec is not None and entry_spec.kind == "prompt" and entry.meta.interpolate:
         # The prompt's "detected but unmanaged" sweep is a fresh body scan, not the
         # analyzer/reconcile machinery (command-kind parity: spec.analyzer is None).
