@@ -60,6 +60,7 @@ FIELD_KEYS = {
     "flag",
     "action",
     "env_source",
+    "delivers_empty",
 }
 
 
@@ -136,6 +137,7 @@ def test_show_json_argparse_full_schema(tmp_path):
         "flag": "",
         "action": "",
         "env_source": "",
+        "delivers_empty": False,
     }
     assert fields["width"]["type"] == "int"
     assert fields["width"]["default"] == "800"

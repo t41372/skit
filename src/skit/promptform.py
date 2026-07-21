@@ -30,6 +30,10 @@ def collect(
             console.print(f"  [dim]{escape(f.help)}[/dim]")
         if f.degraded:
             console.print(f"  [dim]{gettext("Leave empty to use the script's own default.")}[/dim]")
+        if f.input_binding:
+            console.print(
+                f"  [dim]{gettext('Leave empty and the script will ask you in the terminal.')}[/dim]"
+            )
         values[f.key] = _ask_until_valid(f, prefill.get(f.key, ""), console)
     return values
 

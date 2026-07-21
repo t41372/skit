@@ -740,9 +740,12 @@ def test_type_error_messages_exact(tmp_path):
 
 def test_assemble_display_order_and_masking(tmp_path):
     plan = flows.plan_for_entry(_python_entry(tmp_path, MANAGED_SCRIPT, slug="disp"))
+    # WIDTH "900" differs from the source default 800 on purpose: a value EQUAL to the
+    # script's own current value is deliberately not delivered (or displayed) at all —
+    # see test_assemble_inject_skips_values_equal_to_the_source_default.
     asm = flows.assemble(
         plan,
-        {"OUTPUT": "long_{today}.jpg", "WIDTH": "800", "API_KEY": "sekret"},
+        {"OUTPUT": "long_{today}.jpg", "WIDTH": "900", "API_KEY": "sekret"},
         [],
         cwd=tmp_path,
         env={},
@@ -750,12 +753,12 @@ def test_assemble_display_order_and_masking(tmp_path):
     )
     assert asm.display == [
         ("OUTPUT", "long_2026-07-09.jpg"),
-        ("WIDTH", "800"),
+        ("WIDTH", "900"),
         ("API_KEY", "•••"),
     ]
     assert asm.inject_values == {
         "OUTPUT": "long_2026-07-09.jpg",
-        "WIDTH": "800",
+        "WIDTH": "900",
         "API_KEY": "sekret",
     }
     assert asm.masked_args == asm.args  # inject: values aren't in argv, nothing to mask
@@ -871,9 +874,10 @@ def _emit_sink():
 
 def test_transparency_lines_inject_source_shows_masked_and_temp_note(tmp_path):
     plan = flows.plan_for_entry(_python_entry(tmp_path, MANAGED_SCRIPT, slug="tl"))
+    # Values differ from the source defaults on purpose — equal values skip delivery.
     asm = flows.assemble(
         plan,
-        {"OUTPUT": "out.jpg", "WIDTH": "800", "API_KEY": "sekret"},
+        {"OUTPUT": "new.jpg", "WIDTH": "900", "API_KEY": "sekret"},
         [],
         cwd=tmp_path,
         env={},
@@ -884,7 +888,7 @@ def test_transparency_lines_inject_source_shows_masked_and_temp_note(tmp_path):
     )
     joined = "\n".join(lines)
     assert "→ inject:" in joined
-    assert "OUTPUT = out.jpg" in joined  # plain `k = v`, no repr quotes (the old CLI/TUI drift)
+    assert "OUTPUT = new.jpg" in joined  # plain `k = v`, no repr quotes (the old CLI/TUI drift)
     assert "temporary copy" in joined
     assert "sekret" not in joined  # the secret value never appears
     assert "•••" in joined
@@ -1154,9 +1158,10 @@ def test_execute_bad_value_reports_value_not_drift(tmp_path, monkeypatch):
 
 def test_transparency_inject_lines_are_exact(tmp_path):
     plan = flows.plan_for_entry(_python_entry(tmp_path, MANAGED_SCRIPT, slug="tex"))
+    # Values differ from the source defaults on purpose — equal values skip delivery.
     asm = flows.assemble(
         plan,
-        {"OUTPUT": "out.jpg", "WIDTH": "800", "API_KEY": "s"},
+        {"OUTPUT": "new.jpg", "WIDTH": "900", "API_KEY": "s"},
         [],
         cwd=tmp_path,
         env={},
@@ -1166,7 +1171,7 @@ def test_transparency_inject_lines_are_exact(tmp_path):
         _python_entry(tmp_path, MANAGED_SCRIPT, slug="tex2"), asm, None
     )
     # Exact first line (kills the ", " separator and the "→ inject: " string mutants):
-    assert lines[0] == "→ inject: OUTPUT = out.jpg, WIDTH = 800, API_KEY = •••"
+    assert lines[0] == "→ inject: OUTPUT = new.jpg, WIDTH = 900, API_KEY = •••"
     assert lines[1].startswith("  (written to a temporary copy")
 
 

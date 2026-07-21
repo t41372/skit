@@ -79,14 +79,22 @@ class ParamRow(Vertical):
     ParamRow Input { width: 1fr; }
     """
 
-    def __init__(self, spec: ParamDecl) -> None:
+    def __init__(
+        self, spec: ParamDecl, current_default: str | int | float | bool | None = None
+    ) -> None:
         super().__init__()
         self.spec: ParamDecl = spec
+        # Display-only: the SOURCE's current default (Report.current_defaults), so this
+        # pane can't disagree with `skit params` / the run form about one record. The
+        # spec itself stays unmutated — saving the screen must not silently rewrite the
+        # block's cached default (that write belongs to --resync).
+        self._current_default: str | int | float | bool | None = current_default
 
     @override
     def compose(self) -> ComposeResult:
         s = self.spec
-        default = "" if s.default is None else repr(s.default)
+        shown = self._current_default if self._current_default is not None else s.default
+        default = "" if shown is None else repr(shown)
         yield Checkbox(f"{escape(s.name)}  [dim]{s.type} {escape(default)}[/dim]", value=True)
         with Horizontal():
             yield Static("  " + gettext("Form label:"), classes="p-meta")
@@ -576,8 +584,10 @@ class ScriptSettingsScreen(Screen[bool]):
             for s in self._specs:
                 yield Static(f"· {escape(s.name)} ({s.type})")
             return
+        report = self._reconcile()
+        current = report.current_defaults if report is not None else {}
         for s in self._specs:
-            yield ParamRow(s)
+            yield ParamRow(s, current_default=current.get(s.name))
         if self._cli_driven():
             # This script's form already comes from its own argparse/click/typer surface.
             # Managing a hardcoded constant would write a [tool.skit] block that shadows
@@ -590,18 +600,14 @@ class ScriptSettingsScreen(Screen[bool]):
                 ),
                 classes="hint",
             )
-        else:
-            report = self._reconcile()
-            if report is not None and report.new:
-                yield Static(
-                    gettext("Detected but not yet managed — tick to manage:"), classes="hint"
+        elif report is not None and report.new:
+            yield Static(gettext("Detected but not yet managed — tick to manage:"), classes="hint")
+            for i, c in enumerate(report.new):
+                yield Checkbox(
+                    f"{escape(c.name)}  [dim]{c.type} = {escape(repr(c.default))}[/dim]",
+                    value=False,
+                    id=f"st-new-{i}",
                 )
-                for i, c in enumerate(report.new):
-                    yield Checkbox(
-                        f"{escape(c.name)}  [dim]{c.type} = {escape(repr(c.default))}[/dim]",
-                        value=False,
-                        id=f"st-new-{i}",
-                    )
         if self._specs and all(s.binding == "input" for s in self._specs):
             yield Static(
                 gettext("Every input() is managed — this script can now run with --no-input."),

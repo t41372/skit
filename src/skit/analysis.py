@@ -25,7 +25,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 from .callmatch import match_calls
-from .params import ParamDecl
+from .params import ParamDecl, coerce_default
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -92,6 +92,16 @@ class Report:
     rebind: list[tuple[ParamDecl, Candidate]] = field(default_factory=list)
     new: list[Candidate] = field(default_factory=list)
     syntax_error: bool = False
+    # The SOURCE's current default for every ok-matched const/envdefault spec, keyed by
+    # name. The stored block default is a cache written at manage time; the script is the
+    # truth, and a user who edits `X = "hello"` to `X = "bonjour"` must see (and prefill,
+    # and reset to) "bonjour" — the stale cache used to be silently re-injected OVER that
+    # edit. A value change is deliberately NOT drift: tracking the source is the expected
+    # behavior, not a warning. Two exclusions, both in _records_default/_type_matches: a
+    # SECRET's literal never travels (C3), and a type-mismatched default never overlays a
+    # spec (a const carries a drift warning and keeps its old prefill until resync; an env
+    # param stays ok but its default must still fit the declared type).
+    current_defaults: dict[str, str | int | float | bool] = field(default_factory=dict)
 
     @property
     def has_drift(self) -> bool:
@@ -231,8 +241,8 @@ def edit_specs(
     # insertion order, so this only changes anything when specs already has duplicate names).
     order: list[str] = list(by_name)  # keep original order; new ones appended at the end
 
-    # 1) resync: prune missing and update changed types per the current script (keeping custom
-    #    secret/prompt/default).
+    # 1) resync: prune missing and update changed types/defaults per the current script
+    #    (keeping custom secret/prompt).
     if resync:
         _apply_resync(text, specs, by_name, order, warnings, analyze=analyze)
 
@@ -275,20 +285,30 @@ def _apply_resync(
         warnings.append("resync-skipped")
         return
     missing_names = {s.name for s in report.missing}
-    changed_types = {spec.name: cand.type for spec, cand in report.changed}
+    changed_pairs = {spec.name: cand for spec, cand in report.changed}
     rebind_targets = {spec.name: cand for spec, cand in report.rebind}
     for name in list(order):
         if name in missing_names:
             warnings.append(f"resync-dropped:{name}")
             del by_name[name]
             order.remove(name)
-        elif name in changed_types:
-            # changed_types[name] is a Candidate.type (a plain str); ParamDecl.type is the
-            # closed ParamType literal, so re-anchor the type through dataclasses.replace
-            # (whose kwargs are untyped) rather than a direct attribute write. by_name[name]
-            # is already a private shallow copy (see the replace() at the top of edit_specs),
-            # so swapping in a fresh copy is the same visible effect as mutating in place.
-            by_name[name] = replace(by_name[name], type=changed_types[name])
+        elif name in changed_pairs:
+            # cand.type is a plain str while ParamDecl.type is the closed ParamType
+            # literal, so re-anchor through dataclasses.replace (whose kwargs are
+            # untyped) rather than a direct attribute write. by_name[name] is already a
+            # private shallow copy (see the replace() at the top of edit_specs), so
+            # swapping in a fresh copy is the same visible effect as mutating in place.
+            # The default rides along with the type: once the spec is retyped to the
+            # source's current shape, keeping the old-typed default would leave stale
+            # junk (an int 3 on a now-str constant) in the refreshed record.
+            cand = changed_pairs[name]
+            by_name[name] = replace(by_name[name], type=cand.type, default=cand.default)
+        elif name in report.current_defaults:
+            # An ok-matched const/envdefault whose SOURCE default moved on: resync's job
+            # is to make the stored record match the script again, and the cached default
+            # is part of that record (the run form already tracks the source either way —
+            # see Report.current_defaults).
+            by_name[name] = replace(by_name[name], default=report.current_defaults[name])
         elif name in rebind_targets:
             # The prompt no longer uniquely resolves; re-anchor to whichever call site position
             # currently supplied it, so the *next* run's plain reconcile() (no --resync) sees an
@@ -343,6 +363,40 @@ def _apply_tweaks(
             by_name[name].prompt = prompt
         else:
             warnings.append(f"not-managed:{name}")
+
+
+def _record_default(report: Report, spec: ParamDecl, cand: Candidate) -> None:
+    """Publish the source's current literal as this spec's default — the one rule both
+    matched lanes share. It travels only when it MAY (see _recordable_default) and when
+    the DECLARED type can actually hold it.
+
+    Fitness is coercibility, not type equality: the analyzers type a literal by its
+    shape, so a `str` param defaulting to `8080` reads back as an int candidate and must
+    still refresh (its value is text either way). What must not pass is a default the
+    declared type cannot represent — an env param stays ok through a type change (the
+    value arrives by environment regardless), so `PORT=${PORT:-$FALLBACK}` on an int
+    param would otherwise prefill text that fails the form's own validation and hand
+    resync that text to write onto an int spec."""
+    default = _recordable_default(spec, cand)
+    if default is None:
+        return
+    try:
+        coerce_default(str(default), spec.type)
+    except ValueError:
+        return
+    report.current_defaults[spec.name] = default
+
+
+def _recordable_default(spec: ParamDecl, cand: Candidate) -> str | int | float | bool | None:
+    """The source literal this match may publish as the spec's current default, or None
+    when it may not.
+
+    A SECRET is the one hard exclusion (C3): its literal is exactly the thing that must
+    not travel. current_defaults feeds `params --json`, `show --json` and the settings
+    pane — machine-facing surfaces with no masking of their own — so a hardcoded
+    `TOKEN = "sk-live-…"` would leave the script's own text for the first time. The
+    secret's stored block default (if any) still describes it, masked, exactly as before."""
+    return None if spec.secret else cand.default
 
 
 def _type_matches(spec: ParamDecl, cand: Candidate) -> bool:
@@ -402,6 +456,7 @@ def reconcile(  # noqa: PLR0912 — one branch per binding and drift category; a
             else:
                 covered_envs.add(spec.name)
                 report.ok.append(spec)  # default-text/type changes stay ok (env delivery)
+                _record_default(report, spec, cand)
             continue
         cand = consts.get(spec.name)
         if cand is None:
@@ -412,6 +467,7 @@ def reconcile(  # noqa: PLR0912 — one branch per binding and drift category; a
         else:
             covered_consts.add(spec.name)
             report.ok.append(spec)
+            _record_default(report, spec, cand)
 
     for cand in analysis.candidates:
         if (

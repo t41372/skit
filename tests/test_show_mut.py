@@ -131,6 +131,8 @@ def test_show_inject_secret_output_exact(tmp_path):
         "┡━━━━━━━━━━━╇━━━━━━╇━━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━┩\n"
         "│ KEY       │ str  │ —        │ •••     │ —       │ yes ← $API_KEY │ —           │\n"
         "│ CITY      │ str  │ —        │ Taipei  │ —       │ —              │ Which city? │\n"
+        # TOKEN declares no block default and its source literal is never published as
+        # one (a secret's value must not leave the script's text — C3), so: "—".
         "│ TOKEN     │ str  │ —        │ —       │ —       │ yes            │ —           │\n"
         "└───────────┴──────┴──────────┴─────────┴─────────┴────────────────┴─────────────┘\n"
         "  Run it: skit run api\n"

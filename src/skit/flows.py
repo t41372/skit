@@ -15,11 +15,16 @@ line prompts or an inline mini-form — one logic, N renderings. Rules implement
 here:
 
 - Prefill: definition default < last-used < preset (this run's input wins in the UI).
+  A definition default is the SOURCE's current value for in-file params
+  (Report.current_defaults), never the block's manage-time cache.
 - Values persist as TYPED TEXT (token/glob originals) — intent, not expansion.
 - Tokens expand and globs re-expand at assembly time, every run.
 - Explicit-pass: a filled field is always passed (reproducibility); checkboxes pass
   their flag only when they differ from the script's default; degraded fields are
-  omitted when empty so the script's own default applies.
+  omitted when empty so the script's own default applies. A delivers-empty field
+  (FormField.delivers_empty: free-text with a known default) is WYSIWYG — cleared
+  means an empty string is delivered, because the default is expressed by being IN
+  the field, and '' is a value a user may genuinely mean.
 - Secrets: never prefilled, never saved (argstate enforces C3 structurally); an
   env_source reads the value from the environment at assembly, and a missing
   variable is a hard, named error — never a silently empty value.
@@ -85,6 +90,31 @@ class FormField:
     flag: str = ""  # "--output"; "" = positional (flag source only)
     action: str = ""  # store_true | store_false (bool flags)
     env_target: str = ""  # env source only: the variable to SET ("" = the field's key)
+    input_binding: bool = False  # inject source: an intercepted input()/read prompt
+
+    @property
+    def delivers_empty(self) -> bool:
+        """Whether clearing this field sends an EMPTY STRING instead of "leave the
+        script alone". WYSIWYG applies exactly where it is sound: a free-text (str/path)
+        field whose default is known is prefilled with that default, so "use the
+        default" is expressed by the default being IN the field — clearing it is a
+        deliberate act that must deliver '' (an empty string is a legitimate value, and
+        collapsing it into "unset" made it inexpressible). Everywhere else empty keeps
+        meaning "unset": int/float ('' is never a value there, and empty is the only
+        spelling of unset), bool/choice (the widget always holds a definite state),
+        secrets (empty falls back to the env source), multi-value fields (empty = no
+        pieces), degraded/defaultless fields (the script's own behavior is the only
+        honest fallback), and input bindings (empty = let the script ask). Placeholder
+        delivery is not listed because it has always substituted the field verbatim."""
+        return (
+            self.has_default
+            and not self.secret
+            and not self.degraded
+            and not self.multiple
+            and not self.input_binding
+            and self.kind in ("str", "path")
+            and self.source in ("inject", "flag", "env")
+        )
 
     @classmethod
     def from_decl(cls, d: ParamDecl) -> FormField:
@@ -104,6 +134,7 @@ class FormField:
                 has_default=d.default is not None,
                 secret=d.secret,
                 env_source=d.env_source,
+                input_binding=d.binding == "input",
             )
         if d.delivery == "flag":
             # Reflected from the script's own CLI parser: assembled into real argv. A degraded
@@ -373,6 +404,7 @@ def plan_for_entry(entry: Entry) -> FormPlan:  # noqa: PLR0911 — one return pe
         report = lang.analyzer.reconcile(text, specs)
         drift = list(analysis.drift_lines(report, entry.meta.name)) if report.has_drift else []
         fields = [FormField.from_decl(s) for s in report.usable]
+        _refresh_defaults(fields, report.current_defaults)
         # MERGE: declared [[parameters]] flag/env rows ride along after the analyzer's in-file
         # params (a shell/python entry may hand-declare an env or flag channel the analyzer can't
         # see). Names already fielded from the in-file block win — no duplicate rows. For the
@@ -407,6 +439,25 @@ def _render_default(value: str | int | float | bool) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value)
+
+
+def _refresh_defaults(
+    fields: list[FormField], current: Mapping[str, str | int | float | bool]
+) -> None:
+    """Refresh each field's default from the SOURCE (Report.current_defaults): the
+    block's manage-time cache must never beat the script — a user who edits
+    `X = "hello"` to `"bonjour"` must see bonjour prefilled, where the stale cache used
+    to be silently re-injected over exactly that edit.
+
+    A field with NO recorded default is left alone rather than given one. "The block
+    claims a default" and "the script happens to assign a literal" are different facts:
+    the first is a value skit promised to manage, the second is just the script's own
+    text, which it already runs with. Inventing a default there would prefill a value
+    that then gets injected into a temp copy on every run — spending a rewrite (and
+    `__file__` / `$0`) to tell the script what it already says."""
+    for f in fields:
+        if f.has_default and f.key in current:
+            f.default = _render_default(current[f.key])
 
 
 # --------------------------------------------------------------------------
@@ -527,13 +578,14 @@ def assemble(
         # test_assemble_degraded_empty_omitted_filled_passed (a missing field must not inject).
         raw = values.get(f.key, "")  # pragma: no mutate
         value = _final_value(f, raw, cwd=cwd, env=env, now=now)
-        if value and f.source == "inject":
+        if f.source == "inject" and (value or f.delivers_empty):
             # ONLY inject-delivered values belong under the "→ inject:" transparency
             # line (its caveat is the temporary-copy rewrite); env values already
             # render as a VAR=value prefix and flag/placeholder values appear in the
             # command line itself — listing them here claimed a delivery that never
-            # happens.
-            display.append((f.key, "•••" if f.secret else value))
+            # happens. A delivered empty string shows as '' — a blank after the = would
+            # read as nothing being delivered, which is the opposite of the truth.
+            display.append((f.key, "•••" if f.secret else (value or "''")))
         final[f.key] = value
     # expand_extra=False: the CLI's `-- args` already went through the user's shell —
     # a second token/glob pass would rewrite what they deliberately quoted (and --raw
@@ -555,7 +607,9 @@ def assemble(
     # placeholders + env params on a command template). final[f.key] is always present
     # (the loop above wrote every field's key).
     out.inject_values = {
-        f.key: final[f.key] for f in plan.fields if f.source == "inject" and final[f.key]
+        f.key: final[f.key]
+        for f in plan.fields
+        if f.source == "inject" and (final[f.key] or f.delivers_empty)
     }
     if any(f.source == "flag" for f in plan.fields):
         out.args = _assemble_flags(plan, final, cwd) + expanded_extra
@@ -577,8 +631,13 @@ def assemble(
             for f in placeholder_fields
         }
     # Empty env fields are ABSENT (not set to ""): leaving the variable unset is what
-    # lets the script's own default fire; an empty-string export would shadow it.
-    env_fields = [f for f in plan.fields if f.source == "env" and final[f.key]]
+    # lets the script's own default fire; an empty-string export would shadow it. The
+    # exception is a delivers-empty field, where a cleared value IS the export — a
+    # ${NAME:-default} script still falls back (shell's own ':-' semantics treat null
+    # as unset), while a ${NAME-default} script genuinely receives the empty string.
+    env_fields = [
+        f for f in plan.fields if f.source == "env" and (final[f.key] or f.delivers_empty)
+    ]
     out.env_values = {(f.env_target or f.key): final[f.key] for f in env_fields}
     out.masked_env = {
         (f.env_target or f.key): ("•••" if f.secret else final[f.key]) for f in env_fields
@@ -648,7 +707,7 @@ def _assemble_flags(plan: FormPlan, final: Mapping[str, str], cwd: Path) -> list
             if (f.action == "store_true" and fired) or (f.action == "store_false" and not fired):
                 flags.append(f.flag)
             continue
-        if not value:
+        if not value and not f.delivers_empty:
             continue  # optional/degraded left empty: the script's own default applies
         pieces = _split_multi(value, cwd) if f.multiple else [value]
         if f.flag == "":
@@ -696,6 +755,27 @@ _coerce_bool_lenient = truthy  # internal name kept for the assembly call sites
 # --------------------------------------------------------------------------
 
 
+def remembered_values(plan: FormPlan, values: Mapping[str, str]) -> dict[str, str]:
+    """What LAST-USED stores: the values that differ from their definition default,
+    empties dropped (an empty means "unset" — storing it would shadow a later
+    definition default) except on a delivers-empty field, where a cleared value was
+    genuinely delivered as '' and must replay as one.
+
+    Accepting a default is not a choice: remembering it would freeze today's default
+    and hide tomorrow's, which is the exact staleness this change set out to kill. A
+    preset is the deliberate, named way to pin one — presets store the run's values
+    verbatim, which is why only this last-used lane filters."""
+    by_key = {f.key: f for f in plan.fields}
+    out: dict[str, str] = {}
+    for k, v in values.items():
+        f = by_key.get(k)
+        if f is not None and f.has_default and v == f.default:
+            continue
+        if v or (f is not None and f.delivers_empty):
+            out[k] = v
+    return out
+
+
 def save_after_run(
     slug: str,
     plan: FormPlan,
@@ -713,7 +793,7 @@ def save_after_run(
         argstate.purge_secret(slug, plan.secret_names)
     argstate.save_last(
         slug,
-        values={k: v for k, v in values.items() if v},
+        values=remembered_values(plan, values),
         extra_args=list(extra_args),
         secret_names=plan.secret_names,
     )

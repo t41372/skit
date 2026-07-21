@@ -2334,6 +2334,10 @@ def _field_to_dict(f: flows.FormField) -> dict[str, object]:
         "flag": f.flag,
         "action": f.action,
         "env_source": f.env_source,
+        # True = clearing this field (or --set NAME=) delivers an EMPTY STRING; false =
+        # an empty value means "unset — the script's own default applies". Additive key
+        # so an agent can tell the two apart before assembling a run.
+        "delivers_empty": f.delivers_empty,
     }
 
 
@@ -3132,7 +3136,10 @@ def run(
         argstate.save_preset(
             entry.slug,
             save_preset,
-            {k: v for k, v in values.items() if v},
+            # A preset is the exact snapshot of this run — a cleared field included, so
+            # it pins "stays cleared" over whatever last-used remembers (secrets are
+            # stripped structurally by argstate).
+            values,
             secret_names=plan.secret_names,
         )
         # stderr, like every run-adjacent skit line ("Reusing your last arguments",
@@ -3536,15 +3543,20 @@ def preset_save(
             EXIT_USAGE,
         )
     if from_last:
-        last = argstate.load_state(entry.slug)["values"]
-        keys = {f.key for f in plan.fields}
-        values = {k: v for k, v in last.items() if k in keys}
-        if not values:
+        # The EFFECTIVE values of the last run (definition default < last-used), not the
+        # raw [values] table: last-used deliberately stores only what differed from the
+        # defaults (flows.remembered_values), so a run that accepted every default leaves
+        # that table empty — reading it directly refused to save a perfectly good preset.
+        # The honest gate is "has this entry anything to remember at all", which is what
+        # the message already says; either half of the state answers it.
+        state = argstate.load_state(entry.slug)
+        if not state["last_run"] and not state["values"]:
             raise _fail(
                 gettext("%(name)s has no remembered values yet — run it once first.")
                 % {"name": entry.meta.name},
                 1,
             )
+        values = flows.prefill(plan, entry.slug)
     elif _is_interactive():
         values = promptform.collect(plan, flows.prefill(plan, entry.slug), console=console)
     else:
@@ -3558,7 +3570,14 @@ def preset_save(
             % {"names": ", ".join(escape(n) for n in sorted(secret_overlap))}
             + _DIM_CLOSE
         )
-    argstate.save_preset(entry.slug, preset_name, values, secret_names=plan.secret_names)
+    argstate.save_preset(
+        entry.slug,
+        preset_name,
+        # The exact snapshot, cleared fields included — one rule for every preset
+        # writer (the run form's Ctrl+S and `run --save-preset` store the same way).
+        values,
+        secret_names=plan.secret_names,
+    )
     console.print(
         f"[green]{gettext('Preset "%(preset)s" saved for %(name)s.') % {'preset': escape(preset_name), 'name': escape(entry.meta.name)}}[/green]"
     )
@@ -3787,6 +3806,7 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
     # vanished analyzable script must not invent either signal (test_cli_mut_part06 pins it).
     self_locating, reader_driven = False, False
     ref_mode = entry.meta.mode == "reference"
+    current_defaults: dict[str, str | int | float | bool] = {}
     if entry_spec is not None and entry_spec.analyzer is not None:  # noqa: SIM102
         # Keep the text gate nested instead of pragma-suppressing a three-way BooleanOperation:
         # changing ``and text`` to ``or text`` is equivalent under the registry invariant, but a
@@ -3797,6 +3817,9 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
             # only the WRITE ops differ, and the advice below switches voice on that).
             report = entry_spec.analyzer.reconcile(text, specs)
             an = entry_spec.analyzer.analyze(text)
+            # The Default column shows the SOURCE's current value, exactly like the run
+            # form's prefill — two surfaces reading one record must not disagree.
+            current_defaults = report.current_defaults
             # A MODELED reader form (flows.reader_fields — the one trap predicate every
             # surface shares) is the entry's real interface: plan_for_entry prefers managed
             # params, so a --manage advice here would sell REPLACING that form. Self-parsing
@@ -3822,6 +3845,10 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
     if as_json:
         payload = {
             "params": [s.to_block_dict() for s in specs],
+            # The SOURCE's current default per managed name (additive key). "params"
+            # stays the verbatim stored record — an agent that wants the value a run
+            # would actually prefill reads it here, same truth as the human table.
+            "current_defaults": current_defaults,
             "unmanaged": unmanaged,
             "placeholders": entry.meta.params or [],
             "declared": [d.to_meta_dict() for d in declared],
@@ -3887,10 +3914,11 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
                 last_shown = gettext("•••") if s.name in last else "—"
             else:
                 last_shown = last.get(s.name, "—")
+            effective_default = current_defaults.get(s.name, s.default)
             default_shown = (
                 gettext("•••")
-                if s.secret and s.default is not None
-                else ("—" if s.default is None else str(s.default))
+                if s.secret and effective_default is not None
+                else ("—" if effective_default is None else str(effective_default))
             )
             table.add_row(
                 escape(s.name),

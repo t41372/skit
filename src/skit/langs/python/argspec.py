@@ -5,9 +5,11 @@ scripts that parse their own CLI don't get injection — skit reads their argume
 declarations statically and renders the same form, then assembles real flags.
 
 Honesty rules (mirrors the analyzer's A4/C4 stance — never execute the user's script):
-- Only LITERAL arguments to add_argument are trusted. A field whose type/choices/default
-  can't be read statically degrades to a free-text field that is omitted when left empty
-  (the script's own default then applies).
+- Only LITERAL arguments to add_argument are trusted — plus one sound extension: a
+  default that names a top-level literal constant (`default=DEFAULT_DOMAIN`) resolves
+  through the analyzer's own constant harvest (see _constant_env). A field whose
+  type/choices/default can't be read statically degrades to a free-text field that is
+  omitted when left empty (the script's own default then applies).
 - A parser that can't be modeled at all — add_subparsers, add_argument inside a loop —
   degrades the whole spec: the form keeps only the passthrough-args escape field, and the
   UI says so instead of pretending.
@@ -21,7 +23,65 @@ import ast
 from dataclasses import dataclass, field
 
 from ...params import ParamDecl, ParamType, is_secret_name
-from .analyzer import _literal_value
+from .analyzer import _const_candidates, _literal_value
+
+# A default that references a module constant by NAME (`default=DEFAULT_DOMAIN`) is as
+# statically knowable as the literal itself — but ONLY when the name provably holds that
+# literal at the call, which is what keeps this inside the A4/C4 honesty bar. Two rules
+# enforce it, and a name that fails either degrades exactly as it did before this reader
+# resolved names at all (free-text, omitted when empty, the script's own default applies):
+#
+# - **Bound exactly once, module-wide.** `_const_candidates` reads top-level literal
+#   assignments, but a name can be rebound in an `if`/`try`/`with` body, inside a
+#   function, or shadowed by a parameter — none of which is a top-level statement, so
+#   none is visible there. Counting every binding of the name in the whole module (any
+#   Store context, plus parameters) and requiring exactly one means the harvested
+#   top-level literal IS the only binding. It also subsumes the accumulator rule and
+#   the order problem: `C = 1` … `C = 2` binds twice, so it never resolves at all
+#   rather than guessing which assignment the parser call sits between.
+# - **Never a secret.** A hardcoded `API_KEY = "sk-live-…"` resolved into a plain field
+#   default would be prefilled, printed by `show --json`, and written into preset TOML —
+#   the literal leaving the script's own text for the first time (C3). The field
+#   degrades instead, exactly as before.
+ConstEnv = dict[str, str | int | float | bool]
+
+
+def _bound_names(tree: ast.Module) -> dict[str, int]:
+    """How many times each name is BOUND anywhere in the module — every Store-context
+    Name (assignment, annotated/augmented assignment, `for` target, `with … as`, walrus,
+    comprehension target, unpacking) plus every function parameter."""
+    counts: dict[str, int] = {}
+    for node in ast.walk(tree):
+        name = ""
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            name = node.id
+        elif isinstance(node, ast.arg):
+            name = node.arg
+        if name:
+            counts[name] = counts.get(name, 0) + 1
+    return counts
+
+
+def _constant_env(tree: ast.Module) -> ConstEnv:
+    counts = _bound_names(tree)
+    return {
+        c.name: c.default
+        for c in _const_candidates(tree.body)
+        if c.default is not None and not c.secret and counts.get(c.name) == 1
+    }
+
+
+def _resolve_literal(node: ast.expr, env: ConstEnv) -> tuple[bool, str | int | float | bool | None]:
+    """`_literal_value`, extended with the constant environment: a bare Name that refers
+    to a top-level literal constant resolves exactly as if the literal were written
+    inline. Returns (ok, value)."""
+    ok, value = _literal_value(node)
+    if ok:
+        return True, value
+    if isinstance(node, ast.Name) and node.id in env:
+        return True, env[node.id]
+    return False, None
+
 
 # Actions that add no form field at all (argparse handles them internally).
 _NON_FIELD_ACTIONS = ("help", "version")
@@ -85,9 +145,10 @@ def read_argparse(text: str) -> ArgSpec | None:
         return ArgSpec(ok=False, reason="subparsers")
     if _any_call_inside_loop(tree):
         return ArgSpec(ok=False, reason="dynamic")
+    env = _constant_env(tree)
     fields: list[ParamDecl] = []
     for call in sorted(calls, key=lambda c: (c.lineno, c.col_offset)):
-        f = _read_call(call)
+        f = _read_call(call, env)
         if f is not None:
             fields.append(f)
     return ArgSpec(fields=fields)
@@ -107,7 +168,7 @@ def _any_call_inside_loop(tree: ast.Module) -> bool:
     return False
 
 
-def _read_call(call: ast.Call) -> ParamDecl | None:
+def _read_call(call: ast.Call, env: ConstEnv) -> ParamDecl | None:
     """One add_argument call -> ParamDecl, or None for non-field actions (--help/--version)."""
     names = [a.value for a in call.args if isinstance(a, ast.Constant) and isinstance(a.value, str)]
     if not names or len(names) != len(call.args):
@@ -148,11 +209,11 @@ def _read_call(call: ast.Call) -> ParamDecl | None:
         # append / count / extend / custom Action classes: real but unmodelable — degrade.
         f.degraded = True
     else:
-        _apply_value_kwargs(f, kwargs)
+        _apply_value_kwargs(f, kwargs, env)
     return f
 
 
-def _apply_value_kwargs(f: ParamDecl, kwargs: dict[str, ast.expr]) -> None:
+def _apply_value_kwargs(f: ParamDecl, kwargs: dict[str, ast.expr], env: ConstEnv) -> None:
     """Fill type/choices/default from literal kwargs; degrade the field on anything opaque."""
     if "choices" in kwargs:
         choices = _literal_str_list(kwargs["choices"])
@@ -166,7 +227,7 @@ def _apply_value_kwargs(f: ParamDecl, kwargs: dict[str, ast.expr]) -> None:
         f.degraded = True
         return
     if "default" in kwargs:
-        ok, value = _literal_value(kwargs["default"])
+        ok, value = _resolve_literal(kwargs["default"], env)
         if ok:
             f.default = value
         elif not (isinstance(kwargs["default"], ast.Constant) and kwargs["default"].value is None):
@@ -251,6 +312,7 @@ def _read_click(tree: ast.Module) -> ArgSpec | None:
         return None
     if has_group or len(commands) > 1:
         return ArgSpec(ok=False, reason="subparsers")
+    env = _constant_env(tree)
     fields: list[ParamDecl] = []
     for deco in reversed(commands[0].decorator_list):
         call = _decorator_call(deco)
@@ -259,7 +321,7 @@ def _read_click(tree: ast.Module) -> ArgSpec | None:
         kind = _decorator_name(deco)
         if kind not in ("option", "argument"):
             continue
-        f = _read_click_param(call, positional=(kind == "argument"))
+        f = _read_click_param(call, positional=(kind == "argument"), env=env)
         if f is not None:
             fields.append(f)
     return ArgSpec(fields=fields)
@@ -269,7 +331,7 @@ def _is_true_kwarg(node: ast.expr | None) -> bool:
     return isinstance(node, ast.Constant) and node.value is True
 
 
-def _read_click_param(call: ast.Call, positional: bool) -> ParamDecl | None:
+def _read_click_param(call: ast.Call, positional: bool, env: ConstEnv) -> ParamDecl | None:
     names = [a.value for a in call.args if isinstance(a, ast.Constant) and isinstance(a.value, str)]
     if not names or len(names) != len(call.args):
         return None
@@ -303,7 +365,7 @@ def _read_click_param(call: ast.Call, positional: bool) -> ParamDecl | None:
         f.degraded = True
         return f
     if "default" in kwargs:
-        ok, value = _literal_value(kwargs["default"])
+        ok, value = _resolve_literal(kwargs["default"], env)
         if ok:
             f.default = value
         elif not (isinstance(kwargs["default"], ast.Constant) and kwargs["default"].value is None):
@@ -395,6 +457,7 @@ def _read_typer(tree: ast.Module) -> ArgSpec | None:
         return None
     if len(commands) > 1:
         return ArgSpec(ok=False, reason="subparsers")
+    env = _constant_env(tree)
     fn = commands[0]
     args = fn.args.args + fn.args.kwonlyargs
     defaults: list[ast.expr | None] = list(fn.args.defaults) + list(fn.args.kw_defaults)
@@ -405,7 +468,7 @@ def _read_typer(tree: ast.Module) -> ArgSpec | None:
     # len(aligned) == len(args) by construction: pad + positional defaults covers
     # args.args, and kw_defaults is exactly one entry per kwonly arg (None when absent).
     for i, arg in enumerate(args):
-        fields.append(_read_typer_param(arg, aligned[i]))
+        fields.append(_read_typer_param(arg, aligned[i], env))
     return ArgSpec(fields=fields)
 
 
@@ -437,7 +500,7 @@ def _annotated_parts(annotation: ast.expr | None) -> tuple[ast.expr | None, ast.
     return base, meta
 
 
-def _read_typer_param(arg: ast.arg, default: ast.expr | None) -> ParamDecl:
+def _read_typer_param(arg: ast.arg, default: ast.expr | None, env: ConstEnv) -> ParamDecl:
     name = arg.arg
     annotation, annotated_meta = _annotated_parts(arg.annotation)
     looked_up = _ANNOTATION_KINDS.get(annotation.id) if isinstance(annotation, ast.Name) else None
@@ -456,8 +519,8 @@ def _read_typer_param(arg: ast.arg, default: ast.expr | None) -> ParamDecl:
         # pragma: has_positional_default=False vs None is equivalent (both falsy in every
         # branch of _apply_typer_meta); the killable True variant is behaviorally pinned by
         # test_annotated_option_positional_decl_is_a_flag_not_a_default.
-        _apply_typer_meta(f, annotated_meta, has_positional_default=False)  # pragma: no mutate
-        _apply_typer_signature_default(f, default)
+        _apply_typer_meta(f, annotated_meta, env, has_positional_default=False)  # pragma: no mutate
+        _apply_typer_signature_default(f, default, env)
         return _typer_finish_bool(f)
     if default is None:
         # No default: a positional, required argument (typer's own rule).
@@ -467,13 +530,15 @@ def _read_typer_param(arg: ast.arg, default: ast.expr | None) -> ParamDecl:
     if isinstance(default, ast.Call) and _decorator_name(default) in ("Option", "Argument"):
         # Legacy style: the Option/Argument call IS the parameter default, and its first
         # positional is the value default (ellipsis = required).
-        _apply_typer_meta(f, default, has_positional_default=True)
+        _apply_typer_meta(f, default, env, has_positional_default=True)
         return _typer_finish_bool(f)
-    _apply_typer_signature_default(f, default)
+    _apply_typer_signature_default(f, default, env)
     return _typer_finish_bool(f)
 
 
-def _apply_typer_meta(f: ParamDecl, call: ast.Call, *, has_positional_default: bool) -> None:
+def _apply_typer_meta(
+    f: ParamDecl, call: ast.Call, env: ConstEnv, *, has_positional_default: bool
+) -> None:
     """Read flag/help (and, in the legacy style, the value default) from a typer
     Option/Argument call. In the Annotated style the call carries no positional default,
     so every string positional is a flag declaration."""
@@ -491,20 +556,20 @@ def _apply_typer_meta(f: ParamDecl, call: ast.Call, *, has_positional_default: b
         if isinstance(first, ast.Constant) and first.value is ...:
             f.required = True
         else:
-            ok, value = _literal_value(first)
+            ok, value = _resolve_literal(first, env)
             if ok:
                 f.default = value
             elif not (isinstance(first, ast.Constant) and first.value is None):
                 f.degraded = True
 
 
-def _apply_typer_signature_default(f: ParamDecl, default: ast.expr | None) -> None:
+def _apply_typer_signature_default(f: ParamDecl, default: ast.expr | None, env: ConstEnv) -> None:
     """Apply the parameter's own `= value` default (the Annotated style keeps it there,
     and a bare `x: int = 5` too). None means required."""
     if default is None:
         f.required = True
         return
-    ok, value = _literal_value(default)
+    ok, value = _resolve_literal(default, env)
     if ok:
         f.default = value
     else:
