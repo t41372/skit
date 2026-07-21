@@ -424,6 +424,37 @@ def test_js_function_parameter_shadow_does_not_resolve():
     assert f.default is None
 
 
+def test_js_constant_read_as_a_parameter_default_still_resolves():
+    # `function main(a = HOST)` BINDS `a` and merely READS HOST. Counting that read as a
+    # declaration would make the constant look bound twice and refuse to fold a value
+    # that is provably still the one literal — a false negative that would quietly
+    # degrade fields as soon as a script used its own constant as a parameter default.
+    spec = cli_reader.read_cli(
+        'const HOST = "localhost";\n'
+        "function main(a = HOST) { return a; }\n"
+        'parseArgs({options:{host:{type:"string", default: HOST}}});\n'
+    )
+    assert spec is not None
+    f = spec.fields[0]
+    assert f.default == "localhost"
+    assert f.degraded is False
+
+
+def test_js_parameter_with_a_default_still_shadows_by_its_bound_name():
+    # The other half of the same branch: in `function main(HOST = "x")` the LEFT of the
+    # default IS the bound name, so it shadows the top-level const and blocks folding.
+    spec = cli_reader.read_cli(
+        'const HOST = "localhost";\n'
+        'function main(HOST = "inner.example.com") {\n'
+        '  parseArgs({options:{host:{type:"string", default: HOST}}});\n'
+        "}\nmain();\n"
+    )
+    assert spec is not None
+    f = spec.fields[0]
+    assert f.degraded is True
+    assert f.default is None
+
+
 def test_ts_typed_function_parameter_shadow_does_not_resolve():
     # The TypeScript grammar wraps a parameter in a required_parameter pattern rather than
     # exposing a bare identifier, so the parameter walk has to reach INSIDE it — the typed

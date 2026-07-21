@@ -80,21 +80,22 @@ class ParamRow(Vertical):
     """
 
     def __init__(
-        self, spec: ParamDecl, current_default: str | int | float | bool | None = None
+        self, spec: ParamDecl, shown_default: str | int | float | bool | None = None
     ) -> None:
         super().__init__()
         self.spec: ParamDecl = spec
-        # Display-only: the SOURCE's current default (Report.current_defaults), so this
-        # pane can't disagree with `skit params` / the run form about one record. The
-        # spec itself stays unmutated — saving the screen must not silently rewrite the
-        # block's cached default (that write belongs to --resync).
-        self._current_default: str | int | float | bool | None = current_default
+        # Display-only, and already resolved by the caller through
+        # analysis.effective_default — the one place that "source's live literal, else
+        # the stored block value" rule lives, so this pane cannot disagree with
+        # `skit params` about one record. The spec itself stays unmutated: saving the
+        # screen must not silently rewrite the block's cached default (--resync owns
+        # that write).
+        self._shown_default: str | int | float | bool | None = shown_default
 
     @override
     def compose(self) -> ComposeResult:
         s = self.spec
-        shown = self._current_default if self._current_default is not None else s.default
-        default = "" if shown is None else repr(shown)
+        default = "" if self._shown_default is None else repr(self._shown_default)
         yield Checkbox(f"{escape(s.name)}  [dim]{s.type} {escape(default)}[/dim]", value=True)
         with Horizontal():
             yield Static("  " + gettext("Form label:"), classes="p-meta")
@@ -587,7 +588,7 @@ class ScriptSettingsScreen(Screen[bool]):
         report = self._reconcile()
         current = report.current_defaults if report is not None else {}
         for s in self._specs:
-            yield ParamRow(s, current_default=current.get(s.name))
+            yield ParamRow(s, shown_default=analysis.effective_default(s, current))
         if self._cli_driven():
             # This script's form already comes from its own argparse/click/typer surface.
             # Managing a hardcoded constant would write a [tool.skit] block that shadows

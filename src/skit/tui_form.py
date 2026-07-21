@@ -738,9 +738,10 @@ class RunFormScreen(Screen[FormResult]):
     def _apply_preset(self, event: Select.Changed) -> None:
         """Dropdown switch: overlay the whole preset onto the fields ("last values"
         restores). Value-keyed, so a preset list that changed since compose can never
-        shift the mapping. Suppressed during the post-save picker refresh — reapplying
-        the just-saved preset would resurrect values the user explicitly cleared
-        (empty values are never stored in a preset, so they'd fall back to prefill)."""
+        shift the mapping. Suppressed during the post-save picker refresh: the fields
+        already hold exactly what the user typed, and re-running the overlay would
+        churn them for nothing. (A preset stores cleared fields as explicit empties, so
+        re-picking one later restores the cleared state rather than the prefill.)"""
         name = str(event.value)
         if self._skip_apply_until is not None:
             if name == self._skip_apply_until:

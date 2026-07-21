@@ -28,7 +28,7 @@ from .callmatch import match_calls
 from .params import ParamDecl, coerce_default
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
 
 @dataclass
@@ -115,6 +115,18 @@ class Report:
         warning, rebind is only a positional-fallback warning -- both still inject, just flagged,
         per 3a: no silent drop, no silent wrong-value swap either)."""
         return self.ok + [spec for spec, _ in self.changed] + [spec for spec, _ in self.rebind]
+
+
+def effective_default(
+    spec: ParamDecl, current: Mapping[str, str | int | float | bool]
+) -> str | int | float | bool | None:
+    """The default a READ surface should show for a managed spec: the source's current
+    literal when reconcile published one (Report.current_defaults), else the stored
+    block value. THE one place that rule lives — `skit params`, `params --json` and the
+    Entry-settings pane all show the same record, and the comments on each of them
+    promise they cannot disagree; two hand-rolled copies of a fallback is exactly how
+    that promise rots."""
+    return current.get(spec.name, spec.default)
 
 
 def drift_lines(report: Report, name: str) -> list[str]:
@@ -300,9 +312,18 @@ def _apply_resync(
             # swapping in a fresh copy is the same visible effect as mutating in place.
             # The default rides along with the type: once the spec is retyped to the
             # source's current shape, keeping the old-typed default would leave stale
-            # junk (an int 3 on a now-str constant) in the refreshed record.
+            # junk (an int 3 on a now-str constant) in the refreshed record. It rides
+            # through the SAME secret gate the ok lane uses (_recordable_default): a
+            # secret's literal must not be written into the block, from where
+            # to_block_dict would publish it to `params --json` / `show --json`. A
+            # retyped secret therefore comes out with no default at all — honest, and
+            # the only leak-free answer once its old default no longer fits the type.
             cand = changed_pairs[name]
-            by_name[name] = replace(by_name[name], type=cand.type, default=cand.default)
+            by_name[name] = replace(
+                by_name[name],
+                type=cand.type,
+                default=_recordable_default(by_name[name], cand),
+            )
         elif name in report.current_defaults:
             # An ok-matched const/envdefault whose SOURCE default moved on: resync's job
             # is to make the stored record match the script again, and the cached default

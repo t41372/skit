@@ -3914,11 +3914,11 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
                 last_shown = gettext("•••") if s.name in last else "—"
             else:
                 last_shown = last.get(s.name, "—")
-            effective_default = current_defaults.get(s.name, s.default)
+            shown_default = analysis.effective_default(s, current_defaults)
             default_shown = (
                 gettext("•••")
-                if s.secret and effective_default is not None
-                else ("—" if effective_default is None else str(effective_default))
+                if s.secret and shown_default is not None
+                else ("—" if shown_default is None else str(shown_default))
             )
             table.add_row(
                 escape(s.name),

@@ -57,7 +57,8 @@ ConstEnv = dict[str, str | int | float | bool]
 
 def _declared_names(root: Node) -> dict[str, int]:
     """How many times each name is DECLARED anywhere in the file: the `name` identifier
-    of every `variable_declarator` at any depth, plus every function parameter."""
+    of every `variable_declarator` at any depth, plus every name a function parameter
+    BINDS."""
     counts: dict[str, int] = {}
 
     def _bump(node: Node | None) -> None:
@@ -65,14 +66,34 @@ def _declared_names(root: Node) -> dict[str, int]:
             text = _text(node)
             counts[text] = counts.get(text, 0) + 1
 
+    def _bump_bound(node: Node) -> None:
+        """Only the names a parameter binds — a plain identifier, the target of a
+        destructuring pattern, or the LEFT of a default. `function f(a = HOST)` binds
+        `a` and merely READS HOST; counting the read too would make the HOST constant
+        look declared twice and needlessly refuse to fold it. TS type annotations are a
+        separate namespace and bind no value name."""
+        kind = node.type
+        if kind == "identifier":
+            _bump(node)
+            return
+        if kind == "type_annotation":
+            return
+        if kind == "assignment_pattern":
+            left = node.child_by_field_name("left")
+            if left is not None:  # pragma: no branch — an assignment_pattern always has a left
+                _bump_bound(left)
+            return
+        for child in node.named_children:
+            _bump_bound(child)
+
     for node in _walk(root):
         if node.type == "variable_declarator":
             _bump(node.child_by_field_name("name"))
         elif node.type == "formal_parameters":
-            for sub in _walk(node):
-                # A parameter is an identifier itself (JS) or wraps one in a
-                # required/optional_parameter pattern (TS) — the walk reaches both.
-                _bump(sub)
+            # A parameter is an identifier itself (JS) or wraps one in a
+            # required/optional_parameter pattern (TS) — the walk reaches both.
+            for sub in node.named_children:
+                _bump_bound(sub)
     return counts
 
 
