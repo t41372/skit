@@ -711,25 +711,24 @@ async def test_insert_picked_escapes_glob_metacharacters(tmp_path):
     """A picked file whose real name holds a glob metacharacter must reach the run as that ONE
     file. Both parsed shapes re-expand globs at assembly (flows._split_multi for `multiple`, the
     extra-args lane for the argv row) and quoting alone doesn't suppress it — insert_picked
-    glob-escapes the pick so the piece matches only its own literal self. Without the escape,
-    picking `data*.csv` would sweep in every data*.csv sibling in the run cwd."""
-    if sys.platform == "win32":
-        pytest.skip("'*' is not a legal filename character on Windows")
-    for name in ("data1.csv", "data2.csv", "data*.csv"):
+    glob-escapes the pick so the piece matches only its own literal self. `[` is a legal filename
+    character on every platform (unlike `*`/`?`), so this guard runs everywhere: an UNescaped
+    `data[1].csv` is a char-class matching `data1.csv`, so dropping the escape fails the assert."""
+    for name in ("data1.csv", "data2.csv", "data[1].csv"):
         (tmp_path / name).write_text("x", encoding="utf-8")
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         box = Input()
         await app.screen.mount(box)
         await pilot.pause()
-        tui_pathpick.insert_picked(box, PickedPath("data*.csv"), mode="shlex")
-        assert box.value == "'data[*].csv'"  # glob.escape wraps the * in a [*] char-class
-        # The multiple field's REAL splitter yields only the picked file — the data1/data2
-        # siblings the bare `data*.csv` glob would have swept in are gone.
-        assert flows._split_multi(box.value, tmp_path) == ["data*.csv"]
+        tui_pathpick.insert_picked(box, PickedPath("data[1].csv"), mode="shlex")
+        assert box.value == "'data[[]1].csv'"  # glob.escape wraps the [ in a [[] char-class
+        # The multiple field's REAL splitter yields only the picked file — the data1 sibling the
+        # unescaped `data[1].csv` char-class would have matched is gone.
+        assert flows._split_multi(box.value, tmp_path) == ["data[1].csv"]
         box.value = ""
-        tui_pathpick.insert_picked(box, PickedPath("data*.csv"), mode="argv")
-        assert argv_text.split(box.value)[-1] == "data[*].csv"  # same escaped literal for argv
+        tui_pathpick.insert_picked(box, PickedPath("data[1].csv"), mode="argv")
+        assert argv_text.split(box.value)[-1] == "data[[]1].csv"  # same escaped literal for argv
 
 
 async def test_secret_field_never_gets_a_suggester(tmp_path):
