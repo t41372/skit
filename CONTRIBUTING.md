@@ -115,11 +115,11 @@ translations as needing review. Keep the committed `.mo` in sync (`compile`) or 
 
 ## Demo assets (README videos & screenshots)
 
-> **Stale after the multi-language release.** The committed demo videos and screenshots predate
-> the multi-language UI copy changes and are **out of date**. Regenerate them before the next
-> release with `bash scripts/record_demo.sh` (needs Docker), then refresh the per-locale
-> references in all three READMEs. The hand-recorded `docs/assets/demo-mouse.gif` is unaffected
-> unless the screens it shows changed.
+> **Regenerate before every release.** The committed videos and screenshots are current as of
+> 0.3.0. Re-render them with `bash scripts/record_demo.sh` (needs Docker) whenever UI copy
+> changes or a locale is added — the filenames are stable, so the READMEs need no edit unless
+> the grid itself changes. The hand-recorded `docs/assets/demo-mouse.gif` is outside the
+> pipeline and goes stale silently; re-record it by hand when the screens it shows change.
 
 The README's demo videos (`docs/assets/demo-*.mp4`) and its four-screen TUI screenshot grid
 (`docs/assets/tui-*-{en,zh}.png`) are never recorded by hand — a scripted, hermetic
