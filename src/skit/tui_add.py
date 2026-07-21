@@ -13,7 +13,9 @@ twin PromptReviewScreen (insertion switch, placeholder ticks, runner pick).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from stat import S_ISREG
 from typing import override
 
 from rich.markup import escape
@@ -243,29 +245,41 @@ class AddSourceScreen(Screen[str | None]):
             yield Input(placeholder=gettext("Description (optional)"), id="add-template-desc")
             from .paths import drafts_dir
 
-            def _mtime(d: Path) -> float:
+            def _stat(d: Path) -> os.stat_result | None:
+                # ONE stat per draft, feeding BOTH the file test and the sort: a
+                # draft that vanished or became unreadable mid-scan must not take
+                # the screen down with it, and Path.is_file() is no help — it
+                # re-raises a stat error whose errno it doesn't recognize (3.13),
+                # and on 3.14 it reaches around Path.stat entirely, so the two
+                # would degrade differently per interpreter.
                 try:
-                    return d.stat().st_mtime
+                    return d.stat()
                 except OSError:
-                    return 0.0
+                    return None
 
             # Newest first: mkstemp names are random, so a name sort hides an
             # ARBITRARY tail — the draft the user just lost is exactly the one that
             # must surface. The cap keeps the screen usable; the overflow line keeps
             # it honest (a silent cap reads as "this is everything").
-            # is_file: drafts are always mkstemp FILES — a hand-planted skit-*
-            # directory must not be offered for resume (the dir lane would store an
-            # exe reference into drafts/, the shape the boundary forbids) or for
-            # "Delete draft…" (unlink on a directory raises).
-            drafts = (
-                sorted(
-                    (d for d in drafts_dir().glob("skit-*") if d.is_file()),
-                    key=_mtime,
-                    reverse=True,
-                )
+            statted = (
+                [(d, _stat(d)) for d in drafts_dir().glob("skit-*")]
                 if drafts_dir().is_dir()
                 else []
             )
+            # S_ISREG: drafts are always mkstemp FILES — a hand-planted skit-*
+            # directory must not be offered for resume (the dir lane would store an
+            # exe reference into drafts/, the shape the boundary forbids) or for
+            # "Delete draft…" (unlink on a directory raises). Only a stat that
+            # positively says "not a regular file" drops one; an unreadable draft
+            # stays LISTED at mtime 0.0 (sorted last), because dropping the entry
+            # the user is most likely hunting for is the worse failure.
+            drafts = [
+                d
+                for d, st in sorted(
+                    statted, key=lambda pair: pair[1].st_mtime if pair[1] else 0.0, reverse=True
+                )
+                if st is None or S_ISREG(st.st_mode)
+            ]
             if drafts:
                 # Kept drafts are resumable, not lore: list them where adding happens —
                 # and deletable here too (an accumulation the user "can see and manage"
