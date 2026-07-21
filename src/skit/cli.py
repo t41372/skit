@@ -3106,9 +3106,10 @@ def run(
             raise typer.Exit(EXIT_SKIT)
     # --raw promises "run the script as-is": replaying a previous run's arguments would
     # betray exactly the clean slate it exists to provide (and the Agent Skill documents).
-    # takes_argv: a command template's "arguments" are its placeholders, so replaying a
-    # remembered argv tail there would be surprising rather than helpful.
-    if not extra and not raw and run_spec is not None and run_spec.takes_argv:
+    # Every other kind reuses its remembered tail — a script replays its argv, a prompt or
+    # command its agent/command flags (a remembered `--model` is config, like the pinned
+    # runner), matching the run form and the TUI's `r` rerun.
+    if not extra and not raw:
         last_extra = argstate.load_state(entry.slug)["extra_args"]
         if last_extra:
             extra = last_extra

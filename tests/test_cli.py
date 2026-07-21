@@ -657,6 +657,23 @@ def test_run_passes_and_remembers_extra_args(tmp_path, run_entry_spy):
     assert run_entry_spy["extra"] == ["--flag", "v"]
 
 
+def test_run_command_reuses_last_extra_args(tmp_path, run_entry_spy):
+    """A command template remembers its appended tail too (docs/design/prompt.md v3.1):
+    passing none on the next run replays it, matching the run form and the `r` rerun.
+    Before v3.1 the command kind refused to replay because takes_argv=False."""
+    store.add_command("echo ready", name="cmd")
+    first = runner.invoke(cli.app, ["run", "cmd", "--no-input", "--", "--loud"])
+    assert first.exit_code == 0, first.output
+    assert run_entry_spy["extra"] == ["--loud"]
+    second = runner.invoke(cli.app, ["run", "cmd", "--no-input"])
+    assert second.exit_code == 0, second.output
+    assert run_entry_spy["extra"] == ["--loud"]
+    # An explicit tail still overrides the remembered one.
+    third = runner.invoke(cli.app, ["run", "cmd", "--no-input", "--", "--quiet"])
+    assert third.exit_code == 0, third.output
+    assert run_entry_spy["extra"] == ["--quiet"]
+
+
 def test_run_nonzero_exit_propagates(tmp_path, run_entry_spy):
     store.add_python(_py(tmp_path, "print(1)\n"), name="j")
     run_entry_spy["code"] = 3

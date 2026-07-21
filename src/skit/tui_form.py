@@ -635,10 +635,6 @@ class RunFormScreen(Screen[FormResult]):
                 for f in self._plan.fields:
                     yield FieldRow(f, self._prefill.get(f.key, ""), path_ctx=self._path_ctx)
                 if self._include_extra:
-                    from .langs.registry import spec_for
-
-                    spec = spec_for(self._entry.meta.kind)
-                    takes_argv = spec is None or spec.takes_argv
                     if self._entry.meta.kind == "prompt":
                         extra_label = gettext("Extra agent arguments")
                     elif self._entry.meta.kind == "command":
@@ -652,13 +648,11 @@ class RunFormScreen(Screen[FormResult]):
                         label=extra_label,
                         source="flag",
                     )
-                    # Replay semantics mirror the CLI's takes_argv rule: a kind whose
-                    # "arguments" are its placeholders never gets a remembered argv tail
-                    # prefilled — the CLI deliberately refuses to replay there, and the
-                    # form must not resurrect the same surprise.
-                    last_extra = (
-                        argstate.load_state(self._entry.slug)["extra_args"] if takes_argv else []
-                    )
+                    # Every kind remembers its extra-args tail: a script replays its argv,
+                    # a prompt/command its agent/command flags — a remembered `--model` is
+                    # persistent config, like the pinned runner, not a per-run surprise.
+                    # The `r` rerun (tui.py) has always replayed it ungated; form and CLI match.
+                    last_extra = argstate.load_state(self._entry.slug)["extra_args"]
                     # The matching split in collect() keeps one argument with spaces
                     # intact and preserves Windows path backslashes.
                     yield FieldRow(extra_field, argv_text.join(last_extra), path_ctx=self._path_ctx)

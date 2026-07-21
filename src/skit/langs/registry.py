@@ -248,9 +248,10 @@ def _exe_spec() -> LangSpec:
 
 
 def _command_spec() -> LangSpec:
-    # takes_argv=False: a command's "arguments" are its placeholders; silently reusing a
-    # remembered argv tail on a template is more surprising than helpful (cli run's
-    # reuse-last-args affordance keys off this).
+    # takes_argv=False: a command's "arguments" are its placeholders, so an appended argv
+    # tail is not the kind's own interface — the parameter surface comes from the template
+    # holes (params.py keys off this). The remembered extra-args tail is orthogonal: it
+    # replays for every kind (see cli run / RunFormScreen), a command's tail included.
     return LangSpec(
         kind="command",
         family="template",

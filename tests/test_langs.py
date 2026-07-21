@@ -99,8 +99,8 @@ def test_exe_and_command_specs_have_no_analysis_capabilities():
     assert exe.has_original_file
     assert cmd.family == "template"
     assert not cmd.has_original_file
-    # command's "arguments" are its placeholders — appended argv is not its interface,
-    # so run's reuse-last-args affordance must skip it.
+    # command's "arguments" are its placeholders — appended argv is not its own interface
+    # (the parameter surface keys off this, not the reuse-last-args affordance).
     assert exe.takes_argv
     assert not cmd.takes_argv
 

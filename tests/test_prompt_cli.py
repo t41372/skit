@@ -919,6 +919,28 @@ def test_run_prompt_extra_args_pass_through_after_dashes(tmp_path, spawn_spy):
     assert spawn_spy["extra"] == ["--model", "opus"]
 
 
+def test_run_prompt_reuses_last_extra_agent_args(tmp_path, spawn_spy):
+    """A remembered `--model` is persistent config, like the pinned runner: passing no tail
+    on the next run replays the last agent flags (docs/design/prompt.md v3.1). Before v3.1
+    the prompt kind refused to replay because takes_argv=False."""
+    _added(tmp_path, pin="claude")
+    first = runner.invoke(
+        cli.app, ["run", "p", "--set", "a=1", "--no-input", "--", "--model", "opus"]
+    )
+    assert first.exit_code == 0, first.output
+    assert spawn_spy["extra"] == ["--model", "opus"]
+    # Next run passes no tail: the remembered agent flags come back.
+    second = runner.invoke(cli.app, ["run", "p", "--set", "a=1", "--no-input"])
+    assert second.exit_code == 0, second.output
+    assert spawn_spy["extra"] == ["--model", "opus"]
+    # An explicit tail still wins over the remembered one — reuse only fills the gap.
+    third = runner.invoke(
+        cli.app, ["run", "p", "--set", "a=1", "--no-input", "--", "--model", "sonnet"]
+    )
+    assert third.exit_code == 0, third.output
+    assert spawn_spy["extra"] == ["--model", "sonnet"]
+
+
 def test_prompt_extra_agent_args_do_not_fill_required_placeholders(tmp_path, spawn_spy):
     _added(tmp_path, pin="claude")
     result = runner.invoke(cli.app, ["run", "p", "--no-input", "--", "--model", "opus"])
