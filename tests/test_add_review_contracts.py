@@ -321,3 +321,48 @@ async def test_resumed_draft_has_no_storage_section(tmp_path):
         review = app.screen
         assert isinstance(review, AddReviewScreen)
         assert not review.query("#rv-mode")  # fresh resume: no Storage ask
+
+
+# ==========================================================================
+# 8. On a short terminal, focus scrolls the candidate checkboxes into view
+# ==========================================================================
+
+
+CONST_PY = "MESSAGE = 'Hello'\nTIMES = 3\nWIDTH = 40\nprint(MESSAGE)\n"
+
+
+async def test_short_terminal_scrolls_focused_candidate_into_view(tmp_path):
+    """Tabbing down the review panel keeps the focused widget on screen at a terminal too
+    short to hold the whole form.
+
+    The deps/params wraps are plain `Vertical`s, which default to `height: 1fr` with
+    overflow hidden: they then swallow their own overflow, the FormBody's virtual size
+    collapses to its viewport (max_scroll_y == 0), and the candidate checkboxes below the
+    fold become unreachable — focus lands on them, nothing scrolls, and the wheel has
+    nothing to move. `height: auto` on both wraps is what keeps them reachable. The rest of
+    the suite runs at 40 rows, where the whole panel fits and the bug is invisible.
+    """
+    src = tmp_path / "banner.py"
+    src.write_text(CONST_PY, encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test(size=(106, 30)) as pilot:
+        review = AddReviewScreen(src, kind="python")
+        app.push_screen(review)
+        await pilot.pause()
+        body = review.query_one("#review-body")
+        assert body.max_scroll_y > 0  # the body knows it overflows at all
+        # Tab all the way to the last candidate; every stop must stay inside the viewport.
+        last = review.query("Checkbox").last()
+        for _ in range(len(review.query("Checkbox")) + 6):
+            focused = app.focused
+            if focused is not None:
+                where = f"{type(focused).__name__}#{focused.id}"
+                top, bottom = focused.region.y, focused.region.y + focused.region.height
+                assert body.region.y <= top, f"{where} scrolled off the top"
+                assert bottom <= body.region.y + body.region.height, f"{where} scrolled off below"
+            if focused is last:
+                break
+            await pilot.press("tab")
+            await pilot.pause()
+        assert app.focused is last  # the walk actually reached the last checkbox
+        assert body.scroll_offset.y > 0  # ...and getting there moved the viewport

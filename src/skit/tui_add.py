@@ -694,6 +694,12 @@ class AddReviewScreen(Screen[str | None]):
         border-title-color: ansi_bright_white;
         border-title-style: bold;
     }
+    /* height: auto, or Textual's Vertical default (1fr, overflow hidden) makes these
+       wraps swallow their own overflow: the body's virtual size then equals its
+       viewport, max_scroll_y is 0, and the candidate checkboxes below the fold become
+       unreachable — focus tabs onto them, nothing scrolls, and the wheel has nothing
+       to move. The same rule guards #pv-holes and #st-prompt-fields. */
+    AddReviewScreen #rv-deps-wrap, AddReviewScreen #rv-params-wrap { height: auto; }
     AddReviewScreen .section { color: $accent; margin: 1 0 0 0; }
     AddReviewScreen .hint { color: $text-muted; }
     AddReviewScreen .warn { color: $warning; }
