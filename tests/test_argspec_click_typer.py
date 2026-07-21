@@ -473,10 +473,25 @@ def test_click_bare_float_and_str_types():
 
 def test_click_unknown_name_type_degrades():
     spec = argspec.read_cli(
-        "import click\n@click.command()\n@click.option('--p', type=Path)\ndef m(p): pass\n"
+        "import click\n@click.command()\n@click.option('--p', type=parse_color)\ndef m(p): pass\n"
     )
     assert spec is not None
-    assert spec.fields[0].degraded is True  # click has no Path shortcut we can vouch for
+    assert spec.fields[0].degraded is True  # an arbitrary callable we won't execute
+
+
+def test_click_path_and_file_types():
+    # click.Path(...)/click.File(...) calls and a bare pathlib Path callable are all
+    # path signals; keyword refinements (exists=, dir_okay=, ...) are not modelled.
+    spec = argspec.read_cli(
+        "import click\n@click.command()\n"
+        "@click.option('--src', type=click.Path(exists=True))\n"
+        "@click.option('--out', type=click.File('w'))\n"
+        "@click.option('--raw', type=Path)\n"
+        "def m(src, out, raw): pass\n"
+    )
+    assert spec is not None
+    assert [f.type for f in spec.fields] == ["path", "path", "path"]
+    assert all(f.degraded is False for f in spec.fields)
 
 
 def test_typer_option_extra_decl_positions():
@@ -488,6 +503,18 @@ def test_typer_option_extra_decl_positions():
     assert spec is not None
     assert spec.fields[0].flag == "--renamed"
     assert spec.fields[0].default == "x"
+
+
+def test_typer_path_annotation_is_path():
+    # A Path annotation is a path signal, in both the legacy-default and the
+    # Annotated spellings.
+    spec = argspec.read_cli(
+        "import typer\nfrom pathlib import Path\nfrom typing import Annotated\n\n"
+        "def main(src: Path, out: Annotated[Path, typer.Option()] = Path('o.txt')):\n"
+        "    pass\n\ntyper.run(main)\n"
+    )
+    assert spec is not None
+    assert [f.type for f in spec.fields] == ["path", "path"]
 
 
 def test_typer_non_constant_decl_is_ignored_not_fatal():

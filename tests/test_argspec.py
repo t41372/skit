@@ -63,8 +63,38 @@ def test_stitch_positional_multiple_required():
     assert inputs.flag == ""
     assert inputs.multiple is True
     assert inputs.required is True
-    assert inputs.type == "str"  # Path renders as text
+    assert inputs.type == "path"  # type=Path is a path signal (docs/design/path.md)
     assert inputs.help == "input images"
+
+
+def test_argparse_path_type_spellings():
+    # Bare Path, dotted pathlib.Path, and FileType (bare and dotted) all mean "the
+    # user supplies a filename"; none of them degrade the field.
+    src = (
+        "import argparse\nimport pathlib\n"
+        "ap = argparse.ArgumentParser()\n"
+        "ap.add_argument('--a', type=Path)\n"
+        "ap.add_argument('--b', type=pathlib.Path)\n"
+        "ap.add_argument('--c', type=argparse.FileType('w'))\n"
+        "ap.add_argument('--d', type=FileType())\n"
+        "ap.parse_args()\n"
+    )
+    spec = argspec.read_argparse(src)
+    assert spec is not None
+    assert [f.type for f in spec.fields] == ["path", "path", "path", "path"]
+    assert all(f.degraded is False for f in spec.fields)
+
+
+def test_argparse_choices_beat_path_type():
+    # choices win exactly as they do over scalar type=: the selector already
+    # constrains input, so the field stays a choice.
+    src = (
+        "import argparse\nap = argparse.ArgumentParser()\n"
+        "ap.add_argument('--m', choices=['a', 'b'], type=Path)\nap.parse_args()\n"
+    )
+    spec = argspec.read_argparse(src)
+    assert spec is not None
+    assert spec.fields[0].type == "choice"
 
 
 def test_stitch_required_flag_and_long_name_preferred():

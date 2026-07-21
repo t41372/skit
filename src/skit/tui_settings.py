@@ -160,7 +160,7 @@ class DeclParamRow(Vertical):
             yield Static("  " + gettext("Type:"), classes="p-meta")
             yield Input(
                 value=d.type,
-                placeholder=gettext("type: str / int / float / bool / choice"),
+                placeholder=gettext("type: str / int / float / bool / choice / path"),
                 classes="d-type",
             )
         with Horizontal():
@@ -728,7 +728,9 @@ class ScriptSettingsScreen(Screen[bool]):
         param_type = params.as_param_type(type_text)
         if param_type is None:
             self.notify(
-                gettext("%(name)s has an unknown type — use str, int, float, bool, or choice.")
+                gettext(
+                    "%(name)s has an unknown type — use str, int, float, bool, choice, or path."
+                )
                 % {"name": d.name},
                 severity="error",
             )

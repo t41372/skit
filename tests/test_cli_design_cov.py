@@ -1021,33 +1021,72 @@ def test_onboard_script_params_reference_forwards_frameworks_to_notice(tmp_path,
     assert seen["fw"] is not None  # the nulled-frameworks mutant passes None
 
 
-def test_onboard_script_params_reads_and_writes_the_copy_as_utf8(tmp_path, monkeypatch):
-    """Both stored-copy reads (analyzer input + write-back) and the write use encoding="utf-8",
-    while the write-back half uses surrogateescape so arbitrary source bytes round-trip."""
+def test_onboard_script_params_write_back_is_byte_based_not_text_mode(tmp_path, monkeypatch):
+    """Onboarding's write-back must be BYTE-based (read_bytes + write_bytes), like _edit_params —
+    never text-mode write_text, which re-expands \\n to the host os.linesep. The only read_text on
+    the copy is the analyzer read (errors="replace"); the write-back re-reads raw bytes and writes
+    raw bytes, so a candidate tick neither bakes U+FFFD over raw bytes nor rewrites line endings."""
     _two_const_shell(tmp_path)
     entry = store.resolve("d")  # resolve before spying, so only the copy read/write are captured
     _fake_tty(monkeypatch)
     monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: "1"))  # pick one -> writes
-    reads: list[dict[str, object]] = []
-    writes: list[dict[str, object]] = []
-    real_read = Path.read_text
-    real_write = Path.write_text
+    text_reads: list[dict[str, object]] = []
+    byte_reads: list[Path] = []
+    byte_writes: list[bytes] = []
+    text_writes: list[Path] = []  # the regression: write_text must never touch the stored copy
+    real_read_text = Path.read_text
+    real_read_bytes = Path.read_bytes
+    real_write_bytes = Path.write_bytes
+    real_write_text = Path.write_text
 
-    def read_spy(self, encoding=None, errors=None, *a, **k):
-        reads.append({"encoding": encoding, "errors": errors})
-        return real_read(self, *a, encoding=encoding, errors=errors, **k)
+    def read_text_spy(self, encoding=None, errors=None, *a, **k):
+        if self == entry.script_path:
+            text_reads.append({"encoding": encoding, "errors": errors})
+        return real_read_text(self, *a, encoding=encoding, errors=errors, **k)
 
-    def write_spy(self, data, encoding=None, errors=None, *a, **k):
-        writes.append({"encoding": encoding, "errors": errors})
-        return real_write(self, data, *a, encoding=encoding, errors=errors, **k)
+    def read_bytes_spy(self):
+        if self == entry.script_path:
+            byte_reads.append(self)
+        return real_read_bytes(self)
 
-    monkeypatch.setattr(Path, "read_text", read_spy)
-    monkeypatch.setattr(Path, "write_text", write_spy)
+    def write_bytes_spy(self, data):
+        if self == entry.script_path:
+            byte_writes.append(data)
+        return real_write_bytes(self, data)
+
+    def write_text_spy(self, *a, **k):
+        if self == entry.script_path:
+            text_writes.append(self)
+        return real_write_text(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", read_text_spy)
+    monkeypatch.setattr(Path, "read_bytes", read_bytes_spy)
+    monkeypatch.setattr(Path, "write_bytes", write_bytes_spy)
+    monkeypatch.setattr(Path, "write_text", write_text_spy)
     assert cli._onboard_script_params(entry, _spec("shell"), no_input=False) == ["WIDTH"]
-    assert [r["encoding"] for r in reads] == ["utf-8", "utf-8"]  # analyzer read + write-back read
-    assert [r["errors"] for r in reads] == ["replace", "surrogateescape"]
-    assert [w["encoding"] for w in writes] == ["utf-8"]  # the single copy write
-    assert [w["errors"] for w in writes] == ["surrogateescape"]
+    assert [r["errors"] for r in text_reads] == ["replace"]  # analyzer read only; no text re-read
+    assert byte_reads  # the write-back re-read raw bytes
+    assert len(byte_writes) == 1  # a single byte write-back
+    assert b"[tool.skit]" in byte_writes[0]  # ...carrying the inserted block
+    assert text_writes == []  # write_text never touched the stored copy (no os.linesep expansion)
+
+
+def test_onboard_script_params_preserves_a_crlf_copy(tmp_path, monkeypatch):
+    """A candidate tick on a CRLF-authored copy leaves it CRLF end to end — only the inserted
+    block changes. write_text used to re-expand \\n to the host os.linesep instead."""
+    source = tmp_path / "crlf.sh"
+    source.write_bytes(b'#!/usr/bin/env bash\r\nWIDTH=800\r\necho "$WIDTH"\r\n')
+    entry = store.add_script(source, kind="shell", name="crlf")
+    entry.script_path.write_bytes(b'#!/usr/bin/env bash\r\nWIDTH=800\r\necho "$WIDTH"\r\n')
+    _fake_tty(monkeypatch)
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: "1"))
+    assert cli._onboard_script_params(entry, _spec("shell"), no_input=False) == ["WIDTH"]
+    rewritten = entry.script_path.read_bytes()
+    assert b"[tool.skit]" in rewritten
+    assert b"\r\n" in rewritten  # CRLF preserved...
+    stripped = rewritten.replace(b"\r\n", b"")  # ...with no bare terminator introduced
+    assert b"\r" not in stripped
+    assert b"\n" not in stripped
 
 
 def test_onboard_script_params_preserves_non_utf8_source_bytes(tmp_path, monkeypatch):
@@ -1061,6 +1100,73 @@ def test_onboard_script_params_preserves_non_utf8_source_bytes(tmp_path, monkeyp
 
     assert cli._onboard_script_params(entry, _spec("shell"), no_input=False) == ["WIDTH"]
 
+    rewritten = entry.script_path.read_bytes()
+    assert b"\xff" in rewritten
+    assert b"\xef\xbf\xbd" not in rewritten  # UTF-8 encoding of U+FFFD
+    assert b"[tool.skit]" in rewritten
+
+
+# ---- _edit_params: the write-back half must be byte-lossless (the onboard idiom) ----------
+
+
+def test_edit_params_write_back_is_byte_based_not_text_mode(tmp_path, monkeypatch):
+    """`params --manage`'s write-back must be BYTE-based (read_bytes + write_bytes), like
+    _normalize_params — never text-mode write_text, which re-expands \\n to os.linesep and would
+    CRLF-ify the whole stored copy on Windows. The only read_text on the copy is the analysis
+    read (errors="replace"); the write-back re-reads raw bytes and writes raw bytes, so a manage
+    edit can neither bake U+FFFD over raw bytes nor rewrite line endings to the host default."""
+    entry = _two_const_shell(tmp_path)
+    text_reads: list[dict[str, object]] = []
+    byte_reads: list[Path] = []
+    byte_writes: list[bytes] = []
+    text_writes: list[Path] = []  # the regression: write_text must never touch the stored copy
+    real_read_text = Path.read_text
+    real_read_bytes = Path.read_bytes
+    real_write_bytes = Path.write_bytes
+    real_write_text = Path.write_text
+
+    def read_text_spy(self, encoding=None, errors=None, *a, **k):
+        if self == entry.script_path:
+            text_reads.append({"encoding": encoding, "errors": errors})
+        return real_read_text(self, *a, encoding=encoding, errors=errors, **k)
+
+    def read_bytes_spy(self):
+        if self == entry.script_path:
+            byte_reads.append(self)
+        return real_read_bytes(self)
+
+    def write_bytes_spy(self, data):
+        if self == entry.script_path:
+            byte_writes.append(data)
+        return real_write_bytes(self, data)
+
+    def write_text_spy(self, *a, **k):
+        if self == entry.script_path:
+            text_writes.append(self)
+        return real_write_text(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", read_text_spy)
+    monkeypatch.setattr(Path, "read_bytes", read_bytes_spy)
+    monkeypatch.setattr(Path, "write_bytes", write_bytes_spy)
+    monkeypatch.setattr(Path, "write_text", write_text_spy)
+    result = runner.invoke(cli.app, ["params", "d", "--manage", "WIDTH"])
+    assert result.exit_code == 0, result.output
+    assert [r["errors"] for r in text_reads] == ["replace"]  # analysis read only; no text re-read
+    assert byte_reads  # the write-back re-read raw bytes
+    assert len(byte_writes) == 1  # a single byte write-back
+    assert b"[tool.skit]" in byte_writes[0]  # ...carrying the rewritten block
+    assert text_writes == []  # write_text never touched the stored copy (no os.linesep expansion)
+
+
+def test_edit_params_preserves_non_utf8_source_bytes(tmp_path):
+    """A --manage edit only inserts the comment block: an unrelated raw byte elsewhere in the
+    script must round-trip, never become U+FFFD (same guarantee as onboarding)."""
+    source = tmp_path / "rawedit.sh"
+    original = b"#!/bin/sh\nWIDTH=800\nprintf '\xff\\n'\n"
+    source.write_bytes(original)
+    entry = store.add_script(source, kind="shell", name="rawedit")
+    result = runner.invoke(cli.app, ["params", "rawedit", "--manage", "WIDTH"])
+    assert result.exit_code == 0, result.output
     rewritten = entry.script_path.read_bytes()
     assert b"\xff" in rewritten
     assert b"\xef\xbf\xbd" not in rewritten  # UTF-8 encoding of U+FFFD

@@ -954,6 +954,31 @@ def test_onboard_python_copy_uses_explicit_deps_python_and_writes(monkeypatch, t
     assert [s.name for s in metawriter.read_params(stored)] == ["CITY"]
 
 
+def test_onboard_python_write_back_preserves_a_crlf_copy(monkeypatch, tmp_path):
+    # A CRLF-authored Python script (no deps -> add_python byte-copies it verbatim) onboarded with
+    # a managed param stays CRLF end to end; only the inserted PEP 723 block changes. write_text
+    # used to re-expand \n to the host os.linesep instead of preserving the copy's own endings.
+    monkeypatch.setattr(
+        cli,
+        "_onboard_params",
+        lambda text, name, no_input: [
+            ParamDecl(name="CITY", binding="const", type="str", default="x")
+        ],
+    )
+    p = tmp_path / "job.py"
+    p.write_bytes(b'CITY = "x"\r\nprint(CITY)\r\n')
+    _entry, _deps, managed, _secrets = cli._onboard_python(
+        p, p.read_text(), name="job", ref=False, no_input=True
+    )
+    assert managed == ["CITY"]
+    rewritten = store.resolve("job").script_path.read_bytes()
+    assert b"[tool.skit]" in rewritten  # the PEP 723 block was inserted
+    assert b"\r\n" in rewritten  # CRLF preserved...
+    stripped = rewritten.replace(b"\r\n", b"")  # ...with no bare terminator introduced
+    assert b"\r" not in stripped
+    assert b"\n" not in stripped
+
+
 def _no_prompt(monkeypatch):
     def _boom(*_a, **_k):
         raise AssertionError("no prompt expected on the non-interactive path")
