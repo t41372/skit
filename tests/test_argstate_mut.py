@@ -55,3 +55,32 @@ def test_save_last_drops_secret_with_no_stored_values_table() -> None:
     state = argstate.load_state(slug)
     assert state["values"] == {}
     assert state["extra_args"] == ["--verbose"]  # unrelated stored data survived the secret-drop
+
+
+def test_last_run_snapshot_strips_and_retroactively_purges_secrets() -> None:
+    slug = "run-snapshot"
+    argstate.record_run(
+        slug,
+        0,
+        at="2026-07-09T00:00:00+00:00",
+        values={"TOKEN": "plaintext", "CITY": "Taipei"},
+        secret_names=(),
+    )
+    assert (
+        argstate.load_state(slug)["last_run"]["values"]["TOKEN"] == "plaintext"  # noqa: S105
+    )
+
+    removed = argstate.purge_secret(slug, ["TOKEN"])
+
+    assert removed == {"TOKEN"}
+    assert argstate.load_state(slug)["last_run"]["values"] == {"CITY": "Taipei"}
+
+    # New snapshots enforce C3 before the value reaches disk at all.
+    argstate.record_run(
+        slug,
+        0,
+        at="2026-07-10T00:00:00+00:00",
+        values={"TOKEN": "new-secret", "CITY": "Osaka"},
+        secret_names={"TOKEN"},
+    )
+    assert argstate.load_state(slug)["last_run"]["values"] == {"CITY": "Osaka"}

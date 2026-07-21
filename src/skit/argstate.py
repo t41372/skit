@@ -4,11 +4,12 @@
 - File shape: [values] (last-used), extra_args, [presets.<name>] (named presets).
 - **C3 is enforced structurally here**: every write entry point requires secret_names, and any key
   in that list is stripped before it hits disk, so a secret value can never appear in a state file
-  (there are tests for this). This holds for *new* writes; it says nothing about a value that was
-  written while the parameter was still public. purge_secret() retroactively scrubs that plaintext
-  once a parameter transitions to secret, and save_last() also drops any now-secret key left over
-  from before, even on calls that carry no new value for it — so nothing written while a parameter
-  was public can outlive it becoming secret.
+  (there are tests for this). This includes the complete values snapshot nested under last_run,
+  which powers `preset save --from-last`. This holds for *new* writes; it says nothing about a value
+  that was written while the parameter was still public. purge_secret() retroactively scrubs that
+  plaintext once a parameter transitions to secret, and save_last() also drops any now-secret key
+  left over from before, even on calls that carry no new value for it — so nothing written while a
+  parameter was public can outlive it becoming secret.
 - Value resolution (this run's input > preset > last-used > definition default) lives in
   flows.prefill; this module only stores and strips.
 """
@@ -150,6 +151,16 @@ def purge_secret(slug: str, names: Iterable[str]) -> set[str]:
             new_presets[name] = cleaned
     doc["presets"] = new_presets
 
+    # The exact last-run snapshot is another value-bearing surface. A parameter that
+    # becomes secret after it ran publicly must be scrubbed here too, or --from-last
+    # could copy the old plaintext back into a preset.
+    last_run = dict(doc.get("last_run", {}))
+    if "values" in last_run:
+        last_values = dict(last_run.get("values", {}))
+        removed |= banned & last_values.keys()
+        last_run["values"] = _strip_secrets(last_values, banned)
+        doc["last_run"] = last_run
+
     _save_doc(slug, doc)
     return removed
 
@@ -177,12 +188,25 @@ def save_last_runner(name: str) -> None:
     atomic_write_toml(state_dir() / "prompt.toml", {"last_runner": name})
 
 
-def record_run(slug: str, exit_code: int, *, at: str) -> None:
+def record_run(
+    slug: str,
+    exit_code: int,
+    *,
+    at: str,
+    values: dict[str, str] | None = None,
+    secret_names: Iterable[str] = (),
+) -> None:
     """Remember when the entry last ran and how it exited (Library sort order, detail pane,
     and the r-rerun context key all read this). Stored as a table — a bare `last_exit = 0`
     top-level key would be dropped by _save_doc's empty-section pruning (0 is falsy)."""
     doc = _load_doc(slug)
-    doc["last_run"] = {"at": at, "exit": exit_code}
+    last_run: dict[str, Any] = {"at": at, "exit": exit_code}
+    if values is not None:
+        # Unlike last-used [values], this is the exact accepted invocation: values
+        # equal to defaults and delivered empty strings stay so --from-last can pin
+        # what actually ran instead of reconstructing it from a later source version.
+        last_run["values"] = _strip_secrets(values, secret_names)
+    doc["last_run"] = last_run
     _save_doc(slug, doc)
 
 

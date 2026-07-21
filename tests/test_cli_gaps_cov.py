@@ -272,7 +272,9 @@ def test_run_interactive_uses_collect_values(tmp_path, run_entry_spy, monkeypatc
 
     def fake_collect(entry, plan, prefill, *, plain, runners=None, runner_default=""):
         called["yes"] = True
-        return prefill, None, False
+        # A value that DIFFERS from the script's own default: an untouched default
+        # deliberately skips injection (the script as written already says it).
+        return {**prefill, "CITY": "Kaohsiung"}, None, False
 
     monkeypatch.setattr(cli, "_collect_values", fake_collect)
     result = runner.invoke(cli.app, ["run", "j"])  # no --no-input -> interactive path

@@ -10,6 +10,10 @@ Field widgets by kind:
 - secret        → password Input (+ "reads $NAME" note when an env source is set)
 - anything else → Input, with live token-expansion preview and glob match count
 - degraded      → Input + "leave empty for the script's own default" hint
+- input binding → Input + "leave empty and the script will ask you" hint
+
+Fields with a known definition default carry a ↺ default chip (Ctrl+O for the focused
+field) that restores it after a remembered value has overlaid it.
 
 Type hints render in muted text and only turn loud on a validation error.
 """
@@ -64,6 +68,21 @@ def _type_label(kind: str) -> str:
         "bool": gettext("on/off"),
         "path": gettext("path"),
     }.get(kind, kind)
+
+
+def _resettable(field: flows.FormField) -> bool:
+    """Whether a field carries a restorable definition default. Last-used values overlay
+    the default in the prefill, so without this affordance the script's own value becomes
+    invisible and unrecoverable except by memory — the exact thing zero-memorization
+    forbids. Secrets are excluded: their defaults are never echoed into the form. So is a
+    choice field whose default isn't one of its choices (a script can declare that) —
+    set_value has no button to press for it, so the chip would be a button that visibly
+    does nothing, which is worse than no chip."""
+    if not field.has_default or field.secret:
+        return False
+    if field.kind == "choice" and field.choices:
+        return field.default in field.choices
+    return True
 
 
 def _degraded_notice(reason: str) -> str:
@@ -146,6 +165,11 @@ class FieldRow(Vertical):
         values skip token expansion by design)."""
         return not self.field.secret and self.field.kind not in ("bool", "choice")
 
+    @property
+    def resettable(self) -> bool:
+        """Whether the ↺ default chip applies (see _resettable)."""
+        return _resettable(self.field)
+
     @override
     def compose(self) -> ComposeResult:
         f = self.field
@@ -160,6 +184,10 @@ class FieldRow(Vertical):
             pieces.append(
                 f"[$accent @click=screen.insert_token('{f.key}')]▾ {gettext('insert')}[/]"
             )
+        if self.resettable:
+            pieces.append(
+                f"[$accent @click=screen.reset_field('{f.key}')]↺ {gettext('default')}[/]"
+            )
         yield Static("  ".join(pieces), classes="field-label", markup=True)
         yield from self._compose_control()
         if f.help:
@@ -167,6 +195,13 @@ class FieldRow(Vertical):
         if f.degraded:
             yield Static(
                 gettext("Leave empty to use the script's own default."), classes="field-help"
+            )
+        if f.input_binding:
+            # Empty means the intercept never happens — invisible semantics without
+            # this line: the script itself asks the question mid-run instead.
+            yield Static(
+                gettext("Leave empty and the script will ask you in the terminal."),
+                classes="field-help",
             )
         if f.secret and f.env_source:
             yield Static(
@@ -495,6 +530,10 @@ class RunFormScreen(Screen[FormResult]):
         Binding("enter", "submit", gettext("Run"), priority=True, show=False),
         Binding("ctrl+r", "submit", gettext("Run"), priority=True),
         Binding("ctrl+t", "insert_token", gettext("Insert value")),
+        # Ctrl+O restores the focused field to the script's default. Deliberately NOT a
+        # chord an Input already owns (Ctrl+D and friends are text editing), so it fires
+        # from inside the field without priority; the per-field ↺ chip is the mouse path.
+        Binding("ctrl+o", "reset_field", gettext("Reset to default")),
         Binding("ctrl+n", "new_runner", gettext("New agent"), show=False),
         *tui_footer.FIELD_NAV_BINDINGS,
     ]
@@ -660,6 +699,12 @@ class RunFormScreen(Screen[FormResult]):
             tui_footer.chip("screen.submit", "Enter", gettext("Run")),
             tui_footer.chip("screen.insert_token", "Ctrl+T", gettext("Insert value")),
         ]
+        if any(_resettable(f) for f in self._plan.fields):
+            # Advertised only when at least one field actually has a default to restore —
+            # a dead chip would teach a key that refuses to act.
+            chips.append(
+                tui_footer.chip("screen.reset_field", "Ctrl+O", gettext("Reset to default"))
+            )
         if self._plan.fields:
             # Advertising Ctrl+S on a field-less form would teach the exact action
             # it refuses there — same rationale that removed the preset row.
@@ -693,9 +738,10 @@ class RunFormScreen(Screen[FormResult]):
     def _apply_preset(self, event: Select.Changed) -> None:
         """Dropdown switch: overlay the whole preset onto the fields ("last values"
         restores). Value-keyed, so a preset list that changed since compose can never
-        shift the mapping. Suppressed during the post-save picker refresh — reapplying
-        the just-saved preset would resurrect values the user explicitly cleared
-        (empty values are never stored in a preset, so they'd fall back to prefill)."""
+        shift the mapping. Suppressed during the post-save picker refresh: the fields
+        already hold exactly what the user typed, and re-running the overlay would
+        churn them for nothing. (A preset stores cleared fields as explicit empties, so
+        re-picking one later restores the cleared state rather than the prefill.)"""
         name = str(event.value)
         if self._skip_apply_until is not None:
             if name == self._skip_apply_until:
@@ -807,6 +853,26 @@ class RunFormScreen(Screen[FormResult]):
             TokenMenuModal(browse=self._path_ctx, path_first=row.field.kind == "path"), _insert
         )
 
+    def action_reset_field(self, key: str = "") -> None:
+        """Ctrl+O (or the ↺ chip on a field): restore the script's own default into the
+        field — the way back after a remembered value has overlaid it. The chip resolves
+        by field key; the chord acts on the focused control's row (any control kind —
+        checkbox and radio defaults restore too)."""
+        if key:
+            row = next(
+                (candidate for candidate in self.query(FieldRow) if candidate.field.key == key),
+                None,
+            )
+        else:
+            focused = self.focused
+            if focused is None:
+                return
+            row = next((a for a in focused.ancestors_with_self if isinstance(a, FieldRow)), None)
+        if row is None or not row.resettable:
+            return
+        row.set_value(row.field.default)
+        row.show_error(None)
+
     def action_save_preset(self) -> None:
         if not self._plan.fields:
             # The always-open form shows this row on field-less entries too — saving
@@ -831,7 +897,9 @@ class RunFormScreen(Screen[FormResult]):
             argstate.save_preset(
                 self._entry.slug,
                 name,
-                {k: v for k, v in values.items() if v},
+                # The exact snapshot the form is showing, a cleared field included —
+                # dropping empties republished the very value the user just cleared.
+                values,
                 secret_names=self._plan.secret_names,
             )
             self._presets = argstate.load_state(self._entry.slug)["presets"]

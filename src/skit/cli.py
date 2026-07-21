@@ -2334,6 +2334,10 @@ def _field_to_dict(f: flows.FormField) -> dict[str, object]:
         "flag": f.flag,
         "action": f.action,
         "env_source": f.env_source,
+        # True = clearing this field (or --set NAME=) delivers an EMPTY STRING; false =
+        # an empty value means "unset — the script's own default applies". Additive key
+        # so an agent can tell the two apart before assembling a run.
+        "delivers_empty": f.delivers_empty,
     }
 
 
@@ -3132,7 +3136,10 @@ def run(
         argstate.save_preset(
             entry.slug,
             save_preset,
-            {k: v for k, v in values.items() if v},
+            # A preset is the exact snapshot of this run — a cleared field included, so
+            # it pins "stays cleared" over whatever last-used remembers (secrets are
+            # stripped structurally by argstate).
+            values,
             secret_names=plan.secret_names,
         )
         # stderr, like every run-adjacent skit line ("Reusing your last arguments",
@@ -3536,15 +3543,34 @@ def preset_save(
             EXIT_USAGE,
         )
     if from_last:
-        last = argstate.load_state(entry.slug)["values"]
-        keys = {f.key for f in plan.fields}
-        values = {k: v for k, v in last.items() if k in keys}
-        if not values:
+        state = argstate.load_state(entry.slug)
+        if not state["last_run"] and not state["values"]:
             raise _fail(
                 gettext("%(name)s has no remembered values yet — run it once first.")
                 % {"name": entry.meta.name},
                 1,
             )
+        keys = {f.key for f in plan.fields}
+        last_snapshot = state["last_run"].get("values")
+        if isinstance(last_snapshot, dict):
+            # The exact accepted invocation, filtered only for fields removed since
+            # that run. Never overlay today's defaults: a changed/new definition did
+            # not participate in the historical run this command promises to save.
+            values = {k: str(v) for k, v in last_snapshot.items() if k in keys}
+        elif state["last_run"]:
+            # Legacy state with a run stamp but no exact snapshot cannot be rebuilt:
+            # remembered values deliberately omitted accepted defaults. Asking for a
+            # fresh run is honest; current defaults would fabricate history.
+            raise _fail(
+                gettext("%(name)s has no remembered values yet — run it once first.")
+                % {"name": entry.meta.name},
+                1,
+            )
+        else:
+            # Older state from before run stamps existed may still have explicit
+            # last-used values. Preserve that narrow compatibility lane without
+            # inventing missing defaults or newly-added fields.
+            values = {k: v for k, v in state["values"].items() if k in keys}
     elif _is_interactive():
         values = promptform.collect(plan, flows.prefill(plan, entry.slug), console=console)
     else:
@@ -3558,7 +3584,14 @@ def preset_save(
             % {"names": ", ".join(escape(n) for n in sorted(secret_overlap))}
             + _DIM_CLOSE
         )
-    argstate.save_preset(entry.slug, preset_name, values, secret_names=plan.secret_names)
+    argstate.save_preset(
+        entry.slug,
+        preset_name,
+        # The exact snapshot, cleared fields included — one rule for every preset
+        # writer (the run form's Ctrl+S and `run --save-preset` store the same way).
+        values,
+        secret_names=plan.secret_names,
+    )
     console.print(
         f"[green]{gettext('Preset "%(preset)s" saved for %(name)s.') % {'preset': escape(preset_name), 'name': escape(entry.meta.name)}}[/green]"
     )
@@ -3787,6 +3820,7 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
     # vanished analyzable script must not invent either signal (test_cli_mut_part06 pins it).
     self_locating, reader_driven = False, False
     ref_mode = entry.meta.mode == "reference"
+    current_defaults: dict[str, str | int | float | bool] = {}
     if entry_spec is not None and entry_spec.analyzer is not None:  # noqa: SIM102
         # Keep the text gate nested instead of pragma-suppressing a three-way BooleanOperation:
         # changing ``and text`` to ``or text`` is equivalent under the registry invariant, but a
@@ -3797,6 +3831,9 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
             # only the WRITE ops differ, and the advice below switches voice on that).
             report = entry_spec.analyzer.reconcile(text, specs)
             an = entry_spec.analyzer.analyze(text)
+            # The Default column shows the SOURCE's current value, exactly like the run
+            # form's prefill — two surfaces reading one record must not disagree.
+            current_defaults = report.current_defaults
             # A MODELED reader form (flows.reader_fields — the one trap predicate every
             # surface shares) is the entry's real interface: plan_for_entry prefers managed
             # params, so a --manage advice here would sell REPLACING that form. Self-parsing
@@ -3822,6 +3859,10 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
     if as_json:
         payload = {
             "params": [s.to_block_dict() for s in specs],
+            # The SOURCE's current default per managed name (additive key). "params"
+            # stays the verbatim stored record — an agent that wants the value a run
+            # would actually prefill reads it here, same truth as the human table.
+            "current_defaults": current_defaults,
             "unmanaged": unmanaged,
             "placeholders": entry.meta.params or [],
             "declared": [d.to_meta_dict() for d in declared],
@@ -3887,10 +3928,11 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
                 last_shown = gettext("•••") if s.name in last else "—"
             else:
                 last_shown = last.get(s.name, "—")
+            shown_default = analysis.effective_default(s, current_defaults)
             default_shown = (
                 gettext("•••")
-                if s.secret and s.default is not None
-                else ("—" if s.default is None else str(s.default))
+                if s.secret and shown_default is not None
+                else ("—" if shown_default is None else str(shown_default))
             )
             table.add_row(
                 escape(s.name),

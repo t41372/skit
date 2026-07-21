@@ -807,18 +807,23 @@ async def test_form_save_preset_does_not_resurrect_a_cleared_field(tmp_path, qui
         modal.action_save_name()
         await pilot.pause()
         await pilot.pause()
-        assert "output" not in argstate.load_state(entry.slug)["presets"]["clean"]
+        # Stored as an explicit empty, not dropped: a preset outranks last-used, so the
+        # cleared field must stay cleared when the preset is applied — an absent key
+        # would let the remembered value show through again.
+        assert argstate.load_state(entry.slug)["presets"]["clean"]["output"] == ""
         select = screen.query_one("#preset-select", Select)
         assert select.value == "clean"
         # THE headline observable: the cleared field STAYS cleared.
         assert rows["output"].query_one(Input).value == ""
-        # Hand-picks still apply, including of the just-saved name later.
+        # Hand-picks still apply, including of the just-saved name later — and picking
+        # "clean" again reproduces what it stored: cleared. (It pins the empty value, so
+        # the prefill overlay no longer shows through the way an absent key let it.)
         select.value = "web"
         await pilot.pause()
         assert rows["output"].query_one(Input).value == "web.png"
         select.value = "clean"
         await pilot.pause()
-        assert rows["output"].query_one(Input).value == "orig.png"  # prefill overlay
+        assert rows["output"].query_one(Input).value == ""
 
 
 async def test_form_save_preset_while_another_preset_is_selected(tmp_path, quiet_run):
@@ -857,7 +862,7 @@ async def test_form_save_preset_while_another_preset_is_selected(tmp_path, quiet
 
 async def test_form_overwrite_selected_preset_keeps_a_cleared_field(tmp_path, quiet_run):
     """Overwrite variant: hand-pick 'web', clear the field, Ctrl+S under the SAME name
-    — the cleared field stays cleared and the stored preset drops the value."""
+    — the cleared field stays cleared and the stored preset pins it as an empty value."""
     entry = _argparse_entry(tmp_path)
     argstate.save_preset(entry.slug, "web", {"output": "web.png"})
     app = tui.MenuApp()
@@ -880,7 +885,7 @@ async def test_form_overwrite_selected_preset_keeps_a_cleared_field(tmp_path, qu
         modal.action_save_name()
         await pilot.pause()
         await pilot.pause()
-        assert "output" not in argstate.load_state(entry.slug)["presets"]["web"]
+        assert argstate.load_state(entry.slug)["presets"]["web"]["output"] == ""  # pinned cleared
         assert rows["output"].query_one(Input).value == ""  # not resurrected
 
 

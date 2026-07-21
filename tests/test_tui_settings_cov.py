@@ -127,6 +127,26 @@ async def test_secret_checkbox_warns_then_clears_the_note(tmp_path):
         assert str(note.render()) == ""  # note cleared
 
 
+async def test_managed_public_to_secret_drops_cached_default(tmp_path):
+    text = metawriter.write_params(
+        'CITY = "source-secret"\nprint(CITY)\n',
+        [ParamDecl(name="CITY", binding="const", type="str", default="cached-public")],
+    )
+    entry = store.add_python(_py(tmp_path, text), name="secret-default")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.query(ParamRow).first().query_one(".p-secret", Checkbox).value = True
+        screen.action_save()
+        await pilot.pause()
+
+    (written,) = metawriter.read_params(entry.script_path.read_text(encoding="utf-8"))
+    assert written.secret is True
+    assert written.default is None
+
+
 # ---------------------------------------------------------------------------
 # Detected-but-unmanaged candidates: the manage-these checkboxes + save
 # ---------------------------------------------------------------------------

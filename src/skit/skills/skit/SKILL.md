@@ -70,6 +70,9 @@ skit run <name> --forget-args --no-input            # erase the remembered extra
   validated against the field's type (exit 125 on mismatch). Values may use tokens —
   `{cwd}`, `{today}`, `{now}`, `{env:VAR}`, a leading `~` — and multi-value fields
   also expand globs.
+- `--set NAME=` (an empty value): check the field's `delivers_empty` in
+  `show --json`. `true` means an empty string is genuinely delivered as the value;
+  `false` means empty = "leave it unset — the script's own default applies".
 - Unset fields fall back to: preset > last-used value > the field's declared default.
   A required field with no value fails fast (exit 125) rather than prompting.
 - **Reuse warning:** with no `--` args given, any run reuses the *last run's* extra args

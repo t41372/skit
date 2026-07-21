@@ -79,14 +79,23 @@ class ParamRow(Vertical):
     ParamRow Input { width: 1fr; }
     """
 
-    def __init__(self, spec: ParamDecl) -> None:
+    def __init__(
+        self, spec: ParamDecl, shown_default: str | int | float | bool | None = None
+    ) -> None:
         super().__init__()
         self.spec: ParamDecl = spec
+        # Display-only, and already resolved by the caller through
+        # analysis.effective_default — the one place that "source's live literal, else
+        # the stored block value" rule lives, so this pane cannot disagree with
+        # `skit params` about one record. The spec itself stays unmutated: saving the
+        # screen must not silently rewrite the block's cached default (--resync owns
+        # that write).
+        self._shown_default: str | int | float | bool | None = shown_default
 
     @override
     def compose(self) -> ComposeResult:
         s = self.spec
-        default = "" if s.default is None else repr(s.default)
+        default = "" if self._shown_default is None else repr(self._shown_default)
         yield Checkbox(f"{escape(s.name)}  [dim]{s.type} {escape(default)}[/dim]", value=True)
         with Horizontal():
             yield Static("  " + gettext("Form label:"), classes="p-meta")
@@ -108,7 +117,13 @@ class ParamRow(Vertical):
             return None
         s = self.spec
         s.prompt = self.query_one(".p-prompt", Input).value.strip()
+        was_secret = s.secret
         s.secret = self.query_one(".p-secret", Checkbox).value
+        if s.secret and not was_secret:
+            # The source literal may be shown while the row is public, but once the
+            # user marks it secret that cached value must not be serialized into the
+            # block (or subsequently exposed through params/show --json).
+            s.default = None
         s.env_source = self.query_one(".p-env", Input).value.strip() if s.secret else ""
         return s
 
@@ -576,8 +591,10 @@ class ScriptSettingsScreen(Screen[bool]):
             for s in self._specs:
                 yield Static(f"· {escape(s.name)} ({s.type})")
             return
+        report = self._reconcile()
+        current = report.current_defaults if report is not None else {}
         for s in self._specs:
-            yield ParamRow(s)
+            yield ParamRow(s, shown_default=analysis.effective_default(s, current))
         if self._cli_driven():
             # This script's form already comes from its own argparse/click/typer surface.
             # Managing a hardcoded constant would write a [tool.skit] block that shadows
@@ -590,18 +607,14 @@ class ScriptSettingsScreen(Screen[bool]):
                 ),
                 classes="hint",
             )
-        else:
-            report = self._reconcile()
-            if report is not None and report.new:
-                yield Static(
-                    gettext("Detected but not yet managed — tick to manage:"), classes="hint"
+        elif report is not None and report.new:
+            yield Static(gettext("Detected but not yet managed — tick to manage:"), classes="hint")
+            for i, c in enumerate(report.new):
+                yield Checkbox(
+                    f"{escape(c.name)}  [dim]{c.type} = {escape(repr(c.default))}[/dim]",
+                    value=False,
+                    id=f"st-new-{i}",
                 )
-                for i, c in enumerate(report.new):
-                    yield Checkbox(
-                        f"{escape(c.name)}  [dim]{c.type} = {escape(repr(c.default))}[/dim]",
-                        value=False,
-                        id=f"st-new-{i}",
-                    )
         if self._specs and all(s.binding == "input" for s in self._specs):
             yield Static(
                 gettext("Every input() is managed — this script can now run with --no-input."),
