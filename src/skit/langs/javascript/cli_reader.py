@@ -67,16 +67,30 @@ def _declared_names(root: Node) -> dict[str, int]:
             counts[text] = counts.get(text, 0) + 1
 
     def _bump_bound(node: Node) -> None:
-        """Only the names a parameter binds — a plain identifier, the target of a
-        destructuring pattern, or the LEFT of a default. `function f(a = HOST)` binds
-        `a` and merely READS HOST; counting the read too would make the HOST constant
-        look declared twice and needlessly refuse to fold it. TS type annotations are a
-        separate namespace and bind no value name."""
+        """Only the names a parameter BINDS — a plain identifier, the targets of a
+        destructuring pattern, or the binding side of a default. `function f(a = HOST)`
+        binds `a` and merely READS HOST; counting that read would make the HOST constant
+        look declared twice and needlessly refuse to fold it.
+
+        The default sits in a different place per grammar, so both spellings are named
+        here rather than left to the generic walk: JS puts it in an `assignment_pattern`
+        (binding on the left), while TS hangs `pattern`, `type` and `value` off one
+        `required_parameter`/`optional_parameter` — so `function f(a: string = HOST)`
+        would otherwise reach HOST through the sibling `value`. Taking only `pattern`
+        there also means a type annotation is never walked into (types are a separate
+        namespace that binds no value name), so no rule is needed for them.
+
+        A destructuring key is a property name, not a binding (`{x: {y}}` binds y), and
+        the grammar gives it its own node type — so the generic walk, which bumps
+        `identifier` alone, already leaves it out."""
         kind = node.type
         if kind == "identifier":
             _bump(node)
             return
-        if kind == "type_annotation":
+        if kind in ("required_parameter", "optional_parameter"):
+            pattern = node.child_by_field_name("pattern")
+            if pattern is not None:  # pragma: no branch — a TS parameter always has a pattern
+                _bump_bound(pattern)
             return
         if kind == "assignment_pattern":
             left = node.child_by_field_name("left")

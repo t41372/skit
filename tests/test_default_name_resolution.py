@@ -440,6 +440,53 @@ def test_js_constant_read_as_a_parameter_default_still_resolves():
     assert f.degraded is False
 
 
+def test_ts_typed_parameter_default_reads_the_constant_without_declaring_it():
+    # TypeScript's shape differs from JS's: `pattern`, `type` and `value` all hang off one
+    # required_parameter, so `a: string = HOST` reaches HOST through a SIBLING of the
+    # binding rather than through an assignment_pattern. Only `pattern` binds a name —
+    # counting the sibling read would refuse to fold a constant that is still one literal.
+    spec = cli_reader.read_cli(
+        'const HOST = "localhost";\n'
+        "function main(a: string = HOST) { return a; }\n"
+        'parseArgs({options:{host:{type:"string", default: HOST}}});\n',
+        lang="ts",
+    )
+    assert spec is not None
+    f = spec.fields[0]
+    assert f.default == "localhost"
+    assert f.degraded is False
+
+
+def test_ts_destructured_parameter_default_is_also_only_a_read():
+    # Same rule through a destructuring pattern: `{x}: Opts = DEF` binds x, reads DEF.
+    spec = cli_reader.read_cli(
+        'const DEF = "d";\n'
+        "function main({x}: Opts = DEF) { return x; }\n"
+        'parseArgs({options:{host:{type:"string", default: DEF}}});\n',
+        lang="ts",
+    )
+    assert spec is not None
+    f = spec.fields[0]
+    assert f.default == "d"
+    assert f.degraded is False
+
+
+def test_ts_typed_parameter_with_a_default_still_shadows_by_its_bound_name():
+    # The other half: the typed parameter's own name still shadows the top-level const,
+    # default or no default — `pattern` is exactly what gets counted.
+    spec = cli_reader.read_cli(
+        'const HOST = "localhost";\n'
+        'function main(HOST: string = "inner.example.com") {\n'
+        '  parseArgs({options:{host:{type:"string", default: HOST}}});\n'
+        "}\nmain();\n",
+        lang="ts",
+    )
+    assert spec is not None
+    f = spec.fields[0]
+    assert f.degraded is True
+    assert f.default is None
+
+
 def test_js_parameter_with_a_default_still_shadows_by_its_bound_name():
     # The other half of the same branch: in `function main(HOST = "x")` the LEFT of the
     # default IS the bound name, so it shadows the top-level const and blocks folding.
