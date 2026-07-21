@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import pytest
 from textual.widgets import Checkbox, DataTable, Input, Select, Static
+from textual.widgets.data_table import RowKey
 
 from conftest import footer_text
 from skit import argstate, argv_text, config, flows, launcher, store, tui
@@ -378,6 +379,27 @@ async def test_refresh_detail_no_ops_when_the_detail_pane_is_gone(tmp_path):
         app.query_one("#detail-body").remove()
         await pilot.pause()
         app._refresh_detail()  # must not raise
+        assert len(app.screen_stack) == 1  # app survived, no crash
+
+
+async def test_refresh_footer_no_ops_when_the_library_chrome_is_gone(tmp_path):
+    """The sibling of the race above, on the next line of the same handler: the footer
+    refresh runs from a queued RowHighlighted AND from the screen-focus watcher, and a
+    modal popping hands focus back while the library chrome is mid-remount. It must
+    no-op rather than let NoMatches escape — seen as a Windows py3.12 CI failure
+    (NoMatches on '#keys-local' from _refresh_footer) that outlived its rerun budget."""
+    store.add_python(_py(tmp_path, "print(1)\n"), name="a")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.query_one("#keys-local").remove()
+        await pilot.pause()
+        app._refresh_footer()  # must not raise
+        # The real trigger, not just the direct call: a row highlight refreshes the
+        # footer from an event handler, where an escaping NoMatches kills the app.
+        table = app.query_one(DataTable)
+        app._on_row_highlighted(DataTable.RowHighlighted(table, 0, RowKey("a")))
+        await pilot.pause()
         assert len(app.screen_stack) == 1  # app survived, no crash
 
 

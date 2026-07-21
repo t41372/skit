@@ -441,7 +441,17 @@ class MenuApp(App[int | PendingRun]):
         )
 
     def _refresh_footer(self) -> None:
-        keys_local = self.query_one("#keys-local", Static)  # pragma: no mutate — expect_type is a pure runtime assertion; None/omitted return the same unique #keys-local match (equivalents); the selector/assignment variants stay pinned by test_normal_local_footer_pins_every_chip  # fmt: skip
+        # The same race _refresh_detail was guarded against (5f65459), on the line
+        # right below it: this runs from a queued RowHighlighted AND from the
+        # screen-focus watcher wired in on_mount, either of which can arrive while the
+        # library chrome is not in the DOM — a modal popping hands focus back
+        # mid-remount. NoMatches escaping an event handler crashes the app.
+        # #keys-local is the probe for all three lookups: it composes after #search and
+        # is mounted in the same batch as its #keys-global sibling.
+        keys = self.query("#keys-local")
+        if not keys:
+            return
+        keys_local = keys.first(Static)  # pragma: no mutate — expect_type is a pure runtime assertion; #keys-local is only ever the local-chips Static, so first(Static)/first(None) return the identical node (equivalents); the lookup + update stays pinned by test_normal_local_footer_pins_every_chip  # fmt: skip
         keys_global = self.query_one("#keys-global", Static)  # pragma: no mutate — expect_type is a pure runtime assertion; None/omitted return the same unique #keys-global match (equivalents); the selector/assignment variants stay pinned by test_normal_global_footer_pins_every_chip  # fmt: skip
         search_box = self.query_one("#search", Input)  # pragma: no mutate — expect_type/type-selector are query mechanics; None/omitted/type-only return the same unique #search Input (equivalents); the selector/assignment variants stay pinned by test_search_mode_footer_pins_its_two_chips_and_blanks_global  # fmt: skip
         if self.focused is search_box:
