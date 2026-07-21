@@ -47,23 +47,48 @@ ConstEnv = dict[str, str | int | float | bool]
 
 
 def _bound_names(tree: ast.Module) -> dict[str, int]:
-    """How many times each name is BOUND anywhere in the module — every Store-context
-    Name (assignment, annotated/augmented assignment, `for` target, `with … as`, walrus,
-    comprehension target, unpacking) plus every function parameter."""
+    """How many times each value name is bound anywhere in the module.
+
+    Most targets are Store-context Names, but several binding forms keep their names
+    as strings or AST fields instead (definitions, imports, exception handlers and
+    pattern captures). Missing even one of those is unsound for constant folding: a
+    local class named DEFAULT can shadow a top-level literal at the parser call site.
+    This intentionally remains file-wide and conservative — any second binding makes
+    the name ineligible rather than attempting partial scope execution."""
     counts: dict[str, int] = {}
-    for node in ast.walk(tree):
-        name = ""
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
-            name = node.id
-        elif isinstance(node, ast.arg):
-            name = node.arg
+
+    def bump(name: str | None) -> None:
         if name:
             counts[name] = counts.get(name, 0) + 1
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            bump(node.id)
+        elif isinstance(node, ast.arg):
+            bump(node.arg)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bump(node.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                # `import pkg.sub` binds pkg; `import pkg.sub as p` binds p.
+                bump(alias.asname or alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                # Star imports can bind any public name, so no top-level literal is
+                # provably unique in their presence. Mark every harvested name below
+                # via the sentinel handled by _constant_env.
+                bump("*" if alias.name == "*" else alias.asname or alias.name)
+        elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
+            bump(node.name)
+        elif isinstance(node, ast.MatchMapping):
+            bump(node.rest)
     return counts
 
 
 def _constant_env(tree: ast.Module) -> ConstEnv:
     counts = _bound_names(tree)
+    if "*" in counts:
+        return {}
     return {
         c.name: c.default
         for c in _const_candidates(tree.body)

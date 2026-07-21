@@ -117,7 +117,13 @@ class ParamRow(Vertical):
             return None
         s = self.spec
         s.prompt = self.query_one(".p-prompt", Input).value.strip()
+        was_secret = s.secret
         s.secret = self.query_one(".p-secret", Checkbox).value
+        if s.secret and not was_secret:
+            # The source literal may be shown while the row is public, but once the
+            # user marks it secret that cached value must not be serialized into the
+            # block (or subsequently exposed through params/show --json).
+            s.default = None
         s.env_source = self.query_one(".p-env", Input).value.strip() if s.secret else ""
         return s
 

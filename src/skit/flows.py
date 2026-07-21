@@ -91,6 +91,7 @@ class FormField:
     action: str = ""  # store_true | store_false (bool flags)
     env_target: str = ""  # env source only: the variable to SET ("" = the field's key)
     input_binding: bool = False  # inject source: an intercepted input()/read prompt
+    empty_uses_default: bool = False  # env source: empty still activates its source fallback
 
     @property
     def delivers_empty(self) -> bool:
@@ -112,6 +113,7 @@ class FormField:
             and not self.degraded
             and not self.multiple
             and not self.input_binding
+            and not self.empty_uses_default
             and self.kind in ("str", "path")
             and self.source in ("inject", "flag", "env")
         )
@@ -404,7 +406,7 @@ def plan_for_entry(entry: Entry) -> FormPlan:  # noqa: PLR0911 — one return pe
         report = lang.analyzer.reconcile(text, specs)
         drift = list(analysis.drift_lines(report, entry.meta.name)) if report.has_drift else []
         fields = [FormField.from_decl(s) for s in report.usable]
-        _refresh_defaults(fields, report.current_defaults)
+        _refresh_defaults(fields, report.current_defaults, report.empty_uses_default)
         # MERGE: declared [[parameters]] flag/env rows ride along after the analyzer's in-file
         # params (a shell/python entry may hand-declare an env or flag channel the analyzer can't
         # see). Names already fielded from the in-file block win — no duplicate rows. For the
@@ -442,7 +444,9 @@ def _render_default(value: str | int | float | bool) -> str:
 
 
 def _refresh_defaults(
-    fields: list[FormField], current: Mapping[str, str | int | float | bool]
+    fields: list[FormField],
+    current: Mapping[str, str | int | float | bool],
+    empty_uses_default: set[str],
 ) -> None:
     """Refresh each field's default from the SOURCE (Report.current_defaults): the
     block's manage-time cache must never beat the script — a user who edits
@@ -458,6 +462,8 @@ def _refresh_defaults(
     for f in fields:
         if f.has_default and f.key in current:
             f.default = _render_default(current[f.key])
+        if f.key in empty_uses_default:
+            f.empty_uses_default = True
 
 
 # --------------------------------------------------------------------------
@@ -797,7 +803,13 @@ def save_after_run(
         extra_args=list(extra_args),
         secret_names=plan.secret_names,
     )
-    argstate.record_run(slug, exit_code, at=at)
+    argstate.record_run(
+        slug,
+        exit_code,
+        at=at,
+        values=dict(values),
+        secret_names=plan.secret_names,
+    )
 
 
 # --------------------------------------------------------------------------

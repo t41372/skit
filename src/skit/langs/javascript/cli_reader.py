@@ -55,14 +55,17 @@ if TYPE_CHECKING:
 ConstEnv = dict[str, str | int | float | bool]
 
 
-def _declared_names(root: Node) -> dict[str, int]:
+def _declared_names(root: Node) -> dict[str, int]:  # noqa: PLR0915 — one branch per JS/TS binding shape
     """How many times each name is DECLARED anywhere in the file: the `name` identifier
     of every `variable_declarator` at any depth, plus every name a function parameter
     BINDS."""
     counts: dict[str, int] = {}
 
     def _bump(node: Node | None) -> None:
-        if node is not None and node.type == "identifier":
+        if node is not None and node.type in (
+            "identifier",
+            "shorthand_property_identifier_pattern",
+        ):
             text = _text(node)
             counts[text] = counts.get(text, 0) + 1
 
@@ -84,7 +87,7 @@ def _declared_names(root: Node) -> dict[str, int]:
         the grammar gives it its own node type — so the generic walk, which bumps
         `identifier` alone, already leaves it out."""
         kind = node.type
-        if kind == "identifier":
+        if kind in ("identifier", "shorthand_property_identifier_pattern"):
             _bump(node)
             return
         if kind in ("required_parameter", "optional_parameter"):
@@ -97,17 +100,60 @@ def _declared_names(root: Node) -> dict[str, int]:
             if left is not None:  # pragma: no branch — an assignment_pattern always has a left
                 _bump_bound(left)
             return
+        if kind == "pair_pattern":
+            value = node.child_by_field_name("value")
+            if value is not None:  # pragma: no branch — pair_pattern always has a value
+                _bump_bound(value)
+            return
         for child in node.named_children:
             _bump_bound(child)
 
+    def _bump_imports(node: Node) -> None:
+        """Count only the value names introduced by one import statement."""
+        clause = next((c for c in node.named_children if c.type == "import_clause"), None)
+        if clause is None:
+            return  # side-effect-only import
+        for child in clause.named_children:
+            if child.type == "identifier":
+                _bump(child)  # default import
+            elif child.type == "namespace_import":
+                identifiers = [c for c in child.named_children if c.type == "identifier"]
+                if identifiers:  # pragma: no branch — namespace_import always binds an identifier
+                    _bump(identifiers[-1])
+            elif child.type == "named_imports":
+                for spec in child.named_children:
+                    # Every named child of named_imports is an import_specifier; braces
+                    # and commas are anonymous tree-sitter children.
+                    bound = spec.child_by_field_name("alias") or spec.child_by_field_name("name")
+                    _bump(bound)
+            else:  # pragma: no cover — import_clause has only the three shapes above
+                continue
+
     for node in _walk(root):
         if node.type == "variable_declarator":
-            _bump(node.child_by_field_name("name"))
+            name = node.child_by_field_name("name")
+            if name is not None:  # pragma: no branch — variable_declarator always has a name
+                _bump_bound(name)
         elif node.type == "formal_parameters":
             # A parameter is an identifier itself (JS) or wraps one in a
             # required/optional_parameter pattern (TS) — the walk reaches both.
             for sub in node.named_children:
                 _bump_bound(sub)
+        elif node.type in (
+            "function_declaration",
+            "function_expression",
+            "generator_function_declaration",
+            "generator_function",
+            "class_declaration",
+            "class",
+        ):
+            _bump(node.child_by_field_name("name"))
+        elif node.type == "catch_clause":
+            parameter = node.child_by_field_name("parameter")
+            if parameter is not None:
+                _bump_bound(parameter)
+        elif node.type == "import_statement":
+            _bump_imports(node)
     return counts
 
 

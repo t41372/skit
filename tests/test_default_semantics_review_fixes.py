@@ -13,7 +13,10 @@ the form had already shown:
    (analysis._record_default's coercibility gate), so the form keeps a valid prefill;
 5. a secret's source literal never reaches params/show --json (C3);
 6. `preset save --from-last` works after a run that accepted every default;
-7. presets store the run's values verbatim while last-used filters the defaults out.
+7. presets store the run's values verbatim while last-used filters the defaults out;
+8. a public-to-secret edit cannot copy the source literal into the secret block;
+9. --from-last reads the exact historical snapshot, never today's source defaults;
+10. shell colon env-default operators do not promise an empty value they cannot deliver.
 
 Style mirrors tests/test_source_default_semantics.py (local _python_entry/_shell_entry
 over a `# /// script` block, NOW datetime) and tests/test_show.py (typer CliRunner) for
@@ -361,6 +364,37 @@ def test_preset_from_last_still_refuses_an_entry_that_never_ran(tmp_path: Path):
     assert argstate.load_state(entry.slug)["presets"] == {}
 
 
+def test_preset_from_last_pins_the_default_that_actually_ran(tmp_path: Path):
+    body = 'GREETING = "A"\nprint(GREETING)\n'
+    specs = [ParamDecl(name="GREETING", binding="const", type="str", default="A")]
+    entry = _managed(tmp_path, body, specs, name="history")
+    plan = flows.plan_for_entry(entry)
+    values = flows.prefill(plan, entry.slug)
+    flows.save_after_run(entry.slug, plan, values, [], 0, at="2026-07-09T14:30:05+00:00")
+
+    current = entry.script_path.read_text(encoding="utf-8")
+    entry.script_path.write_text(current.replace('GREETING = "A"', 'GREETING = "B"'))
+    assert flows.prefill(flows.plan_for_entry(entry), entry.slug) == {"GREETING": "B"}
+
+    result = runner.invoke(cli.app, ["preset", "save", "history", "p", "--from-last"])
+    assert result.exit_code == 0, result.output
+    assert argstate.load_state(entry.slug)["presets"] == {"p": {"GREETING": "A"}}
+
+
+def test_preset_from_legacy_run_without_snapshot_refuses_to_guess(tmp_path: Path):
+    entry = _managed(
+        tmp_path,
+        'GREETING = "B"\nprint(GREETING)\n',
+        [ParamDecl(name="GREETING", binding="const", type="str", default="B")],
+        name="legacy-history",
+    )
+    argstate.record_run(entry.slug, 0, at="2026-07-09T14:30:05+00:00")
+    result = runner.invoke(cli.app, ["preset", "save", "legacy-history", "p", "--from-last"])
+    assert result.exit_code == 1
+    assert "run it once first" in result.output
+    assert argstate.load_state(entry.slug)["presets"] == {}
+
+
 # --------------------------------------------------------------------------
 # 7) presets pin what ran; last-used filters
 # --------------------------------------------------------------------------
@@ -416,3 +450,84 @@ def test_run_save_preset_stores_a_default_equal_value_verbatim(tmp_path: Path):
     state = argstate.load_state(entry.slug)
     assert state["presets"] == {"p": {"GREETING": "bonjour"}}  # verbatim: the default is pinned
     assert state["values"] == {}  # last-used still filtered it out
+
+
+# --------------------------------------------------------------------------
+# 8) public -> secret never caches the source literal
+# --------------------------------------------------------------------------
+
+
+def test_resync_and_secret_in_one_edit_drops_the_refreshed_literal():
+    spec = ParamDecl(name="CITY", binding="const", type="str", default="old")
+    result = analysis.edit_specs(
+        'CITY = "sk-live-source"\n',
+        [spec],
+        resync=True,
+        secret=["CITY"],
+        analyze=py_analyze,
+    )
+    (edited,) = result.specs
+    assert edited.secret is True
+    assert edited.default is None
+    assert "default" not in edited.to_block_dict()
+    assert "sk-live-source" not in repr(edited.to_block_dict())
+
+
+def test_final_no_secret_in_same_edit_keeps_the_public_default():
+    spec = ParamDecl(name="CITY", binding="const", type="str", default="old")
+    result = analysis.edit_specs(
+        'CITY = "new"\n',
+        [spec],
+        resync=True,
+        secret=["CITY"],
+        no_secret=["CITY"],
+        analyze=py_analyze,
+    )
+    (edited,) = result.specs
+    assert edited.secret is False
+    assert edited.default == "new"
+
+
+# --------------------------------------------------------------------------
+# 10) shell colon operators treat empty as unset
+# --------------------------------------------------------------------------
+
+
+def _shell_envdefault_text(operator: str) -> str:
+    return f"""#!/usr/bin/env bash
+# /// script
+# [tool.skit]
+# schema = 1
+#
+# [[tool.skit.params]]
+# name = "CITY"
+# kind = "envdefault"
+# type = "str"
+# default = "Taipei"
+# ///
+echo "${{CITY{operator}Taipei}}"
+"""
+
+
+def test_shell_colon_envdefaults_do_not_claim_to_deliver_empty(tmp_path: Path):
+    for i, operator in enumerate((":-", ":=")):
+        plan = flows.plan_for_entry(
+            _shell_entry(tmp_path, _shell_envdefault_text(operator), slug=f"colon-{i}")
+        )
+        (field,) = plan.fields
+        assert field.empty_uses_default is True
+        assert field.delivers_empty is False
+        asm = flows.assemble(plan, {"CITY": ""}, [], cwd=tmp_path, env={})
+        assert asm.env_values == {}
+
+
+def test_shell_noncolon_envdefaults_genuinely_deliver_empty(tmp_path: Path):
+    for i, operator in enumerate(("-", "=")):
+        plan = flows.plan_for_entry(
+            _shell_entry(tmp_path, _shell_envdefault_text(operator), slug=f"plain-{i}")
+        )
+        (field,) = plan.fields
+        assert field.empty_uses_default is False
+        assert field.delivers_empty is True
+        asm = flows.assemble(plan, {"CITY": ""}, [], cwd=tmp_path, env={})
+        assert asm.env_values == {"CITY": ""}

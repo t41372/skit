@@ -310,6 +310,10 @@ def _envdefault_candidates(root: Node, bare_assigned: set[str]) -> list[Candidat
                 default=default,
                 lineno=node.start_point[0] + 1,
                 secret=is_secret_name(name),
+                # The colon forms test unset OR null, so exporting NAME="" still
+                # activates the fallback. The non-colon forms test only unset and
+                # therefore genuinely accept an empty value.
+                empty_uses_default=operator.type in (":-", ":="),
             )
         )
     return out

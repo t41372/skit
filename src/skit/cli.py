@@ -3543,12 +3543,6 @@ def preset_save(
             EXIT_USAGE,
         )
     if from_last:
-        # The EFFECTIVE values of the last run (definition default < last-used), not the
-        # raw [values] table: last-used deliberately stores only what differed from the
-        # defaults (flows.remembered_values), so a run that accepted every default leaves
-        # that table empty — reading it directly refused to save a perfectly good preset.
-        # The honest gate is "has this entry anything to remember at all", which is what
-        # the message already says; either half of the state answers it.
         state = argstate.load_state(entry.slug)
         if not state["last_run"] and not state["values"]:
             raise _fail(
@@ -3556,7 +3550,27 @@ def preset_save(
                 % {"name": entry.meta.name},
                 1,
             )
-        values = flows.prefill(plan, entry.slug)
+        keys = {f.key for f in plan.fields}
+        last_snapshot = state["last_run"].get("values")
+        if isinstance(last_snapshot, dict):
+            # The exact accepted invocation, filtered only for fields removed since
+            # that run. Never overlay today's defaults: a changed/new definition did
+            # not participate in the historical run this command promises to save.
+            values = {k: str(v) for k, v in last_snapshot.items() if k in keys}
+        elif state["last_run"]:
+            # Legacy state with a run stamp but no exact snapshot cannot be rebuilt:
+            # remembered values deliberately omitted accepted defaults. Asking for a
+            # fresh run is honest; current defaults would fabricate history.
+            raise _fail(
+                gettext("%(name)s has no remembered values yet — run it once first.")
+                % {"name": entry.meta.name},
+                1,
+            )
+        else:
+            # Older state from before run stamps existed may still have explicit
+            # last-used values. Preserve that narrow compatibility lane without
+            # inventing missing defaults or newly-added fields.
+            values = {k: v for k, v in state["values"].items() if k in keys}
     elif _is_interactive():
         values = promptform.collect(plan, flows.prefill(plan, entry.slug), console=console)
     else:

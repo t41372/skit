@@ -15,6 +15,8 @@ JS/TS parseArgs reader.
 
 from __future__ import annotations
 
+import pytest
+
 from skit.langs.javascript import cli_reader
 from skit.langs.python import argspec
 
@@ -74,6 +76,43 @@ def test_argparse_loop_reassigned_name_does_not_resolve():
     f = spec.fields[0]
     assert f.degraded is True
     assert f.default is None
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        "def HOST():\n    pass",
+        "async def HOST():\n    pass",
+        "class HOST:\n    pass",
+        "import pathlib as HOST",
+        "from pathlib import Path as HOST",
+        "try:\n    pass\nexcept Exception as HOST:\n    pass",
+        "match value:\n    case HOST:\n        pass",
+        "match value:\n    case [*HOST]:\n        pass",
+        'match value:\n    case {"x": _, **HOST}:\n        pass',
+        "del HOST",
+    ],
+)
+def test_argparse_non_store_value_binding_does_not_resolve(binding):
+    """Definitions/imports/handlers/patterns/delete all invalidate the outer literal."""
+    spec = argspec.read_argparse(
+        "import argparse\nHOST = 'outer'\n"
+        + binding
+        + "\nap = argparse.ArgumentParser()\nap.add_argument('--host', default=HOST)\n"
+    )
+    assert spec is not None
+    f = spec.fields[0]
+    assert f.degraded is True
+    assert f.default is None
+
+
+def test_argparse_star_import_makes_every_constant_default_opaque():
+    spec = argspec.read_argparse(
+        "import argparse\nHOST = 'outer'\nfrom defaults import *\n"
+        "ap = argparse.ArgumentParser()\nap.add_argument('--host', default=HOST)\n"
+    )
+    assert spec is not None
+    assert spec.fields[0].degraded is True
 
 
 def test_argparse_unknown_name_default_degrades():
@@ -531,6 +570,66 @@ def test_js_secret_constant_never_resolves():
     assert f.degraded is True
     assert f.default is None
     assert "sk-live-abc123" not in repr(f)
+
+
+@pytest.mark.parametrize(
+    ("prefix", "suffix"),
+    [
+        ("function main() { class HOST {}\n", "\n}"),
+        ("function main() { function HOST() {}\n", "\n}"),
+        ("function main() { const {HOST} = source;\n", "\n}"),
+        ("function main() { const {x: HOST} = source;\n", "\n}"),
+        ("function main() { try {} catch (HOST) {\n", "\n}\n}"),
+        ("(function HOST() {\n", "\n})();"),
+    ],
+)
+def test_js_non_parameter_value_binding_does_not_resolve(prefix, suffix):
+    spec = cli_reader.read_cli(
+        'const HOST = "outer";\n'
+        + prefix
+        + 'parseArgs({options:{host:{type:"string", default: HOST}}});'
+        + suffix
+    )
+    assert spec is not None
+    f = spec.fields[0]
+    assert f.degraded is True
+    assert f.default is None
+
+
+@pytest.mark.parametrize(
+    "import_clause",
+    ["HOST", "* as HOST", "{source as HOST}", "{HOST}"],
+)
+def test_js_import_binding_does_not_resolve(import_clause):
+    # Tree-sitter reports syntax, not the later module-linking duplicate-binding error;
+    # the static reader must still never fold through a value import binding.
+    spec = cli_reader.read_cli(
+        f'import {import_clause} from "defaults";\n'
+        'const HOST = "outer";\n'
+        'parseArgs({options:{host:{type:"string", default: HOST}}});\n'
+    )
+    assert spec is not None
+    assert spec.fields[0].degraded is True
+
+
+@pytest.mark.parametrize(
+    "preamble",
+    [
+        'import "defaults";',
+        'import {} from "defaults";',
+        "const Anonymous = class {};",
+        "try {} catch {}",
+    ],
+)
+def test_js_nonbinding_shapes_leave_constant_resolution_intact(preamble):
+    spec = cli_reader.read_cli(
+        'const HOST = "outer";\n'
+        + preamble
+        + '\nparseArgs({options:{host:{type:"string", default: HOST}}});\n'
+    )
+    assert spec is not None
+    assert spec.fields[0].default == "outer"
+    assert spec.fields[0].degraded is False
 
 
 def test_ts_constant_default_resolves():

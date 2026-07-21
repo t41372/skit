@@ -521,7 +521,11 @@ def test_save_after_run_persists_intent_and_stamps_run(tmp_path):
     assert state["values"]["OUTPUT"] == "long_{today}.jpg"  # raw token text, not expansion
     assert "API_KEY" not in state["values"]  # C3
     assert state["extra_args"] == ["--fast"]
-    assert state["last_run"] == {"at": "2026-07-09T14:30:05+00:00", "exit": 0}
+    assert state["last_run"] == {
+        "at": "2026-07-09T14:30:05+00:00",
+        "exit": 0,
+        "values": {"OUTPUT": "long_{today}.jpg", "WIDTH": "800"},
+    }
 
 
 def test_record_run_zero_exit_survives_save(tmp_path):

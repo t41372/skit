@@ -55,6 +55,11 @@ class Candidate:
     # envdefault only: the ${NAME} variable the value is read from at run time (== name; kept
     # explicit so an env-delivery caller never has to re-derive it). "" for const/input.
     env_name: str = ""
+    # envdefault only: an explicitly empty environment value still activates the
+    # source's fallback. Shell's colon operators (:- and :=) have this behavior;
+    # the non-colon operators and fish's set-query idiom do not. Kept as a semantic
+    # boolean so the language-neutral form layer never needs to know shell syntax.
+    empty_uses_default: bool = False
 
 
 @dataclass
@@ -102,6 +107,10 @@ class Report:
     # spec (a const carries a drift warning and keeps its old prefill until resync; an env
     # param stays ok but its default must still fit the declared type).
     current_defaults: dict[str, str | int | float | bool] = field(default_factory=dict)
+    # Managed envdefault names for which an empty environment value still selects
+    # the source fallback. Like current_defaults, this is live source semantics that
+    # is projected onto the run form without changing the frozen [tool.skit] block.
+    empty_uses_default: set[str] = field(default_factory=set)
 
     @property
     def has_drift(self) -> bool:
@@ -379,6 +388,12 @@ def _apply_tweaks(
             by_name[name].env_source = ""  # an env source only means anything on a secret
         else:
             warnings.append(f"not-managed:{name}")
+    # Apply the final-state rule after both lists: `--secret X --no-secret X` ends
+    # public and must keep its public default, while every explicit final transition
+    # to secret removes the cached literal before the block/JSON surfaces can expose it.
+    for name in secret:
+        if name in by_name and by_name[name].secret:
+            by_name[name].default = None
     for name, prompt in prompts.items():
         if name in by_name:
             by_name[name].prompt = prompt
@@ -478,6 +493,8 @@ def reconcile(  # noqa: PLR0912 — one branch per binding and drift category; a
                 covered_envs.add(spec.name)
                 report.ok.append(spec)  # default-text/type changes stay ok (env delivery)
                 _record_default(report, spec, cand)
+                if cand.empty_uses_default:
+                    report.empty_uses_default.add(spec.name)
             continue
         cand = consts.get(spec.name)
         if cand is None:
