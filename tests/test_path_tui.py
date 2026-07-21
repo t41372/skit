@@ -9,9 +9,10 @@ import sys
 from pathlib import Path
 
 import pytest
+from textual.content import Content
 from textual.message import Message
 from textual.suggester import SuggestionReady
-from textual.widgets import Input, OptionList, Static
+from textual.widgets import Checkbox, Input, OptionList, Static
 
 from skit import argv_text, flows, store, tui, tui_footer, tui_pathpick
 from skit.tui_form import _EXTRA_KEY, FieldRow, RunFormScreen, TokenMenuModal
@@ -649,6 +650,147 @@ async def test_token_rows_still_insert_at_cursor(tmp_path, monkeypatch):
         await pilot.press("enter")
         await pilot.pause()
         assert src_row.value == "out-{today}.csv"
+
+
+# ---------------------------------------------------------------------------
+# The 📁 browse link: the picker's own door, on the field (issue #7 follow-up)
+# ---------------------------------------------------------------------------
+
+MIXED_TYPES = (
+    "import argparse\nfrom pathlib import Path\n"
+    "ap = argparse.ArgumentParser()\n"
+    "ap.add_argument('--src', type=Path)\n"
+    "ap.add_argument('--note')\n"
+    "ap.add_argument('--count', type=int)\n"
+    "ap.add_argument('--loud', action='store_true')\n"
+    "ap.parse_args()\n"
+)
+
+
+async def _open_mixed_form(app, pilot, tmp_path, monkeypatch):
+    root = _tree(tmp_path)
+    monkeypatch.setattr(
+        tui_pathpick.PathContext, "for_entry", classmethod(lambda cls, entry: _ctx(root))
+    )
+    p = tmp_path / "mixed.py"
+    p.write_text(MIXED_TYPES, encoding="utf-8")
+    entry = store.add_python(p, name="mixed")
+    screen = RunFormScreen(entry, flows.plan_for_entry(entry), {})
+    app.push_screen(screen)
+    await pilot.pause()
+    return screen, root
+
+
+def _label(row: FieldRow) -> str:
+    return str(row.query_one(".field-label", Static).render())
+
+
+def _label_actions(row: FieldRow) -> list[str]:
+    """The screen actions the label row's links actually fire, read off the rendered
+    spans — a typo in the markup would leave a link that clicks into nothing."""
+    rendered = row.query_one(".field-label", Static).render()
+    assert isinstance(rendered, Content)
+    spans = rendered.spans
+    return [
+        str(span.style).split("screen.", 1)[1].split("(", 1)[0]
+        for span in spans
+        if "@click=screen." in str(span.style)
+    ]
+
+
+async def test_browse_link_renders_on_text_fields_only(tmp_path, monkeypatch):
+    """The affordance the picker shipped without: a per-field door that says what it
+    does. It rides EVERY insertable text field (a shell/JS entry never gets an inferred
+    `path` type, so type-gating it would leave those with no visible door) — but never a
+    numeric or non-text one, where a picked path is a guaranteed validation error."""
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen, _root = await _open_mixed_form(app, pilot, tmp_path, monkeypatch)
+        rows = {r.field.key: r for r in screen.query(FieldRow)}
+        for key in ("src", "note", _EXTRA_KEY):  # path, plain str, the extra-args row
+            assert rows[key].browsable is True
+            assert "browse" in _label(rows[key])
+            assert "insert" in _label(rows[key])  # both doors, never one replacing the other
+            # Browse reads first: it is the primary act on a field that holds a path.
+            assert _label_actions(rows[key]) == ["browse_path", "insert_token"]
+        for key in ("count", "loud"):  # whole number, on/off
+            assert rows[key].browsable is False
+            assert "browse" not in _label(rows[key])
+        assert rows["count"].insertable is True  # the ▾ menu is unchanged there
+        assert _label_actions(rows["count"]) == ["insert_token"]
+        # A link that clicks into nothing would fail silently; pin both actions exist.
+        for name in ("browse_path", "insert_token"):
+            assert callable(getattr(RunFormScreen, f"action_{name}", None))
+
+
+async def test_browse_link_opens_the_picker_directly_and_replaces(tmp_path, monkeypatch):
+    """The flagship journey, now one click: 📁 browse → pick → the value is in the field.
+    No token menu in between."""
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen, _root = await _open_form(app, pilot, tmp_path, monkeypatch)
+        src_row = next(r for r in screen.query(FieldRow) if r.field.key == "src")
+        src_row.set_value("old-prefill.csv")
+        screen.action_browse_path("src")
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, FilePickerModal)
+        picker.query_one(Input).value = "data"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert src_row.value == "data.csv"
+        assert src_row.query_one(Input).has_focus
+
+
+async def test_browse_without_a_key_uses_the_focused_field_and_its_dialect(tmp_path, monkeypatch):
+    """Keyless entry (the focused-field route the footer chip uses) lands on the focused
+    row — and honours THAT row's insert mode: the extra-args row appends a CRT-quoted
+    piece rather than replacing."""
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen, root = await _open_form(app, pilot, tmp_path, monkeypatch)
+        (root / "a b.txt").write_text("x", encoding="utf-8")
+        extra_row = next(r for r in screen.query(FieldRow) if r.field.key == _EXTRA_KEY)
+        extra_row.set_value("--verbose")
+        extra_row.query_one(Input).focus()
+        await pilot.pause()
+        screen.action_browse_path()
+        await pilot.pause()
+        picker = app.screen
+        assert isinstance(picker, FilePickerModal)
+        picker.query_one(Input).value = "a b"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        quoted = '"a b.txt"' if sys.platform == "win32" else "'a b.txt'"
+        assert extra_row.value == f"--verbose {quoted}"
+
+
+async def test_browse_refuses_numeric_secret_and_unknown_rows(tmp_path, monkeypatch):
+    """Both gates hold: `_insert_target` rejects what has no text field to fill, and
+    `browsable` rejects the numeric row the token menu still serves."""
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen, _root = await _open_mixed_form(app, pilot, tmp_path, monkeypatch)
+        for key in ("count", "loud", "row-that-no-longer-exists"):
+            screen.action_browse_path(key)
+            await pilot.pause()
+            assert app.screen is screen  # no picker was pushed
+        screen.query_one(Checkbox).focus()  # the keyless route, focus on a non-text field
+        await pilot.pause()
+        screen.action_browse_path()
+        await pilot.pause()
+        assert app.screen is screen
+
+
+def test_fieldrow_browsable_needs_a_context():
+    """@property bodies are a mutmut blind spot (see below), and this one has a branch no
+    form exercises: a FieldRow built without a completion context cannot browse — there is
+    no root to open the picker at."""
+    field = flows.FormField(key="x", label="x", source="flag")
+    assert FieldRow(field, "").browsable is False
+    assert FieldRow(field, "", path_ctx=_ctx(Path.cwd())).browsable is True
 
 
 def test_fieldrow_shlexy_and_insert_mode_all_branches():

@@ -1,13 +1,48 @@
 # Path-aware parameter entry — design
 
-Status: **review-clean** (v5, 2026-07-19; three adversarial design review rounds, then
-implementation review round 1 applied — see the v4 → v5 revision notes). Resolves [#7](https://github.com/t41372/skit/issues/7) — "Make file
+Status: **shipped in 0.3.0, entry point revised in v6** (2026-07-21). Resolves [#7](https://github.com/t41372/skit/issues/7) — "Make file
 selector more intuitive". Read `docs/design/multilang.md` first (the `ParamDecl`
 universal model and the kind registry) and `docs/design/prompt.md` for the run form's
 current shape — this design is an additive layer on both. Ships from
 `feat/path-picker`, which lands **after** `feat/prompt-kind` merges; file:line
 references are as of base `91a70ea` and are anchored by symbol name where the form is
 in flux.
+
+Revision notes (v5 → v6, from shipping it — the feature worked and nobody found it):
+
+- **The picker shipped invisible, and six review rounds never asked whether it
+  would be found.** The entry-point paragraph in §5 survived byte-identical from v1
+  (`8d67917`) through merge; every round that touched it was arguing correctness —
+  roots, quoting dialects, reconcile drift, a `PgUp` crash. The one place the design
+  reasoned about the mouse (§4, "Mouse story, argued") proved the picker was
+  **reachable** — `▾ insert` link → *"File or folder…"* → rows — which is what the
+  constitutional rule demands, and stopped there. Reachable is not discoverable. On
+  the shipped form a `path` field's affordance is spelled `▾ insert`, the same eight
+  characters as on a `count whole number` field: nothing on the row says a file
+  browser exists.
+- **The classification was the bug.** §5 already knew a picked path is not a token —
+  "a picked path *is* the value", which is why single-value fields **replace** instead
+  of inserting at the cursor — while the entry point filed it under a modal titled
+  *"Insert a run-time value"*, next to `{cwd}` and `{today}`. The semantics and the
+  affordance disagreed; the affordance is what the user reads.
+- **Fix: the picker gets its own door, on the field.** The label row of every
+  insertable text field carries `📁 browse` **before** `▾ insert`
+  (`FieldRow.browsable`, `RunFormScreen.action_browse_path`), opening
+  `FilePickerModal` directly. Both links stay — the token menu is not demoted, and
+  no field loses a mouse path it had.
+- **v1's stated reason survives intact, because it was about keys.** "No per-type
+  chord is introduced" still holds: `action_browse_path` is bound to no key at all.
+  The keyboard reaches the same picker exactly as before — `Ctrl+T` → *"File or
+  folder…"* (first and highlighted on a `path` field). One action, two doors; no
+  chord gains a second meaning.
+- **Scope is every insertable text field, not just `path`-typed ones.** Outside
+  Python no analyzer infers path-ness (§2), so type-gating the link would leave every
+  shell / JS / exe / command entry with no visible door — the majority of the library.
+  **Numeric fields are excluded**: `validate` rejects a path in an `int`/`float`
+  field, and an entry point to a guaranteed error is not an affordance. `bool` and
+  `choice` were never insertable; secrets stay dark (risk 6, unchanged).
+- Demo assets go stale by the same rule that made them stale in P1c — the run form's
+  visible copy changed again.
 
 Revision notes (v1 → v2, from the adversarial review — each verified against the code
 before being adopted):
@@ -288,8 +323,12 @@ and it keeps the eventual rebase near-trivial.
   text cannot re-case what was typed; case-forgiving lookup belongs to the picker.
 - **Mouse story, argued**: `→`-to-accept is keyboard sugar over typing, not a
   mouse-orphaned capability — the *action* ("get this path into the field") is fully
-  mouse-operable via the `▾ insert` link / footer chip → *"File or folder…"* → picker
-  rows. `→` is deliberately not footer-advertised (it is the stock Textual suggester
+  mouse-operable via the field's `📁 browse` link (v6; before that, the `▾ insert`
+  link / footer chip → *"File or folder…"*) → picker rows. Note what this argument
+  did and did not establish: it proved the capability is **reachable** by mouse, the
+  test the constitution actually applies. It says nothing about whether a user
+  *notices* it — and for v1–v5's single generic `▾ insert` entry, they did not.
+  `→` is deliberately not footer-advertised (it is the stock Textual suggester
   gesture, like `Ctrl+A`-home on an Input), so the advertised-key pilot-test policy
   does not attach; the suggester itself is unit-tested.
 
@@ -356,11 +395,19 @@ with the seams specified where the precedent behaves differently:
     (`tui_form.py:713-717`), the picker's dismissal result is a **discriminated
     type** (a picked-path wrapper vs. a plain token string), so the callback can tell
     them apart by construction rather than by sniffing the text.
-- **Entry points**: `TokenMenuModal` gains a *"File or folder…"* row available to every
-  insertable field, chaining into the picker the way *"Environment variable…"* chains
-  into `EnvPickerModal`. On a `path`-typed field that row is **first and highlighted**,
-  so `Ctrl+T, Enter` is the two-keystroke browse path. `Ctrl+T` keeps its one grammar
-  meaning — insert a value — and no per-type chord is introduced.
+- **Entry points** (two doors onto one action — v6):
+  - **The field's own `📁 browse` link**, first in the label row of every insertable
+    text field (`FieldRow.browsable`: not secret, not `bool`/`choice`, not
+    `int`/`float`), opening `FilePickerModal` directly. This is the *discoverable*
+    door, and it is the one the v1–v5 design lacked — see the v5 → v6 notes.
+  - **`TokenMenuModal`'s *"File or folder…"* row**, chaining into the picker the way
+    *"Environment variable…"* chains into `EnvPickerModal`; on a `path`-typed field it
+    is **first and highlighted**, so `Ctrl+T, Enter` is the two-keystroke browse path.
+    This is the *keyboard* door.
+  - `Ctrl+T` keeps its one grammar meaning — insert a value — and **no per-type chord
+    is introduced**: `action_browse_path` carries no binding, only a click target.
+    Both doors land through the same callback, so the per-shape insertion semantics
+    below cannot fork between them.
 
 ## CLI surface (additive only)
 

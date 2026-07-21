@@ -77,8 +77,10 @@ Sleep 1s
 
 # 4 — Run form for the argparse script (text / number / checkbox / path), partly filled in.
 #     Search greet, run it, fill the fields. The path row (--names is typed `Path`, so skit
-#     detects it) is filled through the picker rather than typed: Ctrl+T on a path field opens
-#     the insert menu with "File or folder…" already highlighted, Enter opens the browser, the
+#     detects it) is filled through the picker rather than typed. Every text row shows its two
+#     doors in the label — "📁 browse" (click straight into the picker) and "▾ insert" — and the
+#     tape drives the keyboard one, since VHS has no mouse: Ctrl+T on a path field opens the
+#     insert menu with "File or folder…" already highlighted, Enter opens the browser, the
 #     filter takes the first match — so the shot shows a real picked path, not a typed string.
 Type "/"
 Sleep 400ms

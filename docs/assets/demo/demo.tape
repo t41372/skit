@@ -69,9 +69,11 @@ Sleep 2s
 #     retained output, then relaunch the Library once so the completed run is visible.
 #
 #     The path field is the one place a demo earns its keep: --names is typed `Path` in argparse,
-#     so skit detects it and the field grows the browse affordance. Ctrl+T on a path field opens
-#     the insert menu with "File or folder…" ALREADY highlighted (path-typed fields browse
-#     first), so Ctrl+T, Enter lands straight in the picker — the flagship journey. Type to
+#     so skit detects it and the field grows the path type hint. The browse affordance is on the
+#     row itself — "📁 browse" opens the picker in one click — but VHS drives no mouse, so this
+#     tape takes the keyboard door: Ctrl+T on a path field opens the insert menu with "File or
+#     folder…" ALREADY highlighted (path-typed fields browse first), so Ctrl+T, Enter lands
+#     straight in the picker — the flagship journey. Type to
 #     filter, Enter takes the highlighted match. (The field also ghost-completes as you type,
 #     fish-style, with → to accept; that one is keyboard sugar over the same result and is
 #     deliberately not staged here — one path story per demo.)
