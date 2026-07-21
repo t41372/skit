@@ -110,16 +110,8 @@ class KindPickModal(ModalScreen[str | None]):
         from textual.widgets import Label
         from textual.widgets.option_list import Option
 
-        from .langs.registry import KNOWN_KINDS, spec_for
+        from .kindnames import kind_choices
 
-        # "prompt" is family "interpreted" too, but it has its OWN dedicated option below
-        # ("A prompt for an AI agent") — listing it here as well would duplicate the id
-        # (OptionList raises DuplicateID) and offer the same kind twice.
-        interpreted = sorted(
-            k
-            for k in KNOWN_KINDS
-            if (spec := spec_for(k)) is not None and spec.family == "interpreted" and k != "prompt"
-        )
         with Vertical():
             yield Label(
                 (
@@ -127,14 +119,17 @@ class KindPickModal(ModalScreen[str | None]):
                     if self._has_shebang
                     else gettext("What is %(file)s? skit can't tell from the name.")
                 )
-                % {"file": self._filename}
+                # escape: the Label parses markup, and a bracketed filename
+                # ("report [draft].md") would have its tag-shaped segment silently
+                # swallowed — the plain twin (_ask_kind_plain) and every review
+                # screen's border_title escape the same way.
+                % {"file": escape(self._filename)}
             )
-            from .kindnames import kind_label
-
-            options = [Option(kind_label(kind), id=kind) for kind in interpreted]
-            if self._offer_exe:
-                options.append(Option(gettext("A program (run it directly)"), id="exe"))
-            options.append(Option(gettext("A prompt for an AI agent"), id="prompt"))
+            # The ONE option list both faces render (kindnames.kind_choices) — this
+            # modal and the plain menu cannot drift on kinds, labels, or order.
+            options = [
+                Option(label, id=kind) for kind, label in kind_choices(offer_exe=self._offer_exe)
+            ]
             if self._suggested is not None:
                 options.sort(key=lambda option: option.id != self._suggested)
             yield OptionList(*options)
@@ -258,8 +253,16 @@ class AddSourceScreen(Screen[str | None]):
             # ARBITRARY tail — the draft the user just lost is exactly the one that
             # must surface. The cap keeps the screen usable; the overflow line keeps
             # it honest (a silent cap reads as "this is everything").
+            # is_file: drafts are always mkstemp FILES — a hand-planted skit-*
+            # directory must not be offered for resume (the dir lane would store an
+            # exe reference into drafts/, the shape the boundary forbids) or for
+            # "Delete draft…" (unlink on a directory raises).
             drafts = (
-                sorted(drafts_dir().glob("skit-*"), key=_mtime, reverse=True)
+                sorted(
+                    (d for d in drafts_dir().glob("skit-*") if d.is_file()),
+                    key=_mtime,
+                    reverse=True,
+                )
                 if drafts_dir().is_dir()
                 else []
             )
@@ -1603,11 +1606,13 @@ class AddSourceApp(_ReviewHost):
         super().__init__(AddSourceScreen())
 
 
-class KindPickApp(_ReviewHost):
+class KindPickApp(_ScreenHost[str | None]):
     """`skit add weirdfile` in an interactive terminal: the kind ask alone. It
     returns the picked KIND (not a slug) — the CLI feeds it back into the same
     per-kind dispatch every explicit --kind add takes, so flag refusals and
-    review panels can't drift between the asked and the typed spelling."""
+    review panels can't drift between the asked and the typed spelling.
+    (_ScreenHost, not _ReviewHost: that base's contract is "exits with the new
+    entry's slug", and a kind must never inherit slug-shaped behavior.)"""
 
     def __init__(
         self, filename: str, *, has_shebang: bool, offer_exe: bool, suggested: str | None = None

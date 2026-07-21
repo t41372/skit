@@ -1321,3 +1321,97 @@ def test_run_candidate_picker_returns_the_apps_result(tmp_path, monkeypatch):
     assert isinstance(modal, tui_prompt.PromptCandidatePickerModal)
     assert modal._names == ["a", "b"]
     assert modal._selected == {"a"}
+
+
+# ---------------------------------------------------------------------------
+# Drafts listing lists FILES only; advertised keys have positive key tests
+# ---------------------------------------------------------------------------
+
+
+async def test_drafts_list_skips_planted_directories(tmp_path):
+    """The resumable list is built from drafts_dir(): a hand-planted skit-* DIRECTORY
+    must not appear — resuming it would route the dir lane to an exe reference inside
+    drafts/ (the shape the boundary forbids), and "Delete draft…" would unlink() a
+    directory (IsADirectoryError)."""
+    from skit.paths import drafts_dir
+    from skit.tui_add import AddSourceApp
+
+    drafts_dir().mkdir(parents=True, exist_ok=True)
+    (drafts_dir() / "skit-real.py").write_text("print(1)\n", encoding="utf-8")
+    (drafts_dir() / "skit-planted").mkdir()
+
+    app = AddSourceApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        options = app.screen.query_one("#add-drafts", OptionList)
+        ids = [str(options.get_option_at_index(i).id) for i in range(options.option_count)]
+    assert [i.rsplit("/", 1)[-1] for i in ids] == ["skit-real.py"]
+
+
+async def test_template_desc_enter_key_submits(tmp_path):
+    """The footer's advertised Enter, pressed for real on the NEW description input —
+    the key must reach _submit_template through the actual @on(Input.Submitted)
+    wiring, not a synthetically constructed event."""
+    from skit.tui_add import AddSourceApp
+
+    app = AddSourceApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.screen.query_one("#add-template", Input).value = "echo {x}"
+        app.screen.query_one("#add-template-name", Input).value = "keyed"
+        app.screen.query_one("#add-template-desc", Input).focus()
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+    entry = store.resolve("keyed")
+    assert entry.meta.kind == "command"
+    assert app.return_value == entry.slug
+
+
+async def test_exe_review_ctrl_s_key_adds(tmp_path):
+    """The advertised Ctrl+S (priority binding over the AUTO_FOCUSed Input), pressed
+    for real on the standalone exe review — the CLI face this branch adds."""
+    from skit.tui_add import ExeReviewApp
+
+    exe = tmp_path / "tool"
+    exe.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    exe.chmod(0o755)
+    app = ExeReviewApp(exe, name="kbd", description="via keys")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+    entry = store.resolve("kbd")
+    assert entry.meta.kind == "exe"
+    assert entry.meta.description == "via keys"
+    assert app.return_value == entry.slug
+
+
+async def test_exe_review_escape_key_cancels(tmp_path):
+    from skit.tui_add import ExeReviewApp
+
+    exe = tmp_path / "tool"
+    exe.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    exe.chmod(0o755)
+    app = ExeReviewApp(exe)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("escape")
+        await pilot.pause()
+    assert app.return_value is None
+    assert store.list_entries() == []
+
+
+async def test_kind_pick_question_shows_bracketed_filename_verbatim(tmp_path):
+    """The modal's question escapes the filename like its plain twin does: a bracketed
+    name must display verbatim, not have its tag-shaped segment swallowed as markup —
+    the question's whole job is identifying the file being classified."""
+    from textual.widgets import Label
+
+    from skit.tui_add import _ScreenHost
+
+    host = _ScreenHost(KindPickModal("report [draft].md", has_shebang=False))
+    async with host.run_test() as pilot:
+        await pilot.pause()
+        label = str(host.screen.query(Label).first().render())
+    assert label == "What is report [draft].md? skit can't tell from the name."

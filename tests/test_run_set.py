@@ -412,3 +412,46 @@ def test_interactive_all_fields_set_skips_the_form_entirely(tmp_path, run_entry_
     monkeypatch.setattr(cli, "_collect_values", explode)
     result = runner.invoke(cli.app, ["run", "trip", "--set", "CITY=x", "--set", "TIMES=1"])
     assert result.exit_code == 0, result.output
+
+
+def test_save_preset_no_fields_refused_before_any_form(tmp_path, monkeypatch):
+    """The no-form-fields --save-preset refusal fires BEFORE the interactive collection:
+    a refused invocation must not first host the runner picker (an answered question)
+    or write last-picked runner state (a fingerprint). Regression pin for the hoist —
+    previously a field-less prompt entry opened the picker, saved last-runner, and
+    only then exited 2."""
+    from skit import config
+
+    p = tmp_path / "plain.prompt.md"
+    p.write_text("Just do the thing.\n", encoding="utf-8")
+    store.add_prompt(p, name="plainp")
+    config.ensure_prompt_runners_seeded()  # runner_names non-empty -> picker would host
+    config.save_form("tui")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+
+    def boom(*a, **kw):  # the form/picker must never open for a refused --save-preset
+        raise AssertionError("collection opened before the refusal")
+
+    monkeypatch.setattr(cli, "_collect_values", boom)
+    result = runner.invoke(cli.app, ["run", "plainp", "--save-preset", "x"], env={"TERM": "xterm"})
+    assert result.exit_code == 2, result.output
+    assert "has no form fields" in result.output
+    assert not argstate.load_last_runner()  # no fingerprint
+
+
+def test_save_preset_persists_when_ctrl_c_ends_an_accepted_run(monkeypatch):
+    """Ctrl+C ends the RUNNING script, not the request to keep its values: the launch
+    was accepted, so --save-preset persists. Regression pin for the deferral — the
+    preset must not be lost to the keystroke that normally ends a server/watch
+    script."""
+    ent = store.add_command("echo {msg}", name="e")
+
+    def interrupt(*a, **kw):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli.flows, "execute", interrupt)
+    result = runner.invoke(
+        cli.app, ["run", "e", "--set", "msg=hi", "--save-preset", "prod", "--no-input"]
+    )
+    assert result.exit_code == 130, result.output
+    assert argstate.load_state(ent.slug)["presets"]["prod"] == {"msg": "hi"}

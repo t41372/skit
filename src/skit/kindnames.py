@@ -29,3 +29,25 @@ def kind_label(kind: str) -> str:
         "command": gettext("Command"),
         "prompt": gettext("Prompt"),
     }.get(kind, kind)
+
+
+def kind_choices(*, offer_exe: bool) -> list[tuple[str, str]]:
+    """The (kind, label) options of the unclassifiable-file ASK, in display order —
+    ONE list rendered by both faces (KindPickModal's options and the plain form's
+    numbered menu), so the twins cannot drift. "prompt" is family "interpreted" too,
+    but it gets its OWN dedicated wording at the end (and, in the modal, listing it
+    twice would duplicate the option id); exe is gated because the draft lanes
+    withhold it (authored text is never a binary, and the drafts boundary refuses
+    exe entries outright)."""
+    from .langs.registry import KNOWN_KINDS, spec_for
+
+    interpreted = sorted(
+        k
+        for k in KNOWN_KINDS
+        if (spec := spec_for(k)) is not None and spec.family == "interpreted" and k != "prompt"
+    )
+    choices = [(k, kind_label(k)) for k in interpreted]
+    if offer_exe:
+        choices.append(("exe", gettext("A program (run it directly)")))
+    choices.append(("prompt", gettext("A prompt for an AI agent")))
+    return choices

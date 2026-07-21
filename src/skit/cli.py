@@ -26,7 +26,7 @@ import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, cast, overload
+from typing import TYPE_CHECKING, NoReturn, cast, overload
 
 import typer
 from rich.console import Console
@@ -92,6 +92,24 @@ def _fail(message: str, code: int) -> typer.Exit:
 
 def _is_interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _wants_tui_form() -> bool:
+    """Whether an interactive flow should host a Textual mini-form/panel rather than
+    line prompts: form=tui (the default) on a terminal that can render one — TERM=dumb
+    (screen readers, Emacs shells) always falls back to the plain twin. Only the
+    form-STYLE half of the decision: callers gate --no-input/_is_interactive
+    themselves, because their refusal timing differs per lane."""
+    return os.environ.get("TERM") != "dumb" and config.load_form() == "tui"
+
+
+def _cancelled_add() -> NoReturn:
+    """The one cancel exit every interactive add lane shares: the dim note, then 130.
+    One helper, not nine copies — the message and the exit code are a single
+    contract (agents script against both), so they must not be able to drift
+    per lane."""
+    console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
+    raise typer.Exit(EXIT_CANCELLED)
 
 
 # --------------------------------------------------------------------------
@@ -1340,22 +1358,13 @@ def _ask_kind_plain(filename: str, *, has_shebang: bool, offer_exe: bool) -> str
     `suggested` twin on purpose: in plain mode the .md fast path is the Confirm ask
     that runs BEFORE this menu — if that Confirm ever grows another suggested kind,
     thread `suggested` through here too or the twins diverge."""
-    from .kindnames import kind_label
-    from .langs.registry import KNOWN_KINDS, spec_for
+    from .kindnames import kind_choices
 
-    # "prompt" gets its own dedicated option below, same as the modal.
-    interpreted = sorted(
-        k
-        for k in KNOWN_KINDS
-        if (spec := spec_for(k)) is not None and spec.family == "interpreted" and k != "prompt"
-    )
-    kinds = list(interpreted)
-    labels = [kind_label(k) for k in interpreted]
-    if offer_exe:
-        kinds.append("exe")
-        labels.append(gettext("A program (run it directly)"))
-    kinds.append("prompt")
-    labels.append(gettext("A prompt for an AI agent"))
+    # The ONE option list both faces render (kindnames.kind_choices) — the modal and
+    # this menu cannot drift on kinds, labels, or order.
+    choices = kind_choices(offer_exe=offer_exe)
+    kinds = [k for k, _ in choices]
+    labels = [label for _, label in choices]
     question = (
         gettext("The #! in %(file)s names no interpreter skit knows. What is it?")
         if has_shebang
@@ -1386,6 +1395,14 @@ def _report_command_params(entry: store.Entry) -> None:
         )
 
 
+def _command_secret_names(entry: store.Entry) -> list[str]:
+    """A template's secret-looking {holes}. The run form treats them as secrets
+    (params.synthesized_placeholder sets secret=is_secret_name), so every door of a
+    template add must give the same never-saved caveat the other lanes' secrets get —
+    "your last values are remembered" alone would be a lie for an {API_KEY}."""
+    return [n for n in (entry.meta.params or []) if is_secret_name(n)]
+
+
 def _hosted_add_summary(entry: store.Entry) -> tuple[list[str], list[str], list[str]]:
     """(deps, managed, secrets) for the post-add summary of a panel-hosted add — the
     same trace the line-prompt onboarding leaves. Deps come from effective_uv_metadata
@@ -1412,16 +1429,22 @@ def _add_no_source_ask() -> str | None:
     starts from the same blank slate the TUI source step does. Returns a path for the
     caller to continue the path lane with, or None when the add was handled (or
     cancelled) here."""
-    if os.environ.get("TERM") != "dumb" and config.load_form() == "tui":
+    if _wants_tui_form():
         # The SAME source step the Library's `a` pushes — path, command template,
         # kept drafts, and both blank-page authoring lanes.
         from .tui_add import run_add_source
 
         slug = run_add_source()
         if slug is None:
-            console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
-            raise typer.Exit(EXIT_CANCELLED)
+            _cancelled_add()
         entry = store.resolve(slug)
+        if entry.meta.kind == "command":
+            # The template lanes' ONE report shape (the --cmd and plain-menu doors):
+            # the teaching note plus the secrets caveat — never a second "Managed
+            # parameters" spelling of the same names just because a panel hosted it.
+            _report_command_params(entry)
+            _print_add_summary(entry, [], [], _command_secret_names(entry))
+            return None
         summary_deps, summary_managed, summary_secrets = _hosted_add_summary(entry)
         _print_add_summary(entry, summary_deps, summary_managed, summary_secrets)
         return None
@@ -1445,23 +1468,20 @@ def _add_no_source_ask() -> str | None:
         # template, name, and path asks all behave alike.
         template = Prompt.ask(gettext("Command template"), console=console).strip()
         if not template:
-            console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
-            raise typer.Exit(EXIT_CANCELLED)
+            _cancelled_add()
         cmd_name = Prompt.ask(gettext("Name for the command"), console=console).strip()
         if not cmd_name:
-            console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
-            raise typer.Exit(EXIT_CANCELLED)
+            _cancelled_add()
         description = Prompt.ask(
             gettext("Description (optional)"), default="", console=console
         ).strip()
         entry = store.add_command(template, name=cmd_name, description=description)
         _report_command_params(entry)
-        _print_add_summary(entry, [], [], [])
+        _print_add_summary(entry, [], [], _command_secret_names(entry))
         return None
     path = Prompt.ask(gettext("Path to the file"), console=console).strip()
     if not path:
-        console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
-        raise typer.Exit(EXIT_CANCELLED)
+        _cancelled_add()
     return path
 
 
@@ -1734,6 +1754,7 @@ def add(
             _refuse_unusable_add_flags("command", spec_for("command"), ref, dep, python)
             entry = store.add_command(cmd, name=name, description=description or "")
             _report_command_params(entry)
+            summary_secrets = _command_secret_names(entry)
         else:
             if not path:
                 # Bare `skit add`: pipes/CI get the honest lane list; a terminal gets
@@ -1763,16 +1784,36 @@ def add(
                 if withheld:
                     # Refuse-never-drop: nothing is picked yet, so the ask below has
                     # nothing these could apply to (and can't carry them along).
-                    err_console.print(
-                        "[red]"
-                        + gettext(
+                    # Name ONLY the lanes that honor every withheld flag (the
+                    # non-interactive branch's rule, one block up): recommending a
+                    # lane that refuses one of them is a guaranteed second refusal.
+                    # --name/--description apply to every lane, so they never narrow
+                    # the recommendation.
+                    needy = set(withheld) - {"--name", "--description"}
+                    lanes = [
+                        spelling
+                        for lane_key, spelling in (
+                            ("editor", "--edit"),
+                            ("prompt-editor", "--prompt"),
+                            ("cmd", "--cmd"),
+                        )
+                        if needy <= honorable[lane_key]
+                    ]
+                    message = (
+                        gettext(
                             "%(flags)s need a source — pass the path in the same "
                             "command (skit add PATH …), or pick a lane outright with "
-                            "--edit, --prompt, or --cmd (nothing was added)."
+                            "%(lanes)s (nothing was added)."
+                        )
+                        % {"flags": ", ".join(withheld), "lanes": ", ".join(lanes)}
+                        if lanes
+                        else gettext(
+                            "%(flags)s need a source — pass the path in the same "
+                            "command (skit add PATH …) (nothing was added)."
                         )
                         % {"flags": ", ".join(withheld)}
-                        + _RED_CLOSE
                     )
+                    err_console.print("[red]" + message + _RED_CLOSE)
                     raise typer.Exit(EXIT_USAGE)
                 asked = _add_no_source_ask()
                 if asked is None:
@@ -1800,14 +1841,20 @@ def add(
             # and only then admit that there was never a file to inspect.
             if kind == "exe":
                 _require_exists(resolved)
-            else:
-                if resolved.is_dir() and kind == "unknown":
-                    # A bare directory CAN be added — as a program (add_exe
-                    # deliberately accepts any existing path; the TUI's path lane
-                    # routes one to the exe review) — so "Not a file" without the
-                    # escape would teach a dead end. Only for unclaimed names: a
-                    # directory wearing a script extension (x.prompt.md/) is a typo,
-                    # and suggesting --exe for it would be its own little lie.
+            elif resolved.is_dir() and kind == "unknown":
+                # A bare directory CAN be added — as a program (add_exe
+                # deliberately accepts any existing path; the TUI's path lane
+                # routes one to the exe review) — so "Not a file" without the
+                # escape would teach a dead end. Only for unclaimed names: a
+                # directory wearing a script extension (x.prompt.md/) is a typo,
+                # and suggesting --exe for it would be its own little lie.
+                # Interactively the escape is COLLECTED, not taught (a refusal
+                # must not follow answered questions — the plain bare-add menu
+                # just asked for this path): form=tui rejoins the exe lane, whose
+                # review panel is the consent ask (Esc cancels — the same routing
+                # the TUI's own path lane gives a directory); form=plain gets a
+                # line Confirm first, because its prompts have no Esc.
+                if no_input or not _is_interactive():
                     err_console.print(
                         "[red]"
                         + gettext(
@@ -1818,6 +1865,15 @@ def add(
                         + _RED_CLOSE
                     )
                     raise typer.Exit(EXIT_USAGE)
+                if not _wants_tui_form() and not Confirm.ask(
+                    gettext("%(file)s is a directory. Add it as a program that runs directly?")
+                    % {"file": escape(resolved.name)},
+                    default=True,
+                    console=console,
+                ):
+                    _cancelled_add()
+                kind = "exe"
+            else:
                 _require_file(resolved)
             if is_draft(resolved) and (ref or kind == "exe"):
                 # ONE guard, BEFORE any interactive ask (a refusal must not follow
@@ -1863,9 +1919,7 @@ def add(
             # to refuse outright: interactively, ask; under --no-input/pipe, an
             # explicit --prompt is required — never a guess.
             interactive_ask = kind == "unknown" and not no_input and _is_interactive()
-            tui_ask = (
-                interactive_ask and os.environ.get("TERM") != "dumb" and config.load_form() == "tui"
-            )
+            tui_ask = interactive_ask and _wants_tui_form()
             looks_prompt = resolved.suffix.lower() == ".md"
             # One interaction paradigm per form (the `run` rule — never a bare line
             # prompt glued to a Textual app): under form=tui the .md fast path IS the
@@ -1913,8 +1967,7 @@ def add(
                         resolved.name, has_shebang=ask_shebang, offer_exe=ask_exe
                     )
                 if picked is None:
-                    console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
-                    raise typer.Exit(EXIT_CANCELLED)
+                    _cancelled_add()
                 kind = picked
             kind_spec = spec_for(kind)
             _refuse_unusable_add_flags(kind, kind_spec, ref, dep, python)
@@ -1934,18 +1987,12 @@ def add(
                 # it started in the kind modal — the `run` rule (one paradigm per form),
                 # exact parity with the prompt/script lanes. Pipes/CI/--no-input/form=plain
                 # keep the line-prompt path untouched.
-                if (
-                    not no_input
-                    and _is_interactive()
-                    and os.environ.get("TERM") != "dumb"
-                    and config.load_form() == "tui"
-                ):
+                if not no_input and _is_interactive() and _wants_tui_form():
                     from .tui_add import run_exe_review
 
                     slug = run_exe_review(resolved, name=name, description=description)
                     if slug is None:
-                        console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
-                        raise typer.Exit(EXIT_CANCELLED)
+                        _cancelled_add()
                     entry = store.resolve(slug)
                 else:
                     if not no_input and _is_interactive():
@@ -2010,12 +2057,7 @@ def add(
                 # Interactive + mini-form style: host the SAME review panel the TUI's
                 # `a` opens for prompts (flags prefill it) — exact python-lane parity.
                 # Pipes/CI/--no-input/form=plain keep the line-prompt path untouched.
-                if (
-                    not no_input
-                    and _is_interactive()
-                    and os.environ.get("TERM") != "dumb"
-                    and config.load_form() == "tui"
-                ):
+                if not no_input and _is_interactive() and _wants_tui_form():
                     # The panel's __init__ reads the body outright — guard BEFORE it
                     # opens (the python lane's _require_file discipline), so a typo'd
                     # path is a clean StoreError, never a raw FileNotFoundError.
@@ -2034,8 +2076,7 @@ def add(
                         interpolate=not no_interpolate,
                     )
                     if slug is None:
-                        console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
-                        raise typer.Exit(EXIT_CANCELLED)
+                        _cancelled_add()
                     entry = store.resolve(slug)
                     summary_managed = list(entry.meta.params or [])
                 else:
@@ -2056,12 +2097,7 @@ def add(
                 # list from the kind's own analyzer. (The old comment claimed these
                 # kinds "have no analyzer to review with"; shell/js/ts/fish all do —
                 # the panel just was never wired to them.)
-                if (
-                    not no_input
-                    and _is_interactive()
-                    and os.environ.get("TERM") != "dumb"
-                    and config.load_form() == "tui"
-                ):
+                if not no_input and _is_interactive() and _wants_tui_form():
                     from .tui_add import run_add_review
 
                     slug = run_add_review(
@@ -2073,8 +2109,7 @@ def add(
                         deps=dep,
                     )
                     if slug is None:
-                        console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
-                        raise typer.Exit(EXIT_CANCELLED)
+                        _cancelled_add()
                     entry = store.resolve(slug)
                     # Same trace as the line-prompt onboarding — deps AND managed
                     # params with secrets, not a thinner report because a nicer
@@ -2113,16 +2148,11 @@ def add(
                 # Interactive + mini-form style: host the SAME review panel the TUI's
                 # `a` opens (flags prefill it). Pipes/CI/--no-input/form=plain keep the
                 # line-prompt path — the non-interactive contract is untouched.
-                if (
-                    not no_input
-                    and _is_interactive()
-                    and os.environ.get("TERM") != "dumb"
-                    and config.load_form() == "tui"
-                ):
+                if not no_input and _is_interactive() and _wants_tui_form():
                     from .tui_add import run_add_review
 
                     slug = run_add_review(
-                        Path(path),
+                        resolved,
                         name=name,
                         description=description,
                         reference=ref,
@@ -2130,8 +2160,7 @@ def add(
                         requires_python=python or "",
                     )
                     if slug is None:
-                        console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
-                        raise typer.Exit(EXIT_CANCELLED)
+                        _cancelled_add()
                     entry = store.resolve(slug)
                     # Same trace as the line-prompt onboarding (deps via
                     # effective_uv_metadata — the add-time deps_injected path leaves
@@ -2583,7 +2612,7 @@ def _reconcile_prompt_after_edit(entry: store.Entry) -> None:
         console.print(f"[dim]{message}[/dim]")
         return
     flooded = len(new) > prompt_analyzer.AUTO_MANAGE_LIMIT
-    if os.environ.get("TERM") != "dumb" and config.load_form() == "tui":
+    if _wants_tui_form():
         # form=tui hosts the panel, plain keeps the line prompts — the add flow's
         # rule, applied here too: this is the SAME searchable picker the Library's
         # `e` reconcile opens, same preselection (everything, unless flooded).
@@ -2998,6 +3027,20 @@ def run(
         plan = flows.FormPlan(source="none")
     else:
         plan = flows.plan_for_entry(entry)
+    if save_preset and not plan.fields:
+        # Same rule (and sentence) as `skit preset save` — but NOT its exit code:
+        # inside `run`, 1-124 belongs to the script (docker convention), so a
+        # skit-side refusal must be usage-shaped, never look like the script ran.
+        # BEFORE the form opens: plan.fields is already known, and a refusal must
+        # not first host the runner picker and write last-picked state (a refused
+        # invocation leaves no fingerprints and follows no answered questions).
+        err_console.print(
+            "[red]"
+            + gettext("%(name)s has no form fields, so there's nothing to save.")
+            % {"name": entry.meta.name}
+            + _RED_CLOSE
+        )
+        raise typer.Exit(EXIT_USAGE)
     _print_drift(plan)
     if plan.degraded_reason:
         console.print(
@@ -3078,17 +3121,6 @@ def run(
         asm = flows.assemble(plan, values, extra, cwd=Path.cwd(), expand_extra=False)
     except flows.FormError as exc:
         raise _fail(str(exc), EXIT_SKIT) from exc
-    if save_preset and not plan.fields:
-        # Same rule (and sentence) as `skit preset save` — but NOT its exit code:
-        # inside `run`, 1-124 belongs to the script (docker convention), so a
-        # skit-side refusal must be usage-shaped, never look like the script ran.
-        err_console.print(
-            "[red]"
-            + gettext("%(name)s has no form fields, so there's nothing to save.")
-            % {"name": entry.meta.name}
-            + _RED_CLOSE
-        )
-        raise typer.Exit(EXIT_USAGE)
 
     def _persist_preset() -> None:
         # Deferred until validation/launch has ACCEPTED the invocation: a refusal
@@ -3133,13 +3165,21 @@ def run(
         ):
             console.print(f"[dim]{escape(line)}[/dim]")
         raise typer.Exit(0)
-    outcome = flows.execute(
-        entry,
-        plan,
-        asm,
-        emit=lambda line: console.print(f"[dim]{escape(line)}[/dim]"),
-        runner=runner_obj,
-    )
+    try:
+        outcome = flows.execute(
+            entry,
+            plan,
+            asm,
+            emit=lambda line: console.print(f"[dim]{escape(line)}[/dim]"),
+            runner=runner_obj,
+        )
+    except KeyboardInterrupt:
+        # Ctrl+C ends the RUNNING script — the launch was already accepted, so the
+        # values are still the values the user asked to keep (the rule below).
+        # Without this, --save-preset on a server/watch script would be silently
+        # dropped by the very keystroke that normally ends it.
+        _persist_preset()
+        raise
     code = outcome.code
     if code is None:
         raise _fail(outcome.message, _FAILURE_EXIT[outcome.failure])

@@ -725,11 +725,12 @@ def test_ans_tui_summary_receives_deps_params_and_secrets(tmp_path, monkeypatch)
         cli,
         "_print_add_summary",
         lambda entry, deps, managed, secrets: captured.update(
-            entry=entry, deps=deps, managed=managed, secrets=secrets
+            slug=entry.slug, deps=deps, managed=managed, secrets=secrets
         ),
     )
     out = cli._add_no_source_ask()
     assert out is None
+    assert captured["slug"] == entry.slug  # the resolved entry, not a stand-in
     assert captured["deps"] == ["rich>=13"]  # from effective_uv_metadata, not raw meta
     assert captured["managed"] == ["API_TOKEN", "city"]
     assert captured["secrets"] == ["city"]  # decl.secret honored, not is_secret_name
@@ -1026,8 +1027,9 @@ def test_ans_choice4_call_contracts(tmp_path, monkeypatch):
     assert cargs[0] == "tpl {a} {b}"
     assert ckw["name"] == "cmd4x"
     assert ckw["description"] == "desc4x"
-    # summary is handed the entry then three empty lists (command entries surface
-    # params via _report_command_params, not the summary's managed list).
+    # summary is handed the entry, empty deps/managed, and the secret-named holes
+    # (none here — command entries surface params via _report_command_params, not
+    # the summary's managed list; secrets DO flow so the never-saved caveat prints).
     assert isinstance(summary_calls[0][0], _FakeEntry)
     assert summary_calls[0][1:] == ([], [], [])
 
@@ -1048,3 +1050,211 @@ def test_ans_no_stray_markup_tokens_in_output(tmp_path, monkeypatch, capsys):
     with pytest.raises(typer.Exit):
         cli._add_no_source_ask()
     assert "XX" not in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# 9. Interactive directory adds: the --exe escape is COLLECTED, not taught.
+#    (Pipes/--no-input keep the flag-teaching refusal — pinned in section 8.)
+# ---------------------------------------------------------------------------
+
+
+def test_add_unknown_directory_plain_confirm_yes_adds_program(tmp_path, monkeypatch):
+    """form=plain: a Confirm collects the consent the non-interactive message can only
+    teach; yes rejoins the ordinary exe lane (name/description line prompts)."""
+    config.save_form("plain")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    d = tmp_path / "bundle.dir"
+    d.mkdir()
+    monkeypatch.setattr(cli.Confirm, "ask", staticmethod(lambda *a, **kw: True))
+    answers = iter(["toolname", "a dir-shaped tool"])
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **kw: next(answers)))
+    result = runner.invoke(cli.app, ["add", str(d)], env=_TERM)
+    assert result.exit_code == 0, result.output
+    entry = store.resolve("toolname")
+    assert entry.meta.kind == "exe"
+    assert entry.meta.description == "a dir-shaped tool"
+
+
+def test_add_unknown_directory_plain_confirm_no_cancels(tmp_path, monkeypatch):
+    config.save_form("plain")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    d = tmp_path / "bundle.dir"
+    d.mkdir()
+    monkeypatch.setattr(cli.Confirm, "ask", staticmethod(lambda *a, **kw: False))
+    result = runner.invoke(cli.app, ["add", str(d)], env=_TERM)
+    assert result.exit_code == 130
+    assert "nothing was added" in result.output.lower()
+    assert store.list_entries() == []
+
+
+def test_add_unknown_directory_plain_confirm_call_contract(tmp_path, monkeypatch):
+    """The Confirm's exact question, default-yes, and console — the ask must name the
+    input's actual shape (a directory) and default to the one lane it can take."""
+    config.save_form("plain")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    d = tmp_path / "bundle.dir"
+    d.mkdir()
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def fake_confirm(*a, **kw):
+        calls.append((a, kw))
+        return False
+
+    monkeypatch.setattr(cli.Confirm, "ask", staticmethod(fake_confirm))
+    runner.invoke(cli.app, ["add", str(d)], env=_TERM)
+    (args, kw) = calls[0]
+    assert args[0] == "bundle.dir is a directory. Add it as a program that runs directly?"
+    assert kw["default"] is True
+    assert kw["console"] is cli.console
+
+
+def test_add_unknown_directory_tui_hosts_exe_review_with_no_line_confirm(tmp_path, monkeypatch):
+    """form=tui: the exe review panel IS the consent ask (Esc cancels) — never a bare
+    line Confirm glued to a Textual app (the `run` rule), and the resolved directory
+    reaches the panel."""
+    config.save_form("tui")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    d = tmp_path / "bundle.dir"
+    d.mkdir()
+    monkeypatch.setattr(
+        cli.Confirm,
+        "ask",
+        staticmethod(
+            lambda *a, **kw: (_ for _ in ()).throw(AssertionError("no line Confirm under form=tui"))
+        ),
+    )
+    seen: dict[str, object] = {}
+
+    def fake_review(path, *, name=None, description=None):
+        seen["path"] = path
+        return store.add_exe(path, name="bundled").slug
+
+    monkeypatch.setattr("skit.tui_add.run_exe_review", fake_review)
+    result = runner.invoke(cli.app, ["add", str(d)], env=_TERM)
+    assert result.exit_code == 0, result.output
+    assert seen["path"] == d.resolve()
+    assert store.resolve("bundled").meta.kind == "exe"
+
+
+# ---------------------------------------------------------------------------
+# 10. Command-template adds report the SAME trace through every door: the
+#     teaching note plus the never-saved secrets caveat — never a summary that
+#     claims a secret hole's "last values are remembered".
+# ---------------------------------------------------------------------------
+
+
+def test_command_secret_names_picks_the_secret_holes(tmp_path):
+    entry = store.add_command("curl -H {API_KEY} {url}", name="curler")
+    assert cli._command_secret_names(entry) == ["API_KEY"]
+
+
+def test_cmd_flag_secret_hole_gets_never_saved_note(tmp_path):
+    result = runner.invoke(cli.app, ["add", "--cmd", "curl -H {API_KEY} {url}", "-n", "curler"])
+    assert result.exit_code == 0, result.output
+    assert "Detected parameters" in result.output
+    assert "Secret parameter values are never saved" in result.output
+
+
+def test_plain_menu_choice4_secret_hole_gets_never_saved_note(tmp_path, monkeypatch):
+    config.save_form("plain")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    answers = iter(["4", "deploy {AUTH_TOKEN}", "deployer", ""])
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **kw: next(answers)))
+    result = runner.invoke(cli.app, ["add"], env=_TERM)
+    assert result.exit_code == 0, result.output
+    assert "Detected parameters" in result.output
+    assert "Secret parameter values are never saved" in result.output
+
+
+def test_bare_add_tui_command_door_matches_the_cmd_door(tmp_path, monkeypatch):
+    """The form=tui bare-add door reports a template exactly like `--cmd` and the plain
+    menu do: the teaching note + the secrets caveat, and never a second 'Managed
+    parameters' spelling of the same names."""
+    config.save_form("tui")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    made = store.add_command("echo {API_KEY} {msg}", name="viatui3")
+    monkeypatch.setattr("skit.tui_add.run_add_source", lambda: made.slug)
+    result = runner.invoke(cli.app, ["add"], env=_TERM)
+    assert result.exit_code == 0, result.output
+    assert "Detected parameters" in result.output
+    assert "Managed parameters" not in result.output
+    assert "Secret parameter values are never saved" in result.output
+
+
+@pytest.mark.parametrize(
+    ("flag", "advice"),
+    [
+        (["--ref"], None),
+        (["--exe"], None),
+        (["--kind", "shell"], None),
+        (["--dep", "rich"], "--edit"),
+        (["--python", ">=3.11"], "--edit"),
+        (["--runner", "claude"], "--prompt"),
+        (["--no-interpolate"], "--prompt"),
+        (["--name", "x"], "--edit, --prompt, --cmd"),
+        (["--description", "d"], "--edit, --prompt, --cmd"),
+    ],
+)
+def test_bare_add_refusal_names_only_lanes_that_honor_the_flag(tmp_path, monkeypatch, flag, advice):
+    """The lane advice must never teach a guaranteed second refusal: a recommended
+    lane honors EVERY withheld flag (--ref/--exe/--kind fit none, so no lane is
+    named; --dep/--python fit only --edit; --runner/--no-interpolate only --prompt;
+    -n/-d fit all three)."""
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    result = runner.invoke(cli.app, ["add", *flag], env=_TERM)
+    assert result.exit_code == 2, result.output
+    flat = " ".join(result.output.split())
+    if advice is None:
+        assert "pick a lane" not in flat
+    else:
+        assert f"pick a lane outright with {advice} (nothing was added)" in flat
+
+
+# ---------------------------------------------------------------------------
+# 11. The shared helpers, pinned directly (mutation kills that must not depend
+#     on which lane's test happens to route through them).
+# ---------------------------------------------------------------------------
+
+
+def test_wants_tui_form_matrix(monkeypatch):
+    """TERM=dumb (exactly, case-sensitive) forces plain regardless of form; otherwise
+    the config decides."""
+    monkeypatch.setenv("TERM", "xterm")
+    config.save_form("tui")
+    assert cli._wants_tui_form() is True
+    config.save_form("plain")
+    assert cli._wants_tui_form() is False
+    config.save_form("tui")
+    monkeypatch.setenv("TERM", "dumb")
+    assert cli._wants_tui_form() is False
+
+
+def test_cancelled_add_exact_line_and_exit_code(capsys):
+    with pytest.raises(typer.Exit) as exc:
+        cli._cancelled_add()
+    assert exc.value.exit_code == 130
+    out = capsys.readouterr().out
+    assert "Cancelled — nothing was added." in _lines(out)
+    assert "XX" not in out  # belt: no string-mutation marker may leak
+
+
+def test_bare_add_tui_command_door_summary_call_contract(tmp_path, monkeypatch):
+    """The command door hands _print_add_summary the resolved entry, EMPTY deps and
+    managed (the note owns the params vocabulary), and exactly the secret holes."""
+    config.save_form("tui")
+    monkeypatch.setenv("TERM", "xterm")
+    made = store.add_command("echo {API_KEY} {msg}", name="viatui4")
+    monkeypatch.setattr("skit.tui_add.run_add_source", lambda: made.slug)
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        cli,
+        "_print_add_summary",
+        lambda entry, deps, managed, secrets: captured.update(
+            slug=entry.slug, deps=deps, managed=managed, secrets=secrets
+        ),
+    )
+    assert cli._add_no_source_ask() is None
+    assert captured["slug"] == made.slug
+    assert captured["deps"] == []
+    assert captured["managed"] == []
+    assert captured["secrets"] == ["API_KEY"]
