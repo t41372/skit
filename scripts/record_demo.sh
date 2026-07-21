@@ -19,13 +19,17 @@ IMAGE=skit-demo
 echo "==> building demo image (vhs + uv + skit)…"
 docker build -f docs/assets/demo/Dockerfile -t "$IMAGE" .
 
+# The tape is mounted at /tape, NOT /demo: since the path picker browses the working
+# directory on camera, /demo must hold only the demo's own scripts — a stray demo.tape in
+# that listing shows the recording rig to the viewer.
 run_tape() {   # $1 = SKIT_LANG   $2 = scripts subdir (en/zh)   $3 = tape file in docs/assets/demo/
   docker run --rm -e "SKIT_LANG=$1" \
     -v "$PWD/docs/assets:/out" \
-    -v "$PWD/docs/assets/demo/$3:/demo/demo.tape:ro" \
+    -v "$PWD/docs/assets/demo/$3:/tape/demo.tape:ro" \
     -v "$PWD/docs/assets/demo/scripts/$2/greet.py:/demo/greet.py:ro" \
     -v "$PWD/docs/assets/demo/scripts/$2/banner.py:/demo/banner.py:ro" \
-    "$IMAGE" /demo/demo.tape
+    -v "$PWD/docs/assets/demo/scripts/$2/names.txt:/demo/names.txt:ro" \
+    "$IMAGE" /tape/demo.tape
 }
 
 record() {   # $1 = SKIT_LANG   $2 = scripts subdir   $3 = output basename

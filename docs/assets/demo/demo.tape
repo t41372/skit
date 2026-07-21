@@ -45,25 +45,36 @@ Type "clear" Enter
 Sleep 400ms
 
 # 2 — `skit add greet.py` at the shell opens skit's review panel right in the terminal — name,
-#     description and detection prefilled. Walk slowly DOWN the panel (Tab/↓) and back UP
-#     (Shift+Tab/↑) — the footer advertises both — so the whole thing is read, then Ctrl+S adds it.
+#     description and detection prefilled. Read it by SCROLLING the view, not by Tab: tabbing to
+#     move the eye conflates "I am reading" with "I am about to edit this field", and it made the
+#     earlier cut look like the panel was being filled in.
+#
+#     PageDown/PageUp, not the mouse wheel: VHS's ScrollUp/ScrollDown parse fine but never reach
+#     Textual, because VHS never positions the pointer and Textual routes wheel events to the
+#     widget under the mouse — the commands render as a frozen panel. (Verified against this
+#     image: ScrollDown 4 moved nothing, PageDown scrolled to the bottom.) Wheel operability is
+#     real, it just can't be filmed here; that is what docs/assets/demo-mouse.gif is for.
 Type "skit add greet.py" Enter
 Sleep 1.8s
-Tab@550ms 3
-Sleep 1s
-Shift+Tab
-Sleep 450ms
-Shift+Tab
-Sleep 450ms
-Shift+Tab
-Sleep 1s
+PageDown
+Sleep 1.6s
+PageUp
+Sleep 1.4s
 Ctrl+S
 Sleep 2s
 
 # 3 — Launch skit; greet is the only entry, already selected. Run it: the form is generated from
-#     --name / --count / --shout and opens on the FIRST FIELD — a text box, a number box, a
-#     checkbox, nothing hand-written. Fill it unhurriedly, run, read the retained output, then
-#     relaunch the Library once so the completed run is visible before moving on.
+#     --name / --count / --shout / --names and opens on the FIRST FIELD — a text box, a number
+#     box, a checkbox, a path box, nothing hand-written. Fill it unhurriedly, run, read the
+#     retained output, then relaunch the Library once so the completed run is visible.
+#
+#     The path field is the one place a demo earns its keep: --names is typed `Path` in argparse,
+#     so skit detects it and the field grows the browse affordance. Ctrl+T on a path field opens
+#     the insert menu with "File or folder…" ALREADY highlighted (path-typed fields browse
+#     first), so Ctrl+T, Enter lands straight in the picker — the flagship journey. Type to
+#     filter, Enter takes the highlighted match. (The field also ghost-completes as you type,
+#     fish-style, with → to accept; that one is keyboard sugar over the same result and is
+#     deliberately not staged here — one path story per demo.)
 Type "clear" Enter
 Type "skit" Enter
 Sleep 2.4s
@@ -83,8 +94,18 @@ Tab
 Sleep 700ms
 Space
 Sleep 1.1s
+Tab
+Sleep 900ms
+Ctrl+T
+Sleep 1.6s
 Enter
-Sleep 3.5s
+Sleep 1.8s
+Type "names"
+Sleep 1.2s
+Enter
+Sleep 1.6s
+Enter
+Sleep 3.8s
 Type "skit" Enter
 Sleep 2s
 Escape
@@ -92,44 +113,46 @@ Sleep 1.3s
 
 # ── SCRIPT 2 · banner.py ─────────────────────────────────────────────────────
 # 4 — A second script, parameters hard-coded as constants (MESSAGE / TIMES / WIDTH). Same
-#     `skit add`; walk down onto the detected-constants checklist, UNTICK Width (skit shouldn't
-#     manage it — it stays a plain constant), walk back up, then add.
+#     `skit add`. Two distinct beats, and they must not be confused: PageDown/PageUp READS the
+#     panel (it overflows by 12 rows here, so one page lands at the bottom, where the constants
+#     checklist lives), and only then does the keyboard ACT — Tab walks focus down to Width and
+#     Space unticks it (skit shouldn't manage it; it stays a plain constant). See scene 2 on why
+#     this is PageDown and not the mouse wheel.
+#
+#     The Tab walk is 7 stops: name · description · storage · deps · python-pin · Message ·
+#     Times · Width. The body scrolls to follow focus, so Width is on screen when it flips —
+#     before the height:auto fix on #rv-params-wrap it silently was not, and this scene showed
+#     a frozen panel while keys were audibly pressed.
 Type "clear" Enter
 Sleep 300ms
 Type "skit add banner.py" Enter
 Sleep 1.8s
-Tab@550ms 4
-Sleep 1.1s
-Tab@550ms 3
-Sleep 900ms
-Space
+PageDown
+Sleep 1.8s
+PageUp
 Sleep 1.3s
-Shift+Tab
-Sleep 450ms
-Shift+Tab
-Sleep 450ms
-Shift+Tab
-Sleep 450ms
-Shift+Tab
-Sleep 1s
+Tab@500ms 7
+Sleep 1.2s
+Space
+Sleep 1.6s
 Ctrl+S
 Sleep 2s
 
 # 5 — Launch skit; banner is selected (freshest add). Peek inside with skit's OWN editor: `e`
 #     opens $EDITOR — here vim. skit recorded the ticked constants as a PEP 723 [tool.skit] block
-#     at the top and left the code below untouched. Page briskly top-to-bottom so the whole
-#     (short) script is seen, then quit vim (:q) — view only.
+#     at the top and left the code below untouched. Travel the file the way a person actually
+#     reads one — mashing j down and k back up (36 lines, ~25 on screen, so the view really
+#     scrolls). NOT Ctrl+D / G / gg: a jump to a line number teleports, and the viewer never
+#     sees the text in between, which is the whole point of the peek. Then quit vim (:q) — view only.
 Type "clear" Enter
 Type "skit" Enter
 Sleep 2.4s
 Type "e"
 Sleep 1.6s
-Ctrl+D
-Sleep 1.5s
-Type "G"
+Type@110ms "jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj"
 Sleep 1.3s
-Type "gg"
-Sleep 1s
+Type@100ms "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
+Sleep 1.1s
 Type ":q" Enter
 Sleep 1.6s
 

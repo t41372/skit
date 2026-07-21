@@ -41,13 +41,18 @@ Show
 # 1 — Add review panel: `a` → banner.py → the panel opens with the constants (Message / Times
 #     / Width) detected and pre-ticked. Tab down so the checklist is in view, screenshot, then
 #     Ctrl+S commits banner (managed constants and all) — which also fills the library for shot 2.
+#
+#     SIX tabs, not four: the stops are name · description · storage · deps · python-pin ·
+#     Message · Times, so four only reached the python pin and the checklist stayed below the
+#     fold — every shipped copy of this shot showed one clipped Message row. Landing focus on a
+#     checkbox scrolls the whole checklist into frame, which is what the README caption claims.
 Type "a"
 Sleep 1.5s
 Type "banner.py"
 Sleep 800ms
 Enter
 Sleep 2.5s
-Tab 4
+Tab 6
 Sleep 1s
 Screenshot "/out/shot-add.png"
 # VHS captures screenshots with a lag of roughly the next command, so every Screenshot gets a
@@ -70,8 +75,11 @@ Sleep 2s
 Escape
 Sleep 1s
 
-# 4 — Run form for the argparse script (text / number / checkbox), partly filled in. Search
-#     greet, run it, fill a couple of fields.
+# 4 — Run form for the argparse script (text / number / checkbox / path), partly filled in.
+#     Search greet, run it, fill the fields. The path row (--names is typed `Path`, so skit
+#     detects it) is filled through the picker rather than typed: Ctrl+T on a path field opens
+#     the insert menu with "File or folder…" already highlighted, Enter opens the browser, the
+#     filter takes the first match — so the shot shows a real picked path, not a typed string.
 Type "/"
 Sleep 400ms
 Type "greet"
@@ -87,7 +95,16 @@ Backspace 20
 Type "3"
 Tab
 Space
+Tab
+Sleep 600ms
+Ctrl+T
 Sleep 1.2s
+Enter
+Sleep 1.4s
+Type "names"
+Sleep 1s
+Enter
+Sleep 1.5s
 Screenshot "/out/shot-form.png"
 Sleep 2s
 Escape
