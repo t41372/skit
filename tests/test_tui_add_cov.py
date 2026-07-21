@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+from pathlib import Path
 
 import pytest
 from textual.widgets import Checkbox, Input, OptionList, RadioButton, RadioSet, Static
@@ -1345,7 +1346,9 @@ async def test_drafts_list_skips_planted_directories(tmp_path):
         await pilot.pause()
         options = app.screen.query_one("#add-drafts", OptionList)
         ids = [str(options.get_option_at_index(i).id) for i in range(options.option_count)]
-    assert [i.rsplit("/", 1)[-1] for i in ids] == ["skit-real.py"]
+    # Path().name, not an rsplit on "/": the ids are str(Path), so on Windows the
+    # separator is "\" and a POSIX-only split would compare the whole path here.
+    assert [Path(i).name for i in ids] == ["skit-real.py"]
 
 
 async def test_template_desc_enter_key_submits(tmp_path):
