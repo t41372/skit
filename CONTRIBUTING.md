@@ -219,6 +219,77 @@ Never edit `uv.lock` by hand; let uv maintain it and commit it together with you
 - In your PR, explain the motivation and the approach, and confirm every gate above is green.
 - When touching `.github/workflows/**`, run `zizmor` locally, and always pin third-party actions to a **commit SHA** (with the version tag noted in a comment beside it).
 
+## Releasing (maintainers)
+
+Five steps. `release.yml` automates only step 3 — **steps 4 and 5 are manual and easy to
+forget**, because by then the satisfying part is over. Both were missed on 0.3.0 and had to be
+repaired after the fact: PyPI carried 0.3.0 while the GitHub releases page still advertised
+0.2.0 as latest, and `main` sat on the released version, so `uv tool install git+…` handed out
+dev builds stamped `0.3.0`.
+
+Releases go **directly to `main`** — the tag has to sit there — and every commit is signed, so
+have your signing key unlocked before you start.
+
+**Before you begin**, the whole gate must be green, and two things go stale quietly:
+
+```bash
+uv run ruff format --check && uv run ruff check && uv run ty check && uv run pytest --cov && uv run mutmut run
+uv run python scripts/i18n_coverage.py   # 100% per shipped locale
+bash scripts/record_demo.sh              # if any UI copy changed — see "Demo assets" above
+```
+
+**1 — Bump to the release version.** `uv version` maintains `uv.lock` too; commit both.
+
+```bash
+uv version X.Y.Z
+git commit -am "chore(release): X.Y.Z"     # exactly these two files
+```
+
+**2 — Tag.** Annotated (`-a`), which is what 0.1.0 and 0.3.0 used; 0.2.0 was lightweight, an
+inconsistency not worth repeating. The tag name is `vX.Y.Z` — the leading `v` is what
+`release.yml` triggers on.
+
+```bash
+git push origin main
+git tag -a vX.Y.Z -m "skit X.Y.Z
+
+<a short summary — this is not the release notes, those come in step 4>"
+git push origin vX.Y.Z
+```
+
+**3 — The workflow publishes to PyPI. This is the point of no return.** Pushing the tag builds,
+verifies, and uploads; the `pypi` environment carries **no protection rules**, so nothing pauses
+for approval. A version can never be re-uploaded or overwritten on PyPI. The workflow's first
+real gate is `tag == uv version --short` — a mismatch fails the build before anything ships,
+which is the one mistake it can save you from.
+
+```bash
+gh run watch "$(gh run list --workflow=release.yml --limit 1 --json databaseId -q '.[0].databaseId')" --exit-status
+curl -s https://pypi.org/pypi/skit-cli/json | python3 -c "import json,sys; print(json.load(sys.stdin)['info']['version'])"
+```
+
+**4 — Write the GitHub Release.** Manual: the workflow does not create one, and until you do,
+the releases page still shows the *previous* version as "Latest". Notes are hand-written, not
+auto-generated — see [v0.2.0](https://github.com/t41372/skit/releases/tag/v0.2.0) for the shape:
+a one-line framing of the release, bulleted highlights that lead with the biggest change (check
+`git log vPREV..vX.Y.Z` — it is easy to frame a release around whatever you worked on last
+rather than what actually landed), install/upgrade commands, and the PyPI link.
+
+```bash
+gh release create vX.Y.Z --title "vX.Y.Z" --notes-file notes.md --latest
+```
+
+**5 — Reopen main for development.** Immediately, in the same sitting:
+
+```bash
+uv version X.Y.(Z+1).dev0
+git commit -am "chore: bump version to X.Y.(Z+1).dev0" && git push origin main
+```
+
+Historical note: `v0.0.1` is a lightweight tag that does **not** point at a commit on `main`, and
+predates the single-sourced version in `pyproject.toml`. It is an artifact of the first release,
+not a pattern to copy.
+
 ## License
 
 By submitting a contribution you agree to release it under the project's [MIT License](LICENSE).
