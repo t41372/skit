@@ -149,6 +149,56 @@ def test_save_preset_on_field_less_entry_refused_saves_nothing(run_entry_spy):
     assert argstate.load_state(store.resolve("noargs").slug)["presets"] == {}  # saved nothing
 
 
+def test_save_preset_deferred_until_a_real_run_is_accepted(run_entry_spy):
+    """A normal `run --save-preset` persists the preset AFTER the launch is accepted, so
+    the 'Preset saved' line prints AFTER the script's own output (deferred persistence)."""
+    ent = store.add_command("echo {msg}", name="e")
+    result = runner.invoke(
+        cli.app, ["run", "e", "--set", "msg=hi", "--save-preset", "prod", "--no-input"]
+    )
+    assert result.exit_code == 0, result.output
+    assert run_entry_spy["entry"].slug == ent.slug  # it ran
+    assert argstate.load_state(ent.slug)["presets"]["prod"] == {"msg": "hi"}
+
+
+def test_save_preset_not_written_when_launch_is_refused(run_entry_spy, monkeypatch):
+    """A launch refusal (outcome.code is None) leaves NO preset — the deferred write is
+    gated on acceptance, not merely reaching the run body."""
+    from skit import flows
+
+    store.add_command("echo {msg}", name="e")
+    monkeypatch.setattr(
+        cli.flows,
+        "execute",
+        lambda *a, **k: flows.RunOutcome(None, flows.FAIL_LAUNCH, "runner vanished"),
+    )
+    result = runner.invoke(
+        cli.app, ["run", "e", "--set", "msg=hi", "--save-preset", "prod", "--no-input"]
+    )
+    assert result.exit_code != 0
+    assert argstate.load_state(store.resolve("e").slug)["presets"] == {}  # nothing persisted
+
+
+def test_save_preset_dry_run_validation_failure_writes_nothing(tmp_path):
+    """`--save-preset X --dry-run` on a prompt whose render is over-long exits 125 and
+    persists NO preset — the deferred write sits AFTER dry-run validation."""
+    from skit import argstate as _argstate
+    from skit.langs.prompt import render
+
+    body = "Do {{a}}\n"
+    p = tmp_path / "big.prompt.md"
+    p.write_text(body, encoding="utf-8")
+    store.add_prompt(p, name="big")
+    store.write_prompt_runner(store.resolve("big").slug, "claude")
+    huge = "x" * (render.ARGV_LIMIT + 1)
+    result = runner.invoke(
+        cli.app,
+        ["run", "big", "--set", f"a={huge}", "--save-preset", "toolong", "--dry-run", "--no-input"],
+    )
+    assert result.exit_code == 125, result.output
+    assert _argstate.load_state(store.resolve("big").slug).get("presets", {}) == {}
+
+
 def test_set_secret_never_persisted_and_masked_in_dry_run(tmp_path, run_entry_spy):
     text = metawriter.write_params(
         'KEY = "old"\nprint(KEY)\n',
@@ -362,3 +412,46 @@ def test_interactive_all_fields_set_skips_the_form_entirely(tmp_path, run_entry_
     monkeypatch.setattr(cli, "_collect_values", explode)
     result = runner.invoke(cli.app, ["run", "trip", "--set", "CITY=x", "--set", "TIMES=1"])
     assert result.exit_code == 0, result.output
+
+
+def test_save_preset_no_fields_refused_before_any_form(tmp_path, monkeypatch):
+    """The no-form-fields --save-preset refusal fires BEFORE the interactive collection:
+    a refused invocation must not first host the runner picker (an answered question)
+    or write last-picked runner state (a fingerprint). Regression pin for the hoist —
+    previously a field-less prompt entry opened the picker, saved last-runner, and
+    only then exited 2."""
+    from skit import config
+
+    p = tmp_path / "plain.prompt.md"
+    p.write_text("Just do the thing.\n", encoding="utf-8")
+    store.add_prompt(p, name="plainp")
+    config.ensure_prompt_runners_seeded()  # runner_names non-empty -> picker would host
+    config.save_form("tui")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+
+    def boom(*a, **kw):  # the form/picker must never open for a refused --save-preset
+        raise AssertionError("collection opened before the refusal")
+
+    monkeypatch.setattr(cli, "_collect_values", boom)
+    result = runner.invoke(cli.app, ["run", "plainp", "--save-preset", "x"], env={"TERM": "xterm"})
+    assert result.exit_code == 2, result.output
+    assert "has no form fields" in result.output
+    assert not argstate.load_last_runner()  # no fingerprint
+
+
+def test_save_preset_persists_when_ctrl_c_ends_an_accepted_run(monkeypatch):
+    """Ctrl+C ends the RUNNING script, not the request to keep its values: the launch
+    was accepted, so --save-preset persists. Regression pin for the deferral — the
+    preset must not be lost to the keystroke that normally ends a server/watch
+    script."""
+    ent = store.add_command("echo {msg}", name="e")
+
+    def interrupt(*a, **kw):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli.flows, "execute", interrupt)
+    result = runner.invoke(
+        cli.app, ["run", "e", "--set", "msg=hi", "--save-preset", "prod", "--no-input"]
+    )
+    assert result.exit_code == 130, result.output
+    assert argstate.load_state(ent.slug)["presets"]["prod"] == {"msg": "hi"}

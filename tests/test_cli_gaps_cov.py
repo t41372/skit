@@ -298,7 +298,11 @@ def test_run_save_preset_persists_and_reports(tmp_path, run_entry_spy):
     argstate.save_last(ent.slug, values={"msg": "hi"})
     result = runner.invoke(cli.app, ["run", "e", "--no-input", "--save-preset", "prod"])
     assert result.exit_code == 0, result.output
-    assert 'Preset "prod" saved for e.' in result.output
+    # The confirmation is run-adjacent chrome: it goes to STDERR (after the script's
+    # output), never to the stdout the run exists to produce — appending green chrome to
+    # a piped stdout would corrupt it. Streams are separable in CliRunner (click 8.2+).
+    assert 'Preset "prod" saved for e.' in result.stderr
+    assert 'Preset "prod" saved for e.' not in result.stdout
     assert argstate.load_state(ent.slug)["presets"]["prod"] == {"msg": "hi"}
 
 

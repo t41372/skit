@@ -409,11 +409,44 @@ def test_add_bare_md_interactive_ask_yes_and_no(tmp_path, monkeypatch):
     assert result.exit_code == 0, result.output
     assert store.resolve("notes").meta.kind == "prompt"
 
+    # "No" no longer cancels: it falls through to the generic kind ask. Cancelling
+    # THAT (a "-" answer) is what exits 130 now.
     monkeypatch.setattr(cli.Confirm, "ask", staticmethod(lambda *a, **k: False))
+
+    def which_one_cancel(question, **kwargs):
+        return "-" if "Which one?" in question else kwargs.get("default", "")
+
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(which_one_cancel))
     other = _write(tmp_path, "x\n", name="other.md")
     result = runner.invoke(cli.app, ["add", str(other)])
     assert result.exit_code == 130
     assert "nothing was added" in result.output.lower()
+
+
+def test_add_bare_md_confirm_no_falls_through_to_kind_ask_and_honors_pick(tmp_path, monkeypatch):
+    """Answering "No" to the .md prompt question runs the generic kind ask; picking a
+    language there is honored — the file is added as that kind, not cancelled."""
+    config.save_form("plain")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr(cli.Confirm, "ask", staticmethod(lambda *a, **k: False))
+
+    def pick_shell(question, **kwargs):
+        if "Which one?" in question:
+            from skit.langs.registry import KNOWN_KINDS, spec_for
+
+            interpreted = sorted(
+                k
+                for k in KNOWN_KINDS
+                if (s := spec_for(k)) is not None and s.family == "interpreted" and k != "prompt"
+            )
+            return str(interpreted.index("shell") + 1)
+        return kwargs.get("default", "")
+
+    monkeypatch.setattr(cli.Prompt, "ask", staticmethod(pick_shell))
+    src = _write(tmp_path, "echo hi\n", name="script.md")
+    result = runner.invoke(cli.app, ["add", str(src)])
+    assert result.exit_code == 0, result.output
+    assert store.resolve("script").meta.kind == "shell"
 
 
 def test_add_prompt_from_stdin_needs_a_name(tmp_path):
@@ -1967,6 +2000,7 @@ def _editor_appending(text: str):
 
 
 def test_edit_prompt_interactive_offers_and_manages_a_new_placeholder(tmp_path, monkeypatch):
+    config.save_form("plain")  # the line-prompt path (form=tui hosts the picker modal)
     slug = store.add_prompt(_write(tmp_path, "Say hello.\n"), name="greet").slug
     monkeypatch.setattr(
         cli.editor, "open_entry_in_editor", _editor_appending("\nUser is {{username}}\n")
@@ -1980,6 +2014,7 @@ def test_edit_prompt_interactive_offers_and_manages_a_new_placeholder(tmp_path, 
 
 
 def test_edit_prompt_interactive_none_leaves_the_placeholder_literal(tmp_path, monkeypatch):
+    config.save_form("plain")  # the line-prompt path (form=tui hosts the picker modal)
     slug = store.add_prompt(_write(tmp_path, "Say hello.\n"), name="greet").slug
     monkeypatch.setattr(cli.editor, "open_entry_in_editor", _editor_appending("\n{{username}}\n"))
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
@@ -1991,6 +2026,7 @@ def test_edit_prompt_interactive_none_leaves_the_placeholder_literal(tmp_path, m
 
 
 def test_edit_prompt_interactive_numbers_manage_the_named_ones(tmp_path, monkeypatch):
+    config.save_form("plain")  # the line-prompt path (form=tui hosts the picker modal)
     slug = store.add_prompt(_write(tmp_path, "Base.\n"), name="greet").slug
     monkeypatch.setattr(
         cli.editor, "open_entry_in_editor", _editor_appending("\n{{a}} {{b}} {{c}}\n")
@@ -2003,6 +2039,7 @@ def test_edit_prompt_interactive_numbers_manage_the_named_ones(tmp_path, monkeyp
 
 
 def test_edit_prompt_preserves_existing_managed_and_adds_the_new_one(tmp_path, monkeypatch):
+    config.save_form("plain")  # the line-prompt path (form=tui hosts the picker modal)
     entry = store.add_prompt(_write(tmp_path, "{{kept}}\n"), name="greet", managed=["kept"])
     monkeypatch.setattr(cli.editor, "open_entry_in_editor", _editor_appending("\n{{added}}\n"))
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
@@ -2037,6 +2074,7 @@ def test_edit_prompt_non_interactive_flood_previews_with_a_tail(tmp_path, monkey
 def test_edit_prompt_interactive_flood_previews_secret_mark_and_tail(tmp_path, monkeypatch):
     from skit.langs.prompt.analyzer import LIST_PREVIEW_LIMIT
 
+    config.save_form("plain")  # the line-prompt path (form=tui hosts the picker modal)
     store.add_prompt(_write(tmp_path, "Base.\n"), name="greet")
     holes = "{{token}} " + " ".join("{{h" + str(i) + "}}" for i in range(LIST_PREVIEW_LIMIT + 3))
     monkeypatch.setattr(cli.editor, "open_entry_in_editor", _editor_appending("\n" + holes + "\n"))
@@ -2050,6 +2088,64 @@ def test_edit_prompt_interactive_flood_previews_secret_mark_and_tail(tmp_path, m
     assert store.resolve("greet").meta.params == ["token"] + [
         f"h{i}" for i in range(LIST_PREVIEW_LIMIT + 3)
     ]
+
+
+def test_edit_prompt_tui_reconcile_manages_the_pickers_selection(tmp_path, monkeypatch):
+    """Under form=tui the reconcile hosts run_candidate_picker; its returned set is what
+    gets managed (preselection = every new name when not flooded)."""
+    config.save_form("tui")
+    slug = store.add_prompt(_write(tmp_path, "Say hello.\n"), name="greet").slug
+    monkeypatch.setattr(
+        cli.editor, "open_entry_in_editor", _editor_appending("\n{{a}} {{b}} {{c}}\n")
+    )
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    seen: dict[str, object] = {}
+
+    def fake_picker(names, selected):
+        seen["names"] = list(names)
+        seen["selected"] = set(selected)
+        return {"a", "c"}
+
+    monkeypatch.setattr("skit.tui_add.run_candidate_picker", fake_picker)
+    result = runner.invoke(cli.app, ["edit", "greet"])
+    assert result.exit_code == 0, result.output
+    assert seen["names"] == ["a", "b", "c"]
+    assert seen["selected"] == {"a", "b", "c"}  # not flooded → all preselected
+    assert store.resolve(slug).meta.params == ["a", "c"]
+    assert "Now managed: a, c" in result.output
+
+
+def test_edit_prompt_tui_reconcile_none_manages_nothing(tmp_path, monkeypatch):
+    """Cancelling the picker (None) manages nothing — no 'Now managed' line."""
+    config.save_form("tui")
+    slug = store.add_prompt(_write(tmp_path, "Say hello.\n"), name="greet").slug
+    monkeypatch.setattr(cli.editor, "open_entry_in_editor", _editor_appending("\n{{username}}\n"))
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr("skit.tui_add.run_candidate_picker", lambda names, selected: None)
+    result = runner.invoke(cli.app, ["edit", "greet"])
+    assert result.exit_code == 0, result.output
+    assert store.resolve(slug).meta.params is None
+    assert "Now managed" not in result.output
+
+
+def test_edit_prompt_tui_reconcile_flood_preselects_nothing(tmp_path, monkeypatch):
+    """Above AUTO_MANAGE_LIMIT new names, the picker opens with an EMPTY preselection."""
+    from skit.langs.prompt.analyzer import AUTO_MANAGE_LIMIT
+
+    config.save_form("tui")
+    store.add_prompt(_write(tmp_path, "Base.\n"), name="greet")
+    holes = " ".join("{{h" + str(i) + "}}" for i in range(AUTO_MANAGE_LIMIT + 1))
+    monkeypatch.setattr(cli.editor, "open_entry_in_editor", _editor_appending("\n" + holes + "\n"))
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    seen: dict[str, object] = {}
+
+    def fake_picker(names, selected):
+        seen["selected"] = set(selected)
+
+    monkeypatch.setattr("skit.tui_add.run_candidate_picker", fake_picker)
+    result = runner.invoke(cli.app, ["edit", "greet"])
+    assert result.exit_code == 0, result.output
+    assert seen["selected"] == set()  # flooded → nothing preselected
 
 
 def test_edit_prompt_with_no_new_placeholders_is_silent(tmp_path, monkeypatch):

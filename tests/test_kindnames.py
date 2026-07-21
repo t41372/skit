@@ -54,3 +54,29 @@ def test_unknown_kind_falls_through_to_its_raw_id():
     never a crash or a blank — the `.get(kind, kind)` fallthrough."""
     assert kindnames.kind_label("cobol") == "cobol"
     assert kindnames.kind_label("") == ""
+
+
+def test_kind_choices_exact_options_and_order():
+    """The ONE option list both ask faces render: sorted interpreted kinds (prompt
+    excluded — it gets its own dedicated wording), then exe (gated), then prompt.
+    Exact ids and labels — the twins' contract."""
+    from skit.langs.registry import KNOWN_KINDS, spec_for
+
+    full = kindnames.kind_choices(offer_exe=True)
+    interp = [k for k, _ in full[:-2]]
+    assert interp == sorted(
+        k
+        for k in KNOWN_KINDS
+        if (s := spec_for(k)) is not None and s.family == "interpreted" and k != "prompt"
+    )
+    assert interp  # the registry's interpreted kinds actually made it in
+    assert all(label == kindnames.kind_label(k) for k, label in full[:-2])
+    assert full[-2] == ("exe", "A program (run it directly)")
+    assert full[-1] == ("prompt", "A prompt for an AI agent")
+
+
+def test_kind_choices_offer_exe_false_drops_only_exe():
+    full = kindnames.kind_choices(offer_exe=True)
+    gated = kindnames.kind_choices(offer_exe=False)
+    assert gated == [c for c in full if c[0] != "exe"]
+    assert gated[-1] == ("prompt", "A prompt for an AI agent")

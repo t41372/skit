@@ -13,7 +13,9 @@ twin PromptReviewScreen (insertion switch, placeholder ticks, runner pick).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from stat import S_ISREG
 from typing import override
 
 from rich.markup import escape
@@ -81,7 +83,14 @@ class KindPickModal(ModalScreen[str | None]):
     KindPickModal.-h-short Static, KindPickModal.-h-tiny Static { margin: 0; }
     """
 
-    def __init__(self, filename: str, *, has_shebang: bool = False, offer_exe: bool = True) -> None:
+    def __init__(
+        self,
+        filename: str,
+        *,
+        has_shebang: bool = False,
+        offer_exe: bool = True,
+        suggested: str | None = None,
+    ) -> None:
         super().__init__()
         self._filename: str = filename
         # Two different truths need two different labels: with a #! present, "can't
@@ -93,22 +102,18 @@ class KindPickModal(ModalScreen[str | None]):
         # drafts boundary forbids (the store would hold nothing while the success
         # path deletes, or the resumable list advertises, the only copy).
         self._offer_exe: bool = offer_exe
+        # The likely answer, when the name gives one (a bare .md is probably a
+        # prompt): listed FIRST and therefore pre-highlighted, so Enter accepts it —
+        # the modal twin of the plain form's "looks like a prompt? [Y/n]" fast path.
+        self._suggested: str | None = suggested
 
     @override
     def compose(self) -> ComposeResult:
         from textual.widgets import Label
         from textual.widgets.option_list import Option
 
-        from .langs.registry import KNOWN_KINDS, spec_for
+        from .kindnames import kind_choices
 
-        # "prompt" is family "interpreted" too, but it has its OWN dedicated option below
-        # ("A prompt for an AI agent") — listing it here as well would duplicate the id
-        # (OptionList raises DuplicateID) and offer the same kind twice.
-        interpreted = sorted(
-            k
-            for k in KNOWN_KINDS
-            if (spec := spec_for(k)) is not None and spec.family == "interpreted" and k != "prompt"
-        )
         with Vertical():
             yield Label(
                 (
@@ -116,14 +121,19 @@ class KindPickModal(ModalScreen[str | None]):
                     if self._has_shebang
                     else gettext("What is %(file)s? skit can't tell from the name.")
                 )
-                % {"file": self._filename}
+                # escape: the Label parses markup, and a bracketed filename
+                # ("report [draft].md") would have its tag-shaped segment silently
+                # swallowed — the plain twin (_ask_kind_plain) and every review
+                # screen's border_title escape the same way.
+                % {"file": escape(self._filename)}
             )
-            from .kindnames import kind_label
-
-            options = [Option(kind_label(kind), id=kind) for kind in interpreted]
-            if self._offer_exe:
-                options.append(Option(gettext("A program (run it directly)"), id="exe"))
-            options.append(Option(gettext("A prompt for an AI agent"), id="prompt"))
+            # The ONE option list both faces render (kindnames.kind_choices) — this
+            # modal and the plain menu cannot drift on kinds, labels, or order.
+            options = [
+                Option(label, id=kind) for kind, label in kind_choices(offer_exe=self._offer_exe)
+            ]
+            if self._suggested is not None:
+                options.sort(key=lambda option: option.id != self._suggested)
             yield OptionList(*options)
             yield Static(
                 tui_footer.bar(tui_footer.chip("screen.cancel", "Esc", gettext("Cancel"))),
@@ -230,23 +240,46 @@ class AddSourceScreen(Screen[str | None]):
             )
             yield Input(placeholder="ffmpeg -i {input} {output}", id="add-template")
             yield Input(placeholder=gettext("Name for the command"), id="add-template-name")
+            # Every other lane reviews a description (skit list is the discovery
+            # surface) — the template lane is no exception.
+            yield Input(placeholder=gettext("Description (optional)"), id="add-template-desc")
             from .paths import drafts_dir
 
-            def _mtime(d: Path) -> float:
+            def _stat(d: Path) -> os.stat_result | None:
+                # ONE stat per draft, feeding BOTH the file test and the sort: a
+                # draft that vanished or became unreadable mid-scan must not take
+                # the screen down with it, and Path.is_file() is no help — it
+                # re-raises a stat error whose errno it doesn't recognize (3.13),
+                # and on 3.14 it reaches around Path.stat entirely, so the two
+                # would degrade differently per interpreter.
                 try:
-                    return d.stat().st_mtime
+                    return d.stat()
                 except OSError:
-                    return 0.0
+                    return None
 
             # Newest first: mkstemp names are random, so a name sort hides an
             # ARBITRARY tail — the draft the user just lost is exactly the one that
             # must surface. The cap keeps the screen usable; the overflow line keeps
             # it honest (a silent cap reads as "this is everything").
-            drafts = (
-                sorted(drafts_dir().glob("skit-*"), key=_mtime, reverse=True)
+            statted = (
+                [(d, _stat(d)) for d in drafts_dir().glob("skit-*")]
                 if drafts_dir().is_dir()
                 else []
             )
+            # S_ISREG: drafts are always mkstemp FILES — a hand-planted skit-*
+            # directory must not be offered for resume (the dir lane would store an
+            # exe reference into drafts/, the shape the boundary forbids) or for
+            # "Delete draft…" (unlink on a directory raises). Only a stat that
+            # positively says "not a regular file" drops one; an unreadable draft
+            # stays LISTED at mtime 0.0 (sorted last), because dropping the entry
+            # the user is most likely hunting for is the worse failure.
+            drafts = [
+                d
+                for d, st in sorted(
+                    statted, key=lambda pair: pair[1].st_mtime if pair[1] else 0.0, reverse=True
+                )
+                if st is None or S_ISREG(st.st_mode)
+            ]
             if drafts:
                 # Kept drafts are resumable, not lore: list them where adding happens —
                 # and deletable here too (an accumulation the user "can see and manage"
@@ -318,19 +351,19 @@ class AddSourceScreen(Screen[str | None]):
             return
         path = Path(raw).expanduser()
         error = self.query_one("#add-error", Static)  # pragma: no mutate
-        if not path.is_file():
+        if not path.is_file() and not path.is_dir():
             error.update(
                 f"[red]{gettext('File not found: %(path)s') % {'path': escape(str(path))}}[/red]"
             )
             return
-        kind = infer_kind(path)
 
         # A kept draft is skit's own artifact destined for consumption: resuming it is
         # fresh authoring (fresh=True — no "Link the original" ask). A reference entry
         # pointing into drafts/ would leave its script in the resumable list — a live
         # entry's file offered for re-adding and for "Delete draft… (it is the only
-        # copy)", both lies.
-        draft_resume = is_draft(path)
+        # copy)", both lies. (is_file: a directory can never be a draft, and the
+        # consumption unlink below must never point at one.)
+        draft_resume = is_draft(path) and path.is_file()
 
         def _reviewed(slug: str | None) -> None:
             if slug is None:
@@ -341,6 +374,14 @@ class AddSourceScreen(Screen[str | None]):
                 # lane performs. (fresh always copies; the mode check is the belt.)
                 path.unlink(missing_ok=True)  # pragma: no mutate — missing_ok True/False/None are indistinguishable here: this unlink runs only after a resumed draft reached the store as a copy, so the draft file always still exists; the unlink itself is pinned by test_resume_draft_accept_unlinks_the_draft  # fmt: skip
             self.dismiss(slug)
+
+        if path.is_dir():
+            # add_exe deliberately accepts any existing path, directories included
+            # (an .app bundle, a dir-shaped tool) — the CLI's contract; the exe
+            # review is the only lane a directory can take, so no ask is needed.
+            self.app.push_screen(ExeReviewScreen(path), _reviewed)
+            return
+        kind = infer_kind(path)
 
         if kind == "exe" and draft_resume:
             # A draft is authored text, never a binary — and an exe entry is
@@ -379,20 +420,25 @@ class AddSourceScreen(Screen[str | None]):
                 path.name,
                 has_shebang=shebang_program(path) is not None,
                 offer_exe=not draft_resume,
+                # A bare .md is probably a prompt: pre-highlight it (the TUI twin of
+                # the plain form's "looks like a prompt? [Y/n]" fast path).
+                suggested="prompt" if path.suffix.lower() == ".md" else None,
             ),
             _kind_picked,
         )
 
     @on(Input.Submitted, "#add-template")
     @on(Input.Submitted, "#add-template-name")
+    @on(Input.Submitted, "#add-template-desc")
     def _template_given(self, event: Input.Submitted) -> None:
         self._submit_template()
 
     def _submit_template(self) -> None:
         # See _submit_path: query_one's type guard is inert and each id is the sole match, so
-        # the type-drop / None-type mutations of these three calls are equivalent.
+        # the type-drop / None-type mutations of these four calls are equivalent.
         template = self.query_one("#add-template", Input).value.strip()  # pragma: no mutate
         name = self.query_one("#add-template-name", Input).value.strip()  # pragma: no mutate
+        description = self.query_one("#add-template-desc", Input).value.strip()  # pragma: no mutate
         error = self.query_one("#add-error", Static)  # pragma: no mutate
         if not template:
             return
@@ -400,7 +446,7 @@ class AddSourceScreen(Screen[str | None]):
             error.update(f"[red]{gettext('A name is required.')}[/red]")
             return
         try:
-            entry = store.add_command(template, name=name)
+            entry = store.add_command(template, name=name, description=description)
         except store.StoreError as exc:
             error.update(f"[red]{escape(str(exc))}[/red]")
             return
@@ -570,9 +616,16 @@ class ExeReviewScreen(Screen[str | None]):
     ExeReviewScreen #xv-keys { color: $text-muted; }
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self, path: Path, *, name: str | None = None, description: str | None = None
+    ) -> None:
+        """`name`/`description` prefill the two fields — the CLI face passes `skit add`'s
+        flags through them, exactly as the script/prompt panels do — and both stay
+        editable on screen."""
         super().__init__()
         self._path: Path = path
+        self._name: str | None = name
+        self._description: str | None = description
 
     def on_mount(self) -> None:
         self.query_one("#xv-body").border_title = gettext("Add %(name)s") % {
@@ -583,9 +636,10 @@ class ExeReviewScreen(Screen[str | None]):
     def compose(self) -> ComposeResult:
         with tui_footer.FormBody(id="xv-body"):
             yield Static(gettext("Name"), classes="section")
-            yield Input(value=self._path.stem, id="xv-name")
+            yield Input(value=self._name or self._path.stem, id="xv-name")
             yield Static(gettext("Description"), classes="section")
             yield Input(
+                value=self._description or "",
                 placeholder=gettext("(shown in the Library — you can write one line)"),
                 id="xv-desc",
             )
@@ -606,8 +660,8 @@ class ExeReviewScreen(Screen[str | None]):
         )
 
     def action_accept(self) -> None:
-        name = self.query_one("#xv-name", Input).value.strip() or None
-        desc = self.query_one("#xv-desc", Input).value.strip()
+        name = self.query_one("#xv-name", Input).value.strip() or None  # pragma: no mutate — expect_type/type-selector equivalent (unique first #xv-name Input); pinned by test_exe_review_app_prefills_flags_and_accepts  # fmt: skip
+        desc = self.query_one("#xv-desc", Input).value.strip()  # pragma: no mutate — expect_type equivalent (unique #xv-desc Input); pinned by test_exe_review_app_prefills_flags_and_accepts  # fmt: skip
         try:
             entry = store.add_exe(self._path, name=name, description=desc)
         except store.StoreError as exc:
@@ -1528,17 +1582,17 @@ class PromptReviewScreen(Screen[str | None]):
         self.dismiss(None)
 
 
-class _ReviewHost(App[str | None]):
-    """A review panel hosted alone (the CLI face). Exits with the new entry's slug, or
-    None on cancel — the SAME screen the TUI's `a` pushes, so the two can't drift."""
+class _ScreenHost[ResultT](App[ResultT]):
+    """A single skit screen hosted alone (the CLI face): same theme bootstrap as the
+    Library app, exits with the screen's dismiss value."""
 
     ENABLE_COMMAND_PALETTE = False
     HORIZONTAL_BREAKPOINTS = tui_layout.HORIZONTAL_BREAKPOINTS
     VERTICAL_BREAKPOINTS = tui_layout.VERTICAL_BREAKPOINTS
 
-    def __init__(self, screen: Screen[str | None]) -> None:
+    def __init__(self, screen: Screen[ResultT]) -> None:
         super().__init__()
-        self._screen: Screen[str | None] = screen
+        self._screen: Screen[ResultT] = screen
 
     @override
     def get_css_variables(self) -> dict[str, str]:
@@ -1550,6 +1604,38 @@ class _ReviewHost(App[str | None]):
         self.register_theme(theme.CLAUDE_THEME)
         self.theme = "skit-claude"
         self.push_screen(self._screen, self.exit)
+
+
+class _ReviewHost(_ScreenHost[str | None]):
+    """A review panel hosted alone. Exits with the new entry's slug, or None on
+    cancel — the SAME screen the TUI's `a` pushes, so the two can't drift."""
+
+
+class AddSourceApp(_ReviewHost):
+    """A bare `skit add` in an interactive terminal: the SAME source step the
+    Library's `a` pushes — path, command template, kept drafts, and the two
+    blank-page authoring lanes — instead of a usage error that teaches flags."""
+
+    def __init__(self) -> None:
+        super().__init__(AddSourceScreen())
+
+
+class KindPickApp(_ScreenHost[str | None]):
+    """`skit add weirdfile` in an interactive terminal: the kind ask alone. It
+    returns the picked KIND (not a slug) — the CLI feeds it back into the same
+    per-kind dispatch every explicit --kind add takes, so flag refusals and
+    review panels can't drift between the asked and the typed spelling.
+    (_ScreenHost, not _ReviewHost: that base's contract is "exits with the new
+    entry's slug", and a kind must never inherit slug-shaped behavior.)"""
+
+    def __init__(
+        self, filename: str, *, has_shebang: bool, offer_exe: bool, suggested: str | None = None
+    ) -> None:
+        super().__init__(
+            KindPickModal(
+                filename, has_shebang=has_shebang, offer_exe=offer_exe, suggested=suggested
+            )
+        )
 
 
 class AddReviewApp(_ReviewHost):
@@ -1581,6 +1667,17 @@ class AddReviewApp(_ReviewHost):
         )
 
 
+class ExeReviewApp(_ReviewHost):
+    """`skit add ./tool --exe` (or an unclassifiable file picked as "A program") in an
+    interactive terminal: the SAME identity review the Library's `a` opens for a program,
+    so a mouse can finish the add — never a line prompt glued to the kind modal."""
+
+    def __init__(
+        self, path: Path, *, name: str | None = None, description: str | None = None
+    ) -> None:
+        super().__init__(ExeReviewScreen(path, name=name, description=description))
+
+
 class PromptReviewApp(_ReviewHost):
     """`skit add x.prompt.md` in an interactive terminal."""
 
@@ -1606,6 +1703,27 @@ class PromptReviewApp(_ReviewHost):
         )
 
 
+def run_add_source() -> str | None:
+    """Blocking CLI entry to the source step. Returns the new slug, or None."""
+    return AddSourceApp().run()
+
+
+def run_kind_pick(
+    filename: str, *, has_shebang: bool, offer_exe: bool, suggested: str | None = None
+) -> str | None:
+    """Blocking CLI entry to the kind ask. Returns the picked kind, or None."""
+    return KindPickApp(
+        filename, has_shebang=has_shebang, offer_exe=offer_exe, suggested=suggested
+    ).run()
+
+
+def run_candidate_picker(names: list[str], selected: set[str]) -> set[str] | None:
+    """Blocking CLI entry to the prompt-variable picker — the SAME modal the Library's
+    `e` reconcile and Script settings open, hosted alone for a terminal `skit edit`.
+    Returns the chosen names, or None on cancel."""
+    return _ScreenHost(tui_prompt.PromptCandidatePickerModal(names, selected)).run()
+
+
 def run_add_review(
     path: Path,
     *,
@@ -1626,6 +1744,13 @@ def run_add_review(
         deps=deps,
         requires_python=requires_python,
     ).run()
+
+
+def run_exe_review(
+    path: Path, *, name: str | None = None, description: str | None = None
+) -> str | None:
+    """Blocking CLI entry to the program identity review. Returns the new slug, or None."""
+    return ExeReviewApp(path, name=name, description=description).run()
 
 
 def run_prompt_review(
