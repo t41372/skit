@@ -1068,6 +1068,30 @@ async def test_extra_argument_labels_name_the_actual_receiver(tmp_path):
             await pilot.pause()
 
 
+async def test_prompt_and_command_forms_prefill_remembered_extra_args(tmp_path):
+    """The run form prefills the last extra-args tail for prompt and command too — a
+    remembered `--model` is config, like the pinned runner (docs/design/prompt.md v3.1).
+    Before v3.1 the takes_argv=False kinds opened this field blank."""
+    command = store.add_command("echo ready", name="cmd")
+    argstate.save_last(command.slug, extra_args=["--loud"])
+    prompt_path = tmp_path / "review.prompt.md"
+    prompt_path.write_text("Review this\n", encoding="utf-8")
+    prompt = store.add_prompt(prompt_path, name="review")
+    argstate.save_last(prompt.slug, extra_args=["--model", "opus"])
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        for entry, expected in ((command, "--loud"), (prompt, "--model opus")):
+            screen = RunFormScreen(entry, flows.plan_for_entry(entry), {})
+            app.push_screen(screen)
+            await pilot.pause()
+            extra_row = next(
+                row for row in screen.query(FieldRow) if row.field.key == "__extra_args__"
+            )
+            assert extra_row.query_one(Input).value == expected
+            app.pop_screen()
+            await pilot.pause()
+
+
 async def test_collect_keeps_unbalanced_extra_as_one_argument(tmp_path, quiet_run):
     """Extra args with an unbalanced quote can't be shlex-split; collect falls back to
     passing the raw text as a single argument rather than dropping it."""

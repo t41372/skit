@@ -98,6 +98,19 @@ Revision notes (v2.2 → v3, maintainer-decided after using the shipped v2.2):
   (CLI add, params view, settings checkboxes) previews at most LIST_PREVIEW_LIMIT (20)
   names plus a "+N more" tail.
 
+Revision notes (v3 → v3.1, maintainer-decided after user feedback, 2026-07-20):
+
+- **The remembered extra-args tail is now prefilled/replayed for prompt and command too.**
+  v2.2 tied the reuse-last-args affordance to `takes_argv`, so the `takes_argv=False` kinds
+  (prompt, command) never got their last `--` tail back — and the canonical example was
+  literally `--model opus`, deliberately treated as per-run. In practice users set the model
+  once and expect it to stick, exactly as the last-picked runner does; a remembered `--model`
+  is persistent config, not a one-off. So the reuse policy is now orthogonal to `takes_argv`:
+  every kind remembers its tail (the TUI `r` rerun already did, ungated — the run form and
+  `skit run` now match it). `takes_argv=False` keeps its one real job — argv is not the kind's
+  parameter interface (`params.py`) — and nothing else. `--raw` still suppresses replay for its
+  clean-slate promise, and `--forget-args` still clears the remembered tail.
+
 Cross-surface verification requirements (v2.1 → v2.2):
 
 - **The trait migration covers all five `family == "template"` decision sites**, not just
@@ -185,7 +198,7 @@ def _prompt_spec() -> LangSpec:
         # langs/prompt/analyzer.py as plain functions consumed directly by the
         # add/params/plan surfaces.
         supports_modes=True,
-        takes_argv=False,           # reuse-last-args stays off; extra argv follows rule below
+        takes_argv=False,           # argv is not the kind's param interface; extra argv follows rule below
         placeholder_params=True,    # opens the placeholder form path (see flows amendment)
     )
 ```
@@ -392,9 +405,9 @@ mirroring — not calling — the `_render` missing-check).
    string substitution inside one token, **no quoting of any kind**.
 5. Place `extra` argv (anything after `--` on `skit run`) on the option side of a
    runner template's end-of-options delimiter, when it has one; otherwise append it.
-   Thus per-run agent flags (`skit run review -- --model opus`) keep working while a
-   positional prompt beginning with `--help` cannot turn into an agent option.
-   `takes_argv=False` still keeps the reuse-last-args affordance off.
+   Thus agent flags (`skit run review -- --model opus`) keep working while a positional
+   prompt beginning with `--help` cannot turn into an agent option. Passing none reuses the
+   remembered tail (v3.1) — `takes_argv=False` no longer suppresses that.
 6. Validate the configured argv, resolve its executable, replace only `argv[0]` with that
    resolved binary, and validate the real argv again. Body/render/length failures therefore
    still precede a missing-binary refusal.

@@ -72,9 +72,10 @@ skit run <name> --forget-args --no-input            # erase the remembered extra
   also expand globs.
 - Unset fields fall back to: preset > last-used value > the field's declared default.
   A required field with no value fails fast (exit 125) rather than prompting.
-- **Reuse warning:** with no `--` args given, a script or exe run reuses the *last
-  run's* extra args (it says so on stderr). Pass your own `--` args, use `--raw` (which
-  never replays old arguments), or `--forget-args` (erases the remembered tail up front,
+- **Reuse warning:** with no `--` args given, any run reuses the *last run's* extra args
+  — a script's argv, a prompt's or command's agent/command flags like `--model` alike (it
+  says so on stderr). Pass your own `--` args, use `--raw` (which never replays old
+  arguments), or `--forget-args` (erases the remembered tail up front,
   then runs) when you need a clean slate; `--dry-run` shows exactly what would happen.
 - `--raw` runs a script's stored copy as-is, skipping the parameter form and injection.
   It applies to every kind EXCEPT prompt and command, whose placeholders ARE the

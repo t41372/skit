@@ -33,8 +33,8 @@ def test_command_spec_fields_and_launch_strategy():
 
 def test_command_spec_does_not_take_argv():
     # takes_argv=False overrides the True default: a command's "arguments" are its
-    # placeholders, so run's reuse-last-args affordance must not append a remembered
-    # argv tail. `is False` also pins it against a None mutation.
+    # placeholders, so an appended argv tail is not the kind's own interface (the
+    # parameter surface keys off this). `is False` also pins it against a None mutation.
     spec = registry.spec_for("command")
     assert spec is not None
     assert spec.takes_argv is False
