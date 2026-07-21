@@ -125,8 +125,10 @@ class FieldRow(Vertical):
     def shlexy(self) -> bool:
         """Whether the field's text is re-split into pieces at collection/assembly
         (multi-value fields and the extra-args row) — the shapes whose ghost completes
-        only the trailing piece and whose picked paths append rather than replace."""
-        return self.field.multiple or self.field.key == _EXTRA_KEY
+        only the trailing piece and whose picked paths append rather than replace. Derived
+        from insert_mode so the two can never drift: `replace` is the single-value shape,
+        every other insert mode re-splits."""
+        return self.insert_mode != "replace"
 
     @property
     def insert_mode(self) -> tui_pathpick.InsertMode:

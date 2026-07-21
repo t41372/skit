@@ -707,6 +707,31 @@ async def test_insert_picked_shapes(monkeypatch):
             assert tui_pathpick.argv_text.split(box.value) == ["--verbose", "a b.txt"]
 
 
+async def test_insert_picked_escapes_glob_metacharacters(tmp_path):
+    """A picked file whose real name holds a glob metacharacter must reach the run as that ONE
+    file. Both parsed shapes re-expand globs at assembly (flows._split_multi for `multiple`, the
+    extra-args lane for the argv row) and quoting alone doesn't suppress it — insert_picked
+    glob-escapes the pick so the piece matches only its own literal self. Without the escape,
+    picking `data*.csv` would sweep in every data*.csv sibling in the run cwd."""
+    if sys.platform == "win32":
+        pytest.skip("'*' is not a legal filename character on Windows")
+    for name in ("data1.csv", "data2.csv", "data*.csv"):
+        (tmp_path / name).write_text("x", encoding="utf-8")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        box = Input()
+        await app.screen.mount(box)
+        await pilot.pause()
+        tui_pathpick.insert_picked(box, PickedPath("data*.csv"), mode="shlex")
+        assert box.value == "'data[*].csv'"  # glob.escape wraps the * in a [*] char-class
+        # The multiple field's REAL splitter yields only the picked file — the data1/data2
+        # siblings the bare `data*.csv` glob would have swept in are gone.
+        assert flows._split_multi(box.value, tmp_path) == ["data*.csv"]
+        box.value = ""
+        tui_pathpick.insert_picked(box, PickedPath("data*.csv"), mode="argv")
+        assert argv_text.split(box.value)[-1] == "data[*].csv"  # same escaped literal for argv
+
+
 async def test_secret_field_never_gets_a_suggester(tmp_path):
     src = tmp_path / "job.py"
     src.write_text("print('hi')\n", encoding="utf-8")

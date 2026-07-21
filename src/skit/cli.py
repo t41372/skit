@@ -4122,15 +4122,23 @@ def _edit_params(
     for w in _apply_env_sources(result.specs, env_sources):
         err_console.print(f"[yellow]{escape(w)}[/yellow]")
     # This is a write-back path, so the decode must be lossless (same discipline as
-    # _onboard_script_params): `text` above was read with errors="replace" for the analyzer,
-    # but writing THAT text back would bake U+FFFD over every non-UTF-8 byte. Re-read with
-    # surrogateescape — params_io.write only touches the comment block, so raw bytes round-trip.
-    current = copy_path.read_text(encoding="utf-8", errors="surrogateescape")  # pragma: no mutate — utf-8 equivalence  # fmt: skip
-    copy_path.write_text(
-        entry_spec.params_io.write(current, result.specs),
-        encoding="utf-8",
-        errors="surrogateescape",
-    )  # pragma: no mutate
+    # _onboard_script_params and _normalize_params): `text` above was read with errors="replace"
+    # for the analyzer, but writing THAT text back would bake U+FFFD over every non-UTF-8 byte.
+    # Re-read the raw bytes with surrogateescape — params_io.write only touches the comment
+    # block, so unrelated bytes round-trip.
+    current = copy_path.read_bytes().decode(
+        "utf-8", errors="surrogateescape"
+    )  # pragma: no mutate — codec alias
+    # Fold newlines exactly like the universal-newline read this replaced (\r\n AND lone \r ->
+    # \n): the comment-block engine is LF-based (its regex never matches "# ///\r"), so a CRLF
+    # copy would otherwise splice nothing. write_bytes then persists that LF form on every
+    # platform — write_text used to re-expand \n to os.linesep, CRLF-ifying the WHOLE stored copy
+    # on Windows even though only the [tool.skit] block changed. That was the byte-lossless
+    # claim's missing half; the fix mirrors what its sibling _normalize_params already carries.
+    current = current.replace("\r\n", "\n").replace("\r", "\n")
+    copy_path.write_bytes(
+        entry_spec.params_io.write(current, result.specs).encode("utf-8", errors="surrogateescape")
+    )  # pragma: no mutate — codec alias
     secret_now = {s.name for s in result.specs if s.secret}
     purged = argstate.purge_secret(entry.slug, secret_now)
     if purged:
@@ -4244,11 +4252,12 @@ def _normalize_params(
             1,
         ) from None
     # The comment-block engine below is LF-based (its block regex never matches "# ///\r"), so
-    # fold CRLF exactly like the universal-newline read this replaced; the write-back then
-    # persists the LF form on every platform (write_text used to re-expand to os.linesep,
-    # CRLF-ifying the whole copy on Windows). A Windows-authored stored copy — CRLF everywhere
-    # after any write_text-based edit — would otherwise skip the re-anchor half silently.
-    text = text.replace("\r\n", "\n")
+    # fold newlines exactly like the universal-newline read this replaced — \r\n AND lone \r
+    # (classic-Mac) -> \n, or a lone-CR copy leaves "# ///\r" unmatched and normalizes nothing.
+    # The write-back then persists the LF form on every platform (write_text used to re-expand to
+    # os.linesep, CRLF-ifying the whole copy on Windows). A Windows-authored stored copy — CRLF
+    # everywhere after any write_text-based edit — would otherwise skip the re-anchor half silently.
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     result = entry_spec.normalizer.normalize(text, list(names))
     for warning in result.refused:
         err_console.print(f"[yellow]{escape(_render_normalize_warning(warning))}[/yellow]")

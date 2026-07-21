@@ -1070,34 +1070,53 @@ def test_onboard_script_params_preserves_non_utf8_source_bytes(tmp_path, monkeyp
 # ---- _edit_params: the write-back half must be byte-lossless (the onboard idiom) ----------
 
 
-def test_edit_params_write_back_uses_the_surrogateescape_pair(tmp_path, monkeypatch):
-    """`params --manage`'s write-back mirrors the onboard idiom: the analysis read stays
-    errors="replace", but the text that is WRITTEN comes from a surrogateescape re-read and
-    goes back with surrogateescape — so a manage edit can't bake U+FFFD over raw bytes."""
+def test_edit_params_write_back_is_byte_based_not_text_mode(tmp_path, monkeypatch):
+    """`params --manage`'s write-back must be BYTE-based (read_bytes + write_bytes), like
+    _normalize_params — never text-mode write_text, which re-expands \\n to os.linesep and would
+    CRLF-ify the whole stored copy on Windows. The only read_text on the copy is the analysis
+    read (errors="replace"); the write-back re-reads raw bytes and writes raw bytes, so a manage
+    edit can neither bake U+FFFD over raw bytes nor rewrite line endings to the host default."""
     entry = _two_const_shell(tmp_path)
-    reads: list[dict[str, object]] = []
-    writes: list[dict[str, object]] = []
-    real_read = Path.read_text
-    real_write = Path.write_text
+    text_reads: list[dict[str, object]] = []
+    byte_reads: list[Path] = []
+    byte_writes: list[bytes] = []
+    text_writes: list[Path] = []  # the regression: write_text must never touch the stored copy
+    real_read_text = Path.read_text
+    real_read_bytes = Path.read_bytes
+    real_write_bytes = Path.write_bytes
+    real_write_text = Path.write_text
 
-    def read_spy(self, encoding=None, errors=None, *a, **k):
+    def read_text_spy(self, encoding=None, errors=None, *a, **k):
         if self == entry.script_path:
-            reads.append({"encoding": encoding, "errors": errors})
-        return real_read(self, *a, encoding=encoding, errors=errors, **k)
+            text_reads.append({"encoding": encoding, "errors": errors})
+        return real_read_text(self, *a, encoding=encoding, errors=errors, **k)
 
-    def write_spy(self, data, encoding=None, errors=None, *a, **k):
+    def read_bytes_spy(self):
         if self == entry.script_path:
-            writes.append({"encoding": encoding, "errors": errors})
-        return real_write(self, data, *a, encoding=encoding, errors=errors, **k)
+            byte_reads.append(self)
+        return real_read_bytes(self)
 
-    monkeypatch.setattr(Path, "read_text", read_spy)
-    monkeypatch.setattr(Path, "write_text", write_spy)
+    def write_bytes_spy(self, data):
+        if self == entry.script_path:
+            byte_writes.append(data)
+        return real_write_bytes(self, data)
+
+    def write_text_spy(self, *a, **k):
+        if self == entry.script_path:
+            text_writes.append(self)
+        return real_write_text(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_text", read_text_spy)
+    monkeypatch.setattr(Path, "read_bytes", read_bytes_spy)
+    monkeypatch.setattr(Path, "write_bytes", write_bytes_spy)
+    monkeypatch.setattr(Path, "write_text", write_text_spy)
     result = runner.invoke(cli.app, ["params", "d", "--manage", "WIDTH"])
     assert result.exit_code == 0, result.output
-    assert [r["encoding"] for r in reads] == ["utf-8", "utf-8"]  # analysis read + write-back read
-    assert [r["errors"] for r in reads] == ["replace", "surrogateescape"]
-    assert [w["encoding"] for w in writes] == ["utf-8"]  # the single copy write
-    assert [w["errors"] for w in writes] == ["surrogateescape"]
+    assert [r["errors"] for r in text_reads] == ["replace"]  # analysis read only; no text re-read
+    assert byte_reads  # the write-back re-read raw bytes
+    assert len(byte_writes) == 1  # a single byte write-back
+    assert b"[tool.skit]" in byte_writes[0]  # ...carrying the rewritten block
+    assert text_writes == []  # write_text never touched the stored copy (no os.linesep expansion)
 
 
 def test_edit_params_preserves_non_utf8_source_bytes(tmp_path):

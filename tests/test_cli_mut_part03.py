@@ -433,6 +433,38 @@ def test_normalize_folds_a_crlf_copy_and_reanchors_its_managed_definition(tmp_pa
     assert 'kind = "envdefault"' in text  # the managed definition followed the source
 
 
+def test_manage_write_back_folds_crlf_and_persists_lf(tmp_path):
+    # --manage rewrites the [tool.skit] block in the STORED COPY. Its write-back mirrors
+    # _normalize_params (read_bytes + fold CRLF/CR -> LF + write_bytes), so a CRLF-authored copy
+    # folds to LF and is persisted as LF on every platform. write_text used to re-expand \n to
+    # os.linesep, CRLF-ifying the WHOLE copy on Windows even though only the block changed — the
+    # missing half of the "byte-lossless write-backs for --manage" claim (the lane Windows CI
+    # would catch), and the CRLF-ified copy then skips the next --normalize's re-anchor half.
+    entry = _shell(tmp_path, '#!/usr/bin/env bash\nWIDTH=800\necho "$WIDTH"\n', name="crlf")
+    crlf = entry.script_path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    entry.script_path.write_bytes(crlf)
+    result = runner.invoke(cli.app, ["params", "crlf", "--manage", "WIDTH"])
+    assert result.exit_code == 0, result.output
+    rewritten = entry.script_path.read_bytes()
+    assert b"\r" not in rewritten  # no host-linesep re-expansion, no stray CR left behind
+    assert "Managed parameters: WIDTH" in _norm(result.output)
+
+
+def test_normalize_folds_a_lone_cr_copy_classic_mac(tmp_path):
+    # A classic-Mac stored copy uses lone \r line endings. The strict-decoded text must fold BOTH
+    # \r\n AND lone \r to \n before the LF-based engine runs, or WIDTH never sits on its own line
+    # and normalize finds nothing to rewrite. The universal-newline read this fold replaced folded
+    # lone \r too; dropping it (a bare replace("\r\n", "\n")) was a regression.
+    entry = _shell(tmp_path, '#!/usr/bin/env bash\nWIDTH=800\necho "$WIDTH"\n', name="cr")
+    lone_cr = entry.script_path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r")
+    entry.script_path.write_bytes(lone_cr)
+    result = runner.invoke(cli.app, ["params", "cr", "--normalize", "WIDTH"])
+    assert result.exit_code == 0, result.output
+    rewritten = entry.script_path.read_bytes()
+    assert b"\r" not in rewritten
+    assert 'WIDTH="${WIDTH:-800}"' in rewritten.decode("utf-8")
+
+
 def test_normalize_success_message_two_names_exact(tmp_path):
     # Two consts normalized in one call: the success line names them ", "-joined. Kills the
     # message-is-None, the msgid wrap, the lowercase, and the "XX, XX".join mutants.

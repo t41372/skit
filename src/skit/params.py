@@ -306,7 +306,7 @@ ALLOWED_TYPES: tuple[ParamType, ...] = _TYPES
 
 
 def as_param_type(value: str) -> ParamType | None:
-    """The value as one of the five ParamTypes, or None when it isn't one — so a caller can
+    """The value as one of the six ParamTypes, or None when it isn't one — so a caller can
     reject a hand-typed type (e.g. the TUI's type field) instead of silently coercing it."""
     for t in _TYPES:
         if value == t:

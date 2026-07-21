@@ -18,6 +18,8 @@ Input and only returns strings.
 
 from __future__ import annotations
 
+import asyncio
+import glob
 import os
 import re
 import shlex
@@ -125,10 +127,12 @@ def looks_pathy(piece: str) -> bool:
 
 
 def _scan(base: Path, keep: Callable[[str], bool], *, show_hidden: bool) -> list[tuple[str, bool]]:
-    """Directory entries under base that `keep` accepts, as (name, is_dir), sorted;
-    hidden entries only when asked for; at most SCAN_CAP entries examined so a
-    node_modules-sized directory cannot stall the event loop (path.md risk 4).
-    Unreadable directories and unstatable entries degrade, never raise."""
+    """Directory entries under base that `keep` accepts, as (name, is_dir), in the OS's
+    own scan order; hidden entries only when asked for; at most SCAN_CAP entries examined
+    so a node_modules-sized directory cannot stall the event loop (path.md risk 4). Each
+    caller imposes its own order — the ghost's exact-case alphabetical, the picker's ranked
+    sort — so scanning leaves the listing unordered rather than sorting it twice. Unreadable
+    directories and unstatable entries degrade, never raise."""
     matches: list[tuple[str, bool]] = []
     try:
         with os.scandir(base) as entries:
@@ -145,13 +149,15 @@ def _scan(base: Path, keep: Callable[[str], bool], *, show_hidden: bool) -> list
                     matches.append((entry.name, is_dir))
     except OSError:
         return []
-    return sorted(matches)
+    return matches
 
 
 def _list_matches(base: Path, prefix: str) -> list[tuple[str, bool]]:
-    """The ghost's listing: exact-case prefix matches — appended ghost text cannot
-    re-case what the user already typed."""
-    return _scan(base, lambda name: name.startswith(prefix), show_hidden=prefix.startswith("."))
+    """The ghost's listing: exact-case prefix matches, alphabetical — appended ghost text
+    cannot re-case what the user already typed, and get_suggestion completes the first entry."""
+    return sorted(
+        _scan(base, lambda name: name.startswith(prefix), show_hidden=prefix.startswith("."))
+    )
 
 
 def _list_filtered(base: Path, needle: str) -> list[tuple[str, bool]]:
@@ -198,7 +204,12 @@ class PathSuggester(Suggester):
         if located is None:
             return None
         base, prefix = located
-        for name, is_dir in _list_matches(base, prefix):
+        # _list_matches hits the filesystem (os.scandir + a stat per entry). Textual runs the
+        # suggester as a NON-threaded async task, so a synchronous scan would block the event
+        # loop — a slow/unresponsive network or FUSE mount freezes the whole TUI on every
+        # keystroke. SCAN_CAP bounds entries examined, not the blocking open/stat latency; the
+        # thread offload is what keeps the loop live (path.md risk 4).
+        for name, is_dir in await asyncio.to_thread(_list_matches, base, prefix):
             remainder = name[len(prefix) :] + ("/" if is_dir else "")
             if remainder:
                 return value + remainder
@@ -438,7 +449,13 @@ def insert_picked(target: Input, picked: PickedPath, *, mode: InsertMode) -> Non
     if mode == "replace":
         target.value = picked.text
     else:
-        piece = shlex.quote(picked.text) if mode == "shlex" else argv_text.join([picked.text])
+        # Glob-escape the pick before quoting. Both parsed shapes re-expand globs at assembly
+        # (flows._split_multi for `multiple`, the extra-args lane for the argv row), and quoting
+        # alone doesn't suppress that — a real file literally named `data*.csv` would otherwise
+        # expand to every data*.csv in the run cwd, launching the script with the wrong argument
+        # set. glob.escape wraps *?[ in [..] so the piece matches only its own literal self.
+        literal = glob.escape(picked.text)
+        piece = shlex.quote(literal) if mode == "shlex" else argv_text.join([literal])
         existing = target.value.strip()
         target.value = f"{existing} {piece}" if existing else piece
     target.cursor_position = len(target.value)
