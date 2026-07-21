@@ -378,6 +378,100 @@ def test_normalize_no_stored_copy_message_exact(tmp_path):
     assert "XX" not in out
 
 
+def test_normalize_refuses_a_non_utf8_script_untouched(tmp_path):
+    # A stored copy that isn't valid UTF-8 can't round-trip through the strict parse-and-splice
+    # pipeline, so --normalize refuses the whole file (exit 1) and leaves it byte-for-byte
+    # untouched — the errors="replace" read would have baked U+FFFD over the raw byte instead.
+    src = tmp_path / "raw.sh"
+    original = b"#!/usr/bin/env bash\nWIDTH=800\nprintf '\xff\\n'\necho \"$WIDTH\"\n"
+    src.write_bytes(original)
+    entry = store.add_script(src, kind="shell", name="raw")
+    result = runner.invoke(cli.app, ["params", "raw", "--normalize", "WIDTH"])
+    assert result.exit_code == 1
+    out = _norm(result.output)
+    assert (
+        "raw isn't valid UTF-8, so --normalize can't rewrite it safely; nothing was changed "
+        "— its constants keep being injected into a temporary copy." in out
+    )
+    assert "XX" not in out
+    assert entry.script_path.read_bytes() == original
+
+
+def test_normalize_splices_bytes_minimally_on_a_cjk_script(tmp_path):
+    # The A5 byte-minimal promise, byte-for-byte: only WIDTH's value span changes. CJK + emoji
+    # pin the multibyte byte offsets through the strict encode/decode pair.
+    src = tmp_path / "cjk.sh"
+    original = (
+        b"#!/usr/bin/env bash\n"
+        b"WIDTH=800\n"
+        b"# \xe5\xaf\xac\xe5\xba\xa6 \xf0\x9f\x8e\xaf\n"
+        b'echo "$WIDTH"\n'
+    )
+    src.write_bytes(original)
+    entry = store.add_script(src, kind="shell", name="cjk")
+    result = runner.invoke(cli.app, ["params", "cjk", "--normalize", "WIDTH"])
+    assert result.exit_code == 0, result.output
+    expected = original.replace(b"WIDTH=800", b'WIDTH="${WIDTH:-800}"')
+    assert entry.script_path.read_bytes() == expected
+
+
+def test_normalize_preserves_a_crlf_copy_and_reanchors_its_managed_definition(tmp_path):
+    # A Windows-authored stored copy is CRLF everywhere. The strict-decoded text is folded to LF
+    # so the LF-based comment-block engine can match (else params_io.read finds nothing and the
+    # re-anchor half is skipped silently — the lane Windows CI caught), then the copy's OWN CRLF
+    # style is restored at write-back: the file stays CRLF end to end and skit's edit stays
+    # confined to the constant it rewrote (non-invasive / genuinely byte-lossless).
+    entry = _shell(tmp_path, '#!/usr/bin/env bash\nWIDTH=800\necho "$WIDTH"\n', name="crlf")
+    assert runner.invoke(cli.app, ["params", "crlf", "--manage", "WIDTH"]).exit_code == 0
+    raw = entry.script_path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    entry.script_path.write_bytes(raw)
+    result = runner.invoke(cli.app, ["params", "crlf", "--normalize", "WIDTH"])
+    assert result.exit_code == 0, result.output
+    rewritten = entry.script_path.read_bytes()
+    assert b"\r\n" in rewritten  # CRLF preserved...
+    stripped = rewritten.replace(b"\r\n", b"")  # ...end to end: no bare \r or \n survives the pairs
+    assert b"\r" not in stripped
+    assert b"\n" not in stripped
+    text = rewritten.decode("utf-8")
+    assert 'WIDTH="${WIDTH:-800}"' in text
+    assert 'kind = "envdefault"' in text  # the managed definition followed the source
+
+
+def test_manage_write_back_preserves_crlf(tmp_path):
+    # --manage rewrites only the [tool.skit] block in the STORED COPY, and its write-back is
+    # byte-lossless: fold to LF for the block engine, then restore the copy's CRLF style. A
+    # CRLF-authored copy stays CRLF (write_text used to re-expand \n to the HOST os.linesep,
+    # CRLF-ifying the whole copy on Windows / LF-flattening it on POSIX even though only the block
+    # changed — the missing half of the "byte-lossless write-backs for --manage" claim).
+    entry = _shell(tmp_path, '#!/usr/bin/env bash\nWIDTH=800\necho "$WIDTH"\n', name="crlf")
+    crlf = entry.script_path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+    entry.script_path.write_bytes(crlf)
+    result = runner.invoke(cli.app, ["params", "crlf", "--manage", "WIDTH"])
+    assert result.exit_code == 0, result.output
+    rewritten = entry.script_path.read_bytes()
+    assert b"\r\n" in rewritten  # CRLF preserved...
+    stripped = rewritten.replace(b"\r\n", b"")  # ...with no bare terminator left behind
+    assert b"\r" not in stripped
+    assert b"\n" not in stripped
+    assert "Managed parameters: WIDTH" in _norm(result.output)
+
+
+def test_normalize_preserves_a_lone_cr_copy_classic_mac(tmp_path):
+    # A classic-Mac stored copy uses lone \r line endings. The fold covers \r\n AND lone \r -> \n
+    # so the LF-based engine matches (else WIDTH never sits on its own line and normalize finds
+    # nothing); the copy's lone-CR style is then restored, so it stays lone-CR and only the
+    # constant changes. Dropping either half — the fold or the restore — is observable here.
+    entry = _shell(tmp_path, '#!/usr/bin/env bash\nWIDTH=800\necho "$WIDTH"\n', name="cr")
+    lone_cr = entry.script_path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r")
+    entry.script_path.write_bytes(lone_cr)
+    result = runner.invoke(cli.app, ["params", "cr", "--normalize", "WIDTH"])
+    assert result.exit_code == 0, result.output
+    rewritten = entry.script_path.read_bytes()
+    assert b"\r" in rewritten  # lone-CR preserved...
+    assert b"\n" not in rewritten  # ...never flattened to (or mixed with) LF
+    assert 'WIDTH="${WIDTH:-800}"' in rewritten.decode("utf-8")
+
+
 def test_normalize_success_message_two_names_exact(tmp_path):
     # Two consts normalized in one call: the success line names them ", "-joined. Kills the
     # message-is-None, the msgid wrap, the lowercase, and the "XX, XX".join mutants.

@@ -43,7 +43,7 @@ skit list --json          # same data, machine-readable (only if you're scriptin
 skit show <name> --json   # full parameter schema as JSON
 ```
 
-`show` is the map: each field's `type` (str/int/float/bool/choice), `required`,
+`show` is the map: each field's `type` (str/int/float/bool/choice/path), `required`,
 `default`, `choices`, and `source` — where the value goes: `flag` (passed as a real
 CLI flag), `inject` (a managed constant or prompt answer, rewritten into a temporary
 copy at run time), `env` (delivered as an environment variable), or `placeholder`

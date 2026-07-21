@@ -42,7 +42,7 @@ if TYPE_CHECKING:
 
 Binding = Literal["const", "input", "envdefault", "none"]
 Delivery = Literal["inject", "env", "flag", "placeholder"]
-ParamType = Literal["str", "int", "float", "bool", "choice"]
+ParamType = Literal["str", "int", "float", "bool", "choice", "path"]
 
 # Secret pre-check heuristic (matched against the upper-cased name / prompt). Universal:
 # python candidates, shell variables, command placeholders, and declared params all run
@@ -57,7 +57,10 @@ def is_secret_name(text: str) -> bool:
 
 _BINDINGS: tuple[Binding, ...] = ("const", "input", "envdefault", "none")
 _DELIVERIES: tuple[Delivery, ...] = ("inject", "env", "flag", "placeholder")
-_TYPES: tuple[ParamType, ...] = ("str", "int", "float", "bool", "choice")
+# "path" carries str semantics everywhere a value is validated, coerced, or delivered
+# (no existence checks) — it changes what the TUI offers, never what a run requires
+# (docs/design/path.md).
+_TYPES: tuple[ParamType, ...] = ("str", "int", "float", "bool", "choice", "path")
 
 # The delivery each source-anchored binding implies; "none" is the free axis.
 _BINDING_DELIVERY: dict[str, Delivery] = {
@@ -303,7 +306,7 @@ ALLOWED_TYPES: tuple[ParamType, ...] = _TYPES
 
 
 def as_param_type(value: str) -> ParamType | None:
-    """The value as one of the five ParamTypes, or None when it isn't one — so a caller can
+    """The value as one of the six ParamTypes, or None when it isn't one — so a caller can
     reject a hand-typed type (e.g. the TUI's type field) instead of silently coercing it."""
     for t in _TYPES:
         if value == t:

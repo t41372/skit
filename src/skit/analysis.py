@@ -345,6 +345,15 @@ def _apply_tweaks(
             warnings.append(f"not-managed:{name}")
 
 
+def _type_matches(spec: ParamDecl, cand: Candidate) -> bool:
+    """Whether a stored const type still matches what the source derives. A declared
+    ``path`` over a derived ``str`` is a user refinement — a string constant is exactly
+    how a path lives in source — not drift; every other mismatch is real. Resync
+    preservation falls out for free: a compatible pair never enters ``report.changed``,
+    so ``_apply_resync`` never rewrites the declared type (docs/design/path.md)."""
+    return cand.type == spec.type or (spec.type == "path" and cand.type == "str")
+
+
 def reconcile(  # noqa: PLR0912 — one branch per binding and drift category; a flat dispatch
     text: str, specs: list[ParamDecl], *, analyze: Callable[[str], Analysis]
 ) -> Report:
@@ -397,7 +406,7 @@ def reconcile(  # noqa: PLR0912 — one branch per binding and drift category; a
         cand = consts.get(spec.name)
         if cand is None:
             report.missing.append(spec)
-        elif cand.type != spec.type:
+        elif not _type_matches(spec, cand):
             covered_consts.add(spec.name)
             report.changed.append((spec, cand))
         else:

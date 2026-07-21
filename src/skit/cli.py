@@ -607,13 +607,19 @@ def _onboard_script_params(entry: store.Entry, kind_spec: LangSpec, no_input: bo
     if not specs:
         return []
     copy_path = entry.script_path
-    # This is a write-back path, so the decode must be lossless. Shell/fish scripts may
-    # legitimately contain arbitrary bytes; surrogateescape lets the comment-only metadata
-    # edit round-trip them instead of silently replacing each one with U+FFFD.
-    current = copy_path.read_text(encoding="utf-8", errors="surrogateescape")  # pragma: no mutate — utf-8 equivalence  # fmt: skip
-    copy_path.write_text(
-        kind_spec.params_io.write(current, specs), encoding="utf-8", errors="surrogateescape"
-    )  # pragma: no mutate
+    # This is a write-back path, so it must be byte-lossless (same discipline as _edit_params).
+    # Shell/fish scripts may legitimately contain arbitrary bytes; surrogateescape lets the
+    # comment-only metadata edit round-trip them instead of replacing each with U+FFFD. Fold to
+    # LF for the LF-based block engine, then restore the copy's own line-ending style so a CRLF
+    # script stays CRLF and the edit stays confined to the block it inserted.
+    raw = copy_path.read_bytes()
+    newline = _detect_newline(raw)
+    current = raw.decode("utf-8", errors="surrogateescape")  # pragma: no mutate — codec alias
+    current = current.replace("\r\n", "\n").replace("\r", "\n")
+    written = _restore_newline(kind_spec.params_io.write(current, specs), newline)
+    copy_path.write_bytes(
+        written.encode("utf-8", errors="surrogateescape")
+    )  # pragma: no mutate — codec alias
     return [s.name for s in specs]
 
 
@@ -654,9 +660,16 @@ def _onboard_python(
         params_specs = _onboard_params(text, entry.meta.name, no_input)
         if params_specs:
             copy_path = entry.script_path
-            current = copy_path.read_text(encoding="utf-8")  # pragma: no mutate — utf-8 equivalence
-            new_text = metawriter.write_params(current, params_specs)
-            copy_path.write_text(new_text, encoding="utf-8")  # pragma: no mutate
+            # Byte-lossless write-back (same discipline as _edit_params): fold to LF for the
+            # LF-based PEP 723 block engine, then restore the copy's own line-ending style so a
+            # CRLF script stays CRLF instead of being re-expanded to the host os.linesep.
+            raw = copy_path.read_bytes()
+            newline = _detect_newline(raw)
+            current = (
+                raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+            )  # pragma: no mutate — codec alias
+            new_text = _restore_newline(metawriter.write_params(current, params_specs), newline)
+            copy_path.write_bytes(new_text.encode("utf-8"))  # pragma: no mutate — codec alias
             managed = [s.name for s in params_specs]
             secrets = [s.name for s in params_specs if s.secret]
     return entry, final_deps, managed, secrets
@@ -3920,7 +3933,7 @@ def params(
     type_opt: list[str] = typer.Option(
         None,
         "--type",
-        help=gettext("Set a declared parameter's type, as NAME=str|int|float|bool|choice"),
+        help=gettext("Set a declared parameter's type, as NAME=str|int|float|bool|choice|path"),
     ),
     default_opt: list[str] = typer.Option(
         None, "--default", help=gettext("Set a declared parameter's default, as NAME=VALUE")
@@ -4329,6 +4342,27 @@ def _apply_env_sources(specs: list[ParamDecl], env_sources: dict[str, str]) -> l
     return warnings
 
 
+def _detect_newline(raw: bytes) -> str:
+    """The stored copy's line-ending style, so an LF-based edit can restore it before write-back.
+    The comment-block engine only matches on "\\n", so both write paths fold to LF to run it — but
+    persisting that LF would rewrite every line of a CRLF script even though only the block
+    changed. Detect the style here (CRLF wins if any is present, else lone CR, else LF) and
+    re-apply it after the edit: a uniformly-terminated file — every real script — round-trips
+    byte-for-byte, and skit's edit stays confined to the block it meant to touch. A (pathological)
+    mixed-ending file normalizes to the detected style, still no worse than the LF-only form."""
+    if b"\r\n" in raw:
+        return "\r\n"
+    if b"\r" in raw:
+        return "\r"
+    return "\n"
+
+
+def _restore_newline(text: str, newline: str) -> str:
+    """Re-apply `newline` to LF-normalized engine output. A no-op for LF copies; after the fold
+    every terminator is a lone "\\n", so the mapping back is unambiguous."""
+    return text if newline == "\n" else text.replace("\n", newline)
+
+
 def _edit_params(
     entry: store.Entry,
     *,
@@ -4394,8 +4428,22 @@ def _edit_params(
         err_console.print(f"[yellow]{escape(analysis.render_warning(w))}[/yellow]")
     for w in _apply_env_sources(result.specs, env_sources):
         err_console.print(f"[yellow]{escape(w)}[/yellow]")
-    new_text = entry_spec.params_io.write(text, result.specs)
-    copy_path.write_text(new_text, encoding="utf-8")  # pragma: no mutate — utf-8 equivalence
+    # This is a write-back path, so it must be byte-lossless (same discipline as
+    # _onboard_script_params and _normalize_params): `text` above was read with errors="replace"
+    # for the analyzer, but writing THAT text back would bake U+FFFD over every non-UTF-8 byte.
+    # Re-read the raw bytes with surrogateescape — params_io.write only touches the comment block,
+    # so unrelated bytes round-trip. Fold to LF for the LF-based block engine, then restore the
+    # copy's own line-ending style: writing the folded LF back would rewrite every line of a CRLF
+    # script even though only the [tool.skit] block changed (and write_text, the old path, was
+    # worse still — it re-expanded \n to the HOST os.linesep, CRLF-ifying a copy on Windows).
+    raw = copy_path.read_bytes()
+    newline = _detect_newline(raw)
+    current = raw.decode("utf-8", errors="surrogateescape")  # pragma: no mutate — codec alias
+    current = current.replace("\r\n", "\n").replace("\r", "\n")
+    written = _restore_newline(entry_spec.params_io.write(current, result.specs), newline)
+    copy_path.write_bytes(
+        written.encode("utf-8", errors="surrogateescape")
+    )  # pragma: no mutate — codec alias
     secret_now = {s.name for s in result.specs if s.secret}
     purged = argstate.purge_secret(entry.slug, secret_now)
     if purged:
@@ -4493,7 +4541,30 @@ def _normalize_params(
     copy_path = entry.script_path
     if not copy_path.exists():
         raise _fail(gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}, 1)
-    text = copy_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
+    # Bytes in, bytes out: --normalize rewrites the script's own text, and the whole
+    # parse-and-splice pipeline is strict UTF-8 end to end — a lossy read (errors="replace")
+    # would bake U+FFFD over every non-UTF-8 byte on write-back. A script that doesn't decode
+    # is refused whole instead, leaving the stored copy byte-for-byte untouched.
+    raw = copy_path.read_bytes()
+    try:
+        text = raw.decode("utf-8")  # pragma: no mutate — codec alias
+    except UnicodeDecodeError:
+        raise _fail(
+            gettext(
+                "%(name)s isn't valid UTF-8, so --normalize can't rewrite it safely; nothing "
+                "was changed — its constants keep being injected into a temporary copy."
+            )
+            % {"name": entry.meta.name},
+            1,
+        ) from None
+    # The comment-block engine below is LF-based (its block regex never matches "# ///\r"), so
+    # fold every terminator to LF — \r\n AND lone \r (classic-Mac) -> \n, or a CRLF/CR copy
+    # leaves "# ///\r" unmatched and normalizes nothing. The copy's own style is captured first
+    # and restored at write-back, so a CRLF script stays CRLF and skit's edit stays confined to
+    # the one constant it rewrote (write_text, the old path, re-expanded \n to the HOST os.linesep
+    # instead, CRLF-ifying the whole copy on Windows and skipping the next re-anchor silently).
+    newline = _detect_newline(raw)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     result = entry_spec.normalizer.normalize(text, list(names))
     for warning in result.refused:
         err_console.print(f"[yellow]{escape(_render_normalize_warning(warning))}[/yellow]")
@@ -4514,8 +4585,8 @@ def _normalize_params(
         else s
         for s in entry_spec.params_io.read(result.text)
     ]
-    new_text = entry_spec.params_io.write(result.text, specs)
-    copy_path.write_text(new_text, encoding="utf-8")  # pragma: no mutate — utf-8 equivalence
+    new_text = _restore_newline(entry_spec.params_io.write(result.text, specs), newline)
+    copy_path.write_bytes(new_text.encode("utf-8"))  # pragma: no mutate — codec alias
     console.print(
         f"[green]{gettext('Normalized %(names)s in %(name)s: delivered as environment variables from now on (no temporary copy, and $0 stays your real file).') % {'names': ', '.join(escape(n) for n in result.normalized), 'name': escape(entry.meta.name)}}[/green]"
     )
@@ -4534,7 +4605,7 @@ def _render_declared_warning(warning: str) -> str:
             "%(name)s isn't a template placeholder, so it can't use placeholder delivery; skipped."
         ),
         "bad-type": gettext(
-            "%(name)s: unknown type; skipped (use str, int, float, bool, or choice)."
+            "%(name)s: unknown type; skipped (use str, int, float, bool, choice, or path)."
         ),
         "bad-default": gettext("%(name)s: the default doesn't fit its type; skipped."),
         "env-source-not-secret": gettext(
