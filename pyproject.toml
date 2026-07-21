@@ -2,7 +2,7 @@
 # Distribution name only ("skit" is admin-prohibited on PyPI); the import package,
 # CLI command, and config dirs all stay "skit".
 name = "skit-cli"
-version = "0.3.0"
+version = "0.3.1.dev0"
 description = "Launcher and parameter manager for scripts, prompts, programs, and commands: one library, one run form, nothing to memorize."
 readme = "README.md"
 requires-python = ">=3.12"
