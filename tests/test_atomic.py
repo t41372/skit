@@ -12,6 +12,7 @@ from __future__ import annotations
 import errno
 import os
 import re
+import stat
 import subprocess
 import sys
 import threading
@@ -434,6 +435,63 @@ def test_atomic_write_bytes_temp_fsync_failure_still_cleans_up_tmp_file(
 
     assert not path.exists()
     assert list(tmp_path.iterdir()) == []  # the temp file was cleaned up, not left behind
+
+
+# --------------------------------------------------------------------------
+# atomic_write_text_keep_mode — preserve an existing file's permission bits
+# --------------------------------------------------------------------------
+
+
+def test_atomic_write_text_keep_mode_preserves_existing_mode(tmp_path: Path) -> None:
+    """An existing file's permission bits survive the atomic replace: mkstemp's tmp is always
+    0600, so a plain atomic_write_text would silently re-mode a 0755 stored script copy (added
+    via copy2, which preserved the original's bits). keep_mode restores the exact captured mode
+    after the replace, and the new content lands."""
+    target = tmp_path / "script.sh"
+    target.write_text("old\n", encoding="utf-8")
+    target.chmod(0o755)
+
+    atomic.atomic_write_text_keep_mode(target, "new content\n")
+
+    assert target.read_text(encoding="utf-8") == "new content\n"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o755  # bits preserved exactly
+
+
+def test_atomic_write_text_keep_mode_missing_target_skips_chmod(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A target that vanished since the caller read it: the pre-stat raises OSError so mode is
+    None, and NO chmod is attempted (nothing to preserve). The fresh write still lands, without
+    crashing."""
+    target = tmp_path / "gone.txt"
+    assert not target.exists()
+    chmod_calls: list[object] = []
+    monkeypatch.setattr(atomic.os, "chmod", lambda *a, **_k: chmod_calls.append(a))
+
+    atomic.atomic_write_text_keep_mode(target, "created\n")
+
+    assert target.read_text(encoding="utf-8") == "created\n"
+    assert chmod_calls == []  # mode was None → the chmod branch was skipped entirely
+
+
+def test_atomic_write_text_keep_mode_suppresses_chmod_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mode-restoring chmod is best-effort (contextlib.suppress(OSError)): if os.chmod
+    raises, the write still succeeds — the new content was already committed by the atomic
+    replace before the chmod ran."""
+    target = tmp_path / "script.sh"
+    target.write_text("old\n", encoding="utf-8")
+    target.chmod(0o644)
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise OSError("chmod not permitted")
+
+    monkeypatch.setattr(atomic.os, "chmod", boom)
+
+    atomic.atomic_write_text_keep_mode(target, "new\n")  # must not raise
+
+    assert target.read_text(encoding="utf-8") == "new\n"
 
 
 # --------------------------------------------------------------------------

@@ -128,6 +128,47 @@ def _is_main_guard(stmt: ast.stmt) -> TypeGuard[ast.If]:
     return has_name and has_main
 
 
+def _bound_names(tree: ast.Module) -> dict[str, int]:
+    """How many times each value name is bound anywhere in the module.
+
+    Most targets are Store-context Names, but several binding forms keep their names
+    as strings or AST fields instead (definitions, imports, exception handlers and
+    pattern captures). Missing even one of those is unsound for constant folding: a
+    local class named DEFAULT can shadow a top-level literal at the parser call site.
+    This intentionally remains file-wide and conservative — any second binding makes
+    the name ineligible rather than attempting partial scope execution. (Lives here,
+    not in argspec, so input-candidate detection can share it without an import cycle;
+    argspec's constant folding imports it back.)"""
+    counts: dict[str, int] = {}
+
+    def bump(name: str | None) -> None:
+        if name:
+            counts[name] = counts.get(name, 0) + 1
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            bump(node.id)
+        elif isinstance(node, ast.arg):
+            bump(node.arg)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bump(node.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                # `import pkg.sub` binds pkg; `import pkg.sub as p` binds p.
+                bump(alias.asname or alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                # Star imports can bind any public name, so no top-level literal is
+                # provably unique in their presence. Mark every harvested name below
+                # via the sentinel handled by _constant_env.
+                bump("*" if alias.name == "*" else alias.asname or alias.name)
+        elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
+            bump(node.name)
+        elif isinstance(node, ast.MatchMapping):
+            bump(node.rest)
+    return counts
+
+
 def _literal_prompt(call: ast.Call) -> str:
     """The literal first-argument string of an input() call, or "" if absent/non-literal.
 
@@ -143,6 +184,13 @@ def _literal_prompt(call: ast.Call) -> str:
 
 def _input_candidates(tree: ast.Module) -> list[Candidate]:
     """Every input() call in the file, numbered by order of appearance in the source (B1)."""
+    if _bound_names(tree).get("input"):
+        # The script binds `input` itself (a def, an assignment, an import, even a
+        # parameter): its calls reach THAT binding, not the builtin prompt — and the
+        # shim's rewrite would swap the script's own function for a wrapper that falls
+        # back to real stdin input. File-wide and conservative, like every other
+        # honesty rule here: one shadowing binding disables input detection outright.
+        return []
     calls: list[ast.Call] = [
         node
         for node in ast.walk(tree)

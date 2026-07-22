@@ -87,6 +87,7 @@ class FormField:
     env_source: str = ""
     degraded: bool = False  # free-text fallback; omit from delivery when empty
     multiple: bool = False  # shlex-split + glob-expand each piece
+    repeat: bool = False  # multiple: emit the flag before EACH piece (click/parseArgs style)
     flag: str = ""  # "--output"; "" = positional (flag source only)
     action: str = ""  # store_true | store_false (bool flags)
     env_target: str = ""  # env source only: the variable to SET ("" = the field's key)
@@ -141,6 +142,12 @@ class FormField:
         if d.delivery == "flag":
             # Reflected from the script's own CLI parser: assembled into real argv. A degraded
             # field is a free-text field whatever its declared type said.
+            action = d.action
+            if not action and not d.degraded and d.type == "bool" and d.flag:
+                # A declared bool flag whose row names no action (hand-edited meta, or a
+                # pre-hygiene `--type v=bool` edit) can only mean "pass the flag when on";
+                # without this default the checkbox delivers nothing in EITHER state.
+                action = "store_true"
             return cls(
                 key=d.name,
                 label=d.name,
@@ -154,8 +161,9 @@ class FormField:
                 secret=d.secret,
                 degraded=d.degraded,
                 multiple=d.multiple,
+                repeat=d.repeat,
                 flag=d.flag,
-                action=d.action,
+                action=action,
             )
         if d.delivery == "env":
             # Declared env parameter: the value becomes an environment variable on the
@@ -709,8 +717,11 @@ def _assemble_flags(plan: FormPlan, final: Mapping[str, str], cwd: Path) -> list
         if f.kind == "bool":
             fired = _coerce_bool_lenient(value)
             # A checkbox fires its flag only when it differs from the script default:
-            # store_true fires on checked, store_false fires on unchecked.
-            if (f.action == "store_true" and fired) or (f.action == "store_false" and not fired):
+            # store_true fires on checked, store_false fires on unchecked. A flagless
+            # bool (a hand-declared positional) has nothing to append — never argv "".
+            if f.flag and (
+                (f.action == "store_true" and fired) or (f.action == "store_false" and not fired)
+            ):
                 flags.append(f.flag)
             continue
         if not value and not f.delivers_empty:
@@ -718,6 +729,13 @@ def _assemble_flags(plan: FormPlan, final: Mapping[str, str], cwd: Path) -> list
         pieces = _split_multi(value, cwd) if f.multiple else [value]
         if f.flag == "":
             positionals.extend(pieces)
+        elif f.repeat:
+            # Click multiple=True / parseArgs multiple: the option must be REPEATED per
+            # value (`--tag a --tag b`); the one-flag-many-values shape below is argparse
+            # nargs grammar and reads as one flag plus positionals to these parsers.
+            for piece in pieces:
+                flags.append(f.flag)
+                flags.append(piece)
         else:
             flags.append(f.flag)
             flags.extend(pieces)

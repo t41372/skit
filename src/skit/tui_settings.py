@@ -30,6 +30,7 @@ from . import (
     tui_prompt,
     tui_runner,
 )
+from .atomic import atomic_write_text_keep_mode
 from .i18n import gettext
 from .langs.prompt import text as prompt_text
 from .langs.registry import spec_for
@@ -1050,8 +1051,10 @@ class ScriptSettingsScreen(Screen[bool]):
                 box = self.query(f"#st-new-{i}")
                 if box and box.first(Checkbox).value:
                     new_specs.append(ParamDecl.from_candidate(c))
-            entry.script_path.write_text(
-                spec.params_io.write(self._text, new_specs), encoding="utf-8"
+            # Atomic + mode-preserving: a torn write_text here could truncate the stored
+            # copy mid-save; tmp+replace leaves either the old script or the new one.
+            atomic_write_text_keep_mode(
+                entry.script_path, spec.params_io.write(self._text, new_specs)
             )
             purged = argstate.purge_secret(entry.slug, {s.name for s in new_specs if s.secret})
             if purged:

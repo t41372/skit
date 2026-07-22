@@ -23,7 +23,7 @@ import ast
 from dataclasses import dataclass, field
 
 from ...params import ParamDecl, ParamType, is_secret_name
-from .analyzer import _const_candidates, _literal_value
+from .analyzer import _bound_names, _const_candidates, _literal_value
 
 # A default that references a module constant by NAME (`default=DEFAULT_DOMAIN`) is as
 # statically knowable as the literal itself — but ONLY when the name provably holds that
@@ -44,45 +44,6 @@ from .analyzer import _const_candidates, _literal_value
 #   the literal leaving the script's own text for the first time (C3). The field
 #   degrades instead, exactly as before.
 ConstEnv = dict[str, str | int | float | bool]
-
-
-def _bound_names(tree: ast.Module) -> dict[str, int]:
-    """How many times each value name is bound anywhere in the module.
-
-    Most targets are Store-context Names, but several binding forms keep their names
-    as strings or AST fields instead (definitions, imports, exception handlers and
-    pattern captures). Missing even one of those is unsound for constant folding: a
-    local class named DEFAULT can shadow a top-level literal at the parser call site.
-    This intentionally remains file-wide and conservative — any second binding makes
-    the name ineligible rather than attempting partial scope execution."""
-    counts: dict[str, int] = {}
-
-    def bump(name: str | None) -> None:
-        if name:
-            counts[name] = counts.get(name, 0) + 1
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
-            bump(node.id)
-        elif isinstance(node, ast.arg):
-            bump(node.arg)
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            bump(node.name)
-        elif isinstance(node, ast.Import):
-            for alias in node.names:
-                # `import pkg.sub` binds pkg; `import pkg.sub as p` binds p.
-                bump(alias.asname or alias.name.split(".")[0])
-        elif isinstance(node, ast.ImportFrom):
-            for alias in node.names:
-                # Star imports can bind any public name, so no top-level literal is
-                # provably unique in their presence. Mark every harvested name below
-                # via the sentinel handled by _constant_env.
-                bump("*" if alias.name == "*" else alias.asname or alias.name)
-        elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
-            bump(node.name)
-        elif isinstance(node, ast.MatchMapping):
-            bump(node.rest)
-    return counts
 
 
 def _constant_env(tree: ast.Module) -> ConstEnv:
@@ -372,6 +333,10 @@ def _read_click_param(call: ast.Call, positional: bool, env: ConstEnv) -> ParamD
         required=(positional and nargs != -1) or _is_true_kwarg(kwargs.get("required")),
         help=_literal_str(kwargs.get("help")),
         multiple=nargs == -1 or _is_true_kwarg(kwargs.get("multiple")),
+        # click's multiple=True consumes ONE value per occurrence: assembly must repeat
+        # the flag (`--tag a --tag b`; `--tag a b` is an exit-2 usage error to click).
+        # nargs=-1 is variadic-positional grammar and keeps the plain pieces shape.
+        repeat=_is_true_kwarg(kwargs.get("multiple")),
         secret=is_secret_name(dest),
     )
     is_flag = kwargs.get("is_flag")

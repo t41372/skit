@@ -83,3 +83,29 @@ def test_read_option_defaults_binding_none_delivery_flag():
     assert f.binding == "none"
     assert f.delivery == "flag"
     assert f.flag == "--name"
+
+
+# ---- _apply_option_spec: `multiple: true` sets BOTH multiple and repeat ------------------------
+
+
+def test_multiple_true_option_sets_both_multiple_and_repeat():
+    # parseArgs `multiple: true` collects one value per occurrence, so the flag must be REPEATED
+    # per value at assembly. The reader records that as multiple AND repeat (kills the dropped
+    # `field.repeat = True` line — the field stays multiple either way, so the kill is on repeat).
+    (f,) = read('parseArgs({options:{tag:{type:"string",multiple:true}}});\n').fields
+    assert f.multiple is True
+    assert f.repeat is True
+
+
+def test_no_multiple_key_leaves_both_off():
+    (f,) = read('parseArgs({options:{name:{type:"string"}}});\n').fields
+    assert f.multiple is False
+    assert f.repeat is False
+
+
+def test_multiple_false_option_leaves_both_off():
+    # The guard requires the `true` literal, not merely a `multiple` key: `multiple: false` sets
+    # neither flag (kills a `== "true"` -> `!= "true"` / always-true mutation).
+    (f,) = read('parseArgs({options:{tag:{type:"string",multiple:false}}});\n').fields
+    assert f.multiple is False
+    assert f.repeat is False

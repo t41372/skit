@@ -6,6 +6,7 @@ import contextlib
 import errno
 import os
 import shutil
+import stat
 import sys
 import tempfile
 import threading
@@ -173,6 +174,21 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
 
 def atomic_write_text(path: Path, text: str) -> None:
     atomic_write_bytes(path, text.encode("utf-8"))  # pragma: no mutate — utf-8/UTF-8 alias
+
+
+def atomic_write_text_keep_mode(path: Path, text: str) -> None:
+    """Atomic replacement for an existing file that keeps its permission bits: mkstemp's
+    tmp is always 0600, so a plain atomic_write_text would silently re-mode a stored
+    script copy (added via copy2, which preserved the original's bits). A target that
+    vanished since the caller read it just gets the fresh write (nothing to preserve)."""
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError:
+        mode = None
+    atomic_write_text(path, text)
+    if mode is not None:
+        with contextlib.suppress(OSError):
+            os.chmod(path, mode)
 
 
 def atomic_write_toml(path: Path, doc: dict[str, Any]) -> None:

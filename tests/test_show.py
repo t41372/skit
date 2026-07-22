@@ -53,6 +53,7 @@ FIELD_KEYS = {
     "required",
     "secret",
     "multiple",
+    "repeat",
     "degraded",
     "choices",
     "default",
@@ -130,6 +131,7 @@ def test_show_json_argparse_full_schema(tmp_path):
         "required": True,
         "secret": False,
         "multiple": False,
+        "repeat": False,
         "degraded": False,
         "choices": [],
         "default": None,
@@ -157,6 +159,25 @@ def test_show_json_stable_shape(tmp_path):
     assert set(payload) == PAYLOAD_KEYS
     for f in payload["fields"]:
         assert set(f) == FIELD_KEYS
+
+
+CLICK_MULTIPLE = (
+    "import click\n"
+    "@click.command()\n"
+    "@click.option('--tag', multiple=True)\n"
+    "def main(tag):\n"
+    "    pass\n"
+)
+
+
+def test_show_json_repeat_true_for_a_click_multiple_option(tmp_path):
+    # The True side of the `repeat` JSON key (the argparse fixtures only ever emit False): a click
+    # multiple option assembles as a repeated flag, and an agent reads that off `repeat`.
+    store.add_python(_py(tmp_path, CLICK_MULTIPLE), name="tagger")
+    payload = _show_json("tagger")
+    fields = {f["key"]: f for f in payload["fields"]}
+    assert fields["tag"]["multiple"] is True
+    assert fields["tag"]["repeat"] is True
 
 
 def test_show_json_inject_secret_and_state(tmp_path):

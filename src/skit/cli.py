@@ -172,7 +172,11 @@ def main(
 
 
 def _resolve_python_metadata(
-    text: str, deps_opt: list[str] | None, python_opt: str | None, no_input: bool
+    text: str,
+    deps_opt: list[str] | None,
+    python_opt: str | None,
+    no_input: bool,
+    script_dir: Path | None = None,
 ) -> tuple[list[str], str]:
     """Decide the (dependencies, requires_python) to fill in.
 
@@ -209,7 +213,7 @@ def _resolve_python_metadata(
         if pin:
             _note_python_pin(pin)
         return [d.strip() for d in (deps_opt or []) if d.strip()], (python_opt or "").strip() or pin
-    suggested = pep723.suggest_dependencies(text)
+    suggested = pep723.suggest_dependencies(text, script_dir=script_dir)
     if not suggested:
         if pin:
             _note_python_pin(pin)
@@ -661,7 +665,9 @@ def _onboard_python(
     onboarding. Returns (entry, deps, managed_names, secret_names) for the summary."""
     python_opt = _validate_python_flags(deps_opt, python_opt)
     name, description = _prompt_identity(p, text, name, description, no_input)
-    final_deps, final_py = _resolve_python_metadata(text, deps_opt, python_opt, no_input)
+    final_deps, final_py = _resolve_python_metadata(
+        text, deps_opt, python_opt, no_input, script_dir=p.parent
+    )
     entry = store.add_python(
         p,
         name=name,
@@ -2327,6 +2333,9 @@ def _field_to_dict(f: flows.FormField) -> dict[str, object]:
         "required": f.required,
         "secret": f.secret,
         "multiple": f.multiple,
+        # True = each value travels as its own --flag occurrence (click/parseArgs
+        # repeated-option grammar) instead of one flag followed by every value.
+        "repeat": f.repeat,
         "degraded": f.degraded,
         "choices": list(f.choices),
         "default": f.default if f.has_default else None,

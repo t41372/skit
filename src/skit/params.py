@@ -81,6 +81,7 @@ class ParamDecl:
     default: str | int | float | bool | None = None
     required: bool = False
     multiple: bool = False  # flag delivery: shlex-split + glob-expand each piece
+    repeat: bool = False  # multiple flags: --tag a --tag b (click/parseArgs), not --tag a b (nargs)
     choices: tuple[str, ...] = ()
     prompt: str = ""  # form label; for input bindings, the literal call prompt
     help: str = ""  # field help text (shown under the form field)
@@ -181,6 +182,7 @@ class ParamDecl:
         tail: tuple[tuple[str, str | bool], ...] = (
             ("required", self.required),
             ("multiple", self.multiple),
+            ("repeat", self.repeat),
             ("prompt", self.prompt),
             ("help", self.help),
             ("secret", self.secret),
@@ -209,6 +211,7 @@ class ParamDecl:
             default=_scalar_or_none(d.get("default")),
             required=bool(d.get("required", False)),
             multiple=bool(d.get("multiple", False)),
+            repeat=bool(d.get("repeat", False)),
             choices=choices,
             prompt=str(d.get("prompt", "")),
             help=str(d.get("help", "")),
@@ -454,6 +457,14 @@ def edit_declared(  # noqa: PLR0912 — a fixed-order edit pipeline; the branche
             allowed_deliveries=allowed_deliveries,
             placeholders=placeholders,
         )
+        # Bool-flag action hygiene: a checkbox that fires no flag in EITHER state is a
+        # silent hole (`--type v=bool` used to create exactly that). A bool flag with no
+        # action can only mean "pass the flag when on" — record store_true explicitly so
+        # `show --json` tells the truth; a type moved off bool sheds the stale action.
+        if decl.type == "bool" and decl.delivery == "flag" and decl.flag and not decl.action:
+            decl.action = "store_true"
+        if decl.type != "bool":
+            decl.action = ""
         normalized = normalize(decl)
         if validate_invariants(normalized) is not None:
             warnings.append(f"choice-without-choices:{name}")

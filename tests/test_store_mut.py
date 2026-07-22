@@ -15,6 +15,7 @@ import os
 import shutil
 import socket
 import tempfile
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import override
@@ -497,18 +498,38 @@ def test_resolve_not_found_exact_message(tmp_path):
 
 
 def test_remove_passes_ignore_errors_true_to_rmtree(sample_script, monkeypatch):
-    """remove() must call shutil.rmtree with ignore_errors=True (a best-effort delete):
-    the entry is already gone from the registry/meta by the time rmtree runs, so a
-    filesystem hiccup there must not turn a successful logical removal into a crash."""
-    store.add_python(sample_script, name="hi")
+    """remove() must call shutil.rmtree with ignore_errors=True (a best-effort delete): the
+    entry is already gone from the registry/meta by the time rmtree runs. But a best-effort
+    delete that leaves the directory behind (a Windows held-open file, simulated here with a
+    no-op rmtree) must NOT be reported as success — remove() re-checks entry.dir.exists() and
+    raises StoreError naming the leftover directory, so a later `doctor --rebuild` can't
+    silently resurrect the 'removed' entry from its surviving meta.toml."""
+    entry = store.add_python(sample_script, name="hi")
+    captured: dict[str, object] = {}
 
-    def fake_rmtree(_path, ignore_errors=False, **_kw):
-        if not ignore_errors:
-            raise FileNotFoundError("simulated: directory already gone")
+    def fake_rmtree(path, ignore_errors=False, **_kw):
+        captured["path"] = Path(path)
+        captured["ignore_errors"] = ignore_errors
+        # A no-op even under ignore_errors=True: the directory survives, which is exactly
+        # the held-open-file case the leftover raise exists to catch.
 
     monkeypatch.setattr(shutil, "rmtree", fake_rmtree)
-    name = store.remove("hi")
-    assert name == "hi"
+    with pytest.raises(store.StoreError) as exc:
+        store.remove("hi")
+    assert captured["ignore_errors"] is True  # best-effort delete, not a hard rmtree
+    assert captured["path"] == entry.dir
+    assert str(entry.dir) in str(exc.value)
+    # The leftover-dir message is a 3-segment implicit string concat. mutmut mutates each segment
+    # independently (an "XX"-wrap and an uppercase variant per literal), and several survive a mere
+    # `path in message` check: an XX-wrap of segment 3 keeps every interior substring intact, so
+    # even asserting `"doctor --rebuild" in message` misses it. Pin the WHOLE rendered message so a
+    # break anywhere in any segment — wrap or uppercase — fails the equality.
+    expected = (
+        "hi was removed from the library, but its files couldn't be fully "
+        f"deleted: {entry.dir} — close any program using them, then delete the folder "
+        "(or run `skit doctor --rebuild` to restore the entry and retry)."
+    )
+    assert str(exc.value) == expected
 
 
 def test_doctor_rebuild_continues_past_missing_meta_dirs(tmp_path):
@@ -569,32 +590,43 @@ def test_update_dependencies_reference_mode_never_touches_disk(sample_script):
 
 
 def test_update_dependencies_reads_and_writes_script_py_as_utf8(sample_script, monkeypatch):
+    """The copy-mode PEP 723 sync reads the stored copy as BYTES (strict utf-8 decode, so a
+    non-utf-8 byte is preserved instead of replaced) and writes it back through
+    atomic_write_text_keep_mode (atomic + permission-preserving) — never a plain
+    read_text/write_text. Its mutation-killing purpose is retained: the stored copy still
+    round-trips as UTF-8 with the edit applied."""
     entry = store.add_python(sample_script)
 
-    read_calls: list[tuple[Path, dict[str, object]]] = []
-    write_calls: list[tuple[Path, dict[str, object]]] = []
-    real_read_text = Path.read_text
-    real_write_text = Path.write_text
+    read_bytes_paths: list[Path] = []
+    real_read_bytes = Path.read_bytes
 
-    def spy_read(self, *a, **kw):
-        read_calls.append((self, kw))
-        return real_read_text(self, *a, **kw)
+    def spy_read_bytes(self):
+        read_bytes_paths.append(self)
+        return real_read_bytes(self)
 
-    def spy_write(self, *a, **kw):
-        write_calls.append((self, kw))
-        return real_write_text(self, *a, **kw)
+    keep_mode_writes: list[tuple[Path, str]] = []
+    real_keep_mode = store.atomic_write_text_keep_mode
 
-    monkeypatch.setattr(Path, "read_text", spy_read)
-    monkeypatch.setattr(Path, "write_text", spy_write)
+    def spy_keep_mode(path, text):
+        keep_mode_writes.append((path, text))
+        return real_keep_mode(path, text)
+
+    monkeypatch.setattr(Path, "read_bytes", spy_read_bytes)
+    monkeypatch.setattr(store, "atomic_write_text_keep_mode", spy_keep_mode)
     store.update_dependencies(entry.slug, ["httpx"], ">=3.11")
 
-    script_reads = [kw for p, kw in read_calls if p.name == "script.py"]
-    script_writes = [kw for p, kw in write_calls if p.name == "script.py"]
-    assert script_reads, "expected a read_text call on script.py"
-    assert script_reads[0].get("encoding") == "utf-8"
-    assert script_reads[0].get("errors") == "replace"
-    assert script_writes, "expected a write_text call on script.py"
-    assert script_writes[0].get("encoding") == "utf-8"
+    assert any(p.name == "script.py" for p in read_bytes_paths), (
+        "the sync must read the copy as bytes (read_bytes), not read_text"
+    )
+    script_writes = [(p, t) for p, t in keep_mode_writes if p.name == "script.py"]
+    assert script_writes, "the copy must be written via atomic_write_text_keep_mode"
+    _, written_text = script_writes[0]
+    assert "httpx" in written_text
+    assert ">=3.11" in written_text
+    # The stored copy round-trips as UTF-8 with the edit applied (no lossy re-encode).
+    round_tripped = entry.script_path.read_text(encoding="utf-8")
+    assert "httpx" in round_tripped
+    assert ">=3.11" in round_tripped
 
 
 def test_update_dependencies_returns_entry_with_correct_slug(sample_script):
@@ -887,6 +919,114 @@ def test_rename_empty_name_exact_message():
     with pytest.raises(store.StoreError) as exc:
         store.rename(entry.slug, "   ")
     assert str(exc.value) == "A name is required."
+
+
+def test_rename_to_another_entrys_slug_string_is_taken():
+    """The uniqueness predicate restates resolve()'s matching against the LOCKED registry
+    snapshot: another entry's SLUG key counts as taken, not only its display name. Renaming B
+    to A's slug string is refused with the exact message."""
+    a = store.add_command("echo a", name="Alpha Name")  # slug "alpha-name" != display name
+    b = store.add_command("echo b", name="beta")
+    assert a.slug != a.meta.name
+    with pytest.raises(store.StoreError) as exc:
+        store.rename(b.slug, a.slug)
+    assert str(exc.value) == f"The name {a.slug} is already taken."
+
+
+def test_rename_to_its_own_slug_string_is_allowed():
+    """Renaming an entry to a string equal to its OWN slug is allowed — the predicate excludes
+    the entry's own slug key (`new_name != entry.slug`), even though that slug is a registry key."""
+    entry = store.add_command("echo hi", name="Some Name")  # slug "some-name" != display name
+    assert entry.slug != entry.meta.name
+    renamed = store.rename(entry.slug, entry.slug)
+    assert renamed.meta.name == entry.slug
+    assert renamed.slug == entry.slug  # slug is immutable
+    assert store.resolve(entry.slug).meta.name == entry.slug
+
+
+def test_rename_updates_meta_and_registry_and_preserves_slug_dir_argstate(sample_script):
+    """A normal rename writes the new name to meta.toml AND the registry row, while the slug,
+    the entry directory, and the argstate values file (both keyed by the immutable slug) all
+    survive untouched."""
+    entry = store.add_python(sample_script, name="before")
+    argstate.save_preset(entry.slug, "p1", {"A": "1"})
+    slug, entry_dir = entry.slug, entry.dir
+
+    renamed = store.rename(slug, "after")
+
+    assert renamed.slug == slug  # slug immutable
+    assert renamed.dir == entry_dir
+    assert renamed.meta.name == "after"
+    assert store._read_meta(entry_dir).name == "after"  # meta.toml on disk carries the new name
+    assert store._load_registry()[slug]["name"] == "after"  # registry row updated
+    assert argstate.load_state(slug)["presets"] == {"p1": {"A": "1"}}  # argstate preserved
+
+
+def test_rename_race_exactly_one_of_two_concurrent_claims_wins():
+    """The uniqueness check sits INSIDE the registry lock: two entries renaming to the SAME new
+    name concurrently must not both pass (each holds only its own entry lock). The registry lock
+    serializes the check+write, so exactly one rename lands and the other is refused."""
+    a = store.add_command("echo a", name="aaa")
+    b = store.add_command("echo b", name="bbb")
+
+    barrier = threading.Barrier(2)
+    results: dict[str, str] = {}
+
+    def do(slug: str, key: str) -> None:
+        barrier.wait()
+        try:
+            store.rename(slug, "shared-name")
+            results[key] = "ok"
+        except store.StoreError as exc:
+            results[key] = str(exc)
+
+    threads = [
+        threading.Thread(target=do, args=(a.slug, "a")),
+        threading.Thread(target=do, args=(b.slug, "b")),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    outcomes = list(results.values())
+    assert outcomes.count("ok") == 1  # exactly one succeeded
+    assert any("already taken" in v for v in outcomes if v != "ok")  # the other was refused
+    names = [e.meta.name for e in store.list_entries()]
+    assert names.count("shared-name") == 1  # only one entry ended up with the shared name
+
+
+def test_remove_leftover_dir_raises_but_drops_registry_row_and_keeps_values(
+    sample_script, monkeypatch
+):
+    """When the best-effort rmtree leaves the directory behind, remove() raises — but the
+    registry row was already popped (durable removal happens BEFORE rmtree), and the values
+    file is deliberately KEPT so a `doctor --rebuild`-restored entry keeps its presets."""
+    entry = store.add_python(sample_script, name="hi")
+    argstate.save_preset(entry.slug, "p1", {"A": "1"})
+    values_file = values_dir() / f"{entry.slug}.toml"
+    assert values_file.exists()
+
+    monkeypatch.setattr(shutil, "rmtree", lambda *a, **k: None)  # no-op → directory survives
+    with pytest.raises(store.StoreError):
+        store.remove("hi")
+
+    assert entry.slug not in store._load_registry()  # registry row gone (pop happened first)
+    assert values_file.exists()  # values kept for a doctor-restored entry
+
+
+def test_remove_real_delete_removes_dir_and_values_and_returns_name(sample_script):
+    """The success path (no monkeypatch): the entry directory is gone, the argstate values file
+    is forgotten, and the entry's display name is returned."""
+    entry = store.add_python(sample_script, name="hi")
+    argstate.save_last(entry.slug, values={"A": "1"})
+    values_file = values_dir() / f"{entry.slug}.toml"
+    assert values_file.exists()
+
+    name = store.remove("hi")
+    assert name == "hi"
+    assert not entry.dir.exists()
+    assert not values_file.exists()
 
 
 def test_resolve_corrupt_meta_exact_message():

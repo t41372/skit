@@ -75,7 +75,14 @@ def _check_exe_exists(source: str) -> None:
         raise TargetMissingError(
             gettext("The executable doesn't exist: %(path)s") % {"path": source}
         )
-    if sys.platform != "win32" and path.is_file() and not os.access(path, os.X_OK):
+    if not path.is_file():
+        # A directory (a macOS .app bundle, a typo'd path) would reach subprocess.run and
+        # die with a raw PermissionError traceback; refuse it as the usual clean 126.
+        raise NotExecutableError(
+            gettext("%(path)s isn't a runnable file (it's a directory or special file).")
+            % {"path": source}
+        )
+    if sys.platform != "win32" and not os.access(path, os.X_OK):
         raise NotExecutableError(
             gettext("%(path)s exists but isn't executable (chmod +x it?).") % {"path": source}
         )
@@ -200,8 +207,105 @@ def quote_for_shell(value: str) -> str:
 _TEMPLATE_TOKEN_RE = re.compile(r"\{\{|\}\}|(?<!\{)\{([a-zA-Z_][a-zA-Z0-9_]*)\}(?!\})")
 
 
+def _posix_quote_state(text: str, state: str) -> str:
+    """Advance the POSIX shell quote context ("" unquoted, "'" single, '"' double) across a
+    chunk of template text. Backslash consumes the next character outside single quotes —
+    inside double quotes that over-approximates (`\\x` leaves the backslash literal for most
+    x), but the skipped character is never one that could change the state ('`'' is literal
+    in double quotes anyway, and `\\\"` correctly stays inside). A chunk ENDING on an
+    unconsumed backslash returns the state with "\\" appended ('\\\\' or '\"\\\\'): that
+    escape would otherwise silently apply to the first character of whatever the caller
+    emits next — exactly how `\"foo\\{name}\"` once ate the escape guarding a substituted
+    value's `$`. Callers resolve the pending escape (see _substitute_posix); a resumed
+    chunk consumes its first character as the escaped one. ANSI-C `$'…'` quoting is
+    tracked as ordinary single quotes; its `\\'` escape is the one known mis-track."""
+    i = 0
+    n = len(text)
+    if state.endswith("\\"):
+        # Resuming after a dangling backslash: the first character is the escaped one.
+        state = state.removesuffix("\\")
+        if n == 0:
+            return state + "\\"
+        i = 1
+    while i < n:
+        ch = text[i]
+        if state == "'":
+            if ch == "'":
+                state = ""
+        elif ch == "\\":
+            if i + 1 >= n:
+                return state + "\\"  # dangling: the escape pends across the boundary
+            i += 1  # pragma: no mutate — escaped-char skip (decrement/reset would hang)
+        elif state == '"':
+            if ch == '"':
+                state = ""
+        elif ch in ("'", '"'):
+            state = ch
+        i += 1  # pragma: no mutate — loop cursor (decrement/reset never reaches n)
+    return state
+
+
+def _posix_quote_value(value: str, state: str) -> str:
+    """Quote one substituted value FOR the quote context its placeholder sits in. shlex.quote
+    alone is only right in unquoted position: inside "double quotes" it leaves $(…)/backticks
+    live and adds literal apostrophes, and inside 'single quotes' it nests quotes wrongly —
+    the reproduced way a value like `$(cmd)` stopped arriving literally. Every branch is
+    state-neutral: the template's own context resumes exactly where it left off."""
+    if state == "'":
+        return value.replace("'", "'\\''")
+    if state == '"':
+        out = value.replace("\\", "\\\\").replace('"', '\\"')
+        return out.replace("$", "\\$").replace("`", "\\`")
+    return shlex.quote(value)
+
+
 class TemplateLaunch:
     """command entries: template + placeholder fill-in, executed through the shell."""
+
+    @staticmethod
+    def _substitute_posix(template: str, vals: dict[str, str]) -> str:
+        """The POSIX twin of the Windows regex pass below: same one-pass token walk
+        (substituted values are never re-scanned), but the quote context is tracked
+        across the template's OWN text between tokens, so each value is escaped for
+        the position it lands in. Brace escapes and untouched placeholders emit
+        literal braces — no quote characters, so the state carries straight through."""
+        out: list[str] = []
+        # state: "XXXX" (the only surviving mutant of "") behaves identically — state is
+        # only ever compared to "'"/'"' or tested with .endswith, never truthy-checked, so
+        # any non-quote sentinel is the unquoted context. pos: only pos=None survives, and
+        # None is the slice-start of 0 (template[None:x] == template[0:x]); pos=1 is killed.
+        state = ""  # pragma: no mutate — see above: "XXXX" is an equivalent sentinel
+        pos = 0  # pragma: no mutate — see above: None-start ≡ 0 (the only surviving mutant)
+        for m in _TEMPLATE_TOKEN_RE.finditer(template):
+            chunk = template[pos : m.start()]
+            out.append(chunk)
+            state = _posix_quote_state(chunk, state)
+            matched = m.group(0)
+            if state.endswith("\\"):
+                # The template ends this chunk on a dangling backslash that would escape
+                # the FIRST character we emit next — for a substituted value, eating the
+                # `\\` that guards its `$`. Emitting one more backslash completes an
+                # escaped `\\\\` pair (a literal backslash in both unquoted and double-
+                # quoted sh, which is what the template's own text meant), and the value's
+                # quoting below stays intact. A brace emission (m.group(1) is None) absorbs
+                # the escape instead — `\\{` is the same literal two characters either way —
+                # so the neutralizer is added ONLY before a substituted value.
+                state = state.removesuffix("\\")
+                if m.group(1) in vals:
+                    out.append("\\")
+            if matched == "{{":
+                out.append("{")
+            elif matched == "}}":
+                out.append("}")
+            else:
+                name = m.group(1)
+                if name is not None and name in vals:
+                    out.append(_posix_quote_value(vals[name], state))
+                else:
+                    out.append(matched)  # unfilled placeholder: travels as-is, quote-neutral
+            pos = m.end()
+        out.append(template[pos:])
+        return "".join(out)
 
     def _render(self, entry: Entry, extra: list[str], values: dict[str, str] | None) -> str:
         template = entry.meta.template
@@ -224,7 +328,12 @@ class TemplateLaunch:
                 return matched
             return quote_for_shell(vals[name])
 
-        cmd = _TEMPLATE_TOKEN_RE.sub(repl, template)
+        if sys.platform == "win32":
+            # cmd.exe has no tractable universal escape (`%` expands even inside double
+            # quotes); keep the historical list2cmdline pass rather than pretend otherwise.
+            cmd = _TEMPLATE_TOKEN_RE.sub(repl, template)
+        else:
+            cmd = self._substitute_posix(template, vals)
         if extra:
             # shell=True execution: quoting must follow that platform's shell (POSIX uses shlex,
             # Windows cmd uses list2cmdline), or arguments containing $ or backticks would be

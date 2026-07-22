@@ -153,6 +153,57 @@ def test_duplicate_const_injection_no_longer_corrupts_source():
     ast.parse(injected)  # must still be valid Python (used to raise SyntaxError)
 
 
+# ---------- shadowed `input`: any binding disables input detection file-wide ----------
+
+
+def _input_names(src: str) -> list[str]:
+    return [c.name for c in analyzer.analyze(src).candidates if c.binding == "input"]
+
+
+def test_shadowed_input_via_def_yields_no_input_candidates():
+    # `def input(...)` binds the name `input`: every input() call in the file reaches THAT
+    # function, not the builtin prompt — so there is nothing for skit to manage.
+    assert _input_names("def input(prompt=''):\n    return 'x'\nname = input('Name: ')\n") == []
+
+
+def test_shadowed_input_via_assignment_yields_no_input_candidates():
+    # A plain reassignment `input = <something>` is a binding too.
+    assert _input_names("input = str\nname = input('Name: ')\n") == []
+
+
+def test_shadowed_input_via_from_import_yields_no_input_candidates():
+    # `from mod import input` binds the name to the imported object.
+    assert _input_names("from mymod import input\nname = input('Name: ')\n") == []
+
+
+def test_shadowed_input_via_plain_import_yields_no_input_candidates():
+    # Even `import input` (a module literally named input) binds the name — a weird but real
+    # binding that the file-wide guard must still catch.
+    assert _input_names("import input\nname = input('Name: ')\n") == []
+
+
+def test_shadowed_input_via_function_parameter_yields_no_input_candidates():
+    # A function PARAMETER named `input` binds it (only within that function, but the rule is
+    # deliberately file-wide and conservative): one binding anywhere disables detection outright,
+    # even though the top-level input('Name: ') here is really the builtin.
+    assert _input_names("def f(input):\n    return input\nname = input('Name: ')\n") == []
+
+
+def test_shadowing_input_does_not_suppress_const_detection():
+    # The guard nukes ONLY input candidates: literal const assignments in the same file are still
+    # detected, so it must not short-circuit the whole analysis.
+    src = "def input(p=''):\n    return 'x'\nCITY = 'Taipei'\nname = input('Name: ')\n"
+    result = analyzer.analyze(src)
+    assert [c.name for c in result.candidates if c.binding == "input"] == []
+    assert [c.name for c in result.candidates if c.binding == "const"] == ["CITY"]
+
+
+def test_unshadowed_input_is_still_detected():
+    # Control: with no binding of `input`, the builtin call is a candidate as before — the guard
+    # must not fire unconditionally.
+    assert _input_names("name = input('Name: ')\n") == ["input-1"]
+
+
 # ---------- callmatch.match_calls: prompt-keyed input matching ----------
 
 

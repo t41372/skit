@@ -502,3 +502,67 @@ def test_concurrent_add_python_both_succeed_with_distinct_slugs(tmp_path):
     entries = store.list_entries()
     assert len(entries) == 8
     assert len({e.slug for e in entries}) == 8
+
+
+# ---------------------------------------------------------------------------
+# _sync_python_block: the PEP 723 sync path's own strict-decode gate
+# (the copy-mode twin of add_python's non-UTF-8 fidelity rule)
+# ---------------------------------------------------------------------------
+
+
+def test_update_dependencies_copy_non_utf8_leaves_stored_copy_byte_identical(tmp_path):
+    """`skit deps` on a copy-mode python entry syncs the copy's PEP 723 block — but only after a
+    STRICT re-decode (read_bytes().decode('utf-8')). A copy that isn't valid UTF-8 makes that
+    decode raise, and the sync RETURNS silently, leaving the copy byte-exact. The previous
+    errors='replace' round-trip would have rewritten every non-UTF-8 byte as U+FFFD (real
+    corruption). The dependency edit still lands in meta (delivered via --with at run time)."""
+    from skit import store
+
+    src = tmp_path / "latin1.py"
+    src.write_bytes(b"# -*- coding: latin-1 -*-\nTEXT = 'caf\xe9'\n")
+    entry = store.add_python(src)  # non-UTF-8 copy, no injection at add
+    before = entry.script_path.read_bytes()
+
+    updated = store.update_dependencies(entry.slug, ["requests"])
+
+    assert entry.script_path.read_bytes() == before  # byte-identical: no U+FFFD corruption
+    assert updated.meta.dependencies == ["requests"]  # recorded in meta instead
+
+
+def test_update_dependencies_copy_utf8_syncs_block_and_stays_utf8(tmp_path):
+    """The happy path is unchanged: a strict-UTF-8 copy still gets its PEP 723 block updated
+    (written atomically), and the copy round-trips as UTF-8 with the edit applied."""
+    from skit import store
+
+    src = tmp_path / "plain.py"
+    src.write_text("print(1)\n", encoding="utf-8")
+    entry = store.add_python(src)
+
+    updated = store.update_dependencies(entry.slug, ["httpx"], ">=3.11")
+
+    text = updated.script_path.read_text(encoding="utf-8")
+    assert "httpx" in text
+    assert ">=3.11" in text
+
+
+def test_update_dependencies_copy_sync_swallows_read_oserror(tmp_path, monkeypatch):
+    """The sync's guard covers OSError too, not just decode failures: if the stored copy can't be
+    read back at all, the edit still lands in meta and the sync degrades silently rather than
+    crashing the whole update."""
+    from skit import store
+
+    src = tmp_path / "plain.py"
+    src.write_text("print(1)\n", encoding="utf-8")
+    entry = store.add_python(src)
+
+    real_read_bytes = Path.read_bytes
+
+    def boom(self):
+        if self.name == "script.py":
+            raise OSError("simulated: unreadable stored copy")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", boom)
+    updated = store.update_dependencies(entry.slug, ["httpx"])  # must not crash
+
+    assert updated.meta.dependencies == ["httpx"]

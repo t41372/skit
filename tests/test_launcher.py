@@ -183,6 +183,35 @@ def test_exe_missing_source_raises(tmp_path, monkeypatch):
         launcher.build_command(entry)
 
 
+# ---------- _build_exe: source is a directory (Fix B: refuse before subprocess.run) ----------
+
+
+def test_exe_directory_source_refused_as_not_executable(tmp_path):
+    """An exe entry pointing at a directory (a macOS .app bundle, a typo'd path) must be
+    refused with a clean NotExecutableError (exit 126) instead of reaching subprocess.run and
+    crashing with a raw PermissionError traceback. The refusal names the offending path."""
+    from skit import launcher, store
+
+    d = tmp_path / "Bundle.app"
+    d.mkdir()
+    entry = store.add_exe(d)
+    with pytest.raises(launcher.NotExecutableError) as exc:
+        launcher.build_command(entry)
+    assert entry.meta.source in str(exc.value)
+
+
+def test_preflight_refuses_exe_directory_source(tmp_path):
+    """Same refusal on the preflight path the TUI runs before suspending the terminal."""
+    from skit import launcher, store
+
+    d = tmp_path / "Bundle.app"
+    d.mkdir()
+    entry = store.add_exe(d)
+    with pytest.raises(launcher.NotExecutableError) as exc:
+        launcher.preflight(entry)
+    assert entry.meta.source in str(exc.value)
+
+
 # ---------- build_command: unknown kind ----------
 
 

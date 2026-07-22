@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from . import argstate, paths, pep723
-from .atomic import advisory_file_lock, atomic_write_toml
+from .atomic import advisory_file_lock, atomic_write_text_keep_mode, atomic_write_toml
 from .i18n import gettext
 from .langs import registry
 from .langs.registry import stored_name
@@ -832,6 +832,19 @@ def _remove_locked_entry(entry: Entry) -> str:
         entries.pop(entry.slug, None)  # pragma: no mutate — TOCTOU defense, kept deliberately
         _save_registry(entries)
     shutil.rmtree(entry.dir, ignore_errors=True)
+    if entry.dir.exists():
+        # A held-open file (Windows) can make the best-effort rmtree a silent no-op —
+        # and a later `doctor --rebuild` would then re-index the surviving meta.toml,
+        # resurrecting the "removed" entry. Say so instead of reporting success; the
+        # values file is deliberately kept so a doctor-restored entry keeps its state.
+        raise StoreError(
+            gettext(
+                "%(name)s was removed from the library, but its files couldn't be fully "
+                "deleted: %(path)s — close any program using them, then delete the folder "
+                "(or run `skit doctor --rebuild` to restore the entry and retry)."
+            )
+            % {"name": entry.meta.name, "path": str(entry.dir)}
+        )
     argstate.forget(entry.slug)  # drop the last-used values too
     return entry.meta.name
 
@@ -988,7 +1001,18 @@ def _sync_python_block(
     surfaces at once, and a deps clear that left the block's list would be its twin."""
     if not script.exists():
         return
-    text = script.read_text(encoding="utf-8", errors="replace")
+    try:
+        # pragma: the surviving mutant is decode("UTF-8"), a genuine equivalent (codec
+        # names are case-insensitive — codecs.lookup normalizes them); mirrors atomic.py's
+        # utf-8/UTF-8 alias pragma. The co-generated decode("XXutf-8XX") is killable
+        # (LookupError) and dies by coverage on the identical unpragma'd add_python:239.
+        text = script.read_bytes().decode("utf-8")  # pragma: no mutate — utf-8/UTF-8 alias
+    except (OSError, UnicodeDecodeError):
+        # add_python's encoding rule, applied to the sync path too: re-encoding a lossy
+        # errors="replace" decode would swap every non-UTF-8 byte in the copy for U+FFFD.
+        # Leave the copy byte-exact; the edit is already in meta, which the launcher
+        # passes via --with/--python exactly like a reference-mode entry.
+        return
     block = pep723.parse_block(text) or {}
     constraint = meta.requires_python
     if not constraint and requires_python is None:
@@ -998,9 +1022,10 @@ def _sync_python_block(
         block_deps = list(meta.dependencies or []) or [
             str(d) for d in (block.get("dependencies") or [])
         ]
-    script.write_text(
-        pep723.set_dependencies(text, block_deps, requires_python=constraint),
-        encoding="utf-8",
+    # Atomic, mode-preserving: a plain write_text can tear the stored copy on a crash,
+    # and a tmp+replace without the chmod would drop the bits copy2 preserved at add.
+    atomic_write_text_keep_mode(
+        script, pep723.set_dependencies(text, block_deps, requires_python=constraint)
     )
 
 
@@ -1044,17 +1069,23 @@ def rename(name_or_slug: str, new_name: str) -> Entry:
     if not new_name:
         raise StoreError(gettext("A name is required."))
     with _locked_entry(name_or_slug) as entry:
-        try:
-            other = resolve(new_name)
-        except NotFoundError:
-            other = None
-        if other is not None and other.slug != entry.slug:
-            raise StoreError(gettext("The name %(name)s is already taken.") % {"name": new_name})
         meta = entry.meta
-        meta.name = new_name
-        _write_meta(entry.dir, meta)
         with _registry_lock():
+            # The uniqueness decision sits INSIDE the registry lock: two entries renaming
+            # to the same name concurrently each hold only their own entry lock, so a
+            # pre-lock resolve() check lets both pass and both write — two entries, one
+            # display name. The predicate restates resolve()'s matching (another slug
+            # key, or another row's display name) against the locked snapshot.
             entries = _load_registry()
+            taken = (new_name in entries and new_name != entry.slug) or any(
+                s != entry.slug and e.get("name") == new_name for s, e in entries.items()
+            )
+            if taken:
+                raise StoreError(
+                    gettext("The name %(name)s is already taken.") % {"name": new_name}
+                )
+            meta.name = new_name
+            _write_meta(entry.dir, meta)
             row = entries.get(entry.slug)
             if row is not None:
                 row["name"] = new_name

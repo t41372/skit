@@ -115,6 +115,31 @@ def test_meta_dict_omits_defaults():
     assert d == {"name": "x", "delivery": "flag", "type": "str"}
 
 
+def test_meta_dict_omits_repeat_when_false():
+    # repeat rides the truthiness-gated tail: at its False default it is absent entirely,
+    # never serialized as `repeat = false` (additive-only forward contract).
+    assert "repeat" not in ParamDecl(name="x", delivery="flag").to_meta_dict()
+
+
+def test_meta_dict_repeat_emitted_and_roundtrips_only_when_set():
+    src = ParamDecl(name="tag", delivery="flag", flag="--tag", multiple=True, repeat=True)
+    d = src.to_meta_dict()
+    assert d["repeat"] is True  # emitted only because it is truthy
+    back = ParamDecl.from_meta_dict(d)
+    assert back == src
+    assert back.repeat is True
+
+
+def test_from_meta_dict_repeat_defaults_false_when_absent():
+    assert ParamDecl.from_meta_dict({"name": "x", "delivery": "flag"}).repeat is False
+
+
+def test_from_meta_dict_repeat_coerces_truthy_to_bool():
+    # A hand-edited meta.toml may carry a non-bool truthy scalar; from_meta_dict normalizes it to
+    # a real bool (kills the bool()-wrapper drop mutant, which would leave repeat as the raw int).
+    assert ParamDecl.from_meta_dict({"name": "x", "delivery": "flag", "repeat": 1}).repeat is True
+
+
 def test_meta_dict_includes_binding_and_order_when_set():
     # The two truthiness-gated head fields of to_meta_dict: a source-anchored binding and a
     # call-order key are emitted only when present, and round-trip back unchanged.

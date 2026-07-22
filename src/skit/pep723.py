@@ -14,6 +14,7 @@ import ast
 import re
 import sys
 import tomllib
+from pathlib import Path
 from typing import Any
 
 
@@ -91,10 +92,22 @@ def has_block(text: str, leader: str = "#") -> bool:
     return _block_re(leader).search(text) is not None
 
 
-def suggest_dependencies(text: str) -> list[str]:
+def _is_local_module(script_dir: Path | None, module: str) -> bool:
+    """Whether `import module` resolves to a sibling of the script rather than a package:
+    when the script runs, its own directory leads sys.path, so a `helpers.py` (or a
+    `helpers/` directory — bare dirs import as namespace packages) next to it wins over
+    any same-named PyPI distribution. Suggesting such a name as a dependency would
+    install an unrelated package — and `--no-input` accepts suggestions as-is."""
+    if script_dir is None:
+        return False
+    return (script_dir / f"{module}.py").is_file() or (script_dir / module).is_dir()
+
+
+def suggest_dependencies(text: str, *, script_dir: Path | None = None) -> list[str]:
     """Scan imports, return the top-level module names that look third-party (sorted, deduped).
 
-    Returns an empty list on syntax errors.
+    `script_dir` (the original script's directory, when it has one) excludes imports that
+    resolve to sibling local modules. Returns an empty list on syntax errors.
     """
     try:
         tree = ast.parse(text)
@@ -108,7 +121,11 @@ def suggest_dependencies(text: str) -> list[str]:
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
             found.add(node.module.split(".")[0])
     stdlib = sys.stdlib_module_names
-    third_party = (m for m in found if m not in stdlib and not m.startswith("_"))
+    third_party = (
+        m
+        for m in found
+        if m not in stdlib and not m.startswith("_") and not _is_local_module(script_dir, m)
+    )
     # Map known import names to their real PyPI distribution names, then dedupe again in case two
     # imports collapse to the same package (e.g. `Crypto` and its submodules -> pycryptodome).
     # A name PEP 508 refuses (`import café` — a legal Python identifier, an illegal
