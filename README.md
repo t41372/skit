@@ -13,7 +13,8 @@
 
 **skit is a launcher and a home for your scripts.**
 
-skit stores your scripts in one place and makes them painless to launch.
+skit stores your scripts in one place and makes them painless to launch — Python, shell, and
+JS/TS go deepest, a dozen kinds in all.
 
 **AI writes the scripts. skit gives them a home.**
 
@@ -21,7 +22,7 @@ And it's a home you share with your agent: the library you drive from a menu, AI
 drive through a deterministic CLI — checking it before writing yet another one-off
 script, and (with your OK) saving the good ones back, so they outlive the chat.
 
-<video src="https://github.com/user-attachments/assets/d27121fe-5855-4270-91b0-b0ee9e5d11ee" controls></video>
+<video src="https://github.com/user-attachments/assets/8a1f27cd-f2f2-42db-977a-b4f8ea207340" controls></video>
 
 ## What it does
 

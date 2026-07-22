@@ -3,7 +3,7 @@
 # CLI command, and config dirs all stay "skit".
 name = "skit-cli"
 version = "0.3.1.dev0"
-description = "Launcher and parameter manager for scripts, prompts, programs, and commands: one library, one run form, nothing to memorize."
+description = "A terminal script manager and launcher for humans and AI agents: put any script, prompt, or program in one library; skit turns its inputs and flags into a run form and remembers past parameters. Ships an Agent Skill so agents reuse the scripts they wrote."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
