@@ -2,7 +2,7 @@
 # Distribution name only ("skit" is admin-prohibited on PyPI); the import package,
 # CLI command, and config dirs all stay "skit".
 name = "skit-cli"
-version = "0.4.0"
+version = "0.4.1.dev0"
 description = "A terminal script manager and launcher for humans and AI agents: put any script, prompt, or program in one library; skit turns its inputs and flags into a run form and remembers past parameters. Ships an Agent Skill so agents reuse the scripts they wrote."
 readme = "README.md"
 requires-python = ">=3.12"
