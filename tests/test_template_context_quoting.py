@@ -410,3 +410,121 @@ def test_render_win32_repl_handles_brace_escapes_and_unfilled_placeholders(monke
     cmd = launcher.build_command(entry, values={"filled": "v"})
     # Every repl branch: {{ -> {, }} -> }, a filled placeholder, and an untouched one.
     assert cmd == "echo {x} v {unfilled}"
+
+
+# ==========================================================================
+# Command substitution frames: `$( … )` and `` ` … ` `` restart quoting, so the
+# state machine is a FRAME STACK, not one character. Three reviewers found the
+# same hole here and nothing in this file reached it.
+# ==========================================================================
+
+
+def test_state_pushes_and_pops_a_command_substitution_frame():
+    # `$(` opens a frame even inside double quotes, and `)` pops it — so the template's
+    # own `"` after the substitution closes the OUTER context, not the inner one.
+    assert launch._posix_quote_state('"$(', "") == '"('
+    assert launch._posix_quote_state('"$(cmd)', "") == '"'
+    assert launch._posix_quote_state('"$(cmd "', "") == '"("'
+    # A `)` with no frame open is left alone: the shell would reject the template itself,
+    # and popping there would corrupt the frames of one that is merely mid-word.
+    assert launch._posix_quote_state('"a)b"', "") == ""
+
+
+def test_state_treats_backticks_as_a_frame_that_one_character_opens_and_closes():
+    assert launch._posix_quote_state('"`', "") == '"`'
+    assert launch._posix_quote_state('"`cmd`', "") == '"'
+
+
+def test_state_pops_exactly_one_frame_off_a_deep_stack():
+    """Every pop takes the innermost frame and nothing else. Asserted on stacks at least
+    three deep, because a two-frame stack cannot tell `state[:-1]` apart from `state[:1]`
+    (and a one-frame one cannot tell it from `state[:-2]`) — the shapes a slice typo
+    takes."""
+    # A single quote inside a substitution: closing it must leave the `"(` below intact.
+    assert launch._posix_quote_state("\"$(a 'b'", "") == '"('
+    # A double quote inside a substitution inside double quotes: same, one level deeper.
+    assert launch._posix_quote_state('"$(a "b"', "") == '"('
+    # A backtick likewise.
+    assert launch._posix_quote_state('"$(a `b`', "") == '"('
+    # And `)` pops the substitution frame only — the `"(` it was nested in survives.
+    assert launch._posix_quote_state('"$("$(a)', "") == '"("'
+
+
+def test_state_opening_a_frame_never_discards_the_ones_below_it():
+    # Each opener PUSHES; replacing the stack instead would silently drop the enclosing
+    # context and mis-quote every later value.
+    assert launch._posix_quote_state("\"$(a '", "") == "\"('"
+    assert launch._posix_quote_state('"$(a "', "") == '"("'
+    assert launch._posix_quote_state('"$(a `', "") == '"(`'
+    assert launch._posix_quote_state('"$(a $(', "") == '"(('
+
+
+def test_state_only_a_dollar_followed_by_paren_opens_a_substitution():
+    # A bare `$` (a variable reference, a literal) is ordinary text: treating it as an
+    # opener would both push a phantom frame and swallow the next character.
+    assert launch._posix_quote_state('"$HOME', "") == '"'
+    assert launch._posix_quote_state("$x", "") == ""
+    # ...and a `(` that no `$` introduces is ordinary text too.
+    assert launch._posix_quote_state('"(a)', "") == '"'
+
+
+def test_value_inside_a_substitution_takes_the_unquoted_branch():
+    # However many double quotes wrap the substitution, the value sits in the nested
+    # command's own unquoted context — the shlex.quote branch.
+    assert launch._posix_quote_value("a b", '"(') == "'a b'"
+    assert launch._posix_quote_value("a b", '"`') == "'a b'"
+    # ...and double quotes INSIDE the substitution take the double-quote branch again:
+    # only the innermost frame decides.
+    assert launch._posix_quote_value("$x", '"("') == "\\$x"
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize(
+    ("template", "value"),
+    [
+        # The value lands UNQUOTED inside the substitution: `;` would have been live.
+        ('printf "%s\\n" "$(printf %s {v})"', "safe; printf INJECTED"),
+        # ...and word-splitting would have eaten the space.
+        ('printf "%s\\n" "$(printf %s {v})"', "a b"),
+        # The value lands in double quotes INSIDE the substitution: the old tracker read
+        # that `"` as closing the outer one and shlex-quoted, adding literal apostrophes.
+        ('printf "%s\\n" "$(printf %s "{v}")"', "$(printf PWNED)"),
+        ('printf "%s\\n" "$(printf %s "{v}")"', "a b"),
+        # Backticks, unquoted and single-quoted inner contexts.
+        ('printf "%s\\n" "`printf %s {v}`"', "safe; printf INJECTED"),
+        ('printf "%s\\n" "`printf %s \'{v}\'`"', "it's $HOME"),
+        # Two levels deep.
+        ('printf "%s\\n" "$(printf %s "$(printf %s "{v}")")"', "deep 'a b' $X"),
+    ],
+)
+def test_value_survives_a_nested_command_substitution_verbatim(template, value):
+    from skit import launcher, store
+
+    entry = store.add_command(template, name=f"sub-{abs(hash((template, value)))}")
+    cmd = launcher.build_command(entry, values={"v": value})
+    result = _run_sh(cmd)
+    assert result.returncode == 0
+    assert result.stdout == value + "\n"
+
+
+@_POSIX_ONLY
+def test_double_quotes_nested_in_backticks_are_refused_not_guessed():
+    """The one context skit cannot quote for: the backtick form strips one layer of
+    backslashes before parsing the inner command, so the `\\$` the double-quote branch
+    emits arrives bare and `$(cmd)` runs. Escaping twice only moves the problem out a
+    level, so the render refuses instead of assembling a command that means something
+    else."""
+    from skit import launcher, store
+    from skit.langs.base import LaunchError
+
+    entry = store.add_command('printf "%s\\n" "`printf %s "{v}"`"', name="bt-dq")
+    with pytest.raises(LaunchError) as exc:
+        launcher.build_command(entry, values={"v": "$(printf PWNED)"})
+    # The whole rendered message, not a substring: it is a 3-segment implicit concat, and
+    # mutmut wraps/uppercases each segment independently — an "XX"-wrap of any one of them
+    # leaves every interior substring intact (the idiom test_store_mut.py documents).
+    assert str(exc.value) == (
+        "Can't safely fill in a value inside double quotes nested in a `…` command "
+        "substitution — the shell strips one layer of escaping there. Rewrite that part "
+        "of the template with $(…) instead of backticks."
+    )

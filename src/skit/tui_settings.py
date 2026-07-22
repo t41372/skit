@@ -30,12 +30,13 @@ from . import (
     tui_prompt,
     tui_runner,
 )
-from .atomic import atomic_write_text_keep_mode
+from .atomic import atomic_write_bytes_keep_mode
 from .i18n import gettext
 from .langs.prompt import text as prompt_text
 from .langs.registry import spec_for
 from .models import Entry
 from .params import ParamDecl
+from .rewrite import detect_newline, restore_newline
 
 
 class DiscardChangesModal(ModalScreen[bool]):
@@ -304,8 +305,20 @@ class ScriptSettingsScreen(Screen[bool]):
         self._spec = spec_for(entry.meta.kind)
         self._is_prompt: bool = entry.meta.kind == "prompt"
         params_io = self._spec.params_io if self._spec is not None else None
+        # The newline style the copy actually uses, captured for the save below. Reading with
+        # universal newlines and errors="replace" (what this did) is fine for DISPLAY but
+        # cannot be written back: the save would flatten a CRLF script to LF on every
+        # checkbox tick and burn each non-UTF-8 byte down to U+FFFD. Same discipline as
+        # cli._edit_params — fold to LF for the LF-based block engine, restore on write.
+        self._newline: str = "\n"
         if params_io is not None and entry.script_path.exists():
-            self._text = entry.script_path.read_text(encoding="utf-8", errors="replace")
+            raw = entry.script_path.read_bytes()
+            self._newline = detect_newline(raw)
+            self._text = (
+                raw.decode("utf-8", errors="surrogateescape")  # pragma: no mutate — codec alias
+                .replace("\r\n", "\n")
+                .replace("\r", "\n")
+            )
         # The ENTRY'S OWN params_io — never Python's. shell/fish carry their block in the same
         # '#' engine, but JS/TS carry it behind '//', so the Python reader would return [] for a
         # perfectly valid managed JS entry (TUI↔CLI parity: cli._edit_params already routes this way).
@@ -1051,10 +1064,15 @@ class ScriptSettingsScreen(Screen[bool]):
                 box = self.query(f"#st-new-{i}")
                 if box and box.first(Checkbox).value:
                     new_specs.append(ParamDecl.from_candidate(c))
-            # Atomic + mode-preserving: a torn write_text here could truncate the stored
-            # copy mid-save; tmp+replace leaves either the old script or the new one.
-            atomic_write_text_keep_mode(
-                entry.script_path, spec.params_io.write(self._text, new_specs)
+            # Atomic + mode-preserving: a torn write here could truncate the stored copy
+            # mid-save; tmp+replace leaves either the old script or the new one. Byte-lossless
+            # too — the copy's own line endings go back on, and surrogateescape carries any
+            # non-UTF-8 byte through untouched, so a comment-block edit stays a comment-block
+            # edit rather than rewriting the whole file.
+            written = restore_newline(spec.params_io.write(self._text, new_specs), self._newline)
+            atomic_write_bytes_keep_mode(
+                entry.script_path,
+                written.encode("utf-8", errors="surrogateescape"),  # pragma: no mutate — alias
             )
             purged = argstate.purge_secret(entry.slug, {s.name for s in new_specs if s.secret})
             if purged:

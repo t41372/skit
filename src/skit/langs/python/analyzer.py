@@ -169,6 +169,115 @@ def _bound_names(tree: ast.Module) -> dict[str, int]:
     return counts
 
 
+# Every node type that opens a namespace of its own. Names bound inside one of these
+# cannot change what `input` means outside it, so the scan below stops at each boundary.
+_SCOPE_NODES = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.Lambda,
+    ast.ClassDef,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+)
+
+
+def _scope_body(scope: ast.AST) -> list[ast.AST]:
+    """The nodes evaluated in `scope`'s OWN namespace.
+
+    A function's parameters bind inside it, so `args` comes along; its decorators and
+    defaults actually evaluate in the ENCLOSING scope, and counting them here is the one
+    deliberate over-approximation (a decorator that binds `input` is not a thing)."""
+    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return [scope.args, *scope.body]
+    if isinstance(scope, ast.Lambda):
+        return [scope.args, scope.body]
+    if isinstance(scope, (ast.Module, ast.ClassDef)):
+        return list(scope.body)
+    return list(ast.iter_child_nodes(scope))  # comprehensions
+
+
+def _scope_nodes(scope: ast.AST) -> tuple[list[ast.AST], list[ast.AST]]:
+    """(nodes in this scope's own namespace, nested scopes to visit separately).
+
+    A nested scope's own node stays in the first list — `def input(): ...` binds the name
+    `input` out HERE — while its body goes to the second."""
+    own: list[ast.AST] = []
+    nested: list[ast.AST] = []
+    stack = _scope_body(scope)
+    while stack:
+        node = stack.pop()
+        own.append(node)
+        if isinstance(node, _SCOPE_NODES):
+            nested.append(node)
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+    return own, nested
+
+
+def _binds_input(own: list[ast.AST]) -> bool:
+    """Whether these same-scope nodes bind the name `input` — every binding form
+    _bound_names knows, asked about one scope instead of the whole file."""
+    for node in own:
+        names: tuple[str | None, ...]
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            names = (node.id,)
+        elif isinstance(node, ast.arg):
+            names = (node.arg,)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names = (node.name,)
+        elif isinstance(node, ast.Import):
+            # `import pkg.sub` binds pkg; `import pkg.sub as p` binds p.
+            names = tuple(a.asname or a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            # A star import can bind any public name, `input` included.
+            names = tuple("input" if a.name == "*" else a.asname or a.name for a in node.names)
+        elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
+            names = (node.name,)
+        elif isinstance(node, ast.MatchMapping):
+            names = (node.rest,)
+        else:
+            continue
+        if "input" in names:
+            return True
+    return False
+
+
+def _builtin_input_calls(tree: ast.Module) -> list[ast.Call]:
+    """Every `input(...)` call whose `input` still resolves to the builtin, in source order.
+
+    A script that binds `input` itself calls THAT, not the builtin prompt, and rewriting
+    such a call would splice a stdin-fallback wrapper over the script's own function — so
+    those call sites are dropped and any stored parameter for them surfaces as reconcile
+    drift instead. The question is asked PER SCOPE, because it is a resolution question:
+    `_bound_names` answers it file-wide, which is right where it came from (constant
+    folding, where an extra binding merely skips a fold) and wrong here, where the cost is
+    an entry that no longer runs. A parameter named `input` in one unrelated helper — a
+    common name — must not strip the managed prompts off the rest of the file.
+
+    Conservative in the two directions that stay cheap: a binding in a scope disables its
+    nested scopes too (a closure sees it), and a binding in a CLASS body disables the
+    methods below it even though Python's lookup skips class scope there — a miss costs a
+    parameter, never a corrupted rewrite."""
+    out: list[ast.Call] = []
+    scopes: list[ast.AST] = [tree]
+    while scopes:
+        own, nested = _scope_nodes(scopes.pop())
+        if _binds_input(own):
+            continue
+        out.extend(
+            node
+            for node in own
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "input"
+        )
+        scopes.extend(nested)
+    out.sort(key=lambda c: (c.lineno, c.col_offset))
+    return out
+
+
 def _literal_prompt(call: ast.Call) -> str:
     """The literal first-argument string of an input() call, or "" if absent/non-literal.
 
@@ -184,21 +293,7 @@ def _literal_prompt(call: ast.Call) -> str:
 
 def _input_candidates(tree: ast.Module) -> list[Candidate]:
     """Every input() call in the file, numbered by order of appearance in the source (B1)."""
-    if _bound_names(tree).get("input"):
-        # The script binds `input` itself (a def, an assignment, an import, even a
-        # parameter): its calls reach THAT binding, not the builtin prompt — and the
-        # shim's rewrite would swap the script's own function for a wrapper that falls
-        # back to real stdin input. File-wide and conservative, like every other
-        # honesty rule here: one shadowing binding disables input detection outright.
-        return []
-    calls: list[ast.Call] = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "input"
-    ]
-    calls.sort(key=lambda c: (c.lineno, c.col_offset))
+    calls = _builtin_input_calls(tree)
     out: list[Candidate] = []
     for i, call in enumerate(calls):
         prompt = _literal_prompt(call)

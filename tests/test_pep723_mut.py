@@ -163,15 +163,35 @@ def test_is_local_module_py_file_arm(tmp_path):
     assert pep723.suggest_dependencies("import helpers\n", script_dir=tmp_path) == []
 
 
-def test_is_local_module_dir_arm(tmp_path):
-    # The dir arm ALONE: only a sibling `helpers/` directory exists (no `helpers.py`), even
-    # empty (a bare dir imports as a namespace package). The second arm
-    # (`(dir / "helpers").is_dir()`) must return True on its own — a mutant swapping it to
-    # `.is_file()` sees no file and returns False. The `or` between the arms is likewise pinned:
-    # each test leaves exactly one arm true, so an `and` mutant fails both.
+def test_is_local_module_package_arm(tmp_path):
+    # The `__init__.py` arm ALONE: only a sibling `helpers/` package exists (no `helpers.py`).
+    # A regular package really does shadow a same-named distribution, so this arm must return
+    # True on its own. The `or` between the arms is likewise pinned: each test leaves exactly
+    # one arm true, so an `and` mutant fails both.
     (tmp_path / "helpers").mkdir()
+    (tmp_path / "helpers" / "__init__.py").write_text("X = 1\n", encoding="utf-8")
     assert pep723._is_local_module(tmp_path, "helpers") is True
     assert pep723.suggest_dependencies("import helpers\n", script_dir=tmp_path) == []
+
+
+def test_is_local_module_namespace_portion_with_modules_arm(tmp_path):
+    # The glob arm ALONE: a sibling directory with no `__init__.py` but real modules inside is
+    # a namespace portion the script can import from, so it still counts as local.
+    (tmp_path / "helpers").mkdir()
+    (tmp_path / "helpers" / "thing.py").write_text("X = 1\n", encoding="utf-8")
+    assert pep723._is_local_module(tmp_path, "helpers") is True
+    assert pep723.suggest_dependencies("import helpers\n", script_dir=tmp_path) == []
+
+
+def test_data_directory_does_not_suppress_a_real_dependency(tmp_path):
+    # The regression this rule exists for: a directory carrying no Python is not an import.
+    # PEP 420 makes it a namespace PORTION at most, and the finder keeps scanning sys.path,
+    # so the installed `rich` still wins — dropping the dependency on its account produced a
+    # stored copy that died with ModuleNotFoundError on its first run.
+    (tmp_path / "rich").mkdir()
+    (tmp_path / "rich" / "notes.txt").write_text("data\n", encoding="utf-8")
+    assert pep723._is_local_module(tmp_path, "rich") is False
+    assert pep723.suggest_dependencies("import rich\n", script_dir=tmp_path) == ["rich"]
 
 
 def test_is_local_module_none_script_dir_is_false():

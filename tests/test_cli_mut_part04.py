@@ -203,6 +203,10 @@ def test_render_declared_warning_exact_line_per_code() -> None:
         "bad-type": "w: unknown type; skipped (use str, int, float, bool, choice, or path).",
         "bad-default": "w: the default doesn't fit its type; skipped.",
         "choice-without-choices": "w: a choice parameter needs choices; set --choices w=a,b,c.",
+        "bool-flag-on-by-default": (
+            "w is on by default, so its flag could only ever turn it on again. Declare the "
+            "flag that turns it OFF instead (--no-w and the like), with default false."
+        ),
     }
     for code, line in expected.items():
         assert cli._render_declared_warning(f"{code}:w") == line

@@ -172,7 +172,13 @@ def _read_call(call: ast.Call, env: ConstEnv) -> ParamDecl | None:
         names[0] if positional else flag.lstrip("-").replace("-", "_")
     )
     nargs = _literal_value(kwargs["nargs"])[1] if "nargs" in kwargs else None
-    multiple = nargs in ("+", "*")
+    # A fixed count is a multi-value field too: `nargs=2` wants `--point 1 2`, exactly the
+    # one-flag-many-values shape _assemble_flags emits for `+`/`*`. Modelling it as single
+    # sent the only legal input through as one quoted token — argparse then reported
+    # "expected 2 arguments" and the run died at exit 2 before the script saw anything.
+    multiple = nargs in ("+", "*") or (
+        isinstance(nargs, int) and not isinstance(nargs, bool) and nargs > 1
+    )
     if positional:
         required = nargs not in ("*", "?")
     else:
@@ -326,13 +332,21 @@ def _read_click_param(call: ast.Call, positional: bool, env: ConstEnv) -> ParamD
     flag = "" if positional else (long_flags[0] if long_flags else names[0])
     dest = names[0] if positional else (flag.lstrip("-").replace("-", "_"))
     nargs = _literal_value(kwargs["nargs"])[1] if "nargs" in kwargs else None
+    fixed_count = isinstance(nargs, int) and not isinstance(nargs, bool) and nargs > 1
+    if fixed_count and _is_true_kwarg(kwargs.get("multiple")):
+        # `multiple=True, nargs=2` repeats the flag AND takes two values per occurrence
+        # (`--point 1 2 --point 3 4`). Nothing in a ParamDecl records that arity, so there
+        # is no shape to assemble — hand the option to the passthrough extra-args field
+        # instead of emitting `--point 1 --point 2`, which click rejects at exit 2.
+        return None
     f = ParamDecl(
         name=dest,
         flag=flag,
         # click arguments are required by default; nargs=-1 (variadic) is not.
         required=(positional and nargs != -1) or _is_true_kwarg(kwargs.get("required")),
         help=_literal_str(kwargs.get("help")),
-        multiple=nargs == -1 or _is_true_kwarg(kwargs.get("multiple")),
+        # A fixed nargs>1 is the one-flag-many-values shape, same as argparse's.
+        multiple=nargs == -1 or fixed_count or _is_true_kwarg(kwargs.get("multiple")),
         # click's multiple=True consumes ONE value per occurrence: assembly must repeat
         # the flag (`--tag a --tag b`; `--tag a b` is an exit-2 usage error to click).
         # nargs=-1 is variadic-positional grammar and keeps the plain pieces shape.

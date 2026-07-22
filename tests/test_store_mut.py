@@ -1113,3 +1113,25 @@ def test_write_parameters_returns_entry_with_correct_dir(sample_script):
     updated = store.write_parameters(entry.slug, decls)
     assert updated.dir == entry.dir
     assert updated.slug == entry.slug
+
+
+def test_cli_remove_reports_a_partial_deletion_as_an_error_not_a_traceback(
+    sample_script, monkeypatch, tmp_path
+):
+    """store.remove's leftover-dir StoreError reached neither caller. From the CLI that meant a
+    raw traceback and exit 1 instead of skit's own error line, so the recovery step the message
+    was written to deliver ("skit doctor --rebuild") never reached the user."""
+    import shutil as shutil_mod
+
+    from typer.testing import CliRunner
+
+    from skit.cli import app
+
+    store.add_python(sample_script, name="hi")
+    monkeypatch.setattr(shutil_mod, "rmtree", lambda *_a, **_k: None)
+
+    result = CliRunner().invoke(app, ["remove", "hi", "--yes"])
+
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "doctor --rebuild" in result.output

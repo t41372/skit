@@ -125,6 +125,10 @@ def _read_spec(raw: str) -> ParamDecl | None:
     elif has_value:
         decl.type = "str"
         decl.multiple = multiple
+        # fish's `=+`/`=*` are REPEAT grammar, like click's multiple= and parseArgs': each
+        # value needs its own `--tag`. The one-flag-many-values shape is argparse nargs, and
+        # `argparse 't/tag=+'` reads the extra words as positionals instead.
+        decl.repeat = multiple
     else:
         decl.type = "bool"
         decl.action = "store_true"

@@ -94,13 +94,25 @@ def has_block(text: str, leader: str = "#") -> bool:
 
 def _is_local_module(script_dir: Path | None, module: str) -> bool:
     """Whether `import module` resolves to a sibling of the script rather than a package:
-    when the script runs, its own directory leads sys.path, so a `helpers.py` (or a
-    `helpers/` directory — bare dirs import as namespace packages) next to it wins over
-    any same-named PyPI distribution. Suggesting such a name as a dependency would
-    install an unrelated package — and `--no-input` accepts suggestions as-is."""
+    when the script runs, its own directory leads sys.path, so a `helpers.py` next to it
+    wins over any same-named PyPI distribution. Suggesting such a name as a dependency
+    would install an unrelated package — and `--no-input` accepts suggestions as-is.
+
+    A directory counts only when it actually holds importable Python. PEP 420 is the
+    reason: a directory with no `__init__.py` is merely a namespace PORTION, so the finder
+    records it and KEEPS SCANNING sys.path, and an installed regular package still wins.
+    Treating every same-named directory as local dropped real dependencies on the strength
+    of a `docs/`, `build/` or `assets/` folder that happens to collide with an import name,
+    and the stored copy then died with ModuleNotFoundError on its first run."""
     if script_dir is None:
         return False
-    return (script_dir / f"{module}.py").is_file() or (script_dir / module).is_dir()
+    if (script_dir / f"{module}.py").is_file():
+        return True
+    # Any Python inside makes it importable: `__init__.py` for a regular package (which
+    # shadows outright), any other module for a namespace portion the script can still
+    # import from. A directory carrying no Python at all — `docs/`, `build/`, a data
+    # folder that happens to collide with an import name — is not an import.
+    return any((script_dir / module).glob("*.py"))
 
 
 def suggest_dependencies(text: str, *, script_dir: Path | None = None) -> list[str]:

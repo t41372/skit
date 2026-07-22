@@ -87,9 +87,11 @@ def test_suggest_dependencies_excludes_sibling_py_module(tmp_path):
 
 
 def test_suggest_dependencies_excludes_sibling_package_dir(tmp_path):
-    # A sibling `helpers/` directory (even empty — a bare dir imports as a namespace package)
-    # shadows any same-named distribution too.
+    # A sibling `helpers/` PACKAGE shadows any same-named distribution too. It needs real
+    # Python in it to do that: an empty directory is only a PEP 420 namespace portion, which
+    # never wins over an installed regular package (see test_pep723_mut.py).
     (tmp_path / "helpers").mkdir()
+    (tmp_path / "helpers" / "__init__.py").write_text("x = 1\n", encoding="utf-8")
     src = "import helpers\nimport requests\n"
     assert pep723.suggest_dependencies(src, script_dir=tmp_path) == ["requests"]
 
@@ -117,6 +119,7 @@ def test_suggest_dependencies_from_import_sibling_excluded(tmp_path):
 def test_suggest_dependencies_submodule_of_sibling_dir_excluded(tmp_path):
     # `import helpers.sub` splits to the top-level `helpers`, which is the sibling package dir.
     (tmp_path / "helpers").mkdir()
+    (tmp_path / "helpers" / "sub.py").write_text("x = 1\n", encoding="utf-8")
     src = "import helpers.sub\nimport requests\n"
     assert pep723.suggest_dependencies(src, script_dir=tmp_path) == ["requests"]
 

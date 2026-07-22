@@ -566,3 +566,67 @@ def test_update_dependencies_copy_sync_swallows_read_oserror(tmp_path, monkeypat
     updated = store.update_dependencies(entry.slug, ["httpx"])  # must not crash
 
     assert updated.meta.dependencies == ["httpx"]
+
+
+def test_update_dependencies_refuses_when_a_non_utf8_copy_carries_its_own_block(tmp_path):
+    """The gap the silent return left: when the un-rewritable copy ALSO has a PEP 723 block,
+    that block is what uv reads and meta cannot override it — an empty meta value means
+    "untouched, defer to the block" everywhere, so a clear or an unpin has nowhere to be
+    recorded. Letting the write through reported success while `skit show` and `uv run` both
+    kept the old list. Validate-then-write: refuse before meta is touched, so nothing changes
+    and the edit stays retryable."""
+    import pytest
+
+    from skit import store
+
+    src = tmp_path / "latin1_block.py"
+    src.write_bytes(
+        b"# /// script\n"
+        b'# requires-python = ">=3.13"\n'
+        b'# dependencies = ["requests"]\n'
+        b"# ///\n"
+        b"TEXT = 'caf\xe9'\n"
+    )
+    entry = store.add_python(src)
+    before = entry.script_path.read_bytes()
+
+    with pytest.raises(store.StoreUsageError) as exc:
+        store.update_dependencies(entry.slug, [])
+    # The whole rendered message: it is a 3-segment implicit concat, and mutmut wraps or
+    # uppercases each segment independently — an "XX"-wrap of any one leaves every interior
+    # substring intact (the idiom test_store_mut.py documents).
+    assert str(exc.value) == (
+        "latin1_block's stored copy isn't valid UTF-8, so skit can't rewrite the script's "
+        "own dependency block — and that block is what uv reads. Edit it in the script "
+        "itself: skit edit latin1_block"
+    )
+
+    assert entry.script_path.read_bytes() == before
+    # Nothing was committed: the read view still agrees with what uv actually installs.
+    deps, constraint = store.effective_uv_metadata(store.resolve(entry.slug))
+    assert deps == ["requests"]
+    assert constraint == ">=3.13"
+
+
+def test_update_dependencies_python_unpin_is_refused_for_the_same_copy(tmp_path):
+    # The constraint axis hits the identical wall; both spellings must be turned away.
+    import pytest
+
+    from skit import store
+
+    src = tmp_path / "latin1_block2.py"
+    src.write_bytes(b"# /// script\n# requires-python = \">=3.13\"\n# ///\nT = 'caf\xe9'\n")
+    entry = store.add_python(src)
+
+    with pytest.raises(store.StoreUsageError):
+        store.update_dependencies(entry.slug, None, requires_python="-")
+
+
+def test_update_dependencies_untouched_axes_never_reach_the_refusal(tmp_path):
+    # A call that edits neither axis has nothing to deliver, so it must not refuse either.
+    from skit import store
+
+    src = tmp_path / "latin1_block3.py"
+    src.write_bytes(b"# /// script\n# dependencies = [\"requests\"]\n# ///\nT = 'caf\xe9'\n")
+    entry = store.add_python(src)
+    assert store.update_dependencies(entry.slug, None) is not None

@@ -30,6 +30,35 @@ _UTF8 = "utf-8"  # pragma: no mutate — "utf-8"/"UTF-8" codec alias
 _NEWLINE_RE = re.compile(r"\r\n|\r|\n")
 
 
+def detect_newline(raw: bytes) -> str:
+    """The stored copy's line-ending style, so an LF-based edit can restore it before write-back.
+    The comment-block engine only matches on "\\n", so every write path folds to LF to run it — but
+    persisting that LF would rewrite every line of a CRLF script even though only the block
+    changed. Detect the style here (CRLF wins if any is present, else lone CR, else LF) and
+    re-apply it after the edit: a uniformly-terminated file — every real script — round-trips
+    byte-for-byte, and skit's edit stays confined to the block it meant to touch. A (pathological)
+    mixed-ending file normalizes to the detected style, still no worse than the LF-only form.
+
+    Lives here rather than in cli.py because it is not a CLI concern: the TUI's Script settings
+    saves the very same block through the very same engine, and reading the copy with universal
+    newlines flattened a CRLF script on every checkbox tick."""
+    if b"\r\n" in raw:
+        return "\r\n"
+    if b"\r" in raw:
+        return "\r"
+    return "\n"
+
+
+def restore_newline(text: str, newline: str) -> str:
+    """Re-apply `newline` to LF-normalized engine output. A no-op for LF copies; after the fold
+    every terminator is a lone "\\n", so the mapping back is unambiguous."""
+    # The LF test is a shortcut, not a branch that decides anything: for newline == "\n" the
+    # else arm computes text.replace("\n", "\n"), which IS text. Every mutant of the compared
+    # literal is therefore equivalent — it can only route an LF copy through an identity
+    # replace.
+    return text if newline == "\n" else text.replace("\n", newline)  # pragma: no mutate
+
+
 def _physical_lines(text: str) -> list[str]:
     """Split text into the same physical lines (keeping line endings) that AST linenos count.
 

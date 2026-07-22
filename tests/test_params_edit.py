@@ -368,3 +368,30 @@ def test_as_param_type_accepts_the_five(value):
 @pytest.mark.parametrize("value", ["integer", "", "STR", "number"])
 def test_as_param_type_rejects_others(value):
     assert params.as_param_type(value) is None
+
+
+def test_bool_flag_that_is_on_by_default_is_refused_not_stamped():
+    """The other half of the hygiene rule. A flag that is already ON can only be turned off
+    by a DIFFERENT spelling (--no-x, --quiet) that skit cannot invent, so store_true there
+    ships a checkbox whose unticked state delivers nothing and leaves the script in its
+    default state. The reader side refuses the same shape (argspec._typer_finish_bool); the
+    hand-declared path must not be the way around it, so the row is kept unchanged and the
+    caller gets a warning code to explain."""
+    pre = ParamDecl(name="verbose", delivery="flag", flag="--verbose")
+    res = edit_declared([pre], types={"verbose": "bool"}, defaults={"verbose": "true"})
+    d = _by_name(res.decls)["verbose"]
+    assert res.warnings == ["bool-flag-on-by-default:verbose"]
+    assert d.action == ""  # nothing stamped
+    assert d.type == "str"  # and the whole row rolled back, like every refused edit
+
+
+def test_bool_flag_that_is_off_by_default_still_gets_store_true():
+    # The control: the refusal must key off the default, not fire for every bool flag.
+    res = edit_declared(
+        [ParamDecl(name="verbose", delivery="flag", flag="--verbose")],
+        types={"verbose": "bool"},
+        defaults={"verbose": "false"},
+    )
+    d = _by_name(res.decls)["verbose"]
+    assert res.warnings == []
+    assert (d.type, d.default, d.action) == ("bool", False, "store_true")

@@ -313,6 +313,10 @@ def test_argparse_value_suffixes():
     assert fields["retries"].type == "str"  # optional attached value
     assert fields["file"].multiple is True
     assert fields["glob"].multiple is True
+    # `=+`/`=*` are REPEAT grammar: fish's argparse wants `--file a --file b`, and the
+    # one-flag-many-values shape would leave `b` as a stray positional.
+    assert (fields["file"].repeat, fields["glob"].repeat) == (True, True)
+    assert fields["name"].repeat is False
 
 
 def test_argparse_long_only_and_short_only():

@@ -208,17 +208,31 @@ _TEMPLATE_TOKEN_RE = re.compile(r"\{\{|\}\}|(?<!\{)\{([a-zA-Z_][a-zA-Z0-9_]*)\}(
 
 
 def _posix_quote_state(text: str, state: str) -> str:
-    """Advance the POSIX shell quote context ("" unquoted, "'" single, '"' double) across a
-    chunk of template text. Backslash consumes the next character outside single quotes —
-    inside double quotes that over-approximates (`\\x` leaves the backslash literal for most
-    x), but the skipped character is never one that could change the state ('`'' is literal
-    in double quotes anyway, and `\\\"` correctly stays inside). A chunk ENDING on an
-    unconsumed backslash returns the state with "\\" appended ('\\\\' or '\"\\\\'): that
-    escape would otherwise silently apply to the first character of whatever the caller
-    emits next — exactly how `\"foo\\{name}\"` once ate the escape guarding a substituted
-    value's `$`. Callers resolve the pending escape (see _substitute_posix); a resumed
-    chunk consumes its first character as the escaped one. ANSI-C `$'…'` quoting is
-    tracked as ordinary single quotes; its `\\'` escape is the one known mis-track."""
+    """Advance the POSIX shell quote context across a chunk of template text.
+
+    `state` is a FRAME STACK, innermost frame last: "'" single quotes, '"' double quotes,
+    "(" a `$(…)` command substitution, "`" a backtick one. It is a stack rather than one
+    character because a command substitution RESTARTS quoting — inside `$(…)` the shell
+    parses a fresh command, so the `"` in `"$(printf %s "{v}")"` OPENS a context instead
+    of closing the outer one. Reading that `"` as a close (the single-char tracker this
+    replaced) put the value in the wrong branch of _posix_quote_value in BOTH directions:
+    a value landing in `"$(cmd {v})"` was escaped for double quotes and reached the inner
+    command bare (`;` and `|` live, and `a b` split into two words), while one landing in
+    `"$(cmd "{v}")"` was shlex-quoted and arrived wrapped in literal apostrophes.
+
+    Only the innermost frame decides quoting, and "(" / "`" behave like unquoted text —
+    which is exactly what they are to the nested command. Backslash consumes the next
+    character outside single quotes; inside double quotes that over-approximates (`\\x`
+    leaves the backslash literal for most x), but the skipped character is never one that
+    could change the state. A chunk ENDING on an unconsumed backslash returns the state
+    with "\\" appended: that escape would otherwise silently apply to the first character
+    of whatever the caller emits next — exactly how `\"foo\\{name}\"` once ate the escape
+    guarding a substituted value's `$`. Callers resolve the pending escape (see
+    _substitute_posix); a resumed chunk consumes its first character as the escaped one.
+    ANSI-C `$'…'` quoting is tracked as ordinary single quotes; its `\\'` escape is the one
+    known mis-track. An unbalanced `)` outside a substitution frame is left alone: the
+    shell would reject the template itself, and guessing a pop there would corrupt the
+    frames of a template that is merely mid-word."""
     i = 0
     n = len(text)
     if state.endswith("\\"):
@@ -229,18 +243,24 @@ def _posix_quote_state(text: str, state: str) -> str:
         i = 1
     while i < n:
         ch = text[i]
-        if state == "'":
+        top = state[-1:]
+        if top == "'":
             if ch == "'":
-                state = ""
+                state = state[:-1]
         elif ch == "\\":
             if i + 1 >= n:
                 return state + "\\"  # dangling: the escape pends across the boundary
             i += 1  # pragma: no mutate — escaped-char skip (decrement/reset would hang)
-        elif state == '"':
-            if ch == '"':
-                state = ""
-        elif ch in ("'", '"'):
-            state = ch
+        elif ch == "$" and text[i + 1 : i + 2] == "(":
+            state += "("  # `$(` opens a fresh command context, even inside double quotes
+            i += 1  # pragma: no mutate — consumes the "(" so a later ")" pops THIS frame
+        elif ch in ("`", '"'):
+            # Each of these both opens and closes, so the top frame decides which this is.
+            state = state[:-1] if top == ch else state + ch
+        elif ch == "'" and top != '"':
+            state += ch  # a lone apostrophe inside double quotes is literal text, not a frame
+        elif ch == ")" and top == "(":
+            state = state[:-1]
         i += 1  # pragma: no mutate — loop cursor (decrement/reset never reaches n)
     return state
 
@@ -250,10 +270,36 @@ def _posix_quote_value(value: str, state: str) -> str:
     alone is only right in unquoted position: inside "double quotes" it leaves $(…)/backticks
     live and adds literal apostrophes, and inside 'single quotes' it nests quotes wrongly —
     the reproduced way a value like `$(cmd)` stopped arriving literally. Every branch is
-    state-neutral: the template's own context resumes exactly where it left off."""
-    if state == "'":
+    state-neutral: the template's own context resumes exactly where it left off.
+
+    Only the INNERMOST frame matters (see _posix_quote_state): a placeholder inside a
+    `$(…)` or backtick substitution sits in that nested command's own unquoted context,
+    however many double quotes wrap the substitution itself, so it takes the shlex.quote
+    branch. Single-quoting there is safe in both substitution forms — the `'\\''` idiom
+    needs no backslash before `$`, which is the one escape a backtick context would eat a
+    second time."""
+    # No pending-escape handling here: _substitute_posix resolves a dangling backslash
+    # before it ever reaches a value (see the neutralizer there), so `state` is always a
+    # clean frame stack by this point.
+    top = state[-1:]
+    if top == "'":
         return value.replace("'", "'\\''")
-    if state == '"':
+    if top == '"':
+        if "`" in state:
+            # Double quotes nested in a `…` substitution are the one context skit cannot
+            # quote for: the backtick form strips ONE layer of backslashes before the inner
+            # command is parsed, so the `\$` this branch emits arrives as a bare `$` and a
+            # value like `$(cmd)` runs. Escaping twice would only move the problem one level
+            # out (backticks nest by re-escaping, unboundedly), so refuse instead of
+            # assembling a command that quietly means something else. $(…) has no such
+            # layer and is the fix on the template side.
+            raise LaunchError(
+                gettext(
+                    "Can't safely fill in a value inside double quotes nested in a `…` "
+                    "command substitution — the shell strips one layer of escaping there. "
+                    "Rewrite that part of the template with $(…) instead of backticks."
+                )
+            )
         out = value.replace("\\", "\\\\").replace('"', '\\"')
         return out.replace("$", "\\$").replace("`", "\\`")
     return shlex.quote(value)
@@ -270,10 +316,12 @@ class TemplateLaunch:
         the position it lands in. Brace escapes and untouched placeholders emit
         literal braces — no quote characters, so the state carries straight through."""
         out: list[str] = []
-        # state: "XXXX" (the only surviving mutant of "") behaves identically — state is
-        # only ever compared to "'"/'"' or tested with .endswith, never truthy-checked, so
-        # any non-quote sentinel is the unquoted context. pos: only pos=None survives, and
-        # None is the slice-start of 0 (template[None:x] == template[0:x]); pos=1 is killed.
+        # state: "XXXX" (the only surviving mutant of "") behaves identically — the frame
+        # stack is only ever read through state[-1:], compared to a frame character or
+        # tested with .endswith, never truthy-checked, and no frame pops off a sentinel
+        # that opened none, so any non-frame prefix IS the unquoted context. pos: only
+        # pos=None survives, and None is the slice-start of 0 (template[None:x] ==
+        # template[0:x]); pos=1 is killed.
         state = ""  # pragma: no mutate — see above: "XXXX" is an equivalent sentinel
         pos = 0  # pragma: no mutate — see above: None-start ≡ 0 (the only surviving mutant)
         for m in _TEMPLATE_TOKEN_RE.finditer(template):

@@ -12,7 +12,7 @@ import tempfile
 import threading
 import time
 import tomllib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -154,12 +154,27 @@ def _fsync_dir(dir_path: Path) -> None:
         os.close(fd)
 
 
-def atomic_write_bytes(path: Path, data: bytes) -> None:
+# os.fchmod exists on POSIX and not on Windows. Looked up once, here, so the mode-carrying
+# write and its post-rename fallback below key off ONE predicate — "can this platform set the
+# mode through an open fd?" — which is the actual question, and which the type checker (it
+# checks every platform at once) can follow without a suppression.
+_FCHMOD: Callable[[int, int], None] | None = getattr(os, "fchmod", None)
+
+
+def atomic_write_bytes(path: Path, data: bytes, *, mode: int | None = None) -> None:
+    """`mode`, when given, is applied to the temp file BEFORE the rename, so the permission
+    bits are published in the same atomic swap as the content. Chmod'ing afterwards leaves a
+    window where a crash strands the file at mkstemp's 0600 — for a stored copy that means
+    losing the execute bit permanently. POSIX only: os.fchmod does not exist on Windows,
+    where the mode is a read-only bit that callers restore after the replace instead."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
+            if mode is not None and _FCHMOD is not None:
+                with contextlib.suppress(OSError):
+                    _FCHMOD(f.fileno(), mode)
             f.flush()
             os.fsync(f.fileno())  # durable on disk BEFORE the rename, not just before this returns
         _replace_with_retry(tmp, path)
@@ -172,21 +187,41 @@ def atomic_write_bytes(path: Path, data: bytes) -> None:
         raise
 
 
-def atomic_write_text(path: Path, text: str) -> None:
-    atomic_write_bytes(path, text.encode("utf-8"))  # pragma: no mutate — utf-8/UTF-8 alias
+def atomic_write_text(path: Path, text: str, *, mode: int | None = None) -> None:
+    atomic_write_bytes(path, text.encode("utf-8"), mode=mode)  # pragma: no mutate — utf-8 alias
+
+
+def atomic_write_bytes_keep_mode(path: Path, data: bytes) -> None:
+    """atomic_write_text_keep_mode for callers that already hold exact bytes — a write-back of
+    a script decoded with surrogateescape, where re-encoding through the strict-UTF-8 text
+    helper would raise (or, decoded with errors="replace", would silently swap every
+    non-UTF-8 byte for U+FFFD)."""
+    _write_keeping_mode(path, lambda mode: atomic_write_bytes(path, data, mode=mode))
 
 
 def atomic_write_text_keep_mode(path: Path, text: str) -> None:
     """Atomic replacement for an existing file that keeps its permission bits: mkstemp's
     tmp is always 0600, so a plain atomic_write_text would silently re-mode a stored
     script copy (added via copy2, which preserved the original's bits). A target that
-    vanished since the caller read it just gets the fresh write (nothing to preserve)."""
+    vanished since the caller read it just gets the fresh write (nothing to preserve).
+
+    The bits ride along with the content (see atomic_write_bytes) rather than being
+    restored afterwards, so there is no window in which the file exists with the wrong
+    mode. Windows has no fchmod, so the post-replace chmod stays the path there."""
+    _write_keeping_mode(path, lambda mode: atomic_write_text(path, text, mode=mode))
+
+
+def _write_keeping_mode(path: Path, write: Callable[[int | None], None]) -> None:
+    """Capture the target's mode, hand it to `write` so it rides along with the content, and
+    restore it afterwards only where that is the only option (Windows has no os.fchmod)."""
     try:
         mode = stat.S_IMODE(path.stat().st_mode)
     except OSError:
         mode = None
-    atomic_write_text(path, text)
-    if mode is not None:
+    write(mode)
+    if mode is not None and _FCHMOD is None:
+        # Windows: no fchmod, so the bits can only go on after the rename. That window is
+        # exactly what the POSIX path exists to avoid, and it is the best available there.
         with contextlib.suppress(OSError):
             os.chmod(path, mode)
 

@@ -974,6 +974,8 @@ def _update_dependencies_entry(
             js_deps.clear(entry.dir)
         except NotExecutableError as exc:
             raise StoreError(str(exc)) from exc
+    if meta.kind == "python" and meta.mode == "copy":
+        _refuse_unsyncable_block(entry, dependencies, requires_python)
     if dependencies is not None:
         meta.dependencies = dependencies or None
     if requires_python is not None:
@@ -984,6 +986,43 @@ def _update_dependencies_entry(
     if meta.kind == "python" and meta.mode == "copy":  # pragma: no mutate — and/or equivalent
         _sync_python_block(entry.script_path, meta, dependencies, requires_python)
     return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
+
+
+def _refuse_unsyncable_block(
+    entry: Entry,
+    dependencies: list[str] | None,
+    requires_python: str | None,
+) -> None:
+    """Refuse an edit whose result skit could not actually deliver — BEFORE meta is written.
+
+    A stored copy that isn't valid UTF-8 can't have its PEP 723 block rewritten (re-encoding
+    an errors="replace" decode would swap every non-UTF-8 byte for U+FFFD, so add_python's
+    rule is to leave the copy byte-exact). If that copy also HAS a block, the block is what
+    uv reads, and meta cannot override it: an empty meta value means "untouched, defer to the
+    block" everywhere, so there is no way to record a clear or an unpin at all. Letting the
+    write through printed "Dependencies of x updated: —" while `skit show` and `uv run` both
+    kept the old list — the exact false statement _sync_python_block's docstring forbids.
+    Validate-then-write instead: nothing is committed, and the edit stays retryable."""
+    if dependencies is None and requires_python is None:
+        return  # nothing explicitly edited; the sync path has nothing to deliver either
+    try:
+        raw = entry.script_path.read_bytes()
+    except OSError:
+        return  # a missing/unreadable copy is the sync path's own no-op case
+    try:
+        raw.decode("utf-8")  # pragma: no mutate — utf-8/UTF-8 alias, and utf-8 is the default
+    except UnicodeDecodeError:
+        # The block fence and keys are ASCII, so a lossy decode is sound for DETECTION even
+        # though it is not sound for rewriting.
+        if pep723.has_block(raw.decode("utf-8", errors="replace")):  # pragma: no mutate — alias
+            raise StoreUsageError(
+                gettext(
+                    "%(name)s's stored copy isn't valid UTF-8, so skit can't rewrite the "
+                    "script's own dependency block — and that block is what uv reads. "
+                    "Edit it in the script itself: skit edit %(name)s"
+                )
+                % {"name": entry.meta.name}
+            ) from None
 
 
 def _sync_python_block(
@@ -1011,7 +1050,9 @@ def _sync_python_block(
         # add_python's encoding rule, applied to the sync path too: re-encoding a lossy
         # errors="replace" decode would swap every non-UTF-8 byte in the copy for U+FFFD.
         # Leave the copy byte-exact; the edit is already in meta, which the launcher
-        # passes via --with/--python exactly like a reference-mode entry.
+        # passes via --with/--python exactly like a reference-mode entry. The case where
+        # meta CAN'T stand in — a copy that carries its own block — never reaches here:
+        # _refuse_unsyncable_block turned it away before meta was written.
         return
     block = pep723.parse_block(text) or {}
     constraint = meta.requires_python

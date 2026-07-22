@@ -153,7 +153,7 @@ def test_duplicate_const_injection_no_longer_corrupts_source():
     ast.parse(injected)  # must still be valid Python (used to raise SyntaxError)
 
 
-# ---------- shadowed `input`: any binding disables input detection file-wide ----------
+# ---------- shadowed `input`: a binding disables detection in ITS scope ----------
 
 
 def _input_names(src: str) -> list[str]:
@@ -182,11 +182,35 @@ def test_shadowed_input_via_plain_import_yields_no_input_candidates():
     assert _input_names("import input\nname = input('Name: ')\n") == []
 
 
-def test_shadowed_input_via_function_parameter_yields_no_input_candidates():
-    # A function PARAMETER named `input` binds it (only within that function, but the rule is
-    # deliberately file-wide and conservative): one binding anywhere disables detection outright,
-    # even though the top-level input('Name: ') here is really the builtin.
-    assert _input_names("def f(input):\n    return input\nname = input('Name: ')\n") == []
+def test_function_parameter_named_input_does_not_shadow_the_module_level_call():
+    # A function PARAMETER named `input` binds it only INSIDE that function — `input` is a
+    # common parameter name, and a file-wide rule would strip the managed prompt off every
+    # entry whose script happens to contain one, turning its next run into definition drift.
+    assert _input_names("def f(input):\n    return input\nname = input('Name: ')\n") == ["input-1"]
+
+
+def test_call_inside_the_shadowing_function_is_not_a_candidate():
+    # The other half of the same rule: within the function that binds it, `input(...)` really
+    # is the parameter, so that call site must stay unmanaged while the module-level one below
+    # is still detected.
+    src = "def f(input):\n    return input('inner')\nname = input('Name: ')\n"
+    assert [c.lineno for c in analyzer.analyze(src).candidates if c.binding == "input"] == [3]
+
+
+def test_local_assignment_shadows_only_its_own_function():
+    src = "def f():\n    input = str\n    return input('inner')\nname = input('Name: ')\n"
+    assert [c.lineno for c in analyzer.analyze(src).candidates if c.binding == "input"] == [4]
+
+
+def test_module_level_binding_still_shadows_calls_nested_in_functions():
+    # A module-scope binding reaches into every function below it (closures see it), so a call
+    # inside one is NOT the builtin either.
+    assert _input_names("input = str\ndef f():\n    return input('inner')\n") == []
+
+
+def test_comprehension_and_lambda_bindings_stay_local():
+    src = "xs = [input for input in range(3)]\ng = lambda input: input\nname = input('Name: ')\n"
+    assert _input_names(src) == ["input-1"]
 
 
 def test_shadowing_input_does_not_suppress_const_detection():
@@ -293,3 +317,44 @@ def test_match_inputs_triple_duplicate_stored_prompts_only_one_winner():
     assert bindings == {0: (0, False)}
     resolved = [current_order for current_order, _ in bindings.values()]
     assert len(resolved) == len(set(resolved))
+
+
+def test_match_capture_named_input_shadows_only_its_own_scope():
+    # The pattern-capture binding forms count too — a `case {**input}` rest-capture and a
+    # `case [*input]` star-capture bind the name where they appear, like any assignment.
+    mapping = "def f(d):\n    match d:\n        case {**input}:\n            return input\nname = input('Name: ')\n"
+    star = "def g(d):\n    match d:\n        case [*input]:\n            return input\nname = input('Name: ')\n"
+    # Each pattern alone, so neither arm can be masked by the other short-circuiting first.
+    assert _input_names(mapping) == ["input-1"]
+    assert _input_names(star) == ["input-1"]
+
+
+def test_except_handler_named_input_shadows_only_its_own_scope():
+    src = "def f():\n    try:\n        pass\n    except ValueError as input:\n        return input\nname = input('Name: ')\n"
+    assert _input_names(src) == ["input-1"]
+
+
+def test_dotted_import_binds_only_its_top_level_name():
+    # `import input.sub` binds `input`, so the module-level call is that module, not the
+    # builtin — the split(".")[0] the binding scan does.
+    assert _input_names("import input.sub\nname = input('Name: ')\n") == []
+    # ...and a dotted import of anything else leaves the builtin alone.
+    assert _input_names("import os.path\nname = input('Name: ')\n") == ["input-1"]
+
+
+def test_star_import_is_treated_as_possibly_binding_input():
+    # A star import can bind any public name, `input` included; nothing static can rule it
+    # out, so the scope it appears in stops offering input candidates.
+    assert _input_names("from mymod import *\nname = input('Name: ')\n") == []
+
+
+def test_one_shadowing_scope_does_not_stop_the_scan_of_the_others():
+    # The shadow check skips THAT scope, not the rest of the walk: a script with a helper
+    # that binds `input` and another that calls it must still surface the second one.
+    src = (
+        "def a(input):\n    return input\n"
+        "def b():\n    return input('B: ')\n"
+        "def c(input):\n    return input\n"
+        "def d():\n    return input('D: ')\n"
+    )
+    assert _input_names(src) == ["input-1", "input-2"]

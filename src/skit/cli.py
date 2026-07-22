@@ -54,6 +54,7 @@ from .i18n import gettext, ngettext
 from .langs.python import analyzer, metawriter
 from .langs.registry import KNOWN_KINDS, spec_for
 from .params import ParamDecl, declared_from_meta, edit_declared, is_secret_name
+from .rewrite import detect_newline, restore_newline
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -635,10 +636,10 @@ def _onboard_script_params(entry: store.Entry, kind_spec: LangSpec, no_input: bo
     # LF for the LF-based block engine, then restore the copy's own line-ending style so a CRLF
     # script stays CRLF and the edit stays confined to the block it inserted.
     raw = copy_path.read_bytes()
-    newline = _detect_newline(raw)
+    newline = detect_newline(raw)
     current = raw.decode("utf-8", errors="surrogateescape")  # pragma: no mutate — codec alias
     current = current.replace("\r\n", "\n").replace("\r", "\n")
-    written = _restore_newline(kind_spec.params_io.write(current, specs), newline)
+    written = restore_newline(kind_spec.params_io.write(current, specs), newline)
     copy_path.write_bytes(
         written.encode("utf-8", errors="surrogateescape")
     )  # pragma: no mutate — codec alias
@@ -688,11 +689,11 @@ def _onboard_python(
             # LF-based PEP 723 block engine, then restore the copy's own line-ending style so a
             # CRLF script stays CRLF instead of being re-expanded to the host os.linesep.
             raw = copy_path.read_bytes()
-            newline = _detect_newline(raw)
+            newline = detect_newline(raw)
             current = (
                 raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
             )  # pragma: no mutate — codec alias
-            new_text = _restore_newline(metawriter.write_params(current, params_specs), newline)
+            new_text = restore_newline(metawriter.write_params(current, params_specs), newline)
             copy_path.write_bytes(new_text.encode("utf-8"))  # pragma: no mutate — codec alias
             managed = [s.name for s in params_specs]
             secrets = [s.name for s in params_specs if s.secret]
@@ -2535,7 +2536,13 @@ def remove(
                 "name": entry.meta.name
             }
         typer.confirm(question, abort=True)
-    removed = store.remove(name)
+    try:
+        removed = store.remove(name)
+    except store.StoreError as exc:
+        # A partly-deleted entry (a held-open file made rmtree a no-op) is a real, worded
+        # failure with a recovery step in it — it must reach the user as skit's own error,
+        # not as a traceback.
+        raise _fail(str(exc), 1) from exc
     console.print(f"[green]{gettext('Removed: %(name)s') % {'name': escape(removed)}}[/green]")
 
 
@@ -4434,27 +4441,6 @@ def _apply_env_sources(specs: list[ParamDecl], env_sources: dict[str, str]) -> l
     return warnings
 
 
-def _detect_newline(raw: bytes) -> str:
-    """The stored copy's line-ending style, so an LF-based edit can restore it before write-back.
-    The comment-block engine only matches on "\\n", so both write paths fold to LF to run it — but
-    persisting that LF would rewrite every line of a CRLF script even though only the block
-    changed. Detect the style here (CRLF wins if any is present, else lone CR, else LF) and
-    re-apply it after the edit: a uniformly-terminated file — every real script — round-trips
-    byte-for-byte, and skit's edit stays confined to the block it meant to touch. A (pathological)
-    mixed-ending file normalizes to the detected style, still no worse than the LF-only form."""
-    if b"\r\n" in raw:
-        return "\r\n"
-    if b"\r" in raw:
-        return "\r"
-    return "\n"
-
-
-def _restore_newline(text: str, newline: str) -> str:
-    """Re-apply `newline` to LF-normalized engine output. A no-op for LF copies; after the fold
-    every terminator is a lone "\\n", so the mapping back is unambiguous."""
-    return text if newline == "\n" else text.replace("\n", newline)
-
-
 def _edit_params(
     entry: store.Entry,
     *,
@@ -4529,10 +4515,10 @@ def _edit_params(
     # script even though only the [tool.skit] block changed (and write_text, the old path, was
     # worse still — it re-expanded \n to the HOST os.linesep, CRLF-ifying a copy on Windows).
     raw = copy_path.read_bytes()
-    newline = _detect_newline(raw)
+    newline = detect_newline(raw)
     current = raw.decode("utf-8", errors="surrogateescape")  # pragma: no mutate — codec alias
     current = current.replace("\r\n", "\n").replace("\r", "\n")
-    written = _restore_newline(entry_spec.params_io.write(current, result.specs), newline)
+    written = restore_newline(entry_spec.params_io.write(current, result.specs), newline)
     copy_path.write_bytes(
         written.encode("utf-8", errors="surrogateescape")
     )  # pragma: no mutate — codec alias
@@ -4655,7 +4641,7 @@ def _normalize_params(
     # and restored at write-back, so a CRLF script stays CRLF and skit's edit stays confined to
     # the one constant it rewrote (write_text, the old path, re-expanded \n to the HOST os.linesep
     # instead, CRLF-ifying the whole copy on Windows and skipping the next re-anchor silently).
-    newline = _detect_newline(raw)
+    newline = detect_newline(raw)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     result = entry_spec.normalizer.normalize(text, list(names))
     for warning in result.refused:
@@ -4677,7 +4663,7 @@ def _normalize_params(
         else s
         for s in entry_spec.params_io.read(result.text)
     ]
-    new_text = _restore_newline(entry_spec.params_io.write(result.text, specs), newline)
+    new_text = restore_newline(entry_spec.params_io.write(result.text, specs), newline)
     copy_path.write_bytes(new_text.encode("utf-8"))  # pragma: no mutate — codec alias
     console.print(
         f"[green]{gettext('Normalized %(names)s in %(name)s: delivered as environment variables from now on (no temporary copy, and $0 stays your real file).') % {'names': ', '.join(escape(n) for n in result.normalized), 'name': escape(entry.meta.name)}}[/green]"
@@ -4705,6 +4691,11 @@ def _render_declared_warning(warning: str) -> str:
         ),
         "choice-without-choices": gettext(
             "%(name)s: a choice parameter needs choices; set --choices %(name)s=a,b,c."
+        ),
+        "bool-flag-on-by-default": gettext(
+            "%(name)s is on by default, so its flag could only ever turn it on again. "
+            "Declare the flag that turns it OFF instead (--no-%(name)s and the like), with "
+            "default false."
         ),
     }[code] % {"name": name}
 

@@ -1511,3 +1511,24 @@ def test_execute_inject_falls_back_to_entry_dir(tmp_path, monkeypatch):
     path = landed["path"]
     assert isinstance(path, Path)
     assert path.parent == entry.dir  # the fallback dir was entry.dir, not None
+
+
+def test_typed_multi_value_field_validates_each_piece_not_the_whole_box():
+    """A multi-value field holds several values in one box (`--point 1 2`), so an int type
+    applies to each PIECE. Coercing the whole string rejected the only legal input a typed
+    `nargs=2` / `nargs='+'` option has — "1 2" is not a whole number, but 1 and 2 are."""
+    field = flows.FormField(key="point", label="point", source="flag", kind="int", multiple=True)
+    assert flows._type_error(field, "1 2") is None
+    assert flows._type_error(field, "1 -2 30") is None
+    # A bad piece still fails, and the message quotes what the user actually typed.
+    error = flows._type_error(field, "1 x")
+    assert error is not None
+    assert "whole number" in error
+    assert "'1 x'" in error
+
+
+def test_single_value_field_still_validates_the_whole_string():
+    # The contrast: without multiple, a space-separated pair is exactly the wrong input.
+    field = flows.FormField(key="n", label="n", source="flag", kind="int")
+    assert flows._type_error(field, "1 2") is not None
+    assert flows._type_error(field, "12") is None

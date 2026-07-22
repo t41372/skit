@@ -943,8 +943,19 @@ class MenuApp(App[int | PendingRun]):
 
         def _done(confirmed: bool | None) -> None:
             if confirmed:
-                store.remove(entry.slug)
+                # A partly-deleted entry is a worded failure with a recovery step in it.
+                # Raised bare from a screen callback it would take the whole TUI down, so it
+                # lands in the status line like every other action's error. The reload still
+                # runs (the registry removal already happened) — and it runs BEFORE the
+                # message, because _refresh_status()'s own no-argument call would wipe it.
+                failure = ""
+                try:
+                    store.remove(entry.slug)
+                except store.StoreError as exc:
+                    failure = str(exc)
                 self._reload()
+                if failure:
+                    self._refresh_status(gettext("Error: %(error)s") % {"error": escape(failure)})
 
         self.push_screen(ConfirmRemove(entry), _done)
 

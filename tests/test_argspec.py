@@ -337,3 +337,71 @@ def test_computed_default_degrades_field():
     assert spec.fields[0].name == "size"
     assert spec.fields[0].degraded is True
     assert spec.fields[0].default is None  # a computed default is never read as a value
+
+
+# ---------------------------------------------------------------------------
+# nargs arity: a fixed count is a multi-value field, and click's multiple+nargs
+# pair has no shape at all
+# ---------------------------------------------------------------------------
+
+
+def test_argparse_fixed_nargs_is_a_multi_value_field():
+    # `nargs=2` wants `--point 1 2` — the same one-flag-many-values shape as `+`/`*`.
+    # Modelled as single, the only legal input went through as one quoted token and
+    # argparse answered "expected 2 arguments" at exit 2.
+    spec = argspec.read_argparse(
+        "import argparse\n"
+        "ap = argparse.ArgumentParser()\n"
+        "ap.add_argument('--point', nargs=2, type=int)\n"
+        "ap.add_argument('--one', nargs=1)\n"
+    )
+    assert spec is not None
+    fields = {f.name: f for f in spec.fields}
+    assert fields["point"].multiple is True
+    assert fields["point"].repeat is False  # nargs grammar, not repeat-the-flag
+    assert fields["one"].multiple is False  # nargs=1 still takes exactly one value
+
+
+def test_click_fixed_nargs_is_a_multi_value_field():
+    spec = argspec.read_cli(
+        "import click\n"
+        "@click.command()\n"
+        "@click.option('--pair', nargs=2)\n"
+        "def main(pair):\n    pass\n"
+    )
+    assert spec is not None
+    (field,) = [f for f in spec.fields if f.name == "pair"]
+    assert field.multiple is True
+    assert field.repeat is False
+
+
+def test_click_multiple_with_fixed_nargs_is_not_modelled_at_all():
+    """`multiple=True, nargs=2` repeats the flag AND takes two values per occurrence.
+    Nothing in a ParamDecl records that arity, so there is no assembly shape: the option
+    is dropped to the passthrough extra-args field rather than emitted as
+    `--point 1 --point 2`, which click rejects at exit 2."""
+    spec = argspec.read_cli(
+        "import click\n"
+        "@click.command()\n"
+        "@click.option('--point', nargs=2, type=int, multiple=True)\n"
+        "@click.option('--tag', multiple=True)\n"
+        "def main(point, tag):\n    pass\n"
+    )
+    assert spec is not None
+    names = [f.name for f in spec.fields]
+    assert "point" not in names
+    assert "tag" in names  # plain multiple= is still modelled (repeat the flag)
+
+
+def test_click_multiple_with_nargs_one_is_still_modelled():
+    # Only a nargs GREATER than one is unrepresentable: `nargs=1` is the ordinary
+    # one-value-per-occurrence shape click's multiple= already means.
+    spec = argspec.read_cli(
+        "import click\n"
+        "@click.command()\n"
+        "@click.option('--tag', nargs=1, multiple=True)\n"
+        "def main(tag):\n    pass\n"
+    )
+    assert spec is not None
+    (field,) = [f for f in spec.fields if f.name == "tag"]
+    assert (field.multiple, field.repeat) == (True, True)
