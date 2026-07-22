@@ -20,13 +20,14 @@ from pathlib import Path
 from typing import Any
 
 from . import argstate, paths, pep723
-from .atomic import advisory_file_lock, atomic_write_text_keep_mode, atomic_write_toml
+from .atomic import advisory_file_lock, atomic_write_bytes_keep_mode, atomic_write_toml
 from .i18n import gettext
 from .langs import registry
 from .langs.registry import stored_name
 from .models import Entry, Kind, Mode, ScriptMeta, ScriptMetaError, now_iso, slugify
 from .params import ParamDecl, declared_from_meta
 from .paths import registry_path, scripts_dir
+from .rewrite import detect_newline, restore_newline
 
 # Corruption/error types every meta.toml reader must treat the same way: valid-but-unreadable file,
 # invalid TOML, or valid TOML missing a required key are all "this entry is corrupt" — never a bare
@@ -235,10 +236,18 @@ def add_python(
     # lossy `errors="replace"` decode back to disk would corrupt any non-UTF-8 byte in the copy
     # (store.py:130). A source that doesn't decode cleanly falls back to recording the deps in meta
     # instead (same as reference mode) and leaves the copy byte-exact.
+    # Fold to LF for the block engine (its fences match on "\n" only) and remember the
+    # source's own style for the write-back: a CRLF script whose text was handed to the
+    # engine raw looked blockless, so `has_block` said False and skit injected a SECOND
+    # `# /// script` block on top of the existing one.
+    source_raw = source.read_bytes()
+    source_newline = detect_newline(source_raw)
     try:
-        strict_text: str | None = source.read_bytes().decode("utf-8")
+        strict_text: str | None = source_raw.decode("utf-8")
     except UnicodeDecodeError:
         strict_text = None
+    else:
+        strict_text = strict_text.replace("\r\n", "\n").replace("\r", "\n")
     # reference mode: never touch the original; record in meta, and launcher passes it via
     # --with/--python.
     after_copy: Callable[[Path], None] | None = None
@@ -251,7 +260,12 @@ def add_python(
         injected_text = pep723.inject_block(strict_text, dependencies or [], requires_python)
 
         def _write_injected(entry_dir: Path) -> None:
-            (entry_dir / stored_name("python")).write_text(injected_text, encoding="utf-8")
+            # write_bytes with the style restored, not write_text: the latter re-expands
+            # every "\n" to os.linesep, which on Windows rewrote an LF script's whole file
+            # to CRLF for the sake of a comment block.
+            (entry_dir / stored_name("python")).write_bytes(
+                restore_newline(injected_text, source_newline).encode("utf-8")
+            )
 
         after_copy = _write_injected
     if mode == "reference":
@@ -1045,7 +1059,8 @@ def _sync_python_block(
         # names are case-insensitive — codecs.lookup normalizes them); mirrors atomic.py's
         # utf-8/UTF-8 alias pragma. The co-generated decode("XXutf-8XX") is killable
         # (LookupError) and dies by coverage on the identical unpragma'd add_python:239.
-        text = script.read_bytes().decode("utf-8")  # pragma: no mutate — utf-8/UTF-8 alias
+        raw = script.read_bytes()
+        text = raw.decode("utf-8")  # pragma: no mutate — utf-8/UTF-8 alias
     except (OSError, UnicodeDecodeError):
         # add_python's encoding rule, applied to the sync path too: re-encoding a lossy
         # errors="replace" decode would swap every non-UTF-8 byte in the copy for U+FFFD.
@@ -1054,6 +1069,12 @@ def _sync_python_block(
         # meta CAN'T stand in — a copy that carries its own block — never reaches here:
         # _refuse_unsyncable_block turned it away before meta was written.
         return
+    # Fold for the LF-based block engine, restore the copy's own style on the way out.
+    # Handing it CRLF text made parse_block find nothing, so the "update" prepended a
+    # SECOND `# /// script` block and left the [tool.skit] params below it unreadable —
+    # every managed parameter silently gone, on every CRLF copy.
+    newline = detect_newline(raw)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     block = pep723.parse_block(text) or {}
     constraint = meta.requires_python
     if not constraint and requires_python is None:
@@ -1063,10 +1084,13 @@ def _sync_python_block(
         block_deps = list(meta.dependencies or []) or [
             str(d) for d in (block.get("dependencies") or [])
         ]
-    # Atomic, mode-preserving: a plain write_text can tear the stored copy on a crash,
-    # and a tmp+replace without the chmod would drop the bits copy2 preserved at add.
-    atomic_write_text_keep_mode(
-        script, pep723.set_dependencies(text, block_deps, requires_python=constraint)
+    # Atomic, mode-preserving: a plain write can tear the stored copy on a crash, and a
+    # tmp+replace without the chmod would drop the bits copy2 preserved at add.
+    atomic_write_bytes_keep_mode(
+        script,
+        restore_newline(
+            pep723.set_dependencies(text, block_deps, requires_python=constraint), newline
+        ).encode("utf-8"),  # pragma: no mutate — codec alias
     )
 
 

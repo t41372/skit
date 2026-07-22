@@ -182,6 +182,9 @@ async def test_save_preserves_stored_copy_permission_bits(tmp_path):
 
     entry = store.add_python(_py(tmp_path, 'CITY = "Taipei"\nprint(CITY)\n'), name="perm")
     entry.script_path.chmod(0o755)
+    # What chmod actually produced: Windows has no POSIX mode bits and reports 0o666
+    # whatever it was handed. The contract under test is PRESERVATION, not a value.
+    expected_mode = stat_mod.S_IMODE(entry.script_path.stat().st_mode)
     original_text = entry.script_path.read_text(encoding="utf-8")
     spec = spec_for(entry.meta.kind)
     assert spec is not None
@@ -199,7 +202,7 @@ async def test_save_preserves_stored_copy_permission_bits(tmp_path):
         await pilot.pause()
         assert not isinstance(app.screen, ScriptSettingsScreen)  # saved & dismissed
 
-    assert stat_mod.S_IMODE(entry.script_path.stat().st_mode) == 0o755  # bits survived the save
+    assert stat_mod.S_IMODE(entry.script_path.stat().st_mode) == expected_mode  # bits survived
     # Content equals exactly what params_io.write emits for the ticked candidate.
     report = spec.analyzer.reconcile(original_text, [])
     expected_specs = [ParamDecl.from_candidate(c) for c in report.new]

@@ -416,14 +416,16 @@ def test_add_python_injected_write_failure_rolls_back_entire_entry(tmp_path, mon
     src = tmp_path / "nodoc.py"
     src.write_text("print(1)\n", encoding="utf-8")
 
-    real_write_text = Path.write_text
+    # write_bytes, not write_text: the injected write restores the source's own line
+    # endings itself rather than letting write_text re-expand every "\n" to os.linesep.
+    real_write_bytes = Path.write_bytes
 
     def boom(self, *a, **kw):
         if self.name == "script.py":
             raise OSError("disk full (simulated)")
-        return real_write_text(self, *a, **kw)
+        return real_write_bytes(self, *a, **kw)
 
-    monkeypatch.setattr(Path, "write_text", boom)
+    monkeypatch.setattr(Path, "write_bytes", boom)
     with pytest.raises(OSError, match="disk full"):
         store.add_python(src, dependencies=["requests"])
 
@@ -630,3 +632,68 @@ def test_update_dependencies_untouched_axes_never_reach_the_refusal(tmp_path):
     src.write_bytes(b"# /// script\n# dependencies = [\"requests\"]\n# ///\nT = 'caf\xe9'\n")
     entry = store.add_python(src)
     assert store.update_dependencies(entry.slug, None) is not None
+
+
+# ---------------------------------------------------------------------------
+# CRLF stored copies: the block engine matches on "\n" only, so every path that
+# hands it a copy must fold first and restore the copy's own style on the way out
+# ---------------------------------------------------------------------------
+
+
+def test_deps_edit_on_a_crlf_copy_keeps_one_block_and_its_params(tmp_path):
+    """A CRLF copy handed to the block engine raw looked blockless, so the "update" PREPENDED a
+    second `# /// script` block and left the [tool.skit] params below it unreadable — every
+    managed parameter silently gone. Windows writes CRLF by default, so this was every copy
+    there."""
+    from skit import store
+    from skit.langs.python import metawriter
+    from skit.params import ParamDecl
+
+    text = metawriter.write_params(
+        'CITY = "Taipei"\nprint(CITY)\n',
+        [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
+    )
+    src = tmp_path / "crlf.py"
+    src.write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
+    entry = store.add_python(src, name="crlf")
+
+    store.update_dependencies(entry.slug, ["rich>=15"], requires_python=">=3.12")
+
+    raw = entry.script_path.read_bytes()
+    assert raw.count(b"/// script") == 1  # not two stacked blocks
+    assert b"\r\n" in raw  # the copy's own line endings survive the edit
+    assert b"\n" not in raw.replace(b"\r\n", b"")  # ...and nothing was left half-folded
+    body = raw.decode("utf-8").replace("\r\n", "\n")
+    assert [p.name for p in metawriter.read_params(body)] == ["CITY"]
+    deps, constraint = store.effective_uv_metadata(store.resolve(entry.slug))
+    assert deps == ["rich>=15"]
+    assert constraint == ">=3.12"
+
+
+def test_add_with_deps_does_not_double_block_a_crlf_script(tmp_path):
+    # The add lane's twin: `has_block` on unfolded CRLF text said False, so skit injected a
+    # block on top of the one already there.
+    from skit import store
+    from skit.langs.python import metawriter
+
+    src = tmp_path / "crlf_add.py"
+    src.write_bytes(b'# /// script\r\n# dependencies = ["requests"]\r\n# ///\r\nprint(1)\r\n')
+    entry = store.add_python(src, name="crlfadd", dependencies=["rich"])
+
+    raw = entry.script_path.read_bytes()
+    assert raw.count(b"/// script") == 1
+    assert metawriter.read_params(raw.decode("utf-8").replace("\r\n", "\n")) == []
+
+
+def test_add_keeps_an_lf_script_lf_when_injecting_a_block(tmp_path):
+    # The other direction: write_text would have re-expanded every "\n" to os.linesep and
+    # rewritten an LF script's whole file to CRLF on Windows for the sake of a comment block.
+    from skit import store
+
+    src = tmp_path / "lf.py"
+    src.write_bytes(b"import rich\nprint(1)\n")
+    entry = store.add_python(src, name="lfadd", dependencies=["rich"])
+
+    raw = entry.script_path.read_bytes()
+    assert b"/// script" in raw
+    assert b"\r\n" not in raw

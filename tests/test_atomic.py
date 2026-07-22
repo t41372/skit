@@ -450,11 +450,14 @@ def test_atomic_write_text_keep_mode_preserves_existing_mode(tmp_path: Path) -> 
     target = tmp_path / "script.sh"
     target.write_text("old\n", encoding="utf-8")
     target.chmod(0o755)
+    # What chmod actually produced — Windows has no POSIX mode bits and reports 0o666
+    # whatever it was handed. The contract under test is PRESERVATION, not a value.
+    expected = stat.S_IMODE(target.stat().st_mode)
 
     atomic.atomic_write_text_keep_mode(target, "new content\n")
 
     assert target.read_text(encoding="utf-8") == "new content\n"
-    assert stat.S_IMODE(target.stat().st_mode) == 0o755  # bits preserved exactly
+    assert stat.S_IMODE(target.stat().st_mode) == expected  # bits preserved exactly
 
 
 def test_atomic_write_text_keep_mode_applies_mode_before_the_rename(
@@ -467,6 +470,7 @@ def test_atomic_write_text_keep_mode_applies_mode_before_the_rename(
     target = tmp_path / "script.sh"
     target.write_text("old\n", encoding="utf-8")
     target.chmod(0o755)
+    expected = stat.S_IMODE(target.stat().st_mode)
     seen: list[int] = []
     real_replace = atomic._replace_with_retry
 
@@ -478,7 +482,7 @@ def test_atomic_write_text_keep_mode_applies_mode_before_the_rename(
 
     atomic.atomic_write_text_keep_mode(target, "new\n")
 
-    assert seen == [0o755]  # not 0o600: the bits rode along with the content
+    assert seen == [expected]  # not mkstemp's 0600: the bits rode along with the content
 
 
 def test_atomic_write_text_keep_mode_missing_target_skips_chmod(
@@ -526,6 +530,7 @@ def test_atomic_write_text_keep_mode_falls_back_to_chmod_on_windows(
     target = tmp_path / "script.sh"
     target.write_text("old\n", encoding="utf-8")
     target.chmod(0o755)
+    expected = stat.S_IMODE(target.stat().st_mode)
     chmod_calls: list[object] = []
     real_chmod = os.chmod
     monkeypatch.setattr(
@@ -536,7 +541,7 @@ def test_atomic_write_text_keep_mode_falls_back_to_chmod_on_windows(
     atomic.atomic_write_text_keep_mode(target, "new\n")
 
     assert target.read_text(encoding="utf-8") == "new\n"
-    assert chmod_calls == [(target, 0o755)]
+    assert chmod_calls == [(target, expected)]
 
 
 # --------------------------------------------------------------------------

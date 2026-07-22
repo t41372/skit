@@ -376,20 +376,23 @@ def test_add_python_writes_injected_script_as_utf8_with_lowercase_name(tmp_path,
     script = tmp_path / "nodoc3.py"
     script.write_text("print(1)\n", encoding="utf-8")
 
-    calls: list[tuple[Path, dict[str, object]]] = []
-    real_write_text = Path.write_text
+    calls: list[tuple[Path, bytes]] = []
+    real_write_bytes = Path.write_bytes
 
-    def spy(self, *a, **kw):
-        calls.append((self, kw))
-        return real_write_text(self, *a, **kw)
+    def spy(self, data):
+        calls.append((self, data))
+        return real_write_bytes(self, data)
 
-    monkeypatch.setattr(Path, "write_text", spy)
+    # write_bytes, not write_text: the injected write encodes UTF-8 itself after restoring
+    # the source's own line endings, because write_text would re-expand every "\n" to
+    # os.linesep and rewrite an LF script's whole file to CRLF on Windows.
+    monkeypatch.setattr(Path, "write_bytes", spy)
     store.add_python(script, dependencies=["httpx"])
 
-    matched = [(p, kw) for p, kw in calls if p.name.lower() == "script.py"]
-    assert matched, "expected a write_text call on script.py"
+    matched = [(p, data) for p, data in calls if p.name.lower() == "script.py"]
+    assert matched, "expected a write_bytes call on script.py"
     assert matched[0][0].name == "script.py"  # exact case, not SCRIPT.PY
-    assert matched[0][1].get("encoding") == "utf-8"
+    assert matched[0][1].decode("utf-8")  # valid UTF-8, encoded at the call site
 
 
 def test_add_exe_roundtrip_full_fields(tmp_path):
@@ -592,9 +595,10 @@ def test_update_dependencies_reference_mode_never_touches_disk(sample_script):
 def test_update_dependencies_reads_and_writes_script_py_as_utf8(sample_script, monkeypatch):
     """The copy-mode PEP 723 sync reads the stored copy as BYTES (strict utf-8 decode, so a
     non-utf-8 byte is preserved instead of replaced) and writes it back through
-    atomic_write_text_keep_mode (atomic + permission-preserving) — never a plain
-    read_text/write_text. Its mutation-killing purpose is retained: the stored copy still
-    round-trips as UTF-8 with the edit applied."""
+    atomic_write_bytes_keep_mode (atomic + permission-preserving, and byte-exact so the
+    copy's own line endings survive) — never a plain read_text/write_text. Its
+    mutation-killing purpose is retained: the stored copy still round-trips as UTF-8 with
+    the edit applied."""
     entry = store.add_python(sample_script)
 
     read_bytes_paths: list[Path] = []
@@ -604,23 +608,23 @@ def test_update_dependencies_reads_and_writes_script_py_as_utf8(sample_script, m
         read_bytes_paths.append(self)
         return real_read_bytes(self)
 
-    keep_mode_writes: list[tuple[Path, str]] = []
-    real_keep_mode = store.atomic_write_text_keep_mode
+    keep_mode_writes: list[tuple[Path, bytes]] = []
+    real_keep_mode = store.atomic_write_bytes_keep_mode
 
-    def spy_keep_mode(path, text):
-        keep_mode_writes.append((path, text))
-        return real_keep_mode(path, text)
+    def spy_keep_mode(path, data):
+        keep_mode_writes.append((path, data))
+        return real_keep_mode(path, data)
 
     monkeypatch.setattr(Path, "read_bytes", spy_read_bytes)
-    monkeypatch.setattr(store, "atomic_write_text_keep_mode", spy_keep_mode)
+    monkeypatch.setattr(store, "atomic_write_bytes_keep_mode", spy_keep_mode)
     store.update_dependencies(entry.slug, ["httpx"], ">=3.11")
 
     assert any(p.name == "script.py" for p in read_bytes_paths), (
         "the sync must read the copy as bytes (read_bytes), not read_text"
     )
     script_writes = [(p, t) for p, t in keep_mode_writes if p.name == "script.py"]
-    assert script_writes, "the copy must be written via atomic_write_text_keep_mode"
-    _, written_text = script_writes[0]
+    assert script_writes, "the copy must be written via atomic_write_bytes_keep_mode"
+    written_text = script_writes[0][1].decode("utf-8")
     assert "httpx" in written_text
     assert ">=3.11" in written_text
     # The stored copy round-trips as UTF-8 with the edit applied (no lossy re-encode).
