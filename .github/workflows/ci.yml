@@ -4,10 +4,14 @@ on:
   push:
     branches: [main]
     # Docs/assets never affect the gates below (tests, coverage, and mutation all scope to
-    # src/skit) — skip the whole workflow when a change touches nothing but them.
-    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
+    # src/skit) — skip the whole workflow when a change touches nothing but them. The one
+    # exception: the Agent Skill's SKILL.md IS gated (test_agent_skill.py enforces the
+    # source↔packaged byte sync and resolves every command it teaches), so a skill-only
+    # markdown edit must still run CI — hence `paths` with negations, which paths-ignore
+    # can't express (later patterns win, so `skills/**` re-includes what `!**.md` dropped).
+    paths: ['**', '!**.md', '!docs/**', '!LICENSE', 'skills/**', 'src/skit/skills/**']
   pull_request:
-    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
+    paths: ['**', '!**.md', '!docs/**', '!LICENSE', 'skills/**', 'src/skit/skills/**']
 
 # Grant no permissions by default; each job requests the minimum it needs
 # (zizmor: excessive-permissions).

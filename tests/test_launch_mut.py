@@ -95,6 +95,29 @@ def test_check_exe_exists_non_executable_message_is_the_english_source(tmp_path:
     assert str(exc.value) == f"{f} exists but isn't executable (chmod +x it?)."
 
 
+def test_check_exe_exists_refuses_a_directory_message_is_the_english_source(tmp_path: Path):
+    # Fix B: a directory (a macOS .app bundle, a typo'd path) must be refused with a clean
+    # NotExecutableError (exit 126) BEFORE the POSIX X_OK check — otherwise it reaches
+    # subprocess.run and dies with a raw PermissionError traceback. The is_file() gate is
+    # platform-independent, so this fires everywhere; the message names the offending path.
+    d = tmp_path / "Bundle.app"
+    d.mkdir()
+    with pytest.raises(NotExecutableError) as exc:
+        launch._check_exe_exists(str(d))
+    assert str(exc.value) == f"{d} isn't a runnable file (it's a directory or special file)."
+
+
+def test_check_exe_exists_regular_executable_file_passes(tmp_path: Path, monkeypatch):
+    # The other side of Fix B's reorder: a regular file with the execute bit set clears the new
+    # is_file() gate AND the X_OK check, so _check_exe_exists returns without raising. Pins the
+    # X_OK-true branch so a mutant flipping `not os.access(...)` is caught (it would raise here).
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr(launch.os, "access", lambda _path, _mode: True)
+    f = tmp_path / "tool"
+    f.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    launch._check_exe_exists(str(f))  # must not raise
+
+
 # ==========================================================================
 # resolve_interpreter — shell-family tuple + refusal messages
 # ==========================================================================

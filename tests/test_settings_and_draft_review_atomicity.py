@@ -429,3 +429,22 @@ async def test_add_panel_prefill_drops_a_pep508_illegal_import(tmp_path):
         prefill = screen.query_one("#rv-deps", Input).value
     assert "café" not in prefill
     assert "requests" in prefill
+
+
+async def test_add_panel_prefill_drops_a_sibling_local_module(tmp_path):
+    """The #rv-deps prefill is `suggest_dependencies(text, script_dir=self._path.parent)`, so a
+    bare `import helpers` that resolves to a sibling `helpers.py` next to the script never seeds
+    the field (suggesting it would install an unrelated PyPI `helpers` that the script's own
+    module shadows), while a real third-party import beside it still does."""
+    (tmp_path / "helpers.py").write_text("def go():\n    return 1\n", encoding="utf-8")
+    src = _py(
+        tmp_path, "import helpers\nimport requests\nprint(helpers, requests)\n", "uses_sib.py"
+    )
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = AddReviewScreen(src)
+        app.push_screen(screen)
+        await pilot.pause()
+        prefill = screen.query_one("#rv-deps", Input).value
+    assert "helpers" not in prefill
+    assert "requests" in prefill

@@ -1177,3 +1177,26 @@ async def test_form_shows_drift_banner_when_the_plan_drifted(tmp_path, quiet_run
         assert isinstance(screen, RunFormScreen)
         banner = str(screen.query_one("#drift-banner", Static).render())
         assert "GONE" in banner
+
+
+async def test_remove_reports_a_partial_deletion_in_the_status_instead_of_crashing(
+    tmp_path, monkeypatch
+):
+    """store.remove's leftover-dir StoreError, raised bare from the confirm screen's callback,
+    took the whole TUI down with a traceback. It belongs in the status line like every other
+    action's error — and the reload still has to run, because the registry removal already
+    happened before the failure."""
+    import shutil
+
+    store.add_python(_py(tmp_path, "print(1)\n"), name="stuck")
+    monkeypatch.setattr(shutil, "rmtree", lambda *_a, **_k: None)
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.action_remove()
+        await pilot.pause()
+        assert isinstance(app.screen, tui.ConfirmRemove)
+        await pilot.press("y")
+        await pilot.pause()
+        assert len(app.screen_stack) == 1  # still alive, back on the Library
+        assert "doctor --rebuild" in _static_text(app, "#status")

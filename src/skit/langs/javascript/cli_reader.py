@@ -308,6 +308,9 @@ def _apply_option_spec(field: ParamDecl, spec: Node, env: ConstEnv) -> None:
         _apply_default(field, props["default"], env)
     if "multiple" in props and props["multiple"].type == "true":
         field.multiple = True
+        # parseArgs collects one value per occurrence: the flag must be repeated
+        # (`--tag a --tag b`); a bare second value is an unexpected-positional error.
+        field.repeat = True
 
 
 def _apply_type(field: ParamDecl, value: Node) -> None:

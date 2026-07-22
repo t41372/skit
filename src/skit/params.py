@@ -81,6 +81,7 @@ class ParamDecl:
     default: str | int | float | bool | None = None
     required: bool = False
     multiple: bool = False  # flag delivery: shlex-split + glob-expand each piece
+    repeat: bool = False  # multiple flags: --tag a --tag b (click/parseArgs), not --tag a b (nargs)
     choices: tuple[str, ...] = ()
     prompt: str = ""  # form label; for input bindings, the literal call prompt
     help: str = ""  # field help text (shown under the form field)
@@ -181,6 +182,7 @@ class ParamDecl:
         tail: tuple[tuple[str, str | bool], ...] = (
             ("required", self.required),
             ("multiple", self.multiple),
+            ("repeat", self.repeat),
             ("prompt", self.prompt),
             ("help", self.help),
             ("secret", self.secret),
@@ -209,6 +211,7 @@ class ParamDecl:
             default=_scalar_or_none(d.get("default")),
             required=bool(d.get("required", False)),
             multiple=bool(d.get("multiple", False)),
+            repeat=bool(d.get("repeat", False)),
             choices=choices,
             prompt=str(d.get("prompt", "")),
             help=str(d.get("help", "")),
@@ -454,6 +457,11 @@ def edit_declared(  # noqa: PLR0912 — a fixed-order edit pipeline; the branche
             allowed_deliveries=allowed_deliveries,
             placeholders=placeholders,
         )
+        unrepresentable = _apply_bool_flag_action(decl)
+        if unrepresentable is not None:
+            warnings.append(f"{unrepresentable}:{name}")
+            by_name[name] = pre
+            continue
         normalized = normalize(decl)
         if validate_invariants(normalized) is not None:
             warnings.append(f"choice-without-choices:{name}")
@@ -462,6 +470,28 @@ def edit_declared(  # noqa: PLR0912 — a fixed-order edit pipeline; the branche
             by_name[name] = normalized
 
     return DeclEditResult(decls=[by_name[n] for n in order], warnings=warnings)
+
+
+def _apply_bool_flag_action(decl: ParamDecl) -> str | None:
+    """Bool-flag action hygiene, in place. Returns a warning code when the declaration
+    describes a toggle skit cannot deliver, and the caller then keeps the row unchanged.
+
+    A checkbox that fires no flag in EITHER state is a silent hole (`--type v=bool` used to
+    create exactly that), so a bool flag with no action records store_true explicitly — that
+    is what "pass the flag when on" means, and `show --json` should say it. But only for a
+    flag that is OFF by default: one that is already on can only be turned off by a
+    DIFFERENT spelling (--no-x, --quiet) which skit cannot invent, so store_true there ships
+    a checkbox whose unticked state delivers nothing and leaves the script in its default
+    state. The reader side refuses that same shape (see argspec._typer_finish_bool); the
+    hand-declared path must not be the way around it. A type moved off bool sheds the stale
+    action."""
+    if decl.type == "bool" and decl.delivery == "flag" and decl.flag and not decl.action:
+        if decl.default:
+            return "bool-flag-on-by-default"
+        decl.action = "store_true"
+    if decl.type != "bool":
+        decl.action = ""
+    return None
 
 
 def _apply_declared_tweaks(  # noqa: PLR0912 — one branch per editable field; a flat dispatch

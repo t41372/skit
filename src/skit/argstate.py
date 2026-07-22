@@ -19,10 +19,20 @@ from __future__ import annotations
 import contextlib
 import tomllib
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
-from .atomic import atomic_write_toml
+from .atomic import advisory_file_lock, atomic_write_toml
 from .paths import state_dir, values_dir
+
+
+def _values_lock_path(slug: str) -> Path:
+    # Outside values/ — forget() unlinks the values file itself, and a lock file must
+    # never be a thing another process is about to unlink (store._entry_lock_path's
+    # rule). Every read-modify-write below holds this lock: atomic_write_toml alone
+    # stops torn TOML but not last-writer-wins — two processes saving different
+    # presets from the same stale snapshot would silently drop one of them.
+    return state_dir() / ".locks" / f"{slug}.values.lock"
 
 
 def _load_doc(slug: str) -> dict[str, Any]:
@@ -78,15 +88,16 @@ def save_last(
     the previously-stored values — a value saved while a parameter was public must not
     survive on disk after it becomes secret.
     """
-    doc = _load_doc(slug)
-    banned = set(secret_names)
-    if values is not None:
-        doc["values"] = _strip_secrets(values, banned)
-    elif banned:
-        doc["values"] = _strip_secrets(doc.get("values", {}), banned)
-    if extra_args is not None:
-        doc["extra_args"] = extra_args
-    _save_doc(slug, doc)
+    with advisory_file_lock(_values_lock_path(slug)):
+        doc = _load_doc(slug)
+        banned = set(secret_names)
+        if values is not None:
+            doc["values"] = _strip_secrets(values, banned)
+        elif banned:
+            doc["values"] = _strip_secrets(doc.get("values", {}), banned)
+        if extra_args is not None:
+            doc["extra_args"] = extra_args
+        _save_doc(slug, doc)
 
 
 def save_preset(
@@ -97,22 +108,24 @@ def save_preset(
     secret_names: Iterable[str] = (),
 ) -> None:
     """Save one named preset. Secret keys are stripped (C3)."""
-    doc = _load_doc(slug)
-    presets = dict(doc.get("presets", {}))
-    presets[preset] = _strip_secrets(values, secret_names)
-    doc["presets"] = presets
-    _save_doc(slug, doc)
+    with advisory_file_lock(_values_lock_path(slug)):
+        doc = _load_doc(slug)
+        presets = dict(doc.get("presets", {}))
+        presets[preset] = _strip_secrets(values, secret_names)
+        doc["presets"] = presets
+        _save_doc(slug, doc)
 
 
 def delete_preset(slug: str, preset: str) -> bool:
-    doc = _load_doc(slug)
-    presets = dict(doc.get("presets", {}))
-    if preset not in presets:
-        return False
-    del presets[preset]
-    doc["presets"] = presets
-    _save_doc(slug, doc)
-    return True
+    with advisory_file_lock(_values_lock_path(slug)):
+        doc = _load_doc(slug)
+        presets = dict(doc.get("presets", {}))
+        if preset not in presets:
+            return False
+        del presets[preset]
+        doc["presets"] = presets
+        _save_doc(slug, doc)
+        return True
 
 
 def purge_secret(slug: str, names: Iterable[str]) -> set[str]:
@@ -130,39 +143,41 @@ def purge_secret(slug: str, names: Iterable[str]) -> set[str]:
     banned = set(names)
     if not banned:
         return set()
-    doc = _load_doc(slug)
-    removed: set[str] = set()
+    with advisory_file_lock(_values_lock_path(slug)):
+        doc = _load_doc(slug)
+        removed: set[str] = set()
 
-    values = dict(doc.get("values", {}))
-    # `removed` is still empty here, so |= and = are equivalent; pragma only the accumulation and
-    # keep the intersection on its own line so its &→| mutant stays mutation-tested.
-    value_hits = banned & values.keys()
-    removed |= value_hits  # pragma: no mutate
-    doc["values"] = _strip_secrets(values, banned)
+        values = dict(doc.get("values", {}))
+        # `removed` is still empty here, so |= and = are equivalent; pragma only the accumulation
+        # and keep the intersection on its own line so its &→| mutant stays mutation-tested.
+        value_hits = banned & values.keys()
+        removed |= value_hits  # pragma: no mutate
+        doc["values"] = _strip_secrets(values, banned)
 
-    presets = dict(doc.get("presets", {}))
-    new_presets: dict[str, dict[str, str]] = {}
-    for name, preset_values in presets.items():
-        removed |= banned & preset_values.keys()
-        cleaned = _strip_secrets(preset_values, banned)
-        # Drop a preset that held only the now-secret param, mirroring delete_preset — an empty
-        # [presets.<name>] table would otherwise linger and still validate for `run --preset`.
-        if cleaned:
-            new_presets[name] = cleaned
-    doc["presets"] = new_presets
+        presets = dict(doc.get("presets", {}))
+        new_presets: dict[str, dict[str, str]] = {}
+        for name, preset_values in presets.items():
+            removed |= banned & preset_values.keys()
+            cleaned = _strip_secrets(preset_values, banned)
+            # Drop a preset that held only the now-secret param, mirroring delete_preset — an
+            # empty [presets.<name>] table would otherwise linger and still validate for
+            # `run --preset`.
+            if cleaned:
+                new_presets[name] = cleaned
+        doc["presets"] = new_presets
 
-    # The exact last-run snapshot is another value-bearing surface. A parameter that
-    # becomes secret after it ran publicly must be scrubbed here too, or --from-last
-    # could copy the old plaintext back into a preset.
-    last_run = dict(doc.get("last_run", {}))
-    if "values" in last_run:
-        last_values = dict(last_run.get("values", {}))
-        removed |= banned & last_values.keys()
-        last_run["values"] = _strip_secrets(last_values, banned)
-        doc["last_run"] = last_run
+        # The exact last-run snapshot is another value-bearing surface. A parameter that
+        # becomes secret after it ran publicly must be scrubbed here too, or --from-last
+        # could copy the old plaintext back into a preset.
+        last_run = dict(doc.get("last_run", {}))
+        if "values" in last_run:
+            last_values = dict(last_run.get("values", {}))
+            removed |= banned & last_values.keys()
+            last_run["values"] = _strip_secrets(last_values, banned)
+            doc["last_run"] = last_run
 
-    _save_doc(slug, doc)
-    return removed
+        _save_doc(slug, doc)
+        return removed
 
 
 def load_last_runner() -> str:
@@ -199,15 +214,16 @@ def record_run(
     """Remember when the entry last ran and how it exited (Library sort order, detail pane,
     and the r-rerun context key all read this). Stored as a table — a bare `last_exit = 0`
     top-level key would be dropped by _save_doc's empty-section pruning (0 is falsy)."""
-    doc = _load_doc(slug)
-    last_run: dict[str, Any] = {"at": at, "exit": exit_code}
-    if values is not None:
-        # Unlike last-used [values], this is the exact accepted invocation: values
-        # equal to defaults and delivered empty strings stay so --from-last can pin
-        # what actually ran instead of reconstructing it from a later source version.
-        last_run["values"] = _strip_secrets(values, secret_names)
-    doc["last_run"] = last_run
-    _save_doc(slug, doc)
+    with advisory_file_lock(_values_lock_path(slug)):
+        doc = _load_doc(slug)
+        last_run: dict[str, Any] = {"at": at, "exit": exit_code}
+        if values is not None:
+            # Unlike last-used [values], this is the exact accepted invocation: values
+            # equal to defaults and delivered empty strings stay so --from-last can pin
+            # what actually ran instead of reconstructing it from a later source version.
+            last_run["values"] = _strip_secrets(values, secret_names)
+        doc["last_run"] = last_run
+        _save_doc(slug, doc)
 
 
 def forget(slug: str) -> None:

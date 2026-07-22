@@ -255,6 +255,71 @@ def test_choice_type_with_choices_in_the_same_call_is_valid():
     assert d.choices == ("r", "g")
 
 
+# --------------------------------------------------------------------------- bool-flag action hygiene
+# A `--type NAME=bool` on a flag-delivery decl used to leave action="" — a checkbox that fires no
+# flag in EITHER state. The tweak pipeline now records store_true (so `show --json` tells the truth)
+# and sheds a stale action when a type moves OFF bool. The second `type != "bool"` clean runs for
+# every tweaked decl, not just type tweaks.
+
+
+def test_type_tweak_to_bool_on_a_flag_sets_store_true():
+    res = edit_declared([ParamDecl(name="v", delivery="flag", flag="--v")], types={"v": "bool"})
+    d = _by_name(res.decls)["v"]
+    assert d.type == "bool"
+    assert d.action == "store_true"
+
+
+def test_type_tweak_to_bool_on_a_positional_keeps_empty_action():
+    # No flag → nothing to fire → no store_true default (the `decl.flag` half of the guard).
+    res = edit_declared([ParamDecl(name="b", delivery="flag", flag="")], types={"b": "bool"})
+    d = _by_name(res.decls)["b"]
+    assert d.type == "bool"
+    assert d.action == ""
+
+
+def test_type_tweak_to_bool_on_env_delivery_keeps_empty_action():
+    # store_true is a flag-assembly concept: an env-delivered bool must not gain one (the
+    # `delivery == "flag"` half of the guard).
+    res = edit_declared(
+        [ParamDecl(name="v", delivery="env", flag="--v")],
+        types={"v": "bool"},
+        allowed_deliveries=("flag", "env"),
+    )
+    d = _by_name(res.decls)["v"]
+    assert d.type == "bool"
+    assert d.action == ""
+
+
+def test_type_tweak_off_bool_sheds_stale_action():
+    res = edit_declared(
+        [ParamDecl(name="v", delivery="flag", flag="--v", type="bool", action="store_true")],
+        types={"v": "str"},
+    )
+    d = _by_name(res.decls)["v"]
+    assert d.type == "str"
+    assert d.action == ""
+
+
+def test_non_type_tweak_on_a_bool_leaves_its_action_alone():
+    # An unrelated tweak on a bool decl that already carries an action must NOT clobber it to
+    # store_true (the `not decl.action` half of the first guard).
+    res = edit_declared(
+        [ParamDecl(name="c", delivery="flag", flag="--c", type="bool", action="store_false")],
+        defaults={"c": "true"},
+    )
+    assert _by_name(res.decls)["c"].action == "store_false"
+
+
+def test_non_type_tweak_on_a_str_with_stale_action_clears_it():
+    # The `type != "bool"` clean runs for EVERY tweaked decl: a non-bool row carrying a stale
+    # action (a hand-edited meta.toml) is cleaned even by an unrelated tweak.
+    res = edit_declared(
+        [ParamDecl(name="a", delivery="flag", flag="--a", type="str", action="store_true")],
+        help_texts={"a": "x"},
+    )
+    assert _by_name(res.decls)["a"].action == ""
+
+
 # --------------------------------------------------------------------------- coerce_default
 
 
@@ -303,3 +368,30 @@ def test_as_param_type_accepts_the_five(value):
 @pytest.mark.parametrize("value", ["integer", "", "STR", "number"])
 def test_as_param_type_rejects_others(value):
     assert params.as_param_type(value) is None
+
+
+def test_bool_flag_that_is_on_by_default_is_refused_not_stamped():
+    """The other half of the hygiene rule. A flag that is already ON can only be turned off
+    by a DIFFERENT spelling (--no-x, --quiet) that skit cannot invent, so store_true there
+    ships a checkbox whose unticked state delivers nothing and leaves the script in its
+    default state. The reader side refuses the same shape (argspec._typer_finish_bool); the
+    hand-declared path must not be the way around it, so the row is kept unchanged and the
+    caller gets a warning code to explain."""
+    pre = ParamDecl(name="verbose", delivery="flag", flag="--verbose")
+    res = edit_declared([pre], types={"verbose": "bool"}, defaults={"verbose": "true"})
+    d = _by_name(res.decls)["verbose"]
+    assert res.warnings == ["bool-flag-on-by-default:verbose"]
+    assert d.action == ""  # nothing stamped
+    assert d.type == "str"  # and the whole row rolled back, like every refused edit
+
+
+def test_bool_flag_that_is_off_by_default_still_gets_store_true():
+    # The control: the refusal must key off the default, not fire for every bool flag.
+    res = edit_declared(
+        [ParamDecl(name="verbose", delivery="flag", flag="--verbose")],
+        types={"verbose": "bool"},
+        defaults={"verbose": "false"},
+    )
+    d = _by_name(res.decls)["verbose"]
+    assert res.warnings == []
+    assert (d.type, d.default, d.action) == ("bool", False, "store_true")

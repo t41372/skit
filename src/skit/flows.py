@@ -87,6 +87,7 @@ class FormField:
     env_source: str = ""
     degraded: bool = False  # free-text fallback; omit from delivery when empty
     multiple: bool = False  # shlex-split + glob-expand each piece
+    repeat: bool = False  # multiple: emit the flag before EACH piece (click/parseArgs style)
     flag: str = ""  # "--output"; "" = positional (flag source only)
     action: str = ""  # store_true | store_false (bool flags)
     env_target: str = ""  # env source only: the variable to SET ("" = the field's key)
@@ -141,6 +142,15 @@ class FormField:
         if d.delivery == "flag":
             # Reflected from the script's own CLI parser: assembled into real argv. A degraded
             # field is a free-text field whatever its declared type said.
+            action = d.action
+            if not action and not d.degraded and d.type == "bool" and d.flag and not d.default:
+                # A declared bool flag whose row names no action (hand-edited meta, or a
+                # pre-hygiene `--type v=bool` edit) can only mean "pass the flag when on";
+                # without this default the checkbox delivers nothing in EITHER state. Only
+                # for a flag that is OFF by default, though: params.edit_declared refuses to
+                # record the on-by-default shape, and inferring store_true for one that
+                # reached meta.toml by hand would make the unticked box lie.
+                action = "store_true"
             return cls(
                 key=d.name,
                 label=d.name,
@@ -154,8 +164,9 @@ class FormField:
                 secret=d.secret,
                 degraded=d.degraded,
                 multiple=d.multiple,
+                repeat=d.repeat,
                 flag=d.flag,
-                action=d.action,
+                action=action,
             )
         if d.delivery == "env":
             # Declared env parameter: the value becomes an environment variable on the
@@ -515,10 +526,16 @@ def validate_value(f: FormField, value: str) -> str | None:
 def _type_error(f: FormField, value: str) -> str | None:
     if f.kind in ("int", "float", "bool"):
         try:
+            # A multi-value field holds several values in one box (`--point 1 2`), so the
+            # type applies to each PIECE — coercing the whole string rejected the only legal
+            # input a typed nargs>1 option has ("1 2" is not a whole number, but 1 and 2 are).
+            # Split the same way assembly will; an unsplittable string stays one piece and
+            # fails as before.
             # f.key feeds only InjectValueError's param_name, which this function discards (it
             # rebuilds the message from f.label below); f.key -> None is thus equivalent. The
             # killable value/kind coercion stays covered by test_type_error_messages_exact.
-            _coerce(value, f.kind, f.key)  # pragma: no mutate
+            for piece in _shlex_pieces(value) if f.multiple else [value]:
+                _coerce(piece, f.kind, f.key)  # pragma: no mutate
         except InjectValueError:
             type_names = {
                 "int": gettext("a whole number"),
@@ -709,8 +726,11 @@ def _assemble_flags(plan: FormPlan, final: Mapping[str, str], cwd: Path) -> list
         if f.kind == "bool":
             fired = _coerce_bool_lenient(value)
             # A checkbox fires its flag only when it differs from the script default:
-            # store_true fires on checked, store_false fires on unchecked.
-            if (f.action == "store_true" and fired) or (f.action == "store_false" and not fired):
+            # store_true fires on checked, store_false fires on unchecked. A flagless
+            # bool (a hand-declared positional) has nothing to append — never argv "".
+            if f.flag and (
+                (f.action == "store_true" and fired) or (f.action == "store_false" and not fired)
+            ):
                 flags.append(f.flag)
             continue
         if not value and not f.delivers_empty:
@@ -718,19 +738,32 @@ def _assemble_flags(plan: FormPlan, final: Mapping[str, str], cwd: Path) -> list
         pieces = _split_multi(value, cwd) if f.multiple else [value]
         if f.flag == "":
             positionals.extend(pieces)
+        elif f.repeat:
+            # Click multiple=True / parseArgs multiple: the option must be REPEATED per
+            # value (`--tag a --tag b`); the one-flag-many-values shape below is argparse
+            # nargs grammar and reads as one flag plus positionals to these parsers.
+            for piece in pieces:
+                flags.append(f.flag)
+                flags.append(piece)
         else:
             flags.append(f.flag)
             flags.extend(pieces)
     return positionals + flags
 
 
+def _shlex_pieces(value: str) -> list[str]:
+    """The individual values a multi-value field's single box holds. An unbalanced quote is
+    not a split — it is one literal value, the reading assembly has always used."""
+    try:
+        return shlex.split(value)
+    except ValueError:
+        return [value]
+
+
 def _split_multi(value: str, cwd: Path) -> list[str]:
     """A multi-value field holds shell-ish text: split it like a shell would, then
     re-expand globs against the run's cwd (the TUI has no shell to do either)."""
-    try:
-        pieces = shlex.split(value)
-    except ValueError:
-        pieces = [value]
+    pieces = _shlex_pieces(value)
     out: list[str] = []
     for piece in pieces:
         out.extend(_expand_glob_piece(piece, cwd))

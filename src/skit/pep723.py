@@ -14,6 +14,7 @@ import ast
 import re
 import sys
 import tomllib
+from pathlib import Path
 from typing import Any
 
 
@@ -91,10 +92,34 @@ def has_block(text: str, leader: str = "#") -> bool:
     return _block_re(leader).search(text) is not None
 
 
-def suggest_dependencies(text: str) -> list[str]:
+def _is_local_module(script_dir: Path | None, module: str) -> bool:
+    """Whether `import module` resolves to a sibling of the script rather than a package:
+    when the script runs, its own directory leads sys.path, so a `helpers.py` next to it
+    wins over any same-named PyPI distribution. Suggesting such a name as a dependency
+    would install an unrelated package — and `--no-input` accepts suggestions as-is.
+
+    A directory counts only when it actually holds importable Python. PEP 420 is the
+    reason: a directory with no `__init__.py` is merely a namespace PORTION, so the finder
+    records it and KEEPS SCANNING sys.path, and an installed regular package still wins.
+    Treating every same-named directory as local dropped real dependencies on the strength
+    of a `docs/`, `build/` or `assets/` folder that happens to collide with an import name,
+    and the stored copy then died with ModuleNotFoundError on its first run."""
+    if script_dir is None:
+        return False
+    if (script_dir / f"{module}.py").is_file():
+        return True
+    # Any Python inside makes it importable: `__init__.py` for a regular package (which
+    # shadows outright), any other module for a namespace portion the script can still
+    # import from. A directory carrying no Python at all — `docs/`, `build/`, a data
+    # folder that happens to collide with an import name — is not an import.
+    return any((script_dir / module).glob("*.py"))
+
+
+def suggest_dependencies(text: str, *, script_dir: Path | None = None) -> list[str]:
     """Scan imports, return the top-level module names that look third-party (sorted, deduped).
 
-    Returns an empty list on syntax errors.
+    `script_dir` (the original script's directory, when it has one) excludes imports that
+    resolve to sibling local modules. Returns an empty list on syntax errors.
     """
     try:
         tree = ast.parse(text)
@@ -108,7 +133,11 @@ def suggest_dependencies(text: str) -> list[str]:
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
             found.add(node.module.split(".")[0])
     stdlib = sys.stdlib_module_names
-    third_party = (m for m in found if m not in stdlib and not m.startswith("_"))
+    third_party = (
+        m
+        for m in found
+        if m not in stdlib and not m.startswith("_") and not _is_local_module(script_dir, m)
+    )
     # Map known import names to their real PyPI distribution names, then dedupe again in case two
     # imports collapse to the same package (e.g. `Crypto` and its submodules -> pycryptodome).
     # A name PEP 508 refuses (`import café` — a legal Python identifier, an illegal

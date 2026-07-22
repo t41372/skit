@@ -34,7 +34,7 @@ from ...callmatch import match_calls
 from ...params import ParamDecl
 from ...rewrite import ByteSpan, apply_byte_spans, line_start_table, linecol_to_byte, write_injected
 from ..base import InjectError, InjectRequest, InjectResult, InjectValueError
-from .analyzer import _is_main_guard, _literal_prompt, _literal_value
+from .analyzer import _builtin_input_calls, _is_main_guard, _literal_prompt, _literal_value
 
 # The historical names, kept as aliases: the exception family moved to langs/base.py when shell
 # grew a second injector (flows maps them for EVERY language, so they can't live in python's
@@ -103,15 +103,9 @@ def _const_targets(body: list[ast.stmt], name: str) -> list[ast.expr]:
 
 
 def _input_calls(tree: ast.Module) -> list[ast.Call]:
-    calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "input"
-    ]
-    calls.sort(key=lambda c: (c.lineno, c.col_offset))
-    return calls
+    # The analyzer's shadowing rule, shared rather than mirrored (A2): add time and run
+    # time must agree on which call sites are the builtin, so they call one function.
+    return _builtin_input_calls(tree)
 
 
 def _build_preamble(queue: dict[int, tuple[str, bool]]) -> str:

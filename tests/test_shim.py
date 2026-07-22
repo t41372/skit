@@ -150,6 +150,45 @@ def test_missing_value_leaves_script_untouched():
     assert out == SCRIPT
 
 
+# ---------- shadowed `input`: the analyzer's guard, mirrored in the shim (A2) ----------
+
+
+def test_shadowed_input_is_not_rewritten_and_surfaces_as_drift():
+    # A script that binds `input` itself (a def) has NO managed call sites, so `_input_calls`
+    # returns [] and a stored input spec can't resolve — it must surface as drift (ShimError)
+    # rather than the shim splicing a stdin-fallback wrapper over the script's OWN function call.
+    src = "def input(prompt=''):\n    return 'HARDCODED'\ny = input('Q: ')\nprint(y)\n"
+    with pytest.raises(shim.ShimError):
+        shim.inject(
+            src, [spec("input-1", binding="input", order=0, prompt="Q: ")], {"input-1": "typed"}
+        )
+
+
+def test_shadowed_input_leaves_the_call_site_text_intact_when_only_a_const_is_delivered():
+    # A const in the same shadowed-input file still injects, and the `input('Q: ')` call site is
+    # left byte-for-byte intact (never rewritten to `_skit_i[K]`) because the shim treats the
+    # bound name as the script's own function.
+    src = (
+        "def input(prompt=''):\n    return 'x'\nCITY = 'Taipei'\ny = input('Q: ')\nprint(y, CITY)\n"
+    )
+    out = shim.inject(src, [spec("CITY")], {"CITY": "Tainan"})
+    assert "CITY = 'Tainan'" in out
+    assert "y = input('Q: ')" in out  # untouched
+    assert "_skit_i" not in out
+
+
+def test_unshadowed_input_is_rewritten_to_the_wrapper():
+    # Control: the SAME input spec against an unshadowed script DOES rewrite the call site, so the
+    # shadow guard is not firing unconditionally / returning [] always.
+    out = shim.inject(
+        "y = input('Q: ')\nprint(y)\n",
+        [spec("input-1", binding="input", order=0, prompt="Q: ")],
+        {"input-1": "typed"},
+    )
+    assert "y = _skit_i[0]('Q: ')" in out
+    assert "typed" in _run_injected(out)
+
+
 def test_drifted_target_raises():
     with pytest.raises(shim.ShimError):
         shim.inject(SCRIPT, [spec("GONE")], {"GONE": "x"})

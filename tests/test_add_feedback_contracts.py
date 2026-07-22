@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from skit import analysis, cli, i18n, store
+from skit import analysis, cli, i18n, pep723, store
 from skit.langs.registry import python_version_pin
 from skit.paths import drafts_dir, is_draft
 
@@ -255,3 +255,38 @@ def test_dynamic_optstring_with_argv_names_extra_arguments_once(tmp_path):
     result = runner.invoke(cli.app, ["add", str(sh), "-n", "dyn", "--no-input"])
     assert result.exit_code == 0, result.output
     assert _flat(result.output).count("extra-arguments field") == 1
+
+
+# ==========================================================================
+# 7. A sibling local module is not recorded as a PyPI dependency
+# ==========================================================================
+
+
+def test_add_records_only_third_party_deps_not_sibling_modules(tmp_path):
+    """End-to-end (CLI add --no-input): a script importing a SIBLING module (helpers.py next to
+    it) and a genuine third-party package records only the third-party one in the stored copy's
+    PEP 723 block — `_onboard_python` passes script_dir=p.parent, so `helpers` (which would
+    resolve to the local file at run time) is filtered out rather than installed as an unrelated
+    PyPI `helpers`."""
+    (tmp_path / "helpers.py").write_text("def go():\n    return 1\n", encoding="utf-8")
+    script = tmp_path / "job.py"
+    script.write_text(
+        "import helpers\nimport requests\nprint(helpers.go(), requests)\n", encoding="utf-8"
+    )
+    result = runner.invoke(cli.app, ["add", str(script), "-n", "job", "--no-input"])
+    assert result.exit_code == 0, result.output
+    stored = (store.resolve("job").dir / "script.py").read_text(encoding="utf-8")
+    meta = pep723.parse_block(stored)
+    assert meta is not None
+    assert meta["dependencies"] == ["requests"]  # helpers excluded as a local sibling
+
+
+def test_resolve_python_metadata_without_script_dir_does_not_filter():
+    """Called WITHOUT script_dir (the default None), `_resolve_python_metadata` has no directory
+    to resolve siblings against, so nothing is treated as local — pinning the default parameter
+    and the contract for any caller that omits it."""
+    deps, py = cli._resolve_python_metadata(
+        "import helpers\nimport requests\n", None, None, no_input=True
+    )
+    assert deps == ["helpers", "requests"]  # unfiltered: both survive
+    assert py == ""

@@ -8,6 +8,8 @@ a values=None call, through the real on-disk read-modify-write.
 
 from __future__ import annotations
 
+import contextlib
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -84,3 +86,87 @@ def test_last_run_snapshot_strips_and_retroactively_purges_secrets() -> None:
         secret_names={"TOKEN"},
     )
     assert argstate.load_state(slug)["last_run"]["values"] == {"CITY": "Osaka"}
+
+
+# ---------------------------------------------------------------------------
+# Cross-process/thread RMW lock around the value-file mutators
+# ---------------------------------------------------------------------------
+
+
+def test_values_lock_path_shape() -> None:
+    """The read-modify-write lock lives OUTSIDE values/ — forget() unlinks the values file
+    itself, and a lock file must never be a path another process is about to unlink. Its shape is
+    state_dir()/.locks/<slug>.values.lock."""
+    from skit.paths import state_dir
+
+    path = argstate._values_lock_path("my-slug")
+    assert path.name == "my-slug.values.lock"
+    assert path.parent.name == ".locks"
+    assert path.parent.parent == state_dir()
+
+
+# Each read-modify-write mutator wraps its body in advisory_file_lock(_values_lock_path(slug)).
+# purge_secret only reaches the lock with a NON-EMPTY names (it early-returns set() otherwise), so
+# it is invoked with one. delete_preset locks before it checks membership, so it locks even with no
+# matching preset. None of these need on-disk preconditions to acquire the lock exactly once.
+_RMW_MUTATORS: list[object] = [
+    pytest.param(lambda slug: argstate.save_last(slug, values={"A": "1"}), id="save_last"),
+    pytest.param(lambda slug: argstate.save_preset(slug, "p", {"A": "1"}), id="save_preset"),
+    pytest.param(lambda slug: argstate.delete_preset(slug, "p"), id="delete_preset"),
+    pytest.param(lambda slug: argstate.purge_secret(slug, ["A"]), id="purge_secret"),
+    pytest.param(
+        lambda slug: argstate.record_run(slug, 0, at="2026-01-01T00:00:00+00:00"),
+        id="record_run",
+    ),
+]
+
+
+@pytest.mark.parametrize("invoke", _RMW_MUTATORS)
+def test_rmw_mutator_locks_the_exact_per_slug_values_path(
+    invoke: Callable[[str], object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every value-file read-modify-write holds advisory_file_lock(_values_lock_path(slug)).
+
+    The lock's ARGUMENT must be this slug's own path. A mutant that passes _values_lock_path(None)
+    still hands advisory_file_lock a real, exclusive path (state_dir()/.locks/None.values.lock), so
+    a single-process run serializes fine and the wrong slug goes unnoticed — only pinning the exact
+    captured path catches it. The spy still yields, so the real RMW runs underneath and the mutator
+    keeps functioning.
+    """
+    slug = "lock-slug"
+    captured: list[Path] = []
+
+    @contextlib.contextmanager
+    def spy(lock_path: Path, **_kwargs: object) -> Iterator[None]:
+        captured.append(lock_path)
+        yield
+
+    monkeypatch.setattr(argstate, "advisory_file_lock", spy)
+
+    invoke(slug)
+
+    # Exactly this slug's lock path — not _values_lock_path(None) (…/None.values.lock), which is
+    # what the surviving `slug`→`None` mutant would have captured.
+    assert captured == [argstate._values_lock_path(slug)]
+    assert captured[0].name == "lock-slug.values.lock"
+
+
+def test_concurrent_save_preset_from_many_threads_loses_no_preset() -> None:
+    """Each save_preset wraps its load→modify→save in advisory_file_lock(_values_lock_path(slug)).
+    Without it, N threads saving distinct presets from the same stale snapshot would silently drop
+    all but the last writer (last-writer-wins on the single values file). The in-process thread
+    lock serializes them, so every one of the N presets survives."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    slug = "many-threads"
+    names = [f"p{i}" for i in range(8)]
+
+    def save(name: str) -> None:
+        argstate.save_preset(slug, name, {name: "v"})
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(save, names))
+
+    presets = argstate.load_state(slug)["presets"]
+    assert set(presets) == set(names)  # not one lost to a stale-snapshot overwrite
+    assert all(presets[n] == {n: "v"} for n in names)

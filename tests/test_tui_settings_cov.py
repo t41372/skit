@@ -173,6 +173,43 @@ async def test_detected_candidate_can_be_ticked_into_management(tmp_path):
     assert [s.name for s in written] == ["CITY"]  # the ticked candidate is now managed
 
 
+async def test_save_preserves_stored_copy_permission_bits(tmp_path):
+    """The managed-params stored-copy write goes through atomic_write_text_keep_mode: chmod the
+    stored copy 0o755 first, tick a detected constant into management, save — and the permission
+    bits survive AND the copy's bytes equal exactly what spec.params_io.write produces for the
+    collected specs (a plain write_text would have re-moded the copy to 0600)."""
+    import stat as stat_mod
+
+    entry = store.add_python(_py(tmp_path, 'CITY = "Taipei"\nprint(CITY)\n'), name="perm")
+    entry.script_path.chmod(0o755)
+    # What chmod actually produced: Windows has no POSIX mode bits and reports 0o666
+    # whatever it was handed. The contract under test is PRESERVATION, not a value.
+    expected_mode = stat_mod.S_IMODE(entry.script_path.stat().st_mode)
+    original_text = entry.script_path.read_text(encoding="utf-8")
+    spec = spec_for(entry.meta.kind)
+    assert spec is not None
+    assert spec.params_io is not None
+    assert spec.analyzer is not None
+
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.query_one("#st-new-0", Checkbox).value = True  # tick CITY into management
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+        assert not isinstance(app.screen, ScriptSettingsScreen)  # saved & dismissed
+
+    assert stat_mod.S_IMODE(entry.script_path.stat().st_mode) == expected_mode  # bits survived
+    # Content equals exactly what params_io.write emits for the ticked candidate.
+    report = spec.analyzer.reconcile(original_text, [])
+    expected_specs = [ParamDecl.from_candidate(c) for c in report.new]
+    expected = spec.params_io.write(original_text, expected_specs)
+    assert entry.script_path.read_text(encoding="utf-8") == expected
+
+
 async def test_all_inputs_managed_shows_no_input_promise(tmp_path):
     """When every managed parameter is an input(), the screen tells the user the script can now run
     under --no-input."""

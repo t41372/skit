@@ -939,7 +939,9 @@ class AddReviewScreen(Screen[str | None]):
             if not deps and not python:
                 yield Static(f"[dim]{gettext('(none declared)')}[/dim]")
         else:
-            suggested = ", ".join(pep723.suggest_dependencies(self._text))
+            suggested = ", ".join(
+                pep723.suggest_dependencies(self._text, script_dir=self._path.parent)
+            )
             yield Input(
                 value=self._overrides.get("deps", suggested),
                 placeholder=gettext("comma separated, e.g. requests>=2,<3, rich"),

@@ -146,3 +146,84 @@ def test_inject_block_with_existing_slash_block_is_unchanged():
     # "#" block instead would find none and inject a second, duplicate `//` block.
     text = "// /// script\n// dependencies = []\n// ///\nconst x = 1;\n"
     assert pep723.inject_block(text, ["requests"], leader="//") == text
+
+
+# --------------------------------------------------------------------------
+# _is_local_module: sibling shadows a same-named PyPI distribution
+# --------------------------------------------------------------------------
+
+
+def test_is_local_module_py_file_arm(tmp_path):
+    # The `.py` arm ALONE: only a sibling `helpers.py` exists (no `helpers/` dir). The first
+    # arm (`(dir / "helpers.py").is_file()`) must return True on its own — a mutant that swaps
+    # it to `.is_dir()` sees no directory and returns False. Asserted both directly and through
+    # the suggestion filter that consumes it.
+    (tmp_path / "helpers.py").write_text("X = 1\n", encoding="utf-8")
+    assert pep723._is_local_module(tmp_path, "helpers") is True
+    assert pep723.suggest_dependencies("import helpers\n", script_dir=tmp_path) == []
+
+
+def test_is_local_module_package_arm(tmp_path):
+    # The `__init__.py` arm ALONE: only a sibling `helpers/` package exists (no `helpers.py`).
+    # A regular package really does shadow a same-named distribution, so this arm must return
+    # True on its own. The `or` between the arms is likewise pinned: each test leaves exactly
+    # one arm true, so an `and` mutant fails both.
+    (tmp_path / "helpers").mkdir()
+    (tmp_path / "helpers" / "__init__.py").write_text("X = 1\n", encoding="utf-8")
+    assert pep723._is_local_module(tmp_path, "helpers") is True
+    assert pep723.suggest_dependencies("import helpers\n", script_dir=tmp_path) == []
+
+
+def test_is_local_module_namespace_portion_with_modules_arm(tmp_path):
+    # The glob arm ALONE: a sibling directory with no `__init__.py` but real modules inside is
+    # a namespace portion the script can import from, so it still counts as local.
+    (tmp_path / "helpers").mkdir()
+    (tmp_path / "helpers" / "thing.py").write_text("X = 1\n", encoding="utf-8")
+    assert pep723._is_local_module(tmp_path, "helpers") is True
+    assert pep723.suggest_dependencies("import helpers\n", script_dir=tmp_path) == []
+
+
+def test_data_directory_does_not_suppress_a_real_dependency(tmp_path):
+    # The regression this rule exists for: a directory carrying no Python is not an import.
+    # PEP 420 makes it a namespace PORTION at most, and the finder keeps scanning sys.path,
+    # so the installed `rich` still wins — dropping the dependency on its account produced a
+    # stored copy that died with ModuleNotFoundError on its first run.
+    (tmp_path / "rich").mkdir()
+    (tmp_path / "rich" / "notes.txt").write_text("data\n", encoding="utf-8")
+    assert pep723._is_local_module(tmp_path, "rich") is False
+    assert pep723.suggest_dependencies("import rich\n", script_dir=tmp_path) == ["rich"]
+
+
+def test_is_local_module_none_script_dir_is_false():
+    # script_dir=None short-circuits to False and never touches the filesystem (a `None / "x"`
+    # would raise). A mutant inverting the guard would fall through to the path arithmetic and
+    # crash; a `return False` -> `return True` mutant would wrongly call a script-less name local.
+    assert pep723._is_local_module(None, "helpers") is False
+
+
+def test_is_local_module_no_sibling_is_false(tmp_path):
+    # An otherwise-empty directory: neither `helpers.py` nor `helpers/` is present, so the name
+    # is NOT local and stays a real suggestion (the filter is precise, not blanket).
+    assert pep723._is_local_module(tmp_path, "helpers") is False
+    assert pep723.suggest_dependencies("import helpers\n", script_dir=tmp_path) == ["helpers"]
+
+
+# --------------------------------------------------------------------------
+# suggest_dependencies: underscore-led (private/C-extension) imports are dropped
+# --------------------------------------------------------------------------
+
+
+def test_suggest_dependencies_drops_underscore_led_import(monkeypatch):
+    # `not m.startswith("_")` excludes private/dunder import names (C-extension shims like
+    # `_mycext`) from suggestions. The surviving mutant `startswith("XX_XX")` never matches a real
+    # module, so the filter goes dead and the underscore name flows through.
+    #
+    # A leading-underscore name is ALSO rejected downstream by requirement_error (PEP 508 forbids
+    # it), which would mask the mutant — with that second filter live, both original and mutant
+    # return []. Neutralize requirement_error so THIS filter is the only thing deciding: now the
+    # original still drops `_mycext` (→ []) while the mutant would suggest it (→ ["_mycext"]).
+    # script_dir stays None, so the local-module filter is not involved.
+    monkeypatch.setattr(pep723, "requirement_error", lambda value: None)
+    result = pep723.suggest_dependencies("import _mycext\n")
+    assert "_mycext" not in result
+    assert result == []

@@ -20,13 +20,14 @@ from pathlib import Path
 from typing import Any
 
 from . import argstate, paths, pep723
-from .atomic import advisory_file_lock, atomic_write_toml
+from .atomic import advisory_file_lock, atomic_write_bytes_keep_mode, atomic_write_toml
 from .i18n import gettext
 from .langs import registry
 from .langs.registry import stored_name
 from .models import Entry, Kind, Mode, ScriptMeta, ScriptMetaError, now_iso, slugify
 from .params import ParamDecl, declared_from_meta
 from .paths import registry_path, scripts_dir
+from .rewrite import detect_newline, restore_newline
 
 # Corruption/error types every meta.toml reader must treat the same way: valid-but-unreadable file,
 # invalid TOML, or valid TOML missing a required key are all "this entry is corrupt" — never a bare
@@ -235,10 +236,18 @@ def add_python(
     # lossy `errors="replace"` decode back to disk would corrupt any non-UTF-8 byte in the copy
     # (store.py:130). A source that doesn't decode cleanly falls back to recording the deps in meta
     # instead (same as reference mode) and leaves the copy byte-exact.
+    # Fold to LF for the block engine (its fences match on "\n" only) and remember the
+    # source's own style for the write-back: a CRLF script whose text was handed to the
+    # engine raw looked blockless, so `has_block` said False and skit injected a SECOND
+    # `# /// script` block on top of the existing one.
+    source_raw = source.read_bytes()
+    source_newline = detect_newline(source_raw)
     try:
-        strict_text: str | None = source.read_bytes().decode("utf-8")
+        strict_text: str | None = source_raw.decode("utf-8")
     except UnicodeDecodeError:
         strict_text = None
+    else:
+        strict_text = strict_text.replace("\r\n", "\n").replace("\r", "\n")
     # reference mode: never touch the original; record in meta, and launcher passes it via
     # --with/--python.
     after_copy: Callable[[Path], None] | None = None
@@ -251,7 +260,12 @@ def add_python(
         injected_text = pep723.inject_block(strict_text, dependencies or [], requires_python)
 
         def _write_injected(entry_dir: Path) -> None:
-            (entry_dir / stored_name("python")).write_text(injected_text, encoding="utf-8")
+            # write_bytes with the style restored, not write_text: the latter re-expands
+            # every "\n" to os.linesep, which on Windows rewrote an LF script's whole file
+            # to CRLF for the sake of a comment block.
+            (entry_dir / stored_name("python")).write_bytes(
+                restore_newline(injected_text, source_newline).encode("utf-8")
+            )
 
         after_copy = _write_injected
     if mode == "reference":
@@ -832,6 +846,19 @@ def _remove_locked_entry(entry: Entry) -> str:
         entries.pop(entry.slug, None)  # pragma: no mutate — TOCTOU defense, kept deliberately
         _save_registry(entries)
     shutil.rmtree(entry.dir, ignore_errors=True)
+    if entry.dir.exists():
+        # A held-open file (Windows) can make the best-effort rmtree a silent no-op —
+        # and a later `doctor --rebuild` would then re-index the surviving meta.toml,
+        # resurrecting the "removed" entry. Say so instead of reporting success; the
+        # values file is deliberately kept so a doctor-restored entry keeps its state.
+        raise StoreError(
+            gettext(
+                "%(name)s was removed from the library, but its files couldn't be fully "
+                "deleted: %(path)s — close any program using them, then delete the folder "
+                "(or run `skit doctor --rebuild` to restore the entry and retry)."
+            )
+            % {"name": entry.meta.name, "path": str(entry.dir)}
+        )
     argstate.forget(entry.slug)  # drop the last-used values too
     return entry.meta.name
 
@@ -961,6 +988,8 @@ def _update_dependencies_entry(
             js_deps.clear(entry.dir)
         except NotExecutableError as exc:
             raise StoreError(str(exc)) from exc
+    if meta.kind == "python" and meta.mode == "copy":
+        _refuse_unsyncable_block(entry, dependencies, requires_python)
     if dependencies is not None:
         meta.dependencies = dependencies or None
     if requires_python is not None:
@@ -971,6 +1000,43 @@ def _update_dependencies_entry(
     if meta.kind == "python" and meta.mode == "copy":  # pragma: no mutate — and/or equivalent
         _sync_python_block(entry.script_path, meta, dependencies, requires_python)
     return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
+
+
+def _refuse_unsyncable_block(
+    entry: Entry,
+    dependencies: list[str] | None,
+    requires_python: str | None,
+) -> None:
+    """Refuse an edit whose result skit could not actually deliver — BEFORE meta is written.
+
+    A stored copy that isn't valid UTF-8 can't have its PEP 723 block rewritten (re-encoding
+    an errors="replace" decode would swap every non-UTF-8 byte for U+FFFD, so add_python's
+    rule is to leave the copy byte-exact). If that copy also HAS a block, the block is what
+    uv reads, and meta cannot override it: an empty meta value means "untouched, defer to the
+    block" everywhere, so there is no way to record a clear or an unpin at all. Letting the
+    write through printed "Dependencies of x updated: —" while `skit show` and `uv run` both
+    kept the old list — the exact false statement _sync_python_block's docstring forbids.
+    Validate-then-write instead: nothing is committed, and the edit stays retryable."""
+    if dependencies is None and requires_python is None:
+        return  # nothing explicitly edited; the sync path has nothing to deliver either
+    try:
+        raw = entry.script_path.read_bytes()
+    except OSError:
+        return  # a missing/unreadable copy is the sync path's own no-op case
+    try:
+        raw.decode("utf-8")  # pragma: no mutate — utf-8/UTF-8 alias, and utf-8 is the default
+    except UnicodeDecodeError:
+        # The block fence and keys are ASCII, so a lossy decode is sound for DETECTION even
+        # though it is not sound for rewriting.
+        if pep723.has_block(raw.decode("utf-8", errors="replace")):  # pragma: no mutate — alias
+            raise StoreUsageError(
+                gettext(
+                    "%(name)s's stored copy isn't valid UTF-8, so skit can't rewrite the "
+                    "script's own dependency block — and that block is what uv reads. "
+                    "Edit it in the script itself: skit edit %(name)s"
+                )
+                % {"name": entry.meta.name}
+            ) from None
 
 
 def _sync_python_block(
@@ -988,7 +1054,27 @@ def _sync_python_block(
     surfaces at once, and a deps clear that left the block's list would be its twin."""
     if not script.exists():
         return
-    text = script.read_text(encoding="utf-8", errors="replace")
+    try:
+        # pragma: the surviving mutant is decode("UTF-8"), a genuine equivalent (codec
+        # names are case-insensitive — codecs.lookup normalizes them); mirrors atomic.py's
+        # utf-8/UTF-8 alias pragma. The co-generated decode("XXutf-8XX") is killable
+        # (LookupError) and dies by coverage on the identical unpragma'd add_python:239.
+        raw = script.read_bytes()
+        text = raw.decode("utf-8")  # pragma: no mutate — utf-8/UTF-8 alias
+    except (OSError, UnicodeDecodeError):
+        # add_python's encoding rule, applied to the sync path too: re-encoding a lossy
+        # errors="replace" decode would swap every non-UTF-8 byte in the copy for U+FFFD.
+        # Leave the copy byte-exact; the edit is already in meta, which the launcher
+        # passes via --with/--python exactly like a reference-mode entry. The case where
+        # meta CAN'T stand in — a copy that carries its own block — never reaches here:
+        # _refuse_unsyncable_block turned it away before meta was written.
+        return
+    # Fold for the LF-based block engine, restore the copy's own style on the way out.
+    # Handing it CRLF text made parse_block find nothing, so the "update" prepended a
+    # SECOND `# /// script` block and left the [tool.skit] params below it unreadable —
+    # every managed parameter silently gone, on every CRLF copy.
+    newline = detect_newline(raw)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     block = pep723.parse_block(text) or {}
     constraint = meta.requires_python
     if not constraint and requires_python is None:
@@ -998,9 +1084,13 @@ def _sync_python_block(
         block_deps = list(meta.dependencies or []) or [
             str(d) for d in (block.get("dependencies") or [])
         ]
-    script.write_text(
-        pep723.set_dependencies(text, block_deps, requires_python=constraint),
-        encoding="utf-8",
+    # Atomic, mode-preserving: a plain write can tear the stored copy on a crash, and a
+    # tmp+replace without the chmod would drop the bits copy2 preserved at add.
+    atomic_write_bytes_keep_mode(
+        script,
+        restore_newline(
+            pep723.set_dependencies(text, block_deps, requires_python=constraint), newline
+        ).encode("utf-8"),  # pragma: no mutate — codec alias
     )
 
 
@@ -1044,17 +1134,23 @@ def rename(name_or_slug: str, new_name: str) -> Entry:
     if not new_name:
         raise StoreError(gettext("A name is required."))
     with _locked_entry(name_or_slug) as entry:
-        try:
-            other = resolve(new_name)
-        except NotFoundError:
-            other = None
-        if other is not None and other.slug != entry.slug:
-            raise StoreError(gettext("The name %(name)s is already taken.") % {"name": new_name})
         meta = entry.meta
-        meta.name = new_name
-        _write_meta(entry.dir, meta)
         with _registry_lock():
+            # The uniqueness decision sits INSIDE the registry lock: two entries renaming
+            # to the same name concurrently each hold only their own entry lock, so a
+            # pre-lock resolve() check lets both pass and both write — two entries, one
+            # display name. The predicate restates resolve()'s matching (another slug
+            # key, or another row's display name) against the locked snapshot.
             entries = _load_registry()
+            taken = (new_name in entries and new_name != entry.slug) or any(
+                s != entry.slug and e.get("name") == new_name for s, e in entries.items()
+            )
+            if taken:
+                raise StoreError(
+                    gettext("The name %(name)s is already taken.") % {"name": new_name}
+                )
+            meta.name = new_name
+            _write_meta(entry.dir, meta)
             row = entries.get(entry.slug)
             if row is not None:
                 row["name"] = new_name

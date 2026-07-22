@@ -74,6 +74,56 @@ def test_suggest_dependencies_unmapped_name_unchanged():
     assert pep723.suggest_dependencies("import requests\n") == ["requests"]
 
 
+# ---------- suggest_dependencies: sibling local modules are not PyPI deps ----------
+
+
+def test_suggest_dependencies_excludes_sibling_py_module(tmp_path):
+    # A bare `import helpers` next to a sibling `helpers.py` resolves to that local file at run
+    # time (the script's own directory leads sys.path), so it must NOT be suggested as a PyPI
+    # dependency; the genuine third-party import beside it still is.
+    (tmp_path / "helpers.py").write_text("X = 1\n", encoding="utf-8")
+    src = "import helpers\nimport requests\n"
+    assert pep723.suggest_dependencies(src, script_dir=tmp_path) == ["requests"]
+
+
+def test_suggest_dependencies_excludes_sibling_package_dir(tmp_path):
+    # A sibling `helpers/` PACKAGE shadows any same-named distribution too. It needs real
+    # Python in it to do that: an empty directory is only a PEP 420 namespace portion, which
+    # never wins over an installed regular package (see test_pep723_mut.py).
+    (tmp_path / "helpers").mkdir()
+    (tmp_path / "helpers" / "__init__.py").write_text("x = 1\n", encoding="utf-8")
+    src = "import helpers\nimport requests\n"
+    assert pep723.suggest_dependencies(src, script_dir=tmp_path) == ["requests"]
+
+
+def test_suggest_dependencies_keeps_name_without_a_sibling(tmp_path):
+    # No sibling of that name in the directory -> still a real suggestion (the exclusion is
+    # scoped to names that actually resolve locally).
+    assert pep723.suggest_dependencies("import helpers\n", script_dir=tmp_path) == ["helpers"]
+
+
+def test_suggest_dependencies_default_script_dir_none_does_not_filter():
+    # The old behavior, pinned: with no script_dir (the default), nothing is treated as local,
+    # so a name that WOULD be a sibling elsewhere is suggested here.
+    assert pep723.suggest_dependencies("import helpers\n") == ["helpers"]
+
+
+def test_suggest_dependencies_from_import_sibling_excluded(tmp_path):
+    # `from helpers import x` (level 0) resolves to the sibling `helpers.py` exactly as a plain
+    # `import helpers` does, so it is excluded the same way.
+    (tmp_path / "helpers.py").write_text("x = 1\n", encoding="utf-8")
+    src = "from helpers import x\nimport requests\n"
+    assert pep723.suggest_dependencies(src, script_dir=tmp_path) == ["requests"]
+
+
+def test_suggest_dependencies_submodule_of_sibling_dir_excluded(tmp_path):
+    # `import helpers.sub` splits to the top-level `helpers`, which is the sibling package dir.
+    (tmp_path / "helpers").mkdir()
+    (tmp_path / "helpers" / "sub.py").write_text("x = 1\n", encoding="utf-8")
+    src = "import helpers.sub\nimport requests\n"
+    assert pep723.suggest_dependencies(src, script_dir=tmp_path) == ["requests"]
+
+
 def test_inject_block_roundtrip():
     src = "#!/usr/bin/env python3\nimport requests\n"
     out = pep723.inject_block(src, ["requests"], ">=3.10")

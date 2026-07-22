@@ -98,6 +98,9 @@ def test_plan_argparse_script(tmp_path):
     assert plan.source == "argparse"
     assert [f.key for f in plan.fields] == ["inputs", "output", "gap", "mode", "fast", "bg"]
     assert plan.fields[0].multiple is True
+    # argparse nargs="+" is one-flag-many-values grammar, never a repeated option: the reader
+    # leaves repeat False, so assembly emits `--flag a b`, not `--flag a --flag b`.
+    assert plan.fields[0].repeat is False
     assert plan.fields[5].degraded is True
     assert plan.text == ARGPARSE_SCRIPT  # the delivery layer reuses exactly this script text
 
@@ -590,6 +593,95 @@ def test_assemble_store_false_fires_flag_when_unchecked(tmp_path):
     assert unchecked.args == ["--color"]
 
 
+# --------------------------------------------------------------------------
+# assembly: repeated-option (click/parseArgs) delivery
+# --------------------------------------------------------------------------
+
+
+def _flag_plan(*fields: flows.FormField) -> flows.FormPlan:
+    return flows.FormPlan(source="argparse", fields=list(fields))
+
+
+def _repeat_field(*, flag: str = "--tag", repeat: bool = True) -> flows.FormField:
+    return flows.FormField(
+        key="tag", label="tag", source="flag", flag=flag, multiple=True, repeat=repeat
+    )
+
+
+def test_assemble_repeat_emits_flag_before_each_piece(tmp_path):
+    # click multiple / parseArgs multiple: each value travels behind its OWN flag occurrence.
+    result = flows._assemble_flags(_flag_plan(_repeat_field()), {"tag": "a b"}, tmp_path)
+    assert result == ["--tag", "a", "--tag", "b"]
+
+
+def test_assemble_non_repeat_multi_keeps_one_flag_then_values(tmp_path):
+    # The contrast case: multiple but NOT repeat is argparse nargs grammar — one flag, then every
+    # value as a bare positional-looking token.
+    result = flows._assemble_flags(
+        _flag_plan(_repeat_field(repeat=False)), {"tag": "a b"}, tmp_path
+    )
+    assert result == ["--tag", "a", "b"]
+
+
+def test_assemble_repeat_single_piece(tmp_path):
+    # One value still goes through the per-piece path: flag then the lone value, no trailing flag.
+    result = flows._assemble_flags(_flag_plan(_repeat_field()), {"tag": "a"}, tmp_path)
+    assert result == ["--tag", "a"]
+
+
+def test_assemble_repeat_shares_shlex_and_glob_split_with_non_repeat(tmp_path):
+    # repeat runs the SAME _split_multi (shlex + glob) as non-repeat: `'a b'` stays one shlex
+    # piece, `*.png` re-expands sorted against cwd — only the emission shape differs.
+    (tmp_path / "1.png").touch()
+    (tmp_path / "2.png").touch()
+    value = {"tag": "'a b' *.png"}
+    rep = flows._assemble_flags(_flag_plan(_repeat_field(flag="--src")), value, tmp_path)
+    assert rep == ["--src", "a b", "--src", "1.png", "--src", "2.png"]
+    plain = flows._assemble_flags(
+        _flag_plan(_repeat_field(flag="--src", repeat=False)), value, tmp_path
+    )
+    assert plain == ["--src", "a b", "1.png", "2.png"]  # identical pieces, one flag
+
+
+# --------------------------------------------------------------------------
+# assembly: bool guard — a flag must be present to fire, never an empty argv element
+# --------------------------------------------------------------------------
+
+
+def _bool_field(*, flag: str = "--v", action: str = "") -> flows.FormField:
+    return flows.FormField(key="v", label="v", kind="bool", source="flag", flag=flag, action=action)
+
+
+def test_assemble_bool_store_true_fires_only_when_checked(tmp_path):
+    plan = _flag_plan(_bool_field(action="store_true"))
+    assert flows._assemble_flags(plan, {"v": "true"}, tmp_path) == ["--v"]
+    assert flows._assemble_flags(plan, {"v": "false"}, tmp_path) == []
+
+
+def test_assemble_bool_flagless_never_appends_empty_string(tmp_path):
+    # The new `f.flag and` guard: a flagless (hand-declared positional) bool that WOULD fire must
+    # append nothing — never argv "". Both action senses are exercised in the state that fires.
+    st = flows._assemble_flags(
+        _flag_plan(_bool_field(flag="", action="store_true")), {"v": "true"}, tmp_path
+    )
+    assert st == []
+    assert "" not in st
+    sf = flows._assemble_flags(
+        _flag_plan(_bool_field(flag="", action="store_false")), {"v": "false"}, tmp_path
+    )
+    assert sf == []
+    assert "" not in sf
+
+
+def test_assemble_bool_empty_action_fires_in_neither_state(tmp_path):
+    # A raw FormField with an empty action fires in NO state (the guard requires a concrete
+    # store_true/store_false). from_decl is what defaults the action; a directly-built field
+    # does not, so this pins that assembly alone never invents a firing rule.
+    plan = _flag_plan(_bool_field(action=""))
+    assert flows._assemble_flags(plan, {"v": "true"}, tmp_path) == []
+    assert flows._assemble_flags(plan, {"v": "false"}, tmp_path) == []
+
+
 def test_field_from_arg_maps_every_field(tmp_path):
     a = ParamDecl(
         name="mode",
@@ -622,6 +714,52 @@ def test_field_from_arg_degraded_renders_as_text(tmp_path):
     assert f.kind == "str"  # a degraded field is a free-text field, whatever its type said
     assert f.default == ""  # a None flag default renders as the empty string, not a sentinel
     assert f.has_default is False
+
+
+def test_field_from_arg_copies_repeat(tmp_path):
+    a = ParamDecl(
+        name="tag", binding="none", delivery="flag", flag="--tag", multiple=True, repeat=True
+    )
+    f = flows.FormField.from_decl(a)
+    assert f.multiple is True
+    assert f.repeat is True  # the flag branch carries repeat straight onto the form field
+
+
+def test_field_from_arg_bool_flag_empty_action_defaults_store_true(tmp_path):
+    # A declared bool flag whose row names no action (hand-edited meta, or a pre-hygiene
+    # `--type v=bool` edit) can only mean "pass the flag when on": from_decl records store_true so
+    # the checkbox delivers SOMETHING instead of nothing in either state.
+    a = ParamDecl(name="v", binding="none", delivery="flag", flag="--v", type="bool", action="")
+    f = flows.FormField.from_decl(a)
+    assert f.kind == "bool"
+    assert f.action == "store_true"
+
+
+def test_field_from_arg_bool_flag_degraded_stays_text_and_keeps_empty_action(tmp_path):
+    # The store_true default is gated on `not degraded`: a degraded row is a free-text field,
+    # so it never acquires a phantom checkbox action.
+    a = ParamDecl(
+        name="v", binding="none", delivery="flag", flag="--v", type="bool", action="", degraded=True
+    )
+    f = flows.FormField.from_decl(a)
+    assert f.kind == "str"
+    assert f.action == ""
+
+
+def test_field_from_arg_bool_positional_no_flag_keeps_empty_action(tmp_path):
+    # A flagless (positional) bool has nothing to fire, so the store_true default is NOT applied.
+    a = ParamDecl(name="b", binding="none", delivery="flag", flag="", type="bool", action="")
+    f = flows.FormField.from_decl(a)
+    assert f.action == ""
+
+
+def test_field_from_arg_bool_flag_explicit_action_preserved(tmp_path):
+    # An explicit action is never overwritten by the store_true default.
+    a = ParamDecl(
+        name="c", binding="none", delivery="flag", flag="--c", type="bool", action="store_false"
+    )
+    f = flows.FormField.from_decl(a)
+    assert f.action == "store_false"
 
 
 def test_render_default_spells_booleans_lowercase():
@@ -1373,3 +1511,24 @@ def test_execute_inject_falls_back_to_entry_dir(tmp_path, monkeypatch):
     path = landed["path"]
     assert isinstance(path, Path)
     assert path.parent == entry.dir  # the fallback dir was entry.dir, not None
+
+
+def test_typed_multi_value_field_validates_each_piece_not_the_whole_box():
+    """A multi-value field holds several values in one box (`--point 1 2`), so an int type
+    applies to each PIECE. Coercing the whole string rejected the only legal input a typed
+    `nargs=2` / `nargs='+'` option has — "1 2" is not a whole number, but 1 and 2 are."""
+    field = flows.FormField(key="point", label="point", source="flag", kind="int", multiple=True)
+    assert flows._type_error(field, "1 2") is None
+    assert flows._type_error(field, "1 -2 30") is None
+    # A bad piece still fails, and the message quotes what the user actually typed.
+    error = flows._type_error(field, "1 x")
+    assert error is not None
+    assert "whole number" in error
+    assert "'1 x'" in error
+
+
+def test_single_value_field_still_validates_the_whole_string():
+    # The contrast: without multiple, a space-separated pair is exactly the wrong input.
+    field = flows.FormField(key="n", label="n", source="flag", kind="int")
+    assert flows._type_error(field, "1 2") is not None
+    assert flows._type_error(field, "12") is None

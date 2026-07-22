@@ -416,14 +416,16 @@ def test_add_python_injected_write_failure_rolls_back_entire_entry(tmp_path, mon
     src = tmp_path / "nodoc.py"
     src.write_text("print(1)\n", encoding="utf-8")
 
-    real_write_text = Path.write_text
+    # write_bytes, not write_text: the injected write restores the source's own line
+    # endings itself rather than letting write_text re-expand every "\n" to os.linesep.
+    real_write_bytes = Path.write_bytes
 
     def boom(self, *a, **kw):
         if self.name == "script.py":
             raise OSError("disk full (simulated)")
-        return real_write_text(self, *a, **kw)
+        return real_write_bytes(self, *a, **kw)
 
-    monkeypatch.setattr(Path, "write_text", boom)
+    monkeypatch.setattr(Path, "write_bytes", boom)
     with pytest.raises(OSError, match="disk full"):
         store.add_python(src, dependencies=["requests"])
 
@@ -502,3 +504,196 @@ def test_concurrent_add_python_both_succeed_with_distinct_slugs(tmp_path):
     entries = store.list_entries()
     assert len(entries) == 8
     assert len({e.slug for e in entries}) == 8
+
+
+# ---------------------------------------------------------------------------
+# _sync_python_block: the PEP 723 sync path's own strict-decode gate
+# (the copy-mode twin of add_python's non-UTF-8 fidelity rule)
+# ---------------------------------------------------------------------------
+
+
+def test_update_dependencies_copy_non_utf8_leaves_stored_copy_byte_identical(tmp_path):
+    """`skit deps` on a copy-mode python entry syncs the copy's PEP 723 block — but only after a
+    STRICT re-decode (read_bytes().decode('utf-8')). A copy that isn't valid UTF-8 makes that
+    decode raise, and the sync RETURNS silently, leaving the copy byte-exact. The previous
+    errors='replace' round-trip would have rewritten every non-UTF-8 byte as U+FFFD (real
+    corruption). The dependency edit still lands in meta (delivered via --with at run time)."""
+    from skit import store
+
+    src = tmp_path / "latin1.py"
+    src.write_bytes(b"# -*- coding: latin-1 -*-\nTEXT = 'caf\xe9'\n")
+    entry = store.add_python(src)  # non-UTF-8 copy, no injection at add
+    before = entry.script_path.read_bytes()
+
+    updated = store.update_dependencies(entry.slug, ["requests"])
+
+    assert entry.script_path.read_bytes() == before  # byte-identical: no U+FFFD corruption
+    assert updated.meta.dependencies == ["requests"]  # recorded in meta instead
+
+
+def test_update_dependencies_copy_utf8_syncs_block_and_stays_utf8(tmp_path):
+    """The happy path is unchanged: a strict-UTF-8 copy still gets its PEP 723 block updated
+    (written atomically), and the copy round-trips as UTF-8 with the edit applied."""
+    from skit import store
+
+    src = tmp_path / "plain.py"
+    src.write_text("print(1)\n", encoding="utf-8")
+    entry = store.add_python(src)
+
+    updated = store.update_dependencies(entry.slug, ["httpx"], ">=3.11")
+
+    text = updated.script_path.read_text(encoding="utf-8")
+    assert "httpx" in text
+    assert ">=3.11" in text
+
+
+def test_update_dependencies_copy_sync_swallows_read_oserror(tmp_path, monkeypatch):
+    """The sync's guard covers OSError too, not just decode failures: if the stored copy can't be
+    read back at all, the edit still lands in meta and the sync degrades silently rather than
+    crashing the whole update."""
+    from skit import store
+
+    src = tmp_path / "plain.py"
+    src.write_text("print(1)\n", encoding="utf-8")
+    entry = store.add_python(src)
+
+    real_read_bytes = Path.read_bytes
+
+    def boom(self):
+        if self.name == "script.py":
+            raise OSError("simulated: unreadable stored copy")
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", boom)
+    updated = store.update_dependencies(entry.slug, ["httpx"])  # must not crash
+
+    assert updated.meta.dependencies == ["httpx"]
+
+
+def test_update_dependencies_refuses_when_a_non_utf8_copy_carries_its_own_block(tmp_path):
+    """The gap the silent return left: when the un-rewritable copy ALSO has a PEP 723 block,
+    that block is what uv reads and meta cannot override it — an empty meta value means
+    "untouched, defer to the block" everywhere, so a clear or an unpin has nowhere to be
+    recorded. Letting the write through reported success while `skit show` and `uv run` both
+    kept the old list. Validate-then-write: refuse before meta is touched, so nothing changes
+    and the edit stays retryable."""
+    import pytest
+
+    from skit import store
+
+    src = tmp_path / "latin1_block.py"
+    src.write_bytes(
+        b"# /// script\n"
+        b'# requires-python = ">=3.13"\n'
+        b'# dependencies = ["requests"]\n'
+        b"# ///\n"
+        b"TEXT = 'caf\xe9'\n"
+    )
+    entry = store.add_python(src)
+    before = entry.script_path.read_bytes()
+
+    with pytest.raises(store.StoreUsageError) as exc:
+        store.update_dependencies(entry.slug, [])
+    # The whole rendered message: it is a 3-segment implicit concat, and mutmut wraps or
+    # uppercases each segment independently — an "XX"-wrap of any one leaves every interior
+    # substring intact (the idiom test_store_mut.py documents).
+    assert str(exc.value) == (
+        "latin1_block's stored copy isn't valid UTF-8, so skit can't rewrite the script's "
+        "own dependency block — and that block is what uv reads. Edit it in the script "
+        "itself: skit edit latin1_block"
+    )
+
+    assert entry.script_path.read_bytes() == before
+    # Nothing was committed: the read view still agrees with what uv actually installs.
+    deps, constraint = store.effective_uv_metadata(store.resolve(entry.slug))
+    assert deps == ["requests"]
+    assert constraint == ">=3.13"
+
+
+def test_update_dependencies_python_unpin_is_refused_for_the_same_copy(tmp_path):
+    # The constraint axis hits the identical wall; both spellings must be turned away.
+    import pytest
+
+    from skit import store
+
+    src = tmp_path / "latin1_block2.py"
+    src.write_bytes(b"# /// script\n# requires-python = \">=3.13\"\n# ///\nT = 'caf\xe9'\n")
+    entry = store.add_python(src)
+
+    with pytest.raises(store.StoreUsageError):
+        store.update_dependencies(entry.slug, None, requires_python="-")
+
+
+def test_update_dependencies_untouched_axes_never_reach_the_refusal(tmp_path):
+    # A call that edits neither axis has nothing to deliver, so it must not refuse either.
+    from skit import store
+
+    src = tmp_path / "latin1_block3.py"
+    src.write_bytes(b"# /// script\n# dependencies = [\"requests\"]\n# ///\nT = 'caf\xe9'\n")
+    entry = store.add_python(src)
+    assert store.update_dependencies(entry.slug, None) is not None
+
+
+# ---------------------------------------------------------------------------
+# CRLF stored copies: the block engine matches on "\n" only, so every path that
+# hands it a copy must fold first and restore the copy's own style on the way out
+# ---------------------------------------------------------------------------
+
+
+def test_deps_edit_on_a_crlf_copy_keeps_one_block_and_its_params(tmp_path):
+    """A CRLF copy handed to the block engine raw looked blockless, so the "update" PREPENDED a
+    second `# /// script` block and left the [tool.skit] params below it unreadable — every
+    managed parameter silently gone. Windows writes CRLF by default, so this was every copy
+    there."""
+    from skit import store
+    from skit.langs.python import metawriter
+    from skit.params import ParamDecl
+
+    text = metawriter.write_params(
+        'CITY = "Taipei"\nprint(CITY)\n',
+        [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
+    )
+    src = tmp_path / "crlf.py"
+    src.write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
+    entry = store.add_python(src, name="crlf")
+
+    store.update_dependencies(entry.slug, ["rich>=15"], requires_python=">=3.12")
+
+    raw = entry.script_path.read_bytes()
+    assert raw.count(b"/// script") == 1  # not two stacked blocks
+    assert b"\r\n" in raw  # the copy's own line endings survive the edit
+    assert b"\n" not in raw.replace(b"\r\n", b"")  # ...and nothing was left half-folded
+    body = raw.decode("utf-8").replace("\r\n", "\n")
+    assert [p.name for p in metawriter.read_params(body)] == ["CITY"]
+    deps, constraint = store.effective_uv_metadata(store.resolve(entry.slug))
+    assert deps == ["rich>=15"]
+    assert constraint == ">=3.12"
+
+
+def test_add_with_deps_does_not_double_block_a_crlf_script(tmp_path):
+    # The add lane's twin: `has_block` on unfolded CRLF text said False, so skit injected a
+    # block on top of the one already there.
+    from skit import store
+    from skit.langs.python import metawriter
+
+    src = tmp_path / "crlf_add.py"
+    src.write_bytes(b'# /// script\r\n# dependencies = ["requests"]\r\n# ///\r\nprint(1)\r\n')
+    entry = store.add_python(src, name="crlfadd", dependencies=["rich"])
+
+    raw = entry.script_path.read_bytes()
+    assert raw.count(b"/// script") == 1
+    assert metawriter.read_params(raw.decode("utf-8").replace("\r\n", "\n")) == []
+
+
+def test_add_keeps_an_lf_script_lf_when_injecting_a_block(tmp_path):
+    # The other direction: write_text would have re-expanded every "\n" to os.linesep and
+    # rewritten an LF script's whole file to CRLF on Windows for the sake of a comment block.
+    from skit import store
+
+    src = tmp_path / "lf.py"
+    src.write_bytes(b"import rich\nprint(1)\n")
+    entry = store.add_python(src, name="lfadd", dependencies=["rich"])
+
+    raw = entry.script_path.read_bytes()
+    assert b"/// script" in raw
+    assert b"\r\n" not in raw

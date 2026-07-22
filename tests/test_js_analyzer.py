@@ -305,6 +305,10 @@ def test_parseargs_all_option_features():
     assert fields["name"].flag == "--name"
     assert (fields["verbose"].type, fields["verbose"].action) == ("bool", "store_true")
     assert fields["tag"].multiple is True
+    # parseArgs `multiple: true` collects one value per occurrence, so assembly must repeat the
+    # flag (`--tag a --tag b`); repeat records that. A non-multiple option keeps repeat False.
+    assert fields["tag"].repeat is True
+    assert fields["verbose"].repeat is False
     assert fields["dry-run"].default is False
 
 

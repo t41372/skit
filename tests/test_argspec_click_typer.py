@@ -54,6 +54,9 @@ def test_click_argument_variadic_is_multiple_not_required():
     assert inputs.flag == ""
     assert inputs.multiple is True
     assert inputs.required is False  # nargs=-1 lifts click's argument-required default
+    # nargs=-1 is variadic-positional grammar (`--flag a b`), NOT the repeated-option shape:
+    # a positional has no flag to repeat, so repeat stays False even though multiple is True.
+    assert inputs.repeat is False
 
 
 def test_click_is_flag_choice_int_and_required():
@@ -259,6 +262,9 @@ def test_click_multiple_option_flag():
     )
     assert spec is not None
     assert spec.fields[0].multiple is True
+    # click's multiple=True consumes ONE value per occurrence, so assembly must REPEAT the flag
+    # (`--tag a --tag b`); `--tag a b` is an exit-2 usage error to click. repeat records that.
+    assert spec.fields[0].repeat is True
 
 
 def test_click_short_flag_only_and_help():
