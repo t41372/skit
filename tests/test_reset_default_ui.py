@@ -29,6 +29,7 @@ import json
 from pathlib import Path
 from typing import override
 
+from rich.cells import cell_len
 from rich.console import Console
 from textual.app import App, ComposeResult
 from textual.widgets import Checkbox, Input, RadioButton, Static
@@ -168,8 +169,11 @@ async def test_reset_chip_mouse_click_restores_the_default():
         row = _row(screen, "greeting")
         label = row.query_one(".field-label", Static)
         rendered = str(label.render())
-        idx = rendered.find("↺")
-        assert idx >= 0  # the ↺ chip is present in the label to click on
+        pos = rendered.find("↺")
+        assert pos >= 0  # the ↺ chip is present in the label to click on
+        # Click offsets are terminal CELLS, not string indices: the 📁 browse link
+        # ahead of this chip holds a double-width emoji, so measure the prefix.
+        idx = cell_len(rendered[:pos])
         # Clicking the chip resets THIS field to its default: were its @click wired to any
         # other key, greeting's Input would stay "world" and this would fail — so the click
         # pins the field-keyed routing end to end, mouse-only.

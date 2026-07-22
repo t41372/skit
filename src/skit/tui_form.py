@@ -45,6 +45,8 @@ from . import argstate, argv_text, flows, tokens, tui_footer, tui_pathpick, tui_
 from .i18n import gettext
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from .models import Entry
 
 # The submit result: raw field values, extra passthrough args, selected runner name,
@@ -170,6 +172,21 @@ class FieldRow(Vertical):
         """Whether the ↺ default chip applies (see _resettable)."""
         return _resettable(self.field)
 
+    @property
+    def browsable(self) -> bool:
+        """Whether the 📁 browse link applies — the picker's own affordance, on the
+        field itself. Every insertable text field carries it, not just `path`-typed
+        ones: outside Python the analyzers never infer path-ness (path.md §2), so a
+        type-gated link would leave every shell/JS/exe entry with no visible door.
+        Numeric fields are excluded — a picked path there is a value `validate` is
+        guaranteed to reject, and an entry point to a certain error is not an
+        affordance. Needs a completion context to browse from."""
+        return (
+            self.insertable
+            and self.field.kind not in ("int", "float")
+            and self._path_ctx is not None
+        )
+
     @override
     def compose(self) -> ComposeResult:
         f = self.field
@@ -180,6 +197,13 @@ class FieldRow(Vertical):
             pieces.append(f"[dim]{_type_label(f.kind)}[/dim]")
         if f.secret:
             pieces.append(f"[dim]🔒 {gettext('never saved to disk')}[/dim]")
+        if self.browsable:
+            # The picker's own door, first and named for what it does. "insert" is a
+            # verb about tokens; nothing in it says "pick a file", which is exactly how
+            # the picker shipped invisible in 0.3.0 (path.md §5, entry points).
+            pieces.append(
+                f"[$accent @click=screen.browse_path('{f.key}')]📁 {gettext('browse')}[/]"
+            )
         if self.insertable:
             pieces.append(
                 f"[$accent @click=screen.insert_token('{f.key}')]▾ {gettext('insert')}[/]"
@@ -814,43 +838,72 @@ class RunFormScreen(Screen[FormResult]):
     def action_cancel(self) -> None:
         self.dismiss(None)
 
-    def action_insert_token(self, key: str = "") -> None:
-        """Ctrl+T (or the ▾ link on a field): insert a run-time value token at the
-        cursor of the focused text field. Secrets are excluded — their values skip
-        token expansion by design."""
+    def _insert_target(self, key: str) -> FieldRow | None:
+        """The row an insert/browse action acts on: the named one (a field's own ▾/📁
+        link) or the focused Input's (Ctrl+T and the footer chip, which never move
+        focus). Secrets and non-text fields are excluded — their values skip token
+        expansion by design."""
         if key:
             row = next(
                 (candidate for candidate in self.query(FieldRow) if candidate.field.key == key),
                 None,
             )
             if row is None:
-                return
+                return None
         else:
             focused = self.focused
             if not isinstance(focused, Input):
-                return
+                return None
             row = next((a for a in focused.ancestors if isinstance(a, FieldRow)), None)
             if row is None:
-                return
-        if not row.insertable:
-            return
-        target = row.query_one(Input)
-        target.focus()
-        insert_mode = row.insert_mode
+                return None
+        return row if row.insertable else None
+
+    def _place_result(
+        self, target: Input, mode: tui_pathpick.InsertMode
+    ) -> Callable[[str | tui_pathpick.PickedPath | None], None]:
+        """The dismissal callback shared by the ▾ token menu and the 📁 picker — both
+        land a value in the same Input, and the two doors must agree on how."""
 
         def _insert(result: str | tui_pathpick.PickedPath | None) -> None:
             if isinstance(result, tui_pathpick.PickedPath):
                 # A picked path IS the value: replace a single-value field, append a
                 # dialect-quoted piece to a parsed one — at-cursor insertion would
                 # corrupt a prefilled value (path.md §5).
-                tui_pathpick.insert_picked(target, result, mode=insert_mode)
+                tui_pathpick.insert_picked(target, result, mode=mode)
                 target.focus()
             elif result:
                 target.insert_text_at_cursor(result)
                 target.focus()
 
+        return _insert
+
+    def action_insert_token(self, key: str = "") -> None:
+        """Ctrl+T (or the ▾ link on a field): insert a run-time value token at the
+        cursor of the focused text field."""
+        row = self._insert_target(key)
+        if row is None:
+            return
+        target = row.query_one(Input)
+        target.focus()
         self.app.push_screen(
-            TokenMenuModal(browse=self._path_ctx, path_first=row.field.kind == "path"), _insert
+            TokenMenuModal(browse=self._path_ctx, path_first=row.field.kind == "path"),
+            self._place_result(target, row.insert_mode),
+        )
+
+    def action_browse_path(self, key: str = "") -> None:
+        """The 📁 link on a field: open the file picker straight away, skipping the
+        token menu. No new chord — the keyboard reaches the same picker through Ctrl+T's
+        "File or folder…" row (first and highlighted on a path field), so this is a
+        second door onto one action, not a second meaning for a key."""
+        row = self._insert_target(key)
+        if row is None or not row.browsable:
+            return
+        target = row.query_one(Input)
+        target.focus()
+        self.app.push_screen(
+            tui_pathpick.FilePickerModal(self._path_ctx),
+            self._place_result(target, row.insert_mode),
         )
 
     def action_reset_field(self, key: str = "") -> None:
