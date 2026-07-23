@@ -1,0 +1,42 @@
+---
+title: Environment variables
+description: Every variable skit reads, and the ones it sets for child processes.
+---
+
+## Variables skit reads
+
+| Variable | Effect |
+| --- | --- |
+| `SKIT_DATA_DIR` | overrides the data root — the library, stored copies, drafts, and skit's private uv |
+| `SKIT_STATE_DIR` | overrides the state root — last-used values, presets, run history |
+| `SKIT_CONFIG_DIR` | overrides the config root — `config.toml` |
+| `SKIT_LANG` | UI language for this process (`SKIT_LANG=zh-TW skit`) |
+| `VISUAL` / `EDITOR` | editor, when the `editor` config key is unset |
+| `TERM` | `TERM=dumb` switches interactive flows to plain line prompts (screen readers, Emacs shells) |
+| `TEXTUAL_DISABLE_KITTY_KEY` | skit sets `1` by default to keep CJK IMEs working (see [Troubleshooting](/en/docs/troubleshooting#cjk--ime-input-broken-in-the-tui)); set `0` yourself to re-enable the kitty keyboard protocol |
+| `PATHEXT` (Windows) | decides which extensions count as runnable when classifying executables |
+
+Precedence details:
+
+- **Language**: `SKIT_LANG` → the `lang` config key → `LC_ALL` → `LC_MESSAGES` →
+  `LANG` → system locale. A value of `C` is ignored.
+- **Editor**: the `editor` config key → `VISUAL` → `EDITOR` → platform default
+  (`notepad` on Windows, `vi` elsewhere). Blank values count as unset.
+
+`skit doctor` prints the resolved data/state/config paths.
+
+## Variables skit sets for the processes it launches
+
+Mirror settings apply as an environment overlay on skit's **own child
+processes** — never written to your shell, `PATH`, or global uv config — and
+each defers to a value you already set yourself:
+
+| Variable | Fed by | Defers to |
+| --- | --- | --- |
+| `UV_DEFAULT_INDEX` | `mirror.pypi` | your own `UV_DEFAULT_INDEX` or `UV_INDEX_URL` |
+| `UV_PYTHON_INSTALL_MIRROR` | `mirror.github` | — |
+| `NPM_CONFIG_REGISTRY` | `mirror.npm` | your own `NPM_CONFIG_REGISTRY` / `npm_config_registry` (note: npm ranks this variable above `~/.npmrc`) |
+
+The uppercase `NPM_CONFIG_REGISTRY` form reaches npm, bun, and deno alike.
+Parameter values delivered via environment are overlaid last, so an explicitly
+set parameter beats both the ambient environment and skit's mirror variables.

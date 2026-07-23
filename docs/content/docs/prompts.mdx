@@ -1,0 +1,93 @@
+---
+title: Prompts
+description: Parameterized prompt entries and the runners that execute them.
+---
+
+A prompt entry is a reusable, parameterized piece of text for an AI coding agent.
+Fill its placeholders in the launch menu, then fire it at the agent of your
+choice:
+
+```bash
+skit add review.prompt.md            # managed placeholders become input fields
+skit run review                      # pick the agent, fill in the inputs, go
+skit run review --runner codex --set target=src/app.py --no-input
+```
+
+## Adding one
+
+A `.prompt.md` (or `.prompt`) file is recognized as a prompt outright. A plain
+`.md` works too — interactively skit asks whether to add it as a prompt
+(defaulting to yes); non-interactively it never guesses, so pass `--prompt`. You
+can also draft one from scratch with `skit add --prompt`.
+
+## Placeholders
+
+During interactive add review you choose which detected `{{placeholders}}` become
+input fields. Up to 30 are selected by default; when detection exceeds 30, none
+are selected by default — so code samples pasted into a prompt are not mistaken
+for variables. Managed fields get the full preset / last-values / `--set`
+experience.
+
+There are no escape sequences to learn: anything that isn't a placeholder you
+manage — unmanaged `{{holes}}` included — travels to the agent byte-for-byte as
+written. A per-prompt switch (`--no-interpolate`, or one checkbox in Entry
+settings) turns insertion off entirely, for prompts that were never written with
+it in mind.
+
+## Runners
+
+A **runner** is the agent CLI that receives the rendered prompt. Five come
+preconfigured — seeded on first use, then yours to edit:
+
+| Runner | Command |
+| --- | --- |
+| `claude` | `claude -- {{prompt}}` |
+| `codex` | `codex -- {{prompt}}` |
+| `opencode` | `opencode --prompt={{prompt}}` |
+| `amp` | `amp -x {{prompt}}` |
+| `antigravity` | `agy --prompt-interactive {{prompt}}` |
+
+The `--` / `=` binding forms are deliberate: a prompt that happens to begin with
+`--help` or `--model` must not be parsed as a flag. All of these open the
+agent's interactive session with the prompt as the opening message — except
+amp, which has no such mode and uses its official `amp -x` one-shot to execute
+the prompt and return.
+
+Register anything else with:
+
+```bash
+skit runner add mycli -- mycli run {{prompt}}
+```
+
+Template rules: each word is one argv token (no shell anywhere); exactly one
+token must be `{{prompt}}`; it can't be the first token (that's the binary); no
+other `{{holes}}` are allowed; single-brace text is literal.
+
+How the runner is chosen:
+
+- **Interactive runs**: picked in the launch menu, prefilled with your last
+  pick. A pin you leave untouched doesn't count as a pick.
+- **Non-interactive runs**: `--runner` beats the entry's pin; with neither, the
+  run fails with exit 126. There is deliberately no global default and no
+  ranking — the runner changes the *result*. The last pick only ever prefills
+  pickers; it never resolves a `--no-input` run.
+- Per-run agent flags ride after `--`: `skit run review -- --model opus`. The
+  tail is remembered like any entry's — see
+  [Parameters & values](/en/docs/parameters#what-gets-remembered).
+
+## Delivery
+
+Running a prompt renders the text and invokes the selected runner's configured
+argv command with it. The rendered prompt travels as a single process argument —
+no shell in between, so nothing in the text is ever shell-interpreted.
+
+Oversized prompts are refused before spawn with a clean error (exit 125) naming
+the measured size, instead of a raw OS failure: the assembled command line caps
+at 60,000 UTF-16 units on Windows and 100,000 bytes on POSIX — CJK text counts
+in bytes, not characters. A NUL byte in the rendered text is refused too.
+
+## Not a secrets channel
+
+Whatever the rendered text contains ends up in the receiving agent's own session
+logs. Don't put secrets in prompts — no delivery mechanism here pretends
+otherwise.

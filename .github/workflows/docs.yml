@@ -1,0 +1,68 @@
+name: Docs site
+
+# Build the Fumadocs documentation site and deploy it to GitHub Pages.
+# The base path (`/skit`) is configured in docs/next.config.mjs.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # docs/ is the site; assets/ and design/ live beside it but aren't published.
+      - docs/**
+      - '!docs/assets/**'
+      - '!docs/design/**'
+      - '!docs/mutation-ledger.md'
+      # The landing page renders README.md (synced in at build), so a README-only
+      # change must still redeploy.
+      - README.md
+      - .github/workflows/docs.yml
+  workflow_dispatch:
+
+# Least privilege by default; each job opts into exactly what it needs.
+permissions: {}
+
+# Allow one concurrent deployment; let in-progress production deploys finish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+        working-directory: docs
+      - name: Build static site
+        run: npm run build
+        working-directory: docs
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: docs/out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write # deploy to GitHub Pages
+      id-token: write # verify the deployment originates from this workflow
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

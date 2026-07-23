@@ -1,0 +1,39 @@
+{
+  "name": "skit-docs",
+  "version": "0.0.7",
+  "private": true,
+  "scripts": {
+    "predev": "node scripts/sync-readme.mjs",
+    "dev": "next dev",
+    "prebuild": "node scripts/sync-readme.mjs",
+    "build": "next build",
+    "postbuild": "node scripts/check-links.mjs",
+    "check-links": "node scripts/check-links.mjs",
+    "start": "serve out",
+    "types:check": "fumadocs-mdx && next typegen && tsc --noEmit",
+    "postinstall": "fumadocs-mdx"
+  },
+  "dependencies": {
+    "@orama/orama": "^3.1.18",
+    "cnfast": "^0.0.8",
+    "fumadocs-core": "16.12.0",
+    "fumadocs-mdx": "15.2.0",
+    "fumadocs-ui": "npm:@fumadocs/base-ui@16.12.0",
+    "lucide-react": "^1.25.0",
+    "next": "16.2.11",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "rehype-raw": "^7.0.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/mdx": "^2.0.14",
+    "@types/node": "^26.1.1",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "postcss": "^8.5.21",
+    "serve": "^14.2.6",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^6.0.3"
+  }
+}

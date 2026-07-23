@@ -1,0 +1,76 @@
+---
+title: Troubleshooting & FAQ
+description: Known quirks, their escape hatches, and short answers to common questions.
+---
+
+## CJK / IME input broken in the TUI
+
+**Symptom**: composing Chinese/Japanese/Korean text misbehaves — candidate
+digits arrive as literal numbers, Enter confirms nothing, Caps Lock types "A"
+(seen on iTerm2 3.6.x on macOS).
+
+**Cause**: the terminal's kitty-keyboard-protocol handling conflicts with the
+OS input method.
+
+**What skit does**: disables the protocol by default
+(`TEXTUAL_DISABLE_KITTY_KEY=1`). Your own value wins — set
+`TEXTUAL_DISABLE_KITTY_KEY=0` to re-enable it (iTerm2 fixed the underlying
+issue in 3.7.0beta6).
+
+## Shell scripts don't run on Windows
+
+Shell entries need bash: skit looks on `PATH`, then at the `shell.bash_path`
+config key, then refuses with exit 126 and a hint — it never silently reroutes
+through WSL. PowerShell entries need `pwsh` (or `powershell.exe`).
+
+## Downloads fail in mainland China
+
+Point each ecosystem at a domestic mirror — see
+[Configuration](/en/docs/configuration) for the `mirror.*` keys. For the very
+first `uv tool install skit-cli` (before skit exists to help), export
+`UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple` for that one
+command.
+
+## FAQ
+
+**Does skit modify my scripts?**
+Only the `[tool.skit]` comment block, and only in skit's stored copy (reference
+entries are never written at all). Edits preserve the file's own line endings —
+CRLF included — and non-UTF-8 bytes. The single exception is the opt-in
+`skit params --normalize NAME` (shell only), which rewrites one `NAME=value`
+into `${NAME:-value}` in the stored copy, with your consent.
+
+**I edited a constant in my script — why did the run use the old value?**
+It won't, since 0.4.0: defaults are read from the script's current source on
+every run, not from a manage-time cache. If definitions look stale,
+`skit params NAME --resync` refreshes them.
+
+**How do I pass an empty string?**
+Clear the prefilled field in the launch menu, or `--set NAME=`. Empty is
+delivered as a real `''` where the type supports it — see
+[Empty means empty](/en/docs/parameters#empty-means-empty).
+
+**I set `-- --model opus` once — does it stick?**
+Yes: every entry remembers its last `--` tail and replays it on argument-less
+runs (with a stderr note). `--forget-args` clears it; `--raw` runs clean.
+
+**Is deno sandboxing my script?**
+No. When deno is the resolved runner, skit passes `--allow-all` so the same
+script behaves identically under deno, bun, and node. skit is a launcher, not a
+sandbox.
+
+**Are secrets safe in a prompt?**
+No — a prompt is not a secrets channel. Marking a placeholder secret keeps skit
+from persisting it and gets you a warning before a real run, but the rendered
+text still lands in the receiving agent's own session logs.
+
+**Where is my data, and what does uninstalling remove?**
+`skit doctor` prints the resolved library path. `uv tool uninstall skit-cli`
+removes skit and its `PATH` shim but deliberately leaves your library, config,
+and presets — reinstall and you're back. skit never writes to your `PATH`,
+shell profile, or global uv config.
+
+**What Python / runtimes does skit need?**
+Python 3.12+ for skit itself; uv (tested against 0.11.26 — skit offers to
+download a pinned, checksum-verified private copy if you have none). For JS/TS
+you supply deno, bun, or node — skit never installs a JS runtime.

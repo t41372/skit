@@ -1,0 +1,100 @@
+---
+title: Script types
+description: What runs, what gets detected, and how values reach the script.
+---
+
+skit launches a dozen kinds of entries. Python, shell, and JS/TS get the deepest
+support — skit finds their parameters by reading the code. Every other type
+launches out of the box and can use hand-declared parameters.
+
+## Support at a glance
+
+| Script type | How it runs | Parameters skit detects |
+| --- | --- | --- |
+| **Python** | uv (`uv run --script`) | CLI flags (argparse · click · typer), `input()` prompts, constants |
+| **Shell** (bash/sh/zsh) | the matching shell | CLI flags (getopts), `read` prompts, constants, `${VAR:-}` env-defaults |
+| **JS / TS** | deno, bun, or node — first found | CLI flags (`util.parseArgs`), `const` values |
+| **fish** | fish | CLI flags (`argparse`), `set -q` env-defaults |
+| **PowerShell** | pwsh | `param()` definitions |
+| **Ruby · Perl · Lua · R** | their interpreter | — |
+| **Executables** | run directly | — |
+| **Command templates** | skit fills the blanks, runs the command | — |
+| **Prompts** | your coding agent (claude · codex · …) | `{{placeholders}}` |
+
+## How values reach the script
+
+Depending on what was detected, a value you set in the launch menu travels one of
+three ways — all invisible from the menu, but they explain the depth differences
+between types:
+
+- **Rewritten values.** For Python, shell, and JS/TS, skit can rewrite a detected
+  constant (like `WIDTH = 800`) in its stored copy at launch. This is what makes
+  "hard-coded constants become fields" possible — and it's why those three types
+  are the deepest.
+- **Environment variables.** Env-default idioms — shell's `${VAR:-default}` and
+  fish's `set -q NAME; or set NAME default` — read the environment first, so skit
+  delivers the value as an environment variable without touching the script.
+- **Command-line arguments.** Where skit reads the script's own CLI definition
+  (argparse/click/typer, getopts, `util.parseArgs`, fish's `argparse`,
+  PowerShell's `param()`), values are passed as ordinary arguments and the script
+  parses them itself. Hand-declared parameters travel the same way.
+
+That's the whole story behind, say, fish vs Python: a fish script's hard-coded
+`set width 800` won't appear in the launch menu (skit doesn't rewrite fish code),
+but its `argparse` flags and `set -q` env-defaults will.
+
+## Declared parameters
+
+No auto-detection for your type? Declare parameters by hand — every type gets the
+same launch menu / preset / `--set` experience, even a plain executable:
+
+```bash
+skit params my_tool --add FORMAT --choices FORMAT=png,jpg,webp --default FORMAT=png
+```
+
+## External commands ("needs")
+
+Any entry can list the external commands it depends on (`ffmpeg`, `jq`, …). skit
+checks they're on your `PATH` before each run — for every type.
+
+## Per-script package dependencies
+
+Python and JS/TS get isolated, per-script package dependencies:
+
+- **Python**: dependencies are declared inline in the script (PEP 723) and
+  resolved by uv into an isolated environment. Nothing global.
+- **JS/TS**: npm-style dependencies install into a `node_modules` next to the
+  stored copy, on first run (`skit add` suggests them from the script's own
+  imports). Managed deps apply to copied entries — a referenced script keeps
+  using its own project's `node_modules`.
+
+Two safety/consistency details:
+
+- Installs never run package lifecycle scripts: npm and bun get
+  `--ignore-scripts`, and deno skips them by default.
+- When deno is the runner skit picks, it passes `--allow-all`, so the same
+  script behaves the same under deno, bun, and node.
+
+skit bootstraps uv for Python if you don't have it, but never a JS runtime — you
+supply node, bun, or deno.
+
+## Pinning the runtime
+
+- The JS/TS runner order is deno → bun → node, first found on `PATH`; the
+  `js.runner` config key forces one globally.
+- Interpreted kinds record their interpreter at add time from the shebang or
+  extension — a `#!/bin/zsh` script keeps running under zsh. Pin or reset it
+  with `skit params NAME --interpreter BINARY` (empty returns to auto; refused
+  for python and prompt entries, which don't run through a pinnable
+  interpreter).
+
+## Platform notes
+
+- **Windows, shell entries**: skit finds bash on `PATH`, then the
+  `shell.bash_path` config key, then refuses with exit 126 — it never reroutes
+  through WSL. PowerShell entries need `pwsh` / `powershell.exe`.
+- **Windows, executables**: files are classified as runnable via `PATHEXT` —
+  the executable bit means nothing there.
+- **Line endings & encodings**: skit's edits are confined to the `[tool.skit]`
+  comment block and preserve the file's own line endings (CRLF included) and
+  non-UTF-8 bytes.

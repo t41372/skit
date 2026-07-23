@@ -155,3 +155,25 @@ the hero video in all three READMEs — is hand-recorded, because VHS drives no 
 single shared clip (not per-locale) that the pipeline cannot regenerate, so it goes stale
 silently if the UI it shows changes; re-record and re-trim it by hand (recipe in
 CONTRIBUTING.md).
+
+The demo videos (`docs/assets/demo-*.mp4`) are deliberately **not** tracked in git (they'd
+balloon history); the README hero videos are uploaded to GitHub user-attachments by hand.
+The PNGs, banner, and `demo-mouse.gif` stay tracked — the READMEs hotlink them via
+raw.githubusercontent.
+
+## Documentation site
+
+`docs/` doubles as the user-facing documentation site: a Fumadocs (Next.js static-export)
+app, deployed to GitHub Pages (https://t41372.github.io/skit/) by
+`.github/workflows/docs.yml` on pushes to main. **To change a documentation page, edit the
+MDX in `docs/content/docs/`** (sidebar order: `meta.json` there); pages carry deep reference
+detail, not TUI walk-throughs. The **landing page is the repo README itself** — `index.mdx`
+just `<include>`s it (synced into `docs/.generated/` by the predev/prebuild hook), so fix
+landing content in `README.md`, not `index.mdx`. Verify with `cd docs && npm ci &&
+npm run build`; the build runs a link checker (`scripts/check-links.mjs`) that fails on any
+broken internal link or `#anchor`. Preview with `npm run dev` (http://localhost:3000/skit/en/).
+Gotcha: `<include>` and Turbopack only resolve files **inside** `docs/` — never reference a
+path above the project root. The docs are English-only for now and sit **outside** the i18n
+coverage gate; the scaffolding (`docs/lib/i18n.ts`) is ready for zh content later. README copy
+vocabulary applies — the run screen is the "launch menu", never a "form". `docs/assets/` and
+`docs/design/` live beside the site and are not published to it.

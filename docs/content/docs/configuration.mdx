@@ -1,0 +1,32 @@
+---
+title: Configuration
+description: config.toml and every `skit config` key.
+---
+
+`skit config` uses git-config grammar: bare `skit config` lists everything,
+`skit config KEY` reads one key, `skit config KEY VALUE` writes it, `--json`
+for machines. Everything lands in `config.toml` in skit's config directory
+(`skit doctor` prints the resolved path; `SKIT_CONFIG_DIR` overrides it).
+
+| Key | Values | Meaning |
+| --- | --- | --- |
+| `lang` | a language tag, or `auto` | UI language |
+| `editor` | a command (arguments allowed) | editor used by `skit edit` and `Ctrl+E` |
+| `form` | `tui` / `plain` | interactive style: inline mini-form, or plain line prompts |
+| `after_run` | `exit` / `stay` | after a menu-launched run finishes: exit skit (default), or return to the menu as a workbench |
+| `shell.bash_path` | a path | Windows: the bash to run shell entries with when none is on `PATH` (validated to exist when set) |
+| `js.runner` | `deno` / `bun` / `node`, empty = auto | force the JS runtime instead of first-found |
+| `mirror` | `on` / `off` | master mirror switch — `off` keeps the saved URLs |
+| `mirror.pypi` | `tsinghua` / `aliyun` / `ustc` / a URL / `off` | Python package index |
+| `mirror.github` | `nju` / an `https://` base URL / `off` | Python builds + the uv binary — https required, since the downloaded binary is executed |
+| `mirror.npm` | `npmmirror` / a URL / `off` | JS/TS package registry |
+
+Notes:
+
+- The `mirror` master switch takes only `on`/`off` — vendors are chosen per
+  axis. Writing an axis while the master switch is off warns on stderr.
+- Mirror settings never touch your global uv config or shell; they ride as
+  environment overlays on skit's child processes — see
+  [Environment variables](/en/docs/environment).
+- Prompt runners also live in this file (`[[prompt.runners]]`), but you manage
+  them through `skit runner add` / `remove` / `list`, not raw keys.

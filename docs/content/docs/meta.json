@@ -1,0 +1,14 @@
+{
+  "title": "Documentation",
+  "pages": [
+    "index",
+    "cli",
+    "parameters",
+    "script-types",
+    "prompts",
+    "ai-agents",
+    "environment",
+    "configuration",
+    "troubleshooting"
+  ]
+}

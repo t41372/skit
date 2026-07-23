@@ -1,0 +1,184 @@
+---
+title: CLI reference
+description: Every command, flag, and exit code.
+---
+
+Plain `skit` opens the TUI menu. Everything below is the scriptable surface —
+the same actions, deterministic behavior.
+
+## Conventions
+
+- **`--json`** on every read command: `list`, `show`, `params`, `deps`,
+  `preset list`, `runner list`, `doctor`, `config`.
+- **`--no-input`** on the commands that could prompt: `add`, `run`,
+  `runner remove`. Read commands never prompt and don't take it.
+- **`--dry-run`** on `run` only: prints the exact command — tokens and globs
+  expanded — and runs nothing.
+- **Non-interactive contract**: in a pipe, in CI, or under `--no-input`, skit
+  never prompts and never guesses — it fails fast with a named error.
+  "Interactive" requires both stdin and stdout to be TTYs.
+- **Shell completion** is dynamic: entry names, preset names, and runner names
+  all complete.
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | success |
+| `2` | usage error — bad flag combination, unknown `--set` name, unknown preset, a flag refused for the entry's type |
+| `125` | skit-side failure — missing/invalid parameter value, drift, token expansion error, over-long rendered command |
+| `126` | the target exists but can't run — missing interpreter or JS runtime, a `needs` command absent from `PATH`, no runner resolvable for a prompt |
+| `127` | no such entry in the library |
+| `130` | user cancelled an interactive screen (128 + SIGINT) |
+
+`skit run` passes the launched process's own exit code through untouched — even
+125–127 (docker convention: 1–124 always belong to your script). A script killed
+by signal N reports `128+N`, matching POSIX shells. `skit doctor`'s exit code
+reflects uv availability only (0 = present or not needed, 1 = required but
+missing); per-entry warnings never change it.
+
+## skit add
+
+`skit add [PATH]` — add a script, executable, prompt, or command template.
+`PATH` may be a file, `-` for stdin, or omitted in a terminal to be asked.
+
+| Flag | Effect |
+| --- | --- |
+| `--name`, `-n` | entry name (default: derived from the filename) |
+| `--description`, `-d` | description shown in the library |
+| `--ref` | reference the original file in place instead of copying |
+| `--kind KIND` | force a language kind |
+| `--exe` | force the executable kind |
+| `--cmd 'TEMPLATE'` | register a command template |
+| `--prompt` | add as an AI-agent prompt |
+| `--edit`, `-e` | draft a new script in your editor |
+| `--runner NAME` | pin the prompt's agent |
+| `--no-interpolate` | prompt: deliver verbatim, no placeholder insertion |
+| `--dep SPEC` | package dependency (repeatable) |
+| `--python 'CONSTRAINT'` | Python version constraint |
+| `--no-input` | never prompt |
+
+The lane selectors — a file path, `-`, `--cmd`, `--edit` — are mutually
+exclusive (exit 2), and per-lane flags are refused with a hint when they don't
+apply to the chosen lane.
+
+## skit run
+
+`skit run NAME [flags] [-- ARGS]`
+
+| Flag | Effect |
+| --- | --- |
+| `--set NAME=VALUE` | set a parameter (repeatable; [tokens](/en/docs/parameters#value-tokens) expand; `--set NAME=` delivers a real empty where the type supports it) |
+| `--preset`, `-p NAME` | apply a saved preset |
+| `--save-preset NAME` | save this run's values as a preset |
+| `--runner NAME` | prompt: override the pinned runner for this run |
+| `--dry-run` | print the exact command, run nothing |
+| `--no-input` | never prompt; a required value with no source fails with 125 |
+| `--plain` | line prompts instead of the TUI mini-form |
+| `--raw` | run the stored copy as-is: no injection, no remembered args; refused for prompt/command (exit 2) and incompatible with `--set`/`-p`/`--save-preset` |
+| `--forget-args` | erase the remembered `--` tail before this run |
+
+Value resolution, highest wins: `--set` → preset → last-used → the declared
+default. Extra `-- ARGS` are remembered per entry and replay on the next
+argument-less run (with a note on stderr); `--forget-args` clears them, `--raw`
+never replays them.
+
+## skit list / show
+
+- `skit list [--json]` — every entry: name, kind, description.
+- `skit show NAME [--json]` — full metadata, dependencies, parameters, presets.
+  The JSON schema is stable; each parameter carries `key`, `label`, `type`,
+  `source`, `required`, `secret`, `multiple`, `repeat`, `degraded`, `choices`,
+  `default`, `help`, `flag`, `action`, `env_source`, `delivers_empty`, plus
+  top-level `param_origin`, `degraded_reason`, and `needs`. Prompt entries add
+  `runner`, `runners_available`, and `interpolate`.
+
+## skit remove / rename / describe / edit
+
+- `skit remove NAME [--yes]` — remove an entry (the original file is untouched;
+  copy mode deletes skit's copy). Confirms unless `--yes`.
+- `skit rename NAME NEW` — presets, remembered values, and history follow.
+- `skit describe NAME TEXT` — set the description; empty text clears it.
+- `skit edit NAME` — open the stored source (the original, in reference mode) in
+  your editor; offers to create the entry if the name is new. Refused for
+  exe/command — there's no editable source.
+
+## skit params
+
+`skit params NAME [--json]` shows managed parameters and last-used values.
+With flags it edits definitions — generally one editing operation per
+invocation:
+
+| Flag | Effect |
+| --- | --- |
+| `--resync` | prune/refresh definitions to match the script's current source |
+| `--manage NAME` / `--unmanage NAME` | manage or drop a detected constant/prompt (repeatable) |
+| `--add NAME` / `--rm NAME` | declare or remove a parameter by hand (exe/command and friends) |
+| `--type NAME=T` | `str`, `int`, `float`, `bool`, `choice`, `path` |
+| `--default NAME=VALUE` | declared default |
+| `--choices NAME=a,b,c` | choice values |
+| `--deliver NAME=env\|flag\|placeholder` | how the value reaches the script |
+| `--flag NAME=--out` | the CLI flag to assemble (empty = positional) |
+| `--required NAME` / `--optional NAME` | requiredness |
+| `--help-text NAME=TEXT` / `--prompt NAME=TEXT` | descriptions |
+| `--secret NAME` / `--no-secret NAME` | secret marking (see [Secrets](/en/docs/parameters#secrets)) |
+| `--env-source NAME=ENVVAR` | read the value from an env var at run time (empty clears) |
+| `--normalize NAME` | shell only: rewrite a bare `NAME=value` into `${NAME:-value}` in the **stored copy** — consent-gated, never the original |
+| `--runner NAME` | prompt: pin a runner (empty clears the pin) |
+| `--interpolate` / `--no-interpolate` | prompt: placeholder insertion on/off |
+| `--workdir origin\|store\|invoke\|/abs/path` | working directory policy |
+| `--template 'T'` | command entries: replace the template |
+| `--interpreter NAME` | pin the interpreter for interpreted kinds (empty = auto; refused on python/prompt) |
+
+## skit deps
+
+`skit deps NAME [--json]` — package dependencies, Python constraint, and needed
+external commands.
+
+| Flag | Effect |
+| --- | --- |
+| `--dep SPEC` | repeatable; **replaces** the whole dependency list |
+| `--clear` | remove all package dependencies |
+| `--python 'CONSTRAINT'` | Python version constraint |
+| `--need CMD` | repeatable; **replaces** the whole needs list |
+| `--clear-needs` | remove all needs |
+
+Package deps apply to Python and JS/TS entries; `--need` applies to every kind.
+
+## skit preset
+
+- `skit preset save NAME PRESET [--from-last]` — `--from-last` snapshots the
+  last run's values without asking.
+- `skit preset list NAME [--json]`
+- `skit preset delete NAME PRESET`
+
+## skit runner
+
+- `skit runner list [--json] [--all]` — configured prompt runners; `--all` also
+  shows malformed raw rows with repair indexes.
+- `skit runner add NAME COMMAND…` — register a runner. Each word is one argv
+  token (no shell); exactly one token must be `{{prompt}}` — see
+  [Prompts → Runners](/en/docs/prompts#runners). `--force` replaces an existing
+  name.
+- `skit runner remove [NAME] [--row INDEX] [--yes] [--no-input]`
+
+## skit agent
+
+`skit agent install [TARGET]` — install the bundled Agent Skill. `TARGET` is
+`claude`, `codex`, or `agents`; `--to DIR` picks a directory explicitly;
+`--project` installs into the current repo (`./.claude` / `./.codex`) instead of
+home. The bare form detects agent directories on your machine and asks.
+
+## skit doctor
+
+`skit doctor [--json] [--rebuild]` — checks uv and library integrity, prints the
+resolved library path. `--rebuild` reconstructs the index from each entry's
+`meta.toml`. JSON keys include `uv`, `entries`, `missing`, `drift`,
+`needs_missing`, `launch_blocked`, `runner_rows_invalid`, `rebuilt`,
+`rebuild_problems`, `mirror`, `location`, `size_bytes`.
+
+## skit config
+
+Git-config grammar: `skit config` lists everything, `skit config KEY` reads,
+`skit config KEY VALUE` writes; `--json` for machines. Every key is documented
+in [Configuration](/en/docs/configuration).
