@@ -30,3 +30,7 @@ mutants/
 
 # OS
 .DS_Store
+
+# Demo videos are uploaded to GitHub user-attachments, not hotlinked from the
+# repo like the PNGs — keeping them out of git stops history from ballooning.
+docs/assets/demo-*.mp4

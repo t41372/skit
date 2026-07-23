@@ -1,0 +1,88 @@
+---
+title: Parameters & values
+description: How values resolve, persist, and expand — defaults, presets, tokens, secrets.
+---
+
+## Where a value comes from
+
+Highest wins:
+
+1. this run's `--set NAME=VALUE` (or what you type in the launch menu)
+2. the applied preset (`-p NAME`)
+3. the last-used value
+4. the parameter's declared default
+
+A required parameter with no value from any source fails non-interactively with
+exit 125 — skit never guesses.
+
+## Defaults come from the script
+
+The launch menu prefills each parameter with the script's **current** default —
+skit re-reads the source every time, so editing a constant in the script updates
+the menu immediately (no stale manage-time cache; `skit params --resync` writes
+refreshed definitions back). After you've overridden a value, `↺ default`
+(`Ctrl+O`) restores the script's own value.
+
+When a CLI parser's default names a constant (`default=DEFAULT_HOST` in
+argparse/click/typer/`parseArgs`), skit resolves it to the literal — but only
+when that name is bound exactly once in the file and doesn't look like a secret.
+A secret-looking constant's literal never leaves the script's own text.
+
+## Empty means empty
+
+Fields arrive prefilled with their default, so clearing one is a deliberate act:
+it delivers a real empty string (`''`) through inject, env, or flag delivery.
+`--set NAME=` expresses the same thing from the CLI. For types where empty can't
+be a value — `int`, `float`, `bool`, `choice`, secrets, and defaultless
+parameters — empty still means "unset". Agents can tell the two apart via the
+per-field `delivers_empty` in `skit show --json`.
+
+## What gets remembered
+
+- **Last-used values** come back prefilled on the next run. A submitted value
+  that equals the declared default is *not* stored — so a future change to the
+  script's default isn't buried by an old run. To pin a value deliberately, use
+  a preset: presets store the run verbatim, cleared fields included.
+- **The `--` tail** (extra arguments after `--`) is remembered per entry and
+  replays on the next argument-less run, with a note on stderr. `--forget-args`
+  clears it; `--raw` never replays it.
+- **Run history**: each entry's state file records the last run's time, exit
+  code, and exact values.
+- All of this lives in skit's state directory (one TOML per entry) — see
+  [Environment variables](/en/docs/environment) for where that is and how to
+  move it. Removing an entry removes its state.
+
+## Value tokens
+
+Tokens work in any launch-menu value, `--set` value, and preset value. They are
+stored as written and expanded fresh on every run — a preset saying `{cwd}`
+means "wherever I run this", forever.
+
+| Token | Expands to |
+| --- | --- |
+| `{cwd}` | the invoke-time working directory |
+| `{today}` | the date, `YYYY-MM-DD` |
+| `{now}` | the time, `HH-MM-SS` |
+| `{env:NAME}` | the environment variable `NAME` — a missing variable is a hard error (exit 125), never a silent empty |
+| leading `~` | home directory |
+
+Only these names expand; any other `{…}` text passes through untouched, and
+`{{` / `}}` escape to literal braces. The exception is prompt/command
+placeholder values, where `{{` and `}}` pass through byte-identical (named
+tokens still expand).
+
+Multi-value parameters additionally shell-split each piece and expand globs
+(recursive, rooted at the invoke directory). Extra `-- ARGS` from the CLI are
+**not** re-tokenized or globbed — they already went through your shell.
+
+## Secrets
+
+A parameter marked secret is never persisted: not in last-used values, not in
+presets, not in run history — enforced structurally at every state write, and
+retroactively scrubbed if you mark an already-used parameter secret. Secret
+values are masked (`•••`) in `--dry-run` and command displays. To avoid typing
+them at all, `--env-source NAME=ENVVAR` reads the value from an environment
+variable at run time — only the variable's *name* is stored.
+
+The value still reaches the running process, and prompts are not a secrets
+channel: a rendered prompt lands in the receiving agent's own session logs.

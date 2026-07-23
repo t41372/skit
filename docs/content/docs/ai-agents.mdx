@@ -1,0 +1,53 @@
+---
+title: AI agents & automation
+description: The Agent Skill and the deterministic CLI contract.
+---
+
+skit is a script repository for humans *and* AI agents: one library — you get the
+TUI, agents get a deterministic CLI.
+
+## Install the Agent Skill
+
+The official [Agent Skill](https://agentskills.io) teaches compatible agents
+(Claude Code, Codex, Cursor, Gemini CLI, and many more) how to drive your
+library:
+
+```bash
+skit agent install            # pick one of the agent directories found on your machine
+skit agent install claude     # or name it: claude / codex / agents (--project for this repo only)
+npx skills add t41372/skit    # or install through skills.sh into 70+ agents
+```
+
+## What the skill teaches
+
+- **Check the library first** (`skit list`) before writing yet another one-off
+  script — it may already exist.
+- **Inspect before running**: `skit show <name> --json` returns the entry's full
+  parameter schema, machine-readable.
+- **Run deterministically**: `skit run <name> --set key=value --no-input`.
+- **Offer to save** the useful scripts it writes — with your OK — so they outlive
+  the session that created them.
+
+## The CLI contract
+
+Every launch-menu action is also a CLI command, built to be driven by machines:
+
+- `--json` output on every listing and inspection command — `skit show --json`
+  returns a stable per-parameter schema (types, defaults, `delivers_empty`,
+  secret marking, choices) documented in the [CLI reference](/en/docs/cli).
+- **Meaningful exit codes**, docker-convention: `skit run` passes the script's
+  own exit code through untouched; skit's own errors use 125/126/127, 130 means
+  the user cancelled, and signal death reports as `128+N` — full table in the
+  [CLI reference](/en/docs/cli#exit-codes).
+- **Deterministic value resolution**: `--set` → preset → last-used → declared
+  default. An unknown parameter name exits 2; a bad value exits 125.
+- `--no-input` never prompts and never guesses — if information is missing, skit
+  fails fast with a named error instead of silently assembling a broken command.
+- `--dry-run` prints the exact command that would run, without running it.
+
+```bash
+skit list --json              # machine-readable listing
+skit show my_script --json    # full parameter schema
+skit run my_script --set width=800 --no-input
+skit run my_script --dry-run
+```
