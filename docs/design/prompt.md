@@ -364,6 +364,18 @@ argv = ["amp", "-x", "{{prompt}}"]
 [[prompt.runners]]
 name = "antigravity"
 argv = ["agy", "--prompt-interactive", "{{prompt}}"]
+
+[[prompt.runners]]
+name = "copilot"
+argv = ["copilot", "--interactive={{prompt}}"]
+
+[[prompt.runners]]
+name = "cursor"
+argv = ["cursor-agent", "--", "agent", "{{prompt}}"]
+
+[[prompt.runners]]
+name = "pi"
+argv = ["pi", "{{prompt}}"]
 ```
 
 (These are the shipped seeds. Amp's CLI has no interactive-with-initial-prompt invocation,
