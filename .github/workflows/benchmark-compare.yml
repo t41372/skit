@@ -27,10 +27,6 @@ concurrency:
 env:
   PYTHONUTF8: "1"
   BENCH_CI_RUNNER: ubuntu-24.04
-  # Micro scripts import skit internals; against an older side they may fail to
-  # import. Under compare that side records a per-script skip carrying the actual
-  # error instead of failing the run (benchmarks/suites/micro.py).
-  BENCH_COMPARE: "1"
 
 jobs:
   compare:
@@ -64,20 +60,16 @@ jobs:
       - name: Sync harness dependencies
         run: uv sync --dev
       - name: Install hyperfine (pinned)
-        run: |
-          curl -sSfL -o hyperfine.tgz \
-            "https://github.com/sharkdp/hyperfine/releases/download/v1.20.0/hyperfine-v1.20.0-x86_64-unknown-linux-gnu.tar.gz"
-          echo "63ad53934062118f5b0be11785e0bb1603d4b91667d1921f2fd8df9a8712040a  hyperfine.tgz" | sha256sum -c -
-          tar xzf hyperfine.tgz
-          install -m 0755 hyperfine-v1.20.0-x86_64-unknown-linux-gnu/hyperfine /usr/local/bin/hyperfine
-          rm -rf hyperfine.tgz hyperfine-v1.20.0-x86_64-unknown-linux-gnu
+        uses: ./.github/actions/install-hyperfine
       # Each side: its own venv from its own lockfile (runtime deps only — groups are
       # dev tooling and old refs may not have today's groups), plus pyperf as harness
       # infrastructure. The harness then runs UNDER the side's python, so
       # sys.executable's venv — the thing the suites benchmark — is that side's skit,
       # while the benchmarks/ package resolves from this checkout's cwd. The harness
       # therefore imports only runtime deps + pyperf + stdlib — enforced by
-      # tests/test_benchmarks_tooling.py's import-surface test.
+      # tests/test_benchmarks_tooling.py's import-surface test. The compare profile
+      # itself carries compare_mode on every SuitePlan, so micro degrades per-case
+      # with recorded skips against older sides (no ambient env flag involved).
       # --measured-repo makes the results carry the SIDE's git identity, never the
       # harness ref's. Compatibility floor: sides must be ≥ 725f11d (the dataset
       # generator uses the prompt-kind store API) — older refs fail dataset

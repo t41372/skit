@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 from .results import GitInfo, HostInfo, Meta
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    pass
 
 # The workflows export this (no GitHub-provided variable carries the `runs-on` label);
 # absent or empty locally, which envinfo reports as None = "not CI".
@@ -107,10 +107,10 @@ def build_meta(
     )
 
 
-def dist_version(name: str, probe: Callable[[str], str] = version) -> str:
-    """Installed distribution version, or "unknown" for a bare checkout."""
+def dist_version(name: str) -> str:
+    """Installed distribution version, or "unknown" when the name isn't installed."""
     try:
-        return probe(name)
+        return version(name)
     except PackageNotFoundError:
         return "unknown"
 
@@ -127,9 +127,8 @@ def uv_version_from_output(output: str) -> str:
 def collect_meta(profile: str, repo_root: Path) -> Meta:  # pragma: no cover — real-host seam
     """Assemble the manifest from the actual machine: the only untested lines in this
     module, and they only *read* the host and delegate to the pure builders above."""
-    from datetime import UTC, datetime
-
     import skit
+    from skit.models import now_iso
 
     uname = platform.uname()
     try:
@@ -172,7 +171,7 @@ def collect_meta(profile: str, repo_root: Path) -> Meta:  # pragma: no cover —
     ).stdout
     return build_meta(
         profile=profile,
-        generated_at=datetime.now(UTC).replace(microsecond=0).isoformat(),
+        generated_at=now_iso(),
         commit=commit,
         dirty=git_dirty(porcelain),
         host=host,

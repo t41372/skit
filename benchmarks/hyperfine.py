@@ -75,6 +75,8 @@ def parse_export(json_text: str) -> dict[str, list[float]]:
         raise ParseError("hyperfine export has no results")
     out: dict[str, list[float]] = {}
     for entry in results:
+        if not isinstance(entry, dict):
+            raise ParseError("hyperfine result entry is not an object")
         name = entry.get("command")
         times = entry.get("times")
         if not isinstance(name, str) or not isinstance(times, list) or not times:
@@ -82,7 +84,10 @@ def parse_export(json_text: str) -> dict[str, list[float]]:
         codes = entry.get("exit_codes", [])
         if any(code != 0 for code in codes):
             raise ParseError(f"hyperfine case {name!r} recorded non-zero exit codes")
-        out[name] = [float(t) for t in times]
+        try:
+            out[name] = [float(t) for t in times]
+        except (TypeError, ValueError) as exc:
+            raise ParseError(f"hyperfine case {name!r}: non-numeric time") from exc
     return out
 
 

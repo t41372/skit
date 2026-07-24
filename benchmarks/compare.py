@@ -6,12 +6,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .results import Results
+from .results import Results, python_major_minor
 
-# |Δ| must clear BOTH: 5% of base and, for time metrics, a 2 ms absolute floor
-# (converted into the metric's own unit) — sub-2ms wiggle on a hosted runner is noise.
+# |Δ| must clear BOTH: 5% of base and a per-unit absolute noise floor. The floor is
+# NOT one physical duration converted between units: macro (hyperfine, ms-scale)
+# numbers carry hosted-runner process noise, so sub-2ms wiggle is meaningless there —
+# while micro (pyperf, µs-scale) numbers are calibrated in-process loops whose values
+# sit in the 1-600 µs range, where a 2000 µs floor would swallow every realistic
+# regression (a 3x micro slowdown must land in "Notable", not "Within noise").
 RELATIVE_THRESHOLD = 0.05
-TIME_FLOOR_BY_UNIT = {"s": 0.002, "ms": 2.0, "us": 2000.0}
+TIME_FLOOR_BY_UNIT = {"s": 0.002, "ms": 2.0, "us": 1.0}
 
 
 @dataclass(frozen=True)
@@ -46,6 +50,10 @@ class Comparison:
     deltas: list[Delta]
     only_base: list[str]
     only_head: list[str]
+    # Provenance fields on which the two sides differ ("profile: full vs pr", ...) —
+    # non-empty means the delta table compares apples to oranges and the report says
+    # so up top instead of rendering a clean-looking A/B.
+    incomparable: list[str]
 
     @property
     def notable(self) -> list[Delta]:
@@ -55,7 +63,22 @@ class Comparison:
 def compare(base: Results, head: Results) -> Comparison:
     """`pipeline.*` self-timings (suite durations, skip counts) are excluded: they
     measure the harness, not skit, and their wobble would intermittently pollute the
-    "Notable" section of A/B evidence."""
+    "Notable" section of A/B evidence. Provenance mismatches (profile, platform,
+    python) are detected here and rendered as a loud warning — a full-vs-pr or
+    cross-platform diff must never look like a legitimate comparison."""
+    incomparable = [
+        f"{label}: {a} vs {b}"
+        for label, a, b in (
+            ("profile", base.meta.profile, head.meta.profile),
+            ("platform", base.meta.host.platform_key, head.meta.host.platform_key),
+            (
+                "python",
+                python_major_minor(base.meta.python),
+                python_major_minor(head.meta.python),
+            ),
+        )
+        if a != b
+    ]
     deltas: list[Delta] = []
     for metric_id in sorted(set(base.metrics) & set(head.metrics)):
         if metric_id.startswith("pipeline."):
@@ -70,6 +93,7 @@ def compare(base: Results, head: Results) -> Comparison:
         only_head=sorted(
             m for m in set(head.metrics) - set(base.metrics) if not m.startswith("pipeline.")
         ),
+        incomparable=incomparable,
     )
 
 
@@ -81,9 +105,18 @@ def render_markdown(base: Results, head: Results, comparison: Comparison) -> str
         f"Head: `{head.meta.git.commit[:12]}` ({head.meta.skit_version}) · "
         f"profile {head.meta.profile} · {head.meta.host.platform_key}",
         "",
-        "Warn-only: notable = |Δ| > max(5%, 2 ms). Hosted-runner numbers are advisory.",
+        "Warn-only: notable = |Δ| > max(5%, per-unit floor: 2 ms macro / 1 µs micro). "
+        "Hosted-runner numbers are advisory.",
         "",
     ]
+    if comparison.incomparable:
+        lines += [
+            "> [!WARNING]",
+            "> **The sides are not directly comparable** — "
+            + "; ".join(comparison.incomparable)
+            + ". Deltas below mix apples and oranges.",
+            "",
+        ]
     notable = comparison.notable
     lines.append(f"### Notable ({len(notable)})" if notable else "### Notable (none)")
     if notable:

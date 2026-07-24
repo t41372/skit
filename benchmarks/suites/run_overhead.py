@@ -19,15 +19,9 @@ if TYPE_CHECKING:
 
 def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
     if ctx.hyperfine is None:
-        return SuiteOutput(
-            suite="run_overhead",
-            skipped=[Skip(suite="run_overhead", case="all", reason="hyperfine not found")],
-        )
+        return SuiteOutput.skip_all("run_overhead", "hyperfine not found")
     if ctx.uv is None:
-        return SuiteOutput(
-            suite="run_overhead",
-            skipped=[Skip(suite="run_overhead", case="all", reason="uv not found")],
-        )
+        return SuiteOutput.skip_all("run_overhead", "uv not found")
     library = generate_runover(ctx.workdir / "runover", ctx.fixtures_dir)
     env = bench_env(ctx, library.root)
     src = library.root / "srcfiles"

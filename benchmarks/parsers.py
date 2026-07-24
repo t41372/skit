@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import statistics
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,11 +26,7 @@ class ParseError(ValueError):
 def median(values: list[float]) -> float:
     if not values:
         raise ParseError("median of no values")
-    ordered = sorted(values)
-    mid = len(ordered) // 2
-    if len(ordered) % 2:
-        return ordered[mid]
-    return (ordered[mid - 1] + ordered[mid]) / 2
+    return float(statistics.median(values))
 
 
 def p95(values: list[float]) -> float:
@@ -43,12 +40,13 @@ def p95(values: list[float]) -> float:
 
 
 def stddev(values: list[float]) -> float:
+    """Sample stddev (statistics.stdev), with the harness conventions kept: no values
+    is a broken run, a single sample has zero spread rather than an error."""
     if not values:
         raise ParseError("stddev of no values")
     if len(values) == 1:
         return 0.0
-    mean = sum(values) / len(values)
-    return math.sqrt(sum((v - mean) ** 2 for v in values) / (len(values) - 1))
+    return float(statistics.stdev(values))
 
 
 # ---------------------------------------------------------------- import census
@@ -187,12 +185,20 @@ def pyperf_benchmarks(json_text: str) -> list[PyperfBench]:
         raise ParseError("pyperf output has no benchmarks")
     out: list[PyperfBench] = []
     for bench in benches:
+        if not isinstance(bench, dict):
+            raise ParseError("pyperf benchmark entry is not an object")
         name = _pyperf_name(bench, doc)
+        runs = bench.get("runs", [])
+        if not isinstance(runs, list):
+            raise ParseError(f"pyperf benchmark {name!r}: runs is not an array")
         values: list[float] = []
-        for run in bench.get("runs", []):
-            run_values = run.get("values")
+        for run in runs:
+            run_values = run.get("values") if isinstance(run, dict) else None
             if isinstance(run_values, list):
-                values.extend(float(v) for v in run_values)
+                try:
+                    values.extend(float(v) for v in run_values)
+                except (TypeError, ValueError) as exc:
+                    raise ParseError(f"pyperf benchmark {name!r}: non-numeric value") from exc
         if not values:
             raise ParseError(f"pyperf benchmark {name!r} has no measured values")
         out.append(PyperfBench(name=name, values_s=values))

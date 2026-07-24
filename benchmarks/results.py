@@ -9,6 +9,7 @@ a divergence waiting to happen.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -87,6 +88,12 @@ class SuiteOutput:
         return json.dumps(asdict(self), sort_keys=True, indent=2) + "\n"
 
     @classmethod
+    def skip_all(cls, suite: str, reason: str) -> SuiteOutput:
+        """A suite that cannot run at all: one whole-suite skip, both suite fields
+        filled from one argument so they can never disagree."""
+        return cls(suite=suite, skipped=[Skip(suite=suite, case="all", reason=reason)])
+
+    @classmethod
     def from_json(cls, text: str) -> SuiteOutput:
         doc = _load_object(text, "suite output")
         suite = _string(doc, "suite")
@@ -97,7 +104,7 @@ class SuiteOutput:
             raise ResultsError("raw: expected an object")
         duration = doc.get("duration_s", 0.0)
         if not _is_number(duration):
-            raise ResultsError("duration_s: expected a number")
+            raise ResultsError("duration_s: expected a finite number")
         return cls(
             suite=suite,
             metrics=metrics,
@@ -160,7 +167,9 @@ def _load_object(text: str, what: str) -> dict[str, Any]:
 
 
 def _is_number(value: Any) -> bool:
-    return isinstance(value, int | float) and not isinstance(value, bool)
+    """Finite numbers only: json.loads happily parses bare NaN/Infinity, and a NaN
+    metric would silently pass every `value > max` budget comparison."""
+    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
 
 
 def _string(doc: dict[Any, Any], key: str, *, path: str = "") -> str:
@@ -180,7 +189,9 @@ def _metrics(node: Any) -> dict[str, Metric]:
             raise ResultsError(f"metrics.{metric_id}: expected an object")
         value = body.get("value")
         if not _is_number(value):
-            raise ResultsError(f"metrics.{metric_id}.value: expected a number, got {value!r}")
+            raise ResultsError(
+                f"metrics.{metric_id}.value: expected a finite number, got {value!r}"
+            )
         unit = body.get("unit")
         if not isinstance(unit, str) or not unit:
             raise ResultsError(f"metrics.{metric_id}.unit: expected a non-empty string")
@@ -189,10 +200,10 @@ def _metrics(node: Any) -> dict[str, Metric]:
             raise ResultsError(f"metrics.{metric_id}.n: expected a positive integer, got {n!r}")
         p95 = body.get("p95")
         if p95 is not None and not _is_number(p95):
-            raise ResultsError(f"metrics.{metric_id}.p95: expected a number or null")
+            raise ResultsError(f"metrics.{metric_id}.p95: expected a finite number or null")
         stddev = body.get("stddev")
         if stddev is not None and not _is_number(stddev):
-            raise ResultsError(f"metrics.{metric_id}.stddev: expected a number or null")
+            raise ResultsError(f"metrics.{metric_id}.stddev: expected a finite number or null")
         out[metric_id] = Metric(
             value=float(value),
             unit=unit,

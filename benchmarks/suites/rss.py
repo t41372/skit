@@ -10,7 +10,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from ..parsers import maxrss_kib, median
-from ..results import Metric, Skip, SuiteOutput
+from ..results import Metric, SuiteOutput
 from ._env import RunCtx, bench_env
 
 if TYPE_CHECKING:
@@ -31,10 +31,7 @@ _HARNESS = (
 
 def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
     if sys.platform == "win32":
-        return SuiteOutput(
-            suite="rss",
-            skipped=[Skip(suite="rss", case="all", reason="no resource module on Windows")],
-        )
+        return SuiteOutput.skip_all("rss", "no resource module on Windows")
     output = SuiteOutput(suite="rss")
     cases: list[tuple[str, tuple[str, ...], int]] = [("rss.version", (ctx.skit, "--version"), 0)]
     cases += [(f"rss.list_json.n{n}", (ctx.skit, "list", "--json"), n) for n in plan.ns]

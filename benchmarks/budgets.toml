@@ -16,6 +16,10 @@
 metric = "footprint.wheel_bytes"
 max = 1048576
 tier = "enforced"
+profiles = [
+    "pr",
+    "full",
+]
 note = "1 MiB hand-set contract bound (wheel is ~451 KiB); catches accidental data shipping"
 
 [budget.context]
@@ -52,7 +56,9 @@ date = "2026-07-20"
 metric = "pipeline.skipped_count"
 max = 0
 tier = "enforced"
-profile = "pr"
+profiles = [
+    "pr",
+]
 platform = "linux-x86_64"
 ci_only = true
 note = "the pr profile may not silently decay on the reference CI platform"
@@ -65,7 +71,9 @@ date = "2026-07-20"
 metric = "pipeline.skipped_count"
 max = 0
 tier = "enforced"
-profile = "full"
+profiles = [
+    "full",
+]
 platform = "linux-x86_64"
 ci_only = true
 note = "the skip-prone suites (JS lane, syscalls, closure) run only nightly; the full profile may not silently decay either"
@@ -114,7 +122,9 @@ note = "TUI peak RSS at most 96 MiB at 1000 entries"
 metric = "footprint.closure_bytes"
 max = 67108864
 tier = "target"
-profile = "full"
+profiles = [
+    "full",
+]
 note = "full dependency closure at most 64 MiB (excludes interpreter, uv, caches, per-script deps)"
 
 [[budget]]
@@ -145,5 +155,7 @@ note = "fast-path acceptance: --version imports no tree-sitter"
 metric = "syscalls.list_json.network"
 max = 0
 tier = "target"
-profile = "full"
+profiles = [
+    "full",
+]
 note = "warm read-only paths do zero network syscalls"

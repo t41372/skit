@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..results import Metric, Skip, SuiteOutput
+from ..results import Metric, SuiteOutput
 from ._env import RunCtx
 
 if TYPE_CHECKING:
@@ -35,10 +35,7 @@ print(json.dumps(sizes))
 
 def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
     if ctx.uv is None:
-        return SuiteOutput(
-            suite="footprint",
-            skipped=[Skip(suite="footprint", case="all", reason="uv not found")],
-        )
+        return SuiteOutput.skip_all("footprint", "uv not found")
     uv = ctx.uv
     output = SuiteOutput(suite="footprint")
     dist_dir = ctx.workdir / "dist"
@@ -91,13 +88,20 @@ def _closure(ctx: RunCtx, uv: str, wheel: Path, output: SuiteOutput) -> None:
         check=True,
     ).stdout.strip()
     site = Path(purelib)
+    # One walk, two totals: re-walking the skit subtree after the closure rglob
+    # already visited it would just re-stat the same files.
+    closure_bytes = 0
+    skit_bytes = 0
+    for file in site.rglob("*"):
+        if not file.is_file():
+            continue
+        size = file.stat().st_size
+        closure_bytes += size
+        top = file.relative_to(site).parts[0]
+        if top == "skit" or top.startswith("skit_cli"):
+            skit_bytes += size
     output.metrics["footprint.closure_bytes"] = Metric(
-        value=float(_tree_bytes(site)), unit="bytes", n=1
-    )
-    skit_bytes = sum(
-        _tree_bytes(p) if p.is_dir() else p.stat().st_size
-        for p in site.iterdir()
-        if p.name == "skit" or p.name.startswith("skit_cli")
+        value=float(closure_bytes), unit="bytes", n=1
     )
     output.metrics["footprint.skit_installed_bytes"] = Metric(
         value=float(skit_bytes), unit="bytes", n=1
@@ -109,7 +113,3 @@ def _closure(ctx: RunCtx, uv: str, wheel: Path, output: SuiteOutput) -> None:
     )
     output.metrics["footprint.distributions"] = Metric(value=float(len(sizes)), unit="count", n=1)
     output.raw["largest_distributions"] = dict(sorted(sizes.items(), key=lambda kv: -kv[1])[:10])
-
-
-def _tree_bytes(root: Path) -> int:
-    return sum(p.stat().st_size for p in root.rglob("*") if p.is_file())

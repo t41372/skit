@@ -20,12 +20,13 @@ _CENSUS_PROBE = """\
 import json, os, sys
 sys.argv = ["skit"] + json.loads(os.environ["BENCH_ARGS"])
 from skit.cli import app
-code = 0
+code = None
 try:
     app()
 except SystemExit as exc:
-    code = int(exc.code or 0)
-if code != 0:
+    code = exc.code
+if code not in (None, 0):
+    # SystemExit.code may be an int or a message string; re-raise either as-is.
     raise SystemExit(code)
 with open(os.environ["BENCH_OUT"], "w", encoding="utf-8") as f:
     json.dump(sorted(sys.modules), f)

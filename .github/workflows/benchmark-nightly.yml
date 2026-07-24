@@ -44,14 +44,7 @@ jobs:
       - name: Install strace (not preinstalled on runner images)
         run: sudo apt-get update -q && sudo apt-get install -y -q strace
       - name: Install hyperfine (pinned)
-        run: |
-          curl -sSfL -o hyperfine.tgz \
-            "https://github.com/sharkdp/hyperfine/releases/download/v1.20.0/hyperfine-v1.20.0-x86_64-unknown-linux-gnu.tar.gz"
-          echo "63ad53934062118f5b0be11785e0bb1603d4b91667d1921f2fd8df9a8712040a  hyperfine.tgz" | sha256sum -c -
-          tar xzf hyperfine.tgz
-          install -m 0755 hyperfine-v1.20.0-x86_64-unknown-linux-gnu/hyperfine /usr/local/bin/hyperfine
-          rm -rf hyperfine.tgz hyperfine-v1.20.0-x86_64-unknown-linux-gnu
-          hyperfine --version
+        uses: ./.github/actions/install-hyperfine
       - name: Run full profile
         run: uv run python -m benchmarks run --profile full --out .bench
       - name: Check budgets (enforced tier gates this job)

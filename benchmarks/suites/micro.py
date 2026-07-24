@@ -8,7 +8,6 @@ worse, the developer's real) library."""
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -49,7 +48,7 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
     for n in plan.ns:
         env = bench_env(ctx, ctx.datasets[n].root)
         env["BENCH_N"] = str(n)
-        _run_script(ctx, "bench_store.py", env, plan.fast, output, f"store_n{n}")
+        _run_script(ctx, plan, "bench_store.py", env, output, f"store_n{n}")
 
     # Analyzer availability is a property of the installed grammars: record what can't
     # run instead of letting it silently vanish from the numbers. Under compare, the
@@ -59,7 +58,7 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
     try:
         from skit.langs.registry import spec_for
     except ImportError as exc:
-        if not os.environ.get("BENCH_COMPARE"):
+        if not plan.compare_mode:
             raise
         output.skipped.append(
             Skip(suite="micro", case="analyzers", reason=f"harness import failed: {exc}")
@@ -81,15 +80,15 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
     if available:
         env = bench_env(ctx, ctx.datasets[plan.ns[0]].root)
         env["BENCH_SOURCES_DIR"] = str(sources_dir)
-        _run_script(ctx, "bench_analyzers.py", env, plan.fast, output, "analyzers")
+        _run_script(ctx, plan, "bench_analyzers.py", env, output, "analyzers")
         for lang in available:
-            _cold_parse(ctx, lang, sources_dir, output)
+            _cold_parse(ctx, plan, lang, sources_dir, output)
 
     launch_n = max(plan.ns)
     env = bench_env(ctx, ctx.datasets[launch_n].root)
-    _run_script(ctx, "bench_launch.py", env, plan.fast, output, "launch")
-    env = bench_env(ctx, None)
-    _run_script(ctx, "bench_render.py", env, plan.fast, output, "render")
+    _run_script(ctx, plan, "bench_launch.py", env, output, "launch")
+    env = bench_env(ctx, ctx.datasets[0].root)
+    _run_script(ctx, plan, "bench_render.py", env, output, "render")
     return output
 
 
@@ -105,9 +104,9 @@ def _materialize_sources(ctx: RunCtx) -> Path:
 
 def _run_script(
     ctx: RunCtx,
+    plan: SuitePlan,
     script: str,
     env: Mapping[str, str],
-    fast: bool,
     output: SuiteOutput,
     label: str,
 ) -> None:
@@ -120,7 +119,7 @@ def _run_script(
         "--inherit-environ",
         ",".join(PYPERF_INHERIT),
     ]
-    if fast:
+    if plan.fast:
         argv.append("--fast")
     proc = subprocess.run(  # noqa: S603 — fixed-shape pyperf argv
         argv,
@@ -131,11 +130,11 @@ def _run_script(
         check=False,
     )
     if proc.returncode != 0:
-        # Under benchmark-compare (BENCH_COMPARE=1) a side whose skit predates a micro
-        # script's API is recorded — with the actual error, never a canned label — so
-        # an A/B against old refs degrades per-script instead of dying. A normal run
-        # keeps the hard failure policy: a crash is a pipeline bug, not a skip.
-        if os.environ.get("BENCH_COMPARE"):
+        # Under benchmark-compare (plan.compare_mode) a side whose skit predates a
+        # micro script's API is recorded — with the actual error, never a canned
+        # label — so an A/B against old refs degrades per-script instead of dying. A
+        # normal run keeps the hard failure policy: a crash is a bug, not a skip.
+        if plan.compare_mode:
             output.skipped.append(
                 Skip(
                     suite="micro",
@@ -156,9 +155,11 @@ def _run_script(
     output.raw[label] = {b.name: b.values_s for b in benches}
 
 
-def _cold_parse(ctx: RunCtx, lang: str, sources_dir: Path, output: SuiteOutput) -> None:
+def _cold_parse(
+    ctx: RunCtx, plan: SuitePlan, lang: str, sources_dir: Path, output: SuiteOutput
+) -> None:
     source = sources_dir / f"{lang}_200.{sources.EXTENSIONS[lang]}"
-    env = bench_env(ctx, None)
+    env = bench_env(ctx, ctx.datasets[0].root)
     env["BENCH_KIND"] = lang
     env["BENCH_SOURCE"] = str(source)
     samples: list[float] = []
@@ -174,7 +175,7 @@ def _cold_parse(ctx: RunCtx, lang: str, sources_dir: Path, output: SuiteOutput) 
         if proc.returncode != 0:
             # Same compare-mode degradation as _run_script: an older side's probe
             # failure records what broke; a normal run treats it as a pipeline bug.
-            if os.environ.get("BENCH_COMPARE"):
+            if plan.compare_mode:
                 output.skipped.append(
                     Skip(
                         suite="micro",

@@ -75,6 +75,8 @@ def execute(
             module = import_module(f"benchmarks.suites.{plan.suite}")
             t_suite = time.monotonic()
             output: SuiteOutput = module.run(ctx, plan)
+            if output.suite != plan.suite:
+                raise RuntimeError(f"suite {plan.suite!r} returned output labeled {output.suite!r}")
             output = dataclasses.replace(output, duration_s=time.monotonic() - t_suite)
             (suites_dir / f"{plan.suite}.json").write_text(output.to_json(), encoding="utf-8")
     finally:

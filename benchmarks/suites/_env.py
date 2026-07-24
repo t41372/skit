@@ -76,7 +76,7 @@ def discover(
     )
 
 
-def bench_env(ctx: RunCtx, dataset_root: Path | None) -> dict[str, str]:
+def bench_env(ctx: RunCtx, dataset_root: Path) -> dict[str, str]:
     """The constructed env for this run's children (envspec.build_env, applied to the
     discovered binaries and this run's workdir)."""
     return build_env(

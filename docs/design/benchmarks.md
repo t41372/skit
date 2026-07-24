@@ -336,7 +336,7 @@ model, and renders `results.md` (the step-summary/human artifact).
 metric = "imports.version.modules"
 max = 320                      # 291 measured at merge on CI's 3.13 (+ ~10% headroom)
 tier = "enforced"              # or "target"
-profile = "pr"                 # optional predicate vs meta.profile
+profiles = ["pr"]              # optional predicate vs meta.profile (list; empty = all)
 platform = "linux-x86_64"      # optional predicate vs meta.host.platform_key
 ci_only = true                 # optional predicate vs meta.host.ci_runner != null
 context = { python = "3.13", commit = "…", date = "2026-07-…" }  # provenance, enforced rows
@@ -347,8 +347,8 @@ note = "ratchet: fast path may not get importier before the fast-path PR lands"
   violation. Day-1 set (all pass on current main by construction):
   - `footprint.wheel_bytes ≤ 1 MiB` (current ~451 KiB; catches accidental data shipping).
   - `imports.version.modules` and `imports.list_json.modules` ratchets (measured + ~10%).
-  - `pipeline.skipped_count = 0` twice — once with `profile = "pr"` and once with
-    `profile = "full"` (the skip-prone suites — JS lane, syscalls, closure — run only
+  - `pipeline.skipped_count = 0` twice — once with `profiles = ["pr"]` and once with
+    `profiles = ["full"]` (the skip-prone suites — JS lane, syscalls, closure — run only
     nightly, so a pr-only row would never budget them), both with
     `platform = "linux-x86_64"`, `ci_only = true` — the pipeline may not silently decay
     *on the reference platform*; local macOS/Windows runs see these rows reported
@@ -436,7 +436,7 @@ violations — visible shame, no merge lock.
 2. **`benchmark-nightly.yml`** — schedule (off-hour minute, house style) +
    `workflow_dispatch`. Full profile. Installs strace via apt. Then the same tail as the
    pr job — `summarize` → `check --require-enforced` (this is where the
-   `profile = "full"` enforced rows get their enforcement point; without it they'd be
+   `profiles = ["full"]` enforced rows get their enforcement point; without it they'd be
    evaluated by no CI run, ever) → uploads artifacts; converts headline metrics via
    `export-gha` and publishes history with `benchmark-action/github-action-benchmark`
    (SHA-pinned; v1.22.x current) to the `gh-pages` branch under `bench/` —
@@ -446,7 +446,7 @@ violations — visible shame, no merge lock.
    (merge checklist in the PR): create the `gh-pages` branch (empty orphan commit — the
    action documents pre-creating it), enable Pages so the chart is actually served, and
    **dispatch `benchmark-nightly` immediately after merge** to confirm the
-   `profile = "full"` enforced rows evaluate green — schedule-only workflows first run
+   `profiles = ["full"]` enforced rows evaluate green — schedule-only workflows first run
    post-merge, so their first evaluation must be deliberate, not whenever the cron gets
    around to it.
 3. **`benchmark-compare.yml`** — `workflow_dispatch(base, head)`; inputs reach only
@@ -459,9 +459,11 @@ violations — visible shame, no merge lock.
    compare via the CLI surface only (valid against any skit); micro (which imports skit
    internals) runs best-effort per side — an import failure records a skip carrying the
    actual exception text (never a canned label that misattributes the cause) for that
-   side's benchmark instead of failing the workflow. `compare` flags |Δ| > max(5%, 2 ms) as notable
-   (raw sample lists ship in each side's results.json for any deeper statistics) —
-   warn-only. Compatibility floor: sides must postdate the prompt-kind store API
+   side's benchmark instead of failing the workflow. `compare` flags |Δ| > max(5%, a
+   per-unit noise floor: 2 ms for macro ms-metrics, 1 µs for micro µs-metrics) as
+   notable (raw sample lists ship in each side's results.json for any deeper
+   statistics), and a profile/platform/python mismatch between the sides renders a
+   loud not-directly-comparable warning — warn-only either way. Compatibility floor: sides must postdate the prompt-kind store API
    (`725f11d`) — the dataset generator uses it, so older refs fail dataset generation
    before any suite runs; the workflow says so where it would bite. Results carry each
    SIDE's git identity (`--measured-repo`), never the harness ref's. This is the

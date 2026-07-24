@@ -38,7 +38,7 @@ _ALLOWED_KEYS = {
     "tier",
     "ratchet",
     "headroom",
-    "profile",
+    "profiles",
     "platform",
     "ci_only",
     "context",
@@ -73,7 +73,7 @@ class Budget:
     tier: Tier
     ratchet: bool = False
     headroom: float = 0.10
-    profile: str | None = None
+    profiles: tuple[str, ...] = ()  # () = applies on every profile
     platform: str | None = None
     ci_only: bool = False
     context: dict[str, str] = field(default_factory=dict)
@@ -147,6 +147,8 @@ def _load_row(index: int, row: object) -> Budget:
     bound = row.get("max")
     if isinstance(bound, bool) or not isinstance(bound, int | float):
         raise BudgetsError(f"{where}: max must be a number")
+    if not math.isfinite(bound):
+        raise BudgetsError(f"{where}: max must be finite")
     tier_node = row.get("tier")
     if tier_node not in ("enforced", "target"):
         raise BudgetsError(f"{where}: tier must be 'enforced' or 'target'")
@@ -161,7 +163,14 @@ def _load_row(index: int, row: object) -> Budget:
         raise BudgetsError(f"{where}: headroom must be a number")
     if not 0 < headroom < 1:
         raise BudgetsError(f"{where}: headroom must be between 0 and 1")
-    profile = _optional_str(row, "profile", where)
+    profiles_node = row.get("profiles", [])
+    if not isinstance(profiles_node, list):
+        raise BudgetsError(f"{where}: profiles must be an array of non-empty strings")
+    profiles: list[str] = []
+    for entry in profiles_node:
+        if not isinstance(entry, str) or not entry:
+            raise BudgetsError(f"{where}: profiles must be an array of non-empty strings")
+        profiles.append(entry)
     platform = _optional_str(row, "platform", where)
     ci_only = row.get("ci_only", False)
     if not isinstance(ci_only, bool):
@@ -182,7 +191,7 @@ def _load_row(index: int, row: object) -> Budget:
         tier=tier,
         ratchet=ratchet,
         headroom=float(headroom),
-        profile=profile,
+        profiles=tuple(profiles),
         platform=platform,
         ci_only=ci_only,
         context={str(k): str(v) for k, v in context_node.items()},
@@ -210,7 +219,7 @@ def _evaluate_row(budget: Budget, results: Results) -> RowResult:
     meta = results.meta
     # Predicates first. An absent-or-empty meta field a predicate needs is a decay
     # channel, not a pass (JSON null ci_runner is *evaluable*: it means "not CI").
-    if budget.profile is not None and budget.profile != meta.profile:
+    if budget.profiles and meta.profile not in budget.profiles:
         return RowResult(budget, "not-applicable", detail=f"profile is {meta.profile}")
     if budget.platform is not None:
         if not meta.host.platform_key:
@@ -332,7 +341,7 @@ def propose(budgets: list[Budget], results: Results) -> str:
                 tier=budget.tier,
                 ratchet=True,
                 headroom=budget.headroom,
-                profile=budget.profile,
+                profiles=budget.profiles,
                 platform=budget.platform,
                 ci_only=budget.ci_only,
                 context={
@@ -359,8 +368,8 @@ def render_budgets(budgets: list[Budget]) -> str:
         if b.ratchet:
             row["ratchet"] = True
             row["headroom"] = b.headroom
-        if b.profile is not None:
-            row["profile"] = b.profile
+        if b.profiles:
+            row["profiles"] = list(b.profiles)
         if b.platform is not None:
             row["platform"] = b.platform
         if b.ci_only:

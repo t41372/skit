@@ -5,9 +5,11 @@ Format fidelity by construction: every entry is added the way real entries are a
 registry rewrite makes this O(N²) — fine at the N ≤ 1000 this pipeline uses by design
 (the 10k tier + a bulk writer is an explicit non-goal; see docs/design/benchmarks.md).
 
-Discontinuity clause: the kind mix, `state_fraction`, and the missing-target fraction
-are load-bearing inputs to every scale/tui metric. Changing ANY of them bumps
-GENERATOR_VERSION and is a history discontinuity.
+Discontinuity clause: the kind mix, `state_fraction`, the missing-target fraction,
+and SEARCH_PROBE_CHAR are load-bearing generation inputs (the probe char shapes the
+entry-0 / surviving-match invariants). Changing ANY of them bumps GENERATOR_VERSION
+and is a history discontinuity. The manifest records the probe char, so a reused
+dataset can never silently desync from the probe (check_reusable refuses).
 """
 
 from __future__ import annotations
@@ -85,7 +87,10 @@ class Manifest:
     state_fraction: float
     generator_version: int
     skit_version: str
+    probe_char: str
     slugs: tuple[str, ...]
+    # Per-slug kind map — diagnostic metadata (tests assert the mix through it); no
+    # suite consumes it.
     kinds: dict[str, str]
 
     @property
@@ -100,6 +105,7 @@ class Manifest:
                 {
                     "generator_version": self.generator_version,
                     "skit_version": self.skit_version,
+                    "probe_char": self.probe_char,
                     "n": self.n,
                     "seed": self.seed,
                     "state_fraction": self.state_fraction,
@@ -122,6 +128,7 @@ class Manifest:
             state_fraction=doc["state_fraction"],
             generator_version=doc["generator_version"],
             skit_version=doc.get("skit_version", ""),
+            probe_char=doc.get("probe_char", ""),
             slugs=tuple(doc["slugs"]),
             kinds=doc["kinds"],
         )
@@ -142,8 +149,16 @@ def check_reusable(manifest: Manifest, n: int) -> None:
         manifest.state_fraction,
         manifest.generator_version,
         manifest.skit_version,
+        manifest.probe_char,
     )
-    wanted = (n, DEFAULT_SEED, DEFAULT_STATE_FRACTION, GENERATOR_VERSION, skit.__version__)
+    wanted = (
+        n,
+        DEFAULT_SEED,
+        DEFAULT_STATE_FRACTION,
+        GENERATOR_VERSION,
+        skit.__version__,
+        SEARCH_PROBE_CHAR,
+    )
     if inputs != wanted:
         raise DatasetError(
             f"dataset {manifest.root} was generated with different inputs "
@@ -322,6 +337,20 @@ def generate(
         if found != n:
             raise DatasetError(f"generated {found} entries, expected {n}")
 
+    return _finalize(root, n=n, seed=seed, state_fraction=state_fraction, slugs=slugs, kinds=kinds)
+
+
+def _finalize(
+    root: Path,
+    *,
+    n: int,
+    seed: int,
+    state_fraction: float,
+    slugs: list[str],
+    kinds: dict[str, str],
+) -> Manifest:
+    """The one place the on-disk manifest schema is stamped and written — both
+    generators share it, so a Manifest field change can't drift between them."""
     import skit
 
     manifest = Manifest(
@@ -331,6 +360,7 @@ def generate(
         state_fraction=state_fraction,
         generator_version=GENERATOR_VERSION,
         skit_version=skit.__version__,
+        probe_char=SEARCH_PROBE_CHAR,
         slugs=tuple(slugs),
         kinds=kinds,
     )
@@ -382,17 +412,11 @@ def generate_runover(root: Path, fixtures_dir: Path) -> Manifest:
         if found != 3:
             raise DatasetError(f"runover library has {found} entries, expected 3")
 
-    import skit
-
-    manifest = Manifest(
-        root=root,
+    return _finalize(
+        root,
         n=3,
         seed=0,
         state_fraction=0.0,
-        generator_version=GENERATOR_VERSION,
-        skit_version=skit.__version__,
-        slugs=tuple(slugs),
+        slugs=slugs,
         kinds={slugs[0]: "python", slugs[1]: "shell", slugs[2]: "js"},
     )
-    (root / "manifest.json").write_text(manifest.to_json(), encoding="utf-8")
-    return manifest

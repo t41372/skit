@@ -8,7 +8,6 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..datasets import SEARCH_PROBE_CHAR
 from ..parsers import median, p95, stddev, vmhwm_kib
 from ..results import Metric, Skip, SuiteOutput
 from ._env import RunCtx, bench_env
@@ -31,7 +30,8 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
         )
     import_samples: list[float] = []
     for n in plan.ns:
-        env = bench_env(ctx, ctx.datasets[n].root)
+        manifest = ctx.datasets[n]
+        env = bench_env(ctx, manifest.root)
         first_idle: list[float] = []
         search: list[float] = []
         peaks: list[float] = []
@@ -44,7 +44,10 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
                     "--entries",
                     str(n),
                     "--probe-char",
-                    SEARCH_PROBE_CHAR,
+                    # The DATASET's recorded char: a manifest generated before a
+                    # probe-char change carries its own truth (check_reusable refuses
+                    # mismatched reuse anyway; this keeps probe and data one unit).
+                    manifest.probe_char,
                     "--out",
                     str(out_file),
                 ],

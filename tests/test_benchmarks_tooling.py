@@ -270,8 +270,12 @@ class TestBudgetLoader:
         assert all(b.context for b in enforced)
         # Both anti-decay rows exist: the skip-prone suites run only nightly, so a
         # pr-only row would never budget them (design: Budgets).
-        skip_rows = {b.profile for b in enforced if b.metric == "pipeline.skipped_count"}
-        assert skip_rows == {"pr", "full"}
+        skip_rows = {b.profiles for b in enforced if b.metric == "pipeline.skipped_count"}
+        assert skip_rows == {("pr",), ("full",)}
+        # The wheel is built by pr and full but deliberately not by compare (it would
+        # weigh the harness ref) — the enforced row must say so.
+        (wheel,) = [b for b in enforced if b.metric == "footprint.wheel_bytes"]
+        assert wheel.profiles == ("pr", "full")
         ratchets = [b for b in enforced if b.ratchet]
         assert ratchets, "the import ratchets must exist"
         assert all(b.context.get("python") == "3.13" for b in ratchets)
@@ -287,7 +291,10 @@ class TestBudgetLoader:
             ("[[budget]]\nmetric = 'm'\nmax = 1\ntier = 'target'\nratchet = true", "ratchet"),
             ("[[budget]]\nmetric = 'm'\nmax = 1\ntier = 'enforced'", "context"),
             ("[[budget]]\nmetric = 'm'\nmax = 1\ntier = 'target'\nbogus = 1", "unknown keys"),
-            ("[[budget]]\nmetric = 'm'\nmax = 1\ntier = 'target'\nprofile = ''", "profile"),
+            ("[[budget]]\nmetric = 'm'\nmax = 1\ntier = 'target'\nprofiles = ['']", "profiles"),
+            ("[[budget]]\nmetric = 'm'\nmax = 1\ntier = 'target'\nprofiles = 'pr'", "profiles"),
+            ("[[budget]]\nmetric = 'm'\nmax = 1\ntier = 'target'\nplatform = ''", "platform"),
+            ("[[budget]]\nmetric = 'm'\nmax = inf\ntier = 'target'", "max must be finite"),
             (
                 ENFORCED_ROW + "headroom = 2.0",
                 "headroom",
@@ -343,7 +350,7 @@ class TestBudgetEvaluation:
         assert not report.failures
 
     def test_profile_predicate_scopes_row(self) -> None:
-        budgets = budgets_from(ENFORCED_ROW + 'profile = "full"')
+        budgets = budgets_from(ENFORCED_ROW + 'profiles = ["full"]')
         report = evaluate(
             budgets, make_results({"imports.version.modules": Metric(300, "count", 1)})
         )
@@ -431,7 +438,7 @@ class TestBudgetEvaluation:
         assert "ceiling is stale" in text
 
     def test_enforced_evaluated_counts_verdicts_not_na(self) -> None:
-        budgets = budgets_from(ENFORCED_ROW + 'profile = "full"') + budgets_from(ENFORCED_ROW)
+        budgets = budgets_from(ENFORCED_ROW + 'profiles = ["full"]') + budgets_from(ENFORCED_ROW)
         report = evaluate(
             budgets, make_results({"imports.version.modules": Metric(300, "count", 1)})
         )
@@ -725,13 +732,8 @@ class TestEnvinfo:
         assert envinfo.uv_version_from_output("garbage") == "unknown"
 
     def test_dist_version_fallback(self) -> None:
-        from importlib.metadata import PackageNotFoundError
-
-        def missing(_name: str) -> str:
-            raise PackageNotFoundError
-
-        assert envinfo.dist_version("nope", probe=missing) == "unknown"
-        assert envinfo.dist_version("x", probe=lambda _n: "1.2.3") == "1.2.3"
+        assert envinfo.dist_version("this-distribution-does-not-exist") == "unknown"
+        assert envinfo.dist_version("pytest") != "unknown"
 
     def test_build_host_and_meta(self) -> None:
         host = envinfo.build_host(
@@ -877,7 +879,10 @@ class TestPipeline:
         )
         output = SuiteOutput(
             suite="startup",
-            metrics={"startup.version.median_ms": Metric(218.0, "ms", 15)},
+            metrics={
+                "startup.python.median_ms": Metric(35.0, "ms", 15),
+                "startup.version.median_ms": Metric(218.0, "ms", 15),
+            },
         )
         (bench / "suites" / "startup.json").write_text(output.to_json())
         results = pipeline.summarize_dir(bench)
@@ -951,9 +956,7 @@ class TestDatasets:
         assert len(set(manifest.slugs)) == 30
         # The store agrees (post-generate self-check ran), through the same env vars
         # any suite would use.
-        saved = {k: os.environ.get(k) for k in skit_dirs(manifest.root)}
-        os.environ.update(skit_dirs(manifest.root))
-        try:
+        with datasets.scoped_skit_dirs(manifest.root):
             from skit import store
 
             entries = {e.slug: e for e in store.list_entries()}
@@ -963,12 +966,6 @@ class TestDatasets:
 
             first = entries[manifest.slugs[0]]
             assert SEARCH_PROBE_CHAR not in f"{first.meta.name} {first.meta.description}"
-        finally:
-            for key, value in saved.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
 
     def test_generate_is_deterministic(self, tmp_path: Path) -> None:
         a = generate(tmp_path / "a", 15)
@@ -997,27 +994,17 @@ class TestDatasets:
         assert kinds.count("exe") == 6
         # Long tail present: one each of ruby/perl/lua/r.
         assert {"ruby", "perl", "lua", "r"} <= set(kinds)
-        saved = {k: os.environ.get(k) for k in skit_dirs(manifest.root)}
-        os.environ.update(skit_dirs(manifest.root))
-        try:
+        with datasets.scoped_skit_dirs(manifest.root):
             from skit import launcher, store
 
             entries = store.list_entries()
             missing = [e for e in entries if launcher.target_missing(e)]
             assert missing, "every 10th reference entry's target is deliberately deleted"
-        finally:
-            for key, value in saved.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
 
     @pytest.mark.parametrize(("fraction", "expect_state"), [(0.0, False), (1.0, True)])
     def test_state_fraction(self, tmp_path: Path, fraction: float, expect_state: bool) -> None:
         manifest = generate(tmp_path / "ds", 8, state_fraction=fraction)
-        saved = {k: os.environ.get(k) for k in skit_dirs(manifest.root)}
-        os.environ.update(skit_dirs(manifest.root))
-        try:
+        with datasets.scoped_skit_dirs(manifest.root):
             from skit import argstate
 
             with_state = [
@@ -1026,12 +1013,6 @@ class TestDatasets:
             assert bool(with_state) is expect_state
             if expect_state:
                 assert len(with_state) == manifest.n
-        finally:
-            for key, value in saved.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
 
     def test_refuses_non_empty_root(self, tmp_path: Path) -> None:
         root = tmp_path / "ds"
@@ -1059,19 +1040,11 @@ class TestDatasets:
         manifest = generate_runover(tmp_path / "ro", FIXTURES_DIR)
         assert manifest.n == 3
         assert set(manifest.kinds.values()) == {"python", "shell", "js"}
-        saved = {k: os.environ.get(k) for k in skit_dirs(manifest.root)}
-        os.environ.update(skit_dirs(manifest.root))
-        try:
+        with datasets.scoped_skit_dirs(manifest.root):
             from skit import store
 
             names = {e.meta.name for e in store.list_entries()}
             assert names == {"noop-py", "noop-sh", "noop-js"}
-        finally:
-            for key, value in saved.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
 
     def test_scoped_skit_dirs_restores_previously_unset_var(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1131,7 +1104,7 @@ class TestFrontDoor:
         from benchmarks.__main__ import main
 
         budgets_path = tmp_path / "budgets.toml"
-        budgets_path.write_text(ENFORCED_ROW + 'profile = "full"')
+        budgets_path.write_text(ENFORCED_ROW + 'profiles = ["full"]')
         results_path = tmp_path / "r.json"
         results_path.write_text(
             make_results({"imports.version.modules": Metric(300, "count", 1)}).to_json()
@@ -1192,16 +1165,25 @@ class TestContractSync:
         text = (REPO_ROOT / "benchmarks" / "budgets.toml").read_text(encoding="utf-8")
         assert render_budgets(load_budgets(text)) == text
 
+    def test_hyperfine_pin_synced_to_install_action(self) -> None:
+        """hyperfine.py's pinned version + sha256 + URL are the single source of
+        truth; the composite install action must carry the same pin."""
+        action = (REPO_ROOT / ".github" / "actions" / "install-hyperfine" / "action.yml").read_text(
+            encoding="utf-8"
+        )
+        assert hyperfine.HYPERFINE_URL in action
+        assert hyperfine.HYPERFINE_SHA256 in action
+        assert f"hyperfine-v{hyperfine.HYPERFINE_VERSION}-x86_64" in action
+
     @pytest.mark.parametrize(
         "workflow",
         ["benchmark.yml", "benchmark-nightly.yml", "benchmark-compare.yml"],
     )
-    def test_hyperfine_pin_synced_to_workflows(self, workflow: str) -> None:
-        """hyperfine.py's pinned version + sha256 are the single source of truth; every
-        workflow's install block must carry the same pin."""
+    def test_workflows_install_hyperfine_via_the_action(self, workflow: str) -> None:
+        """One install block, not three drifting copies: every bench workflow must go
+        through the composite action."""
         text = (REPO_ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
-        assert f"v{hyperfine.HYPERFINE_VERSION}/hyperfine-v{hyperfine.HYPERFINE_VERSION}" in text
-        assert hyperfine.HYPERFINE_SHA256 in text
+        assert "uses: ./.github/actions/install-hyperfine" in text
 
     @pytest.mark.parametrize(
         "workflow",
@@ -1248,13 +1230,18 @@ class TestEnvspec:
     def test_build_env_dedupes_and_tolerates_missing_tools(self, tmp_path: Path) -> None:
         from benchmarks import envspec
 
+        # The empty library is the generated, manifest-verified n=0 dataset — there
+        # is no unverified special case.
+        manifest = generate(tmp_path / "n0", 0)
         env = envspec.build_env(
-            skit="/usr/bin/skit", uv=None, node=None, workdir=tmp_path, dataset_root=None
+            skit="/usr/bin/skit",
+            uv=None,
+            node=None,
+            workdir=tmp_path / "work",
+            dataset_root=manifest.root,
         )
         assert env["PATH"] == "/usr/bin:/bin"
-        # None dataset → a real (empty) library dir, still absolute.
-        assert env["SKIT_DATA_DIR"].startswith(str(tmp_path))
-        assert (tmp_path / "empty-library").is_dir()
+        assert env["SKIT_DATA_DIR"] == str((tmp_path / "n0" / "data").resolve())
 
     def test_build_env_refuses_non_dataset_roots(self, tmp_path: Path) -> None:
         from benchmarks import envspec
@@ -1351,20 +1338,12 @@ class TestSearchProbeInvariant:
         from benchmarks.datasets import SEARCH_PROBE_CHAR
 
         manifest = generate(tmp_path / "ds", n)
-        saved = {k: os.environ.get(k) for k in skit_dirs(manifest.root)}
-        os.environ.update(skit_dirs(manifest.root))
-        try:
+        with datasets.scoped_skit_dirs(manifest.root):
             from skit import store
 
             texts = [f"{e.meta.name} {e.meta.description}" for e in store.list_entries()]
             assert any(SEARCH_PROBE_CHAR not in t for t in texts), "a non-match must exist"
             assert any(SEARCH_PROBE_CHAR in t for t in texts), "a match must survive"
-        finally:
-            for key, value in saved.items():
-                if value is None:
-                    os.environ.pop(key, None)
-                else:
-                    os.environ[key] = value
 
 
 # ================================================================ round 1 review fixes
@@ -1447,3 +1426,131 @@ class TestHarnessImportSurface:
                         f"{path.relative_to(REPO_ROOT)} imports {top!r} — outside the "
                         "A/B harness surface (runtime deps + pyperf + stdlib)"
                     )
+
+
+class TestCodeReviewFixes:
+    """Behaviors added by the /code-review round (see the PR's review appendix)."""
+
+    def test_micro_deltas_clear_the_us_floor(self) -> None:
+        base = make_results({"micro.store.resolve.mid.n1000.median_us": Metric(100.0, "us", 40)})
+        head = make_results({"micro.store.resolve.mid.n1000.median_us": Metric(300.0, "us", 40)})
+        comparison = bcompare.compare(base, head)
+        assert [d.metric for d in comparison.notable] == ["micro.store.resolve.mid.n1000.median_us"]
+        # Sub-µs wiggle stays noise.
+        near = make_results({"micro.store.resolve.mid.n1000.median_us": Metric(100.5, "us", 40)})
+        assert bcompare.compare(base, near).notable == []
+
+    def test_compare_flags_incomparable_sides(self) -> None:
+        base = make_results({"x.ms": Metric(100.0, "ms", 5)}, meta=make_meta(profile="full"))
+        head = make_results(
+            {"x.ms": Metric(100.0, "ms", 5)},
+            meta=make_meta(profile="pr", platform_key="darwin-aarch64", python="3.14.2"),
+        )
+        comparison = bcompare.compare(base, head)
+        assert comparison.incomparable == [
+            "profile: full vs pr",
+            "platform: linux-x86_64 vs darwin-aarch64",
+            "python: 3.13 vs 3.14",
+        ]
+        text = bcompare.render_markdown(base, head, comparison)
+        assert "not directly comparable" in text
+        matched = bcompare.compare(base, base)
+        assert matched.incomparable == []
+        assert "not directly comparable" not in bcompare.render_markdown(base, base, matched)
+
+    def test_budgets_reject_non_finite_bounds(self) -> None:
+        with pytest.raises(BudgetsError, match="max must be finite"):
+            budgets_from("[[budget]]\nmetric = 'm'\nmax = nan\ntier = 'target'")
+
+    @pytest.mark.parametrize("bad", [float("inf"), float("nan")])
+    def test_results_reject_non_finite_values(self, bad: float) -> None:
+        doc = json.loads(make_results({"m.x": Metric(1.0, "ms", 1)}).to_json())
+        doc["metrics"]["m.x"]["value"] = bad
+        with pytest.raises(ResultsError, match="finite"):
+            Results.from_json(json.dumps(doc))
+
+    def test_pyperf_parser_rejects_malformed_elements(self) -> None:
+        with pytest.raises(parsers.ParseError, match="not an object"):
+            parsers.pyperf_benchmarks('{"benchmarks": [1]}')
+        with pytest.raises(parsers.ParseError, match="runs is not an array"):
+            parsers.pyperf_benchmarks(
+                json.dumps({"benchmarks": [{"metadata": {"name": "x"}, "runs": 5}]})
+            )
+        with pytest.raises(parsers.ParseError, match="non-numeric value"):
+            parsers.pyperf_benchmarks(
+                json.dumps(
+                    {"benchmarks": [{"metadata": {"name": "x"}, "runs": [{"values": ["y"]}]}]}
+                )
+            )
+
+    def test_hyperfine_parser_rejects_malformed_entries(self) -> None:
+        with pytest.raises(parsers.ParseError, match="not an object"):
+            hyperfine.parse_export('{"results": [1]}')
+        with pytest.raises(parsers.ParseError, match="non-numeric time"):
+            hyperfine.parse_export(
+                json.dumps({"results": [{"command": "a", "times": ["x"], "exit_codes": [0]}]})
+            )
+
+    def test_derive_strict_pair_half_present_fails_loud(self) -> None:
+        # A renamed producer metric must never silently drop a headline derivation.
+        with pytest.raises(pipeline.PipelineError, match="half-present"):
+            pipeline.derive({"startup.version.median_ms": Metric(218.0, "ms", 15)})
+
+    def test_derive_scale_grid_half_is_legitimate(self) -> None:
+        # The scale pair rides on the plan's N grid; one endpoint alone is a config
+        # choice, not a rename — silently skipped, budget reports metric-missing.
+        derived = pipeline.derive({"scale.list_json.n0.median_ms": Metric(220.0, "ms", 15)})
+        assert "scale.list_json.per_entry_us" not in derived
+
+    def test_merge_rejects_duplicate_suite_outputs(self) -> None:
+        a = SuiteOutput(suite="micro", metrics={"m.a": Metric(1, "us", 1)})
+        b = SuiteOutput(suite="micro", metrics={"m.b": Metric(2, "us", 1)})
+        with pytest.raises(pipeline.PipelineError, match="duplicate suite output"):
+            pipeline.merge(make_meta(), [a, b], total_duration_s=1.0)
+
+    def test_summarize_dir_rejects_corrupt_run_json(self, tmp_path: Path) -> None:
+        (tmp_path / "run.json").write_text("{truncated")
+        with pytest.raises(pipeline.PipelineError, match="not valid JSON"):
+            pipeline.summarize_dir(tmp_path)
+
+    def test_summarize_dir_rejects_non_finite_total(self, tmp_path: Path) -> None:
+        import dataclasses
+
+        (tmp_path / "run.json").write_text(
+            json.dumps({"meta": dataclasses.asdict(make_meta()), "total_duration_s": float("inf")})
+        )
+        with pytest.raises(pipeline.PipelineError, match="finite"):
+            pipeline.summarize_dir(tmp_path)
+
+    def test_skip_all_fills_both_suite_fields(self) -> None:
+        output = SuiteOutput.skip_all("rss", "no resource module on Windows")
+        assert output.suite == "rss"
+        assert output.skipped == [
+            Skip(suite="rss", case="all", reason="no resource module on Windows")
+        ]
+        assert SuiteOutput.from_json(output.to_json()) == output
+
+    def test_compare_profile_carries_compare_mode(self) -> None:
+        assert all(plan.compare_mode for plan in pipeline.build_plan("compare"))
+        assert not any(plan.compare_mode for plan in pipeline.build_plan("pr"))
+        assert not any(plan.compare_mode for plan in pipeline.build_plan("full"))
+
+    def test_startup_and_imports_declare_their_empty_library(self) -> None:
+        # Their n=0 need must be plan-visible (dataset_ns feeds prepare_datasets),
+        # never satisfied incidentally by a sibling suite.
+        for profile in pipeline.PROFILES:
+            for plan in pipeline.build_plan(profile):
+                if plan.suite in ("startup", "imports"):
+                    assert 0 in plan.ns
+
+    def test_manifest_records_the_probe_char(self, tmp_path: Path) -> None:
+        import dataclasses
+
+        from benchmarks.datasets import SEARCH_PROBE_CHAR, check_reusable
+
+        manifest = generate(tmp_path / "ds", 3)
+        assert manifest.probe_char == SEARCH_PROBE_CHAR
+        assert Manifest.load(manifest.root).probe_char == SEARCH_PROBE_CHAR
+        stale = dataclasses.replace(manifest, probe_char="e")
+        with pytest.raises(DatasetError, match="different inputs"):
+            check_reusable(stale, 3)

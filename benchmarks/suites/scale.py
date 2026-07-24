@@ -6,7 +6,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..hyperfine import Case
-from ..results import Skip, SuiteOutput
+from ..results import SuiteOutput
 from ._env import RunCtx, bench_env, run_hyperfine
 
 if TYPE_CHECKING:
@@ -15,10 +15,7 @@ if TYPE_CHECKING:
 
 def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
     if ctx.hyperfine is None:
-        return SuiteOutput(
-            suite="scale",
-            skipped=[Skip(suite="scale", case="all", reason="hyperfine not found")],
-        )
+        return SuiteOutput.skip_all("scale", "hyperfine not found")
     output = SuiteOutput(suite="scale")
     for n in plan.ns:
         manifest = ctx.datasets[n]

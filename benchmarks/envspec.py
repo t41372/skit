@@ -33,7 +33,7 @@ def build_env(
     uv: str | None,
     node: str | None,
     workdir: Path,
-    dataset_root: Path | None,
+    dataset_root: Path,
 ) -> dict[str, str]:
     """The constructed env dict — built, not scrubbed: composed PATH (venv, uv, node,
     system), dataset-pointed SKIT dirs, scratch HOME/XDG, per-session UV cache, pinned
@@ -62,12 +62,10 @@ def build_env(
         "COLUMNS": "100",
         "LINES": "40",
     }
-    if dataset_root is None:
-        dataset_root = workdir / "empty-library"
-        dataset_root.mkdir(parents=True, exist_ok=True)
-    elif not (dataset_root / "manifest.json").exists():
+    if not (dataset_root / "manifest.json").exists():
         # Wrong-but-plausible defense: a dataset root that doesn't hold a generated
-        # library would make every child benchmark an empty one. Die here, loudly.
+        # library would make every child benchmark an empty one — no exceptions, an
+        # "empty library" is the generated, verified n=0 dataset. Die here, loudly.
         raise RuntimeError(f"{dataset_root} is not a generated dataset (no manifest.json)")
     env.update(skit_dirs(dataset_root))
     return env

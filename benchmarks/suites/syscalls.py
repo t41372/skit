@@ -12,7 +12,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from ..parsers import FILE_OP_SYSCALLS, NETWORK_SYSCALLS, count_group, strace_counts
-from ..results import Metric, Skip, SuiteOutput
+from ..results import Metric, SuiteOutput
 from ._env import RunCtx, bench_env
 
 if TYPE_CHECKING:
@@ -21,15 +21,9 @@ if TYPE_CHECKING:
 
 def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
     if sys.platform != "linux":
-        return SuiteOutput(
-            suite="syscalls",
-            skipped=[Skip(suite="syscalls", case="all", reason="not Linux")],
-        )
+        return SuiteOutput.skip_all("syscalls", "not Linux")
     if ctx.strace is None:
-        return SuiteOutput(
-            suite="syscalls",
-            skipped=[Skip(suite="syscalls", case="all", reason="strace not found")],
-        )
+        return SuiteOutput.skip_all("syscalls", "strace not found")
     if len(plan.ns) != 1:
         raise RuntimeError("syscalls metric IDs are unsuffixed: the plan must carry one N")
     n = plan.ns[0]

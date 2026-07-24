@@ -115,7 +115,7 @@ The rendered summary always shows both.
 `budgets.toml` rows are `enforced` (deterministic/ratchet-safe only — `check` exits
 non-zero) or `target` (the aspirational contract — reported loudly, never failing CI
 until a future PR deliberately promotes a row; wall-clock rows only ever on fixed
-hardware). Optional predicates (`profile`, `platform`, `ci_only`) scope rows;
+hardware). Optional predicates (`profiles`, `platform`, `ci_only`) scope rows;
 non-matching hosts see "not applicable", and every distinct decay channel is its own
 hard failure: violation, **metric missing** (renamed ID / crashed suite),
 **predicate unevaluable** (absent/empty meta field), **python mismatch on CI**
@@ -137,7 +137,7 @@ bootstrap bounds carry hand-written `context.python = "3.13"` (the workflow's pi
   check while path-filtered (GitHub leaves path-skipped required checks Pending,
   blocking docs-only PRs). Red = visible shame, not a merge lock.
 - **benchmark-nightly.yml** (02:43 UTC + dispatch): full profile → check (the
-  `profile = "full"` enforced rows' only enforcement point) → artifacts → history
+  `profiles = ["full"]` enforced rows' only enforcement point) → artifacts → history
   push to `gh-pages` under `bench/` via github-action-benchmark
   (`customSmallerIsBetter`; names are the stable metric IDs from
   `pipeline.HEADLINE_METRICS`).
@@ -146,8 +146,10 @@ bootstrap bounds carry hand-written `context.python = "3.13"` (the workflow's pi
   built venv from its own lockfile (pyperf injected as harness infrastructure), and
   the harness runs *under that side's python*, so the benchmarked venv is the side's
   while the harness code is fixed. Results carry each side's own git identity
-  (`--measured-repo`). Micro scripts that can't import an older side's API record
-  per-script skips carrying the actual error (`BENCH_COMPARE=1`). Compatibility
+  (`--measured-repo`). The compare profile carries `compare_mode` on every
+  SuitePlan, so micro scripts that can't import an older side's API record
+  per-script skips carrying the actual error — including on a local
+  `run --profile compare`. Compatibility
   floor: sides must postdate the prompt-kind store API (`725f11d`) — the dataset
   generator uses it, so older refs fail dataset generation before any suite runs.
 
@@ -162,7 +164,7 @@ its noise distribution is measured.
    --allow-empty -m "bench history" && git push origin gh-pages` (the action
    documents pre-creating it).
 2. Repo Settings → Pages → deploy from `gh-pages` so the chart is served.
-3. Dispatch `benchmark (nightly)` once and confirm the `profile = "full"` enforced
+3. Dispatch `benchmark (nightly)` once and confirm the `profiles = ["full"]` enforced
    rows evaluate green — schedule-only workflows never run pre-merge.
 4. Tighten the provisional ratchet bounds from the merged PR's CI artifact
    (`check --propose`).

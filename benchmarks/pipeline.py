@@ -5,6 +5,7 @@ every decision about what runs and what the numbers mean — gate code, covered.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -34,16 +35,20 @@ class SuitePlan:
     closure: bool = False
     js_lane: bool = False
     doctor: bool = False
+    # A/B side run (benchmark-compare): suites that import skit internals degrade
+    # per-case with recorded skips instead of failing the run. Carried on the plan —
+    # the one source of truth for execution mode — never on ambient env.
+    compare_mode: bool = False
 
 
 def build_plan(profile: str) -> tuple[SuitePlan, ...]:
     """The suites x profiles table from docs/design/benchmarks.md, as data."""
     if profile == "pr":
         return (
-            SuitePlan("imports"),
+            SuitePlan("imports", ns=(0,)),
             SuitePlan("footprint", closure=False),
             SuitePlan("rss", ns=(0, 1000), samples=5),
-            SuitePlan("startup", warmup=3, min_runs=15),
+            SuitePlan("startup", ns=(0,), warmup=3, min_runs=15),
             SuitePlan("scale", ns=(0, 100, 1000), warmup=3, min_runs=15),
             SuitePlan("run_overhead", warmup=3, min_runs=15, js_lane=False),
             SuitePlan("micro", ns=(0, 100, 1000), fast=True),
@@ -51,10 +56,10 @@ def build_plan(profile: str) -> tuple[SuitePlan, ...]:
         )
     if profile == "full":
         return (
-            SuitePlan("imports"),
+            SuitePlan("imports", ns=(0,)),
             SuitePlan("footprint", closure=True),
             SuitePlan("rss", ns=(0, 1000), samples=10),
-            SuitePlan("startup", warmup=5, min_runs=40),
+            SuitePlan("startup", ns=(0,), warmup=5, min_runs=40),
             SuitePlan("scale", ns=(0, 10, 100, 1000), warmup=5, min_runs=40, doctor=True),
             SuitePlan("run_overhead", warmup=5, min_runs=40, js_lane=True),
             SuitePlan("micro", ns=(0, 100, 1000), fast=False),
@@ -67,13 +72,13 @@ def build_plan(profile: str) -> tuple[SuitePlan, ...]:
         # A/B it would measure the invoking ref twice — wrong-but-plausible data,
         # exactly the failure class this pipeline exists to prevent.
         return (
-            SuitePlan("imports"),
-            SuitePlan("rss", ns=(0, 1000), samples=5),
-            SuitePlan("startup", warmup=3, min_runs=15),
-            SuitePlan("scale", ns=(0, 100, 1000), warmup=3, min_runs=15),
-            SuitePlan("run_overhead", warmup=3, min_runs=15, js_lane=False),
-            SuitePlan("micro", ns=(0, 100, 1000), fast=True),
-            SuitePlan("tui", ns=(0, 100, 1000), samples=5),
+            SuitePlan("imports", ns=(0,), compare_mode=True),
+            SuitePlan("rss", ns=(0, 1000), samples=5, compare_mode=True),
+            SuitePlan("startup", ns=(0,), warmup=3, min_runs=15, compare_mode=True),
+            SuitePlan("scale", ns=(0, 100, 1000), warmup=3, min_runs=15, compare_mode=True),
+            SuitePlan("run_overhead", warmup=3, min_runs=15, js_lane=False, compare_mode=True),
+            SuitePlan("micro", ns=(0, 100, 1000), fast=True, compare_mode=True),
+            SuitePlan("tui", ns=(0, 100, 1000), samples=5, compare_mode=True),
         )
     raise PipelineError(f"unknown profile {profile!r} (expected one of {PROFILES})")
 
@@ -99,6 +104,8 @@ def merge(meta: Meta, outputs: list[SuiteOutput], total_duration_s: float) -> Re
                 raise PipelineError(f"duplicate metric id {metric_id!r}")
             metrics[metric_id] = metric
         skipped.extend(output.skipped)
+        if output.suite in raw:
+            raise PipelineError(f"duplicate suite output {output.suite!r}")
         raw[output.suite] = output.raw
         metrics[f"pipeline.suite.{output.suite}.duration_s"] = Metric(
             value=round(output.duration_s, 3), unit="s", n=1
@@ -112,48 +119,80 @@ def merge(meta: Meta, outputs: list[SuiteOutput], total_duration_s: float) -> Re
     return Results(meta=meta, metrics=metrics, skipped=skipped, raw=raw)
 
 
-def derive(metrics: dict[str, Metric]) -> dict[str, Metric]:
-    """Cross-suite deltas. Each derivation appears only when all its inputs did — a
-    missing derived metric then trips its budget as metric-missing instead of being
-    silently faked from partial data."""
-    out: dict[str, Metric] = {}
+@dataclass(frozen=True)
+class Derivation:
+    """One cross-suite delta. `strict` pairs are minted unconditionally by a single
+    suite (both inputs appear together or not at all), so a HALF-present pair can
+    only mean a renamed/broken producer — the loud-failure channel that keeps a
+    metric rename from silently dropping a headline number. Non-strict pairs
+    (scale's endpoints) depend on the plan's N grid and may legitimately lose one
+    side to a grid change."""
 
-    def delta(target: str, minuend: str, subtrahend: str, *, unit: str, scale: float = 1) -> None:
-        a, b = metrics.get(minuend), metrics.get(subtrahend)
-        if a is not None and b is not None:
-            out[target] = Metric(value=round((a.value - b.value) * scale, 4), unit=unit, n=1)
+    target: str
+    minuend: str
+    subtrahend: str
+    unit: str
+    strict: bool
 
-    delta(
+
+DERIVATIONS: tuple[Derivation, ...] = (
+    Derivation(
         "startup.version.over_python_ms",
         "startup.version.median_ms",
         "startup.python.median_ms",
-        unit="ms",
-    )
+        "ms",
+        strict=True,
+    ),
     # (ms delta over 1000 entries) → µs per entry: ÷1000 entries x 1000 µs/ms cancel.
-    delta(
+    Derivation(
         "scale.list_json.per_entry_us",
         "scale.list_json.n1000.median_ms",
         "scale.list_json.n0.median_ms",
-        unit="us",
-    )
-    delta(
+        "us",
+        strict=False,
+    ),
+    Derivation(
         "run_overhead.python.overhead_ms",
         "run_overhead.python.skit.median_ms",
         "run_overhead.python.uv_script.median_ms",
-        unit="ms",
-    )
-    delta(
+        "ms",
+        strict=True,
+    ),
+    Derivation(
         "run_overhead.shell.overhead_ms",
         "run_overhead.shell.skit.median_ms",
         "run_overhead.shell.bash.median_ms",
-        unit="ms",
-    )
-    delta(
+        "ms",
+        strict=True,
+    ),
+    Derivation(
         "run_overhead.js.overhead_ms",
         "run_overhead.js.skit.median_ms",
         "run_overhead.js.node.median_ms",
-        unit="ms",
-    )
+        "ms",
+        strict=True,
+    ),
+)
+
+
+def derive(metrics: dict[str, Metric]) -> dict[str, Metric]:
+    """Cross-suite deltas from DERIVATIONS. Both inputs present → derived; both
+    absent (suite/lane skipped) → the derivation is omitted and its budget reports
+    metric-missing; exactly ONE present on a strict pair → a renamed/broken producer,
+    which fails loudly here instead of quietly dropping a headline metric."""
+    out: dict[str, Metric] = {}
+    for d in DERIVATIONS:
+        a, b = metrics.get(d.minuend), metrics.get(d.subtrahend)
+        if a is not None and b is not None:
+            out[d.target] = Metric(value=round(a.value - b.value, 4), unit=d.unit, n=1)
+        elif d.strict and (a is not None) != (b is not None):
+            present, absent = (
+                (d.minuend, d.subtrahend) if a is not None else (d.subtrahend, d.minuend)
+            )
+            raise PipelineError(
+                f"derivation {d.target!r}: input pair half-present ({present} without "
+                f"{absent}) — was a suite's metric ID renamed?"
+            )
     return out
 
 
@@ -238,11 +277,14 @@ def summarize_dir(bench_dir: Path, budgets: list[Budget] | None = None) -> Resul
     run_path = bench_dir / "run.json"
     if not run_path.exists():
         raise PipelineError(f"no run.json in {bench_dir} — did `run` complete?")
-    run_doc = json.loads(run_path.read_text(encoding="utf-8"))
+    try:
+        run_doc = json.loads(run_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise PipelineError(f"run.json is not valid JSON ({exc}) — crashed run?") from exc
     meta = meta_from_dict(run_doc.get("meta"))
     total = run_doc.get("total_duration_s")
-    if not isinstance(total, int | float) or isinstance(total, bool):
-        raise PipelineError("run.json total_duration_s: expected a number")
+    if not isinstance(total, int | float) or isinstance(total, bool) or not math.isfinite(total):
+        raise PipelineError("run.json total_duration_s: expected a finite number")
     suite_files = sorted((bench_dir / "suites").glob("*.json"))
     if not suite_files:
         raise PipelineError(f"no suite outputs under {bench_dir / 'suites'}")
