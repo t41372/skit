@@ -52,7 +52,7 @@ async def _click_chip(pilot, widget: Static, label: str) -> None:
     """Click the linked span rather than an arbitrary blank cell in its Static."""
     # Inline chips live in the form's ordinary wheel-scrollable body. Bring this one
     # into the viewport exactly as a mouse user scrolling to it would.
-    widget.scroll_visible(animate=False)
+    widget.scroll_visible(animate=False, immediate=True, force=True)
     await pilot.pause()
     plain = str(widget.render()).replace(tui_footer.GLUE, " ")
     position = plain.find(label)

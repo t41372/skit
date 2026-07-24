@@ -15,6 +15,7 @@ from typer.testing import CliRunner
 from skit import argstate, cli, config, i18n, store
 from skit.langs.base import ArgvLaunch
 from skit.langs.prompt import analyzer as prompt_analyzer
+from skit.langs.prompt import text as prompt_text
 
 runner = CliRunner()
 
@@ -994,7 +995,7 @@ def test_real_prompt_run_warns_before_sending_a_nonempty_secret(tmp_path, spawn_
 
 @pytest.mark.parametrize("text", ["--help\nsecond line", "@README.md", "install", "config"])
 def test_noninteractive_pi_run_warns_and_uses_lossy_fallback(tmp_path, spawn_spy, text):
-    _added(tmp_path, text=text, pin="pi")
+    entry = _added(tmp_path, text=text, pin="pi")
     result = runner.invoke(cli.app, ["run", "p", "--no-input"])
     assert result.exit_code == 0, result.output
     assert "Warning: Pi would interpret" in result.output
@@ -1002,7 +1003,7 @@ def test_noninteractive_pi_run_warns_and_uses_lossy_fallback(tmp_path, spawn_spy
     prepared = spawn_spy["prepared"]
     assert isinstance(prepared, cli.launcher.PreparedLaunch)
     assert isinstance(prepared.payload, ArgvLaunch)
-    assert prepared.payload.argv[1] == f"\n{text}"
+    assert prepared.payload.argv[1] == f"\n{prompt_text.read(entry.script_path)}"
 
 
 def test_noninteractive_pi_dry_run_warns_and_shows_fallback(tmp_path, spawn_spy):
