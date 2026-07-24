@@ -382,7 +382,13 @@ argv = ["pi", "{{prompt}}"]
 so `amp -x` is the deliberate one-shot exception; the human `runner list` view and the
 run path make that behavior explicit. OpenCode binds the value in the `--prompt=…` token
 because its yargs parser would treat a separate option-looking value such as `--help` or
-`--version` as a CLI option instead of prompt text. Config rows remain plain editable data.)
+`--version` as a CLI option instead of prompt text. Copilot likewise binds
+`--interactive=…` so a leading-dash prompt remains data. Cursor's root `--` delimiter plus
+fixed `agent` subcommand protects both option-looking prompts and a prompt such as `status`
+that would otherwise name a Cursor root command. Pi supports neither guard: when its
+positional prompt starts with `-` or `@`, or exactly matches a package command, skit warns
+and prepends one newline so Pi keeps it in interactive-message mode. Config rows remain
+plain editable data.)
 
 - **Argv, not a shell string.** Each element is one argv token; substitution happens
   *within* a token, so a multi-line prompt is one `execve` argument — no shell, no
