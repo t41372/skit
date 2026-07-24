@@ -48,6 +48,7 @@ preconfigured — seeded on first use, then yours to edit:
 | `antigravity` | `agy --prompt-interactive {{prompt}}` |
 | `copilot` | `copilot --interactive={{prompt}}` |
 | `cursor` | `cursor-agent -- agent {{prompt}}` |
+| `pi` | `pi {{prompt}}` |
 
 The `--` / `=` binding forms are deliberate where those CLIs support them: they
 keep a prompt that begins with `--help` or `--model` from being parsed as a flag.
@@ -57,10 +58,11 @@ interactive session with the prompt as the opening message — except amp, which
 has no such mode and uses its official `amp -x` one-shot to execute the prompt
 and return.
 
-Pi is not preconfigured because its current positional parser has no end-of-options
-delimiter or bound prompt option. A prompt beginning with `-` therefore cannot be
-delivered byte-for-byte while keeping an interactive session. You can still register
-a custom Pi runner if that trade-off is acceptable for your prompts.
+Pi's positional parser has no end-of-options delimiter or bound prompt option. If the
+rendered prompt starts with `-` or `@`, or exactly matches one of Pi's package commands,
+skit warns and prepends one newline before launching. This non-lossless fallback keeps
+Pi in interactive mode and prevents it from treating the prompt as an option, attachment,
+or package operation. The same warning and fallback apply in non-interactive skit runs.
 
 Register anything else with:
 

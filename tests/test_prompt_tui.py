@@ -499,7 +499,7 @@ async def test_exit_mode_pending_run_carries_the_runner(tmp_path, monkeypatch):
 
     seen: dict[str, object] = {}
 
-    def fake_execute(entry, plan, asm, *, emit, invoke_cwd=None, runner=None):
+    def fake_execute(entry, plan, asm, *, emit, warn=None, invoke_cwd=None, runner=None):
         seen["runner"] = runner
         return flows.RunOutcome(0)
 

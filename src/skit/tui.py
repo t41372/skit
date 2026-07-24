@@ -833,7 +833,12 @@ class MenuApp(App[int | PendingRun]):
             # The shared delivery pipeline: inject, transparency, run, cleanup. The TUI
             # just prints what it emits (bare, inside the suspend) and shows a banner.
             outcome = flows.execute(
-                entry, plan, asm, emit=lambda line: print(line, flush=True), runner=runner
+                entry,
+                plan,
+                asm,
+                emit=lambda line: print(line, flush=True),
+                warn=lambda line: print(line, flush=True),
+                runner=runner,
             )
             if outcome.code is None:
                 print(gettext("Error: %(error)s") % {"error": outcome.message}, flush=True)
@@ -1073,6 +1078,7 @@ def _finish_run(pending: PendingRun) -> int:
         pending.plan,
         pending.asm,
         emit=lambda line: print(line, flush=True),
+        warn=lambda line: print(line, flush=True),
         runner=pending.runner,
     )
     if outcome.code is None:

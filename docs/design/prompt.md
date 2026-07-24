@@ -24,9 +24,10 @@ Revision notes (v1 → v2, all maintainer-decided):
   command strings. Eliminates the quoting-injection surface by construction and makes
   multi-line prompts (the norm) safe on Windows, where `shell=True` means cmd.exe and
   quoted newlines are a minefield.
-- **Seven seed runners** — claude, codex, opencode, amp, antigravity, copilot, cursor.
-  gemini-cli is deliberately excluded (dead), and pi has no byte-preserving argv form
-  for a dash-prefixed interactive opening prompt.
+- **Eight seed runners** — claude, codex, opencode, amp, antigravity, copilot, cursor,
+  pi. gemini-cli is deliberately excluded (dead). Pi has no byte-preserving argv form
+  for every interactive opening prompt, so its compatibility adapter warns and prepends
+  one newline only for parser-ambiguous leading text.
 - **`family="interpreted"`, not `"template"`** — `base.LangSpec.has_original_file` is
   defined as `family != "template"`, so a template-family prompt in reference mode would
   be treated as having no original file (wrong removal messaging, wrong drift story). A
@@ -115,13 +116,14 @@ Revision notes (v3 → v3.1, maintainer-decided after user feedback, 2026-07-20)
 Revision notes (v3.1 → v3.2, issue
 [#19](https://github.com/t41372/skit/issues/19), 2026-07-24):
 
-- **Two more safe seed runners** — GitHub Copilot CLI and Cursor Agent. Copilot uses
+- **Three more seed runners** — GitHub Copilot CLI, Cursor Agent, and Pi. Copilot uses
   its interactive-prompt option with a bound value (`--interactive={{prompt}}`);
-  Cursor uses a root delimiter plus its fixed `agent` subcommand. Pi was evaluated but
-  not seeded: its parser has neither an end-of-options delimiter nor a bound prompt
-  option, so an arbitrary dash-prefixed opening prompt cannot be passed byte-identical
-  in interactive mode. Existing materialized runner lists remain user-owned and are
-  not silently amended; the expanded seed list applies before first materialization.
+  Cursor uses a root delimiter plus its fixed `agent` subcommand. Pi uses its positional
+  opening prompt. Because Pi has neither an end-of-options delimiter nor a bound prompt
+  option, skit detects prompts that Pi would dispatch as an option, file, or package
+  command, warns, and prepends one newline before continuing. Existing materialized
+  runner lists remain user-owned and are not silently amended; the expanded seed list
+  applies before first materialization.
 
 Cross-surface verification requirements (v2.1 → v2.2):
 
@@ -161,8 +163,8 @@ Decisions already made (maintainer-approved on the issue and in review; not up f
 re-litigation):
 
 - **skit hard-codes no specific agent.** Runners are user-editable argv templates in
-  config; skit ships seven seed presets (claude / codex / opencode / amp / antigravity /
-  copilot / cursor) as data, materialized into the user's config on first need.
+  config; skit ships eight seed presets (claude / codex / opencode / amp / antigravity /
+  copilot / cursor / pi) as data, materialized into the user's config on first need.
   "Other weird stuff" (the
   issue's words) is supported the moment the user adds a runner — no code change.
 - **Naming: "runner", not "agent".** `skit agent install` already means "install skit's

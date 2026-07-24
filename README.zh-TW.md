@@ -86,7 +86,7 @@ skit 會替 Python 引導 uv，但不會替你裝 JS runtime——node、bun 或
 
 提示詞條目是給 AI coding agent 的、可重複使用且帶參數的一段文字。加入一個 `.prompt.md` 檔（或用 `skit add --prompt` 直接起草）後，互動加入時可在複核頁中選擇哪些偵測到的 `{{佔位符}}` 要變成輸入欄位。候選不超過 30 個時預設全選；超過 30 個時預設一個都不選，以免把程式碼範例誤認為變數。管理中的欄位完整享有組合 / 上次值 / `--set` 體驗。
 
-沒有任何轉義規則要學：凡是你沒交給 skit 管理的內容——包括沒管理的 `{{佔位符}}`——一律逐位元組原樣送達 agent；每個提示詞還有插值總開關（`--no-interpolate`）。**執行器**在啟動選單上選（或按提示詞釘選）；claude / codex / opencode / amp / antigravity / copilot / cursor 已預先設定，其他 CLI 用 `skit runner add` 註冊。一個誠實的提醒：提示詞不是保密通道——渲染後的內容會落在對方 agent 自己的 session 紀錄裡。各執行器的行為、非互動時的解析規則、無 shell 的遞送保證：見[文檔（英文）](https://t41372.github.io/skit/en/docs/prompts/)。
+沒有任何轉義規則要學：凡是你沒交給 skit 管理的內容——包括沒管理的 `{{佔位符}}`——都會逐位元組原樣送達 agent，唯一例外是下文說明的 Pi 警告式單換行降級；每個提示詞還有插值總開關（`--no-interpolate`）。**執行器**在啟動選單上選（或按提示詞釘選）；claude / codex / opencode / amp / antigravity / copilot / cursor / pi 已預先設定，其他 CLI 用 `skit runner add` 註冊。一個誠實的提醒：提示詞不是保密通道——渲染後的內容會落在對方 agent 自己的 session 紀錄裡。各執行器的行為、非互動時的解析規則、Pi 對歧義開頭的警告式降級，以及無 shell 的遞送保證：見[文檔（英文）](https://t41372.github.io/skit/en/docs/prompts/)。
 
 ```bash
 skit add review.prompt.md            # 管理中的佔位符變成輸入欄位

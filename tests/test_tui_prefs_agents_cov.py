@@ -287,7 +287,7 @@ async def test_prefs_agents_count_updates_after_managing(tmp_path):
         app.push_screen(PreferencesScreen())
         await pilot.pause()
         screen = _as(app.screen, PreferencesScreen)
-        assert "7 agents configured" in str(screen.query_one("#pf-runner-count", Static).render())
+        assert "8 agents configured" in str(screen.query_one("#pf-runner-count", Static).render())
         # Ctrl+O opens the manage screen; remove one runner (confirm) and come back.
         await pilot.press("ctrl+o")
         await pilot.pause()
@@ -305,7 +305,7 @@ async def test_prefs_agents_count_updates_after_managing(tmp_path):
         await pilot.pause()
         # Back on Preferences: the count line refreshed via the return callback.
         assert isinstance(app.screen, PreferencesScreen)
-        assert "6 agents configured" in str(
+        assert "7 agents configured" in str(
             app.screen.query_one("#pf-runner-count", Static).render()
         )
 
