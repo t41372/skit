@@ -13,7 +13,9 @@ import pytest
 from typer.testing import CliRunner
 
 from skit import argstate, cli, config, i18n, store
+from skit.langs.base import ArgvLaunch
 from skit.langs.prompt import analyzer as prompt_analyzer
+from skit.langs.prompt import text as prompt_text
 
 runner = CliRunner()
 
@@ -991,6 +993,29 @@ def test_real_prompt_run_warns_before_sending_a_nonempty_secret(tmp_path, spawn_
     assert spawn_spy["values"] == {"api_key": "hunter2"}
 
 
+@pytest.mark.parametrize("text", ["--help\nsecond line", "@README.md", "install", "config"])
+def test_noninteractive_pi_run_warns_and_uses_lossy_fallback(tmp_path, spawn_spy, text):
+    entry = _added(tmp_path, text=text, pin="pi")
+    result = runner.invoke(cli.app, ["run", "p", "--no-input"])
+    assert result.exit_code == 0, result.output
+    assert "Warning: Pi would interpret" in result.output
+    assert "prepended one newline" in result.output
+    prepared = spawn_spy["prepared"]
+    assert isinstance(prepared, cli.launcher.PreparedLaunch)
+    assert isinstance(prepared.payload, ArgvLaunch)
+    assert prepared.payload.argv[1] == f"\n{prompt_text.read(entry.script_path)}"
+
+
+def test_noninteractive_pi_dry_run_warns_and_shows_fallback(tmp_path, spawn_spy):
+    _added(tmp_path, text="--help", pin="pi")
+    result = runner.invoke(cli.app, ["run", "p", "--dry-run", "--no-input"])
+    assert result.exit_code == 0, result.output
+    assert "Warning: Pi would interpret" in result.output
+    assert "one character longer" in result.output
+    assert "\n--help" in result.output
+    assert "prepared" not in spawn_spy
+
+
 def test_missing_runner_binary_refuses_before_any_delivery_output(tmp_path, monkeypatch):
     from skit.langs import launch as langs_launch
 
@@ -1249,7 +1274,16 @@ def test_runner_list_materializes_the_seeds(tmp_path):
     result = runner.invoke(cli.app, ["runner", "list"])
     assert result.exit_code == 0, result.output
     assert config.prompt_runners_seeded()  # first management need seeded the config
-    for name in ("claude", "codex", "opencode", "amp", "antigravity"):
+    for name in (
+        "claude",
+        "codex",
+        "opencode",
+        "amp",
+        "antigravity",
+        "copilot",
+        "cursor",
+        "pi",
+    ):
         assert name in result.output
     assert "amp -x" in result.output
     assert "does not open an interactive session" in " ".join(result.output.split())
@@ -1259,6 +1293,15 @@ def test_runner_list_json(tmp_path):
     payload = json.loads(runner.invoke(cli.app, ["runner", "list", "--json"]).output)
     assert {"name": "claude", "argv": ["claude", "--", "{{prompt}}"]} in payload
     assert {"name": "opencode", "argv": ["opencode", "--prompt={{prompt}}"]} in payload
+    assert {
+        "name": "copilot",
+        "argv": ["copilot", "--interactive={{prompt}}"],
+    } in payload
+    assert {
+        "name": "cursor",
+        "argv": ["cursor-agent", "--", "agent", "{{prompt}}"],
+    } in payload
+    assert {"name": "pi", "argv": ["pi", "{{prompt}}"]} in payload
 
 
 def test_runner_list_all_json_exposes_stable_raw_indexes_and_reasons(tmp_path):
@@ -1480,7 +1523,16 @@ def test_runner_remove_rejects_ambiguous_or_invalid_targets_before_writing(tmp_p
 
 
 def test_removing_every_runner_stays_empty(tmp_path):
-    for name in ("claude", "codex", "opencode", "amp", "antigravity"):
+    for name in (
+        "claude",
+        "codex",
+        "opencode",
+        "amp",
+        "antigravity",
+        "copilot",
+        "cursor",
+        "pi",
+    ):
         assert runner.invoke(cli.app, ["runner", "remove", name, "--yes"]).exit_code == 0
     assert config.load_prompt_runners() == []
     # The seeds must NOT resurrect (the runners_seeded marker).

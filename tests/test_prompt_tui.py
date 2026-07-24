@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 
 import pytest
+from textual.containers import VerticalScroll
 from textual.widgets import (
     Checkbox,
     DataTable,
@@ -51,8 +52,19 @@ async def _click_option(pilot, overlay: OptionList, index: int) -> None:
 async def _click_chip(pilot, widget: Static, label: str) -> None:
     """Click the linked span rather than an arbitrary blank cell in its Static."""
     # Inline chips live in the form's ordinary wheel-scrollable body. Bring this one
-    # into the viewport exactly as a mouse user scrolling to it would.
-    widget.scroll_visible(animate=False)
+    # into the viewport exactly as a mouse user scrolling to it would. Center it so a
+    # docked footer cannot obscure a chip that is only barely inside the screen region.
+    for ancestor in widget.ancestors:
+        if isinstance(ancestor, VerticalScroll):
+            ancestor.scroll_to_widget(
+                widget,
+                animate=False,
+                center=True,
+                immediate=True,
+                force=True,
+                origin_visible=False,
+            )
+    widget.scroll_visible(animate=False, immediate=True, force=True)
     await pilot.pause()
     plain = str(widget.render()).replace(tui_footer.GLUE, " ")
     position = plain.find(label)
@@ -499,7 +511,7 @@ async def test_exit_mode_pending_run_carries_the_runner(tmp_path, monkeypatch):
 
     seen: dict[str, object] = {}
 
-    def fake_execute(entry, plan, asm, *, emit, invoke_cwd=None, runner=None):
+    def fake_execute(entry, plan, asm, *, emit, warn=None, invoke_cwd=None, runner=None):
         seen["runner"] = runner
         return flows.RunOutcome(0)
 
