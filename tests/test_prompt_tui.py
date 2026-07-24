@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 
 import pytest
+from textual.containers import VerticalScroll
 from textual.widgets import (
     Checkbox,
     DataTable,
@@ -52,6 +53,15 @@ async def _click_chip(pilot, widget: Static, label: str) -> None:
     """Click the linked span rather than an arbitrary blank cell in its Static."""
     # Inline chips live in the form's ordinary wheel-scrollable body. Bring this one
     # into the viewport exactly as a mouse user scrolling to it would.
+    for ancestor in widget.ancestors:
+        if isinstance(ancestor, VerticalScroll):
+            ancestor.scroll_to_widget(
+                widget,
+                animate=False,
+                immediate=True,
+                force=True,
+                origin_visible=False,
+            )
     widget.scroll_visible(animate=False, immediate=True, force=True)
     await pilot.pause()
     plain = str(widget.render()).replace(tui_footer.GLUE, " ")
