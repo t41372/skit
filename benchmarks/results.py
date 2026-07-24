@@ -59,6 +59,7 @@ class HostInfo:
     mem_total_mib: int
     platform_key: str
     ci_runner: str | None
+    ci_image_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,7 @@ class Meta:
     python: str
     uv: str
     textual: str
+    pyperf: str
 
 
 @dataclass(frozen=True)
@@ -253,6 +255,12 @@ def _meta(node: Any) -> Meta:
     ci_runner = host_node.get("ci_runner")
     if ci_runner is not None and not isinstance(ci_runner, str):
         raise ResultsError("meta.host.ci_runner: expected a string or null")
+    ci_image_version = host_node.get("ci_image_version")
+    if ci_image_version is not None and not isinstance(ci_image_version, str):
+        raise ResultsError("meta.host.ci_image_version: expected a string or null")
+    pyperf = node.get("pyperf", "unknown")
+    if not isinstance(pyperf, str) or not pyperf:
+        raise ResultsError("meta.pyperf: expected a non-empty string")
     host = HostInfo(
         os=_string(host_node, "os", path="meta.host."),
         kernel=_string(host_node, "kernel", path="meta.host."),
@@ -261,6 +269,7 @@ def _meta(node: Any) -> Meta:
         mem_total_mib=mem,
         platform_key=_string(host_node, "platform_key", path="meta.host."),
         ci_runner=ci_runner,
+        ci_image_version=ci_image_version,
     )
     return Meta(
         generated_at=_string(node, "generated_at", path="meta."),
@@ -271,4 +280,7 @@ def _meta(node: Any) -> Meta:
         python=_string(node, "python", path="meta."),
         uv=_string(node, "uv", path="meta."),
         textual=_string(node, "textual", path="meta."),
+        # Schema v1 artifacts produced before harness provenance was added remain
+        # readable; comparisons surface "unknown" against a recorded version.
+        pyperf=pyperf,
     )

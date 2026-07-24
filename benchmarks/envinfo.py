@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 # The workflows export this (no GitHub-provided variable carries the `runs-on` label);
 # absent or empty locally, which envinfo reports as None = "not CI".
 CI_RUNNER_VAR = "BENCH_CI_RUNNER"
+CI_IMAGE_VERSION_VAR = "ImageVersion"
 
 _MACHINE_ALIASES = {"amd64": "x86_64", "arm64": "aarch64"}
 
@@ -41,6 +42,11 @@ def ci_runner(env: Mapping[str, str]) -> str | None:
     """The runner label CI exported, or None off-CI. Empty string collapses to None:
     an empty export is "unset", not a runner named ''."""
     return env.get(CI_RUNNER_VAR) or None
+
+
+def ci_image_version(env: Mapping[str, str]) -> str | None:
+    """The GitHub-hosted image build identifier, or None off that image."""
+    return env.get(CI_IMAGE_VERSION_VAR) or None
 
 
 def cpu_model(cpuinfo_text: str, fallback: str) -> str:
@@ -80,6 +86,7 @@ def build_host(
         mem_total_mib=mem_mib,
         platform_key=platform_key(system, machine),
         ci_runner=ci_runner(env),
+        ci_image_version=ci_image_version(env),
     )
 
 
@@ -94,6 +101,7 @@ def build_meta(
     uv_version: str,
     skit_version: str,
     textual_version: str,
+    pyperf_version: str,
 ) -> Meta:
     return Meta(
         generated_at=generated_at,
@@ -104,6 +112,7 @@ def build_meta(
         python=python_version,
         uv=uv_version,
         textual=textual_version,
+        pyperf=pyperf_version,
     )
 
 
@@ -179,4 +188,5 @@ def collect_meta(profile: str, repo_root: Path) -> Meta:  # pragma: no cover —
         uv_version=uv_version_from_output(uv_out),
         skit_version=skit.__version__,
         textual_version=dist_version("textual"),
+        pyperf_version=dist_version("pyperf"),
     )

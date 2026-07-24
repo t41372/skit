@@ -304,8 +304,9 @@ Stable-ordered JSON:
     "generated_at": "…", "profile": "pr",
     "git": {"commit": "…", "dirty": false}, "skit_version": "0.2.1.dev0",
     "host": {"os": "…", "kernel": "…", "cpu": "…", "cpu_count": 8, "mem_total_mib": 16384,
-              "ci_runner": "ubuntu-24.04|null", "platform_key": "linux-x86_64"},
-    "python": "3.13.x", "uv": "0.11.x", "textual": "8.2.8"
+              "ci_runner": "ubuntu-24.04|null", "ci_image_version": "20260719.1|null",
+              "platform_key": "linux-x86_64"},
+    "python": "3.13.x", "uv": "0.11.x", "textual": "8.2.8", "pyperf": "2.10.0"
   },
   "metrics": {   // flat, dotted, stable IDs — budgets and history key on these
     "startup.version.median_ms": {"value": 218.7, "unit": "ms", "p95": 231.0,
@@ -417,8 +418,10 @@ cannot flake; *display* the rest loudly on every run so drift is seen immediatel
 
 Three workflows, matching house rules (SHA-pinned actions, `permissions: {}` top-level +
 minimal per-job grants, `persist-credentials: false`, concurrency groups, `PYTHONUTF8`,
-zizmor-clean). Runner: `ubuntu-24.04` pinned (not `-latest`) for comparability — a future
-label change is a history discontinuity and gets annotated. Python pinned 3.13.
+zizmor-clean). Runner OS label: `ubuntu-24.04` fixed (not `-latest`); GitHub refreshes
+the image behind that label, so `meta.host.ci_image_version` records the exact build
+and compare warns when it differs. A future label change is also a history
+discontinuity and gets annotated. Python pinned 3.13.
 `timeout-minutes` on every bench job (20 for the pr job, 45 for nightly and
 compare); the job's own duration is a recorded metric.
 

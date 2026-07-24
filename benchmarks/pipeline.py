@@ -235,8 +235,9 @@ def render_markdown(results: Results, report: Report | None = None) -> str:
         "",
         f"{meta.host.os} {meta.host.kernel} · {meta.host.cpu} x {meta.host.cpu_count} · "
         f"{meta.host.mem_total_mib} MiB · python {meta.python} · uv {meta.uv} · "
-        f"textual {meta.textual} · runner "
-        f"{meta.host.ci_runner if meta.host.ci_runner else 'local'}",
+        f"textual {meta.textual} · pyperf {meta.pyperf} · runner "
+        f"{meta.host.ci_runner if meta.host.ci_runner else 'local'}"
+        f"{f' image {meta.host.ci_image_version}' if meta.host.ci_image_version else ''}",
         "",
         "| Metric | Value | p95 | n |",
         "| --- | ---: | ---: | ---: |",

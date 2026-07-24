@@ -72,10 +72,16 @@ def compare(base: Results, head: Results) -> Comparison:
             ("profile", base.meta.profile, head.meta.profile),
             ("platform", base.meta.host.platform_key, head.meta.host.platform_key),
             (
+                "runner image",
+                base.meta.host.ci_image_version,
+                head.meta.host.ci_image_version,
+            ),
+            (
                 "python",
                 python_major_minor(base.meta.python),
                 python_major_minor(head.meta.python),
             ),
+            ("pyperf", base.meta.pyperf, head.meta.pyperf),
         )
         if a != b
     ]

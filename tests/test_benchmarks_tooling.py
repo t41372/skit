@@ -62,6 +62,8 @@ def make_meta(
     python: str = "3.13.5",
     ci_runner: str | None = "ubuntu-24.04",
     platform_key: str = "linux-x86_64",
+    ci_image_version: str | None = "20260719.1",
+    pyperf: str = "2.10.0",
 ) -> Meta:
     return Meta(
         generated_at="2026-07-20T12:00:00+00:00",
@@ -76,10 +78,12 @@ def make_meta(
             mem_total_mib=16384,
             platform_key=platform_key,
             ci_runner=ci_runner,
+            ci_image_version=ci_image_version if ci_runner else None,
         ),
         python=python,
         uv="0.11.26",
         textual="8.2.8",
+        pyperf=pyperf,
     )
 
 
@@ -731,6 +735,9 @@ class TestEnvinfo:
         assert envinfo.ci_runner({"BENCH_CI_RUNNER": "ubuntu-24.04"}) == "ubuntu-24.04"
         assert envinfo.ci_runner({"BENCH_CI_RUNNER": ""}) is None
         assert envinfo.ci_runner({}) is None
+        assert envinfo.ci_image_version({"ImageVersion": "20260719.1"}) == "20260719.1"
+        assert envinfo.ci_image_version({"ImageVersion": ""}) is None
+        assert envinfo.ci_image_version({}) is None
 
     def test_cpu_model(self) -> None:
         text = "processor: 0\nmodel name\t: AMD Ryzen 9\nflags: x\n"
@@ -759,7 +766,10 @@ class TestEnvinfo:
             cpu="Test CPU",
             cpu_count=8,
             mem_mib=16384,
-            env={"BENCH_CI_RUNNER": "ubuntu-24.04"},
+            env={
+                "BENCH_CI_RUNNER": "ubuntu-24.04",
+                "ImageVersion": "20260719.1",
+            },
         )
         assert host.platform_key == "linux-x86_64"
         meta = envinfo.build_meta(
@@ -772,9 +782,12 @@ class TestEnvinfo:
             uv_version="0.11.26",
             skit_version="0.2.1.dev0",
             textual_version="8.2.8",
+            pyperf_version="2.10.0",
         )
         assert meta.host is host
         assert meta.profile == "pr"
+        assert meta.host.ci_image_version == "20260719.1"
+        assert meta.pyperf == "2.10.0"
 
 
 # ================================================================ pipeline
@@ -1598,6 +1611,38 @@ class TestCodeReviewFixes:
         matched = bcompare.compare(base, base)
         assert matched.incomparable == []
         assert "not directly comparable" not in bcompare.render_markdown(base, base, matched)
+
+    def test_compare_flags_harness_provenance_changes(self) -> None:
+        base = make_results(
+            {"x.ms": Metric(100.0, "ms", 5)},
+            meta=make_meta(ci_image_version="20260719.1", pyperf="2.10.0"),
+        )
+        head = make_results(
+            {"x.ms": Metric(100.0, "ms", 5)},
+            meta=make_meta(ci_image_version="20260726.1", pyperf="2.11.0"),
+        )
+        assert bcompare.compare(base, head).incomparable == [
+            "runner image: 20260719.1 vs 20260726.1",
+            "pyperf: 2.10.0 vs 2.11.0",
+        ]
+
+    def test_old_schema_defaults_missing_harness_provenance(self) -> None:
+        doc = json.loads(make_results({}).to_json())
+        del doc["meta"]["host"]["ci_image_version"]
+        del doc["meta"]["pyperf"]
+        restored = Results.from_json(json.dumps(doc))
+        assert restored.meta.host.ci_image_version is None
+        assert restored.meta.pyperf == "unknown"
+
+    def test_results_rejects_invalid_harness_provenance(self) -> None:
+        doc = json.loads(make_results({}).to_json())
+        doc["meta"]["host"]["ci_image_version"] = 123
+        with pytest.raises(ResultsError, match="ci_image_version"):
+            Results.from_json(json.dumps(doc))
+        doc["meta"]["host"]["ci_image_version"] = None
+        doc["meta"]["pyperf"] = ""
+        with pytest.raises(ResultsError, match=r"meta\.pyperf"):
+            Results.from_json(json.dumps(doc))
 
     def test_budgets_reject_non_finite_bounds(self) -> None:
         with pytest.raises(BudgetsError, match="max must be finite"):

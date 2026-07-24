@@ -89,9 +89,10 @@ every 10th reference entry's target is deliberately deleted.
 **Discontinuity clause:** the kind mix, `state_fraction`, and the missing-target
 fraction are inputs to every scale/tui metric. Changing ANY of them bumps
 `GENERATOR_VERSION` and is a history discontinuity (annotate the gh-pages chart).
-The same applies to the pinned runner label (`ubuntu-24.04`) when it eventually
-EOLs, and to major dependency bumps (textual above all — the TUI proxy rides on it;
-the manifest records versions for exactly this reason).
+The same applies to the fixed runner label (`ubuntu-24.04`) when it eventually
+EOLs, and to its periodically refreshed image build (recorded as
+`meta.host.ci_image_version`), and to major dependency bumps (textual above all —
+the TUI proxy rides on it; the manifest records versions for exactly this reason).
 
 ## Profiles
 

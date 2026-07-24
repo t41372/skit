@@ -41,8 +41,8 @@ env:
 jobs:
   bench-pr:
     name: pr profile (advisory)
-    # Pinned image, not -latest: hosted-runner numbers are only comparable to
-    # themselves, and a silent image change is a history discontinuity.
+    # Fixed OS label, not -latest. GitHub still refreshes the underlying image build;
+    # envinfo records ImageVersion so that discontinuity cannot be silent.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
