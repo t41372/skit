@@ -1483,6 +1483,7 @@ class TestCodeReviewFixes:
     """Behaviors added by the /code-review round (see the PR's review appendix)."""
 
     def test_rss_keeps_samples_and_full_statistics(self, tmp_path: Path, monkeypatch) -> None:
+        monkeypatch.setattr(rss_suite.sys, "platform", "linux")
         ctx = cast(
             RunCtx,
             SimpleNamespace(

@@ -9,7 +9,7 @@ numbers — the worst failure class a benchmark suite has (docs/design/benchmark
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .datasets import skit_dirs
 
@@ -38,8 +38,11 @@ def build_env(
     """The constructed env dict — built, not scrubbed: composed PATH (venv, uv, node,
     system), dataset-pointed SKIT dirs, scratch HOME/XDG, per-session UV cache, pinned
     locale/terminal. Ambient PYTHONPATH, color vars, UV_* mirrors never leak in."""
-    path_parts: list[str] = [str(Path(skit).parent)]
-    path_parts.extend(str(Path(tool).parent) for tool in (uv, node) if tool)
+    # Benchmark execution is POSIX-only.  Keep this pure builder POSIX-deterministic
+    # even when its contract tests run on Windows, where Path would reinterpret the
+    # fixture paths with backslashes and manufacture a mixed-separator PATH.
+    path_parts: list[str] = [str(PurePosixPath(skit).parent)]
+    path_parts.extend(str(PurePosixPath(tool).parent) for tool in (uv, node) if tool)
     path_parts += ["/usr/bin", "/bin"]
     seen: dict[str, None] = {}
     for part in path_parts:
