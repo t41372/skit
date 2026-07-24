@@ -530,6 +530,21 @@ def test_seeded_copilot_binds_dash_prefixed_prompt_and_keeps_extra(tmp_path, mon
     ]
 
 
+@pytest.mark.parametrize("text", ["--help\nsecond line", "status"])
+def test_seeded_cursor_selects_agent_before_passing_prompt(tmp_path, monkeypatch, text):
+    entry = _entry_with_runner(tmp_path, monkeypatch, text=text, pin="cursor", managed=[])
+    payload = PromptLaunch().build(entry, ["--model", "gpt-5"], {}, None)
+    assert isinstance(payload, ArgvLaunch)
+    assert payload.argv == [
+        "/bin/cursor-agent",
+        "--model",
+        "gpt-5",
+        "--",
+        "agent",
+        text,
+    ]
+
+
 def test_build_refuses_nul_in_prompt_as_launch_error(tmp_path, monkeypatch):
     entry = _entry_with_runner(tmp_path, monkeypatch, text="bad\x00prompt", managed=[])
     with pytest.raises(LaunchError, match="NUL byte"):
@@ -776,7 +791,6 @@ def test_load_prompt_runners_is_read_only_before_seeding(tmp_path):
         "antigravity",
         "copilot",
         "cursor",
-        "pi",
     ]
     assert all(config.prompt_runner_row_reason(row) == "valid" for row in raw_rows)
     runners = config.load_prompt_runners()
@@ -788,7 +802,6 @@ def test_load_prompt_runners_is_read_only_before_seeding(tmp_path):
         "antigravity",
         "copilot",
         "cursor",
-        "pi",
     ]
     assert config.find_prompt_runner("antigravity") == config.PromptRunner(
         "antigravity", ("agy", "--prompt-interactive", "{{prompt}}")
@@ -800,9 +813,8 @@ def test_load_prompt_runners_is_read_only_before_seeding(tmp_path):
         "copilot", ("copilot", "--interactive={{prompt}}")
     )
     assert config.find_prompt_runner("cursor") == config.PromptRunner(
-        "cursor", ("cursor-agent", "{{prompt}}")
+        "cursor", ("cursor-agent", "--", "agent", "{{prompt}}")
     )
-    assert config.find_prompt_runner("pi") == config.PromptRunner("pi", ("pi", "{{prompt}}"))
     assert not config.prompt_runners_seeded()  # reading never wrote
 
 

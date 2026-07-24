@@ -624,13 +624,14 @@ def prompt_runner_row_reason(row: PromptRunnerRow) -> str:
     }.get(reason, gettext("This runner row is malformed."))
 
 
-# The eight seeds (docs/design/prompt.md; gemini-cli deliberately excluded). Interactive
+# The seven seeds (docs/design/prompt.md; gemini-cli deliberately excluded). Interactive
 # invocations — each opens the agent's own session with the prompt as opening message.
 # amp has no interactive-with-initial-prompt form, so its seed is the closest equivalent
 # (`amp -x` executes the prompt). Antigravity installs as `agy`; its
 # `--prompt-interactive` flag supplies the opening prompt and keeps the session open.
-# Copilot binds its interactive prompt with `=` so a leading-dash prompt remains data;
-# Cursor and pi expose the opening prompt as a positional argument.
+# Copilot binds its interactive prompt with `=` so a leading-dash prompt remains data.
+# Cursor's fixed `agent` subcommand plus the root delimiter protects both option-looking
+# prompts and prompts such as `status` that collide with another root subcommand.
 # All of it is user-editable data, not code.
 PROMPT_RUNNER_SEEDS: tuple[PromptRunner, ...] = (
     # Positional prompts need the end-of-options delimiter: without it, a prompt
@@ -643,8 +644,7 @@ PROMPT_RUNNER_SEEDS: tuple[PromptRunner, ...] = (
     PromptRunner("amp", ("amp", "-x", "{{prompt}}")),
     PromptRunner("antigravity", ("agy", "--prompt-interactive", "{{prompt}}")),
     PromptRunner("copilot", ("copilot", "--interactive={{prompt}}")),
-    PromptRunner("cursor", ("cursor-agent", "{{prompt}}")),
-    PromptRunner("pi", ("pi", "{{prompt}}")),
+    PromptRunner("cursor", ("cursor-agent", "--", "agent", "{{prompt}}")),
 )
 
 

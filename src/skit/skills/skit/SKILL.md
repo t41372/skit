@@ -208,7 +208,7 @@ skit preset delete <name> nightly
 A **prompt** entry is a reusable, parameterized piece of text for an AI coding agent:
 `{{placeholder}}` holes (double braces, identifier names) become form fields / `--set`
 targets, and the rendered text is handed to a **runner** — a configured agent CLI
-(claude, codex, opencode, amp, antigravity, copilot, cursor, pi are preconfigured). There are NO escape
+(claude, codex, opencode, amp, antigravity, copilot, cursor are preconfigured). There are NO escape
 sequences: single-brace text (JSON, `${VAR}`, f-strings) is never a placeholder, and an
 unmanaged `{{hole}}` passes through byte-identical — skit only ever touches the spans
 that are managed. The rendered prompt travels as ONE process argument, never through a

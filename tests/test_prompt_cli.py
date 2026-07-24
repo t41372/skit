@@ -1257,7 +1257,6 @@ def test_runner_list_materializes_the_seeds(tmp_path):
         "antigravity",
         "copilot",
         "cursor",
-        "pi",
     ):
         assert name in result.output
     assert "amp -x" in result.output
@@ -1272,8 +1271,10 @@ def test_runner_list_json(tmp_path):
         "name": "copilot",
         "argv": ["copilot", "--interactive={{prompt}}"],
     } in payload
-    assert {"name": "cursor", "argv": ["cursor-agent", "{{prompt}}"]} in payload
-    assert {"name": "pi", "argv": ["pi", "{{prompt}}"]} in payload
+    assert {
+        "name": "cursor",
+        "argv": ["cursor-agent", "--", "agent", "{{prompt}}"],
+    } in payload
 
 
 def test_runner_list_all_json_exposes_stable_raw_indexes_and_reasons(tmp_path):
@@ -1503,7 +1504,6 @@ def test_removing_every_runner_stays_empty(tmp_path):
         "antigravity",
         "copilot",
         "cursor",
-        "pi",
     ):
         assert runner.invoke(cli.app, ["runner", "remove", name, "--yes"]).exit_code == 0
     assert config.load_prompt_runners() == []
