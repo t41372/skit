@@ -67,9 +67,20 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
         output.metrics[f"tui.search.n{n}.median_ms"] = _stat(search)
         if peaks:
             output.metrics[f"tui.rss.n{n}.peak_kib"] = Metric(
-                value=median(peaks), unit="KiB", n=len(peaks)
+                value=median(peaks),
+                unit="KiB",
+                n=len(peaks),
+                p95=p95(peaks),
+                stddev=stddev(peaks),
             )
-        output.raw[f"n{n}"] = {"first_idle_ms": first_idle, "search_ms": search}
+        raw = {
+            "first_idle_ms": first_idle,
+            "search_ms": search,
+            "rss_kib": peaks,
+        }
+        if n == 0:
+            raw["import_ms"] = list(import_samples)
+        output.raw[f"n{n}"] = raw
     if import_samples:
         output.metrics["tui.import.median_ms"] = _stat(import_samples)
     return output

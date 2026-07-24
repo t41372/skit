@@ -11,7 +11,8 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from benchmarks import compare as bcompare
@@ -45,6 +46,10 @@ from benchmarks.results import (
     meta_from_dict,
     python_major_minor,
 )
+from benchmarks.suites import micro as micro_suite
+from benchmarks.suites import rss as rss_suite
+from benchmarks.suites import tui as tui_suite
+from benchmarks.suites._env import RunCtx
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURES_DIR = REPO_ROOT / "benchmarks" / "fixtures"
@@ -1453,6 +1458,107 @@ class TestHarnessImportSurface:
 
 class TestCodeReviewFixes:
     """Behaviors added by the /code-review round (see the PR's review appendix)."""
+
+    def test_rss_keeps_samples_and_full_statistics(self, tmp_path: Path, monkeypatch) -> None:
+        ctx = cast(
+            RunCtx,
+            SimpleNamespace(
+                skit="/bin/skit",
+                datasets={0: SimpleNamespace(root=tmp_path)},
+            ),
+        )
+        samples = iter([100, 120, 140, 200, 220, 240])
+        monkeypatch.setattr(rss_suite, "bench_env", lambda _ctx, _root: {})
+        monkeypatch.setattr(rss_suite, "_sample", lambda _ctx, _argv, _env: next(samples))
+        output = rss_suite.run(ctx, pipeline.SuitePlan("rss", ns=(0,), samples=3))
+        version = output.metrics["rss.version.peak_kib"]
+        assert version == Metric(
+            value=120.0,
+            unit="KiB",
+            n=3,
+            p95=140.0,
+            stddev=20.0,
+        )
+        assert output.raw["rss.version"]["samples_kib"] == [100, 120, 140]
+
+    def test_tui_keeps_import_and_rss_samples(self, tmp_path: Path, monkeypatch) -> None:
+        manifest = SimpleNamespace(root=tmp_path, probe_char="o")
+        ctx = cast(
+            RunCtx,
+            SimpleNamespace(
+                python="/bin/python",
+                workdir=tmp_path,
+                datasets={0: manifest},
+            ),
+        )
+        calls = 0
+
+        def fake_run(argv, **_kwargs):
+            nonlocal calls
+            calls += 1
+            out_file = Path(argv[argv.index("--out") + 1])
+            out_file.write_text(
+                json.dumps(
+                    {
+                        "first_idle_ms": float(calls),
+                        "search_ms": float(calls + 10),
+                        "import_ms": float(calls + 20),
+                        "status_text": f"VmHWM: {calls * 100} kB",
+                    }
+                )
+            )
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(tui_suite, "bench_env", lambda _ctx, _root: {})
+        monkeypatch.setattr(tui_suite.subprocess, "run", fake_run)
+        original_exists = Path.exists
+        monkeypatch.setattr(
+            Path,
+            "exists",
+            lambda self: True if self == Path("/proc/self/status") else original_exists(self),
+        )
+        output = tui_suite.run(ctx, pipeline.SuitePlan("tui", ns=(0,), samples=3))
+        assert output.raw["n0"] == {
+            "first_idle_ms": [1.0, 2.0, 3.0],
+            "search_ms": [11.0, 12.0, 13.0],
+            "rss_kib": [100.0, 200.0, 300.0],
+            "import_ms": [21.0, 22.0, 23.0],
+        }
+        assert output.metrics["tui.rss.n0.peak_kib"].p95 == 300.0
+        assert output.metrics["tui.rss.n0.peak_kib"].stddev == 100.0
+
+    def test_cold_parse_keeps_raw_samples(self, tmp_path: Path, monkeypatch) -> None:
+        ctx = cast(
+            RunCtx,
+            SimpleNamespace(
+                python="/bin/python",
+                workdir=tmp_path,
+                datasets={0: SimpleNamespace(root=tmp_path)},
+            ),
+        )
+        values = iter(["1.0", "2.0", "3.0", "4.0", "5.0"])
+        monkeypatch.setattr(micro_suite, "bench_env", lambda _ctx, _root: {})
+        monkeypatch.setattr(
+            micro_suite.subprocess,
+            "run",
+            lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=next(values), stderr=""),
+        )
+        output = SuiteOutput(suite="micro")
+        micro_suite._cold_parse(
+            ctx,
+            pipeline.SuitePlan("micro"),
+            "python",
+            tmp_path,
+            output,
+        )
+        assert output.raw["analyze_cold"]["python"]["samples_ms"] == [
+            1.0,
+            2.0,
+            3.0,
+            4.0,
+            5.0,
+        ]
+        assert output.metrics["micro.analyze_cold.python.median_ms"].value == 3.0
 
     def test_micro_deltas_clear_the_us_floor(self) -> None:
         base = make_results({"micro.store.resolve.mid.n1000.median_us": Metric(100.0, "us", 40)})

@@ -194,6 +194,8 @@ def _cold_parse(
             # the environments disagree — that's a bug, not a skip.
             raise RuntimeError(f"cold-parse probe for {lang} lost its analyzer")
         samples.append(float(text))
+    cold_raw = output.raw.setdefault("analyze_cold", {})
+    cold_raw[lang] = {"samples_ms": samples}
     output.metrics[f"micro.analyze_cold.{lang}.median_ms"] = Metric(
         value=median(samples), unit="ms", n=len(samples), p95=p95(samples), stddev=stddev(samples)
     )

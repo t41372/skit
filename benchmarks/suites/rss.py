@@ -9,7 +9,7 @@ import subprocess
 import sys
 from typing import TYPE_CHECKING
 
-from ..parsers import maxrss_kib, median
+from ..parsers import maxrss_kib, median, p95, stddev
 from ..results import Metric, SuiteOutput
 from ._env import RunCtx, bench_env
 
@@ -38,8 +38,13 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
     for name, argv, n in cases:
         env = bench_env(ctx, ctx.datasets[n].root)
         peaks = [_sample(ctx, argv, env) for _ in range(plan.samples)]
+        peak_values = [float(p) for p in peaks]
         output.metrics[f"{name}.peak_kib"] = Metric(
-            value=median([float(p) for p in peaks]), unit="KiB", n=len(peaks)
+            value=median(peak_values),
+            unit="KiB",
+            n=len(peaks),
+            p95=p95(peak_values),
+            stddev=stddev(peak_values),
         )
         output.metrics[f"{name}.peak_max_kib"] = Metric(
             value=float(max(peaks)), unit="KiB", n=len(peaks)
