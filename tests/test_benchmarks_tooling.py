@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import os
-import tomllib
+from importlib.metadata import version
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -1231,12 +1231,10 @@ class TestContractSync:
         workflow = (REPO_ROOT / ".github" / "workflows" / "benchmark-compare.yml").read_text(
             encoding="utf-8"
         )
-        lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
-        versions = [
-            package["version"] for package in lock["package"] if package["name"] == "pyperf"
-        ]
-        assert len(versions) == 1
-        assert workflow.count(f'pyperf=={versions[0]}"') == 2
+        # This environment was created from uv.lock. Comparing the workflow to the
+        # resolved distribution keeps the test runnable in mutmut's isolated tree,
+        # which deliberately contains source + workflows but not the repository lock.
+        assert workflow.count(f'pyperf=={version("pyperf")}"') == 2
 
     @pytest.mark.parametrize(
         "workflow",
