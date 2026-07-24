@@ -1249,7 +1249,16 @@ def test_runner_list_materializes_the_seeds(tmp_path):
     result = runner.invoke(cli.app, ["runner", "list"])
     assert result.exit_code == 0, result.output
     assert config.prompt_runners_seeded()  # first management need seeded the config
-    for name in ("claude", "codex", "opencode", "amp", "antigravity"):
+    for name in (
+        "claude",
+        "codex",
+        "opencode",
+        "amp",
+        "antigravity",
+        "copilot",
+        "cursor",
+        "pi",
+    ):
         assert name in result.output
     assert "amp -x" in result.output
     assert "does not open an interactive session" in " ".join(result.output.split())
@@ -1259,6 +1268,12 @@ def test_runner_list_json(tmp_path):
     payload = json.loads(runner.invoke(cli.app, ["runner", "list", "--json"]).output)
     assert {"name": "claude", "argv": ["claude", "--", "{{prompt}}"]} in payload
     assert {"name": "opencode", "argv": ["opencode", "--prompt={{prompt}}"]} in payload
+    assert {
+        "name": "copilot",
+        "argv": ["copilot", "--interactive={{prompt}}"],
+    } in payload
+    assert {"name": "cursor", "argv": ["cursor-agent", "{{prompt}}"]} in payload
+    assert {"name": "pi", "argv": ["pi", "{{prompt}}"]} in payload
 
 
 def test_runner_list_all_json_exposes_stable_raw_indexes_and_reasons(tmp_path):
@@ -1480,7 +1495,16 @@ def test_runner_remove_rejects_ambiguous_or_invalid_targets_before_writing(tmp_p
 
 
 def test_removing_every_runner_stays_empty(tmp_path):
-    for name in ("claude", "codex", "opencode", "amp", "antigravity"):
+    for name in (
+        "claude",
+        "codex",
+        "opencode",
+        "amp",
+        "antigravity",
+        "copilot",
+        "cursor",
+        "pi",
+    ):
         assert runner.invoke(cli.app, ["runner", "remove", name, "--yes"]).exit_code == 0
     assert config.load_prompt_runners() == []
     # The seeds must NOT resurrect (the runners_seeded marker).

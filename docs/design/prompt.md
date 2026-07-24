@@ -24,7 +24,8 @@ Revision notes (v1 → v2, all maintainer-decided):
   command strings. Eliminates the quoting-injection surface by construction and makes
   multi-line prompts (the norm) safe on Windows, where `shell=True` means cmd.exe and
   quoted newlines are a minefield.
-- **Five seed runners** — claude, codex, opencode, amp, antigravity. gemini-cli is
+- **Eight seed runners** — claude, codex, opencode, amp, antigravity, copilot, cursor,
+  pi. gemini-cli is
   deliberately excluded (dead).
 - **`family="interpreted"`, not `"template"`** — `base.LangSpec.has_original_file` is
   defined as `family != "template"`, so a template-family prompt in reference mode would
@@ -111,6 +112,15 @@ Revision notes (v3 → v3.1, maintainer-decided after user feedback, 2026-07-20)
   parameter interface (`params.py`) — and nothing else. `--raw` still suppresses replay for its
   clean-slate promise, and `--forget-args` still clears the remembered tail.
 
+Revision notes (v3.1 → v3.2, issue
+[#19](https://github.com/t41372/skit/issues/19), 2026-07-24):
+
+- **Three more seed runners** — GitHub Copilot CLI, Cursor Agent, and pi. Copilot uses
+  its interactive-prompt option with a bound value (`--interactive={{prompt}}`);
+  Cursor Agent and pi accept the opening prompt positionally. Existing materialized
+  runner lists remain user-owned and are not silently amended; the expanded seed list
+  applies before first materialization.
+
 Cross-surface verification requirements (v2.1 → v2.2):
 
 - **The trait migration covers all five `family == "template"` decision sites**, not just
@@ -149,8 +159,9 @@ Decisions already made (maintainer-approved on the issue and in review; not up f
 re-litigation):
 
 - **skit hard-codes no specific agent.** Runners are user-editable argv templates in
-  config; skit ships five seed presets (claude / codex / opencode / amp / antigravity) as
-  data, materialized into the user's config on first need. "Other weird stuff" (the
+  config; skit ships eight seed presets (claude / codex / opencode / amp / antigravity /
+  copilot / cursor / pi) as data, materialized into the user's config on first need.
+  "Other weird stuff" (the
   issue's words) is supported the moment the user adds a runner — no code change.
 - **Naming: "runner", not "agent".** `skit agent install` already means "install skit's
   own Agent Skill into an AI tool" — a different verb. The prompt-execution target is a
@@ -362,11 +373,11 @@ because its yargs parser would treat a separate option-looking value such as `--
   quoting, no cmd.exe. A custom runner that genuinely needs shell syntax (pipes) is out of
   scope for v1 (wrap it in a script and point the runner at that).
 - **Seeded, not hard-coded.** Loading is read-only (before seeding, the effective list
-  IS the five presets — a `skit run`/`show` never writes config as a side effect); the
+  IS the eight presets — a `skit run`/`show` never writes config as a side effect); the
   presets materialize *into the user's config* (with the `runners_seeded` marker) on the
   first `skit runner` management action — the moment the user goes looking for the data,
   it is visible and editable, never a hidden built-in list. The marker distinguishes
-  "never seeded" from "deliberately emptied": removing all five must not resurrect them.
+  "never seeded" from "deliberately emptied": removing all eight must not resurrect them.
 - **`{{prompt}}` is the one reserved slot.** Validation (at `skit runner add` and on load):
   `argv` is a non-empty list of strings; `{{prompt}}` occurs exactly once across all tokens
   (it may be embedded, e.g. `"--message={{prompt}}"`, but not in `argv[0]`); no other
@@ -651,7 +662,7 @@ translated.
 6. **Over-long rendered argv** → clean LaunchError (125) at the platform bound, never a
    raw OS error; boundary test.
 7. **Config `[[prompt.runners]]` corruption** → malformed rows are skipped and reported
-   by doctor; a missing section with no `runners_seeded` marker seeds the five presets; a
+   by doctor; a missing section with no `runners_seeded` marker seeds the eight presets; a
    marker with zero rows stays empty (deliberate-emptying test); neither crashes list/run.
 8. **Reference-mode prompt** → a referenced (not copied) `prompt.md` is read at run time;
    body edits to the original are picked up, drift against declared params reported

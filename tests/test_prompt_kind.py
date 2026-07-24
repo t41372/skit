@@ -518,6 +518,18 @@ def test_seeded_opencode_binds_dash_prefixed_prompt_and_keeps_extra(tmp_path, mo
     ]
 
 
+def test_seeded_copilot_binds_dash_prefixed_prompt_and_keeps_extra(tmp_path, monkeypatch):
+    entry = _entry_with_runner(tmp_path, monkeypatch, text="--version", pin="copilot", managed=[])
+    payload = PromptLaunch().build(entry, ["--model", "gpt-5"], {}, None)
+    assert isinstance(payload, ArgvLaunch)
+    assert payload.argv == [
+        "/bin/copilot",
+        "--interactive=--version",
+        "--model",
+        "gpt-5",
+    ]
+
+
 def test_build_refuses_nul_in_prompt_as_launch_error(tmp_path, monkeypatch):
     entry = _entry_with_runner(tmp_path, monkeypatch, text="bad\x00prompt", managed=[])
     with pytest.raises(LaunchError, match="NUL byte"):
@@ -762,16 +774,35 @@ def test_load_prompt_runners_is_read_only_before_seeding(tmp_path):
         "opencode",
         "amp",
         "antigravity",
+        "copilot",
+        "cursor",
+        "pi",
     ]
     assert all(config.prompt_runner_row_reason(row) == "valid" for row in raw_rows)
     runners = config.load_prompt_runners()
-    assert [r.name for r in runners] == ["claude", "codex", "opencode", "amp", "antigravity"]
+    assert [r.name for r in runners] == [
+        "claude",
+        "codex",
+        "opencode",
+        "amp",
+        "antigravity",
+        "copilot",
+        "cursor",
+        "pi",
+    ]
     assert config.find_prompt_runner("antigravity") == config.PromptRunner(
         "antigravity", ("agy", "--prompt-interactive", "{{prompt}}")
     )
     assert config.find_prompt_runner("opencode") == config.PromptRunner(
         "opencode", ("opencode", "--prompt={{prompt}}")
     )
+    assert config.find_prompt_runner("copilot") == config.PromptRunner(
+        "copilot", ("copilot", "--interactive={{prompt}}")
+    )
+    assert config.find_prompt_runner("cursor") == config.PromptRunner(
+        "cursor", ("cursor-agent", "{{prompt}}")
+    )
+    assert config.find_prompt_runner("pi") == config.PromptRunner("pi", ("pi", "{{prompt}}"))
     assert not config.prompt_runners_seeded()  # reading never wrote
 
 
