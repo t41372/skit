@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import tomllib
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -1212,6 +1213,17 @@ class TestContractSync:
         through the composite action."""
         text = (REPO_ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
         assert "uses: ./.github/actions/install-hyperfine" in text
+
+    def test_compare_workflow_pins_pyperf_to_the_harness_lock(self) -> None:
+        workflow = (REPO_ROOT / ".github" / "workflows" / "benchmark-compare.yml").read_text(
+            encoding="utf-8"
+        )
+        lock = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+        versions = [
+            package["version"] for package in lock["package"] if package["name"] == "pyperf"
+        ]
+        assert len(versions) == 1
+        assert workflow.count(f'pyperf=={versions[0]}"') == 2
 
     @pytest.mark.parametrize(
         "workflow",

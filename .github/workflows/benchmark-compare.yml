@@ -77,12 +77,12 @@ jobs:
       - name: Build base venv + run
         run: |
           uv sync --directory side-base --no-default-groups
-          uv pip install --python side-base/.venv/bin/python pyperf
+          uv pip install --python side-base/.venv/bin/python "pyperf==2.10.0"
           side-base/.venv/bin/python -m benchmarks run --profile compare --out .bench-base --measured-repo side-base
       - name: Build head venv + run
         run: |
           uv sync --directory side-head --no-default-groups
-          uv pip install --python side-head/.venv/bin/python pyperf
+          uv pip install --python side-head/.venv/bin/python "pyperf==2.10.0"
           side-head/.venv/bin/python -m benchmarks run --profile compare --out .bench-head --measured-repo side-head
       - name: Render comparison
         if: ${{ !cancelled() }}
