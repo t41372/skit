@@ -1,0 +1,82 @@
+name: benchmark (nightly)
+
+# The full-profile nightly (docs/design/benchmarks.md): scale grid + JS lane +
+# syscalls + dependency closure, 40+ statistical runs, budgets checked (this is the
+# enforcement point for the profile = "full" enforced rows — the pr job never
+# evaluates them), history published to gh-pages. First run after merge must be
+# dispatched deliberately (see the design's merge checklist).
+on:
+  schedule:
+    - cron: "43 2 * * *" # 02:43 UTC nightly — off the top of the hour, offset from mutation.yml
+  workflow_dispatch:
+
+# Grant no permissions by default; each job requests the minimum it needs.
+permissions: {}
+
+concurrency:
+  group: benchmark-nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHONUTF8: "1"
+  BENCH_CI_RUNNER: ubuntu-24.04
+
+jobs:
+  bench-full:
+    name: full profile + history
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      # github-action-benchmark pushes the history data to the gh-pages branch.
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - name: Sync dependencies
+        run: uv sync --dev
+      - name: Install strace (not preinstalled on runner images)
+        run: sudo apt-get update -q && sudo apt-get install -y -q strace
+      - name: Install hyperfine (pinned)
+        uses: ./.github/actions/install-hyperfine
+      - name: Run full profile
+        run: uv run python -m benchmarks run --profile full --out .bench
+      - name: Check budgets (enforced tier gates this job)
+        run: uv run python -m benchmarks check .bench/results.json --require-enforced
+      - name: Publish step summary
+        if: ${{ !cancelled() }}
+        run: cat .bench/results.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload results artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: benchmark-results-nightly
+          path: |
+            .bench/results.json
+            .bench/results.md
+            .bench/run.json
+            .bench/suites/
+            .bench/artifacts/
+          retention-days: 90
+      - name: Export history rows
+        run: uv run python -m benchmarks export-gha .bench/results.json --out .bench/gha.json
+      # Trend line first; alert thresholds get tuned after ~14 nightly points exist
+      # (benchmarks/README.md tracks that follow-up). The gh-pages branch must exist
+      # (one-time orphan commit — see the README's setup checklist).
+      - name: Publish history to gh-pages
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        with:
+          name: skit benchmarks
+          tool: customSmallerIsBetter
+          output-file-path: .bench/gha.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          gh-pages-branch: gh-pages
+          benchmark-data-dir-path: bench
+          fail-on-alert: false
