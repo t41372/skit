@@ -701,6 +701,16 @@ class TestCompare:
         assert "### Only in head" in text
         assert "- `new.metric`" in text
 
+    def test_unit_mismatch_is_loud_and_never_mints_a_false_delta(self) -> None:
+        base = make_results({"elapsed": Metric(1.0, "s", 5)})
+        head = make_results({"elapsed": Metric(1000.0, "ms", 5)})
+        comparison = bcompare.compare(base, head)
+        assert comparison.deltas == []
+        assert comparison.incomparable == ["unit elapsed: s vs ms"]
+        text = bcompare.render_markdown(base, head, comparison)
+        assert "not directly comparable" in text
+        assert "+99900" not in text
+
 
 # ================================================================ envinfo
 
@@ -827,6 +837,19 @@ class TestPipeline:
         dup2 = SuiteOutput(suite="b", metrics={"m.x": Metric(2, "ms", 1)})
         with pytest.raises(pipeline.PipelineError, match="duplicate metric id"):
             pipeline.merge(make_meta(), [dup, dup2], total_duration_s=1.0)
+
+    @pytest.mark.parametrize(
+        "metric_id",
+        [
+            "pipeline.duration_s",
+            "pipeline.skipped_count",
+            "pipeline.suite.demo.duration_s",
+        ],
+    )
+    def test_merge_rejects_reserved_pipeline_ids(self, metric_id: str) -> None:
+        output = SuiteOutput(suite="demo", metrics={metric_id: Metric(999, "s", 1)})
+        with pytest.raises(pipeline.PipelineError, match="reserved pipeline metric id"):
+            pipeline.merge(make_meta(), [output], total_duration_s=1.0)
 
     def test_merge_rejects_derived_collision(self) -> None:
         clash = SuiteOutput(

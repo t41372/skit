@@ -100,6 +100,8 @@ def merge(meta: Meta, outputs: list[SuiteOutput], total_duration_s: float) -> Re
     raw: dict[str, Any] = {}
     for output in outputs:
         for metric_id, metric in output.metrics.items():
+            if metric_id.startswith("pipeline."):
+                raise PipelineError(f"reserved pipeline metric id {metric_id!r}")
             if metric_id in metrics:
                 raise PipelineError(f"duplicate metric id {metric_id!r}")
             metrics[metric_id] = metric

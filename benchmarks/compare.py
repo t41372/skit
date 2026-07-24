@@ -84,6 +84,9 @@ def compare(base: Results, head: Results) -> Comparison:
         if metric_id.startswith("pipeline."):
             continue
         b, h = base.metrics[metric_id], head.metrics[metric_id]
+        if b.unit != h.unit:
+            incomparable.append(f"unit {metric_id}: {b.unit} vs {h.unit}")
+            continue
         deltas.append(Delta(metric=metric_id, unit=h.unit, base=b.value, head=h.value))
     return Comparison(
         deltas=deltas,
