@@ -212,12 +212,18 @@ of `budgets.toml`, where every ratchet carries a commit message explaining the m
    the point.
 5. Update the profile table here and the design doc.
 
-## Why no CodSpeed / SaaS
+## Why no CodSpeed / SaaS *here*
 
-The pipeline is self-contained (pyperf + hyperfine + artifacts) so it
-works without accounts, tokens, or third-party availability, and A/B evidence stays
-reproducible from the repo alone. CodSpeed's simulation mode would add stable
-PR-regression signal later without redesign: the micro layer is plain callables, so
-`pytest-codspeed` wrappers can be added alongside pyperf if that trade ever earns
-its onboarding. Codecov is the repo's one SaaS precedent; anything added here must
-match its property: optional, never a merge gate, degrades to nothing.
+The pipeline is self-contained (pyperf + hyperfine + artifacts) so it works without
+accounts, tokens, or third-party availability, and A/B evidence stays reproducible from
+the repo alone. That property is the point, and it does not change.
+
+CodSpeed is being adopted alongside it, in its own PR (#15), for the one thing this
+pipeline structurally cannot do: its simulation mode measures CPU instructions rather
+than wall clock, which is hardware-independent, so a PR-time timing regression can
+actually fail instead of drowning in whichever CPU the runner drew. The micro layer is
+plain callables, so `pytest-codspeed` wraps it without redesign. What stays here:
+`budgets.toml` remains the contract, and every metric CodSpeed's instruments cannot take
+— wheel bytes, closure bytes, module censuses, syscall counts. Codecov is the repo's
+SaaS precedent and the bar anything else must clear: optional, never a merge gate,
+degrades to nothing.

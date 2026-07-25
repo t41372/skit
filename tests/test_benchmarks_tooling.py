@@ -2041,13 +2041,14 @@ class TestCodeReviewFixes:
         assert not any(plan.compare_mode for plan in pipeline.build_plan("pr"))
         assert not any(plan.compare_mode for plan in pipeline.build_plan("full"))
 
-    def test_startup_and_imports_declare_their_empty_library(self) -> None:
+    def test_suites_needing_a_library_declare_it(self) -> None:
         # Their n=0 need must be plan-visible (dataset_ns feeds prepare_datasets),
-        # never satisfied incidentally by a sibling suite.
+        # never satisfied incidentally by a sibling suite — footprint included, which
+        # wants one only to build the constructed env its uv spawns run under.
         for profile in pipeline.PROFILES:
             for plan in pipeline.build_plan(profile):
-                if plan.suite in ("startup", "imports"):
-                    assert 0 in plan.ns
+                if plan.suite in ("startup", "imports", "footprint"):
+                    assert 0 in plan.ns, f"{profile}/{plan.suite}"
 
     def test_imports_also_censuses_a_populated_library(self) -> None:
         # An empty library resolves no kind, and resolving a kind is what imports that

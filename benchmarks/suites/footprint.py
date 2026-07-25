@@ -45,7 +45,9 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
     # sdist-only mirror, or UV_NO_BINARY=1, builds the tree-sitter grammars from source
     # and publishes the result as a measured footprint regression. wheel_bytes is an
     # ENFORCED row; it may not be produced by a uv that read someone's shell profile.
-    env = bench_env(ctx, ctx.datasets[min(ctx.datasets)].root)
+    # The library is irrelevant here (nothing reads it), but the need is declared on the
+    # plan rather than borrowed from whichever sibling happens to generate one.
+    env = bench_env(ctx, ctx.datasets[plan.ns[0]].root)
     dist_dir = ctx.workdir / "dist"
     subprocess.run(  # noqa: S603 — fixed-shape uv argv
         [uv, "build", "--out-dir", str(dist_dir)],

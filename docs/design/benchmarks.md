@@ -22,10 +22,10 @@ runtime behavior: **nothing under `src/skit/` is touched.**
   `KindDescriptor`, no parser cache. The pipeline must first record the "before".
 - No README performance claims, no badges, no "lightweight" wording anywhere. Claims come
   in a later PR, generated from this pipeline's output, after budgets are ratified.
-- No SaaS onboarding (CodSpeed etc.). The pipeline is self-contained: pyperf + hyperfine +
-  CI artifacts. CodSpeed can be added later without redesign; the reasons and tradeoffs
-  are documented in `benchmarks/README.md`. (Superseded after review — see #15: CodSpeed
-  is being adopted for the timing trend, which is why no trend chart lives here.)
+- No SaaS onboarding (CodSpeed etc.) **in this PR**. The pipeline is self-contained:
+  pyperf + hyperfine + CI artifacts. CodSpeed can be added later without redesign, in its
+  own PR (#15) — which is also where the timing trend lives, and why nothing here
+  publishes a trend of its own; the reasons and tradeoffs are in `benchmarks/README.md`.
 - No fixed-hardware runner. Hosted-runner wall-clock is treated as *advisory* by design
   (see budget tiers); hard time gates wait for stable hardware.
 - Linux x86_64 is the only reference platform in v1. Suites that need `/proc`, strace, or

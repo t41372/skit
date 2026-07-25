@@ -46,7 +46,7 @@ def build_plan(profile: str) -> tuple[SuitePlan, ...]:
     if profile == "pr":
         return (
             SuitePlan("imports", ns=(0, 100)),
-            SuitePlan("footprint", closure=False),
+            SuitePlan("footprint", ns=(0,), closure=False),
             SuitePlan("rss", ns=(0, 1000), samples=5),
             SuitePlan("startup", ns=(0,), warmup=3, min_runs=15),
             SuitePlan("scale", ns=(0, 100, 1000), warmup=3, min_runs=15),
@@ -57,7 +57,7 @@ def build_plan(profile: str) -> tuple[SuitePlan, ...]:
     if profile == "full":
         return (
             SuitePlan("imports", ns=(0, 100)),
-            SuitePlan("footprint", closure=True),
+            SuitePlan("footprint", ns=(0,), closure=True),
             SuitePlan("rss", ns=(0, 1000), samples=10),
             SuitePlan("startup", ns=(0,), warmup=5, min_runs=40),
             SuitePlan("scale", ns=(0, 10, 100, 1000), warmup=5, min_runs=40, doctor=True),

@@ -103,6 +103,12 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: benchmark-compare
+          # The evidence lives under dot-prefixed directories, which
+          # upload-artifact excludes by default whenever they survive as
+          # artifact-internal paths (they do here: comparison.md at the root
+          # makes the workspace the common root). Silent, and it would leave
+          # the A/B report with no raw results.json behind it.
+          include-hidden-files: true
           path: |
             comparison.md
             .bench-base/results.json
