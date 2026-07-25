@@ -1519,7 +1519,7 @@ def test_run_cli_argv_not_reexpanded(tmp_path, run_entry_spy, monkeypatch):
         captured.update(kw)
         return orig(plan, values, extra, **kw)
 
-    monkeypatch.setattr(cli.flows, "assemble", spy)
+    monkeypatch.setattr(flows, "assemble", spy)
     store.add_python(_py(tmp_path, "print(1)\n"), name="noglob")
     result = runner.invoke(cli.app, ["run", "noglob", "--no-input", "--", "*.txt"])
     assert result.exit_code == 0, result.output

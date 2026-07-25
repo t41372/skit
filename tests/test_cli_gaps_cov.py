@@ -289,7 +289,7 @@ def test_run_assemble_form_error_exits_125(tmp_path, monkeypatch):
     def boom(*_a: object, **_k: object) -> object:
         raise flows.FormError("assembly blew up")
 
-    monkeypatch.setattr(cli.flows, "assemble", boom)
+    monkeypatch.setattr(flows, "assemble", boom)
     result = runner.invoke(cli.app, ["run", "j", "--no-input"])
     assert result.exit_code == 125  # skit-side failure
     assert "assembly blew up" in result.output

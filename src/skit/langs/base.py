@@ -11,15 +11,18 @@ The three axes the old ``Kind`` literal conflated are separated here:
   forward-compat contract is why the type is open.
 - **LaunchPayload** is the closed sum type (``ArgvLaunch | ShellLaunch``) where
   exhaustive matching actually pays off (run_entry's process spawn).
-- **capabilities** are ``X | None`` fields on a frozen LangSpec: the call-site idiom is
-  ``if spec.analyzer is None: <degrade>``, which the type checker narrows structurally.
-  A capability object is a frozen record of functions rather than a Protocol — skit owns
+- **capabilities** are ``X | None`` members of a frozen ``Capabilities`` bundle, read
+  off a LangSpec by the same names they always had: the call-site idiom is ``if
+  spec.analyzer is None: <degrade>``, which the type checker narrows structurally. A
+  capability object is a frozen record of functions rather than a Protocol — skit owns
   every implementation, so structural abstraction would add nothing but indirection.
+  The bundle exists so a spec can carry its capabilities *unresolved* until one is
+  asked for (``LazyCapabilities``); resolving them is what imports a language's parser.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
@@ -299,6 +302,58 @@ class CommentSyntax:
 
 
 @dataclass(frozen=True)
+class Capabilities:
+    """A kind's analysis half, in one record.
+
+    These five are exactly the capabilities that need a language's parser, so they are
+    also exactly the ones a missing grammar wheel takes away together (the single
+    import guard per language in `registry`). Bundling them lets a LangSpec carry them
+    *unresolved* — see `LazyCapabilities` — which is what keeps `skit list` from
+    importing tree-sitter to draw a kind badge.
+    """
+
+    analyzer: Analyzer | None = None
+    cli_reader: CliReader | None = None
+    injector: Injector | None = None  # run-time value delivery (temp-copy rewrite / env)
+    normalizer: Normalizer | None = None  # opt-in source-idiom rewrite (const -> envdefault)
+    # Suggests package deps from the script's own imports (add-time hint; None when the kind
+    # has no scanner or its grammar failed to import).
+    dep_scanner: Callable[[str], list[str]] | None = None
+
+
+NO_CAPABILITIES = Capabilities()
+
+CapabilityName = Literal["analyzer", "cli_reader", "injector", "normalizer", "dep_scanner"]
+
+
+class LazyCapabilities:
+    """A kind's Capabilities, built on first use and then remembered.
+
+    Building them imports the language's parser — three tree-sitter grammars, ~42
+    modules and ~10 ms — and the paths that resolve a spec most often (the Library
+    table, `skit list`, every launch) read `glyph`, `family` and `launch` and never
+    touch a capability at all. So the builder runs the first time one is *asked for*,
+    not when the spec is assembled.
+
+    The import guard is unchanged and still lives inside the builder: an absent or
+    broken grammar wheel yields a Capabilities with None fields, which is the same
+    `spec.analyzer is None` degradation every consumer already handles. Deferring it
+    only moves *when* that question is answered, never the answer.
+    """
+
+    __slots__ = ("_build", "_resolved")
+
+    def __init__(self, build: Callable[[], Capabilities]) -> None:
+        self._build = build
+        self._resolved: Capabilities | None = None
+
+    def get(self) -> Capabilities:
+        if self._resolved is None:
+            self._resolved = self._build()
+        return self._resolved
+
+
+@dataclass(frozen=True)
 class LangSpec:
     """One registered kind. Data + strategy + optional capabilities; frozen."""
 
@@ -312,17 +367,16 @@ class LangSpec:
     stored_name: str = ""  # in-store copy filename; "" = this kind is never copied
     comment: CommentSyntax | None = None
     params_io: ParamsIO | None = None
-    analyzer: Analyzer | None = None
-    cli_reader: CliReader | None = None
-    injector: Injector | None = None  # run-time value delivery (temp-copy rewrite / env)
-    normalizer: Normalizer | None = None  # opt-in source-idiom rewrite (const -> envdefault)
+    # The parser-backed capabilities, resolved or deferred. compare=False: a spec's
+    # identity is its kind and traits, and two specs must not stop comparing equal
+    # merely because one of them has since resolved its grammar.
+    capabilities: Capabilities | LazyCapabilities = field(
+        default=NO_CAPABILITIES, compare=False, repr=False
+    )
     supports_modes: bool = False  # copy/reference choice offered at add time
     # Package-dependency management: "uv" (PEP 723, python), "npm" (package.json materialized
     # next to the stored copy, js/ts), or "" (no package deps — needs-only, like every other kind).
     deps_flavor: Literal["", "uv", "npm"] = ""
-    # Suggests package deps from the script's own imports (add-time hint; None when the kind
-    # has no scanner or its grammar failed to import).
-    dep_scanner: Callable[[str], list[str]] | None = None
     takes_argv: bool = True  # False: appended args are not this kind's interface
     # Placeholder-delivered parameters are this kind's form interface: `{name}` holes
     # become fields via params.declared_for_template (command templates and prompts).
@@ -330,6 +384,48 @@ class LangSpec:
     # (flows._declared_plan, the params CLI/TUI surfaces), so a prompt (family
     # "interpreted", for has_original_file's sake) still gets the placeholder paths.
     placeholder_params: bool = False
+
+    @property
+    def resolved_capabilities(self) -> Capabilities:
+        """This kind's capabilities, building them if they were deferred."""
+        caps = self.capabilities
+        return caps if isinstance(caps, Capabilities) else caps.get()
+
+    # The five capability fields read exactly as they did when they were fields; only
+    # the moment the grammar imports has moved.
+
+    @property
+    def analyzer(self) -> Analyzer | None:
+        return self.resolved_capabilities.analyzer
+
+    @property
+    def cli_reader(self) -> CliReader | None:
+        return self.resolved_capabilities.cli_reader
+
+    @property
+    def injector(self) -> Injector | None:
+        return self.resolved_capabilities.injector
+
+    @property
+    def normalizer(self) -> Normalizer | None:
+        return self.resolved_capabilities.normalizer
+
+    @property
+    def dep_scanner(self) -> Callable[[str], list[str]] | None:
+        return self.resolved_capabilities.dep_scanner
+
+    def with_capabilities(self, capabilities: Capabilities | LazyCapabilities) -> LangSpec:
+        """A copy of this spec carrying `capabilities` instead of its own — resolved or
+        still deferred, exactly as the field accepts them."""
+        return replace(self, capabilities=capabilities)
+
+    def without(self, *names: CapabilityName) -> LangSpec:
+        """A copy of this spec with the named capabilities absent.
+
+        The shape a missing grammar wheel produces — reachable in a test without
+        needing a broken wheel to produce it.
+        """
+        return self.with_capabilities(replace(self.resolved_capabilities, **dict.fromkeys(names)))
 
     @property
     def supports_deps(self) -> bool:

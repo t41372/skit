@@ -55,7 +55,8 @@ Repository = "https://github.com/t41372/skit"
 Issues = "https://github.com/t41372/skit/issues"
 
 [project.scripts]
-skit = "skit.cli:app"
+# The dispatcher, not the Typer app: it answers --version without importing the CLI.
+skit = "skit.__main__:main"
 
 [dependency-groups]
 dev = [

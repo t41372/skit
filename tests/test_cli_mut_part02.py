@@ -220,7 +220,7 @@ def test_entry_drifted_analyzer_degraded_spec_is_false(tmp_path, monkeypatch):
     entry = _ok_entry(tmp_path)
     py_spec = spec_for("python")
     assert py_spec is not None
-    degraded = dataclasses.replace(py_spec, analyzer=None)
+    degraded = py_spec.without("analyzer")
     assert degraded.params_io is not None
     monkeypatch.setattr(healthcheck, "spec_for", lambda kind: degraded)
     assert healthcheck.entry_drifted(entry) is False

@@ -228,7 +228,7 @@ def test_preset_save_piped_stdout_takes_prefill_not_the_prompt(tmp_path, monkeyp
     monkeypatch.setattr("sys.stdin.isatty", lambda: True, raising=False)
     monkeypatch.setattr("sys.stdout.isatty", lambda: False, raising=False)  # piped
     monkeypatch.setattr(
-        cli.promptform,
+        promptform,
         "collect",
         lambda *a, **k: pytest.fail("piped stdout must not open the form"),
     )
@@ -246,7 +246,7 @@ def test_preset_save_interactive_collects_the_form(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     called: dict[str, object] = {}
     monkeypatch.setattr(
-        cli.promptform,
+        promptform,
         "collect",
         lambda plan, prefill, console: called.setdefault("v", {"CITY": "Kyoto"}),
     )

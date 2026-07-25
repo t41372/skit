@@ -20,7 +20,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from skit import cli, config, flows, inlineform, store
+from skit import cli, config, flows, inlineform, promptform, store
 from skit.params import ParamDecl
 
 runner = CliRunner()
@@ -184,9 +184,7 @@ def test_collect_values_term_dumb_forces_plain_promptform(monkeypatch):
     plan = flows.plan_for_entry(ent)
     inline_hit: dict[str, int] = {}
     monkeypatch.setattr(inlineform, "collect", lambda *a, **k: inline_hit.setdefault("x", 1) or {})
-    monkeypatch.setattr(
-        cli.promptform, "collect", lambda plan, prefill, console: {"msg": "plainval"}
-    )
+    monkeypatch.setattr(promptform, "collect", lambda plan, prefill, console: {"msg": "plainval"})
     values, runner, picked = cli._collect_values(ent, plan, {}, plain=False)
     assert values == {"msg": "plainval"}
     assert runner is None  # the line fallback never answers the picker
@@ -231,7 +229,7 @@ def test_collect_values_plain_forwards_module_console(monkeypatch):
         seen["console"] = console
         return {"msg": "v"}
 
-    monkeypatch.setattr(cli.promptform, "collect", fake_collect)
+    monkeypatch.setattr(promptform, "collect", fake_collect)
     cli._collect_values(ent, plan, {}, plain=True)
     assert seen["console"] is cli.console
 

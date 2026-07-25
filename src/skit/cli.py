@@ -33,25 +33,13 @@ from rich.console import Console
 from rich.markup import escape
 from rich.prompt import Confirm, Prompt
 
-from . import (
-    __version__,
-    agentskill,
-    analysis,
-    argstate,
-    config,
-    editor,
-    flows,
-    healthcheck,
-    i18n,
-    kindnames,
-    launcher,
-    models,
-    pep723,
-    promptform,
-    store,
-)
+# Kept eager: every command needs the library and its config, and i18n must initialize
+# before the decorators below resolve their help strings. Everything else a command body
+# reaches for — the analyzer, the form layer, the editor, the agent-skill installer — is
+# imported inside the command that uses it: `skit list` should not pay for `skit run`'s
+# dependencies (~18 modules on a path an agent calls constantly).
+from . import argstate, config, editor, i18n, kindnames, launcher, models, store
 from .i18n import gettext, ngettext
-from .langs.python import analyzer, metawriter
 from .langs.registry import KNOWN_KINDS, spec_for
 from .params import ParamDecl, declared_from_meta, edit_declared, is_secret_name
 from .rewrite import detect_newline, restore_newline
@@ -59,6 +47,7 @@ from .rewrite import detect_newline, restore_newline
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from . import agentskill, analysis, flows
     from .langs.base import LangSpec
 
 app = typer.Typer(
@@ -158,7 +147,12 @@ def main(
     version: bool = typer.Option(False, "--version", "-V", help=gettext("Show version")),
 ) -> None:
     if version:
-        console.print(f"skit {__version__}")
+        # The same answer the __main__ dispatcher gives ahead of this import, in the
+        # same plain form — reached when the flag is not in first position (after
+        # --install-completion, say), which is the only case the fast path leaves here.
+        from . import __version__
+
+        print(f"skit {__version__}")
         raise typer.Exit()
     if ctx.invoked_subcommand is None:
         _maybe_first_run_setup()
@@ -186,6 +180,8 @@ def _resolve_python_metadata(
     - Interactive: only ask when the AST reveals likely third-party imports; ask nothing when
       there are no dependencies at all.
     """
+    from . import pep723
+
     if pep723.has_block(text):
         meta = pep723.parse_block(text) or {}
         deps = meta.get("dependencies")
@@ -270,6 +266,8 @@ def _validate_python_flags(deps_opt: list[str] | None, python_opt: str | None) -
     unparseable value would otherwise be written into the stored copy's PEP 723
     block and brick every subsequent run with uv's raw error (validate-then-write).
     npm --dep is NOT routed here: its grammar belongs to the npm installer."""
+    from . import pep723
+
     for d in deps_opt or []:
         if d.strip() and (error := pep723.requirement_error(d.strip())) is not None:
             err_console.print(f"[red]{escape(error)}[/red]")
@@ -544,6 +542,9 @@ def _onboard_params(text: str, script_name: str, no_input: bool) -> list[ParamDe
       managed constants ADD fields rather than replace anything — the offer stands.
     - Non-interactive: don't guess, don't select, return empty (honesty beats clever).
     """
+    from . import flows
+    from .langs.python import analyzer
+
     result = analyzer.analyze(text)
     if result.uses_cli_framework:
         _print_reader_notice(spec_for("python"), text, result.frameworks)
@@ -578,6 +579,8 @@ def _print_reference_add_notice(
     script's own parser models a form, say so — the reader works in reference mode,
     so "setup was skipped" alone would read as "the form is lost" (it isn't).
     Otherwise say plainly that parameter setup was skipped."""
+    from . import flows
+
     if flows.reader_fields(kind_spec, text):
         _print_reader_notice(kind_spec, text, frameworks)
         return
@@ -593,6 +596,8 @@ def _onboard_script_params(entry: store.Entry, kind_spec: LangSpec, no_input: bo
     support was fake. Ticks are copy mode only (reference never writes the original,
     A7 — the reference voice says so); non-interactive selects nothing (python's
     rule: honesty beats clever)."""
+    from . import flows
+
     if kind_spec.analyzer is None or kind_spec.params_io is None:
         return []
     text = entry.script_path.read_text(encoding="utf-8", errors="replace")
@@ -664,6 +669,8 @@ def _onboard_python(
 ) -> tuple[store.Entry, list[str], list[str], list[str]]:
     """Shared add/create pipeline: identity -> dependencies -> store add -> parameter
     onboarding. Returns (entry, deps, managed_names, secret_names) for the summary."""
+    from .langs.python import analyzer, metawriter
+
     python_opt = _validate_python_flags(deps_opt, python_opt)
     name, description = _prompt_identity(p, text, name, description, no_input)
     final_deps, final_py = _resolve_python_metadata(
@@ -2464,6 +2471,8 @@ def show(
 ) -> None:
     """The single read view an automation (or a human) needs before running a script:
     identity, dependencies, the unified parameter schema (all three sources), presets."""
+    from . import flows
+
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
@@ -2758,6 +2767,8 @@ def _parse_set_opts(plan: flows.FormPlan, raw: list[str]) -> dict[str, str]:
     """--set NAME=VALUE overrides: parsed strictly (never guess). A malformed item or an
     unknown name is a usage error (exit 2); a value that fails its field's own validation
     is a skit failure (exit 125), like any other bad value."""
+    from . import flows
+
     pairs: dict[str, str] = {}
     bad: list[str] = []
     for item in raw:
@@ -2814,6 +2825,8 @@ def _collect_values(
     Returns values, selected runner name, and whether the user actually changed the
     runner picker. The runner is non-None only when `runners` was passed AND the inline
     form rendered its picker row; the line fallback never answers that question."""
+    from . import promptform
+
     style = _PLAIN_STYLE if plain or os.environ.get("TERM") == "dumb" else config.load_form()
     if style == "tui":
         import importlib
@@ -2836,11 +2849,6 @@ def _collect_values(
     return promptform.collect(plan, prefill, console=console), None, False
 
 
-# How a flows.RunOutcome failure maps to skit's exit-code contract (docker convention).
-# The numbers live in flows so the TUI's exit-after-run path shares them.
-_FAILURE_EXIT = flows.FAILURE_EXIT_CODES
-
-
 def _headless_validation_errors(
     plan: flows.FormPlan,
     values: dict[str, str],
@@ -2853,6 +2861,8 @@ def _headless_validation_errors(
     filled flag, and it is never an alternative delivery channel for placeholders,
     injected constants, or environment fields.
     """
+    from . import flows
+
     errors = flows.validate(plan, values)
     if not extra:
         return errors
@@ -2985,6 +2995,8 @@ def run(
 ) -> None:
     """Run an entry straight through the terminal. skit's own failures exit 125/126/127;
     the launched process's exit code passes through untouched."""
+    from . import flows
+
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
@@ -3211,7 +3223,10 @@ def run(
         raise
     code = outcome.code
     if code is None:
-        raise _fail(outcome.message, _FAILURE_EXIT[outcome.failure])
+        # How a RunOutcome failure maps to skit's exit-code contract (docker
+        # convention). The numbers live in flows so the TUI's exit-after-run path
+        # shares them.
+        raise _fail(outcome.message, flows.FAILURE_EXIT_CODES[outcome.failure])
     # The launch was accepted (the script's own exit code is the script's business —
     # its values are still the values the user asked to keep).
     _persist_preset()
@@ -3552,6 +3567,8 @@ def preset_save(
 ) -> None:
     """Save a named preset: interactively, or straight from the last run with --from-last.
     Secret values are never persisted (C3)."""
+    from . import flows, promptform
+
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
@@ -3828,6 +3845,8 @@ def _show_command_params(
 
 def _show_params(entry: store.Entry, as_json: bool) -> None:
     """Read view: managed parameters + last values + detected-but-unmanaged candidates."""
+    from . import analysis, flows
+
     last = argstate.load_state(entry.slug)["values"]
     entry_spec = spec_for(entry.meta.kind)
     specs: list[ParamDecl] = []
@@ -4460,6 +4479,8 @@ def _edit_params(
     quiet: bool = False,
 ) -> None:
     """Apply parameter-definition changes to a copy-mode Python entry (rewrites [tool.skit])."""
+    from . import analysis, flows
+
     console = _maybe_quiet(quiet)
     entry_spec = spec_for(entry.meta.kind)
     if entry_spec is None or entry_spec.params_io is None or entry_spec.analyzer is None:
@@ -4993,6 +5014,8 @@ app.add_typer(agent_app, name="agent")
 def _agent_install_confirmed(skills_dir: Path) -> None:
     # Read the bundled skill BEFORE the write-error wrap: a broken installation (skill
     # missing from the package) must fail loudly, not as "could not write there".
+    from . import agentskill
+
     text = agentskill.skill_text()
     try:
         written = agentskill.install_into(skills_dir, text)
@@ -5058,6 +5081,8 @@ def agent_install(
     """Teach the user's AI agents to use skit. An explicit TARGET or --to is consent by
     itself; bare `skit agent install` detects agent directories and asks (principle #6:
     skit never touches another tool's directory uninvited)."""
+    from . import agentskill
+
     if to is not None and (target or project):
         err_console.print(
             f"[red]{gettext('Use a named target (with optional --project) or --to — not both.')}[/red]"
@@ -5123,6 +5148,7 @@ def doctor(
     as_json: bool = typer.Option(False, "--json", help=gettext("Output as JSON")),
 ) -> None:
     """Environment self-check (the CLI face of the TUI health-check screen)."""
+    from . import healthcheck
     from .paths import scripts_dir
 
     uv = launcher.find_uv()

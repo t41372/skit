@@ -12,6 +12,8 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 PYPROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
@@ -71,7 +73,6 @@ def test_version_is_single_sourced_from_the_distribution() -> None:
 
 def test_version_falls_back_when_no_distribution_is_installed(monkeypatch) -> None:
     """A bare checkout without an installed dist still imports (and says so)."""
-    import importlib
     import importlib.metadata
 
     import skit
@@ -79,8 +80,41 @@ def test_version_falls_back_when_no_distribution_is_installed(monkeypatch) -> No
     def missing(_name: str) -> str:
         raise importlib.metadata.PackageNotFoundError
 
+    skit.__version__  # noqa: B018 — resolve first, so delattr below has a value to restore
     monkeypatch.setattr(importlib.metadata, "version", missing)
-    importlib.reload(skit)
+    # Drop the memoized value so the next attribute access runs the resolver again;
+    # monkeypatch restores the real one at teardown.
+    monkeypatch.delattr(skit, "__version__")
     assert skit.__version__ == "0.0.0+unknown"
-    monkeypatch.undo()
-    importlib.reload(skit)  # restore the real version for the rest of the suite
+
+
+def test_version_is_resolved_once_and_then_memoized(monkeypatch) -> None:
+    """`importlib.metadata` costs ~85 modules — the largest single import on skit's
+    startup path — so the version resolves lazily, and at most once per interpreter.
+    A second access must not reach the metadata layer again."""
+    import importlib.metadata
+
+    import skit
+
+    calls: list[str] = []
+
+    def counting(name: str) -> str:
+        calls.append(name)
+        return "9.9.9"
+
+    skit.__version__  # noqa: B018 — as above: give delattr something to restore
+    monkeypatch.setattr(importlib.metadata, "version", counting)
+    monkeypatch.delattr(skit, "__version__")
+    assert skit.__version__ == "9.9.9"
+    assert skit.__version__ == "9.9.9"
+    assert calls == ["skit-cli"]
+
+
+def test_module_getattr_refuses_anything_but_the_version() -> None:
+    """The lazy hook answers exactly one name; everything else must still raise the
+    normal AttributeError, or a typo anywhere in skit would resolve to a version
+    string instead of failing."""
+    import skit
+
+    with pytest.raises(AttributeError, match="module 'skit' has no attribute 'nope'"):
+        skit.nope  # noqa: B018 — the attribute access IS the assertion
