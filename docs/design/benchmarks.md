@@ -53,7 +53,7 @@ uv run python -m benchmarks compare base.json head.json  # A/B delta table
 uv run python -m benchmarks export-gha .bench/results.json       # history format
 ```
 
-```
+```text
 benchmarks/
 ├── README.md            # methodology: cold/warm defs, run counts, how to read numbers
 ├── __init__.py
