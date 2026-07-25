@@ -68,6 +68,13 @@ def execute(
     for stale_suite in suites_dir.glob("*.json"):
         stale_suite.unlink()  # a fresh run must not summarize a previous run's leftovers
 
+    # Before the suites, not after: collect_meta shells out to git, and a repo it
+    # cannot read (git absent, --measured-repo pointing at a non-repo) would otherwise
+    # throw away a completed 45-minute run — run.json was already unlinked above, so
+    # summarize can never be re-run over the surviving suites/*.json. Failing here
+    # costs a second.
+    meta = collect_meta(profile, measured_root or repo_root)
+
     workdir = Path(tempfile.mkdtemp(prefix="skit-bench-"))  # OUTSIDE any uv project
     try:
         ctx = discover(repo_root, bench_dir, workdir, datasets)
@@ -82,7 +89,6 @@ def execute(
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
-    meta = collect_meta(profile, measured_root or repo_root)
     (bench_dir / "run.json").write_text(
         json.dumps(
             {"meta": dataclasses.asdict(meta), "total_duration_s": time.monotonic() - t0},

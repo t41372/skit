@@ -23,8 +23,9 @@ runtime behavior: **nothing under `src/skit/` is touched.**
 - No README performance claims, no badges, no "lightweight" wording anywhere. Claims come
   in a later PR, generated from this pipeline's output, after budgets are ratified.
 - No SaaS onboarding (CodSpeed etc.). The pipeline is self-contained: pyperf + hyperfine +
-  artifacts + a git history branch. CodSpeed can be added later without redesign; the
-  reasons and tradeoffs are documented in `benchmarks/README.md`.
+  CI artifacts. CodSpeed can be added later without redesign; the reasons and tradeoffs
+  are documented in `benchmarks/README.md`. (Superseded after review — see #15: CodSpeed
+  is being adopted for the timing trend, which is why no trend chart lives here.)
 - No fixed-hardware runner. Hosted-runner wall-clock is treated as *advisory* by design
   (see budget tiers); hard time gates wait for stable hardware.
 - Linux x86_64 is the only reference platform in v1. Suites that need `/proc`, strace, or
@@ -569,7 +570,7 @@ orchestration that needs external binaries is exempt, each exemption commented.*
   `pipeline.HEADLINE_METRICS` — in code, so it can't drift), budget tiers + ratchet protocol + `--propose` workflow,
   hosted-runner noise policy, exact lane argvs for run_overhead, how to run locally
   (including "non-Linux hosts see skips; the skip budget applies only to reference CI"),
-  how to add a suite, the history branch's one-time setup checklist, and what would move
+  how to add a suite, the one-time setup checklist, and what would move
   wall-clock budgets to `enforced` (fixed hardware + observed noise distribution).
 - `AGENTS.md`: add the bench commands to Commands and a short "Performance pipeline"
   section: *pipeline PRs measure; optimization PRs must attach `benchmark-compare`

@@ -17,7 +17,7 @@ from typing import Any, Literal
 
 import tomli_w
 
-from .results import Results, python_major_minor
+from .results import Results, fmt_number, python_major_minor
 
 Tier = Literal["enforced", "target"]
 Outcome = Literal[
@@ -31,6 +31,7 @@ Outcome = Literal[
 
 # Ratchet ceilings sitting this far under their bound trigger the "tighten it" nudge.
 STALE_FRACTION = 0.85
+_DEFAULT_HEADROOM = 0.10
 
 _ALLOWED_KEYS = {
     "metric",
@@ -53,9 +54,11 @@ _HEADER = """\
 # tier = "target": the aspirational contract — reported on every run, never failing
 #   CI until a future PR deliberately moves the row to enforced.
 # ratchet = true: the bound derives from a measured value + headroom, and
-#   `check --propose` refreshes it (from the CI artifact — never a local run; the
-#   module census is python-version-dependent). Non-ratchet bounds are hand-set
-#   contract values that propose leaves alone.
+#   `check --propose` refreshes it. CI artifacts only — propose REFUSES a local or
+#   dirty-tree run, because the module census is platform- and python-dependent. It
+#   also refuses to widen a bound (that is a regression wearing a ratchet's clothes)
+#   unless asked with --allow-regression. Non-ratchet bounds are hand-set contract
+#   values that propose leaves alone.
 # context.pr / context.commit: where a refreshed bound came from. A PR artifact
 #   anchors on the PR number — a PR run's HEAD is GitHub's ephemeral merge ref, which
 #   no clone resolves and squash-merge deletes; artifacts off a PR carry the commit.
@@ -75,7 +78,7 @@ class Budget:
     max_value: float
     tier: Tier
     ratchet: bool = False
-    headroom: float = 0.10
+    headroom: float = _DEFAULT_HEADROOM
     profiles: tuple[str, ...] = ()  # () = applies on every profile
     platform: str | None = None
     ci_only: bool = False
@@ -161,7 +164,7 @@ def _load_row(index: int, row: object) -> Budget:
         raise BudgetsError(f"{where}: ratchet must be a boolean")
     if ratchet and tier != "enforced":
         raise BudgetsError(f"{where}: ratchet rows must be enforced")
-    headroom = row.get("headroom", 0.10)
+    headroom = row.get("headroom", _DEFAULT_HEADROOM)
     if isinstance(headroom, bool) or not isinstance(headroom, int | float):
         raise BudgetsError(f"{where}: headroom must be a number")
     if not 0 < headroom < 1:
@@ -262,24 +265,16 @@ def _evaluate_row(budget: Budget, results: Results) -> RowResult:
             budget,
             "violated",
             value=metric.value,
-            detail=f"{_fmt(metric.value)} {metric.unit} > {_fmt(budget.max_value)}",
+            detail=f"{fmt_number(metric.value)} {metric.unit} > {fmt_number(budget.max_value)}",
         )
     stale = budget.ratchet and metric.value < STALE_FRACTION * budget.max_value
     return RowResult(
         budget,
         "passed",
         value=metric.value,
-        detail=f"{_fmt(metric.value)} {metric.unit} ≤ {_fmt(budget.max_value)}",
+        detail=f"{fmt_number(metric.value)} {metric.unit} ≤ {fmt_number(budget.max_value)}",
         stale=stale,
     )
-
-
-def _fmt(value: float) -> str:
-    """Bounds and measurements print as plain numbers — a byte contract that renders
-    as 1.04858e+06 is unreadable exactly where readability is the point."""
-    if value == int(value):
-        return str(int(value))
-    return f"{value:g}"
 
 
 _SYMBOLS: dict[Outcome, str] = {
@@ -308,8 +303,8 @@ def render_report(report: Report) -> str:
         )
         if row.stale:
             lines.append(
-                f"[enforced] note  {row.budget.metric}: measured {_fmt(row.value or 0)} sits below "
-                f"{STALE_FRACTION:.0%} of the bound {_fmt(row.budget.max_value)} — "
+                f"[enforced] note  {row.budget.metric}: measured {fmt_number(row.value or 0)} sits below "
+                f"{STALE_FRACTION:.0%} of the bound {fmt_number(row.budget.max_value)} — "
                 "ceiling is stale, tighten it (check --propose)"
             )
     enforced = [r for r in report.rows if r.budget.tier == "enforced"]
@@ -343,11 +338,41 @@ def _provenance(results: Results) -> dict[str, str]:
     }
 
 
-def propose(budgets: list[Budget], results: Results) -> str:
+def _refuse_unproposable(results: Results) -> None:
+    """ "Refresh ratchets ONLY from a CI artifact" was prose while every other invariant
+    here got a hard guard — so the command the README prints was one `--propose` away
+    from committing a laptop's census as an enforced ceiling, indistinguishable from a
+    CI-derived one. The census is platform- and python-dependent: a higher local number
+    silently loosens the bound past the next real regression, a lower one fails CI on an
+    untouched import graph with the bound itself as the bug. Both are the
+    wrong-but-plausible class this pipeline exists to prevent, so both die here."""
+    if results.meta.host.ci_runner is None:
+        raise BudgetsError(
+            "cannot propose from a local run: ratchet bounds come from CI artifacts "
+            "(the census is platform- and python-dependent). Download the run's "
+            "benchmark-results-* artifact and propose from that results.json."
+        )
+    if results.meta.git.dirty:
+        raise BudgetsError(
+            "cannot propose from a dirty tree: the bound would record a commit that "
+            "does not describe what was measured"
+        )
+
+
+def propose(budgets: list[Budget], results: Results, *, allow_regression: bool = False) -> str:
     """The refreshed budgets.toml: ratchet rows get max = measured x (1 + headroom)
     (ceil — bounds are integers in spirit) and fresh context from the results
-    manifest; every other row round-trips untouched. Output is the complete file."""
+    manifest; every other row round-trips untouched. Output is the complete file.
+
+    Refuses to WIDEN an enforced ceiling unless asked. A regression makes `check` fail,
+    and `propose` was the one command that would then rewrite the failing bound to fit
+    the regression — turning a red gate into a rubber stamp with no trace in the diff
+    that the ratchet moved the wrong way. Legitimately looser bounds do exist (a
+    dependency bump that really does add modules), so this is consent, not prohibition:
+    `--allow-regression` says out loud that the increase is intended."""
+    _refuse_unproposable(results)
     refreshed: list[Budget] = []
+    widened: list[str] = []
     for budget in budgets:
         if not budget.ratchet:
             refreshed.append(budget)
@@ -355,10 +380,16 @@ def propose(budgets: list[Budget], results: Results) -> str:
         metric = results.metrics.get(budget.metric)
         if metric is None:
             raise BudgetsError(f"cannot propose {budget.metric}: metric absent from results")
+        bound = float(math.ceil(metric.value * (1 + budget.headroom)))
+        if bound > budget.max_value:
+            widened.append(
+                f"{budget.metric}: {fmt_number(budget.max_value)} -> {fmt_number(bound)} "
+                f"(measured {fmt_number(metric.value)})"
+            )
         refreshed.append(
             Budget(
                 metric=budget.metric,
-                max_value=float(math.ceil(metric.value * (1 + budget.headroom))),
+                max_value=bound,
                 tier=budget.tier,
                 ratchet=True,
                 headroom=budget.headroom,
@@ -368,6 +399,14 @@ def propose(budgets: list[Budget], results: Results) -> str:
                 context=_provenance(results),
                 note=budget.note,
             )
+        )
+    if widened and not allow_regression:
+        rows = "\n  ".join(widened)
+        raise BudgetsError(
+            "refusing to loosen enforced bounds — this artifact regressed against the "
+            f"committed contract:\n  {rows}\n"
+            "Fix the regression, or pass --allow-regression if the increase is intended "
+            "(say why in the row's note)."
         )
     return render_budgets(refreshed)
 
@@ -384,6 +423,11 @@ def render_budgets(budgets: list[Budget]) -> str:
         }
         if b.ratchet:
             row["ratchet"] = True
+        # Emitted for any row that carries a non-default value, not just ratchets:
+        # propose() regenerates the WHOLE file, so a headroom hand-set on a row that
+        # isn't a ratchet yet would be silently dropped and reappear as the 0.10
+        # default the day the row is promoted.
+        if b.headroom != _DEFAULT_HEADROOM or b.ratchet:
             row["headroom"] = b.headroom
         if b.profiles:
             row["profiles"] = list(b.profiles)

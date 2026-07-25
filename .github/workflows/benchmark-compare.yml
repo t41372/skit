@@ -20,9 +20,14 @@ on:
 # Grant no permissions by default; the job requests the minimum it needs.
 permissions: {}
 
+# A/B runs are told apart by their INPUTS, not the ref they were dispatched from, so
+# keying on the ref alone would have a second dispatch cancel the first — destroying
+# ~45 minutes of the evidence AGENTS.md makes mandatory for optimization PRs. Serialize
+# per base/head pair and never cancel (benchmark-nightly.yml is non-cancelling for the
+# same reason).
 concurrency:
-  group: benchmark-compare-${{ github.ref }}
-  cancel-in-progress: true
+  group: benchmark-compare-${{ github.event.inputs.base }}-${{ github.event.inputs.head }}
+  cancel-in-progress: false
 
 env:
   PYTHONUTF8: "1"
@@ -86,6 +91,10 @@ jobs:
           side-head/.venv/bin/python -m benchmarks run --profile compare --out .bench-head --measured-repo side-head
       - name: Render comparison
         if: ${{ !cancelled() }}
+        # Explicit `shell: bash` for `pipefail`: the default shell runs `bash -e`
+        # WITHOUT it, so `compare | tee` would report tee's success and publish an
+        # empty comparison.md as green A/B evidence.
+        shell: bash
         run: |
           uv run python -m benchmarks compare .bench-base/results.json .bench-head/results.json \
             | tee comparison.md >> "$GITHUB_STEP_SUMMARY"

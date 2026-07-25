@@ -5,9 +5,11 @@
 # tier = "target": the aspirational contract — reported on every run, never failing
 #   CI until a future PR deliberately moves the row to enforced.
 # ratchet = true: the bound derives from a measured value + headroom, and
-#   `check --propose` refreshes it (from the CI artifact — never a local run; the
-#   module census is python-version-dependent). Non-ratchet bounds are hand-set
-#   contract values that propose leaves alone.
+#   `check --propose` refreshes it. CI artifacts only — propose REFUSES a local or
+#   dirty-tree run, because the module census is platform- and python-dependent. It
+#   also refuses to widen a bound (that is a regression wearing a ratchet's clothes)
+#   unless asked with --allow-regression. Non-ratchet bounds are hand-set contract
+#   values that propose leaves alone.
 # context.pr / context.commit: where a refreshed bound came from. A PR artifact
 #   anchors on the PR number — a PR run's HEAD is GitHub's ephemeral merge ref, which
 #   no clone resolves and squash-merge deletes; artifacts off a PR carry the commit.

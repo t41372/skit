@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from random import Random
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
@@ -120,7 +120,22 @@ class Manifest:
 
     @classmethod
     def load(cls, root: Path) -> Manifest:
-        doc = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+        """A manifest half-written by an interrupted run (Ctrl-C, OOM, a CI step
+        timeout inside _finalize's non-atomic write) must surface as the pipeline's own
+        error, not a bare JSONDecodeError/KeyError: those are not in the front door's
+        except tuple, so the user would get a traceback that never names .bench/datasets
+        and never reaches check_reusable's "delete it and rerun" remedy."""
+        try:
+            doc = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+            return cls._from_doc(root, doc)
+        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+            raise DatasetError(
+                f"{root / 'manifest.json'} is unreadable ({exc}) — a previous generation "
+                f"was interrupted. Delete {root} and rerun."
+            ) from exc
+
+    @classmethod
+    def _from_doc(cls, root: Path, doc: dict[str, Any]) -> Manifest:
         return cls(
             root=root,
             n=doc["n"],

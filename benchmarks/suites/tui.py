@@ -37,7 +37,7 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
         peaks: list[float] = []
         for i in range(plan.samples):
             out_file = ctx.workdir / f"tui_{n}_{i}.json"
-            subprocess.run(  # noqa: S603 — fixed-shape probe argv
+            probe = subprocess.run(  # noqa: S603 — fixed-shape probe argv
                 [
                     ctx.python,
                     str(_PROBE),
@@ -54,9 +54,25 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
                 cwd=ctx.workdir,
                 env=dict(env),
                 timeout=PROBE_TIMEOUT_S,
-                check=True,
-                stdout=subprocess.DEVNULL,
+                check=plan.compare_mode is False,
+                capture_output=True,
+                text=True,
             )
+            if probe.returncode != 0:
+                # A/B only: the probe drives skit's own TUI, so an older side can fail
+                # its assertions on a widget id or a screen that did not exist yet.
+                # Under compare that is this side's answer, recorded with the actual
+                # error — not a reason to lose the whole 45-minute run (SuitePlan.
+                # compare_mode). Off compare it stays a crash, as it must.
+                output.skipped.append(
+                    Skip(
+                        suite="tui",
+                        case=f"n{n}.sample{i}",
+                        reason=f"probe exit {probe.returncode}: "
+                        f"{(probe.stderr or probe.stdout).strip()[-300:]}",
+                    )
+                )
+                break
             doc = json.loads(out_file.read_text(encoding="utf-8"))
             first_idle.append(doc["first_idle_ms"])
             search.append(doc["search_ms"])
@@ -64,6 +80,8 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
                 import_samples.append(doc["import_ms"])
             if proc_status:
                 peaks.append(float(vmhwm_kib(doc["status_text"])))
+        if not first_idle:
+            continue  # every sample was skipped (compare mode): no metrics, not zeros
         output.metrics[f"tui.first_idle.n{n}.median_ms"] = _stat(first_idle)
         output.metrics[f"tui.search.n{n}.median_ms"] = _stat(search)
         if peaks:

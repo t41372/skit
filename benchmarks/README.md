@@ -131,7 +131,13 @@ applicable enforced rows were evaluated.
 
 **Ratchet protocol:** ratchet rows (`ratchet = true`) bound a measured value +
 headroom. Refresh them ONLY from a CI artifact — `uv run python -m benchmarks check
-<ci-results.json> --propose` prints the exact replacement file. A PR that
+<ci-results.json> --propose` prints the exact replacement file. Both halves of that
+rule are enforced, not advisory: propose **refuses** a local or dirty-tree artifact
+(the census is platform- and python-dependent, so a laptop's number must never become
+an enforced ceiling), and it **refuses to widen** a bound — a regression is what makes
+`check` fail, and rewriting the failing bound to fit it turns a red gate into a rubber
+stamp. Bounds do legitimately loosen sometimes (a dependency bump that really does add
+modules); `--allow-regression` says so out loud, and the row's `note` should say why. A PR that
 intentionally moves an enforced metric updates budgets.toml in the same PR. When a
 measured value sits under 85% of its ceiling, `check` nags to tighten. `--propose`
 stamps each refreshed row's `context` from the artifact it read: python, date, and

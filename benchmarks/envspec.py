@@ -28,6 +28,26 @@ PYPERF_INHERIT = (
 )
 
 
+def bench_path(*, skit: str, uv: str | None, node: str | None) -> str:
+    """The PATH benchmarked children get. Exposed on its own because the harness must
+    resolve tools the SAME way the child will: run_overhead's shell lane used to pick
+    bash off the ambient PATH, then benchmark that binary against a `skit run` that
+    resolved bash off this one. On a Homebrew macOS those are two different programs and
+    the headline shell-overhead number is the difference between them; where bash lives
+    outside /usr/bin and /bin (NixOS, a prefixed container) the guard passed and skit
+    then exited non-zero, killing the whole batch instead of recording a skip."""
+    # Benchmark execution is POSIX-only.  Keep this pure builder POSIX-deterministic
+    # even when its contract tests run on Windows, where Path would reinterpret the
+    # fixture paths with backslashes and manufacture a mixed-separator PATH.
+    parts: list[str] = [str(PurePosixPath(skit).parent)]
+    parts.extend(str(PurePosixPath(tool).parent) for tool in (uv, node) if tool)
+    parts += ["/usr/bin", "/bin"]
+    seen: dict[str, None] = {}
+    for part in parts:
+        seen.setdefault(part, None)
+    return ":".join(seen)
+
+
 def build_env(
     *,
     skit: str,
@@ -39,20 +59,10 @@ def build_env(
     """The constructed env dict — built, not scrubbed: composed PATH (venv, uv, node,
     system), dataset-pointed SKIT dirs, scratch HOME/XDG, per-session UV cache, pinned
     locale/terminal. Ambient PYTHONPATH, color vars, UV_* mirrors never leak in."""
-    # Benchmark execution is POSIX-only.  Keep this pure builder POSIX-deterministic
-    # even when its contract tests run on Windows, where Path would reinterpret the
-    # fixture paths with backslashes and manufacture a mixed-separator PATH.
-    path_parts: list[str] = [str(PurePosixPath(skit).parent)]
-    path_parts.extend(str(PurePosixPath(tool).parent) for tool in (uv, node) if tool)
-    path_parts += ["/usr/bin", "/bin"]
-    seen: dict[str, None] = {}
-    for part in path_parts:
-        seen.setdefault(part, None)
-
     home = workdir / "home"
     home.mkdir(parents=True, exist_ok=True)
     env: dict[str, str] = {
-        "PATH": ":".join(seen),
+        "PATH": bench_path(skit=skit, uv=uv, node=node),
         "HOME": str(home),
         "XDG_DATA_HOME": str(workdir / "xdg-data"),
         "XDG_STATE_HOME": str(workdir / "xdg-state"),

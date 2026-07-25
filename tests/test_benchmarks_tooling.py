@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import dataclasses
 import hashlib
 import json
 import os
@@ -275,7 +276,7 @@ def budgets_from(toml_text: str) -> list[Budget]:
 ENFORCED_ROW = """
 [[budget]]
 metric = "imports.version.modules"
-max = 320
+max = 400
 tier = "enforced"
 ratchet = true
 context = { python = "3.13", commit = "abc", date = "2026-07-20" }
@@ -518,6 +519,55 @@ tier = "target"
         with pytest.raises(BudgetsError, match="cannot propose"):
             propose(load_budgets(ENFORCED_ROW), make_results({}))
 
+    def test_propose_refuses_a_local_artifact(self) -> None:
+        """The census is platform- and python-dependent, so a laptop's number must never
+        become an enforced ceiling — "CI artifacts only" is a guard, not just prose."""
+        local = make_results(
+            {"imports.version.modules": Metric(291, "count", 1)},
+            meta=make_meta(ci_runner=None),
+        )
+        with pytest.raises(BudgetsError, match="cannot propose from a local run"):
+            propose(load_budgets(ENFORCED_ROW), local)
+
+    def test_propose_refuses_a_dirty_tree(self) -> None:
+        meta = dataclasses.replace(make_meta(), git=GitInfo(commit="abc", dirty=True))
+        dirty = make_results({"imports.version.modules": Metric(291, "count", 1)}, meta=meta)
+        with pytest.raises(BudgetsError, match="cannot propose from a dirty tree"):
+            propose(load_budgets(ENFORCED_ROW), dirty)
+
+    def test_propose_refuses_to_widen_a_bound(self) -> None:
+        """A regression makes `check` fail; propose was the one command that would then
+        rewrite the failing bound to fit it, turning a red gate into a rubber stamp."""
+        regressed = make_results({"imports.version.modules": Metric(400, "count", 1)})
+        with pytest.raises(BudgetsError, match="refusing to loosen enforced bounds") as exc:
+            propose(load_budgets(ENFORCED_ROW), regressed)
+        assert "imports.version.modules: 400 -> 441" in str(exc.value)
+        assert "--allow-regression" in str(exc.value)
+
+    def test_propose_widens_when_the_increase_is_declared(self) -> None:
+        regressed = make_results({"imports.version.modules": Metric(400, "count", 1)})
+        (row,) = load_budgets(propose(load_budgets(ENFORCED_ROW), regressed, allow_regression=True))
+        assert row.max_value == 441
+
+    def test_propose_keeps_a_hand_set_headroom_on_a_non_ratchet_row(self) -> None:
+        """propose regenerates the WHOLE file, so a headroom written on a row that is
+        not a ratchet yet must survive — otherwise it silently reverts to the default
+        the day the row is promoted, and the refreshed ceiling is tighter than the
+        contract said."""
+        text = (
+            ENFORCED_ROW
+            + """
+[[budget]]
+metric = "startup.version.over_python_ms"
+max = 75
+tier = "target"
+headroom = 0.25
+"""
+        )
+        results = make_results({"imports.version.modules": Metric(291, "count", 1)})
+        by_metric = {b.metric: b for b in load_budgets(propose(load_budgets(text), results))}
+        assert by_metric["startup.version.over_python_ms"].headroom == 0.25
+
     def test_render_budgets_round_trips(self) -> None:
         budgets = budgets_from(
             (REPO_ROOT / "benchmarks" / "budgets.toml").read_text(encoding="utf-8")
@@ -693,18 +743,52 @@ class TestCompare:
             {
                 "startup.version.median_ms": Metric(230.0, "ms", 15),  # +15%, > 2ms → notable
                 "small.wiggle_ms": Metric(11.0, "ms", 15),  # +10% but ≤ 2ms floor → noise
-                "imports.version.modules": Metric(104, "count", 1),  # +4% < 5% → noise
+                # +4% — under the relative threshold, but a module census has no
+                # run-to-run noise, so any change is real and must be notable.
+                "imports.version.modules": Metric(104, "count", 1),
                 "new.metric": Metric(1, "count", 1),
             }
         )
         comparison = bcompare.compare(base, head)
-        assert [d.metric for d in comparison.notable] == ["startup.version.median_ms"]
+        assert sorted(d.metric for d in comparison.notable) == [
+            "imports.version.modules",
+            "startup.version.median_ms",
+        ]
         assert comparison.only_base == ["gone.metric"]
         assert comparison.only_head == ["new.metric"]
 
+    def test_exact_units_ignore_the_noise_threshold(self) -> None:
+        """Counts, byte sizes and booleans are identical across runs of the same tree,
+        so a "within noise" verdict on them can only ever hide a real change."""
+        for unit, base_value, head_value in (
+            ("count", 315.0, 316.0),
+            ("bytes", 508392.0, 508393.0),
+            ("bool", 0.0, 1.0),
+        ):
+            base = make_results({"m.x": Metric(base_value, unit, 1)})
+            head = make_results({"m.x": Metric(head_value, unit, 1)})
+            (delta,) = bcompare.compare(base, head).deltas
+            assert delta.notable, unit
+            assert not bcompare.compare(base, base).deltas[0].notable, unit
+
+    def test_render_reports_each_side_skips(self) -> None:
+        """compare_mode records WHY an older side lacks a metric; without this the
+        report's "Only in head" reads as "head added benchmarks" — the opposite."""
+        base = make_results(
+            {"m.x": Metric(1, "count", 1)},
+            skipped=[Skip(suite="micro", case="bench_launch.py", reason="exit 1: ImportError")],
+        )
+        head = make_results({"m.x": Metric(1, "count", 1), "m.y": Metric(2, "count", 1)})
+        text = bcompare.render_markdown(base, head, bcompare.compare(base, head))
+        assert "### Skipped in base (1)" in text
+        assert "exit 1: ImportError" in text
+        assert "Skipped in head" not in text
+
     def test_zero_base(self) -> None:
-        base = make_results({"c.count": Metric(0, "count", 1)})
-        grown = make_results({"c.count": Metric(3, "count", 1)})
+        # A measured unit, so this exercises the relative branch: with base 0 there is
+        # no percentage to take, and any movement off zero is the whole signal.
+        base = make_results({"c.median_ms": Metric(0, "ms", 15)})
+        grown = make_results({"c.median_ms": Metric(3, "ms", 15)})
         delta = bcompare.compare(base, grown).deltas[0]
         assert delta.pct is None
         assert delta.notable
@@ -1368,7 +1452,7 @@ class TestContractSync:
             for name, subparser in sorted(subparsers.choices.items())
         )
         assert hashlib.sha256(text.encode()).hexdigest() == (
-            "5485d300ca31d82a641a666a35444856925c4fa9bffa1b61bbd0e06dda9a2804"
+            "90a99e522db65bfa72725e6149ea74cf84ee8a32c81f5fc36eaa0474ef72ed0c"
         )
 
     def test_all_benchmark_subprocesses_are_bounded(self) -> None:
@@ -1464,6 +1548,21 @@ class TestEnvspec:
         )
         assert env["PATH"] == "/usr/bin:/bin"
         assert env["SKIT_DATA_DIR"] == str((tmp_path / "n0" / "data").resolve())
+
+    def test_bench_path_is_what_build_env_exports(self, tmp_path: Path) -> None:
+        """One PATH, two callers: `discover` resolves bash through `bench_path` so the
+        shell lane times the same binary `skit run` will launch. If these ever diverge,
+        run_overhead.shell.overhead_ms becomes the difference between two programs."""
+        from benchmarks import envspec
+
+        args = {"skit": "/venv/bin/skit", "uv": "/opt/uv/bin/uv", "node": "/opt/node/bin/node"}
+        path = envspec.bench_path(**args)
+        assert path == "/venv/bin:/opt/uv/bin:/opt/node/bin:/usr/bin:/bin"
+        dataset = tmp_path / "n0"
+        dataset.mkdir()
+        (dataset / "manifest.json").write_text("{}", encoding="utf-8")
+        env = envspec.build_env(**args, workdir=tmp_path, dataset_root=dataset)
+        assert env["PATH"] == path
 
     def test_build_env_refuses_non_dataset_roots(self, tmp_path: Path) -> None:
         from benchmarks import envspec
@@ -1694,12 +1793,15 @@ class TestCodeReviewFixes:
         monkeypatch.setattr(footprint_suite.subprocess, "run", fake_run)
         monkeypatch.setattr(footprint_suite.time, "sleep", sleeps.append)
         output = SuiteOutput(suite="footprint")
-        footprint_suite._closure(ctx, "/bin/uv", tmp_path / "skit.whl", output)
+        footprint_suite._closure(ctx, "/bin/uv", tmp_path / "skit.whl", output, {"PATH": "/bin"})
 
         assert install_attempts == 2
         assert sleeps == [footprint_suite._INSTALL_BACKOFF_SECONDS]
         assert all(kwargs["cwd"] == tmp_path for _, kwargs in calls)
         assert all(isinstance(kwargs["timeout"], int) for _, kwargs in calls)
+        # Every uv/probe spawn here runs under the constructed env, never the ambient
+        # one — an inherited UV_INDEX_URL/UV_NO_BINARY would change what gets weighed.
+        assert all(kwargs["env"] == {"PATH": "/bin"} for _, kwargs in calls)
 
     def test_rss_keeps_samples_and_full_statistics(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.setattr(rss_suite.sys, "platform", "linux")
@@ -1962,6 +2064,21 @@ class TestCodeReviewFixes:
         # The populated-library parser flag is the whole reason the n100 tier exists;
         # dropping it from the headline would quietly hide the row it was added for.
         assert "imports.list_json.n100.has_tree_sitter" in pipeline.HEADLINE_METRICS
+
+    @pytest.mark.parametrize("body", ['{"n": 3, "seed":', '{"n": 3}'])
+    def test_corrupt_manifest_reports_the_remedy(self, tmp_path: Path, body: str) -> None:
+        """Truncated JSON and a missing key both come from the same cause — a run
+        interrupted mid-write — and both must arrive as DatasetError, which the front
+        door catches, rather than as a traceback naming neither the directory nor the
+        fix. `prepare_datasets` takes the reuse branch on mere existence, so anything
+        that escapes here wedges .bench/datasets for every later run."""
+        from benchmarks.datasets import Manifest
+
+        root = tmp_path / "n3"
+        root.mkdir()
+        (root / "manifest.json").write_text(body, encoding="utf-8")
+        with pytest.raises(DatasetError, match="is unreadable"):
+            Manifest.load(root)
 
     def test_manifest_records_the_probe_char(self, tmp_path: Path) -> None:
         import dataclasses

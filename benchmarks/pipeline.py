@@ -1,6 +1,6 @@
 """Pure run-plan logic: profile → suite plans, merge + derived metrics, the rendered
-summary, and the history-export conversion. Suites spawn processes; this module makes
-every decision about what runs and what the numbers mean — gate code, covered."""
+summary. Suites spawn processes; this module makes every decision about what runs and
+what the numbers mean — gate code, covered."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from .budgets import Report, evaluate, render_report
-from .results import Meta, Metric, Results, Skip, SuiteOutput, meta_from_dict
+from .results import Meta, Metric, Results, Skip, SuiteOutput, fmt_number, meta_from_dict
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -248,8 +248,10 @@ def render_markdown(results: Results, report: Report | None = None) -> str:
         metric = results.metrics.get(metric_id)
         if metric is None:
             continue
-        p95 = f"{metric.p95:g}" if metric.p95 is not None else "—"
-        lines.append(f"| `{metric_id}` | {metric.value:g} {metric.unit} | {p95} | {metric.n} |")
+        p95 = fmt_number(metric.p95) if metric.p95 is not None else "—"
+        lines.append(
+            f"| `{metric_id}` | {fmt_number(metric.value)} {metric.unit} | {p95} | {metric.n} |"
+        )
     if results.skipped:
         lines += ["", f"### Skipped ({len(results.skipped)})", ""]
         lines += [f"- `{s.suite}/{s.case}`: {s.reason}" for s in results.skipped]

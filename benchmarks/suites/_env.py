@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from ..envspec import PYPERF_INHERIT, build_env
+from ..envspec import PYPERF_INHERIT, bench_path, build_env
 from ..hyperfine import Case, build_argv, metrics_from_export, parse_export
 
 if TYPE_CHECKING:
@@ -76,6 +76,8 @@ def discover(
         raise RuntimeError(
             f"no skit console script next to {sys.executable} — run via `uv run python -m benchmarks`"
         )
+    uv = shutil.which("uv")
+    node = shutil.which("node")
     return RunCtx(
         repo_root=repo_root,
         out_dir=out_dir,
@@ -84,9 +86,11 @@ def discover(
         fixtures_dir=repo_root / "benchmarks" / "fixtures",
         python=sys.executable,
         skit=str(skit_bin),
-        uv=shutil.which("uv"),
-        bash=shutil.which("bash"),
-        node=shutil.which("node"),
+        uv=uv,
+        # Resolved against the PATH the benchmarked child will get, not the ambient one:
+        # the shell lane must time the same bash `skit run` will launch.
+        bash=shutil.which("bash", path=bench_path(skit=str(skit_bin), uv=uv, node=node)),
+        node=node,
         hyperfine=shutil.which("hyperfine"),
         strace=shutil.which("strace"),
     )

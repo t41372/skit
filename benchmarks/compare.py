@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .results import Results, python_major_minor
+from .results import Results, fmt_number, python_major_minor
 
 # |Δ| must clear BOTH: 5% of base and a per-unit absolute noise floor. The floor is
 # NOT one physical duration converted between units: macro (hyperfine, ms-scale)
@@ -16,6 +16,12 @@ from .results import Results, python_major_minor
 # regression (a 3x micro slowdown must land in "Notable", not "Within noise").
 RELATIVE_THRESHOLD = 0.05
 TIME_FLOOR_BY_UNIT = {"s": 0.002, "ms": 2.0, "us": 1.0}
+# Units with no run-to-run noise at all: a module census, a byte size and a boolean are
+# the same number on every run of the same tree. A "noise" threshold over those hides
+# exactly what the enforced tier gates — 315 -> 330 modules is 4.8%, so the A/B evidence
+# would file a real import regression under "Within noise" and the ratchet would catch
+# it two merges later, after the report said the change was nothing.
+EXACT_UNITS = frozenset({"count", "bytes", "bool"})
 
 
 @dataclass(frozen=True)
@@ -37,6 +43,8 @@ class Delta:
 
     @property
     def notable(self) -> bool:
+        if self.unit in EXACT_UNITS:
+            return self.diff != 0
         floor = TIME_FLOOR_BY_UNIT.get(self.unit, 0.0)
         if abs(self.diff) <= floor:
             return False
@@ -114,7 +122,8 @@ def render_markdown(base: Results, head: Results, comparison: Comparison) -> str
         f"Head: `{head.meta.git.commit[:12]}` ({head.meta.skit_version}) · "
         f"profile {head.meta.profile} · {head.meta.host.platform_key}",
         "",
-        "Warn-only: notable = |Δ| > max(5%, per-unit floor: 2 ms macro / 1 µs micro). "
+        "Warn-only: notable = |Δ| > max(5%, per-unit floor: 2 ms macro / 1 µs micro); "
+        "counts, byte sizes and booleans are exact — any change is notable. "
         "Hosted-runner numbers are advisory.",
         "",
     ]
@@ -142,6 +151,14 @@ def render_markdown(base: Results, head: Results, comparison: Comparison) -> str
         if ids:
             lines += ["", f"### {title}", ""]
             lines += [f"- `{metric_id}`" for metric_id in ids]
+    # Skips are why a metric is missing, and compare_mode exists to record them with the
+    # actual error text. Without this section "Only in head" reads as "head added new
+    # benchmarks" when the truth is "base tried and could not" — the opposite inference,
+    # in the file that gets cited as A/B evidence.
+    for label, results in (("base", base), ("head", head)):
+        if results.skipped:
+            lines += ["", f"### Skipped in {label} ({len(results.skipped)})", ""]
+            lines += [f"- `{s.suite}/{s.case}`: {s.reason}" for s in results.skipped]
     return "\n".join(lines) + "\n"
 
 
@@ -150,6 +167,7 @@ def _table(deltas: list[Delta]) -> list[str]:
     for d in deltas:
         pct = "—" if d.pct is None else f"{d.pct:+.1f}%"
         rows.append(
-            f"| `{d.metric}` | {d.base:g} {d.unit} | {d.head:g} {d.unit} | {d.diff:+g} | {pct} |"
+            f"| `{d.metric}` | {fmt_number(d.base)} {d.unit} "
+            f"| {fmt_number(d.head)} {d.unit} | {fmt_number(d.diff, sign=True)} | {pct} |"
         )
     return rows

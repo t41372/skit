@@ -151,6 +151,16 @@ class Results:
         return cls(meta=meta, metrics=metrics, skipped=skipped, raw=raw)
 
 
+def fmt_number(value: float, *, sign: bool = False) -> str:
+    """Measurements and bounds print as plain numbers. `:g` alone renders anything past
+    six significant digits in exponential notation, so a 50 MiB closure publishes as
+    5.03316e+07 — with the true byte count unrecoverable — in the very artifacts
+    AGENTS.md makes the mandatory source of README performance claims."""
+    if value == int(value):
+        return f"{int(value):+d}" if sign else str(int(value))
+    return f"{value:+g}" if sign else f"{value:g}"
+
+
 def python_major_minor(version: str) -> str:
     """ "3.13.7" → "3.13" — the granularity budget provenance compares at."""
     return ".".join(version.split(".")[:2])

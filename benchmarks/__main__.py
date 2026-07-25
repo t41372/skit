@@ -60,6 +60,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--budgets", type=Path, default=_DEFAULT_BUDGETS)
     p.add_argument("--propose", action="store_true", help="print refreshed budgets.toml")
     p.add_argument(
+        "--allow-regression",
+        action="store_true",
+        help="let --propose widen a ratchet bound (say why in the row's note)",
+    )
+    p.add_argument(
         "--require-enforced",
         action="store_true",
         help="also fail when zero applicable enforced rows were evaluated (CI passes this)",
@@ -100,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         results = _load_results(args.results)
         budgets = load_budgets(args.budgets.read_text(encoding="utf-8"))
         if args.propose:
-            print(propose(budgets, results), end="")
+            print(propose(budgets, results, allow_regression=args.allow_regression), end="")
             return 0
         report = evaluate(budgets, results)
         print(render_report(report), end="")

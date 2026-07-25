@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..results import Metric, SuiteOutput
-from ._env import PROBE_TIMEOUT_S, TOOL_TIMEOUT_S, RunCtx
+from ._env import PROBE_TIMEOUT_S, TOOL_TIMEOUT_S, RunCtx, bench_env
 
 if TYPE_CHECKING:
     from ..pipeline import SuitePlan
@@ -40,10 +40,17 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
         return SuiteOutput.skip_all("footprint", "uv not found")
     uv = ctx.uv
     output = SuiteOutput(suite="footprint")
+    # The constructed env, like every other suite. Without it these uv spawns inherit
+    # the developer's or runner's UV_* — an ambient UV_INDEX_URL pointing at an
+    # sdist-only mirror, or UV_NO_BINARY=1, builds the tree-sitter grammars from source
+    # and publishes the result as a measured footprint regression. wheel_bytes is an
+    # ENFORCED row; it may not be produced by a uv that read someone's shell profile.
+    env = bench_env(ctx, ctx.datasets[min(ctx.datasets)].root)
     dist_dir = ctx.workdir / "dist"
     subprocess.run(  # noqa: S603 — fixed-shape uv argv
         [uv, "build", "--out-dir", str(dist_dir)],
         cwd=ctx.repo_root,
+        env=env,
         timeout=TOOL_TIMEOUT_S,
         check=True,
         capture_output=True,
@@ -63,15 +70,16 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
     output.raw["uv_pinned_version"] = UV_VERSION
 
     if plan.closure:
-        _closure(ctx, uv, wheels[0], output)
+        _closure(ctx, uv, wheels[0], output, env)
     return output
 
 
-def _closure(ctx: RunCtx, uv: str, wheel: Path, output: SuiteOutput) -> None:
+def _closure(ctx: RunCtx, uv: str, wheel: Path, output: SuiteOutput, env: dict[str, str]) -> None:
     venv = ctx.workdir / "footprint-venv"
     subprocess.run(  # noqa: S603 — fixed-shape uv argv
         [uv, "venv", str(venv)],
         cwd=ctx.workdir,
+        env=env,
         timeout=TOOL_TIMEOUT_S,
         check=True,
         capture_output=True,
@@ -81,6 +89,7 @@ def _closure(ctx: RunCtx, uv: str, wheel: Path, output: SuiteOutput) -> None:
         proc = subprocess.run(  # noqa: S603 — fixed-shape uv argv
             [uv, "pip", "install", "--python", str(venv_python), str(wheel)],
             cwd=ctx.workdir,
+            env=env,
             capture_output=True,
             text=True,
             timeout=TOOL_TIMEOUT_S,
@@ -94,6 +103,7 @@ def _closure(ctx: RunCtx, uv: str, wheel: Path, output: SuiteOutput) -> None:
     purelib = subprocess.run(  # noqa: S603 — fixed-shape probe argv
         [str(venv_python), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
         cwd=ctx.workdir,
+        env=env,
         capture_output=True,
         text=True,
         timeout=PROBE_TIMEOUT_S,
@@ -122,6 +132,7 @@ def _closure(ctx: RunCtx, uv: str, wheel: Path, output: SuiteOutput) -> None:
         subprocess.run(  # noqa: S603 — fixed-shape probe argv
             [str(venv_python), "-c", _DIST_SIZES],
             cwd=ctx.workdir,
+            env=env,
             capture_output=True,
             text=True,
             timeout=PROBE_TIMEOUT_S,
