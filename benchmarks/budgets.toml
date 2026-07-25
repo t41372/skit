@@ -57,11 +57,11 @@ date = "2026-07-25"
 
 [[budget]]
 metric = "imports.list_json.n100.modules"
-max = 600
+max = 347
 tier = "enforced"
 ratchet = true
 headroom = 0.1
-note = "ratchet: the census a real library actually pays — resolving a kind builds its LangSpec, which imports that language's grammar (provisional bootstrap bound; tighten from the CI artifact via check --propose)"
+note = "ratchet: the census a real library actually pays — resolving a kind builds its LangSpec, which imports that language's grammar (315 measured + 10% headroom)"
 
 [budget.context]
 python = "3.13"
