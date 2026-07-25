@@ -937,7 +937,7 @@ def validate_prompt_argv(
     asm: Assembly,
     *,
     runner: PromptRunner | None = None,
-) -> str | None:
+) -> tuple[str, str] | None:
     """Validate prompt rendering/argv limits without looking up the runner on PATH.
 
     Non-prompt kinds are a no-op.  The CLI calls this before --dry-run output; execute
@@ -947,7 +947,7 @@ def validate_prompt_argv(
     spec = spec_for(entry.meta.kind)
     if spec is None or not isinstance(spec.launch, PromptLaunch):
         return None
-    return spec.launch.validate_argv(
+    return spec.launch.validate_argv_snapshot(
         entry,
         asm.args,
         asm.command_values,
@@ -998,6 +998,7 @@ def execute(  # noqa: PLR0911, PLR0912 — one early return/branch per injection
     asm: Assembly,
     *,
     emit: Callable[[str], None],
+    warn: Callable[[str], None] | None = None,
     invoke_cwd: Path | None = None,
     runner: PromptRunner | None = None,
 ) -> RunOutcome:
@@ -1018,6 +1019,7 @@ def execute(  # noqa: PLR0911, PLR0912 — one early return/branch per injection
     """
     injected: Path | None = None
     prepared: launcher.PreparedLaunch | None = None
+    emit_warning = warn or emit
     try:
         # The injector's env overlay rides ON TOP of the assembled env-delivered values:
         # both are "set this variable on the child", and a shell entry can legitimately
@@ -1044,15 +1046,17 @@ def execute(  # noqa: PLR0911, PLR0912 — one early return/branch per injection
                 return RunOutcome(None, FAIL_LAUNCH, str(exc))
             amp_seed = next(r for r in config.PROMPT_RUNNER_SEEDS if r.name == "amp")
             if prepared.prompt_runner == amp_seed:
-                emit(
+                emit_warning(
                     gettext(
                         "The built-in amp runner is one-shot: amp -x runs this prompt once "
                         "and does not open an interactive session."
                     )
                 )
+            if prepared.warning:
+                emit_warning(prepared.warning)
             secret_warning = _prompt_secret_warning(plan, asm)
             if secret_warning:
-                emit(secret_warning)
+                emit_warning(secret_warning)
         if (
             plan.source == "inject"
             and asm.inject_values

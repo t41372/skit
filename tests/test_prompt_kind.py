@@ -518,6 +518,77 @@ def test_seeded_opencode_binds_dash_prefixed_prompt_and_keeps_extra(tmp_path, mo
     ]
 
 
+def test_seeded_copilot_binds_dash_prefixed_prompt_and_keeps_extra(tmp_path, monkeypatch):
+    entry = _entry_with_runner(tmp_path, monkeypatch, text="--version", pin="copilot", managed=[])
+    payload = PromptLaunch().build(entry, ["--model", "gpt-5"], {}, None)
+    assert isinstance(payload, ArgvLaunch)
+    assert payload.argv == [
+        "/bin/copilot",
+        "--interactive=--version",
+        "--model",
+        "gpt-5",
+    ]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "--help\nsecond line",
+        "-v",
+        "@README.md",
+        "config",
+        "install",
+        "list",
+        "remove",
+        "uninstall",
+        "update",
+    ],
+)
+def test_seeded_pi_warns_and_prefixes_newline_for_parser_ambiguous_prompt(
+    tmp_path, monkeypatch, text
+):
+    entry = _entry_with_runner(tmp_path, monkeypatch, text=text, pin="pi", managed=[])
+    prepared = launcher.prepare_entry(entry, ["--model", "fast"])
+    assert isinstance(prepared.payload, ArgvLaunch)
+    assert prepared.payload.argv == ["/bin/pi", f"\n{text}", "--model", "fast"]
+    assert "Warning: Pi would interpret" in prepared.warning
+    assert "prepended one newline" in prepared.warning
+    assert "one character longer" in prepared.warning
+
+
+@pytest.mark.parametrize("text", ["ordinary prompt", "first line\nsecond line", " install", "help"])
+def test_seeded_pi_keeps_unambiguous_prompt_byte_exact(tmp_path, monkeypatch, text):
+    entry = _entry_with_runner(tmp_path, monkeypatch, text=text, pin="pi", managed=[])
+    prepared = launcher.prepare_entry(entry)
+    assert isinstance(prepared.payload, ArgvLaunch)
+    assert prepared.payload.argv == ["/bin/pi", text]
+    assert prepared.warning == ""
+
+
+def test_user_edited_pi_command_keeps_the_compatibility_adapter(tmp_path, monkeypatch):
+    custom = config.PromptRunner("my-pi", ("/opt/tools/pi.exe", "--model", "fast", "{{prompt}}"))
+    entry = _entry_with_runner(tmp_path, monkeypatch, text="@notes.md", managed=[])
+    prepared = launcher.prepare_entry(entry, runner=custom)
+    assert isinstance(prepared.payload, ArgvLaunch)
+    assert prepared.payload.argv[3] == "\n@notes.md"
+    assert prepared.warning
+
+
+@pytest.mark.parametrize("text", ["--help\nsecond line", "status"])
+def test_seeded_cursor_selects_agent_before_passing_prompt(tmp_path, monkeypatch, text):
+    entry = _entry_with_runner(tmp_path, monkeypatch, text=text, pin="cursor", managed=[])
+    payload = PromptLaunch().build(entry, ["--model", "gpt-5"], {}, None)
+    assert isinstance(payload, ArgvLaunch)
+    assert payload.argv == [
+        "/bin/cursor-agent",
+        "--model",
+        "gpt-5",
+        "--",
+        "agent",
+        text,
+    ]
+
+
 def test_build_refuses_nul_in_prompt_as_launch_error(tmp_path, monkeypatch):
     entry = _entry_with_runner(tmp_path, monkeypatch, text="bad\x00prompt", managed=[])
     with pytest.raises(LaunchError, match="NUL byte"):
@@ -762,16 +833,35 @@ def test_load_prompt_runners_is_read_only_before_seeding(tmp_path):
         "opencode",
         "amp",
         "antigravity",
+        "copilot",
+        "cursor",
+        "pi",
     ]
     assert all(config.prompt_runner_row_reason(row) == "valid" for row in raw_rows)
     runners = config.load_prompt_runners()
-    assert [r.name for r in runners] == ["claude", "codex", "opencode", "amp", "antigravity"]
+    assert [r.name for r in runners] == [
+        "claude",
+        "codex",
+        "opencode",
+        "amp",
+        "antigravity",
+        "copilot",
+        "cursor",
+        "pi",
+    ]
     assert config.find_prompt_runner("antigravity") == config.PromptRunner(
         "antigravity", ("agy", "--prompt-interactive", "{{prompt}}")
     )
     assert config.find_prompt_runner("opencode") == config.PromptRunner(
         "opencode", ("opencode", "--prompt={{prompt}}")
     )
+    assert config.find_prompt_runner("copilot") == config.PromptRunner(
+        "copilot", ("copilot", "--interactive={{prompt}}")
+    )
+    assert config.find_prompt_runner("cursor") == config.PromptRunner(
+        "cursor", ("cursor-agent", "--", "agent", "{{prompt}}")
+    )
+    assert config.find_prompt_runner("pi") == config.PromptRunner("pi", ("pi", "{{prompt}}"))
     assert not config.prompt_runners_seeded()  # reading never wrote
 
 

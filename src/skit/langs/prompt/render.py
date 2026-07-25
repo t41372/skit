@@ -33,6 +33,12 @@ if TYPE_CHECKING:
 # at 128 KiB (MAX_ARG_STRLEN); the conservative POSIX total stays at 100 KiB.
 ARGV_LIMIT = 60_000 if sys.platform == "win32" else 100_000
 
+# Pi handles these exact first arguments before its normal message parser, while
+# dash-prefixed and @-prefixed arguments are parsed as options and file attachments.
+# Pi currently has no end-of-options delimiter, so its argv compatibility adapter
+# prefixes one newline only for those ambiguous prompts.
+PI_PACKAGE_COMMANDS = frozenset({"config", "install", "list", "remove", "uninstall", "update"})
+
 
 def render_body(text: str, values: dict[str, str], managed: list[str]) -> str:
     """Stage 1: fill the body's MANAGED ``{{placeholder}}`` tokens from ``values``, raw.
@@ -55,6 +61,18 @@ def render_body(text: str, values: dict[str, str], managed: list[str]) -> str:
         return values[name]
 
     return TOKEN_RE.sub(repl, text)
+
+
+def protect_pi_prompt(rendered: str) -> tuple[str, bool]:
+    """Make a Pi opening prompt unambiguously positional when its parser would not.
+
+    The fallback is deliberately non-lossless and therefore returns whether it was
+    applied: delivery callers must surface the accompanying warning before launch.
+    A single leading newline is the smallest transformation that defeats all of Pi's
+    current first-argument dispatch checks while preserving interactive mode.
+    """
+    ambiguous = rendered.startswith(("-", "@")) or rendered in PI_PACKAGE_COMMANDS
+    return (f"\n{rendered}", True) if ambiguous else (rendered, False)
 
 
 def fill_runner_argv(argv: list[str], rendered: str, extra: list[str] | None = None) -> list[str]:

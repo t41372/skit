@@ -3171,12 +3171,14 @@ def run(
         # does no PATH lookup.  Its remaining failures are therefore body/render failures;
         # all 126 runner refusals have already exited through _resolve_run_runner above.
         try:
-            validated_prompt_command = flows.validate_prompt_argv(entry, asm, runner=runner_obj)
+            validated_prompt = flows.validate_prompt_argv(entry, asm, runner=runner_obj)
         except launcher.TargetMissingError as exc:
             raise _fail(str(exc), EXIT_NOT_FOUND) from exc
         except launcher.LaunchError as exc:
             raise _fail(str(exc), EXIT_SKIT) from exc
         _persist_preset()
+        if validated_prompt is not None and validated_prompt[1]:
+            err_console.print(f"[yellow]{escape(validated_prompt[1])}[/yellow]")
         # No temp copy is written for a dry run, so the command line shows the original
         # script path — the shape, not a doomed-to-be-deleted temp file.
         for line in flows.transparency_lines(
@@ -3185,7 +3187,9 @@ def run(
             None,
             runner=runner_obj,
             exact_prompt=True,
-            validated_prompt_command=validated_prompt_command,
+            validated_prompt_command=(
+                validated_prompt[0] if validated_prompt is not None else None
+            ),
         ):
             console.print(f"[dim]{escape(line)}[/dim]")
         raise typer.Exit(0)
@@ -3195,6 +3199,7 @@ def run(
             plan,
             asm,
             emit=lambda line: console.print(f"[dim]{escape(line)}[/dim]"),
+            warn=lambda line: err_console.print(f"[yellow]{escape(line)}[/yellow]"),
             runner=runner_obj,
         )
     except KeyboardInterrupt:
