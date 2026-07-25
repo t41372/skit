@@ -30,6 +30,7 @@ from .base import (
 if TYPE_CHECKING:
     from ..config import PromptRunner
     from ..models import Entry
+    from .base import LaunchTarget
 
 
 def find_uv() -> str | None:
@@ -148,7 +149,7 @@ class UvLaunch:
         script = script_override or entry.script_path
         return join_for_display([*cmd, "--script", str(script), *extra])
 
-    def target(self, entry: Entry) -> Path | None:
+    def target(self, entry: LaunchTarget) -> Path | None:
         return entry.script_path
 
     def preflight(self, entry: Entry, *, runner: PromptRunner | None = None) -> None:
@@ -182,8 +183,8 @@ class DirectLaunch:
     ) -> str:
         return join_for_display([entry.meta.source, *extra])
 
-    def target(self, entry: Entry) -> Path | None:
-        return Path(entry.meta.source)
+    def target(self, entry: LaunchTarget) -> Path | None:
+        return Path(entry.source)
 
     def preflight(self, entry: Entry, *, runner: PromptRunner | None = None) -> None:
         _check_exe_exists(entry.meta.source)
@@ -417,7 +418,7 @@ class TemplateLaunch:
         except LaunchError:
             return entry.meta.template
 
-    def target(self, entry: Entry) -> Path | None:
+    def target(self, entry: LaunchTarget) -> Path | None:
         return None  # command entries have no file target
 
     def preflight(self, entry: Entry, *, runner: PromptRunner | None = None) -> None:
@@ -502,7 +503,7 @@ class InterpreterLaunch:
         script = script_override or entry.script_path
         return join_for_display([self._interpreter_name(entry), *self._prefix, str(script), *extra])
 
-    def target(self, entry: Entry) -> Path | None:
+    def target(self, entry: LaunchTarget) -> Path | None:
         return entry.script_path
 
     def preflight(self, entry: Entry, *, runner: PromptRunner | None = None) -> None:
@@ -616,7 +617,7 @@ class RunnerLaunch:
         script = script_override or entry.script_path
         return join_for_display([name, *self._INVOKE.get(name, ()), str(script), *extra])
 
-    def target(self, entry: Entry) -> Path | None:
+    def target(self, entry: LaunchTarget) -> Path | None:
         return entry.script_path
 
     def preflight(self, entry: Entry, *, runner: PromptRunner | None = None) -> None:
@@ -916,7 +917,7 @@ class PromptLaunch:
             return join_for_display([*argv, *extra])
         return join_for_display(render.fill_runner_argv(argv, rendered, extra))
 
-    def target(self, entry: Entry) -> Path | None:
+    def target(self, entry: LaunchTarget) -> Path | None:
         return entry.script_path
 
     def preflight(self, entry: Entry, *, runner: PromptRunner | None = None) -> None:

@@ -439,6 +439,12 @@ def test_list_json_missing_field(tmp_path):
     assert '"missing": true' in result.output
 
 
+def _summary(slug: str) -> store.EntrySummary:
+    """The listing view `skit list` actually renders — served from the index, not from
+    a meta.toml read."""
+    return next(s for s in store.list_summaries() if s.slug == slug)
+
+
 def test_list_description_exact_marker_when_no_description(tmp_path):
     """No description: the cell is exactly the dim marker — never a stray "—" prefix.
     (Direct unit test: Rich's table truncates long paths, so the rendered output can't
@@ -446,7 +452,9 @@ def test_list_description_exact_marker_when_no_description(tmp_path):
     p = _py(tmp_path, "print(1)\n")
     entry = store.add_python(p, name="gone")
     entry.script_path.unlink()
-    assert cli._list_description(entry) == f"[dim]⚠ missing: {entry.script_path}[/dim]"
+    assert (
+        cli._list_description(_summary(entry.slug)) == f"[dim]⚠ missing: {entry.script_path}[/dim]"
+    )
 
 
 def test_list_and_show_human_faces_use_translated_kind_labels(tmp_path):
@@ -483,21 +491,24 @@ def test_list_description_appends_marker_after_description(tmp_path):
     p = _py(tmp_path, '"""My job."""\nprint(1)\n')
     entry = store.add_python(p, name="gone2", description="My job.")
     entry.script_path.unlink()
-    assert cli._list_description(entry) == f"My job.  [dim]⚠ missing: {entry.script_path}[/dim]"
+    assert (
+        cli._list_description(_summary(entry.slug))
+        == f"My job.  [dim]⚠ missing: {entry.script_path}[/dim]"
+    )
 
 
 def test_list_description_healthy_and_command_entries_untouched(tmp_path):
     healthy = store.add_python(_py(tmp_path, '"""Fine."""\nprint(1)\n'), description="Fine.")
-    assert cli._list_description(healthy) == "Fine."
+    assert cli._list_description(_summary(healthy.slug)) == "Fine."
     bare = store.add_command("echo hi", name="cmdbare", description="")
-    assert cli._list_description(bare) == "—"
+    assert cli._list_description(_summary(bare.slug)) == "—"
 
 
 def test_list_description_escapes_markup_in_description():
     """A description containing rich markup renders as literal text, never interpreted (would
     otherwise let a hostile description inject color/style into the list table)."""
     entry = store.add_command("echo hi", name="mkup", description="[red]DANGER[/red]")
-    assert cli._list_description(entry) == r"\[red]DANGER\[/red]"
+    assert cli._list_description(_summary(entry.slug)) == r"\[red]DANGER\[/red]"
 
 
 def test_list_description_escapes_markup_in_missing_path(tmp_path):
@@ -508,7 +519,9 @@ def test_list_description_escapes_markup_in_missing_path(tmp_path):
     exe.touch()
     entry = store.add_exe(exe, name="mkup-path")
     exe.unlink()
-    assert cli._list_description(entry) == f"[dim]{escape(f'⚠ missing: {exe}')}[/dim]"
+    assert (
+        cli._list_description(_summary(entry.slug)) == f"[dim]{escape(f'⚠ missing: {exe}')}[/dim]"
+    )
 
 
 def test_list_table_renders_markup_literally_end_to_end(tmp_path):

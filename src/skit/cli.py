@@ -2259,18 +2259,21 @@ def list_cmd(
     as_json: bool = typer.Option(False, "--json", help=gettext("Output as JSON")),
 ) -> None:
     """List every registered entry."""
-    entries = store.list_entries()
+    # Summaries, not full entries: listing renders name/kind/mode/description and the
+    # missing-target mark, all of which the index already holds. Reading a meta.toml per
+    # entry to render them cost one file read each on the path agents call most.
+    entries = store.list_summaries()
     if as_json:
         rows = []
         for e in entries:
-            last = argstate.load_state(e.slug)["last_run"]
+            last = argstate.last_run(e.slug)
             rows.append(
                 {
-                    "name": e.meta.name,
+                    "name": e.name,
                     "slug": e.slug,
-                    "kind": e.meta.kind,
-                    "mode": e.meta.mode,
-                    "description": e.meta.description,
+                    "kind": e.kind,
+                    "mode": e.mode,
+                    "description": e.description,
                     "missing": launcher.target_missing(e),
                     "last_run_at": last.get("at"),
                     "last_exit": last.get("exit"),
@@ -2288,12 +2291,12 @@ def list_cmd(
     table.add_column(gettext("Kind"))
     table.add_column(gettext("Description"))
     for e in entries:
-        table.add_row(escape(e.meta.name), kindnames.kind_label(e.meta.kind), _list_description(e))
+        table.add_row(escape(e.name), kindnames.kind_label(e.kind), _list_description(e))
     console.print(table)
 
 
-def _list_description(e: store.Entry) -> str:
-    desc = escape(e.meta.description) if e.meta.description else "—"
+def _list_description(e: store.EntrySummary) -> str:
+    desc = escape(e.description) if e.description else "—"
     marker = launcher.missing_marker(e)
     if marker is None:
         return desc

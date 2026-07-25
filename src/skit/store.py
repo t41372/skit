@@ -24,7 +24,16 @@ from .atomic import advisory_file_lock, atomic_write_bytes_keep_mode, atomic_wri
 from .i18n import gettext
 from .langs import registry
 from .langs.registry import stored_name
-from .models import Entry, Kind, Mode, ScriptMeta, ScriptMetaError, now_iso, slugify
+from .models import (
+    Entry,
+    EntrySummary,
+    Kind,
+    Mode,
+    ScriptMeta,
+    ScriptMetaError,
+    now_iso,
+    slugify,
+)
 from .params import ParamDecl, declared_from_meta
 from .paths import registry_path, scripts_dir
 from .rewrite import detect_newline, restore_newline
@@ -118,6 +127,23 @@ def _load_registry() -> dict[str, dict[str, Any]]:
 
 def _save_registry(entries: dict[str, dict[str, Any]]) -> None:
     atomic_write_toml(registry_path(), {"entries": entries})
+
+
+# The index projection of a meta: exactly what a listing renders, and nothing else.
+# `kind`, `mode` and `source` are fixed at add time and never rewritten (nothing in this
+# module assigns them after the add_* constructors), so the only rows that need
+# refreshing later are the two the mutators already refresh: rename and set-description.
+_ROW_KEYS = ("name", "kind", "mode", "source", "description")
+
+
+def _registry_row(meta: ScriptMeta) -> dict[str, Any]:
+    return {
+        "name": meta.name,
+        "kind": meta.kind,
+        "mode": meta.mode,
+        "source": meta.source,
+        "description": meta.description,
+    }
 
 
 @contextlib.contextmanager
@@ -742,7 +768,7 @@ def _add_entry(
         except BaseException:
             shutil.rmtree(entry_dir, ignore_errors=True)
             raise
-        entries[slug] = {"name": meta.name, "kind": meta.kind, "description": meta.description}
+        entries[slug] = _registry_row(meta)
         _save_registry(entries)
         return Entry(slug=slug, meta=meta, dir=entry_dir)
 
@@ -758,6 +784,102 @@ def list_entries() -> list[Entry]:
             continue  # leave corrupt entries for doctor to handle
         out.append(Entry(slug=slug, meta=meta, dir=entry_dir))
     return out
+
+
+def _summary_from_row(slug: str, row: dict[str, Any], entry_dir: Path) -> EntrySummary | None:
+    """An EntrySummary from an index row, or None when the row can't supply one.
+
+    None is not an error — it means "this row predates the widened index, or a hand
+    edit broke it", and the caller re-reads that entry's meta.toml. Rows are only ever
+    written by `_registry_row`, so in a store this skit wrote the answer is never None.
+    """
+    name, kind, mode, source, description = (row.get(key) for key in _ROW_KEYS)
+    if not (
+        isinstance(name, str)
+        and isinstance(kind, str)
+        and isinstance(source, str)
+        and isinstance(description, str)
+    ):
+        return None
+    if mode != "copy" and mode != "reference":  # noqa: PLR1714 — narrows Mode; `in` does not
+        return None
+    return EntrySummary(
+        slug=slug,
+        name=name,
+        kind=kind,
+        mode=mode,
+        source=source,
+        description=description,
+        dir=entry_dir,
+    )
+
+
+def _summary_from_meta(slug: str, meta: ScriptMeta, entry_dir: Path) -> EntrySummary:
+    return EntrySummary(
+        slug=slug,
+        name=meta.name,
+        kind=meta.kind,
+        mode=meta.mode,
+        source=meta.source,
+        description=meta.description,
+        dir=entry_dir,
+    )
+
+
+def list_summaries() -> list[EntrySummary]:
+    """Every entry, listing-shaped, served from registry.toml.
+
+    The point is what it does NOT do: `list_entries` opens and parses one meta.toml per
+    entry, which at a thousand entries is a thousand file reads on a path an agent calls
+    to see what exists. Every field a listing renders is already in the index — fixed at
+    add time (kind/mode/source) or refreshed by the mutator that changes it
+    (name/description) — so the common case reads one file total.
+
+    An index row that a NEWER skit could not have written (an older store, a hand edit)
+    falls back to that entry's meta.toml, which is the truth; a corrupt meta is skipped,
+    exactly as `list_entries` skips it, and left for doctor. `doctor --rebuild` still
+    reconstructs the whole index from the metas.
+    """
+    entries = _load_registry()
+    root = scripts_dir()
+    out: list[EntrySummary] = []
+    upgraded: dict[str, dict[str, Any]] = {}
+    for slug in sorted(entries):
+        entry_dir = root / slug
+        summary = _summary_from_row(slug, entries[slug], entry_dir)
+        if summary is None:
+            try:
+                meta = _read_meta(entry_dir)
+            except _META_CORRUPTION:
+                continue  # leave corrupt entries for doctor to handle
+            summary = _summary_from_meta(slug, meta, entry_dir)
+            upgraded[slug] = _registry_row(meta)
+        out.append(summary)
+    if upgraded:
+        _upgrade_rows(upgraded)
+    return out
+
+
+def _upgrade_rows(rows: dict[str, dict[str, Any]]) -> None:
+    """Widen index rows that predate the listing projection, in place.
+
+    Without this, a library added by an older skit would fall back to reading every
+    meta.toml forever — the index only gains the new fields when an entry is added,
+    renamed or re-described, and most libraries sit still for months. Rewriting them
+    the first time they are listed makes the upgrade self-healing rather than something
+    a user has to know to run `doctor --rebuild` for.
+
+    Best effort, by design: this is a read path, and a read must not fail because an
+    index it does not depend on could not be refreshed (a read-only store, a store
+    another process is mid-write on). It also only ever FILLS IN the slugs it has
+    metas for, re-reading under the lock so a concurrent add cannot be dropped.
+    """
+    with contextlib.suppress(OSError), _registry_lock():
+        entries = _load_registry()
+        for slug, row in rows.items():
+            if slug in entries:
+                entries[slug] = row
+        _save_registry(entries)
 
 
 def prompt_entries_pinned_to(runner: str) -> list[Entry]:
@@ -1204,11 +1326,7 @@ def doctor_rebuild() -> tuple[int, list[str]]:
                         gettext("%(slug)s: the referenced source file is gone: %(path)s")
                         % {"slug": entry_dir.name, "path": meta.source}
                     )
-                entries[entry_dir.name] = {
-                    "name": meta.name,
-                    "kind": meta.kind,
-                    "description": meta.description,
-                }
+                entries[entry_dir.name] = _registry_row(meta)
         _save_registry(entries)
     return len(entries), problems
 

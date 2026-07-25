@@ -157,6 +157,33 @@ class ShellLaunch:
 LaunchPayload = ArgvLaunch | ShellLaunch
 
 
+class LaunchTarget(Protocol):
+    """Everything a strategy needs to name its launch target — and no more.
+
+    `target()` is the one strategy method a *listing* calls: `skit list` and the
+    Library table mark an entry whose file is gone. A listing holds an EntrySummary,
+    not a full Entry, so the target rule is expressed against this narrower shape and
+    the two callers share one implementation instead of the listing re-deriving it.
+    Entry satisfies it too (it grows a `source` property for exactly that).
+    """
+
+    @property
+    def script_path(self) -> Path: ...
+
+    @property
+    def source(self) -> str: ...
+
+
+class ListedEntry(LaunchTarget, Protocol):
+    """A LaunchTarget that also names its kind — enough to pick the spec and ask it
+    where the target is. `launcher.target_missing` takes this, so `skit list` can mark
+    a missing file from a summary and a launch can ask the same question of a full
+    Entry, through one implementation."""
+
+    @property
+    def kind(self) -> str: ...
+
+
 class LaunchStrategy(Protocol):
     """How a kind turns an Entry into a running process. Required on every LangSpec.
 
@@ -191,7 +218,7 @@ class LaunchStrategy(Protocol):
         """A purely descriptive command line: no lookups, no checks, no side effects."""
         ...
 
-    def target(self, entry: Entry) -> Path | None:
+    def target(self, entry: LaunchTarget) -> Path | None:
         """The launch target on disk, or None when the kind has no file target."""
         ...
 

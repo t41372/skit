@@ -170,3 +170,43 @@ def test_concurrent_save_preset_from_many_threads_loses_no_preset() -> None:
     presets = argstate.load_state(slug)["presets"]
     assert set(presets) == set(names)  # not one lost to a stale-snapshot overwrite
     assert all(presets[n] == {n: "v"} for n in names)
+
+
+# ---------------------------------------------------------------------------
+# last_run — the listing's slice of a state file
+# ---------------------------------------------------------------------------
+
+
+def test_last_run_matches_load_state_before_and_after_a_run() -> None:
+    """`skit list --json` reports last_run_at/last_exit for every entry, so it reads
+    one state file per entry. `last_run` reads the same file and must give the same
+    answer as the full `load_state` — it only skips copying out values, extra args and
+    every preset, which a listing never renders."""
+    assert argstate.last_run("never-run") == argstate.load_state("never-run")["last_run"] == {}
+
+    argstate.save_last("s", values={"a": "1"}, extra_args=["--x"])
+    argstate.save_preset("s", "prod", {"a": "2"}, secret_names=())
+    assert argstate.last_run("s") == {}
+
+    argstate.record_run("s", 3, at="2026-07-25T00:00:00+00:00")
+    assert argstate.last_run("s") == argstate.load_state("s")["last_run"]
+    assert argstate.last_run("s")["exit"] == 3
+
+
+def test_last_run_is_a_copy_not_the_stored_mapping() -> None:
+    """A caller mutating what it got back must not corrupt the next read."""
+    argstate.record_run("s", 0, at="2026-07-25T00:00:00+00:00")
+    first = argstate.last_run("s")
+    first["exit"] = 99
+    assert argstate.last_run("s")["exit"] == 0
+
+
+def test_a_missing_state_file_is_empty_not_an_error() -> None:
+    """The common case for an entry that has never run — and the reason the exists()
+    check ahead of the open was pure cost."""
+    assert argstate.load_state("absent") == {
+        "values": {},
+        "extra_args": [],
+        "presets": {},
+        "last_run": {},
+    }

@@ -36,11 +36,11 @@ def _values_lock_path(slug: str) -> Path:
 
 
 def _load_doc(slug: str) -> dict[str, Any]:
-    path = values_dir() / f"{slug}.toml"
-    if not path.exists():
-        return {}
+    # One syscall, not two: the missing-file case is the common one for an entry that
+    # has never run, and it already lands in the OSError branch below. A preceding
+    # exists() only bought a second stat per entry — a thousand of them on `skit list`.
     try:
-        with open(path, "rb") as f:
+        with open(values_dir() / f"{slug}.toml", "rb") as f:
             return tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError):
         return {}
@@ -68,6 +68,16 @@ def load_state(slug: str) -> dict[str, Any]:
         "presets": {k: dict(v) for k, v in doc.get("presets", {}).items()},
         "last_run": dict(doc.get("last_run", {})),
     }
+
+
+def last_run(slug: str) -> dict[str, Any]:
+    """Just the last-run stamp — {"at": ISO-8601 str, "exit": int}, or {} before the
+    first recorded run.
+
+    `load_state` reads the same file but also copies out values, extra args and every
+    preset; a listing needs none of that, and pays for all of it once per entry.
+    """
+    return dict(_load_doc(slug).get("last_run", {}))
 
 
 def save_last(

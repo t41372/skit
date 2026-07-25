@@ -503,3 +503,199 @@ def test_add_script_lua_uses_double_dash_description(tmp_path: Path):
     assert entry.meta.kind == "lua"
     assert entry.meta.description == "Resize things"  # '--' comment prefix honoured
     assert entry.script_path.name == "script.lua"
+
+
+# ---------------------------------------------------------------------------
+# list_summaries — the listing view, served from the index
+# ---------------------------------------------------------------------------
+
+
+def test_summaries_match_full_entries_field_for_field(sample_script: Path, tmp_path: Path):
+    """The index projection and the meta must agree on every field a listing renders.
+    If they can drift, `skit list` shows something `skit show` contradicts."""
+    from skit import store
+
+    store.add_python(sample_script, name="copied", description="a copy")
+    store.add_python(sample_script, name="linked", mode="reference")
+    store.add_command("echo hi", name="templated", description="no file")
+    exe = tmp_path / "tool"
+    exe.touch(mode=0o755)
+    store.add_exe(exe, name="binary")
+
+    by_slug = {e.slug: e for e in store.list_entries()}
+    summaries = store.list_summaries()
+    assert [s.slug for s in summaries] == sorted(by_slug)
+    for summary in summaries:
+        meta = by_slug[summary.slug].meta
+        assert (summary.name, summary.kind, summary.mode, summary.source, summary.description) == (
+            meta.name,
+            meta.kind,
+            meta.mode,
+            meta.source,
+            meta.description,
+        )
+        assert summary.script_path == by_slug[summary.slug].script_path
+
+
+def test_summaries_serve_from_the_index_without_reading_metas(sample_script: Path):
+    """The whole point: one file read for the whole library. Proven by deleting every
+    meta.toml — a listing that still answers cannot have opened one."""
+    from skit import store
+
+    store.add_python(sample_script, name="one", description="first")
+    store.add_command("echo hi", name="two", description="second")
+    expected = [(s.slug, s.name, s.description) for s in store.list_summaries()]
+    for entry in store.list_entries():
+        (entry.dir / "meta.toml").unlink()
+
+    assert [(s.slug, s.name, s.description) for s in store.list_summaries()] == expected
+    assert store.list_entries() == []  # the full read has nothing left to read
+
+
+def test_a_row_an_older_skit_wrote_falls_back_to_its_meta(sample_script: Path):
+    """Registries written before the index carried mode/source still list correctly —
+    the row can't supply a summary, so that one entry is read from its meta."""
+    from skit import store
+
+    entry = store.add_python(sample_script, name="old", description="from before")
+    narrow = {entry.slug: {"name": "old", "kind": "python", "description": "from before"}}
+    store._save_registry(narrow)
+
+    (summary,) = store.list_summaries()
+    assert summary.mode == entry.meta.mode
+    assert summary.source == entry.meta.source
+    assert summary.script_path == entry.script_path
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"name": "x", "kind": "python", "mode": "copy", "source": "/s", "description": 7},
+        {"name": "x", "kind": "python", "mode": "sideways", "source": "/s", "description": ""},
+        {"kind": "python", "mode": "copy", "source": "/s", "description": ""},
+    ],
+    ids=["non-string-field", "unknown-mode", "missing-field"],
+)
+def test_a_hand_broken_row_falls_back_instead_of_inventing_a_summary(
+    sample_script: Path, row: dict[str, object]
+):
+    """registry.toml is a plain file a user can edit. A row that a newer skit could not
+    have written is never coerced into a summary — the meta answers instead."""
+    from skit import store
+
+    entry = store.add_python(sample_script, name="real", description="the truth")
+    store._save_registry({entry.slug: row})
+
+    (summary,) = store.list_summaries()
+    assert summary.name == "real"
+    assert summary.description == "the truth"
+
+
+def test_a_broken_row_over_a_corrupt_meta_is_skipped_like_list_entries(sample_script: Path):
+    """Fallback reaches a meta that is itself corrupt: skip the entry and leave it for
+    doctor — the same answer list_entries gives, never a crash."""
+    from skit import store
+
+    entry = store.add_python(sample_script, name="doomed")
+    store._save_registry({entry.slug: {"name": "doomed"}})
+    (entry.dir / "meta.toml").write_text("not [ toml", encoding="utf-8")
+
+    assert store.list_summaries() == []
+    assert store.list_entries() == []
+
+
+def test_rename_and_describe_keep_the_index_in_step(sample_script: Path):
+    """The two fields that change after add. If a mutator forgets the row, `skit list`
+    shows a stale name until someone runs doctor --rebuild."""
+    from skit import store
+
+    entry = store.add_python(sample_script, name="before", description="old text")
+    store.rename(entry.slug, "after")
+    store.update_description(entry.slug, "new text")
+
+    (summary,) = store.list_summaries()
+    assert (summary.name, summary.description) == ("after", "new text")
+
+
+def test_an_older_registry_is_widened_the_first_time_it_is_listed(sample_script: Path):
+    """Self-healing: a library added by an older skit would otherwise fall back to
+    reading every meta.toml forever, because the index only gains the new fields when
+    an entry is added, renamed or re-described. The first listing rewrites it, so
+    nobody has to know to run `doctor --rebuild` after upgrading."""
+    from skit import store
+
+    entry = store.add_python(sample_script, name="legacy", description="old row")
+    store._save_registry(
+        {entry.slug: {"name": "legacy", "kind": "python", "description": "old row"}}
+    )
+
+    store.list_summaries()
+
+    row = store._load_registry()[entry.slug]
+    assert row == store._registry_row(entry.meta)
+    assert store._summary_from_row(entry.slug, row, entry.dir) is not None
+
+
+def test_widening_never_drops_an_entry_added_meanwhile(sample_script: Path, tmp_path: Path):
+    """The rewrite re-reads under the registry lock and only fills in the slugs it has
+    metas for, so an entry that landed between the read and the write survives."""
+    from skit import store
+
+    old = store.add_python(sample_script, name="legacy")
+    store._save_registry({old.slug: {"name": "legacy", "kind": "python", "description": ""}})
+
+    other = tmp_path / "other.py"
+    other.write_text("print(2)\n", encoding="utf-8")
+    raced = store.add_python(other, name="raced")
+    # Roll the index back to the pre-add snapshot the listing read, then widen with it:
+    # exactly the interleaving where a blind overwrite would erase `raced`.
+    store._save_registry({old.slug: {"name": "legacy", "kind": "python", "description": ""}})
+    stale = {old.slug: store._registry_row(old.meta)}
+
+    def restore_the_race(_entries: object = None) -> dict[str, object]:
+        return {
+            old.slug: {"name": "legacy", "kind": "python", "description": ""},
+            raced.slug: store._registry_row(raced.meta),
+        }
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(store, "_load_registry", restore_the_race)
+        store._upgrade_rows(stale)
+
+    rows = store._load_registry()
+    assert set(rows) == {old.slug, raced.slug}
+    assert rows[old.slug] == store._registry_row(old.meta)
+
+
+def test_widening_skips_an_entry_removed_meanwhile(sample_script: Path):
+    """The other side of re-reading under the lock: a slug the listing saw but that a
+    concurrent `skit remove` has since deleted must not be written back in — the
+    widening fills rows in, it never resurrects them."""
+    from skit import store
+
+    entry = store.add_python(sample_script, name="legacy")
+    stale = {entry.slug: store._registry_row(entry.meta), "vanished": {"name": "ghost"}}
+
+    store._upgrade_rows(stale)
+
+    assert set(store._load_registry()) == {entry.slug}
+
+
+def test_a_store_that_cannot_be_written_still_lists(sample_script: Path, monkeypatch):
+    """The widening is a side effect of a READ. A read-only store, or one another
+    process is mid-write on, must still answer `skit list` — never fail on an index it
+    does not depend on."""
+    from skit import store
+
+    entry = store.add_python(sample_script, name="legacy", description="old row")
+    store._save_registry(
+        {entry.slug: {"name": "legacy", "kind": "python", "description": "old row"}}
+    )
+
+    def refuse(_entries: object) -> None:
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(store, "_save_registry", refuse)
+    (summary,) = store.list_summaries()
+    assert summary.name == "legacy"
+    assert summary.mode == entry.meta.mode
