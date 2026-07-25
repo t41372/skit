@@ -33,6 +33,7 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
         manifest = ctx.datasets[n]
         env = bench_env(ctx, manifest.root)
         first_idle: list[float] = []
+        select: list[float] = []
         search: list[float] = []
         peaks: list[float] = []
         for i in range(plan.samples):
@@ -76,6 +77,10 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
             doc = json.loads(out_file.read_text(encoding="utf-8"))
             first_idle.append(doc["first_idle_ms"])
             search.append(doc["search_ms"])
+            # None below n=2: there is no second row to move to, so the probe records
+            # no span rather than a repaint that never happened.
+            if doc["select_ms"] is not None:
+                select.append(doc["select_ms"])
             if n == 0:
                 import_samples.append(doc["import_ms"])
             if proc_status:
@@ -84,6 +89,8 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
             continue  # every sample was skipped (compare mode): no metrics, not zeros
         output.metrics[f"tui.first_idle.n{n}.median_ms"] = _stat(first_idle)
         output.metrics[f"tui.search.n{n}.median_ms"] = _stat(search)
+        if select:
+            output.metrics[f"tui.select.n{n}.median_ms"] = _stat(select)
         if peaks:
             output.metrics[f"tui.rss.n{n}.peak_kib"] = Metric(
                 value=median(peaks),
@@ -94,6 +101,7 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
             )
         raw = {
             "first_idle_ms": first_idle,
+            "select_ms": select,
             "search_ms": search,
             "rss_kib": peaks,
         }

@@ -63,15 +63,24 @@ the exact list, with reasons, is in `pyproject.toml`'s coverage `omit`).
 - **cold import vs warm parse** — `micro.analyze_cold.*` is a one-shot subprocess
   (first import + first parse); `micro.analyze.*` is pyperf's warm in-process loop.
   Never averaged together.
+- **`micro.analyze_broken.*` is only meaningful beside its twin** — the same 2000-line
+  source with its last line left half-written, which is what a launcher parses while
+  its user is still editing. It comes out 4–10× FASTER than the valid twin, because
+  the analyzer bails out (Python raises, the grammars enter error recovery) and
+  returns no parameters. Read alone it looks like a speed-up; the pair
+  `analyze.<lang>.l2000` / `analyze_broken.<lang>.l2000` is the measurement.
 - **median / p95** — headline values are medians; p95 is nearest-rank
   (`ceil(0.95·n)`); raw samples ship in `results.json` under `raw`.
 - **TUI spans are proxies** — headless Textual (`run_test`, 120×40), not terminal
   paint: span 1 `import skit.tui`, span 2 App() → first `pilot.pause()` returns,
-  span 3 focus search (`/`), settle, then measure `press(<probe char>)` → settle
-  (the char is `datasets.SEARCH_PROBE_CHAR`). The probe asserts the row count matches
-  the library, that the filter really dropped rows (the dataset guarantees a
-  probe-char-free entry), and — at 3+ entries — that some rows survive (a matching
-  entry is guaranteed too), so the span never degenerates to filter-to-zero.
+  span 3 press `down` while the table still owns focus (cursor moves one row, the
+  detail pane re-renders), span 4 focus search (`/`), settle, then measure
+  `press(<probe char>)` → settle (the char is `datasets.SEARCH_PROBE_CHAR`). The probe
+  asserts the row count matches the library, that the cursor actually moved, that the
+  filter really dropped rows (the dataset guarantees a probe-char-free entry), and —
+  at 3+ entries — that some rows survive (a matching entry is guaranteed too), so the
+  span never degenerates to filter-to-zero. `tui.select` is absent below N=2: there is
+  no second row to move to, and a span that measured nothing is worse than none.
 - **run overhead** — lane A `python noop.py`; lane B `uv run --no-project --script
   noop.py` (the EXACT argv skit builds — `src/skit/langs/launch.py`); lane C
   `skit run noop-py --no-input`. Core overhead = C − B. C legitimately includes
@@ -80,6 +89,13 @@ the exact list, with reasons, is in `pyproject.toml`'s coverage `omit`).
 - **`scale.list_json.per_entry_us`** — (median_ms(N=1000) − median_ms(N=0)) is the
   total ms for 1000 entries; numerically that IS the per-entry µs figure (÷1000
   entries × 1000 µs/ms cancel). Stated so nobody "fixes" it into a 1000× lie.
+- **`footprint.library_*` measures the USER, not the tool** — every other footprint
+  metric is what installing skit costs (wheel, sdist, closure). `library_bytes` is
+  what the user's own entries weigh in the store, `library_state_bytes` what their
+  remembered values and presets weigh, and `library_bytes_per_entry` the figure that
+  scales. Deterministic, because the datasets are seeded. Per-script `node_modules` is
+  deliberately NOT in here: materializing it needs npm and the network, which the pr
+  profile must not touch.
 
 ## Datasets
 
@@ -111,7 +127,7 @@ the TUI proxy rides on it; the manifest records versions for exactly this reason
 | tui | 5 probes × {0, 100, 1000} | 10 × same | 5 × same |
 | micro | pyperf `--fast` | full rigor | `--fast` |
 | syscalls | — | list --json @1000 | — |
-| footprint | wheel+sdist only | + closure, dist sizes | — (would measure the harness ref) |
+| footprint | wheel+sdist+library | + closure, dist sizes | — (would measure the harness ref) |
 
 N=100 is the *typical-library* scale; 1000 is the stress point the budgets quote.
 The rendered summary always shows both.

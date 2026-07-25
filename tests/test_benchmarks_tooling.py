@@ -59,6 +59,8 @@ from benchmarks.suites import rss as rss_suite
 from benchmarks.suites import tui as tui_suite
 from benchmarks.suites._env import RunCtx
 
+from skit.langs.registry import spec_for
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURES_DIR = REPO_ROOT / "benchmarks" / "fixtures"
 
@@ -1409,6 +1411,10 @@ class TestContractSync:
             f"{lang}_{lines}.{sources.EXTENSIONS[lang]}"
             for lang in sources.LANGS
             for lines in (20, 200, 2000)
+        } | {
+            # The half-written twin, at the largest size only (micro._BROKEN_LINES).
+            f"{lang}_2000_broken.{sources.EXTENSIONS[lang]}"
+            for lang in sources.LANGS
         }
         assert {path.name for path in materialized.iterdir()} == expected
         script = (REPO_ROOT / "benchmarks" / "micro" / "bench_analyzers.py").read_text(
@@ -1440,6 +1446,43 @@ class TestContractSync:
             for lines in (20, 200, 2000)
         }
         assert actual == expected
+
+    def test_broken_workloads_are_byte_stable_and_actually_broken(self) -> None:
+        """The half-written twin is a workload like any other: its bytes are history.
+        And it must genuinely fail to parse — a "broken" fixture that happens to be
+        valid would quietly benchmark a clean parse under an error-recovery name."""
+        expected = {
+            "python:2000": "af266a68d9826a6d003dc4e4b1609c15ff74ac4a8dd76a21217505fcbe2fdb22",
+            "shell:2000": "cd792b3d0663223351bb25f585e0da85d220b7dbada1720dc3185504076b0b2b",
+            "js:2000": "deaf98beca99466bcf3f651f757adbb1ddb2f94733087156b1b6a68514437ff2",
+            "ts:2000": "8e64a7453ec0fbf7d32dc257f1c44c13d4927c8571055e59c34e87985176de21",
+        }
+        actual = {
+            f"{lang}:2000": hashlib.sha256(sources.generate_broken(lang, 2000).encode()).hexdigest()
+            for lang in sources.LANGS
+        }
+        assert actual == expected
+
+        for lang in sources.LANGS:
+            valid = sources.generate(lang, 2000)
+            broken = sources.generate_broken(lang, 2000)
+            # Same size, same seed, one damaged line: the pair IS the measurement.
+            assert len(broken.splitlines()) == len(valid.splitlines()) == 2000
+            assert broken.splitlines()[:-1] == valid.splitlines()[:-1]
+            assert broken != valid
+        with pytest.raises(SyntaxError):
+            ast.parse(sources.generate_broken("python", 2000))
+        ast.parse(sources.generate("python", 2000))  # the twin still parses
+
+    def test_analyzers_survive_a_half_written_source(self) -> None:
+        """Whatever the grammars do with error recovery, analyze() must return rather
+        than raise — the benchmark measures a cost, and skit's own add/reconcile paths
+        hit this input for real whenever a user is mid-edit."""
+        for lang in sources.LANGS:
+            spec = spec_for(lang)
+            if spec is None or spec.analyzer is None:  # pragma: no cover — grammar absent
+                continue
+            assert spec.analyzer.analyze(sources.generate_broken(lang, 200)) is not None
 
     def test_cli_parser_surface_is_stable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("COLUMNS", "80")
@@ -1853,6 +1896,7 @@ class TestCodeReviewFixes:
                     {
                         "first_idle_ms": float(calls),
                         "search_ms": float(calls + 10),
+                        "select_ms": None,
                         "import_ms": float(calls + 20),
                         "status_text": f"VmHWM: {calls * 100} kB",
                     }
@@ -1871,12 +1915,55 @@ class TestCodeReviewFixes:
         output = tui_suite.run(ctx, pipeline.SuitePlan("tui", ns=(0,), samples=3))
         assert output.raw["n0"] == {
             "first_idle_ms": [1.0, 2.0, 3.0],
+            "select_ms": [],  # n=0 has no second row to move to
             "search_ms": [11.0, 12.0, 13.0],
             "rss_kib": [100.0, 200.0, 300.0],
             "import_ms": [21.0, 22.0, 23.0],
         }
+        assert "tui.select.n0.median_ms" not in output.metrics
         assert output.metrics["tui.rss.n0.peak_kib"].p95 == 300.0
         assert output.metrics["tui.rss.n0.peak_kib"].stddev == 100.0
+
+    def test_tui_records_the_selection_span_when_the_probe_measured_one(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A library with rows to move between yields tui.select; one without does not
+        (asserted above). The metric must never appear as a zero standing in for a
+        repaint that never happened."""
+        manifest = SimpleNamespace(root=tmp_path, probe_char="o")
+        ctx = cast(
+            RunCtx,
+            SimpleNamespace(python="/bin/python", workdir=tmp_path, datasets={2: manifest}),
+        )
+        calls = 0
+
+        def fake_run(argv, **_kwargs):
+            nonlocal calls
+            calls += 1
+            Path(argv[argv.index("--out") + 1]).write_text(
+                json.dumps(
+                    {
+                        "first_idle_ms": 1.0,
+                        "search_ms": 2.0,
+                        "select_ms": float(calls),
+                        "import_ms": 3.0,
+                        "status_text": None,
+                    }
+                )
+            )
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(tui_suite, "bench_env", lambda _ctx, _root: {})
+        monkeypatch.setattr(tui_suite.subprocess, "run", fake_run)
+        original_exists = Path.exists
+        monkeypatch.setattr(
+            Path,
+            "exists",
+            lambda self: False if self == Path("/proc/self/status") else original_exists(self),
+        )
+        output = tui_suite.run(ctx, pipeline.SuitePlan("tui", ns=(2,), samples=3))
+        assert output.raw["n2"]["select_ms"] == [1.0, 2.0, 3.0]
+        assert output.metrics["tui.select.n2.median_ms"].value == 2.0
 
     def test_cold_parse_keeps_raw_samples(self, tmp_path: Path, monkeypatch) -> None:
         ctx = cast(

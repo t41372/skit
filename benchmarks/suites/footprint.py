@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ..datasets import skit_dirs
 from ..results import Metric, SuiteOutput
 from ._env import PROBE_TIMEOUT_S, TOOL_TIMEOUT_S, RunCtx, bench_env
 
@@ -71,9 +72,48 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
 
     output.raw["uv_pinned_version"] = UV_VERSION
 
+    _library(ctx, plan, output)
     if plan.closure:
         _closure(ctx, uv, wheels[0], output, env)
     return output
+
+
+def _library(ctx: RunCtx, plan: SuitePlan, output: SuiteOutput) -> None:
+    """What the USER's library weighs, reported apart from what skit itself weighs.
+
+    Everything else in this suite measures the tool: wheel, sdist, dependency closure.
+    None of it answers the question a user actually has after a year of use — how much
+    disk their own entries have accumulated — and "skit is 508 KB" is a half-truth if
+    the store beside it is ten times that. The datasets are seeded, so these bytes are
+    deterministic and can be budgeted like any other count.
+
+    Split three ways because the three grow for different reasons and a user can act on
+    them differently: the store (skit's copies and metas), the state (remembered values
+    and presets, which only entries that have RUN have), and the per-entry mean at the
+    largest size, which is the figure that scales.
+    """
+    for n in plan.ns:
+        dirs = skit_dirs(ctx.datasets[n].root)
+        store_bytes = _tree_bytes(Path(dirs["SKIT_DATA_DIR"]))
+        state_bytes = _tree_bytes(Path(dirs["SKIT_STATE_DIR"]))
+        output.metrics[f"footprint.library_bytes.n{n}"] = Metric(
+            value=float(store_bytes), unit="bytes", n=1
+        )
+        output.metrics[f"footprint.library_state_bytes.n{n}"] = Metric(
+            value=float(state_bytes), unit="bytes", n=1
+        )
+    largest = max(plan.ns)
+    if largest:
+        dirs = skit_dirs(ctx.datasets[largest].root)
+        total = _tree_bytes(Path(dirs["SKIT_DATA_DIR"])) + _tree_bytes(Path(dirs["SKIT_STATE_DIR"]))
+        output.metrics["footprint.library_bytes_per_entry"] = Metric(
+            value=total / largest, unit="bytes", n=1
+        )
+
+
+def _tree_bytes(root: Path) -> int:
+    """Total bytes of the files under `root` (0 when it does not exist)."""
+    return sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
 
 
 def _closure(ctx: RunCtx, uv: str, wheel: Path, output: SuiteOutput, env: dict[str, str]) -> None:

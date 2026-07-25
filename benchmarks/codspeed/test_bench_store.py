@@ -35,6 +35,15 @@ def test_list_entries(benchmark, library: list[str]) -> None:
     assert len(entries) == _N
 
 
+def test_list_summaries(benchmark, library: list[str]) -> None:
+    """What `skit list` and the CLI listing surfaces actually call: served from
+    registry.toml, where list_entries opens one meta.toml per entry. The two are
+    benchmarked side by side on purpose — the gap between them IS the optimization,
+    and a change that closes it is a regression in the index."""
+    summaries = benchmark(store.list_summaries)
+    assert len(summaries) == _N
+
+
 def test_resolve_first(benchmark, library: list[str]) -> None:
     first = library[0]
     entry = benchmark(store.resolve, first)
