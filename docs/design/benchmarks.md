@@ -23,7 +23,7 @@ runtime behavior: **nothing under `src/skit/` is touched.**
 - No README performance claims, no badges, no "lightweight" wording anywhere. Claims come
   in a later PR, generated from this pipeline's output, after budgets are ratified.
 - No SaaS onboarding (CodSpeed etc.). The pipeline is self-contained: pyperf + hyperfine +
-  artifacts + a gh-pages history branch. CodSpeed can be added later without redesign; the
+  artifacts + a git history branch. CodSpeed can be added later without redesign; the
   reasons and tradeoffs are documented in `benchmarks/README.md`.
 - No fixed-hardware runner. Hosted-runner wall-clock is treated as *advisory* by design
   (see budget tiers); hard time gates wait for stable hardware.
@@ -460,12 +460,23 @@ violations — visible shame, no merge lock.
    `profiles = ["full"]` enforced rows get their enforcement point; without it they'd be
    evaluated by no CI run, ever) → uploads artifacts; converts headline metrics via
    `export-gha` and publishes history with `benchmark-action/github-action-benchmark`
-   (SHA-pinned; v1.22.x current) to the `gh-pages` branch under `bench/` —
+   (SHA-pinned; v1.22.x current) to the **`bench-history`** branch under `bench/` —
    `customSmallerIsBetter`, `auto-push`, `fail-on-alert: false` initially; **alert
    thresholds get tuned after ~14 nightly points exist** (tracked in
-   benchmarks/README.md). `contents: write` granted to exactly this job. One-time setup
-   (merge checklist in the PR): create the `gh-pages` branch (empty orphan commit — the
-   action documents pre-creating it), enable Pages so the chart is actually served, and
+   benchmarks/README.md). `contents: write` granted to exactly this job.
+
+   **The branch is deliberately not `gh-pages`, and nothing serves it.** The action is
+   built around serving its chart from Pages, and this repo cannot: a repository has one
+   Pages deployment and it belongs to the documentation site, which publishes by artifact
+   upload (`docs.yml`, `build_type = workflow`). Repointing Pages at a branch would take
+   the docs site down — a measurement pipeline may not cost the project its docs. What
+   actually matters survives the trade: alert thresholds compare a run against the rows
+   already committed to the branch, which is a git read, not an HTTP one. Only the
+   rendered chart is lost, and if it should live on the web later the way to get there is
+   to have the docs build carry `bench/data.js` into the site it already publishes.
+
+   One-time setup (merge checklist in the PR): create the `bench-history` branch (empty
+   orphan commit — the action documents pre-creating it) and
    **dispatch `benchmark-nightly` immediately after merge** to confirm the
    `profiles = ["full"]` enforced rows evaluate green — schedule-only workflows first run
    post-merge, so their first evaluation must be deliberate, not whenever the cron gets
@@ -560,7 +571,7 @@ orchestration that needs external binaries is exempt, each exemption commented.*
   `pipeline.HEADLINE_METRICS` — in code, so it can't drift), budget tiers + ratchet protocol + `--propose` workflow,
   hosted-runner noise policy, exact lane argvs for run_overhead, how to run locally
   (including "non-Linux hosts see skips; the skip budget applies only to reference CI"),
-  how to add a suite, the gh-pages one-time setup checklist, and what would move
+  how to add a suite, the history branch's one-time setup checklist, and what would move
   wall-clock budgets to `enforced` (fixed hardware + observed noise distribution).
 - `AGENTS.md`: add the bench commands to Commands and a short "Performance pipeline"
   section: *pipeline PRs measure; optimization PRs must attach `benchmark-compare`
@@ -582,7 +593,7 @@ orchestration that needs external binaries is exempt, each exemption commented.*
 - **`uv pip install` network flake in footprint (nightly)** → retries; wheel-only metric
   stays on the PR path.
 - **Third-party history action** → SHA-pinned, `contents: write` on one job only,
-  publishes to gh-pages only.
+  publishes to the `bench-history` branch only.
 
 ## Implementation order (within the single PR)
 
