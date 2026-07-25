@@ -119,6 +119,7 @@ omit = [
     "benchmarks/suites/*",         # subprocess orchestration around hyperfine/strace/uv/probes
     "benchmarks/micro/*",          # pyperf scripts re-exec'd as worker processes
     "benchmarks/fixtures/noop.py", # benchmark subject (a script the benchmarks run), not harness code
+    "benchmarks/codspeed/*",       # pytest benchmark subjects, collected only by the CodSpeed job
 ]
 
 [tool.coverage.paths]

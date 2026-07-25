@@ -1739,6 +1739,12 @@ class TestHarnessImportSurface:
         per_file = {
             "micro": self_contained | {"pyperf"},
             "tui_probe.py": self_contained | {"textual"},
+            # The CodSpeed benchmarks are pytest modules, collected only by the
+            # CodSpeed workflow (`pytest benchmarks/codspeed/ --codspeed`). The A/B
+            # harness never imports them — `python -m benchmarks run` reaches
+            # benchmarks.suites.*, not benchmarks.codspeed.* — so the side-venv surface
+            # does not bind here. The exemption is exactly pytest and its plugin.
+            "codspeed": allowed_anywhere | {"pytest", "pytest_codspeed"},
         }
         for path in sorted((REPO_ROOT / "benchmarks").rglob("*.py")):
             allowed = allowed_anywhere

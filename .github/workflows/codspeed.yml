@@ -28,7 +28,9 @@ permissions: {}
 
 concurrency:
   group: codspeed-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded PR runs, never a main push: those record the baseline every later
+  # comparison is measured against, and a cancelled one leaves a hole in the history.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # skit is a UTF-8 TUI; force Python UTF-8 mode to match the rest of the repo's CI.
@@ -37,7 +39,11 @@ env:
 jobs:
   benchmarks:
     name: Run benchmarks
-    runs-on: ubuntu-latest
+    # Fixed label, matching benchmark.yml. Simulation mode counts instructions rather
+    # than time, so the CPU does not matter — but the IMAGE decides which library code
+    # those instructions run through, and -latest rolling to a new release would land
+    # as a step change in the trend that looks exactly like a regression.
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       id-token: write # OpenID Connect authentication with CodSpeed
