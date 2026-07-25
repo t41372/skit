@@ -128,8 +128,10 @@ applicable enforced rows were evaluated.
 headroom. Refresh them ONLY from a CI artifact — `uv run python -m benchmarks check
 <ci-results.json> --propose` prints the exact replacement file. A PR that
 intentionally moves an enforced metric updates budgets.toml in the same PR. When a
-measured value sits under 85% of its ceiling, `check` nags to tighten. Provisional
-bootstrap bounds carry hand-written `context.python = "3.13"` (the workflow's pin).
+measured value sits under 85% of its ceiling, `check` nags to tighten. `--propose`
+stamps each refreshed row's `context` (python, commit, date) from the artifact it read;
+on CI a ratchet row whose `context.python` disagrees with the running python **fails**
+— a bound may not gate a census it was never set on.
 
 ## CI
 
@@ -167,8 +169,8 @@ its noise distribution is measured.
 2. Repo Settings → Pages → deploy from `gh-pages` so the chart is served.
 3. Dispatch `benchmark (nightly)` once and confirm the `profiles = ["full"]` enforced
    rows evaluate green — schedule-only workflows never run pre-merge.
-4. Tighten the provisional ratchet bounds from the merged PR's CI artifact
-   (`check --propose`).
+4. Re-propose the ratchet bounds if the first main-push run's census differs from the
+   PR's (`check --propose`) — squashing changes no imports, so it normally won't.
 5. After ~14 nightly points: pick alert thresholds for github-action-benchmark
    (currently `fail-on-alert: false` — trend line first).
 

@@ -28,29 +28,29 @@ date = "2026-07-20"
 
 [[budget]]
 metric = "imports.version.modules"
-max = 400
+max = 321
 tier = "enforced"
 ratchet = true
 headroom = 0.1
-note = "ratchet: the fast path may not get importier before the fast-path PR lands (provisional bootstrap bound; tighten from the CI artifact via check --propose)"
+note = "ratchet: --version may not import more modules before the fast-path PR lands (291 measured on PR #29's CI artifact + 10% headroom; context.commit is that run's ephemeral merge ref, the PR is the durable anchor)"
 
 [budget.context]
 python = "3.13"
-commit = "366d6d4"
-date = "2026-07-20"
+commit = "aef5086cb4b1722b55a1bb9eff725227d83fb84e"
+date = "2026-07-25"
 
 [[budget]]
 metric = "imports.list_json.modules"
-max = 400
+max = 321
 tier = "enforced"
 ratchet = true
 headroom = 0.1
-note = "ratchet: list's import graph may not grow before the fast-path PR lands (provisional bootstrap bound; tighten from the CI artifact via check --propose)"
+note = "ratchet: list's import graph may not grow before the fast-path PR lands (291 measured on PR #29's CI artifact + 10% headroom; context.commit is that run's ephemeral merge ref, the PR is the durable anchor)"
 
 [budget.context]
 python = "3.13"
-commit = "366d6d4"
-date = "2026-07-20"
+commit = "aef5086cb4b1722b55a1bb9eff725227d83fb84e"
+date = "2026-07-25"
 
 [[budget]]
 metric = "pipeline.skipped_count"
