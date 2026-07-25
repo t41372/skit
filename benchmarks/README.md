@@ -129,9 +129,11 @@ headroom. Refresh them ONLY from a CI artifact — `uv run python -m benchmarks 
 <ci-results.json> --propose` prints the exact replacement file. A PR that
 intentionally moves an enforced metric updates budgets.toml in the same PR. When a
 measured value sits under 85% of its ceiling, `check` nags to tighten. `--propose`
-stamps each refreshed row's `context` (python, commit, date) from the artifact it read;
-on CI a ratchet row whose `context.python` disagrees with the running python **fails**
-— a bound may not gate a census it was never set on.
+stamps each refreshed row's `context` from the artifact it read: python, date, and
+either `pr` (PR artifacts — a PR run's HEAD is GitHub's ephemeral merge ref, which no
+clone resolves and squash-merge deletes) or `commit` (everything else). On CI a ratchet
+row whose `context.python` disagrees with the running python **fails** — a bound may
+not gate a census it was never set on.
 
 ## CI
 

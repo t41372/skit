@@ -302,7 +302,7 @@ Stable-ordered JSON:
   "schema_version": 1,
   "meta": {
     "generated_at": "…", "profile": "pr",
-    "git": {"commit": "…", "dirty": false}, "skit_version": "0.2.1.dev0",
+    "git": {"commit": "…", "dirty": false, "pr": "29|null"}, "skit_version": "0.2.1.dev0",
     "host": {"os": "…", "kernel": "…", "cpu": "…", "cpu_count": 8, "mem_total_mib": 16384,
               "ci_runner": "ubuntu-24.04|null", "ci_image_version": "20260719.1|null",
               "platform_key": "linux-x86_64"},
@@ -327,6 +327,16 @@ Stable-ordered JSON:
 
 `summarize` merges per-suite JSONs, computes derived metrics, validates via the dataclass
 model, and renders `results.md` (the step-summary/human artifact).
+
+**`git.pr` — the anchor that survives.** `git.commit` is the measured checkout's HEAD,
+which on a `pull_request` run is GitHub's ephemeral merge ref: it resolves in no clone,
+it is regenerated whenever either side moves, and squash-merge deletes both it and the
+branch head. It is honest about *what ran*, and useless as a pointer *afterwards* — so
+`envinfo.pull_request_number` reads the PR number out of `GITHUB_REF`, and `check
+--propose` writes `context.pr` instead of `context.commit` for PR-derived bounds (the
+PR outlives every SHA involved; artifacts expire at 30 days, so the PR is the only
+durable route to the evidence anyway). Off a PR — main pushes, dispatches, local runs —
+the commit is real and is what gets recorded.
 
 ## Budgets: a two-tier contract
 

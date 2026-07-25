@@ -70,11 +70,12 @@ def make_meta(
     platform_key: str = "linux-x86_64",
     ci_image_version: str | None = "20260719.1",
     pyperf: str = "2.10.0",
+    pr: str | None = None,
 ) -> Meta:
     return Meta(
         generated_at="2026-07-20T12:00:00+00:00",
         profile=profile,
-        git=GitInfo(commit="abcdef1234567890", dirty=False),
+        git=GitInfo(commit="abcdef1234567890", dirty=False, pr=pr),
         skit_version="0.2.1.dev0",
         host=HostInfo(
             os="Linux",
@@ -222,6 +223,10 @@ class TestResultsModel:
             (("meta",), None, "meta: expected an object"),
             (("meta", "git"), 5, "meta.git: expected an object"),
             (("meta", "git", "dirty"), "yes", "meta.git.dirty: expected a boolean"),
+            # An empty string is "unset" spelled wrong — it would render a contract row
+            # anchored on nothing. Only null means "not a PR run".
+            (("meta", "git", "pr"), "", "meta.git.pr: expected a non-empty string or null"),
+            (("meta", "git", "pr"), 29, "meta.git.pr: expected a non-empty string or null"),
             (("meta", "host"), 5, "meta.host: expected an object"),
             (("meta", "host", "cpu_count"), 0, "meta.host.cpu_count: expected a positive integer"),
             (
@@ -496,6 +501,18 @@ tier = "target"
         assert by_metric["footprint.wheel_bytes"].max_value == 1048576
         assert by_metric["footprint.wheel_bytes"].context == {"commit": "old"}
         assert by_metric["startup.version.over_python_ms"].max_value == 75
+
+    def test_propose_anchors_a_pr_artifact_on_the_pr_number(self) -> None:
+        """A PR run's HEAD is GitHub's ephemeral merge ref: unresolvable in a clone,
+        regenerated when either side moves, deleted by squash-merge. Writing it into
+        the committed contract records a dead end, so the PR number replaces it."""
+        results = make_results(
+            {"imports.version.modules": Metric(291, "count", 1)},
+            meta=make_meta(pr="29"),
+        )
+        (ratchet,) = load_budgets(propose(load_budgets(ENFORCED_ROW), results))
+        assert ratchet.context == {"python": "3.13", "pr": "29", "date": "2026-07-20"}
+        assert "commit" not in ratchet.context
 
     def test_propose_requires_the_metric(self) -> None:
         with pytest.raises(BudgetsError, match="cannot propose"):
@@ -794,6 +811,7 @@ class TestEnvinfo:
             generated_at="2026-07-20T00:00:00+00:00",
             commit="abc",
             dirty=False,
+            pr="29",
             host=host,
             python_version="3.13.5",
             uv_version="0.11.26",
@@ -805,6 +823,26 @@ class TestEnvinfo:
         assert meta.profile == "pr"
         assert meta.host.ci_image_version == "20260719.1"
         assert meta.pyperf == "2.10.0"
+        assert meta.git.pr == "29"
+
+    @pytest.mark.parametrize(
+        ("ref", "expected"),
+        [
+            ("refs/pull/29/merge", "29"),
+            ("refs/pull/1234/head", "1234"),
+            ("refs/heads/main", None),
+            ("refs/tags/v0.4.0", None),
+            ("", None),
+            # Shapes that must not be mistaken for a PR: no number, a non-numeric
+            # "number", and a truncated ref that would IndexError on naive slicing.
+            ("refs/pull//merge", None),
+            ("refs/pull/main/merge", None),
+            ("refs/pull/29", None),
+        ],
+    )
+    def test_pull_request_number(self, ref: str, expected: str | None) -> None:
+        assert envinfo.pull_request_number({"GITHUB_REF": ref}) == expected
+        assert envinfo.pull_request_number({}) is None
 
 
 # ================================================================ pipeline

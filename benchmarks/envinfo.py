@@ -51,6 +51,18 @@ def ci_image_version(env: Mapping[str, str]) -> str | None:
     return env.get(CI_IMAGE_VERSION_VAR) or None
 
 
+def pull_request_number(env: Mapping[str, str]) -> str | None:
+    """The PR number from GITHUB_REF ("refs/pull/29/merge" → "29"), or None on any
+    other ref (main pushes, dispatches, local runs). A PR run's HEAD is an ephemeral
+    merge commit; this is the only identifier in the manifest that survives both the
+    branch moving and the squash-merge that deletes it (GitInfo.pr)."""
+    ref = env.get("GITHUB_REF", "")
+    parts = ref.split("/")
+    if len(parts) < 4 or parts[0] != "refs" or parts[1] != "pull" or not parts[2].isdigit():
+        return None
+    return parts[2]
+
+
 def cpu_model(cpuinfo_text: str, fallback: str) -> str:
     """First "model name" from /proc/cpuinfo-shaped text; `fallback` (typically the
     machine arch) when the field is absent (non-x86, non-Linux)."""
@@ -98,6 +110,7 @@ def build_meta(
     generated_at: str,
     commit: str,
     dirty: bool,
+    pr: str | None,
     host: HostInfo,
     python_version: str,
     uv_version: str,
@@ -108,7 +121,7 @@ def build_meta(
     return Meta(
         generated_at=generated_at,
         profile=profile,
-        git=GitInfo(commit=commit, dirty=dirty),
+        git=GitInfo(commit=commit, dirty=dirty, pr=pr),
         skit_version=skit_version,
         host=host,
         python=python_version,
@@ -196,6 +209,7 @@ def collect_meta(profile: str, repo_root: Path) -> Meta:  # pragma: no cover —
         generated_at=now_iso(),
         commit=commit,
         dirty=git_dirty(porcelain),
+        pr=pull_request_number(os.environ),
         host=host,
         python_version=f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
         uv_version=installed_uv_version(),

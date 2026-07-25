@@ -46,8 +46,14 @@ class Skip:
 
 @dataclass(frozen=True)
 class GitInfo:
+    """What was measured. `commit` is the checkout's own HEAD — on a `pull_request`
+    run that is GitHub's ephemeral merge ref, which no clone can resolve and which is
+    regenerated whenever either side moves; `pr` is the durable anchor for exactly
+    that case (the PR outlives its SHAs, squash-merge included)."""
+
     commit: str
     dirty: bool
+    pr: str | None = None
 
 
 @dataclass(frozen=True)
@@ -242,7 +248,10 @@ def _meta(node: Any) -> Meta:
     dirty = git_node.get("dirty")
     if not isinstance(dirty, bool):
         raise ResultsError("meta.git.dirty: expected a boolean")
-    git = GitInfo(commit=_string(git_node, "commit", path="meta.git."), dirty=dirty)
+    pr = git_node.get("pr")
+    if pr is not None and (not isinstance(pr, str) or not pr):
+        raise ResultsError("meta.git.pr: expected a non-empty string or null")
+    git = GitInfo(commit=_string(git_node, "commit", path="meta.git."), dirty=dirty, pr=pr)
     host_node = node.get("host")
     if not isinstance(host_node, dict):
         raise ResultsError("meta.host: expected an object")
