@@ -69,6 +69,7 @@ dev = [
     "zizmor>=1.26,<2",
     "babel>=2.18,<3",  # dev-only: extract/update/compile .po↔.mo (runtime uses stdlib gettext)
     "pytest-rerunfailures>=16.4",
+    "pytest-codspeed>=5,<6",
 ]
 
 [build-system]
