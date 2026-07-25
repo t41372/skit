@@ -1,0 +1,66 @@
+name: CodSpeed
+
+# Continuous performance measurement with CodSpeed. Benchmarks live in
+# benchmarks/codspeed/ (pytest-codspeed, simulation mode) and are separate from the
+# existing pyperf pipeline (benchmarks/) and the pytest suite (tests/). Advisory by
+# policy — a red run here is visible signal, never a merge lock.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'benchmarks/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/codspeed.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'benchmarks/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/codspeed.yml'
+  # Lets CodSpeed trigger a backtest run to seed the initial baseline.
+  workflow_dispatch:
+
+# Grant no permissions by default; the job requests exactly what it needs.
+permissions: {}
+
+concurrency:
+  group: codspeed-${{ github.workflow }}-${{ github.ref }}
+  # Cancel superseded PR runs, never a main push: those record the baseline every later
+  # comparison is measured against, and a cancelled one leaves a hole in the history.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # skit is a UTF-8 TUI; force Python UTF-8 mode to match the rest of the repo's CI.
+  PYTHONUTF8: "1"
+
+jobs:
+  benchmarks:
+    name: Run benchmarks
+    # Fixed label, matching benchmark.yml. Simulation mode counts instructions rather
+    # than time, so the CPU does not matter — but the IMAGE decides which library code
+    # those instructions run through, and -latest rolling to a new release would land
+    # as a step change in the trend that looks exactly like a regression.
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write # OpenID Connect authentication with CodSpeed
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - name: Sync dependencies
+        run: uv sync --dev
+      - name: Run benchmarks
+        uses: CodSpeedHQ/action@f99becdce5e5d51fd556489ebef684f4ecfd6286 # v4.18.5
+        with:
+          mode: simulation
+          run: uv run pytest benchmarks/codspeed/ --codspeed -o testpaths=benchmarks/codspeed
