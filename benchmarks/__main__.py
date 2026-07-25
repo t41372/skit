@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -129,9 +130,10 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-if __name__ == "__main__":
+def cli(argv: list[str] | None = None) -> int:
+    """Run the benchmark front door with one clean diagnostic policy."""
     try:
-        sys.exit(main())
+        return main(argv)
     except (
         ResultsError,
         BudgetsError,
@@ -139,6 +141,12 @@ if __name__ == "__main__":
         DatasetError,
         ParseError,
         RuntimeError,
+        OSError,
+        subprocess.SubprocessError,
     ) as exc:
         print(f"benchmarks: {exc}", file=sys.stderr)
-        sys.exit(1)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(cli())

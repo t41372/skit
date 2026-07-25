@@ -22,6 +22,8 @@ from .results import GitInfo, HostInfo, Meta
 if TYPE_CHECKING:
     pass
 
+_HOST_COMMAND_TIMEOUT_S = 30
+
 # The workflows export this (no GitHub-provided variable carries the `runs-on` label);
 # absent or empty locally, which envinfo reports as None = "not CI".
 CI_RUNNER_VAR = "BENCH_CI_RUNNER"
@@ -163,6 +165,7 @@ def collect_meta(profile: str, repo_root: Path) -> Meta:  # pragma: no cover —
         cwd=repo_root,
         capture_output=True,
         text=True,
+        timeout=_HOST_COMMAND_TIMEOUT_S,
         check=True,
     ).stdout.strip()
     porcelain = subprocess.run(
@@ -170,12 +173,14 @@ def collect_meta(profile: str, repo_root: Path) -> Meta:  # pragma: no cover —
         cwd=repo_root,
         capture_output=True,
         text=True,
+        timeout=_HOST_COMMAND_TIMEOUT_S,
         check=True,
     ).stdout
     uv_out = subprocess.run(
         ["uv", "--version"],  # noqa: S607 — fixed program name, dev tooling
         capture_output=True,
         text=True,
+        timeout=_HOST_COMMAND_TIMEOUT_S,
         check=True,
     ).stdout
     return build_meta(

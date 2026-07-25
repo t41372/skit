@@ -8,14 +8,19 @@ logic, and the dataset generator's load-bearing invariants.
 
 from __future__ import annotations
 
+import argparse
+import ast
+import hashlib
 import json
 import os
+import subprocess
 from importlib.metadata import version
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
+from benchmarks import __main__ as benchmark_cli
 from benchmarks import compare as bcompare
 from benchmarks import datasets, envinfo, hyperfine, parsers, pipeline
 from benchmarks.budgets import (
@@ -47,6 +52,7 @@ from benchmarks.results import (
     meta_from_dict,
     python_major_minor,
 )
+from benchmarks.suites import footprint as footprint_suite
 from benchmarks.suites import micro as micro_suite
 from benchmarks.suites import rss as rss_suite
 from benchmarks.suites import tui as tui_suite
@@ -1128,6 +1134,55 @@ class TestDatasets:
 
 
 class TestFrontDoor:
+    def test_datasets_command(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        out = tmp_path / "dataset"
+        assert benchmark_cli.main(["datasets", "--n", "3", "--out", str(out)]) == 0
+        assert Manifest.load(out).n == 3
+        assert "generated 3 entries" in capsys.readouterr().out
+
+    def test_run_and_summarize_commands(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from benchmarks.suites import _run
+
+        results = make_results({"x.ms": Metric(1.0, "ms", 1)})
+        seen: dict[str, object] = {}
+
+        def fake_execute(profile, out, repo_root, budgets, *, measured_root=None):
+            seen.update(
+                profile=profile,
+                out=out,
+                repo_root=repo_root,
+                budgets=budgets,
+                measured_root=measured_root,
+            )
+            return results
+
+        monkeypatch.setattr(_run, "execute", fake_execute)
+        measured = tmp_path / "measured"
+        out = tmp_path / "run"
+        assert (
+            benchmark_cli.main(
+                [
+                    "run",
+                    "--profile",
+                    "pr",
+                    "--out",
+                    str(out),
+                    "--measured-repo",
+                    str(measured),
+                ]
+            )
+            == 0
+        )
+        assert seen["profile"] == "pr"
+        assert seen["out"] == out
+        assert seen["measured_root"] == measured
+
+        monkeypatch.setattr(benchmark_cli, "summarize_dir", lambda *_args: results)
+        assert benchmark_cli.main(["summarize", str(out)]) == 0
+        assert capsys.readouterr().out.count("results:") == 2
+
     def test_check_exit_codes(self, tmp_path: Path) -> None:
         from benchmarks.__main__ import main
 
@@ -1173,16 +1228,41 @@ class TestFrontDoor:
         assert load_budgets(out)[0].max_value == 321
 
     def test_export_gha_writes_file(self, tmp_path: Path) -> None:
-        from benchmarks.__main__ import main
-
         results_path = tmp_path / "r.json"
         results_path.write_text(
             make_results({"startup.version.median_ms": Metric(218.0, "ms", 15)}).to_json()
         )
         out = tmp_path / "gha.json"
-        assert main(["export-gha", str(results_path), "--out", str(out)]) == 0
+        assert benchmark_cli.main(["export-gha", str(results_path), "--out", str(out)]) == 0
         rows = json.loads(out.read_text())
         assert rows[0]["name"] == "startup.version.median_ms"
+
+    def test_export_gha_prints_stdout(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        results_path = tmp_path / "r.json"
+        results_path.write_text(
+            make_results({"startup.version.median_ms": Metric(218.0, "ms", 15)}).to_json()
+        )
+        assert benchmark_cli.main(["export-gha", str(results_path)]) == 0
+        assert json.loads(capsys.readouterr().out)[0]["name"] == "startup.version.median_ms"
+
+    def test_cli_formats_os_errors(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        missing = tmp_path / "missing.json"
+        assert benchmark_cli.cli(["check", str(missing)]) == 1
+        assert capsys.readouterr().err.startswith("benchmarks: ")
+
+    def test_cli_formats_subprocess_errors(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        def fail(_argv):
+            raise subprocess.TimeoutExpired(["hyperfine"], 1)
+
+        monkeypatch.setattr(benchmark_cli, "main", fail)
+        assert benchmark_cli.cli([]) == 1
+        assert "timed out after 1 seconds" in capsys.readouterr().err
 
     def test_compare_command(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         from benchmarks.__main__ import main
@@ -1216,6 +1296,76 @@ class TestContractSync:
         assert hyperfine.HYPERFINE_URL in action
         assert hyperfine.HYPERFINE_SHA256 in action
         assert f"hyperfine-v{hyperfine.HYPERFINE_VERSION}-x86_64" in action
+
+    def test_analyzer_source_filenames_share_one_registry(self, tmp_path: Path) -> None:
+        ctx = cast(RunCtx, SimpleNamespace(workdir=tmp_path))
+        materialized = micro_suite._materialize_sources(ctx)
+        expected = {
+            f"{lang}_{lines}.{sources.EXTENSIONS[lang]}"
+            for lang in sources.LANGS
+            for lines in (20, 200, 2000)
+        }
+        assert {path.name for path in materialized.iterdir()} == expected
+        script = (REPO_ROOT / "benchmarks" / "micro" / "bench_analyzers.py").read_text(
+            encoding="utf-8"
+        )
+        assert "_EXT =" not in script
+        assert 'json.loads(os.environ["BENCH_SOURCE_EXTENSIONS"])' in script
+
+    def test_analyzer_workloads_are_byte_stable(self) -> None:
+        """Generator changes alter benchmark history and must be explicit, not an
+        unnoticed mutation that happens to keep the same syntax and line count."""
+        expected = {
+            "python:20": "331e49e5afdc220ec7072bce1c36bcadfbf4ef27a272fbcfea6c58232048c5eb",
+            "python:200": "bddbff14521b972353a786a23d26878241ebd201bb3abddbf41816f5b6a0e30c",
+            "python:2000": "d3930447d045e075d42e9de5af26d7fc82b00aadddfd22ab5e3280c71611c2fd",
+            "shell:20": "18313d3c90cf19940c4d7929f98175c78e581a6a8ae2beb3298e11e92dd6e71f",
+            "shell:200": "1580868ff9403e7994f6154dcf140ef662296cffe4b8270323e6f7f27a46bdd9",
+            "shell:2000": "f06766fb3268b15d1ef41004302894cab8dcc0f60e7cd8e40481ff07b8883076",
+            "js:20": "a71c521298245d452903ff3c72ecb46587eaa0a2d94207d1752a3a50c2c66c0b",
+            "js:200": "3c5dce15dd809b1943dfd33347a27d9f5bf63b7100f5c4570032450b58d3f78c",
+            "js:2000": "d6fcca3167e919aa5745cea2789e995ce312d9cda6e8486ae2bc08321298de4d",
+            "ts:20": "53d5404ce5ee784b79841b1897a8c63c81e064076d62cfe56404f761ca8c0e1e",
+            "ts:200": "9dfa7b5ba9138fd6a9e23166eead6e9a73fae74eb9aa39e178a4d8ee927c18f4",
+            "ts:2000": "4fa53b7268b29fccdac92e0c751ba48d48980f6d4ad75c3fdb45cb88ecd8f558",
+        }
+        actual = {
+            f"{lang}:{lines}": hashlib.sha256(sources.generate(lang, lines).encode()).hexdigest()
+            for lang in sources.LANGS
+            for lines in (20, 200, 2000)
+        }
+        assert actual == expected
+
+    def test_cli_parser_surface_is_stable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("COLUMNS", "80")
+        parser = benchmark_cli._build_parser()
+        subparsers = next(
+            action for action in parser._actions if isinstance(action, argparse._SubParsersAction)
+        )
+        text = parser.format_help() + "".join(
+            f"\n## {name}\n{subparser.format_help()}"
+            for name, subparser in sorted(subparsers.choices.items())
+        )
+        assert hashlib.sha256(text.encode()).hexdigest() == (
+            "452004a28e54464ee2118113389455838923ece10383814941d941aa6c7516ed"
+        )
+
+    def test_all_benchmark_subprocesses_are_bounded(self) -> None:
+        missing: list[str] = []
+        for path in sorted((REPO_ROOT / "benchmarks").rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "subprocess"
+                    and node.func.attr == "run"
+                ):
+                    continue
+                if not any(keyword.arg == "timeout" for keyword in node.keywords):
+                    missing.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
+        assert missing == []
 
     @pytest.mark.parametrize(
         "workflow",
@@ -1481,6 +1631,44 @@ class TestHarnessImportSurface:
 
 class TestCodeReviewFixes:
     """Behaviors added by the /code-review round (see the PR's review appendix)."""
+
+    def test_footprint_closure_bounds_and_isolates_retries(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        site = tmp_path / "site"
+        site.mkdir()
+        (site / "skit").mkdir()
+        (site / "skit" / "__init__.py").write_text("")
+        ctx = cast(RunCtx, SimpleNamespace(workdir=tmp_path))
+        calls: list[tuple[list[str], dict[str, object]]] = []
+        install_attempts = 0
+
+        def fake_run(argv, **kwargs):
+            nonlocal install_attempts
+            argv = list(argv)
+            calls.append((argv, kwargs))
+            if argv[1:3] == ["pip", "install"]:
+                install_attempts += 1
+                return SimpleNamespace(
+                    returncode=0 if install_attempts == 2 else 1,
+                    stderr="temporary network error",
+                )
+            if "sysconfig.get_paths()" in argv[-1]:
+                return SimpleNamespace(stdout=f"{site}\n")
+            if argv[-1] == footprint_suite._DIST_SIZES:
+                return SimpleNamespace(stdout="{}")
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+        sleeps: list[int] = []
+        monkeypatch.setattr(footprint_suite.subprocess, "run", fake_run)
+        monkeypatch.setattr(footprint_suite.time, "sleep", sleeps.append)
+        output = SuiteOutput(suite="footprint")
+        footprint_suite._closure(ctx, "/bin/uv", tmp_path / "skit.whl", output)
+
+        assert install_attempts == 2
+        assert sleeps == [footprint_suite._INSTALL_BACKOFF_SECONDS]
+        assert all(kwargs["cwd"] == tmp_path for _, kwargs in calls)
+        assert all(isinstance(kwargs["timeout"], int) for _, kwargs in calls)
 
     def test_rss_keeps_samples_and_full_statistics(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.setattr(rss_suite.sys, "platform", "linux")

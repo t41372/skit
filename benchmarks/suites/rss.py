@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from ..parsers import maxrss_kib, median, p95, stddev
 from ..results import Metric, SuiteOutput
-from ._env import RunCtx, bench_env
+from ._env import PROBE_TIMEOUT_S, RunCtx, bench_env
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -23,7 +23,8 @@ if TYPE_CHECKING:
 # reused harness would let a large earlier child mask a smaller later one.
 _HARNESS = (
     "import json, resource, subprocess, sys\n"
-    "p = subprocess.run(sys.argv[1:], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+    "p = subprocess.run(sys.argv[1:], stdout=subprocess.DEVNULL, "
+    "stderr=subprocess.DEVNULL, timeout=60)\n"
     "ru = resource.getrusage(resource.RUSAGE_CHILDREN)\n"
     "print(json.dumps({'maxrss': ru.ru_maxrss, 'rc': p.returncode}))\n"
 )
@@ -60,6 +61,7 @@ def _sample(ctx: RunCtx, argv: tuple[str, ...], env: Mapping[str, str]) -> int:
         env=dict(env),
         capture_output=True,
         text=True,
+        timeout=PROBE_TIMEOUT_S,
         check=True,
     )
     doc = json.loads(proc.stdout)

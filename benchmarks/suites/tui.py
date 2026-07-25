@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 
 from ..parsers import median, p95, stddev, vmhwm_kib
 from ..results import Metric, Skip, SuiteOutput
-from ._env import RunCtx, bench_env
+from ._env import PROBE_TIMEOUT_S, RunCtx, bench_env
 
 if TYPE_CHECKING:
     from ..pipeline import SuitePlan
@@ -53,6 +53,7 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
                 ],
                 cwd=ctx.workdir,
                 env=dict(env),
+                timeout=PROBE_TIMEOUT_S,
                 check=True,
                 stdout=subprocess.DEVNULL,
             )

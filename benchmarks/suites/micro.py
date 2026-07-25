@@ -8,6 +8,7 @@ worse, the developer's real) library."""
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -15,7 +16,7 @@ from typing import TYPE_CHECKING
 from ..fixtures import sources
 from ..parsers import median, p95, pyperf_benchmarks, stddev
 from ..results import Metric, Skip, SuiteOutput
-from ._env import PYPERF_INHERIT, RunCtx, bench_env
+from ._env import BENCHMARK_TIMEOUT_S, PROBE_TIMEOUT_S, PYPERF_INHERIT, RunCtx, bench_env
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -80,6 +81,9 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
     if available:
         env = bench_env(ctx, ctx.datasets[plan.ns[0]].root)
         env["BENCH_SOURCES_DIR"] = str(sources_dir)
+        env["BENCH_SOURCE_EXTENSIONS"] = json.dumps(
+            {lang: sources.EXTENSIONS[lang] for lang in sources.LANGS}
+        )
         _run_script(ctx, plan, "bench_analyzers.py", env, output, "analyzers")
         for lang in available:
             _cold_parse(ctx, plan, lang, sources_dir, output)
@@ -127,6 +131,7 @@ def _run_script(
         env=dict(env),
         capture_output=True,
         text=True,
+        timeout=BENCHMARK_TIMEOUT_S,
         check=False,
     )
     if proc.returncode != 0:
@@ -170,6 +175,7 @@ def _cold_parse(
             env=env,
             capture_output=True,
             text=True,
+            timeout=PROBE_TIMEOUT_S,
             check=False,
         )
         if proc.returncode != 0:

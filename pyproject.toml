@@ -117,7 +117,6 @@ parallel = true
 omit = [
     "benchmarks/suites/*",         # subprocess orchestration around hyperfine/strace/uv/probes
     "benchmarks/micro/*",          # pyperf scripts re-exec'd as worker processes
-    "benchmarks/__main__.py",      # thin argparse shim; all logic lives in covered modules
     "benchmarks/fixtures/noop.py", # benchmark subject (a script the benchmarks run), not harness code
 ]
 

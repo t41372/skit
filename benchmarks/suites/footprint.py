@@ -6,16 +6,18 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..results import Metric, SuiteOutput
-from ._env import RunCtx
+from ._env import PROBE_TIMEOUT_S, TOOL_TIMEOUT_S, RunCtx
 
 if TYPE_CHECKING:
     from ..pipeline import SuitePlan
 
 _INSTALL_ATTEMPTS = 3  # closure installs touch the network; retry flakes
+_INSTALL_BACKOFF_SECONDS = 2
 
 # Per-distribution installed sizes, computed inside the probe venv.
 _DIST_SIZES = """\
@@ -42,6 +44,7 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
     subprocess.run(  # noqa: S603 — fixed-shape uv argv
         [uv, "build", "--out-dir", str(dist_dir)],
         cwd=ctx.repo_root,
+        timeout=TOOL_TIMEOUT_S,
         check=True,
         capture_output=True,
     )
@@ -67,24 +70,33 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
 def _closure(ctx: RunCtx, uv: str, wheel: Path, output: SuiteOutput) -> None:
     venv = ctx.workdir / "footprint-venv"
     subprocess.run(  # noqa: S603 — fixed-shape uv argv
-        [uv, "venv", str(venv)], check=True, capture_output=True
+        [uv, "venv", str(venv)],
+        cwd=ctx.workdir,
+        timeout=TOOL_TIMEOUT_S,
+        check=True,
+        capture_output=True,
     )
     venv_python = venv / "bin" / "python"
     for attempt in range(1, _INSTALL_ATTEMPTS + 1):
         proc = subprocess.run(  # noqa: S603 — fixed-shape uv argv
             [uv, "pip", "install", "--python", str(venv_python), str(wheel)],
+            cwd=ctx.workdir,
             capture_output=True,
             text=True,
+            timeout=TOOL_TIMEOUT_S,
             check=False,
         )
         if proc.returncode == 0:
             break
         if attempt == _INSTALL_ATTEMPTS:
             raise RuntimeError(f"closure install failed {attempt}x: {proc.stderr[-2000:]}")
+        time.sleep(_INSTALL_BACKOFF_SECONDS * attempt)
     purelib = subprocess.run(  # noqa: S603 — fixed-shape probe argv
         [str(venv_python), "-c", "import sysconfig; print(sysconfig.get_paths()['purelib'])"],
+        cwd=ctx.workdir,
         capture_output=True,
         text=True,
+        timeout=PROBE_TIMEOUT_S,
         check=True,
     ).stdout.strip()
     site = Path(purelib)
@@ -108,7 +120,12 @@ def _closure(ctx: RunCtx, uv: str, wheel: Path, output: SuiteOutput) -> None:
     )
     sizes: dict[str, int] = json.loads(
         subprocess.run(  # noqa: S603 — fixed-shape probe argv
-            [str(venv_python), "-c", _DIST_SIZES], capture_output=True, text=True, check=True
+            [str(venv_python), "-c", _DIST_SIZES],
+            cwd=ctx.workdir,
+            capture_output=True,
+            text=True,
+            timeout=PROBE_TIMEOUT_S,
+            check=True,
         ).stdout
     )
     output.metrics["footprint.distributions"] = Metric(value=float(len(sizes)), unit="count", n=1)

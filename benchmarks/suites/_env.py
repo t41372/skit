@@ -26,7 +26,23 @@ if TYPE_CHECKING:
     from ..datasets import Manifest
     from ..results import Metric
 
-__all__ = ["PYPERF_INHERIT", "RunCtx", "bench_env", "discover", "run_hyperfine"]
+__all__ = [
+    "BENCHMARK_TIMEOUT_S",
+    "PROBE_TIMEOUT_S",
+    "PYPERF_INHERIT",
+    "TOOL_TIMEOUT_S",
+    "RunCtx",
+    "bench_env",
+    "discover",
+    "run_hyperfine",
+]
+
+# Every child process is bounded. Long-running hyperfine/pyperf batches get enough
+# room for the nightly profile; tools that may touch the network get ten minutes;
+# single-shot probes should never need more than two.
+BENCHMARK_TIMEOUT_S = 1800
+TOOL_TIMEOUT_S = 600
+PROBE_TIMEOUT_S = 120
 
 
 @dataclass(frozen=True)
@@ -113,6 +129,7 @@ def run_hyperfine(
         argv,
         cwd=ctx.workdir,
         env=dict(env),
+        timeout=BENCHMARK_TIMEOUT_S,
         check=False,
     )
     if proc.returncode != 0:
@@ -135,6 +152,7 @@ def diagnose_cases(ctx: RunCtx, cases: list[Case], env: Mapping[str, str]) -> st
             env=dict(env),
             capture_output=True,
             text=True,
+            timeout=PROBE_TIMEOUT_S,
             check=False,
         )
         detail = "" if probe.returncode == 0 else f" stderr: {probe.stderr.strip()[-500:]!r}"

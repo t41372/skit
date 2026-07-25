@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from ..parsers import census, importtime_top
 from ..results import Metric, SuiteOutput
-from ._env import RunCtx, bench_env
+from ._env import PROBE_TIMEOUT_S, RunCtx, bench_env
 
 if TYPE_CHECKING:
     from ..pipeline import SuitePlan
@@ -45,6 +45,7 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
             [ctx.python, "-c", _CENSUS_PROBE],
             cwd=ctx.workdir,
             env=probe_env,
+            timeout=PROBE_TIMEOUT_S,
             check=True,
             stdout=subprocess.DEVNULL,
         )
@@ -63,6 +64,7 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
         [ctx.python, "-X", "importtime", "-c", "import skit.cli"],
         cwd=ctx.workdir,
         env=dict(env),
+        timeout=PROBE_TIMEOUT_S,
         check=True,
         capture_output=True,
         text=True,

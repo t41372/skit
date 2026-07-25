@@ -45,8 +45,8 @@ reference platform's.
 | `fixtures/` | noop benchmark subjects + seeded analyzer-source generators |
 
 Trust split: everything that computes, decides, or persuades sits under the repo's
-100% coverage floor; only `suites/*`, `micro/*`, `__main__.py`, and
-`fixtures/noop.py` are exempt (spawn-and-wait orchestration and benchmark subjects —
+100% coverage floor; only `suites/*`, `micro/*`, and `fixtures/noop.py` are exempt
+(spawn-and-wait orchestration and benchmark subjects —
 the exact list, with reasons, is in `pyproject.toml`'s coverage `omit`).
 
 ## Definitions (what the numbers mean)

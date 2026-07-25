@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 from ..parsers import FILE_OP_SYSCALLS, NETWORK_SYSCALLS, count_group, strace_counts
 from ..results import Metric, SuiteOutput
-from ._env import RunCtx, bench_env
+from ._env import PROBE_TIMEOUT_S, RunCtx, bench_env
 
 if TYPE_CHECKING:
     from ..pipeline import SuitePlan
@@ -33,6 +33,7 @@ def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
         [ctx.strace, "-f", "-c", "-o", str(table_file), ctx.skit, "list", "--json"],
         cwd=ctx.workdir,
         env=dict(env),
+        timeout=PROBE_TIMEOUT_S,
         check=True,
         stdout=subprocess.DEVNULL,
     )
