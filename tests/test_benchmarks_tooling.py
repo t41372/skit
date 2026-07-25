@@ -1458,7 +1458,9 @@ class TestEnvspec:
         from benchmarks import envspec
 
         assert {"SKIT_DATA_DIR", "SKIT_STATE_DIR", "SKIT_CONFIG_DIR"} <= set(envspec.PYPERF_INHERIT)
-        assert {"BENCH_N", "BENCH_SOURCES_DIR"} <= set(envspec.PYPERF_INHERIT)
+        assert {"BENCH_N", "BENCH_SOURCES_DIR", "BENCH_SOURCE_EXTENSIONS"} <= set(
+            envspec.PYPERF_INHERIT
+        )
 
 
 # ================================================================ dataset reuse

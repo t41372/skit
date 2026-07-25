@@ -24,6 +24,7 @@ PYPERF_INHERIT = (
     "LC_ALL",
     "BENCH_N",
     "BENCH_SOURCES_DIR",
+    "BENCH_SOURCE_EXTENSIONS",
 )
 
 
