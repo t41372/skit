@@ -54,21 +54,44 @@ async def _click_chip(pilot, widget: Static, label: str) -> None:
     # Inline chips live in the form's ordinary wheel-scrollable body. Bring this one
     # into the viewport exactly as a mouse user scrolling to it would. Center it so a
     # docked footer cannot obscure a chip that is only barely inside the screen region.
-    for ancestor in widget.ancestors:
-        if isinstance(ancestor, VerticalScroll):
-            ancestor.scroll_to_widget(
-                widget,
-                animate=False,
-                center=True,
-                immediate=True,
-                force=True,
-                origin_visible=False,
-            )
+    scroll_ancestors = [
+        ancestor for ancestor in widget.ancestors if isinstance(ancestor, VerticalScroll)
+    ]
+    for scroll in scroll_ancestors:
+        scroll.scroll_to_widget(
+            widget,
+            animate=False,
+            center=True,
+            immediate=True,
+            force=True,
+            origin_visible=False,
+        )
     widget.scroll_visible(animate=False, immediate=True, force=True)
     await pilot.pause()
+
+    # Textual may initially measure a deeply nested Static before its Windows layout
+    # has settled. If the first targeted scroll left it outside the screen, reproduce
+    # the mouse user's fallback: wheel the owning body toward the off-screen edge.
+    screen_region = pilot.app.screen.region
+    if scroll_ancestors and (
+        widget.region.y < screen_region.y or widget.region.bottom > screen_region.bottom
+    ):
+        scroll = scroll_ancestors[0]
+        scroll.scroll_to(
+            y=scroll.scroll_y + widget.region.y - screen_region.center.y,
+            animate=False,
+            immediate=True,
+            force=True,
+        )
+        await pilot.pause()
+
     plain = str(widget.render()).replace(tui_footer.GLUE, " ")
     position = plain.find(label)
     assert position >= 0, plain
+    assert pilot.app.screen.region.contains(
+        widget.region.x + position + 1,
+        widget.region.y,
+    ), widget.region
     await pilot.click(widget, offset=(position + 1, 0))
     await pilot.pause()
 
