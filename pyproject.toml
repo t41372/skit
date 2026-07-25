@@ -69,6 +69,7 @@ dev = [
     "zizmor>=1.26,<2",
     "babel>=2.18,<3",  # dev-only: extract/update/compile .po↔.mo (runtime uses stdlib gettext)
     "pytest-rerunfailures>=16.4",
+    "pytest-codspeed>=4,<5",
 ]
 # The benchmark pipeline's only extra dependency (benchmarks/ — never a runtime dep).
 # Kept as its own group for clarity, but default-installed (see [tool.uv]) so ty's
@@ -221,6 +222,9 @@ ignore = [
     "SIM117",  # nested with statements readable in tests
 ]
 "tests/corpus/**" = ["ALL"]  # corpus files are verbatim analyzer inputs, not code style subjects
+"benchmarks/codspeed/**" = [
+    "S101",    # assert is how the CodSpeed benchmarks sanity-check the measured call
+]
 
 [tool.mutmut]
 # Modern key names (paths_to_mutate / tests_dir print deprecation warnings on 3.6).
