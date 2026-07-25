@@ -132,6 +132,21 @@ def uv_version_from_output(output: str) -> str:
     return words[1] if len(words) > 1 else "unknown"
 
 
+def installed_uv_version() -> str:
+    """Installed uv version, or "unknown" when uv is not on PATH."""
+    try:
+        output = subprocess.run(
+            ["uv", "--version"],  # noqa: S607 — fixed program name, dev tooling
+            capture_output=True,
+            text=True,
+            timeout=_HOST_COMMAND_TIMEOUT_S,
+            check=True,
+        ).stdout
+    except FileNotFoundError:
+        return "unknown"
+    return uv_version_from_output(output)
+
+
 # ---------------------------------------------------------------- the real-host seam
 
 
@@ -176,13 +191,6 @@ def collect_meta(profile: str, repo_root: Path) -> Meta:  # pragma: no cover —
         timeout=_HOST_COMMAND_TIMEOUT_S,
         check=True,
     ).stdout
-    uv_out = subprocess.run(
-        ["uv", "--version"],  # noqa: S607 — fixed program name, dev tooling
-        capture_output=True,
-        text=True,
-        timeout=_HOST_COMMAND_TIMEOUT_S,
-        check=True,
-    ).stdout
     return build_meta(
         profile=profile,
         generated_at=now_iso(),
@@ -190,7 +198,7 @@ def collect_meta(profile: str, repo_root: Path) -> Meta:  # pragma: no cover —
         dirty=git_dirty(porcelain),
         host=host,
         python_version=f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
-        uv_version=uv_version_from_output(uv_out),
+        uv_version=installed_uv_version(),
         skit_version=skit.__version__,
         textual_version=dist_version("textual"),
         pyperf_version=dist_version("pyperf"),

@@ -760,6 +760,17 @@ class TestEnvinfo:
         assert envinfo.uv_version_from_output("uv 0.11.26 (abc 2026-01-01)") == "0.11.26"
         assert envinfo.uv_version_from_output("garbage") == "unknown"
 
+    def test_installed_uv_version(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        completed = subprocess.CompletedProcess(["uv", "--version"], 0, "uv 0.11.26\n")
+        monkeypatch.setattr(envinfo.subprocess, "run", lambda *_args, **_kwargs: completed)
+        assert envinfo.installed_uv_version() == "0.11.26"
+
+        def missing(*_args, **_kwargs):
+            raise FileNotFoundError
+
+        monkeypatch.setattr(envinfo.subprocess, "run", missing)
+        assert envinfo.installed_uv_version() == "unknown"
+
     def test_dist_version_fallback(self) -> None:
         assert envinfo.dist_version("this-distribution-does-not-exist") == "unknown"
         assert envinfo.dist_version("pytest") != "unknown"
@@ -1177,6 +1188,10 @@ class TestFrontDoor:
         )
         assert seen["profile"] == "pr"
         assert seen["out"] == out
+        assert seen["repo_root"] == benchmark_cli._REPO_ROOT
+        assert seen["budgets"] == load_budgets(
+            benchmark_cli._DEFAULT_BUDGETS.read_text(encoding="utf-8")
+        )
         assert seen["measured_root"] == measured
 
         monkeypatch.setattr(benchmark_cli, "summarize_dir", lambda *_args: results)
