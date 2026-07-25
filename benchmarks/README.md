@@ -55,6 +55,11 @@ the exact list, with reasons, is in `pyproject.toml`'s coverage `omit`).
   warmup runs have warmed the page cache and (where uv is involved) `UV_CACHE_DIR`.
   Cold-filesystem / first-ever-install journeys are separate future suites, never
   mixed into these numbers.
+- **the import census is N-dependent** — resolving an entry's kind builds its `LangSpec`,
+  which imports that language's grammar, so `imports.list_json` is measured once per N.
+  `n0` is the CLI floor (no kind resolved); `n100` is what a real library pays, and the
+  only tier where `has_tree_sitter` can be anything but 0. `imports.version.*` carries no
+  N — `--version` never reads the library.
 - **cold import vs warm parse** — `micro.analyze_cold.*` is a one-shot subprocess
   (first import + first parse); `micro.analyze.*` is pyperf's warm in-process loop.
   Never averaged together.
@@ -102,7 +107,7 @@ the TUI proxy rides on it; the manifest records versions for exactly this reason
 | scale | N ∈ {0, 100, 1000} | {0, 10, 100, 1000} + doctor | {0, 100, 1000} |
 | run_overhead | python + shell | + JS lane | python + shell |
 | rss | 5 samples | 10 | 5 |
-| imports | census (deterministic) | same | same |
+| imports | census at N ∈ {0, 100} (deterministic) | same | same |
 | tui | 5 probes × {0, 100, 1000} | 10 × same | 5 × same |
 | micro | pyperf `--fast` | full rigor | `--fast` |
 | syscalls | — | list --json @1000 | — |

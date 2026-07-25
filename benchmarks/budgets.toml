@@ -43,17 +43,36 @@ pr = "29"
 date = "2026-07-25"
 
 [[budget]]
-metric = "imports.list_json.modules"
+metric = "imports.list_json.n0.modules"
 max = 321
 tier = "enforced"
 ratchet = true
 headroom = 0.1
-note = "ratchet: list's import graph may not grow before the fast-path PR lands (291 measured + 10% headroom)"
+note = "ratchet: list's import graph on an EMPTY library — the CLI floor, no kind resolved (291 measured + 10% headroom)"
 
 [budget.context]
 python = "3.13"
 pr = "29"
 date = "2026-07-25"
+
+[[budget]]
+metric = "imports.list_json.n100.modules"
+max = 600
+tier = "enforced"
+ratchet = true
+headroom = 0.1
+note = "ratchet: the census a real library actually pays — resolving a kind builds its LangSpec, which imports that language's grammar (provisional bootstrap bound; tighten from the CI artifact via check --propose)"
+
+[budget.context]
+python = "3.13"
+pr = "29"
+date = "2026-07-25"
+
+[[budget]]
+metric = "imports.list_json.n100.has_tree_sitter"
+max = 0
+tier = "target"
+note = "acceptance for the parser-free kind descriptor (#15 P2): listing a populated library must not import a grammar. Deliberately red today — the n0 census cannot see this, which is why the row keys on n100"
 
 [[budget]]
 metric = "pipeline.skipped_count"

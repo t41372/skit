@@ -211,7 +211,12 @@ Report median and max.
 **imports** — deterministic census, not timing: run the real CLI path
 (`sys.argv=['skit','--version']; from skit.cli import app; app()` catching `SystemExit`)
 and dump `sorted(sys.modules)`; record the count plus presence booleans for `typer`,
-`rich`, `textual`, `tree_sitter*`. Same for `skit list --json` (N=0). Measured at design
+`rich`, `textual`, `tree_sitter*`. Same for `skit list --json`, **once per N** — the
+list census is N-dependent, because resolving an entry's kind builds its `LangSpec` and
+that imports the language's grammar. An N=0 census therefore reports `has_tree_sitter =
+0` on the one input where it cannot be anything else; the populated tier is the number a
+user actually pays, and the one the parser-free-descriptor work is judged by. `--version`
+never reads the library, so it stays unsuffixed. Measured at design
 time on main: `--version` = 298 modules on CPython 3.14 / 291 on 3.13 (the census is
 python-version-dependent — which is exactly why the ratchet protocol pins the capture to
 the CI python; these prose numbers are context, never the bound). typer+rich present,
@@ -357,7 +362,8 @@ note = "ratchet: fast path may not get importier before the fast-path PR lands"
 - **`enforced`** — deterministic or ratchet-safe metrics only; `check` exits non-zero on
   violation. Day-1 set (all pass on current main by construction):
   - `footprint.wheel_bytes ≤ 1 MiB` (current ~451 KiB; catches accidental data shipping).
-  - `imports.version.modules` and `imports.list_json.modules` ratchets (measured + ~10%).
+  - `imports.version.modules`, `imports.list_json.n0.modules` and
+    `imports.list_json.n100.modules` ratchets (measured + ~10%).
   - `pipeline.skipped_count = 0` twice — once with `profiles = ["pr"]` and once with
     `profiles = ["full"]` (the skip-prone suites — JS lane, syscalls, closure — run only
     nightly, so a pr-only row would never budget them), both with
@@ -391,7 +397,9 @@ reasoned decision before spawning work).
   hardware): `--version` ≤ python + 75 ms; `list(1000) − list(0)` ≤ 250 ms; TUI first
   idle @1000 ≤ 800 ms; CLI peak RSS ≤ 64 MiB; TUI peak RSS ≤ 96 MiB; closure ≤ 64 MiB;
   `imports.version.has_typer/rich/textual/tree_sitter = 0` (the fast-path PR's acceptance
-  criteria, visible from day one); `syscalls.list_json.network = 0`.
+  criteria, visible from day one); `imports.list_json.n100.has_tree_sitter = 0` (the
+  parser-free-descriptor PR's, likewise — red on day one);
+  `syscalls.list_json.network = 0`.
 
 **Ratchet protocol** (the part that keeps enforced numbers honest):
 

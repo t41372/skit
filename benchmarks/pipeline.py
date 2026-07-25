@@ -45,7 +45,7 @@ def build_plan(profile: str) -> tuple[SuitePlan, ...]:
     """The suites x profiles table from docs/design/benchmarks.md, as data."""
     if profile == "pr":
         return (
-            SuitePlan("imports", ns=(0,)),
+            SuitePlan("imports", ns=(0, 100)),
             SuitePlan("footprint", closure=False),
             SuitePlan("rss", ns=(0, 1000), samples=5),
             SuitePlan("startup", ns=(0,), warmup=3, min_runs=15),
@@ -56,7 +56,7 @@ def build_plan(profile: str) -> tuple[SuitePlan, ...]:
         )
     if profile == "full":
         return (
-            SuitePlan("imports", ns=(0,)),
+            SuitePlan("imports", ns=(0, 100)),
             SuitePlan("footprint", closure=True),
             SuitePlan("rss", ns=(0, 1000), samples=10),
             SuitePlan("startup", ns=(0,), warmup=5, min_runs=40),
@@ -72,7 +72,7 @@ def build_plan(profile: str) -> tuple[SuitePlan, ...]:
         # A/B it would measure the invoking ref twice — wrong-but-plausible data,
         # exactly the failure class this pipeline exists to prevent.
         return (
-            SuitePlan("imports", ns=(0,), compare_mode=True),
+            SuitePlan("imports", ns=(0, 100), compare_mode=True),
             SuitePlan("rss", ns=(0, 1000), samples=5, compare_mode=True),
             SuitePlan("startup", ns=(0,), warmup=3, min_runs=15, compare_mode=True),
             SuitePlan("scale", ns=(0, 100, 1000), warmup=3, min_runs=15, compare_mode=True),
@@ -215,7 +215,9 @@ HEADLINE_METRICS: tuple[str, ...] = (
     "rss.version.peak_kib",
     "rss.list_json.n1000.peak_kib",
     "imports.version.modules",
-    "imports.list_json.modules",
+    "imports.list_json.n0.modules",
+    "imports.list_json.n100.modules",
+    "imports.list_json.n100.has_tree_sitter",
     "footprint.wheel_bytes",
     "footprint.closure_bytes",
     "micro.store.list_entries.n1000.median_us",

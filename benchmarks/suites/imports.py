@@ -33,32 +33,43 @@ with open(os.environ["BENCH_OUT"], "w", encoding="utf-8") as f:
 """
 
 
+def _census(ctx: RunCtx, env: dict[str, str], name: str, args: list[str]) -> list[str]:
+    """Run one census probe under `env`; return the modules its process ended up with."""
+    out_file = ctx.workdir / f"census_{name}.json"
+    probe_env = dict(env)
+    probe_env["BENCH_ARGS"] = json.dumps(args)
+    probe_env["BENCH_OUT"] = str(out_file)
+    subprocess.run(  # noqa: S603 — fixed-shape probe argv
+        [ctx.python, "-c", _CENSUS_PROBE],
+        cwd=ctx.workdir,
+        env=probe_env,
+        timeout=PROBE_TIMEOUT_S,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    return json.loads(out_file.read_text(encoding="utf-8"))
+
+
 def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
     output = SuiteOutput(suite="imports")
-    env = bench_env(ctx, ctx.datasets[0].root)
-    for probe, args in (("version", ["--version"]), ("list_json", ["list", "--json"])):
-        out_file = ctx.workdir / f"census_{probe}.json"
-        probe_env = dict(env)
-        probe_env["BENCH_ARGS"] = json.dumps(args)
-        probe_env["BENCH_OUT"] = str(out_file)
-        subprocess.run(  # noqa: S603 — fixed-shape probe argv
-            [ctx.python, "-c", _CENSUS_PROBE],
-            cwd=ctx.workdir,
-            env=probe_env,
-            timeout=PROBE_TIMEOUT_S,
-            check=True,
-            stdout=subprocess.DEVNULL,
-        )
-        modules = json.loads(out_file.read_text(encoding="utf-8"))
+    # `--version` never reads the library, so it carries no N: one probe, unsuffixed.
+    # `list` does, and the census is N-DEPENDENT — resolving an entry's kind builds its
+    # LangSpec, which imports that language's grammar. An empty-library census cannot
+    # see that, so the populated tiers are where has_tree_sitter means anything.
+    probes = [("version", ["--version"], ctx.datasets[plan.ns[0]].root)]
+    probes += [(f"list_json.n{n}", ["list", "--json"], ctx.datasets[n].root) for n in plan.ns]
+    for name, args, dataset_root in probes:
+        modules = _census(ctx, bench_env(ctx, dataset_root), name, args)
         result = census(modules)
-        output.metrics[f"imports.{probe}.modules"] = Metric(
+        output.metrics[f"imports.{name}.modules"] = Metric(
             value=float(result.modules), unit="count", n=1
         )
         for flag in ("has_typer", "has_rich", "has_textual", "has_tree_sitter"):
-            output.metrics[f"imports.{probe}.{flag}"] = Metric(
+            output.metrics[f"imports.{name}.{flag}"] = Metric(
                 value=float(getattr(result, flag)), unit="bool", n=1
             )
-        output.raw[f"census_{probe}"] = modules
+        output.raw[f"census_{name}"] = modules
+    env = bench_env(ctx, ctx.datasets[plan.ns[0]].root)
 
     timed = subprocess.run(  # noqa: S603 — fixed-shape probe argv
         [ctx.python, "-X", "importtime", "-c", "import skit.cli"],

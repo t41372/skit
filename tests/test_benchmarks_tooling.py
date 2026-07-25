@@ -1971,6 +1971,19 @@ class TestCodeReviewFixes:
                 if plan.suite in ("startup", "imports"):
                     assert 0 in plan.ns
 
+    def test_imports_also_censuses_a_populated_library(self) -> None:
+        # An empty library resolves no kind, and resolving a kind is what imports that
+        # language's grammar — so an n=0-only census passes has_tree_sitter on the one
+        # input where it cannot fail. Every profile must carry a populated tier too.
+        for profile in pipeline.PROFILES:
+            for plan in pipeline.build_plan(profile):
+                if plan.suite == "imports":
+                    assert any(n > 0 for n in plan.ns), profile
+
+    def test_headline_keeps_both_census_tiers(self) -> None:
+        assert "imports.list_json.n0.modules" in pipeline.HEADLINE_METRICS
+        assert "imports.list_json.n100.modules" in pipeline.HEADLINE_METRICS
+
     def test_manifest_records_the_probe_char(self, tmp_path: Path) -> None:
         import dataclasses
 
