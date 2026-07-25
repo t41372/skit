@@ -500,13 +500,15 @@ The trust rule: **code whose output gates or persuades gets gated itself; only
 orchestration that needs external binaries is exempt, each exemption commented.**
 
 - **Coverage (100% floor):** `[tool.coverage.run] source` gains `benchmarks`; an `omit`
-  list excludes exactly `benchmarks/suites/*`, `benchmarks/micro/*`,
-  `benchmarks/__main__.py`, and `benchmarks/fixtures/noop.py` — and *only* those:
-  suites/micro after the parse layer is pulled out are genuinely spawn-and-wait
-  orchestration around external binaries, `__main__.py` is a thin argparse shim, and
+  list excludes exactly `benchmarks/suites/*`, `benchmarks/micro/*`, and
+  `benchmarks/fixtures/noop.py` — and *only* those: suites/micro after the parse layer
+  is pulled out are genuinely spawn-and-wait orchestration around external binaries, and
   `noop.py` is a benchmark *subject* (a script the benchmarks run, not harness code) —
-  each omission commented in pyproject. The covered set is everything that computes,
-  decides, or persuades: `results.py`, `budgets.py`, `compare.py`, `datasets.py`,
+  each omission commented in pyproject. `__main__.py` was drafted as a fourth exemption
+  ("a thin argparse shim") and is **not** one: the shim turned out to be testable
+  end-to-end, so it is covered like everything else. The covered set is everything that
+  computes, decides, or persuades: `__main__.py`, `results.py`, `budgets.py`,
+  `compare.py`, `datasets.py`,
   `hyperfine.py` (pure builder/parser by design: no subprocess calls in it),
   `parsers.py` (every function that turns tool output — census dumps, strace tables,
   importtime stderr, VmHWM lines, pyperf JSON — into metric values; enforced metrics

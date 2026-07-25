@@ -142,9 +142,11 @@ measurement side of a contract:
 - The bench CI job is advisory by policy: never make it a required status check while
   path-filtered.
 - The pipeline's own logic (results/budgets/parsers/pipeline/datasets/envinfo/envspec/
-  compare/hyperfine builders) sits under the same 100% coverage floor as src/skit; only
-  spawn-and-wait orchestration (`suites/`, `micro/`, `__main__.py`) and benchmark
-  subjects are exempt, each exemption commented in pyproject's coverage `omit`.
+  compare/hyperfine builders, and the `__main__` front door) sits under the same 100%
+  coverage floor as src/skit; only spawn-and-wait orchestration (`suites/`, `micro/`)
+  and benchmark subjects are exempt, each exemption commented in pyproject's coverage
+  `omit`. Mutation testing stays pointed at `src/skit` — `benchmarks/` rides along in
+  mutmut's `also_copy` because the tests import it, not to be mutated.
 
 ## i18n workflow
 

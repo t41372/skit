@@ -1506,6 +1506,14 @@ class TestEnvspec:
             envspec.build_env(
                 skit="/usr/bin/skit", uv=None, node=None, workdir=tmp_path, dataset_root=bogus
             )
+        # A *directory* named manifest.json is not a manifest either — the guard asks
+        # for a regular file, so the loud death happens here rather than as an
+        # IsADirectoryError three frames deeper.
+        (bogus / "manifest.json").mkdir()
+        with pytest.raises(RuntimeError, match="not a generated dataset"):
+            envspec.build_env(
+                skit="/usr/bin/skit", uv=None, node=None, workdir=tmp_path, dataset_root=bogus
+            )
 
     def test_pyperf_inherit_covers_the_fixture_vars(self) -> None:
         from benchmarks import envspec
@@ -1983,6 +1991,9 @@ class TestCodeReviewFixes:
     def test_headline_keeps_both_census_tiers(self) -> None:
         assert "imports.list_json.n0.modules" in pipeline.HEADLINE_METRICS
         assert "imports.list_json.n100.modules" in pipeline.HEADLINE_METRICS
+        # The populated-library parser flag is the whole reason the n100 tier exists;
+        # dropping it from the headline would quietly hide the row it was added for.
+        assert "imports.list_json.n100.has_tree_sitter" in pipeline.HEADLINE_METRICS
 
     def test_manifest_records_the_probe_char(self, tmp_path: Path) -> None:
         import dataclasses

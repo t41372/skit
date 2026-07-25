@@ -66,7 +66,7 @@ def build_env(
         "COLUMNS": "100",
         "LINES": "40",
     }
-    if not (dataset_root / "manifest.json").exists():
+    if not (dataset_root / "manifest.json").is_file():
         # Wrong-but-plausible defense: a dataset root that doesn't hold a generated
         # library would make every child benchmark an empty one — no exceptions, an
         # "empty library" is the generated, verified n=0 dataset. Die here, loudly.
