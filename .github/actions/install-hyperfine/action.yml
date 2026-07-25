@@ -1,0 +1,19 @@
+name: Install hyperfine (pinned)
+description: >-
+  Version-pinned hyperfine from a GitHub release tarball, verified against a
+  hardcoded sha256 (upstream publishes no checksum assets). The pin's source of
+  truth is benchmarks/hyperfine.py; tests/test_benchmarks_tooling.py holds this
+  file to it byte-for-byte on version, checksum, and URL.
+runs:
+  using: composite
+  steps:
+    - name: Download, verify, install
+      shell: bash
+      run: |
+        curl -sSfL -o hyperfine.tgz \
+          "https://github.com/sharkdp/hyperfine/releases/download/v1.20.0/hyperfine-v1.20.0-x86_64-unknown-linux-gnu.tar.gz"
+        echo "63ad53934062118f5b0be11785e0bb1603d4b91667d1921f2fd8df9a8712040a  hyperfine.tgz" | sha256sum -c -
+        tar xzf hyperfine.tgz
+        install -m 0755 hyperfine-v1.20.0-x86_64-unknown-linux-gnu/hyperfine /usr/local/bin/hyperfine
+        rm -rf hyperfine.tgz hyperfine-v1.20.0-x86_64-unknown-linux-gnu
+        hyperfine --version
