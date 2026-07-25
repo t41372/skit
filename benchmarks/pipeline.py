@@ -260,19 +260,6 @@ def render_markdown(results: Results, report: Report | None = None) -> str:
     return "\n".join(lines) + "\n"
 
 
-def export_gha(results: Results) -> list[dict[str, Any]]:
-    """github-action-benchmark `customSmallerIsBetter` rows for the headline metrics
-    that this run actually produced. Names are the stable metric IDs."""
-    rows = [
-        {"name": metric_id, "unit": metric.unit, "value": metric.value}
-        for metric_id in HEADLINE_METRICS
-        if (metric := results.metrics.get(metric_id)) is not None
-    ]
-    if not rows:
-        raise PipelineError("no headline metrics present — nothing to export")
-    return rows
-
-
 # ---------------------------------------------------------------- run-dir summarize
 
 

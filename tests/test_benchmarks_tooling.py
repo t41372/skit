@@ -953,18 +953,6 @@ class TestPipeline:
         clean = pipeline.render_markdown(make_results({}))
         assert "No skipped cases." in clean
 
-    def test_export_gha(self) -> None:
-        results = make_results(
-            {
-                "startup.version.median_ms": Metric(218.0, "ms", 15),
-                "not.a.headline": Metric(1.0, "ms", 1),
-            }
-        )
-        rows = pipeline.export_gha(results)
-        assert rows == [{"name": "startup.version.median_ms", "unit": "ms", "value": 218.0}]
-        with pytest.raises(pipeline.PipelineError, match="no headline metrics"):
-            pipeline.export_gha(make_results({}))
-
     def test_summarize_dir(self, tmp_path: Path) -> None:
         bench = tmp_path / "bench"
         (bench / "suites").mkdir(parents=True)
@@ -1280,26 +1268,6 @@ class TestFrontDoor:
         out = capsys.readouterr().out
         assert load_budgets(out)[0].max_value == 321
 
-    def test_export_gha_writes_file(self, tmp_path: Path) -> None:
-        results_path = tmp_path / "r.json"
-        results_path.write_text(
-            make_results({"startup.version.median_ms": Metric(218.0, "ms", 15)}).to_json()
-        )
-        out = tmp_path / "gha.json"
-        assert benchmark_cli.main(["export-gha", str(results_path), "--out", str(out)]) == 0
-        rows = json.loads(out.read_text())
-        assert rows[0]["name"] == "startup.version.median_ms"
-
-    def test_export_gha_prints_stdout(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        results_path = tmp_path / "r.json"
-        results_path.write_text(
-            make_results({"startup.version.median_ms": Metric(218.0, "ms", 15)}).to_json()
-        )
-        assert benchmark_cli.main(["export-gha", str(results_path)]) == 0
-        assert json.loads(capsys.readouterr().out)[0]["name"] == "startup.version.median_ms"
-
     def test_cli_formats_os_errors(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -1400,7 +1368,7 @@ class TestContractSync:
             for name, subparser in sorted(subparsers.choices.items())
         )
         assert hashlib.sha256(text.encode()).hexdigest() == (
-            "452004a28e54464ee2118113389455838923ece10383814941d941aa6c7516ed"
+            "5485d300ca31d82a641a666a35444856925c4fa9bffa1b61bbd0e06dda9a2804"
         )
 
     def test_all_benchmark_subprocesses_are_bounded(self) -> None:

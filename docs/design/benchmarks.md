@@ -50,7 +50,6 @@ uv run python -m benchmarks summarize .bench/            # → results.json + re
 uv run python -m benchmarks check .bench/results.json    # budgets gate (enforced tier)
 uv run python -m benchmarks check --propose .bench/results.json  # print refreshed TOML
 uv run python -m benchmarks compare base.json head.json  # A/B delta table
-uv run python -m benchmarks export-gha .bench/results.json       # history format
 ```
 
 ```text
@@ -72,7 +71,7 @@ benchmarks/
 │                        #   everything that turns tool output into metric values
 ├── pipeline.py          # pure run-plan logic: profile → suite plan, duration capture,
 │                        #   skip collection, summarize merge + derived metrics,
-│                        #   results.md render, export-gha conversion
+│                        #   results.md render
 ├── budgets.toml         # the performance contract (see Budgets)
 ├── fixtures/            # noop.py/.sh/.js (benchmark subjects) + sources.py (seeded
 │                        #   per-language analyzer-input generators — covered code)
@@ -458,25 +457,24 @@ violations — visible shame, no merge lock.
    `workflow_dispatch`. Full profile. Installs strace via apt. Then the same tail as the
    pr job — `summarize` → `check --require-enforced` (this is where the
    `profiles = ["full"]` enforced rows get their enforcement point; without it they'd be
-   evaluated by no CI run, ever) → uploads artifacts; converts headline metrics via
-   `export-gha` and publishes history with `benchmark-action/github-action-benchmark`
-   (SHA-pinned; v1.22.x current) to the **`bench-history`** branch under `bench/` —
-   `customSmallerIsBetter`, `auto-push`, `fail-on-alert: false` initially; **alert
-   thresholds get tuned after ~14 nightly points exist** (tracked in
-   benchmarks/README.md). `contents: write` granted to exactly this job.
+   evaluated by no CI run, ever) → step summary → uploads artifacts with 90-day
+   retention.
 
-   **The branch is deliberately not `gh-pages`, and nothing serves it.** The action is
-   built around serving its chart from Pages, and this repo cannot: a repository has one
-   Pages deployment and it belongs to the documentation site, which publishes by artifact
-   upload (`docs.yml`, `build_type = workflow`). Repointing Pages at a branch would take
-   the docs site down — a measurement pipeline may not cost the project its docs. What
-   actually matters survives the trade: alert thresholds compare a run against the rows
-   already committed to the branch, which is a git read, not an HTTP one. Only the
-   rendered chart is lost, and if it should live on the web later the way to get there is
-   to have the docs build carry `bench/data.js` into the site it already publishes.
+   **No trend chart, and no history branch.** An earlier revision published headline
+   metrics to `gh-pages` via `benchmark-action/github-action-benchmark`, with a merge
+   step that pointed Settings → Pages at the branch. A repository has exactly one Pages
+   deployment and this one belongs to the documentation site (`docs.yml`, artifact
+   upload, `build_type = workflow`): that step would have taken the docs site down. A
+   measurement pipeline may not cost the project its docs. Renaming the branch fixes the
+   collision but not the premise — the chart was never the mechanism. Regressions are
+   stopped by `budgets.toml` + `check --require-enforced`, a bound in the repo that
+   fails CI. Timing trends belong to CodSpeed, which measures instruction counts and
+   keeps its own history; the metrics CodSpeed cannot take (wheel bytes, closure bytes,
+   module censuses, syscall counts) are exactly the deterministic ones where a bound
+   beats a curve, and their history is the git log of `budgets.toml`. Dropping the
+   action also drops a third-party `contents: write` grant.
 
-   One-time setup (merge checklist in the PR): create the `bench-history` branch (empty
-   orphan commit — the action documents pre-creating it) and
+   One-time setup (merge checklist in the PR):
    **dispatch `benchmark-nightly` immediately after merge** to confirm the
    `profiles = ["full"]` enforced rows evaluate green — schedule-only workflows first run
    post-merge, so their first evaluation must be deliberate, not whenever the cron gets
@@ -544,7 +542,7 @@ orchestration that needs external binaries is exempt, each exemption commented.*
   hyperfine command construction + JSON parsing against a fixture, every `parsers.py`
   derivation against fixture tool output, `pipeline.py` plan/merge/derive/render logic,
   `fixtures/sources.py` determinism + requested line counts, envinfo derivations from
-  injected values, export-gha shape.
+  injected values.
   `[tool.pytest.ini_options]` gains `pythonpath = ["."]` so `import benchmarks` works
   (and keeps working inside mutmut's `mutants/` tree — pytest resolves `pythonpath`
   relative to the inifile, which mutmut copies into `mutants/`).
@@ -592,8 +590,6 @@ orchestration that needs external binaries is exempt, each exemption commented.*
   textual version recorded in the manifest; history annotates dependency bumps.
 - **`uv pip install` network flake in footprint (nightly)** → retries; wheel-only metric
   stays on the PR path.
-- **Third-party history action** → SHA-pinned, `contents: write` on one job only,
-  publishes to the `bench-history` branch only.
 
 ## Implementation order (within the single PR)
 
@@ -603,7 +599,7 @@ orchestration that needs external binaries is exempt, each exemption commented.*
    `suites/_env.py` and the suites: imports/footprint/rss → startup/scale/run_overhead
    (hyperfine) → micro (pyperf) → tui (probe) → syscalls.
 4. `pipeline.py` (+ `__main__.py` thin front door): profiles, `summarize`/`check`/
-   `compare`/`export-gha` + tests.
+   `compare` + tests.
 5. Workflows + AGENTS.md + benchmarks/README.md.
 6. Full gate run; then a baseline captured **from the PR's own CI bench artifact**
    (ratchet protocol: the census is python-dependent, so bounds come from the pinned CI

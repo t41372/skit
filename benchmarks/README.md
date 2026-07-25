@@ -35,7 +35,7 @@ reference platform's.
 | `budgets.py` + `budgets.toml` | the two-tier performance contract |
 | `parsers.py` | everything that turns tool output into metric values |
 | `envspec.py` | the constructed-environment contract (built, never inherited) |
-| `pipeline.py` | profiles, merge, derived metrics, results.md, history export |
+| `pipeline.py` | profiles, merge, derived metrics, results.md render |
 | `datasets.py` | deterministic library generator (public store API only) |
 | `hyperfine.py` | hyperfine argv building + export parsing (no subprocess) |
 | `envinfo.py` | host manifest; budget predicates key on its output |
@@ -93,7 +93,7 @@ every 10th reference entry's target is deliberately deleted.
 
 **Discontinuity clause:** the kind mix, `state_fraction`, and the missing-target
 fraction are inputs to every scale/tui metric. Changing ANY of them bumps
-`GENERATOR_VERSION` and is a history discontinuity (annotate the history branch).
+`GENERATOR_VERSION` and is a history discontinuity (say so in the PR that does it).
 The same applies to the fixed runner label (`ubuntu-24.04`) when it eventually
 EOLs, and to its periodically refreshed image build (recorded as
 `meta.host.ci_image_version`), and to major dependency bumps (textual above all —
@@ -147,11 +147,8 @@ not gate a census it was never set on.
   check while path-filtered (GitHub leaves path-skipped required checks Pending,
   blocking docs-only PRs). Red = visible shame, not a merge lock.
 - **benchmark-nightly.yml** (02:43 UTC + dispatch): full profile → check (the
-  `profiles = ["full"]` enforced rows' only enforcement point) → artifacts → history
-  appended to the **`bench-history`** branch under `bench/` via github-action-benchmark
-  (`customSmallerIsBetter`; names are the stable metric IDs from
-  `pipeline.HEADLINE_METRICS`). That branch is a data store, **not** a Pages source —
-  see below.
+  `profiles = ["full"]` enforced rows' only enforcement point) → step summary →
+  artifacts (`results.json` and the full per-suite output, 90-day retention).
 - **benchmark-compare.yml** (dispatch: base, head): the A/B evidence tool. The
   harness is ALWAYS the invoking ref's `benchmarks/`; each side is its own
   built venv from its own lockfile (pyperf injected as harness infrastructure), and
@@ -169,33 +166,28 @@ workloads. Trend lines and A/B-on-one-runner are meaningful; single absolute num
 are not. Wall-clock budget rows stay `target`-tier until fixed hardware exists and
 its noise distribution is measured.
 
-### The history branch is not a Pages source
+### Why there is no trend chart here
 
-`github-action-benchmark` is built around serving its chart from `gh-pages`, and that
-is exactly what this repo must not do: **a repository has one Pages deployment, and
-this one belongs to the documentation site**, which publishes by artifact upload
-(`docs.yml`, `build_type = workflow`). Pointing Pages at a branch would take
-https://t41372.github.io/skit/ down.
+An earlier draft published headline metrics to a `gh-pages` branch via
+`benchmark-action/github-action-benchmark`, and the setup checklist said to point
+Settings → Pages at that branch. That was wrong twice over. A repository has exactly
+one Pages deployment and this one belongs to the documentation site, which publishes
+by artifact upload (`docs.yml`, `build_type = workflow`) — following the checklist
+would have taken https://t41372.github.io/skit/ down. And the chart was never the
+mechanism: what stops a regression is `budgets.toml` plus `check --require-enforced`,
+a bound in the repo that fails CI, not a line on a page nobody is watching.
 
-So the history lands on a branch named `bench-history` — deliberately not `gh-pages`,
-so nobody is ever tempted — and nothing serves it. Only the action's rendered chart
-needs serving; **the part that matters does not**: alert thresholds compare a new run
-against the rows already committed to the branch, which is a plain git read. Reading
-the trend today means checking the branch out and opening `bench/index.html` locally.
-If it should live on the web later, the way to do it is to have the docs build carry
-`bench/data.js` into the site it already publishes — never to repoint Pages.
+Trends over time are CodSpeed's job (see below), and for the metrics CodSpeed cannot
+measure — wheel bytes, closure bytes, module censuses, syscall counts — a bound beats
+a curve: they are deterministic, they are `enforced`, and their history is the git log
+of `budgets.toml`, where every ratchet carries a commit message explaining the move.
 
 ### One-time setup (merge checklist)
 
-1. Create the history branch: `git switch --orphan bench-history && git commit
-   --allow-empty -m "bench history" && git push origin bench-history` (the action
-   documents pre-creating it).
-2. Dispatch `benchmark (nightly)` once and confirm the `profiles = ["full"]` enforced
+1. Dispatch `benchmark (nightly)` once and confirm the `profiles = ["full"]` enforced
    rows evaluate green — schedule-only workflows never run pre-merge.
-3. Re-propose the ratchet bounds if the first main-push run's census differs from the
+2. Re-propose the ratchet bounds if the first main-push run's census differs from the
    PR's (`check --propose`) — squashing changes no imports, so it normally won't.
-4. After ~14 nightly points: pick alert thresholds for github-action-benchmark
-   (currently `fail-on-alert: false` — trend line first).
 
 ## Adding a suite
 
@@ -216,7 +208,7 @@ If it should live on the web later, the way to do it is to have the docs build c
 
 ## Why no CodSpeed / SaaS
 
-The pipeline is self-contained (pyperf + hyperfine + artifacts + a history branch) so it
+The pipeline is self-contained (pyperf + hyperfine + artifacts) so it
 works without accounts, tokens, or third-party availability, and A/B evidence stays
 reproducible from the repo alone. CodSpeed's simulation mode would add stable
 PR-regression signal later without redesign: the micro layer is plain callables, so

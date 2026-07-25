@@ -3,8 +3,7 @@ name: benchmark (nightly)
 # The full-profile nightly (docs/design/benchmarks.md): scale grid + JS lane +
 # syscalls + dependency closure, 40+ statistical runs, budgets checked (this is the
 # enforcement point for the profile = "full" enforced rows — the pr job never
-# evaluates them), history appended to the bench-history branch. First run after merge
-# must be
+# evaluates them), artifacts retained for 90 days. First run after merge must be
 # dispatched deliberately (see the design's merge checklist).
 on:
   schedule:
@@ -24,12 +23,11 @@ env:
 
 jobs:
   bench-full:
-    name: full profile + history
+    name: full profile
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
-      # github-action-benchmark pushes the history data to the bench-history branch.
-      contents: write
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -65,25 +63,3 @@ jobs:
             .bench/suites/
             .bench/artifacts/
           retention-days: 90
-      - name: Export history rows
-        run: uv run python -m benchmarks export-gha .bench/results.json --out .bench/gha.json
-      # Trend line first; alert thresholds get tuned after ~14 nightly points exist
-      # (benchmarks/README.md tracks that follow-up). The branch must exist (one-time
-      # orphan commit — see the README's setup checklist).
-      #
-      # NOT `gh-pages`, and never served: this repo's single Pages deployment belongs
-      # to the docs site, which publishes by artifact upload (docs.yml, build_type =
-      # workflow). Repointing Pages at a branch would take the docs site down. The
-      # branch is a DATA store — alerting compares against the rows committed here and
-      # needs no serving; only the action's rendered chart would.
-      - name: Append history to bench-history
-        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
-        with:
-          name: skit benchmarks
-          tool: customSmallerIsBetter
-          output-file-path: .bench/gha.json
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          auto-push: true
-          gh-pages-branch: bench-history
-          benchmark-data-dir-path: bench
-          fail-on-alert: false
