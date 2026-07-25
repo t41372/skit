@@ -719,8 +719,9 @@ class PromptLaunch:
         extra: list[str],
         values: dict[str, str] | None,
         script_override: Path | None,
+        runner: PromptRunner,
         argv: list[str],
-    ) -> list[str]:
+    ) -> tuple[list[str], str]:
         """Render and validate argv from an already chosen runner command."""
         from .prompt import render
 
@@ -729,9 +730,66 @@ class PromptLaunch:
         text = self._read_body(script)
         managed = list(entry.meta.params or []) if entry.meta.interpolate else []
         rendered = render.render_body(text, values or {}, managed)
+        rendered, protected = self._protect_pi_prompt(runner, rendered)
         filled = render.fill_runner_argv(argv, rendered, extra)
         render.check_argv_length(filled)
-        return filled
+        return filled, self._pi_fallback_warning() if protected else ""
+
+    @staticmethod
+    def _protect_pi_prompt(runner: PromptRunner, rendered: str) -> tuple[str, bool]:
+        """Apply Pi's argv adapter to standard and user-edited Pi commands.
+
+        Runner rows stay generic data. The executable identity selects this bounded
+        compatibility adapter, so renaming the row or adding Pi flags does not silently
+        discard the protection.
+        """
+        from .prompt import render
+
+        executable = Path(runner.argv[0]).name.casefold()
+        if executable not in {"pi", "pi.cmd", "pi.exe", "pi.ps1"}:
+            return rendered, False
+        return render.protect_pi_prompt(rendered)
+
+    @staticmethod
+    def _pi_fallback_warning() -> str:
+        return gettext(
+            "Warning: Pi would interpret the beginning of this prompt as a CLI option, "
+            "file, or package command. skit prepended one newline and is continuing; "
+            "the prompt delivered to Pi is one character longer than the rendered text."
+        )
+
+    def validate_argv_snapshot(
+        self,
+        entry: Entry,
+        extra: list[str],
+        values: dict[str, str] | None,
+        script_override: Path | None,
+        *,
+        runner: PromptRunner | None = None,
+        display_values: dict[str, str] | None = None,
+    ) -> tuple[str, str]:
+        """Return the validated display and any lossy-delivery warning."""
+        from .prompt import render
+
+        chosen = self._resolve_runner(entry, runner)
+        script = script_override or entry.script_path
+        _check_script_exists(script)
+        text = self._read_body(script)
+        managed = list(entry.meta.params or []) if entry.meta.interpolate else []
+        rendered = render.render_body(text, values or {}, managed)
+        rendered, protected = self._protect_pi_prompt(chosen, rendered)
+        argv = render.fill_runner_argv(list(chosen.argv), rendered, extra)
+        render.check_argv_length(argv)
+        if display_values is not None:
+            # Render the masked twin from the SAME body snapshot that was validated.
+            # A second read could expose a concurrently edited secret or print bytes
+            # that never passed the argv limits above.
+            display_body = render.render_body(text, display_values, managed)
+            if protected:
+                display_body = f"\n{display_body}"
+            argv = render.fill_runner_argv(list(chosen.argv), display_body, extra)
+        warning = self._pi_fallback_warning() if protected else ""
+        return join_for_display(argv), warning
 
     def validate_argv(
         self,
@@ -749,23 +807,15 @@ class PromptLaunch:
         platform argv limits fail before anything is printed, while a dry run remains
         side-effect-free and does not require the agent CLI to be installed.
         """
-        from .prompt import render
-
-        chosen = self._resolve_runner(entry, runner)
-        script = script_override or entry.script_path
-        _check_script_exists(script)
-        text = self._read_body(script)
-        managed = list(entry.meta.params or []) if entry.meta.interpolate else []
-        rendered = render.render_body(text, values or {}, managed)
-        argv = render.fill_runner_argv(list(chosen.argv), rendered, extra)
-        render.check_argv_length(argv)
-        if display_values is not None:
-            # Render the masked twin from the SAME body snapshot that was validated.
-            # A second read could expose a concurrently edited secret or print bytes
-            # that never passed the argv limits above.
-            display_body = render.render_body(text, display_values, managed)
-            argv = render.fill_runner_argv(list(chosen.argv), display_body, extra)
-        return join_for_display(argv)
+        display, _warning = self.validate_argv_snapshot(
+            entry,
+            extra,
+            values,
+            script_override,
+            runner=runner,
+            display_values=display_values,
+        )
+        return display
 
     def build(
         self,
@@ -776,7 +826,7 @@ class PromptLaunch:
         *,
         runner: PromptRunner | None = None,
     ) -> LaunchPayload:
-        payload, _safe_display, _chosen = self.build_snapshot(
+        payload, _safe_display, _chosen, _warning = self.build_snapshot(
             entry,
             extra,
             values,
@@ -793,7 +843,7 @@ class PromptLaunch:
         script_override: Path | None,
         *,
         runner: PromptRunner | None = None,
-    ) -> tuple[ArgvLaunch, str, PromptRunner]:
+    ) -> tuple[ArgvLaunch, str, PromptRunner, str]:
         """Build one executable argv plus its body-safe transparency display.
 
         Both derive from the same resolved runner row. This matters for an unpinned
@@ -806,13 +856,17 @@ class PromptLaunch:
         # Preserve preflight/old execute refusal order: body/render errors precede a
         # missing runner binary. Render against the configured command first, then
         # replace only argv[0] with the resolved executable and recheck its real size.
-        argv = self._render_argv(entry, extra, values, script_override, list(chosen.argv))
+        argv, warning = self._render_argv(
+            entry, extra, values, script_override, chosen, list(chosen.argv)
+        )
         binary = self._require_binary(chosen)
         argv[0] = binary
         render.check_argv_length(argv)
         omitted = gettext("<rendered prompt omitted; use --dry-run to inspect it>")
+        if warning:
+            omitted = f"\n{omitted}"
         safe_display = join_for_display(render.fill_runner_argv(list(chosen.argv), omitted, extra))
-        return ArgvLaunch(argv), safe_display, chosen
+        return ArgvLaunch(argv), safe_display, chosen, warning
 
     def describe_compact(
         self,

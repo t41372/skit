@@ -43,6 +43,7 @@ class PreparedLaunch:
     cwd: Path
     safe_display: str | None = None
     prompt_runner: PromptRunner | None = None
+    warning: str = ""
 
 
 def find_uv() -> str | None:
@@ -216,11 +217,12 @@ def prepare_entry(
         raise LaunchError(gettext("Unknown entry kind: %(kind)s") % {"kind": entry.meta.kind})
     safe_display: str | None = None
     prompt_runner: PromptRunner | None = None
+    warning = ""
     if isinstance(spec.launch, _launch.PromptLaunch):
         # Prompt preflight and the former execute gate validate the body before
         # needs/binary failures. build_snapshot preserves that order while also
         # resolving the runner row only once for argv and transparency.
-        payload, safe_display, prompt_runner = spec.launch.build_snapshot(
+        payload, safe_display, prompt_runner, warning = spec.launch.build_snapshot(
             entry,
             extra_args or [],
             values,
@@ -246,6 +248,7 @@ def prepare_entry(
         cwd=cwd,
         safe_display=safe_display,
         prompt_runner=prompt_runner,
+        warning=warning,
     )
 
 
