@@ -36,12 +36,12 @@ def main() -> None:
     # must move a headline number, not hide inside end-to-end wall clock.
     runner.bench_func(f"store.list_summaries.n{n}", store.list_summaries)
     if entries:
-        first = entries[0].slug
         mid = entries[len(entries) // 2].slug
-        last = entries[-1].slug
-        runner.bench_func(f"store.resolve.first.n{n}", store.resolve, first)
-        runner.bench_func(f"store.resolve.mid.n{n}", store.resolve, mid)
-        runner.bench_func(f"store.resolve.last.n{n}", store.resolve, last)
+        # ONE resolve series, not first/mid/last: resolve-by-slug is a dict hit after
+        # the registry parse, so row position cannot matter, and the by-name linear
+        # scan is 0.6% of the call at N=200 — positional series triple-reported the
+        # parse cost under names that implied a curve which does not exist.
+        runner.bench_func(f"store.resolve.n{n}", store.resolve, mid)
         runner.bench_func(f"argstate.load_state.n{n}", argstate.load_state, mid)
 
 

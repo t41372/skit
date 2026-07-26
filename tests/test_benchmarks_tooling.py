@@ -2049,12 +2049,12 @@ class TestCodeReviewFixes:
         assert output.metrics["micro.analyze_cold.python.median_ms"].value == 3.0
 
     def test_micro_deltas_clear_the_us_floor(self) -> None:
-        base = make_results({"micro.store.resolve.mid.n1000.median_us": Metric(100.0, "us", 40)})
-        head = make_results({"micro.store.resolve.mid.n1000.median_us": Metric(300.0, "us", 40)})
+        base = make_results({"micro.store.resolve.n1000.median_us": Metric(100.0, "us", 40)})
+        head = make_results({"micro.store.resolve.n1000.median_us": Metric(300.0, "us", 40)})
         comparison = bcompare.compare(base, head)
-        assert [d.metric for d in comparison.notable] == ["micro.store.resolve.mid.n1000.median_us"]
+        assert [d.metric for d in comparison.notable] == ["micro.store.resolve.n1000.median_us"]
         # Sub-µs wiggle stays noise.
-        near = make_results({"micro.store.resolve.mid.n1000.median_us": Metric(100.5, "us", 40)})
+        near = make_results({"micro.store.resolve.n1000.median_us": Metric(100.5, "us", 40)})
         assert bcompare.compare(base, near).notable == []
 
     def test_compare_flags_incomparable_sides(self) -> None:

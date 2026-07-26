@@ -170,16 +170,6 @@ class ScriptMeta:
 
 
 @dataclass
-class RegistryEntry:
-    """A single index row in registry.toml."""
-
-    name: str
-    slug: str
-    kind: Kind
-    description: str = ""
-
-
-@dataclass
 class Entry:
     """Combined view: index + full meta + directory path. The primary object of the Core API."""
 

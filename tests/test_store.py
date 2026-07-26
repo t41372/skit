@@ -1133,3 +1133,169 @@ def test_a_copy_mode_exe_meta_still_reports_its_gone_binary(tmp_path: Path):
     broken = store.resolve(entry.slug)
     assert broken.meta.mode == "copy"
     assert launcher.target_missing(broken) is True
+
+
+# ---------------------------------------------------------------------------
+# Every meta write keeps its own index row fresh
+# ---------------------------------------------------------------------------
+
+
+def test_add_survives_a_hand_broken_row_that_can_claim_no_name(sample_script: Path):
+    """`add` cross-checks the index for a name conflict, and registry.toml is a file a
+    person can edit: a scalar row (which the _load_registry chokepoint coerces to an
+    empty table) and a row whose `name` a hand edit made a number both claim no name at
+    all. Reading the key blindly made EVERY `skit add` die of a KeyError on such a
+    library, while list/run/rename degraded gracefully — the same one-face-crashes split
+    the chokepoint exists to prevent. The real names around the junk still conflict."""
+    from skit import store
+
+    good = store.add_python(sample_script, name="real")
+    rows = dict(store._load_registry())
+    rows["bad"] = "garbage"  # ty: ignore[invalid-assignment] — the hand edit IS the test
+    rows["numeric"] = {"name": 7, "kind": "python", "description": ""}
+    store._save_registry(rows)
+
+    added = store.add_command("echo hi", name="newcmd")
+
+    assert store.resolve("newcmd").slug == added.slug
+    assert store.resolve("real").slug == good.slug  # the healthy entry is untouched
+    with pytest.raises(store.NameConflictError):
+        store.add_command("echo hi", name="real")  # …and still defends its name
+
+
+def test_an_entry_whose_row_was_mangled_still_defends_its_name(sample_script: Path):
+    """The sibling hazard: a REAL entry (directory and meta intact) whose registry row
+    a hand edit turned into a scalar. The row claims no name, and `add`'s directory
+    sweep used to skip any dir that had a row at all — so the entry's display name
+    went unprotected and a colliding add produced two entries with one name (which a
+    later resolve-by-name then refuses as ambiguous). An untrusted row must fall
+    through to the meta, the same rule every other reader follows."""
+    from skit import store
+
+    good = store.add_python(sample_script, name="Guarded Name")
+    rows = dict(store._load_registry())
+    rows[good.slug] = "garbage"  # ty: ignore[invalid-assignment] — the hand edit IS the test
+    store._save_registry(rows)
+
+    with pytest.raises(store.NameConflictError):
+        store.add_command("echo hi", name="Guarded Name")
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "update_needs",
+        "write_parameters",
+        "update_dependencies",
+        "write_workdir",
+        "update_description",
+        "write_prompt_managed",
+    ],
+)
+def test_a_meta_mutator_leaves_a_row_the_next_listing_serves_untouched(
+    mutation: str, sample_script: Path, tmp_path: Path
+):
+    """A row carries the mtime of the meta it was projected from, so EVERY meta write
+    invalidates it — not just one that changes a listed field. A mutator that skipped
+    the re-projection would hand the next `skit list` a stale row, and the listing
+    would fall back to the meta and then take the cross-process registry lock to
+    rewrite the whole index: a read turned into a write for work the writer already had
+    in hand. Proven in bytes — the listing after the mutation changes registry.toml not
+    at all, and still reports what the mutation changed."""
+    from skit import store
+    from skit.params import ParamDecl
+    from skit.paths import registry_path
+
+    if mutation == "write_prompt_managed":
+        src = tmp_path / "ask.prompt.md"
+        src.write_text("Summarize {{topic}}\n", encoding="utf-8")
+        entry = store.add_prompt(src, name="subject", description="the old text")
+    else:
+        entry = store.add_python(sample_script, name="subject", description="the old text")
+
+    mutate = {
+        "update_needs": lambda: store.update_needs(entry.slug, ["ffmpeg"]),
+        "write_parameters": lambda: store.write_parameters(entry.slug, [ParamDecl(name="CITY")]),
+        "update_dependencies": lambda: store.update_dependencies(entry.slug, ["httpx"]),
+        "write_workdir": lambda: store.write_workdir(entry.slug, "store"),
+        "update_description": lambda: store.update_description(entry.slug, "the new text"),
+        "write_prompt_managed": lambda: store.write_prompt_managed(entry.slug, []),
+    }[mutation]
+    mutated = mutate()
+
+    row = store._load_registry()[entry.slug]
+    assert row == store._registry_row(mutated.meta, entry.dir)  # re-projected, stamp and all
+    assert row["mtime_ns"] == os.stat(entry.dir / "meta.toml").st_mtime_ns
+
+    before = registry_path().read_bytes()
+    (summary,) = store.list_summaries()
+    assert summary.description == (
+        "the new text" if mutation == "update_description" else "the old text"
+    )
+    assert registry_path().read_bytes() == before  # index-served: nothing to self-heal
+
+
+def test_a_mutator_whose_row_vanished_mid_write_persists_the_meta_without_resurrecting_it(
+    sample_script: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The row projection is skipped when the slug is no longer indexed. registry.toml
+    is a rebuildable index a person can edit and an older skit can rewrite, so the row
+    can be gone by the time the projection reads it back. Two halves of one rule: the
+    meta — the entry's own truth (C7) — is written regardless, and the projection never
+    writes a row for a slug the index does not claim. Inventing one would revive an
+    entry someone just took out of the index, which is doctor's call to make, not a
+    setter's."""
+    from skit import store
+
+    entry = store.add_python(sample_script, name="subject")
+    real_write_meta = store._write_meta
+
+    def write_then_lose_the_row(entry_dir: Path, meta: object) -> None:
+        real_write_meta(entry_dir, meta)  # ty: ignore[invalid-argument-type]
+        rows = store._load_registry()
+        del rows[entry.slug]  # the index is rewritten without this row, right here
+        store._save_registry(rows)
+
+    monkeypatch.setattr(store, "_write_meta", write_then_lose_the_row)
+
+    updated = store.update_needs(entry.slug, ["ffmpeg"])
+
+    assert updated.meta.needs == ["ffmpeg"]
+    assert store._read_meta(entry.dir).needs == ["ffmpeg"]  # on disk, not just in hand
+    assert store._load_registry() == {}  # the row is doctor's to rebuild, not this write's
+
+
+def test_a_listing_survives_an_entry_removed_while_it_was_mid_fallback(
+    sample_script: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """A `skit remove` committing while the listing is mid-fallback must never take
+    the whole listing down (an earlier draft's second stat here crashed it with
+    FileNotFoundError). After the read succeeds, the projection is PURE — the stamp
+    was statted at the top of the loop — so the doomed entry is served from the
+    snapshot the listing already proved existed, exactly like any point-in-time view;
+    the next listing's stat finds the storage gone and drops it."""
+    import shutil
+
+    from skit import store
+    from skit.models import ScriptMeta
+
+    doomed = store.add_python(sample_script, name="doomed")
+    store.add_command("echo hi", name="kept")
+    # A legacy row for `doomed` alone: it cannot supply a summary, so that entry — and
+    # only that entry — goes through the meta fallback. `kept`'s row stays index-served.
+    rows = store._load_registry()
+    rows[doomed.slug] = {"name": "doomed", "kind": "python", "description": ""}
+    store._save_registry(rows)
+
+    real_read_meta = store._read_meta
+
+    def read_then_remove(entry_dir: Path) -> ScriptMeta:
+        meta = real_read_meta(entry_dir)
+        shutil.rmtree(entry_dir)  # a concurrent `skit remove` commits right here
+        return meta
+
+    monkeypatch.setattr(store, "_read_meta", read_then_remove)
+
+    assert [s.name for s in store.list_summaries()] == ["doomed", "kept"]
+    monkeypatch.setattr(store, "_read_meta", real_read_meta)
+    assert [s.name for s in store.list_summaries()] == ["kept"]

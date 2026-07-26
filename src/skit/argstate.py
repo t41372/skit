@@ -41,9 +41,31 @@ def _load_doc(slug: str) -> dict[str, Any]:
     # exists() only bought a second stat per entry — a thousand of them on `skit list`.
     try:
         with open(values_dir() / f"{slug}.toml", "rb") as f:
-            return tomllib.load(f)
+            doc = tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError):
         return {}
+    # Chokepoint shape guard (store._load_registry's rule): a values file is TOML a
+    # person can edit, so a section may hold a scalar where every reader expects a
+    # table (or array). Dropping the malformed section HERE — not in each reader —
+    # keeps one degradation rule for all of them: the listing's last_run stamp, the
+    # run form's prefill, preset commands. Without it, `last_run = "x"` crashed
+    # `skit list --json` whole. Only the shapes readers subscript are guarded; leaf
+    # values round-trip as-is.
+    for key, shape in (
+        ("values", dict),
+        ("extra_args", list),
+        ("presets", dict),
+        ("last_run", dict),
+    ):
+        if key in doc and not isinstance(doc[key], shape):
+            del doc[key]
+    if "presets" in doc:
+        doc["presets"] = {k: v for k, v in doc["presets"].items() if isinstance(v, dict)}
+    last_run = doc.get("last_run")
+    if isinstance(last_run, dict) and not isinstance(last_run.get("values", {}), dict):
+        # The nested snapshot is subscripted too (purge_secret, --from-last).
+        doc["last_run"] = {k: v for k, v in last_run.items() if k != "values"}
+    return doc
 
 
 def _save_doc(slug: str, doc: dict[str, Any]) -> None:

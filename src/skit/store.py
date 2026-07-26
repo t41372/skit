@@ -89,6 +89,24 @@ def _write_meta(entry_dir: Path, meta: ScriptMeta) -> None:
     atomic_write_toml(entry_dir / "meta.toml", meta.to_toml_dict())
 
 
+def _write_meta_and_row(entry_dir: Path, slug: str, meta: ScriptMeta) -> None:
+    """Persist meta.toml, then re-project this entry's registry row in the same motion.
+
+    One write path for every mutator (see the projection comment above _ROW_KEYS): the
+    row carries the meta's mtime stamp, so any meta write leaves it stale until someone
+    re-projects it, and that someone should be the writer — not the next listing's
+    self-heal. Caller holds the entry lock; the registry lock nests inside it, the same
+    order rename established. A slug missing from the registry (lost or corrupt-renamed
+    index) is skipped: the index is rebuildable, and doctor owns rebuilding it.
+    """
+    _write_meta(entry_dir, meta)
+    with _registry_lock():
+        entries = _load_registry()
+        if slug in entries:
+            entries[slug] = _registry_row(meta, entry_dir)
+            _save_registry(entries)
+
+
 def _entry_lock_path(slug: str) -> Path:
     # Outside scripts/, never a child of the directory remove() deletes. Keeping the lock in
     # entry.dir would let rmtree unlink a live lock and a waiter acquire a replacement while
@@ -146,9 +164,14 @@ def _save_registry(entries: dict[str, dict[str, Any]]) -> None:
 
 # The listing projection of a meta: exactly what a listing renders, and nothing else.
 # `kind`, `mode` and the reference target are fixed at add time and never rewritten
-# (nothing in this module assigns them after the add_* constructors), so the only rows
-# that need refreshing later are the two the mutators refresh: rename and
-# set-description.
+# (nothing in this module assigns them after the add_* constructors) — but `mtime_ns`
+# is part of the row too, so EVERY meta write invalidates the row wholesale, not just
+# one that changes a listed field. Every mutator therefore re-projects the row in its
+# own transaction (`_write_meta_and_row`; rename inlines the same steps around its
+# uniqueness check): a mutator that skipped it would push a deferred registry rewrite
+# onto the next listing via the self-heal, turning a read into a write for work the
+# mutator could have absorbed. The self-heal remains for what no mutator can cover —
+# hand-edited metas and rows written by older skits.
 #
 # `mtime_ns` is the meta.toml the row was projected FROM, and it is what makes the row
 # trustworthy at all: meta.toml is a file skit's own docstrings acknowledge users hand
@@ -168,20 +191,26 @@ def _save_registry(entries: dict[str, dict[str, Any]]) -> None:
 _ROW_KEYS = ("name", "kind", "description")
 
 
-def _registry_row(meta: ScriptMeta, entry_dir: Path) -> dict[str, Any]:
+def _registry_row(
+    meta: ScriptMeta, entry_dir: Path, *, mtime_ns: int | None = None
+) -> dict[str, Any]:
     row: dict[str, Any] = {
         "name": meta.name,
         "kind": meta.kind,
         "mode": meta.mode,
         "description": meta.description,
-        # Stamped at projection time. skit's own writers hold the entry lock across
-        # write-then-project, so content and stamp cannot disagree; the re-deriving
-        # paths (repair, doctor --rebuild) can in principle stat a newer file than the
-        # meta they read, but every skit meta-writer rewrites the row itself right
-        # after, so the losing side of that race is overwritten by the winner. What
-        # remains is a hand edit landing in that microsecond window — stale until the
-        # next edit, the same residual as a forged timestamp.
-        "mtime_ns": os.stat(entry_dir / "meta.toml").st_mtime_ns,
+        # The stamp has two modes, split by who is projecting:
+        # - A WRITER omits mtime_ns and stats now: it holds the entry lock across
+        #   write-then-project, so content and stamp cannot disagree. (The residual is
+        #   a hand edit landing inside that locked microsecond window — stale until
+        #   the next edit, the same residual as a forged timestamp.)
+        # - A RE-DERIVING path (the listing fallback, repair, doctor --rebuild) passes
+        #   the stamp it statted BEFORE reading the meta: a write landing mid-
+        #   derivation then dates the stamp before the content, so the row can only
+        #   read as stale and be re-derived — never trusted-but-wrong.
+        "mtime_ns": (
+            os.stat(entry_dir / "meta.toml").st_mtime_ns if mtime_ns is None else mtime_ns
+        ),
     }
     if meta.mode == "reference":
         # Only a reference entry HAS a launch target outside the store; for a copied one
@@ -228,7 +257,9 @@ def _fs_truth(entries: dict[str, dict[str, Any]]) -> tuple[set[str], set[str]]:
     a process that mkdir'd but crashed before writing anything) claims no slug and stays reusable.
     """
     slugs = set(entries)
-    names = {e["name"] for e in entries.values()}
+    # .get, not [] — the chokepoint (_load_registry) coerces a hand-edited scalar row to
+    # {}, and an empty or mangled row claims no name (its slug is already counted above).
+    names = {name for e in entries.values() if isinstance(name := e.get("name"), str)}
     root = scripts_dir()
     if not root.is_dir():
         return slugs, names
@@ -239,8 +270,10 @@ def _fs_truth(entries: dict[str, dict[str, Any]]) -> tuple[set[str], set[str]]:
         if not in_registry and not any(entry_dir.iterdir()):
             continue  # empty, unregistered leftover — nothing to protect, safe to reuse
         slugs.add(entry_dir.name)
-        if in_registry:
+        if in_registry and isinstance(entries[entry_dir.name].get("name"), str):
             continue  # its name is already accounted for via the registry row
+        # No row, or a row the chokepoint emptied: the meta answers — a mangled row
+        # must not strip its entry's display name of collision protection.
         try:
             names.add(_read_meta(entry_dir).name)
         except _META_CORRUPTION:
@@ -567,7 +600,7 @@ def write_prompt_managed(name_or_slug: str, managed: list[str]) -> Entry:
             )
         meta = entry.meta
         meta.params = managed or None
-        _write_meta(entry.dir, meta)
+        _write_meta_and_row(entry.dir, entry.slug, meta)
         return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
@@ -581,7 +614,7 @@ def write_prompt_interpolate(name_or_slug: str, interpolate: bool) -> Entry:
             )
         meta = entry.meta
         meta.interpolate = interpolate
-        _write_meta(entry.dir, meta)
+        _write_meta_and_row(entry.dir, entry.slug, meta)
         return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
@@ -594,7 +627,7 @@ def write_prompt_runner(name_or_slug: str, runner: str) -> Entry:
             )
         meta = entry.meta
         meta.runner = runner
-        _write_meta(entry.dir, meta)
+        _write_meta_and_row(entry.dir, entry.slug, meta)
         return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
@@ -689,7 +722,7 @@ def update_launch_policy(
             workdir=workdir_value,
             interpreter=interpreter_value,
         )
-        _write_meta(entry.dir, meta)
+        _write_meta_and_row(entry.dir, entry.slug, meta)
         return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
@@ -955,7 +988,10 @@ def list_summaries() -> list[EntrySummary]:
             # row cannot represent (a hand-edited mode, say) is served from the meta
             # directly and NOT staged: repairing it is impossible, and restaging it
             # would rewrite the index on every listing without ever converging.
-            row = _registry_row(meta, entry_dir)
+            # The stamp is the stat taken BEFORE the read (stamp contract in
+            # _registry_row), which also makes this projection pure — an entry removed
+            # between the read and here is served from the snapshot, never crashed on.
+            row = _registry_row(meta, entry_dir, mtime_ns=meta_mtime_ns)
             summary = _summary_from_row(slug, row, entry_dir, row["mtime_ns"])
             if summary is not None:
                 stale.append(slug)
@@ -988,9 +1024,9 @@ def _repair_rows(slugs: list[str]) -> None:
       rename, a set-description, a remove-then-add that reuses the slug — including by
       an OLDER skit whose fresh legacy row is indistinguishable from the stale one the
       listing saw. A snapshot write would revert those; re-deriving from the meta as
-      it is NOW makes the newest state win no matter who wrote it. The stamp is read
-      before the meta (see `_registry_row`), so a change landing mid-derivation only
-      makes the row stale again — never trusted-but-wrong.
+      it is NOW makes the newest state win no matter who wrote it. The stamp is
+      statted before the meta is read (stamp contract in `_registry_row`), so a change
+      landing mid-derivation only makes the row stale again — never trusted-but-wrong.
 
     Best effort throughout: a slug whose meta vanished or broke meanwhile is skipped
     (doctor owns it), a row that would not validate is not written (see
@@ -1009,8 +1045,11 @@ def _repair_rows(slugs: list[str]) -> None:
                 continue  # removed since the listing read the index
             entry_dir = scripts_dir() / slug
             try:
+                # Stat BEFORE the read — the ordering the docstring's second property
+                # rests on (stamp contract in _registry_row).
+                stamp = os.stat(entry_dir / "meta.toml").st_mtime_ns
                 meta = _read_meta(entry_dir)
-                row = _registry_row(meta, entry_dir)
+                row = _registry_row(meta, entry_dir, mtime_ns=stamp)
             except _META_CORRUPTION:
                 continue
             if _summary_from_row(slug, row, entry_dir, row["mtime_ns"]) is None:
@@ -1258,7 +1297,7 @@ def _update_dependencies_entry(
         # Strip: a whitespace-only constraint ("   ") is truthy but an unparseable version
         # specifier that bricks every run — store "" (omitted) instead.
         meta.requires_python = (requires_python or "").strip()
-    _write_meta(entry.dir, meta)
+    _write_meta_and_row(entry.dir, entry.slug, meta)
     if meta.kind == "python" and meta.mode == "copy":  # pragma: no mutate — and/or equivalent
         _sync_python_block(entry.script_path, meta, dependencies, requires_python)
     return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
@@ -1364,7 +1403,7 @@ def update_needs(name_or_slug: str, needs: list[str]) -> Entry:
     with _locked_entry(name_or_slug) as entry:
         meta = entry.meta
         meta.needs = needs or None
-        _write_meta(entry.dir, meta)
+        _write_meta_and_row(entry.dir, entry.slug, meta)
         return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
@@ -1378,7 +1417,7 @@ def write_parameters(name_or_slug: str, decls: list[ParamDecl]) -> Entry:
     with _locked_entry(name_or_slug) as entry:
         meta = entry.meta
         meta.parameters = [d.to_meta_dict() for d in decls] or None
-        _write_meta(entry.dir, meta)
+        _write_meta_and_row(entry.dir, entry.slug, meta)
         return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
@@ -1428,12 +1467,7 @@ def update_description(name_or_slug: str, description: str) -> Entry:
     with _locked_entry(name_or_slug) as entry:
         meta = entry.meta
         meta.description = description
-        _write_meta(entry.dir, meta)
-        with _registry_lock():
-            entries = _load_registry()
-            if entry.slug in entries:
-                entries[entry.slug] = _registry_row(meta, entry.dir)  # whole projection; see rename
-                _save_registry(entries)
+        _write_meta_and_row(entry.dir, entry.slug, meta)
         return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
@@ -1449,6 +1483,9 @@ def doctor_rebuild() -> tuple[int, list[str]]:
         if root.exists():
             for entry_dir in sorted(p for p in root.iterdir() if p.is_dir()):
                 try:
+                    # Stat before read (stamp contract in _registry_row): a write
+                    # landing mid-rebuild leaves a stale row, never a wrong-but-fresh one.
+                    stamp = os.stat(entry_dir / "meta.toml").st_mtime_ns
                     meta = _read_meta(entry_dir)
                 except FileNotFoundError:
                     problems.append(
@@ -1467,7 +1504,7 @@ def doctor_rebuild() -> tuple[int, list[str]]:
                         gettext("%(slug)s: the referenced source file is gone: %(path)s")
                         % {"slug": entry_dir.name, "path": meta.source}
                     )
-                entries[entry_dir.name] = _registry_row(meta, entry_dir)
+                entries[entry_dir.name] = _registry_row(meta, entry_dir, mtime_ns=stamp)
         _save_registry(entries)
     return len(entries), problems
 

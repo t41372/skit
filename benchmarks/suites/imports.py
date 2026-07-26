@@ -65,9 +65,11 @@ def _census(ctx: RunCtx, env: dict[str, str], name: str, args: list[str]) -> lis
 def run(ctx: RunCtx, plan: SuitePlan) -> SuiteOutput:
     output = SuiteOutput(suite="imports")
     # `--version` never reads the library, so it carries no N: one probe, unsuffixed.
-    # `list` does, and the census is N-DEPENDENT — resolving an entry's kind builds its
-    # LangSpec, which imports that language's grammar. An empty-library census cannot
-    # see that, so the populated tiers are where has_tree_sitter means anything.
+    # `list` does, so its census is measured per N. Resolving an entry's kind no longer
+    # imports that language's grammar (capabilities resolve lazily) — the populated
+    # tiers are where a REINTRODUCED grammar import would show, which is what the
+    # enforced has_tree_sitter=0 row at n100 keys on. An empty-library census cannot
+    # see it: no kind is ever resolved there.
     probes = [("version", ["--version"], ctx.datasets[plan.ns[0]].root)]
     probes += [(f"list_json.n{n}", ["list", "--json"], ctx.datasets[n].root) for n in plan.ns]
     for name, args, dataset_root in probes:

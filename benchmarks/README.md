@@ -55,11 +55,12 @@ the exact list, with reasons, is in `pyproject.toml`'s coverage `omit`).
   warmup runs have warmed the page cache and (where uv is involved) `UV_CACHE_DIR`.
   Cold-filesystem / first-ever-install journeys are separate future suites, never
   mixed into these numbers.
-- **the import census is N-dependent** — resolving an entry's kind builds its `LangSpec`,
-  which imports that language's grammar, so `imports.list_json` is measured once per N.
-  `n0` is the CLI floor (no kind resolved); `n100` is what a real library pays, and the
-  only tier where `has_tree_sitter` can be anything but 0. `imports.version.*` carries no
-  N — `--version` never reads the library.
+- **the import census is N-dependent** — `imports.list_json` is measured once per N.
+  `n0` is the CLI floor (no kind resolved); `n100` is what a real library pays. Resolving
+  a kind no longer imports its language's grammar (capabilities resolve lazily), so
+  `has_tree_sitter` is 0 at every tier — the populated tiers are where a reintroduced
+  grammar import would show, and the enforced `n100` budget row keys on exactly that.
+  `imports.version.*` carries no N — `--version` never reads the library.
 - **cold import vs warm parse** — `micro.analyze_cold.*` is a one-shot subprocess
   (first import + first parse); `micro.analyze.*` is pyperf's warm in-process loop.
   Never averaged together.
