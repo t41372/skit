@@ -55,6 +55,19 @@ else
   base="https://github.com/$REPO/releases/latest/download"
 fi
 
+# uv tool / pipx install their `skit` shim into this same default directory. Overwriting
+# it would silently split the install in two: `uv tool upgrade skit-cli` would later stomp
+# this binary back to the PyPI version, and `uv tool uninstall` would delete it. A shim is
+# a script (starts with "#!"); a previous run of THIS installer left a real executable,
+# which is safe to replace in place. Checked before downloading anything: fail fast.
+target="$INSTALL_DIR/skit"
+if [ -e "$target" ] && [ "$(head -c 2 "$target" 2>/dev/null)" = "#!" ] && [ "${SKIT_INSTALL_FORCE:-}" != "1" ]; then
+  die "$target already exists and looks like a uv/pipx shim for skit-cli.
+  Keep that install (upgrade it with: uv tool upgrade skit-cli), remove it first
+  (uv tool uninstall skit-cli), or pick another directory (SKIT_INSTALL_DIR=~/bin).
+  To overwrite anyway: SKIT_INSTALL_FORCE=1"
+fi
+
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 

@@ -1105,7 +1105,7 @@ def resolve(name_or_slug: str) -> Entry:
         if len(matches) == 1:
             slug = matches[0]
     if slug is None:
-        raise NotFoundError(gettext("Script not found: %(name)s") % {"name": name_or_slug})
+        raise NotFoundError(gettext("Entry not found: %(name)s") % {"name": name_or_slug})
     entry_dir = scripts_dir() / slug
     try:
         meta = _read_meta(entry_dir)

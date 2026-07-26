@@ -15,7 +15,7 @@
 
 skit 把你的脚本集中收在一处，并让启动脚本非常容易 —— 支持 Python、shell、JS/TS、可执行文件、提示词等等。
 
-skit 会读你的脚本，把命令行参数、`input()`、写死的常量之类的东西变成一个带说明的启动菜单 —— 输入和变量都在画面上改，不用改脚本。
+skit 会读你的脚本，把命令行参数、`input()`、写死的常量之类的东西变成一个带说明的启动菜单（即运行表单）—— 输入和变量都在画面上改，不用改脚本。
 
 于是你再也不用担心明年找不到或忘了怎么用你（或 AI）写的脚本了 —— 直接塞 skit 里，什么时候要跑都很轻松。
 
@@ -53,7 +53,7 @@ skit                 # 打开菜单——选、填、跑
 |:--:|:--:|
 | **工具库**——每个动作都在画面上，鼠标键盘皆可 | **启动菜单**——从脚本自己的参数生成 |
 | ![加入脚本](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-zh.png) | ![脚本设置](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-zh.png) |
-| **加入脚本**——静态检测参数；哪些交给 skit 管理由你决定 | **脚本设置**——参数、机密、组合、依赖 |
+| **加入脚本**——静态检测参数；哪些交给 skit 管理由你决定 | **条目设置**——参数、机密、组合、依赖 |
 
 <p align="center">
   <img width="480" alt="只用鼠标操作 skit——画面上每个控件都是可点击的目标" src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/demo-mouse.gif"><br>
@@ -127,7 +127,9 @@ curl -fsSL https://raw.githubusercontent.com/t41372/skit/main/scripts/install.sh
 
 Windows 用户：从[最新 release](https://github.com/t41372/skit/releases/latest) 下载 `skit-windows-x86_64.exe`，改名为 `skit.exe` 并放进 `PATH`。
 
-这个二进制本身就是完整的 skit——TUI、分析器、提示词、所有脚本类型都在里面。只有*运行 Python 脚本*这一件事仍然经过 uv，而 skit 的处理方式一如既往：先问你，再下载它自己那份锁定版本、校验过哈希的 uv（支持大陆镜像）。校验和与构建溯源、镜像安装、各平台注意事项：[安装文档（英文）](https://t41372.github.io/skit/en/docs/installation/)。
+> 已经用 `uv tool` 装过了？两条安装路径都把 `skit` 放在 `~/.local/bin`。安装脚本会拒绝覆盖 uv/pipx 的 shim（两个管理器悄悄争抢同一个文件，正是「装了新版却神秘降级」的来源）——请二选一，或用 `SKIT_INSTALL_DIR` 把二进制装到别处。
+
+这个二进制本身就是完整的 skit——TUI、分析器、提示词、所有脚本类型都在里面。只有*运行 Python 脚本*这一件事仍然经过 uv，而 skit 的处理方式一如既往：终端里先问你（管道 / CI 里改为 stderr 告知），再下载它自己那份锁定版本、校验过哈希的 uv（支持大陆镜像）。校验和与构建溯源、镜像安装、各平台注意事项：[安装文档（英文）](https://t41372.github.io/skit/en/docs/installation/)。
 
 ## 更新
 

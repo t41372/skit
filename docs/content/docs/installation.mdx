@@ -41,13 +41,17 @@ curl -fsSL https://raw.githubusercontent.com/t41372/skit/main/scripts/install.sh
 Knobs: `SKIT_VERSION=v0.5.0` pins a release, `SKIT_INSTALL_DIR=~/bin` changes the target
 directory, and `SKIT_INSTALL_MIRROR` is covered under [mainland China](#mainland-china)
 below. On Windows, download the `.exe`, rename it `skit.exe`, and put its directory on
-`PATH`.
+`PATH`. Note the PyPI lane's `uv tool install` puts its `skit` shim in the same
+`~/.local/bin`; the script refuses to overwrite such a shim (a binary that a later
+`uv tool upgrade` would silently stomp is worse than an error) — uninstall one lane
+before installing the other, or set `SKIT_INSTALL_DIR`.
 
 What's inside — and what isn't: the binary embeds CPython, the TUI, the tree-sitter
 analyzers, and the translations, so every skit feature works with zero network. The one
 thing it does *not* embed is uv: running Python scripts is uv's job, and skit keeps its
-usual contract — it asks first, then downloads a version-pinned, sha256-verified uv into
-skit's private directory, honoring your `mirror.github` setting.
+usual contract — in a terminal it asks first, in a pipe or CI it announces on stderr
+instead of asking, then downloads a version-pinned, sha256-verified uv into skit's
+private directory, honoring your `mirror.github` setting.
 
 ### Verifying downloads
 

@@ -205,7 +205,11 @@ class FormField:
 
 @dataclass
 class FormPlan:
-    source: str  # "inject" | "argparse" | "command" | "none"
+    source: str  # "inject" | "argparse" | "declared" | "command" | "none" — "argparse" is
+    # the historical token for EVERY static CLI reader (python argparse/click/typer, but
+    # also shell getopts, JS parseArgs, PowerShell param()); it leaks into `show --json`
+    # as param_source, where param_origin's "reader" is the honestly-named twin (cli.py
+    # _PARAM_ORIGIN documents the pairing).
     fields: list[FormField] = field(default_factory=list)
     drift_lines: list[str] = field(default_factory=list)  # localized, shown as a banner
     degraded_reason: str = ""  # argparse whole-parser degradation: "subparsers" | "dynamic"

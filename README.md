@@ -16,7 +16,7 @@
 
 skit keeps your scripts in one place and makes them painless to launch — Python, shell, JS/TS, executables, prompts, and more.
 
-It's painless because skit reads each script and turns its CLI flags, `input()` calls, and hard-coded constants into a launch menu with descriptions — you edit inputs and variables on screen, without ever touching the script.
+It's painless because skit reads each script and turns its CLI flags, `input()` calls, and hard-coded constants into a launch menu (the run form) with descriptions — you edit inputs and variables on screen, without ever touching the script.
 
 So you can finally stop worrying about where to store your script and whether you still know how to use it next year — put it in skit and forget about it.
 
@@ -53,8 +53,8 @@ No need to modify your script for skit — we will take care of it, and will ask
 | ![The library menu](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-library-en.png) | ![The launch menu](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-form-en.png) |
 |:--:|:--:|
 | **The library** — every action on screen, mouse or keyboard | **The launch menu** — generated from the script's own parameters |
-| ![Adding a script](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-en.png) | ![Script settings](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-en.png) |
-| **Adding a script** — parameters detected statically; you choose which ones skit manages | **Script settings** — parameters, secrets, presets, dependencies |
+| ![Adding a script](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-en.png) | ![Entry settings](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-en.png) |
+| **Adding a script** — parameters detected statically; you choose which ones skit manages | **Entry settings** — parameters, secrets, presets, dependencies |
 
 <p align="center">
   <img width="480" alt="Driving skit with the mouse alone — every control on screen is a click target" src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/demo-mouse.gif"><br>
@@ -128,7 +128,9 @@ curl -fsSL https://raw.githubusercontent.com/t41372/skit/main/scripts/install.sh
 
 On Windows, download `skit-windows-x86_64.exe` from the [latest release](https://github.com/t41372/skit/releases/latest), rename it `skit.exe`, and put it on your `PATH`.
 
-The binary is complete in itself — TUI, analyzers, prompts, every script kind. Only *running Python scripts* still involves uv, and skit handles that the way it always has: asks first, then fetches its own pinned, checksum-verified copy (mirror-aware for mainland China). Checksums and provenance attestations, mirror installs, and platform notes: [installation docs](https://t41372.github.io/skit/en/docs/installation/).
+> Already installed via `uv tool`? Both lanes place `skit` in `~/.local/bin`. The installer refuses to overwrite a uv/pipx shim (two managers silently fighting over one file is how installs "mysteriously downgrade") — pick one lane, or point the binary elsewhere with `SKIT_INSTALL_DIR`.
+
+The binary is complete in itself — TUI, analyzers, prompts, every script kind. Only *running Python scripts* still involves uv, and skit handles that the way it always has: asks first in a terminal (announces on stderr in pipes/CI), then fetches its own pinned, checksum-verified copy (mirror-aware for mainland China). Checksums and provenance attestations, mirror installs, and platform notes: [installation docs](https://t41372.github.io/skit/en/docs/installation/).
 
 ## Update
 

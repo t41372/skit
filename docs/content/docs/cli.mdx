@@ -94,6 +94,17 @@ never replays them.
   top-level `param_origin`, `degraded_reason`, and `needs`. Prompt entries add
   `runner`, `runners_available`, and `interpolate`.
 
+  Two top-level keys describe where the form came from, and `param_origin` is
+  the one to read. `param_source` is the older token and keeps its historical
+  values for compatibility — including `"argparse"` for *every* static CLI
+  reader (Python argparse/click/typer, but also shell `getopts`, JS
+  `parseArgs`, PowerShell `param()`). `param_origin` says the same thing
+  honestly: `managed` (skit-managed constants/inputs), `reader` (any static
+  CLI reader), `declared` (hand-declared schema), `command` (template
+  placeholders — prompt bodies included). New automation should key on
+  `param_origin`; `param_source` will not change meaning, but it will not get
+  new values either.
+
 ## skit remove / rename / describe / edit
 
 - `skit remove NAME [--yes] [--no-input]` — remove an entry (the original file

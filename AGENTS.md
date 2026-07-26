@@ -29,7 +29,9 @@ resyncs its definitions from the script), Ctrl+S saves/commits the screen's work
 field to its source default (README documents it on the run form — it must never mean
 anything else), and Ctrl+L always opens the screen's variable/candidate picker (the
 prompt review panel and Script settings). A new screen action takes an UNCLAIMED chord,
-never a second meaning for a claimed one. Ctrl+A (cursor-home) and — while an Input has
+never a second meaning for a claimed one — check the candidate against every screen
+before it lands (the three-way Ctrl+O collision happened because each screen picked it
+in isolation). Ctrl+A (cursor-home) and — while an Input has
 focus — Ctrl+E (end-of-line) belong to the Input: screen chords for them are never
 priority-bound; the chip is the path mid-edit.
 Never bind a text-editing chord (Ctrl+K and friends) with `priority=True` on a screen
@@ -232,5 +234,9 @@ broken internal link or `#anchor`. Preview with `npm run dev` (http://localhost:
 Gotcha: `<include>` and Turbopack only resolve files **inside** `docs/` — never reference a
 path above the project root. The docs are English-only for now and sit **outside** the i18n
 coverage gate; the scaffolding (`docs/lib/i18n.ts`) is ready for zh content later. README copy
-vocabulary applies — the run screen is the "launch menu", never a "form". `docs/assets/` and
+vocabulary applies — the run screen's product name is the "launch menu": READMEs and docs
+introduce it by that name, and in-app copy may say "form" only for the mechanism (the
+fields being filled), never as the screen's name. README's first "launch menu" mention
+bridges the two ("the launch menu (the run form)") so a user meeting "form" strings
+in-app can connect them. `docs/assets/` and
 `docs/design/` live beside the site and are not published to it.

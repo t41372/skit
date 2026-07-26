@@ -2561,7 +2561,7 @@ def rename(
     name: str = _SCRIPT_ARG,
     new_name: str = typer.Argument(..., help=gettext("The new name")),
 ) -> None:
-    """The CLI twin of the Script-settings name field: agents curate the library too,
+    """The CLI twin of the Entry-settings name field: agents curate the library too,
     and remove + re-add (the only workaround before) destroyed presets and history."""
     try:
         entry = store.rename(name, new_name)
@@ -2577,7 +2577,7 @@ def describe(
     name: str = _SCRIPT_ARG,
     text: str = typer.Argument(..., help=gettext("The description (empty text clears it)")),
 ) -> None:
-    """The CLI twin of the Script-settings description field — the discovery surface
+    """The CLI twin of the Entry-settings description field — the discovery surface
     agents are told to maintain must be writable by them."""
     try:
         entry = store.update_description(name, text.strip())
@@ -3196,7 +3196,16 @@ def run(
             raise _fail(str(exc), EXIT_NOT_FOUND) from exc
         except launcher.LaunchError as exc:
             raise _fail(str(exc), EXIT_SKIT) from exc
-        _persist_preset()
+        # A dry run writes NOTHING — that is the whole word. --save-preset persisting
+        # here while the help text promised "print the command, then exit" was a silent
+        # side effect; saving still works on any real run.
+        if save_preset:
+            err_console.print(
+                "[dim]"
+                + gettext("Dry run — preset %(preset)s was NOT saved (drop --dry-run to save it).")
+                % {"preset": escape(save_preset)}
+                + _DIM_CLOSE
+            )
         if validated_prompt is not None and validated_prompt[1]:
             err_console.print(f"[yellow]{escape(validated_prompt[1])}[/yellow]")
         # No temp copy is written for a dry run, so the command line shows the original
@@ -3259,7 +3268,9 @@ def run(
 # --------------------------------------------------------------------------
 
 runner_app = typer.Typer(
-    help=gettext("Manage the agents (runners) that prompt entries run with."),
+    help=gettext(
+        "Manage the agents (runners) that prompt entries run with. (Not the JavaScript runtime — that is: skit config js.runner)"
+    ),
     no_args_is_help=True,
 )
 app.add_typer(runner_app, name="runner")
@@ -3622,8 +3633,18 @@ def preset_save(
     elif _is_interactive():
         values = promptform.collect(plan, flows.prefill(plan, entry.slug), console=console)
     else:
-        # Non-interactive contract: don't prompt — save what the prefill already knows.
-        values = flows.prefill(plan, entry.slug)
+        # Non-interactive contract: never guess. The prefill is whatever defaults and
+        # last-used values happen to be lying around — silently minting a preset out of
+        # that would save a value set the user never chose (the exact "silently assemble"
+        # move the contract forbids). The deterministic sources remain: --from-last
+        # snapshots a real run; `skit run … --save-preset` snapshots delivered values.
+        raise _fail(
+            gettext(
+                "preset save needs a terminal to ask for values. Non-interactively: use --from-last after a run, or skit run %(name)s --save-preset %(preset)s"
+            )
+            % {"name": entry.meta.name, "preset": preset_name},
+            1,
+        )
     secret_overlap = plan.secret_names & values.keys()
     if secret_overlap:
         console.print(
@@ -4147,6 +4168,7 @@ def params(
     normalize_opt: list[str] = typer.Option(
         None,
         "--normalize",
+        rich_help_panel=gettext("Entry & launch policy (not parameter definitions)"),
         help=gettext(
             "Shell only: rewrite a constant into the ${NAME:-default} idiom in the stored copy, so its value is delivered as an environment variable instead of a rewritten temporary copy (repeatable)"
         ),
@@ -4154,6 +4176,7 @@ def params(
     runner_pin: str = typer.Option(
         None,
         "--runner",
+        rich_help_panel=gettext("Entry & launch policy (not parameter definitions)"),
         help=gettext(
             "Prompt only: pin the agent this prompt runs with (empty value clears the pin)"
         ),
@@ -4162,6 +4185,7 @@ def params(
     interpolate_opt: bool = typer.Option(
         None,
         "--interpolate/--no-interpolate",
+        rich_help_panel=gettext("Entry & launch policy (not parameter definitions)"),
         help=gettext(
             "Prompt only: turn variable insertion on/off for this prompt (off = the body "
             "travels exactly as written)"
@@ -4170,6 +4194,7 @@ def params(
     workdir_opt: str = typer.Option(
         None,
         "--workdir",
+        rich_help_panel=gettext("Entry & launch policy (not parameter definitions)"),
         help=gettext(
             "Set where the entry runs: origin (its own folder), store, invoke (where you "
             "run skit from), or an absolute path"
@@ -4178,11 +4203,13 @@ def params(
     template_opt: str = typer.Option(
         None,
         "--template",
+        rich_help_panel=gettext("Entry & launch policy (not parameter definitions)"),
         help=gettext("Command only: rewrite the template ({placeholders} are re-read from it)"),
     ),
     interpreter_opt: str = typer.Option(
         None,
         "--interpreter",
+        rich_help_panel=gettext("Entry & launch policy (not parameter definitions)"),
         help=gettext(
             "Pin the interpreter/runtime an interpreted entry runs with (e.g. zsh, bun; "
             "empty value returns to automatic)"
@@ -5165,13 +5192,13 @@ def agent_install(
 
 
 def _uv_required(entries: list[store.Entry]) -> bool:
-    """Whether a missing uv should fail doctor's exit code. uv is what runs python
-    entries, so it's required when any python entry exists — and also for an EMPTY
-    library (a fresh install's doctor must still steer the user toward a working
-    setup). A non-empty library made purely of exe/command entries runs fine without
-    uv, and exiting 1 there sent automation chasing a phantom problem."""
-    if not entries:
-        return True
+    """Whether a missing uv should fail doctor's exit code: only when a python entry
+    actually exists, because uv is what runs those. An empty library — a fresh install,
+    and for the standalone binary often the user's very first command — is healthy
+    without uv: skit downloads its own pinned, mirror-aware copy the first time a
+    Python entry needs it, so there is nothing to fix and exit 1 would send new users
+    and CI health checks chasing a phantom problem the README explicitly promises does
+    not exist ("the binary is complete in itself")."""
     return any(e.meta.kind == "python" for e in entries)
 
 
@@ -5242,9 +5269,17 @@ def doctor(
         raise typer.Exit(0 if uv or not _uv_required(entries) else 1)
     if uv:
         console.print(f"[green]✓ {gettext('uv: %(path)s') % {'path': escape(uv)}}[/green]")
-    else:
+    elif _uv_required(entries):
+        # Python entries exist and cannot run right now — a real, actionable failure.
+        # skit's own consent-gated download remains the primary remedy; a system-wide
+        # install is the alternative, not the prescription.
         console.print(
-            f"[red]✗ {gettext('uv: not found. Install it from https://docs.astral.sh/uv/getting-started/installation/')}[/red]"
+            f"[red]✗ {gettext('uv: not found — Python entries cannot run. skit offers to download its own pinned uv on their next run, or install it system-wide: https://docs.astral.sh/uv/getting-started/installation/')}[/red]"
+        )
+    else:
+        # No python entries (maybe no entries at all): uv is simply not needed yet.
+        console.print(
+            f"[dim]○ {gettext('uv: not found — not needed yet. skit will offer to download its own pinned copy when a Python entry first runs.')}[/dim]"
         )
     console.print(
         "✓ "
@@ -5494,7 +5529,7 @@ def _config_set(key: str, value: str) -> None:
     elif key == "js.runner":
         if value.strip() and value not in config.JS_RUNNERS:
             err_console.print(
-                f"[red]{gettext('Unknown JS runner: %(value)s. Choose from: %(names)s') % {'value': escape(value), 'names': ', '.join(config.JS_RUNNERS)}}[/red]"
+                f"[red]{gettext('Unknown JS runtime: %(value)s. Choose from: %(names)s. (Looking for the AI agents prompts run with? That is: skit runner)') % {'value': escape(value), 'names': ', '.join(config.JS_RUNNERS)}}[/red]"
             )
             raise typer.Exit(EXIT_USAGE)
         config.save_js_runner(value)
