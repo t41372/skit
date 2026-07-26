@@ -414,6 +414,27 @@ def test_manage_flip_note_names_the_reader_form_then_stays_quiet(tmp_path):
     assert "The run form now asks for the managed parameters" not in again.output
 
 
+def test_manage_flip_note_lists_every_framework_it_sets_aside(tmp_path):
+    """A script can carry more than one CLI framework, and the note names the form it is
+    replacing — so it has to name ALL of them, in a list a human reads. One framework can never
+    show whether the separator is right; two can."""
+    py = tmp_path / "both.py"
+    py.write_text(
+        "import argparse\nimport click\nCITY = 'Taipei'\n"
+        "parser = argparse.ArgumentParser()\nparser.add_argument('--n')\nprint(CITY)\n",
+        encoding="utf-8",
+    )
+    runner.invoke(cli.app, ["add", str(py), "-n", "twoframeworks", "--no-input"])
+
+    result = runner.invoke(cli.app, ["params", "twoframeworks", "--manage", "CITY"])
+
+    assert result.exit_code == 0, result.output
+    assert (
+        "The run form now asks for the managed parameters — the script's own command-line "
+        "form (argparse, click) is set aside until they are removed (--unmanage)."
+    ) in " ".join(result.output.split())
+
+
 def test_manage_flip_note_fires_on_a_single_option_reader_form(tmp_path):
     """ "Reader-driven" is the shared modeled-form predicate — `reader_fields(...) > 0`, not
     "more than one". A script whose own parser takes a SINGLE option still has a form that

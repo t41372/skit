@@ -13,11 +13,13 @@ D. Extra-args provenance, TUI face: `r` replays a CLI-captured tail literally, t
    identical tail from an untouched one — or a concurrent CLI write from a user edit.
 E. The Library detail pane's plan cache: keyed on both files' (mtime_ns, size) plus the
    reader-tool fingerprint, validated by a second stat so a racing write can't pin stale
-   content under a fresh key, caching snapshot fallbacks instead of a subprocess per cursor
-   move, popped by edit and by the settings-close callback, _has_drift served off the same
+   content under a fresh key AND (round 7) by a meta re-read for the half of the window the
+   stats cannot see, caching snapshot fallbacks instead of a subprocess per cursor move,
+   popped by edit and by the settings-close callback, _has_drift served off the same
    entry — and (E2) freshness owned by MenuApp._fresh, so the pane and both LAUNCH paths
    describe one generation of one record.
-J. The as-is note on the TUI's two run faces, from the CLI's own msgid.
+J. The as-is note on the TUI's two run faces, from the ONE msgid both faces share
+   (flows.as_is_note, round 7 — tui._as_is_note was a second copy of the same source string).
 F. AddReviewScreen._reader_modeled memoizes its probe on (text, reader tool) — for a reader
    kind each call is a synchronous subprocess and the panel must not freeze because a radio
    button was clicked, but a pwsh installed mid-session must not be invisible either.
@@ -850,6 +852,61 @@ def test_cached_plan_caches_nothing_when_a_write_lands_during_the_build(
     assert app._plan_cache[entry.slug][0] == plan_cache_key(entry)  # ...and the next one settles
 
 
+def test_cached_plan_caches_nothing_when_the_snapshot_predates_the_meta_on_disk(
+    tmp_path, plan_builds
+):
+    """The OTHER half of the cache window, and the one stat equality cannot see. The write
+    lands before the FIRST stat — an agent's `skit params --add` between the caller's resolve
+    and this render — so both stats agree while the plan is built from the caller's older
+    meta (plan_for_entry reads declared rows from the in-memory entry.meta, not from disk).
+
+    Round 6's single proof pinned that stale plan under the CURRENT key, which every later
+    highlight then cache-HIT: the parameter an agent just declared would never appear, for as
+    long as nothing else touched the files. The meta re-read closes it."""
+    entry = _exe(tmp_path)  # the caller's snapshot, taken before the write
+    store.write_parameters(
+        entry.slug, [ParamDecl(name="WIDTH", delivery="flag", flag="--width", type="int")]
+    )
+
+    app = tui.MenuApp()
+    stale = app._cached_plan(entry)
+
+    assert [f.key for f in stale.fields] == []  # built from the snapshot it was handed...
+    assert entry.slug not in app._plan_cache  # ...and not pinned under the current key
+    # ...so the next render — the fresh record the pane really passes — sees the new row.
+    plan = app._cached_plan(store.resolve(entry.slug))
+    assert [f.key for f in plan.fields] == ["WIDTH"]
+    assert app._plan_cache[entry.slug] == (plan_cache_key(entry), plan)
+    assert plan_builds == [entry.slug] * 2
+
+
+def test_meta_unchanged_compares_the_whole_record_and_treats_gone_as_unchanged(
+    tmp_path, monkeypatch
+):
+    """The proof itself, at its three answers. It re-reads the record and compares BOTH halves
+    — a plan built from a different meta is stale, and so is one built against a different
+    directory — while an entry that no longer resolves counts as unchanged, because the
+    snapshot is then the best generation there is and caching it is the round-6 fix for the
+    subprocess-per-highlight corrupt-meta case."""
+    entry = _managed_entry(tmp_path, name="a")
+    app = tui.MenuApp()
+    assert app._meta_unchanged(entry) is True
+
+    store.update_description(entry.slug, "described by an agent")
+    assert app._meta_unchanged(entry) is False  # the meta half
+
+    fresh = store.resolve(entry.slug)
+    assert app._meta_unchanged(fresh) is True
+    monkeypatch.setattr(tui.store, "resolve", lambda _slug: replace(fresh, dir=tmp_path / "moved"))
+    assert app._meta_unchanged(fresh) is False  # the dir half: same meta, different home
+
+    def removed(_slug):
+        raise store.NotFoundError("removed mid-render")
+
+    monkeypatch.setattr(tui.store, "resolve", removed)
+    assert app._meta_unchanged(fresh) is True  # unresolvable is not "changed"
+
+
 def test_cached_plan_reprobes_when_the_reader_tool_appears_mid_session(
     tmp_path, plan_builds, monkeypatch
 ):
@@ -1058,20 +1115,24 @@ class _PrintRecorder:
         return "__line-not-printed__"
 
 
-def test_the_tui_note_is_the_clis_msgid_resolved_at_print_time(monkeypatch):
+def test_the_note_has_one_home_and_resolves_at_print_time(monkeypatch):
     """ONE msgid across both faces — the sentence that explains provenance cannot be allowed
-    to drift into two wordings. Resolved when it prints, not at import: a module-level constant
-    would freeze the note in whatever locale happened to be active when tui.py was imported."""
-    assert tui._as_is_note() == (
+    to drift into two wordings. Round 7 gave it one HOME too (flows.as_is_note): tui._as_is_note
+    was a second copy of the same source string, and two copies of a msgid are two things a
+    translator can be asked about separately. Resolved when it prints, not at import: a
+    module-level constant would freeze the note in whatever locale happened to be active when
+    the module was imported."""
+    assert flows.as_is_note() == (
         "(passed as-is — a remembered tail only expands {tokens} and globs "
         "when it was typed into the launch menu)"
     )
+    assert not hasattr(tui, "_as_is_note")  # ...and the second copy is gone, not shadowed
     from skit import i18n
 
     monkeypatch.setenv("SKIT_LANG", "zh-TW")
     i18n.init("zh-TW")
     try:
-        translated = tui._as_is_note()
+        translated = flows.as_is_note()
     finally:
         i18n.init("en")
     assert _AS_IS not in translated  # the active locale really applies
@@ -1096,7 +1157,7 @@ async def test_rerun_says_a_marker_less_expandable_tail_is_passed_as_is(
         await pilot.pause()
 
     assert quiet_run["extra"] == ["out_{today}.txt", "*.png"]  # the note explains, never changes
-    assert any(_AS_IS in line for line in rec.lines)
+    assert flows.as_is_note() in rec.lines  # the shared home's sentence, verbatim
     assert rec.flush_for(_AS_IS) is True  # ...ahead of the child's own output
 
 
@@ -1130,10 +1191,21 @@ async def test_rerun_stays_quiet_for_a_marked_or_plain_tail(
     [
         (["out_{today}.txt"], False, True),
         (["~/backups"], False, True),
+        # Round 7, both directions of the predicate's repair on this face too: `}}` would have
+        # halved, a bare `{x}` would not have changed at all.
+        (["done}}"], False, True),
+        (["{x}"], False, False),
         (["out_{today}.txt"], True, False),
         (["--limit", "MAX"], False, False),
     ],
-    ids=["token-literal", "tilde-literal", "marked-raw", "plain-tail"],
+    ids=[
+        "token-literal",
+        "tilde-literal",
+        "close-escape-literal",
+        "unknown-brace",
+        "marked-raw",
+        "plain-tail",
+    ],
 )
 def test_the_exit_after_run_path_prints_the_note_too(
     tmp_path, monkeypatch, extra: list[str], extra_raw: bool, noted: bool
@@ -1154,6 +1226,7 @@ def test_the_exit_after_run_path_prints_the_note_too(
 
     assert any(_AS_IS in line for line in rec.lines) is noted
     if noted:
+        assert flows.as_is_note() in rec.lines  # the shared home's sentence, verbatim
         assert rec.flush_for(_AS_IS) is True
 
 

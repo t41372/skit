@@ -1,4 +1,4 @@
-"""Behavior coverage for the design-audit fixes (rounds 1, 2, 5 and 6), headless + CLI half.
+"""Behavior coverage for the design-audit fixes (rounds 1, 2, 5, 6 and 7), headless + CLI half.
 
 Each section keeps one verified bug dead:
 
@@ -13,7 +13,11 @@ B. ``params.is_secret_name`` — TWO word sources per segment (the jam AND its c
    substring rule made ``--max-tokens`` a permanent password field on the reader lane;
    round 2's repair let plurals (``API_KEYS``) and acronym jams (``APIkey``) through
    unmarked, which is the publishing direction; round 5's kept the jam and lost
-   ``awsSecretKey``. Round 6 owes every direction at once.
+   ``awsSecretKey``. Round 6 owes every direction at once. Round 7 made the verdict
+   per-SEGMENT (``_judge_segment``) so a camel fragment can no longer veto a credential
+   in the segment next door (``N8N_TOKEN``) and digits stay inside their segment
+   (``api_key2``); round 7b split count WORDS from bare NUMBERS, because a number is an
+   index unless it stands in front (``GITHUB_TOKEN_2`` is a second GitHub token).
 C. ``skit remove`` / ``skit preset delete`` — the non-interactive contract (worded exit-2
    refusal naming --yes, never a confirm that eats piped stdin) plus preset deletion's new
    confirmation ceremony.
@@ -42,7 +46,7 @@ import pytest
 from typer.testing import CliRunner
 
 from conftest import without_block
-from skit import argstate, cli, flows, launcher, params, rewrite, store
+from skit import argstate, argv_text, cli, flows, launcher, params, rewrite, store, tokens
 from skit.langs.python import metawriter
 from skit.langs.registry import spec_for
 from skit.params import ParamDecl
@@ -322,6 +326,33 @@ _SECRET_TRUE = [
     # The same shape at its shortest: the count word is the only other word in the text, and
     # it still FOLLOWS the token word instead of qualifying it.
     "Token (max 64):",
+    # ROUND 7 — digits stay INSIDE their segment now. The old [^A-Za-z]+ split shattered
+    # N8N into N + N, and that stray count word ("N") vetoed the TOKEN in the segment next
+    # door: every self-hosted n8n credential published a live literal.
+    "N8N_TOKEN",
+    "n8n_token",
+    "n8nToken",
+    "gpt4_token",
+    "gpt4Token",
+    # ...and _forms strips digits per word, so a credential word glued to one still matches.
+    "api_key2",
+    "base64Key",
+    # ROUND 7b — a bare number is an INDEX unless it stands in front. Round 7 made any
+    # number count context for the whole name, so a second GitHub token read as a token
+    # COUNT and went unmasked — the publishing direction, on names people really write.
+    "GITHUB_TOKEN_2",
+    "API_TOKEN_1",
+    "slack-token-3",
+    "TOKEN_2",
+    "token_2",
+    # SENTENCE shape, round 7: an ask that ALSO quotes a rate is still an ask. The old rule
+    # suppressed on ANY count-preceded mention, so the parenthetical vetoed the credential.
+    "Enter your API token (limit: 4096 tokens)",
+    "Paste your GitHub token (rate limit 60 tokens/min)",
+    # RE-RULED in round 7 (was False): digits no longer split "max64chars" into a bare MAX,
+    # so this jam keeps its TOKEN hit. The direction is masking, and every real count
+    # spelling still reads as a count (see _SECRET_FALSE).
+    "EnterYourAPIToken(max64chars)",
 ]
 
 _SECRET_FALSE = [
@@ -375,6 +406,21 @@ _SECRET_FALSE = [
     # Padding is not shape: a name with stray whitespace around it is still a name, so the
     # "anywhere" rule applies (the sentence rule would leave this masked).
     "  maxOutputTokens  ",
+    # ROUND 7 — a count word still wins inside a digit-bearing name, from either source: the
+    # segment's own camel fragment (MAX2 → MAX) or a segment of its own.
+    "MAX2TOKENS",
+    "max_2_tokens",
+    "max64Tokens",
+    # ROUND 7b — a bare number IN FRONT is the count it looks like, in both shapes.
+    "2_tokens",
+    "60 tokens",
+    "max 4096 tokens",
+    # RE-RULED in round 7 (were True): the bare-plural knob reads as a count in ANY casing.
+    # No compound can hide inside six letters the way API + key hides inside "APIkey", so
+    # the old "both word sources must spell TOKENS" condition was an accident of the camel
+    # split, not a rule.
+    "toKens",
+    "TokenS",
 ]
 
 
@@ -482,15 +528,20 @@ def test_a_bare_plural_tokens_is_a_count_but_a_qualified_one_is_not() -> None:
     assert params.is_secret_name("max_tokens") is False
 
 
-def test_the_bare_plural_exemption_needs_both_word_sources_to_agree() -> None:
-    """The exemption is for the bare word "tokens", and BOTH sources have to say so. A
-    nonstandard casing that jams to TOKENS but splits into something else is the APIkey class
-    of spelling — the one rounds 2 and 5 each got wrong in turn — and it is not the count knob,
-    so ambiguity errs toward masking."""
-    assert params.is_secret_name("tokens") is False
-    assert params.is_secret_name("Tokens") is False  # ...the same bare word, capitalized
-    assert params.is_secret_name("toKens") is True
-    assert params.is_secret_name("TokenS") is True
+def test_the_bare_plural_exemption_reads_the_letters_not_the_casing() -> None:
+    """RE-RULED in round 7 (toKens/TokenS were True): the exemption is for the bare word
+    "tokens", and six letters have no room to hide a compound. Rounds 2-6 required both word
+    sources to spell TOKENS, which made the camel split decide the answer — so "toKens" and
+    "TokenS" read as credentials while "tokens" and "Tokens" read as counts, on names that are
+    the same word. That condition was an accident of the split, not a rule; the letters are.
+
+    The APIkey class it was borrowed from is genuinely different: there the casing hides API +
+    key, two words the rules know. TO + KENS are not words, and neither is TOKEN + S."""
+    for spelling in ("tokens", "Tokens", "toKens", "TokenS", "TOKENS"):
+        assert params.is_secret_name(spelling) is False, spelling
+    # A companion word is what makes the plural a credential again — in any casing.
+    assert params.is_secret_name("github_tokens") is True
+    assert params.is_secret_name("gitHubToKens") is True
 
 
 def test_both_word_sources_are_matched_not_one_or_the_other() -> None:
@@ -523,8 +574,16 @@ def test_count_suppression_is_scoped_by_shape_name_versus_sentence() -> None:
     assert params.is_secret_name("maxOutputTokens") is False  # name: MAX anywhere suppresses
     assert params.is_secret_name("max tokens:") is False  # sentence: MAX right before the noun
     assert params.is_secret_name("Enter your API token (max 64 chars):") is True
-    # ...and the very same words jammed into a NAME take the "anywhere" rule instead.
-    assert params.is_secret_name("EnterYourAPIToken(max64chars)") is False
+    # ...and the very same words spaced into a NAME take the "anywhere" rule instead.
+    assert params.is_secret_name("enter_your_API_token_max_64_chars") is False
+    # RE-RULED in round 7 (was False): jammed against digits there is no bare MAX left to
+    # find — "max64chars" is one segment whose forms are MAX64CHARS/MAXCHARS, neither a count
+    # word — so the name keeps its TOKEN hit. Masking a synthetic jam costs a prefill;
+    # unmasking a credential publishes it, and every count spelling people really type still
+    # reads as a count (max_64_tokens, max64Tokens, MAX2TOKENS, gpt4_max_tokens).
+    assert params.is_secret_name("EnterYourAPIToken(max64chars)") is True
+    assert params.is_secret_name("max_64_tokens") is False
+    assert params.is_secret_name("gpt4_max_tokens") is False
     # Stripping is what keeps a padded name a name — the sentence rule would mask this one.
     assert params.is_secret_name("  maxOutputTokens  ") is False
 
@@ -549,6 +608,157 @@ def test_an_all_caps_jam_of_a_multi_word_count_stays_masked() -> None:
     assert params.is_secret_name("MAXOUTPUTTOKENS") is True
     assert params.is_secret_name("MAX_OUTPUT_TOKENS") is False
     assert params.is_secret_name("maxOutputTokens") is False
+
+
+# --------------------------------------------------------------------------
+# B (round 7). The verdict is per SEGMENT — and a bare number qualifies FORWARD
+# --------------------------------------------------------------------------
+
+
+def test_forms_folds_the_plural_and_strips_digits_per_word() -> None:
+    """The match variants of ONE word. Digits no longer split a name apart (that is what
+    shattered N8N), so they have to be lifted off each word instead — otherwise "key2" is a
+    word no rule has ever heard of and api_key2 publishes a live key. Both folds are offered
+    together, so a digit-bearing plural (KEYS2) reaches KEY as well."""
+    assert params._forms("KEY") == {"KEY"}
+    assert params._forms("KEYS") == {"KEYS", "KEY"}
+    assert params._forms("KEY2") == {"KEY2", "KEY"}
+    # ...and the two folds compose, so a digit-bearing plural still reaches KEY.
+    assert params._forms("KEYS2") == {"KEYS2", "KEYS", "KEY"}
+    assert params._forms("N8N") == {"N8N", "NN"}
+    # An all-digit word strips to nothing, and the empty string is not a form of anything — so
+    # the filter drops it (inverting that filter leaves _forms holding nothing else).
+    assert params._forms("4096") == {"4096"}
+    assert "" not in params._forms("64")
+    # ...and the rules really consult the stripped form, on both sides of a name.
+    assert params.is_secret_name("api_key2") is True
+    assert params.is_secret_name("base64Key") is True
+
+
+def test_token_form_lifts_exactly_one_fused_count_qualifier() -> None:
+    """The single-qualifier slice, at the position that lifts it off the noun: NTOKEN/MAXTOKEN
+    are counts jammed into one word, PHOTOKEN is a word that merely ends the same way. A slice
+    off by one turns either answer into the other."""
+    assert params._token_form("TOKEN") is True
+    assert params._token_form("PHOTOKEN") is True
+    assert params._token_form("NTOKEN") is False
+    assert params._token_form("MAXTOKEN") is False
+    assert params._token_form("TOKENS") is False  # the fold is the caller's job, not this one
+    assert params._token_form("KEY") is False
+
+
+def test_a_segment_is_judged_whole_and_reports_the_four_things_the_rules_ask() -> None:
+    """The round-7 structure: one verdict per segment, four independent bits. Secrecy is a
+    whole-name answer; a token mention belongs to the segment that carries it; count WORDS and
+    bare NUMBERS are different kinds of context (round 7b) and are reported apart."""
+    assert params._judge_segment("token") == params._SegmentVerdict(
+        secret=False, token=True, county=False, numeric=False
+    )
+    assert params._judge_segment("apiKey") == params._SegmentVerdict(
+        secret=True, token=False, county=False, numeric=False
+    )
+    assert params._judge_segment("limit") == params._SegmentVerdict(
+        secret=False, token=False, county=True, numeric=False
+    )
+    assert params._judge_segment("60") == params._SegmentVerdict(
+        secret=False, token=False, county=False, numeric=True
+    )
+    # A segment's OWN count word vetoes its OWN token hit, camel-fused or not.
+    assert params._judge_segment("maxOutputTokens").token is False
+    assert params._judge_segment("nTokens").token is False
+    assert params._judge_segment("photokens").token is True
+
+
+def test_the_camel_split_cuts_on_the_separator_its_own_sub_inserts() -> None:
+    """One decision spelled in two places: _CAMEL_BOUNDARY.sub writes a SPACE at each boundary
+    and the split cuts on that same space, so the two must stay the same character. Widening
+    the split to "any whitespace" would be a second, wider rule the sub never asked for — and
+    a segment cannot carry whitespace anyway, because is_secret_name has already cut the name
+    on every non-alphanumeric character."""
+    assert params._judge_segment("apiKey").secret is True  # the boundary the sub inserts
+    assert params._judge_segment("api key").secret is True  # ...that same character, literally
+    assert params._judge_segment("api\tkey").secret is False  # ...and only that character
+
+
+def test_a_camel_fragment_is_never_count_context_for_the_segment_next_door() -> None:
+    """THE round-7 HIGH. county is judged on the JAM only. The digit boundary cuts N8N into
+    N8 + N, and "N" is a count word — so a fragment of one segment vetoed the real credential
+    in the segment beside it, and every n8n API token went unmasked.
+
+    The fragment still vetoes its OWN segment (that is what makes maxOutputTokens a count), so
+    both halves have to be pinned together or the repair reads as either extreme."""
+    assert "N" in {f for w in ("N8", "N") for f in params._forms(w)}  # the fragment is real...
+    assert params._judge_segment("N8N").county is False  # ...and does not leak out
+    assert params._judge_segment("maxOutputTokens").token is False  # ...but vetoes at home
+    assert params.is_secret_name("N8N_TOKEN") is True
+    assert params.is_secret_name("n8nToken") is True
+    assert params.is_secret_name("maxOutputTokens") is False
+
+
+def test_a_bare_number_is_count_context_only_for_what_follows_it() -> None:
+    """ROUND 7b. "60 tokens" is a count by construction; GITHUB_TOKEN_2 is a second GitHub
+    token. Round 7 made every number count context for the whole name and unmasked the entire
+    indexed-credential family — the publishing direction, on names people really write.
+
+    So a number qualifies FORWARD only, while a count WORD still qualifies a name from
+    anywhere (max_tokens keeps its qualifier three words away)."""
+    assert params.is_secret_name("2_tokens") is False  # the number stands in front
+    assert params.is_secret_name("60 tokens") is False  # ...in either shape
+    for indexed in ("GITHUB_TOKEN_2", "API_TOKEN_1", "slack-token-3", "TOKEN_2", "token_2"):
+        assert params.is_secret_name(indexed) is True, indexed
+    # ...and the two kinds of context are not interchangeable: merging them back into one bit
+    # is exactly the round-7 bug.
+    assert params._judge_segment("2") == params._SegmentVerdict(
+        secret=False, token=False, county=False, numeric=True
+    )
+    assert params._judge_segment("max") == params._SegmentVerdict(
+        secret=False, token=False, county=True, numeric=False
+    )
+    assert params.is_secret_name("max_tokens_2") is False  # a count WORD reaches from anywhere
+
+
+def test_a_number_excuses_the_mention_it_stands_in_front_of_never_the_whole_name() -> None:
+    """The quantifier in the name branch is ALL mentions, not any. A name that counts tokens
+    somewhere and also names a token elsewhere is still asking for a credential, and the
+    credential wins — the same direction the sentence rule takes.
+
+    (The two-mention spelling is synthetic; nobody names a variable this. It is the only shape
+    that separates "every mention is number-qualified" from "some mention is", and the rule it
+    pins is the one that keeps GITHUB_TOKEN_2 masked.)"""
+    assert params.is_secret_name("2_tokens") is False  # every mention qualified → a count
+    assert params.is_secret_name("token_2_tokens") is True  # one bare mention → a credential
+    assert params.is_secret_name("2_tokens_token") is True
+
+
+def test_the_sentence_rule_is_secret_if_any_mention_is_unqualified() -> None:
+    """ROUND 7's other leak direction, flipped: the old rule suppressed as soon as ANY mention
+    was count-preceded, so a parenthetical rate note vetoed the ask beside it. An ask that
+    quotes a rate AND asks for a credential is an ask for a credential.
+
+    Three separable pieces, one killing case each: the mention must have a predecessor at all
+    (a leading Token), that predecessor is the one BEFORE it (not after, not wrapped), and the
+    verdict is the NEGATION of qualification (an unqualified mention is what masks)."""
+    # No predecessor: the token word is first, so nothing can qualify it.
+    assert params.is_secret_name("Token (max 64):") is True
+    # The predecessor is the segment immediately BEFORE — "max tokens" is a count, and a count
+    # word that merely appears later never suppresses.
+    assert params.is_secret_name("max tokens:") is False
+    assert params.is_secret_name("tokens max:") is True
+    # The negation: one mention with count context, one without — the one without wins.
+    assert params.is_secret_name("Paste your GitHub token (rate limit 60 tokens/min)") is True
+    assert params.is_secret_name("Enter your API token (limit: 4096 tokens)") is True
+    # ...and with every mention qualified there is nothing left to mask.
+    assert params.is_secret_name("How many tokens do you want?") is False
+    assert params.is_secret_name("rate limit 60 tokens/min") is False
+
+
+def test_both_kinds_of_count_context_qualify_a_sentence_mention() -> None:
+    """qualified() reads county OR numeric, and each half owns cases the other cannot see:
+    "many tokens" has no number, "60 tokens" has no count word. Dropping either half re-masks
+    an LLM knob on a lane with no override."""
+    assert params.is_secret_name("many tokens") is False  # the count-word half
+    assert params.is_secret_name("60 tokens") is False  # the bare-number half
+    assert params.is_secret_name("tokens") is False  # (and the bare plural is neither)
 
 
 def test_secret_heuristic_is_universal_across_lanes(tmp_path: Path) -> None:
@@ -874,32 +1084,81 @@ _AS_IS = "(passed as-is"
     ("tail", "expandable"),
     [
         (["out_{today}.png"], True),
+        (["{cwd}"], True),
+        (["{env:HOME}"], True),
         (["*.png"], True),
         (["report?.txt"], True),
         (["log[0-9].txt"], True),
         # Round 6: tokens.expand also expands a LEADING ~, so a tail that starts with one
         # would silently arrive unexpanded — the exact surprise the note exists for.
         (["~/backups"], True),
+        # Round 7: the brace half is tokens.has_tokens now, and the hand-rolled check it
+        # replaces was wrong in BOTH directions. `}}` halves to `}` — silently, with no note;
+        # a bare `{x}` is no token at all and passes through untouched, so the note fired on
+        # tails nothing would have changed.
+        (["}}"], True),
+        (["{{"], True),
+        (["{x}"], False),
         (["--flag"], False),
         (["a~b"], False),  # ...only LEADING: a tilde inside a word is just a character
         ([], False),
     ],
-    ids=["token", "star", "question", "bracket", "tilde", "flag", "inner-tilde", "empty"],
+    ids=[
+        "token",
+        "cwd",
+        "env",
+        "star",
+        "question",
+        "bracket",
+        "tilde",
+        "close-escape",
+        "open-escape",
+        "unknown-brace",
+        "flag",
+        "inner-tilde",
+        "empty",
+    ],
 )
 def test_tail_looks_expandable_is_the_one_predicate_behind_the_note(
     tail: list[str], expandable: bool
 ) -> None:
     """THE predicate, in one place: both faces (the CLI replay line and the TUI's two run
     paths) ask flows.tail_looks_expandable, so they cannot drift into two notions of "this
-    would have expanded". It answers for the syntax tokens.expand actually acts on — {braces},
-    glob characters, and a leading ~ — and stays quiet for anything else."""
+    would have expanded". It answers for the syntax tokens.expand actually acts on — the token
+    grammar, brace escapes and a leading ~ — plus the glob characters assemble's own pass
+    acts on, and stays quiet for anything else."""
     assert flows.tail_looks_expandable(tail) is expandable
 
 
 @pytest.mark.parametrize(
+    "piece",
+    ["out_{today}.png", "{cwd}", "{env:HOME}", "{x}", "{{", "}}", "{{cwd}}", "~/backups", "a~b"],
+)
+def test_the_token_half_of_the_predicate_is_the_expander_itself(piece: str, tmp_path: Path) -> None:
+    """Round 7's structural point: the note's question is "would expand() have changed this?",
+    and tokens is THE authority on that answer — so the predicate delegates instead of
+    re-deriving. The hand-rolled brace check had already forked (missing `}}`, over-firing on
+    `{x}`), and a fork here is a lie printed to the user either way.
+
+    Asked against the real expander, with no glob character in sight so only the token half
+    can answer."""
+    changed = tokens.expand(piece, cwd=tmp_path, env={"HOME": "/home/x"}) != piece
+    assert flows.tail_looks_expandable([piece]) is changed
+
+
+@pytest.mark.parametrize(
     "tail",
-    [["out_{today}.png"], ["*.png"], ["report?.txt"], ["log[0-9].txt"], ["~/backups"]],
-    ids=["token", "star", "question", "bracket", "tilde"],
+    [
+        ["out_{today}.png"],
+        ["*.png"],
+        ["report?.txt"],
+        ["log[0-9].txt"],
+        ["~/backups"],
+        # Round 7: `}}` halves to `}` on an expanding replay, so a literal one differs from
+        # what the user would have got — and the old hand-rolled check said nothing at all.
+        ["done}}"],
+    ],
+    ids=["token", "star", "question", "bracket", "tilde", "close-escape"],
 )
 def test_replaying_an_unmarked_tail_with_syntax_says_it_is_passed_as_is(
     tmp_path: Path, run_entry_spy, tail: list[str]
@@ -920,18 +1179,41 @@ def test_replaying_an_unmarked_tail_with_syntax_says_it_is_passed_as_is(
     assert _AS_IS not in result.stdout
 
 
-def test_replaying_an_unmarked_plain_tail_stays_quiet(tmp_path: Path, run_entry_spy) -> None:
-    """The note is a surprise-avoidance line, not a banner: a tail of plain words expands to
-    itself under either regime, so saying "passed as-is" would be noise on every replay."""
+@pytest.mark.parametrize(
+    "tail",
+    [["--limit", "MAX"], ["{x}"]],
+    ids=["plain-tail", "unknown-brace"],
+)
+def test_replaying_an_unmarked_plain_tail_stays_quiet(
+    tmp_path: Path, run_entry_spy, tail: list[str]
+) -> None:
+    """The note is a surprise-avoidance line, not a banner: a tail that expands to itself under
+    either regime would collect the caveat on every single replay. Round 7 added the second
+    case — `{x}` is no token skit knows, so expand() passes it through and the literal replay
+    is byte-identical to the expanding one."""
     entry = store.add_python(_py(tmp_path, "print(1)\n"), name="j")
-    argstate.save_last(entry.slug, extra_args=["--limit", "MAX"])
+    argstate.save_last(entry.slug, extra_args=tail)
 
     result = runner.invoke(cli.app, ["run", "j", "--no-input"])
 
     assert result.exit_code == 0, result.output
-    assert run_entry_spy["extra"] == ["--limit", "MAX"]
+    assert run_entry_spy["extra"] == tail
     assert "Reusing your last arguments" in result.stderr  # the reuse line still prints...
     assert _AS_IS not in result.stderr  # ...without the caveat
+
+
+def test_the_cli_note_is_the_shared_msgid_verbatim(tmp_path: Path, run_entry_spy) -> None:
+    """ONE msgid, ONE home: round 7 moved the sentence into flows.as_is_note() and both faces
+    call it (the TUI half is pinned in tests/test_design_audit_tui.py). Asserting the exact
+    string here is what makes the two faces provably the same sentence — a substring check
+    would pass on two wordings that share a prefix."""
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="j")
+    argstate.save_last(entry.slug, extra_args=["*.png"])
+
+    result = runner.invoke(cli.app, ["run", "j", "--no-input"])
+
+    assert result.exit_code == 0, result.output
+    assert flows.as_is_note() in " ".join(result.stderr.split())
 
 
 def test_replaying_a_marked_tail_with_syntax_stays_quiet(tmp_path: Path, run_entry_spy) -> None:
@@ -971,7 +1253,7 @@ def test_manage_on_an_exe_names_the_declared_lane_it_does_have(tmp_path: Path) -
     assert "Declare one instead: skit params prog --add PARAM" in out
 
 
-def test_the_add_hint_shell_quotes_the_name_it_tells_you_to_paste(tmp_path: Path) -> None:
+def test_the_add_hint_quotes_the_name_it_tells_you_to_paste(tmp_path: Path) -> None:
     """The hint is a copy-pasteable COMMAND, and entry names may contain spaces. Unquoted, the
     line told the user to run `skit params my tool --add PARAM` — two arguments, an entry named
     "my" that doesn't exist, and a refusal that hands out a broken incantation is worse than
@@ -981,7 +1263,29 @@ def test_the_add_hint_shell_quotes_the_name_it_tells_you_to_paste(tmp_path: Path
     assert result.exit_code == 1
     out = " ".join(result.output.split())
     assert "my tool has no managed parameters" in out  # prose half: the name as the user sees it
-    assert "Declare one instead: skit params 'my tool' --add PARAM" in out
+    quoted = argv_text.join(["my tool"])
+    assert f"Declare one instead: skit params {quoted} --add PARAM" in out
+    if sys.platform != "win32":  # this run's convention, spelled out
+        assert "skit params 'my tool' --add PARAM" in out
+
+
+def test_the_add_hint_quotes_for_the_shell_the_user_is_sitting_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Round 7: shlex.quote wraps in SINGLE quotes, which cmd.exe does not treat as quoting at
+    all — the hint would tell a Windows user to paste `skit params 'my tool' --add PARAM`, and
+    the shell skit explicitly targets would split it into three arguments. argv_text.join is
+    the platform pair (shlex on POSIX, list2cmdline on Windows), so the copy-pasteable command
+    is pasteable where it is read."""
+    _exe(tmp_path, name="my tool")
+    monkeypatch.setattr(argv_text, "sys", types.SimpleNamespace(platform="win32"))
+
+    result = runner.invoke(cli.app, ["params", "my tool", "--manage", "WIDTH"])
+
+    assert result.exit_code == 1
+    out = " ".join(result.output.split())
+    assert 'Declare one instead: skit params "my tool" --add PARAM' in out
+    assert "'my tool'" not in out  # ...never the POSIX convention on the other platform
 
 
 def test_manage_on_a_python_entry_takes_the_analyzer_path_with_no_hint(tmp_path: Path) -> None:
