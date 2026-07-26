@@ -74,10 +74,10 @@ date = "2026-07-25"
 metric = "imports.list_json.n100.has_tree_sitter"
 max = 0
 tier = "enforced"
-note = "listing a populated library must not import a grammar. A boolean census fact, so enforceable without a ratchet — earned when LangSpec capabilities became lazy; the n0 census cannot see this, which is why the row keys on n100"
+note = "listing a populated library must not import a grammar. A boolean census fact — enforceable without a ratchet, and NOT pinned to a python version: whether a grammar is imported does not depend on the interpreter, and a pin would turn a CI python bump into a hard failure. The n0 census cannot see this, which is why the row keys on n100"
 
 [budget.context]
-python = "3.13"
+pr = "33"
 date = "2026-07-25"
 
 [[budget]]
@@ -162,7 +162,7 @@ tier = "enforced"
 note = "--version imports no typer. A boolean census fact, so enforceable without a ratchet — earned when the entry point became a dispatcher that answers the flag before importing the CLI"
 
 [budget.context]
-python = "3.13"
+pr = "33"
 date = "2026-07-25"
 
 [[budget]]
@@ -172,7 +172,7 @@ tier = "enforced"
 note = "--version imports no rich (and prints plainly, which rich's number highlighter did not)"
 
 [budget.context]
-python = "3.13"
+pr = "33"
 date = "2026-07-25"
 
 [[budget]]
@@ -182,7 +182,7 @@ tier = "enforced"
 note = "--version imports no textual"
 
 [budget.context]
-python = "3.13"
+pr = "33"
 date = "2026-07-25"
 
 [[budget]]
@@ -192,7 +192,7 @@ tier = "enforced"
 note = "--version imports no tree-sitter"
 
 [budget.context]
-python = "3.13"
+pr = "33"
 date = "2026-07-25"
 
 [[budget]]

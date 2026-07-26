@@ -8,21 +8,23 @@ runs. `--version` is not a real command: it answers from package metadata alone,
 agents and packaging checks call it far more often than people do.
 
 So the version flag is answered here, ahead of the import, and everything else falls
-through to Typer unchanged. The fast path only claims the flag in FIRST position, which
-is the only place Typer itself accepts it as an app-level option — anywhere else it is
-either a subcommand's own flag or a usage error, and both of those answers belong to
-Typer, not to this file.
+through to Typer unchanged. The fast path claims the flag only when it is the WHOLE
+command line — `skit --version`, nothing else. That is the one invocation whose answer
+cannot depend on anything Typer would have parsed: `skit --version foo` is a usage
+error Typer reports ("No such command 'foo'"), and `skit --version list` prints the
+version through the callback. Claiming a leading flag and ignoring the rest of argv
+would turn both of those into a silent exit 0.
 """
 
 from __future__ import annotations
 
 import sys
 
-_VERSION_FLAGS = ("--version", "-V")
+_VERSION_ARGV = (["--version"], ["-V"])
 
 
 def main() -> None:
-    if sys.argv[1:2] and sys.argv[1] in _VERSION_FLAGS:
+    if sys.argv[1:] in _VERSION_ARGV:
         from . import __version__
 
         # Plain print, not the CLI's rich Console: `--version` is a machine-facing

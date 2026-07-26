@@ -26,9 +26,10 @@ def __getattr__(name: str) -> str:
     `importlib.metadata` drags in the whole `email` parser stack, ~85 modules, which
     is the single largest import cost on skit's startup path. Almost no invocation
     needs the version, so nothing pays for it until something asks. The resolved value
-    is cached into the module globals, so this runs at most once per interpreter (and
-    `importlib.reload(skit)` clears it, which is how the no-distribution fallback stays
-    testable).
+    is cached into the module globals, so this runs at most once per interpreter — and
+    once cached, only deleting the attribute brings the resolver back (reload re-executes
+    the module in its EXISTING namespace and leaves already-set globals in place, so a
+    test that reloads to re-exercise the fallback would silently assert nothing).
     """
     if name != "__version__":
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

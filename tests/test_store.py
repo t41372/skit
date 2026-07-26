@@ -540,19 +540,20 @@ def test_summaries_match_full_entries_field_for_field(sample_script: Path, tmp_p
         assert summary.script_path == entry.script_path
 
 
-def test_summaries_serve_from_the_index_without_reading_metas(sample_script: Path):
-    """The whole point: one file read for the whole library. Proven by deleting every
-    meta.toml — a listing that still answers cannot have opened one."""
+def test_summaries_serve_from_the_index_without_parsing_metas(sample_script: Path):
+    """The whole point: the listing does not PARSE a meta per entry. Proven by filling
+    every meta.toml with garbage — a listing that still answers in full cannot have
+    read one. (It does still stat them; see the missing-meta test below for why.)"""
     from skit import store
 
     store.add_python(sample_script, name="one", description="first")
     store.add_command("echo hi", name="two", description="second")
     expected = [(s.slug, s.name, s.description) for s in store.list_summaries()]
     for entry in store.list_entries():
-        (entry.dir / "meta.toml").unlink()
+        (entry.dir / "meta.toml").write_text("not [ toml", encoding="utf-8")
 
     assert [(s.slug, s.name, s.description) for s in store.list_summaries()] == expected
-    assert store.list_entries() == []  # the full read has nothing left to read
+    assert store.list_entries() == []  # the parsing read has nothing left to read
 
 
 def test_a_row_an_older_skit_wrote_falls_back_to_its_meta(sample_script: Path):
@@ -567,7 +568,15 @@ def test_a_row_an_older_skit_wrote_falls_back_to_its_meta(sample_script: Path):
 
     atomic_write_toml(
         registry_path(),
-        {"entries": {entry.slug: {"name": "old", "kind": "python", "description": ""}}},
+        {
+            "entries": {
+                entry.slug: {
+                    "name": entry.meta.name,
+                    "kind": "python",
+                    "description": entry.meta.description,
+                }
+            }
+        },
     )
     assert store._load_index()[0] == 1
 
@@ -655,22 +664,20 @@ def test_widening_never_drops_an_entry_added_meanwhile(sample_script: Path, tmp_
     metas for, so an entry that landed between the read and the write survives."""
     from skit import store
 
-    old = store.add_python(sample_script, name="legacy")
-    store._save_registry({old.slug: {"name": "legacy", "kind": "python", "description": ""}})
+    old = store.add_python(sample_script, name="legacy", mode="reference")
+    legacy_row = {"name": "legacy", "kind": "python", "description": old.meta.description}
+    store._save_registry({old.slug: dict(legacy_row)})
 
     other = tmp_path / "other.py"
     other.write_text("print(2)\n", encoding="utf-8")
     raced = store.add_python(other, name="raced")
     # Roll the index back to the pre-add snapshot the listing read, then widen with it:
     # exactly the interleaving where a blind overwrite would erase `raced`.
-    store._save_registry({old.slug: {"name": "legacy", "kind": "python", "description": ""}})
+    store._save_registry({old.slug: dict(legacy_row)})
     stale = {old.slug: store._registry_row(old.meta)}
 
     def restore_the_race(_entries: object = None) -> dict[str, object]:
-        return {
-            old.slug: {"name": "legacy", "kind": "python", "description": ""},
-            raced.slug: store._registry_row(raced.meta),
-        }
+        return {old.slug: dict(legacy_row), raced.slug: store._registry_row(raced.meta)}
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(store, "_load_registry", restore_the_race)
@@ -749,3 +756,102 @@ def test_exe_is_always_reference_mode(tmp_path: Path):
     # ...and asked of the narrow shape a listing holds, the same answer.
     (summary,) = [s for s in store.list_summaries() if s.slug == entry.slug]
     assert spec.launch.target(summary) == entry.script_path
+
+
+def test_an_entry_whose_meta_is_gone_is_not_listed(sample_script: Path):
+    """Parity with the faces that read metas. Serving the index blindly would list an
+    entry the TUI and doctor both drop and `run` refuses — three faces disagreeing
+    about what the library contains, with `list --json` the one telling an agent the
+    entry is fine. A reference entry is the case that bites: its launch target still
+    exists, so the missing-marker cannot catch it."""
+    from skit import store
+
+    linked = store.add_python(sample_script, name="linked", mode="reference")
+    store.add_command("echo hi", name="kept")
+    import shutil
+
+    shutil.rmtree(linked.dir)
+
+    assert [s.name for s in store.list_summaries()] == ["kept"]
+    assert [e.meta.name for e in store.list_entries()] == ["kept"]
+    assert sample_script.exists()  # the original is untouched; only the store is gone
+
+
+def test_a_present_but_corrupt_meta_is_still_listed(sample_script: Path):
+    """The documented limit of the rule above: deciding a PRESENT meta is corrupt needs
+    the parse this whole function exists to avoid. The index is the membership
+    authority; doctor is the health command."""
+    from skit import store
+
+    entry = store.add_python(sample_script, name="broken")
+    (entry.dir / "meta.toml").write_text("not [ toml", encoding="utf-8")
+
+    assert [s.name for s in store.list_summaries()] == ["broken"]
+    assert store.list_entries() == []
+
+
+def test_a_non_mapping_row_falls_back_instead_of_crashing(sample_script: Path):
+    """registry.toml is a file a person can edit, so `entries.<slug>` may be a scalar.
+    A listing must degrade into the meta, not die of an AttributeError."""
+    from skit import store
+
+    entry = store.add_python(sample_script, name="real", description="the truth")
+    store._save_registry({entry.slug: "oops"})  # ty: ignore[invalid-argument-type]
+
+    (summary,) = store.list_summaries()
+    assert (summary.name, summary.description) == ("real", "the truth")
+
+
+def test_widening_gives_up_on_a_row_it_would_reject_again(sample_script: Path):
+    """A meta whose mode a hand edit made unrepresentable round-trips into a row this
+    same code rejects. Restaging it would retake the cross-process registry lock and
+    rewrite the whole index on EVERY listing, forever, without converging."""
+    import tomllib
+
+    from skit import store
+    from skit.paths import registry_path
+
+    entry = store.add_python(sample_script, name="odd")
+    doc = tomllib.loads((entry.dir / "meta.toml").read_text(encoding="utf-8"))
+    doc["mode"] = "sideways"
+    from skit.atomic import atomic_write_toml
+
+    atomic_write_toml(entry.dir / "meta.toml", doc)
+    # A v1 document, so the row cannot answer and the meta fallback actually runs.
+    atomic_write_toml(
+        registry_path(),
+        {"entries": {entry.slug: {"name": "odd", "kind": "python", "description": ""}}},
+    )
+    assert store._load_index()[0] == 1
+
+    before = registry_path().read_bytes()
+    for _ in range(3):
+        assert [s.name for s in store.list_summaries()] == ["odd"]
+    assert registry_path().read_bytes() == before  # never restaged, never rewritten
+
+
+def test_widening_keeps_a_rename_that_landed_meanwhile(sample_script: Path):
+    """The listing that produced these rows may have spent tens of ms reading metas,
+    and a rename can commit in that window. Writing the snapshot back whole would
+    revert it — and `resolve` matches display names off this index, so the entry would
+    be unreachable by its new name until someone ran `doctor --rebuild`."""
+    from skit import store
+
+    entry = store.add_python(sample_script, name="before", mode="reference")
+    stale = {entry.slug: store._registry_row(entry.meta)}
+    # The locked snapshot the upgrade will re-read: a rename has landed since.
+    renamed = dict(stale[entry.slug])
+    renamed["name"] = "after"
+
+    def locked_snapshot() -> dict[str, object]:
+        return {entry.slug: {"name": "after", "kind": "python", "description": "fresh"}}
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(store, "_load_registry", locked_snapshot)
+        store._upgrade_rows(stale)
+
+    row = store._load_registry()[entry.slug]
+    assert row["name"] == "after"  # the mutator owns it
+    assert row["description"] == "fresh"
+    assert row["mode"] == "reference"  # ...and the upgrade still added what it exists for
+    assert row["target"] == entry.meta.source

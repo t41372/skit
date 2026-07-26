@@ -92,10 +92,14 @@ the exact list, with reasons, is in `pyproject.toml`'s coverage `omit`).
 - **`footprint.library_*` measures the USER, not the tool** — every other footprint
   metric is what installing skit costs (wheel, sdist, closure). `library_bytes` is
   what the user's own entries weigh in the store, `library_state_bytes` what their
-  remembered values and presets weigh, and `library_bytes_per_entry` the figure that
-  scales. Deterministic, because the datasets are seeded. Per-script `node_modules` is
-  deliberately NOT in here: materializing it needs npm and the network, which the pr
-  profile must not touch.
+  remembered values and presets weigh, `library_total_bytes` their sum, and
+  `library_bytes_per_entry` that sum divided by N — the per-entry figure divides into
+  the TOTAL, not into the store figure it is printed beside.
+  **Host-dependent, so never budget material**: every meta.toml records its entry's
+  absolute source path, so the same seeded library totals different bytes under a CI
+  workdir and a local /tmp one. It compares one host against itself, which is what an
+  A/B run does. Per-script `node_modules` is deliberately NOT in here: materializing it
+  needs npm and the network, which the pr profile must not touch.
 
 ## Datasets
 

@@ -1460,6 +1460,22 @@ class TestContractSync:
         }
         assert actual == expected
 
+    def test_the_library_footprint_metrics_divide_into_each_other(self, tmp_path: Path) -> None:
+        """A per-entry mean printed beside a total that it does not divide into is a
+        trap for whoever reads the summary. This pins the pair to the same numerator."""
+        root = tmp_path / "ds"
+        manifest = generate(root, 3)
+        ctx = cast(RunCtx, SimpleNamespace(datasets={3: manifest}))
+        output = SuiteOutput(suite="footprint")
+        footprint_suite._library(ctx, pipeline.SuitePlan("footprint", ns=(3,)), output)
+
+        total = output.metrics["footprint.library_total_bytes.n3"].value
+        assert total == (
+            output.metrics["footprint.library_bytes.n3"].value
+            + output.metrics["footprint.library_state_bytes.n3"].value
+        )
+        assert output.metrics["footprint.library_bytes_per_entry.n3"].value == total / 3
+
     def test_broken_workloads_are_byte_stable_and_actually_broken(self) -> None:
         """The half-written twin is a workload like any other: its bytes are history.
         And it must genuinely fail to parse — a "broken" fixture that happens to be

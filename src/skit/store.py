@@ -816,19 +816,30 @@ def list_entries() -> list[Entry]:
     return out
 
 
-def _summary_from_row(slug: str, row: dict[str, Any], entry_dir: Path) -> EntrySummary | None:
+def _summary_from_row(slug: str, row: object, entry_dir: Path) -> EntrySummary | None:
     """An EntrySummary from an index row, or None when the row can't supply one.
 
     None is not an error — it means "a hand edit broke this row", and the caller
     re-reads that entry's meta.toml. Rows are only ever written by `_registry_row`, so
     in a store this skit wrote the answer is never None. (A row from an OLDER store is
     not distinguishable here at all — the document version decides that, before this.)
+
+    `row` is typed `object` on purpose: registry.toml is a file a person can edit, so
+    `entries.<slug>` may be a scalar rather than a table, and a listing must degrade
+    into the meta rather than die of an AttributeError.
     """
+    if not isinstance(row, dict):
+        return None
     name, kind, description = (row.get(key) for key in _ROW_KEYS)
     if not (isinstance(name, str) and isinstance(kind, str) and isinstance(description, str)):
         return None
-    mode = row.get("mode", "copy")  # omitted = the default, which is what most rows are
-    if mode != "copy" and mode != "reference":  # noqa: PLR1714 — narrows Mode; `in` does not
+    stored_mode = row.get("mode", "copy")  # omitted = the default, which most rows are
+    mode: Mode
+    if stored_mode == "copy":
+        mode = "copy"
+    elif stored_mode == "reference":
+        mode = "reference"
+    else:
         return None
     target = row.get("target", "")
     if not isinstance(target, str):
@@ -868,9 +879,16 @@ def list_summaries() -> list[EntrySummary]:
     An index a NEWER skit could not have written falls back to the metas, which are the
     truth: a whole document from an older store (its rows cannot say what mode they
     are), or a single row a hand edit broke. Either way the rows involved are then
-    rewritten, so the fallback is paid once. A corrupt meta is skipped, exactly as
-    `list_entries` skips it, and left for doctor. `doctor --rebuild` still reconstructs
-    the whole index from the metas.
+    rewritten, so the fallback is paid once — unless the rewritten row would be rejected
+    again, in which case it is left alone rather than restaged on every listing.
+
+    An entry with NO meta.toml is not listed, whatever the index says. That costs one
+    stat per entry, and it is worth it: without it the CLI would list an entry the TUI
+    and doctor (which read the metas) both drop, and `run` refuses — three faces
+    disagreeing about what the library contains. A meta that exists but is corrupt IS
+    listed, because deciding that needs the parse this function exists to avoid; the
+    index is the membership authority, and doctor is the health command. `doctor
+    --rebuild` still reconstructs the whole index from the metas.
     """
     version, entries = _load_index()
     root = scripts_dir()
@@ -878,6 +896,8 @@ def list_summaries() -> list[EntrySummary]:
     upgraded: dict[str, dict[str, Any]] = {}
     for slug in sorted(entries):
         entry_dir = root / slug
+        if not (entry_dir / "meta.toml").exists():
+            continue  # storage is gone; the index is stale and doctor owns that
         summary = (
             None if version < INDEX_VERSION else _summary_from_row(slug, entries[slug], entry_dir)
         )
@@ -887,7 +907,14 @@ def list_summaries() -> list[EntrySummary]:
             except _META_CORRUPTION:
                 continue  # leave corrupt entries for doctor to handle
             summary = _summary_from_meta(slug, meta, entry_dir)
-            upgraded[slug] = _registry_row(meta)
+            row = _registry_row(meta)
+            # Only stage a rewrite that would actually be accepted next time. A meta
+            # whose mode/description a hand edit made unrepresentable round-trips into
+            # a row this same function rejects, and restaging it would retake the
+            # cross-process registry lock and rewrite the whole index on EVERY listing,
+            # forever, without ever converging.
+            if _summary_from_row(slug, row, entry_dir) is not None:
+                upgraded[slug] = row
         out.append(summary)
     if upgraded:
         _upgrade_rows(upgraded)
@@ -905,14 +932,27 @@ def _upgrade_rows(rows: dict[str, dict[str, Any]]) -> None:
 
     Best effort, by design: this is a read path, and a read must not fail because an
     index it does not depend on could not be refreshed (a read-only store, a store
-    another process is mid-write on). It also only ever FILLS IN the slugs it has
-    metas for, re-reading under the lock so a concurrent add cannot be dropped.
+    another process is mid-write on).
+
+    Re-read under the lock, and merge by FIELD OWNERSHIP rather than writing the
+    snapshot back whole. The listing that produced these rows may have spent tens of
+    milliseconds reading metas, and a rename or set-description can commit in that
+    window; writing the snapshot wholesale would revert it, leaving the entry
+    unreachable by its new name (resolve matches display names off this index) until
+    someone ran `doctor --rebuild`. So `name` and `description` — the two fields a
+    mutator owns — are kept as the locked snapshot has them, and only the add-time
+    facts this upgrade exists to add are taken from the meta.
     """
+    owned_by_the_meta = ("kind", "mode", "target")
     with contextlib.suppress(OSError), _registry_lock():
         entries = _load_registry()
         for slug, row in rows.items():
-            if slug in entries:
-                entries[slug] = row
+            current = entries.get(slug)
+            if not isinstance(current, dict):
+                continue  # added/removed, or hand-broken, since the listing read it
+            merged = {key: value for key, value in current.items() if key not in owned_by_the_meta}
+            merged.update({k: v for k, v in row.items() if k in owned_by_the_meta})
+            entries[slug] = merged
         _save_registry(entries)
 
 

@@ -108,11 +108,13 @@ def _cancelled_add() -> NoReturn:
 
 
 def _complete_script(incomplete: str) -> list[str]:
+    # Summaries, not full entries: completion needs a name and a slug, and this is the
+    # one path where the cost is felt as keyboard lag while the user waits on TAB.
     try:
-        entries = store.list_entries()
+        entries = store.list_summaries()
     except Exception:  # completion must never crash the shell
         return []
-    out = {e.meta.name for e in entries} | {e.slug for e in entries}
+    out = {e.name for e in entries} | {e.slug for e in entries}
     return sorted(c for c in out if c.startswith(incomplete))
 
 
@@ -148,8 +150,8 @@ def main(
 ) -> None:
     if version:
         # The same answer the __main__ dispatcher gives ahead of this import, in the
-        # same plain form — reached when the flag is not in first position (after
-        # --install-completion, say), which is the only case the fast path leaves here.
+        # same plain form. Reached whenever the flag is not the whole command line —
+        # `skit --version list`, say — which is everything the fast path leaves alone.
         from . import __version__
 
         print(f"skit {__version__}")

@@ -115,13 +115,25 @@ def test_no_arguments_reaches_the_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     assert called == [True]
 
 
-@pytest.mark.parametrize("argv", [["list", "--version"], ["--install-completion", "--version"]])
-def test_the_flag_is_only_claimed_in_first_position(
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["list", "--version"],
+        ["--install-completion", "--version"],
+        ["--version", "foo"],
+        ["--version", "list"],
+        ["-V", "bar", "baz"],
+    ],
+)
+def test_the_flag_is_claimed_only_as_the_whole_command_line(
     monkeypatch: pytest.MonkeyPatch, argv: list[str]
 ) -> None:
-    """Typer accepts `--version` as an app-level option in first position only;
-    anywhere else it is a subcommand's own flag or a usage error, and both of those
-    answers belong to Typer. The dispatcher must not intercept them."""
+    """`skit --version` is the one invocation whose answer cannot depend on anything
+    Typer would have parsed. `skit --version foo` is a usage error Typer reports ("No
+    such command 'foo'"); `skit --version list` prints the version through the
+    callback; `skit --install-completion --version` exits on the eager option first.
+    A dispatcher that claimed a LEADING flag and ignored the rest of argv would turn
+    all of those into a silent exit 0."""
     called: list[bool] = []
     monkeypatch.setattr(sys, "argv", ["skit", *argv])
     monkeypatch.setattr("skit.cli.app", lambda: called.append(True))
@@ -148,3 +160,14 @@ def test_the_console_script_points_at_the_dispatcher() -> None:
     """If the entry point goes back to `skit.cli:app`, every test above still passes
     while the installed `skit` command quietly pays the full import again."""
     assert PYPROJECT["project"]["scripts"] == {"skit": "skit.__main__:main"}
+
+
+@pytest.mark.parametrize("argv", [["--version", "foo"], ["-V", "bar", "baz"]])
+def test_a_bad_invocation_still_fails_through_the_dispatcher(argv: list[str]) -> None:
+    """The behavioral half of the test above: these command lines exited non-zero
+    before the dispatcher existed, and must still. Run end to end so the assertion is
+    about what a user's shell sees, not about which function was called."""
+    proc = _run(argv)
+    code, _ = _report(proc)
+    assert code not in (None, 0)
+    assert "skit " not in proc.stdout
