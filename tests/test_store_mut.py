@@ -489,9 +489,34 @@ def test_add_entry_cleanup_on_failure_ignores_rmtree_errors(sample_script, monke
 
 
 def test_add_entry_registry_index_has_correct_keys(sample_script):
+    """The index row is the listing projection of the meta: every field `skit list`
+    renders, so it never has to open a meta.toml to render one."""
     entry = store.add_python(sample_script, name="hi", description="desc here")
     reg = store._load_registry()
-    assert reg[entry.slug] == {"name": "hi", "kind": "python", "description": "desc here"}
+    # `mode` is always present and `mtime_ns` stamps the meta the row was projected
+    # from (freshness/trust), while `target` appears only when the entry launches
+    # something outside the store — every resolve() parses this whole file to answer
+    # one lookup, so nothing optional rides along.
+    import os
+
+    assert reg[entry.slug] == {
+        "name": "hi",
+        "kind": "python",
+        "mode": "copy",
+        "description": "desc here",
+        "mtime_ns": os.stat(entry.dir / "meta.toml").st_mtime_ns,
+    }
+    linked = store.add_python(
+        sample_script, name="linked", mode="reference", description="linked desc"
+    )
+    assert store._load_registry()[linked.slug] == {
+        "name": "linked",
+        "kind": "python",
+        "description": "linked desc",
+        "mode": "reference",
+        "target": str(sample_script.resolve()),
+        "mtime_ns": os.stat(linked.dir / "meta.toml").st_mtime_ns,
+    }
 
 
 def test_resolve_not_found_exact_message(tmp_path):
@@ -689,15 +714,20 @@ def test_doctor_rebuild_corrupt_meta_exact_message(tmp_path):
 
 
 def test_doctor_rebuild_registry_index_has_correct_keys(sample_script):
-    """The rebuilt registry rows must use the same schema as _add_entry writes
-    ("name"/"kind"/"description"), otherwise resolve() and the index consumers break."""
+    """The rebuilt registry rows must use the same schema as _add_entry writes,
+    otherwise resolve() and the index consumers break. Both go through _registry_row,
+    so this pins that they still agree — and that a rebuild restores a row complete
+    enough to serve a summary without falling back to the meta."""
     entry = store.add_python(sample_script, name="hi", description="desc here")
+    expected = store._load_registry()[entry.slug]
     os.unlink(registry_path())
 
     store.doctor_rebuild()
     reg = store._load_registry()
-    assert reg[entry.slug] == {"name": "hi", "kind": "python", "description": "desc here"}
+    assert reg[entry.slug] == expected
     assert store.resolve("hi").slug == entry.slug
+    row = reg[entry.slug]
+    assert store._summary_from_row(entry.slug, row, entry.dir, row["mtime_ns"]) is not None
 
 
 # ===========================================================================

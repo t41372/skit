@@ -27,6 +27,7 @@ from .models import Entry
 
 if TYPE_CHECKING:
     from .config import PromptRunner
+    from .langs.base import ListedEntry
 
 # Public re-exports: the exception family is part of launcher's stable surface
 # (flows/cli/tui catch launcher.LaunchError) even though it now lives in langs/base.
@@ -132,18 +133,21 @@ def describe_command(
     return spec.launch.describe(entry, extra_args or [], values, script_override, runner=runner)
 
 
-def target_missing(entry: Entry) -> bool:
+def target_missing(entry: ListedEntry) -> bool:
     """Whether entry's launch target is already known to be gone from disk: the source path for
     exe/reference entries, the stored copy for copy-mode python. Command entries have no file
-    target and never report missing."""
-    spec = spec_for(entry.meta.kind)
+    target and never report missing.
+
+    Takes the narrow ListedEntry shape, so a listing can ask it of an EntrySummary
+    without reading that entry's meta.toml — one rule, both callers."""
+    spec = spec_for(entry.kind)
     if spec is None:
         return False  # unknown kind: nothing this version can check
     target = spec.launch.target(entry)
     return target is not None and not target.exists()
 
 
-def missing_marker(entry: Entry) -> str | None:
+def missing_marker(entry: ListedEntry) -> str | None:
     """A human-readable "target is missing" message for entry, or None when it's healthy or has no
     file target (command entries). Callers decide how to style/render it (TUI table, CLI list).
     exe entries are always reference-mode, so script_path is exactly their source path."""

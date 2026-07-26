@@ -87,8 +87,8 @@ def test_ts_spec_scalar_fields_and_empty_shebangs():
 
 
 def test_js_spec_cli_reader_is_wired_and_reads_parseargs():
-    # cli_reader=cli_reader_cap: the parseArgs reader must be present AND functional. Nulling or
-    # dropping the kwarg leaves cli_reader=None (the base default), so this real read would crash.
+    # Capabilities(cli_reader=...): the parseArgs reader must be present AND functional. Nulling or
+    # dropping the kwarg leaves cli_reader=None (the bundle default), so this real read would crash.
     spec = registry.spec_for("js")
     assert spec is not None
     assert spec.cli_reader is not None
@@ -99,8 +99,8 @@ def test_js_spec_cli_reader_is_wired_and_reads_parseargs():
 
 
 def test_js_spec_injector_is_wired_and_rewrites_a_const(tmp_path):
-    # injector=injector_cap: the const injector must be present AND functional. Nulling/dropping it
-    # leaves injector=None (base default) → the call below would crash instead of rewriting.
+    # Capabilities(injector=...): the const injector must be present AND functional. Nulling/dropping
+    # it leaves injector=None (bundle default) → the call below would crash instead of rewriting.
     spec = registry.spec_for("js")
     assert spec is not None
     assert spec.injector is not None
@@ -116,8 +116,8 @@ def test_js_spec_injector_is_wired_and_rewrites_a_const(tmp_path):
 
 
 def test_js_spec_dep_scanner_is_wired_and_reports_imports():
-    # dep_scanner=dep_scanner: the npm import scanner must be present AND functional. Nulling/dropping
-    # it leaves dep_scanner=None (base default) → not callable.
+    # Capabilities(dep_scanner=...): the npm import scanner must be present AND functional.
+    # Nulling/dropping it leaves dep_scanner=None (bundle default) → not callable.
     spec = registry.spec_for("js")
     assert spec is not None
     assert spec.dep_scanner is not None

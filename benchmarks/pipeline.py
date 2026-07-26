@@ -46,7 +46,7 @@ def build_plan(profile: str) -> tuple[SuitePlan, ...]:
     if profile == "pr":
         return (
             SuitePlan("imports", ns=(0, 100)),
-            SuitePlan("footprint", ns=(0,), closure=False),
+            SuitePlan("footprint", ns=(0, 1000), closure=False),
             SuitePlan("rss", ns=(0, 1000), samples=5),
             SuitePlan("startup", ns=(0,), warmup=3, min_runs=15),
             SuitePlan("scale", ns=(0, 100, 1000), warmup=3, min_runs=15),
@@ -57,7 +57,7 @@ def build_plan(profile: str) -> tuple[SuitePlan, ...]:
     if profile == "full":
         return (
             SuitePlan("imports", ns=(0, 100)),
-            SuitePlan("footprint", ns=(0,), closure=True),
+            SuitePlan("footprint", ns=(0, 1000), closure=True),
             SuitePlan("rss", ns=(0, 1000), samples=10),
             SuitePlan("startup", ns=(0,), warmup=5, min_runs=40),
             SuitePlan("scale", ns=(0, 10, 100, 1000), warmup=5, min_runs=40, doctor=True),
@@ -211,6 +211,7 @@ HEADLINE_METRICS: tuple[str, ...] = (
     "run_overhead.shell.overhead_ms",
     "tui.first_idle.n100.median_ms",
     "tui.first_idle.n1000.median_ms",
+    "tui.select.n1000.median_ms",
     "tui.search.n1000.median_ms",
     "rss.version.peak_kib",
     "rss.list_json.n1000.peak_kib",
@@ -220,7 +221,10 @@ HEADLINE_METRICS: tuple[str, ...] = (
     "imports.list_json.n100.has_tree_sitter",
     "footprint.wheel_bytes",
     "footprint.closure_bytes",
+    "footprint.library_total_bytes.n1000",
+    "footprint.library_bytes_per_entry.n1000",
     "micro.store.list_entries.n1000.median_us",
+    "micro.store.list_summaries.n1000.median_us",
     "syscalls.list_json.file_ops",
     "pipeline.duration_s",
 )

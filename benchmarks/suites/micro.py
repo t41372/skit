@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
 _MICRO_DIR = Path(__file__).parent.parent / "micro"
 _SOURCE_LINES = (20, 200, 2000)
+_BROKEN_LINES = 2000  # the half-written twin's size; must be one of _SOURCE_LINES
 _COLD_SAMPLES = 5
 
 _COLD_PROBE = """\
@@ -103,6 +104,11 @@ def _materialize_sources(ctx: RunCtx) -> Path:
         for lines in _SOURCE_LINES:
             path = sources_dir / f"{lang}_{lines}.{sources.EXTENSIONS[lang]}"
             path.write_text(sources.generate(lang, lines), encoding="utf-8")
+        # One broken twin, at the largest size only: error recovery is the interesting
+        # curve and the big file is where it costs, while doubling every size would
+        # double the micro suite's wall clock for no extra signal.
+        broken = sources_dir / f"{lang}_{_BROKEN_LINES}_broken.{sources.EXTENSIONS[lang]}"
+        broken.write_text(sources.generate_broken(lang, _BROKEN_LINES), encoding="utf-8")
     return sources_dir
 
 

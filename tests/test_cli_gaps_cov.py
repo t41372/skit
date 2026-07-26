@@ -88,11 +88,23 @@ def test_complete_script_returns_names_and_slugs(tmp_path):
 
 
 def test_complete_script_swallows_store_errors(monkeypatch):
-    def boom() -> list[store.Entry]:
+    def boom() -> list[store.EntrySummary]:
         raise RuntimeError("store is broken")
 
-    monkeypatch.setattr(cli.store, "list_entries", boom)
+    monkeypatch.setattr(cli.store, "list_summaries", boom)
     assert cli._complete_script("x") == []  # completion must never crash the shell
+
+
+def test_complete_script_does_not_read_a_meta_per_entry(tmp_path, monkeypatch):
+    """TAB completion needs a name and a slug, both of which the index holds. Reading
+    a meta.toml per entry is felt directly as keyboard lag on a big library."""
+    store.add_python(_py(tmp_path, "print(1)\n"), name="alpha")
+
+    def refuse() -> list[store.Entry]:
+        raise AssertionError("completion parsed a meta.toml per entry")
+
+    monkeypatch.setattr(cli.store, "list_entries", refuse)
+    assert cli._complete_script("al") == ["alpha"]
 
 
 def _ctx(name: object) -> typer.Context:
@@ -289,7 +301,7 @@ def test_run_assemble_form_error_exits_125(tmp_path, monkeypatch):
     def boom(*_a: object, **_k: object) -> object:
         raise flows.FormError("assembly blew up")
 
-    monkeypatch.setattr(cli.flows, "assemble", boom)
+    monkeypatch.setattr(flows, "assemble", boom)
     result = runner.invoke(cli.app, ["run", "j", "--no-input"])
     assert result.exit_code == 125  # skit-side failure
     assert "assembly blew up" in result.output

@@ -55,7 +55,8 @@ Repository = "https://github.com/t41372/skit"
 Issues = "https://github.com/t41372/skit/issues"
 
 [project.scripts]
-skit = "skit.cli:app"
+# The dispatcher, not the Typer app: it answers --version without importing the CLI.
+skit = "skit.__main__:main"
 
 [dependency-groups]
 dev = [
@@ -212,6 +213,9 @@ ignore = [
 "benchmarks/budgets.py" = [
     "PLR0911", # the outcome evaluator returns exactly once per decay channel by design
     "PLR0912", # the row validator checks one field per branch; collapsing them hides errors
+]
+"src/skit/store.py" = [
+    "PLR0911", # _summary_from_row refuses once per distrust reason; collapsing them hides which
 ]
 "tests/**" = [
     "S101",    # assert is the point of tests

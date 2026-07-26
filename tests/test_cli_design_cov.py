@@ -10,7 +10,6 @@ or the exact user-facing wording — never that a line merely ran.
 
 from __future__ import annotations
 
-import dataclasses
 import io
 import json
 import sys
@@ -703,14 +702,13 @@ def test_add_js_stdin_explicit_dep_beats_scanner(tmp_path):
 def test_add_js_stdin_without_scanner_still_adds_no_deps(tmp_path, monkeypatch):
     """A2 degradation: a broken js grammar leaves dep_scanner None. The stdin lane must
     still add the entry (no scan, no crash) — it just records no dependencies."""
-    import dataclasses
 
     real = cli.spec_for
 
     def scannerless(kind):
         s = real(kind)
         if kind == "js" and s is not None:
-            return dataclasses.replace(s, dep_scanner=None)
+            return s.without("dep_scanner")
         return s
 
     monkeypatch.setattr(cli, "spec_for", scannerless)
@@ -987,7 +985,7 @@ def test_onboard_script_params_or_guard_returns_early_without_analyzer(tmp_path,
     `analyzer.analyze`. The `and` mutant would fall through and crash on None.analyze."""
     _shell(tmp_path, name="d")
     _fake_tty(monkeypatch)
-    faceless = dataclasses.replace(_spec("shell"), analyzer=None)  # analyzer None, params_io kept
+    faceless = _spec("shell").without("analyzer")  # analyzer None, params_io kept
     assert cli._onboard_script_params(store.resolve("d"), faceless, no_input=False) == []
 
 

@@ -33,48 +33,52 @@ date = "2026-07-20"
 
 [[budget]]
 metric = "imports.version.modules"
-max = 321
+max = 165
 tier = "enforced"
 ratchet = true
 headroom = 0.1
-note = "ratchet: --version may not import more modules before the fast-path PR lands (291 measured + 10% headroom)"
+note = "ratchet: --version's import graph — the dispatcher answers the flag before importing the CLI, so this is the dispatcher plus the metadata read and nothing else (150 measured + 10% headroom, down from 291)"
 
 [budget.context]
 python = "3.13"
-pr = "29"
-date = "2026-07-25"
+pr = "33"
+date = "2026-07-26"
 
 [[budget]]
 metric = "imports.list_json.n0.modules"
-max = 321
+max = 270
 tier = "enforced"
 ratchet = true
 headroom = 0.1
-note = "ratchet: list's import graph on an EMPTY library — the CLI floor, no kind resolved (291 measured + 10% headroom)"
+note = "ratchet: list's import graph on an EMPTY library — the CLI floor, no kind resolved (245 measured + 10% headroom, down from 291: the version now resolves lazily and the command bodies import their own dependencies)"
 
 [budget.context]
 python = "3.13"
-pr = "29"
-date = "2026-07-25"
+pr = "33"
+date = "2026-07-26"
 
 [[budget]]
 metric = "imports.list_json.n100.modules"
-max = 347
+max = 274
 tier = "enforced"
 ratchet = true
 headroom = 0.1
-note = "ratchet: the census a real library actually pays — resolving a kind builds its LangSpec, which imports that language's grammar (315 measured + 10% headroom)"
+note = "ratchet: the census a real library actually pays — now only 4 modules above the empty-library floor, because resolving a kind no longer imports that language's grammar (249 measured + 10% headroom, down from 315)"
 
 [budget.context]
 python = "3.13"
-pr = "29"
-date = "2026-07-25"
+pr = "33"
+date = "2026-07-26"
 
 [[budget]]
 metric = "imports.list_json.n100.has_tree_sitter"
 max = 0
-tier = "target"
-note = "acceptance for the parser-free kind descriptor (#15 P2): listing a populated library must not import a grammar. Deliberately red today — the n0 census cannot see this, which is why the row keys on n100"
+tier = "enforced"
+note = "listing a populated library must not import a grammar. A boolean census fact — enforceable without a ratchet, and NOT pinned to a python version: whether a grammar is imported does not depend on the interpreter, and a pin would turn a CI python bump into a hard failure. The n0 census cannot see this, which is why the row keys on n100"
+
+[budget.context]
+pr = "33"
+date = "2026-07-25"
 
 [[budget]]
 metric = "pipeline.skipped_count"
@@ -154,26 +158,42 @@ note = "full dependency closure at most 64 MiB (excludes interpreter, uv, caches
 [[budget]]
 metric = "imports.version.has_typer"
 max = 0
-tier = "target"
-note = "fast-path acceptance: --version imports no typer"
+tier = "enforced"
+note = "--version imports no typer. A boolean census fact, so enforceable without a ratchet — earned when the entry point became a dispatcher that answers the flag before importing the CLI"
+
+[budget.context]
+pr = "33"
+date = "2026-07-25"
 
 [[budget]]
 metric = "imports.version.has_rich"
 max = 0
-tier = "target"
-note = "fast-path acceptance: --version imports no rich"
+tier = "enforced"
+note = "--version imports no rich (and prints plainly, which rich's number highlighter did not)"
+
+[budget.context]
+pr = "33"
+date = "2026-07-25"
 
 [[budget]]
 metric = "imports.version.has_textual"
 max = 0
-tier = "target"
-note = "fast-path acceptance: --version imports no textual"
+tier = "enforced"
+note = "--version imports no textual"
+
+[budget.context]
+pr = "33"
+date = "2026-07-25"
 
 [[budget]]
 metric = "imports.version.has_tree_sitter"
 max = 0
-tier = "target"
-note = "fast-path acceptance: --version imports no tree-sitter"
+tier = "enforced"
+note = "--version imports no tree-sitter"
+
+[budget.context]
+pr = "33"
+date = "2026-07-25"
 
 [[budget]]
 metric = "syscalls.list_json.network"

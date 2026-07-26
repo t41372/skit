@@ -19,12 +19,15 @@ from typing import TYPE_CHECKING
 
 from . import launch
 from .base import (
+    NO_CAPABILITIES,
     Analyzer,
+    Capabilities,
     CliReader,
     CommentSyntax,
     Injector,
     LangSpec,
     LaunchStrategy,
+    LazyCapabilities,
     Normalizer,
     ParamsIO,
 )
@@ -33,8 +36,18 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
+def _python_caps() -> Capabilities:
+    from .python import analyzer, argspec, reconcile, shim
+
+    return Capabilities(
+        analyzer=Analyzer(analyze=analyzer.analyze, reconcile=reconcile.reconcile),
+        cli_reader=CliReader(read_cli=argspec.read_cli),
+        injector=Injector(inject=shim.inject_entry),
+    )
+
+
 def _python_spec() -> LangSpec:
-    from .python import analyzer, argspec, metawriter, reconcile, shim
+    from .python import metawriter  # params_io is grammar-free, so it stays eager
 
     return LangSpec(
         kind="python",
@@ -46,9 +59,7 @@ def _python_spec() -> LangSpec:
         stored_name="script.py",  # PINNED: existing stores carry this name on disk
         comment=CommentSyntax(prefix="#"),
         params_io=ParamsIO(read=metawriter.read_params, write=metawriter.write_params),
-        analyzer=Analyzer(analyze=analyzer.analyze, reconcile=reconcile.reconcile),
-        cli_reader=CliReader(read_cli=argspec.read_cli),
-        injector=Injector(inject=shim.inject_entry),
+        capabilities=LazyCapabilities(_python_caps),
         supports_modes=True,
         deps_flavor="uv",
     )
@@ -82,6 +93,25 @@ def _interpreted(
     )
 
 
+def _shell_caps() -> Capabilities:
+    try:
+        # One guard for all four: every one of them is a tree-sitter consumer (inject/normalize and
+        # the getopts reader import the analyzer's grammar handle and node helpers), so they stand or
+        # fall together — a broken grammar wheel must not leave a half-capable shell kind behind.
+        from .shell import analyzer, cli_reader, inject, normalize
+    except ImportError:  # pragma: no cover — a broken/absent tree-sitter grammar wheel
+        # Degrade the capabilities to None (the `if spec.analyzer is None` idiom downstream handles
+        # the rest); everything else about the shell kind still works. With no analyzer there are no
+        # detected params at all, so an inject-delivery value can never reach the missing injector.
+        return NO_CAPABILITIES
+    return Capabilities(
+        analyzer=Analyzer(analyze=analyzer.analyze, reconcile=analyzer.reconcile),
+        cli_reader=CliReader(read_cli=cli_reader.read_cli),
+        injector=Injector(inject=inject.inject),
+        normalizer=Normalizer(normalize=normalize.normalize_idiom),
+    )
+
+
 def _shell_spec() -> LangSpec:
     from .python import metawriter  # the '#'-comment block engine is language-blind (PEP-723 regex)
 
@@ -95,40 +125,23 @@ def _shell_spec() -> LangSpec:
     )
     # The in-file [tool.skit] block works verbatim on shell text (same '#' comment prefix), so shell
     # gets the full manage/reconcile experience through the same metawriter as Python.
-    analyzer_cap: Analyzer | None
-    injector_cap: Injector | None
-    normalizer_cap: Normalizer | None
-    cli_reader_cap: CliReader | None
-    try:
-        # One guard for all four: every one of them is a tree-sitter consumer (inject/normalize and
-        # the getopts reader import the analyzer's grammar handle and node helpers), so they stand or
-        # fall together — a broken grammar wheel must not leave a half-capable shell kind behind.
-        from .shell import analyzer, cli_reader, inject, normalize
-    except ImportError:  # pragma: no cover — a broken/absent tree-sitter grammar wheel
-        # Degrade the capabilities to None (the `if spec.analyzer is None` idiom downstream handles
-        # the rest); everything else about the shell kind still works. With no analyzer there are no
-        # detected params at all, so an inject-delivery value can never reach the missing injector.
-        analyzer_cap = None
-        injector_cap = None
-        normalizer_cap = None
-        cli_reader_cap = None
-    else:
-        analyzer_cap = Analyzer(analyze=analyzer.analyze, reconcile=analyzer.reconcile)
-        injector_cap = Injector(inject=inject.inject)
-        normalizer_cap = Normalizer(normalize=normalize.normalize_idiom)
-        cli_reader_cap = CliReader(read_cli=cli_reader.read_cli)
     return replace(
         spec,
         params_io=ParamsIO(read=metawriter.read_params, write=metawriter.write_params),
-        analyzer=analyzer_cap,
-        cli_reader=cli_reader_cap,
-        injector=injector_cap,
-        normalizer=normalizer_cap,
+        capabilities=LazyCapabilities(_shell_caps),
+    )
+
+
+def _fish_caps() -> Capabilities:
+    from .fish import analyzer, cli_reader
+
+    return Capabilities(
+        analyzer=Analyzer(analyze=analyzer.analyze, reconcile=analyzer.reconcile),
+        cli_reader=CliReader(read_cli=cli_reader.read_cli),
     )
 
 
 def _fish_spec() -> LangSpec:
-    from .fish import analyzer, cli_reader
     from .python import metawriter  # the '#'-comment block engine is language-blind (PEP-723 regex)
 
     spec = _interpreted("fish", "∿", "fish", (".fish",), ("fish",), "#")
@@ -141,14 +154,11 @@ def _fish_spec() -> LangSpec:
     return replace(
         spec,
         params_io=ParamsIO(read=metawriter.read_params, write=metawriter.write_params),
-        analyzer=Analyzer(analyze=analyzer.analyze, reconcile=analyzer.reconcile),
-        cli_reader=CliReader(read_cli=cli_reader.read_cli),
+        capabilities=LazyCapabilities(_fish_caps),
     )
 
 
-def _js_analysis(
-    lang: str,
-) -> tuple[Analyzer | None, CliReader | None, Injector | None, Callable[[str], list[str]] | None]:
+def _js_analysis(lang: str) -> Capabilities:
     """The four tree-sitter-backed JS/TS capabilities for a `lang` ("js"/"ts"), behind ONE import
     guard: analyzer, parseArgs reader, injector and dep scanner are all grammar consumers, so they
     stand or fall together — a broken grammar wheel must not leave a half-capable kind behind. Each
@@ -157,15 +167,17 @@ def _js_analysis(
     try:
         from .javascript import analyzer, cli_reader, inject
     except ImportError:  # pragma: no cover — a broken/absent tree-sitter grammar wheel
-        return None, None, None, None
-    return (
-        Analyzer(
+        return NO_CAPABILITIES
+    return Capabilities(
+        analyzer=Analyzer(
             analyze=lambda text: analyzer.analyze(text, lang=lang),
             reconcile=lambda text, specs: analyzer.reconcile(text, specs, lang=lang),
         ),
-        CliReader(read_cli=lambda text: cli_reader.read_cli(text, lang=lang)),
-        Injector(inject=lambda request: inject.inject(request, lang=lang)),
-        lambda text: analyzer.external_imports(text, lang=lang),
+        cli_reader=CliReader(read_cli=lambda text: cli_reader.read_cli(text, lang=lang)),
+        injector=Injector(inject=lambda request: inject.inject(request, lang=lang)),
+        # Per-script npm deps (package.json + node_modules materialized next to the stored copy —
+        # the PEP 723 analogue); the scanner suggests the list from the script's own imports.
+        dep_scanner=lambda text: analyzer.external_imports(text, lang=lang),
     )
 
 
@@ -184,17 +196,11 @@ def _javascript_spec(kind: str, glyph: str, extensions: tuple[str, ...], lang: s
         "//",
         launch_strategy=launch.RunnerLaunch(),
     )
-    analyzer_cap, cli_reader_cap, injector_cap, dep_scanner = _js_analysis(lang)
     return replace(
         spec,
         params_io=ParamsIO(read=io.read_params, write=io.write_params),
-        analyzer=analyzer_cap,
-        cli_reader=cli_reader_cap,
-        injector=injector_cap,
-        # Per-script npm deps (package.json + node_modules materialized next to the stored copy —
-        # the PEP 723 analogue); the scanner suggests the list from the script's own imports.
+        capabilities=LazyCapabilities(lambda: _js_analysis(lang)),
         deps_flavor="npm",
-        dep_scanner=dep_scanner,
     )
 
 
@@ -206,11 +212,15 @@ def _ts_spec() -> LangSpec:
     return _javascript_spec("ts", "✧", (".ts", ".mts", ".cts"), "ts")
 
 
+def _powershell_caps() -> Capabilities:
+    from .powershell import cli_reader
+
+    return Capabilities(cli_reader=CliReader(read_cli=cli_reader.read_cli))
+
+
 def _powershell_spec() -> LangSpec:
     # `pwsh -File` (explicit file semantics); powershell.exe users set
     # meta.interpreter — the strategy resolves whatever name is recorded.
-    from .powershell import cli_reader
-
     spec = _interpreted(
         "powershell",
         "»",
@@ -224,7 +234,7 @@ def _powershell_spec() -> LangSpec:
     # subprocess, stdlib only — no import guard needed; the reader degrades at run time when
     # no pwsh/powershell.exe is on PATH). No analyzer/injector: injection is out of scope for
     # PowerShell in v1 — the reader assembles real `-Name value` flags instead.
-    return replace(spec, cli_reader=CliReader(read_cli=cli_reader.read_cli))
+    return replace(spec, capabilities=LazyCapabilities(_powershell_caps))
 
 
 def _ruby_spec() -> LangSpec:

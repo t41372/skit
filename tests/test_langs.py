@@ -9,6 +9,8 @@ of crashing (list/show keep working; only run fails, with a clean LaunchError).
 
 from __future__ import annotations
 
+import dataclasses
+import subprocess
 import sys
 from pathlib import Path
 
@@ -17,6 +19,7 @@ from typer.testing import CliRunner
 
 from skit import launcher
 from skit.langs import registry
+from skit.langs.base import CliReader
 from skit.models import Entry, ScriptMeta
 
 runner = CliRunner()
@@ -103,6 +106,75 @@ def test_exe_and_command_specs_have_no_analysis_capabilities():
     # (the parameter surface keys off this, not the reuse-last-args affordance).
     assert exe.takes_argv
     assert not cmd.takes_argv
+
+
+def test_resolving_a_spec_does_not_import_a_language_parser():
+    """The contract behind LazyCapabilities: the Library table, `skit list` and every
+    launch resolve specs for their glyph, family and launch strategy — none of which
+    needs a grammar. Loading three tree-sitter grammars to draw a kind badge cost ~42
+    modules and ~10 ms on a path an agent calls constantly."""
+    probe = (
+        "import sys\n"
+        "from skit.langs.registry import spec_for\n"
+        "for kind in ('python', 'shell', 'fish', 'js', 'ts', 'powershell'):\n"
+        "    spec = spec_for(kind)\n"
+        "    assert spec is not None\n"
+        "    spec.glyph, spec.family, spec.launch, spec.stored_name, spec.supports_modes\n"
+        "print([m for m in sys.modules if m.startswith('tree_sitter')])\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True, timeout=120
+    )
+    assert result.stdout.strip() == "[]"
+
+
+def test_asking_for_a_capability_resolves_it_once():
+    """The deferral is invisible: a capability reads exactly as it did when it was a
+    field, and the builder runs at most once per kind."""
+    builds: list[int] = []
+
+    def build() -> registry.Capabilities:
+        builds.append(1)
+        return registry.Capabilities(cli_reader=CliReader(read_cli=lambda _t: None))
+
+    lazy = registry.LazyCapabilities(build)
+    spec = registry.spec_for("exe")
+    assert spec is not None
+    deferred = spec.with_capabilities(lazy)
+    assert builds == []  # merely carrying them resolves nothing
+    assert deferred.analyzer is None
+    assert deferred.cli_reader is not None
+    assert deferred.injector is None
+    assert deferred.normalizer is None
+    assert deferred.dep_scanner is None
+    assert builds == [1]
+
+
+def test_without_drops_exactly_the_named_capabilities():
+    """`without()` produces the shape a missing grammar wheel produces — the degraded
+    spec every consumer must keep working against."""
+    spec = registry.spec_for("shell")
+    assert spec is not None
+    assert spec.analyzer is not None
+    assert spec.injector is not None
+    degraded = spec.without("analyzer", "injector")
+    assert degraded.analyzer is None
+    assert degraded.injector is None
+    assert degraded.cli_reader is not None  # untouched
+    assert degraded.normalizer is not None
+    assert spec.analyzer is not None  # the original is unchanged
+
+
+def test_capabilities_do_not_decide_spec_identity():
+    """`capabilities` is compare=False: two specs must not stop comparing equal merely
+    because one of them has since resolved its grammar."""
+    spec = registry.spec_for("js")
+    assert spec is not None
+    unresolved = dataclasses.replace(spec, capabilities=registry.LazyCapabilities(lambda: caps))
+    caps = registry.Capabilities()
+    assert unresolved == spec
+    assert spec.analyzer is not None  # resolve it
+    assert unresolved == spec
 
 
 def test_spec_for_unknown_kind_is_none_and_cached():
@@ -235,13 +307,12 @@ def test_doctor_json_missing_uv_pure_exe_library_exits_zero(tmp_path: Path, monk
 def test_plan_without_cli_reader_degrades_to_none_plan(tmp_path: Path, monkeypatch):
     # A future kind can carry params_io+analyzer but no static CLI reader (e.g. shell
     # before a getopts reader exists) — the plan must fall through to "none", not crash.
-    import dataclasses
 
     from skit import flows, store
 
     python_spec = registry.spec_for("python")
     assert python_spec is not None
-    stripped = dataclasses.replace(python_spec, cli_reader=None)
+    stripped = python_spec.without("cli_reader")
     monkeypatch.setattr("skit.flows.spec_for", lambda kind: stripped)
     py = tmp_path / "b.py"
     py.write_text("import argparse\np = argparse.ArgumentParser()\np.add_argument('--x')\n")

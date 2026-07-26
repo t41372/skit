@@ -10,7 +10,6 @@ dropped or nulled keyword arguments are observable.
 
 from __future__ import annotations
 
-import dataclasses
 from pathlib import Path
 
 import pytest
@@ -55,7 +54,7 @@ def _degraded_shell_spec() -> LangSpec:
     chain from its and-mutants."""
     base = registry.spec_for("shell")
     assert base is not None
-    return dataclasses.replace(base, analyzer=None)
+    return base.without("analyzer")
 
 
 def _exe(tmp_path: Path, name: str = "prog") -> store.Entry:

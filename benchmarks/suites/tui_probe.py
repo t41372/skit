@@ -9,7 +9,12 @@ Spans:
 1. import — `import skit.tui` (the cold import share).
 2. first idle — MenuApp() → run_test(120x40) → first pilot.pause() returns (mount +
    initial _reload + message queue drained).
-3. search — the table owns focus after mount and plain letters are action keys, so:
+3. select — press "down" and settle: the cursor moves one row and the detail pane
+   re-renders for the newly highlighted entry. Measured BEFORE the search span,
+   while the table still owns focus (afterwards the Input has it and "down" is the
+   Input's key, not the table's). Needs 2+ rows to move at all; at n<2 the span is
+   simply absent rather than a repaint that never happened.
+4. search — the table owns focus after mount and plain letters are action keys, so:
    press "/" (focus search), settle, THEN measure press(<probe char>) → pause().
 
 The probe asserts its measurements are real: the row count must equal the expected
@@ -50,7 +55,7 @@ def main() -> None:
 
     from textual.widgets import DataTable, Input
 
-    async def drive() -> dict[str, float]:
+    async def drive() -> dict[str, float | None]:
         t_app = time.perf_counter()
         app = MenuApp()
         async with app.run_test(size=(120, 40)) as pilot:
@@ -62,6 +67,18 @@ def main() -> None:
                     f"tui_probe: expected {args.entries} rows, saw {table.row_count} — "
                     "wrong library behind SKIT_DATA_DIR?"
                 )
+            select_ms: float | None = None
+            if args.entries >= 2:
+                before = table.cursor_row
+                t_select = time.perf_counter()
+                await pilot.press("down")
+                await pilot.pause()
+                select_ms = (time.perf_counter() - t_select) * 1000
+                if table.cursor_row == before:
+                    sys.exit(
+                        "tui_probe: the cursor did not move — the span measured a "
+                        "keypress the table ignored, not a selection repaint"
+                    )
             await pilot.press("slash")
             await pilot.pause()
             t_search = time.perf_counter()
@@ -81,7 +98,11 @@ def main() -> None:
                     "tui_probe: filter emptied the table — the dataset lost its "
                     "matching-entry invariant, so the span degenerated to filter-to-zero"
                 )
-        return {"first_idle_ms": first_idle_ms, "search_ms": search_ms}
+        return {
+            "first_idle_ms": first_idle_ms,
+            "select_ms": select_ms,
+            "search_ms": search_ms,
+        }
 
     spans = asyncio.run(drive())
 
@@ -92,6 +113,7 @@ def main() -> None:
             {
                 "import_ms": import_ms,
                 "first_idle_ms": spans["first_idle_ms"],
+                "select_ms": spans["select_ms"],
                 "search_ms": spans["search_ms"],
                 "status_text": status_text,
             }

@@ -170,3 +170,165 @@ def test_concurrent_save_preset_from_many_threads_loses_no_preset() -> None:
     presets = argstate.load_state(slug)["presets"]
     assert set(presets) == set(names)  # not one lost to a stale-snapshot overwrite
     assert all(presets[n] == {n: "v"} for n in names)
+
+
+# ---------------------------------------------------------------------------
+# last_run — the listing's slice of a state file
+# ---------------------------------------------------------------------------
+
+
+def test_last_run_matches_load_state_before_and_after_a_run() -> None:
+    """`skit list --json` reports last_run_at/last_exit for every entry, so it reads
+    one state file per entry. `last_run` reads the same file and must give the same
+    answer as the full `load_state` — it only skips copying out values, extra args and
+    every preset, which a listing never renders."""
+    assert argstate.last_run("never-run") == argstate.load_state("never-run")["last_run"] == {}
+
+    argstate.save_last("s", values={"a": "1"}, extra_args=["--x"])
+    argstate.save_preset("s", "prod", {"a": "2"}, secret_names=())
+    assert argstate.last_run("s") == {}
+
+    argstate.record_run("s", 3, at="2026-07-25T00:00:00+00:00")
+    assert argstate.last_run("s") == argstate.load_state("s")["last_run"]
+    assert argstate.last_run("s")["exit"] == 3
+
+
+def test_last_run_is_a_copy_not_the_stored_mapping() -> None:
+    """A caller mutating what it got back must not corrupt the next read."""
+    argstate.record_run("s", 0, at="2026-07-25T00:00:00+00:00")
+    first = argstate.last_run("s")
+    first["exit"] = 99
+    assert argstate.last_run("s")["exit"] == 0
+
+
+def test_a_missing_state_file_is_empty_not_an_error() -> None:
+    """The common case for an entry that has never run — and the reason the exists()
+    check ahead of the open was pure cost."""
+    assert argstate.load_state("absent") == {
+        "values": {},
+        "extra_args": [],
+        "presets": {},
+        "last_run": {},
+    }
+
+
+# ---------------------------------------------------------------------------
+# The _load_doc shape guard — a values file is TOML a person can edit
+# ---------------------------------------------------------------------------
+
+
+def _write_values_file(slug: str, body: str) -> None:
+    """Hand-write state_dir()/values/<slug>.toml — the file a user (or a stray editor)
+    can put anything valid-TOML into. Deliberately not through argstate's own writers:
+    the shapes under test are ones no writer would ever produce."""
+    from skit.paths import values_dir
+
+    values_dir().mkdir(parents=True, exist_ok=True)
+    (values_dir() / f"{slug}.toml").write_text(body, encoding="utf-8")
+
+
+_EMPTY_STATE = {"values": {}, "extra_args": [], "presets": {}, "last_run": {}}
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (
+            'values = 5\nextra_args = ["--verbose"]\n',
+            {**_EMPTY_STATE, "extra_args": ["--verbose"]},
+        ),
+        (
+            'extra_args = "--verbose"\n[values]\nCITY = "Taipei"\n',
+            {**_EMPTY_STATE, "values": {"CITY": "Taipei"}},
+        ),
+        (
+            'presets = 5\n[values]\nCITY = "Taipei"\n',
+            {**_EMPTY_STATE, "values": {"CITY": "Taipei"}},
+        ),
+        (
+            '[presets]\nbroken = "not a table"\n\n[presets.prod]\nCITY = "Osaka"\n',
+            {**_EMPTY_STATE, "presets": {"prod": {"CITY": "Osaka"}}},
+        ),
+        (
+            'last_run = "garbage"\n[values]\nCITY = "Taipei"\n',
+            {**_EMPTY_STATE, "values": {"CITY": "Taipei"}},
+        ),
+        (
+            '[last_run]\nat = "2026-07-25T00:00:00+00:00"\nexit = 0\nvalues = "garbage"\n',
+            {**_EMPTY_STATE, "last_run": {"at": "2026-07-25T00:00:00+00:00", "exit": 0}},
+        ),
+    ],
+    ids=[
+        "scalar-values",
+        "scalar-extra-args",
+        "scalar-presets",
+        "scalar-preset-row",
+        "scalar-last-run",
+        "scalar-last-run-values",
+    ],
+)
+def test_a_hand_edited_state_file_drops_only_the_malformed_section(
+    body: str, expected: dict[str, object]
+) -> None:
+    """Every reader subscripts these four sections, so a scalar where a table (or array)
+    belongs used to crash whichever reader touched it first. The guard sits at the single
+    load chokepoint: the malformed section degrades to its documented empty shape, one
+    bad preset row is dropped without taking its healthy siblings with it, and everything
+    else in the file round-trips untouched."""
+    slug = "hand-edited"
+    _write_values_file(slug, body)
+
+    assert argstate.load_state(slug) == expected
+    # last_run reads the same file through the same guard, so it can never disagree.
+    assert argstate.last_run(slug) == expected["last_run"]
+
+
+def test_a_scalar_last_run_still_lists_through_the_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The user-visible surface: `skit list --json` reads one last-run stamp per entry, so
+    a single hand-broken values file used to take the WHOLE listing down with a ValueError
+    — an agent asking what the library contains got a traceback instead of the JSON
+    contract. The bad section degrades to {}; the entry still lists, with null stamps."""
+    import json
+
+    from typer.testing import CliRunner
+
+    from skit import cli, store
+
+    monkeypatch.setenv("SKIT_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SKIT_CONFIG_DIR", str(tmp_path / "config"))
+    entry = store.add_command("echo hi", name="chores")
+    _write_values_file(entry.slug, 'last_run = "garbage"\n')
+
+    assert argstate.last_run(entry.slug) == {}
+    assert argstate.load_state(entry.slug) == _EMPTY_STATE
+
+    result = CliRunner().invoke(cli.app, ["list", "--json"])
+
+    assert result.exit_code == 0
+    (row,) = json.loads(result.output)
+    assert row["name"] == "chores"
+    assert (row["last_run_at"], row["last_exit"]) == (None, None)
+
+
+def test_purge_secret_survives_a_last_run_values_that_is_not_a_table() -> None:
+    """C3's retroactive scrub subscripts the nested last-run snapshot, so a hand-edited
+    `values = "garbage"` under [last_run] used to crash the very call that exists to get
+    plaintext off disk. The nested section is dropped while the stamp around it survives —
+    there is nothing left to scrub, and the purge reports exactly that."""
+    slug = "broken-snapshot"
+    _write_values_file(
+        slug,
+        '[values]\nAPI_KEY = "plaintext"\n'
+        '[last_run]\nat = "2026-07-25T00:00:00+00:00"\nexit = 0\nvalues = "garbage"\n',
+    )
+
+    assert argstate.last_run(slug) == {"at": "2026-07-25T00:00:00+00:00", "exit": 0}
+
+    removed = argstate.purge_secret(slug, ["API_KEY"])
+
+    assert removed == {"API_KEY"}  # the readable plaintext still got scrubbed
+    state = argstate.load_state(slug)
+    assert state["values"] == {}
+    assert state["last_run"] == {"at": "2026-07-25T00:00:00+00:00", "exit": 0}

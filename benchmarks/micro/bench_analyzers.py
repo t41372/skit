@@ -20,6 +20,7 @@ import pyperf
 from skit.langs.registry import spec_for
 
 _LINES = (20, 200, 2000)
+_BROKEN_LINES = 2000  # kept in step with suites/micro.py's _BROKEN_LINES
 
 
 def main() -> None:
@@ -33,6 +34,12 @@ def main() -> None:
         for lines in _LINES:
             text = (sources_dir / f"{lang}_{lines}.{ext}").read_text(encoding="utf-8")
             runner.bench_func(f"analyze.{lang}.l{lines}", spec.analyzer.analyze, text)
+        # The half-written twin of the largest source: a launcher parses scripts its
+        # user is mid-edit on, and error recovery is a different cost curve from a
+        # clean parse. Paired with analyze.<lang>.l2000 above — the two together are
+        # the measurement.
+        broken = (sources_dir / f"{lang}_{_BROKEN_LINES}_broken.{ext}").read_text(encoding="utf-8")
+        runner.bench_func(f"analyze_broken.{lang}.l{_BROKEN_LINES}", spec.analyzer.analyze, broken)
 
 
 if __name__ == "__main__":

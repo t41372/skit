@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from skit import argstate, cli, launcher, store
+from skit import argstate, cli, flows, launcher, store
 from skit.langs.python import metawriter
 from skit.params import ParamDecl
 
@@ -168,7 +168,7 @@ def test_save_preset_not_written_when_launch_is_refused(run_entry_spy, monkeypat
 
     store.add_command("echo {msg}", name="e")
     monkeypatch.setattr(
-        cli.flows,
+        flows,
         "execute",
         lambda *a, **k: flows.RunOutcome(None, flows.FAIL_LAUNCH, "runner vanished"),
     )
@@ -449,7 +449,7 @@ def test_save_preset_persists_when_ctrl_c_ends_an_accepted_run(monkeypatch):
     def interrupt(*a, **kw):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(cli.flows, "execute", interrupt)
+    monkeypatch.setattr(flows, "execute", interrupt)
     result = runner.invoke(
         cli.app, ["run", "e", "--set", "msg=hi", "--save-preset", "prod", "--no-input"]
     )

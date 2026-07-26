@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import subprocess
+import tomllib
 from importlib.metadata import version
 from pathlib import Path
 from types import SimpleNamespace
@@ -54,10 +55,13 @@ from benchmarks.results import (
     python_major_minor,
 )
 from benchmarks.suites import footprint as footprint_suite
+from benchmarks.suites import imports as imports_suite
 from benchmarks.suites import micro as micro_suite
 from benchmarks.suites import rss as rss_suite
 from benchmarks.suites import tui as tui_suite
 from benchmarks.suites._env import RunCtx
+
+from skit.langs.registry import spec_for
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURES_DIR = REPO_ROOT / "benchmarks" / "fixtures"
@@ -1402,6 +1406,17 @@ class TestContractSync:
         assert hyperfine.HYPERFINE_SHA256 in action
         assert f"hyperfine-v{hyperfine.HYPERFINE_VERSION}-x86_64" in action
 
+    def test_the_census_probe_runs_the_real_console_script(self) -> None:
+        """The import census only means anything if it measures the entry point users
+        actually get. This pins the probe to pyproject's [project.scripts] — the probe
+        once hardcoded `skit.cli:app` under a comment claiming it was what the console
+        script does, and silently kept measuring it after the console script changed."""
+        pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        assert pyproject["project"]["scripts"] == {"skit": imports_suite.CONSOLE_SCRIPT}
+        module, attr = imports_suite.CONSOLE_SCRIPT.split(":")
+        assert f"from {module} import {attr} as entry" in imports_suite._CENSUS_PROBE
+        assert "from skit.cli import" not in imports_suite._CENSUS_PROBE
+
     def test_analyzer_source_filenames_share_one_registry(self, tmp_path: Path) -> None:
         ctx = cast(RunCtx, SimpleNamespace(workdir=tmp_path))
         materialized = micro_suite._materialize_sources(ctx)
@@ -1409,6 +1424,14 @@ class TestContractSync:
             f"{lang}_{lines}.{sources.EXTENSIONS[lang]}"
             for lang in sources.LANGS
             for lines in (20, 200, 2000)
+        } | {
+            # The half-written twin, at one size only. Derived, not a third hardcoded
+            # copy of the tier: which tier it is belongs to
+            # test_broken_lines_constant_is_the_same_in_both_files, which pins the two
+            # source constants to each other AND to a tier the loop above materializes.
+            # What THIS test guards is the naming scheme and the file set.
+            f"{lang}_{micro_suite._BROKEN_LINES}_broken.{sources.EXTENSIONS[lang]}"
+            for lang in sources.LANGS
         }
         assert {path.name for path in materialized.iterdir()} == expected
         script = (REPO_ROOT / "benchmarks" / "micro" / "bench_analyzers.py").read_text(
@@ -1440,6 +1463,76 @@ class TestContractSync:
             for lines in (20, 200, 2000)
         }
         assert actual == expected
+
+    def test_the_library_footprint_metrics_divide_into_each_other(self, tmp_path: Path) -> None:
+        """A per-entry mean printed beside a total that it does not divide into is a
+        trap for whoever reads the summary. This pins the pair to the same numerator."""
+        root = tmp_path / "ds"
+        manifest = generate(root, 3)
+        ctx = cast(RunCtx, SimpleNamespace(datasets={3: manifest}))
+        output = SuiteOutput(suite="footprint")
+        footprint_suite._library(ctx, pipeline.SuitePlan("footprint", ns=(3,)), output)
+
+        total = output.metrics["footprint.library_total_bytes.n3"].value
+        assert total == (
+            output.metrics["footprint.library_bytes.n3"].value
+            + output.metrics["footprint.library_state_bytes.n3"].value
+        )
+        assert output.metrics["footprint.library_bytes_per_entry.n3"].value == total / 3
+
+    def test_broken_lines_constant_is_the_same_in_both_files(self) -> None:
+        """bench_analyzers.py reads the file that suites/micro.py materializes, and the
+        size tier lives hand-duplicated in both (the micro script is self-contained by
+        contract and cannot import the suite). Only this test ties the copies: if they
+        drift, the pyperf subprocess dies on a missing file — in CI only, since the
+        script is a coverage-exempt benchmark subject nothing else executes."""
+        import re
+
+        values = {}
+        for rel in ("benchmarks/suites/micro.py", "benchmarks/micro/bench_analyzers.py"):
+            text = (REPO_ROOT / rel).read_text(encoding="utf-8")
+            match = re.search(r"^_BROKEN_LINES = (\d+)", text, flags=re.M)
+            assert match is not None, f"{rel} lost its _BROKEN_LINES constant"
+            values[rel] = int(match.group(1))
+        assert len(set(values.values())) == 1, values
+        assert next(iter(set(values.values()))) in micro_suite._SOURCE_LINES
+
+    def test_broken_workloads_are_byte_stable_and_actually_broken(self) -> None:
+        """The half-written twin is a workload like any other: its bytes are history.
+        And it must genuinely fail to parse — a "broken" fixture that happens to be
+        valid would quietly benchmark a clean parse under an error-recovery name."""
+        expected = {
+            "python:2000": "af266a68d9826a6d003dc4e4b1609c15ff74ac4a8dd76a21217505fcbe2fdb22",
+            "shell:2000": "cd792b3d0663223351bb25f585e0da85d220b7dbada1720dc3185504076b0b2b",
+            "js:2000": "deaf98beca99466bcf3f651f757adbb1ddb2f94733087156b1b6a68514437ff2",
+            "ts:2000": "8e64a7453ec0fbf7d32dc257f1c44c13d4927c8571055e59c34e87985176de21",
+        }
+        actual = {
+            f"{lang}:2000": hashlib.sha256(sources.generate_broken(lang, 2000).encode()).hexdigest()
+            for lang in sources.LANGS
+        }
+        assert actual == expected
+
+        for lang in sources.LANGS:
+            valid = sources.generate(lang, 2000)
+            broken = sources.generate_broken(lang, 2000)
+            # Same size, same seed, one damaged line: the pair IS the measurement.
+            assert len(broken.splitlines()) == len(valid.splitlines()) == 2000
+            assert broken.splitlines()[:-1] == valid.splitlines()[:-1]
+            assert broken != valid
+        with pytest.raises(SyntaxError):
+            ast.parse(sources.generate_broken("python", 2000))
+        ast.parse(sources.generate("python", 2000))  # the twin still parses
+
+    def test_analyzers_survive_a_half_written_source(self) -> None:
+        """Whatever the grammars do with error recovery, analyze() must return rather
+        than raise — the benchmark measures a cost, and skit's own add/reconcile paths
+        hit this input for real whenever a user is mid-edit."""
+        for lang in sources.LANGS:
+            spec = spec_for(lang)
+            if spec is None or spec.analyzer is None:  # pragma: no cover — grammar absent
+                continue
+            assert spec.analyzer.analyze(sources.generate_broken(lang, 200)) is not None
 
     def test_cli_parser_surface_is_stable(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("COLUMNS", "80")
@@ -1853,6 +1946,7 @@ class TestCodeReviewFixes:
                     {
                         "first_idle_ms": float(calls),
                         "search_ms": float(calls + 10),
+                        "select_ms": None,
                         "import_ms": float(calls + 20),
                         "status_text": f"VmHWM: {calls * 100} kB",
                     }
@@ -1871,12 +1965,55 @@ class TestCodeReviewFixes:
         output = tui_suite.run(ctx, pipeline.SuitePlan("tui", ns=(0,), samples=3))
         assert output.raw["n0"] == {
             "first_idle_ms": [1.0, 2.0, 3.0],
+            "select_ms": [],  # n=0 has no second row to move to
             "search_ms": [11.0, 12.0, 13.0],
             "rss_kib": [100.0, 200.0, 300.0],
             "import_ms": [21.0, 22.0, 23.0],
         }
+        assert "tui.select.n0.median_ms" not in output.metrics
         assert output.metrics["tui.rss.n0.peak_kib"].p95 == 300.0
         assert output.metrics["tui.rss.n0.peak_kib"].stddev == 100.0
+
+    def test_tui_records_the_selection_span_when_the_probe_measured_one(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A library with rows to move between yields tui.select; one without does not
+        (asserted above). The metric must never appear as a zero standing in for a
+        repaint that never happened."""
+        manifest = SimpleNamespace(root=tmp_path, probe_char="o")
+        ctx = cast(
+            RunCtx,
+            SimpleNamespace(python="/bin/python", workdir=tmp_path, datasets={2: manifest}),
+        )
+        calls = 0
+
+        def fake_run(argv, **_kwargs):
+            nonlocal calls
+            calls += 1
+            Path(argv[argv.index("--out") + 1]).write_text(
+                json.dumps(
+                    {
+                        "first_idle_ms": 1.0,
+                        "search_ms": 2.0,
+                        "select_ms": float(calls),
+                        "import_ms": 3.0,
+                        "status_text": None,
+                    }
+                )
+            )
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(tui_suite, "bench_env", lambda _ctx, _root: {})
+        monkeypatch.setattr(tui_suite.subprocess, "run", fake_run)
+        original_exists = Path.exists
+        monkeypatch.setattr(
+            Path,
+            "exists",
+            lambda self: False if self == Path("/proc/self/status") else original_exists(self),
+        )
+        output = tui_suite.run(ctx, pipeline.SuitePlan("tui", ns=(2,), samples=3))
+        assert output.raw["n2"]["select_ms"] == [1.0, 2.0, 3.0]
+        assert output.metrics["tui.select.n2.median_ms"].value == 2.0
 
     def test_cold_parse_keeps_raw_samples(self, tmp_path: Path, monkeypatch) -> None:
         ctx = cast(
@@ -1912,12 +2049,12 @@ class TestCodeReviewFixes:
         assert output.metrics["micro.analyze_cold.python.median_ms"].value == 3.0
 
     def test_micro_deltas_clear_the_us_floor(self) -> None:
-        base = make_results({"micro.store.resolve.mid.n1000.median_us": Metric(100.0, "us", 40)})
-        head = make_results({"micro.store.resolve.mid.n1000.median_us": Metric(300.0, "us", 40)})
+        base = make_results({"micro.store.resolve.n1000.median_us": Metric(100.0, "us", 40)})
+        head = make_results({"micro.store.resolve.n1000.median_us": Metric(300.0, "us", 40)})
         comparison = bcompare.compare(base, head)
-        assert [d.metric for d in comparison.notable] == ["micro.store.resolve.mid.n1000.median_us"]
+        assert [d.metric for d in comparison.notable] == ["micro.store.resolve.n1000.median_us"]
         # Sub-µs wiggle stays noise.
-        near = make_results({"micro.store.resolve.mid.n1000.median_us": Metric(100.5, "us", 40)})
+        near = make_results({"micro.store.resolve.n1000.median_us": Metric(100.5, "us", 40)})
         assert bcompare.compare(base, near).notable == []
 
     def test_compare_flags_incomparable_sides(self) -> None:

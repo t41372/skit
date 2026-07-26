@@ -90,3 +90,33 @@ def _ts(lines: int, rng: random.Random) -> list[str]:
             "}",
         ]
     return _pad(body, lines, "//")
+
+
+# The last line of a half-written source, per language: an opener with no closer, which
+# is what a file looks like while someone is still typing it. Each one is a genuine
+# parse failure for that language — an unterminated parameter list, test bracket or
+# function body — not merely unusual syntax.
+_TRUNCATIONS = {
+    "python": "def fn_half_written(x: int,",
+    "shell": 'if [ "${ALPHA}" = ',
+    "js": "function fnHalfWritten(x) {",
+    "ts": "function fnHalfWritten(x: number): number {",
+}
+
+
+def generate_broken(lang: str, lines: int, seed: int = 20260720) -> str:
+    """The same source as `generate`, left half-written on its last line.
+
+    A launcher parses scripts its user is in the middle of editing — it is arguably
+    the *common* case for a tool whose whole job is to notice a script's parameters.
+    A tree-sitter grammar answers that with an error-recovery parse, which has its own
+    cost curve (in this repo's own history, an accidentally truncated JS fixture
+    under-reported analyze time about fivefold), and Python's `ast` answers by raising.
+    Neither is measured by a corpus of exclusively valid files.
+
+    Line count and seed match `generate`, so a broken source is comparable to the
+    valid one of the same size — the pair is the measurement, not either alone.
+    """
+    body = generate(lang, lines, seed).splitlines()
+    body[-1] = _TRUNCATIONS[lang]
+    return "\n".join(body) + "\n"

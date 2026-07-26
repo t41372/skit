@@ -170,16 +170,6 @@ class ScriptMeta:
 
 
 @dataclass
-class RegistryEntry:
-    """A single index row in registry.toml."""
-
-    name: str
-    slug: str
-    kind: Kind
-    description: str = ""
-
-
-@dataclass
 class Entry:
     """Combined view: index + full meta + directory path. The primary object of the Core API."""
 
@@ -187,16 +177,72 @@ class Entry:
     meta: ScriptMeta
     dir: Path
 
+    # `kind` and `source` restate meta fields at the top level so an Entry satisfies
+    # the same ListedEntry/LaunchTarget protocols an EntrySummary does — one
+    # missing-target rule, asked of either shape (langs/base.py).
+
+    @property
+    def kind(self) -> Kind:
+        return self.meta.kind
+
+    @property
+    def source(self) -> str:
+        return self.meta.source
+
     @property
     def script_path(self) -> Path:
         """The in-store script in copy mode; the original path in reference mode."""
-        if self.meta.mode == "reference":
-            return Path(self.meta.source)
-        # Lazy import: models is the data layer everything imports, so it must not pull the
-        # registry (and through it the launch strategies) in at module load.
-        from .langs.registry import stored_name
+        return _script_path(self.dir, self.meta.kind, self.meta.mode, self.meta.source)
 
-        return self.dir / stored_name(self.meta.kind)
+
+def _script_path(entry_dir: Path, kind: str, mode: str, source: str) -> Path:
+    """The one rule for where an entry's script lives, shared by Entry and EntrySummary
+    so a listing and a launch can never disagree about the file."""
+    if mode == "reference":
+        return Path(source)
+    # Lazy import: models is the data layer everything imports, so it must not pull the
+    # registry (and through it the launch strategies) in at module load.
+    from .langs.registry import stored_name
+
+    return entry_dir / stored_name(kind)
+
+
+@dataclass(frozen=True)
+class EntrySummary:
+    """What a listing needs, and deliberately nothing else.
+
+    Reading it costs no meta.toml: these fields are the ones registry.toml already
+    carries or can carry, because they are fixed at add time (kind, mode, target) or
+    kept in step by the mutators that change them (name, description). Everything else
+    about an entry — its parameters, needs, interpreter, runner, dependencies — is
+    absent ON PURPOSE. A summary that quietly defaulted those would be a lie a caller
+    could not see, so surfaces that need them call `store.resolve` / `list_entries`
+    and read the real meta.
+
+    `target` is the linked original of a REFERENCE entry, and empty otherwise — it is
+    not `meta.source`. A copied entry's script lives in the store, and its provenance
+    path is a meta field no listing renders; carrying it here would have doubled the
+    index for every entry, which every `resolve()` then pays to parse.
+    """
+
+    slug: str
+    name: str
+    kind: Kind
+    mode: Mode
+    description: str
+    dir: Path
+    target: str = ""
+
+    @property
+    def source(self) -> str:
+        """The LaunchTarget spelling of `target` — the linked original, "" when there
+        is none. One protocol, whichever shape a strategy is handed."""
+        return self.target
+
+    @property
+    def script_path(self) -> Path:
+        """The in-store script in copy mode; the linked original in reference mode."""
+        return _script_path(self.dir, self.kind, self.mode, self.target)
 
 
 def now_iso() -> str:

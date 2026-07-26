@@ -180,7 +180,9 @@ def test_execute_forwards_interpreter_and_source_to_injector(tmp_path, monkeypat
 
     real = flows.spec_for("python")
     assert real is not None
-    fake_spec = dataclasses.replace(real, injector=Injector(inject=fake_inject))
+    fake_spec = real.with_capabilities(
+        dataclasses.replace(real.resolved_capabilities, injector=Injector(inject=fake_inject))
+    )
     monkeypatch.setattr(flows, "spec_for", lambda _kind: fake_spec)
     monkeypatch.setattr(launcher, "run_entry", lambda *a, **k: 0)
 
@@ -256,9 +258,7 @@ def test_plan_degraded_analyzer_falls_back_to_none(tmp_path, monkeypatch):
     # must stay an OR: turning it into AND would fall through into `analyzer.reconcile` and crash.
     real = flows.spec_for("python")
     assert real is not None
-    degraded = dataclasses.replace(
-        real, analyzer=None, cli_reader=None, injector=None, normalizer=None
-    )
+    degraded = real.without("analyzer", "cli_reader", "injector", "normalizer")
     monkeypatch.setattr(flows, "spec_for", lambda _kind: degraded)
     entry = _python_entry(tmp_path, MANAGED_SCRIPT, slug="degr")
     plan = flows.plan_for_entry(entry)

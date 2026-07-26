@@ -956,14 +956,11 @@ async def test_settings_reconcile_is_none_when_the_script_is_gone(tmp_path):
 async def test_settings_cli_driven_is_false_when_the_kind_has_no_reader(tmp_path, monkeypatch):
     # Defensive contract: a spec carrying an analyzer but no cli_reader (a future kind, or a
     # partially-degraded one) must report "not CLI-driven" rather than crash on a missing reader.
-    import dataclasses
 
     entry = _shell(tmp_path, '#!/bin/bash\nGREETING="hello"\n', name="sh5")
     spec = spec_for("shell")
     assert spec is not None
-    monkeypatch.setattr(
-        "skit.tui_settings.spec_for", lambda _kind: dataclasses.replace(spec, cli_reader=None)
-    )
+    monkeypatch.setattr("skit.tui_settings.spec_for", lambda _kind: spec.without("cli_reader"))
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         screen = ScriptSettingsScreen(store.resolve(entry.slug))

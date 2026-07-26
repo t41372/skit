@@ -643,3 +643,60 @@ def test_keep_mode_windows_fallback_suppresses_a_chmod_failure(
     atomic.atomic_write_text_keep_mode(target, "new\n")  # must not raise
 
     assert target.read_text(encoding="utf-8") == "new\n"
+
+
+# ---------------------------------------------------------------------------
+# try_advisory_file_lock — the never-waits variant for read-path writes
+# ---------------------------------------------------------------------------
+
+
+def test_try_lock_acquires_when_free_and_excludes_a_second_taker(tmp_path):
+    from skit.atomic import try_advisory_file_lock
+
+    lock = tmp_path / "x.lock"
+    with try_advisory_file_lock(lock) as got:
+        assert got is True
+        with try_advisory_file_lock(lock) as second:
+            assert second is False  # same process: the thread lock refuses, no wait
+    with try_advisory_file_lock(lock) as again:
+        assert again is True  # fully released
+
+
+def test_try_lock_declines_while_the_blocking_lock_is_held(tmp_path):
+    from skit.atomic import advisory_file_lock, try_advisory_file_lock
+
+    lock = tmp_path / "x.lock"
+    with advisory_file_lock(lock):
+        with try_advisory_file_lock(lock) as got:
+            assert got is False  # would have polled forever in the blocking variant
+
+
+def test_try_lock_declines_when_only_the_native_lock_is_held(tmp_path):
+    """The cross-PROCESS case: another process holds the flock but no thread in this
+    one holds the thread lock. The try-variant must open the file, fail the native
+    acquisition once, and close the fd without unlocking anything."""
+    import os
+
+    from skit.atomic import _try_native_lock, try_advisory_file_lock
+
+    lock = tmp_path / "x.lock"
+    lock.write_bytes(b"\0")
+    fd = os.open(lock, os.O_RDWR)
+    try:
+        assert _try_native_lock(fd) is True  # stand in for the other process
+        with try_advisory_file_lock(lock) as got:
+            assert got is False
+    finally:
+        os.close(fd)
+
+
+def test_try_lock_treats_an_unopenable_lock_file_as_not_acquired(tmp_path, monkeypatch):
+    import skit.atomic as atomic_mod
+    from skit.atomic import try_advisory_file_lock
+
+    def refuse(*_a, **_k):
+        raise OSError("no")
+
+    monkeypatch.setattr(atomic_mod.os, "open", refuse)
+    with try_advisory_file_lock(tmp_path / "x.lock") as got:
+        assert got is False

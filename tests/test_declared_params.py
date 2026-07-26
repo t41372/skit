@@ -793,8 +793,11 @@ def test_reader_kind_declared_env_rider_merges_not_erases(tmp_path: Path, monkey
     entry = store.add_script(ps, kind="powershell")
     store.write_parameters(entry.slug, [ParamDecl(name="LOGLEVEL", delivery="env")])
     fake = ArgSpec(fields=[ParamDecl(name="Region", delivery="flag", flag="-Region")])
-    spec = dataclasses.replace(
-        registry._powershell_spec(), cli_reader=CliReader(read_cli=lambda _t: fake)
+    base = registry._powershell_spec()
+    spec = base.with_capabilities(
+        dataclasses.replace(
+            base.resolved_capabilities, cli_reader=CliReader(read_cli=lambda _t: fake)
+        )
     )
     monkeypatch.setattr("skit.flows.spec_for", lambda _kind: spec)
     plan = flows.plan_for_entry(store.resolve(entry.slug))
@@ -816,8 +819,11 @@ def test_reader_kind_declared_rows_stand_alone_when_no_readable_surface(
     ps.write_text("Write-Output 'hi'\n", encoding="utf-8")
     entry = store.add_script(ps, kind="powershell", name="d2")
     store.write_parameters(entry.slug, [ParamDecl(name="LOGLEVEL", delivery="env")])
-    spec = dataclasses.replace(
-        registry._powershell_spec(), cli_reader=CliReader(read_cli=lambda _t: None)
+    base = registry._powershell_spec()
+    spec = base.with_capabilities(
+        dataclasses.replace(
+            base.resolved_capabilities, cli_reader=CliReader(read_cli=lambda _t: None)
+        )
     )
     monkeypatch.setattr("skit.flows.spec_for", lambda _kind: spec)
     plan = flows.plan_for_entry(store.resolve(entry.slug))

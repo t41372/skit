@@ -8,8 +8,6 @@ dismisses with. English catalog throughout, so the message assertions are exact.
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 import pytest
 from textual.widgets import Input, Static
 
@@ -144,7 +142,7 @@ async def test_js_degraded_scanner_leaves_deps_empty(tmp_path, monkeypatch):
     def degraded(kind):
         spec = real(kind)
         if kind == "js" and spec is not None:
-            return replace(spec, dep_scanner=None)
+            return spec.without("dep_scanner")
         return spec
 
     monkeypatch.setattr(registry, "spec_for", degraded)
