@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import sys
 import types
 from pathlib import Path
@@ -105,8 +106,10 @@ def _find_runner(name):
 
 def _flat(text: str) -> str:
     """Collapse rich's soft-wrap newlines/whitespace so a message split across the 80-col
-    CliRunner width still matches as one string."""
-    return " ".join(text.split())
+    CliRunner width still matches as one string — and strip ANSI escapes first: on the
+    macOS CI runners rich decides the captured stream is color-capable and slices every
+    `--flag` apart with style codes, which a literal `in` can never match."""
+    return " ".join(re.sub(r"\x1b\[[0-9;]*m", "", text).split())
 
 
 # ============================================================ curation
