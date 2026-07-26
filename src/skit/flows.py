@@ -582,11 +582,21 @@ def glob_feedback(value: str, cwd: Path) -> int | None:
 
 
 def tail_looks_expandable(extra_args: list[str]) -> bool:
-    """Whether a tail carries syntax the launch menu WOULD expand — {token} braces,
-    glob characters, or a leading ~ (tokens.expand's home expansion). THE predicate
-    behind the "passed as-is" note both faces print when a literal-replay tail carries
-    such syntax: replaying literally is the design, doing it silently was the bug."""
-    return any(piece.startswith("~") or any(ch in piece for ch in "{*?[") for piece in extra_args)
+    """Whether a tail carries syntax the launch menu WOULD alter: token/escape/tilde
+    grammar is tokens.has_tokens — THE authority on what expand() changes, so this
+    predicate can never fork from it (a hand-rolled brace check missed `}}` halving and
+    over-fired on bare `{`) — plus the glob characters assemble's own glob pass acts
+    on. Behind the "passed as-is" note both faces print for a literal-replay tail:
+    replaying literally is the design, doing it silently was the bug."""
+    return any(tokens.has_tokens(piece) or any(ch in piece for ch in "*?[") for piece in extra_args)
+
+
+def as_is_note() -> str:
+    """The literal-replay transparency line, ONE msgid for both faces (CLI replay,
+    TUI r-rerun/exit-after-run) — resolved at call time so the active locale applies."""
+    return gettext(
+        "(passed as-is — a remembered tail only expands {tokens} and globs when it was typed into the launch menu)"
+    )
 
 
 # --------------------------------------------------------------------------

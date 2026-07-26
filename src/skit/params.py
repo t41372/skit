@@ -66,12 +66,15 @@ ParamType = Literal["str", "int", "float", "bool", "choice", "path"]
 #   qualifier (APIkey, sshkey — never MONKEY, and not publickey/hostkey, which aren't
 #   secrets).
 # - TOKEN is the LLM-era collision: max_tokens/maxOutputTokens are counts,
-#   github_tokens/session_token are credentials. In a NAME, a count word anywhere —
-#   split, camel (maxOutputTokens → MAX) or fused onto the jam (nTokens) — suppresses
-#   the TOKEN match, and a bare plural "tokens" reads as a count. In SENTENCE text (a
-#   prompt), only a count word IMMEDIATELY BEFORE the token word suppresses ("How many
-#   tokens?", "max tokens:") — "Enter your API token (max 64 chars):" is a credential
-#   ask whose parenthetical mentions a size, and must stay masked.
+#   github_tokens/session_token/N8N_TOKEN are credentials. Judged per SEGMENT: a
+#   segment's own count words (fused nTokens, camel maxOutputTokens → MAX) veto its
+#   token hit; ONLY a segment that is itself count-shaped (MAX, limit, a number) is
+#   count context for its NEIGHBORS — camel fragments never leak out (N8N's stray N
+#   must not veto TOKEN next door). In a NAME a count segment anywhere suppresses; in
+#   SENTENCE text only a count segment IMMEDIATELY BEFORE a token segment suppresses
+#   that one mention, and any other token mention keeps the ask secret ("Paste your
+#   GitHub token (rate limit 60 tokens/min):" stays masked). A bare plural "tokens"
+#   reads as a count.
 _SECRET_SUFFIXES = ("SECRET", "PASSWORD", "PASSWD")
 _KEY_PREFIXES = frozenset(
     {"API", "AUTH", "ACCESS", "SECRET", "PRIVATE", "PASS", "SSH", "GPG", "AWS", "MASTER",
@@ -89,47 +92,76 @@ def _fold_plural(word: str) -> str:
     return word[:-1] if word.endswith("S") else word
 
 
-def _is_count(word: str) -> bool:
-    return _fold_plural(word) in _COUNT_WORDS
+def _forms(word: str) -> set[str]:
+    """The match variants of one word: itself, plural-folded, and digit-stripped
+    (api_key2 → KEY; digits never split a segment apart, but they must not hide a
+    credential word they're glued to)."""
+    stripped = re.sub(r"[0-9]+", "", word)
+    return {v for v in (word, _fold_plural(word), stripped, _fold_plural(stripped)) if v}
 
 
-def _token_hit(word: str) -> bool:
-    """A provisional TOKEN hit: the folded word ends in TOKEN and is not a single count
-    qualifier fused onto it (nTokens/maxTokens jam to NTOKENS/MAXTOKENS). Multi-word
-    fused qualifiers (maxOutputTokens) are handled by the camel words in the pool; an
-    all-caps jam of those (MAXOUTPUTTOKENS) stays a hit — masking a count is the safe
-    direction, unmasking a credential is not."""
-    folded = _fold_plural(word)
-    return folded.endswith("TOKEN") and folded[:-5] not in _COUNT_WORDS
+def _token_form(form: str) -> bool:
+    """One variant ends in TOKEN and is not a single count qualifier fused onto it
+    (nTokens/maxTokens jam to NTOKENS/MAXTOKENS)."""
+    return form.endswith("TOKEN") and form[:-5] not in _COUNT_WORDS
+
+
+@dataclass(frozen=True)
+class _SegmentVerdict:
+    secret: bool  # a SECRET/PASSWORD/PASSWD/KEY rule hit — final, whole-name answer
+    token: bool  # a TOKEN mention this segment stands behind (its own count words veto it)
+    county: bool  # this segment IS count context for its neighbors (MAX, 4096, limit)
+
+
+def _judge_segment(raw: str) -> _SegmentVerdict:
+    """One non-alphanumeric-separated segment, judged whole. TWO word sources: the
+    JAMMED segment (apiKey/APIKey/APIkey are all APIKEY — no camel convention can hide
+    a compound) and its camelCase sub-words (awsSecretKey → AWS/SECRET/KEY). county is
+    judged on the JAM only: a camel fragment must not leak out as count context — the
+    digit boundary splits N8N into N8+N, and that stray N vetoed a real credential.
+    Camel fragments DO veto their own segment's token hit (maxOutputTokens → MAX)."""
+    jam = raw.upper()
+    camel = [w.upper() for w in _CAMEL_BOUNDARY.sub(" ", raw).split(" ") if w]
+    jam_forms = _forms(jam)
+    all_forms = set(jam_forms)
+    for w in camel:
+        all_forms |= _forms(w)
+    secret = (
+        any(f.endswith(_SECRET_SUFFIXES) for f in all_forms)
+        or "KEY" in all_forms
+        or any(f.endswith("KEY") and f[:-3] in _KEY_PREFIXES for f in all_forms)
+    )
+    county = jam.isdigit() or any(f in _COUNT_WORDS for f in jam_forms)
+    internal_count = any(v in _COUNT_WORDS for w in camel for v in _forms(w))
+    token = any(_token_form(f) for f in all_forms) and not county and not internal_count
+    return _SegmentVerdict(secret=secret, token=token, county=county)
 
 
 def is_secret_name(text: str) -> bool:
-    raw_segments = [s for s in re.split(r"[^A-Za-z]+", text) if s]
-    segments = [s.upper() for s in raw_segments]
-    words: list[str] = []  # camel sub-words, in order — the sentence-adjacency rule needs order
-    for s in raw_segments:
-        words.extend(w.upper() for w in _CAMEL_BOUNDARY.sub(" ", s).split(" ") if w)
-    pool = set(segments) | set(words)
-    forms = pool | {_fold_plural(w) for w in pool}
-    if (
-        any(w.endswith(_SECRET_SUFFIXES) for w in forms)
-        or "KEY" in forms
-        or any(w.endswith("KEY") and w[:-3] in _KEY_PREFIXES for w in forms)
-    ):
+    # Split on non-alphanumerics only: digits stay inside their segment (N8N, gpt4),
+    # where _forms strips them per word instead of shattering the name into fragments.
+    raw_segments = [s for s in re.split(r"[^A-Za-z0-9]+", text) if s]
+    verdicts = [_judge_segment(s) for s in raw_segments]
+    if any(v.secret for v in verdicts):
         return True
-    if not any(_token_hit(w) for w in forms):
+    if not any(v.token for v in verdicts):
         return False
     if any(c.isspace() for c in text.strip()):
-        # Sentence-shaped (a prompt): suppress only "count word, then token word".
-        return not any(
-            _fold_plural(w).endswith("TOKEN") and i > 0 and _is_count(words[i - 1])
-            for i, w in enumerate(words)
+        # Sentence-shaped (a prompt): a count segment immediately before a token
+        # segment suppresses THAT mention ("How many tokens?", "rate limit 60
+        # tokens/min") — but any OTHER token mention with no count in front keeps the
+        # ask secret: "Paste your GitHub token (rate limit 60 tokens/min):" names a
+        # rate AND asks for a credential, and the credential wins. Suppressing on ANY
+        # count-preceded mention let the parenthetical veto the ask — the leak
+        # direction.
+        return any(
+            v.token and not (i > 0 and verdicts[i - 1].county) for i, v in enumerate(verdicts)
         )
-    if any(_is_count(w) for w in pool):
-        return False  # max_tokens, token_limit, maxOutputTokens, nTokens
+    if any(v.county for v in verdicts):
+        return False  # max_tokens, token_limit, n_tokens — a count qualifier anywhere
     # A bare plural with no companion word ("tokens") is a count knob, not a credential;
     # any qualifier that survived the count check (github_tokens) reads as one.
-    return not (len(segments) == 1 and segments[0] == "TOKENS" and words == ["TOKENS"])
+    return not (len(raw_segments) == 1 and raw_segments[0].upper() == "TOKENS")
 
 
 _BINDINGS: tuple[Binding, ...] = ("const", "input", "envdefault", "none")

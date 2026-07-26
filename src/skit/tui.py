@@ -71,15 +71,6 @@ def _kind_badge(kind: str) -> tuple[str, str]:
     return (spec.glyph if spec is not None else "?"), label
 
 
-def _as_is_note() -> str:
-    """The literal-replay transparency line — the SAME msgid the CLI replay prints, so
-    the two faces cannot drift on the one sentence that explains provenance. Resolved at
-    print time (not import time) so the active locale applies."""
-    return gettext(
-        "(passed as-is — a remembered tail only expands {tokens} and globs when it was typed into the launch menu)"
-    )
-
-
 def _runner_detail_line(entry: Entry) -> str:
     """The detail pane's runner line — honest about a pin whose config row is gone
     (Entry settings says "(no longer configured)"; two surfaces, one truth)."""
@@ -563,9 +554,28 @@ class MenuApp(App[int | PendingRun]):
         if cached is not None and cached[0] == key:
             return cached[1]
         plan = flows.plan_for_entry(entry)
-        if self._plan_key(entry) == key:
+        # Cache only when BOTH freshness proofs hold. The second stat catches a write
+        # after the first stat; the meta re-read catches the other half of the window —
+        # a meta.toml write landing between the caller's resolve and the first stat,
+        # which would otherwise pin a plan built from the OLD meta under the NEW key
+        # (stat equality alone can't see it: plan_for_entry reads declared params from
+        # the in-memory entry.meta, not from disk). Either proof failing just skips the
+        # cache — the next highlight rebuilds fresh.
+        if self._plan_key(entry) == key and self._meta_unchanged(entry):
             self._plan_cache[entry.slug] = (key, plan)
         return plan
+
+    @staticmethod
+    def _meta_unchanged(entry: Entry) -> bool:
+        """Whether the on-disk record still matches the entry a plan was just built
+        from (see _cached_plan). Unresolvable counts as unchanged: the snapshot IS the
+        best available generation then, and caching it is the fix for the
+        subprocess-per-highlight corrupt-meta case."""
+        try:
+            current = store.resolve(entry.slug)
+        except store.StoreError:
+            return True
+        return current.meta == entry.meta and current.dir == entry.dir
 
     def _has_drift(self, entry: Entry) -> bool:
         """Drift is the expensive check (read + reconcile): served off the plan cache."""
@@ -939,7 +949,7 @@ class MenuApp(App[int | PendingRun]):
                 # The CLI replay's as-is note, on this face too: a literal-replay tail
                 # that LOOKS expandable must say it is passed through untouched — the
                 # replay-literally design was never the bug, doing it silently was.
-                print(_as_is_note(), flush=True)
+                print(flows.as_is_note(), flush=True)
             # The shared delivery pipeline: inject, transparency, run, cleanup. The TUI
             # just prints what it emits (bare, inside the suspend) and shows a banner.
             outcome = flows.execute(
@@ -1186,7 +1196,7 @@ def _finish_run(pending: PendingRun) -> int:
         for line in pending.plan.drift_lines:
             print(line, flush=True)
     if not pending.extra_raw and flows.tail_looks_expandable(list(pending.extra)):
-        print(_as_is_note(), flush=True)
+        print(flows.as_is_note(), flush=True)
     outcome = flows.execute(
         pending.entry,
         pending.plan,
