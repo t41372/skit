@@ -157,14 +157,22 @@ def without_block(raw: bytes, newline: bytes) -> bytes:
     return newline.join(keep)
 
 
-def plan_cache_key(entry: Entry) -> tuple[int, int, int, int]:
+def plan_cache_key(entry: Entry) -> tuple[int, int, int, int, str | None]:
     """The MenuApp._plan_cache key for `entry`: (mtime_ns, size) of the stored script AND of
-    its meta.toml — a display plan is a function of both files. mtime_ns + size (not a float
-    mtime) narrows the same-tick blind spot on coarse-mtime filesystems to same-tick
-    same-size writes. Shared so the key's shape is spelled out in exactly one place."""
+    its meta.toml — a display plan is a function of both files — plus the kind's reader-tool
+    fingerprint, because a reader plan (PowerShell) is a function of pwsh availability too.
+    mtime_ns + size (not a float mtime) narrows the same-tick blind spot on coarse-mtime
+    filesystems to same-tick same-size writes. Shared so the key's shape is spelled out in
+    exactly one place."""
+    from skit.langs.registry import spec_for  # deferred: see the import-order note above
+
     script = entry.script_path.stat()
     meta = (entry.dir / "meta.toml").stat()
-    return (script.st_mtime_ns, script.st_size, meta.st_mtime_ns, meta.st_size)
+    spec = spec_for(entry.meta.kind)
+    reader = spec.cli_reader if spec is not None else None
+    fingerprint = reader.runtime_fingerprint if reader is not None else None
+    tool = fingerprint() if fingerprint is not None else None
+    return (script.st_mtime_ns, script.st_size, meta.st_mtime_ns, meta.st_size, tool)
 
 
 def footer_text(static: Static) -> str:

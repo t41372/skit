@@ -1,4 +1,4 @@
-"""Behavior coverage for the design-audit fixes (rounds 1, 2 and 5), headless + CLI half.
+"""Behavior coverage for the design-audit fixes (rounds 1, 2, 5 and 6), headless + CLI half.
 
 Each section keeps one verified bug dead:
 
@@ -8,19 +8,26 @@ A. ``rewrite.read_for_block_edit`` / ``write_block_edit`` — the ONE byte-lossl
    source-rewriting lanes (``--normalize``, the deps sync) pass so the fold/detect discipline
    lives in exactly one place. The TUI half of A (the AddReviewScreen corruption that
    actually shipped) lives in tests/test_design_audit_tui.py.
-B. ``params.is_secret_name`` — SEGMENT matching with one plural fold and TOKEN's count
-   context. The substring rule made ``--max-tokens`` a permanent password field on the
-   reader lane; round 2's repair let plurals (``API_KEYS``) and acronym jams (``APIkey``)
-   through unmarked, which is the publishing direction. Round 5 owes both directions.
+B. ``params.is_secret_name`` — TWO word sources per segment (the jam AND its camel
+   sub-words) with one plural fold, and TOKEN's count context scoped by shape. The
+   substring rule made ``--max-tokens`` a permanent password field on the reader lane;
+   round 2's repair let plurals (``API_KEYS``) and acronym jams (``APIkey``) through
+   unmarked, which is the publishing direction; round 5's kept the jam and lost
+   ``awsSecretKey``. Round 6 owes every direction at once.
 C. ``skit remove`` / ``skit preset delete`` — the non-interactive contract (worded exit-2
    refusal naming --yes, never a confirm that eats piped stdin) plus preset deletion's new
    confirmation ceremony.
 D. Extra-args provenance — a remembered tail records HOW it was captured, and every replay
    in either face follows that record instead of the face doing the replaying.
 J. …and a marker-less replay that carries token/glob syntax SAYS it is passed as-is:
-   replaying literally is the design, doing it silently was the bug.
-H. ``params --manage`` on a kind with no analyzer names the ``--add`` door it does have.
+   replaying literally is the design, doing it silently was the bug. Round 6 moved the
+   predicate into ``flows.tail_looks_expandable`` (a leading ``~`` counts) so both faces
+   ask one question; the TUI half of J lives in tests/test_design_audit_tui.py.
+H. ``params --manage`` on a kind with no analyzer names the ``--add`` door it does have —
+   with the entry name shell-quoted, because the hint is a command to paste.
 I. ``params --json`` rows carry an additive ``binding`` key beside the frozen ``kind``.
+K. ``flows.prefill`` accepts the state its caller already loaded: one state read per
+   interaction, so a form's values, tail and provenance describe one snapshot.
 """
 
 from __future__ import annotations
@@ -293,6 +300,28 @@ _SECRET_TRUE = [
     # not a word anyone means; a variable named it is far likelier to hold a credential than
     # a count, and ambiguity errs toward masking.
     "photokens",
+    # ROUND 6 — the camelCase word source, restored beside the jammed one. Round 5 matched
+    # the JAMMED segment only, so every one of these published a live literal: AWSSECRETKEY
+    # ends in KEY but "AWSSECRET" is no listed qualifier, PASSWORDFILE ends in neither rule's
+    # suffix, STRIPEKEY's "STRIPE" is not a prefix. Split into the words the rules already
+    # know — AWS/SECRET/KEY, PASSWORD/FILE, STRIPE/KEY — every one of them matches.
+    "awsSecretKey",
+    "openaiApiKey",
+    "passwordFile",
+    "secretsFile",  # ...and the plural fold reaches a camel sub-word too (SECRETS → SECRET)
+    "adminPasswordHash",
+    "stripeKey",
+    "deployKey",
+    "clientSecretValue",
+    "apiKeyId",
+    # SENTENCE shape — a credential ask whose parenthetical happens to mention a size. Under
+    # the name rule ("a count word ANYWHERE suppresses") these went unmasked, the publishing
+    # direction, because "max"/"limit" appears somewhere after the token word.
+    "Enter your API token (max 64 chars):",
+    "Paste your GitHub token (limit 1 per line):",
+    # The same shape at its shortest: the count word is the only other word in the text, and
+    # it still FOLLOWS the token word instead of qualifying it.
+    "Token (max 64):",
 ]
 
 _SECRET_FALSE = [
@@ -331,6 +360,21 @@ _SECRET_FALSE = [
     "num_tokens",
     "token_limits",
     "tokens_per_minute",
+    # ROUND 6 — the camel word source cuts BOTH ways: these are the LLM knobs people actually
+    # type, and round 2's segment-only rule re-masked every one of them (MAXOUTPUTTOKENS has
+    # no count word to see until it is split into MAX/OUTPUT/TOKENS). A count word anywhere in
+    # a NAME suppresses, however many words sit between it and the noun.
+    "maxOutputTokens",
+    "maxNewTokens",
+    "maxInputTokens",
+    "maxCompletionTokens",
+    "numPredictTokens",
+    # ...and the sentence shape's own rule: a count word IMMEDIATELY BEFORE the token word.
+    "max tokens:",
+    "How many tokens do you want?",
+    # Padding is not shape: a name with stray whitespace around it is still a name, so the
+    # "anywhere" rule applies (the sentence rule would leave this masked).
+    "  maxOutputTokens  ",
 ]
 
 
@@ -417,6 +461,17 @@ def test_a_count_word_fused_into_the_segment_suppresses_too() -> None:
     assert params.is_secret_name("photokens") is True
 
 
+def test_a_fused_count_qualifier_suppresses_with_no_camel_boundary_to_help() -> None:
+    """The all-caps spelling of the same names: MAXTOKENS/NTOKENS split into nothing, so the
+    ONLY thing that can see the qualifier is the fused-single-qualifier rule inside the token
+    check — the exact position of the slice that lifts it off the noun. (The multi-word jam
+    MAXOUTPUTTOKENS is the deliberate exception: no single qualifier to lift, so it stays
+    masked.)"""
+    assert params.is_secret_name("MAXTOKENS") is False
+    assert params.is_secret_name("NTOKENS") is False
+    assert params.is_secret_name("MAXOUTPUTTOKENS") is True
+
+
 def test_a_bare_plural_tokens_is_a_count_but_a_qualified_one_is_not() -> None:
     """ "tokens" alone is the LLM count knob; the singular "token" is what an auth header holds.
     Add ANY companion word and the plural reads as a credential again (github_tokens), unless
@@ -425,6 +480,75 @@ def test_a_bare_plural_tokens_is_a_count_but_a_qualified_one_is_not() -> None:
     assert params.is_secret_name("token") is True
     assert params.is_secret_name("github_tokens") is True
     assert params.is_secret_name("max_tokens") is False
+
+
+def test_the_bare_plural_exemption_needs_both_word_sources_to_agree() -> None:
+    """The exemption is for the bare word "tokens", and BOTH sources have to say so. A
+    nonstandard casing that jams to TOKENS but splits into something else is the APIkey class
+    of spelling — the one rounds 2 and 5 each got wrong in turn — and it is not the count knob,
+    so ambiguity errs toward masking."""
+    assert params.is_secret_name("tokens") is False
+    assert params.is_secret_name("Tokens") is False  # ...the same bare word, capitalized
+    assert params.is_secret_name("toKens") is True
+    assert params.is_secret_name("TokenS") is True
+
+
+def test_both_word_sources_are_matched_not_one_or_the_other() -> None:
+    """Round 6's structural repair: each segment contributes TWO word sources, and each source
+    owns cases the other cannot see. Rounds 2 and 5 each kept one and regressed the other's
+    family — this pins the pair, so dropping either source turns half of these red.
+
+    Only the JAM sees APIkey (the camel rule cuts it at the acronym boundary into AP + Ikey);
+    only the CAMEL words see awsSecretKey (the jam AWSSECRETKEY ends in KEY behind no listed
+    qualifier). Neither spelling is exotic — both are how people really name credentials."""
+    # jam-only: a lowercase tail on an acronym defeats every camel boundary there is
+    assert params.is_secret_name("APIkey") is True
+    assert params.is_secret_name("SSHkey") is True
+    # camel-only: the jammed compound matches no rule at all
+    assert params.is_secret_name("awsSecretKey") is True
+    assert params.is_secret_name("passwordFile") is True
+    # ...and the non-credential lookalikes stay unmasked under both sources
+    assert params.is_secret_name("monkey") is False
+    assert params.is_secret_name("publickey") is False
+
+
+def test_count_suppression_is_scoped_by_shape_name_versus_sentence() -> None:
+    """THE round-6 seam. A NAME suppresses on a count word anywhere in its pool, because
+    maxOutputTokens is one identifier whose qualifier sits three words from the noun. A
+    SENTENCE cannot afford that rule: "Enter your API token (max 64 chars):" is a credential
+    ask whose parenthetical merely mentions a size, and unmasking it publishes the token.
+
+    Whitespace (after stripping) is the discriminator, so the same words decide differently
+    depending on which shape they arrive in — deliberately."""
+    assert params.is_secret_name("maxOutputTokens") is False  # name: MAX anywhere suppresses
+    assert params.is_secret_name("max tokens:") is False  # sentence: MAX right before the noun
+    assert params.is_secret_name("Enter your API token (max 64 chars):") is True
+    # ...and the very same words jammed into a NAME take the "anywhere" rule instead.
+    assert params.is_secret_name("EnterYourAPIToken(max64chars)") is False
+    # Stripping is what keeps a padded name a name — the sentence rule would mask this one.
+    assert params.is_secret_name("  maxOutputTokens  ") is False
+
+
+def test_in_a_sentence_only_the_word_immediately_before_the_token_word_suppresses() -> None:
+    """The sentence rule is positional, over the camel words IN ORDER: "max tokens" is a count
+    knob, "token (max 64)" is a credential with a length note. A count word that merely appears
+    later in the text — or wraps around to the front of the list — must not suppress."""
+    assert params.is_secret_name("max tokens:") is False  # count word, then the token word
+    assert params.is_secret_name("Rate limits: tokens per minute") is False  # ...plural folded
+    # The token word FIRST: nothing precedes it, so nothing can suppress it. (An index check
+    # that wrapped would consult the last word — "max" — and unmask a credential prompt.)
+    assert params.is_secret_name("Token (max 64):") is True
+    assert params.is_secret_name("Paste your GitHub token (limit 1 per line):") is True
+
+
+def test_an_all_caps_jam_of_a_multi_word_count_stays_masked() -> None:
+    """The deliberate direction of the one case neither source can split: MAXOUTPUTTOKENS has
+    no boundary to cut on and no count word as a segment, so it stays a TOKEN hit. Masking a
+    count costs a prefill; unmasking a credential publishes it — and the two spellings that
+    DO carry a boundary both read as counts."""
+    assert params.is_secret_name("MAXOUTPUTTOKENS") is True
+    assert params.is_secret_name("MAX_OUTPUT_TOKENS") is False
+    assert params.is_secret_name("maxOutputTokens") is False
 
 
 def test_secret_heuristic_is_universal_across_lanes(tmp_path: Path) -> None:
@@ -747,9 +871,35 @@ _AS_IS = "(passed as-is"
 
 
 @pytest.mark.parametrize(
+    ("tail", "expandable"),
+    [
+        (["out_{today}.png"], True),
+        (["*.png"], True),
+        (["report?.txt"], True),
+        (["log[0-9].txt"], True),
+        # Round 6: tokens.expand also expands a LEADING ~, so a tail that starts with one
+        # would silently arrive unexpanded — the exact surprise the note exists for.
+        (["~/backups"], True),
+        (["--flag"], False),
+        (["a~b"], False),  # ...only LEADING: a tilde inside a word is just a character
+        ([], False),
+    ],
+    ids=["token", "star", "question", "bracket", "tilde", "flag", "inner-tilde", "empty"],
+)
+def test_tail_looks_expandable_is_the_one_predicate_behind_the_note(
+    tail: list[str], expandable: bool
+) -> None:
+    """THE predicate, in one place: both faces (the CLI replay line and the TUI's two run
+    paths) ask flows.tail_looks_expandable, so they cannot drift into two notions of "this
+    would have expanded". It answers for the syntax tokens.expand actually acts on — {braces},
+    glob characters, and a leading ~ — and stays quiet for anything else."""
+    assert flows.tail_looks_expandable(tail) is expandable
+
+
+@pytest.mark.parametrize(
     "tail",
-    [["out_{today}.png"], ["*.png"], ["report?.txt"], ["log[0-9].txt"]],
-    ids=["token", "star", "question", "bracket"],
+    [["out_{today}.png"], ["*.png"], ["report?.txt"], ["log[0-9].txt"], ["~/backups"]],
+    ids=["token", "star", "question", "bracket", "tilde"],
 )
 def test_replaying_an_unmarked_tail_with_syntax_says_it_is_passed_as_is(
     tmp_path: Path, run_entry_spy, tail: list[str]
@@ -821,6 +971,19 @@ def test_manage_on_an_exe_names_the_declared_lane_it_does_have(tmp_path: Path) -
     assert "Declare one instead: skit params prog --add PARAM" in out
 
 
+def test_the_add_hint_shell_quotes_the_name_it_tells_you_to_paste(tmp_path: Path) -> None:
+    """The hint is a copy-pasteable COMMAND, and entry names may contain spaces. Unquoted, the
+    line told the user to run `skit params my tool --add PARAM` — two arguments, an entry named
+    "my" that doesn't exist, and a refusal that hands out a broken incantation is worse than
+    one that hands out none. The sentence half still names the entry plainly."""
+    _exe(tmp_path, name="my tool")
+    result = runner.invoke(cli.app, ["params", "my tool", "--manage", "WIDTH"])
+    assert result.exit_code == 1
+    out = " ".join(result.output.split())
+    assert "my tool has no managed parameters" in out  # prose half: the name as the user sees it
+    assert "Declare one instead: skit params 'my tool' --add PARAM" in out
+
+
 def test_manage_on_a_python_entry_takes_the_analyzer_path_with_no_hint(tmp_path: Path) -> None:
     """The complement: a kind that HAS an analyzer never sees the refusal — nor its hint. The
     manage really happens."""
@@ -875,3 +1038,60 @@ def test_params_json_binding_is_additive_not_a_rename(tmp_path: Path) -> None:
     (row,) = json.loads(runner.invoke(cli.app, ["params", "s", "--json"]).output)["params"]
     decl = ParamDecl(name="TOKEN", binding="const", type="str", default="x", secret=True)
     assert row == {**decl.to_block_dict(), "binding": "const"}
+
+
+# ==========================================================================
+# K. flows.prefill takes the state its caller already loaded
+# ==========================================================================
+
+
+def _prefill_plan() -> flows.FormPlan:
+    return flows.FormPlan(
+        source="declared",
+        fields=[flows.FormField(key="CITY", label="CITY", default="Taipei", has_default=True)],
+    )
+
+
+def test_prefill_uses_a_passed_state_and_never_opens_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One interaction, one state read: the TUI loads the entry's state once and hands the SAME
+    snapshot to prefill, to the form's extra row and to the provenance baseline. Passing it must
+    actually skip the load — otherwise three reads of a file an agent may be rewriting can
+    disagree with each other inside one launch."""
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="p")
+    argstate.save_last(entry.slug, values={"CITY": "Kyoto"})
+    loads: list[str] = []
+
+    def recording(slug: str) -> dict[str, object]:
+        loads.append(slug)
+        return {}
+
+    monkeypatch.setattr(flows.argstate, "load_state", recording)
+
+    handed = {"values": {"CITY": "Osaka"}, "presets": {}, "extra_args": [], "last_run": {}}
+    assert flows.prefill(_prefill_plan(), entry.slug, state=handed) == {"CITY": "Osaka"}
+    assert loads == []  # the passed snapshot won, and nothing was re-read
+
+
+def test_prefill_without_a_state_still_loads_it_itself(tmp_path: Path) -> None:
+    """The default path is unchanged — every non-TUI caller (the CLI, the inline form) keeps
+    passing nothing and gets the entry's stored values."""
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="p")
+    argstate.save_last(entry.slug, values={"CITY": "Kyoto"})
+
+    assert flows.prefill(_prefill_plan(), entry.slug) == {"CITY": "Kyoto"}
+
+
+def test_prefill_reads_the_preset_out_of_the_passed_state_too(tmp_path: Path) -> None:
+    """`state` replaces the read WHOLE, not just its values half: a preset resolved against a
+    different snapshot than the values it overlays would mix two generations in one form."""
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="p")
+    handed = {
+        "values": {"CITY": "Osaka"},
+        "presets": {"trip": {"CITY": "Nara"}},
+        "extra_args": [],
+        "last_run": {},
+    }
+
+    assert flows.prefill(_prefill_plan(), entry.slug, "trip", state=handed) == {"CITY": "Nara"}

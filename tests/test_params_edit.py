@@ -395,3 +395,21 @@ def test_bool_flag_that_is_off_by_default_still_gets_store_true():
     d = _by_name(res.decls)["verbose"]
     assert res.warnings == []
     assert (d.type, d.default, d.action) == ("bool", False, "store_true")
+
+
+def test_one_refused_row_reverts_itself_and_the_edit_carries_on():
+    """A refused row is reverted and SKIPPED, not a stop sign for the whole edit: one bad
+    `--type v=bool` in a batch must not silently drop every tweak the user asked for after it.
+    (Ordering is the tweak loop's own — `verbose` comes first because it is declared first.)"""
+    res = edit_declared(
+        [
+            ParamDecl(name="verbose", delivery="flag", flag="--verbose"),
+            ParamDecl(name="width", delivery="flag", flag="--width"),
+        ],
+        types={"verbose": "bool", "width": "int"},
+        defaults={"verbose": "true", "width": "800"},
+    )
+    by = _by_name(res.decls)
+    assert res.warnings == ["bool-flag-on-by-default:verbose"]
+    assert (by["verbose"].type, by["verbose"].action) == ("str", "")  # rolled back
+    assert (by["width"].type, by["width"].default) == ("int", 800)  # ...and the next one applied

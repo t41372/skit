@@ -150,6 +150,33 @@ async def test_nonzero_exit_records_failed_status(tmp_path, stay_suspend, monkey
     assert status == "Last: a ✗ failed (code 3)"
 
 
+async def test_the_suspend_body_wires_the_warn_channel_to_a_flushed_print(
+    tmp_path, stay_suspend, monkeypatch
+):
+    """flows.execute has TWO output channels, and the suspend body owns both: `warn` (the amp
+    one-shot notice, a degraded delivery) must reach the terminal exactly like `emit` — its own
+    text, flushed. Wired to None it raises on the first warning; wired to a swallowing lambda
+    the notice is simply never seen, which is the failure mode nobody would report."""
+    rec = _PrintRecorder()
+    monkeypatch.setattr("builtins.print", rec)
+
+    def warning_execute(_entry, _plan, _asm, *, emit, warn, invoke_cwd=None, runner=None):
+        warn("WARN-SENTINEL")
+        return flows.RunOutcome(0, "", "")
+
+    monkeypatch.setattr(tui.flows, "execute", warning_execute)
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="a")
+    plan = flows.FormPlan(source="none")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._execute(entry, plan, {}, [])
+        await pilot.pause()
+
+    assert "WARN-SENTINEL" in rec.lines  # the warning's own text, whole and alone
+    assert rec.flush_for("WARN-SENTINEL") is True
+
+
 # ---------------------------------------------------------------------------
 # in-TUI launch-failure path: error line + "couldn't launch" status
 # ---------------------------------------------------------------------------

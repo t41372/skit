@@ -162,6 +162,32 @@ def test_finish_run_launch_failure_prints_error_and_uses_docker_code(tmp_path, m
     assert argstate.load_state(entry.slug)["last_run"] == {}  # nothing ran, nothing recorded
 
 
+def test_finish_run_wires_the_warn_channel_to_a_flushed_print(tmp_path, monkeypatch):
+    """flows.execute has TWO output channels, and the exit tail owns both: `warn` (the amp
+    one-shot notice, a degraded delivery) must reach the terminal exactly like `emit` — its own
+    text, flushed. Wired to None it raises on the first warning; wired to a swallowing lambda
+    the notice is simply never seen, which is the failure mode nobody would report."""
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="warny")
+    plan = flows.plan_for_entry(entry)
+    asm = flows.assemble(plan, {}, [], cwd=tmp_path)
+
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: calls.append((a, k)))
+
+    def warning_execute(_entry, _plan, _asm, *, emit, warn, invoke_cwd=None, runner=None):
+        warn("WARN-SENTINEL")
+        return flows.RunOutcome(0, "", "")
+
+    monkeypatch.setattr(flows, "execute", warning_execute)
+
+    pending = tui.PendingRun(entry, plan, asm, {}, [], extra_raw=True, show_drift=False)
+    assert tui._finish_run(pending) == 0
+
+    warned = next(((a, k) for a, k in calls if a and str(a[0]) == "WARN-SENTINEL"), None)
+    assert warned is not None  # the warning's own text, not None and not an empty line
+    assert warned[1].get("flush") is True
+
+
 def test_finish_run_unmapped_failure_falls_back_to_generic_skit_error_code(tmp_path, monkeypatch):
     """Defensive default: a failure name outside FAILURE_EXIT_CODES maps to 125, the generic
     skit-error docker code — never None (would break the int contract) and never another

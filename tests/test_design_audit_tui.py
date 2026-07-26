@@ -1,4 +1,4 @@
-"""Behavior coverage for the design-audit fixes (rounds 1, 2 and 5), TUI half.
+"""Behavior coverage for the design-audit fixes (rounds 1, 2, 5 and 6), TUI half.
 
 A. THE round-1 HIGH: the add-review panel wrote parameter blocks back with
    read_text/write_text, silently rewriting every line ending of the just-stored copy. Pinned
@@ -7,10 +7,17 @@ A. THE round-1 HIGH: the add-review panel wrote parameter blocks back with
 D. Extra-args provenance, TUI face: `r` replays a CLI-captured tail literally, the form's own
    tail expands, the marker rides through the deferred (exit-mode) save on PendingRun — and
    (round 5, the rule's third face) a PREFILLED tail submitted untouched keeps the provenance
-   it was recorded with; only text the user actually edited is re-captured as form text.
-E. The Library detail pane's plan cache: keyed on both files' (mtime_ns, size), re-resolved
-   from the store on a miss so a stale Library row can't pin a stale plan under a fresh key,
-   popped by edit and by the settings-close callback, and _has_drift served off the same entry.
+   it was recorded with; only text the user actually edited is re-captured as form text. Round
+   6 moved that verdict INTO the form (a real dirt bit on the extra row, against its own
+   compose-time snapshot), which is the only place that can tell a cleared-and-retyped
+   identical tail from an untouched one — or a concurrent CLI write from a user edit.
+E. The Library detail pane's plan cache: keyed on both files' (mtime_ns, size) plus the
+   reader-tool fingerprint, validated by a second stat so a racing write can't pin stale
+   content under a fresh key, caching snapshot fallbacks instead of a subprocess per cursor
+   move, popped by edit and by the settings-close callback, _has_drift served off the same
+   entry — and (E2) freshness owned by MenuApp._fresh, so the pane and both LAUNCH paths
+   describe one generation of one record.
+J. The as-is note on the TUI's two run faces, from the CLI's own msgid.
 F. AddReviewScreen._reader_modeled memoizes its probe on (text, reader tool) — for a reader
    kind each call is a synchronous subprocess and the panel must not freeze because a radio
    button was clicked, but a pwsh installed mid-session must not be invisible either.
@@ -29,7 +36,7 @@ import pytest
 from textual.widgets import Checkbox, Input, Select
 
 from conftest import plan_cache_key, without_block
-from skit import argstate, argv_text, config, flows, launcher, store, tui
+from skit import argstate, argv_text, config, flows, launcher, store, tui, tui_form
 from skit.analysis import ArgSpec
 from skit.langs.base import CliReader
 from skit.langs.python import metawriter
@@ -103,7 +110,10 @@ def _py(tmp_path, body: str, name: str = "job.py") -> Path:
 
 
 def _detail_text(app) -> str:
-    return " ".join(str(s.render()) for s in app.query("#detail-body Static"))
+    """The detail pane's rendered text — "" when the size tier dropped the pane entirely.
+    (#detail-body IS the Static: a descendant selector matches nothing and silently makes
+    every assertion here vacuous.)"""
+    return " ".join(str(s.render()) for s in app.query("#detail-body"))
 
 
 # ==========================================================================
@@ -372,6 +382,259 @@ async def test_pending_run_carries_the_marker_into_the_deferred_save(tmp_path, m
     assert argstate.load_state(entry.slug)["extra_args_raw"] is False
 
 
+async def _open_run_form(app, pilot) -> RunFormScreen:
+    app.action_run()
+    await pilot.pause()
+    screen = app.screen
+    assert isinstance(screen, RunFormScreen)
+    return screen
+
+
+def _extra_row(screen: RunFormScreen) -> FieldRow:
+    return next(r for r in screen.query(FieldRow) if r.field.key == _EXTRA_KEY)
+
+
+async def _retype(pilot, row: FieldRow, text: str) -> None:
+    """Clear the extra field and type `text` into it with real keystrokes — the only way to
+    prove the path a user takes (a programmatic .value assignment posts the same Input.Changed,
+    so it would prove nothing about the keyboard)."""
+    box = row.query_one(Input)
+    box.focus()
+    await pilot.pause()
+    await pilot.press("end", *(["backspace"] * len(box.value)))
+    await pilot.press(*text)
+    await pilot.pause()
+
+
+async def test_clearing_and_retyping_the_identical_tail_counts_as_typing(
+    tmp_path, quiet_run, expansions
+):
+    """THE round-6 finding. Provenance used to be inferred by comparing the submitted tail
+    against the state on disk, so a user who selected the remembered tail, deleted it and typed
+    it back — the documented one-time repair for a legacy literal tail — produced identical
+    text and was judged untouched. The repair silently did nothing, twice, forever.
+
+    The form now tracks a real dirt bit on the extra row: the EVENT is the truth, and typing
+    into the launch menu is typing into the launch menu whatever the letters come out as."""
+    entry = _managed_entry(tmp_path)
+    argstate.save_last(entry.slug, extra_args=["out_{today}.txt"])  # unmarked → literal
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        screen = await _open_run_form(app, pilot)
+        row = _extra_row(screen)
+        prefilled = row.value
+        await _retype(pilot, row, prefilled)
+        assert row.value == prefilled  # byte-identical to what it replaced
+        screen.action_submit()
+        await pilot.pause()
+
+    (tail,) = quiet_run["extra"]
+    assert tail.startswith("out_20")  # the retyped text is form text: it expanded
+    assert expansions == [True]
+    state = argstate.load_state(entry.slug)
+    assert state["extra_args"] == ["out_{today}.txt"]  # intent persisted, never expansion
+    assert state["extra_args_raw"] is True  # ...and the repair actually took
+
+
+async def test_a_concurrent_write_to_the_stored_tail_cannot_fake_an_edit(
+    tmp_path, quiet_run, expansions
+):
+    """The other half of the same repair. Diffing the submitted tail against freshly-reloaded
+    state also read the reverse case wrong: an agent running `skit run` in another terminal
+    while the launch menu sits open changed the record, so the untouched prefill no longer
+    matched it and was re-captured as form text — a write by someone else promoted to a user
+    edit. The verdict is the FORM's, judged against its own compose-time snapshot, and the
+    tail that launches is the one the user was looking at."""
+    entry = _managed_entry(tmp_path)
+    argstate.save_last(entry.slug, extra_args=["out_{today}.txt"])  # unmarked → literal
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        screen = await _open_run_form(app, pilot)
+        # …an agent runs `skit run j -- other.txt` in another terminal, right now.
+        argstate.save_last(entry.slug, extra_args=["other.txt"], extra_args_raw=True)
+        screen.action_submit()
+        await pilot.pause()
+
+    assert quiet_run["extra"] == ["out_{today}.txt"]  # what the form showed, verbatim
+    assert expansions == [False]  # ...under the provenance the form composed with
+    state = argstate.load_state(entry.slug)
+    assert state["extra_args"] == ["out_{today}.txt"]
+    assert state["extra_args_raw"] is False  # the concurrent write did not flip the marker
+
+
+def test_the_forms_dirt_bits_start_disarmed_and_clean(tmp_path):
+    """The dirt bit follows the runner picker's own two-flag idiom: a form starts DISARMED (the
+    compose-time value settling must never count as a user edit) and CLEAN, each exactly False
+    rather than merely falsy — a None reads the same inside an `if` and quietly turns a boolean
+    into a tri-state nobody wrote a rule for."""
+    entry = _managed_entry(tmp_path)
+    screen = RunFormScreen(entry, flows.plan_for_entry(entry), {})
+    assert screen._extra_armed is False
+    assert screen._extra_dirty is False
+    assert screen._runner_pick_armed is False
+    assert screen._runner_was_picked is False
+    assert screen._skip_apply_until is None  # the guard is off, not armed on an empty name
+    assert screen._runner_default == ""  # the omitted-arg default, not a sentinel
+
+
+def test_a_form_given_no_state_loads_the_entrys_own(tmp_path):
+    """The default path is unchanged: every caller that does NOT already hold the state (the
+    CLI's inline frame) keeps getting the entry's stored snapshot, and the tail's provenance
+    baseline comes from that same read."""
+    entry = _managed_entry(tmp_path)
+    argstate.save_last(entry.slug, extra_args=["out.txt"], extra_args_raw=True)
+
+    screen = RunFormScreen(entry, flows.plan_for_entry(entry), {})
+
+    assert screen._state["extra_args"] == ["out.txt"]
+    assert screen._extra_prefill_raw is True
+
+
+def test_a_form_given_a_state_uses_that_one_and_reads_nothing(tmp_path, monkeypatch):
+    """…and a caller that already holds the snapshot hands it over WHOLE: the tail, its
+    provenance and the preset list all come from the one object, so no part of one form can
+    describe a different generation than another part."""
+    entry = _managed_entry(tmp_path)
+    argstate.save_last(entry.slug, extra_args=["on-disk.txt"])
+    monkeypatch.setattr(
+        tui_form.argstate, "load_state", lambda slug: pytest.fail("re-read the state file")
+    )
+    handed = {
+        "values": {},
+        "presets": {"trip": {"CITY": "Nara"}},
+        "extra_args": ["handed.txt"],
+        "extra_args_raw": True,
+        "last_run": {},
+    }
+
+    screen = RunFormScreen(entry, flows.plan_for_entry(entry), {}, state=handed)
+
+    assert screen._state is handed
+    assert screen._presets is handed["presets"]
+    assert screen._extra_prefill_raw is True
+
+
+@pytest.fixture
+def state_reads(monkeypatch):
+    """Every argstate.load_state a test's window performs. Installed by the test AFTER the
+    app has mounted, so the initial detail render is not in the count."""
+    reads: list[str] = []
+    real = argstate.load_state
+
+    def counting(slug):
+        reads.append(slug)
+        return real(slug)
+
+    def install() -> list[str]:
+        monkeypatch.setattr(tui.argstate, "load_state", counting)
+        return reads
+
+    return install
+
+
+@pytest.fixture
+def prefill_calls(monkeypatch):
+    """Every (plan, slug, kwargs) triple handed to flows.prefill. The state kwarg makes the
+    slug unused DOWNSTREAM today, so only the call site itself can pin that the entry's own
+    slug (never None, never another entry's) is what the launch asks about — remove the state
+    kwarg later and a wrong slug there is a form filled from the wrong entry's memory."""
+    calls: list[tuple[object, object, dict[str, object]]] = []
+    real = flows.prefill
+
+    def spy(plan, slug, preset=None, **kwargs):
+        calls.append((plan, slug, kwargs))
+        return real(plan, slug, preset, **kwargs)
+
+    monkeypatch.setattr(tui.flows, "prefill", spy)
+    return calls
+
+
+async def test_action_run_asks_prefill_about_this_entry_with_the_one_snapshot(
+    tmp_path, quiet_run, prefill_calls
+):
+    """The launch's prefill call is wired to THIS entry's slug and to the very state object the
+    form is handed — one snapshot, one entry, no second read hiding behind a default."""
+    entry = _managed_entry(tmp_path)
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        screen = await _open_run_form(app, pilot)
+        (plan, slug, kwargs) = prefill_calls[-1]
+        assert slug == entry.slug
+        assert plan is screen._plan
+        assert kwargs["state"] is screen._state
+
+
+async def test_action_rerun_asks_prefill_about_this_entry_with_the_one_snapshot(
+    tmp_path, quiet_run, prefill_calls
+):
+    """…and so is the form-free `r` path, which assembles the launch straight out of that
+    prefill: a wrong slug here replays another entry's remembered values with no form to show
+    them in."""
+    entry = _managed_entry(tmp_path)
+    argstate.save_last(entry.slug, values={"CITY": "Kyoto"})
+    argstate.record_run(entry.slug, 0, at="2026-07-09T00:00:00+00:00")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        app.action_rerun()
+        await pilot.pause()
+
+    (_plan, slug, kwargs) = prefill_calls[-1]
+    assert slug == entry.slug
+    assert kwargs["state"]["values"] == {"CITY": "Kyoto"}  # the one snapshot, not a fresh read
+    assert quiet_run["extra"] == []  # ...and that prefill really carried the launch
+
+
+async def test_a_launch_interaction_reads_the_entrys_state_exactly_once(tmp_path, state_reads):
+    """One interaction, one snapshot. The prefill, the form's remembered tail, its preset list
+    and the provenance baseline used to come from FOUR separate reads of one file — four
+    chances for an agent writing beside the TUI to hand different parts of one form different
+    generations. (Exit mode, so the post-run reload's own render is outside the window.)"""
+    config.save_after_run("exit")
+    entry = _managed_entry(tmp_path)
+    argstate.save_last(entry.slug, values={"CITY": "Kyoto"}, extra_args=["out.txt"])
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        reads = state_reads()
+        screen = await _open_run_form(app, pilot)
+        screen.action_submit()
+        await pilot.pause()
+        assert reads == [entry.slug]
+
+    pending = app.return_value
+    assert isinstance(pending, tui.PendingRun)  # ...and that one read served the whole launch
+    assert pending.extra == ["out.txt"]  # the remembered tail reached the form
+    assert pending.values == {"CITY": "Kyoto"}  # ...and so did the remembered values
+    assert pending.extra_raw is False  # ...and the provenance baseline came from it too
+
+
+async def test_the_rerun_path_reads_the_entrys_state_exactly_once(tmp_path, state_reads):
+    """The `r` path had the same repeated read — the last-run guard, the prefill and the tail's
+    provenance each opened the file, so a rerun could check one generation's "has it run" and
+    replay another generation's arguments. One read now answers all three."""
+    config.save_after_run("exit")
+    entry = _managed_entry(tmp_path)
+    argstate.save_last(entry.slug, values={"CITY": "Kyoto"}, extra_args=["out.txt"])
+    argstate.record_run(entry.slug, 0, at="2026-07-09T00:00:00+00:00")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        reads = state_reads()
+        app.action_rerun()
+        await pilot.pause()
+        assert reads == [entry.slug]
+
+    pending = app.return_value
+    assert isinstance(pending, tui.PendingRun)
+    assert pending.extra == ["out.txt"]
+    assert pending.values == {"CITY": "Kyoto"}
+    assert pending.extra_raw is False
+
+
 # ==========================================================================
 # E. the Library detail pane's plan cache
 # ==========================================================================
@@ -443,11 +706,12 @@ def test_cached_plan_builds_fresh_when_the_script_cannot_be_stat_ed(tmp_path, pl
     assert entry.slug not in app._plan_cache
 
 
-def test_cached_plan_key_is_mtime_ns_and_size_per_file(tmp_path):
-    """The key is (mtime_ns, size) of the script AND of meta.toml. A float st_mtime is
-    second- (FAT: two-second-) granular on some filesystems, so a same-tick edit landed under
-    a key that still looked fresh; the size half narrows that blind spot to same-tick
-    same-size writes."""
+def test_cached_plan_key_is_mtime_ns_and_size_per_file_plus_the_reader_tool(tmp_path):
+    """The key is (mtime_ns, size) of the script AND of meta.toml, then the kind's reader-tool
+    fingerprint. A float st_mtime is second- (FAT: two-second-) granular on some filesystems,
+    so a same-tick edit landed under a key that still looked fresh; the size half narrows that
+    blind spot to same-tick same-size writes. The fifth element is None for a kind whose
+    reading needs no external tool (python parses in-process)."""
     entry = store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     app = tui.MenuApp()
     app._cached_plan(entry)
@@ -455,7 +719,7 @@ def test_cached_plan_key_is_mtime_ns_and_size_per_file(tmp_path):
     (key, _plan) = app._plan_cache[entry.slug]
     assert key == plan_cache_key(entry)
     script, meta = entry.script_path.stat(), (entry.dir / "meta.toml").stat()
-    assert key == (script.st_mtime_ns, script.st_size, meta.st_mtime_ns, meta.st_size)
+    assert key == (script.st_mtime_ns, script.st_size, meta.st_mtime_ns, meta.st_size, None)
 
 
 def _exe(tmp_path, name: str = "prog"):
@@ -465,48 +729,156 @@ def _exe(tmp_path, name: str = "prog"):
     return store.add_exe(prog, name=name)
 
 
-def test_cached_plan_rebuilds_from_the_store_not_the_librarys_stale_row(tmp_path):
-    """The passed-in Entry is the Library's snapshot from the last _reload, which may PREDATE
-    the very meta.toml change that invalidated the key. Building the replacement plan from it
-    parked a stale plan under the fresh key — where every later reload cache-HIT it, so the
-    pane never caught up until the file moved again. The miss re-resolves from the store.
+def test_cached_plan_caches_the_generation_its_caller_handed_it(tmp_path):
+    """Round 6 moved freshness OUT of the cache: _cached_plan no longer re-resolves, it caches
+    whatever generation its CALLER renders. Handed the current record it caches the current
+    plan; handed a stale snapshot it does not silently second-guess the caller. One owner of
+    freshness (MenuApp._fresh), not two racing ones — the pane's own guarantee is pinned in the
+    test below, and _fresh is the only thing standing between the two.
 
-    The scenario is the product's own coexistence story: an agent runs `skit params prog --add
-    WIDTH` beside an open TUI, and nothing in the app has reloaded yet."""
-    entry = _exe(tmp_path)
+    The scenario behind it is the product's own coexistence story: an agent runs `skit params
+    prog --add WIDTH` beside an open TUI, and nothing in the app has reloaded yet."""
+    stale = _exe(tmp_path)
     app = tui.MenuApp()
-    assert [f.key for f in app._cached_plan(entry).fields] == []  # cached under the old key
+    assert [f.key for f in app._cached_plan(stale).fields] == []
 
     store.write_parameters(
-        entry.slug, [ParamDecl(name="WIDTH", delivery="flag", flag="--width", type="int")]
+        stale.slug, [ParamDecl(name="WIDTH", delivery="flag", flag="--width", type="int")]
     )
 
-    plan = app._cached_plan(entry)  # ...asked with the SAME stale Entry the pane still holds
-    assert [f.key for f in plan.fields] == ["WIDTH"]  # the new meta, not the snapshot's
-    assert app._cached_plan(entry) is plan  # ...and the fresh plan is what landed in the cache
+    # The current record in — the current plan out, and THAT is what lands in the cache.
+    plan = app._cached_plan(store.resolve(stale.slug))
+    assert [f.key for f in plan.fields] == ["WIDTH"]
+    assert app._cached_plan(store.resolve(stale.slug)) is plan
+
+    # The stale snapshot in — the stale plan out (a caller asking about last week's record
+    # gets an answer about last week's record). Nothing in the app does this: every
+    # production call site passes _fresh().
+    app._plan_cache.clear()
+    assert [f.key for f in app._cached_plan(stale).fields] == []
 
 
-def test_cached_plan_falls_back_to_the_snapshot_when_the_entry_is_gone(
+async def test_the_detail_pane_catches_up_with_a_parameter_declared_beside_it(tmp_path):
+    """Where that guarantee lives now: _refresh_detail resolves the record itself, so the very
+    meta.toml write the key noticed is the one the plan is built from. Before round 6 the miss
+    re-read inside the cache; the pane's OTHER lines still came from the Library snapshot, so
+    one render could show a fresh parameter row under a stale description."""
+    entry = _exe(tmp_path)
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        assert "WIDTH" not in _detail_text(app)
+
+        store.write_parameters(
+            entry.slug, [ParamDecl(name="WIDTH", delivery="flag", flag="--width", type="int")]
+        )
+        store.update_description(entry.slug, "resized by an agent")
+
+        app._refresh_detail()  # a cursor movement, with no _reload in between
+        await pilot.pause()
+        text = _detail_text(app)
+
+    assert "WIDTH" in text  # the plan the cache serves is the new generation...
+    assert "resized by an agent" in text  # ...and so is the description beside it
+
+
+def test_fresh_degrades_to_the_snapshot_when_the_record_no_longer_resolves(tmp_path, monkeypatch):
+    """_fresh is the ONE owner of "what generation is this interaction about", so it has to
+    survive the entry being removed (or its meta corrupted) between the Library's reload and
+    this render: it hands back the snapshot the caller already holds and lets the caller's own
+    missing/error path speak. A cursor movement must never raise."""
+    entry = _managed_entry(tmp_path, name="a")
+    app = tui.MenuApp()
+    assert app._fresh(entry).meta.name == "a"  # resolves for real when it can
+
+    def removed(_slug):
+        raise store.NotFoundError("removed mid-render")
+
+    monkeypatch.setattr(tui.store, "resolve", removed)
+    assert app._fresh(entry) is entry  # the snapshot, verbatim — not an exception
+
+
+def test_cached_plan_caches_an_unresolvable_entrys_plan_instead_of_rebuilding_per_highlight(
     tmp_path, plan_builds, monkeypatch
 ):
-    """The re-read can lose a race: the entry may be removed (or its meta corrupted) between
-    the stat and the resolve. The pane then draws from the snapshot it already holds — a
-    cursor movement must never raise — and caches NOTHING, because the key it computed
-    describes files whose entry no longer resolves."""
+    """A corrupt meta.toml made _fresh degrade to the snapshot on EVERY render, and the old
+    cache refused to store what the resolve couldn't confirm — so a reader kind paid a
+    subprocess per cursor move for as long as the corruption lasted. The files still stat, so
+    the key is real: cache the plan the caller could build."""
     entry = _managed_entry(tmp_path, name="a")
     app = tui.MenuApp()
 
-    def removed(slug):
+    def removed(_slug):
         raise store.NotFoundError("removed mid-render")
 
     monkeypatch.setattr(tui.store, "resolve", removed)
 
-    plan = app._cached_plan(entry)
+    plan = app._cached_plan(app._fresh(entry))
 
     assert [f.key for f in plan.fields] == ["CITY"]  # a real plan, built from the snapshot
-    assert plan_builds == [entry.slug]
-    assert entry.slug not in app._plan_cache
-    assert app._cached_plan(entry) is not plan  # nothing was cached: it builds again
+    assert app._cached_plan(app._fresh(entry)) is plan  # ...served from the cache
+    assert plan_builds == [entry.slug]  # exactly ONE build, not one per highlight
+
+
+def test_cached_plan_caches_nothing_when_a_write_lands_during_the_build(
+    tmp_path, plan_builds, monkeypatch
+):
+    """The poison this cache once shipped: the stat comes BEFORE the plan's own file reads, so
+    a write landing in that window is read by the build yet keyed by the pre-write stat —
+    pinning content under a key that every later highlight cache-HITS. A second _plan_key after
+    the build closes it: when the two disagree, nothing is cached and the next render rebuilds
+    (one wasted build beats an indefinitely wrong pane)."""
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="a")
+    app = tui.MenuApp()
+    real_plan_for_entry = tui.flows.plan_for_entry
+
+    def writing(e):
+        # A racing `skit params --add` (or an $EDITOR save) between the two stats.
+        plan = real_plan_for_entry(e)
+        (e.dir / "meta.toml").write_text(
+            (e.dir / "meta.toml").read_text(encoding="utf-8") + "\n# raced\n", encoding="utf-8"
+        )
+        return plan
+
+    monkeypatch.setattr(tui.flows, "plan_for_entry", writing)
+
+    app._cached_plan(entry)
+    assert entry.slug not in app._plan_cache  # the key it computed no longer describes the files
+
+    monkeypatch.setattr(tui.flows, "plan_for_entry", real_plan_for_entry)
+    app._cached_plan(entry)
+    assert app._plan_cache[entry.slug][0] == plan_cache_key(entry)  # ...and the next one settles
+
+
+def test_cached_plan_reprobes_when_the_reader_tool_appears_mid_session(
+    tmp_path, plan_builds, monkeypatch
+):
+    """A reader plan is a function of the reader TOOL too, so a key of file stats alone kept
+    serving the tool-less plan after the user installed pwsh in another terminal — the pane
+    would have claimed the script has no parameters for the rest of the session. Same rule the
+    add panel's memo follows, same fingerprint. (The kind is stubbed rather than run against a
+    real pwsh: CI has none, and the key is what's under test, not PowerShell.)"""
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="a")
+    app = tui.MenuApp()
+    tool: list[str | None] = [None]
+    real = spec_for("python")
+    assert real is not None
+    gated = _tool_gated_spec(real, tool)
+    # Only tui's OWN spec lookup (the key's fingerprint) is stubbed; flows builds the plan
+    # through its own import, so the builds counted below are the real ones.
+    monkeypatch.setattr(tui, "spec_for", lambda kind: gated if kind == "python" else real)
+
+    app._cached_plan(entry)
+    app._cached_plan(entry)
+    assert plan_builds == [entry.slug]  # memoized while the fingerprint holds
+
+    tool[0] = "/opt/pwsh"  # installed in another terminal, mid-session
+    app._cached_plan(entry)
+    assert plan_builds == [entry.slug] * 2  # ...seen, not served from the stale key
+
+    tool[0] = None  # ...and uninstalled again
+    app._cached_plan(entry)
+    assert plan_builds == [entry.slug] * 3
 
 
 def test_has_drift_is_served_off_the_same_cache(tmp_path, plan_builds):
@@ -579,6 +951,210 @@ async def test_settings_close_pops_this_entrys_cache_key(tmp_path):
         await pilot.pause()
         assert app._plan_cache.get(entry.slug, (None, None))[1] is not planted
         assert "The script changed" not in _detail_text(app)
+
+
+# ==========================================================================
+# E2. …and both LAUNCH paths read the same fresh record the pane described
+# ==========================================================================
+
+
+async def test_enter_opens_a_form_built_from_the_record_on_disk_right_now(tmp_path, quiet_run):
+    """The pane was made fresher than the launch it fronts: the detail pane re-resolved on
+    every render while Enter still built its form from the Library's snapshot, so the pane
+    could advertise a parameter and the form beside it launch without one. Both paths now go
+    through _fresh, so the form has the field the user is looking at."""
+    entry = _exe(tmp_path)
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        # An agent declares a parameter beside the open TUI; nothing has reloaded.
+        store.write_parameters(
+            entry.slug,
+            [ParamDecl(name="WIDTH", delivery="flag", flag="--width", type="int", default="800")],
+        )
+        screen = await _open_run_form(app, pilot)
+        assert [f.key for f in screen._plan.fields] == ["WIDTH"]
+        assert [r.field.key for r in screen.query(FieldRow) if r.field.key != _EXTRA_KEY] == [
+            "WIDTH"
+        ]
+        screen.action_submit()
+        await pilot.pause()
+
+    assert quiet_run["extra"] == ["--width", "800"]  # ...and the launch really carries it
+
+
+async def test_rerun_launches_the_record_on_disk_not_the_library_snapshot(tmp_path, quiet_run):
+    """Same rule on the form-free path: `r` skips the form, never the freshness. A rerun built
+    from the snapshot would replay yesterday's argv for a definition that changed a second
+    ago — silently dropping the flag the entry now takes."""
+    entry = _exe(tmp_path)
+    argstate.record_run(entry.slug, 0, at="2026-07-09T00:00:00+00:00")
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()
+        store.write_parameters(
+            entry.slug,
+            [ParamDecl(name="WIDTH", delivery="flag", flag="--width", type="int", default="800")],
+        )
+        app.action_rerun()
+        await pilot.pause()
+
+    assert quiet_run["extra"] == ["--width", "800"]
+
+
+async def test_the_launch_paths_still_work_on_the_snapshot_when_the_record_wont_resolve(
+    tmp_path, quiet_run, monkeypatch
+):
+    """_fresh degrades rather than raising, and the launch paths carry on: an entry whose
+    meta.toml corrupts (or whose row vanishes) between the Library's reload and this keypress
+    must still reach the launcher's own missing/error handling, not crash a keypress handler.
+    The snapshot the app already holds is what launches — the parameter declared after it was
+    taken is invisible, exactly as it was before round 6 made freshness possible at all."""
+    entry = _exe(tmp_path)
+    argstate.record_run(entry.slug, 0, at="2026-07-09T00:00:00+00:00")
+
+    def unresolvable(_slug):
+        raise store.NotFoundError("meta corrupted mid-keypress")
+
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause()  # ...the Library's snapshot is taken here, without WIDTH
+        store.write_parameters(
+            entry.slug,
+            [ParamDecl(name="WIDTH", delivery="flag", flag="--width", type="int", default="800")],
+        )
+        monkeypatch.setattr(tui.store, "resolve", unresolvable)
+        app.action_rerun()
+        await pilot.pause()
+
+    assert quiet_run["extra"] == []  # the snapshot launched: nothing raised, nothing invented
+
+
+# ==========================================================================
+# J. the as-is note, TUI face — both of them, and the CLI's own msgid
+# ==========================================================================
+
+_AS_IS = "(passed as-is"
+
+
+class _PrintRecorder:
+    """Every print(*args, **kwargs) the run path makes, so a test can assert the text AND the
+    flush that keeps it ahead of the child's own output."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def __call__(self, *args: object, **kwargs: object) -> None:
+        self.calls.append((args, kwargs))
+
+    @property
+    def lines(self) -> list[str]:
+        return [" ".join(str(a) for a in args) for args, _ in self.calls]
+
+    def flush_for(self, needle: str) -> object:
+        for args, kwargs in self.calls:
+            if needle in " ".join(str(a) for a in args):
+                return kwargs.get("flush", "__no-flush-kwarg__")
+        return "__line-not-printed__"
+
+
+def test_the_tui_note_is_the_clis_msgid_resolved_at_print_time(monkeypatch):
+    """ONE msgid across both faces — the sentence that explains provenance cannot be allowed
+    to drift into two wordings. Resolved when it prints, not at import: a module-level constant
+    would freeze the note in whatever locale happened to be active when tui.py was imported."""
+    assert tui._as_is_note() == (
+        "(passed as-is — a remembered tail only expands {tokens} and globs "
+        "when it was typed into the launch menu)"
+    )
+    from skit import i18n
+
+    monkeypatch.setenv("SKIT_LANG", "zh-TW")
+    i18n.init("zh-TW")
+    try:
+        translated = tui._as_is_note()
+    finally:
+        i18n.init("en")
+    assert _AS_IS not in translated  # the active locale really applies
+    assert translated  # ...and it is translated, not blanked
+
+
+async def test_rerun_says_a_marker_less_expandable_tail_is_passed_as_is(
+    tmp_path, quiet_run, monkeypatch
+):
+    """The `r` path replays a CLI-captured tail literally BY DESIGN — the bug was doing it
+    silently. The user sees `*.png` come back and reasonably expects the glob to expand, so
+    the run output says it did not."""
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="j")
+    argstate.save_last(entry.slug, extra_args=["out_{today}.txt", "*.png"])  # unmarked
+    argstate.record_run(entry.slug, 0, at="2026-07-09T00:00:00+00:00")
+    rec = _PrintRecorder()
+    monkeypatch.setattr("builtins.print", rec)
+
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.action_rerun()
+        await pilot.pause()
+
+    assert quiet_run["extra"] == ["out_{today}.txt", "*.png"]  # the note explains, never changes
+    assert any(_AS_IS in line for line in rec.lines)
+    assert rec.flush_for(_AS_IS) is True  # ...ahead of the child's own output
+
+
+@pytest.mark.parametrize(
+    ("extra", "raw"),
+    [(["out_{today}.txt"], True), (["--limit", "MAX"], False)],
+    ids=["marked-raw", "plain-tail"],
+)
+async def test_rerun_stays_quiet_for_a_marked_or_plain_tail(
+    tmp_path, quiet_run, monkeypatch, extra: list[str], raw: bool
+):
+    """The note is a surprise-avoidance line, not a banner. A raw-marked tail EXPANDS, so the
+    note would claim the opposite of what just happened; a tail of plain words expands to
+    itself under either regime, so saying anything would be noise on every rerun."""
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="j")
+    argstate.save_last(entry.slug, extra_args=extra, extra_args_raw=raw)
+    argstate.record_run(entry.slug, 0, at="2026-07-09T00:00:00+00:00")
+    rec = _PrintRecorder()
+    monkeypatch.setattr("builtins.print", rec)
+
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.action_rerun()
+        await pilot.pause()
+
+    assert not any(_AS_IS in line for line in rec.lines)
+
+
+@pytest.mark.parametrize(
+    ("extra", "extra_raw", "noted"),
+    [
+        (["out_{today}.txt"], False, True),
+        (["~/backups"], False, True),
+        (["out_{today}.txt"], True, False),
+        (["--limit", "MAX"], False, False),
+    ],
+    ids=["token-literal", "tilde-literal", "marked-raw", "plain-tail"],
+)
+def test_the_exit_after_run_path_prints_the_note_too(
+    tmp_path, monkeypatch, extra: list[str], extra_raw: bool, noted: bool
+):
+    """Out of the box skit is a launcher: the run happens AFTER the TUI exits, in _finish_run.
+    A transparency line that only the stay-mode path printed would be missing from the default
+    experience — the same run, the same tail, one face silent."""
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="j")
+    plan = flows.plan_for_entry(entry)
+    asm = flows.assemble(plan, {}, list(extra), cwd=tmp_path, expand_extra=extra_raw)
+    rec = _PrintRecorder()
+    monkeypatch.setattr("builtins.print", rec)
+    monkeypatch.setattr(flows, "execute", lambda *a, **k: flows.RunOutcome(0, "", ""))
+
+    tui._finish_run(
+        tui.PendingRun(entry, plan, asm, {}, list(extra), extra_raw=extra_raw, show_drift=False)
+    )
+
+    assert any(_AS_IS in line for line in rec.lines) is noted
+    if noted:
+        assert rec.flush_for(_AS_IS) is True
 
 
 # ==========================================================================

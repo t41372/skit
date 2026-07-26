@@ -84,7 +84,7 @@ async def test_edit_invalidates_the_plan_cache(tmp_path, monkeypatch):
         # A stale sentinel under an impossible key, carrying drift the file doesn't
         # have: only the post-edit pop + re-derivation can replace it.
         stale = flows.FormPlan(source="none", drift_lines=["stale sentinel"])
-        app._plan_cache[entry.slug] = ((0, 0, 0, 0), stale)
+        app._plan_cache[entry.slug] = ((0, 0, 0, 0, None), stale)
         app.action_edit()
         await pilot.pause()
         # The stale sentinel is gone: the reload re-derived the truth from the files.
