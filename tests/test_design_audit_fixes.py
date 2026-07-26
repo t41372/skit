@@ -498,6 +498,22 @@ def test_load_state_defaults_the_marker_for_a_legacy_document() -> None:
     assert doc["extra_args_raw"] is False
 
 
+def test_a_hand_edited_marker_degrades_to_literal_replay() -> None:
+    """The house rule for hand-editable bools (`is True`, models.interpolate's discipline):
+    a values file is TOML a person can edit, and `extra_args_raw = "no"` must land on the
+    safe literal-replay default — a truthy-string coercion would flip the tail toward
+    re-expansion, the exact surprise the marker exists to prevent."""
+    from skit.paths import values_dir
+
+    values_dir().mkdir(parents=True, exist_ok=True)
+    (values_dir() / "edited.toml").write_text(
+        'extra_args = ["*.png"]\nextra_args_raw = "no"\n', encoding="utf-8"
+    )
+    doc = argstate.load_state("edited")
+    assert doc["extra_args"] == ["*.png"]
+    assert doc["extra_args_raw"] is False
+
+
 def test_save_after_run_threads_the_provenance_to_argstate(tmp_path: Path) -> None:
     entry = store.add_command("echo {msg}", name="c")
     plan = flows.plan_for_entry(entry)

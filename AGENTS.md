@@ -51,7 +51,10 @@ principles. What this means in practice:
 untouched; skit errors are 125/126/127), `--no-input`, `--dry-run`, and dynamic completion.
 The non-interactive contract is absolute: in a pipe, in CI, or under `--no-input`, never
 guess, never prompt, never silently assemble a broken command. When choosing between designs,
-prefer the one an agent can drive deterministically.
+prefer the one an agent can drive deterministically. One sanctioned bend, recorded like the
+A5 exception: read commands never prompt and never touch user data, but a listing may
+self-heal **skit's own registry index** (`store._repair_rows`) — atomic, lock-protected,
+skipped under any contention, and convergent, so reads stay safe to run concurrently.
 
 **5. Verification gate:** 100% test coverage floor, ruff, ty (strictest mode), mutation
 testing with mutmut (zero surviving mutants), and the i18n coverage gate are all hard CI

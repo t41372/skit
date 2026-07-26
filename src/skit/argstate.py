@@ -93,7 +93,11 @@ def load_state(slug: str) -> dict[str, Any]:
     return {
         "values": dict(doc.get("values", {})),
         "extra_args": list(doc.get("extra_args", [])),
-        "extra_args_raw": bool(doc.get("extra_args_raw", False)),
+        # `is True`, not bool(): the house rule for hand-editable bools (models.py's
+        # interpolate, config.py's enabled). A hand-edited `extra_args_raw = "no"`
+        # must degrade to the safe literal-replay default, never coerce truthy toward
+        # re-expansion — the exact direction the provenance marker exists to prevent.
+        "extra_args_raw": doc.get("extra_args_raw") is True,
         "presets": {k: dict(v) for k, v in doc.get("presets", {}).items()},
         "last_run": dict(doc.get("last_run", {})),
     }
