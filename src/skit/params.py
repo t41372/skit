@@ -110,7 +110,8 @@ def _token_form(form: str) -> bool:
 class _SegmentVerdict:
     secret: bool  # a SECRET/PASSWORD/PASSWD/KEY rule hit — final, whole-name answer
     token: bool  # a TOKEN mention this segment stands behind (its own count words veto it)
-    county: bool  # this segment IS count context for its neighbors (MAX, 4096, limit)
+    county: bool  # a count WORD (MAX, limit) — qualifies a NAME from anywhere
+    numeric: bool  # a bare number — qualifies only the segment that FOLLOWS it
 
 
 def _judge_segment(raw: str) -> _SegmentVerdict:
@@ -119,7 +120,12 @@ def _judge_segment(raw: str) -> _SegmentVerdict:
     a compound) and its camelCase sub-words (awsSecretKey → AWS/SECRET/KEY). county is
     judged on the JAM only: a camel fragment must not leak out as count context — the
     digit boundary splits N8N into N8+N, and that stray N vetoed a real credential.
-    Camel fragments DO veto their own segment's token hit (maxOutputTokens → MAX)."""
+    Camel fragments DO veto their own segment's token hit (maxOutputTokens → MAX).
+
+    A bare NUMBER is its own kind of context: "60 tokens" is a count by construction,
+    but a trailing index is not a qualifier — GITHUB_TOKEN_2 is a second GitHub token,
+    not a token count, so numeric context only ever applies FORWARD (see
+    is_secret_name), never from anywhere the way a count word does."""
     jam = raw.upper()
     camel = [w.upper() for w in _CAMEL_BOUNDARY.sub(" ", raw).split(" ") if w]
     jam_forms = _forms(jam)
@@ -131,10 +137,13 @@ def _judge_segment(raw: str) -> _SegmentVerdict:
         or "KEY" in all_forms
         or any(f.endswith("KEY") and f[:-3] in _KEY_PREFIXES for f in all_forms)
     )
-    county = jam.isdigit() or any(f in _COUNT_WORDS for f in jam_forms)
+    county = any(f in _COUNT_WORDS for f in jam_forms)
+    numeric = jam.isdigit()
     internal_count = any(v in _COUNT_WORDS for w in camel for v in _forms(w))
-    token = any(_token_form(f) for f in all_forms) and not county and not internal_count
-    return _SegmentVerdict(secret=secret, token=token, county=county)
+    token = (
+        any(_token_form(f) for f in all_forms) and not county and not numeric and not internal_count
+    )
+    return _SegmentVerdict(secret=secret, token=token, county=county, numeric=numeric)
 
 
 def is_secret_name(text: str) -> bool:
@@ -146,19 +155,27 @@ def is_secret_name(text: str) -> bool:
         return True
     if not any(v.token for v in verdicts):
         return False
+
+    def qualified(i: int) -> bool:
+        """This token mention has count context IMMEDIATELY before it (a count word or
+        a bare number: "many tokens", "60 tokens", "2_tokens")."""
+        return i > 0 and (verdicts[i - 1].county or verdicts[i - 1].numeric)
+
     if any(c.isspace() for c in text.strip()):
-        # Sentence-shaped (a prompt): a count segment immediately before a token
+        # Sentence-shaped (a prompt): a count/number segment immediately before a token
         # segment suppresses THAT mention ("How many tokens?", "rate limit 60
         # tokens/min") — but any OTHER token mention with no count in front keeps the
         # ask secret: "Paste your GitHub token (rate limit 60 tokens/min):" names a
         # rate AND asks for a credential, and the credential wins. Suppressing on ANY
         # count-preceded mention let the parenthetical veto the ask — the leak
         # direction.
-        return any(
-            v.token and not (i > 0 and verdicts[i - 1].county) for i, v in enumerate(verdicts)
-        )
+        return any(v.token and not qualified(i) for i, v in enumerate(verdicts))
     if any(v.county for v in verdicts):
-        return False  # max_tokens, token_limit, n_tokens — a count qualifier anywhere
+        return False  # max_tokens, token_limit, n_tokens — a count WORD anywhere
+    if all(qualified(i) for i, v in enumerate(verdicts) if v.token):
+        # 2_tokens: the number in front IS the count. A number elsewhere is an index —
+        # GITHUB_TOKEN_2 is a second GitHub token, and unmasking it would publish it.
+        return False
     # A bare plural with no companion word ("tokens") is a count knob, not a credential;
     # any qualifier that survived the count check (github_tokens) reads as one.
     return not (len(raw_segments) == 1 and raw_segments[0].upper() == "TOKENS")
