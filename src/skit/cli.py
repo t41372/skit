@@ -23,6 +23,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import shlex
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -3163,10 +3164,10 @@ def run(
             err_console.print(
                 f"[dim]{gettext('Reusing your last arguments: %(args)s') % {'args': ' '.join(escape(a) for a in extra)}}[/dim]"
             )
-            if not extra_raw and any(ch in piece for piece in extra for ch in "{*?["):
+            if not extra_raw and flows.tail_looks_expandable(extra):
                 # De-silence the literal replay exactly where it could surprise: a tail
-                # with token/glob syntax but no raw marker (captured via the CLI — or
-                # remembered before provenance existed) is passed through untouched.
+                # with token/glob/leading-~ syntax but no raw marker (captured via the
+                # CLI — or remembered before provenance existed) passes untouched.
                 err_console.print(
                     f"[dim]{escape(gettext('(passed as-is — a remembered tail only expands {tokens} and globs when it was typed into the launch menu)'))}[/dim]"
                 )
@@ -4539,12 +4540,14 @@ def _edit_params(
             # would hide the exact door that was built for it. ONE msgid, not two sentences
             # spliced with a hard-coded space: translators own the whole pair, including
             # its punctuation and order.
+            # %(target)s is shell-quoted: the hint is a copy-pasteable command, and an
+            # entry named "my tool" must paste back as one argument, not two.
             raise _fail(
                 gettext(
                     "%(name)s has no managed parameters — its kind has no analyzer to read "
-                    "them from. Declare one instead: skit params %(name)s --add PARAM"
+                    "them from. Declare one instead: skit params %(target)s --add PARAM"
                 )
-                % {"name": entry.meta.name},
+                % {"name": entry.meta.name, "target": shlex.quote(entry.meta.name)},
                 1,
             )
         raise _fail(

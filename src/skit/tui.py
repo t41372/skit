@@ -71,6 +71,15 @@ def _kind_badge(kind: str) -> tuple[str, str]:
     return (spec.glyph if spec is not None else "?"), label
 
 
+def _as_is_note() -> str:
+    """The literal-replay transparency line — the SAME msgid the CLI replay prints, so
+    the two faces cannot drift on the one sentence that explains provenance. Resolved at
+    print time (not import time) so the active locale applies."""
+    return gettext(
+        "(passed as-is — a remembered tail only expands {tokens} and globs when it was typed into the launch menu)"
+    )
+
+
 def _runner_detail_line(entry: Entry) -> str:
     """The detail pane's runner line — honest about a pin whose config row is gone
     (Entry settings says "(no longer configured)"; two surfaces, one truth)."""
@@ -354,7 +363,7 @@ class MenuApp(App[int | PendingRun]):
         self._entries: list[Entry] = []
         self._visible: list[Entry] = []
         self._ctrl_c_at: float = 0.0
-        # slug -> ((script mtime_ns+size, meta.toml mtime_ns+size), plan). The detail
+        # slug -> (_plan_key(entry), plan). The detail
         # pane re-renders on every RowHighlighted, and a plan build is a full parse —
         # or, for a reader kind like PowerShell, a synchronous subprocess with a
         # cold-start runtime — so it must never run uncached inside a cursor-movement
@@ -365,7 +374,9 @@ class MenuApp(App[int | PendingRun]):
         # up, not only the TUI's own writes. mtime_ns + size (not float mtime alone)
         # narrows the same-tick blind spot on coarse-mtime filesystems (FAT: 2 s) to
         # same-tick same-size writes.
-        self._plan_cache: dict[str, tuple[tuple[int, int, int, int], flows.FormPlan]] = {}
+        self._plan_cache: dict[
+            str, tuple[tuple[int, int, int, int, str | None], flows.FormPlan]
+        ] = {}
 
     @override
     def get_default_screen(self) -> Screen[None]:
@@ -502,35 +513,58 @@ class MenuApp(App[int | PendingRun]):
         keys_local.update(tui_footer.bar(*local))
         keys_global.update(tui_footer.bar(*globals_row))
 
-    def _cached_plan(self, entry: Entry) -> flows.FormPlan:
-        """plan_for_entry for DISPLAY (detail pane, drift badge): lazy, keyed on both
-        files' (mtime_ns, size) (see _plan_cache). Runs always build a fresh plan
-        (action_run/action_rerun) — the cache serves the cursor, never a launch. An
-        entry whose script is gone/never-a-file (a command template, a removed target)
-        just builds fresh: those plans are cheap meta reads.
+    def _fresh(self, entry: Entry) -> Entry:
+        """The current on-disk record for an interaction. The Library list is a snapshot
+        refreshed by _reload, but a detail render or a LAUNCH must see what an agent
+        editing the library concurrently just wrote — the pane and the run it advertises
+        must describe the same record. Degrades to the snapshot when the entry vanished
+        or its meta corrupted mid-render; the caller's own missing/error paths then
+        speak."""
+        try:
+            return store.resolve(entry.slug)
+        except store.StoreError:
+            return entry
 
-        On a miss the entry is RE-RESOLVED from the store before building: the passed-in
-        Entry is the Library's snapshot from the last _reload, which may predate the
-        very meta.toml change that invalidated the key — building from it would pin a
-        stale plan under the fresh key, where every later _reload cache-hits it. The
-        stats above come BEFORE the re-read, so a write racing this window can only
-        park fresh content under an old key (one extra rebuild), never the reverse."""
+    def _plan_key(self, entry: Entry) -> tuple[int, int, int, int, str | None] | None:
+        """The cache key: both files' (mtime_ns, size) — narrowing coarse-mtime blind
+        spots to same-tick same-size writes — plus the kind's reader-tool fingerprint,
+        because a reader plan (PowerShell) is a function of pwsh availability too: the
+        pane must re-probe when the tool appears mid-session, exactly like the add
+        panel's memo. None when a file can't be stat'ed (build fresh, cache nothing)."""
         try:
             s = entry.script_path.stat()
             m = (entry.dir / "meta.toml").stat()
-            key = (s.st_mtime_ns, s.st_size, m.st_mtime_ns, m.st_size)
         except OSError:
+            return None
+        spec = spec_for(entry.meta.kind)
+        fingerprint = (
+            spec.cli_reader.runtime_fingerprint
+            if spec is not None and spec.cli_reader is not None
+            else None
+        )
+        tool = fingerprint() if fingerprint is not None else None
+        return (s.st_mtime_ns, s.st_size, m.st_mtime_ns, m.st_size, tool)
+
+    def _cached_plan(self, entry: Entry) -> flows.FormPlan:
+        """plan_for_entry for DISPLAY (detail pane, drift badge): lazy, keyed by
+        _plan_key. Callers pass the entry they are rendering — _refresh_detail hands in
+        the _fresh() record, so the cached plan is built from the same generation the
+        pane's other lines show. Launches never read this cache (action_run/rerun build
+        fresh plans from their own _fresh() entry).
+
+        The key is validated by a SECOND stat after the build: a write landing between
+        the first stat and the plan's own reads would otherwise pin stale content under
+        the fresh key — the poison this cache once shipped. When the two keys disagree,
+        nothing is cached and the next highlight rebuilds."""
+        key = self._plan_key(entry)
+        if key is None:
             return flows.plan_for_entry(entry)
         cached = self._plan_cache.get(entry.slug)
         if cached is not None and cached[0] == key:
             return cached[1]
-        try:
-            entry = store.resolve(entry.slug)
-        except store.StoreError:
-            # Removed/unresolvable mid-render: serve the snapshot, cache nothing.
-            return flows.plan_for_entry(entry)
         plan = flows.plan_for_entry(entry)
-        self._plan_cache[entry.slug] = (key, plan)
+        if self._plan_key(entry) == key:
+            self._plan_cache[entry.slug] = (key, plan)
         return plan
 
     def _has_drift(self, entry: Entry) -> bool:
@@ -564,7 +598,10 @@ class MenuApp(App[int | PendingRun]):
             else:
                 body.update("")
             return
-        body.update("\n".join(self._detail_lines(entry)))
+        # ONE generation per render: description, deps, and the plan all come from the
+        # same _fresh() record — a fresh plan under a stale description would be two
+        # panes of one TUI disagreeing about one record.
+        body.update("\n".join(self._detail_lines(self._fresh(entry))))
 
     def _detail_lines(self, entry: Entry) -> list[str]:
         glyph, kind_label = _kind_badge(entry.meta.kind)
@@ -737,6 +774,10 @@ class MenuApp(App[int | PendingRun]):
         entry = self._selected()
         if entry is None:
             return
+        # The LAUNCH reads the same fresh record the detail pane just described — a
+        # form built from the Library's stale snapshot would lack the parameter an
+        # agent declared a second ago, contradicting the pane beside it.
+        entry = self._fresh(entry)
         is_prompt = entry.meta.kind == "prompt"
         # A prompt's actual executable is selected on the run form.  Checking its
         # entry pin here would let a stale/broken pin block the very picker that can
@@ -767,12 +808,15 @@ class MenuApp(App[int | PendingRun]):
         # (the old skip-shortcut replayed them invisibly, forever). Enter on the fresh
         # form submits immediately, so the fast path costs one keypress; the truly
         # form-free rerun is the explicit `r` key.
-        prefill = flows.prefill(plan, entry.slug)
+        # ONE state read per interaction: prefill, the form's extra row, and the
+        # provenance baseline all come from the same snapshot.
+        state = argstate.load_state(entry.slug)
+        prefill = flows.prefill(plan, entry.slug, state=state)
 
         def _submitted(result: FormResult) -> None:
             if result is None:
                 return
-            values, extra, runner_name, runner_was_picked = result
+            values, extra, runner_name, runner_was_picked, extra_raw = result
             runner = None
             if runner_name is not None:
                 runner = config.find_prompt_runner(runner_name)
@@ -792,14 +836,11 @@ class MenuApp(App[int | PendingRun]):
                 except launcher.LaunchError as exc:
                     self._refresh_status(gettext("Error: %(error)s") % {"error": escape(str(exc))})
                     return
-            # The extra field was PREFILLED from the remembered tail; the form's raw-text
-            # semantics apply only to text the user actually authored here. A tail
-            # submitted untouched keeps its recorded provenance — otherwise one
-            # Enter-Enter pass through the launch menu would re-expand a CLI-captured
-            # literal tail AND flip its stored marker to raw for every later replay on
-            # both faces (the third face of the provenance rule).
-            state = argstate.load_state(entry.slug)
-            extra_raw = True if extra != state["extra_args"] else state["extra_args_raw"]
+            # extra_raw is the FORM's verdict (see FormResult): an untouched prefill
+            # keeps its stored provenance, an edited tail is form text. Judged by the
+            # form's own dirt bit against its compose-time snapshot — never by diffing
+            # values against freshly-reloaded state, which a concurrent CLI write (or a
+            # cleared-and-retyped identical tail) would fool.
             self._execute(
                 entry, plan, values, extra, extra_raw=extra_raw, show_drift=False, runner=runner
             )
@@ -815,6 +856,7 @@ class MenuApp(App[int | PendingRun]):
                     if entry.meta.runner in runner_names
                     else argstate.load_last_runner()
                 ),
+                state=state,
             ),
             _submitted,
         )
@@ -824,7 +866,11 @@ class MenuApp(App[int | PendingRun]):
         entry = self._selected()
         if entry is None:
             return
-        if not argstate.last_run(entry.slug):
+        # Same freshness rule as action_run, and ONE state read for the whole rerun
+        # (the last-run guard reads the same snapshot instead of a second file open).
+        entry = self._fresh(entry)
+        state = argstate.load_state(entry.slug)
+        if not state["last_run"]:
             self._refresh_status(
                 gettext("%(name)s hasn't run yet — press Enter to fill the form first.")
                 % {"name": escape(entry.meta.name)}
@@ -841,7 +887,7 @@ class MenuApp(App[int | PendingRun]):
             self._refresh_status(gettext("Error: %(error)s") % {"error": escape(str(exc))})
             return
         plan = flows.plan_for_entry(entry)
-        prefill = flows.prefill(plan, entry.slug)
+        prefill = flows.prefill(plan, entry.slug, state=state)
         if flows.validate(plan, prefill):
             # The last values no longer satisfy the form (e.g. a new required field):
             # fall back to the form rather than assembling a broken command.
@@ -850,7 +896,6 @@ class MenuApp(App[int | PendingRun]):
         # The replayed tail keeps its recorded provenance: a tail the CLI captured
         # post-shell must not get a second token/glob pass just because the rerun
         # happens from the TUI.
-        state = argstate.load_state(entry.slug)
         self._execute(entry, plan, prefill, state["extra_args"], extra_raw=state["extra_args_raw"])
 
     def _execute(
@@ -890,6 +935,11 @@ class MenuApp(App[int | PendingRun]):
             if show_drift:
                 for line in plan.drift_lines:
                     print(line, flush=True)
+            if not extra_raw and flows.tail_looks_expandable(list(extra)):
+                # The CLI replay's as-is note, on this face too: a literal-replay tail
+                # that LOOKS expandable must say it is passed through untouched — the
+                # replay-literally design was never the bug, doing it silently was.
+                print(_as_is_note(), flush=True)
             # The shared delivery pipeline: inject, transparency, run, cleanup. The TUI
             # just prints what it emits (bare, inside the suspend) and shows a banner.
             outcome = flows.execute(
@@ -1135,6 +1185,8 @@ def _finish_run(pending: PendingRun) -> int:
     if pending.show_drift:
         for line in pending.plan.drift_lines:
             print(line, flush=True)
+    if not pending.extra_raw and flows.tail_looks_expandable(list(pending.extra)):
+        print(_as_is_note(), flush=True)
     outcome = flows.execute(
         pending.entry,
         pending.plan,

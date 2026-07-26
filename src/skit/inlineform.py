@@ -88,5 +88,5 @@ def collect(
     result = app.run(inline=True)
     if result is None:
         return None
-    values, _extra, runner, runner_was_picked = result
+    values, _extra, runner, runner_was_picked, _extra_raw = result
     return values, runner, runner_was_picked

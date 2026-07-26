@@ -39,7 +39,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from . import analysis, argstate, config, launcher, params, tokens
 from .i18n import gettext
@@ -482,11 +482,19 @@ def _refresh_defaults(
 # --------------------------------------------------------------------------
 
 
-def prefill(plan: FormPlan, slug: str, preset: str | None = None) -> dict[str, str]:
+def prefill(
+    plan: FormPlan,
+    slug: str,
+    preset: str | None = None,
+    *,
+    state: dict[str, Any] | None = None,
+) -> dict[str, str]:
     """Definition default < last-used < preset. Secrets are never prefilled — their
     values are never on disk (C3), and echoing a remembered secret would defeat the
-    point of masking."""
-    state = argstate.load_state(slug)
+    point of masking. `state` lets a caller that already holds the entry's loaded
+    state (the TUI reads it once per interaction) skip a second file read."""
+    if state is None:
+        state = argstate.load_state(slug)
     keys = {f.key for f in plan.fields}
     secret = plan.secret_names
     out: dict[str, str] = {}
@@ -571,6 +579,14 @@ def glob_feedback(value: str, cwd: Path) -> int | None:
         else:
             count += 1
     return count
+
+
+def tail_looks_expandable(extra_args: list[str]) -> bool:
+    """Whether a tail carries syntax the launch menu WOULD expand — {token} braces,
+    glob characters, or a leading ~ (tokens.expand's home expansion). THE predicate
+    behind the "passed as-is" note both faces print when a literal-replay tail carries
+    such syntax: replaying literally is the design, doing it silently was the bug."""
+    return any(piece.startswith("~") or any(ch in piece for ch in "{*?[") for piece in extra_args)
 
 
 # --------------------------------------------------------------------------
