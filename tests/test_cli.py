@@ -1334,7 +1334,8 @@ def test_preset_save_command_escapes_markup_in_preset_name_and_entry_name(
     # `preset save` collect values at all, so drive the interactive lane directly.
     store.add_command("echo {msg}", name="[blue]e[/blue]")
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
-    monkeypatch.setattr(cli.promptform, "collect", lambda *a, **k: {"msg": "hi"})
+    # cli imports promptform lazily inside the command body, so patch the module itself.
+    monkeypatch.setattr("skit.promptform.collect", lambda *a, **k: {"msg": "hi"})
     cli.preset_save("[blue]e[/blue]", "[green]p[/green]", from_last=False)
     out = capsys.readouterr().out
     assert "[green]p[/green]" in out
