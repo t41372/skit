@@ -493,12 +493,18 @@ def test_add_entry_registry_index_has_correct_keys(sample_script):
     renders, so it never has to open a meta.toml to render one."""
     entry = store.add_python(sample_script, name="hi", description="desc here")
     reg = store._load_registry()
-    assert reg[entry.slug] == {
-        "name": "hi",
+    # A copy-mode row carries no mode and no target: the script lives in the store, and
+    # every resolve() parses this file to answer one lookup, so defaults are omitted.
+    assert reg[entry.slug] == {"name": "hi", "kind": "python", "description": "desc here"}
+    linked = store.add_python(
+        sample_script, name="linked", mode="reference", description="linked desc"
+    )
+    assert store._load_registry()[linked.slug] == {
+        "name": "linked",
         "kind": "python",
-        "mode": "copy",
-        "source": str(sample_script),
-        "description": "desc here",
+        "description": "linked desc",
+        "mode": "reference",
+        "target": str(sample_script.resolve()),
     }
 
 

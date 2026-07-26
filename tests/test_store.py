@@ -526,15 +526,18 @@ def test_summaries_match_full_entries_field_for_field(sample_script: Path, tmp_p
     summaries = store.list_summaries()
     assert [s.slug for s in summaries] == sorted(by_slug)
     for summary in summaries:
-        meta = by_slug[summary.slug].meta
-        assert (summary.name, summary.kind, summary.mode, summary.source, summary.description) == (
+        entry = by_slug[summary.slug]
+        meta = entry.meta
+        assert (summary.name, summary.kind, summary.mode, summary.description) == (
             meta.name,
             meta.kind,
             meta.mode,
-            meta.source,
             meta.description,
         )
-        assert summary.script_path == by_slug[summary.slug].script_path
+        # `target` is the LINKED original, not meta.source: a copied entry's script
+        # lives in the store, and carrying its provenance path would double the index.
+        assert summary.target == (meta.source if meta.mode == "reference" else "")
+        assert summary.script_path == entry.script_path
 
 
 def test_summaries_serve_from_the_index_without_reading_metas(sample_script: Path):
@@ -557,24 +560,35 @@ def test_a_row_an_older_skit_wrote_falls_back_to_its_meta(sample_script: Path):
     the row can't supply a summary, so that one entry is read from its meta."""
     from skit import store
 
-    entry = store.add_python(sample_script, name="old", description="from before")
-    narrow = {entry.slug: {"name": "old", "kind": "python", "description": "from before"}}
-    store._save_registry(narrow)
+    entry = store.add_python(sample_script, name="old", mode="reference")
+    # An older document: no version key, and rows that cannot say what mode they are.
+    from skit.atomic import atomic_write_toml
+    from skit.paths import registry_path
+
+    atomic_write_toml(
+        registry_path(),
+        {"entries": {entry.slug: {"name": "old", "kind": "python", "description": ""}}},
+    )
+    assert store._load_index()[0] == 1
 
     (summary,) = store.list_summaries()
-    assert summary.mode == entry.meta.mode
-    assert summary.source == entry.meta.source
+    assert summary.mode == "reference"  # NOT the "copy" a v2 row would have implied
     assert summary.script_path == entry.script_path
+    # ...and the document is rewritten, so the fallback is paid once.
+    version, rows = store._load_index()
+    assert version == store.INDEX_VERSION
+    assert rows[entry.slug] == store._registry_row(entry.meta)
 
 
 @pytest.mark.parametrize(
     "row",
     [
-        {"name": "x", "kind": "python", "mode": "copy", "source": "/s", "description": 7},
-        {"name": "x", "kind": "python", "mode": "sideways", "source": "/s", "description": ""},
-        {"kind": "python", "mode": "copy", "source": "/s", "description": ""},
+        {"name": "x", "kind": "python", "description": 7},
+        {"name": "x", "kind": "python", "mode": "sideways", "description": ""},
+        {"kind": "python", "description": ""},
+        {"name": "x", "kind": "python", "description": "", "mode": "reference", "target": 7},
     ],
-    ids=["non-string-field", "unknown-mode", "missing-field"],
+    ids=["non-string-field", "unknown-mode", "missing-field", "non-string-target"],
 )
 def test_a_hand_broken_row_falls_back_instead_of_inventing_a_summary(
     sample_script: Path, row: dict[str, object]
@@ -699,3 +713,39 @@ def test_a_store_that_cannot_be_written_still_lists(sample_script: Path, monkeyp
     (summary,) = store.list_summaries()
     assert summary.name == "legacy"
     assert summary.mode == entry.meta.mode
+
+
+def test_a_corrupt_index_lists_nothing_and_preserves_the_bad_bytes(sample_script: Path):
+    """registry.toml is a rebuildable index, so a listing degrades exactly as every
+    other reader does: empty, with the unparseable bytes moved aside for inspection
+    rather than discarded, and the metas untouched for `doctor --rebuild`."""
+    from skit import store
+    from skit.paths import registry_path
+
+    store.add_python(sample_script, name="doomed")
+    registry_path().write_text("entries = [ this is not toml", encoding="utf-8")
+
+    assert store.list_summaries() == []
+    assert registry_path().with_name("registry.toml.corrupt").exists()
+    assert store.doctor_rebuild()[0] == 1  # the meta survived; the index comes back
+    assert [s.name for s in store.list_summaries()] == ["doomed"]
+
+
+def test_exe_is_always_reference_mode(tmp_path: Path):
+    """`DirectLaunch.target` returns `script_path` rather than `Path(meta.source)`,
+    which is the same answer ONLY because an exe entry is never copied. If that ever
+    changes, a copy-mode exe would resolve its target to the entry directory (exe has
+    no stored_name) and the missing-target mark would go quietly wrong."""
+    from skit import store
+    from skit.langs.registry import spec_for
+
+    exe = tmp_path / "tool"
+    exe.touch(mode=0o755)
+    entry = store.add_exe(exe, name="binary")
+    assert entry.meta.mode == "reference"
+    spec = spec_for("exe")
+    assert spec is not None
+    assert spec.launch.target(entry) == Path(entry.meta.source) == entry.script_path
+    # ...and asked of the narrow shape a listing holds, the same answer.
+    (summary,) = [s for s in store.list_summaries() if s.slug == entry.slug]
+    assert spec.launch.target(summary) == entry.script_path

@@ -187,17 +187,12 @@ class Entry:
     meta: ScriptMeta
     dir: Path
 
-    # `kind` and `source` restate two meta fields at the top level so an Entry satisfies
-    # the same ListedEntry protocol an EntrySummary does — one missing-target rule, asked
-    # of either shape (langs/base.py).
-
     @property
     def kind(self) -> Kind:
+        """Restates meta.kind at the top level so an Entry satisfies the same
+        ListedEntry protocol an EntrySummary does — one missing-target rule, asked of
+        either shape (langs/base.py)."""
         return self.meta.kind
-
-    @property
-    def source(self) -> str:
-        return self.meta.source
 
     @property
     def script_path(self) -> Path:
@@ -222,26 +217,31 @@ class EntrySummary:
     """What a listing needs, and deliberately nothing else.
 
     Reading it costs no meta.toml: these fields are the ones registry.toml already
-    carries or can carry, because they are fixed at add time (kind, mode, source) or
+    carries or can carry, because they are fixed at add time (kind, mode, target) or
     kept in step by the mutators that change them (name, description). Everything else
     about an entry — its parameters, needs, interpreter, runner, dependencies — is
     absent ON PURPOSE. A summary that quietly defaulted those would be a lie a caller
     could not see, so surfaces that need them call `store.resolve` / `list_entries`
     and read the real meta.
+
+    `target` is the linked original of a REFERENCE entry, and empty otherwise — it is
+    not `meta.source`. A copied entry's script lives in the store, and its provenance
+    path is a meta field no listing renders; carrying it here would have doubled the
+    index for every entry, which every `resolve()` then pays to parse.
     """
 
     slug: str
     name: str
     kind: Kind
     mode: Mode
-    source: str
     description: str
     dir: Path
+    target: str = ""
 
     @property
     def script_path(self) -> Path:
-        """The in-store script in copy mode; the original path in reference mode."""
-        return _script_path(self.dir, self.kind, self.mode, self.source)
+        """The in-store script in copy mode; the linked original in reference mode."""
+        return _script_path(self.dir, self.kind, self.mode, self.target)
 
 
 def now_iso() -> str:

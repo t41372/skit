@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import subprocess
+import tomllib
 from importlib.metadata import version
 from pathlib import Path
 from types import SimpleNamespace
@@ -54,6 +55,7 @@ from benchmarks.results import (
     python_major_minor,
 )
 from benchmarks.suites import footprint as footprint_suite
+from benchmarks.suites import imports as imports_suite
 from benchmarks.suites import micro as micro_suite
 from benchmarks.suites import rss as rss_suite
 from benchmarks.suites import tui as tui_suite
@@ -1403,6 +1405,17 @@ class TestContractSync:
         assert hyperfine.HYPERFINE_URL in action
         assert hyperfine.HYPERFINE_SHA256 in action
         assert f"hyperfine-v{hyperfine.HYPERFINE_VERSION}-x86_64" in action
+
+    def test_the_census_probe_runs_the_real_console_script(self) -> None:
+        """The import census only means anything if it measures the entry point users
+        actually get. This pins the probe to pyproject's [project.scripts] — the probe
+        once hardcoded `skit.cli:app` under a comment claiming it was what the console
+        script does, and silently kept measuring it after the console script changed."""
+        pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        assert pyproject["project"]["scripts"] == {"skit": imports_suite.CONSOLE_SCRIPT}
+        module, attr = imports_suite.CONSOLE_SCRIPT.split(":")
+        assert f"from {module} import {attr} as entry" in imports_suite._CENSUS_PROBE
+        assert "from skit.cli import" not in imports_suite._CENSUS_PROBE
 
     def test_analyzer_source_filenames_share_one_registry(self, tmp_path: Path) -> None:
         ctx = cast(RunCtx, SimpleNamespace(workdir=tmp_path))

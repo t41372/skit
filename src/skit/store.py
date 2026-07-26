@@ -126,24 +126,54 @@ def _load_registry() -> dict[str, dict[str, Any]]:
 
 
 def _save_registry(entries: dict[str, dict[str, Any]]) -> None:
-    atomic_write_toml(registry_path(), {"entries": entries})
+    atomic_write_toml(registry_path(), {"version": INDEX_VERSION, "entries": entries})
 
 
-# The index projection of a meta: exactly what a listing renders, and nothing else.
-# `kind`, `mode` and `source` are fixed at add time and never rewritten (nothing in this
-# module assigns them after the add_* constructors), so the only rows that need
-# refreshing later are the two the mutators already refresh: rename and set-description.
-_ROW_KEYS = ("name", "kind", "mode", "source", "description")
+def _load_index() -> tuple[int, dict[str, dict[str, Any]]]:
+    """The index with its version. Only `list_summaries` needs the version: a row this
+    skit wrote and a row written before the listing projection existed are the same
+    three keys for a copy-mode entry, so the rows cannot say which they are — the
+    document has to."""
+    path = registry_path()
+    if not path.exists():
+        return INDEX_VERSION, {}
+    try:
+        with open(path, "rb") as f:
+            doc = tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return INDEX_VERSION, _load_registry()  # the corruption path, handled there
+    version = doc.get("version")
+    return (version if isinstance(version, int) else 1), doc.get("entries", {})
+
+
+# The listing projection of a meta: exactly what a listing renders, and nothing else.
+# `kind`, `mode` and the reference target are fixed at add time and never rewritten
+# (nothing in this module assigns them after the add_* constructors), so the only rows
+# that need refreshing later are the two the mutators already refresh: rename and
+# set-description.
+#
+# Defaults are OMITTED, and that is load-bearing rather than tidy. Every `resolve()` —
+# so every run, show, edit, params, completion — parses this whole file to answer one
+# lookup. Carrying mode and the source path on all N rows doubled it (133 → 269 KiB at
+# a thousand entries) and made resolve 44% slower, which is a worse trade than the
+# listing win it paid for. A copy-mode entry's script lives in the store, so its row
+# needs neither field, and 84% of a realistic library is copy mode.
+INDEX_VERSION = 2
+_ROW_KEYS = ("name", "kind", "description")
 
 
 def _registry_row(meta: ScriptMeta) -> dict[str, Any]:
-    return {
+    row: dict[str, Any] = {
         "name": meta.name,
         "kind": meta.kind,
-        "mode": meta.mode,
-        "source": meta.source,
         "description": meta.description,
     }
+    if meta.mode != "copy":
+        row["mode"] = meta.mode
+        # Only a reference entry HAS a launch target outside the store; for a copied
+        # one this would be pure provenance no listing reads.
+        row["target"] = meta.source
+    return row
 
 
 @contextlib.contextmanager
@@ -789,28 +819,28 @@ def list_entries() -> list[Entry]:
 def _summary_from_row(slug: str, row: dict[str, Any], entry_dir: Path) -> EntrySummary | None:
     """An EntrySummary from an index row, or None when the row can't supply one.
 
-    None is not an error — it means "this row predates the widened index, or a hand
-    edit broke it", and the caller re-reads that entry's meta.toml. Rows are only ever
-    written by `_registry_row`, so in a store this skit wrote the answer is never None.
+    None is not an error — it means "a hand edit broke this row", and the caller
+    re-reads that entry's meta.toml. Rows are only ever written by `_registry_row`, so
+    in a store this skit wrote the answer is never None. (A row from an OLDER store is
+    not distinguishable here at all — the document version decides that, before this.)
     """
-    name, kind, mode, source, description = (row.get(key) for key in _ROW_KEYS)
-    if not (
-        isinstance(name, str)
-        and isinstance(kind, str)
-        and isinstance(source, str)
-        and isinstance(description, str)
-    ):
+    name, kind, description = (row.get(key) for key in _ROW_KEYS)
+    if not (isinstance(name, str) and isinstance(kind, str) and isinstance(description, str)):
         return None
+    mode = row.get("mode", "copy")  # omitted = the default, which is what most rows are
     if mode != "copy" and mode != "reference":  # noqa: PLR1714 — narrows Mode; `in` does not
+        return None
+    target = row.get("target", "")
+    if not isinstance(target, str):
         return None
     return EntrySummary(
         slug=slug,
         name=name,
         kind=kind,
         mode=mode,
-        source=source,
         description=description,
         dir=entry_dir,
+        target=target,
     )
 
 
@@ -820,9 +850,9 @@ def _summary_from_meta(slug: str, meta: ScriptMeta, entry_dir: Path) -> EntrySum
         name=meta.name,
         kind=meta.kind,
         mode=meta.mode,
-        source=meta.source,
         description=meta.description,
         dir=entry_dir,
+        target=meta.source if meta.mode == "reference" else "",
     )
 
 
@@ -832,21 +862,25 @@ def list_summaries() -> list[EntrySummary]:
     The point is what it does NOT do: `list_entries` opens and parses one meta.toml per
     entry, which at a thousand entries is a thousand file reads on a path an agent calls
     to see what exists. Every field a listing renders is already in the index — fixed at
-    add time (kind/mode/source) or refreshed by the mutator that changes it
+    add time (kind/mode/target) or refreshed by the mutator that changes it
     (name/description) — so the common case reads one file total.
 
-    An index row that a NEWER skit could not have written (an older store, a hand edit)
-    falls back to that entry's meta.toml, which is the truth; a corrupt meta is skipped,
-    exactly as `list_entries` skips it, and left for doctor. `doctor --rebuild` still
-    reconstructs the whole index from the metas.
+    An index a NEWER skit could not have written falls back to the metas, which are the
+    truth: a whole document from an older store (its rows cannot say what mode they
+    are), or a single row a hand edit broke. Either way the rows involved are then
+    rewritten, so the fallback is paid once. A corrupt meta is skipped, exactly as
+    `list_entries` skips it, and left for doctor. `doctor --rebuild` still reconstructs
+    the whole index from the metas.
     """
-    entries = _load_registry()
+    version, entries = _load_index()
     root = scripts_dir()
     out: list[EntrySummary] = []
     upgraded: dict[str, dict[str, Any]] = {}
     for slug in sorted(entries):
         entry_dir = root / slug
-        summary = _summary_from_row(slug, entries[slug], entry_dir)
+        summary = (
+            None if version < INDEX_VERSION else _summary_from_row(slug, entries[slug], entry_dir)
+        )
         if summary is None:
             try:
                 meta = _read_meta(entry_dir)

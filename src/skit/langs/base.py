@@ -164,14 +164,11 @@ class LaunchTarget(Protocol):
     Library table mark an entry whose file is gone. A listing holds an EntrySummary,
     not a full Entry, so the target rule is expressed against this narrower shape and
     the two callers share one implementation instead of the listing re-deriving it.
-    Entry satisfies it too (it grows a `source` property for exactly that).
+    Entry satisfies it too.
     """
 
     @property
     def script_path(self) -> Path: ...
-
-    @property
-    def source(self) -> str: ...
 
 
 class ListedEntry(LaunchTarget, Protocol):

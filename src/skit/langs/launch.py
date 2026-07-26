@@ -184,7 +184,10 @@ class DirectLaunch:
         return join_for_display([entry.meta.source, *extra])
 
     def target(self, entry: LaunchTarget) -> Path | None:
-        return Path(entry.source)
+        # An exe entry is ALWAYS reference mode (store.add_exe never copies a binary),
+        # so its script_path IS its source path — same answer, asked of the narrow
+        # shape a listing holds. Pinned by test_exe_is_always_reference_mode.
+        return entry.script_path
 
     def preflight(self, entry: Entry, *, runner: PromptRunner | None = None) -> None:
         _check_exe_exists(entry.meta.source)
