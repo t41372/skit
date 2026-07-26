@@ -493,9 +493,15 @@ def test_add_entry_registry_index_has_correct_keys(sample_script):
     renders, so it never has to open a meta.toml to render one."""
     entry = store.add_python(sample_script, name="hi", description="desc here")
     reg = store._load_registry()
-    # A copy-mode row carries no mode and no target: the script lives in the store, and
-    # every resolve() parses this file to answer one lookup, so defaults are omitted.
-    assert reg[entry.slug] == {"name": "hi", "kind": "python", "description": "desc here"}
+    # `mode` is always present — it doubles as the row's own version marker — while
+    # `target` appears only when the entry launches something outside the store, because
+    # every resolve() parses this whole file to answer one lookup.
+    assert reg[entry.slug] == {
+        "name": "hi",
+        "kind": "python",
+        "mode": "copy",
+        "description": "desc here",
+    }
     linked = store.add_python(
         sample_script, name="linked", mode="reference", description="linked desc"
     )

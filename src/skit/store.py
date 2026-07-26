@@ -126,39 +126,28 @@ def _load_registry() -> dict[str, dict[str, Any]]:
 
 
 def _save_registry(entries: dict[str, dict[str, Any]]) -> None:
-    atomic_write_toml(registry_path(), {"version": INDEX_VERSION, "entries": entries})
-
-
-def _load_index() -> tuple[int, dict[str, dict[str, Any]]]:
-    """The index with its version. Only `list_summaries` needs the version: a row this
-    skit wrote and a row written before the listing projection existed are the same
-    three keys for a copy-mode entry, so the rows cannot say which they are — the
-    document has to."""
-    path = registry_path()
-    if not path.exists():
-        return INDEX_VERSION, {}
-    try:
-        with open(path, "rb") as f:
-            doc = tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError):
-        return INDEX_VERSION, _load_registry()  # the corruption path, handled there
-    version = doc.get("version")
-    return (version if isinstance(version, int) else 1), doc.get("entries", {})
+    atomic_write_toml(registry_path(), {"entries": entries})
 
 
 # The listing projection of a meta: exactly what a listing renders, and nothing else.
 # `kind`, `mode` and the reference target are fixed at add time and never rewritten
 # (nothing in this module assigns them after the add_* constructors), so the only rows
-# that need refreshing later are the two the mutators already refresh: rename and
+# that need refreshing later are the two the mutators refresh: rename and
 # set-description.
 #
-# Defaults are OMITTED, and that is load-bearing rather than tidy. Every `resolve()` —
-# so every run, show, edit, params, completion — parses this whole file to answer one
-# lookup. Carrying mode and the source path on all N rows doubled it (133 → 269 KiB at
-# a thousand entries) and made resolve 44% slower, which is a worse trade than the
-# listing win it paid for. A copy-mode entry's script lives in the store, so its row
-# needs neither field, and 84% of a realistic library is copy mode.
-INDEX_VERSION = 2
+# `mode` is ALSO the row's own version marker: a row written before this projection
+# existed has no mode, and that is the one thing that tells a reader it cannot be
+# trusted for anything but name/kind/description. Marking the DOCUMENT instead was the
+# obvious alternative and is wrong, because writers touch one row at a time — `rename`
+# patches a single row and re-saves, `remove` pops one and re-saves the rest — so a
+# document-level stamp would declare every untouched legacy row current. A renamed
+# reference entry would then list against the store path it does not use.
+#
+# `target` is omitted for anything with no launch target outside the store, which keeps
+# the file small: every `resolve()` — so every run, show, edit, params, completion —
+# parses the whole thing to answer one lookup, and carrying an absolute source path on
+# all N rows doubled it (133 → 269 KiB at a thousand entries) and made resolve 44%
+# slower, a worse trade than the listing win it paid for.
 _ROW_KEYS = ("name", "kind", "description")
 
 
@@ -166,12 +155,13 @@ def _registry_row(meta: ScriptMeta) -> dict[str, Any]:
     row: dict[str, Any] = {
         "name": meta.name,
         "kind": meta.kind,
+        "mode": meta.mode,
         "description": meta.description,
     }
-    if meta.mode != "copy":
-        row["mode"] = meta.mode
-        # Only a reference entry HAS a launch target outside the store; for a copied
-        # one this would be pure provenance no listing reads.
+    if meta.mode == "reference" and meta.source:
+        # Only a reference entry HAS a launch target outside the store; for a copied one
+        # this would be pure provenance no listing reads, and a command template has no
+        # file target at all.
         row["target"] = meta.source
     return row
 
@@ -833,7 +823,10 @@ def _summary_from_row(slug: str, row: object, entry_dir: Path) -> EntrySummary |
     name, kind, description = (row.get(key) for key in _ROW_KEYS)
     if not (isinstance(name, str) and isinstance(kind, str) and isinstance(description, str)):
         return None
-    stored_mode = row.get("mode", "copy")  # omitted = the default, which most rows are
+    # A missing mode is the marker of a row written before this projection existed; it
+    # is NOT "the default". Reading it as copy would point a reference entry's listing
+    # at a store path it does not use.
+    stored_mode = row.get("mode")
     mode: Mode
     if stored_mode == "copy":
         mode = "copy"
@@ -876,11 +869,11 @@ def list_summaries() -> list[EntrySummary]:
     add time (kind/mode/target) or refreshed by the mutator that changes it
     (name/description) — so the common case reads one file total.
 
-    An index a NEWER skit could not have written falls back to the metas, which are the
-    truth: a whole document from an older store (its rows cannot say what mode they
-    are), or a single row a hand edit broke. Either way the rows involved are then
-    rewritten, so the fallback is paid once — unless the rewritten row would be rejected
-    again, in which case it is left alone rather than restaged on every listing.
+    A row a NEWER skit could not have written falls back to that entry's meta, which is
+    the truth: a row from an older store (no `mode`, so it cannot say where the script
+    lives) or one a hand edit broke. Either way it is then rewritten, so the fallback is
+    paid once — unless the rewritten row would be rejected again, in which case it is
+    left alone rather than restaged on every listing.
 
     An entry with NO meta.toml is not listed, whatever the index says. That costs one
     stat per entry, and it is worth it: without it the CLI would list an entry the TUI
@@ -890,7 +883,7 @@ def list_summaries() -> list[EntrySummary]:
     index is the membership authority, and doctor is the health command. `doctor
     --rebuild` still reconstructs the whole index from the metas.
     """
-    version, entries = _load_index()
+    entries = _load_registry()
     root = scripts_dir()
     out: list[EntrySummary] = []
     upgraded: dict[str, dict[str, Any]] = {}
@@ -898,9 +891,7 @@ def list_summaries() -> list[EntrySummary]:
         entry_dir = root / slug
         if not (entry_dir / "meta.toml").exists():
             continue  # storage is gone; the index is stale and doctor owns that
-        summary = (
-            None if version < INDEX_VERSION else _summary_from_row(slug, entries[slug], entry_dir)
-        )
+        summary = _summary_from_row(slug, entries[slug], entry_dir)
         if summary is None:
             try:
                 meta = _read_meta(entry_dir)
@@ -934,25 +925,22 @@ def _upgrade_rows(rows: dict[str, dict[str, Any]]) -> None:
     index it does not depend on could not be refreshed (a read-only store, a store
     another process is mid-write on).
 
-    Re-read under the lock, and merge by FIELD OWNERSHIP rather than writing the
-    snapshot back whole. The listing that produced these rows may have spent tens of
-    milliseconds reading metas, and a rename or set-description can commit in that
-    window; writing the snapshot wholesale would revert it, leaving the entry
-    unreachable by its new name (resolve matches display names off this index) until
-    someone ran `doctor --rebuild`. So `name` and `description` — the two fields a
-    mutator owns — are kept as the locked snapshot has them, and only the add-time
-    facts this upgrade exists to add are taken from the meta.
+    Re-read under the lock and write only rows that are STILL legacy. The listing that
+    produced these may have spent tens of milliseconds reading metas, and anything can
+    commit in that window: a rename, a set-description, even a remove followed by an add
+    that reuses the slug. All three leave a row carrying `mode` — the marker of a row
+    written by this projection — and none of them needs upgrading. Writing a stale
+    snapshot over one of them would revert it, and since `resolve` matches display names
+    off this index, a reverted rename leaves the entry unreachable by its new name until
+    someone runs `doctor --rebuild`.
     """
-    owned_by_the_meta = ("kind", "mode", "target")
     with contextlib.suppress(OSError), _registry_lock():
         entries = _load_registry()
         for slug, row in rows.items():
             current = entries.get(slug)
-            if not isinstance(current, dict):
-                continue  # added/removed, or hand-broken, since the listing read it
-            merged = {key: value for key, value in current.items() if key not in owned_by_the_meta}
-            merged.update({k: v for k, v in row.items() if k in owned_by_the_meta})
-            entries[slug] = merged
+            if not isinstance(current, dict) or "mode" in current:
+                continue  # gone, hand-broken, or already rewritten since the read
+            entries[slug] = row
         _save_registry(entries)
 
 
@@ -1347,9 +1335,11 @@ def rename(name_or_slug: str, new_name: str) -> Entry:
                 )
             meta.name = new_name
             _write_meta(entry.dir, meta)
-            row = entries.get(entry.slug)
-            if row is not None:
-                row["name"] = new_name
+            if entry.slug in entries:
+                # The whole projection, not just the changed key: the meta is in hand,
+                # and patching one field of a row written by an older skit would leave
+                # it legacy-shaped forever.
+                entries[entry.slug] = _registry_row(meta)
                 _save_registry(entries)
         return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
@@ -1363,9 +1353,8 @@ def update_description(name_or_slug: str, description: str) -> Entry:
         _write_meta(entry.dir, meta)
         with _registry_lock():
             entries = _load_registry()
-            row = entries.get(entry.slug)
-            if row is not None:
-                row["description"] = description
+            if entry.slug in entries:
+                entries[entry.slug] = _registry_row(meta)  # the whole projection; see rename
                 _save_registry(entries)
         return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 

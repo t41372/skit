@@ -563,30 +563,22 @@ def test_a_row_an_older_skit_wrote_falls_back_to_its_meta(sample_script: Path):
 
     entry = store.add_python(sample_script, name="old", mode="reference")
     # An older document: no version key, and rows that cannot say what mode they are.
-    from skit.atomic import atomic_write_toml
-    from skit.paths import registry_path
 
-    atomic_write_toml(
-        registry_path(),
+    store._save_registry(
         {
-            "entries": {
-                entry.slug: {
-                    "name": entry.meta.name,
-                    "kind": "python",
-                    "description": entry.meta.description,
-                }
+            entry.slug: {
+                "name": entry.meta.name,
+                "kind": "python",
+                "description": entry.meta.description,
             }
-        },
+        }
     )
-    assert store._load_index()[0] == 1
 
     (summary,) = store.list_summaries()
     assert summary.mode == "reference"  # NOT the "copy" a v2 row would have implied
     assert summary.script_path == entry.script_path
-    # ...and the document is rewritten, so the fallback is paid once.
-    version, rows = store._load_index()
-    assert version == store.INDEX_VERSION
-    assert rows[entry.slug] == store._registry_row(entry.meta)
+    # ...and the row is rewritten, so the fallback is paid once.
+    assert store._load_registry()[entry.slug] == store._registry_row(entry.meta)
 
 
 @pytest.mark.parametrize(
@@ -817,12 +809,8 @@ def test_widening_gives_up_on_a_row_it_would_reject_again(sample_script: Path):
     from skit.atomic import atomic_write_toml
 
     atomic_write_toml(entry.dir / "meta.toml", doc)
-    # A v1 document, so the row cannot answer and the meta fallback actually runs.
-    atomic_write_toml(
-        registry_path(),
-        {"entries": {entry.slug: {"name": "odd", "kind": "python", "description": ""}}},
-    )
-    assert store._load_index()[0] == 1
+    # A legacy row (no mode), so it cannot answer and the meta fallback actually runs.
+    store._save_registry({entry.slug: {"name": "odd", "kind": "python", "description": ""}})
 
     before = registry_path().read_bytes()
     for _ in range(3):
@@ -830,28 +818,44 @@ def test_widening_gives_up_on_a_row_it_would_reject_again(sample_script: Path):
     assert registry_path().read_bytes() == before  # never restaged, never rewritten
 
 
-def test_widening_keeps_a_rename_that_landed_meanwhile(sample_script: Path):
+def test_widening_leaves_a_row_rewritten_meanwhile_alone(sample_script: Path):
     """The listing that produced these rows may have spent tens of ms reading metas,
-    and a rename can commit in that window. Writing the snapshot back whole would
-    revert it — and `resolve` matches display names off this index, so the entry would
-    be unreachable by its new name until someone ran `doctor --rebuild`."""
+    and anything can commit in that window — a rename, a set-description, even a remove
+    followed by an add that reuses the slug. All three leave a row carrying `mode`, and
+    none of them needs upgrading; writing a stale snapshot over one would revert it,
+    and `resolve` matches display names off this index, so a reverted rename leaves the
+    entry unreachable by its new name until someone runs `doctor --rebuild`."""
     from skit import store
 
     entry = store.add_python(sample_script, name="before", mode="reference")
     stale = {entry.slug: store._registry_row(entry.meta)}
-    # The locked snapshot the upgrade will re-read: a rename has landed since.
-    renamed = dict(stale[entry.slug])
-    renamed["name"] = "after"
 
     def locked_snapshot() -> dict[str, object]:
-        return {entry.slug: {"name": "after", "kind": "python", "description": "fresh"}}
+        # What the lock sees: a rename landed, so the row is current, not legacy.
+        return {entry.slug: {**stale[entry.slug], "name": "after", "description": "fresh"}}
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(store, "_load_registry", locked_snapshot)
         store._upgrade_rows(stale)
 
     row = store._load_registry()[entry.slug]
-    assert row["name"] == "after"  # the mutator owns it
+    assert row["name"] == "after"
     assert row["description"] == "fresh"
-    assert row["mode"] == "reference"  # ...and the upgrade still added what it exists for
-    assert row["target"] == entry.meta.source
+
+
+def test_a_renamed_legacy_row_is_upgraded_not_patched(sample_script: Path):
+    """The reason `mode` marks the ROW and not the document: writers touch one row at a
+    time. A rename that patched only `name` would leave a legacy row behind, and a
+    document-level version stamp would then declare it current — pointing a reference
+    entry's listing at the store path it does not use."""
+    from skit import store
+
+    entry = store.add_python(sample_script, name="linked", mode="reference")
+    store._save_registry({entry.slug: {"name": "linked", "kind": "python", "description": ""}})
+
+    store.rename(entry.slug, "renamed")
+
+    (summary,) = store.list_summaries()
+    assert summary.name == "renamed"
+    assert summary.mode == "reference"
+    assert summary.script_path == entry.script_path
