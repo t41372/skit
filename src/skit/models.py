@@ -187,12 +187,17 @@ class Entry:
     meta: ScriptMeta
     dir: Path
 
+    # `kind` and `source` restate meta fields at the top level so an Entry satisfies
+    # the same ListedEntry/LaunchTarget protocols an EntrySummary does — one
+    # missing-target rule, asked of either shape (langs/base.py).
+
     @property
     def kind(self) -> Kind:
-        """Restates meta.kind at the top level so an Entry satisfies the same
-        ListedEntry protocol an EntrySummary does — one missing-target rule, asked of
-        either shape (langs/base.py)."""
         return self.meta.kind
+
+    @property
+    def source(self) -> str:
+        return self.meta.source
 
     @property
     def script_path(self) -> Path:
@@ -237,6 +242,12 @@ class EntrySummary:
     description: str
     dir: Path
     target: str = ""
+
+    @property
+    def source(self) -> str:
+        """The LaunchTarget spelling of `target` — the linked original, "" when there
+        is none. One protocol, whichever shape a strategy is handed."""
+        return self.target
 
     @property
     def script_path(self) -> Path:

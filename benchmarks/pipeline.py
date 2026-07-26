@@ -224,6 +224,7 @@ HEADLINE_METRICS: tuple[str, ...] = (
     "footprint.library_total_bytes.n1000",
     "footprint.library_bytes_per_entry.n1000",
     "micro.store.list_entries.n1000.median_us",
+    "micro.store.list_summaries.n1000.median_us",
     "syscalls.list_json.file_ops",
     "pipeline.duration_s",
 )

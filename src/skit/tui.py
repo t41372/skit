@@ -98,7 +98,7 @@ def _fuzzy_match(query: str, text: str) -> bool:
 def _activity_key(entry: Entry) -> str:
     """Recency sort key: last run or added time, whichever is newer (a fresh add must
     surface even though it has never run)."""
-    last = argstate.load_state(entry.slug)["last_run"]
+    last = argstate.last_run(entry.slug)
     return max(str(last.get("at", "")), entry.meta.added_at or "")
 
 
@@ -469,7 +469,7 @@ class MenuApp(App[int | PendingRun]):
         local: list[str] = []
         if entry is not None:
             local.append(tui_footer.chip("app.run", "Enter", gettext("Run")))
-            if argstate.load_state(entry.slug)["last_run"]:
+            if argstate.last_run(entry.slug):
                 local.append(tui_footer.chip("app.rerun", "r", gettext("Rerun")))
             local.append(tui_footer.chip("app.settings", "p", gettext("Entry settings")))
             local.append(tui_footer.chip("app.edit", "e", gettext("Edit source")))
@@ -776,7 +776,7 @@ class MenuApp(App[int | PendingRun]):
         entry = self._selected()
         if entry is None:
             return
-        if not argstate.load_state(entry.slug)["last_run"]:
+        if not argstate.last_run(entry.slug):
             self._refresh_status(
                 gettext("%(name)s hasn't run yet — press Enter to fill the form first.")
                 % {"name": escape(entry.meta.name)}

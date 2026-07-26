@@ -149,12 +149,12 @@ def main(
     version: bool = typer.Option(False, "--version", "-V", help=gettext("Show version")),
 ) -> None:
     if version:
-        # The same answer the __main__ dispatcher gives ahead of this import, in the
-        # same plain form. Reached whenever the flag is not the whole command line —
-        # `skit --version list`, say — which is everything the fast path leaves alone.
-        from . import __version__
+        # The dispatcher's own line, not a second f-string. Reached whenever the flag
+        # is not the whole command line — `skit --version list`, say — which is
+        # everything the fast path leaves alone.
+        from .__main__ import print_version
 
-        print(f"skit {__version__}")
+        print_version()
         raise typer.Exit()
     if ctx.invoked_subcommand is None:
         _maybe_first_run_setup()

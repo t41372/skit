@@ -30,6 +30,11 @@ def main() -> None:
         # wrong place — benchmarking it would produce plausible-looking garbage.
         sys.exit(f"bench_store: BENCH_N={n} but the library reads empty — wrong SKIT_*_DIR?")
     runner.bench_func(f"store.list_entries.n{n}", store.list_entries)
+    # The path `skit list`, `list --json` and completion actually take, beside the
+    # full-meta read it replaced — the gap between the two IS the index optimization,
+    # and a change that closes it (say, every row quietly falling back to its meta)
+    # must move a headline number, not hide inside end-to-end wall clock.
+    runner.bench_func(f"store.list_summaries.n{n}", store.list_summaries)
     if entries:
         first = entries[0].slug
         mid = entries[len(entries) // 2].slug

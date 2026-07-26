@@ -165,10 +165,19 @@ class LaunchTarget(Protocol):
     not a full Entry, so the target rule is expressed against this narrower shape and
     the two callers share one implementation instead of the listing re-deriving it.
     Entry satisfies it too.
+
+    `source` is the linked original recorded at add time ("" when there is none).
+    DirectLaunch needs it because an exe's target IS its source, unconditionally —
+    deriving it through `script_path` would trust `mode`, and a hand-edited copy-mode
+    exe meta then resolves to the entry DIRECTORY (exe has no stored filename), which
+    exists as long as the entry does, so a gone binary could never be reported missing.
     """
 
     @property
     def script_path(self) -> Path: ...
+
+    @property
+    def source(self) -> str: ...
 
 
 class ListedEntry(LaunchTarget, Protocol):

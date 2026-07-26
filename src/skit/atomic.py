@@ -122,6 +122,44 @@ def advisory_file_lock(
             process_lock.release()
 
 
+@contextlib.contextmanager
+def try_advisory_file_lock(lock_path: Path) -> Iterator[bool]:
+    """`advisory_file_lock` that never waits: yields True holding the lock, or False
+    holding nothing.
+
+    For writes that ride on a READ path — an index self-heal under `skit list`, say —
+    where the write is optional and the read's latency is not. The blocking variant
+    polls forever, so a read that used it would freeze TAB completion behind any
+    process sitting on the lock; a read that uses this one skips its optional write
+    and stays a read.
+    """
+    process_lock = _thread_lock_for(lock_path)
+    if not process_lock.acquire(blocking=False):
+        yield False
+        return
+    fd = -1
+    native_locked = False
+    try:
+        try:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+            if os.fstat(fd).st_size == 0:
+                os.write(fd, b"\0")  # Windows locks one real byte; see advisory_file_lock
+            native_locked = _try_native_lock(fd)
+        except OSError:
+            native_locked = False  # an unopenable lock file is "not acquired", not an error
+        yield native_locked
+    finally:
+        try:
+            if fd >= 0:
+                if native_locked:
+                    with contextlib.suppress(OSError):
+                        _unlock_native(fd)
+                os.close(fd)
+        finally:
+            process_lock.release()
+
+
 def _replace_with_retry(src: str, dst: Path) -> None:
     """os.replace that rides out transient Windows sharing violations. After the
     retries are exhausted, the final attempt's PermissionError propagates — a target

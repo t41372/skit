@@ -493,14 +493,18 @@ def test_add_entry_registry_index_has_correct_keys(sample_script):
     renders, so it never has to open a meta.toml to render one."""
     entry = store.add_python(sample_script, name="hi", description="desc here")
     reg = store._load_registry()
-    # `mode` is always present — it doubles as the row's own version marker — while
-    # `target` appears only when the entry launches something outside the store, because
-    # every resolve() parses this whole file to answer one lookup.
+    # `mode` is always present and `mtime_ns` stamps the meta the row was projected
+    # from (freshness/trust), while `target` appears only when the entry launches
+    # something outside the store — every resolve() parses this whole file to answer
+    # one lookup, so nothing optional rides along.
+    import os
+
     assert reg[entry.slug] == {
         "name": "hi",
         "kind": "python",
         "mode": "copy",
         "description": "desc here",
+        "mtime_ns": os.stat(entry.dir / "meta.toml").st_mtime_ns,
     }
     linked = store.add_python(
         sample_script, name="linked", mode="reference", description="linked desc"
@@ -511,6 +515,7 @@ def test_add_entry_registry_index_has_correct_keys(sample_script):
         "description": "linked desc",
         "mode": "reference",
         "target": str(sample_script.resolve()),
+        "mtime_ns": os.stat(linked.dir / "meta.toml").st_mtime_ns,
     }
 
 
@@ -721,7 +726,8 @@ def test_doctor_rebuild_registry_index_has_correct_keys(sample_script):
     reg = store._load_registry()
     assert reg[entry.slug] == expected
     assert store.resolve("hi").slug == entry.slug
-    assert store._summary_from_row(entry.slug, reg[entry.slug], entry.dir) is not None
+    row = reg[entry.slug]
+    assert store._summary_from_row(entry.slug, row, entry.dir, row["mtime_ns"]) is not None
 
 
 # ===========================================================================

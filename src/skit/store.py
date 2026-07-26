@@ -20,7 +20,12 @@ from pathlib import Path
 from typing import Any
 
 from . import argstate, paths, pep723
-from .atomic import advisory_file_lock, atomic_write_bytes_keep_mode, atomic_write_toml
+from .atomic import (
+    advisory_file_lock,
+    atomic_write_bytes_keep_mode,
+    atomic_write_toml,
+    try_advisory_file_lock,
+)
 from .i18n import gettext
 from .langs import registry
 from .langs.registry import stored_name
@@ -122,7 +127,17 @@ def _load_registry() -> dict[str, dict[str, Any]]:
         with contextlib.suppress(OSError):
             os.replace(path, path.with_name(f"{path.name}.corrupt"))
         return {}
-    return doc.get("entries", {})
+    entries = doc.get("entries", {})
+    if not isinstance(entries, dict):
+        return {}
+    # Chokepoint normalization: registry.toml is a file a person can edit, so
+    # `entries.<slug>` may be a scalar rather than a table. Coercing it to an empty row
+    # HERE — not in each consumer — keeps every face on one rule: the slug still
+    # resolves (by slug; an empty row matches no name), still lists (the empty row
+    # fails validation, so the meta answers), and the self-heal can still repair it.
+    # Before this lived here, `skit list` degraded gracefully while `skit run <name>`
+    # crashed with a TypeError on the same row.
+    return {slug: (row if isinstance(row, dict) else {}) for slug, row in entries.items()}
 
 
 def _save_registry(entries: dict[str, dict[str, Any]]) -> None:
@@ -135,13 +150,15 @@ def _save_registry(entries: dict[str, dict[str, Any]]) -> None:
 # that need refreshing later are the two the mutators refresh: rename and
 # set-description.
 #
-# `mode` is ALSO the row's own version marker: a row written before this projection
-# existed has no mode, and that is the one thing that tells a reader it cannot be
-# trusted for anything but name/kind/description. Marking the DOCUMENT instead was the
-# obvious alternative and is wrong, because writers touch one row at a time — `rename`
-# patches a single row and re-saves, `remove` pops one and re-saves the rest — so a
-# document-level stamp would declare every untouched legacy row current. A renamed
-# reference entry would then list against the store path it does not use.
+# `mtime_ns` is the meta.toml the row was projected FROM, and it is what makes the row
+# trustworthy at all: meta.toml is a file skit's own docstrings acknowledge users hand
+# edit, and a projection with no way to notice the original changed would show the old
+# name and description forever (list and show disagreeing about the same entry, with
+# doctor --rebuild the only cure). The listing already stats each meta to prove the
+# entry exists, and the SAME stat carries st_mtime_ns — so freshness costs nothing the
+# design was not already paying. A row whose stamp does not match the file is stale,
+# whatever it says; a row with no stamp predates this projection. Either way the meta
+# answers, and the row is rewritten once.
 #
 # `target` is omitted for anything with no launch target outside the store, which keeps
 # the file small: every `resolve()` — so every run, show, edit, params, completion —
@@ -151,12 +168,20 @@ def _save_registry(entries: dict[str, dict[str, Any]]) -> None:
 _ROW_KEYS = ("name", "kind", "description")
 
 
-def _registry_row(meta: ScriptMeta) -> dict[str, Any]:
+def _registry_row(meta: ScriptMeta, entry_dir: Path) -> dict[str, Any]:
     row: dict[str, Any] = {
         "name": meta.name,
         "kind": meta.kind,
         "mode": meta.mode,
         "description": meta.description,
+        # Stamped at projection time. skit's own writers hold the entry lock across
+        # write-then-project, so content and stamp cannot disagree; the re-deriving
+        # paths (repair, doctor --rebuild) can in principle stat a newer file than the
+        # meta they read, but every skit meta-writer rewrites the row itself right
+        # after, so the losing side of that race is overwritten by the winner. What
+        # remains is a hand edit landing in that microsecond window — stale until the
+        # next edit, the same residual as a forged timestamp.
+        "mtime_ns": os.stat(entry_dir / "meta.toml").st_mtime_ns,
     }
     if meta.mode == "reference":
         # Only a reference entry HAS a launch target outside the store; for a copied one
@@ -791,7 +816,7 @@ def _add_entry(
         except BaseException:
             shutil.rmtree(entry_dir, ignore_errors=True)
             raise
-        entries[slug] = _registry_row(meta)
+        entries[slug] = _registry_row(meta, entry_dir)
         _save_registry(entries)
         return Entry(slug=slug, meta=meta, dir=entry_dir)
 
@@ -809,26 +834,35 @@ def list_entries() -> list[Entry]:
     return out
 
 
-def _summary_from_row(slug: str, row: object, entry_dir: Path) -> EntrySummary | None:
+def _summary_from_row(
+    slug: str, row: object, entry_dir: Path, meta_mtime_ns: int
+) -> EntrySummary | None:
     """An EntrySummary from an index row, or None when the row can't supply one.
 
-    None is not an error — it means "a hand edit broke this row", and the caller
-    re-reads that entry's meta.toml. Rows are only ever written by `_registry_row`, so
-    in a store this skit wrote the answer is never None. (A row from an OLDER store is
-    not distinguishable here at all — the document version decides that, before this.)
+    None is not an error — it means "this row cannot be trusted": its stamp does not
+    match the meta on disk (a hand edit, an older skit, or a projection this code has
+    since stopped writing), or a hand edit broke its shape. The caller re-reads that
+    entry's meta.toml, which is always the truth. Rows are only ever written by
+    `_registry_row`, so in an untouched store this skit wrote the answer is never None.
 
-    `row` is typed `object` on purpose: registry.toml is a file a person can edit, so
-    `entries.<slug>` may be a scalar rather than a table, and a listing must degrade
-    into the meta rather than die of an AttributeError.
+    `row` is typed `object` as defense in depth behind `_load_registry`'s chokepoint
+    normalization: registry.toml is a file a person can edit.
     """
     if not isinstance(row, dict):
+        return None
+    if row.get("mtime_ns") != meta_mtime_ns:
+        # The meta changed after this row was projected from it (or the row predates
+        # the stamp). Serving it anyway would show a hand-edited name or description
+        # forever — `list` and `show` disagreeing about the same entry — and would
+        # trust a projection of content that no longer exists. This is also the
+        # corruption filter: breaking a meta changes its mtime, so the fallback
+        # re-reads it, fails to parse, and skips the entry exactly as list_entries
+        # does. (An edit that deliberately preserves mtime defeats both; that is a
+        # forged timestamp, not a failure mode this index arbitrates.)
         return None
     name, kind, description = (row.get(key) for key in _ROW_KEYS)
     if not (isinstance(name, str) and isinstance(kind, str) and isinstance(description, str)):
         return None
-    # A missing mode is the marker of a row written before this projection existed; it
-    # is NOT "the default". Reading it as copy would point a reference entry's listing
-    # at a store path it does not use.
     stored_mode = row.get("mode")
     mode: Mode
     if stored_mode == "copy":
@@ -846,6 +880,15 @@ def _summary_from_row(slug: str, row: object, entry_dir: Path) -> EntrySummary |
     target = row.get("target", "")
     if not isinstance(target, str) or (mode == "reference" and "target" not in row):
         return None
+    if mode == "reference" and not target:
+        # An EMPTY target is a real answer only for a kind with no file to launch (a
+        # command template). For a file kind it is the same Path("") trap as a missing
+        # key — a hand-emptied value would report a deleted original as healthy — so
+        # the meta answers. Unknown kinds (a newer skit's meta) fall back too: this
+        # version cannot know whether "" is honest for them.
+        spec = registry.spec_for(kind)
+        if spec is None or spec.has_original_file:
+            return None
     return EntrySummary(
         slug=slug,
         name=name,
@@ -878,79 +921,105 @@ def list_summaries() -> list[EntrySummary]:
     add time (kind/mode/target) or refreshed by the mutator that changes it
     (name/description) — so the common case reads one file total.
 
-    A row a NEWER skit could not have written falls back to that entry's meta, which is
-    the truth: a row from an older store (no `mode`, so it cannot say where the script
-    lives) or one a hand edit broke. Either way it is then rewritten, so the fallback is
-    paid once — unless the rewritten row would be rejected again, in which case it is
-    left alone rather than restaged on every listing.
+    A row this skit could not have written falls back to that entry's meta, which is
+    the truth: a row from an older store, one whose stamp says the meta changed under
+    it (a hand edit — meta.toml is a file users edit, and the pre-index listing always
+    reflected that), or one a hand edit broke. Either way the row is then repaired, so
+    the fallback is paid once per change rather than forever.
 
-    An entry with NO meta.toml is not listed, whatever the index says. That costs one
-    stat per entry, and it is worth it: without it the CLI would list an entry the TUI
-    and doctor (which read the metas) both drop, and `run` refuses — three faces
-    disagreeing about what the library contains. A meta that exists but is corrupt IS
-    listed, because deciding that needs the parse this function exists to avoid; the
-    index is the membership authority, and doctor is the health command. `doctor
-    --rebuild` still reconstructs the whole index from the metas.
+    An entry with NO meta.toml is not listed, whatever the index says; a corrupt meta
+    is skipped when its row forces the fallback (and breaking a meta changes its mtime,
+    so it does). One stat per entry buys all of that, and it is the same stat the
+    freshness check needs — without it the CLI would list entries the TUI, doctor and
+    `run` (which read the metas) all refuse, three faces disagreeing about what the
+    library contains. `doctor --rebuild` still reconstructs the whole index.
     """
     entries = _load_registry()
     root = scripts_dir()
     out: list[EntrySummary] = []
-    upgraded: dict[str, dict[str, Any]] = {}
+    stale: list[str] = []
     for slug in sorted(entries):
         entry_dir = root / slug
-        if not (entry_dir / "meta.toml").exists():
+        try:
+            meta_mtime_ns = os.stat(entry_dir / "meta.toml").st_mtime_ns
+        except OSError:
             continue  # storage is gone; the index is stale and doctor owns that
-        summary = _summary_from_row(slug, entries[slug], entry_dir)
+        summary = _summary_from_row(slug, entries[slug], entry_dir, meta_mtime_ns)
         if summary is None:
             try:
                 meta = _read_meta(entry_dir)
             except _META_CORRUPTION:
                 continue  # leave corrupt entries for doctor to handle
-            summary = _summary_from_meta(slug, meta, entry_dir)
-            row = _registry_row(meta)
-            # Only stage a rewrite that would actually be accepted next time. A meta
-            # whose mode/description a hand edit made unrepresentable round-trips into
-            # a row this same function rejects, and restaging it would retake the
-            # cross-process registry lock and rewrite the whole index on EVERY listing,
-            # forever, without ever converging.
-            if _summary_from_row(slug, row, entry_dir) is not None:
-                upgraded[slug] = row
+            # Serve exactly what the repaired row will serve next time — one
+            # construction, no chance of the two projections disagreeing. A meta the
+            # row cannot represent (a hand-edited mode, say) is served from the meta
+            # directly and NOT staged: repairing it is impossible, and restaging it
+            # would rewrite the index on every listing without ever converging.
+            row = _registry_row(meta, entry_dir)
+            summary = _summary_from_row(slug, row, entry_dir, row["mtime_ns"])
+            if summary is not None:
+                stale.append(slug)
+            else:
+                summary = _summary_from_meta(slug, meta, entry_dir)
         out.append(summary)
-    if upgraded:
-        _upgrade_rows(upgraded)
+    if stale:
+        _repair_rows(stale)
     return out
 
 
-def _upgrade_rows(rows: dict[str, dict[str, Any]]) -> None:
-    """Widen index rows that predate the listing projection, in place.
+def _repair_rows(slugs: list[str]) -> None:
+    """Re-project the named slugs' index rows from their metas, in place.
 
-    Without this, a library added by an older skit would fall back to reading every
-    meta.toml forever — the index only gains the new fields when an entry is added,
-    renamed or re-described, and most libraries sit still for months. Rewriting them
-    the first time they are listed makes the upgrade self-healing rather than something
-    a user has to know to run `doctor --rebuild` for.
+    Without this, a library added by an older skit — or one whose metas were hand
+    edited — would fall back to reading those metas on every listing forever; the index
+    only refreshes on add/rename/describe otherwise. Repairing on first listing makes
+    it self-healing instead of something a user must know to run `doctor --rebuild`
+    for.
 
-    Best effort, by design: this is a read path, and a read must not fail because an
-    index it does not depend on could not be refreshed (a read-only store, a store
-    another process is mid-write on).
+    Two properties, both load-bearing:
 
-    Re-read under the lock and write only rows that are STILL legacy. The listing that
-    produced these may have spent tens of milliseconds reading metas, and anything can
-    commit in that window: a rename, a set-description, even a remove followed by an add
-    that reuses the slug. All three leave a row carrying `mode` — the marker of a row
-    written by this projection — and none of them needs upgrading. Writing a stale
-    snapshot over one of them would revert it, and since `resolve` matches display names
-    off this index, a reverted rename leaves the entry unreachable by its new name until
-    someone runs `doctor --rebuild`.
+    - **The lock is TRY-ONLY.** This runs on read paths — `skit list`, shell TAB
+      completion — and the blocking lock polls forever, so a listing that used it
+      would freeze the user's shell behind any process holding the lock (a large add,
+      a hung skit). If the lock is busy, the repair simply doesn't happen this time;
+      the next listing tries again. A read stays a read.
+    - **Rows are re-derived from their metas UNDER the lock, never written from the
+      listing's snapshot.** Anything can commit while the listing reads metas: a
+      rename, a set-description, a remove-then-add that reuses the slug — including by
+      an OLDER skit whose fresh legacy row is indistinguishable from the stale one the
+      listing saw. A snapshot write would revert those; re-deriving from the meta as
+      it is NOW makes the newest state win no matter who wrote it. The stamp is read
+      before the meta (see `_registry_row`), so a change landing mid-derivation only
+      makes the row stale again — never trusted-but-wrong.
+
+    Best effort throughout: a slug whose meta vanished or broke meanwhile is skipped
+    (doctor owns it), a row that would not validate is not written (see
+    `list_summaries`), and nothing is saved unless something actually changed.
     """
-    with contextlib.suppress(OSError), _registry_lock():
+    with (
+        contextlib.suppress(OSError),
+        try_advisory_file_lock(registry_path().with_suffix(".native.lock")) as acquired,
+    ):
+        if not acquired:
+            return
         entries = _load_registry()
-        for slug, row in rows.items():
-            current = entries.get(slug)
-            if not isinstance(current, dict) or "mode" in current:
-                continue  # gone, hand-broken, or already rewritten since the read
-            entries[slug] = row
-        _save_registry(entries)
+        changed = False
+        for slug in slugs:
+            if slug not in entries:
+                continue  # removed since the listing read the index
+            entry_dir = scripts_dir() / slug
+            try:
+                meta = _read_meta(entry_dir)
+                row = _registry_row(meta, entry_dir)
+            except _META_CORRUPTION:
+                continue
+            if _summary_from_row(slug, row, entry_dir, row["mtime_ns"]) is None:
+                continue  # unrepresentable meta: writing this row would repair nothing
+            if entries[slug] != row:
+                entries[slug] = row
+                changed = True
+        if changed:
+            _save_registry(entries)
 
 
 def prompt_entries_pinned_to(runner: str) -> list[Entry]:
@@ -998,7 +1067,7 @@ def resolve(name_or_slug: str) -> Entry:
     if name_or_slug in entries:
         slug = name_or_slug
     else:
-        matches = [s for s, e in entries.items() if e["name"] == name_or_slug]
+        matches = [s for s, e in entries.items() if e.get("name") == name_or_slug]
         if len(matches) == 1:
             slug = matches[0]
     if slug is None:
@@ -1348,7 +1417,7 @@ def rename(name_or_slug: str, new_name: str) -> Entry:
                 # The whole projection, not just the changed key: the meta is in hand,
                 # and patching one field of a row written by an older skit would leave
                 # it legacy-shaped forever.
-                entries[entry.slug] = _registry_row(meta)
+                entries[entry.slug] = _registry_row(meta, entry.dir)
                 _save_registry(entries)
         return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
@@ -1363,7 +1432,7 @@ def update_description(name_or_slug: str, description: str) -> Entry:
         with _registry_lock():
             entries = _load_registry()
             if entry.slug in entries:
-                entries[entry.slug] = _registry_row(meta)  # the whole projection; see rename
+                entries[entry.slug] = _registry_row(meta, entry.dir)  # whole projection; see rename
                 _save_registry(entries)
         return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
@@ -1398,7 +1467,7 @@ def doctor_rebuild() -> tuple[int, list[str]]:
                         gettext("%(slug)s: the referenced source file is gone: %(path)s")
                         % {"slug": entry_dir.name, "path": meta.source}
                     )
-                entries[entry_dir.name] = _registry_row(meta)
+                entries[entry_dir.name] = _registry_row(meta, entry_dir)
         _save_registry(entries)
     return len(entries), problems
 
@@ -1427,6 +1496,7 @@ def human_size(size: int) -> str:
 
 __all__ = [
     "Entry",
+    "EntrySummary",
     "Kind",
     "NameConflictError",
     "NotFoundError",
@@ -1440,6 +1510,7 @@ __all__ = [
     "doctor_rebuild",
     "human_size",
     "list_entries",
+    "list_summaries",
     "read_parameters",
     "remove",
     "resolve",

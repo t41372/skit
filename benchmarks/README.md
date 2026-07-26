@@ -65,10 +65,11 @@ the exact list, with reasons, is in `pyproject.toml`'s coverage `omit`).
   Never averaged together.
 - **`micro.analyze_broken.*` is only meaningful beside its twin** — the same 2000-line
   source with its last line left half-written, which is what a launcher parses while
-  its user is still editing. It comes out 4–10× FASTER than the valid twin, because
+  its user is still editing. It comes out markedly FASTER than the valid twin, because
   the analyzer bails out (Python raises, the grammars enter error recovery) and
-  returns no parameters. Read alone it looks like a speed-up; the pair
-  `analyze.<lang>.l2000` / `analyze_broken.<lang>.l2000` is the measurement.
+  returns no parameters — a number that looks like a speed-up and is nothing of the
+  kind. The pair `analyze.<lang>.l2000` / `analyze_broken.<lang>.l2000` is the
+  measurement; the actual ratio lives in each run's `results.json`, never here.
 - **median / p95** — headline values are medians; p95 is nearest-rank
   (`ceil(0.95·n)`); raw samples ship in `results.json` under `raw`.
 - **TUI spans are proxies** — headless Textual (`run_test`, 120×40), not terminal

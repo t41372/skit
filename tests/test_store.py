@@ -542,15 +542,23 @@ def test_summaries_match_full_entries_field_for_field(sample_script: Path, tmp_p
 
 def test_summaries_serve_from_the_index_without_parsing_metas(sample_script: Path):
     """The whole point: the listing does not PARSE a meta per entry. Proven by filling
-    every meta.toml with garbage — a listing that still answers in full cannot have
-    read one. (It does still stat them; see the missing-meta test below for why.)"""
+    every meta.toml with garbage while PRESERVING its mtime — a listing that still
+    answers in full cannot have read one. (It does stat them: existence and the
+    freshness stamp ride on the same stat.) The mtime forgery is the test's tool, and
+    also the documented limit: an edit that fakes its own timestamp is
+    indistinguishable without the parse this function exists to avoid."""
+    import os
+
     from skit import store
 
     store.add_python(sample_script, name="one", description="first")
     store.add_command("echo hi", name="two", description="second")
     expected = [(s.slug, s.name, s.description) for s in store.list_summaries()]
     for entry in store.list_entries():
-        (entry.dir / "meta.toml").write_text("not [ toml", encoding="utf-8")
+        meta = entry.dir / "meta.toml"
+        st = os.stat(meta)
+        meta.write_text("not [ toml", encoding="utf-8")
+        os.utime(meta, ns=(st.st_atime_ns, st.st_mtime_ns))
 
     assert [(s.slug, s.name, s.description) for s in store.list_summaries()] == expected
     assert store.list_entries() == []  # the parsing read has nothing left to read
@@ -575,10 +583,10 @@ def test_a_row_an_older_skit_wrote_falls_back_to_its_meta(sample_script: Path):
     )
 
     (summary,) = store.list_summaries()
-    assert summary.mode == "reference"  # NOT the "copy" a v2 row would have implied
+    assert summary.mode == "reference"  # NOT the "copy" a stamped row would imply
     assert summary.script_path == entry.script_path
-    # ...and the row is rewritten, so the fallback is paid once.
-    assert store._load_registry()[entry.slug] == store._registry_row(entry.meta)
+    # ...and the row is repaired, so the fallback is paid once.
+    assert store._load_registry()[entry.slug] == store._registry_row(entry.meta, entry.dir)
 
 
 @pytest.mark.parametrize(
@@ -647,49 +655,47 @@ def test_an_older_registry_is_widened_the_first_time_it_is_listed(sample_script:
     store.list_summaries()
 
     row = store._load_registry()[entry.slug]
-    assert row == store._registry_row(entry.meta)
-    assert store._summary_from_row(entry.slug, row, entry.dir) is not None
+    assert row == store._registry_row(entry.meta, entry.dir)
+    assert store._summary_from_row(entry.slug, row, entry.dir, row["mtime_ns"]) is not None
 
 
-def test_widening_never_drops_an_entry_added_meanwhile(sample_script: Path, tmp_path: Path):
-    """The rewrite re-reads under the registry lock and only fills in the slugs it has
-    metas for, so an entry that landed between the read and the write survives."""
+def test_repair_never_drops_an_entry_added_meanwhile(sample_script: Path, tmp_path: Path):
+    """The repair re-reads the index under the lock and touches only the slugs it was
+    asked to repair, so an entry that landed between the listing's read and the repair
+    survives untouched."""
     from skit import store
 
     old = store.add_python(sample_script, name="legacy", mode="reference")
-    legacy_row = {"name": "legacy", "kind": "python", "description": old.meta.description}
-    store._save_registry({old.slug: dict(legacy_row)})
-
     other = tmp_path / "other.py"
     other.write_text("print(2)\n", encoding="utf-8")
     raced = store.add_python(other, name="raced")
-    # Roll the index back to the pre-add snapshot the listing read, then widen with it:
-    # exactly the interleaving where a blind overwrite would erase `raced`.
-    store._save_registry({old.slug: dict(legacy_row)})
-    stale = {old.slug: store._registry_row(old.meta)}
+    raced_row = dict(store._load_registry()[raced.slug])
+    # The index as a listing would have staged from: legacy row for `old`, and the
+    # concurrent add already committed.
+    store._save_registry(
+        {
+            old.slug: {"name": "legacy", "kind": "python", "description": ""},
+            raced.slug: raced_row,
+        }
+    )
 
-    def restore_the_race(_entries: object = None) -> dict[str, object]:
-        return {old.slug: dict(legacy_row), raced.slug: store._registry_row(raced.meta)}
-
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(store, "_load_registry", restore_the_race)
-        store._upgrade_rows(stale)
+    store._repair_rows([old.slug])
 
     rows = store._load_registry()
     assert set(rows) == {old.slug, raced.slug}
-    assert rows[old.slug] == store._registry_row(old.meta)
+    assert rows[old.slug] == store._registry_row(old.meta, old.dir)
+    assert rows[raced.slug] == raced_row  # untouched
 
 
-def test_widening_skips_an_entry_removed_meanwhile(sample_script: Path):
+def test_repair_skips_an_entry_removed_meanwhile(sample_script: Path):
     """The other side of re-reading under the lock: a slug the listing saw but that a
     concurrent `skit remove` has since deleted must not be written back in — the
-    widening fills rows in, it never resurrects them."""
+    repair fixes rows in place, it never resurrects them."""
     from skit import store
 
     entry = store.add_python(sample_script, name="legacy")
-    stale = {entry.slug: store._registry_row(entry.meta), "vanished": {"name": "ghost"}}
 
-    store._upgrade_rows(stale)
+    store._repair_rows([entry.slug, "vanished"])
 
     assert set(store._load_registry()) == {entry.slug}
 
@@ -731,10 +737,8 @@ def test_a_corrupt_index_lists_nothing_and_preserves_the_bad_bytes(sample_script
 
 
 def test_exe_is_always_reference_mode(tmp_path: Path):
-    """`DirectLaunch.target` returns `script_path` rather than `Path(meta.source)`,
-    which is the same answer ONLY because an exe entry is never copied. If that ever
-    changes, a copy-mode exe would resolve its target to the entry directory (exe has
-    no stored_name) and the missing-target mark would go quietly wrong."""
+    """add_exe always records reference mode, and DirectLaunch.target answers from the
+    SOURCE, so the well-formed shapes all name the same file."""
     from skit import store
     from skit.langs.registry import spec_for
 
@@ -769,17 +773,21 @@ def test_an_entry_whose_meta_is_gone_is_not_listed(sample_script: Path):
     assert sample_script.exists()  # the original is untouched; only the store is gone
 
 
-def test_a_present_but_corrupt_meta_is_still_listed(sample_script: Path):
-    """The documented limit of the rule above: deciding a PRESENT meta is corrupt needs
-    the parse this whole function exists to avoid. The index is the membership
-    authority; doctor is the health command."""
+def test_a_corrupted_meta_drops_out_of_the_listing_like_every_other_face(
+    sample_script: Path,
+):
+    """Breaking a meta changes its mtime, so the row's stamp no longer matches, the
+    fallback re-reads the file, the parse fails, and the entry is skipped — exactly
+    what list_entries, the TUI and doctor do. Before the freshness stamp, the CLI was
+    the one face still listing it as healthy."""
     from skit import store
 
     entry = store.add_python(sample_script, name="broken")
+    store.add_command("echo hi", name="fine")
     (entry.dir / "meta.toml").write_text("not [ toml", encoding="utf-8")
 
-    assert [s.name for s in store.list_summaries()] == ["broken"]
-    assert store.list_entries() == []
+    assert [s.name for s in store.list_summaries()] == ["fine"]
+    assert [e.meta.name for e in store.list_entries()] == ["fine"]
 
 
 def test_a_non_mapping_row_falls_back_instead_of_crashing(sample_script: Path):
@@ -818,29 +826,55 @@ def test_widening_gives_up_on_a_row_it_would_reject_again(sample_script: Path):
     assert registry_path().read_bytes() == before  # never restaged, never rewritten
 
 
-def test_widening_leaves_a_row_rewritten_meanwhile_alone(sample_script: Path):
-    """The listing that produced these rows may have spent tens of ms reading metas,
-    and anything can commit in that window — a rename, a set-description, even a remove
-    followed by an add that reuses the slug. All three leave a row carrying `mode`, and
-    none of them needs upgrading; writing a stale snapshot over one would revert it,
-    and `resolve` matches display names off this index, so a reverted rename leaves the
-    entry unreachable by its new name until someone runs `doctor --rebuild`."""
+def test_repair_keeps_a_rename_that_landed_meanwhile(sample_script: Path):
+    """The listing that staged this repair may have spent tens of ms reading metas,
+    and a rename can commit in that window. The repair never writes the listing's
+    snapshot — it re-derives each row from the meta AS IT IS NOW, under the lock — so
+    whatever landed last wins, whoever wrote it. A snapshot write would revert the
+    rename, and `resolve` matches display names off this index, so the entry would be
+    unreachable by its new name until `doctor --rebuild`."""
     from skit import store
 
     entry = store.add_python(sample_script, name="before", mode="reference")
-    stale = {entry.slug: store._registry_row(entry.meta)}
+    # The listing saw a legacy row and staged `entry.slug` for repair...
+    store._save_registry({entry.slug: {"name": "before", "kind": "python", "description": ""}})
+    # ...and a rename lands before the repair runs (meta AND row both updated).
+    store.rename(entry.slug, "after")
 
-    def locked_snapshot() -> dict[str, object]:
-        # What the lock sees: a rename landed, so the row is current, not legacy.
-        return {entry.slug: {**stale[entry.slug], "name": "after", "description": "fresh"}}
-
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(store, "_load_registry", locked_snapshot)
-        store._upgrade_rows(stale)
+    store._repair_rows([entry.slug])
 
     row = store._load_registry()[entry.slug]
     assert row["name"] == "after"
-    assert row["description"] == "fresh"
+    assert row["mode"] == "reference"
+    assert store.resolve("after").slug == entry.slug
+
+
+def test_repair_adopts_a_slug_reused_by_an_older_skit_meanwhile(
+    sample_script: Path, tmp_path: Path
+):
+    """The nastiest interleaving: while the listing is mid-fallback, an OLDER skit
+    removes the entry and adds a different script that reuses the freed slug, writing
+    a fresh legacy row indistinguishable from the stale one. A marker-based guard
+    cannot tell those apart in either direction; re-deriving from the meta under the
+    lock sidesteps the question — the repair projects whatever the slug means NOW, so
+    the new entry gets a correct row instead of the dead entry's."""
+    from skit import store
+    from skit.models import ScriptMeta
+
+    entry = store.add_python(sample_script, name="deploy", mode="reference")
+    slug = entry.slug
+    # Old skit's remove+add, reusing the slug: a NEW meta and a legacy row.
+    new_meta = ScriptMeta(name="deploy", kind="shell", mode="copy", source=str(tmp_path / "n.sh"))
+    store._write_meta(entry.dir, new_meta)
+    (entry.dir / "script.sh").write_text("echo hi\n", encoding="utf-8")
+    store._save_registry({slug: {"name": "deploy", "kind": "shell", "description": ""}})
+
+    store._repair_rows([slug])  # staged from the OLD entry's listing pass
+
+    row = store._load_registry()[slug]
+    assert row["kind"] == "shell"  # the new entry's projection, not the dead one's
+    assert row["mode"] == "copy"
+    assert "target" not in row
 
 
 def test_a_renamed_legacy_row_is_upgraded_not_patched(sample_script: Path):
@@ -900,3 +934,202 @@ def test_a_command_row_keeps_an_empty_target(tmp_path: Path):
     before = store._load_registry()
     store.list_summaries()
     assert store._load_registry() == before  # nothing restaged
+
+
+def test_a_hand_edited_meta_shows_up_on_the_next_listing(sample_script: Path):
+    """meta.toml is a file skit's own docstrings acknowledge users hand edit, and the
+    pre-index listing always reflected an edit. The row's freshness stamp keeps that:
+    the edit changes the meta's mtime, the stamp no longer matches, and the listing
+    falls back, serves the truth, and repairs the row — `list` and `show` can never
+    disagree for longer than one listing."""
+    import time
+    import tomllib
+
+    from skit import store
+    from skit.atomic import atomic_write_toml
+
+    entry = store.add_python(sample_script, name="job", description="the old text")
+    (summary,) = store.list_summaries()
+    assert summary.description == "the old text"
+
+    doc = tomllib.loads((entry.dir / "meta.toml").read_text(encoding="utf-8"))
+    doc["description"] = "edited by hand"
+    time.sleep(0.01)  # a real edit is never same-instant; keep coarse-mtime hosts honest
+    atomic_write_toml(entry.dir / "meta.toml", doc)
+
+    (summary,) = store.list_summaries()
+    assert summary.description == "edited by hand"
+    # ...and the repair stamped the new mtime, so the next listing is index-served.
+    row = store._load_registry()[entry.slug]
+    assert row["description"] == "edited by hand"
+    (summary,) = store.list_summaries()
+    assert summary.description == "edited by hand"
+
+
+def test_a_listing_never_blocks_on_the_registry_lock(sample_script: Path):
+    """The repair rides on READ paths — `skit list`, shell TAB completion — and the
+    blocking lock polls forever, so a listing that used it would freeze the user's
+    shell behind any process holding the lock (a large add, a hung skit). The repair's
+    lock is try-only: if it is busy, the listing still answers and simply skips the
+    repair; the next listing tries again."""
+    from skit import store
+    from skit.atomic import advisory_file_lock
+    from skit.paths import registry_path
+
+    entry = store.add_python(sample_script, name="legacy", description="old")
+    legacy = {entry.slug: {"name": "legacy", "kind": "python", "description": "old"}}
+    store._save_registry(legacy)
+
+    with advisory_file_lock(registry_path().with_suffix(".native.lock")):
+        (summary,) = store.list_summaries()  # must return, not deadlock
+        assert summary.name == "legacy"
+        assert store._load_registry() == legacy  # repair skipped: the lock was busy
+
+    (summary,) = store.list_summaries()  # lock free again: repair goes through
+    assert store._load_registry()[entry.slug] == store._registry_row(entry.meta, entry.dir)
+
+
+def test_a_reference_row_that_lost_its_target_is_repaired_once(sample_script: Path):
+    """The convergence contract, on the exact row shape that used to defeat it: a
+    reference row whose `target` a hand edit removed still carries `mode`, so a
+    marker-based guard refused to repair it while the listing restaged it — a locked
+    whole-index rewrite on every listing, forever. The repair now re-derives from the
+    meta, so the first listing fixes the row and the second is index-served."""
+    from skit import store
+    from skit.paths import registry_path
+
+    entry = store.add_python(sample_script, name="linked", mode="reference")
+    rows = store._load_registry()
+    del rows[entry.slug]["target"]
+    store._save_registry(rows)
+
+    (summary,) = store.list_summaries()  # fallback: the row cannot say where the script is
+    assert summary.script_path == entry.script_path
+    assert store._load_registry()[entry.slug] == store._registry_row(entry.meta, entry.dir)
+
+    before_bytes = registry_path().read_bytes()
+    (summary,) = store.list_summaries()  # converged: served from the index, no rewrite
+    assert summary.script_path == entry.script_path
+    assert registry_path().read_bytes() == before_bytes
+
+
+def test_an_emptied_target_on_a_file_kind_falls_back_to_the_meta(tmp_path: Path):
+    """The presence check guards a DELETED key; this guards an emptied VALUE. For a
+    kind with a file to launch, `target = ""` resolves to Path("") — the current
+    directory, which exists — so a deleted original would list as healthy. A command
+    template's empty target is a real answer (no file target) and stays trusted."""
+    from skit import launcher, store
+
+    src = tmp_path / "orig.py"
+    src.write_text("print(1)\n", encoding="utf-8")
+    entry = store.add_python(src, name="linked", mode="reference")
+    src.unlink()
+    rows = store._load_registry()
+    rows[entry.slug]["target"] = ""
+    store._save_registry(rows)
+
+    (summary,) = store.list_summaries()
+    assert summary.script_path == entry.script_path
+    assert launcher.target_missing(summary) is True
+
+
+def test_resolve_survives_a_hand_broken_row(sample_script: Path):
+    """The hand-edited-registry tolerance lives at the _load_registry chokepoint, so
+    every face shares it. Before that, `skit list` degraded gracefully while `skit
+    run <name>` crashed with a TypeError on the same scalar row — an uncaught
+    traceback instead of the documented exit-code contract."""
+    from skit import store
+
+    entry = store.add_python(sample_script, name="real")
+    rows = dict(store._load_registry())
+    rows["stray"] = "oops"  # ty: ignore[invalid-assignment] — the hand edit IS the test
+    store._save_registry(rows)
+
+    assert store.resolve("real").slug == entry.slug  # by name, scanning past the junk
+    assert store.resolve(entry.slug).slug == entry.slug
+    with pytest.raises(store.NotFoundError):
+        store.resolve("stray")  # the junk row matches nothing, cleanly
+
+
+def test_a_fresh_stamped_row_with_broken_fields_falls_back(sample_script: Path):
+    """Defense in depth past the freshness gate: a row whose stamp matches but whose
+    fields a hand edit broke (a non-string description, a scalar row) still falls back
+    to the meta instead of inventing a summary or crashing."""
+    import os
+
+    from skit import store
+
+    entry = store.add_python(sample_script, name="real", description="the truth")
+    mtime_ns = os.stat(entry.dir / "meta.toml").st_mtime_ns
+    broken = {"name": "real", "kind": "python", "description": 7, "mtime_ns": mtime_ns}
+    store._save_registry({entry.slug: broken})
+    (summary,) = store.list_summaries()
+    assert summary.description == "the truth"
+    # The non-dict guard, called directly: list paths normalize rows at the
+    # _load_registry chokepoint, so only a caller bypassing it can hit this.
+    assert store._summary_from_row(entry.slug, "oops", entry.dir, mtime_ns) is None
+
+
+def test_an_index_whose_entries_key_is_not_a_table_reads_empty(sample_script: Path):
+    """`entries` itself hand-edited into a scalar: the chokepoint answers an empty
+    index (doctor rebuilds it) instead of every consumer crashing on .items()."""
+    from skit import store
+    from skit.atomic import atomic_write_toml
+    from skit.paths import registry_path
+
+    store.add_python(sample_script, name="real")
+    atomic_write_toml(registry_path(), {"entries": 5})
+    assert store._load_registry() == {}
+    assert store.list_summaries() == []
+    assert store.doctor_rebuild()[0] == 1
+
+
+def test_repair_skips_a_meta_that_broke_or_went_unrepresentable_meanwhile(
+    sample_script: Path, tmp_path: Path
+):
+    """Best effort under the lock: a meta that corrupted between staging and repair is
+    doctor's problem, and one a hand edit made unrepresentable would produce a row the
+    next listing rejects — writing either would repair nothing."""
+    import tomllib
+
+    from skit import store
+    from skit.atomic import atomic_write_toml
+
+    corrupt = store.add_python(sample_script, name="corrupt")
+    other = tmp_path / "o.py"
+    other.write_text("print(2)\n", encoding="utf-8")
+    sideways = store.add_python(other, name="sideways")
+    before = dict(store._load_registry())
+
+    (corrupt.dir / "meta.toml").write_text("not [ toml", encoding="utf-8")
+    doc = tomllib.loads((sideways.dir / "meta.toml").read_text(encoding="utf-8"))
+    doc["mode"] = "sideways"
+    atomic_write_toml(sideways.dir / "meta.toml", doc)
+
+    store._repair_rows([corrupt.slug, sideways.slug])
+
+    assert store._load_registry() == before  # nothing written for either
+
+
+def test_a_copy_mode_exe_meta_still_reports_its_gone_binary(tmp_path: Path):
+    """`DirectLaunch.target` answers from the SOURCE, unconditionally. Deriving it
+    through script_path trusts `mode`, and a hand-edited copy-mode exe meta sends
+    script_path down the copy branch — exe has no stored filename, so the "copy"
+    resolves to the entry directory, which exists as long as the entry does, and a
+    gone binary could never be reported missing."""
+    import tomllib
+
+    from skit import launcher, store
+    from skit.atomic import atomic_write_toml
+
+    exe = tmp_path / "tool"
+    exe.touch(mode=0o755)
+    entry = store.add_exe(exe, name="binary")
+    doc = tomllib.loads((entry.dir / "meta.toml").read_text(encoding="utf-8"))
+    doc["mode"] = "copy"  # the hand edit
+    atomic_write_toml(entry.dir / "meta.toml", doc)
+    exe.unlink()
+
+    broken = store.resolve(entry.slug)
+    assert broken.meta.mode == "copy"
+    assert launcher.target_missing(broken) is True

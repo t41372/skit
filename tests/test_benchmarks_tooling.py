@@ -1476,6 +1476,23 @@ class TestContractSync:
         )
         assert output.metrics["footprint.library_bytes_per_entry.n3"].value == total / 3
 
+    def test_broken_lines_constant_is_the_same_in_both_files(self) -> None:
+        """bench_analyzers.py reads the file that suites/micro.py materializes, and the
+        size tier lives hand-duplicated in both (the micro script is self-contained by
+        contract and cannot import the suite). Only this test ties the copies: if they
+        drift, the pyperf subprocess dies on a missing file — in CI only, since the
+        script is a coverage-exempt benchmark subject nothing else executes."""
+        import re
+
+        values = {}
+        for rel in ("benchmarks/suites/micro.py", "benchmarks/micro/bench_analyzers.py"):
+            text = (REPO_ROOT / rel).read_text(encoding="utf-8")
+            match = re.search(r"^_BROKEN_LINES = (\d+)", text, flags=re.M)
+            assert match is not None, f"{rel} lost its _BROKEN_LINES constant"
+            values[rel] = int(match.group(1))
+        assert len(set(values.values())) == 1, values
+        assert next(iter(set(values.values()))) in micro_suite._SOURCE_LINES
+
     def test_broken_workloads_are_byte_stable_and_actually_broken(self) -> None:
         """The half-written twin is a workload like any other: its bytes are history.
         And it must genuinely fail to parse — a "broken" fixture that happens to be

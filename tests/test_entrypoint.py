@@ -156,6 +156,25 @@ def test_python_dash_m_skit_is_the_same_entry() -> None:
     assert proc.stdout == f"skit {skit.__version__}\n"
 
 
+def test_both_version_paths_print_the_identical_line(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The dispatcher's fast path and the CLI callback (`skit --version list`) share
+    one `print_version` — an agent parsing the output must get one answer whatever
+    the argv shape. This asserts byte equality, so a second hand-synced f-string
+    reappearing in either place fails here the day it drifts."""
+    from typer.testing import CliRunner
+
+    from skit import cli
+
+    monkeypatch.setattr(sys, "argv", ["skit", "--version"])
+    entry.main()
+    fast_path = capsys.readouterr().out
+    slow_path = CliRunner().invoke(cli.app, ["--version", "list"])
+    assert slow_path.exit_code == 0
+    assert slow_path.output == fast_path
+
+
 def test_the_console_script_points_at_the_dispatcher() -> None:
     """If the entry point goes back to `skit.cli:app`, every test above still passes
     while the installed `skit` command quietly pays the full import again."""

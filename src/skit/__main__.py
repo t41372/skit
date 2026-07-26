@@ -23,14 +23,23 @@ import sys
 _VERSION_ARGV = (["--version"], ["-V"])
 
 
+def print_version() -> None:
+    """The one spelling of the version line, shared with the CLI callback.
+
+    Plain print, not the CLI's rich Console: `--version` is a machine-facing answer,
+    and rich's number highlighter splits a PEP 440 version into colored fragments
+    ("0.4" cyan, then ".", then "1." cyan) on a terminal. Both paths that answer the
+    flag call THIS — an agent parsing the output must get one answer whatever the
+    argv shape, and two hand-synced f-strings would drift silently.
+    """
+    from . import __version__
+
+    print(f"skit {__version__}")
+
+
 def main() -> None:
     if sys.argv[1:] in _VERSION_ARGV:
-        from . import __version__
-
-        # Plain print, not the CLI's rich Console: `--version` is a machine-facing
-        # answer, and rich's number highlighter splits a PEP 440 version into colored
-        # fragments ("0.4" cyan, then ".", then "1." cyan) on a terminal.
-        print(f"skit {__version__}")
+        print_version()
         return
     from .cli import app
 

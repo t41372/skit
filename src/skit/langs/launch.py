@@ -184,10 +184,14 @@ class DirectLaunch:
         return join_for_display([entry.meta.source, *extra])
 
     def target(self, entry: LaunchTarget) -> Path | None:
-        # An exe entry is ALWAYS reference mode (store.add_exe never copies a binary),
-        # so its script_path IS its source path — same answer, asked of the narrow
-        # shape a listing holds. Pinned by test_exe_is_always_reference_mode.
-        return entry.script_path
+        # The source, NOT script_path: an exe's target is its recorded binary no matter
+        # what `mode` claims. store.add_exe always writes reference mode, but meta.toml
+        # is a plain file — a hand-edited copy-mode exe meta would send script_path down
+        # the copy branch, and exe's stored_name is "" (never copied), so the "copy"
+        # would resolve to the entry DIRECTORY, which exists as long as the entry does.
+        # An empty source has no path to check (None = no file target), matching the
+        # honest answer preflight gives at run time.
+        return Path(entry.source) if entry.source else None
 
     def preflight(self, entry: Entry, *, runner: PromptRunner | None = None) -> None:
         _check_exe_exists(entry.meta.source)
