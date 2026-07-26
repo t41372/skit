@@ -148,3 +148,37 @@ def test_skill_teaches_executable_empty_value_spellings_for_clearing_pins():
     commands = [shlex.split(line, comments=True) for line in _skill_command_lines()]
     assert ["skit", "params", "<name>", "--runner", ""] in commands
     assert ["skit", "params", "<name>", "--interpreter", ""] in commands
+
+
+def test_skill_presets_recipe_actually_works_end_to_end(tmp_path, monkeypatch):
+    """The Presets code block must be a WORKING recipe, not folklore: this executes its
+    exact command shapes against a real entry. Guards the seam that already broke once —
+    the skill taught `run --save-preset --dry-run` as "create without running" after a
+    dry run stopped persisting state, and the command-tree checks above stayed green
+    because every flag still existed; only the semantics had died."""
+    from typer.testing import CliRunner
+
+    from skit import argstate, store
+
+    monkeypatch.setenv("SKIT_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SKIT_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("SKIT_CONFIG_DIR", str(tmp_path / "config"))
+    block = re.search(r"## Presets\n.*?```bash\n(.*?)```", ROOT_SKILL.read_text(), re.DOTALL)
+    assert block is not None
+    lines = [ln for ln in block.group(1).splitlines() if ln.strip()]
+    # The recipe must include the mint-without-running lane it exists to teach.
+    assert any("preset save" in ln and "--set" in ln for ln in lines)
+
+    entry = store.add_command("echo {a} {b}", name="job")
+    runner = CliRunner()
+    ran_something = False
+    for line in lines:
+        argv = shlex.split(line, comments=True)
+        assert argv[0] == "skit"
+        argv = [tok.replace("<name>", "job") for tok in argv[1:]]
+        result = runner.invoke(cli.app, argv, catch_exceptions=False)
+        assert result.exit_code == 0, f"skill recipe line failed: {line!r}\n{result.output}"
+        ran_something = True
+    assert ran_something
+    # The recipe's own promises: the preset existed mid-recipe and delete removed it.
+    assert "nightly" not in argstate.load_state(entry.slug)["presets"]

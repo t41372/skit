@@ -3196,9 +3196,11 @@ def run(
             raise _fail(str(exc), EXIT_NOT_FOUND) from exc
         except launcher.LaunchError as exc:
             raise _fail(str(exc), EXIT_SKIT) from exc
-        # A dry run writes NOTHING — that is the whole word. --save-preset persisting
+        # A dry run persists no preset, values, or run history. --save-preset writing
         # here while the help text promised "print the command, then exit" was a silent
-        # side effect; saving still works on any real run.
+        # side effect; saving still works on any real run, and `preset save --set` mints
+        # one without running anything. (The interactive runner pick is still remembered
+        # — choosing a runner is its own explicit act, dry run or not.)
         if save_preset:
             err_console.print(
                 "[dim]"
@@ -3585,9 +3587,16 @@ def preset_save(
         "--from-last",
         help=gettext("Save the last run's values without asking (automation-friendly)"),
     ),
+    set_opts: list[str] = typer.Option(
+        None,
+        "--set",
+        help=gettext(
+            "Save this value, as NAME=VALUE (repeatable; tokens like {cwd} stay unexpanded until each run) — mint a preset non-interactively without running the entry"
+        ),
+    ),
 ) -> None:
-    """Save a named preset: interactively, or straight from the last run with --from-last.
-    Secret values are never persisted (C3)."""
+    """Save a named preset: interactively, from explicit --set values, or straight from
+    the last run with --from-last. Secret values are never persisted (C3)."""
     from . import flows, promptform
 
     try:
@@ -3601,7 +3610,20 @@ def preset_save(
             % {"name": entry.meta.name},
             EXIT_USAGE,
         )
-    if from_last:
+    if from_last and set_opts:
+        # Two competing value sources in one invocation is a shape error, not a merge.
+        raise _fail(
+            gettext("--from-last and --set are different value sources — pick one."),
+            EXIT_USAGE,
+        )
+    if set_opts:
+        # Explicit values ARE the deterministic source (same strict parser as run --set:
+        # malformed or unknown names exit 2). This is the one lane that mints a preset
+        # without a terminal, without history, and without executing anything — the job
+        # `run --save-preset --dry-run` used to do by accident before dry runs stopped
+        # persisting state; the Agent Skill teaches this lane.
+        values = _parse_set_opts(plan, set_opts)
+    elif from_last:
         state = argstate.load_state(entry.slug)
         if not state["last_run"] and not state["values"]:
             raise _fail(
@@ -3636,14 +3658,15 @@ def preset_save(
         # Non-interactive contract: never guess. The prefill is whatever defaults and
         # last-used values happen to be lying around — silently minting a preset out of
         # that would save a value set the user never chose (the exact "silently assemble"
-        # move the contract forbids). The deterministic sources remain: --from-last
-        # snapshots a real run; `skit run … --save-preset` snapshots delivered values.
+        # move the contract forbids). The deterministic sources are named, and the exit
+        # code is 2 like every other wrong-shape refusal (remove/preset delete without
+        # --yes, editor lanes without a terminal): the invocation is missing a flag, the
+        # operation itself never started.
         raise _fail(
             gettext(
-                "preset save needs a terminal to ask for values. Non-interactively: use --from-last after a run, or skit run %(name)s --save-preset %(preset)s"
-            )
-            % {"name": entry.meta.name, "preset": preset_name},
-            1,
+                "Saving a preset needs a value source in a pipe: pass --set NAME=VALUE, use --from-last after a run, or run interactively."
+            ),
+            EXIT_USAGE,
         )
     secret_overlap = plan.secret_names & values.keys()
     if secret_overlap:
@@ -5191,17 +5214,6 @@ def agent_install(
 # --------------------------------------------------------------------------
 
 
-def _uv_required(entries: list[store.Entry]) -> bool:
-    """Whether a missing uv should fail doctor's exit code: only when a python entry
-    actually exists, because uv is what runs those. An empty library — a fresh install,
-    and for the standalone binary often the user's very first command — is healthy
-    without uv: skit downloads its own pinned, mirror-aware copy the first time a
-    Python entry needs it, so there is nothing to fix and exit 1 would send new users
-    and CI health checks chasing a phantom problem the README explicitly promises does
-    not exist ("the binary is complete in itself")."""
-    return any(e.meta.kind == "python" for e in entries)
-
-
 @app.command(help=gettext("Check that uv is available and the entry library is intact."))
 def doctor(
     rebuild: bool = typer.Option(
@@ -5242,6 +5254,10 @@ def doctor(
             json.dumps(
                 {
                     "uv": uv,
+                    # Additive: whether a missing uv is a failure HERE (python entries
+                    # exist). Lets automation read the verdict instead of re-deriving
+                    # the exit code's reasoning from the entries list.
+                    "uv_required": healthcheck.uv_required(entries),
                     "entries": len(entries),
                     "missing": missing,
                     "drift": drifted,
@@ -5266,10 +5282,10 @@ def doctor(
                 ensure_ascii=False,
             )
         )
-        raise typer.Exit(0 if uv or not _uv_required(entries) else 1)
+        raise typer.Exit(0 if uv or not healthcheck.uv_required(entries) else 1)
     if uv:
         console.print(f"[green]✓ {gettext('uv: %(path)s') % {'path': escape(uv)}}[/green]")
-    elif _uv_required(entries):
+    elif healthcheck.uv_required(entries):
         # Python entries exist and cannot run right now — a real, actionable failure.
         # skit's own consent-gated download remains the primary remedy; a system-wide
         # install is the alternative, not the prescription.
@@ -5313,7 +5329,7 @@ def doctor(
         gettext("Library: %(path)s (%(count)s · %(size)s)")
         % {"path": escape(str(location)), "count": len(entries), "size": store.human_size(size)}
     )
-    raise typer.Exit(0 if uv or not _uv_required(entries) else 1)
+    raise typer.Exit(0 if uv or not healthcheck.uv_required(entries) else 1)
 
 
 # --------------------------------------------------------------------------

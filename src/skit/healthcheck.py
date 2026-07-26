@@ -35,6 +35,16 @@ class HealthReport:
     blocked_entries: list[store.Entry] = field(default_factory=list)
 
 
+def uv_required(entries: list[store.Entry]) -> bool:
+    """Whether a missing uv is a FAILURE for this library: only when a python entry
+    exists, because uv is what runs those. An empty or non-Python library is healthy
+    without uv — skit downloads its own pinned, mirror-aware copy the first time a
+    Python entry needs it, so there is nothing to fix (README: "the binary is complete
+    in itself"). Lives here so doctor and the Health screen render ONE fact (this file's
+    charter); each face adds its own remedy wording, never its own predicate."""
+    return any(e.meta.kind == "python" for e in entries)
+
+
 def entry_drifted(entry: store.Entry) -> bool:
     """Whether the stored definitions no longer match the script — through the entry's
     OWN analyzer, plus the prompt kind's fresh body scan (no analyzer, by design)."""

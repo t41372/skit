@@ -813,7 +813,7 @@ def test_preset_save_command_with_params(tmp_path, tty, monkeypatch):
     # exercised through invoke() — the tty fixture + a direct call is the honest path.
     ent = store.add_command("echo {msg}", name="e")
     monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: "hello")
-    cli.preset_save("e", "prod", from_last=False)
+    cli.preset_save("e", "prod", from_last=False, set_opts=[])
     assert argstate.load_state(ent.slug)["presets"]["prod"] == {"msg": "hello"}
 
 
@@ -1336,19 +1336,19 @@ def test_preset_save_command_escapes_markup_in_preset_name_and_entry_name(
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     # cli imports promptform lazily inside the command body, so patch the module itself.
     monkeypatch.setattr("skit.promptform.collect", lambda *a, **k: {"msg": "hi"})
-    cli.preset_save("[blue]e[/blue]", "[green]p[/green]", from_last=False)
+    cli.preset_save("[blue]e[/blue]", "[green]p[/green]", from_last=False, set_opts=[])
     out = capsys.readouterr().out
     assert "[green]p[/green]" in out
     assert "[blue]e[/blue]" in out
 
 
-def test_preset_save_non_interactive_message_escapes_markup_in_both_names(tmp_path):
-    """The refusal names the entry and the preset too — through _fail, which escapes."""
+def test_preset_save_non_interactive_refusal_is_static_and_exit_two(tmp_path):
+    """The refusal is a static usage message (exit 2) — markup-bearing entry/preset
+    names never reach it, so there is nothing to escape and nothing to crash on."""
     store.add_command("echo {msg}", name="[blue]e[/blue]")
     result = runner.invoke(cli.app, ["preset", "save", "[blue]e[/blue]", "[green]p[/green]"])
-    assert result.exit_code == 1
-    assert "[green]p[/green]" in result.output
-    assert "[blue]e[/blue]" in result.output
+    assert result.exit_code == 2
+    assert "Saving a preset needs a value source in a pipe" in " ".join(result.output.split())
 
 
 def test_preset_delete_unknown_escapes_markup_in_preset_name():
@@ -1528,7 +1528,7 @@ def test_preset_save_prompt_escapes_markup_in_placeholder_name(monkeypatch, tty)
         return "x"
 
     monkeypatch.setattr(cli.Prompt, "ask", fake_ask)
-    cli.preset_save("e", "p", from_last=False)
+    cli.preset_save("e", "p", from_last=False, set_opts=[])
     assert captured["prompt"] == r"  \[red]msg\[/red]"
 
 

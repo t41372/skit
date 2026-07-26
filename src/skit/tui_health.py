@@ -62,10 +62,10 @@ class HealthScreen(Screen[str | None]):
             entries = store.list_entries()
             if uv:
                 yield Static(f"✓ {gettext('uv: %(path)s') % {'path': escape(uv)}}", classes="ok")
-            elif any(e.meta.kind == "python" for e in entries):
-                # Same split as `skit doctor` (cli._uv_required): red only when Python
-                # entries actually cannot run; a fresh/non-Python library is healthy
-                # because skit fetches its own pinned uv on first need.
+            elif healthcheck.uv_required(entries):
+                # The shared predicate (healthcheck.uv_required — one fact, two faces,
+                # per that module's charter): red only when Python entries actually
+                # cannot run; this face's remedy wording stays its own.
                 yield Static(
                     f"✗ {gettext('uv: not found — Python entries cannot run. skit offers to download its own pinned uv on their next run, or install it system-wide: https://docs.astral.sh/uv/getting-started/installation/')}",
                     classes="bad",

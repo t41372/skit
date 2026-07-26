@@ -23,12 +23,12 @@ positive pilot test.
 Key grammar: a chord keeps one meaning per context class — Ctrl+E always opens `$EDITOR`
 on the screen's current subject, Ctrl+N always creates the screen's primary object (a
 script on the add step, an agent on a runner picker), Ctrl+T always inserts a value,
-Ctrl+R re-runs/refreshes the screen's subject (the run form runs it; Script settings
+Ctrl+R re-runs/refreshes the screen's subject (the run form runs it; Entry settings
 resyncs its definitions from the script), Ctrl+S saves/commits the screen's work
 (the run form's save-as-preset included), Ctrl+O always restores the screen's current
 field to its source default (README documents it on the run form — it must never mean
 anything else), and Ctrl+L always opens the screen's variable/candidate picker (the
-prompt review panel and Script settings). A new screen action takes an UNCLAIMED chord,
+prompt review panel and Entry settings). A new screen action takes an UNCLAIMED chord,
 never a second meaning for a claimed one — check the candidate against every screen
 before it lands (the three-way Ctrl+O collision happened because each screen picked it
 in isolation). Ctrl+A (cursor-home) and — while an Input has

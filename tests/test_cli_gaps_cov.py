@@ -493,7 +493,22 @@ def test_doctor_json_uv_missing_on_an_empty_library_exits_0(monkeypatch):
     monkeypatch.setattr("skit.langs.launch.find_uv", lambda: None)
     result = runner.invoke(cli.app, ["doctor", "--json"])
     assert result.exit_code == 0
-    assert json.loads(result.output)["uv"] is None
+    payload = json.loads(result.output)
+    assert payload["uv"] is None
+    # The verdict itself rides in the payload: automation reads WHY exit 0 held
+    # instead of re-deriving "no python entries" from the entries list.
+    assert payload["uv_required"] is False
+
+
+def test_doctor_json_uv_required_true_with_a_python_entry(monkeypatch, tmp_path):
+    """The same key flips with a python entry — and exit parity flips with it."""
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: None)
+    store.add_python(_py(tmp_path, "print(1)\n"), name="a")
+    result = runner.invoke(cli.app, ["doctor", "--json"])
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["uv"] is None
+    assert payload["uv_required"] is True
 
 
 def _drifted_entry(tmp_path: Path, name: str) -> store.Entry:

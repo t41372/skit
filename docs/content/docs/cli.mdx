@@ -71,7 +71,7 @@ apply to the chosen lane.
 | --- | --- |
 | `--set NAME=VALUE` | set a parameter (repeatable; [tokens](/en/docs/parameters#value-tokens) expand; `--set NAME=` delivers a real empty where the type supports it) |
 | `--preset`, `-p NAME` | apply a saved preset |
-| `--save-preset NAME` | save this run's values as a preset |
+| `--save-preset NAME` | save this run's values as a preset (real runs only — a `--dry-run` persists nothing; to mint without running, use `preset save --set`) |
 | `--runner NAME` | prompt: override the pinned runner for this run |
 | `--dry-run` | print the exact command, run nothing |
 | `--no-input` | never prompt; a required value with no source fails with 125 |
@@ -160,8 +160,10 @@ Package deps apply to Python and JS/TS entries; `--need` applies to every kind.
 
 ## skit preset
 
-- `skit preset save NAME PRESET [--from-last]` — `--from-last` snapshots the
-  last run's values without asking.
+- `skit preset save NAME PRESET [--set K=V]... [--from-last]` — `--set` mints the
+  preset from explicit values without running anything (the non-interactive
+  lane); `--from-last` snapshots the last run's values instead. The two sources
+  are mutually exclusive; with neither, an interactive terminal is required.
 - `skit preset list NAME [--json]`
 - `skit preset delete NAME PRESET [--yes] [--no-input]` — confirms unless `--yes`.
 
@@ -186,9 +188,11 @@ home. The bare form detects agent directories on your machine and asks.
 
 `skit doctor [--json] [--rebuild]` — checks uv and library integrity, prints the
 resolved library path. `--rebuild` reconstructs the index from each entry's
-`meta.toml`. JSON keys include `uv`, `entries`, `missing`, `drift`,
-`needs_missing`, `launch_blocked`, `runner_rows_invalid`, `rebuilt`,
-`rebuild_problems`, `mirror`, `location`, `size_bytes`.
+`meta.toml`. JSON keys include `uv`, `uv_required` (whether a missing uv is a
+failure here — true only when Python entries exist; the exit code follows it),
+`entries`, `missing`, `drift`, `needs_missing`, `launch_blocked`,
+`runner_rows_invalid`, `rebuilt`, `rebuild_problems`, `mirror`, `location`,
+`size_bytes`.
 
 ## skit config
 

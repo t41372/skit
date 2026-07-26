@@ -199,11 +199,14 @@ skit params <name> --template 'ffmpeg -i {input} {output}'  # command kind: rewr
 Named value sets per entry, ideal for recurring jobs:
 
 ```bash
-skit run <name> --set a=1 --set b=2 --save-preset nightly --dry-run --no-input  # create without running
+skit preset save <name> nightly --set a=1 --set b=2   # create without running anything
 skit preset list <name> --json
 skit run <name> -p nightly --no-input
 skit preset delete <name> nightly -y   # confirms without -y
 ```
+
+`skit run … --save-preset NAME` also saves — on a real run only (a `--dry-run`
+persists nothing).
 
 ## Prompts & runners
 

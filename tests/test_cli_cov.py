@@ -209,7 +209,8 @@ def test_preset_save_non_interactive_refuses_instead_of_guessing(tmp_path):
     """Non-interactively there is nothing to ask and nothing the user chose: the prefill
     is whatever defaults/last-used values happen to be lying around, so minting a preset
     from it would be exactly the "silently assemble" move the contract forbids. skit
-    refuses (exit 1), names the two deterministic sources, and writes NO preset."""
+    refuses (exit 2, the wrong-shape convention), names the deterministic sources
+    (--set, --from-last), and writes NO preset."""
     text = metawriter.write_params(
         'CITY = "Taipei"\nprint(CITY)\n',
         [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
@@ -217,11 +218,11 @@ def test_preset_save_non_interactive_refuses_instead_of_guessing(tmp_path):
     ent = store.add_python(_py(tmp_path, text), name="a")
     # CliRunner's stdin is not a tty, so _is_interactive() is False.
     result = runner.invoke(cli.app, ["preset", "save", "a", "prod"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2  # wrong-shape refusal, like every missing --yes/--set
     out = " ".join(result.output.split())
-    assert "preset save needs a terminal to ask for values" in out
+    assert "Saving a preset needs a value source in a pipe" in out
+    assert "--set NAME=VALUE" in out
     assert "--from-last" in out
-    assert "skit run a --save-preset prod" in out
     assert argstate.load_state(ent.slug)["presets"] == {}  # nothing guessed into existence
 
 
@@ -242,8 +243,8 @@ def test_preset_save_piped_stdout_refuses_without_opening_the_form(tmp_path, mon
         lambda *a, **k: pytest.fail("piped stdout must not open the form"),
     )
     with pytest.raises(typer.Exit) as exc:
-        cli.preset_save("a", "prod", from_last=False)
-    assert exc.value.exit_code == 1
+        cli.preset_save("a", "prod", from_last=False, set_opts=[])
+    assert exc.value.exit_code == 2
     assert argstate.load_state(ent.slug)["presets"] == {}
 
 
@@ -261,9 +262,69 @@ def test_preset_save_interactive_collects_the_form(tmp_path, monkeypatch):
         "collect",
         lambda plan, prefill, console: called.setdefault("v", {"CITY": "Kyoto"}),
     )
-    cli.preset_save("a", "prod", from_last=False)
+    cli.preset_save("a", "prod", from_last=False, set_opts=[])
     assert called["v"] == {"CITY": "Kyoto"}  # the form ran
     assert argstate.load_state(ent.slug)["presets"]["prod"] == {"CITY": "Kyoto"}
+
+
+def test_preset_save_set_mints_without_running_or_a_terminal(tmp_path):
+    """The deterministic non-interactive lane (and the recipe SKILL.md teaches):
+    explicit --set values become the preset, nothing executes, no terminal needed."""
+    text = metawriter.write_params(
+        'CITY = "Taipei"\nprint(CITY)\n',
+        [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
+    )
+    ent = store.add_python(_py(tmp_path, text), name="a")
+    result = runner.invoke(cli.app, ["preset", "save", "a", "nightly", "--set", "CITY=Kyoto"])
+    assert result.exit_code == 0
+    assert argstate.load_state(ent.slug)["presets"]["nightly"] == {"CITY": "Kyoto"}
+
+
+def test_preset_save_set_unknown_name_is_usage_error(tmp_path):
+    """--set reuses run's strict parser: an unknown parameter is exit 2, no preset."""
+    text = metawriter.write_params(
+        'CITY = "Taipei"\nprint(CITY)\n',
+        [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
+    )
+    ent = store.add_python(_py(tmp_path, text), name="a")
+    result = runner.invoke(cli.app, ["preset", "save", "a", "nightly", "--set", "TOWN=x"])
+    assert result.exit_code == 2
+    assert argstate.load_state(ent.slug)["presets"] == {}
+
+
+def test_preset_save_set_and_from_last_conflict(tmp_path):
+    """Two value sources in one invocation is a shape error, never a merge."""
+    text = metawriter.write_params(
+        'CITY = "Taipei"\nprint(CITY)\n',
+        [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
+    )
+    ent = store.add_python(_py(tmp_path, text), name="a")
+    result = runner.invoke(
+        cli.app,
+        ["preset", "save", "a", "nightly", "--set", "CITY=Kyoto", "--from-last"],
+    )
+    assert result.exit_code == 2
+    assert argstate.load_state(ent.slug)["presets"] == {}
+
+
+def test_preset_save_set_skips_secrets_with_notice(tmp_path):
+    """C3 holds on the --set lane too: a secret value never lands in the preset."""
+    text = metawriter.write_params(
+        'CITY = "Taipei"\nTOKEN = "x"\nprint(CITY, TOKEN)\n',
+        [
+            ParamDecl(name="CITY", binding="const", type="str", default="Taipei"),
+            ParamDecl(name="TOKEN", binding="const", type="str", default="", secret=True),
+        ],
+    )
+    ent = store.add_python(_py(tmp_path, text), name="a")
+    result = runner.invoke(
+        cli.app,
+        ["preset", "save", "a", "n", "--set", "CITY=Kyoto", "--set", "TOKEN=hunter2"],
+    )
+    assert result.exit_code == 0
+    saved = argstate.load_state(ent.slug)["presets"]["n"]
+    assert saved == {"CITY": "Kyoto"}
+    assert "hunter2" not in str(argstate.load_state(ent.slug))
 
 
 def test_preset_save_python_secret_param_excluded_with_notice(monkeypatch, tmp_path, capsys):
@@ -276,7 +337,7 @@ def test_preset_save_python_secret_param_excluded_with_notice(monkeypatch, tmp_p
     ent = store.add_python(_py(tmp_path, text), name="a")
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)  # take the form path
     monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: "typed-secret")
-    cli.preset_save("a", "prod", from_last=False)
+    cli.preset_save("a", "prod", from_last=False, set_opts=[])
     assert "never stored in presets" in capsys.readouterr().out
     assert argstate.load_state(ent.slug)["presets"]["prod"] == {}
 

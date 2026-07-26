@@ -181,14 +181,14 @@ class PreferencesScreen(Screen[bool]):
         )
 
     def action_manage_runners(self) -> None:
-        """Ctrl+O / the Manage agents… chip: the runner registry, whole (list, edit,
+        """Ctrl+G / the Manage agents… chip: the runner registry, whole (list, edit,
         remove, add) — settings must never be reachable only by hand-editing config."""
         from .tui_runner import RunnerManageScreen
 
         self.app.push_screen(RunnerManageScreen(), lambda _: self._refresh_runner_count())
 
     def action_install_skill(self) -> None:
-        """Ctrl+K / the Teach an AI agent… chip: install the Agent Skill from the TUI —
+        """Ctrl+Y / the Teach an AI agent… chip: install the Agent Skill from the TUI —
         a headline README feature that was CLI-only (`skit agent install`)."""
 
         def _installed(path: str | None) -> None:
