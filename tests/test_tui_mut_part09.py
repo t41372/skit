@@ -16,6 +16,7 @@ import pytest
 from textual.containers import VerticalScroll
 from textual.widgets import DataTable, Input, Static
 
+from conftest import plan_cache_key
 from skit import argstate, config, flows, launcher, store, tui
 from skit.langs.python import metawriter
 from skit.params import ParamDecl
@@ -176,11 +177,6 @@ async def test_edit_editor_error_lands_on_the_status_line(tmp_path, monkeypatch)
     assert "Edited" not in status
 
 
-def _plan_key(entry) -> tuple[float, float]:
-    """The cache key _cached_plan builds: (script mtime, meta.toml mtime)."""
-    return (entry.script_path.stat().st_mtime, (entry.dir / "meta.toml").stat().st_mtime)
-
-
 async def test_edit_invalidates_fresh_plan_cache_entry(tmp_path, monkeypatch):
     """The stored copy may change under the editor, so edit drops this slug's plan
     cache entry — even a fresh (mtime-matching) one — forcing a re-derivation. A stale
@@ -194,7 +190,7 @@ async def test_edit_invalidates_fresh_plan_cache_entry(tmp_path, monkeypatch):
         # A cache entry whose key matches the files on disk: only the pop can clear it
         # (an mtime mismatch would recompute regardless, masking the bug).
         app._plan_cache[entry.slug] = (
-            _plan_key(entry),
+            plan_cache_key(entry),
             flows.FormPlan(source="none", drift_lines=["planted"]),
         )
         app.action_edit()
@@ -279,7 +275,7 @@ async def test_settings_close_invalidates_fresh_plan_cache_entry(tmp_path):
         app.action_settings()
         await pilot.pause()
         app._plan_cache[entry.slug] = (
-            _plan_key(entry),
+            plan_cache_key(entry),
             flows.FormPlan(source="none", drift_lines=["planted"]),
         )
         app.screen.dismiss(False)

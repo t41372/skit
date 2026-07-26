@@ -63,6 +63,8 @@ if TYPE_CHECKING:
 
     from textual.widgets import Static
 
+    from skit.store import Entry
+
 # NOTE: textual must NOT be imported at conftest top level. pytest loads conftest before
 # any test module, which makes it the process's first importer: skit/__init__ has to run
 # before textual.constants reads TEXTUAL_DISABLE_KITTY_KEY from the environment
@@ -128,6 +130,41 @@ def full_mirror():
         uv_binary=config.UV_BINARY_MIRROR,
         npm=config.NPM_REGISTRY_MIRROR,
     )
+
+
+_BLOCK_OPEN = b"# /// script"
+_BLOCK_CLOSE = b"# ///"
+
+
+def without_block(raw: bytes, newline: bytes) -> bytes:
+    """Drop an inserted `# /// script` … `# ///` comment block, keeping every other byte —
+    terminators included — exactly where it lies, so a comparison against the original bytes
+    is a real byte-for-byte claim about the rest of the file rather than a normalized diff.
+
+    THE shared copy: the block-edit write-back is asserted from both the helper level
+    (tests/test_design_audit_fixes.py) and the screen level (tests/test_design_audit_tui.py),
+    and the two must not drift into two different notions of "everything else"."""
+    keep: list[bytes] = []
+    inside = False
+    for chunk in raw.split(newline):
+        if chunk == _BLOCK_OPEN:
+            inside = True
+            continue
+        if inside:
+            inside = chunk != _BLOCK_CLOSE
+            continue
+        keep.append(chunk)
+    return newline.join(keep)
+
+
+def plan_cache_key(entry: Entry) -> tuple[int, int, int, int]:
+    """The MenuApp._plan_cache key for `entry`: (mtime_ns, size) of the stored script AND of
+    its meta.toml — a display plan is a function of both files. mtime_ns + size (not a float
+    mtime) narrows the same-tick blind spot on coarse-mtime filesystems to same-tick
+    same-size writes. Shared so the key's shape is spelled out in exactly one place."""
+    script = entry.script_path.stat()
+    meta = (entry.dir / "meta.toml").stat()
+    return (script.st_mtime_ns, script.st_size, meta.st_mtime_ns, meta.st_size)
 
 
 def footer_text(static: Static) -> str:

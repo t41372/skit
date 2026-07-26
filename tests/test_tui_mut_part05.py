@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 from textual.widgets import Static
 
+from conftest import plan_cache_key
 from skit import config, flows, launcher, store, tui
 from skit.langs.python import metawriter
 from skit.langs.registry import spec_for
@@ -198,16 +199,13 @@ def test_has_drift_is_false_and_never_stats_a_missing_script(tmp_path):
 
 
 def test_has_drift_trusts_a_fresh_mtime_matching_cache(tmp_path):
-    """A cache entry whose stored key equals the CURRENT (script mtime, meta.toml mtime) pair
-    is trusted verbatim — the expensive plan/reconcile is skipped and the cached plan's drift
-    returned. Planting a drifting plan for a script whose real drift is empty proves the cache
-    is honored: any mutant that drops the key, the lookup or the equality test misses the plant
-    and recomputes the real False."""
+    """A cache entry whose stored key equals the CURRENT (mtime_ns, size) pair of the script AND
+    of its meta.toml is trusted verbatim — the expensive plan/reconcile is skipped and the cached
+    plan's drift returned. Planting a drifting plan for a script whose real drift is empty proves
+    the cache is honored: any mutant that drops the key, the lookup or the equality test misses
+    the plant and recomputes the real False."""
     entry = store.add_python(_py(tmp_path, "print(1)\n"), name="clean")
-    key = (
-        entry.script_path.stat().st_mtime,
-        (entry.dir / "meta.toml").stat().st_mtime,
-    )
+    key = plan_cache_key(entry)
     app = tui.MenuApp()
     app._plan_cache[entry.slug] = (key, flows.FormPlan(source="none", drift_lines=["planted"]))
     assert app._has_drift(entry) is True

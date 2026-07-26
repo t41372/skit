@@ -325,6 +325,28 @@ def test_find_none_on_windows_without_powershell(monkeypatch):
     assert cli_reader._find_powershell() is None
 
 
+def test_runtime_fingerprint_is_the_resolved_executable(monkeypatch):
+    """The value a caller keys a MEMOIZED read_cli verdict on (base.CliReader.runtime_
+    fingerprint): read_cli's answer is a function of the text AND of which PowerShell answers,
+    so the fingerprint is that same resolution — the path when the tool is there, None when it
+    isn't, a different value when it moves. Anything constant (a version string, a bare bool)
+    would let a pwsh installed mid-session keep serving the tool-less verdict from the memo."""
+    monkeypatch.setattr(
+        cli_reader.shutil, "which", lambda name: "/opt/pwsh" if name == "pwsh" else None
+    )
+    assert cli_reader.runtime_fingerprint() == "/opt/pwsh"
+    assert cli_reader.runtime_fingerprint() == cli_reader._find_powershell()
+
+    monkeypatch.setattr(
+        cli_reader.shutil, "which", lambda name: "/usr/local/bin/pwsh" if name == "pwsh" else None
+    )
+    assert cli_reader.runtime_fingerprint() == "/usr/local/bin/pwsh"  # moved → a new key
+
+    monkeypatch.setattr(cli_reader.sys, "platform", "linux")
+    monkeypatch.setattr(cli_reader.shutil, "which", lambda name: None)
+    assert cli_reader.runtime_fingerprint() is None  # absent → the tool-less key
+
+
 # ---------------------------------------------------------------- flag assembly + plan
 
 

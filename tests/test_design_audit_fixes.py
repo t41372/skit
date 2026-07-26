@@ -1,19 +1,24 @@
-"""Behavior coverage for the design-audit fixes (rounds 1 and 2), headless + CLI half.
+"""Behavior coverage for the design-audit fixes (rounds 1, 2 and 5), headless + CLI half.
 
 Each section keeps one verified bug dead:
 
 A. ``rewrite.read_for_block_edit`` / ``write_block_edit`` — the ONE byte-lossless
    comment-block write-back pair the six write sites now share (surrogateescape, LF fold,
-   newline restore, atomic + mode-preserving). The TUI half of A (the AddReviewScreen
-   corruption that actually shipped) lives in tests/test_design_audit_tui.py.
-B. ``params.is_secret_name`` — whole-word matching with the jammed spellings kept. The
-   substring rule made ``--max-tokens`` a permanent password field on the reader lane;
-   round 2's repair must not swing the other way and let ``APIKEY`` through unmarked.
+   newline restore, atomic + mode-preserving), plus the ``errors="strict"`` keyword the two
+   source-rewriting lanes (``--normalize``, the deps sync) pass so the fold/detect discipline
+   lives in exactly one place. The TUI half of A (the AddReviewScreen corruption that
+   actually shipped) lives in tests/test_design_audit_tui.py.
+B. ``params.is_secret_name`` — SEGMENT matching with one plural fold and TOKEN's count
+   context. The substring rule made ``--max-tokens`` a permanent password field on the
+   reader lane; round 2's repair let plurals (``API_KEYS``) and acronym jams (``APIkey``)
+   through unmarked, which is the publishing direction. Round 5 owes both directions.
 C. ``skit remove`` / ``skit preset delete`` — the non-interactive contract (worded exit-2
    refusal naming --yes, never a confirm that eats piped stdin) plus preset deletion's new
    confirmation ceremony.
 D. Extra-args provenance — a remembered tail records HOW it was captured, and every replay
    in either face follows that record instead of the face doing the replaying.
+J. …and a marker-less replay that carries token/glob syntax SAYS it is passed as-is:
+   replaying literally is the design, doing it silently was the bug.
 H. ``params --manage`` on a kind with no analyzer names the ``--add`` door it does have.
 I. ``params --json`` rows carry an additive ``binding`` key beside the frozen ``kind``.
 """
@@ -29,6 +34,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from conftest import without_block
 from skit import argstate, cli, flows, launcher, params, rewrite, store
 from skit.langs.python import metawriter
 from skit.langs.registry import spec_for
@@ -89,8 +95,6 @@ def _fake_tty(monkeypatch: pytest.MonkeyPatch) -> None:
 # ==========================================================================
 
 _SHELL_BODY = b'#!/usr/bin/env bash\nWIDTH=800\necho "$WIDTH"\n'
-_BLOCK_OPEN = b"# /// script"
-_BLOCK_CLOSE = b"# ///"
 
 
 def _shell_block_edit(text: str) -> str:
@@ -102,23 +106,6 @@ def _shell_block_edit(text: str) -> str:
     return shell.params_io.write(
         text, [ParamDecl(name="WIDTH", binding="const", type="int", default=800)]
     )
-
-
-def _without_block(raw: bytes, newline: bytes) -> bytes:
-    """Drop the inserted comment block, keeping every other byte — terminators included —
-    exactly where it lies, so the comparison below is a real byte-for-byte claim about the
-    rest of the file rather than a normalized diff."""
-    keep: list[bytes] = []
-    inside = False
-    for chunk in raw.split(newline):
-        if chunk == _BLOCK_OPEN:
-            inside = True
-            continue
-        if inside:
-            inside = chunk != _BLOCK_CLOSE
-            continue
-        keep.append(chunk)
-    return newline.join(keep)
 
 
 @pytest.mark.parametrize(
@@ -150,7 +137,7 @@ def test_block_edit_pair_round_trips_every_line_ending_style(
     assert b"\r" not in stripped
     assert b"\n" not in stripped
     # ...and every byte outside the block is exactly what was there before.
-    assert _without_block(after, newline) == original
+    assert without_block(after, newline) == original
 
 
 def test_block_edit_pair_round_trips_non_utf8_bytes(tmp_path: Path) -> None:
@@ -170,7 +157,38 @@ def test_block_edit_pair_round_trips_non_utf8_bytes(tmp_path: Path) -> None:
     assert b"[tool.skit]" in after
     assert b"\xff\xfe" in after  # the raw bytes round-tripped exactly
     assert b"\xef\xbf\xbd" not in after  # ...and none became U+FFFD
-    assert _without_block(after, b"\n") == original
+    assert without_block(after, b"\n") == original
+
+
+def test_read_for_block_edit_strict_refuses_what_the_default_carries(tmp_path: Path) -> None:
+    """The two STRICT lanes (--normalize, the deps sync) rewrite the script's OWN text, so they
+    need the decode to REFUSE rather than smuggle surrogates into a re-encode. errors="strict"
+    raises on the very bytes the default carries through, and the newline discipline is the same
+    shared mechanics either way — so a fold/detect fix can never miss a lane again."""
+    path = tmp_path / "raw.sh"
+    path.write_bytes(b"#!/usr/bin/env bash\r\nWIDTH=800\r\nprintf '\xff\\n'\r\n")
+
+    with pytest.raises(UnicodeDecodeError):
+        rewrite.read_for_block_edit(path, errors="strict")
+
+    # The default handler is unchanged by the new keyword: same bytes, carried, same style.
+    text, newline = rewrite.read_for_block_edit(path)
+    assert "\udcff" in text
+    assert newline == "\r\n"
+
+
+def test_read_for_block_edit_strict_still_folds_and_detects(tmp_path: Path) -> None:
+    """A strict lane gets the identical (LF-folded text, detected style) pair a lenient one
+    does — that is the whole point of routing --normalize and the deps sync through here
+    instead of their own read_bytes().decode(): the CRLF fold the LF-based block/splice
+    engines need cannot drift between lanes."""
+    path = tmp_path / "crlf.sh"
+    path.write_bytes(b'#!/usr/bin/env bash\r\nWIDTH=800\r\necho "$WIDTH"\r\n')
+
+    text, newline = rewrite.read_for_block_edit(path, errors="strict")
+
+    assert "\r" not in text
+    assert newline == "\r\n"
 
 
 def test_write_block_edit_keeps_the_executable_bit(tmp_path: Path) -> None:
@@ -217,7 +235,7 @@ def test_onboard_python_degrades_on_a_non_utf8_script_instead_of_crashing(
 
 
 # ==========================================================================
-# B. params.is_secret_name — the whole-word rule and its jammed exceptions
+# B. params.is_secret_name — segment matching, plural folding, TOKEN's count context
 # ==========================================================================
 
 _SECRET_TRUE = [
@@ -225,6 +243,13 @@ _SECRET_TRUE = [
     "api_key",
     "apiKey",
     "APIKey",
+    # Nonstandard casing: round 2's camel-splitting regex cut "APIkey" into API + key and
+    # "SSHkey" into SSH + key, so neither reached the KEY-compound rule and both published a
+    # live literal. Segments never split inside a word, so the casing cannot matter.
+    "APIkey",
+    "SSHkey",
+    "GPGkey",
+    "AWSkey",
     "GITHUB_TOKEN",
     "token",
     "access-token",
@@ -247,16 +272,27 @@ _SECRET_TRUE = [
     "DBPASSWORD",
     "licensekey",
     "privatekey",
-    "MYPASSWD",  # the fourth long suffix, jammed like its three siblings above
-    # One jammed spelling per credential qualifier the KEY rule recognizes: each of these
-    # is a real thing people name a variable, and every one of them must stay masked.
-    "AUTHKEY",
-    "ACCESSKEY",
-    "GPGKEY",
-    "AWSKEY",
-    "MASTERKEY",
-    "SIGNINGKEY",
-    "ENCRYPTIONKEY",
+    "gpgkey",
+    # PLURALS — the round-2 regression this round repaired: every one of these read as
+    # non-secret, which is the publishing direction. One trailing S folds away, so a plural
+    # credential matches exactly like its singular.
+    "API_KEYS",
+    "SECRETS",
+    "PASSWORDS",
+    "GITHUB_TOKENS",
+    "apikeys",
+    "SSH_KEYS",
+    "DB_PASSWORDS",
+    # A qualifier that survives the count check reads as a credential, plural or not: these
+    # are GitHub PATs and session credentials, not counters.
+    "github_tokens",
+    "access tokens",
+    "session_token",
+    # RE-RULED this round (was False under the word-list rule, is True now): anything ending
+    # in TOKEN with no count qualifier errs secret, jammed spellings included. "photokens" is
+    # not a word anyone means; a variable named it is far likelier to hold a credential than
+    # a count, and ambiguity errs toward masking.
+    "photokens",
 ]
 
 _SECRET_FALSE = [
@@ -282,6 +318,19 @@ _SECRET_FALSE = [
     "hostkey",
     "primarykey",
     "foreignkey",
+    # RE-RULED this round (were True under the word-list rule, are False now): the count
+    # context suppresses the SINGULAR too. `--max-token`, `--token-limit` and `--token-count`
+    # are LLM knobs people type constantly, and masking one costs a prefill and a memory on a
+    # lane with no override — the same defect --max-tokens was reported for.
+    "MAX_TOKEN",
+    "token_limit",
+    "token_count",
+    # The count context, in its other spellings: a fused qualifier (nTokens), a plural
+    # qualifier (token_limits), a qualifier that trails the noun (tokens_per_minute).
+    "n_tokens",
+    "num_tokens",
+    "token_limits",
+    "tokens_per_minute",
 ]
 
 
@@ -293,6 +342,89 @@ def test_is_secret_name_matches_real_credential_spellings(name: str) -> None:
 @pytest.mark.parametrize("name", _SECRET_FALSE)
 def test_is_secret_name_rejects_lookalikes(name: str) -> None:
     assert params.is_secret_name(name) is False
+
+
+# One case per member of each rule's word list, so no member can be dropped, renamed or
+# typo'd without a red test — and the completeness assertion in each test means a member
+# ADDED without its own case fails too.
+
+_SUFFIX_CASES = {"SECRET": "MYSECRET", "PASSWORD": "DBPASSWORD", "PASSWD": "MYPASSWD"}
+_KEY_PREFIX_CASES = {
+    "API": "APIKEY",
+    "AUTH": "AUTHKEY",
+    "ACCESS": "ACCESSKEY",
+    "SECRET": "SECRETKEY",
+    "PRIVATE": "privatekey",
+    "PASS": "passkey",
+    "SSH": "sshkey",
+    "GPG": "gpgkey",
+    "AWS": "AWSkey",
+    "MASTER": "MASTERKEY",
+    "SIGNING": "SIGNINGKEY",
+    "LICENSE": "licensekey",
+    "ENCRYPTION": "ENCRYPTIONKEY",
+}
+_COUNT_CASES = {
+    "MAX": "MAX_TOKENS",
+    "MIN": "min_tokens",
+    "NUM": "num_tokens",
+    "N": "n_tokens",
+    "COUNT": "token_count",
+    "TOTAL": "total_tokens",
+    "LIMIT": "token_limit",
+    "MANY": "How many tokens?",
+    "NUMBER": "number_of_tokens",
+    "PER": "tokens_per_minute",
+}
+
+
+@pytest.mark.parametrize(("suffix", "name"), sorted(_SUFFIX_CASES.items()))
+def test_every_secret_suffix_masks_its_jammed_spelling(suffix: str, name: str) -> None:
+    """Each long suffix matches at the END of a segment, so the jammed spellings people
+    actually write (MYSECRET, DBPASSWORD) stay masked — the exact-word case is covered by the
+    matrix above. Losing one member publishes that whole family."""
+    assert set(_SUFFIX_CASES) == set(params._SECRET_SUFFIXES)  # every member has a case
+    assert params.is_secret_name(name) is True
+    assert params.is_secret_name(name + "s") is True  # ...and so does its plural (one fold)
+
+
+@pytest.mark.parametrize(("prefix", "name"), sorted(_KEY_PREFIX_CASES.items()))
+def test_every_key_prefix_masks_its_jammed_compound(prefix: str, name: str) -> None:
+    """KEY is too short for a bare suffix rule (MONKEY, TURKEY, WHISKEY), so a jammed KEY
+    compound counts only behind a credential qualifier. Each qualifier is a real thing people
+    name a variable, and every one of them must stay masked."""
+    assert set(_KEY_PREFIX_CASES) == set(params._KEY_PREFIXES)  # every member has a case
+    assert params.is_secret_name(name) is True
+    assert params.is_secret_name(name + "S") is True  # the plural folds to the same compound
+
+
+@pytest.mark.parametrize(("word", "name"), sorted(_COUNT_CASES.items()))
+def test_every_count_word_suppresses_the_token_match(word: str, name: str) -> None:
+    """TOKEN is the LLM-era collision: these names are counters, and masking one costs a
+    prefill and a remembered value on the reader lane, where no override exists to turn it
+    off. Losing a member re-masks that whole family of knobs."""
+    assert set(_COUNT_CASES) == set(params._COUNT_WORDS)  # every member has a case
+    assert params.is_secret_name(name) is False
+
+
+def test_a_count_word_fused_into_the_segment_suppresses_too() -> None:
+    """maxTokens/nTokens carry the qualifier INSIDE the segment, where it never appears as a
+    word of its own — the suppression has to happen while matching the segment, not only in
+    the whole-name pass. The credential spelling with the same shape (photokens) is unaffected:
+    only a real count word suppresses."""
+    assert params.is_secret_name("maxTokens") is False
+    assert params.is_secret_name("nTokens") is False
+    assert params.is_secret_name("photokens") is True
+
+
+def test_a_bare_plural_tokens_is_a_count_but_a_qualified_one_is_not() -> None:
+    """ "tokens" alone is the LLM count knob; the singular "token" is what an auth header holds.
+    Add ANY companion word and the plural reads as a credential again (github_tokens), unless
+    that companion is a count qualifier."""
+    assert params.is_secret_name("tokens") is False
+    assert params.is_secret_name("token") is True
+    assert params.is_secret_name("github_tokens") is True
+    assert params.is_secret_name("max_tokens") is False
 
 
 def test_secret_heuristic_is_universal_across_lanes(tmp_path: Path) -> None:
@@ -605,6 +737,65 @@ def test_forget_args_clears_the_tail_and_its_marker(tmp_path: Path, run_entry_sp
     state = argstate.load_state(entry.slug)
     assert state["extra_args"] == []
     assert state["extra_args_raw"] is False
+
+
+# --------------------------------------------------------------------------
+# J. the literal replay says so — but only where it could surprise
+# --------------------------------------------------------------------------
+
+_AS_IS = "(passed as-is"
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [["out_{today}.png"], ["*.png"], ["report?.txt"], ["log[0-9].txt"]],
+    ids=["token", "star", "question", "bracket"],
+)
+def test_replaying_an_unmarked_tail_with_syntax_says_it_is_passed_as_is(
+    tmp_path: Path, run_entry_spy, tail: list[str]
+) -> None:
+    """Legacy state (and any CLI-captured tail) replays literally BY DESIGN — silently was the
+    bug: the user sees `*.png` come back and reasonably expects the glob to expand. Every
+    character that carries token/glob meaning triggers the note, and it goes to stderr with the
+    reuse line it explains (the script owns stdout)."""
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="j")
+    argstate.save_last(entry.slug, extra_args=tail)
+
+    result = runner.invoke(cli.app, ["run", "j", "--no-input"])
+
+    assert result.exit_code == 0, result.output
+    assert run_entry_spy["extra"] == tail  # ...still literal: the note explains, never changes
+    assert _AS_IS in result.stderr
+    assert "typed into the launch menu" in result.stderr  # ...and names the one-time repair
+    assert _AS_IS not in result.stdout
+
+
+def test_replaying_an_unmarked_plain_tail_stays_quiet(tmp_path: Path, run_entry_spy) -> None:
+    """The note is a surprise-avoidance line, not a banner: a tail of plain words expands to
+    itself under either regime, so saying "passed as-is" would be noise on every replay."""
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="j")
+    argstate.save_last(entry.slug, extra_args=["--limit", "MAX"])
+
+    result = runner.invoke(cli.app, ["run", "j", "--no-input"])
+
+    assert result.exit_code == 0, result.output
+    assert run_entry_spy["extra"] == ["--limit", "MAX"]
+    assert "Reusing your last arguments" in result.stderr  # the reuse line still prints...
+    assert _AS_IS not in result.stderr  # ...without the caveat
+
+
+def test_replaying_a_marked_tail_with_syntax_stays_quiet(tmp_path: Path, run_entry_spy) -> None:
+    """A raw-marked tail EXPANDS on replay, so there is nothing to warn about: the note would
+    claim the opposite of what just happened."""
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="j")
+    argstate.save_last(entry.slug, extra_args=["out_{today}.png"], extra_args_raw=True)
+
+    result = runner.invoke(cli.app, ["run", "j", "--no-input"])
+
+    assert result.exit_code == 0, result.output
+    (delivered,) = run_entry_spy["extra"]
+    assert delivered.startswith("out_20")  # it really expanded
+    assert _AS_IS not in result.stderr
 
 
 # ==========================================================================

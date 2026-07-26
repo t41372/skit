@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from textual.widgets import Static
 
+from conftest import plan_cache_key
 from skit import flows, store, tui
 
 
@@ -80,17 +81,14 @@ async def test_edit_invalidates_the_plan_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
     app = tui.MenuApp()
     async with app.run_test() as pilot:
-        # A stale sentinel under an impossible mtime key, carrying drift the file doesn't
+        # A stale sentinel under an impossible key, carrying drift the file doesn't
         # have: only the post-edit pop + re-derivation can replace it.
         stale = flows.FormPlan(source="none", drift_lines=["stale sentinel"])
-        app._plan_cache[entry.slug] = ((0.0, 0.0), stale)
+        app._plan_cache[entry.slug] = ((0, 0, 0, 0), stale)
         app.action_edit()
         await pilot.pause()
         # The stale sentinel is gone: the reload re-derived the truth from the files.
         key, plan = app._plan_cache[entry.slug]
-        assert key == (
-            entry.script_path.stat().st_mtime,
-            (entry.dir / "meta.toml").stat().st_mtime,
-        )
+        assert key == plan_cache_key(entry)
         assert plan is not stale
         assert plan.drift_lines == []

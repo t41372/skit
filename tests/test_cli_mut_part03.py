@@ -171,7 +171,9 @@ def test_edit_params_degraded_shell_spec_refuses_instead_of_crashing(tmp_path, m
         )
     assert ei.value.exit_code == 1
     err = _norm(capsys.readouterr().err)
-    assert "has no managed parameters — its kind has no analyzer to read them from." in err
+    # The plain refusal, whole and exact — it is its OWN msgid now (the hinted variant is a
+    # second, complete sentence pair), so nothing may be spliced onto either end of it.
+    assert err == "p has no managed parameters — its kind has no analyzer to read them from."
     # ...and NO --add hint: this kind's params_io IS its parameter home, so "declare one
     # instead" would sell a lane it already has. The hint belongs to the kinds that carry no
     # in-file block at all (exe/command/prompt).
@@ -199,7 +201,7 @@ def test_edit_params_none_spec_refuses_before_attribute_access(tmp_path, monkeyp
         )
     assert ei.value.exit_code == 1
     err = _norm(capsys.readouterr().err)
-    assert "has no managed parameters — its kind has no analyzer to read them from." in err
+    assert err == "p has no managed parameters — its kind has no analyzer to read them from."
     # A kind skit doesn't know has no declared lane to point at either: the hint's guard
     # short-circuits on the same None it just refused for.
     assert "Declare one instead" not in err
