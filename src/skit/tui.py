@@ -354,11 +354,15 @@ class MenuApp(App[int | PendingRun]):
         self._entries: list[Entry] = []
         self._visible: list[Entry] = []
         self._ctrl_c_at: float = 0.0
-        # slug -> (mtime, plan). The detail pane re-renders on every RowHighlighted, and
-        # a plan build is a full parse — or, for a reader kind like PowerShell, a
-        # synchronous subprocess with a cold-start runtime — so it must never run
-        # uncached inside a cursor-movement handler.
-        self._plan_cache: dict[str, tuple[float, flows.FormPlan]] = {}
+        # slug -> ((script mtime, meta.toml mtime), plan). The detail pane re-renders on
+        # every RowHighlighted, and a plan build is a full parse — or, for a reader kind
+        # like PowerShell, a synchronous subprocess with a cold-start runtime — so it
+        # must never run uncached inside a cursor-movement handler. BOTH mtimes key the
+        # cache: a plan is a function of the script body AND of meta.toml (declared
+        # [[parameters]] rows, a prompt's managed list/interpolate switch), and an agent
+        # editing the library from the CLI while the TUI sits open is the product's own
+        # coexistence story — the pane must pick that up, not only the TUI's own writes.
+        self._plan_cache: dict[str, tuple[tuple[float, float], flows.FormPlan]] = {}
 
     @override
     def get_default_screen(self) -> Screen[None]:
@@ -496,18 +500,23 @@ class MenuApp(App[int | PendingRun]):
         keys_global.update(tui_footer.bar(*globals_row))
 
     def _cached_plan(self, entry: Entry) -> flows.FormPlan:
-        """plan_for_entry for DISPLAY (detail pane, drift badge): lazy, mtime-cached.
-        Runs always build a fresh plan (action_run/action_rerun) — the cache serves the
-        cursor, never a launch."""
+        """plan_for_entry for DISPLAY (detail pane, drift badge): lazy, mtime-cached on
+        the script AND its meta.toml (see _plan_cache). Runs always build a fresh plan
+        (action_run/action_rerun) — the cache serves the cursor, never a launch. An
+        entry whose script is gone/never-a-file (a command template, a removed target)
+        just builds fresh: those plans are cheap meta reads."""
         try:
-            mtime = entry.script_path.stat().st_mtime
+            key = (
+                entry.script_path.stat().st_mtime,
+                (entry.dir / "meta.toml").stat().st_mtime,
+            )
         except OSError:
             return flows.plan_for_entry(entry)
         cached = self._plan_cache.get(entry.slug)
-        if cached is not None and cached[0] == mtime:
+        if cached is not None and cached[0] == key:
             return cached[1]
         plan = flows.plan_for_entry(entry)
-        self._plan_cache[entry.slug] = (mtime, plan)
+        self._plan_cache[entry.slug] = (key, plan)
         return plan
 
     def _has_drift(self, entry: Entry) -> bool:

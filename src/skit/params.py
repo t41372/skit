@@ -55,15 +55,34 @@ ParamType = Literal["str", "int", "float", "bool", "choice", "path"]
 # maxTokens do not. The substring match this replaces turned `--max-tokens` into a
 # password field — masked, never prefilled, never remembered — on the reader lane,
 # where no override exists to turn it off.
+#
+# Jammed spellings still count (the substring rule caught them, and a false NEGATIVE
+# here publishes a literal into current_defaults/state — the dangerous direction):
+# any word ENDING in the long secret words (AUTHTOKEN, MYSECRET, DBPASSWORD), and
+# KEY-compounds whose prefix is a known credential qualifier (APIKEY, SSHKEY) — KEY
+# alone is too short for a bare suffix rule (MONKEY, TURKEY, HOTKEY, WHISKEY).
 _SECRET_WORDS = frozenset({"KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD"})
+_SECRET_SUFFIXES = ("TOKEN", "SECRET", "PASSWORD", "PASSWD")
+_KEY_PREFIXES = frozenset(
+    {"API", "AUTH", "ACCESS", "SECRET", "PRIVATE", "PASS", "SSH", "GPG", "AWS", "MASTER",
+     "SIGNING", "LICENSE", "ENCRYPTION"}
+)  # fmt: skip
 # lower/digit→Upper and WORDBreak boundaries; separators (_, -, spaces, punctuation)
 # are any non-letter run.
 _CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 
 
+def _secret_word(w: str) -> bool:
+    if w in _SECRET_WORDS:
+        return True
+    if any(w.endswith(s) for s in _SECRET_SUFFIXES):
+        return True
+    return w.endswith("KEY") and w[:-3] in _KEY_PREFIXES
+
+
 def is_secret_name(text: str) -> bool:
     words = re.split(r"[^A-Za-z]+", _CAMEL_BOUNDARY.sub(" ", text))
-    return any(w.upper() in _SECRET_WORDS for w in words if w)
+    return any(_secret_word(w.upper()) for w in words if w)
 
 
 _BINDINGS: tuple[Binding, ...] = ("const", "input", "envdefault", "none")
