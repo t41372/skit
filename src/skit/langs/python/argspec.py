@@ -20,8 +20,10 @@ Headless, stdlib-only.
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass, field
 
+# ArgSpec's home is the neutral analysis module (with Candidate/Analysis/Report) —
+# re-exported here so python-internal callers keep their import path.
+from ...analysis import ArgSpec
 from ...params import ParamDecl, ParamType, is_secret_name
 from .analyzer import _bound_names, _const_candidates, _literal_value
 
@@ -80,15 +82,6 @@ _BOOL_ACTIONS = ("store_true", "store_false")
 _SCALAR_TYPES: dict[str, ParamType] = {"int": "int", "float": "float", "str": "str"}
 # click's own type sentinels (`click.INT` / `click.FLOAT` / `click.STRING`).
 _CLICK_TYPES: dict[str, ParamType] = {"INT": "int", "FLOAT": "float", "STRING": "str"}
-
-
-@dataclass
-class ArgSpec:
-    # Each field is a delivery=flag ParamDecl (binding="none": the script owns the parser,
-    # skit only reflects it). List position carries declaration order — there is no order field.
-    fields: list[ParamDecl] = field(default_factory=list)
-    ok: bool = True  # False -> whole-parser degradation (passthrough escape only)
-    reason: str = ""  # symbolic: "subparsers" | "dynamic" (UI owns the wording)
 
 
 def read_cli(text: str) -> ArgSpec | None:

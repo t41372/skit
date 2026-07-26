@@ -20,12 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from . import argstate, paths, pep723
-from .atomic import (
-    advisory_file_lock,
-    atomic_write_bytes_keep_mode,
-    atomic_write_toml,
-    try_advisory_file_lock,
-)
+from .atomic import advisory_file_lock, atomic_write_toml, try_advisory_file_lock
 from .i18n import gettext
 from .langs import registry
 from .langs.registry import stored_name
@@ -41,7 +36,7 @@ from .models import (
 )
 from .params import ParamDecl, declared_from_meta
 from .paths import registry_path, scripts_dir
-from .rewrite import detect_newline, restore_newline
+from .rewrite import detect_newline, restore_newline, write_block_edit
 
 # Corruption/error types every meta.toml reader must treat the same way: valid-but-unreadable file,
 # invalid TOML, or valid TOML missing a required key are all "this entry is corrupt" — never a bare
@@ -1385,13 +1380,11 @@ def _sync_python_block(
         block_deps = list(meta.dependencies or []) or [
             str(d) for d in (block.get("dependencies") or [])
         ]
-    # Atomic, mode-preserving: a plain write can tear the stored copy on a crash, and a
-    # tmp+replace without the chmod would drop the bits copy2 preserved at add.
-    atomic_write_bytes_keep_mode(
-        script,
-        restore_newline(
-            pep723.set_dependencies(text, block_deps, requires_python=constraint), newline
-        ).encode("utf-8"),  # pragma: no mutate — codec alias
+    # The shared write half (rewrite.write_block_edit): atomic + mode-preserving. The strict
+    # read above stays deliberately different from read_for_block_edit — a copy that doesn't
+    # decode bails out whole and meta stands in (the add_python encoding rule).
+    write_block_edit(
+        script, pep723.set_dependencies(text, block_deps, requires_python=constraint), newline
     )
 
 

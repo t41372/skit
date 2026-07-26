@@ -119,12 +119,13 @@ class PreferencesScreen(Screen[bool]):
     BINDINGS = [
         Binding("escape", "close", gettext("Back")),
         Binding("ctrl+s", "save", gettext("Save"), priority=True),
-        # Ctrl+O/Ctrl+K, not Ctrl+N/Ctrl+T (those mean "New agent" / "insert value"
-        # elsewhere) — and NON-priority: Ctrl+K is every Input's delete-to-end-of-line,
-        # and a screen full of text fields must never answer an editing chord with a
-        # modal. The chips stay the mouse path; the chords fire from any non-Input focus.
-        Binding("ctrl+o", "manage_runners", gettext("Manage agents"), show=False),
-        Binding("ctrl+k", "install_skill", gettext("Teach an AI agent"), show=False),
+        # Ctrl+G/Ctrl+Y: chords with NO meaning anywhere else in skit — not the
+        # grammar chords (Ctrl+E/N/T/R/S, Ctrl+O = restore default, Ctrl+L = choose
+        # variables) and not an Input's own editing chords (Ctrl+A/E/K/U/W…), so they
+        # fire from inside a field without priority and never collide with muscle
+        # memory built on a sibling screen. The chips stay the mouse path.
+        Binding("ctrl+g", "manage_runners", gettext("Manage agents"), show=False),
+        Binding("ctrl+y", "install_skill", gettext("Teach an AI agent"), show=False),
         *tui_footer.FIELD_NAV_BINDINGS,
     ]
     # Boot on the language dropdown, not the "*" pick (the body scroll container).
@@ -287,9 +288,9 @@ class PreferencesScreen(Screen[bool]):
             yield Static("", id="pf-runner-count")
             yield Static(
                 tui_footer.bar(
-                    tui_footer.chip("screen.manage_runners", "Ctrl+O", gettext("Manage agents…")),
+                    tui_footer.chip("screen.manage_runners", "Ctrl+G", gettext("Manage agents…")),
                     tui_footer.chip(
-                        "screen.install_skill", "Ctrl+K", gettext("Teach an AI agent skit…")
+                        "screen.install_skill", "Ctrl+Y", gettext("Teach an AI agent skit…")
                     ),
                 ),
                 id="pf-runner-manage",

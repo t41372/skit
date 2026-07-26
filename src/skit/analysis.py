@@ -32,6 +32,21 @@ if TYPE_CHECKING:
 
 
 @dataclass
+class ArgSpec:
+    """A script's own statically-read CLI surface (argparse/click/typer, parseArgs,
+    getopts, fish argparse, PowerShell param()). Lives HERE with the other neutral
+    result types — Candidate/Analysis/Report — for the same reason they do: every
+    language's cli_reader returns one, and a shell reader must not import the Python
+    analyzer package just to name its result type."""
+
+    # Each field is a delivery=flag ParamDecl (binding="none": the script owns the parser,
+    # skit only reflects it). List position carries declaration order — there is no order field.
+    fields: list[ParamDecl] = field(default_factory=list)
+    ok: bool = True  # False -> whole-parser degradation (passthrough escape only)
+    reason: str = ""  # symbolic: "subparsers" | "dynamic" (UI owns the wording)
+
+
+@dataclass
 class Candidate:
     """A candidate parameter. const/envdefault are keyed by variable name; input by call
     order (B1/A8)."""

@@ -613,6 +613,9 @@ def assemble(
     # expand_extra=False: the CLI's `-- args` already went through the user's shell —
     # a second token/glob pass would rewrite what they deliberately quoted (and --raw
     # must be genuinely raw). The TUI's extra-args field has no shell, so it expands.
+    # A REPLAYED tail follows its recorded provenance (argstate's extra_args_raw), not
+    # the face replaying it: the caller passes that bit here, so a TUI-saved {today}
+    # still expands under `skit run` and a CLI-quoted *.png never globs under `r`.
     if expand_extra:
         expanded_extra: list[str] = []
         for item in extra_args:
@@ -823,9 +826,14 @@ def save_after_run(
     exit_code: int,
     *,
     at: str,
+    extra_raw: bool,
 ) -> None:
-    """Persist intent (raw token/glob text), never expansion; secrets structurally
-    stripped by argstate (C3); stamp the run for Library sorting and the r key."""
+    """Persist intent for field values (raw token/glob text), never expansion; secrets
+    structurally stripped by argstate (C3); stamp the run for Library sorting and the r
+    key. extra_raw is the tail's provenance — True for the TUI form's raw intent text,
+    False for a CLI tail the user's shell already processed — recorded so every later
+    replay (either face) re-expands exactly the tails that were captured raw, and only
+    those (see argstate.load_state)."""
     # Retroactive C3 scrub: a placeholder/param that is secret NOW must not keep old
     # plaintext in values or presets from the days it wasn't (purge is idempotent).
     if plan.secret_names:
@@ -834,6 +842,7 @@ def save_after_run(
         slug,
         values=remembered_values(plan, values),
         extra_args=list(extra_args),
+        extra_args_raw=extra_raw,
         secret_names=plan.secret_names,
     )
     argstate.record_run(

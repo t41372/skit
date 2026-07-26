@@ -22,8 +22,8 @@ Headless, stdlib-only — reuses the analyzer's total scanner.
 
 from __future__ import annotations
 
+from ...analysis import ArgSpec
 from ...params import ParamDecl, is_secret_name
-from ..python.argspec import ArgSpec
 from . import analyzer
 
 # argparse's own options that consume a following value (so their value is not a spec). Attached

@@ -235,6 +235,9 @@ class PendingRun:
     asm: flows.Assembly
     values: dict[str, str]
     extra: list[str]
+    # The tail's provenance (raw form text vs an already-processed replay), carried so
+    # the deferred save_after_run records the same bit an immediate save would have.
+    extra_raw: bool
     show_drift: bool
     runner: config.PromptRunner | None = None
 
@@ -351,7 +354,11 @@ class MenuApp(App[int | PendingRun]):
         self._entries: list[Entry] = []
         self._visible: list[Entry] = []
         self._ctrl_c_at: float = 0.0
-        self._drift_cache: dict[str, tuple[float, bool]] = {}  # slug -> (mtime, has_drift)
+        # slug -> (mtime, plan). The detail pane re-renders on every RowHighlighted, and
+        # a plan build is a full parse — or, for a reader kind like PowerShell, a
+        # synchronous subprocess with a cold-start runtime — so it must never run
+        # uncached inside a cursor-movement handler.
+        self._plan_cache: dict[str, tuple[float, flows.FormPlan]] = {}
 
     @override
     def get_default_screen(self) -> Screen[None]:
@@ -488,19 +495,27 @@ class MenuApp(App[int | PendingRun]):
         keys_local.update(tui_footer.bar(*local))
         keys_global.update(tui_footer.bar(*globals_row))
 
-    def _has_drift(self, entry: Entry) -> bool:
-        """Drift is the expensive check (read + reconcile): lazy, per-selection, mtime-cached."""
-        spec = spec_for(entry.meta.kind)
-        if spec is None or spec.analyzer is None or not entry.script_path.exists():
-            return False
-        mtime = entry.script_path.stat().st_mtime
-        cached = self._drift_cache.get(entry.slug)
+    def _cached_plan(self, entry: Entry) -> flows.FormPlan:
+        """plan_for_entry for DISPLAY (detail pane, drift badge): lazy, mtime-cached.
+        Runs always build a fresh plan (action_run/action_rerun) — the cache serves the
+        cursor, never a launch."""
+        try:
+            mtime = entry.script_path.stat().st_mtime
+        except OSError:
+            return flows.plan_for_entry(entry)
+        cached = self._plan_cache.get(entry.slug)
         if cached is not None and cached[0] == mtime:
             return cached[1]
         plan = flows.plan_for_entry(entry)
-        drift = bool(plan.drift_lines)
-        self._drift_cache[entry.slug] = (mtime, drift)
-        return drift
+        self._plan_cache[entry.slug] = (mtime, plan)
+        return plan
+
+    def _has_drift(self, entry: Entry) -> bool:
+        """Drift is the expensive check (read + reconcile): served off the plan cache."""
+        spec = spec_for(entry.meta.kind)
+        if spec is None or spec.analyzer is None or not entry.script_path.exists():
+            return False
+        return bool(self._cached_plan(entry).drift_lines)
 
     def _refresh_detail(self) -> None:
         # A queued RowHighlighted can reach this after the detail pane is gone — a
@@ -558,7 +573,7 @@ class MenuApp(App[int | PendingRun]):
     def _detail_state_lines(self, entry: Entry) -> list[str]:
         lines: list[str] = []
         state = argstate.load_state(entry.slug)
-        plan = flows.plan_for_entry(entry)
+        plan = self._cached_plan(entry)
         if plan.fields:
             shown: list[str] = []
             for f in plan.fields[:6]:
@@ -799,7 +814,11 @@ class MenuApp(App[int | PendingRun]):
             # fall back to the form rather than assembling a broken command.
             self.action_run()
             return
-        self._execute(entry, plan, prefill, argstate.load_state(entry.slug)["extra_args"])
+        # The replayed tail keeps its recorded provenance: a tail the CLI captured
+        # post-shell must not get a second token/glob pass just because the rerun
+        # happens from the TUI.
+        state = argstate.load_state(entry.slug)
+        self._execute(entry, plan, prefill, state["extra_args"], extra_raw=state["extra_args_raw"])
 
     def _execute(
         self,
@@ -808,14 +827,18 @@ class MenuApp(App[int | PendingRun]):
         values: dict[str, str],
         extra: list[str],
         *,
+        extra_raw: bool = True,
         show_drift: bool = True,
         runner: config.PromptRunner | None = None,
     ) -> None:
         """Suspend, deliver (inject/flags/template), pass the terminal through, record.
 
-        show_drift=False when the form was just shown (its banner already said it)."""
+        show_drift=False when the form was just shown (its banner already said it).
+        extra_raw=True is the form path (the extra field is raw intent text — tokens and
+        globs expand); a rerun replaying a CLI-captured tail passes False so the tail
+        stays literal, matching how it originally launched."""
         try:
-            asm = flows.assemble(plan, values, list(extra), cwd=Path.cwd())
+            asm = flows.assemble(plan, values, list(extra), cwd=Path.cwd(), expand_extra=extra_raw)
         except flows.FormError as exc:
             self._refresh_status(gettext("Error: %(error)s") % {"error": escape(str(exc))})
             return
@@ -823,7 +846,11 @@ class MenuApp(App[int | PendingRun]):
             # A launcher hands the terminal back: quit the TUI FIRST, run after
             # (_finish_run). Running under suspend() and exiting would repaint the
             # whole app for one frame on resume — a visible flash.
-            self.exit(PendingRun(entry, plan, asm, dict(values), list(extra), show_drift, runner))
+            self.exit(
+                PendingRun(
+                    entry, plan, asm, dict(values), list(extra), extra_raw, show_drift, runner
+                )
+            )
             return
         with self.suspend():
             print(f"\n── {gettext('Run %(name)s') % {'name': entry.meta.name}} ──\n", flush=True)
@@ -852,7 +879,9 @@ class MenuApp(App[int | PendingRun]):
                 gettext("Last: %(name)s ✗ couldn't launch") % {"name": escape(entry.meta.name)}
             )
             return
-        flows.save_after_run(entry.slug, plan, values, list(extra), code, at=models.now_iso())
+        flows.save_after_run(
+            entry.slug, plan, values, list(extra), code, at=models.now_iso(), extra_raw=extra_raw
+        )
         self._reload()
         status = (
             gettext("Last: %(name)s ✓ finished")
@@ -892,7 +921,7 @@ class MenuApp(App[int | PendingRun]):
                 editor.open_entry_in_editor(target, kind=entry.meta.kind)
             except (editor.EditorError, editor.EditedSourceError) as exc:
                 edit_error = str(exc)
-        self._drift_cache.pop(entry.slug, None)
+        self._plan_cache.pop(entry.slug, None)
         self._reload()
         if edit_error is not None:
             self._refresh_status(gettext("Error: %(error)s") % {"error": escape(edit_error)})
@@ -983,7 +1012,7 @@ class MenuApp(App[int | PendingRun]):
         from .tui_settings import ScriptSettingsScreen
 
         def _closed(_changed: bool | None) -> None:
-            self._drift_cache.pop(entry.slug, None)
+            self._plan_cache.pop(entry.slug, None)
             self._reload()
 
         self.push_screen(ScriptSettingsScreen(entry, initial_section=section), _closed)
@@ -1093,6 +1122,7 @@ def _finish_run(pending: PendingRun) -> int:
         list(pending.extra),
         outcome.code,
         at=models.now_iso(),
+        extra_raw=pending.extra_raw,
     )
     return outcome.code
 

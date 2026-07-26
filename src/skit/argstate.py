@@ -79,14 +79,21 @@ def _strip_secrets(values: dict[str, str], secret_names: Iterable[str]) -> dict[
 
 
 def load_state(slug: str) -> dict[str, Any]:
-    """Return {"values": {…}, "extra_args": […], "presets": {name: {…}}, "last_run": {…}}.
+    """Return {"values": {…}, "extra_args": […], "extra_args_raw": bool,
+    "presets": {name: {…}}, "last_run": {…}}.
 
     last_run is {"at": ISO-8601 str, "exit": int} after the first recorded run, else {}.
+    extra_args_raw says HOW the remembered tail was captured: True = raw intent text
+    (the TUI's extra field — tokens/globs expand on replay), False/absent = already
+    shell-processed (the CLI's `-- args` — replays literally, in both faces). Without
+    it, one stored tail replayed under two different expansion regimes depending on
+    which face happened to rerun it.
     """
     doc = _load_doc(slug)
     return {
         "values": dict(doc.get("values", {})),
         "extra_args": list(doc.get("extra_args", [])),
+        "extra_args_raw": bool(doc.get("extra_args_raw", False)),
         "presets": {k: dict(v) for k, v in doc.get("presets", {}).items()},
         "last_run": dict(doc.get("last_run", {})),
     }
@@ -107,6 +114,7 @@ def save_last(
     *,
     values: dict[str, str] | None = None,
     extra_args: list[str] | None = None,
+    extra_args_raw: bool = False,
     secret_names: Iterable[str] = (),
 ) -> None:
     """Remember last-used (read-modify-write, keeping presets). Secret keys are stripped (C3).
@@ -115,6 +123,10 @@ def save_last(
     "the user cleared it" and erases the stored value. (Folding those two into one falsy
     check made cleared extra args resurrect forever: the form saved nothing, the next
     run re-read the old value, reused it, and wrote it back.)
+
+    extra_args_raw records the tail's provenance (see load_state) and travels WITH the
+    tail: it is written or cleared exactly when extra_args is, so a marker can never
+    describe a tail it didn't come with.
 
     Even on a call that carries no new values, any name in secret_names is dropped from
     the previously-stored values — a value saved while a parameter was public must not
@@ -129,6 +141,12 @@ def save_last(
             doc["values"] = _strip_secrets(doc.get("values", {}), banned)
         if extra_args is not None:
             doc["extra_args"] = extra_args
+            if extra_args and extra_args_raw:
+                doc["extra_args_raw"] = True
+            else:
+                # _save_doc prunes falsy values, so False is stored as absence; pop so a
+                # cleared/processed tail never inherits a stale raw marker.
+                doc.pop("extra_args_raw", None)
         _save_doc(slug, doc)
 
 

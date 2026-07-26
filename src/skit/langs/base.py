@@ -29,11 +29,10 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from ..analysis import Analysis, Report
+    from ..analysis import Analysis, ArgSpec, Report
     from ..config import PromptRunner
     from ..models import Entry
     from ..params import ParamDecl
-    from .python.argspec import ArgSpec
 
 
 class LaunchError(Exception):

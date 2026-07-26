@@ -24,9 +24,13 @@ Key grammar: a chord keeps one meaning per context class — Ctrl+E always opens
 on the screen's current subject, Ctrl+N always creates the screen's primary object (a
 script on the add step, an agent on a runner picker), Ctrl+T always inserts a value,
 Ctrl+R re-runs/refreshes the screen's subject (the run form runs it; Script settings
-resyncs its definitions from the script), and Ctrl+S saves/commits the screen's work
-(the run form's save-as-preset included). Ctrl+A (cursor-home) and — while an Input has focus —
-Ctrl+E (end-of-line) belong to the Input: screen chords for them are never
+resyncs its definitions from the script), Ctrl+S saves/commits the screen's work
+(the run form's save-as-preset included), Ctrl+O always restores the screen's current
+field to its source default (README documents it on the run form — it must never mean
+anything else), and Ctrl+L always opens the screen's variable/candidate picker (the
+prompt review panel and Script settings). A new screen action takes an UNCLAIMED chord,
+never a second meaning for a claimed one. Ctrl+A (cursor-home) and — while an Input has
+focus — Ctrl+E (end-of-line) belong to the Input: screen chords for them are never
 priority-bound; the chip is the path mid-edit.
 Never bind a text-editing chord (Ctrl+K and friends) with `priority=True` on a screen
 full of Inputs — the Input's own editing wins there, and the chip stays the mouse path.

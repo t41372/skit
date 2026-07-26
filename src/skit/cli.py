@@ -42,7 +42,7 @@ from . import argstate, config, editor, i18n, kindnames, launcher, models, store
 from .i18n import gettext, ngettext
 from .langs.registry import KNOWN_KINDS, spec_for
 from .params import ParamDecl, declared_from_meta, edit_declared, is_secret_name
-from .rewrite import detect_newline, restore_newline
+from .rewrite import detect_newline, read_for_block_edit, write_block_edit
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -637,19 +637,11 @@ def _onboard_script_params(entry: store.Entry, kind_spec: LangSpec, no_input: bo
     if not specs:
         return []
     copy_path = entry.script_path
-    # This is a write-back path, so it must be byte-lossless (same discipline as _edit_params).
-    # Shell/fish scripts may legitimately contain arbitrary bytes; surrogateescape lets the
-    # comment-only metadata edit round-trip them instead of replacing each with U+FFFD. Fold to
-    # LF for the LF-based block engine, then restore the copy's own line-ending style so a CRLF
-    # script stays CRLF and the edit stays confined to the block it inserted.
-    raw = copy_path.read_bytes()
-    newline = detect_newline(raw)
-    current = raw.decode("utf-8", errors="surrogateescape")  # pragma: no mutate — codec alias
-    current = current.replace("\r\n", "\n").replace("\r", "\n")
-    written = restore_newline(kind_spec.params_io.write(current, specs), newline)
-    copy_path.write_bytes(
-        written.encode("utf-8", errors="surrogateescape")
-    )  # pragma: no mutate — codec alias
+    # Byte-lossless write-back through the one shared pair (rewrite.read_for_block_edit /
+    # write_block_edit): surrogateescape bytes, LF fold for the block engine, the copy's own
+    # newline style restored, atomic + mode-preserving.
+    current, newline = read_for_block_edit(copy_path)
+    write_block_edit(copy_path, kind_spec.params_io.write(current, specs), newline)
     return [s.name for s in specs]
 
 
@@ -694,16 +686,12 @@ def _onboard_python(
         params_specs = _onboard_params(text, entry.meta.name, no_input)
         if params_specs:
             copy_path = entry.script_path
-            # Byte-lossless write-back (same discipline as _edit_params): fold to LF for the
-            # LF-based PEP 723 block engine, then restore the copy's own line-ending style so a
-            # CRLF script stays CRLF instead of being re-expanded to the host os.linesep.
-            raw = copy_path.read_bytes()
-            newline = detect_newline(raw)
-            current = (
-                raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
-            )  # pragma: no mutate — codec alias
-            new_text = restore_newline(metawriter.write_params(current, params_specs), newline)
-            copy_path.write_bytes(new_text.encode("utf-8"))  # pragma: no mutate — codec alias
+            # The shared byte-lossless pair (rewrite.py) — surrogateescape included: the old
+            # strict decode here let a non-UTF-8 python file escape as a raw UnicodeDecodeError
+            # traceback after the entry was already stored, where the shell lane degraded
+            # gracefully on the same input.
+            current, newline = read_for_block_edit(copy_path)
+            write_block_edit(copy_path, metawriter.write_params(current, params_specs), newline)
             managed = [s.name for s in params_specs]
             secrets = [s.name for s in params_specs if s.secret]
     return entry, final_deps, managed, secrets
@@ -2535,12 +2523,20 @@ def show(
 def remove(
     name: str = _SCRIPT_ARG,
     yes: bool = typer.Option(False, "--yes", "-y", help=gettext("Skip confirmation")),
+    no_input: bool = typer.Option(False, "--no-input", help=gettext("Never prompt")),
 ) -> None:
     """Remove a script (copy mode deletes the copy in the store; the original is untouched)."""
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
         raise _fail(str(exc), 1) from exc
+    # The non-interactive contract, same guard as runner_remove: in a pipe/CI or under
+    # --no-input, a missing -y is a worded exit-2 refusal — never a typer.confirm that
+    # eats a line of piped stdin or dies as click's bare "Aborted.".
+    if not yes and (no_input or not _is_interactive()):
+        raise _fail(
+            gettext("Confirmation is required; pass --yes to remove the entry."), EXIT_USAGE
+        )
     if not yes:
         entry_spec = spec_for(entry.meta.kind)
         if entry_spec is not None and not entry_spec.has_original_file:
@@ -3146,17 +3142,24 @@ def run(
     # Every other kind reuses its remembered tail — a script replays its argv, a prompt or
     # command its agent/command flags (a remembered `--model` is config, like the pinned
     # runner), matching the run form and the TUI's `r` rerun.
+    # This run's own `-- args` came through the user's shell: never re-expanded
+    # (extra_raw=False). A replayed tail instead follows its recorded provenance, so a
+    # tail typed into the TUI form (raw intent — {today}, globs) expands here exactly
+    # as it does under `r`, and the two faces launch the same argv from the same state.
+    extra_raw = False
     if not extra and not raw:
-        last_extra = argstate.load_state(entry.slug)["extra_args"]
+        state = argstate.load_state(entry.slug)
+        last_extra = state["extra_args"]
         if last_extra:
             extra = last_extra
+            extra_raw = state["extra_args_raw"]
             # stderr, like the drift banner: skit chrome must not pollute the script's
             # own stdout, and agents watch stderr for skit-side signals (SKILL.md).
             err_console.print(
                 f"[dim]{gettext('Reusing your last arguments: %(args)s') % {'args': ' '.join(escape(a) for a in extra)}}[/dim]"
             )
     try:
-        asm = flows.assemble(plan, values, extra, cwd=Path.cwd(), expand_extra=False)
+        asm = flows.assemble(plan, values, extra, cwd=Path.cwd(), expand_extra=extra_raw)
     except flows.FormError as exc:
         raise _fail(str(exc), EXIT_SKIT) from exc
 
@@ -3241,7 +3244,9 @@ def run(
         # The run stamp still lands — Library sorting and `r` treat it as a run.
         argstate.record_run(entry.slug, code, at=models.now_iso())
     else:
-        flows.save_after_run(entry.slug, plan, values, extra, code, at=models.now_iso())
+        flows.save_after_run(
+            entry.slug, plan, values, extra, code, at=models.now_iso(), extra_raw=extra_raw
+        )
     if code != 0:
         err_console.print(
             f"[yellow]{gettext('Run exited with code %(code)s') % {'code': code}}[/yellow]"
@@ -3671,31 +3676,55 @@ def preset_list(
 def preset_delete(
     name: str = _SCRIPT_ARG,
     preset_name: str = typer.Argument(..., help=gettext("Preset name")),
+    yes: bool = typer.Option(False, "--yes", "-y", help=gettext("Skip confirmation")),
+    no_input: bool = typer.Option(False, "--no-input", help=gettext("Never prompt")),
 ) -> None:
     """Delete a named preset."""
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
         raise _fail(str(exc), 1) from exc
+    # Unknown-name feedback comes BEFORE the ask: confirming a deletion that then turns
+    # out to target nothing is a wasted question. delete_preset re-checks under the lock,
+    # so a preset that vanishes between the two reads still lands in the same error.
+    if preset_name not in argstate.load_state(entry.slug)["presets"]:
+        _fail_unknown_preset(entry, preset_name)
+    # A preset is unrecoverable user data; its deletion gets the same ask (and the same
+    # non-interactive refusal) as removing an entry or a runner — the trivially
+    # re-creatable config row must not be better guarded than the thing users typed in.
+    if not yes and (no_input or not _is_interactive()):
+        raise _fail(
+            gettext("Confirmation is required; pass --yes to delete the preset."), EXIT_USAGE
+        )
+    if not yes:
+        typer.confirm(
+            gettext('Delete preset "%(preset)s" from %(name)s?')
+            % {"preset": preset_name, "name": entry.meta.name},
+            abort=True,
+        )
     if argstate.delete_preset(entry.slug, preset_name):
         console.print(
             gettext('Preset "%(preset)s" deleted from %(name)s.')
             % {"preset": escape(preset_name), "name": escape(entry.meta.name)}
         )
     else:
-        err_console.print(
-            "[red]"
-            + gettext('Unknown preset "%(preset)s". Available: %(presets)s')
-            % {
-                "preset": escape(preset_name),
-                "presets": ", ".join(
-                    escape(p) for p in sorted(argstate.load_state(entry.slug)["presets"])
-                )
-                or "—",
-            }
-            + _RED_CLOSE
-        )
-        raise typer.Exit(1)
+        _fail_unknown_preset(entry, preset_name)
+
+
+def _fail_unknown_preset(entry: store.Entry, preset_name: str) -> NoReturn:
+    err_console.print(
+        "[red]"
+        + gettext('Unknown preset "%(preset)s". Available: %(presets)s')
+        % {
+            "preset": escape(preset_name),
+            "presets": ", ".join(
+                escape(p) for p in sorted(argstate.load_state(entry.slug)["presets"])
+            )
+            or "—",
+        }
+        + _RED_CLOSE
+    )
+    raise typer.Exit(1)
 
 
 # --------------------------------------------------------------------------
@@ -3903,7 +3932,12 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
     declared = declared_from_meta(entry.meta.parameters)
     if as_json:
         payload = {
-            "params": [s.to_block_dict() for s in specs],
+            # to_block_dict is the FROZEN on-disk row (its "kind" key carries the
+            # binding — const/input — for back-compat with existing user files). The
+            # JSON projection adds "binding" alongside it so an agent reading `show
+            # --json` (where "kind" is the entry's language) and this command never
+            # meets one key name carrying two different axes.
+            "params": [{**s.to_block_dict(), "binding": s.binding} for s in specs],
             # The SOURCE's current default per managed name (additive key). "params"
             # stays the verbatim stored record — an agent that wants the value a run
             # would actually prefill reads it here, same truth as the human table.
@@ -4489,13 +4523,17 @@ def _edit_params(
     console = _maybe_quiet(quiet)
     entry_spec = spec_for(entry.meta.kind)
     if entry_spec is None or entry_spec.params_io is None or entry_spec.analyzer is None:
-        raise _fail(
-            gettext(
-                "%(name)s has no managed parameters — its kind has no analyzer to read them from."
-            )
-            % {"name": entry.meta.name},
-            1,
-        )
+        message = gettext(
+            "%(name)s has no managed parameters — its kind has no analyzer to read them from."
+        ) % {"name": entry.meta.name}
+        if entry_spec is not None and entry_spec.params_io is None:
+            # The declared [[parameters]] lane IS this kind's parameter home (exe, command,
+            # prompt, the Tier-0 interpreted kinds) — a refusal that names no way forward
+            # would hide the exact door that was built for it.
+            message += " " + gettext("Declare one instead: skit params %(name)s --add PARAM") % {
+                "name": entry.meta.name
+            }
+        raise _fail(message, 1)
     if entry.meta.mode == "reference":
         raise _fail(
             gettext(
@@ -4537,22 +4575,12 @@ def _edit_params(
         err_console.print(f"[yellow]{escape(analysis.render_warning(w))}[/yellow]")
     for w in _apply_env_sources(result.specs, env_sources):
         err_console.print(f"[yellow]{escape(w)}[/yellow]")
-    # This is a write-back path, so it must be byte-lossless (same discipline as
-    # _onboard_script_params and _normalize_params): `text` above was read with errors="replace"
-    # for the analyzer, but writing THAT text back would bake U+FFFD over every non-UTF-8 byte.
-    # Re-read the raw bytes with surrogateescape — params_io.write only touches the comment block,
-    # so unrelated bytes round-trip. Fold to LF for the LF-based block engine, then restore the
-    # copy's own line-ending style: writing the folded LF back would rewrite every line of a CRLF
-    # script even though only the [tool.skit] block changed (and write_text, the old path, was
-    # worse still — it re-expanded \n to the HOST os.linesep, CRLF-ifying a copy on Windows).
-    raw = copy_path.read_bytes()
-    newline = detect_newline(raw)
-    current = raw.decode("utf-8", errors="surrogateescape")  # pragma: no mutate — codec alias
-    current = current.replace("\r\n", "\n").replace("\r", "\n")
-    written = restore_newline(entry_spec.params_io.write(current, result.specs), newline)
-    copy_path.write_bytes(
-        written.encode("utf-8", errors="surrogateescape")
-    )  # pragma: no mutate — codec alias
+    # `text` above was read with errors="replace" for the analyzer; writing THAT text back
+    # would bake U+FFFD over every non-UTF-8 byte. Re-read through the shared byte-lossless
+    # pair (rewrite.py) — params_io.write only touches the comment block, so unrelated bytes
+    # round-trip and the copy's own line-ending style survives.
+    current, newline = read_for_block_edit(copy_path)
+    write_block_edit(copy_path, entry_spec.params_io.write(current, result.specs), newline)
     secret_now = {s.name for s in result.specs if s.secret}
     purged = argstate.purge_secret(entry.slug, secret_now)
     if purged:
@@ -4694,8 +4722,10 @@ def _normalize_params(
         else s
         for s in entry_spec.params_io.read(result.text)
     ]
-    new_text = restore_newline(entry_spec.params_io.write(result.text, specs), newline)
-    copy_path.write_bytes(new_text.encode("utf-8"))  # pragma: no mutate — codec alias
+    # The shared write half (atomic + mode-preserving); the strict read above stays — a
+    # normalize that can't decode is refused whole, unlike the comment-only edits'
+    # surrogateescape round-trip.
+    write_block_edit(copy_path, entry_spec.params_io.write(result.text, specs), newline)
     console.print(
         f"[green]{gettext('Normalized %(names)s in %(name)s: delivered as environment variables from now on (no temporary copy, and $0 stays your real file).') % {'names': ', '.join(escape(n) for n in result.normalized), 'name': escape(entry.meta.name)}}[/green]"
     )

@@ -41,8 +41,8 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ...analysis import ArgSpec
 from ...params import ParamType, is_secret_name
-from ..python.argspec import ArgSpec
 
 if TYPE_CHECKING:
     from ...params import ParamDecl

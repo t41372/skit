@@ -33,6 +33,7 @@ from . import (
     config,
     editor,
     pep723,
+    rewrite,
     store,
     theme,
     tui_footer,
@@ -740,6 +741,7 @@ class AddReviewScreen(Screen[str | None]):
 
         self._spec = spec_for(kind)
         self._text_error: str = ""
+        self._reader_modeled_memo: tuple[str, bool] | None = None
         try:
             self._text = path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate — encoding None/utf-8/UTF-8 decode identically under skit's UTF-8-mode runtime (equivalent); the errors="replace" handler stays behaviourally pinned by test_add_review_screen_reads_invalid_utf8_with_replace  # fmt: skip
         except OSError as exc:
@@ -790,10 +792,18 @@ class AddReviewScreen(Screen[str | None]):
     def _reader_modeled(self) -> bool:
         """Whether the entry's own reader models a form from the current text — the
         shared trap predicate (flows.reader_fields) the tick list and its Space chip
-        both key on."""
+        both key on. Memoized per text: for a reader kind (PowerShell) each read is a
+        synchronous subprocess, and this fires on every mode toggle — the panel must
+        not freeze for seconds because a radio button was clicked. Keyed on the text
+        itself so the Ctrl+E edit→rescan path recomputes naturally."""
+        memo = self._reader_modeled_memo
+        if memo is not None and memo[0] == self._text:
+            return memo[1]
         from . import flows
 
-        return flows.reader_fields(self._spec, self._text) > 0
+        modeled = flows.reader_fields(self._spec, self._text) > 0
+        self._reader_modeled_memo = (self._text, modeled)
+        return modeled
 
     def _suggest_description(self) -> str:
         if self._kind == "python":
@@ -1185,10 +1195,14 @@ class AddReviewScreen(Screen[str | None]):
             if picked:
                 specs = [ParamDecl.from_candidate(c) for c in picked]
                 copy_path = entry.script_path
-                # This is a write-back path, so preserve arbitrary shell/fish bytes while
-                # inserting the comment-only metadata block.
-                current = copy_path.read_text(encoding="utf-8", errors="surrogateescape")  # pragma: no mutate — utf-8 equivalence  # fmt: skip
-                copy_path.write_text(self._spec.params_io.write(current, specs), encoding="utf-8", errors="surrogateescape")  # pragma: no mutate — utf-8 equivalence  # fmt: skip
+                # Byte-lossless write-back through the one shared pair (rewrite.py):
+                # read_text/write_text here silently rewrote every line ending of the
+                # just-stored copy — the exact corruption the CLI twin of this add
+                # (_onboard_script_params) documents and avoids.
+                current, newline = rewrite.read_for_block_edit(copy_path)
+                rewrite.write_block_edit(
+                    copy_path, self._spec.params_io.write(current, specs), newline
+                )
         self.dismiss(entry.slug)
 
     def action_cancel(self) -> None:
@@ -1209,8 +1223,12 @@ class PromptReviewScreen(Screen[str | None]):
         Binding("ctrl+e", "edit_source", gettext("Edit prompt")),
         Binding("ctrl+s", "accept", gettext("Add"), priority=True),
         Binding("ctrl+n", "new_runner", gettext("New agent"), show=False, priority=True),
+        # Ctrl+L, not Ctrl+O: Ctrl+O is the grammar chord for "restore the default"
+        # (README documents it on the run form) and must not mean anything else on a
+        # sibling screen. Ctrl+L is no Input editing chord, so it fires from inside a
+        # field without priority; the chip stays the mouse path.
         Binding(
-            "ctrl+o",
+            "ctrl+l",
             "choose_prompt_candidates",
             gettext("Choose variables…"),
             show=False,
@@ -1426,7 +1444,7 @@ class PromptReviewScreen(Screen[str | None]):
             yield Static(
                 tui_footer.chip(
                     "screen.choose_prompt_candidates",
-                    "Ctrl+O",
+                    "Ctrl+L",
                     gettext("Choose variables…"),
                 ),
                 id="pv-choose-candidates",

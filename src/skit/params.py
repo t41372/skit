@@ -32,6 +32,7 @@ Headless, stdlib-only.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -44,15 +45,25 @@ Binding = Literal["const", "input", "envdefault", "none"]
 Delivery = Literal["inject", "env", "flag", "placeholder"]
 ParamType = Literal["str", "int", "float", "bool", "choice", "path"]
 
-# Secret pre-check heuristic (matched against the upper-cased name / prompt). Universal:
-# python candidates, shell variables, command placeholders, and declared params all run
-# their names through the same rule, so "what counts as secret-looking" can never fork.
-_SECRET_HINTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD")
+# Secret pre-check heuristic (matched against the name / prompt). Universal: python
+# candidates, shell variables, command placeholders, reader-reflected CLI flags, and
+# declared params all run their names through the same rule, so "what counts as
+# secret-looking" can never fork.
+#
+# WHOLE words only (snake_case, kebab-case, camelCase and sentence prompts all split):
+# API_KEY / githubToken / "Enter your API key:" match; MAX_TOKENS / keyword / monkey /
+# maxTokens do not. The substring match this replaces turned `--max-tokens` into a
+# password field — masked, never prefilled, never remembered — on the reader lane,
+# where no override exists to turn it off.
+_SECRET_WORDS = frozenset({"KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD"})
+# lower/digit→Upper and WORDBreak boundaries; separators (_, -, spaces, punctuation)
+# are any non-letter run.
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
 
 
 def is_secret_name(text: str) -> bool:
-    up = text.upper()
-    return any(h in up for h in _SECRET_HINTS)
+    words = re.split(r"[^A-Za-z]+", _CAMEL_BOUNDARY.sub(" ", text))
+    return any(w.upper() in _SECRET_WORDS for w in words if w)
 
 
 _BINDINGS: tuple[Binding, ...] = ("const", "input", "envdefault", "none")

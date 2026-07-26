@@ -96,7 +96,7 @@ skit run review --runner codex --set target=src/app.py --no-input
 
 ## 安裝
 
-skit 建立在 [uv](https://docs.astral.sh/uv/) 之上（以 0.11.26 版測試）。還沒裝 uv？skit 會先徵求你同意，再把釘定版本的 uv 下載到自己的私有目錄——不碰你的 `PATH`，也不碰全域環境。當然，參考[官方文檔](https://docs.astral.sh/uv/getting-started/installation/) 安裝 uv 會更好。
+skit 建立在 [uv](https://docs.astral.sh/uv/) 之上（以 0.11.26 版測試）。還沒裝 uv？skit 會先徵求你同意，再把釘定版本的 uv 下載到自己的私有目錄——不碰你的 `PATH`，也不碰全域環境（在 CI、pipe 這類非互動環境下不會問，直接下載）。當然，參考[官方文檔](https://docs.astral.sh/uv/getting-started/installation/) 安裝 uv 會更好。
 
 ```bash
 # 用 uv tool 從 PyPI 安裝 skit（套件名是 skit-cli，裝好的指令是 skit）

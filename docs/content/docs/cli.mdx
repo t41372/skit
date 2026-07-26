@@ -10,8 +10,9 @@ the same actions, deterministic behavior.
 
 - **`--json`** on every read command: `list`, `show`, `params`, `deps`,
   `preset list`, `runner list`, `doctor`, `config`.
-- **`--no-input`** on the commands that could prompt: `add`, `run`,
-  `runner remove`. Read commands never prompt and don't take it.
+- **`--no-input`** on the commands that could prompt: `add`, `run`, and the
+  destructive trio `remove`, `preset delete`, `runner remove` (which confirm
+  unless `--yes`). Read commands never prompt and don't take it.
 - **`--dry-run`** on `run` only: prints the exact command — tokens and globs
   expanded — and runs nothing.
 - **Non-interactive contract**: in a pipe, in CI, or under `--no-input`, skit
@@ -95,8 +96,9 @@ never replays them.
 
 ## skit remove / rename / describe / edit
 
-- `skit remove NAME [--yes]` — remove an entry (the original file is untouched;
-  copy mode deletes skit's copy). Confirms unless `--yes`.
+- `skit remove NAME [--yes] [--no-input]` — remove an entry (the original file
+  is untouched; copy mode deletes skit's copy). Confirms unless `--yes`;
+  non-interactively, a missing `--yes` is a clean exit-2 refusal.
 - `skit rename NAME NEW` — presets, remembered values, and history follow.
 - `skit describe NAME TEXT` — set the description; empty text clears it.
 - `skit edit NAME` — open the stored source (the original, in reference mode) in
@@ -150,7 +152,7 @@ Package deps apply to Python and JS/TS entries; `--need` applies to every kind.
 - `skit preset save NAME PRESET [--from-last]` — `--from-last` snapshots the
   last run's values without asking.
 - `skit preset list NAME [--json]`
-- `skit preset delete NAME PRESET`
+- `skit preset delete NAME PRESET [--yes] [--no-input]` — confirms unless `--yes`.
 
 ## skit runner
 

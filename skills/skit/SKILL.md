@@ -31,8 +31,10 @@ is *the user's curated space*: treat it like their dotfiles.
    Propose `skit add` when you've written something reusable; don't add it silently.
 5. **Pass `--no-input` on every `skit run` and `skit add`.** It guarantees those never
    block on a prompt; if information is missing, skit fails fast with a named error
-   instead. `skit remove` confirms instead of taking `--no-input` — pass `-y`. The
-   read commands (`list`, `show`, `params`, …) never prompt and don't take the flag.
+   instead. The destructive commands (`remove`, `preset delete`, `runner remove`)
+   confirm unless you pass `-y`; non-interactively, a missing `-y` is a clean exit-2
+   refusal, never a hang. The read commands (`list`, `show`, `params`, …) never prompt
+   and don't take the flag.
 
 ## Discover entries
 
@@ -200,7 +202,7 @@ Named value sets per entry, ideal for recurring jobs:
 skit run <name> --set a=1 --set b=2 --save-preset nightly --dry-run --no-input  # create without running
 skit preset list <name> --json
 skit run <name> -p nightly --no-input
-skit preset delete <name> nightly
+skit preset delete <name> nightly -y   # confirms without -y
 ```
 
 ## Prompts & runners
@@ -249,7 +251,7 @@ skit params <name> --no-interpolate  # switch insertion off; --interpolate turns
 skit runner list --json                       # [{"name": …, "argv": […]}]
 skit runner add mycli -- mycli run {{prompt}} # each word = one argument, no shell
 skit runner add mycli --force -- mycli run --model opus {{prompt}}  # --force replaces an existing runner (edit)
-skit runner remove mycli -y   # confirms without -y, like skit remove
+skit runner remove mycli -y   # confirms without -y, like skit remove and preset delete
 ```
 
 - The agent's own per-run flags pass through after `--`:
