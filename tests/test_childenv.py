@@ -217,6 +217,57 @@ def test_run_entry_child_env_is_scrubbed(bundle: Path, monkeypatch: pytest.Monke
     assert "LD_LIBRARY_PATH_ORIG" not in seen_env
 
 
+def test_shell_gate_child_env_is_scrubbed(
+    bundle: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    from skit.langs.shell import inject as shell_inject
+
+    monkeypatch.setenv("LD_LIBRARY_PATH", str(bundle))
+    monkeypatch.delenv("LD_LIBRARY_PATH_ORIG", raising=False)
+    seen: dict[str, object] = {}
+
+    class _Proc:
+        returncode = 0
+        stderr = b""
+
+    def _fake_run(argv, **kw):
+        seen.update(kw)
+        return _Proc()
+
+    monkeypatch.setattr(shell_inject.subprocess, "run", _fake_run)
+    monkeypatch.setattr(shell_inject.shutil, "which", lambda _name: "/bin/bash")
+    shell_inject._gate_interpreter("bash", tmp_path / "x.sh")
+    env = seen["env"]
+    assert isinstance(env, dict)
+    assert "LD_LIBRARY_PATH" not in env
+
+
+def test_powershell_probe_env_is_scrubbed(
+    bundle: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    from skit.langs.powershell import cli_reader
+
+    monkeypatch.setenv("LD_LIBRARY_PATH", str(bundle))
+    monkeypatch.delenv("LD_LIBRARY_PATH_ORIG", raising=False)
+    seen_env: dict[str, str] = {}
+
+    class _Proc:
+        returncode = 0
+        stdout = b'{"status":"no-params"}'
+
+    def _fake_run(argv, **kw):
+        seen_env.update(kw["env"])
+        return _Proc()
+
+    monkeypatch.setattr(cli_reader.subprocess, "run", _fake_run)
+    target = tmp_path / "x.ps1"
+    assert cli_reader._extract("pwsh", target) is None  # no-params reads as None
+    # The probe's own variable must ride on top of the SCRUBBED environment, not
+    # alongside the bootloader's loader path.
+    assert seen_env["SKIT_PS_TARGET"] == str(target)
+    assert "LD_LIBRARY_PATH" not in seen_env
+
+
 def test_open_in_editor_child_env_is_scrubbed(
     bundle: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

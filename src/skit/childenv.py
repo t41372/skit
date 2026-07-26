@@ -39,7 +39,8 @@ def _bundle_dir() -> str | None:
     onefile, the ``_internal`` dir in onedir). Requiring both keeps the helper a no-op under
     any other runtime that sets ``sys.frozen`` alone.
     """
-    if not getattr(sys, "frozen", False):
+    frozen = getattr(sys, "frozen", False)  # pragma: no mutate — absent-attribute default: False vs None are both falsy (a true equivalent); frozen-detection behavior itself is pinned by test_childenv's frozen/unfrozen suites  # fmt: skip
+    if not frozen:
         return None
     bundle: str | None = getattr(sys, "_MEIPASS", None)
     return bundle
