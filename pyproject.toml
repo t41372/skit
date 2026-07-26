@@ -251,6 +251,8 @@ pytest_add_cli_args_test_selection = ["tests/"]
 # README.md rides along because pyproject's `readme` references it — without it, uv
 # can't build the project inside mutants/ on a cold cache. scripts/ rides along because
 # the i18n-gate tests (test_js_deps.py) import scripts/i18n_coverage.py by path.
+# packaging/ rides along because test_packaging.py reads the binary build's spec to
+# check it collects every tree-sitter grammar the analyzers import.
 # benchmarks/ rides along because tests/test_benchmarks_tooling.py imports the
 # benchmarks package (pytest's inifile-relative pythonpath resolves it inside
 # mutants/). .github/workflows/ rides along because the same file's contract-sync
@@ -263,6 +265,7 @@ also_copy = [
     "skills/",
     "README.md",
     "scripts/",
+    "packaging/",
     "benchmarks/",
     ".github/workflows/",
     ".github/actions/",
