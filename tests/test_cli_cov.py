@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from skit import argstate, cli, flows, launcher, promptform, store
@@ -199,27 +200,35 @@ def test_run_with_valid_preset_succeeds(tmp_path, run_entry_spy):
 
 
 # --------------------------------------------------------------------------
-# preset save: 590-600 (python entry with managed params: prefilled values saved,
-# secret values excluded with a notice)
+# preset save: the interactivity split (a terminal collects the form; a pipe refuses
+# rather than guessing) and secret values excluded with a notice
 # --------------------------------------------------------------------------
 
 
-def test_preset_save_python_with_params_non_interactive_prefill(tmp_path):
+def test_preset_save_non_interactive_refuses_instead_of_guessing(tmp_path):
+    """Non-interactively there is nothing to ask and nothing the user chose: the prefill
+    is whatever defaults/last-used values happen to be lying around, so minting a preset
+    from it would be exactly the "silently assemble" move the contract forbids. skit
+    refuses (exit 1), names the two deterministic sources, and writes NO preset."""
     text = metawriter.write_params(
         'CITY = "Taipei"\nprint(CITY)\n',
         [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
     )
     ent = store.add_python(_py(tmp_path, text), name="a")
-    # CliRunner's stdin is not a tty, so _collect_param_form takes the non-interactive path and
-    # returns the prefill (the definition's default) without prompting.
+    # CliRunner's stdin is not a tty, so _is_interactive() is False.
     result = runner.invoke(cli.app, ["preset", "save", "a", "prod"])
-    assert result.exit_code == 0, result.output
-    assert argstate.load_state(ent.slug)["presets"]["prod"] == {"CITY": "Taipei"}
+    assert result.exit_code == 1
+    out = " ".join(result.output.split())
+    assert "preset save needs a terminal to ask for values" in out
+    assert "--from-last" in out
+    assert "skit run a --save-preset prod" in out
+    assert argstate.load_state(ent.slug)["presets"] == {}  # nothing guessed into existence
 
 
-def test_preset_save_piped_stdout_takes_prefill_not_the_prompt(tmp_path, monkeypatch):
-    """The interactive predicate is now _is_interactive() (stdin AND stdout): a tty stdin
-    with a PIPED stdout must NOT prompt — it takes the non-interactive prefill path."""
+def test_preset_save_piped_stdout_refuses_without_opening_the_form(tmp_path, monkeypatch):
+    """The interactive predicate is _is_interactive() (stdin AND stdout): a tty stdin
+    with a PIPED stdout must NOT prompt — and since there is no terminal to ask in, it
+    refuses rather than falling back to the prefill."""
     text = metawriter.write_params(
         'CITY = "Taipei"\nprint(CITY)\n',
         [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
@@ -232,8 +241,10 @@ def test_preset_save_piped_stdout_takes_prefill_not_the_prompt(tmp_path, monkeyp
         "collect",
         lambda *a, **k: pytest.fail("piped stdout must not open the form"),
     )
-    cli.preset_save("a", "prod", from_last=False)
-    assert argstate.load_state(ent.slug)["presets"]["prod"] == {"CITY": "Taipei"}
+    with pytest.raises(typer.Exit) as exc:
+        cli.preset_save("a", "prod", from_last=False)
+    assert exc.value.exit_code == 1
+    assert argstate.load_state(ent.slug)["presets"] == {}
 
 
 def test_preset_save_interactive_collects_the_form(tmp_path, monkeypatch):

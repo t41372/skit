@@ -520,9 +520,11 @@ def test_add_entry_registry_index_has_correct_keys(sample_script):
 
 
 def test_resolve_not_found_exact_message(tmp_path):
+    # "Entry", not "Script": the library holds prompts, commands and programs too, and
+    # every other surface calls them entries.
     with pytest.raises(store.NotFoundError) as exc:
         store.resolve("nonexistent")
-    assert str(exc.value) == "Script not found: nonexistent"
+    assert str(exc.value) == "Entry not found: nonexistent"
 
 
 def test_remove_passes_ignore_errors_true_to_rmtree(sample_script, monkeypatch):

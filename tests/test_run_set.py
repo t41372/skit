@@ -123,7 +123,10 @@ def test_set_satisfies_required_argparse_field(tmp_path, run_entry_spy):
     assert run_entry_spy["extra"] == ["--output", "x.png"]
 
 
-def test_set_saves_preset_with_dry_run_without_running(run_entry_spy):
+def test_dry_run_save_preset_writes_nothing_and_says_so(run_entry_spy):
+    """A dry run writes NOTHING — that is the whole word, and --save-preset is no
+    exception. The help promises "print the command, then exit"; persisting a preset
+    behind that was a silent side effect. The refusal is announced, not swallowed."""
     runner.invoke(cli.app, ["add", "--cmd", "echo {target}", "--name", "d3", "--no-input"])
     result = runner.invoke(
         cli.app,
@@ -131,7 +134,23 @@ def test_set_saves_preset_with_dry_run_without_running(run_entry_spy):
     )
     assert result.exit_code == 0, result.output
     assert "entry" not in run_entry_spy  # dry run: nothing executed
-    assert argstate.load_state(store.resolve("d3").slug)["presets"] == {
+    out = " ".join(result.output.split())
+    assert "Dry run — preset quick was NOT saved (drop --dry-run to save it)." in out
+    assert argstate.load_state(store.resolve("d3").slug)["presets"] == {}
+
+
+def test_same_command_without_dry_run_still_saves_the_preset(run_entry_spy):
+    """The other half of the contract: drop --dry-run and the identical invocation
+    persists the preset after the launch is accepted."""
+    runner.invoke(cli.app, ["add", "--cmd", "echo {target}", "--name", "d4", "--no-input"])
+    result = runner.invoke(
+        cli.app,
+        ["run", "d4", "--set", "target=stage", "--save-preset", "quick", "--no-input"],
+    )
+    assert result.exit_code == 0, result.output
+    assert run_entry_spy["entry"].meta.name == "d4"  # it really ran
+    assert "was NOT saved" not in result.output
+    assert argstate.load_state(store.resolve("d4").slug)["presets"] == {
         "quick": {"target": "stage"}
     }
 

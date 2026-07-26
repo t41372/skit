@@ -162,6 +162,19 @@ def test_describe_not_found(tmp_path):
 # ============================================================ launch policy: workdir
 
 
+def test_params_help_files_the_policy_flags_under_their_own_panel():
+    """`skit params` is named for parameter definitions but also carries the entry/launch
+    policy switches (--workdir, --interpreter, --template, --runner, --interpolate,
+    --normalize). Left in one undifferentiated option list they read as parameter flags;
+    a rich_help_panel says out loud which half of the command they belong to."""
+    result = runner.invoke(cli.app, ["params", "--help"])
+    assert result.exit_code == 0, result.output
+    out = _flat(result.output)
+    assert "Entry & launch policy (not parameter definitions)" in out
+    for flag in ("--workdir", "--interpreter", "--template", "--runner", "--normalize"):
+        assert flag in out
+
+
 @pytest.mark.parametrize("literal", ["origin", "store", "invoke"])
 def test_params_workdir_literals(tmp_path, literal):
     _shell(tmp_path)

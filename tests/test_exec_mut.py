@@ -855,4 +855,10 @@ def test_ensure_uv_generic_failure_message_exact(
     monkeypatch.setattr("urllib.request.urlopen", fail)
     with pytest.raises(uvman.UvDownloadError) as exc_info:
         uvman.ensure_uv_downloaded(quiet=True)
-    assert str(exc_info.value) == "Failed to download uv: <urlopen error connection refused>"
+    # The wrapped failure carries the mirror lifeline: users who hit this arrive via
+    # `skit add && skit run`, never through the bare-`skit` first-run wizard.
+    assert str(exc_info.value) == (
+        "Failed to download uv: <urlopen error connection refused>. "
+        "Behind a firewall or in mainland China? Point skit at a mirror: "
+        "skit config mirror.github nju (or TUI Preferences → mirrors)."
+    )

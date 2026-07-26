@@ -984,10 +984,16 @@ def test_doctor_uv_found(monkeypatch, tmp_path):
     assert result.exit_code == 0
 
 
-def test_doctor_uv_missing(monkeypatch):
+def test_doctor_uv_missing_on_an_empty_library_is_healthy(monkeypatch):
+    """A fresh install (no entries) without uv is NOT a failure: skit fetches its own
+    pinned copy the first time a Python entry needs one, so doctor reports the dim
+    "not needed yet" line and exits 0 instead of sending new users to a website."""
     monkeypatch.setattr("skit.langs.launch.find_uv", lambda: None)
     result = runner.invoke(cli.app, ["doctor"])
-    assert result.exit_code == 1
+    assert result.exit_code == 0
+    out = " ".join(result.output.split())
+    assert "uv: not found — not needed yet." in out
+    assert "Python entries cannot run" not in out
 
 
 def test_doctor_rebuild(monkeypatch, tmp_path):
@@ -1321,12 +1327,25 @@ def test_preset_list_escapes_markup_in_name_and_values(tmp_path):
     assert "[red]Taipei[/red]" in result.output
 
 
-def test_preset_save_command_escapes_markup_in_preset_name_and_entry_name(tmp_path):
+def test_preset_save_command_escapes_markup_in_preset_name_and_entry_name(
+    tmp_path, monkeypatch, capsys
+):
+    # The saved-confirmation line interpolates both names; a terminal is what makes
+    # `preset save` collect values at all, so drive the interactive lane directly.
     store.add_command("echo {msg}", name="[blue]e[/blue]")
-    result = runner.invoke(
-        cli.app, ["preset", "save", "[blue]e[/blue]", "[green]p[/green]"], input="hi\n"
-    )
-    assert result.exit_code == 0, result.output
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr(cli.promptform, "collect", lambda *a, **k: {"msg": "hi"})
+    cli.preset_save("[blue]e[/blue]", "[green]p[/green]", from_last=False)
+    out = capsys.readouterr().out
+    assert "[green]p[/green]" in out
+    assert "[blue]e[/blue]" in out
+
+
+def test_preset_save_non_interactive_message_escapes_markup_in_both_names(tmp_path):
+    """The refusal names the entry and the preset too — through _fail, which escapes."""
+    store.add_command("echo {msg}", name="[blue]e[/blue]")
+    result = runner.invoke(cli.app, ["preset", "save", "[blue]e[/blue]", "[green]p[/green]"])
+    assert result.exit_code == 1
     assert "[green]p[/green]" in result.output
     assert "[blue]e[/blue]" in result.output
 

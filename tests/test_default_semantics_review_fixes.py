@@ -33,7 +33,7 @@ from typing import Any
 
 from typer.testing import CliRunner
 
-from skit import analysis, argstate, cli, flows, store
+from skit import analysis, argstate, cli, flows, launcher, store
 from skit.langs.python import metawriter, shim
 from skit.langs.python.analyzer import analyze as py_analyze
 from skit.langs.shell import analyzer as shell
@@ -432,25 +432,18 @@ def test_last_used_filters_the_default_but_keeps_a_delivered_empty():
     assert plan.fields[0].delivers_empty is True
 
 
-def test_run_save_preset_stores_a_default_equal_value_verbatim(tmp_path: Path):
+def test_run_save_preset_stores_a_default_equal_value_verbatim(tmp_path: Path, monkeypatch):
     # The deliberate counterpart of the filter above: a preset is the named way to PIN a
     # value, so it stores the run's values verbatim — including one that happens to equal
-    # today's default. (--dry-run keeps this hermetic; the preset write is on the same path.)
+    # today's default. It has to be a REAL run: --dry-run writes nothing at all now, so
+    # the launch is stubbed instead of skipped.
+    monkeypatch.setattr(launcher, "run_entry", lambda *a, **k: 0)
     body = 'GREETING = "bonjour"\nprint(GREETING)\n'
     specs = [ParamDecl(name="GREETING", binding="const", type="str", default="bonjour")]
     entry = _managed(tmp_path, body, specs, name="pinned")
     result = runner.invoke(
         cli.app,
-        [
-            "run",
-            "pinned",
-            "--set",
-            "GREETING=bonjour",
-            "--save-preset",
-            "p",
-            "--no-input",
-            "--dry-run",
-        ],
+        ["run", "pinned", "--set", "GREETING=bonjour", "--save-preset", "p", "--no-input"],
     )
     assert result.exit_code == 0, result.output
     state = argstate.load_state(entry.slug)

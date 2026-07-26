@@ -304,7 +304,10 @@ def test_config_set_form_unknown_message():
 def test_config_set_js_runner_unknown_message():
     result = runner.invoke(cli.app, ["config", "js.runner", "carrier-pigeon"])
     assert result.exit_code == 2
-    assert "Unknown JS runner" in result.output
+    out = " ".join(result.output.split())
+    assert "Unknown JS runtime: carrier-pigeon" in out
+    # The signpost to the OTHER runner vocabulary: skit runner manages prompt agents.
+    assert "That is: skit runner" in out
     assert "XX" not in result.output  # msgid wrapper AND the ', ' join separator
 
 
