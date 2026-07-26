@@ -1425,8 +1425,12 @@ class TestContractSync:
             for lang in sources.LANGS
             for lines in (20, 200, 2000)
         } | {
-            # The half-written twin, at the largest size only (micro._BROKEN_LINES).
-            f"{lang}_2000_broken.{sources.EXTENSIONS[lang]}"
+            # The half-written twin, at one size only. Derived, not a third hardcoded
+            # copy of the tier: which tier it is belongs to
+            # test_broken_lines_constant_is_the_same_in_both_files, which pins the two
+            # source constants to each other AND to a tier the loop above materializes.
+            # What THIS test guards is the naming scheme and the file set.
+            f"{lang}_{micro_suite._BROKEN_LINES}_broken.{sources.EXTENSIONS[lang]}"
             for lang in sources.LANGS
         }
         assert {path.name for path in materialized.iterdir()} == expected
