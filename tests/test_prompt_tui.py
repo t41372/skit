@@ -1010,7 +1010,7 @@ async def test_settings_candidate_picker_reaches_a_hidden_name_and_waits_for_out
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause()
         screen = await _open_settings(app, pilot)
-        await pilot.press("ctrl+o")
+        await pilot.press("ctrl+l")
         await pilot.pause()
         modal = app.screen
         assert isinstance(modal, PromptCandidatePickerModal)
@@ -1072,13 +1072,13 @@ async def test_settings_candidate_picker_cancel_and_unchanged_done_are_noops(tmp
         await pilot.pause()
         screen = await _open_settings(app, pilot)
 
-        await pilot.press("ctrl+o", "escape")
+        await pilot.press("ctrl+l", "escape")
         await pilot.pause()
         assert app.screen is screen
         assert screen._pending_prompt_candidates == set()
         assert screen._dirty is False
 
-        await pilot.press("ctrl+o", "ctrl+s")
+        await pilot.press("ctrl+l", "ctrl+s")
         await pilot.pause()
         assert app.screen is screen
         assert screen._pending_prompt_candidates == set()
@@ -1088,7 +1088,7 @@ async def test_settings_candidate_picker_cancel_and_unchanged_done_are_noops(tmp
 
 
 async def test_settings_candidate_picker_tolerates_preview_recompose(tmp_path):
-    """A queued Ctrl+O/Done can straddle a responsive recompose.  Missing old preview
+    """A queued Ctrl+L/Done can straddle a responsive recompose.  Missing old preview
     widgets are skipped by name while the full modal selection still survives."""
     from skit.langs.prompt.analyzer import LIST_PREVIEW_LIMIT
 
@@ -1100,7 +1100,7 @@ async def test_settings_candidate_picker_tolerates_preview_recompose(tmp_path):
         await pilot.pause()
         screen = await _open_settings(app, pilot)
         await screen.query_one("#st-prompt-new-0", Checkbox).remove()
-        await pilot.press("ctrl+o")
+        await pilot.press("ctrl+l")
         await pilot.pause()
         modal = app.screen
         assert isinstance(modal, PromptCandidatePickerModal)
@@ -1123,13 +1123,13 @@ async def test_settings_choose_variables_key_is_harmless_when_off_or_short(tmp_p
         insertion = screen.query_one("#st-interpolate", Checkbox)
         insertion.value = False
         await pilot.pause()
-        await pilot.press("ctrl+o")
+        await pilot.press("ctrl+l")
         await pilot.pause()
         assert app.screen is screen
 
         insertion.value = True
         await pilot.pause()
-        await pilot.press("ctrl+o")
+        await pilot.press("ctrl+l")
         await pilot.pause()
         assert app.screen is screen
         await pilot.press("escape")
@@ -1191,7 +1191,7 @@ async def test_review_candidate_picker_keyboard_reaches_a_hidden_name(tmp_path):
         await pilot.pause()
         app.push_screen(PromptReviewScreen(src))
         await pilot.pause()
-        await pilot.press("ctrl+o")  # the advertised full-list keyboard path
+        await pilot.press("ctrl+l")  # the advertised full-list keyboard path
         await pilot.pause()
         modal = app.screen
         assert isinstance(modal, PromptCandidatePickerModal)
@@ -1257,7 +1257,7 @@ async def test_review_candidate_picker_keeps_search_and_footer_usable_on_tiny_sc
         await pilot.pause()
         app.push_screen(PromptReviewScreen(src))
         await pilot.pause()
-        await pilot.press("ctrl+o")
+        await pilot.press("ctrl+l")
         await pilot.pause()
         modal = app.screen
         assert isinstance(modal, PromptCandidatePickerModal)
@@ -1289,7 +1289,7 @@ async def test_review_candidate_picker_empty_search_and_cancel_are_keyboard_oper
         await pilot.pause()
         review = app.screen
         assert isinstance(review, PromptReviewScreen)
-        await pilot.press("ctrl+o")
+        await pilot.press("ctrl+l")
         await pilot.pause()
         modal = app.screen
         assert isinstance(modal, PromptCandidatePickerModal)
@@ -1325,7 +1325,7 @@ async def test_review_candidate_picker_tolerates_preview_recompose(tmp_path):
         review = PromptReviewScreen(src)
         app.push_screen(review)
         await pilot.pause()
-        await pilot.press("ctrl+o")
+        await pilot.press("ctrl+l")
         await pilot.pause()
         modal = app.screen
         assert isinstance(modal, PromptCandidatePickerModal)
@@ -1349,7 +1349,7 @@ async def test_review_choose_variables_key_is_harmless_for_a_short_prompt(tmp_pa
         review = PromptReviewScreen(src)
         app.push_screen(review)
         await pilot.pause()
-        await pilot.press("ctrl+o")
+        await pilot.press("ctrl+l")
         await pilot.pause()
         assert app.screen is review
         await pilot.press("escape")

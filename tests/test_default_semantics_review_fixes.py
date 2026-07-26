@@ -342,7 +342,11 @@ def test_preset_from_last_saves_effective_values_after_an_all_defaults_run(tmp_p
     plan = flows.plan_for_entry(entry)
     values = flows.prefill(plan, entry.slug)
     assert values == {"GREETING": "bonjour"}
-    flows.save_after_run(entry.slug, plan, values, [], 0, at="2026-07-09T14:30:05+00:00")
+    # extra_raw=False: this stands in for a `skit run greet` — a CLI tail the user's shell
+    # already processed (there is none here at all).
+    flows.save_after_run(
+        entry.slug, plan, values, [], 0, at="2026-07-09T14:30:05+00:00", extra_raw=False
+    )
     state = argstate.load_state(entry.slug)
     assert state["values"] == {}  # nothing differed from the default
     assert state["last_run"]["exit"] == 0  # ... but the run really happened
@@ -370,7 +374,9 @@ def test_preset_from_last_pins_the_default_that_actually_ran(tmp_path: Path):
     entry = _managed(tmp_path, body, specs, name="history")
     plan = flows.plan_for_entry(entry)
     values = flows.prefill(plan, entry.slug)
-    flows.save_after_run(entry.slug, plan, values, [], 0, at="2026-07-09T14:30:05+00:00")
+    flows.save_after_run(
+        entry.slug, plan, values, [], 0, at="2026-07-09T14:30:05+00:00", extra_raw=False
+    )
 
     current = entry.script_path.read_text(encoding="utf-8")
     entry.script_path.write_text(current.replace('GREETING = "A"', 'GREETING = "B"'))

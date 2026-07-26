@@ -214,7 +214,11 @@ def test_add_stdin_store_error_surfaces_as_exit_1():
 # --------------------------------------------------------------------------
 
 
-def test_remove_command_entry_confirmed(tmp_path):
+def test_remove_command_entry_confirmed(tmp_path, monkeypatch):
+    # The confirm branch is now reachable only on a real terminal (in a pipe/CI a missing
+    # -y is a worded exit-2 refusal, never a prompt that eats piped stdin), so the tty
+    # answer has to be faked the way `runner remove`'s twin test does it.
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     store.add_command("echo hi", name="c")
     result = runner.invoke(cli.app, ["remove", "c"], input="y\n")
     assert result.exit_code == 0, result.output

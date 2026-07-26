@@ -222,13 +222,13 @@ async def test_prefs_dirty_esc_discard_closes(tmp_path):
     assert config.load_js_runner() == ""  # the unsaved edit never persisted
 
 
-# ------------------------------------------------- chord grammar: Ctrl+O / Ctrl+K
+# ------------------------------------------------- chord grammar: Ctrl+G / Ctrl+Y
 
 
 async def test_prefs_ctrl_k_in_an_input_edits_the_field_not_a_modal(tmp_path):
-    """Ctrl+O/Ctrl+K are NON-priority: with focus in a prefs Input, Ctrl+K
-    is the Input's own delete-to-end-of-line — the screen must NOT answer a text-editing
-    chord with a modal on a screen full of text fields."""
+    """Ctrl+K stays the Input's own delete-to-end-of-line on Preferences: the screen binds
+    NOTHING to it (its two squatters moved to Ctrl+G/Ctrl+Y), so a screen full of text fields
+    can never answer a text-editing chord with a modal."""
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         app.push_screen(PreferencesScreen())
@@ -246,8 +246,8 @@ async def test_prefs_ctrl_k_in_an_input_edits_the_field_not_a_modal(tmp_path):
         assert editor_box.value == "micro"  # delete-to-end ran in the Input
 
 
-async def test_prefs_ctrl_k_from_non_input_focus_opens_the_skill_modal(tmp_path, monkeypatch):
-    """The twin: from a non-Input focus (the language dropdown boots there) Ctrl+K still
+async def test_prefs_ctrl_y_from_non_input_focus_opens_the_skill_modal(tmp_path, monkeypatch):
+    """The twin: from a non-Input focus (the language dropdown boots there) Ctrl+Y
     opens the Teach-an-AI-agent modal — the chord fires, just never over an Input."""
     monkeypatch.setattr(agentskill, "detect_targets", lambda *, home, cwd: [])
     app = tui.MenuApp()
@@ -257,13 +257,13 @@ async def test_prefs_ctrl_k_from_non_input_focus_opens_the_skill_modal(tmp_path,
         screen = _as(app.screen, PreferencesScreen)
         screen.query_one("#pf-lang", Select).focus()  # a non-Input widget
         await pilot.pause()
-        await pilot.press("ctrl+k")
+        await pilot.press("ctrl+y")
         await pilot.pause()
         assert isinstance(app.screen, SkillInstallModal)
 
 
-async def test_prefs_ctrl_o_from_non_input_focus_opens_manage_runners(tmp_path):
-    """Ctrl+O from a non-Input focus opens the Manage agents screen."""
+async def test_prefs_ctrl_g_from_non_input_focus_opens_manage_runners(tmp_path):
+    """Ctrl+G from a non-Input focus opens the Manage agents screen."""
     from skit.tui_runner import RunnerManageScreen
 
     app = tui.MenuApp()
@@ -273,7 +273,7 @@ async def test_prefs_ctrl_o_from_non_input_focus_opens_manage_runners(tmp_path):
         screen = _as(app.screen, PreferencesScreen)
         screen.query_one("#pf-lang", Select).focus()
         await pilot.pause()
-        await pilot.press("ctrl+o")
+        await pilot.press("ctrl+g")
         await pilot.pause()
         assert isinstance(app.screen, RunnerManageScreen)
 
@@ -288,8 +288,8 @@ async def test_prefs_agents_count_updates_after_managing(tmp_path):
         await pilot.pause()
         screen = _as(app.screen, PreferencesScreen)
         assert "8 agents configured" in str(screen.query_one("#pf-runner-count", Static).render())
-        # Ctrl+O opens the manage screen; remove one runner (confirm) and come back.
-        await pilot.press("ctrl+o")
+        # Ctrl+G opens the manage screen; remove one runner (confirm) and come back.
+        await pilot.press("ctrl+g")
         await pilot.pause()
         manage = app.screen
         assert isinstance(manage, RunnerManageScreen)
@@ -322,7 +322,7 @@ async def test_prefs_agents_count_empty_state(tmp_path, monkeypatch):
         )
 
 
-async def test_prefs_ctrl_t_opens_then_cancel_notifies_nothing(tmp_path, monkeypatch):
+async def test_prefs_ctrl_y_opens_then_cancel_notifies_nothing(tmp_path, monkeypatch):
     monkeypatch.setattr(agentskill, "detect_targets", lambda *, home, cwd: [])
     notes: list[str] = []
     monkeypatch.setattr(
@@ -332,7 +332,7 @@ async def test_prefs_ctrl_t_opens_then_cancel_notifies_nothing(tmp_path, monkeyp
     async with app.run_test() as pilot:
         app.push_screen(PreferencesScreen())
         await pilot.pause()
-        await pilot.press("ctrl+k")
+        await pilot.press("ctrl+y")
         await pilot.pause()
         assert isinstance(app.screen, SkillInstallModal)
         _as(app.screen, SkillInstallModal).action_cancel()  # dismiss(None): no notify
@@ -396,7 +396,7 @@ async def test_skill_modal_empty_targets_shows_hint(tmp_path, monkeypatch):
         assert not app.screen.query(OptionList)
 
 
-async def test_prefs_ctrl_t_install_notifies_with_the_written_path(tmp_path, monkeypatch):
+async def test_prefs_ctrl_y_install_notifies_with_the_written_path(tmp_path, monkeypatch):
     monkeypatch.setattr(agentskill, "detect_targets", lambda *, home, cwd: [_fake_target(tmp_path)])
     notes: list[str] = []
     monkeypatch.setattr(
@@ -406,7 +406,7 @@ async def test_prefs_ctrl_t_install_notifies_with_the_written_path(tmp_path, mon
     async with app.run_test() as pilot:
         app.push_screen(PreferencesScreen())
         await pilot.pause()
-        await pilot.press("ctrl+k")
+        await pilot.press("ctrl+y")
         await pilot.pause()
         options = app.screen.query_one(OptionList)
         options.highlighted = 0

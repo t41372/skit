@@ -8,8 +8,8 @@ terminal before the child process writes (the file is entirely about terminal ha
 so an unflushed banner would interleave with the script's own output); a launch that
 never starts prints an error line and lands a "couldn't launch" status; a nonzero exit
 records a "failed (code N)" status; EOF at the "press Enter" prompt is swallowed rather
-than crashing the workbench; and the lazy, mtime-keyed drift cache is trusted only while
-fresh and reflects the plan's real drift.
+than crashing the workbench; and the lazy, mtime-keyed PLAN cache _has_drift is served
+off is trusted only while fresh and reflects the plan's real drift.
 """
 
 from __future__ import annotations
@@ -180,7 +180,7 @@ async def test_launch_failure_prints_flushed_error_and_couldnt_launch_status(
 
 
 # ---------------------------------------------------------------------------
-# _has_drift: the guard and the lazy mtime-keyed cache
+# _has_drift: the guard and the lazy mtime-keyed plan cache it reads
 # ---------------------------------------------------------------------------
 
 
@@ -198,15 +198,18 @@ def test_has_drift_is_false_and_never_stats_a_missing_script(tmp_path):
 
 
 def test_has_drift_trusts_a_fresh_mtime_matching_cache(tmp_path):
-    """A cache entry whose stored mtime equals the file's current mtime is trusted verbatim —
-    the expensive plan/reconcile is skipped and the cached verdict returned. Planting True for
-    a script whose real drift is False proves the cache is honored: mutmut_9 (mtime=None),
-    mutmut_10 (cached=None), mutmut_11 (get(None)), mutmut_14 (cached[1]) and mutmut_15 (!=)
-    all miss the plant and recompute the real False."""
+    """A cache entry whose stored key equals the CURRENT (script mtime, meta.toml mtime) pair
+    is trusted verbatim — the expensive plan/reconcile is skipped and the cached plan's drift
+    returned. Planting a drifting plan for a script whose real drift is empty proves the cache
+    is honored: any mutant that drops the key, the lookup or the equality test misses the plant
+    and recomputes the real False."""
     entry = store.add_python(_py(tmp_path, "print(1)\n"), name="clean")
-    mtime = entry.script_path.stat().st_mtime
+    key = (
+        entry.script_path.stat().st_mtime,
+        (entry.dir / "meta.toml").stat().st_mtime,
+    )
     app = tui.MenuApp()
-    app._drift_cache[entry.slug] = (mtime, True)
+    app._plan_cache[entry.slug] = (key, flows.FormPlan(source="none", drift_lines=["planted"]))
     assert app._has_drift(entry) is True
 
 

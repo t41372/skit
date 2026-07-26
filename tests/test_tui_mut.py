@@ -863,7 +863,7 @@ def test_finish_run_executes_records_and_passes_the_code_through(tmp_path, quiet
     quiet_run["code"] = 7
     printed: list[str] = []
     monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
-    pending = tui.PendingRun(entry, plan, asm, {}, [], show_drift=True)
+    pending = tui.PendingRun(entry, plan, asm, {}, [], extra_raw=True, show_drift=True)
     monkeypatch.setattr(tui.MenuApp, "run", lambda self: pending)
     assert tui.run_menu() == 7
     assert "values" in quiet_run
@@ -881,7 +881,9 @@ def test_finish_run_launch_failure_uses_docker_codes_and_records_nothing(tmp_pat
     printed: list[str] = []
     monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
     monkeypatch.setattr(
-        tui.MenuApp, "run", lambda self: tui.PendingRun(entry, plan, asm, {}, [], False)
+        tui.MenuApp,
+        "run",
+        lambda self: tui.PendingRun(entry, plan, asm, {}, [], extra_raw=True, show_drift=False),
     )
     assert tui.run_menu() == 127
     assert argstate.load_state(entry.slug)["last_run"] == {}

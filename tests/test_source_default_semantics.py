@@ -410,6 +410,7 @@ def test_save_after_run_persists_via_the_remembered_rule(tmp_path):
         [],
         0,
         at="2026-07-09T14:30:05+00:00",
+        extra_raw=False,  # a CLI-style run: no tail at all, nothing to re-expand
     )
     state = argstate.load_state("rem")
     assert state["values"] == {"WIDTH": "900"}  # GREETING (== default) dropped; WIDTH kept

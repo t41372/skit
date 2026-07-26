@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from skit import argstate, cli, config, i18n, store
+from skit import argstate, cli, config, i18n, rewrite, store
 from skit.langs.registry import spec_for
 
 runner = CliRunner()
@@ -1020,22 +1020,27 @@ def test_onboard_script_params_reference_forwards_frameworks_to_notice(tmp_path,
 
 
 def test_onboard_script_params_write_back_is_byte_based_not_text_mode(tmp_path, monkeypatch):
-    """Onboarding's write-back must be BYTE-based (read_bytes + write_bytes), like _edit_params —
-    never text-mode write_text, which re-expands \\n to the host os.linesep. The only read_text on
-    the copy is the analyzer read (errors="replace"); the write-back re-reads raw bytes and writes
-    raw bytes, so a candidate tick neither bakes U+FFFD over raw bytes nor rewrites line endings."""
+    """Onboarding's write-back must be BYTE-based, like _edit_params — never text-mode
+    write_text, which re-expands \\n to the host os.linesep. The only read_text on the copy is
+    the analyzer read (errors="replace"); the write-back re-reads raw bytes and lands raw bytes
+    through the shared rewrite pair, so a candidate tick neither bakes U+FFFD over raw bytes nor
+    rewrites line endings. The landing is atomic + mode-preserving now (write_block_edit →
+    atomic_write_bytes_keep_mode), so neither Path.write_bytes nor Path.write_text may touch the
+    copy: a torn plain write could truncate the file a user just handed skit."""
     _two_const_shell(tmp_path)
     entry = store.resolve("d")  # resolve before spying, so only the copy read/write are captured
     _fake_tty(monkeypatch)
     monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: "1"))  # pick one -> writes
     text_reads: list[dict[str, object]] = []
     byte_reads: list[Path] = []
-    byte_writes: list[bytes] = []
+    atomic_writes: list[bytes] = []
+    plain_byte_writes: list[Path] = []  # a plain (non-atomic) byte write is a regression too
     text_writes: list[Path] = []  # the regression: write_text must never touch the stored copy
     real_read_text = Path.read_text
     real_read_bytes = Path.read_bytes
     real_write_bytes = Path.write_bytes
     real_write_text = Path.write_text
+    real_atomic = rewrite.atomic_write_bytes_keep_mode
 
     def read_text_spy(self, encoding=None, errors=None, *a, **k):
         if self == entry.script_path:
@@ -1047,9 +1052,14 @@ def test_onboard_script_params_write_back_is_byte_based_not_text_mode(tmp_path, 
             byte_reads.append(self)
         return real_read_bytes(self)
 
+    def atomic_spy(path, data):
+        if path == entry.script_path:
+            atomic_writes.append(data)
+        return real_atomic(path, data)
+
     def write_bytes_spy(self, data):
         if self == entry.script_path:
-            byte_writes.append(data)
+            plain_byte_writes.append(self)
         return real_write_bytes(self, data)
 
     def write_text_spy(self, *a, **k):
@@ -1059,13 +1069,15 @@ def test_onboard_script_params_write_back_is_byte_based_not_text_mode(tmp_path, 
 
     monkeypatch.setattr(Path, "read_text", read_text_spy)
     monkeypatch.setattr(Path, "read_bytes", read_bytes_spy)
+    monkeypatch.setattr(rewrite, "atomic_write_bytes_keep_mode", atomic_spy)
     monkeypatch.setattr(Path, "write_bytes", write_bytes_spy)
     monkeypatch.setattr(Path, "write_text", write_text_spy)
     assert cli._onboard_script_params(entry, _spec("shell"), no_input=False) == ["WIDTH"]
     assert [r["errors"] for r in text_reads] == ["replace"]  # analyzer read only; no text re-read
     assert byte_reads  # the write-back re-read raw bytes
-    assert len(byte_writes) == 1  # a single byte write-back
-    assert b"[tool.skit]" in byte_writes[0]  # ...carrying the inserted block
+    assert len(atomic_writes) == 1  # a single atomic, mode-preserving byte write-back
+    assert b"[tool.skit]" in atomic_writes[0]  # ...carrying the inserted block
+    assert plain_byte_writes == []  # never a plain write_bytes (non-atomic: can tear)
     assert text_writes == []  # write_text never touched the stored copy (no os.linesep expansion)
 
 
@@ -1108,20 +1120,24 @@ def test_onboard_script_params_preserves_non_utf8_source_bytes(tmp_path, monkeyp
 
 
 def test_edit_params_write_back_is_byte_based_not_text_mode(tmp_path, monkeypatch):
-    """`params --manage`'s write-back must be BYTE-based (read_bytes + write_bytes), like
-    _normalize_params — never text-mode write_text, which re-expands \\n to os.linesep and would
-    CRLF-ify the whole stored copy on Windows. The only read_text on the copy is the analysis
-    read (errors="replace"); the write-back re-reads raw bytes and writes raw bytes, so a manage
-    edit can neither bake U+FFFD over raw bytes nor rewrite line endings to the host default."""
+    """`params --manage`'s write-back must be BYTE-based, like _normalize_params — never
+    text-mode write_text, which re-expands \\n to os.linesep and would CRLF-ify the whole stored
+    copy on Windows. The only read_text on the copy is the analysis read (errors="replace"); the
+    write-back re-reads raw bytes and lands raw bytes through the shared rewrite pair, so a
+    manage edit can neither bake U+FFFD over raw bytes nor rewrite line endings to the host
+    default — and the landing is atomic + mode-preserving, so neither Path.write_bytes nor
+    Path.write_text may touch the copy."""
     entry = _two_const_shell(tmp_path)
     text_reads: list[dict[str, object]] = []
     byte_reads: list[Path] = []
-    byte_writes: list[bytes] = []
+    atomic_writes: list[bytes] = []
+    plain_byte_writes: list[Path] = []  # a plain (non-atomic) byte write is a regression too
     text_writes: list[Path] = []  # the regression: write_text must never touch the stored copy
     real_read_text = Path.read_text
     real_read_bytes = Path.read_bytes
     real_write_bytes = Path.write_bytes
     real_write_text = Path.write_text
+    real_atomic = rewrite.atomic_write_bytes_keep_mode
 
     def read_text_spy(self, encoding=None, errors=None, *a, **k):
         if self == entry.script_path:
@@ -1133,9 +1149,14 @@ def test_edit_params_write_back_is_byte_based_not_text_mode(tmp_path, monkeypatc
             byte_reads.append(self)
         return real_read_bytes(self)
 
+    def atomic_spy(path, data):
+        if path == entry.script_path:
+            atomic_writes.append(data)
+        return real_atomic(path, data)
+
     def write_bytes_spy(self, data):
         if self == entry.script_path:
-            byte_writes.append(data)
+            plain_byte_writes.append(self)
         return real_write_bytes(self, data)
 
     def write_text_spy(self, *a, **k):
@@ -1145,14 +1166,16 @@ def test_edit_params_write_back_is_byte_based_not_text_mode(tmp_path, monkeypatc
 
     monkeypatch.setattr(Path, "read_text", read_text_spy)
     monkeypatch.setattr(Path, "read_bytes", read_bytes_spy)
+    monkeypatch.setattr(rewrite, "atomic_write_bytes_keep_mode", atomic_spy)
     monkeypatch.setattr(Path, "write_bytes", write_bytes_spy)
     monkeypatch.setattr(Path, "write_text", write_text_spy)
     result = runner.invoke(cli.app, ["params", "d", "--manage", "WIDTH"])
     assert result.exit_code == 0, result.output
     assert [r["errors"] for r in text_reads] == ["replace"]  # analysis read only; no text re-read
     assert byte_reads  # the write-back re-read raw bytes
-    assert len(byte_writes) == 1  # a single byte write-back
-    assert b"[tool.skit]" in byte_writes[0]  # ...carrying the rewritten block
+    assert len(atomic_writes) == 1  # a single atomic, mode-preserving byte write-back
+    assert b"[tool.skit]" in atomic_writes[0]  # ...carrying the rewritten block
+    assert plain_byte_writes == []  # never a plain write_bytes (non-atomic: can tear)
     assert text_writes == []  # write_text never touched the stored copy (no os.linesep expansion)
 
 

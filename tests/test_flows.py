@@ -519,11 +519,15 @@ def test_save_after_run_persists_intent_and_stamps_run(tmp_path):
         ["--fast"],
         0,
         at="2026-07-09T14:30:05+00:00",
+        extra_raw=True,  # the TUI form path: the extra field is raw intent text
     )
     state = argstate.load_state("s")
     assert state["values"]["OUTPUT"] == "long_{today}.jpg"  # raw token text, not expansion
     assert "API_KEY" not in state["values"]  # C3
     assert state["extra_args"] == ["--fast"]
+    # ... and the tail's PROVENANCE travels with it, so a later replay from either face
+    # re-expands exactly the tails that were captured raw.
+    assert state["extra_args_raw"] is True
     assert state["last_run"] == {
         "at": "2026-07-09T14:30:05+00:00",
         "exit": 0,
@@ -939,13 +943,18 @@ def test_save_after_run_clears_cleared_extra_args(tmp_path):
     entry = _python_entry(tmp_path, MANAGED_SCRIPT, slug="clr")
     plan = flows.plan_for_entry(entry)
     flows.save_after_run(
-        "clr", plan, {"OUTPUT": "a"}, ["--fast"], 0, at="2026-01-01T00:00:00+00:00"
+        "clr", plan, {"OUTPUT": "a"}, ["--fast"], 0, at="2026-01-01T00:00:00+00:00", extra_raw=True
     )
     assert argstate.load_state("clr")["extra_args"] == ["--fast"]
+    assert argstate.load_state("clr")["extra_args_raw"] is True  # the form's raw intent text
     # The user emptied the extra-args field: the cleared state must PERSIST (the old
-    # falsy-merge resurrected it forever).
-    flows.save_after_run("clr", plan, {"OUTPUT": "a"}, [], 0, at="2026-01-01T00:00:01+00:00")
+    # falsy-merge resurrected it forever) — and the provenance marker goes with it, so a
+    # later CLI tail can never inherit the old form tail's expansion regime.
+    flows.save_after_run(
+        "clr", plan, {"OUTPUT": "a"}, [], 0, at="2026-01-01T00:00:01+00:00", extra_raw=True
+    )
     assert argstate.load_state("clr")["extra_args"] == []
+    assert argstate.load_state("clr")["extra_args_raw"] is False
 
 
 def test_save_after_run_purges_secret_placeholder_from_presets(tmp_path):
@@ -957,7 +966,9 @@ def test_save_after_run_purges_secret_placeholder_from_presets(tmp_path):
     argstate.save_preset("c3", "old", {"api_key": "sk-123"})
     argstate.save_last("c3", values={"api_key": "sk-123"})
     plan = flows.plan_for_entry(entry)
-    flows.save_after_run("c3", plan, {"api_key": "sk-456"}, [], 0, at="2026-01-01T00:00:00+00:00")
+    flows.save_after_run(
+        "c3", plan, {"api_key": "sk-456"}, [], 0, at="2026-01-01T00:00:00+00:00", extra_raw=False
+    )
     state = argstate.load_state("c3")
     assert "api_key" not in state["values"]
     assert all("api_key" not in p for p in state["presets"].values())

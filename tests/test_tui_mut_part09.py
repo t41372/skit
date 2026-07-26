@@ -1,7 +1,7 @@
 """Mutation-kill tests for src/skit/tui.py — chunk 9/10.
 
 Covers the Library action paths: Ctrl+C double-tap quit + toast, edit (no-source
-message, editor-error print/prompt/EOF suppression, drift-cache invalidation), the
+message, editor-error print/prompt/EOF suppression, plan-cache invalidation), the
 Script-settings deep-link + close callback, run/rerun guards and value plumbing.
 
 Each test pins real, observable behaviour through the public TUI surface (Textual
@@ -16,7 +16,7 @@ import pytest
 from textual.containers import VerticalScroll
 from textual.widgets import DataTable, Input, Static
 
-from skit import argstate, config, launcher, store, tui
+from skit import argstate, config, flows, launcher, store, tui
 from skit.langs.python import metawriter
 from skit.params import ParamDecl
 from skit.tui_form import FieldRow, RunFormScreen
@@ -176,8 +176,13 @@ async def test_edit_editor_error_lands_on_the_status_line(tmp_path, monkeypatch)
     assert "Edited" not in status
 
 
-async def test_edit_invalidates_fresh_drift_cache_entry(tmp_path, monkeypatch):
-    """The stored copy may change under the editor, so edit drops this slug's drift
+def _plan_key(entry) -> tuple[float, float]:
+    """The cache key _cached_plan builds: (script mtime, meta.toml mtime)."""
+    return (entry.script_path.stat().st_mtime, (entry.dir / "meta.toml").stat().st_mtime)
+
+
+async def test_edit_invalidates_fresh_plan_cache_entry(tmp_path, monkeypatch):
+    """The stored copy may change under the editor, so edit drops this slug's plan
     cache entry — even a fresh (mtime-matching) one — forcing a re-derivation. A stale
     'has drift' sentinel that survives would light a false 'script changed' warning."""
     entry = store.add_python(_py(tmp_path, "print(1)\n"), name="a")
@@ -186,25 +191,27 @@ async def test_edit_invalidates_fresh_drift_cache_entry(tmp_path, monkeypatch):
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        # A cache entry whose mtime matches the file on disk: only the pop can clear it
+        # A cache entry whose key matches the files on disk: only the pop can clear it
         # (an mtime mismatch would recompute regardless, masking the bug).
-        mtime = entry.script_path.stat().st_mtime
-        app._drift_cache[entry.slug] = (mtime, True)
+        app._plan_cache[entry.slug] = (
+            _plan_key(entry),
+            flows.FormPlan(source="none", drift_lines=["planted"]),
+        )
         app.action_edit()
         await pilot.pause()
         assert "The script changed" not in _detail_text(app)  # re-derived: no real drift
 
 
-async def test_edit_drift_cache_pop_tolerates_an_absent_slug(tmp_path, monkeypatch):
+async def test_edit_plan_cache_pop_tolerates_an_absent_slug(tmp_path, monkeypatch):
     """The post-edit pop must not assume the slug is cached — dropping pop's default
-    would raise KeyError and crash the edit whenever drift was never computed."""
+    would raise KeyError and crash the edit whenever no plan was ever cached."""
     store.add_python(_py(tmp_path, "print(1)\n"), name="j")
     monkeypatch.setattr(tui.editor, "open_in_editor", lambda p: None)
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        app._drift_cache.clear()  # slug is absent when the pop runs
+        app._plan_cache.clear()  # slug is absent when the pop runs
         app.action_edit()  # a KeyError here would crash the edit
         await pilot.pause()
         assert "Edited j." in _status_text(app)
@@ -261,8 +268,8 @@ async def test_settings_close_reloads_the_library(tmp_path):
         assert app.query_one(DataTable).row_count == 2  # _closed reloaded the table
 
 
-async def test_settings_close_invalidates_fresh_drift_cache_entry(tmp_path):
-    """The _closed callback pops this slug's drift cache (a Resync could have changed
+async def test_settings_close_invalidates_fresh_plan_cache_entry(tmp_path):
+    """The _closed callback pops this slug's plan cache (a Resync could have changed
     the definitions), even a fresh mtime-matching entry. A stale sentinel would show a
     bogus 'script changed' warning after closing."""
     entry = store.add_python(_py(tmp_path, "print(1)\n"), name="a")
@@ -271,14 +278,16 @@ async def test_settings_close_invalidates_fresh_drift_cache_entry(tmp_path):
         await pilot.pause()
         app.action_settings()
         await pilot.pause()
-        mtime = entry.script_path.stat().st_mtime
-        app._drift_cache[entry.slug] = (mtime, True)
+        app._plan_cache[entry.slug] = (
+            _plan_key(entry),
+            flows.FormPlan(source="none", drift_lines=["planted"]),
+        )
         app.screen.dismiss(False)
         await pilot.pause()
         assert "The script changed" not in _detail_text(app)
 
 
-async def test_settings_close_drift_pop_tolerates_an_absent_slug(tmp_path):
+async def test_settings_close_plan_pop_tolerates_an_absent_slug(tmp_path):
     """The _closed pop must survive an uncached slug: dropping pop's default raises
     KeyError inside the dismiss callback, which surfaces as an app crash."""
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
@@ -290,7 +299,7 @@ async def test_settings_close_drift_pop_tolerates_an_absent_slug(tmp_path):
         from skit.tui_settings import ScriptSettingsScreen
 
         assert isinstance(app.screen, ScriptSettingsScreen)
-        app._drift_cache.clear()  # slug absent when _closed's pop runs
+        app._plan_cache.clear()  # slug absent when _closed's pop runs
         app.screen.dismiss(False)
         await pilot.pause()
         # The screen closed cleanly; a KeyError in _closed would fault the app on exit.

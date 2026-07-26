@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from textual.widgets import Static
 
-from skit import store, tui
+from skit import flows, store, tui
 
 
 @pytest.fixture(autouse=True)
@@ -74,16 +74,23 @@ async def test_edit_command_entry_reports_no_source(tmp_path, monkeypatch):
         assert "no editable source" in str(app.query_one("#status", Static).render())
 
 
-async def test_edit_invalidates_the_drift_cache(tmp_path, monkeypatch):
+async def test_edit_invalidates_the_plan_cache(tmp_path, monkeypatch):
     entry = store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     monkeypatch.setattr(tui.editor, "open_in_editor", lambda p: None)
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
     app = tui.MenuApp()
     async with app.run_test() as pilot:
-        app._drift_cache[entry.slug] = (0.0, True)
+        # A stale sentinel under an impossible mtime key, carrying drift the file doesn't
+        # have: only the post-edit pop + re-derivation can replace it.
+        stale = flows.FormPlan(source="none", drift_lines=["stale sentinel"])
+        app._plan_cache[entry.slug] = ((0.0, 0.0), stale)
         app.action_edit()
         await pilot.pause()
-        # The stale sentinel is gone: the reload re-derived the truth from the file.
-        mtime, drift = app._drift_cache[entry.slug]
-        assert mtime != 0.0
-        assert drift is False
+        # The stale sentinel is gone: the reload re-derived the truth from the files.
+        key, plan = app._plan_cache[entry.slug]
+        assert key == (
+            entry.script_path.stat().st_mtime,
+            (entry.dir / "meta.toml").stat().st_mtime,
+        )
+        assert plan is not stale
+        assert plan.drift_lines == []

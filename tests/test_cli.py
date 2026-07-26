@@ -771,7 +771,9 @@ def test_preset_list_not_found():
 def test_preset_delete(tmp_path):
     ent = store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     argstate.save_preset(ent.slug, "prod", {"CITY": "Taipei"})
-    result = runner.invoke(cli.app, ["preset", "delete", "a", "prod"])
+    # A preset is unrecoverable user data: deleting it non-interactively takes -y, the same
+    # ceremony `remove` and `runner remove` ask for.
+    result = runner.invoke(cli.app, ["preset", "delete", "a", "prod", "--yes"])
     assert result.exit_code == 0
     assert argstate.load_state(ent.slug)["presets"] == {}
 

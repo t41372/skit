@@ -207,6 +207,7 @@ def test_a_missing_state_file_is_empty_not_an_error() -> None:
     assert argstate.load_state("absent") == {
         "values": {},
         "extra_args": [],
+        "extra_args_raw": False,
         "presets": {},
         "last_run": {},
     }
@@ -227,7 +228,13 @@ def _write_values_file(slug: str, body: str) -> None:
     (values_dir() / f"{slug}.toml").write_text(body, encoding="utf-8")
 
 
-_EMPTY_STATE = {"values": {}, "extra_args": [], "presets": {}, "last_run": {}}
+_EMPTY_STATE = {
+    "values": {},
+    "extra_args": [],
+    "extra_args_raw": False,
+    "presets": {},
+    "last_run": {},
+}
 
 
 @pytest.mark.parametrize(

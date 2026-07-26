@@ -116,7 +116,7 @@ def test_finish_run_prints_banner_drift_and_transparency_all_flushed(
     calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
     monkeypatch.setattr("builtins.print", lambda *a, **k: calls.append((a, k)))
 
-    pending = tui.PendingRun(entry, plan, asm, {}, [], show_drift=True)
+    pending = tui.PendingRun(entry, plan, asm, {}, [], extra_raw=True, show_drift=True)
     assert tui._finish_run(pending) == 0  # the script's own code passes through
 
     # The run banner: exact framing + msgid, flushed.
@@ -152,7 +152,7 @@ def test_finish_run_launch_failure_prints_error_and_uses_docker_code(tmp_path, m
     calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
     monkeypatch.setattr("builtins.print", lambda *a, **k: calls.append((a, k)))
 
-    pending = tui.PendingRun(entry, plan, asm, {}, [], show_drift=False)
+    pending = tui.PendingRun(entry, plan, asm, {}, [], extra_raw=True, show_drift=False)
     assert tui._finish_run(pending) == 127  # docker code for a missing target
 
     err = next(((a, k) for a, k in calls if a and str(a[0]).startswith("Error:")), None)
@@ -175,5 +175,5 @@ def test_finish_run_unmapped_failure_falls_back_to_generic_skit_error_code(tmp_p
         "execute",
         lambda *a, **k: flows.RunOutcome(None, "totally-unknown-failure", "boom"),
     )
-    pending = tui.PendingRun(entry, plan, asm, {}, [], show_drift=False)
+    pending = tui.PendingRun(entry, plan, asm, {}, [], extra_raw=True, show_drift=False)
     assert tui._finish_run(pending) == 125
