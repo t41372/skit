@@ -322,6 +322,7 @@ def test_preset_save_set_skips_secrets_with_notice(tmp_path):
         ["preset", "save", "a", "n", "--set", "CITY=Kyoto", "--set", "TOKEN=hunter2"],
     )
     assert result.exit_code == 0
+    assert "never stored in presets" in result.output  # the notice, not just the outcome
     saved = argstate.load_state(ent.slug)["presets"]["n"]
     assert saved == {"CITY": "Kyoto"}
     assert "hunter2" not in str(argstate.load_state(ent.slug))
@@ -362,6 +363,57 @@ def test_preset_save_python_all_secret_form_refuses_the_husk(monkeypatch, tmp_pa
     assert exc.value.exit_code == 2
     assert argstate.load_state(ent.slug)["presets"] == {}
     assert "typed-secret" not in str(argstate.load_state(ent.slug))
+
+
+def test_preset_save_set_backfills_unnamed_fields_from_defaults_not_history(tmp_path):
+    """--set stores a FULL snapshot like every other preset writer: the field not named
+    takes the entry's own declared default — never this machine's last-used value, or
+    the "deterministic" lane would mint a different preset on every machine."""
+    text = metawriter.write_params(
+        'CITY = "Taipei"\nMODE = "fast"\nprint(CITY, MODE)\n',
+        [
+            ParamDecl(name="CITY", binding="const", type="str", default="Taipei"),
+            ParamDecl(name="MODE", binding="const", type="str", default="fast"),
+        ],
+    )
+    ent = store.add_python(_py(tmp_path, text), name="a")
+    # Pollute local history: a past run chose MODE=slow on this machine.
+    argstate.save_last(ent.slug, values={"MODE": "slow"})
+    result = runner.invoke(cli.app, ["preset", "save", "a", "n", "--set", "CITY=Kyoto"])
+    assert result.exit_code == 0
+    saved = argstate.load_state(ent.slug)["presets"]["n"]
+    assert saved == {"CITY": "Kyoto", "MODE": "fast"}  # default, NOT the remembered "slow"
+
+
+def test_preset_save_set_only_secrets_on_a_mixed_entry_refuses(tmp_path):
+    """Providing ONLY secret values must refuse even when non-secret fields exist:
+    backfilling defaults around a fully-stripped input would report success while
+    dropping everything the user explicitly asked to persist."""
+    text = metawriter.write_params(
+        'CITY = "Taipei"\nTOKEN = "x"\nprint(CITY, TOKEN)\n',
+        [
+            ParamDecl(name="CITY", binding="const", type="str", default="Taipei"),
+            ParamDecl(name="TOKEN", binding="const", type="str", default="", secret=True),
+        ],
+    )
+    ent = store.add_python(_py(tmp_path, text), name="a")
+    result = runner.invoke(cli.app, ["preset", "save", "a", "n", "--set", "TOKEN=hunter2"])
+    assert result.exit_code == 2
+    assert argstate.load_state(ent.slug)["presets"] == {}
+
+
+def test_preset_save_direct_call_without_set_opts_kwarg_still_works(tmp_path, monkeypatch):
+    """A direct Python call without the new kwarg leaves typer's OptionInfo default in
+    place; the command must treat that as "no --set given", not iterate it."""
+    text = metawriter.write_params(
+        'CITY = "Taipei"\nprint(CITY)\n',
+        [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
+    )
+    ent = store.add_python(_py(tmp_path, text), name="a")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr("skit.promptform.collect", lambda *a, **k: {"CITY": "Kyoto"})
+    cli.preset_save("a", "prod", from_last=False)  # no set_opts on purpose
+    assert argstate.load_state(ent.slug)["presets"]["prod"] == {"CITY": "Kyoto"}
 
 
 # --------------------------------------------------------------------------

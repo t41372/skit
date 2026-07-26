@@ -198,6 +198,8 @@ skit params <name> --template 'ffmpeg -i {input} {output}'  # command kind: rewr
 
 Named value sets per entry, ideal for recurring jobs:
 
+<!-- tests/test_agent_skill.py executes every `skit` line in this block: keep it runnable. -->
+
 ```bash
 skit preset save <name> nightly --set a=1 --set b=2   # create without running anything
 skit preset list <name> --json
@@ -206,7 +208,7 @@ skit preset delete <name> nightly -y   # confirms without -y
 ```
 
 `skit run … --save-preset NAME` also saves — on a real run only (a `--dry-run`
-persists nothing).
+persists no preset, values, or run history).
 
 ## Prompts & runners
 
@@ -250,6 +252,8 @@ skit params <name> --no-interpolate  # switch insertion off; --interpolate turns
   custom tool with the argv after `--`, `{{prompt}}` marking where the rendered text
   lands (exactly one slot, never the first word; single-brace text is literal):
 
+<!-- tests/test_agent_skill.py executes every `skit` line in this block: keep it runnable. -->
+
 ```bash
 skit runner list --json                       # [{"name": …, "argv": […]}]
 skit runner add mycli -- mycli run {{prompt}} # each word = one argument, no shell
@@ -278,10 +282,13 @@ skit config shell.bash_path /path  # where bash lives on Windows (POSIX auto-det
 
 `doctor --json` adds `launch_blocked` — a `{name: reason}` map of entries whose run
 would refuse to start (uninstalled interpreter/JS runtime, a pinned agent binary that
-is gone, a vanished working directory) even though their target file is present.
-Note: doctor's EXIT CODE reflects uv availability only — per-entry warnings (missing
-targets, drift, launch_blocked) do not change it. Read `--json` for health, never the
-exit code.
+is gone, a vanished working directory) even though their target file is present — and
+`uv_required` (whether a missing uv is a failure HERE: true only when Python entries
+exist; skit downloads its own uv on first need otherwise).
+Note: doctor's EXIT CODE is `uv_required`-aware — 0 means uv is present OR not needed
+yet (empty/non-Python library), 1 means Python entries exist and uv is missing.
+Per-entry warnings (missing targets, drift, launch_blocked) never change it. Read
+`--json` for health, never the exit code alone.
 
 If `show`/`run` reports drift (the source changed and its managed parameter
 definitions no longer match), `skit params <name> --resync` refreshes them.

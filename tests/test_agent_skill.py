@@ -72,22 +72,33 @@ def test_skill_stays_within_the_progressive_disclosure_budget():
     assert len(ROOT_SKILL.read_text(encoding="utf-8").splitlines()) < 500
 
 
-def _skill_command_lines(section: str | None = None) -> list[str]:
-    """Every fenced `skit …` line the skill teaches — optionally only those under one
-    `## section` heading. One fence walk owns the block grammar for every test here, so
-    a fence-dialect or heading change breaks all consumers the same way instead of
-    letting two parsers drift apart."""
+RUNNABLE_MARKER = "test_agent_skill.py executes every `skit` line in this block"
+
+
+def _skill_command_lines(runnable_only: bool = False) -> list[str]:
+    """Every fenced `skit …` line the skill teaches. One fence walk owns the block
+    grammar for every test here, so a fence-dialect change breaks all consumers the
+    same way instead of letting two parsers drift apart. runnable_only=True keeps just
+    the blocks whose preceding HTML marker declares them machine-executed — the marker
+    lives in SKILL.md itself, so a doc editor sees the contract at the edit site."""
     lines: list[str] = []
     in_block = False
-    in_section = section is None
+    armed = False  # a marker line arms the next opening fence
+    block_runnable = False
     for line in ROOT_SKILL.read_text(encoding="utf-8").splitlines():
-        if section is not None and line.startswith("## "):
-            in_section = line[3:].strip() == section
+        if RUNNABLE_MARKER in line:
+            armed = True
+            continue
         if line.strip().startswith("```"):
+            if not in_block:  # opening fence consumes the marker
+                block_runnable = armed
+                armed = False
+            else:  # closing fence
+                block_runnable = False
             in_block = not in_block
             continue
         stripped = line.strip()
-        if in_section and in_block and stripped.startswith("skit "):
+        if in_block and stripped.startswith("skit ") and (not runnable_only or block_runnable):
             lines.append(stripped)
     return lines
 
@@ -168,23 +179,26 @@ def test_skill_presets_recipe_actually_works_end_to_end():
 
     from skit import argstate, store
 
-    lines = _skill_command_lines(section="Presets")
-    assert lines
-    # The recipe must include the mint-without-running lane it exists to teach.
+    lines = _skill_command_lines(runnable_only=True)
+    # Both marked recipes must be present: the preset mint-without-running lane and
+    # the runner add/replace/remove cycle — each stateful, each capable of teaching
+    # semantics the CLI dropped.
     assert any("preset save" in ln and "--set" in ln for ln in lines)
+    assert any(ln.startswith("skit runner add") for ln in lines)
 
     entry = store.add_command("echo {a} {b}", name="job")
     runner = CliRunner()
-    ran_something = False
     for line in lines:
         argv = shlex.split(line, comments=True)
         if not argv:
-            continue  # a whole-line comment in the recipe block is fine, not a command
+            continue  # a whole-line comment in a recipe block is fine, not a command
         assert argv[0] == "skit"
         argv = [tok.replace("<name>", "job") for tok in argv[1:]]
         result = runner.invoke(cli.app, argv, catch_exceptions=False)
         assert result.exit_code == 0, f"skill recipe line failed: {line!r}\n{result.output}"
-        ran_something = True
-    assert ran_something
-    # The recipe's own promises: the preset existed mid-recipe and delete removed it.
+    # The recipes' own promises: the preset and the custom runner existed mid-recipe
+    # and their delete/remove lines cleaned them back out.
     assert "nightly" not in argstate.load_state(entry.slug)["presets"]
+    from skit import config
+
+    assert all(r.name != "mycli" for r in config.load_prompt_runners())

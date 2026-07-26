@@ -66,7 +66,7 @@ Sleep 2s
 Screenshot "/out/shot-library.png"
 Sleep 2s
 
-# 3 — Script settings: banner is selected (fresh add), so `p` opens ITS settings — the
+# 3 — Entry settings: banner is selected (fresh add), so `p` opens ITS settings — the
 #     constants it detected are now managed params.
 Type "p"
 Sleep 2.5s

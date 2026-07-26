@@ -1073,7 +1073,7 @@ def prompt_entries_pinned_to(runner: str) -> list[Entry]:
 def unmanaged_prompt_placeholders(entry: Entry) -> list[str]:
     """A prompt body's detected ``{{placeholders}}`` that are not yet managed, in order
     of first appearance. This is the ONE rule the surfaces agree on for "you typed a
-    variable that isn't a field yet": `skit params` and Script settings already show it;
+    variable that isn't a field yet": `skit params` and Entry settings already show it;
     the edit path uses it so a placeholder added by editing the body is offered for
     management, not silently dropped into the body as literal text.
 

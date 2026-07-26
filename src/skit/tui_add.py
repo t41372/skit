@@ -1745,7 +1745,7 @@ def run_kind_pick(
 
 def run_candidate_picker(names: list[str], selected: set[str]) -> set[str] | None:
     """Blocking CLI entry to the prompt-variable picker — the SAME modal the Library's
-    `e` reconcile and Script settings open, hosted alone for a terminal `skit edit`.
+    `e` reconcile and Entry settings open, hosted alone for a terminal `skit edit`.
     Returns the chosen names, or None on cancel."""
     return _ScreenHost(tui_prompt.PromptCandidatePickerModal(names, selected)).run()
 

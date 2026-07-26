@@ -3,7 +3,7 @@
 `detect_newline` / `restore_newline` bracket every comment-block write path: the block
 engine matches on "\\n" only, so each path folds the script to LF to run it and restores the
 copy's own style before writing back — otherwise a one-checkbox edit rewrites every line of
-a CRLF script. They lived in cli.py until the TUI's Script settings needed the same
+a CRLF script. They lived in cli.py until the TUI's Entry settings needed the same
 discipline (it was flattening CRLF and burning non-UTF-8 bytes to U+FFFD on every save), so
 they moved here, to the module that already owns source-text surgery.
 

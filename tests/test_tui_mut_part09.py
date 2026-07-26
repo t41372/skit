@@ -2,7 +2,7 @@
 
 Covers the Library action paths: Ctrl+C double-tap quit + toast, edit (no-source
 message, editor-error print/prompt/EOF suppression, plan-cache invalidation), the
-Script-settings deep-link + close callback, run/rerun guards and value plumbing.
+Entry-settings deep-link + close callback, run/rerun guards and value plumbing.
 
 Each test pins real, observable behaviour through the public TUI surface (Textual
 `Pilot`) or a direct action call, mirroring tests/test_tui_mut.py.
@@ -230,7 +230,7 @@ def _many_param_entry(tmp_path):
 
 
 async def test_presets_deeplink_scrolls_settings_to_the_presets_section(tmp_path):
-    """s (action_presets) opens Script settings deep-linked to the Presets section
+    """s (action_presets) opens Entry settings deep-linked to the Presets section
     (section='presets'), which scrolls the body to it. Any other section value leaves
     the body at the top."""
     _many_param_entry(tmp_path)
@@ -249,7 +249,7 @@ async def test_presets_deeplink_scrolls_settings_to_the_presets_section(tmp_path
 
 
 async def test_settings_close_reloads_the_library(tmp_path):
-    """Closing Script settings runs the _closed callback → _reload, so a store change
+    """Closing Entry settings runs the _closed callback → _reload, so a store change
     made while it was open surfaces in the Library. A dropped/None callback would leave
     the table stale."""
     store.add_python(_py(tmp_path, "print(1)\n", "a.py"), name="a")

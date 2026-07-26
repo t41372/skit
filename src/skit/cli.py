@@ -3593,7 +3593,7 @@ def preset_save(
         None,
         "--set",
         help=gettext(
-            "Save this value, as NAME=VALUE (repeatable; tokens like {cwd} stay unexpanded until each run) — mint a preset non-interactively without running the entry"
+            "Save this value, as NAME=VALUE (repeatable; tokens like {cwd} stay unexpanded until each run) — mint a preset non-interactively without running the entry. Fields not named snapshot the entry's own defaults, never this machine's history."
         ),
     ),
 ) -> None:
@@ -3601,6 +3601,10 @@ def preset_save(
     the last run with --from-last. Secret values are never persisted (C3)."""
     from . import flows, promptform
 
+    if not isinstance(set_opts, list):
+        # A direct Python call (tests, embedding) without the kwarg leaves typer's
+        # truthy OptionInfo default in place — the same trap run() guards against.
+        set_opts = []
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
@@ -3623,8 +3627,27 @@ def preset_save(
         # malformed or unknown names exit 2). This is the one lane that mints a preset
         # without a terminal, without history, and without executing anything — the job
         # `run --save-preset --dry-run` used to do by accident before dry runs stopped
-        # persisting state; the Agent Skill teaches this lane.
-        values = _parse_set_opts(plan, set_opts)
+        # persisting state; the Agent Skill teaches this lane. Like every other preset
+        # writer it stores a FULL snapshot: fields not named take the entry's own
+        # declared default ("" when there is none) — never this machine's last-used
+        # values, which would make the "deterministic" lane mint a different preset on
+        # every machine that ran the entry differently.
+        provided = _parse_set_opts(plan, set_opts)
+        if provided and not (provided.keys() - plan.secret_names):
+            # Everything the user EXPLICITLY asked to persist is secret: backfilling
+            # defaults around it would report success while dropping their entire
+            # input. Same refusal as the post-strip husk guard below.
+            raise _fail(
+                gettext(
+                    "Nothing left to save: every provided value is a secret, and secrets are never stored in presets."
+                ),
+                EXIT_USAGE,
+            )
+        values = {
+            f.key: provided.get(f.key, f.default if f.has_default else "")
+            for f in plan.fields
+            if not f.secret or f.key in provided
+        }
     elif from_last:
         state = argstate.load_state(entry.slug)
         if not state["last_run"] and not state["values"]:
@@ -3719,7 +3742,7 @@ def preset_list(
     if not presets:
         console.print(
             gettext(
-                "No presets for %(name)s yet. Create one with: skit run %(name)s --save-preset <preset>"
+                "No presets for %(name)s yet. Create one with: skit preset save %(name)s <preset> --set K=V (no run needed), or skit run %(name)s --save-preset <preset>"
             )
             % {"name": escape(entry.meta.name)}
         )

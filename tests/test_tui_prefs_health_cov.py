@@ -600,7 +600,7 @@ async def test_prefs_close_dismisses_false(tmp_path):
 async def test_health_uv_missing_without_python_entries_is_a_dim_not_needed_yet_line(
     tmp_path, monkeypatch
 ):
-    """Same split as `skit doctor` (cli._uv_required): with nothing that needs uv, the
+    """Same split as `skit doctor` (healthcheck.uv_required): with nothing that needs uv, the
     health screen says so in the dim ○ style — a fresh library is healthy, and skit
     fetches its own pinned copy when a Python entry first runs."""
     monkeypatch.setattr("skit.langs.launch.find_uv", lambda: None)
