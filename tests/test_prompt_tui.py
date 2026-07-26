@@ -77,8 +77,13 @@ async def _click_chip(pilot, widget: Static, label: str) -> None:
         widget.region.y < screen_region.y or widget.region.bottom > screen_region.bottom
     ):
         scroll = scroll_ancestors[0]
+        # Region.center is a (x, y) TUPLE, not a point object — `.center.y` raised
+        # AttributeError every time this branch was taken, which is why it only ever
+        # surfaced as a Windows flake: the branch fires solely when the first targeted
+        # scroll left the widget off-screen.
+        _, screen_center_y = screen_region.center
         scroll.scroll_to(
-            y=scroll.scroll_y + widget.region.y - screen_region.center.y,
+            y=scroll.scroll_y + widget.region.y - screen_center_y,
             animate=False,
             immediate=True,
             force=True,
