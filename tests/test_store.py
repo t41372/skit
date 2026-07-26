@@ -859,3 +859,44 @@ def test_a_renamed_legacy_row_is_upgraded_not_patched(sample_script: Path):
     assert summary.name == "renamed"
     assert summary.mode == "reference"
     assert summary.script_path == entry.script_path
+
+
+def test_a_reference_row_without_a_target_falls_back_to_its_meta(tmp_path: Path):
+    """`target` is checked by PRESENCE, not truthiness. Defaulting a missing key to ""
+    resolves the entry to Path(""), which is the current directory and exists — so a
+    hand-broken row would report a deleted original as healthy, which is worse than the
+    full read it replaced. It must fall back to the meta instead."""
+    from skit import launcher, store
+
+    src = tmp_path / "orig.py"
+    src.write_text("print(1)\n", encoding="utf-8")
+    entry = store.add_python(src, name="linked", mode="reference")
+    src.unlink()  # the linked original is gone; the truth is "missing"
+
+    rows = store._load_registry()
+    del rows[entry.slug]["target"]
+    store._save_registry(rows)
+
+    (summary,) = store.list_summaries()
+    assert summary.script_path == entry.script_path
+    assert launcher.target_missing(summary) is True
+
+
+def test_a_command_row_keeps_an_empty_target(tmp_path: Path):
+    """The other side of checking presence: a command template legitimately has no file
+    target, so its row carries `target = ""` rather than omitting the key. Rejecting an
+    EMPTY target would send every command entry to the meta fallback forever — and the
+    row the upgrade wrote back would be rejected again, which is the non-converging
+    rewrite loop this file already tests for."""
+    from skit import launcher, store
+
+    entry = store.add_command("echo hi", name="tmpl")
+    assert store._load_registry()[entry.slug]["target"] == ""
+
+    (summary,) = store.list_summaries()
+    assert summary.mode == "reference"
+    assert summary.script_path == entry.script_path
+    assert launcher.target_missing(summary) is False  # no file target to be missing
+    before = store._load_registry()
+    store.list_summaries()
+    assert store._load_registry() == before  # nothing restaged

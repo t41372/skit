@@ -158,10 +158,13 @@ def _registry_row(meta: ScriptMeta) -> dict[str, Any]:
         "mode": meta.mode,
         "description": meta.description,
     }
-    if meta.mode == "reference" and meta.source:
+    if meta.mode == "reference":
         # Only a reference entry HAS a launch target outside the store; for a copied one
-        # this would be pure provenance no listing reads, and a command template has no
-        # file target at all.
+        # this would be pure provenance no listing reads. Written even when EMPTY (a
+        # command template has no file target at all), because the key's presence is
+        # what a reader checks: a reference row without it lost the one field that says
+        # where the script is, and must fall back to the meta rather than resolve to
+        # Path("") — which is the current directory, and exists.
         row["target"] = meta.source
     return row
 
@@ -834,8 +837,14 @@ def _summary_from_row(slug: str, row: object, entry_dir: Path) -> EntrySummary |
         mode = "reference"
     else:
         return None
+    # Presence, not truthiness: a reference row must SAY where its script is, even when
+    # the answer is "nowhere on disk" (a command template). Defaulting a missing key to
+    # "" would resolve the entry to Path(""), which is the current directory and exists,
+    # so a hand-broken row would report a deleted original as healthy instead of falling
+    # back to the meta. A copy-mode row carries no target and needs none — its script is
+    # in the store, at a path derived from the kind.
     target = row.get("target", "")
-    if not isinstance(target, str):
+    if not isinstance(target, str) or (mode == "reference" and "target" not in row):
         return None
     return EntrySummary(
         slug=slug,
