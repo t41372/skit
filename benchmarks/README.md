@@ -238,11 +238,20 @@ The pipeline is self-contained (pyperf + hyperfine + artifacts) so it works with
 accounts, tokens, or third-party availability, and A/B evidence stays reproducible from
 the repo alone. That property is the point, and it does not change.
 
-CodSpeed is being adopted alongside it, in its own PR (#15), for the one thing this
-pipeline structurally cannot do: its simulation mode measures CPU instructions rather
-than wall clock, which is hardware-independent, so a PR-time timing regression can
-actually fail instead of drowning in whichever CPU the runner drew. The micro layer is
-plain callables, so `pytest-codspeed` wraps it without redesign. What stays here:
+CodSpeed is adopted alongside it (#32) for the one thing this pipeline structurally
+cannot do: its simulation mode measures CPU instructions rather than wall clock, which
+is hardware-independent, so a PR-time timing regression can actually fail instead of
+drowning in whichever CPU the runner drew. The micro layer is plain callables, so
+`pytest-codspeed` wraps it without redesign.
+
+One rule its benchmarks inherit from this pipeline: **a store benchmark states its kind
+mix.** `benchmarks/codspeed/test_bench_store.py` runs each read path over two libraries
+— 200 command templates (100% reference mode, the index worst case, cheap to build) and
+the seeded generator's own mix (~84% copy mode, what a real library looks like). The
+index carries per-row fields that only reference entries need, so the two shapes give
+materially different answers; reporting either alone would have been a half-truth.
+
+What stays here:
 `budgets.toml` remains the contract, and every metric CodSpeed's instruments cannot take
 — wheel bytes, closure bytes, module censuses, syscall counts. Codecov is the repo's
 SaaS precedent and the bar anything else must clear: optional, never a merge gate,
