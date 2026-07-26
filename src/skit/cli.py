@@ -42,7 +42,7 @@ from . import argstate, config, editor, i18n, kindnames, launcher, models, store
 from .i18n import gettext, ngettext
 from .langs.registry import KNOWN_KINDS, spec_for
 from .params import ParamDecl, declared_from_meta, edit_declared, is_secret_name
-from .rewrite import detect_newline, read_for_block_edit, write_block_edit
+from .rewrite import read_for_block_edit, write_block_edit
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -78,6 +78,15 @@ _RED_CLOSE = "[/red]"  # pragma: no mutate
 def _fail(message: str, code: int) -> typer.Exit:
     err_console.print(f"[red]{escape(message)}[/red]")
     return typer.Exit(code)
+
+
+def _require_yes(yes: bool, no_input: bool, message: str) -> None:
+    """The destructive-command half of the non-interactive contract, in ONE place
+    (remove, preset delete, runner remove): in a pipe/CI or under --no-input, a missing
+    -y is a worded exit-2 refusal — never a typer.confirm that eats a line of piped
+    stdin or dies as click's bare "Aborted."."""
+    if not yes and (no_input or not _is_interactive()):
+        raise _fail(message, EXIT_USAGE)
 
 
 def _is_interactive() -> bool:
@@ -2530,13 +2539,9 @@ def remove(
         entry = store.resolve(name)
     except store.NotFoundError as exc:
         raise _fail(str(exc), 1) from exc
-    # The non-interactive contract, same guard as runner_remove: in a pipe/CI or under
-    # --no-input, a missing -y is a worded exit-2 refusal — never a typer.confirm that
-    # eats a line of piped stdin or dies as click's bare "Aborted.".
-    if not yes and (no_input or not _is_interactive()):
-        raise _fail(
-            gettext("Confirmation is required; pass --yes to remove the entry."), EXIT_USAGE
-        )
+    _require_yes(
+        yes, no_input, gettext("Confirmation is required; pass --yes to remove the entry.")
+    )
     if not yes:
         entry_spec = spec_for(entry.meta.kind)
         if entry_spec is not None and not entry_spec.has_original_file:
@@ -3158,6 +3163,13 @@ def run(
             err_console.print(
                 f"[dim]{gettext('Reusing your last arguments: %(args)s') % {'args': ' '.join(escape(a) for a in extra)}}[/dim]"
             )
+            if not extra_raw and any(ch in piece for piece in extra for ch in "{*?["):
+                # De-silence the literal replay exactly where it could surprise: a tail
+                # with token/glob syntax but no raw marker (captured via the CLI — or
+                # remembered before provenance existed) is passed through untouched.
+                err_console.print(
+                    f"[dim]{escape(gettext('(passed as-is — a remembered tail only expands {tokens} and globs when it was typed into the launch menu)'))}[/dim]"
+                )
     try:
         asm = flows.assemble(plan, values, extra, cwd=Path.cwd(), expand_extra=extra_raw)
     except flows.FormError as exc:
@@ -3525,10 +3537,9 @@ def runner_remove(
             % {"count": pinned_count}
             + "[/yellow]"
         )
-    if not yes and (no_input or not _is_interactive()):
-        raise _fail(
-            gettext("Confirmation is required; pass --yes to remove the runner."), EXIT_USAGE
-        )
+    _require_yes(
+        yes, no_input, gettext("Confirmation is required; pass --yes to remove the runner.")
+    )
     if not yes:
         # The same ask its two siblings give: skit remove confirms unless -y, and the
         # TUI's agent removal confirms — deleting config rows is not a one-keystroke act.
@@ -3692,10 +3703,9 @@ def preset_delete(
     # A preset is unrecoverable user data; its deletion gets the same ask (and the same
     # non-interactive refusal) as removing an entry or a runner — the trivially
     # re-creatable config row must not be better guarded than the thing users typed in.
-    if not yes and (no_input or not _is_interactive()):
-        raise _fail(
-            gettext("Confirmation is required; pass --yes to delete the preset."), EXIT_USAGE
-        )
+    _require_yes(
+        yes, no_input, gettext("Confirmation is required; pass --yes to delete the preset.")
+    )
     if not yes:
         typer.confirm(
             gettext('Delete preset "%(preset)s" from %(name)s?')
@@ -4523,17 +4533,27 @@ def _edit_params(
     console = _maybe_quiet(quiet)
     entry_spec = spec_for(entry.meta.kind)
     if entry_spec is None or entry_spec.params_io is None or entry_spec.analyzer is None:
-        message = gettext(
-            "%(name)s has no managed parameters — its kind has no analyzer to read them from."
-        ) % {"name": entry.meta.name}
         if entry_spec is not None and entry_spec.params_io is None:
             # The declared [[parameters]] lane IS this kind's parameter home (exe, command,
             # prompt, the Tier-0 interpreted kinds) — a refusal that names no way forward
-            # would hide the exact door that was built for it.
-            message += " " + gettext("Declare one instead: skit params %(name)s --add PARAM") % {
-                "name": entry.meta.name
-            }
-        raise _fail(message, 1)
+            # would hide the exact door that was built for it. ONE msgid, not two sentences
+            # spliced with a hard-coded space: translators own the whole pair, including
+            # its punctuation and order.
+            raise _fail(
+                gettext(
+                    "%(name)s has no managed parameters — its kind has no analyzer to read "
+                    "them from. Declare one instead: skit params %(name)s --add PARAM"
+                )
+                % {"name": entry.meta.name},
+                1,
+            )
+        raise _fail(
+            gettext(
+                "%(name)s has no managed parameters — its kind has no analyzer to read them from."
+            )
+            % {"name": entry.meta.name},
+            1,
+        )
     if entry.meta.mode == "reference":
         raise _fail(
             gettext(
@@ -4678,13 +4698,12 @@ def _normalize_params(
     copy_path = entry.script_path
     if not copy_path.exists():
         raise _fail(gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}, 1)
-    # Bytes in, bytes out: --normalize rewrites the script's own text, and the whole
-    # parse-and-splice pipeline is strict UTF-8 end to end — a lossy read (errors="replace")
-    # would bake U+FFFD over every non-UTF-8 byte on write-back. A script that doesn't decode
-    # is refused whole instead, leaving the stored copy byte-for-byte untouched.
-    raw = copy_path.read_bytes()
+    # The shared read half, strict: --normalize rewrites the script's own text, and the
+    # parse-and-splice pipeline is strict UTF-8 end to end — a script that doesn't decode
+    # is refused whole (this lane's OWN policy; the comment-only edits keep their
+    # surrogateescape default), leaving the stored copy byte-for-byte untouched.
     try:
-        text = raw.decode("utf-8")  # pragma: no mutate — codec alias
+        text, newline = read_for_block_edit(copy_path, errors="strict")
     except UnicodeDecodeError:
         raise _fail(
             gettext(
@@ -4694,14 +4713,6 @@ def _normalize_params(
             % {"name": entry.meta.name},
             1,
         ) from None
-    # The comment-block engine below is LF-based (its block regex never matches "# ///\r"), so
-    # fold every terminator to LF — \r\n AND lone \r (classic-Mac) -> \n, or a CRLF/CR copy
-    # leaves "# ///\r" unmatched and normalizes nothing. The copy's own style is captured first
-    # and restored at write-back, so a CRLF script stays CRLF and skit's edit stays confined to
-    # the one constant it rewrote (write_text, the old path, re-expanded \n to the HOST os.linesep
-    # instead, CRLF-ifying the whole copy on Windows and skipping the next re-anchor silently).
-    newline = detect_newline(raw)
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
     result = entry_spec.normalizer.normalize(text, list(names))
     for warning in result.refused:
         err_console.print(f"[yellow]{escape(_render_normalize_warning(warning))}[/yellow]")

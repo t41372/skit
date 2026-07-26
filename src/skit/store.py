@@ -36,7 +36,7 @@ from .models import (
 )
 from .params import ParamDecl, declared_from_meta
 from .paths import registry_path, scripts_dir
-from .rewrite import detect_newline, restore_newline, write_block_edit
+from .rewrite import detect_newline, read_for_block_edit, restore_newline, write_block_edit
 
 # Corruption/error types every meta.toml reader must treat the same way: valid-but-unreadable file,
 # invalid TOML, or valid TOML missing a required key are all "this entry is corrupt" — never a bare
@@ -1351,26 +1351,16 @@ def _sync_python_block(
     if not script.exists():
         return
     try:
-        # pragma: the surviving mutant is decode("UTF-8"), a genuine equivalent (codec
-        # names are case-insensitive — codecs.lookup normalizes them); mirrors atomic.py's
-        # utf-8/UTF-8 alias pragma. The co-generated decode("XXutf-8XX") is killable
-        # (LookupError) and dies by coverage on the identical unpragma'd add_python:239.
-        raw = script.read_bytes()
-        text = raw.decode("utf-8")  # pragma: no mutate — utf-8/UTF-8 alias
-    except (OSError, UnicodeDecodeError):
-        # add_python's encoding rule, applied to the sync path too: re-encoding a lossy
-        # errors="replace" decode would swap every non-UTF-8 byte in the copy for U+FFFD.
-        # Leave the copy byte-exact; the edit is already in meta, which the launcher
-        # passes via --with/--python exactly like a reference-mode entry. The case where
-        # meta CAN'T stand in — a copy that carries its own block — never reaches here:
+        # The shared read half, strict (add_python's encoding rule, applied to the sync
+        # path too): re-encoding a lossy errors="replace" decode would swap every
+        # non-UTF-8 byte in the copy for U+FFFD, so a copy that doesn't decode bails out
+        # whole — the edit is already in meta, which the launcher passes via
+        # --with/--python exactly like a reference-mode entry. The case where meta CAN'T
+        # stand in — a copy that carries its own block — never reaches here:
         # _refuse_unsyncable_block turned it away before meta was written.
+        text, newline = read_for_block_edit(script, errors="strict")
+    except (OSError, UnicodeDecodeError):
         return
-    # Fold for the LF-based block engine, restore the copy's own style on the way out.
-    # Handing it CRLF text made parse_block find nothing, so the "update" prepended a
-    # SECOND `# /// script` block and left the [tool.skit] params below it unreadable —
-    # every managed parameter silently gone, on every CRLF copy.
-    newline = detect_newline(raw)
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
     block = pep723.parse_block(text) or {}
     constraint = meta.requires_python
     if not constraint and requires_python is None:

@@ -153,6 +153,13 @@ def read_cli(text: str) -> ArgSpec | None:
         tmp.unlink(missing_ok=True)  # pragma: no mutate
 
 
+def runtime_fingerprint() -> str | None:
+    """The resolved tool identity for memo keys (see base.CliReader.runtime_fingerprint):
+    read_cli's verdict is a function of the text AND of which PowerShell answers, so a
+    cached verdict must be invalidated when the tool appears, disappears, or moves."""
+    return _find_powershell()
+
+
 def _find_powershell() -> str | None:
     """`pwsh` anywhere on PATH; on Windows, `powershell.exe` as the fallback (Windows
     PowerShell exposes the identical Parser API). None otherwise — the reader degrades."""

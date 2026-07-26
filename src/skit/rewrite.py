@@ -61,16 +61,21 @@ def restore_newline(text: str, newline: str) -> str:
     return text if newline == "\n" else text.replace("\n", newline)  # pragma: no mutate
 
 
-def read_for_block_edit(path: Path) -> tuple[str, str]:
+def read_for_block_edit(path: Path, *, errors: str = "surrogateescape") -> tuple[str, str]:
     """Read a stored copy for a comment-block edit: (LF-folded text, detected newline style).
 
     THE shared read half of every [tool.skit]/PEP 723 write-back — CLI onboarding, `params`
     edits, the TUI add-review panel and Script settings all go through this pair instead of
-    re-implementing the discipline: raw bytes, surrogateescape (arbitrary shell/fish bytes
-    round-trip instead of burning down to U+FFFD), folded to LF for the LF-based block
-    engines. Pair with write_block_edit, which restores the newline style captured here."""
+    re-implementing the discipline: raw bytes, surrogateescape by default (arbitrary
+    shell/fish bytes round-trip instead of burning down to U+FFFD), folded to LF for the
+    LF-based block engines. Pair with write_block_edit, which restores the newline style
+    captured here.
+
+    The two STRICT lanes (`--normalize`, the deps sync) pass errors="strict" and own the
+    resulting UnicodeDecodeError policy themselves (refuse whole / bail to meta) — the
+    mechanics stay shared so a newline-handling fix can never miss a lane again."""
     raw = path.read_bytes()
-    text = raw.decode(_UTF8, errors="surrogateescape")  # pragma: no mutate — codec alias
+    text = raw.decode(_UTF8, errors=errors)  # pragma: no mutate — codec alias
     return text.replace("\r\n", "\n").replace("\r", "\n"), detect_newline(raw)
 
 

@@ -48,7 +48,11 @@ per-field `delivers_empty` in `skit show --json`.
   clears it; `--raw` never replays it. A replayed tail keeps the semantics it
   was captured with: a tail typed into the launch menu's extra field re-expands
   its tokens and globs on each run, while a tail your shell already processed
-  replays literally — in both the CLI and the TUI.
+  replays literally — in both the CLI and the TUI, and submitting the launch
+  menu with the prefilled tail untouched keeps whichever it was. Tails
+  remembered by versions before this record existed replay literally (skit
+  notes it on stderr when they contain tokens or globs); re-enter the tail in
+  the launch menu once to re-capture it as expanding form text.
 - **Run history**: each entry's state file records the last run's time, exit
   code, and exact values.
 - All of this lives in skit's state directory (one TOML per entry) — see

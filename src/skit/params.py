@@ -50,39 +50,67 @@ ParamType = Literal["str", "int", "float", "bool", "choice", "path"]
 # declared params all run their names through the same rule, so "what counts as
 # secret-looking" can never fork.
 #
-# WHOLE words only (snake_case, kebab-case, camelCase and sentence prompts all split):
-# API_KEY / githubToken / "Enter your API key:" match; MAX_TOKENS / keyword / monkey /
-# maxTokens do not. The substring match this replaces turned `--max-tokens` into a
-# password field — masked, never prefilled, never remembered — on the reader lane,
-# where no override exists to turn it off.
-#
-# Jammed spellings still count (the substring rule caught them, and a false NEGATIVE
-# here publishes a literal into current_defaults/state — the dangerous direction):
-# any word ENDING in the long secret words (AUTHTOKEN, MYSECRET, DBPASSWORD), and
-# KEY-compounds whose prefix is a known credential qualifier (APIKEY, SSHKEY) — KEY
-# alone is too short for a bare suffix rule (MONKEY, TURKEY, HOTKEY, WHISKEY).
-_SECRET_WORDS = frozenset({"KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD"})
-_SECRET_SUFFIXES = ("TOKEN", "SECRET", "PASSWORD", "PASSWD")
+# SEGMENT-based: the name splits on non-letters only (API_KEY, api-key, "Enter your API
+# key:"), each segment is matched whole with jammed spellings included — apiKey, APIKey
+# and APIkey are all the segment APIKEY, so no camel-splitting regex can mangle a
+# nonstandard casing into a miss — and one trailing S folds away so plural credentials
+# (API_KEYS, SECRETS, GITHUB_TOKENS) match like their singulars. A false NEGATIVE here
+# publishes a live literal into current_defaults/--json/state files, so ambiguity errs
+# toward secret. Three rules:
+# - SECRET/PASSWORD/PASSWD match as segment suffixes, exact word included (MYSECRET,
+#   DBPASSWORD, passwords).
+# - KEY is too short for a bare suffix rule (MONKEY, TURKEY, HOTKEY, WHISKEY): it
+#   matches as the exact word (api_key — and yes, sort_key: the reader-lane override
+#   follow-up owns that class) or as a compound behind a credential qualifier
+#   (APIKEY, SSHKEY — never MONKEY, and not PUBLICKEY/HOSTKEY, which aren't secrets).
+# - TOKEN is the LLM-era collision: max_tokens/nTokens are counts, github_tokens is a
+#   credential. A count word anywhere in the name — split (MAX_TOKENS) or fused onto
+#   the segment (maxTokens) — suppresses the TOKEN match, and a bare plural "tokens"
+#   with no companion word reads as a count too.
+_SECRET_SUFFIXES = ("SECRET", "PASSWORD", "PASSWD")
 _KEY_PREFIXES = frozenset(
     {"API", "AUTH", "ACCESS", "SECRET", "PRIVATE", "PASS", "SSH", "GPG", "AWS", "MASTER",
      "SIGNING", "LICENSE", "ENCRYPTION"}
 )  # fmt: skip
-# lower/digit→Upper and WORDBreak boundaries; separators (_, -, spaces, punctuation)
-# are any non-letter run.
-_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+_COUNT_WORDS = frozenset(
+    {"MAX", "MIN", "NUM", "N", "COUNT", "TOTAL", "LIMIT", "MANY", "NUMBER", "PER"}
+)
 
 
-def _secret_word(w: str) -> bool:
-    if w in _SECRET_WORDS:
-        return True
-    if any(w.endswith(s) for s in _SECRET_SUFFIXES):
-        return True
-    return w.endswith("KEY") and w[:-3] in _KEY_PREFIXES
+def _fold_plural(seg: str) -> str:
+    return seg[:-1] if seg.endswith("S") else seg
+
+
+def _segment_hits(seg: str) -> tuple[bool, bool]:
+    """(secret, token) verdict for one upper-cased letters-only segment. `token` is a
+    provisional hit — is_secret_name still applies the count-context suppression, which
+    needs the whole name; a count word FUSED into the segment (MAXTOKENS) is already
+    final here, because the qualifier never appears as its own segment in that spelling."""
+    for w in {seg, _fold_plural(seg)}:
+        if w.endswith(_SECRET_SUFFIXES):
+            return True, False
+        if w == "KEY" or (w.endswith("KEY") and w[:-3] in _KEY_PREFIXES):
+            return True, False
+        if w.endswith("TOKEN"):
+            return False, w[:-5] not in _COUNT_WORDS
+    return False, False
 
 
 def is_secret_name(text: str) -> bool:
-    words = re.split(r"[^A-Za-z]+", _CAMEL_BOUNDARY.sub(" ", text))
-    return any(_secret_word(w.upper()) for w in words if w)
+    segments = [s.upper() for s in re.split(r"[^A-Za-z]+", text) if s]
+    token_hit = False
+    for seg in segments:
+        secret, token = _segment_hits(seg)
+        if secret:
+            return True
+        token_hit = token_hit or token
+    if not token_hit:
+        return False
+    if any(_fold_plural(s) in _COUNT_WORDS for s in segments):
+        return False  # max_tokens, token_limit, "How many tokens?"
+    # A bare plural with no companion word ("tokens") is a count knob, not a credential;
+    # any qualifier that survived the count check (github_tokens) reads as one.
+    return not (len(segments) == 1 and segments[0] == "TOKENS")
 
 
 _BINDINGS: tuple[Binding, ...] = ("const", "input", "envdefault", "none")

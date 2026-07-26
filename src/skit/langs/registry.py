@@ -215,7 +215,14 @@ def _ts_spec() -> LangSpec:
 def _powershell_caps() -> Capabilities:
     from .powershell import cli_reader
 
-    return Capabilities(cli_reader=CliReader(read_cli=cli_reader.read_cli))
+    return Capabilities(
+        cli_reader=CliReader(
+            read_cli=cli_reader.read_cli,
+            # The read shells out to pwsh, so a memoized verdict is stale the moment
+            # the tool appears/disappears — the fingerprint lets memo keys see that.
+            runtime_fingerprint=cli_reader.runtime_fingerprint,
+        )
+    )
 
 
 def _powershell_spec() -> LangSpec:

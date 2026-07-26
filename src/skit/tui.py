@@ -354,15 +354,18 @@ class MenuApp(App[int | PendingRun]):
         self._entries: list[Entry] = []
         self._visible: list[Entry] = []
         self._ctrl_c_at: float = 0.0
-        # slug -> ((script mtime, meta.toml mtime), plan). The detail pane re-renders on
-        # every RowHighlighted, and a plan build is a full parse — or, for a reader kind
-        # like PowerShell, a synchronous subprocess with a cold-start runtime — so it
-        # must never run uncached inside a cursor-movement handler. BOTH mtimes key the
-        # cache: a plan is a function of the script body AND of meta.toml (declared
-        # [[parameters]] rows, a prompt's managed list/interpolate switch), and an agent
-        # editing the library from the CLI while the TUI sits open is the product's own
-        # coexistence story — the pane must pick that up, not only the TUI's own writes.
-        self._plan_cache: dict[str, tuple[tuple[float, float], flows.FormPlan]] = {}
+        # slug -> ((script mtime_ns+size, meta.toml mtime_ns+size), plan). The detail
+        # pane re-renders on every RowHighlighted, and a plan build is a full parse —
+        # or, for a reader kind like PowerShell, a synchronous subprocess with a
+        # cold-start runtime — so it must never run uncached inside a cursor-movement
+        # handler. BOTH files key the cache: a plan is a function of the script body AND
+        # of meta.toml (declared [[parameters]] rows, a prompt's managed list /
+        # interpolate switch), and an agent editing the library from the CLI while the
+        # TUI sits open is the product's own coexistence story — the pane must pick that
+        # up, not only the TUI's own writes. mtime_ns + size (not float mtime alone)
+        # narrows the same-tick blind spot on coarse-mtime filesystems (FAT: 2 s) to
+        # same-tick same-size writes.
+        self._plan_cache: dict[str, tuple[tuple[int, int, int, int], flows.FormPlan]] = {}
 
     @override
     def get_default_screen(self) -> Screen[None]:
@@ -500,21 +503,32 @@ class MenuApp(App[int | PendingRun]):
         keys_global.update(tui_footer.bar(*globals_row))
 
     def _cached_plan(self, entry: Entry) -> flows.FormPlan:
-        """plan_for_entry for DISPLAY (detail pane, drift badge): lazy, mtime-cached on
-        the script AND its meta.toml (see _plan_cache). Runs always build a fresh plan
+        """plan_for_entry for DISPLAY (detail pane, drift badge): lazy, keyed on both
+        files' (mtime_ns, size) (see _plan_cache). Runs always build a fresh plan
         (action_run/action_rerun) — the cache serves the cursor, never a launch. An
         entry whose script is gone/never-a-file (a command template, a removed target)
-        just builds fresh: those plans are cheap meta reads."""
+        just builds fresh: those plans are cheap meta reads.
+
+        On a miss the entry is RE-RESOLVED from the store before building: the passed-in
+        Entry is the Library's snapshot from the last _reload, which may predate the
+        very meta.toml change that invalidated the key — building from it would pin a
+        stale plan under the fresh key, where every later _reload cache-hits it. The
+        stats above come BEFORE the re-read, so a write racing this window can only
+        park fresh content under an old key (one extra rebuild), never the reverse."""
         try:
-            key = (
-                entry.script_path.stat().st_mtime,
-                (entry.dir / "meta.toml").stat().st_mtime,
-            )
+            s = entry.script_path.stat()
+            m = (entry.dir / "meta.toml").stat()
+            key = (s.st_mtime_ns, s.st_size, m.st_mtime_ns, m.st_size)
         except OSError:
             return flows.plan_for_entry(entry)
         cached = self._plan_cache.get(entry.slug)
         if cached is not None and cached[0] == key:
             return cached[1]
+        try:
+            entry = store.resolve(entry.slug)
+        except store.StoreError:
+            # Removed/unresolvable mid-render: serve the snapshot, cache nothing.
+            return flows.plan_for_entry(entry)
         plan = flows.plan_for_entry(entry)
         self._plan_cache[entry.slug] = (key, plan)
         return plan
@@ -778,7 +792,17 @@ class MenuApp(App[int | PendingRun]):
                 except launcher.LaunchError as exc:
                     self._refresh_status(gettext("Error: %(error)s") % {"error": escape(str(exc))})
                     return
-            self._execute(entry, plan, values, extra, show_drift=False, runner=runner)
+            # The extra field was PREFILLED from the remembered tail; the form's raw-text
+            # semantics apply only to text the user actually authored here. A tail
+            # submitted untouched keeps its recorded provenance — otherwise one
+            # Enter-Enter pass through the launch menu would re-expand a CLI-captured
+            # literal tail AND flip its stored marker to raw for every later replay on
+            # both faces (the third face of the provenance rule).
+            state = argstate.load_state(entry.slug)
+            extra_raw = True if extra != state["extra_args"] else state["extra_args_raw"]
+            self._execute(
+                entry, plan, values, extra, extra_raw=extra_raw, show_drift=False, runner=runner
+            )
 
         self.push_screen(
             RunFormScreen(

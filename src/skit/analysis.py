@@ -1,6 +1,9 @@
 """Language-neutral analysis model + drift reconciliation (docs/design/multilang.md).
 
-Two things live here, shared by every analyzable language (python today, shell next):
+Three things live here, shared by every analyzable language (python today, shell next):
+
+- **The CLI-surface model** — `ArgSpec`, the result type every language's `cli_reader`
+  returns (argparse/click/typer, parseArgs, getopts, fish argparse, PowerShell param()).
 
 - **The candidate model** — `Candidate` (one detected parameter) and `Analysis` (the whole
   detection result). Every language's `analyze(text) -> Analysis` returns these; they are

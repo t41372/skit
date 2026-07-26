@@ -249,6 +249,12 @@ class CliReader:
     """Static reader for the script's OWN argument parser (argparse tier)."""
 
     read_cli: Callable[[str], ArgSpec | None]
+    # Non-None only when read_cli's answer depends on an external tool (PowerShell's
+    # parser subprocess): returns the resolved tool identity (path, or None when absent)
+    # so a caller that MEMOIZES read_cli results can key on it — otherwise a pwsh
+    # installed mid-session would keep serving the tool-less verdict from the memo.
+    # Purely-static readers leave it None and memoize on text alone.
+    runtime_fingerprint: Callable[[], str | None] | None = None
 
 
 @dataclass(frozen=True)
