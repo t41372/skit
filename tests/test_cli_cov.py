@@ -327,9 +327,29 @@ def test_preset_save_set_skips_secrets_with_notice(tmp_path):
     assert "hunter2" not in str(argstate.load_state(ent.slug))
 
 
-def test_preset_save_python_secret_param_excluded_with_notice(monkeypatch, tmp_path, capsys):
-    # Direct call (CliRunner swaps sys.stdin, hiding the tty): a secret value typed into
-    # the preset form must be skipped with the notice, never persisted (C3).
+def test_preset_save_all_secret_values_refuses_instead_of_minting_a_husk(tmp_path):
+    """When C3 would strip everything, the preset would be {} — the exact husk
+    argstate.purge_secret exists to sweep. Refusing (exit 2) keeps the two modules
+    agreeing that an empty preset must not exist."""
+    text = metawriter.write_params(
+        'TOKEN = "x"\nprint(TOKEN)\n',
+        [ParamDecl(name="TOKEN", binding="const", type="str", default="", secret=True)],
+    )
+    ent = store.add_python(_py(tmp_path, text), name="a")
+    result = runner.invoke(cli.app, ["preset", "save", "a", "n", "--set", "TOKEN=hunter2"])
+    assert result.exit_code == 2
+    out = " ".join(result.output.split())
+    assert "Nothing left to save" in out
+    assert argstate.load_state(ent.slug)["presets"] == {}
+    assert "hunter2" not in str(argstate.load_state(ent.slug))
+
+
+def test_preset_save_python_all_secret_form_refuses_the_husk(monkeypatch, tmp_path):
+    # Direct call (CliRunner swaps sys.stdin, hiding the tty): when the form's ONLY
+    # field is secret, C3 would strip everything and the preset would be {} — the husk
+    # argstate.purge_secret sweeps. The command refuses (exit 2) instead of reporting
+    # success for a preset that must not exist; mixed forms keep the skip-notice lane
+    # (test_preset_save_set_skips_secrets_with_notice).
     text = metawriter.write_params(
         'API = "x"\nprint(API)\n',
         [ParamDecl(name="API", binding="const", type="str", default="x", secret=True)],
@@ -337,9 +357,11 @@ def test_preset_save_python_secret_param_excluded_with_notice(monkeypatch, tmp_p
     ent = store.add_python(_py(tmp_path, text), name="a")
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)  # take the form path
     monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: "typed-secret")
-    cli.preset_save("a", "prod", from_last=False, set_opts=[])
-    assert "never stored in presets" in capsys.readouterr().out
-    assert argstate.load_state(ent.slug)["presets"]["prod"] == {}
+    with pytest.raises(typer.Exit) as exc:
+        cli.preset_save("a", "prod", from_last=False, set_opts=[])
+    assert exc.value.exit_code == 2
+    assert argstate.load_state(ent.slug)["presets"] == {}
+    assert "typed-secret" not in str(argstate.load_state(ent.slug))
 
 
 # --------------------------------------------------------------------------

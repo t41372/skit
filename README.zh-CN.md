@@ -52,7 +52,7 @@ skit                 # 打开菜单——选、填、跑
 | ![工具库](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-library-zh.png) | ![启动菜单](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-form-zh.png) |
 |:--:|:--:|
 | **工具库**——每个动作都在画面上，鼠标键盘皆可 | **启动菜单**——从脚本自己的参数生成 |
-| ![加入脚本](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-zh.png) | ![脚本设置](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-zh.png) |
+| ![加入脚本](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-zh.png) | ![条目设置](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-zh.png) |
 | **加入脚本**——静态检测参数；哪些交给 skit 管理由你决定 | **条目设置**——参数、机密、组合、依赖 |
 
 <p align="center">

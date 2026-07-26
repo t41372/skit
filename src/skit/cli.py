@@ -7,7 +7,9 @@ form layer (flows) so CLI and TUI behave identically.
 Command-surface contracts:
 - Exit codes (docker convention): `run` passes the script's exit code through PURE;
   skit's own failures are 125, a target that exists but isn't executable is 126, a
-  missing target/name is 127, usage errors are 2. Other commands: 0/1/2.
+  missing target/name is 127, usage errors are 2. Other commands use 0/1/2 — plus 125
+  where they validate parameter VALUES with run's own machinery (`preset save --set`),
+  because "bad value" must mean one thing everywhere.
 - Every output has a --json twin where output exists.
 - Lists are repeatable flags (--dep), never comma-joined (PEP 508 specifiers contain
   commas).
@@ -3668,6 +3670,17 @@ def preset_save(
             ),
             EXIT_USAGE,
         )
+    if values and not (values.keys() - plan.secret_names):
+        # Everything provided is secret: after C3 strips them the preset would be {} —
+        # exactly the husk argstate.purge_secret exists to sweep away, so minting one
+        # on purpose (and reporting success) would have two modules disagreeing about
+        # whether an empty preset may exist. Refuse with the wrong-shape code.
+        raise _fail(
+            gettext(
+                "Nothing left to save: every provided value is a secret, and secrets are never stored in presets."
+            ),
+            EXIT_USAGE,
+        )
     secret_overlap = plan.secret_names & values.keys()
     if secret_overlap:
         console.print(
@@ -5239,6 +5252,9 @@ def doctor(
             for p in problems:
                 console.print(f"  [yellow]{escape(p)}[/yellow]")
     entries = store.list_entries()
+    # One evaluation feeds the payload, the message branch, and both exit
+    # expressions - four readers, one fact.
+    uv_needed = healthcheck.uv_required(entries)
     # One shared collector with the TUI Health screen (healthcheck.collect) — the two
     # faces previously swept separately and disagreed about what "healthy" means.
     report = healthcheck.collect(entries)
@@ -5257,7 +5273,7 @@ def doctor(
                     # Additive: whether a missing uv is a failure HERE (python entries
                     # exist). Lets automation read the verdict instead of re-deriving
                     # the exit code's reasoning from the entries list.
-                    "uv_required": healthcheck.uv_required(entries),
+                    "uv_required": uv_needed,
                     "entries": len(entries),
                     "missing": missing,
                     "drift": drifted,
@@ -5282,10 +5298,10 @@ def doctor(
                 ensure_ascii=False,
             )
         )
-        raise typer.Exit(0 if uv or not healthcheck.uv_required(entries) else 1)
+        raise typer.Exit(0 if uv or not uv_needed else 1)
     if uv:
         console.print(f"[green]✓ {gettext('uv: %(path)s') % {'path': escape(uv)}}[/green]")
-    elif healthcheck.uv_required(entries):
+    elif uv_needed:
         # Python entries exist and cannot run right now — a real, actionable failure.
         # skit's own consent-gated download remains the primary remedy; a system-wide
         # install is the alternative, not the prescription.
@@ -5329,7 +5345,7 @@ def doctor(
         gettext("Library: %(path)s (%(count)s · %(size)s)")
         % {"path": escape(str(location)), "count": len(entries), "size": store.human_size(size)}
     )
-    raise typer.Exit(0 if uv or not healthcheck.uv_required(entries) else 1)
+    raise typer.Exit(0 if uv or not uv_needed else 1)
 
 
 # --------------------------------------------------------------------------

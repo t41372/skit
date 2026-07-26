@@ -72,15 +72,22 @@ def test_skill_stays_within_the_progressive_disclosure_budget():
     assert len(ROOT_SKILL.read_text(encoding="utf-8").splitlines()) < 500
 
 
-def _skill_command_lines() -> list[str]:
+def _skill_command_lines(section: str | None = None) -> list[str]:
+    """Every fenced `skit …` line the skill teaches — optionally only those under one
+    `## section` heading. One fence walk owns the block grammar for every test here, so
+    a fence-dialect or heading change breaks all consumers the same way instead of
+    letting two parsers drift apart."""
     lines: list[str] = []
     in_block = False
+    in_section = section is None
     for line in ROOT_SKILL.read_text(encoding="utf-8").splitlines():
+        if section is not None and line.startswith("## "):
+            in_section = line[3:].strip() == section
         if line.strip().startswith("```"):
             in_block = not in_block
             continue
         stripped = line.strip()
-        if in_block and stripped.startswith("skit "):
+        if in_section and in_block and stripped.startswith("skit "):
             lines.append(stripped)
     return lines
 
@@ -150,22 +157,19 @@ def test_skill_teaches_executable_empty_value_spellings_for_clearing_pins():
     assert ["skit", "params", "<name>", "--interpreter", ""] in commands
 
 
-def test_skill_presets_recipe_actually_works_end_to_end(tmp_path, monkeypatch):
+def test_skill_presets_recipe_actually_works_end_to_end():
     """The Presets code block must be a WORKING recipe, not folklore: this executes its
     exact command shapes against a real entry. Guards the seam that already broke once —
     the skill taught `run --save-preset --dry-run` as "create without running" after a
     dry run stopped persisting state, and the command-tree checks above stayed green
-    because every flag still existed; only the semantics had died."""
+    because every flag still existed; only the semantics had died. (Dir isolation comes
+    from conftest's autouse fixture, like every test here.)"""
     from typer.testing import CliRunner
 
     from skit import argstate, store
 
-    monkeypatch.setenv("SKIT_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("SKIT_STATE_DIR", str(tmp_path / "state"))
-    monkeypatch.setenv("SKIT_CONFIG_DIR", str(tmp_path / "config"))
-    block = re.search(r"## Presets\n.*?```bash\n(.*?)```", ROOT_SKILL.read_text(), re.DOTALL)
-    assert block is not None
-    lines = [ln for ln in block.group(1).splitlines() if ln.strip()]
+    lines = _skill_command_lines(section="Presets")
+    assert lines
     # The recipe must include the mint-without-running lane it exists to teach.
     assert any("preset save" in ln and "--set" in ln for ln in lines)
 
@@ -174,6 +178,8 @@ def test_skill_presets_recipe_actually_works_end_to_end(tmp_path, monkeypatch):
     ran_something = False
     for line in lines:
         argv = shlex.split(line, comments=True)
+        if not argv:
+            continue  # a whole-line comment in the recipe block is fine, not a command
         assert argv[0] == "skit"
         argv = [tok.replace("<name>", "job") for tok in argv[1:]]
         result = runner.invoke(cli.app, argv, catch_exceptions=False)
