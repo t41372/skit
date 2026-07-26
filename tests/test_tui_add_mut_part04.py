@@ -8,8 +8,8 @@ survive an edit→rescan, the editor error surfaced to the user, and the panel t
 
 A handful of the mutants on these lines are genuine equivalents: ``query_one``'s
 ``expect_type`` is a pure runtime assertion (None/omitted return the same unique match),
-``query_one(Type)`` resolves the same first/only widget, and ``read_text``/``write_text``
-encoding spellings decode identically under skit's UTF-8-mode runtime. Those lines carry
+``query_one(Type)`` resolves the same first/only widget, and the codec-alias spellings on
+the bytes round trip decode identically under skit's UTF-8-mode runtime. Those lines carry
 ``# pragma: no mutate`` in the source, and the tests below pin the surrounding behaviour
 so the pragma never masks a real regression (the maintainer's tui_form.py convention).
 """
@@ -153,6 +153,52 @@ async def test_accept_preserves_non_utf8_source_bytes(tmp_path):
     rewritten = store.list_entries()[0].script_path.read_bytes()
     assert b"\xff" in rewritten
     assert b"\xef\xbf\xbd" not in rewritten
+
+
+async def test_accept_preserves_a_crlf_source_end_to_end(tmp_path):
+    """The DEFAULT add path is byte-lossless about line endings too, same discipline as
+    tui_settings.action_save and cli._edit_params: fold to LF for the LF-based comment
+    engine, restore the source's own newline style, write atomically. read_text +
+    write_text (what this used to be) re-expands \\n to the HOST os.linesep, which
+    LF-flattened every CRLF script on POSIX — while the FAQ promises line endings
+    survive and "skit only edits comments" must mean the rest comes back identical."""
+    p = tmp_path / "crlf.sh"
+    p.write_bytes(b'#!/bin/sh\r\nWIDTH=800\r\necho "$WIDTH"\r\n')
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = AddReviewScreen(p, kind="shell")
+        app.push_screen(screen)
+        await pilot.pause()
+        assert screen.query_one("#rv-cand-0", Checkbox).value  # a candidate IS ticked
+        screen.action_accept()
+        await pilot.pause()
+
+    entry = store.list_entries()[0]
+    rewritten = entry.script_path.read_bytes()
+    assert b"[tool.skit]" in rewritten  # the block really was inserted
+    assert b"\r\n" in rewritten  # CRLF preserved...
+    stripped = rewritten.replace(b"\r\n", b"")  # ...end to end: no bare terminator survives
+    assert b"\r" not in stripped
+    assert b"\n" not in stripped
+
+
+async def test_accept_leaves_an_lf_source_lf(tmp_path):
+    """The mirror image: restoring the source's own style must not push CRLF onto an
+    LF file (the same write_text bug in the other direction, on Windows)."""
+    p = tmp_path / "lf.sh"
+    p.write_bytes(b'#!/bin/sh\nWIDTH=800\necho "$WIDTH"\n')
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = AddReviewScreen(p, kind="shell")
+        app.push_screen(screen)
+        await pilot.pause()
+        assert screen.query_one("#rv-cand-0", Checkbox).value
+        screen.action_accept()
+        await pilot.pause()
+
+    rewritten = store.list_entries()[0].script_path.read_bytes()
+    assert b"[tool.skit]" in rewritten
+    assert b"\r" not in rewritten
 
 
 # ---------------------------------------------------------------------------

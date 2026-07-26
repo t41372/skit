@@ -62,7 +62,9 @@ class UvDeclinedError(UvDownloadError):
 
 def _ask_consent(dest_dir: Path) -> bool:
     """Ask once before downloading on an interactive terminal; non-interactive (pipe/CI) keeps A9's
-    zero-action behavior but has already been told via stderr.
+    zero-action behavior — no question is asked there, and the only notice is the "First run —
+    downloading uv…" stderr line that ensure_uv_downloaded prints just before the fetch. README's
+    install section documents exactly this split (ask in a terminal, announce-only in a pipe).
 
     - Pulling an executable from the network shouldn't be entirely silent, but the default is Y: the
       target user is someone who "grabbed a script and just wants to run it".
@@ -279,7 +281,14 @@ def ensure_uv_downloaded(*, quiet: bool = False) -> str:
         raise
     except Exception as exc:  # wrap network/extraction failures uniformly
         raise UvDownloadError(
-            gettext("Failed to download uv: %(error)s") % {"error": str(exc)}
+            # The mirror hint rides on the failure itself: the users who hit this most —
+            # mainland China, first python run, no mirror configured yet — arrive via
+            # `skit add && skit run`, never via the bare-`skit` first-run wizard, so this
+            # message is the only place skit can hand them the lifeline.
+            gettext(
+                "Failed to download uv: %(error)s. Behind a firewall or in mainland China? Point skit at a mirror: skit config mirror.github nju (or TUI Preferences → mirrors)."
+            )
+            % {"error": str(exc)}
         ) from exc
     if not quiet:
         print(

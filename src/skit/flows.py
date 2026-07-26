@@ -33,7 +33,6 @@ here:
 from __future__ import annotations
 
 import glob as _glob
-import os
 import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -41,7 +40,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import analysis, argstate, config, launcher, params, tokens
+from . import analysis, argstate, childenv, config, launcher, params, tokens
 from .i18n import gettext
 from .langs.base import (
     InjectError,
@@ -206,7 +205,11 @@ class FormField:
 
 @dataclass
 class FormPlan:
-    source: str  # "inject" | "argparse" | "command" | "none"
+    source: str  # "inject" | "argparse" | "declared" | "command" | "none" — "argparse" is
+    # the historical token for EVERY static CLI reader (python argparse/click/typer, but
+    # also shell getopts, JS parseArgs, PowerShell param()); it leaks into `show --json`
+    # as param_source, where param_origin's "reader" is the honestly-named twin (cli.py
+    # _PARAM_ORIGIN documents the pairing).
     fields: list[FormField] = field(default_factory=list)
     drift_lines: list[str] = field(default_factory=list)  # localized, shown as a banner
     degraded_reason: str = ""  # argparse whole-parser degradation: "subparsers" | "dynamic"
@@ -591,7 +594,9 @@ def assemble(
     """Turn raw form values (token/glob originals) into delivery-ready material.
     Raises FormError with a user-ready message; never assembles around a hole."""
     if env is None:
-        env = os.environ
+        # Delivery material must see the child's environment, not the frozen parent's —
+        # same contract as tokens.expand's own default (see childenv.py).
+        env = childenv.child_env()
     final: dict[str, str] = {}
     display: list[tuple[str, str]] = []
     for f in plan.fields:

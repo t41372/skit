@@ -23,13 +23,15 @@ positive pilot test.
 Key grammar: a chord keeps one meaning per context class — Ctrl+E always opens `$EDITOR`
 on the screen's current subject, Ctrl+N always creates the screen's primary object (a
 script on the add step, an agent on a runner picker), Ctrl+T always inserts a value,
-Ctrl+R re-runs/refreshes the screen's subject (the run form runs it; Script settings
+Ctrl+R re-runs/refreshes the screen's subject (the run form runs it; Entry settings
 resyncs its definitions from the script), Ctrl+S saves/commits the screen's work
 (the run form's save-as-preset included), Ctrl+O always restores the screen's current
 field to its source default (README documents it on the run form — it must never mean
 anything else), and Ctrl+L always opens the screen's variable/candidate picker (the
-prompt review panel and Script settings). A new screen action takes an UNCLAIMED chord,
-never a second meaning for a claimed one. Ctrl+A (cursor-home) and — while an Input has
+prompt review panel and Entry settings). A new screen action takes an UNCLAIMED chord,
+never a second meaning for a claimed one — check the candidate against every screen
+before it lands (the three-way Ctrl+O collision happened because each screen picked it
+in isolation). Ctrl+A (cursor-home) and — while an Input has
 focus — Ctrl+E (end-of-line) belong to the Input: screen chords for them are never
 priority-bound; the chip is the path mid-edit.
 Never bind a text-editing chord (Ctrl+K and friends) with `priority=True` on a screen
@@ -173,6 +175,31 @@ enforces the sync byte-for-byte, validates the frontmatter against the spec, and
 every `skit …` invocation the skill teaches against the real command tree — renaming a
 command or flag fails that test until the skill is updated too.
 
+## Binary release
+
+Releases also ship self-contained single-file binaries (issue #16): PyInstaller onefile,
+built per platform by the `binaries`/`binary-musl` jobs in `.github/workflows/release.yml`
+and attached to the GitHub Release with `checksums.txt` + provenance attestation.
+Contributor rules that follow:
+
+- **`packaging/skit.spec` is a contract, not defaults** — its header documents why each
+  collect/hidden-import line exists. Build locally with
+  `uv sync --group packaging --no-editable --no-dev` (never an editable install — package
+  data must come from the built wheel) and a **uv-managed** Python (the glibc floor comes
+  from python-build-standalone, not the build host; a system interpreter would pin the
+  binary to the host's glibc).
+- **Every binary must pass `packaging/smoke.py` before it ships.** Frozen-app failures are
+  silent by design (a lost tree-sitter grammar degrades analyzers to None; lost metadata
+  becomes version `0.0.0+unknown`), so the smoke suite asserts positive outcomes — CI runs
+  it on every target, and `workflow_dispatch` on the Release workflow is the dry run.
+- **Child environments go through `childenv.child_env()`, never raw `os.environ`.** The
+  frozen bootloader poisons `LD_LIBRARY_PATH` (and friends) for its own libraries; skit
+  spawns user scripts, uv, editors, and installers, and every child-env assembly point
+  must scrub that. New subprocess call sites inherit this rule — and so does anything
+  that turns the environment into *delivery values*: `{env:X}` token expansion
+  (tokens/flows defaults) and the TUI env picker read `child_env()` too, so a frozen
+  install never exposes bundle paths or `_PYI_*` bookkeeping through skit's own UI.
+
 ## Demo assets
 
 The README's demo videos (`docs/assets/demo-*.mp4`) and screenshot grid (`docs/assets/tui-*.png`)
@@ -207,5 +234,9 @@ broken internal link or `#anchor`. Preview with `npm run dev` (http://localhost:
 Gotcha: `<include>` and Turbopack only resolve files **inside** `docs/` — never reference a
 path above the project root. The docs are English-only for now and sit **outside** the i18n
 coverage gate; the scaffolding (`docs/lib/i18n.ts`) is ready for zh content later. README copy
-vocabulary applies — the run screen is the "launch menu", never a "form". `docs/assets/` and
+vocabulary applies — the run screen's product name is the "launch menu": READMEs and docs
+introduce it by that name, and in-app copy may say "form" only for the mechanism (the
+fields being filled), never as the screen's name. README's first "launch menu" mention
+bridges the two ("the launch menu (the run form)") so a user meeting "form" strings
+in-app can connect them. `docs/assets/` and
 `docs/design/` live beside the site and are not published to it.

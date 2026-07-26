@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING
 
 from tree_sitter import Parser
 
+from ...childenv import child_env
 from ...i18n import gettext
 from ...params import coerce_default
 from ...rewrite import ByteSpan, apply_byte_spans, write_injected
@@ -237,6 +238,9 @@ def _gate_node(interpreter: str, path: Path, suffix: str) -> None:
             capture_output=True,
             check=False,
             timeout=_GATE_TIMEOUT,
+            # A frozen skit's loader path must not leak into node (it loads OpenSSL/ICU shared
+            # libraries; child_env is a plain os.environ copy when unfrozen).
+            env=child_env(),
         )  # pragma: no mutate — check=None/omitted is falsy-equivalent to check=False; timeout is a liveness guard that never fires for the bounded `node --check`; capture_output's off-path stays covered by the capture_output=False mutant (test_gate2_needs_captured_stderr_and_no_check_to_report_a_reject)  # fmt: skip
     except (OSError, subprocess.SubprocessError):
         return  # the gate itself couldn't run; gate 1 already vouched for the text

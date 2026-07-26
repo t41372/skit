@@ -68,6 +68,7 @@ from typing import TYPE_CHECKING
 from tree_sitter import Parser
 
 from ...callmatch import match_calls
+from ...childenv import child_env
 from ...i18n import gettext
 from ...rewrite import ByteSpan, apply_byte_spans, line_start_table, write_injected
 from ..base import (
@@ -522,6 +523,9 @@ def _gate_interpreter(interpreter: str, path: Path) -> None:
             capture_output=True,
             check=False,
             timeout=_GATE_TIMEOUT,
+            # A frozen skit's loader path must not leak into the system shell (child_env is a
+            # plain os.environ copy when unfrozen).
+            env=child_env(),
         )
     except (OSError, subprocess.SubprocessError):
         return  # the gate itself couldn't run; gate 1 already vouched for the text

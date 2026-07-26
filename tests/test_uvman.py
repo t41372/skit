@@ -308,6 +308,7 @@ def test_extract_uv_no_exe_in_archive_raises(tmp_path) -> None:
 def test_ensure_uv_network_error_wrapped(monkeypatch, tmp_path) -> None:
     import urllib.error
 
+    monkeypatch.setenv("SKIT_LANG", "en")
     monkeypatch.setattr(uvman, "_ask_consent", lambda _: True)
     monkeypatch.setattr("skit.uvman.private_bin_dir", lambda: tmp_path / "bin")
 
@@ -315,8 +316,29 @@ def test_ensure_uv_network_error_wrapped(monkeypatch, tmp_path) -> None:
         raise urllib.error.URLError("connection refused")
 
     monkeypatch.setattr("urllib.request.urlopen", _fail)
-    with pytest.raises(uvman.UvDownloadError):
+    with pytest.raises(uvman.UvDownloadError) as exc_info:
         uvman.ensure_uv_downloaded(quiet=True)
+    msg = str(exc_info.value)
+    assert "connection refused" in msg  # the underlying cause survives the wrap
+    # A blocked download IS the moment to hand over the mirror lifeline: the users who
+    # hit it most reach uv through `skit add && skit run`, not the bare-`skit` wizard.
+    assert "mainland China" in msg
+    assert "skit config mirror.github nju" in msg
+
+
+def test_declined_download_does_not_get_the_mirror_hint(monkeypatch, tmp_path) -> None:
+    """A refusal is not a failure: the user said no, so the message stays "install it
+    yourself" and must NOT push a mirror at someone who never asked skit to fetch
+    anything. Only the wrapped network/extraction failure carries the lifeline."""
+    monkeypatch.setenv("SKIT_LANG", "en")
+    monkeypatch.setattr(uvman, "_ask_consent", lambda _: False)
+    monkeypatch.setattr("skit.uvman.private_bin_dir", lambda: tmp_path / "bin")
+    with pytest.raises(uvman.UvDeclinedError) as exc_info:
+        uvman.ensure_uv_downloaded()
+    msg = str(exc_info.value)
+    assert "Download declined." in msg
+    assert "mirror" not in msg
+    assert "Failed to download" not in msg
 
 
 def test_download_url_uses_configured_mirror(monkeypatch, tmp_path):

@@ -604,9 +604,11 @@ class RunnerLaunch:
             # `require is not defined`) and node <22.7 reads an ESM one as CommonJS.
             js_deps.ensure_module_manifest(entry.dir, module_type)
             return
-        from .. import config
+        from .. import childenv, config
 
-        env = {**os.environ, **config.mirror_env(os.environ)}
+        # childenv.child_env, not os.environ: a frozen skit must not leak its bundled-library
+        # loader path into npm/bun/deno (they load native addons and TLS libraries).
+        env = {**childenv.child_env(), **config.mirror_env(os.environ)}
         js_deps.ensure_installed(
             entry.dir, list(entry.meta.dependencies), runner, env, module_type=module_type
         )

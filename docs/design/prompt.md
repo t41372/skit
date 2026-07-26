@@ -325,7 +325,7 @@ review:
   the new names and asks which to manage (the add onboarding's `all / none / numbers`
   interaction), the TUI opens the searchable candidate picker. This is the one primitive,
   `store.unmanaged_prompt_placeholders` (body detections minus the managed list), that
-  `skit params` and Script settings already surface. Management stays an explicit choice —
+  `skit params` and Entry settings already surface. Management stays an explicit choice —
   an unmanaged `{{hole}}` is still literal by design (a prompt documenting brace syntax
   must travel verbatim), so nothing is auto-managed and a non-interactive edit only names
   what it found and points at `--add`.

@@ -41,7 +41,7 @@ def detect_newline(raw: bytes) -> str:
     byte-for-byte, and skit's edit stays confined to the block it meant to touch. A (pathological)
     mixed-ending file normalizes to the detected style, still no worse than the LF-only form.
 
-    Lives here rather than in cli.py because it is not a CLI concern: the TUI's Script settings
+    Lives here rather than in cli.py because it is not a CLI concern: the TUI's Entry settings
     saves the very same block through the very same engine, and reading the copy with universal
     newlines flattened a CRLF script on every checkbox tick."""
     if b"\r\n" in raw:
@@ -65,7 +65,7 @@ def read_for_block_edit(path: Path) -> tuple[str, str]:
     """Read a stored copy for a comment-block edit: (LF-folded text, detected newline style).
 
     THE shared read half of every [tool.skit]/PEP 723 write-back — CLI onboarding, `params`
-    edits, the TUI add-review panel and Script settings all go through this pair instead of
+    edits, the TUI add-review panel and Entry settings all go through this pair instead of
     re-implementing the discipline: raw bytes, surrogateescape (arbitrary shell/fish bytes
     round-trip instead of burning down to U+FFFD), folded to LF for the LF-based block
     engines. Pair with write_block_edit, which restores the newline style captured here."""

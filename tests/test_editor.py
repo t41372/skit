@@ -178,9 +178,10 @@ def test_open_in_editor_appends_path_and_returns_code(monkeypatch, tmp_path):
     class _Result:
         returncode = 0
 
-    def fake_run(argv, check=False):
+    def fake_run(argv, check=False, env=None):
         captured["argv"] = argv
         captured["check"] = check
+        captured["env"] = env
         return _Result()
 
     monkeypatch.setattr(editor.subprocess, "run", fake_run)

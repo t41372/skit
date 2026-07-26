@@ -9,6 +9,7 @@ extra, or dropping the wheel-exclude) is still caught fast and hermetically.
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 
@@ -58,6 +59,40 @@ def test_mutmut_refreshes_all_runtime_package_data_in_a_reused_worktree() -> Non
     ]
     assert data_files
     assert not stale, f"mutmut does not refresh runtime package data: {stale}"
+
+
+def test_binary_spec_pins_every_tree_sitter_grammar() -> None:
+    """The frozen binary's spec must name every grammar the analyzers import.
+
+    Each ``import tree_sitter_<lang>`` in langs/ sits inside a try/except guard, so a
+    grammar missing from the bundle does not crash the binary — it silently turns that
+    language's analyzer into ``None`` and ships a build with parameter analysis quietly
+    disabled. Discover the imports instead of naming today's three, so a new language's
+    grammar cannot be added without the spec learning about it."""
+    spec = (ROOT / "packaging" / "skit.spec").read_text(encoding="utf-8")
+    grammars = {
+        match.group(1)
+        for path in (ROOT / "src" / "skit" / "langs").rglob("*.py")
+        for match in re.finditer(
+            r"^import (tree_sitter_\w+)", path.read_text(encoding="utf-8"), re.MULTILINE
+        )
+    }
+    assert grammars
+    missing = sorted(name for name in grammars if name not in spec)
+    assert not missing, f"packaging/skit.spec does not collect: {missing}"
+
+
+def test_release_workflow_and_packaging_files_agree() -> None:
+    """The release workflow builds the binary from files in this repo; a rename that
+    updates only one side would fail at tag time, when a release is already half-made."""
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    for referenced in ("packaging/skit.spec", "packaging/smoke.py"):
+        assert referenced in workflow
+        assert (ROOT / referenced).is_file()
+    # The build installs the project plus this group; a rename would leave the release
+    # jobs installing nothing and failing on the first `pyinstaller` call.
+    assert "--group packaging" in workflow
+    assert "pyinstaller" in " ".join(PYPROJECT["dependency-groups"]["packaging"])
 
 
 def test_version_is_single_sourced_from_the_distribution() -> None:

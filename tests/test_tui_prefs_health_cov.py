@@ -597,16 +597,44 @@ async def test_prefs_close_dismisses_false(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-async def test_health_uv_missing_shows_install_hint(tmp_path, monkeypatch):
-    """When uv can't be found, the checklist shows the install pointer, not a path."""
+async def test_health_uv_missing_without_python_entries_is_a_dim_not_needed_yet_line(
+    tmp_path, monkeypatch
+):
+    """Same split as `skit doctor` (healthcheck.uv_required): with nothing that needs uv, the
+    health screen says so in the dim ○ style — a fresh library is healthy, and skit
+    fetches its own pinned copy when a Python entry first runs."""
     monkeypatch.setattr("skit.langs.launch.find_uv", lambda: None)
+    store.add_command("echo hi", name="cmd")  # a non-python entry needs no uv
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         app.push_screen(HealthScreen())
         await pilot.pause()
         text = _screen_text(app.screen)
-    assert "uv: not found" in text
-    assert "docs.astral.sh/uv" in text
+        line = next(w for w in app.screen.query(Static) if "uv: not found" in str(w.render()))
+        assert line.has_class("dim")
+    assert "○ uv: not found — not needed yet." in text
+    assert "✗" not in text
+    assert "docs.astral.sh/uv" not in text  # nobody is sent to a website for a non-problem
+
+
+async def test_health_uv_missing_with_a_python_entry_is_the_red_cannot_run_line(
+    tmp_path, monkeypatch
+):
+    """The red ✗ is reserved for entries that actually cannot run — and it names skit's
+    own download first, with the system-wide install as the alternative."""
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: None)
+    store.add_python(_py(tmp_path, "print(1)\n"), name="a")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(HealthScreen())
+        await pilot.pause()
+        text = _screen_text(app.screen)
+        line = next(w for w in app.screen.query(Static) if "uv: not found" in str(w.render()))
+        assert line.has_class("bad")
+    assert "✗ uv: not found — Python entries cannot run." in text
+    assert "skit offers to download its own pinned uv on their next run" in text
+    assert "docs.astral.sh/uv" in text  # the alternative is still named
+    assert "not needed yet" not in text
 
 
 async def test_health_lists_drift_issue_and_mirror_on(tmp_path):

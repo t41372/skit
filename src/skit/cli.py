@@ -7,7 +7,9 @@ form layer (flows) so CLI and TUI behave identically.
 Command-surface contracts:
 - Exit codes (docker convention): `run` passes the script's exit code through PURE;
   skit's own failures are 125, a target that exists but isn't executable is 126, a
-  missing target/name is 127, usage errors are 2. Other commands: 0/1/2.
+  missing target/name is 127, usage errors are 2. Other commands use 0/1/2 — plus 125
+  where they validate parameter VALUES with run's own machinery (`preset save --set`),
+  because "bad value" must mean one thing everywhere.
 - Every output has a --json twin where output exists.
 - Lists are repeatable flags (--dep), never comma-joined (PEP 508 specifiers contain
   commas).
@@ -2561,7 +2563,7 @@ def rename(
     name: str = _SCRIPT_ARG,
     new_name: str = typer.Argument(..., help=gettext("The new name")),
 ) -> None:
-    """The CLI twin of the Script-settings name field: agents curate the library too,
+    """The CLI twin of the Entry-settings name field: agents curate the library too,
     and remove + re-add (the only workaround before) destroyed presets and history."""
     try:
         entry = store.rename(name, new_name)
@@ -2577,7 +2579,7 @@ def describe(
     name: str = _SCRIPT_ARG,
     text: str = typer.Argument(..., help=gettext("The description (empty text clears it)")),
 ) -> None:
-    """The CLI twin of the Script-settings description field — the discovery surface
+    """The CLI twin of the Entry-settings description field — the discovery surface
     agents are told to maintain must be writable by them."""
     try:
         entry = store.update_description(name, text.strip())
@@ -3196,7 +3198,18 @@ def run(
             raise _fail(str(exc), EXIT_NOT_FOUND) from exc
         except launcher.LaunchError as exc:
             raise _fail(str(exc), EXIT_SKIT) from exc
-        _persist_preset()
+        # A dry run persists no preset, values, or run history. --save-preset writing
+        # here while the help text promised "print the command, then exit" was a silent
+        # side effect; saving still works on any real run, and `preset save --set` mints
+        # one without running anything. (The interactive runner pick is still remembered
+        # — choosing a runner is its own explicit act, dry run or not.)
+        if save_preset:
+            err_console.print(
+                "[dim]"
+                + gettext("Dry run — preset %(preset)s was NOT saved (drop --dry-run to save it).")
+                % {"preset": escape(save_preset)}
+                + _DIM_CLOSE
+            )
         if validated_prompt is not None and validated_prompt[1]:
             err_console.print(f"[yellow]{escape(validated_prompt[1])}[/yellow]")
         # No temp copy is written for a dry run, so the command line shows the original
@@ -3259,7 +3272,9 @@ def run(
 # --------------------------------------------------------------------------
 
 runner_app = typer.Typer(
-    help=gettext("Manage the agents (runners) that prompt entries run with."),
+    help=gettext(
+        "Manage the agents (runners) that prompt entries run with. (Not the JavaScript runtime — that is: skit config js.runner)"
+    ),
     no_args_is_help=True,
 )
 app.add_typer(runner_app, name="runner")
@@ -3574,11 +3589,22 @@ def preset_save(
         "--from-last",
         help=gettext("Save the last run's values without asking (automation-friendly)"),
     ),
+    set_opts: list[str] = typer.Option(
+        None,
+        "--set",
+        help=gettext(
+            "Save this value, as NAME=VALUE (repeatable; tokens like {cwd} stay unexpanded until each run) — mint a preset non-interactively without running the entry. Fields not named snapshot the entry's own defaults, never this machine's history."
+        ),
+    ),
 ) -> None:
-    """Save a named preset: interactively, or straight from the last run with --from-last.
-    Secret values are never persisted (C3)."""
+    """Save a named preset: interactively, from explicit --set values, or straight from
+    the last run with --from-last. Secret values are never persisted (C3)."""
     from . import flows, promptform
 
+    if not isinstance(set_opts, list):
+        # A direct Python call (tests, embedding) without the kwarg leaves typer's
+        # truthy OptionInfo default in place — the same trap run() guards against.
+        set_opts = []
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
@@ -3590,7 +3616,39 @@ def preset_save(
             % {"name": entry.meta.name},
             EXIT_USAGE,
         )
-    if from_last:
+    if from_last and set_opts:
+        # Two competing value sources in one invocation is a shape error, not a merge.
+        raise _fail(
+            gettext("--from-last and --set are different value sources — pick one."),
+            EXIT_USAGE,
+        )
+    if set_opts:
+        # Explicit values ARE the deterministic source (same strict parser as run --set:
+        # malformed or unknown names exit 2). This is the one lane that mints a preset
+        # without a terminal, without history, and without executing anything — the job
+        # `run --save-preset --dry-run` used to do by accident before dry runs stopped
+        # persisting state; the Agent Skill teaches this lane. Like every other preset
+        # writer it stores a FULL snapshot: fields not named take the entry's own
+        # declared default ("" when there is none) — never this machine's last-used
+        # values, which would make the "deterministic" lane mint a different preset on
+        # every machine that ran the entry differently.
+        provided = _parse_set_opts(plan, set_opts)
+        if provided and not (provided.keys() - plan.secret_names):
+            # Everything the user EXPLICITLY asked to persist is secret: backfilling
+            # defaults around it would report success while dropping their entire
+            # input. Same refusal as the post-strip husk guard below.
+            raise _fail(
+                gettext(
+                    "Nothing left to save: every provided value is a secret, and secrets are never stored in presets."
+                ),
+                EXIT_USAGE,
+            )
+        values = {
+            f.key: provided.get(f.key, f.default if f.has_default else "")
+            for f in plan.fields
+            if not f.secret or f.key in provided
+        }
+    elif from_last:
         state = argstate.load_state(entry.slug)
         if not state["last_run"] and not state["values"]:
             raise _fail(
@@ -3622,8 +3680,30 @@ def preset_save(
     elif _is_interactive():
         values = promptform.collect(plan, flows.prefill(plan, entry.slug), console=console)
     else:
-        # Non-interactive contract: don't prompt — save what the prefill already knows.
-        values = flows.prefill(plan, entry.slug)
+        # Non-interactive contract: never guess. The prefill is whatever defaults and
+        # last-used values happen to be lying around — silently minting a preset out of
+        # that would save a value set the user never chose (the exact "silently assemble"
+        # move the contract forbids). The deterministic sources are named, and the exit
+        # code is 2 like every other wrong-shape refusal (remove/preset delete without
+        # --yes, editor lanes without a terminal): the invocation is missing a flag, the
+        # operation itself never started.
+        raise _fail(
+            gettext(
+                "Saving a preset needs a value source in a pipe: pass --set NAME=VALUE, use --from-last after a run, or run interactively."
+            ),
+            EXIT_USAGE,
+        )
+    if values and not (values.keys() - plan.secret_names):
+        # Everything provided is secret: after C3 strips them the preset would be {} —
+        # exactly the husk argstate.purge_secret exists to sweep away, so minting one
+        # on purpose (and reporting success) would have two modules disagreeing about
+        # whether an empty preset may exist. Refuse with the wrong-shape code.
+        raise _fail(
+            gettext(
+                "Nothing left to save: every provided value is a secret, and secrets are never stored in presets."
+            ),
+            EXIT_USAGE,
+        )
     secret_overlap = plan.secret_names & values.keys()
     if secret_overlap:
         console.print(
@@ -3662,7 +3742,7 @@ def preset_list(
     if not presets:
         console.print(
             gettext(
-                "No presets for %(name)s yet. Create one with: skit run %(name)s --save-preset <preset>"
+                "No presets for %(name)s yet. Create one with: skit preset save %(name)s <preset> --set K=V (no run needed), or skit run %(name)s --save-preset <preset>"
             )
             % {"name": escape(entry.meta.name)}
         )
@@ -4147,6 +4227,7 @@ def params(
     normalize_opt: list[str] = typer.Option(
         None,
         "--normalize",
+        rich_help_panel=gettext("Entry & launch policy (not parameter definitions)"),
         help=gettext(
             "Shell only: rewrite a constant into the ${NAME:-default} idiom in the stored copy, so its value is delivered as an environment variable instead of a rewritten temporary copy (repeatable)"
         ),
@@ -4154,6 +4235,7 @@ def params(
     runner_pin: str = typer.Option(
         None,
         "--runner",
+        rich_help_panel=gettext("Entry & launch policy (not parameter definitions)"),
         help=gettext(
             "Prompt only: pin the agent this prompt runs with (empty value clears the pin)"
         ),
@@ -4162,6 +4244,7 @@ def params(
     interpolate_opt: bool = typer.Option(
         None,
         "--interpolate/--no-interpolate",
+        rich_help_panel=gettext("Entry & launch policy (not parameter definitions)"),
         help=gettext(
             "Prompt only: turn variable insertion on/off for this prompt (off = the body "
             "travels exactly as written)"
@@ -4170,6 +4253,7 @@ def params(
     workdir_opt: str = typer.Option(
         None,
         "--workdir",
+        rich_help_panel=gettext("Entry & launch policy (not parameter definitions)"),
         help=gettext(
             "Set where the entry runs: origin (its own folder), store, invoke (where you "
             "run skit from), or an absolute path"
@@ -4178,11 +4262,13 @@ def params(
     template_opt: str = typer.Option(
         None,
         "--template",
+        rich_help_panel=gettext("Entry & launch policy (not parameter definitions)"),
         help=gettext("Command only: rewrite the template ({placeholders} are re-read from it)"),
     ),
     interpreter_opt: str = typer.Option(
         None,
         "--interpreter",
+        rich_help_panel=gettext("Entry & launch policy (not parameter definitions)"),
         help=gettext(
             "Pin the interpreter/runtime an interpreted entry runs with (e.g. zsh, bun; "
             "empty value returns to automatic)"
@@ -5164,17 +5250,6 @@ def agent_install(
 # --------------------------------------------------------------------------
 
 
-def _uv_required(entries: list[store.Entry]) -> bool:
-    """Whether a missing uv should fail doctor's exit code. uv is what runs python
-    entries, so it's required when any python entry exists — and also for an EMPTY
-    library (a fresh install's doctor must still steer the user toward a working
-    setup). A non-empty library made purely of exe/command entries runs fine without
-    uv, and exiting 1 there sent automation chasing a phantom problem."""
-    if not entries:
-        return True
-    return any(e.meta.kind == "python" for e in entries)
-
-
 @app.command(help=gettext("Check that uv is available and the entry library is intact."))
 def doctor(
     rebuild: bool = typer.Option(
@@ -5200,6 +5275,9 @@ def doctor(
             for p in problems:
                 console.print(f"  [yellow]{escape(p)}[/yellow]")
     entries = store.list_entries()
+    # One evaluation feeds the payload, the message branch, and both exit
+    # expressions - four readers, one fact.
+    uv_needed = healthcheck.uv_required(entries)
     # One shared collector with the TUI Health screen (healthcheck.collect) — the two
     # faces previously swept separately and disagreed about what "healthy" means.
     report = healthcheck.collect(entries)
@@ -5215,6 +5293,10 @@ def doctor(
             json.dumps(
                 {
                     "uv": uv,
+                    # Additive: whether a missing uv is a failure HERE (python entries
+                    # exist). Lets automation read the verdict instead of re-deriving
+                    # the exit code's reasoning from the entries list.
+                    "uv_required": uv_needed,
                     "entries": len(entries),
                     "missing": missing,
                     "drift": drifted,
@@ -5239,12 +5321,20 @@ def doctor(
                 ensure_ascii=False,
             )
         )
-        raise typer.Exit(0 if uv or not _uv_required(entries) else 1)
+        raise typer.Exit(0 if uv or not uv_needed else 1)
     if uv:
         console.print(f"[green]✓ {gettext('uv: %(path)s') % {'path': escape(uv)}}[/green]")
-    else:
+    elif uv_needed:
+        # Python entries exist and cannot run right now — a real, actionable failure.
+        # skit's own consent-gated download remains the primary remedy; a system-wide
+        # install is the alternative, not the prescription.
         console.print(
-            f"[red]✗ {gettext('uv: not found. Install it from https://docs.astral.sh/uv/getting-started/installation/')}[/red]"
+            f"[red]✗ {gettext('uv: not found — Python entries cannot run. skit offers to download its own pinned uv on their next run, or install it system-wide: https://docs.astral.sh/uv/getting-started/installation/')}[/red]"
+        )
+    else:
+        # No python entries (maybe no entries at all): uv is simply not needed yet.
+        console.print(
+            f"[dim]○ {gettext('uv: not found — not needed yet. skit will offer to download its own pinned copy when a Python entry first runs.')}[/dim]"
         )
     console.print(
         "✓ "
@@ -5278,7 +5368,7 @@ def doctor(
         gettext("Library: %(path)s (%(count)s · %(size)s)")
         % {"path": escape(str(location)), "count": len(entries), "size": store.human_size(size)}
     )
-    raise typer.Exit(0 if uv or not _uv_required(entries) else 1)
+    raise typer.Exit(0 if uv or not uv_needed else 1)
 
 
 # --------------------------------------------------------------------------
@@ -5494,7 +5584,7 @@ def _config_set(key: str, value: str) -> None:
     elif key == "js.runner":
         if value.strip() and value not in config.JS_RUNNERS:
             err_console.print(
-                f"[red]{gettext('Unknown JS runner: %(value)s. Choose from: %(names)s') % {'value': escape(value), 'names': ', '.join(config.JS_RUNNERS)}}[/red]"
+                f"[red]{gettext('Unknown JS runtime: %(value)s. Choose from: %(names)s. (Looking for the AI agents prompts run with? That is: skit runner)') % {'value': escape(value), 'names': ', '.join(config.JS_RUNNERS)}}[/red]"
             )
             raise typer.Exit(EXIT_USAGE)
         config.save_js_runner(value)

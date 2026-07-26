@@ -15,7 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import config
+from . import childenv, config
 from .i18n import gettext
 
 
@@ -69,8 +69,9 @@ def open_in_editor(path: Path) -> int:
     argv = [*resolve_editor(), str(path)]
     try:
         # check=False is subprocess.run's default; keeping it explicit. noqa: S603 — argv from the
-        # user-configured editor.
-        completed = subprocess.run(argv, check=False)  # noqa: S603  # pragma: no mutate
+        # user-configured editor. env: a frozen skit must not leak its bundled-library loader
+        # path into the editor (childenv.child_env is a plain os.environ copy when unfrozen).
+        completed = subprocess.run(argv, check=False, env=childenv.child_env())  # noqa: S603  # pragma: no mutate
     except OSError as exc:
         raise EditorError(
             gettext(

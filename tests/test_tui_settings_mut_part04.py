@@ -1,6 +1,6 @@
 """Mutation-kill tests for ScriptSettingsScreen._compose_storage / _compose_presets.
 
-Every assertion pins a real rendered string or CSS class of the live Script settings
+Every assertion pins a real rendered string or CSS class of the live Entry settings
 screen, composed through a Textual `Pilot` exactly as a user sees it — the Storage
 section (copy vs. reference wording) and the Presets section (empty-state hint, the
 "untick to delete" hint, and the per-preset checkbox summary line).

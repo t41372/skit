@@ -813,7 +813,7 @@ def test_preset_save_command_with_params(tmp_path, tty, monkeypatch):
     # exercised through invoke() — the tty fixture + a direct call is the honest path.
     ent = store.add_command("echo {msg}", name="e")
     monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: "hello")
-    cli.preset_save("e", "prod", from_last=False)
+    cli.preset_save("e", "prod", from_last=False, set_opts=[])
     assert argstate.load_state(ent.slug)["presets"]["prod"] == {"msg": "hello"}
 
 
@@ -984,10 +984,16 @@ def test_doctor_uv_found(monkeypatch, tmp_path):
     assert result.exit_code == 0
 
 
-def test_doctor_uv_missing(monkeypatch):
+def test_doctor_uv_missing_on_an_empty_library_is_healthy(monkeypatch):
+    """A fresh install (no entries) without uv is NOT a failure: skit fetches its own
+    pinned copy the first time a Python entry needs one, so doctor reports the dim
+    "not needed yet" line and exits 0 instead of sending new users to a website."""
     monkeypatch.setattr("skit.langs.launch.find_uv", lambda: None)
     result = runner.invoke(cli.app, ["doctor"])
-    assert result.exit_code == 1
+    assert result.exit_code == 0
+    out = " ".join(result.output.split())
+    assert "uv: not found — not needed yet." in out
+    assert "Python entries cannot run" not in out
 
 
 def test_doctor_rebuild(monkeypatch, tmp_path):
@@ -1321,14 +1327,28 @@ def test_preset_list_escapes_markup_in_name_and_values(tmp_path):
     assert "[red]Taipei[/red]" in result.output
 
 
-def test_preset_save_command_escapes_markup_in_preset_name_and_entry_name(tmp_path):
+def test_preset_save_command_escapes_markup_in_preset_name_and_entry_name(
+    tmp_path, monkeypatch, capsys
+):
+    # The saved-confirmation line interpolates both names; a terminal is what makes
+    # `preset save` collect values at all, so drive the interactive lane directly.
     store.add_command("echo {msg}", name="[blue]e[/blue]")
-    result = runner.invoke(
-        cli.app, ["preset", "save", "[blue]e[/blue]", "[green]p[/green]"], input="hi\n"
-    )
-    assert result.exit_code == 0, result.output
-    assert "[green]p[/green]" in result.output
-    assert "[blue]e[/blue]" in result.output
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    # cli imports promptform lazily inside the command body, so patch the module itself.
+    monkeypatch.setattr("skit.promptform.collect", lambda *a, **k: {"msg": "hi"})
+    cli.preset_save("[blue]e[/blue]", "[green]p[/green]", from_last=False, set_opts=[])
+    out = capsys.readouterr().out
+    assert "[green]p[/green]" in out
+    assert "[blue]e[/blue]" in out
+
+
+def test_preset_save_non_interactive_refusal_is_static_and_exit_two(tmp_path):
+    """The refusal is a static usage message (exit 2) — markup-bearing entry/preset
+    names never reach it, so there is nothing to escape and nothing to crash on."""
+    store.add_command("echo {msg}", name="[blue]e[/blue]")
+    result = runner.invoke(cli.app, ["preset", "save", "[blue]e[/blue]", "[green]p[/green]"])
+    assert result.exit_code == 2
+    assert "Saving a preset needs a value source in a pipe" in " ".join(result.output.split())
 
 
 def test_preset_delete_unknown_escapes_markup_in_preset_name():
@@ -1508,7 +1528,7 @@ def test_preset_save_prompt_escapes_markup_in_placeholder_name(monkeypatch, tty)
         return "x"
 
     monkeypatch.setattr(cli.Prompt, "ask", fake_ask)
-    cli.preset_save("e", "p", from_last=False)
+    cli.preset_save("e", "p", from_last=False, set_opts=[])
     assert captured["prompt"] == r"  \[red]msg\[/red]"
 
 

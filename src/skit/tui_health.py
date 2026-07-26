@@ -46,6 +46,7 @@ class HealthScreen(Screen[str | None]):
     HealthScreen .ok { color: $success; }
     HealthScreen .warn { color: $warning; }
     HealthScreen .bad { color: $error; }
+    HealthScreen .dim { color: $text-muted; }
     HealthScreen .hint { color: $text-muted; }
     HealthScreen KeysBar { dock: bottom; }
     HealthScreen #hc-keys { color: $text-muted; }
@@ -58,14 +59,22 @@ class HealthScreen(Screen[str | None]):
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="hc-body"):
             uv = launcher.find_uv()
+            entries = store.list_entries()
             if uv:
                 yield Static(f"✓ {gettext('uv: %(path)s') % {'path': escape(uv)}}", classes="ok")
-            else:
+            elif healthcheck.uv_required(entries):
+                # The shared predicate (healthcheck.uv_required — one fact, two faces,
+                # per that module's charter): red only when Python entries actually
+                # cannot run; this face's remedy wording stays its own.
                 yield Static(
-                    f"✗ {gettext('uv: not found. Install it from https://docs.astral.sh/uv/getting-started/installation/')}",
+                    f"✗ {gettext('uv: not found — Python entries cannot run. skit offers to download its own pinned uv on their next run, or install it system-wide: https://docs.astral.sh/uv/getting-started/installation/')}",
                     classes="bad",
                 )
-            entries = store.list_entries()
+            else:
+                yield Static(
+                    f"○ {gettext('uv: not found — not needed yet. skit will offer to download its own pinned copy when a Python entry first runs.')}",
+                    classes="dim",
+                )
             yield Static(
                 "✓ "
                 + ngettext(

@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from skit import argstate, cli, flows, launcher, promptform, store
@@ -199,27 +200,36 @@ def test_run_with_valid_preset_succeeds(tmp_path, run_entry_spy):
 
 
 # --------------------------------------------------------------------------
-# preset save: 590-600 (python entry with managed params: prefilled values saved,
-# secret values excluded with a notice)
+# preset save: the interactivity split (a terminal collects the form; a pipe refuses
+# rather than guessing) and secret values excluded with a notice
 # --------------------------------------------------------------------------
 
 
-def test_preset_save_python_with_params_non_interactive_prefill(tmp_path):
+def test_preset_save_non_interactive_refuses_instead_of_guessing(tmp_path):
+    """Non-interactively there is nothing to ask and nothing the user chose: the prefill
+    is whatever defaults/last-used values happen to be lying around, so minting a preset
+    from it would be exactly the "silently assemble" move the contract forbids. skit
+    refuses (exit 2, the wrong-shape convention), names the deterministic sources
+    (--set, --from-last), and writes NO preset."""
     text = metawriter.write_params(
         'CITY = "Taipei"\nprint(CITY)\n',
         [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
     )
     ent = store.add_python(_py(tmp_path, text), name="a")
-    # CliRunner's stdin is not a tty, so _collect_param_form takes the non-interactive path and
-    # returns the prefill (the definition's default) without prompting.
+    # CliRunner's stdin is not a tty, so _is_interactive() is False.
     result = runner.invoke(cli.app, ["preset", "save", "a", "prod"])
-    assert result.exit_code == 0, result.output
-    assert argstate.load_state(ent.slug)["presets"]["prod"] == {"CITY": "Taipei"}
+    assert result.exit_code == 2  # wrong-shape refusal, like every missing --yes/--set
+    out = " ".join(result.output.split())
+    assert "Saving a preset needs a value source in a pipe" in out
+    assert "--set NAME=VALUE" in out
+    assert "--from-last" in out
+    assert argstate.load_state(ent.slug)["presets"] == {}  # nothing guessed into existence
 
 
-def test_preset_save_piped_stdout_takes_prefill_not_the_prompt(tmp_path, monkeypatch):
-    """The interactive predicate is now _is_interactive() (stdin AND stdout): a tty stdin
-    with a PIPED stdout must NOT prompt — it takes the non-interactive prefill path."""
+def test_preset_save_piped_stdout_refuses_without_opening_the_form(tmp_path, monkeypatch):
+    """The interactive predicate is _is_interactive() (stdin AND stdout): a tty stdin
+    with a PIPED stdout must NOT prompt — and since there is no terminal to ask in, it
+    refuses rather than falling back to the prefill."""
     text = metawriter.write_params(
         'CITY = "Taipei"\nprint(CITY)\n',
         [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
@@ -232,8 +242,10 @@ def test_preset_save_piped_stdout_takes_prefill_not_the_prompt(tmp_path, monkeyp
         "collect",
         lambda *a, **k: pytest.fail("piped stdout must not open the form"),
     )
-    cli.preset_save("a", "prod", from_last=False)
-    assert argstate.load_state(ent.slug)["presets"]["prod"] == {"CITY": "Taipei"}
+    with pytest.raises(typer.Exit) as exc:
+        cli.preset_save("a", "prod", from_last=False, set_opts=[])
+    assert exc.value.exit_code == 2
+    assert argstate.load_state(ent.slug)["presets"] == {}
 
 
 def test_preset_save_interactive_collects_the_form(tmp_path, monkeypatch):
@@ -250,14 +262,95 @@ def test_preset_save_interactive_collects_the_form(tmp_path, monkeypatch):
         "collect",
         lambda plan, prefill, console: called.setdefault("v", {"CITY": "Kyoto"}),
     )
-    cli.preset_save("a", "prod", from_last=False)
+    cli.preset_save("a", "prod", from_last=False, set_opts=[])
     assert called["v"] == {"CITY": "Kyoto"}  # the form ran
     assert argstate.load_state(ent.slug)["presets"]["prod"] == {"CITY": "Kyoto"}
 
 
-def test_preset_save_python_secret_param_excluded_with_notice(monkeypatch, tmp_path, capsys):
-    # Direct call (CliRunner swaps sys.stdin, hiding the tty): a secret value typed into
-    # the preset form must be skipped with the notice, never persisted (C3).
+def test_preset_save_set_mints_without_running_or_a_terminal(tmp_path):
+    """The deterministic non-interactive lane (and the recipe SKILL.md teaches):
+    explicit --set values become the preset, nothing executes, no terminal needed."""
+    text = metawriter.write_params(
+        'CITY = "Taipei"\nprint(CITY)\n',
+        [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
+    )
+    ent = store.add_python(_py(tmp_path, text), name="a")
+    result = runner.invoke(cli.app, ["preset", "save", "a", "nightly", "--set", "CITY=Kyoto"])
+    assert result.exit_code == 0
+    assert argstate.load_state(ent.slug)["presets"]["nightly"] == {"CITY": "Kyoto"}
+
+
+def test_preset_save_set_unknown_name_is_usage_error(tmp_path):
+    """--set reuses run's strict parser: an unknown parameter is exit 2, no preset."""
+    text = metawriter.write_params(
+        'CITY = "Taipei"\nprint(CITY)\n',
+        [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
+    )
+    ent = store.add_python(_py(tmp_path, text), name="a")
+    result = runner.invoke(cli.app, ["preset", "save", "a", "nightly", "--set", "TOWN=x"])
+    assert result.exit_code == 2
+    assert argstate.load_state(ent.slug)["presets"] == {}
+
+
+def test_preset_save_set_and_from_last_conflict(tmp_path):
+    """Two value sources in one invocation is a shape error, never a merge."""
+    text = metawriter.write_params(
+        'CITY = "Taipei"\nprint(CITY)\n',
+        [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
+    )
+    ent = store.add_python(_py(tmp_path, text), name="a")
+    result = runner.invoke(
+        cli.app,
+        ["preset", "save", "a", "nightly", "--set", "CITY=Kyoto", "--from-last"],
+    )
+    assert result.exit_code == 2
+    assert argstate.load_state(ent.slug)["presets"] == {}
+
+
+def test_preset_save_set_skips_secrets_with_notice(tmp_path):
+    """C3 holds on the --set lane too: a secret value never lands in the preset."""
+    text = metawriter.write_params(
+        'CITY = "Taipei"\nTOKEN = "x"\nprint(CITY, TOKEN)\n',
+        [
+            ParamDecl(name="CITY", binding="const", type="str", default="Taipei"),
+            ParamDecl(name="TOKEN", binding="const", type="str", default="", secret=True),
+        ],
+    )
+    ent = store.add_python(_py(tmp_path, text), name="a")
+    result = runner.invoke(
+        cli.app,
+        ["preset", "save", "a", "n", "--set", "CITY=Kyoto", "--set", "TOKEN=hunter2"],
+    )
+    assert result.exit_code == 0
+    assert "never stored in presets" in result.output  # the notice, not just the outcome
+    saved = argstate.load_state(ent.slug)["presets"]["n"]
+    assert saved == {"CITY": "Kyoto"}
+    assert "hunter2" not in str(argstate.load_state(ent.slug))
+
+
+def test_preset_save_all_secret_values_refuses_instead_of_minting_a_husk(tmp_path):
+    """When C3 would strip everything, the preset would be {} — the exact husk
+    argstate.purge_secret exists to sweep. Refusing (exit 2) keeps the two modules
+    agreeing that an empty preset must not exist."""
+    text = metawriter.write_params(
+        'TOKEN = "x"\nprint(TOKEN)\n',
+        [ParamDecl(name="TOKEN", binding="const", type="str", default="", secret=True)],
+    )
+    ent = store.add_python(_py(tmp_path, text), name="a")
+    result = runner.invoke(cli.app, ["preset", "save", "a", "n", "--set", "TOKEN=hunter2"])
+    assert result.exit_code == 2
+    out = " ".join(result.output.split())
+    assert "Nothing left to save" in out
+    assert argstate.load_state(ent.slug)["presets"] == {}
+    assert "hunter2" not in str(argstate.load_state(ent.slug))
+
+
+def test_preset_save_python_all_secret_form_refuses_the_husk(monkeypatch, tmp_path):
+    # Direct call (CliRunner swaps sys.stdin, hiding the tty): when the form's ONLY
+    # field is secret, C3 would strip everything and the preset would be {} — the husk
+    # argstate.purge_secret sweeps. The command refuses (exit 2) instead of reporting
+    # success for a preset that must not exist; mixed forms keep the skip-notice lane
+    # (test_preset_save_set_skips_secrets_with_notice).
     text = metawriter.write_params(
         'API = "x"\nprint(API)\n',
         [ParamDecl(name="API", binding="const", type="str", default="x", secret=True)],
@@ -265,9 +358,62 @@ def test_preset_save_python_secret_param_excluded_with_notice(monkeypatch, tmp_p
     ent = store.add_python(_py(tmp_path, text), name="a")
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)  # take the form path
     monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: "typed-secret")
-    cli.preset_save("a", "prod", from_last=False)
-    assert "never stored in presets" in capsys.readouterr().out
-    assert argstate.load_state(ent.slug)["presets"]["prod"] == {}
+    with pytest.raises(typer.Exit) as exc:
+        cli.preset_save("a", "prod", from_last=False, set_opts=[])
+    assert exc.value.exit_code == 2
+    assert argstate.load_state(ent.slug)["presets"] == {}
+    assert "typed-secret" not in str(argstate.load_state(ent.slug))
+
+
+def test_preset_save_set_backfills_unnamed_fields_from_defaults_not_history(tmp_path):
+    """--set stores a FULL snapshot like every other preset writer: the field not named
+    takes the entry's own declared default — never this machine's last-used value, or
+    the "deterministic" lane would mint a different preset on every machine."""
+    text = metawriter.write_params(
+        'CITY = "Taipei"\nMODE = "fast"\nprint(CITY, MODE)\n',
+        [
+            ParamDecl(name="CITY", binding="const", type="str", default="Taipei"),
+            ParamDecl(name="MODE", binding="const", type="str", default="fast"),
+        ],
+    )
+    ent = store.add_python(_py(tmp_path, text), name="a")
+    # Pollute local history: a past run chose MODE=slow on this machine.
+    argstate.save_last(ent.slug, values={"MODE": "slow"})
+    result = runner.invoke(cli.app, ["preset", "save", "a", "n", "--set", "CITY=Kyoto"])
+    assert result.exit_code == 0
+    saved = argstate.load_state(ent.slug)["presets"]["n"]
+    assert saved == {"CITY": "Kyoto", "MODE": "fast"}  # default, NOT the remembered "slow"
+
+
+def test_preset_save_set_only_secrets_on_a_mixed_entry_refuses(tmp_path):
+    """Providing ONLY secret values must refuse even when non-secret fields exist:
+    backfilling defaults around a fully-stripped input would report success while
+    dropping everything the user explicitly asked to persist."""
+    text = metawriter.write_params(
+        'CITY = "Taipei"\nTOKEN = "x"\nprint(CITY, TOKEN)\n',
+        [
+            ParamDecl(name="CITY", binding="const", type="str", default="Taipei"),
+            ParamDecl(name="TOKEN", binding="const", type="str", default="", secret=True),
+        ],
+    )
+    ent = store.add_python(_py(tmp_path, text), name="a")
+    result = runner.invoke(cli.app, ["preset", "save", "a", "n", "--set", "TOKEN=hunter2"])
+    assert result.exit_code == 2
+    assert argstate.load_state(ent.slug)["presets"] == {}
+
+
+def test_preset_save_direct_call_without_set_opts_kwarg_still_works(tmp_path, monkeypatch):
+    """A direct Python call without the new kwarg leaves typer's OptionInfo default in
+    place; the command must treat that as "no --set given", not iterate it."""
+    text = metawriter.write_params(
+        'CITY = "Taipei"\nprint(CITY)\n',
+        [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
+    )
+    ent = store.add_python(_py(tmp_path, text), name="a")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr("skit.promptform.collect", lambda *a, **k: {"CITY": "Kyoto"})
+    cli.preset_save("a", "prod", from_last=False)  # no set_opts on purpose
+    assert argstate.load_state(ent.slug)["presets"]["prod"] == {"CITY": "Kyoto"}
 
 
 # --------------------------------------------------------------------------

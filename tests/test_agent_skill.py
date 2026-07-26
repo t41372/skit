@@ -72,15 +72,33 @@ def test_skill_stays_within_the_progressive_disclosure_budget():
     assert len(ROOT_SKILL.read_text(encoding="utf-8").splitlines()) < 500
 
 
-def _skill_command_lines() -> list[str]:
+RUNNABLE_MARKER = "test_agent_skill.py executes every `skit` line in this block"
+
+
+def _skill_command_lines(runnable_only: bool = False) -> list[str]:
+    """Every fenced `skit …` line the skill teaches. One fence walk owns the block
+    grammar for every test here, so a fence-dialect change breaks all consumers the
+    same way instead of letting two parsers drift apart. runnable_only=True keeps just
+    the blocks whose preceding HTML marker declares them machine-executed — the marker
+    lives in SKILL.md itself, so a doc editor sees the contract at the edit site."""
     lines: list[str] = []
     in_block = False
+    armed = False  # a marker line arms the next opening fence
+    block_runnable = False
     for line in ROOT_SKILL.read_text(encoding="utf-8").splitlines():
+        if RUNNABLE_MARKER in line:
+            armed = True
+            continue
         if line.strip().startswith("```"):
+            if not in_block:  # opening fence consumes the marker
+                block_runnable = armed
+                armed = False
+            else:  # closing fence
+                block_runnable = False
             in_block = not in_block
             continue
         stripped = line.strip()
-        if in_block and stripped.startswith("skit "):
+        if in_block and stripped.startswith("skit ") and (not runnable_only or block_runnable):
             lines.append(stripped)
     return lines
 
@@ -148,3 +166,39 @@ def test_skill_teaches_executable_empty_value_spellings_for_clearing_pins():
     commands = [shlex.split(line, comments=True) for line in _skill_command_lines()]
     assert ["skit", "params", "<name>", "--runner", ""] in commands
     assert ["skit", "params", "<name>", "--interpreter", ""] in commands
+
+
+def test_skill_presets_recipe_actually_works_end_to_end():
+    """The Presets code block must be a WORKING recipe, not folklore: this executes its
+    exact command shapes against a real entry. Guards the seam that already broke once —
+    the skill taught `run --save-preset --dry-run` as "create without running" after a
+    dry run stopped persisting state, and the command-tree checks above stayed green
+    because every flag still existed; only the semantics had died. (Dir isolation comes
+    from conftest's autouse fixture, like every test here.)"""
+    from typer.testing import CliRunner
+
+    from skit import argstate, store
+
+    lines = _skill_command_lines(runnable_only=True)
+    # Both marked recipes must be present: the preset mint-without-running lane and
+    # the runner add/replace/remove cycle — each stateful, each capable of teaching
+    # semantics the CLI dropped.
+    assert any("preset save" in ln and "--set" in ln for ln in lines)
+    assert any(ln.startswith("skit runner add") for ln in lines)
+
+    entry = store.add_command("echo {a} {b}", name="job")
+    runner = CliRunner()
+    for line in lines:
+        argv = shlex.split(line, comments=True)
+        if not argv:
+            continue  # a whole-line comment in a recipe block is fine, not a command
+        assert argv[0] == "skit"
+        argv = [tok.replace("<name>", "job") for tok in argv[1:]]
+        result = runner.invoke(cli.app, argv, catch_exceptions=False)
+        assert result.exit_code == 0, f"skill recipe line failed: {line!r}\n{result.output}"
+    # The recipes' own promises: the preset and the custom runner existed mid-recipe
+    # and their delete/remove lines cleaned them back out.
+    assert "nightly" not in argstate.load_state(entry.slug)["presets"]
+    from skit import config
+
+    assert all(r.name != "mycli" for r in config.load_prompt_runners())

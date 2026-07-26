@@ -418,7 +418,7 @@ async def test_edit_pops_this_entrys_cache_key(tmp_path, monkeypatch):
 
 
 async def test_settings_close_pops_this_entrys_cache_key(tmp_path):
-    """A Resync inside Script settings can change the definitions without touching the script,
+    """A Resync inside Entry settings can change the definitions without touching the script,
     so the close callback drops the key too."""
     entry = store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     app = tui.MenuApp()

@@ -59,6 +59,13 @@ Issues = "https://github.com/t41372/skit/issues"
 skit = "skit.__main__:main"
 
 [dependency-groups]
+# Binary release builds (packaging/skit.spec) — not part of the dev gate. hooks-contrib is
+# pyinstaller's own dependency; the floor is explicit because 2026.2 added the hook that
+# collects rich>=14.3's split-out unicode data, without which the frozen TUI misrenders.
+packaging = [
+    "pyinstaller>=6.21,<7",
+    "pyinstaller-hooks-contrib>=2026.2",
+]
 dev = [
     "pytest>=9.1,<10",
     "pytest-asyncio>=1.4,<2",
@@ -191,6 +198,10 @@ ignore = [
     "PLR0912", # typer command bodies with many options naturally branch a lot
     "PLR0915",
 ]
+"packaging/smoke.py" = [
+    "S606",    # the pty child exec IS the binary under test; no shell wanted
+    "PLR0915", # a linear checklist of smoke assertions reads best as one main()
+]
 "scripts/serve_preview.py" = [
     "S104",    # dev-only preview server binds 0.0.0.0 on purpose
     "S108",    # dev-only demo sandbox under /tmp on purpose
@@ -240,6 +251,8 @@ pytest_add_cli_args_test_selection = ["tests/"]
 # README.md rides along because pyproject's `readme` references it — without it, uv
 # can't build the project inside mutants/ on a cold cache. scripts/ rides along because
 # the i18n-gate tests (test_js_deps.py) import scripts/i18n_coverage.py by path.
+# packaging/ rides along because test_packaging.py reads the binary build's spec to
+# check it collects every tree-sitter grammar the analyzers import.
 # benchmarks/ rides along because tests/test_benchmarks_tooling.py imports the
 # benchmarks package (pytest's inifile-relative pythonpath resolves it inside
 # mutants/). .github/workflows/ rides along because the same file's contract-sync
@@ -252,6 +265,7 @@ also_copy = [
     "skills/",
     "README.md",
     "scripts/",
+    "packaging/",
     "benchmarks/",
     ".github/workflows/",
     ".github/actions/",

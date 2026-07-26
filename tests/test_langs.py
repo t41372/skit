@@ -271,17 +271,22 @@ def test_params_exe_prints_plain_message_without_manage_dead_end(tmp_path: Path)
 
 def test_doctor_missing_uv_pure_exe_library_exits_zero(tmp_path: Path, monkeypatch):
     # A library with no python entries runs fine without uv — exit 1 there sent
-    # automation chasing a phantom problem. The red uv line still prints.
+    # automation chasing a phantom problem. The dim "not needed yet" line prints
+    # instead of the red one: nothing in this library needs uv.
     from skit import cli, store
 
     monkeypatch.setattr("skit.langs.launch.find_uv", lambda: None)
     store.add_exe(_exe(tmp_path), name="prog")
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 0
-    assert "uv" in result.output
+    out = " ".join(result.output.split())
+    assert "uv: not found — not needed yet." in out
+    assert "Python entries cannot run" not in out
 
 
 def test_doctor_missing_uv_with_python_entry_exits_one(tmp_path: Path, monkeypatch):
+    # The red path is reserved for entries that actually cannot run right now, and it
+    # names skit's own download first — the website install is the alternative.
     from skit import cli, store
 
     monkeypatch.setattr("skit.langs.launch.find_uv", lambda: None)
@@ -290,6 +295,10 @@ def test_doctor_missing_uv_with_python_entry_exits_one(tmp_path: Path, monkeypat
     store.add_python(py, name="a")
     result = runner.invoke(cli.app, ["doctor"])
     assert result.exit_code == 1
+    out = " ".join(result.output.split())
+    assert "uv: not found — Python entries cannot run." in out
+    assert "skit offers to download its own pinned uv on their next run" in out
+    assert "not needed yet" not in out
 
 
 def test_doctor_json_missing_uv_pure_exe_library_exits_zero(tmp_path: Path, monkeypatch):
@@ -299,6 +308,19 @@ def test_doctor_json_missing_uv_pure_exe_library_exits_zero(tmp_path: Path, monk
     store.add_exe(_exe(tmp_path), name="prog")
     result = runner.invoke(cli.app, ["doctor", "--json"])
     assert result.exit_code == 0
+
+
+def test_doctor_json_missing_uv_with_python_entry_exits_one(tmp_path: Path, monkeypatch):
+    """--json exit parity with the human output on the red side too: a python entry that
+    cannot run is a real failure an agent must be able to detect from the exit code."""
+    from skit import cli, store
+
+    monkeypatch.setattr("skit.langs.launch.find_uv", lambda: None)
+    py = tmp_path / "a.py"
+    py.write_text("print(1)\n", encoding="utf-8")
+    store.add_python(py, name="a")
+    result = runner.invoke(cli.app, ["doctor", "--json"])
+    assert result.exit_code == 1
 
 
 # ---- plan_for_entry: capability degradation ----------------------------------------------------

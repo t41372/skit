@@ -227,3 +227,29 @@ def test_has_drift_reflects_the_plans_real_drift(tmp_path):
     entry = store.add_python(_py(tmp_path, drifted, "drifty.py"), name="drifty")
     app = tui.MenuApp()
     assert app._has_drift(entry) is True
+
+
+def test_has_drift_is_false_for_an_analyzer_less_kind_whose_plan_really_drifts(tmp_path):
+    """The guard is three INDEPENDENT short-circuits — `spec is None` or `analyzer is None`
+    or `the script is gone` — not a compound. A prompt has no analyzer, yet its plan really
+    can carry drift lines (a managed variable the body dropped), so this is the one case
+    where the second `or` is observable: turning it into `and` lets an analyzer-less kind
+    fall through to the plan and light the Library's ⚠ badge — a badge whose sentence is
+    "The script changed", scoped on purpose to analyzer-backed kinds (prompt drift surfaces
+    through `skit doctor` and Entry settings instead). Before the plan cache the missing-file
+    test covered this operator, because the old body called `stat()` unguarded and crashed;
+    `_cached_plan` now tolerates a missing file (its try/except stat key), so the operator needs its own witness."""
+    src = tmp_path / "p.prompt.md"
+    src.write_text("Do {{a}} and {{b}}\n", encoding="utf-8")
+    entry = store.add_prompt(src, name="p")
+    store.write_prompt_managed(entry.slug, ["a", "b"])
+    entry = store.resolve("p")
+    entry.script_path.write_text("Do {{a}}\n", encoding="utf-8")  # {{b}} is gone → drift
+    entry = store.resolve("p")
+    prompt_spec = spec_for("prompt")
+    assert prompt_spec is not None
+    assert prompt_spec.analyzer is None  # the discriminator the middle clause reads
+    assert entry.script_path.exists()  # ...and the third clause is False, so only it decides
+    assert flows.plan_for_entry(entry).drift_lines  # the plan DOES drift...
+    app = tui.MenuApp()
+    assert app._has_drift(entry) is False  # ...but this badge is not prompt drift's channel

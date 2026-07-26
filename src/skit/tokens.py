@@ -24,6 +24,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 
+from . import childenv
 from .i18n import gettext
 
 # {cwd} / {today} / {now} / {env:NAME}; NAME follows the usual environment-variable shape.
@@ -50,7 +51,12 @@ def expand(
     "anything you didn't ask skit to manage travels untouched". The named tokens
     (`{cwd}`, `{today}`, `{now}`, `{env:X}`, leading `~`) still expand."""
     if env is None:
-        env = os.environ
+        # Expanded values are delivery material — they end up inside a child's argv/env.
+        # childenv.child_env() (a plain os.environ copy when unfrozen) keeps `{env:X}`
+        # consistent with what the child itself would inherit: under a frozen binary,
+        # `{env:LD_LIBRARY_PATH}` must expand to the user's value (or fail like an
+        # unfrozen install), never to the bootloader's temporary bundle path.
+        env = childenv.child_env()
     if now is None:
         now = datetime.now()
     if text.startswith("~"):

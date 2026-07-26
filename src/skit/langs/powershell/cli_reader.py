@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ...analysis import ArgSpec
+from ...childenv import child_env
 from ...params import ParamType, is_secret_name
 
 if TYPE_CHECKING:
@@ -167,14 +168,15 @@ def _find_powershell() -> str | None:
 def _extract(executable: str, tmp: Path) -> ArgSpec | None:
     """Run the extractor over the temp file and map its JSON to an ArgSpec, or None on any
     failure (the reader is best-effort: a broken read must never break `add`/`params`)."""
-    child_env = {**os.environ, "SKIT_PS_TARGET": str(tmp)}
+    # child_env(), not os.environ: a frozen skit's loader path must not leak into pwsh.
+    probe_env = {**child_env(), "SKIT_PS_TARGET": str(tmp)}
     try:
         proc = subprocess.run(  # noqa: S603 — argv list, executable resolved from PATH; ParseFile parses only
             [executable, "-NoProfile", "-NonInteractive", "-Command", _EXTRACTOR],
             capture_output=True,
             check=False,
             timeout=_TIMEOUT,
-            env=child_env,
+            env=probe_env,
         )
     except (OSError, subprocess.SubprocessError):
         return None

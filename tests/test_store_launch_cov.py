@@ -1,7 +1,7 @@
 """store's launch-policy writers: write_workdir, write_interpreter, update_template.
 
 These three persist the policies the CLI's `skit params --workdir/--interpreter/--template`
-and the TUI's Script-settings launch section edit. Each test asserts the stored meta (or
+and the TUI's Entry-settings launch section edit. Each test asserts the stored meta (or
 the raised refusal), never merely that a line ran.
 """
 

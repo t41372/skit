@@ -15,7 +15,7 @@
 
 skit 把你的脚本集中收在一处，并让启动脚本非常容易 —— 支持 Python、shell、JS/TS、可执行文件、提示词等等。
 
-skit 会读你的脚本，把命令行参数、`input()`、写死的常量之类的东西变成一个带说明的启动菜单 —— 输入和变量都在画面上改，不用改脚本。
+skit 会读你的脚本，把命令行参数、`input()`、写死的常量之类的东西变成一个带说明的启动菜单（即运行表单）—— 输入和变量都在画面上改，不用改脚本。
 
 于是你再也不用担心明年找不到或忘了怎么用你（或 AI）写的脚本了 —— 直接塞 skit 里，什么时候要跑都很轻松。
 
@@ -52,8 +52,8 @@ skit                 # 打开菜单——选、填、跑
 | ![工具库](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-library-zh.png) | ![启动菜单](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-form-zh.png) |
 |:--:|:--:|
 | **工具库**——每个动作都在画面上，鼠标键盘皆可 | **启动菜单**——从脚本自己的参数生成 |
-| ![加入脚本](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-zh.png) | ![脚本设置](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-zh.png) |
-| **加入脚本**——静态检测参数；哪些交给 skit 管理由你决定 | **脚本设置**——参数、机密、组合、依赖 |
+| ![加入脚本](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-zh.png) | ![条目设置](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-zh.png) |
+| **加入脚本**——静态检测参数；哪些交给 skit 管理由你决定 | **条目设置**——参数、机密、组合、依赖 |
 
 <p align="center">
   <img width="480" alt="只用鼠标操作 skit——画面上每个控件都是可点击的目标" src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/demo-mouse.gif"><br>
@@ -117,6 +117,20 @@ uv tool install git+https://github.com/t41372/skit          # 最新开发版
 uvx --from git+https://github.com/t41372/skit skit --help   # 或是什么都不装，直接试
 ```
 
+### 完全没有 Python？用独立二进制
+
+每个版本还附带自足的单文件二进制——不需要 Python、不需要 uv、什么都不用预装（Linux x86_64/arm64 glibc + x86_64 musl、macOS Apple 芯片/Intel、Windows x64）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/t41372/skit/main/scripts/install.sh | sh
+```
+
+Windows 用户：从[最新 release](https://github.com/t41372/skit/releases/latest) 下载 `skit-windows-x86_64.exe`，改名为 `skit.exe` 并放进 `PATH`。
+
+> 已经用 `uv tool` 装过了？两条安装路径都把 `skit` 放在 `~/.local/bin`。安装脚本会拒绝覆盖 uv/pipx 的 shim（两个管理器悄悄争抢同一个文件，正是「装了新版却神秘降级」的来源）——请二选一，或用 `SKIT_INSTALL_DIR` 把二进制装到别处。
+
+这个二进制本身就是完整的 skit——TUI、分析器、提示词、所有脚本类型都在里面。只有*运行 Python 脚本*这一件事仍然经过 uv，而 skit 的处理方式一如既往：终端里先问你（管道 / CI 里改为 stderr 告知），再下载它自己那份锁定版本、校验过哈希的 uv（支持大陆镜像）。校验和与构建溯源、镜像安装、各平台注意事项：[安装文档（英文）](https://t41372.github.io/skit/en/docs/installation/)。
+
 ## 更新
 
 ```bash
@@ -124,7 +138,7 @@ uv tool upgrade skit-cli   # 更新到最新版——想「检查更新」也用
 skit --version             # 看当前版本
 ```
 
-`uv tool upgrade` 会跟随你当初的安装来源：从 PyPI 装的追 PyPI 正式版，`git+…` 装的会重新拉取 main 分支。
+`uv tool upgrade` 会跟随你当初的安装来源：从 PyPI 装的追 PyPI 正式版，`git+…` 装的会重新拉取 main 分支。装的是独立二进制？重新跑一遍安装命令即可——它总是拉取最新 release。
 
 ## 用法
 
@@ -195,10 +209,18 @@ skit config mirror off              # 总开关：off 保留已存的 URL；`on`
 
 自定义地址：在 TUI 偏好设置（或首次运行向导）选 `custom`，或直接把 URL 传给对应的轴。
 
+**在大陆安装独立二进制**：release 资产托管在 GitHub 上，请让安装脚本和它的下载都走一个 gh-proxy 式镜像前缀——务必选你信任的：sha256 校验能发现损坏或过期的下载，但恶意镜像连校验文件一起伪造也是可能的，严格验证请用 `gh attestation verify` 或与镜像之外获取的哈希比对（[详见文档](https://t41372.github.io/skit/en/docs/installation/)）：
+
+```bash
+curl -fsSL https://<代理>/https://raw.githubusercontent.com/t41372/skit/main/scripts/install.sh \
+  | SKIT_INSTALL_MIRROR=https://<代理>/ sh
+```
+
 ## 卸载
 
 ```bash
-uv tool uninstall skit-cli
+uv tool uninstall skit-cli    # 从 PyPI 用 uv/pip 装的
+rm ~/.local/bin/skit          # 装的是独立二进制
 ```
 
 这会移除 skit 本身与它在 `PATH` 上的快捷方式。你的工具库与设置存在包**之外**，所以会刻意保留——重装一次，一切照旧。想连这些也一并清掉，就删掉 skit 自己的目录：

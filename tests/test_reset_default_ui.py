@@ -433,7 +433,7 @@ def test_show_json_delivers_empty_true_for_str_const_false_for_int(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# 8. Script settings: the parameter row annotates the SOURCE's live default
+# 8. Entry settings: the parameter row annotates the SOURCE's live default
 # ---------------------------------------------------------------------------
 
 

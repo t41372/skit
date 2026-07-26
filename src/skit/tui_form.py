@@ -513,9 +513,12 @@ class EnvPickerModal(ModalScreen[str | None]):
             )
 
     def _options(self, needle: str) -> list[Option]:
-        import os
+        # childenv.child_env(), not os.environ: what the picker offers must be what the
+        # child will actually see — under a frozen binary the raw parent environment
+        # carries bootloader loader-path surgery and _PYI_* bookkeeping.
+        from . import childenv
 
-        names = sorted(n for n in os.environ if needle.lower() in n.lower())
+        names = sorted(n for n in childenv.child_env() if needle.lower() in n.lower())
         return [Option(escape(n), id=n) for n in names[:200]]
 
     @on(Input.Changed)

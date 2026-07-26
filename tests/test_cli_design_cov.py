@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import sys
 import types
 from pathlib import Path
@@ -105,8 +106,10 @@ def _find_runner(name):
 
 def _flat(text: str) -> str:
     """Collapse rich's soft-wrap newlines/whitespace so a message split across the 80-col
-    CliRunner width still matches as one string."""
-    return " ".join(text.split())
+    CliRunner width still matches as one string — and strip ANSI escapes first: on the
+    macOS CI runners rich decides the captured stream is color-capable and slices every
+    `--flag` apart with style codes, which a literal `in` can never match."""
+    return " ".join(re.sub(r"\x1b\[[0-9;]*m", "", text).split())
 
 
 # ============================================================ curation
@@ -160,6 +163,19 @@ def test_describe_not_found(tmp_path):
 
 
 # ============================================================ launch policy: workdir
+
+
+def test_params_help_files_the_policy_flags_under_their_own_panel():
+    """`skit params` is named for parameter definitions but also carries the entry/launch
+    policy switches (--workdir, --interpreter, --template, --runner, --interpolate,
+    --normalize). Left in one undifferentiated option list they read as parameter flags;
+    a rich_help_panel says out loud which half of the command they belong to."""
+    result = runner.invoke(cli.app, ["params", "--help"])
+    assert result.exit_code == 0, result.output
+    out = _flat(result.output)
+    assert "Entry & launch policy (not parameter definitions)" in out
+    for flag in ("--workdir", "--interpreter", "--template", "--runner", "--normalize"):
+        assert flag in out
 
 
 @pytest.mark.parametrize("literal", ["origin", "store", "invoke"])
