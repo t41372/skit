@@ -33,7 +33,6 @@ here:
 from __future__ import annotations
 
 import glob as _glob
-import os
 import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -41,7 +40,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import analysis, argstate, config, launcher, params, tokens
+from . import analysis, argstate, childenv, config, launcher, params, tokens
 from .i18n import gettext
 from .langs.base import (
     InjectError,
@@ -591,7 +590,9 @@ def assemble(
     """Turn raw form values (token/glob originals) into delivery-ready material.
     Raises FormError with a user-ready message; never assembles around a hole."""
     if env is None:
-        env = os.environ
+        # Delivery material must see the child's environment, not the frozen parent's —
+        # same contract as tokens.expand's own default (see childenv.py).
+        env = childenv.child_env()
     final: dict[str, str] = {}
     display: list[tuple[str, str]] = []
     for f in plan.fields:

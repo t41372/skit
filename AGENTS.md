@@ -173,6 +173,31 @@ enforces the sync byte-for-byte, validates the frontmatter against the spec, and
 every `skit …` invocation the skill teaches against the real command tree — renaming a
 command or flag fails that test until the skill is updated too.
 
+## Binary release
+
+Releases also ship self-contained single-file binaries (issue #16): PyInstaller onefile,
+built per platform by the `binaries`/`binary-musl` jobs in `.github/workflows/release.yml`
+and attached to the GitHub Release with `checksums.txt` + provenance attestation.
+Contributor rules that follow:
+
+- **`packaging/skit.spec` is a contract, not defaults** — its header documents why each
+  collect/hidden-import line exists. Build locally with
+  `uv sync --group packaging --no-editable --no-dev` (never an editable install — package
+  data must come from the built wheel) and a **uv-managed** Python (the glibc floor comes
+  from python-build-standalone, not the build host; a system interpreter would pin the
+  binary to the host's glibc).
+- **Every binary must pass `packaging/smoke.py` before it ships.** Frozen-app failures are
+  silent by design (a lost tree-sitter grammar degrades analyzers to None; lost metadata
+  becomes version `0.0.0+unknown`), so the smoke suite asserts positive outcomes — CI runs
+  it on every target, and `workflow_dispatch` on the Release workflow is the dry run.
+- **Child environments go through `childenv.child_env()`, never raw `os.environ`.** The
+  frozen bootloader poisons `LD_LIBRARY_PATH` (and friends) for its own libraries; skit
+  spawns user scripts, uv, editors, and installers, and every child-env assembly point
+  must scrub that. New subprocess call sites inherit this rule — and so does anything
+  that turns the environment into *delivery values*: `{env:X}` token expansion
+  (tokens/flows defaults) and the TUI env picker read `child_env()` too, so a frozen
+  install never exposes bundle paths or `_PYI_*` bookkeeping through skit's own UI.
+
 ## Demo assets
 
 The README's demo videos (`docs/assets/demo-*.mp4`) and screenshot grid (`docs/assets/tui-*.png`)

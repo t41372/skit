@@ -117,6 +117,18 @@ uv tool install git+https://github.com/t41372/skit          # 最新开发版
 uvx --from git+https://github.com/t41372/skit skit --help   # 或是什么都不装，直接试
 ```
 
+### 完全没有 Python？用独立二进制
+
+每个版本还附带自足的单文件二进制——不需要 Python、不需要 uv、什么都不用预装（Linux x86_64/arm64 glibc + x86_64 musl、macOS Apple 芯片/Intel、Windows x64）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/t41372/skit/main/scripts/install.sh | sh
+```
+
+Windows 用户：从[最新 release](https://github.com/t41372/skit/releases/latest) 下载 `skit-windows-x86_64.exe`，改名为 `skit.exe` 并放进 `PATH`。
+
+这个二进制本身就是完整的 skit——TUI、分析器、提示词、所有脚本类型都在里面。只有*运行 Python 脚本*这一件事仍然经过 uv，而 skit 的处理方式一如既往：先问你，再下载它自己那份锁定版本、校验过哈希的 uv（支持大陆镜像）。校验和与构建溯源、镜像安装、各平台注意事项：[安装文档（英文）](https://t41372.github.io/skit/en/docs/installation/)。
+
 ## 更新
 
 ```bash
@@ -124,7 +136,7 @@ uv tool upgrade skit-cli   # 更新到最新版——想「检查更新」也用
 skit --version             # 看当前版本
 ```
 
-`uv tool upgrade` 会跟随你当初的安装来源：从 PyPI 装的追 PyPI 正式版，`git+…` 装的会重新拉取 main 分支。
+`uv tool upgrade` 会跟随你当初的安装来源：从 PyPI 装的追 PyPI 正式版，`git+…` 装的会重新拉取 main 分支。装的是独立二进制？重新跑一遍安装命令即可——它总是拉取最新 release。
 
 ## 用法
 
@@ -195,10 +207,18 @@ skit config mirror off              # 总开关：off 保留已存的 URL；`on`
 
 自定义地址：在 TUI 偏好设置（或首次运行向导）选 `custom`，或直接把 URL 传给对应的轴。
 
+**在大陆安装独立二进制**：release 资产托管在 GitHub 上，请让安装脚本和它的下载都走一个 gh-proxy 式镜像前缀——务必选你信任的：sha256 校验能发现损坏或过期的下载，但恶意镜像连校验文件一起伪造也是可能的，严格验证请用 `gh attestation verify` 或与镜像之外获取的哈希比对（[详见文档](https://t41372.github.io/skit/en/docs/installation/)）：
+
+```bash
+curl -fsSL https://<代理>/https://raw.githubusercontent.com/t41372/skit/main/scripts/install.sh \
+  | SKIT_INSTALL_MIRROR=https://<代理>/ sh
+```
+
 ## 卸载
 
 ```bash
-uv tool uninstall skit-cli
+uv tool uninstall skit-cli    # 从 PyPI 用 uv/pip 装的
+rm ~/.local/bin/skit          # 装的是独立二进制
 ```
 
 这会移除 skit 本身与它在 `PATH` 上的快捷方式。你的工具库与设置存在包**之外**，所以会刻意保留——重装一次，一切照旧。想连这些也一并清掉，就删掉 skit 自己的目录：

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import config
+from . import childenv, config
 from .i18n import gettext
 from .langs import base as _base
 from .langs import launch as _launch
@@ -286,7 +286,9 @@ def run_entry(
     # Overlay skit's mirror settings onto EVERY child's environment (uv reads the index
     # vars, npm/bun read the registry var — the overlay exists for both) — a no-op
     # unless the user enabled them, never clobbering a variable the user set themselves.
-    env = {**os.environ, **config.mirror_env(os.environ), **(env_overlay or {})}
+    # The base is childenv.child_env(), not os.environ: a frozen skit must not leak its
+    # bundled-library loader path into the user's script, uv, or a prompt runner.
+    env = {**childenv.child_env(), **config.mirror_env(os.environ), **(env_overlay or {})}
     # LaunchPayload is a closed two-member union, so isinstance/else is exhaustive (the
     # else narrows to ArgvLaunch) without the phantom no-match arm a `match` would add.
     if isinstance(launch.payload, ShellLaunch):

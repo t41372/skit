@@ -1,0 +1,117 @@
+---
+title: Installation
+description: Every way to install skit — uv/pip from PyPI, or the standalone single-file binary that needs no Python at all — plus verification, mirrors for mainland China, and per-platform notes.
+---
+
+## Pick a lane
+
+| You have | Install with | Updates via |
+| --- | --- | --- |
+| uv (or any Python ≥ 3.12) | `uv tool install skit-cli` | `uv tool upgrade skit-cli` |
+| pipx / pip | `pipx install skit-cli` | `pipx upgrade skit-cli` |
+| Nothing at all | the standalone binary (below) | re-run the installer |
+
+All lanes produce the same `skit` command with the same features. The PyPI lane starts
+~170 ms faster per invocation (no self-extraction step) and is the recommended default
+when a Python toolchain is already around; the binary lane exists so that *nothing* has
+to be preinstalled.
+
+## Standalone binary
+
+Each [GitHub release](https://github.com/t41372/skit/releases/latest) ships
+self-contained single-file binaries:
+
+| Asset | Platform |
+| --- | --- |
+| `skit-linux-x86_64` | Linux x86_64, glibc 2.26+ (Ubuntu 18.04+, Debian 10+, RHEL 8+, Amazon Linux 2) |
+| `skit-linux-aarch64` | Linux arm64, glibc |
+| `skit-linux-x86_64-musl` | Alpine and other musl distributions |
+| `skit-darwin-arm64` | macOS on Apple Silicon |
+| `skit-darwin-x86_64` | macOS on Intel |
+| `skit-windows-x86_64.exe` | Windows 10+ x64 |
+
+On Linux and macOS the install script picks the right asset, verifies its sha256 against
+the release's `checksums.txt`, and installs to `~/.local/bin` (no sudo, no shell-profile
+edits):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/t41372/skit/main/scripts/install.sh | sh
+```
+
+Knobs: `SKIT_VERSION=v0.5.0` pins a release, `SKIT_INSTALL_DIR=~/bin` changes the target
+directory, and `SKIT_INSTALL_MIRROR` is covered under [mainland China](#mainland-china)
+below. On Windows, download the `.exe`, rename it `skit.exe`, and put its directory on
+`PATH`.
+
+What's inside — and what isn't: the binary embeds CPython, the TUI, the tree-sitter
+analyzers, and the translations, so every skit feature works with zero network. The one
+thing it does *not* embed is uv: running Python scripts is uv's job, and skit keeps its
+usual contract — it asks first, then downloads a version-pinned, sha256-verified uv into
+skit's private directory, honoring your `mirror.github` setting.
+
+### Verifying downloads
+
+`checksums.txt` in each release covers every asset; the install script checks it
+automatically. Each release is also attested with GitHub build provenance, which binds
+the exact bytes to this repository, the release workflow, and the commit — from anywhere
+with GitHub API access:
+
+```bash
+gh attestation verify skit-linux-x86_64 --repo t41372/skit
+```
+
+Behind a mirror, know what each check proves: the sha256 comparison catches corrupt,
+truncated, or stale downloads, but `checksums.txt` travels through the same mirror, so
+it cannot expose a *hostile* mirror on its own. Hard verification from the mainland
+means comparing the hash against a `checksums.txt` obtained off-mirror, or running
+`gh attestation verify` from a network that reaches api.github.com.
+
+## Mainland China
+
+The PyPI lane already works through domestic mirrors (TUNA/Aliyun/Tencent auto-sync all
+wheels):
+
+```bash
+export UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+uv tool install skit-cli
+```
+
+For the binary lane, release assets live on GitHub, whose asset CDN is unreliable from
+the mainland. Route the script and its downloads through a gh-proxy-style mirror prefix
+**you trust** (`SKIT_INSTALL_MIRROR` is prepended to the full GitHub URL — see
+[Verifying downloads](#verifying-downloads) for what the sha256 check does and does not
+prove about a mirror):
+
+```bash
+curl -fsSL https://<proxy>/https://raw.githubusercontent.com/t41372/skit/main/scripts/install.sh \
+  | SKIT_INSTALL_MIRROR=https://<proxy>/ sh
+```
+
+Once skit itself runs, its own mirror settings (`skit config mirror.pypi / mirror.github /
+mirror.npm`) cover everything skit later downloads — uv, Python builds, packages.
+
+## Platform notes
+
+**macOS**: binaries are ad-hoc signed; installs via the curl script (or any terminal
+download) run immediately. A *browser*-downloaded binary carries the quarantine
+attribute, and macOS 15+ will ask for one-time approval under System Settings → Privacy
+& Security → "Open Anyway" (or clear it with `xattr -d com.apple.quarantine skit-darwin-arm64`).
+
+**Windows**: the binary is unsigned; Defender/SmartScreen occasionally false-positives
+on freshly released, low-reputation executables — a known cost of the PyInstaller
+format that projects like yt-dlp document too. If it triggers: check the release's
+`checksums.txt`/attestation, then allow the file. Reports are submitted to Microsoft's
+false-positive portal per release.
+
+**Startup**: the single-file binary self-extracts on every launch (~150–200 ms extra on
+an SSD; more under active antivirus scanning on Windows). If that matters to you and you
+have Python, prefer the PyPI lane.
+
+**musl arm64** has no binary yet (upstream tree-sitter wheels are missing for it) — use
+the PyPI lane there.
+
+## Uninstall
+
+Remove the binary (`rm ~/.local/bin/skit`) or `uv tool uninstall skit-cli`. Your
+library, presets, and settings live outside the install and survive either way — the
+directories are listed in the [Troubleshooting FAQ](/en/docs/troubleshooting#faq).

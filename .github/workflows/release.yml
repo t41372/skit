@@ -1,12 +1,20 @@
 name: Release
 
 # Triggered by pushing a vX.Y.Z tag: build → verify → publish to PyPI via
-# Trusted Publisher (OIDC). No PyPI token needed; the trust relationship is bound
-# in the PyPI project settings as "repo + workflow + environment".
+# Trusted Publisher (OIDC), plus one self-contained binary per platform
+# (packaging/skit.spec) attached to a GitHub Release with checksums and build
+# provenance. No PyPI token needed; the trust relationship is bound in the PyPI
+# project settings as "repo + workflow + environment".
+#
+# workflow_dispatch is the binary dry run: builds and smoke-tests every binary
+# from the selected ref and stops there — no PyPI upload, no GitHub Release. The
+# publishing jobs key on the EVENT (push), not just the ref type, so dispatching
+# on a tag ref (the natural "rebuild v0.5.0" gesture) is still only a dry run.
 on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
 
 # Zero permissions by default; each job requests the minimum it needs.
 permissions: {}
@@ -35,8 +43,10 @@ jobs:
 
       # Final gate before publishing: the tag version must exactly match the version in
       # pyproject, otherwise the wrong version number gets pinned on PyPI forever
-      # (releases cannot be overwritten).
+      # (releases cannot be overwritten). Skipped on workflow_dispatch dry runs, which
+      # build from a branch head that legitimately carries a .dev version.
       - name: Verify tag matches project version
+        if: github.ref_type == 'tag'
         run: |
           tag="${GITHUB_REF_NAME#v}"
           proj="$(uv version --short)"
@@ -61,10 +71,123 @@ jobs:
           name: dist
           path: dist/
           if-no-files-found: error
+          # "Re-run all jobs" on a release must converge: replace attempt-1 artifacts
+          # instead of failing the upload with a name conflict.
+          overwrite: true
+
+  binaries:
+    name: Binary (${{ matrix.target }})
+    # Gated on build so a failing test suite or version mismatch stops every binary.
+    needs: build
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Explicit runner labels, not -latest: a release pipeline must not change
+        # platform floors because GitHub migrated an alias. The glibc floor comes from
+        # the uv-managed python-build-standalone interpreter (glibc 2.17 target), NOT
+        # the runner's system glibc — setup-uv's python-version installs the managed
+        # build, so no manylinux container is needed (verified against glibc 2.26).
+        include:
+          - { target: linux-x86_64, os: ubuntu-24.04, bin: skit }
+          - { target: linux-aarch64, os: ubuntu-24.04-arm, bin: skit }
+          - { target: darwin-arm64, os: macos-15, bin: skit }
+          # Free Intel macOS label (macos-13 successor), promised until ~Aug 2027.
+          - { target: darwin-x86_64, os: macos-15-intel, bin: skit }
+          - { target: windows-x86_64, os: windows-2025, bin: skit.exe }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          # 3.13 = the newest interpreter in ci.yml's tested matrix. Managed (PBS)
+          # builds only — the runner's system Python would link the runner's glibc.
+          python-version: "3.13"
+          # No cache for release-artifact jobs: avoids cache poisoning of what ships.
+          enable-cache: false
+      # --no-editable: package data must be collected from the built wheel's layout
+      # (an editable install would leak maintainer-only .po sources into the bundle).
+      # --no-dev: the packaging group plus the project is all a build needs.
+      - name: Install project + packaging group
+        run: uv sync --group packaging --no-editable --no-dev
+      - name: Build binary
+        run: uv run pyinstaller --noconfirm packaging/skit.spec
+      - name: Smoke-test binary
+        shell: bash
+        run: uv run python packaging/smoke.py "dist/${{ matrix.bin }}"
+      # Belt-and-braces for the glibc floor promised above: the x86_64 binary must boot
+      # on glibc 2.26 (amazonlinux:2). Runs only where that container can (linux x64).
+      - name: Verify glibc floor
+        if: matrix.target == 'linux-x86_64'
+        run: docker run --rm -v "$PWD/dist:/d:ro" amazonlinux:2 /d/skit --version
+      - name: Rename to release asset
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          BIN: ${{ matrix.bin }}
+        run: |
+          ext=""
+          case "$BIN" in *.exe) ext=".exe";; esac
+          mv "dist/$BIN" "dist/skit-${TARGET}${ext}"
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bin-${{ matrix.target }}
+          path: dist/skit-*
+          if-no-files-found: error
+          # See build job: required for "Re-run all jobs" to converge.
+          overwrite: true
+
+  binary-musl:
+    name: Binary (linux-x86_64-musl)
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    # The official python image builds CPython with --enable-shared, which PyInstaller
+    # requires; uv-managed musl interpreters are statically linked and will not work here.
+    container:
+      image: python:3.13-alpine
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install build toolchain
+        shell: sh
+        # binutils: PyInstaller needs objcopy/strip on Linux; gcc/musl-dev/zlib-dev
+        # cover any dependency that has to compile from sdist on musl.
+        run: apk add --no-cache bash binutils gcc musl-dev zlib-dev
+      - name: Install uv
+        run: pip install --no-cache-dir uv
+      - name: Install project + packaging group
+        # The container's shared-libpython interpreter, not a managed download (see above).
+        run: uv sync --group packaging --no-editable --no-dev --python "$(command -v python3)"
+      - name: Build binary
+        run: uv run pyinstaller --noconfirm packaging/skit.spec
+      - name: Smoke-test binary
+        run: uv run python packaging/smoke.py dist/skit
+      - name: Rename to release asset
+        run: mv dist/skit dist/skit-linux-x86_64-musl
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bin-linux-x86_64-musl
+          path: dist/skit-*
+          if-no-files-found: error
+          # See build job: required for "Re-run all jobs" to converge.
+          overwrite: true
 
   publish:
     name: Publish to PyPI
     needs: build
+    # Event AND ref type: a workflow_dispatch pointed at a tag ref must stay a dry run.
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     # Bound to a protected environment; add required reviewers there for a manual release gate.
     environment:
@@ -81,3 +204,64 @@ jobs:
           path: dist/
       - name: Publish
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        with:
+          # A re-run of a release whose PyPI upload already succeeded (e.g. binaries
+          # failed on attempt 1) must be a no-op success, not a 400 duplicate-file error.
+          skip-existing: true
+
+  github-release:
+    name: GitHub Release (binaries + checksums + provenance)
+    # After publish: the PyPI environment (with any required reviewers) is the single
+    # human gate for the whole release; binaries never ship if PyPI didn't.
+    needs: [publish, binaries, binary-musl]
+    # Event AND ref type: a workflow_dispatch pointed at a tag ref must stay a dry run.
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      # Create the release and upload assets.
+      contents: write
+      # Sign build provenance via the public Sigstore instance (OIDC).
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: bin-*
+          merge-multiple: true
+          path: assets/
+      - name: Download wheel + sdist
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: assets/
+      # checksums.txt catches corrupt/truncated/stale mirror downloads without any
+      # GitHub API access — but a hostile mirror serves checksums.txt too, so it is NOT
+      # tamper-evidence on its own; authenticity comes from the provenance attestation
+      # below (gh attestation verify, needs api.github.com) or an off-mirror checksum
+      # comparison.
+      - name: Generate checksums
+        working-directory: assets
+        run: sha256sum * | tee checksums.txt
+      # Provenance binds every asset to this repo + workflow + commit; verify with:
+      #   gh attestation verify skit-linux-x86_64 --repo t41372/skit
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-checksums: assets/checksums.txt
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        # Draft-first: `releases/latest` (which scripts/install.sh downloads from) must
+        # not flip to this release until every asset is attached, so create as draft,
+        # upload, then publish as the last step. --verify-tag refuses to mint a release
+        # for a tag that isn't on the server; view-before-create + --clobber +
+        # edit --draft=false make a re-run of a half-failed job converge instead of
+        # erroring on "release already exists" (gh resolves drafts by tag name too).
+        run: |
+          gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 \
+            || gh release create "$TAG" --repo "$REPO" --verify-tag --generate-notes --draft
+          gh release upload "$TAG" assets/* --repo "$REPO" --clobber
+          gh release edit "$TAG" --repo "$REPO" --draft=false
