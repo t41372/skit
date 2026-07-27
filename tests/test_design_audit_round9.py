@@ -30,6 +30,7 @@ Q. ``LangSpec.takes_argv`` is gone: no code read it, while three comments and a 
 from __future__ import annotations
 
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -520,3 +521,61 @@ def test_both_list_faces_print_the_same_sentence() -> None:
     machine = " ".join(runner.invoke(cli.app, ["list", "--json"]).stderr.split())
 
     assert human == machine
+
+
+def test_a_fresh_index_row_answers_without_the_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The fast path is the whole reason the miss path is allowed to be expensive: a NAME
+    that the index still describes correctly must not stat every meta in the library.
+    Correctness now comes from the fallback, so nothing else can observe this — which is
+    exactly why it is pinned here rather than left to a benchmark nobody runs."""
+    entry = _cmd("my tool")
+    swept: list[str] = []
+    real = store.list_summaries
+    monkeypatch.setattr(store, "list_summaries", lambda: (swept.append("swept"), real())[1])
+
+    assert store.resolve("my tool").slug == entry.slug
+    assert swept == []  # the row answered
+    assert store.resolve(entry.slug).slug == entry.slug
+    assert swept == []  # ...and so did the slug
+
+    with pytest.raises(store.NotFoundError):
+        store.resolve("ghost")
+    assert swept == ["swept"]  # only a miss pays
+
+
+def test_the_corrupt_meta_message_names_what_the_user_typed() -> None:
+    """`requested` exists so the refusal speaks the user's word, not the slug they may
+    never have seen. Reached through the index-row match: the row still carries the name
+    even when the meta it projects has been broken."""
+    entry = _cmd("my tool")
+    (store.scripts_dir() / entry.slug / "meta.toml").write_text("oops = [", encoding="utf-8")
+
+    with pytest.raises(store.NotFoundError) as excinfo:
+        store.resolve("my tool")
+
+    assert "my tool: metadata is corrupt" in str(excinfo.value)
+
+
+def test_the_fallback_path_names_what_the_user_typed_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The same refusal from the OTHER door. list_summaries reads each meta to serve a
+    stale row, and skit's own agent-coexistence story means another process can break that
+    meta between the listing and resolve's own read — the race class _meta_unchanged and
+    the plan cache's double-stat key were both built for. The message must still name the
+    entry the user asked for."""
+    entry = _cmd("my tool")
+    _rename_meta_only(entry.slug, "hola")  # forces the fallback: the row's name is stale
+    real = store._read_meta
+    calls = {"n": 0}
+
+    def flaky(entry_dir):
+        calls["n"] += 1
+        if calls["n"] > 1:  # the listing succeeds; resolve's own read finds it broken
+            raise tomllib.TOMLDecodeError("broken mid-flight", "", 0)
+        return real(entry_dir)
+
+    monkeypatch.setattr(store, "_read_meta", flaky)
+
+    with pytest.raises(store.NotFoundError) as excinfo:
+        store.resolve("hola")
+
+    assert "hola: metadata is corrupt" in str(excinfo.value)

@@ -56,7 +56,11 @@ import pytest
 for _var in ("FORCE_COLOR", "NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE"):
     os.environ.pop(_var, None)
 
-from skit import i18n, tui_footer  # noqa: E402 — must import after the color scrub above
+from skit import (  # noqa: E402 — must import after the color scrub above
+    i18n,
+    interaction,
+    tui_footer,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -194,6 +198,15 @@ async def click_label(pilot, selector: str, needle: str) -> None:
     assert idx >= 0, (needle, plain)
     await pilot.click(selector, offset=(idx + 1, 0))
     await pilot.pause()
+
+
+@pytest.fixture(autouse=True)
+def _reset_interaction() -> None:
+    """The non-interactive verdict is a process-global, like the locale below: a CLI test
+    that passes --no-input calls interaction.forbid(), and without this the NEXT test's
+    consent prompt would be silently suppressed by a flag it never set. (Same reason the
+    product exposes reset(): the TUI re-enters CLI code paths in-process.)"""
+    interaction.reset()
 
 
 @pytest.fixture(autouse=True)

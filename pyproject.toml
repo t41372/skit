@@ -187,6 +187,12 @@ ignore = [
 "src/skit/i18n.py" = [
     "PLW0603", # module-level localization singleton is intentional
 ]
+"src/skit/interaction.py" = [
+    "PLW0603", # one verdict per process, like the locale singleton above: it describes
+               # THIS invocation's terminal, which no argument can vary — and the point
+               # is that layers below cli.py read it with no parameter to thread (and
+               # therefore none to forget, which is how the gate below cli.py was missed)
+]
 "src/skit/cli.py" = [
     "PLR0912", # typer command bodies with many options naturally branch a lot
     "PLR0915",

@@ -30,7 +30,7 @@ from . import (
     tui_prompt,
     tui_runner,
 )
-from .i18n import gettext
+from .i18n import gettext, ngettext
 from .langs.prompt import text as prompt_text
 from .langs.registry import spec_for
 from .models import Entry
@@ -66,6 +66,55 @@ class DiscardChangesModal(ModalScreen[bool]):
         self.dismiss(True)
 
     def action_keep(self) -> None:
+        self.dismiss(False)
+
+
+class PresetDeleteConfirm(ModalScreen[bool]):
+    """Unticking a preset destroys unrecoverable user data, so it gets the ask every
+    other destructive door in skit gets — `skit preset delete` (--yes or a confirm),
+    entry removal, runner removal, draft deletion. It was the fifth door and the only
+    one without one: an untick plus the Ctrl+S the user pressed for an unrelated edit
+    deleted the preset silently, with no undo. The names go IN the question, because
+    "are you sure?" about an unnamed thing is not a question anyone can answer."""
+
+    BINDINGS = [
+        Binding("y", "confirm", gettext("Delete")),
+        Binding("escape,n", "cancel", gettext("Keep")),
+    ]
+    DEFAULT_CSS = """
+    PresetDeleteConfirm { align: center middle; }
+    PresetDeleteConfirm > Vertical { border: round $skit-box-maroon; padding: 1 2; width: auto;
+        max-width: 100%; height: auto; max-height: 100%; background: $background; }
+    PresetDeleteConfirm Static { margin: 1 0 0 0; width: auto; }
+    """
+
+    def __init__(self, names: list[str]) -> None:
+        super().__init__()
+        self._names: list[str] = names
+
+    @override
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label(
+                ngettext(
+                    "Delete the preset %(names)s? Saving cannot be undone.",
+                    "Delete these presets: %(names)s? Saving cannot be undone.",
+                    len(self._names),
+                )
+                % {"names": ", ".join(escape(n) for n in self._names)}
+            )
+            yield Static(
+                tui_footer.bar(
+                    tui_footer.chip("screen.confirm", "y", gettext("Delete")),
+                    tui_footer.chip("screen.cancel", "Esc", gettext("Keep")),
+                ),
+                markup=True,
+            )
+
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
         self.dismiss(False)
 
 
@@ -332,10 +381,21 @@ class ScriptSettingsScreen(Screen[bool]):
         # through THIS list, never a fresh state read (a preset added/deleted
         # mid-session must not shift which name an untick deletes).
         self._preset_names: list[str] = []
-        if self._is_prompt:
-            # Every MANAGED placeholder gets an editable row (undeclared ones as their
-            # synthesized schema), plus declared env riders — the exact field list the
-            # run form serves, so what you edit is what you get.
+        # One ask per save attempt: set when PresetDeleteConfirm says yes, so the
+        # re-entered save proceeds instead of asking again forever.
+        self._presets_confirmed: bool = False
+        if self._spec is not None and self._spec.placeholder_params:
+            # Every placeholder the entry asks for gets an editable row (undeclared ones as
+            # their synthesized schema), plus declared env riders — the exact field list
+            # the run form serves, so what you edit is what you get.
+            #
+            # Keyed on the TRAIT, not on kind == "prompt". The kind test made this the
+            # prompt's exception instead of the screen's rule, so a `command` entry opened
+            # a section headed "Parameters (the run form's fields)" showing none of them:
+            # to give {width} a type you had to retype its name from memory into "Add a
+            # parameter", with no list in front of you — principle 3 inverted, on a screen
+            # whose own heading promised the list. AGENTS.md names this exact shape: these
+            # decisions key off placeholder_params, never off the kind or the family.
             self._declared_decls: list[ParamDecl] = params.declared_for_template(
                 entry.meta.parameters, entry.meta.params or []
             )
@@ -920,6 +980,15 @@ class ScriptSettingsScreen(Screen[bool]):
             self._resync_report = gettext("Everything still matches the script.")
         self.refresh(recompose=True)
 
+    def _unticked_presets(self) -> list[str]:
+        """The presets this save would delete, by the compose-time names the user saw."""
+        out: list[str] = []
+        for i, name in enumerate(self._preset_names):
+            box = self.query(f"#st-preset-{i}")
+            if box and not box.first(Checkbox).value:
+                out.append(name)
+        return out
+
     def action_save(self) -> None:  # noqa: PLR0911, PLR0912, PLR0915 — one validated save across every section
         """Validate every predictable refusal before writing. An explicit npm clear
         then runs first because its filesystem cleanup is the one operational failure
@@ -929,6 +998,20 @@ class ScriptSettingsScreen(Screen[bool]):
         failure, unexpected I/O error, or a name collision created after the precheck
         can still interrupt the later independent atomic replacements."""
         entry = self._entry
+        # A preset deletion is unrecoverable user data, and this save can carry one it was
+        # never asked about (an untick, then a Ctrl+S meant for a description edit). Ask
+        # BEFORE the validation pass, so a refusal costs nothing, and re-enter on yes —
+        # the same push-and-resume shape action_close uses for DiscardChangesModal.
+        doomed = self._unticked_presets()
+        if doomed and not self._presets_confirmed:
+
+            def _decided(confirmed: bool | None) -> None:
+                if confirmed:
+                    self._presets_confirmed = True
+                    self.action_save()
+
+            self.app.push_screen(PresetDeleteConfirm(doomed), _decided)
+            return
         new_name = self.query_one("#st-name", Input).value.strip()
         # ---- validation pass: no writes below may run unless ALL of these pass ----
         launch = self._validated_launch()

@@ -206,7 +206,7 @@ class HelpScreen(ModalScreen[None]):
             ("/", gettext("Search")),
             ("Tab", gettext("Detail pane")),
             (",", gettext("Preferences")),
-            ("D", gettext("Health check")),
+            (HEALTH_KEY, gettext("Health check")),
             ("Ctrl+C Ctrl+C / Esc", gettext("Quit")),
         ]
         body = "\n".join(f"[$accent]{k:>16}[/]  {escape(v)}" for k, v in rows)
@@ -250,6 +250,15 @@ class _LibraryScreen(Screen[None]):
     pushed screen, and the run form / add flow rely on "*" to focus their first field."""
 
     AUTO_FOCUS = "#entry-table"
+
+
+# The Health screen's key glyph, spelled ONCE. It was written out four times — the
+# Binding, the footer chip, the help overlay, and (round 9) a line of blank-state prose
+# that got it wrong: the panic pane told a user whose index had just vanished to "open
+# Health (h)", and h is bound to nothing. That is the one screen where the reader has a
+# single instruction and no patience. Prose that hand-writes a key glyph can drift from
+# the binding; prose that interpolates this cannot.
+HEALTH_KEY = "D"
 
 
 class MenuApp(App[int | PendingRun]):
@@ -339,7 +348,7 @@ class MenuApp(App[int | PendingRun]):
         Binding("s", "presets", gettext("Presets"), show=False),
         Binding("a", "add", gettext("Add entry"), show=False),
         Binding("comma", "preferences", gettext("Preferences"), show=False),
-        Binding("D", "health", gettext("Health check"), show=False),
+        Binding(HEALTH_KEY, "health", gettext("Health check"), show=False),
         Binding("question_mark", "help", gettext("Help"), show=False),
         Binding("slash", "focus_search", gettext("Search"), show=False),
         # priority: Textual's built-in Tab focus-nav would otherwise win. The Library's
@@ -449,7 +458,22 @@ class MenuApp(App[int | PendingRun]):
             status.update(message)
             return
         if not self._entries:
-            status.update(gettext("Your entries will appear here."))
+            # The status line is the surface that survives EVERY size tier (tui_layout:
+            # "the error/feedback channel that stays at every tier"), and the detail pane
+            # is display:none at -h-short/-h-tiny — so on a small terminal this is the
+            # only blank-state copy the user sees, and it was the one never taught the
+            # question. Round 9 fixed "both" blank surfaces; there were three.
+            lost = self._lost_index_count()
+            status.update(
+                ngettext(
+                    "The index lost %(count)s stored entry — press %(key)s to recover it",
+                    "The index lost %(count)s stored entries — press %(key)s to recover them",
+                    lost,
+                )
+                % {"count": lost, "key": HEALTH_KEY}
+                if lost
+                else gettext("Your entries will appear here.")
+            )
             return
         status.update(
             ngettext("%(shown)s/%(total)s entry", "%(shown)s/%(total)s entries", len(self._entries))
@@ -498,7 +522,7 @@ class MenuApp(App[int | PendingRun]):
             # tier auto-hides it, this chip is the visible way back.
             tui_footer.chip("app.toggle_detail", "Tab", gettext("Detail pane")),
             tui_footer.chip("app.preferences", ",", gettext("Preferences")),
-            tui_footer.chip("app.health", "D", gettext("Health check")),
+            tui_footer.chip("app.health", HEALTH_KEY, gettext("Health check")),
             tui_footer.chip("app.help", "?", gettext("Help")),
         ]
         keys_local.update(tui_footer.bar(*local))
@@ -607,17 +631,31 @@ class MenuApp(App[int | PendingRun]):
         body.update("\n".join(self._detail_lines(self._fresh(entry))))
 
     @staticmethod
+    def _lost_index_count() -> int:
+        """How many stored entries the index has lost — THE question every blank-library
+        surface must ask before it says "empty", asked in one place so a surface cannot
+        answer it differently. Three render an answer today (the detail pane, the status
+        line that outlives it at -h-short/-h-tiny, and the Health screen); the round-9
+        fix taught two of them and left the third asserting a first run."""
+        return len(store.unindexed_slugs())
+
+    @staticmethod
     def _blank_library_lines() -> list[str]:
         """The empty-pane copy — which of the two blank states this actually is. A first
         run and a lost index look identical to the list widget and could not be more
         different to the user, so the pane asks disk instead of assuming (the same
-        question `skit list` and the Health screen ask; store.unindexed_slugs owns it)."""
-        if store.unindexed_slugs():
+        question `skit list` and the Health screen ask; store.unindexed_slugs owns it).
+
+        The recovery line is a CHIP, not prose naming a key: the pane renders markup, so
+        the chip is a real click target (principle 2 — the mouse always has a path), and
+        its glyph comes from HEALTH_KEY instead of being typed out a fourth time. The
+        prose spelling shipped in round 9 said "h", which is bound to nothing."""
+        if MenuApp._lost_index_count():
             return [
                 f"[bold]{gettext('The index lists no entries.')}[/bold]",
                 "",
-                gettext("Your stored scripts are still on disk —"),
-                gettext("open Health (h) to recover them."),
+                gettext("Your stored scripts are still on disk."),
+                tui_footer.chip("app.health", HEALTH_KEY, gettext("Recover them")),
             ]
         return [
             f"[bold]{gettext('Your entries will appear here.')}[/bold]",

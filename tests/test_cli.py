@@ -554,8 +554,11 @@ def test_list_table_name_column_escapes_markup(tmp_path):
 
 
 def test_remove_not_found():
+    # ROUND 10: 127, not 1 — one exit code for one store.NotFoundError, whichever
+    # command caught it (docs/content/docs/cli.mdx has always published 127 CLI-wide,
+    # and 1 sits inside the band reserved for the launched script's own code).
     result = runner.invoke(cli.app, ["remove", "ghost"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
 
 
 def test_remove_with_yes(tmp_path):
@@ -765,7 +768,7 @@ def test_preset_list_shows(tmp_path):
 
 def test_preset_list_not_found():
     result = runner.invoke(cli.app, ["preset", "list", "ghost"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
 
 
 def test_preset_delete(tmp_path):
@@ -786,12 +789,12 @@ def test_preset_delete_unknown(tmp_path):
 
 def test_preset_delete_not_found():
     result = runner.invoke(cli.app, ["preset", "delete", "ghost", "p"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
 
 
 def test_preset_save_not_found():
     result = runner.invoke(cli.app, ["preset", "save", "ghost", "p"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
 
 
 def test_preset_save_python_no_params(tmp_path):
@@ -824,7 +827,7 @@ def test_preset_save_command_with_params(tmp_path, tty, monkeypatch):
 
 def test_params_not_found():
     result = runner.invoke(cli.app, ["params", "ghost"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
 
 
 def test_params_empty(tmp_path):
@@ -935,7 +938,7 @@ def test_deps_view(tmp_path):
 
 def test_deps_not_found():
     result = runner.invoke(cli.app, ["deps", "ghost"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
 
 
 def test_deps_not_python(tmp_path):
@@ -1273,7 +1276,7 @@ def test_not_found_error_escapes_markup_in_argument():
     """store.NotFoundError embeds the raw name_or_slug the user typed; a markup-bearing CLI
     argument must render literally in the error, not be interpreted."""
     result = runner.invoke(cli.app, ["deps", "[red]ghost[/red]"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
     assert "[red]ghost[/red]" in result.output
 
 

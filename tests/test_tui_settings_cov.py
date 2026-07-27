@@ -19,6 +19,7 @@ from skit.tui_settings import (
     DeclParamRow,
     DiscardChangesModal,
     ParamRow,
+    PresetDeleteConfirm,
     ScriptSettingsScreen,
 )
 
@@ -250,7 +251,14 @@ async def test_untick_preset_deletes_it_on_save(tmp_path):
         assert "alpha" in str(alpha_box.label)
         alpha_box.value = False  # mark alpha for deletion
         await pilot.pause()
+        # ROUND 10: the deletion is unrecoverable user data, so it now gets the ask every
+        # other destructive door gets — a save that carries one confirms first.
         screen.action_save()
+        await pilot.pause()
+        confirm = app.screen
+        assert isinstance(confirm, PresetDeleteConfirm)
+        assert "alpha" in _body(confirm)
+        confirm.action_confirm()
         await pilot.pause()
 
     assert argstate.load_state(entry.slug)["presets"] == {"beta": {"Y": "2"}}  # only alpha gone
@@ -277,6 +285,10 @@ async def test_untick_preset_is_name_keyed_against_a_concurrent_add(tmp_path):
         beta_box.value = False  # untick beta for deletion
         await pilot.pause()
         screen.action_save()
+        await pilot.pause()
+        confirm = app.screen
+        assert isinstance(confirm, PresetDeleteConfirm)
+        confirm.action_confirm()
         await pilot.pause()
 
     survivors = argstate.load_state(entry.slug)["presets"]

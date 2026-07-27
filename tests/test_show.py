@@ -399,6 +399,9 @@ def test_show_human_missing_marker(tmp_path):
     assert "⚠ missing:" in result.output
 
 
-def test_show_not_found_exits_1():
+def test_show_not_found_exits_127():
+    """127 CLI-wide (round 10): `skit show ghost` and `skit run ghost` answer the same
+    question, and an agent told to trust exit codes could not tell 1 (not in the library)
+    from 1 (the script itself failed)."""
     result = runner.invoke(cli.app, ["show", "ghost"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127

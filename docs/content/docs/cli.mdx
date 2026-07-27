@@ -38,6 +38,11 @@ by signal N reports `128+N`, matching POSIX shells. `skit doctor`'s exit code
 reflects uv availability only (0 = present or not needed, 1 = required but
 missing); per-entry warnings never change it.
 
+`127` is the answer from **every** command that takes an entry name — `run`, `show`,
+`params`, `deps`, `describe`, `rename`, `remove`, `preset save/list/delete` — so
+"no such entry" never has to be told apart from a script's own failure by reading
+the (localized) message.
+
 ## skit add
 
 `skit add [PATH]` — add a script, executable, prompt, or command template.

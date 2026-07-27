@@ -38,7 +38,7 @@ from rich.prompt import Confirm, Prompt
 # reaches for — the analyzer, the form layer, the editor, the agent-skill installer — is
 # imported inside the command that uses it: `skit list` should not pay for `skit run`'s
 # dependencies (~18 modules on a path an agent calls constantly).
-from . import argstate, config, editor, i18n, kindnames, launcher, models, store
+from . import argstate, config, editor, i18n, interaction, kindnames, launcher, models, store
 from .i18n import gettext, ngettext
 from .langs.registry import KNOWN_KINDS, spec_for
 from .params import ParamDecl, declared_from_meta, edit_declared, is_secret_name
@@ -78,6 +78,20 @@ _RED_CLOSE = "[/red]"  # pragma: no mutate
 def _fail(message: str, code: int) -> typer.Exit:
     err_console.print(f"[red]{escape(message)}[/red]")
     return typer.Exit(code)
+
+
+def _fail_not_found(exc: Exception) -> typer.Exit:
+    """ "No such entry" — ONE exit code, wherever the lookup happened.
+
+    The same store.NotFoundError, from the same store.resolve, used to exit 127 from `run`
+    and 1 from show/remove/rename/describe/params/deps/preset {save,list,delete}. 127 is
+    what docs/content/docs/cli.mdx publishes CLI-wide, and 1 sits inside the 1-124 band
+    the same page reserves for the launched script's own exit code — so an agent told to
+    "trust exit codes, never output text" (SKILL.md) had no machine-readable way to tell
+    "not in the library" from "the script failed", and the only thing that distinguished
+    them was the localized string it was told not to read. Nine identical `except ...:
+    raise _fail(str(exc), 1)` blocks were nine chances to answer differently."""
+    return _fail(str(exc), EXIT_NOT_FOUND)
 
 
 def _require_yes(yes: bool, no_input: bool, message: str) -> None:
@@ -1577,6 +1591,11 @@ def add(
     # Validate the whole lane x flag matrix up front. Pairwise, lane-local guards leave
     # unchecked combinations able to drop (or scanner-override) explicit flags.
     # Refuse-never-drop therefore applies to every cell in the table.
+    # The non-interactive verdict crosses the layer boundary here, once: gates BELOW
+    # cli.py (uvman's download consent) cannot see this flag and used to re-derive
+    # interactivity from isatty, which blocked an agent's run on input() forever.
+    if no_input:
+        interaction.forbid()
     if prompt_kind and (edit_new or exe or cmd is not None or kind is not None):
         err_console.print(
             f"[red]{gettext('--prompt names the kind outright — drop --edit/--exe/--kind/--cmd.')}[/red]"
@@ -2503,7 +2522,7 @@ def show(
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail_not_found(exc) from exc
     if entry.meta.kind == "prompt":
         # plan_for_entry deliberately stays total for TUI composition and degrades an
         # unreadable prompt to no fields.  `show` is a read contract, however: reporting
@@ -2560,10 +2579,15 @@ def remove(
     no_input: bool = typer.Option(False, "--no-input", help=gettext("Never prompt")),
 ) -> None:
     """Remove a script (copy mode deletes the copy in the store; the original is untouched)."""
+    # One verdict for the whole invocation (interaction.allowed): gates BELOW
+    # cli.py cannot see this flag, and used to re-derive interactivity from
+    # isatty — which blocked an agent on input() under the flag that forbids it.
+    if no_input:
+        interaction.forbid()
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail_not_found(exc) from exc
     _require_yes(
         yes, no_input, gettext("Confirmation is required; pass --yes to remove the entry.")
     )
@@ -2595,7 +2619,9 @@ def rename(
     and remove + re-add (the only workaround before) destroyed presets and history."""
     try:
         entry = store.rename(name, new_name)
-    except (store.NotFoundError, store.StoreError) as exc:
+    except store.NotFoundError as exc:
+        raise _fail_not_found(exc) from exc
+    except store.StoreError as exc:
         raise _fail(str(exc), 1) from exc
     console.print(
         f"[green]{gettext('Renamed to %(name)s.') % {'name': escape(entry.meta.name)}}[/green]"
@@ -2612,7 +2638,7 @@ def describe(
     try:
         entry = store.update_description(name, text.strip())
     except store.NotFoundError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail_not_found(exc) from exc
     if entry.meta.description:
         console.print(
             f"[green]{gettext('Description updated for %(name)s.') % {'name': escape(entry.meta.name)}}[/green]"
@@ -3027,12 +3053,17 @@ def run(
 ) -> None:
     """Run an entry straight through the terminal. skit's own failures exit 125/126/127;
     the launched process's exit code passes through untouched."""
+    # One verdict for the whole invocation (interaction.allowed): gates BELOW
+    # cli.py cannot see this flag, and used to re-derive interactivity from
+    # isatty — which blocked an agent on input() under the flag that forbids it.
+    if no_input:
+        interaction.forbid()
     from . import flows
 
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
-        raise _fail(str(exc), EXIT_NOT_FOUND) from exc
+        raise _fail_not_found(exc) from exc
     _validate_preset(entry, preset)
     # Form-shaped flags contradict "as-is": refusing beats silently dropping a preset
     # (or persisting an empty one) the way a bare warning-less run would. Checked before
@@ -3064,12 +3095,6 @@ def run(
             ) % {"kind": entry.meta.kind}
         err_console.print("[red]" + message + _RED_CLOSE)
         raise typer.Exit(EXIT_USAGE)
-    if forget_args:
-        # An imperative clear — but placed BELOW every usage gate: an exit-2
-        # invocation must leave no fingerprints (the same rule the --raw refusal
-        # states three lines up). The remembered argv tail was previously
-        # uneraseable from the CLI (an empty `--` is indistinguishable from none).
-        argstate.save_last(entry.slug, extra_args=[])
     # One interaction paradigm per run, not two glued in sequence: when the inline
     # mini-form is about to open for a prompt entry anyway, the runner question moves
     # INTO the form (the same picker row the TUI workbench shows) instead of a bare
@@ -3178,7 +3203,11 @@ def run(
     # tail typed into the TUI form (raw intent — {today}, globs) expands here exactly
     # as it does under `r`, and the two faces launch the same argv from the same state.
     extra_raw = False
-    if not extra and not raw:
+    # --forget-args suppresses the REUSE too, not just the store: "forget it" that
+    # replayed the tail one last time — and then wrote it straight back after the run —
+    # would forget nothing. The CLEAR is deferred to _on_accepted so a refused invocation
+    # leaves the tail alone; this half has to be decided here, before assembly.
+    if not extra and not raw and not forget_args:
         state = argstate.load_state(entry.slug)
         last_extra = state["extra_args"]
         if last_extra:
@@ -3199,10 +3228,22 @@ def run(
     except flows.FormError as exc:
         raise _fail(str(exc), EXIT_SKIT) from exc
 
-    def _persist_preset() -> None:
-        # Deferred until validation/launch has ACCEPTED the invocation: a refusal
-        # leaves no fingerprints (the --forget-args rule ten lines up), and a preset
-        # written by a run that then exited 125 would be exactly such a fingerprint.
+    def _on_accepted() -> None:
+        """Every side effect this invocation is allowed to leave behind, in ONE place,
+        reached only once validation/launch has ACCEPTED it: a refused invocation leaves
+        no fingerprints.
+
+        --forget-args used to clear the remembered tail EAGERLY, above four gates that
+        can still refuse (an unresolvable runner → 126, --save-preset on a field-less
+        entry → 2, an unknown --set name → 2, a headless validation error → 125), so
+        `skit run x --forget-args --set typo=1` destroyed the tail and then exited 2.
+        The comment beside it stated the invariant it was breaking. A rule enforced by
+        WHERE a line sits is a rule the next gate can break by being added above it; one
+        acceptance point cannot be outflanked."""
+        if forget_args:
+            # The remembered argv tail is otherwise uneraseable from the CLI: an empty
+            # `--` is indistinguishable from no `--` at all.
+            argstate.save_last(entry.slug, extra_args=[])
         if not save_preset:
             return
         argstate.save_preset(
@@ -3232,7 +3273,7 @@ def run(
             raise _fail(str(exc), EXIT_NOT_FOUND) from exc
         except launcher.LaunchError as exc:
             raise _fail(str(exc), EXIT_SKIT) from exc
-        _persist_preset()
+        _on_accepted()
         if validated_prompt is not None and validated_prompt[1]:
             err_console.print(f"[yellow]{escape(validated_prompt[1])}[/yellow]")
         # No temp copy is written for a dry run, so the command line shows the original
@@ -3263,7 +3304,7 @@ def run(
         # values are still the values the user asked to keep (the rule below).
         # Without this, --save-preset on a server/watch script would be silently
         # dropped by the very keystroke that normally ends it.
-        _persist_preset()
+        _on_accepted()
         raise
     code = outcome.code
     if code is None:
@@ -3273,7 +3314,7 @@ def run(
         raise _fail(outcome.message, flows.FAILURE_EXIT_CODES[outcome.failure])
     # The launch was accepted (the script's own exit code is the script's business —
     # its values are still the values the user asked to keep).
-    _persist_preset()
+    _on_accepted()
     if raw:
         # The escape hatch leaves no fingerprints: it consulted no form memory, so it
         # must not rewrite it either (values/extra args survive for the next real run).
@@ -3482,6 +3523,11 @@ def runner_remove(
     yes: bool = typer.Option(False, "--yes", "-y", help=gettext("Skip confirmation")),
     no_input: bool = typer.Option(False, "--no-input", help=gettext("Never prompt")),
 ) -> None:
+    # One verdict for the whole invocation (interaction.allowed): gates BELOW
+    # cli.py cannot see this flag, and used to re-derive interactivity from
+    # isatty — which blocked an agent on input() under the flag that forbids it.
+    if no_input:
+        interaction.forbid()
     if (name is None) == (row_opt is None):
         raise _fail(gettext("Pass exactly one runner name or --row INDEX."), EXIT_USAGE)
     if name is not None and not name.strip():
@@ -3617,7 +3663,7 @@ def preset_save(
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail_not_found(exc) from exc
     plan = flows.plan_for_entry(entry)
     if not plan.fields:
         raise _fail(
@@ -3689,7 +3735,7 @@ def preset_list(
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail_not_found(exc) from exc
     presets = argstate.load_state(entry.slug)["presets"]
     if as_json:
         console.print_json(json.dumps(presets, ensure_ascii=False))
@@ -3715,10 +3761,15 @@ def preset_delete(
     no_input: bool = typer.Option(False, "--no-input", help=gettext("Never prompt")),
 ) -> None:
     """Delete a named preset."""
+    # One verdict for the whole invocation (interaction.allowed): gates BELOW
+    # cli.py cannot see this flag, and used to re-derive interactivity from
+    # isatty — which blocked an agent on input() under the flag that forbids it.
+    if no_input:
+        interaction.forbid()
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail_not_found(exc) from exc
     # Unknown-name feedback comes BEFORE the ask: confirming a deletion that then turns
     # out to target nothing is a wasted question. delete_preset re-checks under the lock,
     # so a preset that vanishes between the two reads still lands in the same error.
@@ -4232,7 +4283,7 @@ def params(
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail_not_found(exc) from exc
     prompts, bad_prompts = _parse_kv_opts(prompt or [], "--prompt")
     env_sources, bad_env = _parse_kv_opts(env_source or [], "--env-source")
     types, bad_type = _parse_kv_opts(type_opt or [], "--type")
@@ -4998,7 +5049,7 @@ def deps(
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail_not_found(exc) from exc
     deps_spec = spec_for(entry.meta.kind)
     supports_deps = deps_spec is not None and deps_spec.supports_deps
     deps_requested = dep is not None or clear or python is not None

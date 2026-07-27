@@ -38,6 +38,26 @@ _GITHUB_CHOICES = [*config.GITHUB_RELEASE_PRESETS, "custom", "off"]
 _NPM_CHOICES = [*config.NPM_PRESETS, "custom", "off"]
 
 
+def _choice_label(token: str) -> str:
+    """What a mirror radio SHOWS, as against the token it stands for. Two vocabularies,
+    deliberately: the token is the stored value and the CLI's word (`skit config mirror
+    off`) and must never be localized; the label is UI copy and must always be.
+
+    They used to be one string, so on/off/custom rendered in English — eight untranslated
+    labels in the one section whose entire audience is Chinese-speaking users, directly
+    under a translated hint that explains them. Vendor names (tsinghua, npmmirror) are
+    proper nouns and pass through unchanged.
+
+    The msgids MUST be gettext() literals here rather than gettext(token) over a plain
+    dict: a dict lookup is invisible to Babel's extractor — the exact trap tui_form's
+    _type_label documents."""
+    return {
+        "on": gettext("on"),
+        "off": gettext("off"),
+        "custom": gettext("custom"),
+    }.get(token, token)
+
+
 class SkillInstallModal(ModalScreen[str | None]):
     """Pick an agent directory and install the Agent Skill into it (the TUI face of
     `skit agent install`). Dismisses with the written path, or None. Consent stays
@@ -333,16 +353,20 @@ class PreferencesScreen(Screen[bool]):
         )
         with RadioSet(id="pf-mirror-master", classes="pf-mirror-row"):
             for choice in _MASTER_CHOICES:
-                yield RadioButton(choice, value=((choice == "on") == master_on))
+                yield RadioButton(_choice_label(choice), value=((choice == "on") == master_on))
         yield Static(gettext("PyPI index (Python packages)"), classes="pf-axis")
         with RadioSet(id="pf-mirror-pypi", classes="pf-mirror-row"):
             for choice in _PYPI_CHOICES:
-                yield RadioButton(choice, value=(choice == config.pypi_choice(mirror)))
+                yield RadioButton(
+                    _choice_label(choice), value=(choice == config.pypi_choice(mirror))
+                )
         yield Input(value=mirror.pypi, placeholder=gettext("PyPI index URL"), id="pf-pypi")
         yield Static(gettext("GitHub releases (Python builds, the uv binary)"), classes="pf-axis")
         with RadioSet(id="pf-mirror-github", classes="pf-mirror-row"):
             for choice in _GITHUB_CHOICES:
-                yield RadioButton(choice, value=(choice == config.github_choice(mirror)))
+                yield RadioButton(
+                    _choice_label(choice), value=(choice == config.github_choice(mirror))
+                )
         yield Input(
             value=config.github_base(mirror),
             placeholder=gettext("github-release mirror base URL"),
@@ -351,7 +375,9 @@ class PreferencesScreen(Screen[bool]):
         yield Static(gettext("npm registry (JS/TS packages)"), classes="pf-axis")
         with RadioSet(id="pf-mirror-npm", classes="pf-mirror-row"):
             for choice in _NPM_CHOICES:
-                yield RadioButton(choice, value=(choice == config.npm_choice(mirror)))
+                yield RadioButton(
+                    _choice_label(choice), value=(choice == config.npm_choice(mirror))
+                )
         yield Input(value=mirror.npm, placeholder=gettext("npm registry URL"), id="pf-npm")
         yield Static("", id="pf-mirror-error", classes="error")  # pragma: no mutate — empty Static("") == Static() (default renderable), so the dropped-literal mutant is equivalent; this line-anchored pragma also suppresses the same-line id/classes siblings, whose behavior the mirror-walk test still pins  # fmt: skip
 

@@ -103,6 +103,11 @@ When the entry's target process actually ran, its exit code passes through **unt
 | 127 | no such entry in the library (or launch target missing) |
 | 130 | user cancelled the interactive form |
 
+127 is the answer from **every** command that takes an entry name — `run`, `show`,
+`params`, `deps`, `describe`, `rename`, `remove`, `preset save/list/delete` — not just
+`run`. (Before 0.4.1 the others answered 1, which is inside the band a launched script's
+own exit code uses, so "no such entry" and "the script failed" were indistinguishable.)
+
 ## Add entries to the library
 
 Always confirm with the user before adding. From a file or stdin:

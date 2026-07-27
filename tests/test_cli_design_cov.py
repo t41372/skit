@@ -129,8 +129,11 @@ def test_rename_success_keeps_presets_and_state(tmp_path):
 
 
 def test_rename_not_found(tmp_path):
+    # 127 (round 10): rename catches the same store.NotFoundError every other command
+    # does, and one error must not have two exit codes. Its OTHER refusal (a name
+    # collision, a StoreError) is a different failure and keeps 1.
     result = runner.invoke(cli.app, ["rename", "ghost", "x"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
 
 
 def test_rename_conflict(tmp_path):
@@ -156,7 +159,7 @@ def test_describe_set_and_clear(tmp_path):
 
 def test_describe_not_found(tmp_path):
     result = runner.invoke(cli.app, ["describe", "ghost", "x"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
 
 
 # ============================================================ launch policy: workdir

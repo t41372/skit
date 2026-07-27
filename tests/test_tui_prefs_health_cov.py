@@ -850,4 +850,8 @@ async def test_the_library_pane_tells_a_first_run_from_a_lost_index(tmp_path):
         lost = app._blank_library_lines()
     assert "The index lists no entries." in lost[0]
     assert any("still on disk" in line for line in lost)
-    assert any("Health (h)" in line for line in lost)
+    # The recovery line is a CHIP, not prose naming a key: it carries the real binding
+    # glyph (round 9 shipped "h", which is bound to nothing) AND it is clickable, so the
+    # panic screen keeps a mouse path like every other action in skit.
+    assert any("@click=app.health" in line for line in lost)
+    assert any(tui.HEALTH_KEY in line for line in lost)
