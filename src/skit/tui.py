@@ -147,12 +147,19 @@ class ConfirmRemove(ModalScreen[bool]):
     @override
     def compose(self) -> ComposeResult:
         lines = [Label(gettext('Remove "%(name)s"?') % {"name": escape(self._entry.meta.name)})]
-        if launcher.original_survives(self._entry):
-            # Only when the original actually still exists: for a drafted entry the
-            # "original" was a temp file — reassuring the user about a file that is
-            # already gone would be a lie. The predicate is shared with `skit remove`,
-            # which used to ask a weaker question and printed the promise anyway.
+        # The VERDICT is shared with `skit remove` (launcher.removal_stake); the sentences
+        # are this face's own. Round 11 shared the predicate and forked the answer, so the
+        # only-copy warning existed on the CLI — which makes you type a name — and not
+        # here, where Delete acts on whatever row the cursor happens to be on.
+        stake = launcher.removal_stake(self._entry)
+        if stake == "original-safe":
+            # For a drafted entry the "original" was a temp file: reassuring the user
+            # about a file that is already gone would be a lie.
             lines.append(Static(f"[dim]{gettext('Your original file will not be deleted.')}[/dim]"))
+        elif stake == "only-copy":
+            lines.append(
+                Static(f"[$warning]{gettext('skit holds the only copy — it will be gone.')}[/]")
+            )
         # The verb line IS the button row: y/Esc stay advertised, and each chip is
         # clickable — modals must not be the one place that suddenly demands keys.
         lines.append(
@@ -511,7 +518,12 @@ class MenuApp(App[int | PendingRun]):
             if argstate.last_run(entry.slug):
                 local.append(tui_footer.chip("app.rerun", "r", gettext("Rerun")))
             local.append(tui_footer.chip("app.settings", "p", gettext("Entry settings")))
-            local.append(tui_footer.chip("app.edit", "e", gettext("Edit source")))
+            if self._can_edit(entry):
+                # Round 11's rule, at the highest-traffic screen in the app: one predicate
+                # drives the chip AND check_action, so `e` is never a button that does
+                # nothing when clicked. It is also the door that produced the misleading
+                # "no editable source" message — an entry whose row offers editing.
+                local.append(tui_footer.chip("app.edit", "e", gettext("Edit source")))
             local.append(tui_footer.chip("app.remove", "Del", gettext("Remove")))
         globals_row = [
             tui_footer.chip("app.add", "a", gettext("Add entry")),
@@ -789,8 +801,17 @@ class MenuApp(App[int | PendingRun]):
     @override
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Library keys act only on the Library: keys that bubble out of a pushed
-        screen's own widgets must not trigger surprise actions underneath it."""
-        return not (action in self._LIBRARY_ACTIONS and len(self.screen_stack) > 1)
+        screen's own widgets must not trigger surprise actions underneath it.
+
+        `e` is additionally gated on the kind having an editable source, from the same
+        predicate its chip is built from — one predicate behind the key and the button, so
+        neither can advertise what the other doesn't (the ScriptSettingsScreen rule)."""
+        if action in self._LIBRARY_ACTIONS and len(self.screen_stack) > 1:
+            return False
+        if action == "edit":
+            entry = self._selected()
+            return entry is None or self._can_edit(entry)
+        return True
 
     def _refresh_footer_on_focus_move(self) -> None:
         # The footer's advertised keys depend on who owns the keyboard (search box vs
@@ -1049,15 +1070,17 @@ class MenuApp(App[int | PendingRun]):
         entry = self._selected()
         if entry is None:
             return
-        target = self._editable_source(entry)
-        if target is None or not target.exists():
-            self._refresh_status(
-                gettext(
-                    "%(name)s has no editable source (programs and command templates run as-is)."
-                )
-                % {"name": escape(entry.meta.name)}
-            )
+        plan = launcher.plan_edit(entry)
+        if plan.refusal is not None:
+            # THREE reasons, worded apart (launcher.edit_refusal_message): collapsing them
+            # told the owner of a reference-mode Python entry whose file had moved that it
+            # "has no editable source (programs and command templates run as-is)" — a
+            # sentence that denies the source exists and misclassifies the kind, about a
+            # script that is neither. The CLI named the path to restore; now both do.
+            self._refresh_status(escape(launcher.edit_refusal_message(plan.refusal, entry)))
             return
+        target = plan.target
+        assert target is not None  # noqa: S101 — no refusal means plan_edit gave a target
         edit_error: str | None = None
         with self.suspend():
             try:
@@ -1104,12 +1127,14 @@ class MenuApp(App[int | PendingRun]):
         self.push_screen(tui_prompt.PromptCandidatePickerModal(new, preselected), _picked)
         return True
 
-    def _editable_source(self, entry: Entry) -> Path | None:
-        spec = spec_for(entry.meta.kind)
-        if spec is None or not spec.editable:
-            return None
-        # script_path resolves both modes: the original in reference, the copy in copy.
-        return entry.script_path
+    @staticmethod
+    def _can_edit(entry: Entry) -> bool:
+        """Whether `e` has anywhere to go — the one predicate behind the chip and the
+        binding. The two GONE-FILE refusals stay reachable on purpose: a user cannot tell
+        from the row that a referenced file has moved, so that one is worth a sentence,
+        while "this kind has no source" is knowable from the badge and belongs in a chip
+        that simply isn't there."""
+        return launcher.plan_edit(entry).refusal != "not-editable"
 
     def action_remove(self) -> None:
         if len(self.screen_stack) > 1:

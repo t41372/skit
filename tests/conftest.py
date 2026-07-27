@@ -200,6 +200,23 @@ async def click_label(pilot, selector: str, needle: str) -> None:
     await pilot.pause()
 
 
+@pytest.fixture
+def at_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Declare that this test sits at a real terminal.
+
+    Tests are non-interactive by default (CliRunner's stdin is not a tty), which is the
+    right default — it is what a pipe, CI and an agent all look like. Any test that drives
+    a lane skit will only run for a human (an editor session, an interactive prompt) has
+    to say so, because since round 11/12 those lanes REFUSE rather than blocking on a
+    stdin nobody is typing into."""
+    # Patch the CLI's own name for the question, not sys.*.isatty: CliRunner replaces the
+    # standard streams for the duration of invoke(), so a patched isatty on the outer
+    # objects never reaches the command. This is the seam 176 existing tests already use.
+    from skit import cli
+
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+
+
 @pytest.fixture(autouse=True)
 def _reset_interaction() -> None:
     """The non-interactive verdict is a process-global, like the locale below: a CLI test

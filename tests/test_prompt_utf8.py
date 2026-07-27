@@ -253,7 +253,7 @@ def test_changed_prompt_is_launch_blocked_and_health_reports_the_same_error(tmp_
 
 @pytest.mark.parametrize("mode", ["copy", "reference"])
 def test_cli_edit_refuses_invalid_prompt_bytes_and_the_next_edit_can_repair_them(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: Mode
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: Mode, at_a_terminal
 ):
     source = tmp_path / f"cli-{mode}.prompt.md"
     source.write_text("Review {{target}}\n", encoding="utf-8")

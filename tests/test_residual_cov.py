@@ -242,10 +242,14 @@ class TestPep723Adversarial:
 
 class TestReconcileResidual:
     def test_edit_specs_remove_unmanaged_name_warns(self):
+        # ROUND 12: a DISTINCT code from the tweak-side one, though the user reads the
+        # same sentence — this asks for a state that already holds (idempotent, exit 0),
+        # while a tweak on an unknown name is a refusal (exit 2). One string could not
+        # carry both answers.
         text = 'CITY = "Taipei"\n'
         specs = [ParamDecl(name="CITY", binding="const", type="str")]
         result = reconcile.edit_specs(text, specs, remove=["GONE"])
-        assert result.warnings == ["not-managed:GONE"]
+        assert result.warnings == ["unmanage-not-managed:GONE"]
         # the managed one is untouched
         assert [s.name for s in result.specs] == ["CITY"]
 

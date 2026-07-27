@@ -401,7 +401,11 @@ def test_params_env_source_on_unmanaged_warns(tmp_path):
     )
     store.add_python(_py(tmp_path, text), name="a")
     result = runner.invoke(cli.app, ["params", "a", "--env-source", "GHOST=OPENAI"])
-    assert result.exit_code == 0, result.output
+    # ROUND 12: `skit params` refuses atomically now. A flag it cannot honour writes
+    # NOTHING and exits 2 — the refuse-never-drop answer every sibling intake gives —
+    # because warn-and-continue exited 0, wrote the rest, and then reported the state
+    # it had not written through --json.
+    assert result.exit_code == 2
     assert "GHOST isn't a managed parameter; --env-source skipped." in result.output
 
 
@@ -411,7 +415,11 @@ def test_params_env_source_on_non_secret_warns(tmp_path):
     )
     store.add_python(_py(tmp_path, text), name="a")
     result = runner.invoke(cli.app, ["params", "a", "--env-source", "CITY=OPENAI"])
-    assert result.exit_code == 0, result.output
+    # ROUND 12: `skit params` refuses atomically now. A flag it cannot honour writes
+    # NOTHING and exits 2 — the refuse-never-drop answer every sibling intake gives —
+    # because warn-and-continue exited 0, wrote the rest, and then reported the state
+    # it had not written through --json.
+    assert result.exit_code == 2
     assert "CITY isn't secret" in result.output
 
 

@@ -217,6 +217,35 @@ def drift_lines(report: Report, name: str, target: str | None = None) -> list[st
     return lines
 
 
+# Codes that mean "the thing you asked for did NOT happen". A `skit params` invocation
+# carrying any of these writes nothing and exits 2 — the validate-then-write rule the TUI's
+# own save has always followed, and the refuse-never-drop contract this command's siblings
+# (--set, --dep, --python, --preset, config) all keep. Everything NOT listed here is
+# informational: the requested end state holds (already-managed, already-declared,
+# rm-not-declared, unmanage-not-managed) or it is `--resync` REPORTING what it changed,
+# which is that flag's whole output rather than a refused request.
+REFUSAL_CODES = frozenset(
+    {
+        "not-managed",
+        "not-a-candidate",
+        "not-declared",
+        "not-a-placeholder",
+        "bad-delivery",
+        "bad-type",
+        "bad-default",
+        "choice-without-choices",
+        "bool-flag-on-by-default",
+        "env-source-not-managed",
+        "env-source-not-secret",
+    }
+)
+
+
+def is_refusal(warning: str) -> bool:
+    """Whether a "code:name" warning means the operation did not happen."""
+    return warning.partition(":")[0] in REFUSAL_CODES
+
+
 def render_warning(warning: str) -> str:
     """Translate an EditResult warning ("code:name") into a user-facing line (shared by CLI/TUI).
 
@@ -227,6 +256,14 @@ def render_warning(warning: str) -> str:
     code, _, name = warning.partition(":")
     return {
         "not-managed": gettext("%(name)s isn't a managed parameter; skipped."),
+        "unmanage-not-managed": gettext("%(name)s isn't a managed parameter; skipped."),
+        "env-source-not-managed": gettext(
+            "%(name)s isn't a managed parameter; --env-source skipped."
+        ),
+        "env-source-not-secret": gettext(
+            "%(name)s isn't secret; --env-source only applies to secret parameters "
+            "(mark it with --secret first)."
+        ),
         "resync-dropped": gettext("Dropped %(name)s: it no longer exists in the script."),
         "already-managed": gettext("%(name)s is already managed; skipped."),
         "not-a-candidate": gettext(
@@ -298,7 +335,10 @@ def edit_specs(
             del by_name[name]
             order.remove(name)
         else:
-            warnings.append(f"not-managed:{name}")
+            # Distinct from the tweak-side "not-managed" below: `--unmanage GHOST` asks
+            # for a state that already holds; `--secret GHOST` asks for something that did
+            # not happen. Same sentence to the user, different answer to the caller.
+            warnings.append(f"unmanage-not-managed:{name}")
 
     # 3) add: bring a currently detected candidate under management (skip if already managed).
     if add:

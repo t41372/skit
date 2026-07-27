@@ -134,6 +134,7 @@ class HealthScreen(Screen[str | None]):
                 )
                 for e in report.blocked_entries
             ]
+            self._has_issues = bool(issues)
             if issues:
                 yield Static(gettext("Issues (Enter jumps to the entry):"), classes="warn")
                 yield OptionList(*issues, id="hc-issues")
@@ -170,7 +171,19 @@ class HealthScreen(Screen[str | None]):
         yield tui_footer.KeysBar(
             Static(
                 tui_footer.bar(
-                    tui_footer.chip("screen.jump", "Enter", gettext("Jump to entry")),
+                    # The FIRST chip on this screen was dead whenever the library was
+                    # healthy — i.e. most of the time — because Enter jumps into an issue
+                    # list that isn't composed. A button that does nothing when clicked
+                    # costs more (principle 2) than a hint shown only when it is true; the
+                    # heading above already teaches "Enter jumps" alongside the list, so
+                    # the affordance and its lesson appear together. Chip-only: Enter here
+                    # is an OptionList selection, not a Binding, so there is no action to
+                    # disable — a check_action would be a branch that cannot fire.
+                    *(
+                        [tui_footer.chip("screen.jump", "Enter", gettext("Jump to entry"))]
+                        if self._has_issues
+                        else []
+                    ),
                     tui_footer.chip("screen.rebuild", "Ctrl+R", gettext("Rebuild index")),
                     tui_footer.chip("screen.close", "Esc", gettext("Back")),
                 ),

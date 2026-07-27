@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from skit import argstate, cli, store
+from skit import argstate, cli, kindnames, store
 from skit.langs.python import metawriter
 from skit.params import ParamDecl
 
@@ -148,7 +148,7 @@ def test_show_command_output_exact():
     assert result.exit_code == 0, result.output
     assert result.output == (
         "dep  (Command · reference)\n"
-        "  Working directory: invoke\n"
+        f"  Working directory: {kindnames.workdir_label('invoke')}\n"
         "  Command template: echo deploy {target}\n"
         "┏━━━━━━━━━━━┳━━━━━━┳━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━┳━━━━━━┓\n"
         "┃ Parameter ┃ Type ┃ Required ┃ Default ┃ Choices ┃ Secret ┃ Help ┃\n"
@@ -164,4 +164,4 @@ def test_show_workdir_line_appears_only_when_not_origin(tmp_path):
     store.add_python(p, name="wd", workdir="invoke")
     result = runner.invoke(cli.app, ["show", "wd"])
     assert result.exit_code == 0, result.output
-    assert "  Working directory: invoke\n" in result.output
+    assert f"  Working directory: {kindnames.workdir_label('invoke')}\n" in result.output

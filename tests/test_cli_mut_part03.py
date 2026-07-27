@@ -289,9 +289,13 @@ def test_declared_no_secret_threaded_through(tmp_path):
 def test_declared_malformed_value_message_exact(tmp_path):
     _exe(tmp_path)
     result = runner.invoke(cli.app, ["params", "prog", "--type", "NOEQUALS"])
-    assert result.exit_code == 0, result.output
+    # ROUND 12: `skit params` refuses atomically now. A flag it cannot honour writes
+    # NOTHING and exits 2 — the refuse-never-drop answer every sibling intake gives —
+    # because warn-and-continue exited 0, wrote the rest, and then reported the state
+    # it had not written through --json.
+    assert result.exit_code == 2
     out = _norm(result.output)
-    assert "Ignored a malformed value: --type: NOEQUALS (expected NAME=VALUE)." in out
+    assert "Malformed value: --type: NOEQUALS (expected NAME=VALUE)." in out
     assert "XX" not in out
 
 

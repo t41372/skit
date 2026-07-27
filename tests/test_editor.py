@@ -289,7 +289,7 @@ def test_save_editor_clear_when_absent_does_not_raise():
 # --------------------------------------------------------------------------
 
 
-def test_edit_opens_copy_source(monkeypatch, tmp_path):
+def test_edit_opens_copy_source(monkeypatch, tmp_path, at_a_terminal):
     opened: dict[str, Path] = {}
 
     def fake(p):
@@ -304,7 +304,7 @@ def test_edit_opens_copy_source(monkeypatch, tmp_path):
     assert "Saved a" in result.output
 
 
-def test_edit_opens_reference_original(monkeypatch, tmp_path):
+def test_edit_opens_reference_original(monkeypatch, tmp_path, at_a_terminal):
     src = _py(tmp_path, "print(1)\n", "orig.py")
     store.add_python(src, name="r", mode="reference")
     opened: dict[str, Path] = {}
@@ -319,17 +319,17 @@ def test_edit_opens_reference_original(monkeypatch, tmp_path):
     assert opened["path"] == src.resolve()
 
 
-def test_edit_reference_source_gone(monkeypatch, tmp_path):
+def test_edit_reference_source_gone(monkeypatch, tmp_path, at_a_terminal):
     src = _py(tmp_path, "print(1)\n", "orig.py")
     store.add_python(src, name="r", mode="reference")
     src.unlink()
     monkeypatch.setattr(cli.editor, "open_in_editor", _boom)
     result = runner.invoke(cli.app, ["edit", "r"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
     assert "gone" in result.output
 
 
-def test_edit_reports_editor_launch_failure(monkeypatch, tmp_path):
+def test_edit_reports_editor_launch_failure(monkeypatch, tmp_path, at_a_terminal):
     def fail(_p):
         raise editor.EditorError("could not launch")
 
@@ -375,7 +375,10 @@ def test_edit_unknown_non_interactive_errors(monkeypatch):
     monkeypatch.setattr(cli, "_is_interactive", lambda: False)
     monkeypatch.setattr(cli.editor, "open_in_editor", _boom)
     result = runner.invoke(cli.app, ["edit", "ghost"])
-    assert result.exit_code == 1
+    # ROUND 12: 127 — `skit edit <unknown>` answers the same question as the other ten
+    # entry-name commands, and now the same code. It never raises NotFoundError (it
+    # offers to create instead), which is why round 10's sweep could not see it.
+    assert result.exit_code == 127
 
 
 # --------------------------------------------------------------------------

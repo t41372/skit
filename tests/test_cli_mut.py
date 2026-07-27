@@ -1418,7 +1418,11 @@ def test_edit_params_renders_reconcile_warning(tmp_path):
     )
     store.add_python(_py(tmp_path, text), name="j")
     result = runner.invoke(cli.app, ["params", "j", "--secret", "GHOST"])
-    assert result.exit_code == 0, result.output
+    # ROUND 12: `skit params` refuses atomically now. A flag it cannot honour writes
+    # NOTHING and exits 2 — the refuse-never-drop answer every sibling intake gives —
+    # because warn-and-continue exited 0, wrote the rest, and then reported the state
+    # it had not written through --json.
+    assert result.exit_code == 2
     out = _norm(result.output)
     assert "GHOST" in out  # the offending name
     assert "skipped" in out  # the warning surfaced
@@ -1472,16 +1476,20 @@ def test_edit_params_bad_prompt_warned_exact(tmp_path):
     )
     store.add_python(_py(tmp_path, text), name="j")
     result = runner.invoke(cli.app, ["params", "j", "--prompt", "no-equals-sign"])
-    assert result.exit_code == 0, result.output
+    # ROUND 12: `skit params` refuses atomically now. A flag it cannot honour writes
+    # NOTHING and exits 2 — the refuse-never-drop answer every sibling intake gives —
+    # because warn-and-continue exited 0, wrote the rest, and then reported the state
+    # it had not written through --json.
+    assert result.exit_code == 2
     out = _norm(result.output)
-    assert "Ignored a malformed value: --prompt: no-equals-sign (expected NAME=text)." in out
+    assert "Malformed value: --prompt: no-equals-sign (expected NAME=text)." in out
     assert "XX" not in out
 
 
 # --- edit (open source / create) -------------------------------------------
 
 
-def test_edit_saved_and_reconcile_hint_exact(monkeypatch, tmp_path):
+def test_edit_saved_and_reconcile_hint_exact(monkeypatch, tmp_path, at_a_terminal):
     monkeypatch.setattr(cli.editor, "open_in_editor", lambda p: 0)
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     result = runner.invoke(cli.app, ["edit", "a"])
@@ -1493,7 +1501,7 @@ def test_edit_saved_and_reconcile_hint_exact(monkeypatch, tmp_path):
     assert "XX" not in out
 
 
-def test_edit_reference_editing_original_message(monkeypatch, tmp_path):
+def test_edit_reference_editing_original_message(monkeypatch, tmp_path, at_a_terminal):
     src = _py(tmp_path, "print(1)\n", "orig.py")
     store.add_python(src, name="r", mode="reference")
     opened = {}
@@ -1506,10 +1514,10 @@ def test_edit_reference_editing_original_message(monkeypatch, tmp_path):
     assert opened["p"] == src.resolve()
 
 
-def test_edit_non_python_message_exact():
+def test_edit_non_python_message_exact(at_a_terminal):
     store.add_command("echo hi", name="c")
     result = runner.invoke(cli.app, ["edit", "c"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     out = _norm(result.output)
     # Kind-neutral now: shell/js ARE editable, so the refusal can't claim "Python only".
     assert "c has no editable source (programs and command templates run as-is)." in out
@@ -1519,7 +1527,10 @@ def test_edit_non_python_message_exact():
 def test_offer_create_non_interactive_message(monkeypatch):
     monkeypatch.setattr(cli, "_is_interactive", lambda: False)
     result = runner.invoke(cli.app, ["edit", "ghost"])
-    assert result.exit_code == 1
+    # ROUND 12: 127 — `skit edit <unknown>` answers the same question as the other ten
+    # entry-name commands, and now the same code. It never raises NotFoundError (it
+    # offers to create instead), which is why round 10's sweep could not see it.
+    assert result.exit_code == 127
     out = _norm(result.output)
     assert "No editable entry named ghost." in out
     assert "XX" not in out

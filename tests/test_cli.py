@@ -1404,7 +1404,7 @@ def test_config_set_unknown_mirror_escapes_markup():
     assert "[red]nope[/red]" in result.output
 
 
-def test_edit_reports_escape_markup_in_name(tmp_path, monkeypatch):
+def test_edit_reports_escape_markup_in_name(tmp_path, monkeypatch, at_a_terminal):
     store.add_python(_py(tmp_path, "print(1)\n"), name="[blue]a[/blue]")
     monkeypatch.setattr(cli.editor, "open_in_editor", lambda p: None)
     result = runner.invoke(cli.app, ["edit", "[blue]a[/blue]"])
@@ -1412,7 +1412,7 @@ def test_edit_reports_escape_markup_in_name(tmp_path, monkeypatch):
     assert "[blue]a[/blue]" in result.output
 
 
-def test_edit_reference_mode_escapes_markup_in_name_and_path(tmp_path, monkeypatch):
+def test_edit_reference_mode_escapes_markup_in_name_and_path(tmp_path, monkeypatch, at_a_terminal):
     script = tmp_path / "[red]weird[bold]" / "job.py"
     script.parent.mkdir()
     script.write_text("print(1)\n", encoding="utf-8")
@@ -1423,14 +1423,14 @@ def test_edit_reference_mode_escapes_markup_in_name_and_path(tmp_path, monkeypat
     assert "[red]weird[bold]" in result.output
 
 
-def test_edit_missing_reference_source_escapes_markup_in_path(tmp_path):
+def test_edit_missing_reference_source_escapes_markup_in_path(tmp_path, at_a_terminal):
     script = tmp_path / "[red]weird[bold]" / "job.py"
     script.parent.mkdir()
     script.write_text("print(1)\n", encoding="utf-8")
     store.add_python(script, mode="reference", name="refjob")
     script.unlink()
     result = runner.invoke(cli.app, ["edit", "refjob"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
     assert "[red]weird[bold]" in result.output
 
 
@@ -1450,7 +1450,11 @@ def test_edit_params_malformed_prompt_escapes_markup(tmp_path):
     )
     store.add_python(_py(tmp_path, text), name="a")
     result = runner.invoke(cli.app, ["params", "a", "--prompt", "[red]bad[/red]"])
-    assert result.exit_code == 0, result.output
+    # ROUND 12: `skit params` refuses atomically now. A flag it cannot honour writes
+    # NOTHING and exits 2 — the refuse-never-drop answer every sibling intake gives —
+    # because warn-and-continue exited 0, wrote the rest, and then reported the state
+    # it had not written through --json.
+    assert result.exit_code == 2
     assert "[red]bad[/red]" in result.output
 
 

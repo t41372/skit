@@ -28,6 +28,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn, cast, overload
 
+import click
 import typer
 from rich.console import Console
 from rich.markup import escape
@@ -106,12 +107,12 @@ def _remove_question(entry: store.Entry) -> str:
     launcher.original_survives is now the one predicate behind both faces.
     """
     name = entry.meta.name
-    if launcher.original_survives(entry):
+    stake = launcher.removal_stake(entry)
+    if stake == "original-safe":
         return gettext('Remove "%(name)s"? Your original file will not be deleted.') % {
             "name": name
         }
-    spec = spec_for(entry.meta.kind)
-    if entry.meta.mode == "copy" and (spec is None or spec.has_original_file):
+    if stake == "only-copy":
         return gettext('Remove "%(name)s"? skit holds the only copy — it will be gone.') % {
             "name": name
         }
@@ -153,6 +154,26 @@ def _cancelled_add() -> NoReturn:
     per lane."""
     console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
     raise typer.Exit(EXIT_CANCELLED)
+
+
+def _confirm_destructive(question: str) -> None:
+    """Ask before destroying something, and treat "no" as the deliberate answer it is.
+
+    `typer.confirm(..., abort=True)` dies as click's own bare `Aborted.` — an untranslated
+    English word, printed in RED so it reads as an error, at exit 1, which
+    docs/content/docs/cli.mdx reserves for the launched script's own code. Declining a
+    destructive question is the correct and most common answer to it; the ADD lanes, which
+    destroy nothing, already get a translated line and 130 (_cancelled_add). This is their
+    twin, and it catches BOTH cancel paths: click raises Abort on EOF regardless of
+    abort=True, so handling only the typed "n" would fix half of it.
+    """
+    try:
+        answered_yes = typer.confirm(question)
+    except click.exceptions.Abort:  # Ctrl+D / EOF
+        answered_yes = False
+    if not answered_yes:
+        console.print(f"[dim]{gettext('Cancelled — nothing was removed.')}[/dim]")
+        raise typer.Exit(EXIT_CANCELLED)
 
 
 # --------------------------------------------------------------------------
@@ -2262,7 +2283,7 @@ def _print_add_summary(
     """One consolidated block after a successful add."""
     entry_spec = spec_for(entry.meta.kind)
     mode_note = (
-        gettext("(%(mode)s mode)") % {"mode": entry.meta.mode}
+        gettext("(%(mode)s mode)") % {"mode": kindnames.mode_label(entry.meta.mode)}
         if entry_spec is not None and entry_spec.supports_modes
         else ""
     )
@@ -2437,7 +2458,8 @@ def _field_to_dict(f: flows.FormField) -> dict[str, object]:
 def _print_show_human(entry: store.Entry, plan: flows.FormPlan, presets: list[str]) -> None:
     meta = entry.meta
     console.print(
-        f"[bold]{escape(meta.name)}[/bold]  [dim]({kindnames.kind_label(meta.kind)} · {meta.mode})[/dim]"
+        f"[bold]{escape(meta.name)}[/bold]  "
+        f"[dim]({kindnames.kind_label(meta.kind)} · {kindnames.mode_label(meta.mode)})[/dim]"
     )
     if meta.description:
         console.print(f"  {escape(meta.description)}")
@@ -2446,7 +2468,7 @@ def _print_show_human(entry: store.Entry, plan: flows.FormPlan, presets: list[st
         console.print(f"  {gettext('Source: %(path)s') % {'path': escape(str(meta.source))}}")
     if meta.workdir != "origin":
         console.print(
-            f"  {gettext('Working directory: %(dir)s') % {'dir': escape(str(meta.workdir))}}"
+            f"  {gettext('Working directory: %(dir)s') % {'dir': escape(kindnames.workdir_label(meta.workdir))}}"
         )
     if meta.interpreter:
         console.print(
@@ -2622,7 +2644,7 @@ def remove(
         yes, no_input, gettext("Confirmation is required; pass --yes to remove the entry.")
     )
     if not yes:
-        typer.confirm(_remove_question(entry), abort=True)
+        _confirm_destructive(_remove_question(entry))
     try:
         removed = store.remove(name)
     except store.StoreError as exc:
@@ -2672,13 +2694,20 @@ def describe(
         )
 
 
-def _offer_create_in_editor(name: str) -> None:
-    """`skit edit <unknown>`: offer to create a brand-new script under that name."""
-    if not _is_interactive():
+def _offer_create_in_editor(name: str, *, no_input: bool = False) -> None:
+    """`skit edit <unknown>`: offer to create a brand-new script under that name.
+
+    With no one to ask, that offer cannot happen and the command is simply looking up a
+    name that is not there — the same condition every other entry-name command answers
+    127 for. It answered 1, which docs/content/docs/cli.mdx reserves for the launched
+    script's own exit code, so an agent could not tell "no such entry" from "your script
+    failed". `edit` never raises store.NotFoundError (it lands here instead), which is
+    why round 10's sweep across the other ten commands could not see it."""
+    if no_input or not _is_interactive():
         err_console.print(
             f"[red]{gettext('No editable entry named %(name)s.') % {'name': escape(name)}}[/red]"
         )
-        raise typer.Exit(1)
+        raise typer.Exit(EXIT_NOT_FOUND)
     if not Confirm.ask(
         gettext('No editable entry named "%(name)s". Create a script now?')
         % {"name": escape(name)},
@@ -2701,25 +2730,12 @@ def _reconcile_prompt_after_edit(entry: store.Entry) -> None:
     new = store.unmanaged_prompt_placeholders(store.resolve(entry.slug))
     if not new:
         return
-    if not _is_interactive():
-        # The exact wording `skit params` prints — one rule, two surfaces, so an
-        # automated `skit edit` reports unmanaged variables the same way the inspector
-        # does (and points at the same `--add` escape).
-        names, remaining = prompt_analyzer.preview_names(new)
-        if remaining:
-            message = ngettext(
-                "Detected but not yet managed: %(names)s … and %(count)d more candidate "
-                "(use --add to manage them)",
-                "Detected but not yet managed: %(names)s … and %(count)d more candidates "
-                "(use --add to manage them)",
-                remaining,
-            ) % {"names": escape(names), "count": remaining}
-        else:
-            message = gettext(
-                "Detected but not yet managed: %(names)s (use --add to manage them)"
-            ) % {"names": escape(names)}
-        console.print(f"[dim]{message}[/dim]")
-        return
+    # No non-interactive branch here, and there must not be one: `skit edit` refuses
+    # before the editor opens unless skit may prompt (round 11's gate, round 12's front
+    # door), so reaching this line means we are at a terminal. The branch that used to
+    # sit here could only be entered by a test patching interactivity AFTER the gate had
+    # already passed — a state the product cannot be in. Coverage cannot tell an
+    # unreachable branch from a covered one; this audit has deleted several.
     flooded = len(new) > prompt_analyzer.AUTO_MANAGE_LIMIT
     if _wants_tui_form():
         # form=tui hosts the panel, plain keeps the line prompts — the add flow's
@@ -2767,38 +2783,53 @@ def _reconcile_prompt_after_edit(entry: store.Entry) -> None:
     ),
     epilog=gettext("Example:  skit edit resize"),
 )
-def edit(name: str = _SCRIPT_ARG) -> None:
+def edit(
+    name: str = _SCRIPT_ARG,
+    no_input: bool = typer.Option(False, "--no-input", help=gettext("Never prompt")),
+) -> None:
     """Open a registered script or prompt source in your editor."""
+    # `edit` is inherently interactive, so --no-input here means "refuse, don't hang"
+    # rather than "proceed silently". It is the ONLY way a caller under a pty with nobody
+    # typing — an agent harness, a `script`-wrapped CI job — can say there is no human:
+    # isatty is True there, so the terminal check alone cannot tell. Every sibling that
+    # can prompt takes this flag; `edit` was the one that could prompt and didn't.
+    if no_input:
+        interaction.forbid()
     try:
         entry = store.resolve(name)
     except store.NotFoundError:
-        _offer_create_in_editor(name)
+        _offer_create_in_editor(name, no_input=no_input)
         return
-    entry_spec = spec_for(entry.meta.kind)
-    if entry_spec is None or not entry_spec.editable:
+    plan = launcher.plan_edit(entry)
+    if plan.refusal is not None:
+        # Exit code per REASON, from the contract every other entry-name command follows:
+        # a kind that cannot be edited is a usage error (2); a target that is gone is the
+        # 127 `skit run` already answers for the same condition. `edit` used to answer 1
+        # for all of them — a code docs/content/docs/cli.mdx reserves for the launched
+        # script, so an agent could not tell "no such file" from "your script failed".
         raise _fail(
-            gettext("%(name)s has no editable source (programs and command templates run as-is).")
-            % {"name": entry.meta.name},
-            1,
+            launcher.edit_refusal_message(plan.refusal, entry),
+            EXIT_USAGE if plan.refusal == "not-editable" else EXIT_NOT_FOUND,
         )
-    if entry.meta.mode == "reference":
-        source = Path(entry.meta.source)
-        if not source.exists():
-            raise _fail(
-                gettext("%(name)s: the referenced source file is gone: %(path)s")
-                % {"name": entry.meta.name, "path": str(source)},
-                1,
-            )
+    target = plan.target
+    assert target is not None  # noqa: S101 — refusal is None, so plan_edit gave a target
+    if plan.edits_original:
         console.print(
-            f"[dim]{gettext('Editing the original file (reference mode): %(path)s') % {'path': escape(str(source))}}[/dim]"
+            f"[dim]{gettext('Editing the original file (reference mode): %(path)s') % {'path': escape(str(target))}}[/dim]"
         )
-        target = source
-    else:
-        target = entry.script_path
-        if not target.exists():
-            raise _fail(
-                gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}, 1
+    # The interactivity refusal belongs at the FRONT DOOR, not deep in editor.py: down
+    # there it shares one exception class with "the editor could not be launched", so the
+    # two could only ever get one exit code. Here it can name the resolved file, which is
+    # the thing a non-interactive caller can actually act on.
+    if no_input or not _is_interactive():
+        raise _fail(
+            gettext(
+                "Editing %(name)s needs an interactive terminal — not a pipe, CI, or "
+                "--no-input. Edit the file directly instead: %(path)s"
             )
+            % {"name": entry.meta.name, "path": str(target)},
+            EXIT_USAGE,
+        )
     try:
         editor.open_entry_in_editor(target, kind=entry.meta.kind)
     except (editor.EditorError, editor.EditedSourceError) as exc:
@@ -3636,7 +3667,7 @@ def runner_remove(
     if not yes:
         # The same ask its two siblings give: skit remove confirms unless -y, and the
         # TUI's agent removal confirms — deleting config rows is not a one-keystroke act.
-        typer.confirm(question, abort=True)
+        _confirm_destructive(question)
     if row_opt is not None:
         # The row branch assigns target after its non-empty lookup; cast carries that
         # proven invariant without an unreachable defensive branch that can never fire.
@@ -3805,10 +3836,9 @@ def preset_delete(
         yes, no_input, gettext("Confirmation is required; pass --yes to delete the preset.")
     )
     if not yes:
-        typer.confirm(
+        _confirm_destructive(
             gettext('Delete preset "%(preset)s" from %(name)s?')
-            % {"preset": preset_name, "name": entry.meta.name},
-            abort=True,
+            % {"preset": preset_name, "name": entry.meta.name}
         )
     if argstate.delete_preset(entry.slug, preset_name):
         console.print(
@@ -4520,7 +4550,7 @@ def _edit_entry_policy(
             )
         if workdir_opt is not None:
             console.print(
-                f"[green]{gettext('%(name)s now runs in: %(dir)s') % {'name': escape(entry.meta.name), 'dir': escape(entry.meta.workdir)}}[/green]"
+                f"[green]{gettext('%(name)s now runs in: %(dir)s') % {'name': escape(entry.meta.name), 'dir': escape(kindnames.workdir_label(entry.meta.workdir))}}[/green]"
             )
         if interpreter_opt is not None:
             if entry.meta.interpreter:
@@ -4588,25 +4618,44 @@ def _set_prompt_interpolate(entry: store.Entry, interpolate: bool, *, quiet: boo
         )
 
 
+def _refuse_unhonoured(warnings: list[str], render) -> None:
+    """Refuse a `skit params` invocation that could not honour an explicit flag.
+
+    Nothing is written and the exit is 2 — the same answer `--set`, `--dep`, `--python`,
+    `--preset` and `skit config` already give a value they cannot use, and the same
+    validate-then-write rule ScriptSettingsScreen.action_save applies on the human face.
+    This command used to print the reason to stderr, write everything else, exit 0 and
+    then report the state it had NOT written through `--json`: an agent told to trust exit
+    codes and read `--json` was told twice that a rejected `--type` had been applied.
+
+    All-or-nothing on purpose. A partial apply is only recoverable by reading which parts
+    landed, from a localized line the agent is told not to parse; a refusal is recoverable
+    by fixing the flag and running again."""
+    for w in warnings:
+        err_console.print(f"[yellow]{escape(render(w))}[/yellow]")
+    raise _fail(
+        gettext("Nothing was changed — fix the flag(s) above and run it again."), EXIT_USAGE
+    )
+
+
 def _apply_env_sources(specs: list[ParamDecl], env_sources: dict[str, str]) -> list[str]:
-    """Set/clear env_source on secret specs; returns warnings for unusable requests."""
+    """Set/clear env_source on secret specs; returns "code:name" warnings for unusable
+    requests.
+
+    CODES, not rendered sentences. This was the third warning producer in `skit params`
+    and the only one that returned finished prose, so it was invisible to anything that
+    wanted to CLASSIFY warnings — which left `--env-source` warning-and-continuing on the
+    python/shell/js lane while the very same flag refused on an exe entry, a polarity
+    inversion inside one command."""
     warnings: list[str] = []
     by_name = {s.name: s for s in specs}
     for pname, envvar in env_sources.items():
         spec = by_name.get(pname)
         if spec is None:
-            warnings.append(
-                gettext("%(name)s isn't a managed parameter; --env-source skipped.")
-                % {"name": pname}
-            )
+            warnings.append(f"env-source-not-managed:{pname}")
             continue
         if not spec.secret:
-            warnings.append(
-                gettext(
-                    "%(name)s isn't secret; --env-source only applies to secret parameters (mark it with --secret first)."
-                )
-                % {"name": pname}
-            )
+            warnings.append(f"env-source-not-secret:{pname}")
             continue
         spec.env_source = envvar.strip()
     return warnings
@@ -4679,9 +4728,17 @@ def _edit_params(
     # one would be its own overstatement.
     before = entry_spec.analyzer.analyze(text)
     was_reader_driven = not current and flows.reader_fields(entry_spec, text) > 0
-    for item in malformed:
-        err_console.print(
-            f"[yellow]{escape(gettext('Ignored a malformed value: %(item)s (expected NAME=text).') % {'item': item})}[/yellow]"
+    if malformed:
+        # A NAME=VALUE the parser could not read is a flag that cannot be honoured, so it
+        # refuses like the rest of them — the same answer `--set garbage` has always
+        # given. It fires BEFORE any analysis: there is nothing to compute for an
+        # invocation that is already going to be refused.
+        for item in malformed:
+            err_console.print(
+                f"[yellow]{escape(gettext('Malformed value: %(item)s (expected %(shape)s).') % {'item': item, 'shape': 'NAME=text'})}[/yellow]"
+            )
+        raise _fail(
+            gettext("Nothing was changed — fix the flag(s) above and run it again."), EXIT_USAGE
         )
     result = analysis.edit_specs(
         text,
@@ -4694,10 +4751,14 @@ def _edit_params(
         prompts=prompts,
         analyze=entry_spec.analyzer.analyze,
     )
-    for w in result.warnings:
+    # COMPUTE, then decide, then write: the env-source pass mutates result.specs, so it
+    # has to run before the decision — and no write may happen until every flag is known
+    # to be honourable.
+    warnings = [*result.warnings, *_apply_env_sources(result.specs, env_sources)]
+    if any(analysis.is_refusal(w) for w in warnings):
+        _refuse_unhonoured(warnings, analysis.render_warning)
+    for w in warnings:
         err_console.print(f"[yellow]{escape(analysis.render_warning(w))}[/yellow]")
-    for w in _apply_env_sources(result.specs, env_sources):
-        err_console.print(f"[yellow]{escape(w)}[/yellow]")
     # `text` above was read with errors="replace" for the analyzer; writing THAT text back
     # would bake U+FFFD over every non-UTF-8 byte. Re-read through the shared byte-lossless
     # pair (rewrite.py) — params_io.write only touches the comment block, so unrelated bytes
@@ -4852,6 +4913,7 @@ def _render_declared_warning(warning: str) -> str:
     code, _, name = warning.partition(":")
     return {
         "not-declared": gettext("%(name)s isn't a declared parameter; skipped."),
+        "rm-not-declared": gettext("%(name)s isn't a declared parameter; skipped."),
         "already-declared": gettext("%(name)s is already declared; skipped."),
         "bad-delivery": gettext("%(name)s: that delivery isn't available for this kind; skipped."),
         "not-a-placeholder": gettext(
@@ -4916,6 +4978,8 @@ def _edit_declared_params(
     maintain the MANAGED list (meta `params`) — managing a detected placeholder / unmanaging one
     is exactly the add/remove of its row. An --rm of a managed-but-undeclared name (the common
     synthesized case) is therefore real work for a prompt, not a `not-declared` warning."""
+    from . import analysis  # the refusal classification both param lanes share
+
     console = _maybe_quiet(quiet)
     is_prompt = entry.meta.kind == "prompt"
     if is_prompt and not entry.meta.interpolate:
@@ -4936,9 +5000,17 @@ def _edit_declared_params(
     placeholder_truth = (
         sorted(set(body_placeholders) | set(managed)) if is_prompt else entry.meta.params or []
     )
-    for item in malformed:
-        err_console.print(
-            f"[yellow]{escape(gettext('Ignored a malformed value: %(item)s (expected NAME=VALUE).') % {'item': item})}[/yellow]"
+    if malformed:
+        # A NAME=VALUE the parser could not read is a flag that cannot be honoured, so it
+        # refuses like the rest of them — the same answer `--set garbage` has always
+        # given. It fires BEFORE any analysis: there is nothing to compute for an
+        # invocation that is already going to be refused.
+        for item in malformed:
+            err_console.print(
+                f"[yellow]{escape(gettext('Malformed value: %(item)s (expected %(shape)s).') % {'item': item, 'shape': 'NAME=VALUE'})}[/yellow]"
+            )
+        raise _fail(
+            gettext("Nothing was changed — fix the flag(s) above and run it again."), EXIT_USAGE
         )
     result = edit_declared(
         store.read_parameters(entry.slug),
@@ -4960,6 +5032,7 @@ def _edit_declared_params(
         placeholder_names=placeholder_truth,
     )
     warnings = list(result.warnings)
+    pending_managed: list[str] | None = None
     if is_prompt:
         # Maintain the managed list alongside the schema rows: an added body placeholder
         # becomes managed (in body order); a removed name stops being asked for. An --rm
@@ -4975,12 +5048,19 @@ def _edit_declared_params(
             # A managed name the body has already lost isn't in body order — keep it at
             # the tail unless this very call removed it (drift stays visible, never grows).
             new_managed += [n for n in keep if n not in body_placeholders]
-            store.write_prompt_managed(entry.slug, new_managed)
+            pending_managed = new_managed
             warnings = [
-                w for w in warnings if w not in {f"not-declared:{n}" for n in removed_managed}
+                w for w in warnings if w not in {f"rm-not-declared:{n}" for n in removed_managed}
             ]
+    # DECIDE before any write. The prompt managed-list write used to happen up there, on
+    # the wrong side of this line, so `skit params p --rm noise --rm ghost` would unmanage
+    # `noise` and only then refuse — the partial apply this whole change exists to stop.
+    if any(analysis.is_refusal(w) for w in warnings):
+        _refuse_unhonoured(warnings, _render_declared_warning)
     for w in warnings:
         err_console.print(f"[yellow]{escape(_render_declared_warning(w))}[/yellow]")
+    if pending_managed is not None:
+        store.write_prompt_managed(entry.slug, pending_managed)
     store.write_parameters(entry.slug, result.decls)
     purged = argstate.purge_secret(entry.slug, {d.name for d in result.decls if d.secret})
     if purged:

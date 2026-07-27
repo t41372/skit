@@ -104,8 +104,8 @@ When the entry's target process actually ran, its exit code passes through **unt
 | 130 | user cancelled the interactive form |
 
 127 is the answer from **every** command that takes an entry name — `run`, `show`,
-`params`, `deps`, `describe`, `rename`, `remove`, `preset save/list/delete` — not just
-`run`. (Before 0.4.1 the others answered 1, which is inside the band a launched script's
+`params`, `deps`, `describe`, `rename`, `remove`, `edit`, `preset save/list/delete` —
+not just `run`. (Before 0.4.1 the others answered 1, which is inside the band a launched script's
 own exit code uses, so "no such entry" and "the script failed" were indistinguishable.)
 
 ## Add entries to the library
@@ -294,6 +294,13 @@ state) — use them to answer "where does skit keep this?" instead of guessing p
 Note: doctor's EXIT CODE reflects uv availability only — per-entry warnings (missing
 targets, drift, launch_blocked, unindexed) do not change it. Read `--json` for health,
 never the exit code.
+
+**`skit params` edits atomically.** Any flag it cannot honour (an unknown type, a
+default that does not fit, a name that is not a parameter, a malformed `NAME=VALUE`)
+makes the whole invocation exit `2` with **nothing written** — so a `params` call that
+exits 0 applied every flag you passed, and one that exits 2 applied none. Re-running a
+request that is already satisfied still exits 0. `skit edit` needs a terminal; pass
+`--no-input` to get a refusal instead of a hang.
 
 If `show`/`run` reports drift (the source changed and its managed parameter
 definitions no longer match), `skit params <name> --resync` refreshes them.

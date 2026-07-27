@@ -597,7 +597,12 @@ def edit_declared(  # noqa: PLR0912 — a fixed-order edit pipeline; the branche
             del by_name[name]
             order.remove(name)
         else:
-            warnings.append(f"not-declared:{name}")
+            # A DISTINCT code from the tweak-side "not-declared" below, though the user
+            # reads the same sentence: `--rm GHOST` asks for a state that already holds
+            # (nothing is declared under that name), while `--type GHOST=int` asks for
+            # something that did not happen. One string for both meant the caller could
+            # not tell an idempotent no-op from a refusal — and this command now refuses.
+            warnings.append(f"rm-not-declared:{name}")
 
     for name in add:
         if name in by_name:

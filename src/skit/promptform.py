@@ -108,6 +108,8 @@ def _ask_once(f: flows.FormField, default: str, console: Console) -> str:
         # clear word for deps and python pins, where it can never be a real value, and
         # on a free-text or path field it very much can (it is stdout half the time).
         # So name the spelling that works instead of inventing an ambiguous one.
+        # ("[/DIM]" is an equivalent mutant here: Rich normalizes closing-tag case, so the
+        # rendered bytes are identical with and without a terminal. Left alone.)
         console.print(
             "  [dim]"
             + gettext("Enter keeps it; to send an empty value, run with --set %(name)s=")

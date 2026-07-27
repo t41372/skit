@@ -63,8 +63,16 @@ def test_rm_drops_the_row():
 
 
 def test_rm_unknown_name_warns_not_declared():
+
+    # ROUND 12: a DISTINCT code from the tweak-side one, though the user reads the
+
+    # same sentence — this asks for a state that already holds (idempotent, exit 0),
+
+    # while a tweak on an unknown name is a refusal (exit 2). One string could not
+
+    # carry both answers.
     res = edit_declared([ParamDecl(name="a")], rm=["ghost"])
-    assert res.warnings == ["not-declared:ghost"]
+    assert res.warnings == ["rm-not-declared:ghost"]
     assert [d.name for d in res.decls] == ["a"]
 
 

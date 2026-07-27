@@ -466,13 +466,7 @@ class ScriptSettingsScreen(Screen[bool]):
             yield from self._compose_deps()
             yield from self._compose_needs()
         chips = [tui_footer.chip("screen.save", "Ctrl+S", gettext("Save"))]
-        if (
-            self._spec is not None
-            and self._spec.analyzer is not None
-            and self._entry.meta.mode == "copy"
-        ):
-            # The same guard action_resync applies: advertising a key that silently
-            # no-ops (prompt/exe/command/reference entries) teaches a dead chord.
+        if self._can_resync():
             chips.append(tui_footer.chip("screen.resync", "Ctrl+R", gettext("Resync")))
         chips += [
             tui_footer.chip("screen.close", "Esc", gettext("Back")),
@@ -981,11 +975,14 @@ class ScriptSettingsScreen(Screen[bool]):
     # ----------------------------------------------------------------- save
 
     def action_resync(self) -> None:
-        # One narrowing point (same idiom as action_save): the spec and its analyzer are proven
-        # together, so no second, unreachable None-guard is needed afterwards.
         spec = self._spec
-        if spec is None or spec.analyzer is None or self._entry.meta.mode != "copy":
+        if not self._can_resync():
             return
+        # One narrowing point (same idiom as action_save): _can_resync has already proven
+        # the spec and its analyzer together, so no second None-guard is needed — this one
+        # is for the type checker, which cannot follow the predicate.
+        assert spec is not None  # noqa: S101
+        assert spec.analyzer is not None  # noqa: S101
         result = analysis.edit_specs(
             self._text, self._specs, resync=True, analyze=spec.analyzer.analyze
         )
@@ -1231,6 +1228,18 @@ class ScriptSettingsScreen(Screen[bool]):
             if candidate in self._pending_prompt_candidates and candidate not in taken
         ]
 
+    def _can_resync(self) -> bool:
+        """Whether Ctrl+R has anything to resync. The chip's own comment already stated
+        the rule ("advertising a key that silently no-ops teaches a dead chord") and the
+        action restated the condition in its own words — two spellings of one decision, in
+        a codebase that has spent twelve rounds deleting exactly that. Now three readers
+        (chip, action, check_action) share one."""
+        return (
+            self._spec is not None
+            and self._spec.analyzer is not None
+            and self._entry.meta.mode == "copy"
+        )
+
     def _can_choose_candidates(self) -> bool:
         """Whether the variable picker has anything to open — ONE predicate behind the
         chord and the chip, so the keyboard can never advertise what the mouse doesn't
@@ -1253,6 +1262,8 @@ class ScriptSettingsScreen(Screen[bool]):
             return self._can_choose_candidates()
         if action == "new_runner":
             return self._is_prompt
+        if action == "resync":
+            return self._can_resync()
         return True
 
     def _unmanaged_prompt_names(self) -> list[str]:

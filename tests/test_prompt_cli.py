@@ -1554,7 +1554,11 @@ def test_runner_remove_abort_keeps_the_runner(tmp_path, monkeypatch):
     """Answering "n" (or EOF) aborts: exit 1, nothing removed — the confirm really guards."""
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     result = runner.invoke(cli.app, ["runner", "remove", "amp"], input="n\n")
-    assert result.exit_code == 1  # typer.confirm(abort=True) → Abort → exit 1
+    # ROUND 12: 130, not 1. Declining a destructive question is the deliberate,
+    # correct answer to it — the add lanes have always answered 130 with a
+    # translated line, while these three died as click's untranslated red
+    # `Aborted.` at an exit code the docs reserve for the launched script.
+    assert result.exit_code == 130  # typer.confirm(abort=True) → Abort → exit 1
     assert config.find_prompt_runner("amp") is not None  # still configured
     assert "Runner amp removed." not in result.output
 
@@ -2073,7 +2077,9 @@ def _editor_appending(text: str):
     return fake
 
 
-def test_edit_prompt_interactive_offers_and_manages_a_new_placeholder(tmp_path, monkeypatch):
+def test_edit_prompt_interactive_offers_and_manages_a_new_placeholder(
+    tmp_path, monkeypatch, at_a_terminal
+):
     config.save_form("plain")  # the line-prompt path (form=tui hosts the picker modal)
     slug = store.add_prompt(_write(tmp_path, "Say hello.\n"), name="greet").slug
     monkeypatch.setattr(
@@ -2087,7 +2093,9 @@ def test_edit_prompt_interactive_offers_and_manages_a_new_placeholder(tmp_path, 
     assert "Now managed: username" in result.output
 
 
-def test_edit_prompt_interactive_none_leaves_the_placeholder_literal(tmp_path, monkeypatch):
+def test_edit_prompt_interactive_none_leaves_the_placeholder_literal(
+    tmp_path, monkeypatch, at_a_terminal
+):
     config.save_form("plain")  # the line-prompt path (form=tui hosts the picker modal)
     slug = store.add_prompt(_write(tmp_path, "Say hello.\n"), name="greet").slug
     monkeypatch.setattr(cli.editor, "open_entry_in_editor", _editor_appending("\n{{username}}\n"))
@@ -2099,7 +2107,9 @@ def test_edit_prompt_interactive_none_leaves_the_placeholder_literal(tmp_path, m
     assert "Now managed" not in result.output
 
 
-def test_edit_prompt_interactive_numbers_manage_the_named_ones(tmp_path, monkeypatch):
+def test_edit_prompt_interactive_numbers_manage_the_named_ones(
+    tmp_path, monkeypatch, at_a_terminal
+):
     config.save_form("plain")  # the line-prompt path (form=tui hosts the picker modal)
     slug = store.add_prompt(_write(tmp_path, "Base.\n"), name="greet").slug
     monkeypatch.setattr(
@@ -2112,7 +2122,9 @@ def test_edit_prompt_interactive_numbers_manage_the_named_ones(tmp_path, monkeyp
     assert store.resolve(slug).meta.params == ["a", "c"]
 
 
-def test_edit_prompt_preserves_existing_managed_and_adds_the_new_one(tmp_path, monkeypatch):
+def test_edit_prompt_preserves_existing_managed_and_adds_the_new_one(
+    tmp_path, monkeypatch, at_a_terminal
+):
     config.save_form("plain")  # the line-prompt path (form=tui hosts the picker modal)
     entry = store.add_prompt(_write(tmp_path, "{{kept}}\n"), name="greet", managed=["kept"])
     monkeypatch.setattr(cli.editor, "open_entry_in_editor", _editor_appending("\n{{added}}\n"))
@@ -2123,29 +2135,26 @@ def test_edit_prompt_preserves_existing_managed_and_adds_the_new_one(tmp_path, m
     assert store.resolve(entry.slug).meta.params == ["kept", "added"]
 
 
-def test_edit_prompt_non_interactive_names_the_unmanaged_variable(tmp_path, monkeypatch):
+def test_edit_prompt_non_interactive_refuses_before_touching_anything(tmp_path, monkeypatch):
+    """ROUND 12. There is no non-interactive `skit edit`: an editor session needs a
+    terminal, so the command refuses at the front door rather than running an editor
+    against a stdin nobody is typing into. The prompt's managed list is therefore
+    untouched — which is what this test always meant by "manages nothing", now asserted
+    against a state the product can actually be in."""
     slug = store.add_prompt(_write(tmp_path, "Say hello.\n"), name="greet").slug
-    monkeypatch.setattr(cli.editor, "open_entry_in_editor", _editor_appending("\n{{username}}\n"))
+    monkeypatch.setattr(
+        cli.editor, "open_entry_in_editor", lambda *a, **k: pytest.fail("editor opened")
+    )
     monkeypatch.setattr(cli, "_is_interactive", lambda: False)
     result = runner.invoke(cli.app, ["edit", "greet"])
-    assert result.exit_code == 0, result.output
-    assert store.resolve(slug).meta.params is None  # non-interactive manages nothing
-    assert "Detected but not yet managed: username" in result.output
+    assert result.exit_code == 2
+    assert "needs an interactive terminal" in result.output
+    assert store.resolve(slug).meta.params is None
 
 
-def test_edit_prompt_non_interactive_flood_previews_with_a_tail(tmp_path, monkeypatch):
-    from skit.langs.prompt.analyzer import LIST_PREVIEW_LIMIT
-
-    store.add_prompt(_write(tmp_path, "Base.\n"), name="greet")
-    holes = " ".join("{{h" + str(i) + "}}" for i in range(LIST_PREVIEW_LIMIT + 4))
-    monkeypatch.setattr(cli.editor, "open_entry_in_editor", _editor_appending("\n" + holes + "\n"))
-    monkeypatch.setattr(cli, "_is_interactive", lambda: False)
-    result = runner.invoke(cli.app, ["edit", "greet"])
-    assert result.exit_code == 0, result.output
-    assert "and 4 more candidates" in result.output
-
-
-def test_edit_prompt_interactive_flood_previews_secret_mark_and_tail(tmp_path, monkeypatch):
+def test_edit_prompt_interactive_flood_previews_secret_mark_and_tail(
+    tmp_path, monkeypatch, at_a_terminal
+):
     from skit.langs.prompt.analyzer import LIST_PREVIEW_LIMIT
 
     config.save_form("plain")  # the line-prompt path (form=tui hosts the picker modal)
@@ -2164,7 +2173,9 @@ def test_edit_prompt_interactive_flood_previews_secret_mark_and_tail(tmp_path, m
     ]
 
 
-def test_edit_prompt_tui_reconcile_manages_the_pickers_selection(tmp_path, monkeypatch):
+def test_edit_prompt_tui_reconcile_manages_the_pickers_selection(
+    tmp_path, monkeypatch, at_a_terminal
+):
     """Under form=tui the reconcile hosts run_candidate_picker; its returned set is what
     gets managed (preselection = every new name when not flooded)."""
     config.save_form("tui")
@@ -2189,7 +2200,7 @@ def test_edit_prompt_tui_reconcile_manages_the_pickers_selection(tmp_path, monke
     assert "Now managed: a, c" in result.output
 
 
-def test_edit_prompt_tui_reconcile_none_manages_nothing(tmp_path, monkeypatch):
+def test_edit_prompt_tui_reconcile_none_manages_nothing(tmp_path, monkeypatch, at_a_terminal):
     """Cancelling the picker (None) manages nothing — no 'Now managed' line."""
     config.save_form("tui")
     slug = store.add_prompt(_write(tmp_path, "Say hello.\n"), name="greet").slug
@@ -2202,7 +2213,7 @@ def test_edit_prompt_tui_reconcile_none_manages_nothing(tmp_path, monkeypatch):
     assert "Now managed" not in result.output
 
 
-def test_edit_prompt_tui_reconcile_flood_preselects_nothing(tmp_path, monkeypatch):
+def test_edit_prompt_tui_reconcile_flood_preselects_nothing(tmp_path, monkeypatch, at_a_terminal):
     """Above AUTO_MANAGE_LIMIT new names, the picker opens with an EMPTY preselection."""
     from skit.langs.prompt.analyzer import AUTO_MANAGE_LIMIT
 
@@ -2222,7 +2233,7 @@ def test_edit_prompt_tui_reconcile_flood_preselects_nothing(tmp_path, monkeypatc
     assert seen["selected"] == set()  # flooded → nothing preselected
 
 
-def test_edit_prompt_with_no_new_placeholders_is_silent(tmp_path, monkeypatch):
+def test_edit_prompt_with_no_new_placeholders_is_silent(tmp_path, monkeypatch, at_a_terminal):
     slug = store.add_prompt(_write(tmp_path, "{{a}}\n"), name="greet", managed=["a"]).slug
     monkeypatch.setattr(cli.editor, "open_entry_in_editor", _editor_appending("\nmore prose\n"))
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
@@ -2233,7 +2244,7 @@ def test_edit_prompt_with_no_new_placeholders_is_silent(tmp_path, monkeypatch):
     assert store.resolve(slug).meta.params == ["a"]
 
 
-def test_edit_non_prompt_keeps_the_generic_drift_hint(tmp_path, monkeypatch):
+def test_edit_non_prompt_keeps_the_generic_drift_hint(tmp_path, monkeypatch, at_a_terminal):
     script = tmp_path / "s.py"
     script.write_text("print(1)\n", encoding="utf-8")
     store.add_python(script, name="job")

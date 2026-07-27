@@ -968,7 +968,11 @@ def test_remove_abort_keeps_the_entry(tmp_path: Path, monkeypatch: pytest.Monkey
     _entry(tmp_path)
     _fake_tty(monkeypatch)
     result = runner.invoke(cli.app, ["remove", "a"], input="n\n")
-    assert result.exit_code == 1  # typer.confirm(abort=True) → Abort
+    # ROUND 12: 130, not 1. Declining a destructive question is the deliberate,
+    # correct answer to it — the add lanes have always answered 130 with a
+    # translated line, while these three died as click's untranslated red
+    # `Aborted.` at an exit code the docs reserve for the launched script.
+    assert result.exit_code == 130  # typer.confirm(abort=True) → Abort
     assert store.resolve("a").meta.name == "a"
 
 
@@ -1022,7 +1026,11 @@ def test_preset_delete_abort_keeps_the_preset(
     argstate.save_preset(entry.slug, "prod", {"CITY": "Taipei"})
     _fake_tty(monkeypatch)
     result = runner.invoke(cli.app, ["preset", "delete", "a", "prod"], input="n\n")
-    assert result.exit_code == 1
+    # ROUND 12: 130, not 1. Declining a destructive question is the deliberate,
+    # correct answer to it — the add lanes have always answered 130 with a
+    # translated line, while these three died as click's untranslated red
+    # `Aborted.` at an exit code the docs reserve for the launched script.
+    assert result.exit_code == 130
     assert argstate.load_state(entry.slug)["presets"] == {"prod": {"CITY": "Taipei"}}
 
 

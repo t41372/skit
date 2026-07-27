@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from skit import argstate, cli, config, i18n, rewrite, store
+from skit import argstate, cli, config, i18n, kindnames, rewrite, store
 from skit.langs.registry import spec_for
 
 runner = CliRunner()
@@ -167,11 +167,27 @@ def test_describe_not_found(tmp_path):
 
 @pytest.mark.parametrize("literal", ["origin", "store", "invoke"])
 def test_params_workdir_literals(tmp_path, literal):
+    """ROUND 12: the STORED value is the English token (the CLI accepts it and meta.toml
+    keeps it); what the user READS is a translated label. They used to be the same string,
+    so a Chinese user was told 工作目錄:store."""
     _shell(tmp_path)
     result = runner.invoke(cli.app, ["params", "sh", "--workdir", literal])
     assert result.exit_code == 0, result.output
-    assert f"now runs in: {literal}" in result.output
+    assert f"now runs in: {kindnames.workdir_label(literal)}" in result.output
+    assert kindnames.workdir_label(literal) != literal  # …and it really is a label
     assert store.resolve("sh").meta.workdir == literal
+
+
+def test_params_workdir_path_is_never_relabelled(tmp_path):
+    """The fall-through that keeps the labels safe: `workdir` also holds a user-typed
+    ABSOLUTE PATH, and translating that would corrupt the one value the user must be able
+    to read back verbatim."""
+    _shell(tmp_path)
+    wd = str(tmp_path / "wd")
+    result = runner.invoke(cli.app, ["params", "sh", "--workdir", wd])
+    assert result.exit_code == 0, result.output
+    assert wd in result.output
+    assert kindnames.workdir_label(wd) == wd
 
 
 def test_params_workdir_absolute_path(tmp_path):

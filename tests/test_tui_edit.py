@@ -9,7 +9,7 @@ import pytest
 from textual.widgets import Static
 
 from conftest import plan_cache_key
-from skit import flows, store, tui
+from skit import flows, launcher, store, tui
 
 
 @pytest.fixture(autouse=True)
@@ -32,22 +32,26 @@ def _noop_suspend():
 
 
 def test_editable_source_copy_mode_points_at_the_stored_copy(tmp_path):
+    # ROUND 12: the target now comes from launcher.plan_edit, shared with `skit edit` —
+    # the TUI used to derive it alone and collapsed three refusals into one message.
     entry = store.add_python(_py(tmp_path, "print(1)\n"), name="a")
-    app = tui.MenuApp()
-    assert app._editable_source(entry) == entry.dir / "script.py"
+    assert launcher.plan_edit(entry).target == entry.dir / "script.py"
 
 
 def test_editable_source_reference_mode_points_at_the_original(tmp_path):
     p = _py(tmp_path, "print(1)\n", "orig.py")
     entry = store.add_python(p, name="r", mode="reference")
-    app = tui.MenuApp()
-    assert app._editable_source(entry) == Path(entry.meta.source)
+    plan = launcher.plan_edit(entry)
+    assert plan.target == Path(entry.meta.source)
+    assert plan.edits_original is True  # …and the face announces whose file it is
 
 
 def test_editable_source_command_entry_has_none(tmp_path):
     entry = store.add_command("echo hi", name="c")
-    app = tui.MenuApp()
-    assert app._editable_source(entry) is None
+    plan = launcher.plan_edit(entry)
+    assert plan.target is None
+    assert plan.refusal == "not-editable"
+    assert tui.MenuApp._can_edit(entry) is False  # …so the row offers no `e` chip
 
 
 async def test_edit_opens_editor_and_reports(tmp_path, monkeypatch):

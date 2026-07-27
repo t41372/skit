@@ -10,9 +10,11 @@ the same actions, deterministic behavior.
 
 - **`--json`** on every read command: `list`, `show`, `params`, `deps`,
   `preset list`, `runner list`, `doctor`, `config`.
-- **`--no-input`** on the commands that could prompt: `add`, `run`, and the
-  destructive trio `remove`, `preset delete`, `runner remove` (which confirm
-  unless `--yes`). Read commands never prompt and don't take it.
+- **`--no-input`** on the commands that could prompt: `add`, `run`, `edit`, and
+  the destructive trio `remove`, `preset delete`, `runner remove` (which confirm
+  unless `--yes`). Read commands never prompt and don't take it. On `edit` it
+  means *refuse*, not *proceed*: an editor session needs a terminal, and under a
+  pty with nobody typing this is the only way to say there is no human.
 - **`--dry-run`** on `run` only: prints the exact command — tokens and globs
   expanded — and runs nothing.
 - **Non-interactive contract**: in a pipe, in CI, or under `--no-input`, skit
@@ -26,10 +28,10 @@ the same actions, deterministic behavior.
 | Code | Meaning |
 | --- | --- |
 | `0` | success |
-| `2` | usage error — bad flag combination, unknown `--set` name, unknown preset, a flag refused for the entry's type |
+| `2` | usage error — bad flag combination, unknown `--set` name, unknown preset, or any flag skit cannot honour (`skit params` refuses the whole invocation and writes nothing) |
 | `125` | skit-side failure — missing/invalid parameter value, drift, token expansion error, over-long rendered command |
 | `126` | the target exists but can't run — missing interpreter or JS runtime, a `needs` command absent from `PATH`, no runner resolvable for a prompt |
-| `127` | no such entry in the library |
+| `127` | no such entry in the library, or its launch/edit target is gone from disk |
 | `130` | user cancelled an interactive screen (128 + SIGINT) |
 
 `skit run` passes the launched process's own exit code through untouched — even
@@ -39,8 +41,8 @@ reflects uv availability only (0 = present or not needed, 1 = required but
 missing); per-entry warnings never change it.
 
 `127` is the answer from **every** command that takes an entry name — `run`, `show`,
-`params`, `deps`, `describe`, `rename`, `remove`, `preset save/list/delete` — so
-"no such entry" never has to be told apart from a script's own failure by reading
+`params`, `deps`, `describe`, `rename`, `remove`, `edit`, `preset save/list/delete` —
+so "no such entry" never has to be told apart from a script's own failure by reading
 the (localized) message.
 
 ## skit add
@@ -106,15 +108,23 @@ never replays them.
   non-interactively, a missing `--yes` is a clean exit-2 refusal.
 - `skit rename NAME NEW` — presets, remembered values, and history follow.
 - `skit describe NAME TEXT` — set the description; empty text clears it.
-- `skit edit NAME` — open the stored source (the original, in reference mode) in
-  your editor; offers to create the entry if the name is new. Refused for
-  exe/command — there's no editable source.
+- `skit edit NAME [--no-input]` — open the stored source (the original, in
+  reference mode) in your editor; offers to create the entry if the name is new.
+  Refused with exit 2 for exe/command (there's no editable source) and when skit
+  may not prompt; exit 127 when the name is unknown or the file is gone.
 
 ## skit params
 
 `skit params NAME [--json]` shows managed parameters and last-used values.
 With flags it edits definitions — generally one editing operation per
-invocation:
+invocation.
+
+**Editing is all-or-nothing.** If any flag cannot be honoured — an unknown type, a
+default that does not fit its type, a delivery the kind does not offer, a name that
+is not a parameter, a malformed `NAME=VALUE` — skit writes **nothing**, prints the
+reason on stderr and exits `2`. Fix the flag and run it again. (Requests that are
+already satisfied — re-adding a declared parameter, removing one that is not there —
+are not failures and exit `0`.)
 
 | Flag | Effect |
 | --- | --- |

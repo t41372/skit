@@ -1442,7 +1442,7 @@ class PromptReviewScreen(Screen[str | None]):
                 value=self._tick_overrides.get(hole_name, not flooded),
                 id=f"pv-hole-{i}",
             )
-        if len(detected) > len(self._shown_names):
+        if self._can_choose_candidates():
             yield Static(
                 gettext("…and %(count)s more") % {"count": len(detected) - len(self._shown_names)},
                 classes="hint",
@@ -1490,9 +1490,30 @@ class PromptReviewScreen(Screen[str | None]):
         flooded = len(self._detected) > prompt_analyzer.AUTO_MANAGE_LIMIT
         return {name for name in self._detected if self._tick_overrides.get(name, not flooded)}
 
+    def _can_choose_candidates(self) -> bool:
+        """Whether the inline preview is CAPPED, i.e. whether the picker has anything to
+        show that is not already on screen.
+
+        One predicate for the chip, the action and check_action. They had two: the chip
+        appeared when the list was capped (`len(detected) > len(_shown_names)`, which
+        happens only when flooded), while the action ran whenever the list merely exceeded
+        LIST_PREVIEW_LIMIT. Between those two thresholds Ctrl+L opened a picker that no
+        chip advertised — a keyboard-only path (principle 2) onto a list the user could
+        already see in full. Narrowed to the chip's meaning, because the chip's own words
+        are "…and N more": with nothing more, there is nothing to choose."""
+        return len(self._detected) > prompt_analyzer.AUTO_MANAGE_LIMIT
+
+    @override
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Disable the chord where its chip is not offered — same predicate, so the
+        keyboard and the mouse advertise exactly the same thing."""
+        if action == "choose_prompt_candidates":
+            return self._can_choose_candidates()
+        return True
+
     def action_choose_prompt_candidates(self) -> None:
         """Open the complete searchable choice when the inline preview is capped."""
-        if len(self._detected) <= prompt_analyzer.LIST_PREVIEW_LIMIT:
+        if not self._can_choose_candidates():
             return
         self._remember_visible_ticks()
 

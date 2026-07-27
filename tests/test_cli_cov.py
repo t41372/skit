@@ -302,14 +302,17 @@ def test_params_python_shows_non_secret_last_value(tmp_path):
 
 def test_edit_not_found():
     result = runner.invoke(cli.app, ["edit", "ghost"])
-    assert result.exit_code == 1
+    # ROUND 12: 127 — `skit edit <unknown>` answers the same question as the other ten
+    # entry-name commands, and now the same code. It never raises NotFoundError (it
+    # offers to create instead), which is why round 10's sweep could not see it.
+    assert result.exit_code == 127
 
 
-def test_edit_copy_missing(tmp_path):
+def test_edit_copy_missing(tmp_path, at_a_terminal):
     ent = store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     ent.script_path.unlink()
     result = runner.invoke(cli.app, ["edit", "a"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
     assert "no stored copy to edit" in result.output
 
 

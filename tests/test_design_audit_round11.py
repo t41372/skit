@@ -79,8 +79,12 @@ def test_the_editor_refuses_when_skit_may_not_prompt(
         editor.open_in_editor(tmp_path / "x.py")
 
     assert spawned == []  # nothing was launched
-    assert "interactive terminal" in str(excinfo.value)
-    assert str(tmp_path / "x.py") in str(excinfo.value)
+    # The WHOLE sentence: a substring check passes on copy that has quietly become
+    # something else, and this one has to name the escape (the file) to be worth printing.
+    assert str(excinfo.value) == (
+        "Opening an editor needs an interactive terminal — not a pipe, CI, or "
+        f"--no-input. Edit the file directly instead: {tmp_path / 'x.py'}"
+    )
 
 
 def test_skit_edit_refuses_in_a_pipe_instead_of_claiming_a_save(
@@ -95,7 +99,11 @@ def test_skit_edit_refuses_in_a_pipe_instead_of_claiming_a_save(
 
     result = runner.invoke(cli.app, ["edit", "hello"])
 
-    assert result.exit_code == 1
+    # ROUND 12 moved the refusal to `edit`'s FRONT DOOR: down in editor.py it shared one
+    # exception class with "the editor could not be launched", so the two could only ever
+    # get one exit code. Here it is a usage refusal (2, like its `add --edit` twin) and it
+    # can name the resolved file — the thing a non-interactive caller can act on.
+    assert result.exit_code == 2
     assert "Saved" not in result.output
     assert "interactive terminal" in result.output
 
@@ -191,6 +199,30 @@ async def test_a_prompt_with_few_variables_advertises_neither(tmp_path: Path) ->
         assert screen.check_action("new_runner", ()) is True  # prompt-only, and this IS one
 
 
+async def test_the_picker_opens_only_once_the_list_actually_overflows(tmp_path: Path) -> None:
+    """The boundary, because the chip is built from the same comparison: a list of exactly
+    LIST_PREVIEW_LIMIT names is fully on screen, so there is nothing the picker could show
+    that the user cannot already see and tick. One more, and there is."""
+    from skit.langs.prompt.analyzer import LIST_PREVIEW_LIMIT
+
+    body = tmp_path / "p.prompt.md"
+    body.write_text("Do {{a}}.\n", encoding="utf-8")
+    entry = store.add_prompt(body, name="p")
+    stored = store.resolve(entry.slug).script_path
+
+    async def _can(count: int) -> bool:
+        stored.write_text(" ".join(f"{{{{v{i}}}}}" for i in range(count)) + "\n", encoding="utf-8")
+        app = tui.MenuApp()
+        async with app.run_test() as pilot:
+            screen = ScriptSettingsScreen(store.resolve(entry.slug))
+            app.push_screen(screen)
+            await pilot.pause()
+            return screen._can_choose_candidates()
+
+    assert await _can(LIST_PREVIEW_LIMIT) is False
+    assert await _can(LIST_PREVIEW_LIMIT + 1) is True
+
+
 # ==========================================================================
 # BB. The confirmation tracks names, not a latch
 # ==========================================================================
@@ -277,11 +309,9 @@ def test_the_removal_question_is_honest_about_the_only_copy(tmp_path: Path) -> N
     safe = cli._remove_question(store.resolve(kept.slug))
     plain = cli._remove_question(store.resolve(template.slug))
 
-    assert "only copy" in gone
-    assert "will not be deleted" not in gone
-    assert "will not be deleted" in safe
-    assert "only copy" not in plain  # a template has no original to speak about
-    assert "will not be deleted" not in plain
+    assert gone == 'Remove "onlycopy"? skit holds the only copy — it will be gone.'
+    assert safe == 'Remove "kept"? Your original file will not be deleted.'
+    assert plain == 'Remove "tmpl"?'  # a template has no original to speak about
 
 
 def test_both_removal_faces_ask_the_same_predicate(tmp_path: Path) -> None:
@@ -348,7 +378,35 @@ def test_the_plain_form_names_the_spelling_it_cannot_offer(
     with console.capture() as cap:
         promptform._ask_once(field, "build", console)
 
-    assert "--set OUT=" in cap.get()
+    assert "Enter keeps it; to send an empty value, run with --set OUT=" in cap.get()
+
+
+def test_the_hint_is_scoped_to_fields_that_can_actually_deliver_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both halves of the condition. A field with a default that does NOT deliver empty
+    (an int, where '' is never a value) must not be told to send one — the hint would name
+    a spelling that changes nothing — and a delivers-empty field with no default has
+    nothing to keep, so there is nothing for Enter to preserve either."""
+    from rich.console import Console
+
+    from skit import flows, promptform
+
+    monkeypatch.setattr(promptform.Prompt, "ask", staticmethod(lambda *a, **k: "1"))
+    counted = flows.FormField(
+        key="N", label="N", kind="int", source="inject", default="1", has_default=True
+    )
+    assert counted.delivers_empty is False
+    console = Console(force_terminal=False, no_color=True, width=100)
+    with console.capture() as cap:
+        promptform._ask_once(counted, "1", console)
+    assert "--set" not in cap.get()
+
+    blank = flows.FormField(key="OUT", label="OUT", kind="str", source="inject")
+    assert blank.delivers_empty is False  # no known default to keep
+    with console.capture() as cap:
+        promptform._ask_once(blank, "", console)
+    assert "--set" not in cap.get()
 
 
 async def test_a_degraded_parser_says_so_instead_of_calling_a_script_a_program(
@@ -440,3 +498,33 @@ async def test_an_interpolation_off_prompt_opens_no_picker(tmp_path: Path) -> No
         screen.action_choose_prompt_candidates()
         await pilot.pause()
         assert isinstance(app.screen, ScriptSettingsScreen)  # no picker was pushed
+
+
+async def test_the_gate_does_not_lock_the_tui_out_of_its_own_editor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The regression the round-11 gate could have caused, pinned rather than reasoned
+    about. Ctrl+E runs INSIDE a live Textual app, where sys.stdout is Textual's
+    _PrintCapture rather than the real stream — if that proxy reported isatty() False, the
+    new gate would have refused the workbench's own editor and the fix would have cost
+    more than the bug. It reports honestly, so a real session passes; this test is what
+    keeps that true when Textual changes."""
+    spawned: list[list[str]] = []
+
+    class _Ok:
+        returncode = 0
+
+    monkeypatch.setattr(
+        editor.subprocess, "run", lambda argv, check=False: (spawned.append(argv), _Ok())[1]
+    )
+    monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: __import__("contextlib").nullcontext())
+    store.add_python(_py(tmp_path), name="hello")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: True), raising=False)
+        assert interaction.allowed() is True  # the app's own stdout proxy is honest
+        app.action_edit()
+        await pilot.pause()
+
+    assert spawned, "the TUI's own editor must still open"

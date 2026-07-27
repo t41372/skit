@@ -1,9 +1,20 @@
-"""The human, translated names of the registry kinds — ONE map, shared by every
-surface that shows a kind to a person (the Library badge, the kind-pick modal).
+"""The human, translated VALUE LABELS for skit's stored enum tokens — kind, mode and
+workdir. ONE map per axis, shared by every surface that shows one to a person.
 
-The labels must be gettext() literals (a dict lookup fed to gettext(kind) is invisible
-to Babel's extractor — the i18n gate's dynamic-gettext check exists for exactly that),
-and every new kind adds one literal line here.
+The token stays English wherever it is stored or typed (`meta.toml`, `skit params
+--workdir store`); only what a person READS is translated. Without that split, `skit
+show` printed `(Python · copy)` — the kind translated and the mode raw, inside one
+parenthesis — and `工作目錄:store`. No static gate could ever catch it: the literal is not
+in the source at all, it is in the user's meta.toml.
+
+Scope, stated so it does not drift: this module owns compact VALUE labels. The prose a
+screen writes to explain a CHOICE ("The source file's folder", offered beside a radio
+button) belongs to that screen — it is a different register, and forcing the two together
+would make both worse.
+
+Every label must be a gettext() literal (a dict lookup fed to gettext(token) is invisible
+to Babel's extractor — the i18n gate's dynamic-gettext check exists for exactly that), so
+every new kind, mode or workdir adds one literal line here.
 """
 
 from __future__ import annotations
@@ -29,6 +40,28 @@ def kind_label(kind: str) -> str:
         "command": gettext("Command"),
         "prompt": gettext("Prompt"),
     }.get(kind, kind)
+
+
+def mode_label(mode: str) -> str:
+    """The translated display name for a storage mode (the raw token when unknown)."""
+    return {
+        "copy": gettext("copy"),
+        "reference": gettext("reference"),
+    }.get(mode, mode)
+
+
+def workdir_label(workdir: str) -> str:
+    """The translated display name for a workdir setting.
+
+    Falls through unchanged for anything that is not one of the three tokens, because
+    `workdir` also holds a user-typed ABSOLUTE PATH — translating that would corrupt it.
+    The `.get(token, token)` idiom above carries the same rule for a kind from a newer
+    skit."""
+    return {
+        "origin": gettext("the script's own folder"),
+        "store": gettext("skit's stored-copy folder"),
+        "invoke": gettext("wherever skit is run from"),
+    }.get(workdir, workdir)
 
 
 def kind_choices(*, offer_exe: bool) -> list[tuple[str, str]]:

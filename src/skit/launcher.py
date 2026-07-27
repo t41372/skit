@@ -15,7 +15,7 @@ import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from . import config
 from .i18n import gettext
@@ -143,12 +143,99 @@ def original_survives(entry: ListedEntry) -> bool:
     promise stops holding is the one moment it was printed, on the destructive door, in
     the face that has no Esc. skit's whole copy-mode pitch is why people delete that
     working file in the first place.
+
+    Only `source` is consulted. A kind with no original — a command template — never
+    records one, so a has_original_file guard here would be a branch that cannot fire;
+    mutation testing found it, and this audit has spent eleven rounds deleting exactly
+    that shape. The kind question still matters ONE level up, where `skit remove` decides
+    between "your original is safe" and "skit holds the only copy", and there it fires.
     """
-    spec = spec_for(entry.kind)
-    if spec is not None and not spec.has_original_file:
-        return False  # command templates: there is no "original" to speak about
     source = entry.source
     return bool(source) and Path(source).exists()
+
+
+RemovalStake = Literal["original-safe", "only-copy", "nothing-of-yours"]
+
+
+def removal_stake(entry: Entry) -> RemovalStake:
+    """What a removal actually costs the user — the VERDICT, not the sentence.
+
+    Round 11 unified the predicate (original_survives) and left the ANSWER forked: the
+    CLI grew a third case ("skit holds the only copy") and the TUI modal kept two, so the
+    honest warning appeared only on the face that makes you type a name — while the
+    Library, where Delete acts on whatever row the cursor is on, said nothing. Unifying a
+    predicate and forking its answer is the same defect wearing a smaller hat.
+
+    A verdict, deliberately, not composed copy: cli.py already states the rule ("ONE
+    msgid, not two sentences spliced with a hard-coded space: translators own the whole
+    pair, including its punctuation and order"). Each face renders whole sentences it
+    owns; neither decides which case it is in.
+
+    Takes an Entry rather than the narrower ListedEntry its neighbour above uses, because
+    `mode` is part of the question — both call sites hold one.
+    """
+    if original_survives(entry):
+        return "original-safe"
+    if entry.meta.mode == "copy":
+        # The original is gone AND skit made a copy of it, so skit's copy is the only one
+        # left. Every copy-mode kind has an original file (exe and command are
+        # reference-only), so there is nothing further to test here.
+        return "only-copy"
+    return "nothing-of-yours"
+
+
+EditRefusal = Literal["not-editable", "reference-source-gone", "no-stored-copy"]
+
+
+@dataclass(frozen=True)
+class EditPlan:
+    """Where `skit edit` / the Library's `e` would take the user, or why they can't go.
+
+    THREE conditions, kept apart. The TUI collapsed them into one sentence, so the owner
+    of a reference-mode PYTHON entry whose file had moved was told it "has no editable
+    source (programs and command templates run as-is)" — a message that denies the entry
+    has a source AND misclassifies its kind, about a script that is neither a program nor
+    a template. The CLI, one function away, named the path they needed to restore.
+
+    A reason ID rather than a sentence, because the two faces need different things from
+    it: the CLI maps it to an exit code as well as copy, and the ID is what both maps key
+    off (the `_render_declared_warning` precedent).
+    """
+
+    target: Path | None
+    refusal: EditRefusal | None
+    edits_original: bool = False  # reference mode: the file being opened is the USER's
+
+
+def plan_edit(entry: Entry) -> EditPlan:
+    """What editing this entry means. Shared by `cli.edit` and MenuApp.action_edit."""
+    spec = spec_for(entry.meta.kind)
+    if spec is None or not spec.editable:
+        return EditPlan(target=None, refusal="not-editable")
+    if entry.meta.mode == "reference":
+        source = Path(entry.meta.source)
+        if not source.exists():
+            return EditPlan(target=None, refusal="reference-source-gone")
+        return EditPlan(target=source, refusal=None, edits_original=True)
+    target = entry.script_path
+    if not target.exists():
+        return EditPlan(target=None, refusal="no-stored-copy")
+    return EditPlan(target=target, refusal=None)
+
+
+def edit_refusal_message(refusal: EditRefusal, entry: Entry) -> str:
+    """The refusal, worded once for both faces. A static lookup keeps every string
+    Babel-extractable (the _render_declared_warning rule)."""
+    return {
+        "not-editable": gettext(
+            "%(name)s has no editable source (programs and command templates run as-is)."
+        )
+        % {"name": entry.meta.name},
+        "reference-source-gone": gettext("%(name)s: the referenced source file is gone: %(path)s")
+        % {"name": entry.meta.name, "path": entry.meta.source},
+        "no-stored-copy": gettext("%(name)s has no stored copy to edit.")
+        % {"name": entry.meta.name},
+    }[refusal]
 
 
 def target_missing(entry: ListedEntry) -> bool:

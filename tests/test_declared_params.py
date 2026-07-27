@@ -463,15 +463,20 @@ def test_cli_env_source_on_non_secret_declared_param_warns(tmp_path: Path):
     entry = _exe(tmp_path)
     store.write_parameters(entry.slug, [ParamDecl(name="WIDTH", delivery="env")])
     result = runner.invoke(cli.app, ["params", "prog", "--env-source", "WIDTH=COLS"])
-    assert result.exit_code == 0, result.output
+    # ROUND 12: `skit params` refuses atomically now. A flag it cannot honour writes
+    # NOTHING and exits 2 — the refuse-never-drop answer every sibling intake gives —
+    # because warn-and-continue exited 0, wrote the rest, and then reported the state
+    # it had not written through --json.
+    assert result.exit_code == 2
     assert "WIDTH isn't secret" in result.stderr  # the no-op flag is surfaced, not dropped
-    # --json: stdout is exactly one JSON document; the warning stays on stderr, so the
-    # STDOUT stream (not the mixed .output) parses whole.
+    assert store.read_parameters(entry.slug)[0].env_source == ""  # …and nothing was written
+    # --json refuses too, and emits NO document. That is the point of the change: the old
+    # behaviour printed a read view describing state the write had not applied, to the one
+    # channel agents are told to trust. No payload is honest; a wrong payload is not.
     jr = runner.invoke(cli.app, ["params", "prog", "--env-source", "WIDTH=COLS", "--json"])
-    assert jr.exit_code == 0, jr.output
-    payload = json.loads(jr.stdout)  # stdout alone is pure JSON
-    assert any(p["name"] == "WIDTH" for p in payload["declared"])
-    assert "WIDTH isn't secret" in jr.stderr  # the warning rode stderr, not stdout
+    assert jr.exit_code == 2
+    assert jr.stdout.strip() == ""
+    assert "WIDTH isn't secret" in jr.stderr  # the reason still rides stderr
 
 
 def test_cli_python_manage_with_json_emits_the_final_read_view(tmp_path: Path):
@@ -568,8 +573,12 @@ def test_cli_python_declared_op_is_refused(tmp_path: Path):
 def test_cli_declared_malformed_value_warns(tmp_path: Path):
     _exe(tmp_path)
     result = runner.invoke(cli.app, ["params", "prog", "--type", "NOEQUALS"])
-    assert result.exit_code == 0, result.output
-    assert "Ignored a malformed value" in result.output
+    # ROUND 12: `skit params` refuses atomically now. A flag it cannot honour writes
+    # NOTHING and exits 2 — the refuse-never-drop answer every sibling intake gives —
+    # because warn-and-continue exited 0, wrote the rest, and then reported the state
+    # it had not written through --json.
+    assert result.exit_code == 2
+    assert "Malformed value" in result.output
 
 
 def test_cli_declared_warning_codes_render(tmp_path: Path):
@@ -592,7 +601,11 @@ def test_cli_bad_type_warns_and_skips(tmp_path: Path):
     entry = _exe(tmp_path)
     store.write_parameters(entry.slug, [ParamDecl(name="w", delivery="flag", type="str")])
     result = runner.invoke(cli.app, ["params", "prog", "--type", "w=integer"])
-    assert result.exit_code == 0, result.output
+    # ROUND 12: `skit params` refuses atomically now. A flag it cannot honour writes
+    # NOTHING and exits 2 — the refuse-never-drop answer every sibling intake gives —
+    # because warn-and-continue exited 0, wrote the rest, and then reported the state
+    # it had not written through --json.
+    assert result.exit_code == 2
     assert "unknown type" in result.output
     assert store.read_parameters(entry.slug)[0].type == "str"  # unchanged
 
