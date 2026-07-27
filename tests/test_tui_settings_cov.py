@@ -409,7 +409,7 @@ async def test_unknown_kind_entry_states_no_managed_parameters(tmp_path):
         screen = ScriptSettingsScreen(entry)
         app.push_screen(screen)
         await pilot.pause()
-        assert "programs have no managed parameters" in _body(screen)
+        assert "this kind has no managed parameters" in _body(screen)
 
 
 async def test_reference_entry_is_read_only_and_linked(tmp_path):

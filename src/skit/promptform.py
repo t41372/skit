@@ -99,5 +99,20 @@ def _ask_once(f: flows.FormField, default: str, console: Console) -> str:
                 f"  {label} ({'/'.join(f.choices)})", default="", console=console
             ).strip()
         return answer
+    if f.delivers_empty and default:
+        # The one form semantic this face cannot spell. Clearing a delivers-empty field
+        # sends '' — the TUI does it by emptying the Input, `--set NAME=` does it
+        # outright — but here Enter means "keep the default" and nothing means "clear",
+        # so a --plain/TERM=dumb/SSH user had no path to a value the other two faces
+        # publish (and `show --json` advertises). No sentinel token: '-' is the house
+        # clear word for deps and python pins, where it can never be a real value, and
+        # on a free-text or path field it very much can (it is stdout half the time).
+        # So name the spelling that works instead of inventing an ambiguous one.
+        console.print(
+            "  [dim]"
+            + gettext("Enter keeps it; to send an empty value, run with --set %(name)s=")
+            % {"name": escape(f.key)}
+            + "[/dim]"
+        )
     answer = Prompt.ask(f"  {label}", default=default or None, console=console)
     return (answer or "").strip()

@@ -74,7 +74,10 @@ def _gate_module():
 
 
 def _tty(monkeypatch: pytest.MonkeyPatch, *, value: bool = True) -> None:
+    """All three streams, because `allowed()` asks about stdin plus the stream the
+    question would be printed on — stdout for cli.py's prompts, stderr for uvman's."""
     monkeypatch.setattr(sys, "stdin", types.SimpleNamespace(isatty=lambda: value), raising=False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: value, raising=False)
     monkeypatch.setattr(sys.stderr, "isatty", lambda: value, raising=False)
 
 
@@ -89,9 +92,20 @@ def test_a_terminal_may_be_asked_and_a_pipe_may_not(monkeypatch: pytest.MonkeyPa
     could answer it."""
     _tty(monkeypatch, value=True)
     assert interaction.allowed() is True
+    assert interaction.allowed(on=sys.stderr) is True
 
+    # skit has TWO answering surfaces and they are not interchangeable: cli.py's
+    # Prompt.ask writes to stdout, uvman's consent to stderr (stdout there belongs to
+    # the launched script). Asking one question about the other's stream is how the two
+    # oracles disagreed in both directions at once.
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False, raising=False)
+    assert interaction.allowed() is False  # nobody would see a stdout question…
+    assert interaction.allowed(on=sys.stderr) is True  # …but stderr is still watched
+
+    _tty(monkeypatch, value=True)
     monkeypatch.setattr(sys.stderr, "isatty", lambda: False, raising=False)
-    assert interaction.allowed() is False
+    assert interaction.allowed() is True
+    assert interaction.allowed(on=sys.stderr) is False
 
 
 def test_forbid_outranks_the_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -100,6 +114,7 @@ def test_forbid_outranks_the_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
     _tty(monkeypatch, value=True)
     interaction.forbid()
     assert interaction.allowed() is False
+    assert interaction.allowed(on=sys.stderr) is False  # …on every surface
     interaction.reset()
     assert interaction.allowed() is True
 

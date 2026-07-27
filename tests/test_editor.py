@@ -172,6 +172,17 @@ def test_resolve_editor_unbalanced_quotes_falls_back_to_raw(monkeypatch):
 # --------------------------------------------------------------------------
 
 
+@pytest.fixture
+def _at_a_terminal(monkeypatch):
+    """open_in_editor refuses when skit may not prompt (round 11): an editor session IS
+    interaction, and under a pipe / CI / --no-input it used to spawn $EDITOR against a
+    stdin nobody was typing into — `vi` hung forever, `cat` dumped the file into the
+    caller's stdout, and skit then printed "Saved". These tests are about the spawn, so
+    they sit at a terminal."""
+    monkeypatch.setattr(editor.interaction, "allowed", lambda **_: True)
+
+
+@pytest.mark.usefixtures("_at_a_terminal")
 def test_open_in_editor_appends_path_and_returns_code(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
 
@@ -192,6 +203,7 @@ def test_open_in_editor_appends_path_and_returns_code(monkeypatch, tmp_path):
     assert captured["check"] is False
 
 
+@pytest.mark.usefixtures("_at_a_terminal")
 def test_open_in_editor_returns_nonzero_without_raising(monkeypatch, tmp_path):
     class _Result:
         returncode = 3
@@ -201,6 +213,7 @@ def test_open_in_editor_returns_nonzero_without_raising(monkeypatch, tmp_path):
     assert editor.open_in_editor(tmp_path / "x.py") == 3
 
 
+@pytest.mark.usefixtures("_at_a_terminal")
 def test_open_in_editor_launch_failure_message_exact(monkeypatch, tmp_path):
     def raise_oserror(*_a, **_k):
         raise FileNotFoundError("boom-err")

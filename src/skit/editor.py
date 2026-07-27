@@ -15,7 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import config
+from . import config, interaction
 from .i18n import gettext
 
 
@@ -66,6 +66,23 @@ def open_in_editor(path: Path) -> int:
     Raises EditorError only when the editor cannot be launched at all (a non-zero exit is returned,
     not raised — some editors exit non-zero on an unmodified close).
     """
+    if not interaction.allowed():
+        # THE gate, at the one door every editor lane passes through. Two of the four
+        # lanes refused on their own (`add --edit`, `add --prompt`) and two did not —
+        # including `skit edit`, which the bundled Agent Skill teaches. In a pipe or under
+        # --no-input that spawned $EDITOR against a stdin nobody is typing into: `vi` hung
+        # forever, `cat` dumped the file into the caller's stdout, and skit then printed
+        # "Saved" about an edit that could not have happened. An editor session IS
+        # interaction (the words the refusing lanes already use), so the rule belongs here
+        # rather than in each caller that has to remember it — round 10's lesson, applied
+        # one layer up.
+        raise EditorError(
+            gettext(
+                "Opening an editor needs an interactive terminal — not a pipe, CI, or "
+                "--no-input. Edit the file directly instead: %(path)s"
+            )
+            % {"path": str(path)}
+        )
     argv = [*resolve_editor(), str(path)]
     try:
         # check=False is subprocess.run's default; keeping it explicit. noqa: S603 — argv from the

@@ -94,6 +94,30 @@ def _fail_not_found(exc: Exception) -> typer.Exit:
     return _fail(str(exc), EXIT_NOT_FOUND)
 
 
+def _remove_question(entry: store.Entry) -> str:
+    """The removal ask, honest about what is actually at stake.
+
+    Three cases, not two. A kind with no original (a command template) has nothing to
+    promise about. A copy-mode entry whose original still exists gets the reassurance —
+    and that reassurance is exactly why people delete their working file, which is what
+    makes the third case matter: when the original is gone, skit's copy is the ONLY copy,
+    and repeating "your original file will not be deleted" there is the promise breaking
+    at the one moment it is load-bearing. The TUI modal already withheld the line;
+    launcher.original_survives is now the one predicate behind both faces.
+    """
+    name = entry.meta.name
+    if launcher.original_survives(entry):
+        return gettext('Remove "%(name)s"? Your original file will not be deleted.') % {
+            "name": name
+        }
+    spec = spec_for(entry.meta.kind)
+    if entry.meta.mode == "copy" and (spec is None or spec.has_original_file):
+        return gettext('Remove "%(name)s"? skit holds the only copy — it will be gone.') % {
+            "name": name
+        }
+    return gettext('Remove "%(name)s"?') % {"name": name}
+
+
 def _require_yes(yes: bool, no_input: bool, message: str) -> None:
     """The destructive-command half of the non-interactive contract, in ONE place
     (remove, preset delete, runner remove): in a pipe/CI or under --no-input, a missing
@@ -104,7 +128,13 @@ def _require_yes(yes: bool, no_input: bool, message: str) -> None:
 
 
 def _is_interactive() -> bool:
-    return sys.stdin.isatty() and sys.stdout.isatty()
+    """Whether skit may ask THIS user a question — on stdout, where every Prompt.ask and
+    Confirm.ask in this module writes.
+
+    Delegates to `interaction`, which is also what the gates BELOW cli.py read: two
+    implementations of "is anyone there?" disagreed about the same terminal in both
+    directions, and the flag that forbids prompting could only reach one of them."""
+    return interaction.allowed()
 
 
 def _wants_tui_form() -> bool:
@@ -2592,14 +2622,7 @@ def remove(
         yes, no_input, gettext("Confirmation is required; pass --yes to remove the entry.")
     )
     if not yes:
-        entry_spec = spec_for(entry.meta.kind)
-        if entry_spec is not None and not entry_spec.has_original_file:
-            question = gettext('Remove "%(name)s"?') % {"name": entry.meta.name}
-        else:
-            question = gettext('Remove "%(name)s"? Your original file will not be deleted.') % {
-                "name": entry.meta.name
-            }
-        typer.confirm(question, abort=True)
+        typer.confirm(_remove_question(entry), abort=True)
     try:
         removed = store.remove(name)
     except store.StoreError as exc:

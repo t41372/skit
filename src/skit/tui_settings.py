@@ -381,9 +381,14 @@ class ScriptSettingsScreen(Screen[bool]):
         # through THIS list, never a fresh state read (a preset added/deleted
         # mid-session must not shift which name an untick deletes).
         self._preset_names: list[str] = []
-        # One ask per save attempt: set when PresetDeleteConfirm says yes, so the
-        # re-entered save proceeds instead of asking again forever.
-        self._presets_confirmed: bool = False
+        # The preset NAMES the user has already agreed to delete — not a boolean.
+        # A boolean is set once and never cleared, so a save that confirms `mobile` and
+        # then aborts on an unrelated validation error (an invalid workdir, a bad declared
+        # type, a taken name) leaves the flag standing: unticking `web` afterwards deletes
+        # it with no question ever naming it. Confirming against WHAT THIS SAVE WOULD
+        # DELETE is correct under retick/untick churn, where a reset-on-abort boolean
+        # still is not.
+        self._confirmed_presets: set[str] = set()
         if self._spec is not None and self._spec.placeholder_params:
             # Every placeholder the entry asks for gets an editable row (undeclared ones as
             # their synthesized schema), plus declared env riders — the exact field list
@@ -646,8 +651,23 @@ class ScriptSettingsScreen(Screen[bool]):
         if self._declared:
             yield from self._compose_declared_editor()
             return
-        if self._spec is None or self._spec.analyzer is None:
-            yield Static(gettext("(programs have no managed parameters)"), classes="hint")
+        if self._spec is None:
+            yield Static(gettext("(this kind has no managed parameters)"), classes="hint")
+            return
+        if self._spec.analyzer is None:
+            # Every kind that HAS params_io also has an analyzer, so reaching here means
+            # the A2 degradation fired: the language's parser package failed to import and
+            # the kind's analysis capabilities became None instead of crashing the app.
+            # That is a temporary, environmental condition — saying "programs have no
+            # managed parameters" told a shell-script user something false about their
+            # script instead of something true about their install.
+            yield Static(
+                gettext(
+                    "(skit can't read this script's parameters right now — its language "
+                    "parser failed to load; run skit doctor)"
+                ),
+                classes="hint",
+            )
             return
         if meta.mode == "reference":
             yield Static(
@@ -754,7 +774,7 @@ class ScriptSettingsScreen(Screen[bool]):
                         value=candidate in self._pending_prompt_candidates,
                         id=f"st-prompt-new-{i}",
                     )
-                if len(unmanaged) > prompt_analyzer.LIST_PREVIEW_LIMIT:
+                if self._can_choose_candidates():
                     yield Static(
                         gettext("…and %(count)s more")
                         % {"count": len(unmanaged) - prompt_analyzer.LIST_PREVIEW_LIMIT},
@@ -1003,14 +1023,15 @@ class ScriptSettingsScreen(Screen[bool]):
         # BEFORE the validation pass, so a refusal costs nothing, and re-enter on yes —
         # the same push-and-resume shape action_close uses for DiscardChangesModal.
         doomed = self._unticked_presets()
-        if doomed and not self._presets_confirmed:
+        unasked = [n for n in doomed if n not in self._confirmed_presets]
+        if unasked:
 
             def _decided(confirmed: bool | None) -> None:
                 if confirmed:
-                    self._presets_confirmed = True
+                    self._confirmed_presets.update(unasked)
                     self.action_save()
 
-            self.app.push_screen(PresetDeleteConfirm(doomed), _decided)
+            self.app.push_screen(PresetDeleteConfirm(unasked), _decided)
             return
         new_name = self.query_one("#st-name", Input).value.strip()
         # ---- validation pass: no writes below may run unless ALL of these pass ----
@@ -1210,6 +1231,30 @@ class ScriptSettingsScreen(Screen[bool]):
             if candidate in self._pending_prompt_candidates and candidate not in taken
         ]
 
+    def _can_choose_candidates(self) -> bool:
+        """Whether the variable picker has anything to open — ONE predicate behind the
+        chord and the chip, so the keyboard can never advertise what the mouse doesn't
+        (and vice versa). Pure Python: check_action asks it on every render."""
+        from .langs.prompt import analyzer as prompt_analyzer
+
+        return (
+            self._is_prompt
+            and len(self._unmanaged_prompt_names()) > prompt_analyzer.LIST_PREVIEW_LIMIT
+        )
+
+    @override
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Disable the prompt-only chords on the screens that cannot service them, rather
+        than letting them fire into a DOM that has no such widgets. The Ctrl+R chip already
+        followed this rule in prose ("advertising a key that silently no-ops teaches a dead
+        chord"); this makes the binding list obey it too, from the same predicate the chip
+        is built from."""
+        if action == "choose_prompt_candidates":
+            return self._can_choose_candidates()
+        if action == "new_runner":
+            return self._is_prompt
+        return True
+
     def _unmanaged_prompt_names(self) -> list[str]:
         managed = set(self._entry.meta.params or [])
         return [name for name in self._prompt_body_names if name not in managed]
@@ -1230,13 +1275,22 @@ class ScriptSettingsScreen(Screen[bool]):
                 self._pending_prompt_candidates.discard(candidate)
 
     def action_choose_prompt_candidates(self) -> None:
-        """Open all unmanaged prompt variables without teaching a CLI escape hatch."""
+        """Open all unmanaged prompt variables without teaching a CLI escape hatch.
+
+        The pure-Python guard comes FIRST (the order tui_add's twin already uses): this
+        chord is bound on every Entry settings screen, and #st-interpolate is composed only
+        for prompts, so reading the DOM first crashed the whole workbench — with every
+        unsaved edit on the screen — for python/shell/js/exe/command entries. Ctrl+L is
+        also the terminal's universal clear-screen reflex, so it gets pressed by people who
+        meant nothing by it. check_action now disables the chord where it cannot work; this
+        stays total anyway, because an action reachable programmatically must not depend on
+        its binding being filtered."""
         from .langs.prompt import analyzer as prompt_analyzer
 
+        if not self._can_choose_candidates():
+            return
         unmanaged = self._unmanaged_prompt_names()
         if not self.query_one("#st-interpolate", Checkbox).value:
-            return
-        if len(unmanaged) <= prompt_analyzer.LIST_PREVIEW_LIMIT:
             return
         self._remember_prompt_candidate_ticks()
         before = set(self._pending_prompt_candidates)

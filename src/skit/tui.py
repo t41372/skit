@@ -147,12 +147,11 @@ class ConfirmRemove(ModalScreen[bool]):
     @override
     def compose(self) -> ComposeResult:
         lines = [Label(gettext('Remove "%(name)s"?') % {"name": escape(self._entry.meta.name)})]
-        spec = spec_for(self._entry.meta.kind)
-        source = self._entry.meta.source
-        if (spec is None or spec.has_original_file) and source and Path(source).exists():
+        if launcher.original_survives(self._entry):
             # Only when the original actually still exists: for a drafted entry the
             # "original" was a temp file — reassuring the user about a file that is
-            # already gone would be a lie.
+            # already gone would be a lie. The predicate is shared with `skit remove`,
+            # which used to ask a weaker question and printed the promise anyway.
             lines.append(Static(f"[dim]{gettext('Your original file will not be deleted.')}[/dim]"))
         # The verb line IS the button row: y/Esc stay advertised, and each chip is
         # clickable — modals must not be the one place that suddenly demands keys.

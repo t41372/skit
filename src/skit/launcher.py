@@ -133,6 +133,24 @@ def describe_command(
     return spec.launch.describe(entry, extra_args or [], values, script_override, runner=runner)
 
 
+def original_survives(entry: ListedEntry) -> bool:
+    """Whether the user's OWN file still exists outside skit's library.
+
+    The one question behind every "your original file will not be deleted" reassurance.
+    The TUI's removal modal asked it (source set AND on disk); the CLI's `skit remove`
+    asked only whether the KIND has an original, so it repeated the promise for a
+    copy-mode entry whose original the user had since deleted — the one moment the
+    promise stops holding is the one moment it was printed, on the destructive door, in
+    the face that has no Esc. skit's whole copy-mode pitch is why people delete that
+    working file in the first place.
+    """
+    spec = spec_for(entry.kind)
+    if spec is not None and not spec.has_original_file:
+        return False  # command templates: there is no "original" to speak about
+    source = entry.source
+    return bool(source) and Path(source).exists()
+
+
 def target_missing(entry: ListedEntry) -> bool:
     """Whether entry's launch target is already known to be gone from disk: the source path for
     exe/reference entries, the stored copy for copy-mode python. Command entries have no file

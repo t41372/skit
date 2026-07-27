@@ -22,6 +22,10 @@ can vary within a run. Headless, stdlib-only.
 from __future__ import annotations
 
 import sys
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import TextIO
 
 _forbidden = False
 
@@ -34,17 +38,37 @@ def forbid() -> None:
 
 
 def reset() -> None:
-    """Restore the default (ask the terminal). For tests and for the TUI's in-process
-    re-entry into CLI code paths, which must not inherit a previous command's refusal."""
+    """Restore the default (ask the terminal).
+
+    For TESTS, and only tests — the seam a process-global has to expose to be testable at
+    all: one test's ``--no-input`` would otherwise silently suppress the next test's
+    prompt, which is exactly what it did before tests/conftest.py called this. No product
+    code calls it, and this docstring says so rather than inventing a caller: a line
+    describing behaviour nobody has is the shape LangSpec.takes_argv was deleted for.
+
+    (``_forbidden = False`` has one equivalent mutant, ``= None``: both are falsy at the
+    single place the flag is read. Left alone rather than contorting the read to defeat
+    it.)"""
     global _forbidden
     _forbidden = False
 
 
-def allowed() -> bool:
+def allowed(*, on: TextIO | None = None) -> bool:
     """Whether a prompt is permissible right now.
 
-    ``--no-input`` wins outright. Otherwise both ends of the conversation must be a
-    terminal: skit asks on stderr (stdout belongs to the launched script), so a piped
-    stderr means the question would never be seen even though stdin could answer it.
+    ``--no-input`` wins outright. Otherwise BOTH ends of the conversation must be a
+    terminal — stdin to answer with, and the stream the question is printed to, or the
+    user is asked something they cannot see.
+
+    `on` is that stream, because skit has two answering surfaces and they are not
+    interchangeable: cli.py's `Prompt.ask` writes to **stdout**, uvman's download consent
+    to **stderr** (stdout there belongs to the launched script). Asking one question about
+    the other's stream is how this module briefly disagreed with `cli._is_interactive`
+    in both directions at once — `skit run x > out` had cli decline to prompt while uvman
+    blocked on one, and `skit run x 2> log` had cli open a form while uvman silently
+    downloaded and executed a network binary with no consent at all. One oracle, told
+    which stream it is answering about.
     """
-    return not _forbidden and sys.stdin.isatty() and sys.stderr.isatty()
+    if _forbidden or not sys.stdin.isatty():
+        return False
+    return (on if on is not None else sys.stdout).isatty()

@@ -76,7 +76,7 @@ def _ask_consent(dest_dir: Path) -> bool:
     already takes (proceed, silently), because A9 fixed what non-interactive means here
     and `--no-input` is an assertion of exactly that.
     """
-    if not interaction.allowed():
+    if not interaction.allowed(on=sys.stderr):
         return True
     print(
         gettext(
