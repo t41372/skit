@@ -907,6 +907,39 @@ def test_meta_unchanged_compares_the_whole_record_and_treats_gone_as_unchanged(
     assert app._meta_unchanged(fresh) is True  # unresolvable is not "changed"
 
 
+def test_meta_unchanged_asks_fresh_rather_than_keeping_its_own_degrade_policy(
+    tmp_path, monkeypatch
+):
+    """ROUND 8. _meta_unchanged used to run its own store.resolve + StoreError catch beside
+    _fresh's — the same decision ("what counts as the current generation?") written twice, in a
+    codebase where round 6 had just spent a whole round giving that decision ONE owner because
+    the pane and the launch it advertised were reading different generations.
+
+    Two copies do not have to disagree today to be a bug; they have to be able to. So the proof
+    is delegation, not equal answers: change what _fresh returns and _meta_unchanged must follow
+    it, because it never looks at the store itself."""
+    entry = _managed_entry(tmp_path, name="a")
+    app = tui.MenuApp()
+    assert app._meta_unchanged(entry) is True
+
+    asked: list[str] = []
+
+    def moved(e):
+        asked.append(e.slug)
+        return replace(e, dir=tmp_path / "elsewhere")
+
+    monkeypatch.setattr(tui.MenuApp, "_fresh", staticmethod(moved))
+    assert app._meta_unchanged(entry) is False  # ...the answer came from _fresh
+    assert asked == [entry.slug]
+    # ...and the store is not consulted behind _fresh's back.
+    monkeypatch.setattr(tui.store, "resolve", _never_called)
+    assert app._meta_unchanged(entry) is False
+
+
+def _never_called(_slug):
+    raise AssertionError("_meta_unchanged must reach the store through _fresh only")
+
+
 def test_cached_plan_reprobes_when_the_reader_tool_appears_mid_session(
     tmp_path, plan_builds, monkeypatch
 ):

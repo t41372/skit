@@ -37,6 +37,7 @@ K. ``flows.prefill`` accepts the state its caller already loaded: one state read
 from __future__ import annotations
 
 import json
+import shlex
 import stat
 import sys
 import types
@@ -46,7 +47,7 @@ import pytest
 from typer.testing import CliRunner
 
 from conftest import without_block
-from skit import argstate, argv_text, cli, flows, launcher, params, rewrite, store, tokens
+from skit import analysis, argstate, cli, flows, launcher, params, rewrite, store, tokens
 from skit.langs.python import metawriter
 from skit.langs.registry import spec_for
 from skit.params import ParamDecl
@@ -647,26 +648,115 @@ def test_token_form_lifts_exactly_one_fused_count_qualifier() -> None:
     assert params._token_form("KEY") is False
 
 
-def test_a_segment_is_judged_whole_and_reports_the_four_things_the_rules_ask() -> None:
-    """The round-7 structure: one verdict per segment, four independent bits. Secrecy is a
-    whole-name answer; a token mention belongs to the segment that carries it; count WORDS and
-    bare NUMBERS are different kinds of context (round 7b) and are reported apart."""
+def test_a_segment_is_judged_whole_and_reports_the_six_things_the_rules_ask() -> None:
+    """The round-8 structure: one verdict per segment, six independent bits. Secrecy is a
+    whole-name answer; a token mention belongs to the segment that carries it; whether that
+    mention is PLURAL decides what a bare number in front of it means; a count word INSIDE the
+    segment is a separate bit from a count word that IS the segment, because the first vetoes
+    only at home and only in a name, and the second qualifies its neighbours.
+
+    Round 7 fused the last two into one bit (the token hit was pre-vetoed inside the verdict),
+    which is why a prompt spelling perUserToken read as a count knob. Split, each bit is
+    applied by the rule that owns it."""
     assert params._judge_segment("token") == params._SegmentVerdict(
-        secret=False, token=True, county=False, numeric=False
+        secret=False,
+        token=True,
+        token_plural=False,
+        internal_count=False,
+        county=False,
+        numeric=False,
     )
     assert params._judge_segment("apiKey") == params._SegmentVerdict(
-        secret=True, token=False, county=False, numeric=False
+        secret=True,
+        token=False,
+        token_plural=False,
+        internal_count=False,
+        county=False,
+        numeric=False,
+    )
+    assert params._judge_segment("tokens") == params._SegmentVerdict(
+        secret=False,
+        token=True,
+        token_plural=True,
+        internal_count=False,
+        county=False,
+        numeric=False,
     )
     assert params._judge_segment("limit") == params._SegmentVerdict(
-        secret=False, token=False, county=True, numeric=False
+        secret=False,
+        token=False,
+        token_plural=False,
+        internal_count=True,
+        county=True,
+        numeric=False,
     )
     assert params._judge_segment("60") == params._SegmentVerdict(
-        secret=False, token=False, county=False, numeric=True
+        secret=False,
+        token=False,
+        token_plural=False,
+        internal_count=False,
+        county=False,
+        numeric=True,
     )
-    # A segment's OWN count word vetoes its OWN token hit, camel-fused or not.
-    assert params._judge_segment("maxOutputTokens").token is False
-    assert params._judge_segment("nTokens").token is False
+    # A segment's OWN count word is reported (is_secret_name applies it in NAME shape), and the
+    # token hit it qualifies survives in the verdict so a SENTENCE can still see the mention.
+    assert params._judge_segment("maxOutputTokens").internal_count is True
+    assert params._judge_segment("maxOutputTokens").token is True
+    assert params._judge_segment("nTokens").internal_count is True
+    assert params._judge_segment("photokens").internal_count is False
     assert params._judge_segment("photokens").token is True
+
+
+def test_only_a_count_word_that_is_the_whole_segment_qualifies_its_neighbours() -> None:
+    """THE round-8 leak. county is the UNSTRIPPED jam and nothing else. Round 7 asked _forms —
+    which strips digits — so N26 offered its stripped N, a count word, as context for the
+    segment beside it: `N26_TOKEN` published an n26 API token. A digit run is part of the
+    acronym, not a qualifier that happens to be spelled next to one.
+
+    The other half has to be pinned with it: a real count word still qualifies from anywhere in
+    a name, or max_tokens starts masking."""
+    assert params._judge_segment("N26").county is False  # stripping would find a count "N"
+    assert params._judge_segment("N8N").county is False
+    assert params._judge_segment("N").county is True  # ...the literal word still counts
+    assert params._judge_segment("MAXS").county is True  # ...and so does its plural
+    for indexed in ("N26_TOKEN", "N1_TOKEN", "n8_token", "N8N_TOKEN"):
+        assert params.is_secret_name(indexed) is True, indexed
+    assert params.is_secret_name("max_tokens") is False
+    assert params.is_secret_name("n_tokens") is False
+
+
+def test_the_camel_split_never_cuts_at_a_digit() -> None:
+    """Round 7 split on digit→Upper as well, which shattered the N8N family into a stray count
+    "N" fragment (N8NToken → N8 | N | Token) and unmasked the credential. Digits are recovered
+    by _digit_split for MATCHING instead, so nothing is lost by not cutting here.
+
+    Restoring the digit alternative flips every N8N spelling below back to unmasked."""
+    assert params._CAMEL_BOUNDARY.sub(" ", "N8NToken") == "N8N Token"
+    assert params._CAMEL_BOUNDARY.sub(" ", "base64Key") == "base64Key"  # left whole for the...
+    assert params.is_secret_name("base64Key") is True  # ...digit source to split instead
+    assert params._CAMEL_BOUNDARY.sub(" ", "awsSecretKey") == "aws Secret Key"  # still cuts
+    assert params._CAMEL_BOUNDARY.sub(" ", "APIKey") == "API Key"  # ...on both boundaries
+    for spelling in ("N8NToken", "N8NTOKEN", "n8nToken", "N8N_TOKEN"):
+        assert params.is_secret_name(spelling) is True, spelling
+
+
+def test_digit_glued_words_are_recovered_for_matching() -> None:
+    """The third word source (round 8). base64key is ONE segment whose jam is BASE64KEY and
+    whose camel words are the same — no rule had ever heard of it, so a base64-encoded key was
+    published in current_defaults. Splitting the jam on its digit runs finds the KEY.
+
+    Matching only: the parts must never become count context (that is the N8N trap above), so
+    the shards feed the pool and nothing else."""
+    assert params._digit_split("BASE64KEY") == ["BASE", "KEY"]
+    assert params._digit_split("N8NTOKEN") == ["N", "NTOKEN"]
+    assert params._digit_split("64") == []  # an all-digit jam has no parts at all
+    assert params._digit_split("KEY") == ["KEY"]
+    hashed_keys = ("base64key", "BASE64KEY", "sha256key", "s3key", "md5key", "x509key", "gpt4key")
+    for hashed in hashed_keys:
+        assert params.is_secret_name(hashed) is True, hashed
+    # ...and the shard N from N8NTOKEN is in the pool WITHOUT becoming a qualifier.
+    assert "N" in params._digit_split("N8NTOKEN")
+    assert params.is_secret_name("N8NTOKEN") is True
 
 
 def test_the_camel_split_cuts_on_the_separator_its_own_sub_inserts() -> None:
@@ -680,19 +770,52 @@ def test_the_camel_split_cuts_on_the_separator_its_own_sub_inserts() -> None:
     assert params._judge_segment("api\tkey").secret is False  # ...and only that character
 
 
-def test_a_camel_fragment_is_never_count_context_for_the_segment_next_door() -> None:
-    """THE round-7 HIGH. county is judged on the JAM only. The digit boundary cuts N8N into
-    N8 + N, and "N" is a count word — so a fragment of one segment vetoed the real credential
-    in the segment beside it, and every n8n API token went unmasked.
+def test_a_camel_fragment_vetoes_only_at_home_and_only_in_a_name() -> None:
+    """Two rounds' worth of rules, pinned together because each one alone reads as an extreme.
 
-    The fragment still vetoes its OWN segment (that is what makes maxOutputTokens a count), so
-    both halves have to be pinned together or the repair reads as either extreme."""
-    assert "N" in {f for w in ("N8", "N") for f in params._forms(w)}  # the fragment is real...
-    assert params._judge_segment("N8N").county is False  # ...and does not leak out
-    assert params._judge_segment("maxOutputTokens").token is False  # ...but vetoes at home
+    A count word INSIDE a segment vetoes that segment's own token hit — that is what makes
+    maxOutputTokens a count knob — but it never reaches the segment next door (round 7's HIGH:
+    N8N's fragment vetoed the credential beside it), and in round 8 it stopped reaching across
+    SHAPES too: a prompt that spells the camel name is still an ask for that value. "Enter your
+    perUserToken:" is a person typing a credential into a form, and PER is a preposition there,
+    not a quantity."""
+    assert params._judge_segment("N8N").county is False  # never leaks out...
+    assert params._judge_segment("maxOutputTokens").internal_count is True  # ...vetoes at home
     assert params.is_secret_name("N8N_TOKEN") is True
     assert params.is_secret_name("n8nToken") is True
     assert params.is_secret_name("maxOutputTokens") is False
+    # The NAME/SENTENCE asymmetry the internal veto now respects.
+    assert params.is_secret_name("perUserToken") is False  # a name: PER is a rate qualifier
+    assert params.is_secret_name("Enter your perUserToken: ") is True  # a prompt: an ask
+    assert params.is_secret_name("Enter your maxOutputTokens: ") is True
+
+
+def test_the_internal_veto_takes_a_literal_letter_but_never_a_one_letter_remnant() -> None:
+    """The length test inside internal_count, at the boundary it actually has. N is the only
+    single-letter count word, so the rule is "a ONE-LETTER remnant of stripping never counts" —
+    a camel word that IS the count word still counts at one letter (nTokens), and any shard of
+    two letters or more counts (max64Tokens' MAX).
+
+    Both directions have a killing case. Accept one-letter remnants and N8N's shard vetoes a
+    real credential; reject multi-letter ones and a plural count word stops reading as a count.
+    (`maxsTokens` and `tokenN8` are the smallest names that separate them — synthetic, but they
+    are what makes the boundary a tested fact rather than an arbitrary minimum.)"""
+    assert params._judge_segment("nTokens").internal_count is True  # the literal camel N
+    assert params._judge_segment("max64Tokens").internal_count is True  # digit shard, 3 letters
+    assert params._judge_segment("maxsTokens").internal_count is True  # camel shard, 3 letters
+    assert params._judge_segment("N8NToken").internal_count is False  # a one-letter remnant
+    assert params._judge_segment("tokenN8").internal_count is False
+    assert params.is_secret_name("nTokens") is False
+    assert params.is_secret_name("max64Tokens") is False
+    assert params.is_secret_name("maxsTokens") is False
+    assert params.is_secret_name("MAX2TOKENS") is False
+    assert params.is_secret_name("N8NToken") is True
+    assert params.is_secret_name("N8NTOKEN") is True
+    assert params.is_secret_name("tokenN8") is True
+    # The word list is what makes the boundary 1 and not 2: N is the only count word a
+    # single letter can be, so a rule keyed on any other length would be keyed on nothing.
+    assert [w for w in params._COUNT_WORDS if len(w) == 1] == ["N"]
+    assert not [w for w in params._COUNT_WORDS if len(w) == 2]
 
 
 def test_a_bare_number_is_count_context_only_for_what_follows_it() -> None:
@@ -708,13 +831,32 @@ def test_a_bare_number_is_count_context_only_for_what_follows_it() -> None:
         assert params.is_secret_name(indexed) is True, indexed
     # ...and the two kinds of context are not interchangeable: merging them back into one bit
     # is exactly the round-7 bug.
-    assert params._judge_segment("2") == params._SegmentVerdict(
-        secret=False, token=False, county=False, numeric=True
-    )
-    assert params._judge_segment("max") == params._SegmentVerdict(
-        secret=False, token=False, county=True, numeric=False
-    )
+    assert params._judge_segment("2").numeric is True
+    assert params._judge_segment("2").county is False
+    assert params._judge_segment("max").county is True
+    assert params._judge_segment("max").numeric is False
     assert params.is_secret_name("max_tokens_2") is False  # a count WORD reaches from anywhere
+
+
+def test_a_number_counts_a_plural_and_indexes_a_singular() -> None:
+    """ROUND 8 narrowed the forward rule to the shape English actually uses. "2 tokens" counts
+    them; "step 2 token" numbers ONE of them — and the numbered one is a credential, so
+    STEP_2_TOKEN, USER_2_TOKEN and their prompt spellings must stay masked. Round 7b let any
+    number excuse the mention behind it, which unmasked that whole family the moment the index
+    sat in the middle of the name instead of the end.
+
+    The plural is the discriminator, and it is read from all three word sources."""
+    assert params.is_secret_name("2_tokens") is False  # plural: a count
+    assert params.is_secret_name("60 tokens") is False
+    assert params.is_secret_name("max 4096 tokens") is False
+    for indexed in ("STEP_2_TOKEN", "USER_2_TOKEN", "TENANT_2_TOKEN", "Enter step 2 token:"):
+        assert params.is_secret_name(indexed) is True, indexed
+    # token_plural is what the number consults, and it reads the jam/camel/digit-split words.
+    assert params._judge_segment("tokens").token_plural is True
+    assert params._judge_segment("token").token_plural is False
+    assert params._judge_segment("myTokens").token_plural is True
+    # ...and a segment with no token hit never claims to be a plural one.
+    assert params._judge_segment("2").token_plural is False
 
 
 def test_a_number_excuses_the_mention_it_stands_in_front_of_never_the_whole_name() -> None:
@@ -1146,6 +1288,31 @@ def test_the_token_half_of_the_predicate_is_the_expander_itself(piece: str, tmp_
     assert flows.tail_looks_expandable([piece]) is changed
 
 
+@pytest.mark.parametrize("char", flows._GLOB_CHARS)
+def test_the_glob_half_of_the_predicate_reads_the_same_constant_assemble_does(char: str) -> None:
+    """ROUND 8's version of the same structural point, for the other half. The predicate used to
+    spell its glob characters as a literal "*?[" beside the _GLOB_CHARS tuple assemble's own
+    glob pass consults — two spellings of one decision, and the note is a claim ABOUT what that
+    pass did. Adding a character to the constant would have taught assemble to expand it while
+    the note kept quiet, which is the silent-expansion bug the note exists to prevent.
+
+    Parametrized over the constant itself, so the contract widens automatically with it."""
+    assert flows.tail_looks_expandable([f"file{char}.txt"]) is True
+    assert flows.tail_looks_expandable(["file.txt"]) is False  # ...and nothing else fires
+
+
+@pytest.mark.parametrize(
+    "piece", ["photos/*.png", "img_?.jpg", "log[0-9].txt", "plain.txt", "a b", "--flag"]
+)
+def test_the_note_agrees_with_the_pass_that_does_the_globbing(piece: str, tmp_path: Path) -> None:
+    """The coupling from the other side, behaviourally: glob_feedback is the surface that acts
+    on _GLOB_CHARS, and it answers None for exactly the values it would not expand. Whatever it
+    calls a pattern, the note must call expandable — a divergence is a user watching their tail
+    change with no note printed, or reading a note about a tail that never moved."""
+    treated_as_a_pattern = flows.glob_feedback(piece, tmp_path) is not None
+    assert flows.tail_looks_expandable([piece]) is treated_as_a_pattern
+
+
 @pytest.mark.parametrize(
     "tail",
     [
@@ -1253,39 +1420,48 @@ def test_manage_on_an_exe_names_the_declared_lane_it_does_have(tmp_path: Path) -
     assert "Declare one instead: skit params prog --add PARAM" in out
 
 
-def test_the_add_hint_quotes_the_name_it_tells_you_to_paste(tmp_path: Path) -> None:
-    """The hint is a copy-pasteable COMMAND, and entry names may contain spaces. Unquoted, the
-    line told the user to run `skit params my tool --add PARAM` — two arguments, an entry named
-    "my" that doesn't exist, and a refusal that hands out a broken incantation is worse than
-    one that hands out none. The sentence half still names the entry plainly."""
-    _exe(tmp_path, name="my tool")
+def test_the_add_hint_names_the_slug_so_it_needs_no_quoting(tmp_path: Path) -> None:
+    """ROUND 8, superseding round 7's platform quoting. The hint is a copy-pasteable COMMAND and
+    entry names may contain spaces, so round 7 quoted the name with the running platform's
+    convention. That was still the wrong axis: the shell a user pastes into is not always the
+    shell skit is running under (an agent shelling out, a POSIX skit printing into a Windows
+    terminal, a name carrying & | ^ which list2cmdline leaves bare for cmd.exe).
+
+    A slug needs no convention anywhere — that is what its charset is for — and resolve()
+    accepts it wherever a name works. So the prose half names the entry as the user sees it and
+    the command half names the slug, which is pasteable in every shell."""
+    entry = _exe(tmp_path, name="my tool")
     result = runner.invoke(cli.app, ["params", "my tool", "--manage", "WIDTH"])
     assert result.exit_code == 1
     out = " ".join(result.output.split())
     assert "my tool has no managed parameters" in out  # prose half: the name as the user sees it
-    quoted = argv_text.join(["my tool"])
-    assert f"Declare one instead: skit params {quoted} --add PARAM" in out
-    if sys.platform != "win32":  # this run's convention, spelled out
-        assert "skit params 'my tool' --add PARAM" in out
+    assert f"Declare one instead: skit params {entry.slug} --add PARAM" in out
+    assert entry.slug == "my-tool"  # ...and the slug is quoting-free by construction
+    for convention in ("'my tool'", '"my tool'):  # no platform's quoting, on any platform
+        assert convention not in out
 
 
-def test_the_add_hint_quotes_for_the_shell_the_user_is_sitting_in(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Round 7: shlex.quote wraps in SINGLE quotes, which cmd.exe does not treat as quoting at
-    all — the hint would tell a Windows user to paste `skit params 'my tool' --add PARAM`, and
-    the shell skit explicitly targets would split it into three arguments. argv_text.join is
-    the platform pair (shlex on POSIX, list2cmdline on Windows), so the copy-pasteable command
-    is pasteable where it is read."""
-    _exe(tmp_path, name="my tool")
-    monkeypatch.setattr(argv_text, "sys", types.SimpleNamespace(platform="win32"))
+def test_the_pasted_hint_resolves_back_to_the_entry_it_came_from(tmp_path: Path) -> None:
+    """The hint is only worth printing if it WORKS. Lift the command out of the refusal, run it
+    the way a user would paste it, and it must land on the same entry — a name that needs
+    quoting is exactly the case where the round-7 hint broke, so this is the round trip that
+    proves the slug closes it. A metacharacter name (`a & b`) is the case no quoting convention
+    survived."""
+    entry = _exe(tmp_path, name="a & b")
 
-    result = runner.invoke(cli.app, ["params", "my tool", "--manage", "WIDTH"])
+    result = runner.invoke(cli.app, ["params", "a & b", "--manage", "WIDTH"])
 
     assert result.exit_code == 1
     out = " ".join(result.output.split())
-    assert 'Declare one instead: skit params "my tool" --add PARAM' in out
-    assert "'my tool'" not in out  # ...never the POSIX convention on the other platform
+    hint = out.split("Declare one instead: ")[1]
+    pasted = shlex.split(hint)[: len(["skit", "params", entry.slug, "--add", "PARAM"])]
+    assert pasted == ["skit", "params", entry.slug, "--add", "PARAM"]
+    assert store.resolve(pasted[2]).slug == entry.slug  # the pasted target really resolves
+    # ...and running it does the thing the sentence promised.
+    added = runner.invoke(cli.app, [*pasted[1:], "--type", "PARAM=int"])
+    assert added.exit_code == 0, added.output
+    declared = params.declared_from_meta(store.resolve(entry.slug).meta.parameters)
+    assert [(d.name, d.type) for d in declared] == [("PARAM", "int")]
 
 
 def test_manage_on_a_python_entry_takes_the_analyzer_path_with_no_hint(tmp_path: Path) -> None:
@@ -1301,6 +1477,167 @@ def test_manage_on_a_python_entry_takes_the_analyzer_path_with_no_hint(tmp_path:
     assert io.params_io is not None
     stored = entry.script_path.read_text(encoding="utf-8")
     assert [d.name for d in io.params_io.read(stored)] == ["CITY"]
+
+
+# --------------------------------------------------------------------------
+# H2 (round 8). EVERY paste-able hint names the slug — one rule, seven sites
+# --------------------------------------------------------------------------
+
+# The name every case below is registered under: a space AND a shell metacharacter, so a
+# hint that leaked the display name is broken in every shell rather than only some.
+_AWKWARD = "a & b"
+
+
+def test_drift_lines_keeps_the_name_in_prose_and_the_target_in_the_command() -> None:
+    """The split round 8 introduced: one identity for the human, another for the shell. The
+    header is prose about an entry the user knows by name; the last line is a command they
+    paste. Passing one string for both meant the resync line said `skit params a & b --resync`,
+    which cmd.exe and sh both read as two commands and a background job."""
+    report = analysis.Report(missing=[ParamDecl(name="GONE", type="str", binding="const")])
+    lines = analysis.drift_lines(report, _AWKWARD, target="a-b")
+
+    assert _AWKWARD in lines[0]  # prose: the name as the user sees it
+    assert lines[-1] == "To refresh the definitions, run: skit params a-b --resync"
+    assert _AWKWARD not in lines[-1]
+
+
+def test_drift_lines_falls_back_to_the_name_when_a_caller_has_only_one() -> None:
+    """The default keeps the signature usable for a caller holding a single identity — the
+    behaviour is unchanged from before the parameter existed, which is what makes adding it
+    safe. Dropping the fallback would make the resync line say "None"."""
+    report = analysis.Report(missing=[ParamDecl(name="GONE", type="str", binding="const")])
+
+    assert analysis.drift_lines(report, "solo") == analysis.drift_lines(report, "solo", target=None)
+    assert analysis.drift_lines(report, "solo")[-1].endswith("skit params solo --resync")
+
+
+_DRIFTED = """# /// script
+# dependencies = []
+#
+# [tool.skit]
+# schema = 1
+#
+# [[tool.skit.params]]
+# name = "GONE"
+# kind = "const"
+# type = "str"
+# ///
+print("hi")
+"""
+
+
+def test_the_drift_banner_a_run_prints_names_the_slug(tmp_path: Path) -> None:
+    """The caller side of the same fix: plan_for_entry hands drift_lines both identities, so the
+    banner a user actually meets on the launch menu carries a resync command that runs."""
+    entry = store.add_python(_py(tmp_path, _DRIFTED), name=_AWKWARD)
+
+    plan = flows.plan_for_entry(store.resolve(entry.slug))
+
+    assert plan.drift_lines
+    assert any(_AWKWARD in line for line in plan.drift_lines)  # prose still names the entry
+    assert f"skit params {entry.slug} --resync" in plan.drift_lines[-1]
+    assert f"skit params {_AWKWARD} --resync" not in plan.drift_lines[-1]
+
+
+def test_the_prompt_body_drift_line_names_the_slug(tmp_path: Path) -> None:
+    """A managed placeholder that left the body: the line tells you to go fix the parameters,
+    and the command it hands you has to be one you can paste.
+
+    Asserted as the WHOLE sentence, with two departed names, because that is the only shape
+    that pins all of it: the wording, the separator between the names, and the identity in the
+    command. A substring check passes on a line that has quietly become something else."""
+    body = tmp_path / "p.prompt.md"
+    body.write_text("Summarise {{topic}} for {{reader}}.\n", encoding="utf-8")
+    entry = store.add_prompt(body, name=_AWKWARD)
+    runner.invoke(cli.app, ["params", entry.slug, "--manage", "topic", "--manage", "reader"])
+    left = "Summarise nothing.\n"
+    store.resolve(entry.slug).script_path.write_text(left, encoding="utf-8")
+
+    plan = flows.plan_for_entry(store.resolve(entry.slug))
+
+    assert plan.drift_lines == [
+        "No longer in the prompt (the value would be ignored): topic, reader — "
+        f"edit the body or update parameters with: skit params {entry.slug}"
+    ]
+    assert _AWKWARD not in plan.drift_lines[0]
+    assert plan.text == left  # ...and the plan still carries the body the run will send
+
+
+def test_the_flood_cap_hint_names_the_slug(tmp_path: Path) -> None:
+    """The one hint printed at ADD time, when the entry is brand new and the user has never
+    typed its slug — precisely the moment they would paste what skit shows them."""
+    from skit.langs.prompt.analyzer import AUTO_MANAGE_LIMIT
+
+    body = tmp_path / "many.prompt.md"
+    many = " ".join("{{h" + str(i) + "}}" for i in range(AUTO_MANAGE_LIMIT + 5))
+    body.write_text(many + "\n", encoding="utf-8")
+
+    result = runner.invoke(cli.app, ["add", str(body), "-n", _AWKWARD, "--no-input"])
+
+    assert result.exit_code == 0, result.output
+    out = " ".join(result.output.split())
+    slug = store.resolve(_AWKWARD).slug
+    assert "too many to manage automatically" in out
+    assert f"skit params {slug} --add NAME" in out
+
+
+def test_the_no_runner_refusal_names_the_entry_and_the_slug_apart(tmp_path: Path) -> None:
+    """ONE msgid carrying both identities (%(name)s prose, %(target)s command). The
+    non-interactive contract says this refusal must not guess a runner — so the pin command it
+    offers instead is the entire recovery path, and it has to be pasteable."""
+    body = tmp_path / "p.prompt.md"
+    body.write_text("Say hi.\n", encoding="utf-8")
+    entry = store.add_prompt(body, name=_AWKWARD)
+
+    result = runner.invoke(cli.app, ["run", entry.slug, "--no-input"])
+
+    assert result.exit_code == 126
+    out = " ".join(result.output.split())
+    assert f"No runner selected for {_AWKWARD}." in out  # prose half
+    assert f"skit params {entry.slug} --runner NAME" in out  # command half
+
+
+def test_the_injection_failure_resync_line_names_the_slug(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one hint printed from inside a RUN, when the script and its definitions have already
+    stopped matching. The user is mid-launch and stuck, so the resync command is the whole exit
+    — it has to be one they can paste rather than one they have to repair first."""
+    from skit.langs.python import shim
+
+    def boom(*a: object, **k: object) -> None:
+        raise shim.ShimError("nope")
+
+    text = metawriter.write_params(
+        'CITY = "Taipei"\nprint(CITY)\n', [ParamDecl(name="CITY", binding="const", type="str")]
+    )
+    entry = store.add_python(_py(tmp_path, text), name=_AWKWARD)
+    argstate.save_last(entry.slug, values={"CITY": "Kaohsiung"})
+    monkeypatch.setattr(shim, "inject", boom)
+
+    result = runner.invoke(cli.app, ["run", entry.slug, "--no-input"])
+
+    assert result.exit_code == 125
+    out = " ".join(result.output.split())
+    assert f"Run `skit params {entry.slug} --resync` to fix it." in out
+    assert _AWKWARD not in out
+
+
+def test_the_normalize_hint_names_the_slug(tmp_path: Path) -> None:
+    """The A5 amendment's own door: --normalize is the one consent-gated rewrite skit performs,
+    and this hint is how a user finds it. A broken command here sends them to the shell to
+    improvise on a script-rewriting flag."""
+    script = tmp_path / "s.sh"
+    script.write_text('DIR="$(dirname "$0")"\nOUT=out\necho "$DIR/$OUT"\n', encoding="utf-8")
+    entry = store.add_script(script, kind="shell", name=_AWKWARD)
+
+    result = runner.invoke(cli.app, ["params", entry.slug])
+
+    assert result.exit_code == 0, result.output
+    out = " ".join(result.output.split())
+    assert "This script locates itself" in out
+    assert f"skit params {entry.slug} --normalize NAME" in out
+    assert f"skit params {_AWKWARD} --normalize" not in out
 
 
 # ==========================================================================

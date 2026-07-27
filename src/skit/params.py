@@ -141,8 +141,10 @@ def _judge_segment(raw: str) -> _SegmentVerdict:
     qualifier: county (visible to neighbors) is judged on the UNSTRIPPED jam only —
     N26 must not strip to a count N; internal_count (this segment's own veto, applied
     by is_secret_name in NAME shape only) accepts a camel word (nTokens' literal N,
-    maxOutputTokens' MAX) or a digit-split part of length ≥ 2 (max64Tokens' MAX) —
-    never a single-letter digit shard (N8N's N)."""
+    maxOutputTokens' MAX) or a multi-letter shard (max64Tokens' MAX) — never a
+    ONE-LETTER remnant of stripping (N8N's N), which is the whole point of the length
+    test: `!= 1` is the boundary the domain has (N is the only single-letter count
+    word), not an arbitrary minimum."""
     jam = raw.upper()
     camel = [w.upper() for w in _CAMEL_BOUNDARY.sub(" ", raw).split(" ") if w]
     digit_parts = _digit_split(jam)
@@ -160,8 +162,8 @@ def _judge_segment(raw: str) -> _SegmentVerdict:
         v in _COUNT_WORDS
         for w in camel
         for v in _forms(w)
-        if len(v) >= 2 or w == v  # a literal camel N counts; a stripped N8→N shard never
-    ) or any(v in _COUNT_WORDS and len(v) >= 2 for w in digit_parts for v in _forms(w))
+        if len(v) != 1 or w == v  # a literal camel N counts; a stripped N8→N shard never
+    ) or any(v in _COUNT_WORDS and len(v) != 1 for w in digit_parts for v in _forms(w))
     token = any(_token_form(f) for f in all_forms) and not county and not numeric
     token_plural = token and any(w.endswith("TOKENS") for w in (jam, *camel, *digit_parts))
     return _SegmentVerdict(
