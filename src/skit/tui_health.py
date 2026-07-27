@@ -21,7 +21,7 @@ from textual.widgets.option_list import Option
 
 from . import config, healthcheck, launcher, store, tui_footer
 from .i18n import gettext, ngettext
-from .paths import scripts_dir
+from .paths import config_dir, scripts_dir, state_dir
 
 
 class HealthScreen(Screen[str | None]):
@@ -78,6 +78,25 @@ class HealthScreen(Screen[str | None]):
             # previously swept separately and disagreed — this screen skipped prompt
             # drift, runtime resolution, and invalid runner rows entirely.
             report = healthcheck.collect(entries)
+            if report.unindexed:
+                # The one row that can contradict the count above it, so it sits directly
+                # under it. Same fact as doctor's, this face's remedy: the rebuild chord
+                # is right there in the footer (module contract — shared facts, own hints).
+                yield Static(
+                    "⚠ "
+                    + ngettext(
+                        "%(count)s stored entry is missing from the index and cannot be "
+                        "listed or run: %(slugs)s — rebuild it with Ctrl+R",
+                        "%(count)s stored entries are missing from the index and cannot be "
+                        "listed or run: %(slugs)s — rebuild them with Ctrl+R",
+                        len(report.unindexed),
+                    )
+                    % {
+                        "count": len(report.unindexed),
+                        "slugs": ", ".join(escape(s) for s in report.unindexed),
+                    },
+                    classes="warn",
+                )
             issues: list[Option] = [
                 Option(
                     f"⚠ {escape(e.meta.name)} — " + gettext("the launch target is gone from disk"),
@@ -138,6 +157,14 @@ class HealthScreen(Screen[str | None]):
                     "size": store.human_size(store.dir_size(location)),
                 },
                 classes="hint",
+            )
+            # The other two roots, same as doctor's — "what do I back up?" must have the
+            # same answer on both faces.
+            yield Static(
+                gettext("Config: %(path)s") % {"path": escape(str(config_dir()))}, classes="hint"
+            )
+            yield Static(
+                gettext("State: %(path)s") % {"path": escape(str(state_dir()))}, classes="hint"
             )
             yield Static(getattr(self, "_rebuilt_report", ""), id="hc-rebuilt", classes="ok")
         yield tui_footer.KeysBar(

@@ -174,10 +174,15 @@ home. The bare form detects agent directories on your machine and asks.
 ## skit doctor
 
 `skit doctor [--json] [--rebuild]` — checks uv and library integrity, prints the
-resolved library path. `--rebuild` reconstructs the index from each entry's
-`meta.toml`. JSON keys include `uv`, `entries`, `missing`, `drift`,
-`needs_missing`, `launch_blocked`, `runner_rows_invalid`, `rebuilt`,
-`rebuild_problems`, `mirror`, `location`, `size_bytes`.
+resolved library, config and state paths. `--rebuild` reconstructs the index from
+each entry's `meta.toml`. JSON keys include `uv`, `entries`, `missing`, `drift`,
+`needs_missing`, `launch_blocked`, `unindexed`, `runner_rows_invalid`, `rebuilt`,
+`rebuild_problems`, `mirror`, `location`, `config_dir`, `state_dir`, `size_bytes`.
+
+`unindexed` lists slugs stored on disk but missing from the index — what a lost or
+corrupt `registry.toml` leaves behind. Those entries cannot be listed or run until
+`skit doctor --rebuild` recovers them from their stored `meta.toml`, so `entries: 0`
+beside a non-empty `unindexed` means "unreadable", not "empty".
 
 ## skit config
 

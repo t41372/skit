@@ -1098,7 +1098,7 @@ async def test_extra_argument_labels_name_the_actual_receiver(tmp_path):
 async def test_prompt_and_command_forms_prefill_remembered_extra_args(tmp_path):
     """The run form prefills the last extra-args tail for prompt and command too — a
     remembered `--model` is config, like the pinned runner (docs/design/prompt.md v3.1).
-    Before v3.1 the takes_argv=False kinds opened this field blank."""
+    Before v3.1 the placeholder kinds opened this field blank."""
     command = store.add_command("echo ready", name="cmd")
     argstate.save_last(command.slug, extra_args=["--loud"])
     prompt_path = tmp_path / "review.prompt.md"

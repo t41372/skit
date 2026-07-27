@@ -263,8 +263,9 @@ skit runner remove mycli -y   # confirms without -y, like skit remove and preset
 ## Maintenance
 
 ```bash
-skit doctor --json     # health: uv, location, drift/missing, needs_missing, launch_blocked,
-                       # mirror {enabled + stored URLs; an axis applies iff enabled and its URL is set}
+skit doctor --json     # health: uv, location/config_dir/state_dir, drift/missing, needs_missing,
+                       # launch_blocked, unindexed, mirror {enabled + stored URLs; an axis
+                       # applies iff enabled and its URL is set}
 skit rename <name> <new-name>       # rename; presets, remembered values and history follow
 skit describe <name> "Nightly dump" # set/replace the description (an empty string clears it)
 skit remove <name> -y  # remove an entry (the user's original file is never deleted) — ask first
@@ -276,9 +277,18 @@ skit config shell.bash_path /path  # where bash lives on Windows (POSIX auto-det
 `doctor --json` adds `launch_blocked` — a `{name: reason}` map of entries whose run
 would refuse to start (uninstalled interpreter/JS runtime, a pinned agent binary that
 is gone, a vanished working directory) even though their target file is present.
+It also adds `unindexed` — slugs that are stored on disk but missing from the index
+(a lost or corrupt `registry.toml`). **Check it before concluding a library is empty:**
+`entries: 0` with a non-empty `unindexed` means the entries exist and are unreadable,
+not that the user has none — never offer to re-add scripts in that state. `skit doctor
+--rebuild` recovers them from the stored metas.
+
+`location`, `config_dir` and `state_dir` are the three resolved roots (library, config,
+state) — use them to answer "where does skit keep this?" instead of guessing paths.
+
 Note: doctor's EXIT CODE reflects uv availability only — per-entry warnings (missing
-targets, drift, launch_blocked) do not change it. Read `--json` for health, never the
-exit code.
+targets, drift, launch_blocked, unindexed) do not change it. Read `--json` for health,
+never the exit code.
 
 If `show`/`run` reports drift (the source changed and its managed parameter
 definitions no longer match), `skit params <name> --resync` refreshes them.

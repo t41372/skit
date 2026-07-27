@@ -924,7 +924,7 @@ def test_run_prompt_extra_args_pass_through_after_dashes(tmp_path, spawn_spy):
 def test_run_prompt_reuses_last_extra_agent_args(tmp_path, spawn_spy):
     """A remembered `--model` is persistent config, like the pinned runner: passing no tail
     on the next run replays the last agent flags (docs/design/prompt.md v3.1). Before v3.1
-    the prompt kind refused to replay because takes_argv=False."""
+    the prompt kind refused to replay: the tail was tied to the param surface."""
     _added(tmp_path, pin="claude")
     first = runner.invoke(
         cli.app, ["run", "p", "--set", "a=1", "--no-input", "--", "--model", "opus"]

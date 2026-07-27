@@ -2262,6 +2262,22 @@ def list_cmd(
     # missing-target mark, all of which the index already holds. Reading a meta.toml per
     # entry to render them cost one file read each on the path agents call most.
     entries = store.list_summaries()
+    # An empty listing and an empty library are not the same fact — a lost index empties
+    # the listing while every entry sits untouched on disk — and neither face may assert
+    # the second having only observed the first. ONE msgid, two registers: stdout stays
+    # exactly one JSON array for machines, so the machine face carries the signal on
+    # stderr like every other skit-side warning (drift banner, malformed-value lines).
+    lost = [] if entries else store.unindexed_slugs()
+    lost_line = (
+        ngettext(
+            "The index lists no entries, but %(count)s stored entry is still on disk. Recover it with: skit doctor --rebuild",
+            "The index lists no entries, but %(count)s stored entries are still on disk. Recover them with: skit doctor --rebuild",
+            len(lost),
+        )
+        % {"count": len(lost)}
+        if lost
+        else ""
+    )
     if as_json:
         rows = []
         for e in entries:
@@ -2279,8 +2295,17 @@ def list_cmd(
                 }
             )
         console.print_json(json.dumps(rows, ensure_ascii=False))
+        if lost_line:
+            err_console.print(f"[yellow]{escape(lost_line)}[/yellow]")
         return
     if not entries:
+        # "No entries yet" is an ASSERTION about the library, and it was made without ever
+        # looking at it: a lost index emptied this listing and the copy then invited the
+        # user to re-add scripts they already own. The recovery is one command, and it is
+        # worth more than the invitation.
+        if lost_line:
+            console.print(lost_line)
+            return
         console.print(gettext("No entries yet. Add one with: skit add <path>"))
         return
     from rich.table import Table
@@ -5199,7 +5224,7 @@ def doctor(
 ) -> None:
     """Environment self-check (the CLI face of the TUI health-check screen)."""
     from . import healthcheck
-    from .paths import scripts_dir
+    from .paths import config_dir, scripts_dir, state_dir
 
     uv = launcher.find_uv()
     rebuilt: tuple[int, list[str]] | None = None
@@ -5236,6 +5261,10 @@ def doctor(
                     "needs_missing": needs_missing,
                     "launch_blocked": report.launch_blocked,
                     "runner_rows_invalid": bad_runners,
+                    # Additive key: stored entries the index has lost. An agent reading
+                    # `entries: 0` needs to be able to tell "the library is empty" from
+                    # "the library is unreadable", and this is the only key that says so.
+                    "unindexed": report.unindexed,
                     "rebuilt": rebuilt[0] if rebuilt else None,
                     "rebuild_problems": rebuilt[1] if rebuilt else [],
                     # The stored per-axis URLs plus the master switch — all three states
@@ -5249,6 +5278,10 @@ def doctor(
                         "npm": mirror.npm,
                     },
                     "location": str(location),
+                    # The other two roots the docs have always said doctor prints, and
+                    # which nothing else exposes: "what do I back up?" had no answer.
+                    "config_dir": str(config_dir()),
+                    "state_dir": str(state_dir()),
                     "size_bytes": size,
                 },
                 ensure_ascii=False,
@@ -5266,6 +5299,13 @@ def doctor(
         + ngettext("%(count)s entry registered", "%(count)s entries registered", len(entries))
         % {"count": len(entries)}
     )
+    if report.unindexed:
+        # The one check that can contradict the line above. A ✓ next to "0 entries
+        # registered" printed by the command whose job is checking the library is intact
+        # certified the exact state it exists to detect — and the repair was named nowhere.
+        console.print(
+            f"  [yellow]⚠ {ngettext('%(count)s stored entry is missing from the index and cannot be listed or run: %(slugs)s. Recover it with: skit doctor --rebuild', '%(count)s stored entries are missing from the index and cannot be listed or run: %(slugs)s. Recover them with: skit doctor --rebuild', len(report.unindexed)) % {'count': len(report.unindexed), 'slugs': ', '.join(escape(s) for s in report.unindexed)}}[/yellow]"
+        )
     for m in missing:
         console.print(
             f"  [yellow]⚠ {gettext('%(name)s: the launch target is gone from disk') % {'name': escape(m)}}[/yellow]"
@@ -5293,6 +5333,11 @@ def doctor(
         gettext("Library: %(path)s (%(count)s · %(size)s)")
         % {"path": escape(str(location)), "count": len(entries), "size": store.human_size(size)}
     )
+    # Three roots, because there are three. Two docs pages have always said doctor prints
+    # them, and nothing in skit did — so "where is my config.toml / my presets, and what
+    # do I back up?" was unanswerable from the tool that exists to answer it.
+    console.print(gettext("Config: %(path)s") % {"path": escape(str(config_dir()))})
+    console.print(gettext("State: %(path)s") % {"path": escape(str(state_dir()))})
     raise typer.Exit(0 if uv or not _uv_required(entries) else 1)
 
 

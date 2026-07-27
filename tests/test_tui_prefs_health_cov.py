@@ -799,3 +799,55 @@ async def test_health_close_dismisses_none(tmp_path):
         screen.action_close()
         await pilot.pause()
     assert results == [None]
+
+
+# ---------------------------------------------------------------------------
+# Round 9 — the two blank states are not the same state
+# ---------------------------------------------------------------------------
+
+
+async def test_health_reports_the_entries_the_index_lost(tmp_path):
+    """The round-9 HIGH, on this face. The row sits directly under "0 entries registered"
+    because it is the only check that can contradict it, and it names THIS face's remedy
+    (the Ctrl+R chord in its own footer) for the same fact doctor states as a command."""
+    store.add_command("echo hi", name="one")
+    store.registry_path().unlink()
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(HealthScreen())
+        await pilot.pause()
+        text = _screen_text(app.screen)
+    assert "0 entries registered" in text
+    assert "1 stored entry is missing from the index" in text
+    assert "one" in text
+    assert "Ctrl+R" in text
+
+
+async def test_health_shows_the_config_and_state_roots(tmp_path):
+    """Three roots, the same three doctor prints — "what do I back up?" must not have two
+    answers depending on which face you asked."""
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.push_screen(HealthScreen())
+        await pilot.pause()
+        text = _screen_text(app.screen)
+    assert f"Config: {tmp_path / 'config'}" in text
+    assert f"State: {tmp_path / 'state'}" in text
+    assert "Library:" in text
+
+
+async def test_the_library_pane_tells_a_first_run_from_a_lost_index(tmp_path):
+    """A fresh install and a vanished index look identical to the list widget and could not
+    be more different to the user. Inviting someone to add their first script is the worst
+    possible answer to "where did all my scripts go?", so the pane asks disk first."""
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "Press a to add the first one," in "\n".join(app._blank_library_lines())
+
+        store.add_command("echo hi", name="one")
+        store.registry_path().unlink()
+        lost = app._blank_library_lines()
+    assert "The index lists no entries." in lost[0]
+    assert any("still on disk" in line for line in lost)
+    assert any("Health (h)" in line for line in lost)

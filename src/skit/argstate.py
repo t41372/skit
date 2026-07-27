@@ -267,7 +267,16 @@ def record_run(
 ) -> None:
     """Remember when the entry last ran and how it exited (Library sort order, detail pane,
     and the r-rerun context key all read this). Stored as a table — a bare `last_exit = 0`
-    top-level key would be dropped by _save_doc's empty-section pruning (0 is falsy)."""
+    top-level key would be dropped by _save_doc's empty-section pruning (0 is falsy).
+
+    `values=None` follows the convention save_last states one screen up: "no new data —
+    leave the stored value alone". It used to REPLACE the whole table, so `skit run --raw`
+    — whose call site promises the escape hatch "leaves no fingerprints … values survive
+    for the next real run" — deleted the snapshot on its way past. What it left behind was
+    exactly the shape `preset save --from-last` documents as legacy state, so that command
+    then refused with "no remembered values yet — run it once first" about an entry whose
+    values were sitting in the same file and which had just run twice.
+    """
     with advisory_file_lock(_values_lock_path(slug)):
         doc = _load_doc(slug)
         last_run: dict[str, Any] = {"at": at, "exit": exit_code}
@@ -276,6 +285,10 @@ def record_run(
             # equal to defaults and delivered empty strings stay so --from-last can pin
             # what actually ran instead of reconstructing it from a later source version.
             last_run["values"] = _strip_secrets(values, secret_names)
+        else:
+            kept = doc.get("last_run")
+            if isinstance(kept, dict) and isinstance(snapshot := kept.get("values"), dict):
+                last_run["values"] = snapshot
         doc["last_run"] = last_run
         _save_doc(slug, doc)
 

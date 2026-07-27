@@ -673,7 +673,7 @@ def test_run_passes_and_remembers_extra_args(tmp_path, run_entry_spy):
 def test_run_command_reuses_last_extra_args(tmp_path, run_entry_spy):
     """A command template remembers its appended tail too (docs/design/prompt.md v3.1):
     passing none on the next run replays it, matching the run form and the `r` rerun.
-    Before v3.1 the command kind refused to replay because takes_argv=False."""
+    Before v3.1 the command kind refused to replay: the tail was tied to the param surface."""
     store.add_command("echo ready", name="cmd")
     first = runner.invoke(cli.app, ["run", "cmd", "--no-input", "--", "--loud"])
     assert first.exit_code == 0, first.output

@@ -81,7 +81,6 @@ def test_python_spec_capabilities_and_pinned_store_name():
     assert spec.params_io is not None
     assert spec.supports_modes
     assert spec.supports_deps
-    assert spec.takes_argv
     assert spec.editable
     assert spec.has_original_file
 
@@ -102,10 +101,12 @@ def test_exe_and_command_specs_have_no_analysis_capabilities():
     assert exe.has_original_file
     assert cmd.family == "template"
     assert not cmd.has_original_file
-    # command's "arguments" are its placeholders — appended argv is not its own interface
-    # (the parameter surface keys off this, not the reuse-last-args affordance).
-    assert exe.takes_argv
-    assert not cmd.takes_argv
+    # A command's "arguments" are its placeholders, and placeholder_params is the trait
+    # that says so — an exe's parameters are declared rows delivered as flags/env instead.
+    # (A takes_argv flag used to sit beside this claiming the same thing and was read by
+    # nothing; the trait below is what every surface actually consults.)
+    assert not exe.placeholder_params
+    assert cmd.placeholder_params
 
 
 def test_resolving_a_spec_does_not_import_a_language_parser():

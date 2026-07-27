@@ -31,6 +31,22 @@ first `uv tool install skit-cli` (before skit exists to help), export
 `UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple` for that one
 command.
 
+## All my entries disappeared
+
+`skit list` shows nothing, but your scripts are still on disk. skit keeps a
+`registry.toml` index beside the library; if it is lost or corrupted (a restored
+backup, a synced data directory, a half-written file), everything becomes unlistable
+at once. Nothing is deleted — each entry's own `meta.toml` is untouched, and that is
+what the index is rebuilt from.
+
+```bash
+skit doctor            # names the entries that are on disk but missing from the index
+skit doctor --rebuild  # reconstructs the index from those meta.toml files
+```
+
+`skit list` and the TUI Library pane both say so instead of claiming the library is
+empty, and `doctor --json` reports the same entries under `unindexed`.
+
 ## FAQ
 
 **Does skit modify my scripts?**

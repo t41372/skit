@@ -100,7 +100,8 @@ class LangSpec:
     syntax_check: SyntaxCheck | None = None
     supports_modes: bool = False        # copy/reference choice
     supports_deps: bool = False         # PEP-723-style package deps (python only today)
-    takes_argv: bool = True             # False for command (placeholders are its argv)
+    # (a takes_argv flag lived here until 2026-07-27; nothing ever read it — see the
+    #  correction in prompt.md. placeholder_params carries the rule it was credited with.)
 ```
 
 ### Launcher

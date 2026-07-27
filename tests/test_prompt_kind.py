@@ -273,7 +273,6 @@ def test_prompt_spec_shape():
     assert spec.stored_name == "prompt.md"
     assert spec.editable
     assert spec.supports_modes
-    assert not spec.takes_argv
     assert spec.placeholder_params
     assert spec.analyzer is None  # command-kind parity (raw mode, params surfaces)
     assert spec.params_io is None

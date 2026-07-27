@@ -415,7 +415,6 @@ class LangSpec:
     # Package-dependency management: "uv" (PEP 723, python), "npm" (package.json materialized
     # next to the stored copy, js/ts), or "" (no package deps — needs-only, like every other kind).
     deps_flavor: Literal["", "uv", "npm"] = ""
-    takes_argv: bool = True  # False: appended args are not this kind's interface
     # Placeholder-delivered parameters are this kind's form interface: `{name}` holes
     # become fields via params.declared_for_template (command templates and prompts).
     # This trait — not `family` — is what every template/non-template decision keys off

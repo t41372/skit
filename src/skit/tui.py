@@ -593,16 +593,11 @@ class MenuApp(App[int | PendingRun]):
         entry = self._selected()
         if entry is None:
             if not self._entries:
-                body.update(
-                    "\n".join(
-                        (
-                            f"[bold]{gettext('Your entries will appear here.')}[/bold]",
-                            "",
-                            gettext("Press a to add the first one,"),
-                            gettext("or run: skit add <path> in a terminal."),
-                        )
-                    )
-                )
+                # Same rule as `skit list`: never assert the library is empty without
+                # asking disk. A lost index empties this pane too, and inviting the user
+                # to add their first script is the worst possible answer to "where did
+                # all my scripts go?".
+                body.update("\n".join(self._blank_library_lines()))
             else:
                 body.update("")
             return
@@ -610,6 +605,26 @@ class MenuApp(App[int | PendingRun]):
         # same _fresh() record — a fresh plan under a stale description would be two
         # panes of one TUI disagreeing about one record.
         body.update("\n".join(self._detail_lines(self._fresh(entry))))
+
+    @staticmethod
+    def _blank_library_lines() -> list[str]:
+        """The empty-pane copy — which of the two blank states this actually is. A first
+        run and a lost index look identical to the list widget and could not be more
+        different to the user, so the pane asks disk instead of assuming (the same
+        question `skit list` and the Health screen ask; store.unindexed_slugs owns it)."""
+        if store.unindexed_slugs():
+            return [
+                f"[bold]{gettext('The index lists no entries.')}[/bold]",
+                "",
+                gettext("Your stored scripts are still on disk —"),
+                gettext("open Health (h) to recover them."),
+            ]
+        return [
+            f"[bold]{gettext('Your entries will appear here.')}[/bold]",
+            "",
+            gettext("Press a to add the first one,"),
+            gettext("or run: skit add <path> in a terminal."),
+        ]
 
     def _detail_lines(self, entry: Entry) -> list[str]:
         glyph, kind_label = _kind_badge(entry.meta.kind)

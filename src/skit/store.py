@@ -276,6 +276,31 @@ def _fs_truth(entries: dict[str, dict[str, Any]]) -> tuple[set[str], set[str]]:
     return slugs, names
 
 
+def unindexed_slugs() -> list[str]:
+    """Stored entries that exist under scripts/ but are absent from the index.
+
+    The READ side of the cross-check _fs_truth already performs for writes. The index is
+    only a rebuildable projection (module docstring), and _fs_truth trusts disk over it so
+    a lost registry can't let `add` overwrite a stored script — but nothing ever told the
+    USER about the same divergence. A missing or corrupt registry.toml made every entry
+    vanish from `list`, `run` and `show` while `doctor` cheerfully reported a healthy
+    library of zero entries, and the one command that repairs it (`doctor --rebuild`) was
+    named nowhere. A promise the code makes to itself is not a promise to the user.
+
+    Only directories that hold a meta.toml count: that is precisely what doctor_rebuild can
+    recover. A directory without one is a crashed-mid-add leftover, not a lost entry.
+    """
+    entries = _load_registry()
+    root = scripts_dir()
+    if not root.is_dir():
+        return []
+    return sorted(
+        p.name
+        for p in root.iterdir()
+        if p.is_dir() and p.name not in entries and (p / "meta.toml").exists()
+    )
+
+
 def _extract_description(script_text: str) -> str:
     """Take the first line of the module docstring as a suggested description (empty on failure)."""
     import ast
@@ -1095,26 +1120,53 @@ def unmanaged_prompt_placeholders(entry: Entry) -> list[str]:
     return [name for name in prompt_analyzer.placeholder_names(text) if name not in managed]
 
 
-def resolve(name_or_slug: str) -> Entry:
-    entries = _load_registry()
-    slug = None
-    if name_or_slug in entries:
-        slug = name_or_slug
-    else:
-        matches = [s for s, e in entries.items() if e.get("name") == name_or_slug]
-        if len(matches) == 1:
-            slug = matches[0]
-    if slug is None:
-        raise NotFoundError(gettext("Script not found: %(name)s") % {"name": name_or_slug})
+def _entry_at(slug: str, requested: str) -> Entry:
+    """The stored entry under one slug, read from its meta (the truth). `requested` is
+    only for the corrupt-meta message: it names the entry the way the user asked for it."""
     entry_dir = scripts_dir() / slug
     try:
         meta = _read_meta(entry_dir)
     except _META_CORRUPTION as exc:
         raise NotFoundError(
             gettext("%(name)s: metadata is corrupt (%(error)s); run skit doctor --rebuild")
-            % {"name": name_or_slug, "error": str(exc)}
+            % {"name": requested, "error": str(exc)}
         ) from exc
     return Entry(slug=slug, meta=meta, dir=entry_dir)
+
+
+def resolve(name_or_slug: str) -> Entry:
+    """The entry a NAME or SLUG refers to.
+
+    A slug is the directory name — there is no projection of it that can go stale, so a
+    slug hit is served straight from the index. A NAME is a projection, and this function
+    already reads the meta a line later, so verifying it costs nothing: if the meta no
+    longer carries that name, the row is stale and the match was a lie.
+
+    The MISS path then pays for the truth once, via list_summaries — which stats every
+    meta, falls back to it when the stamp says the row is stale, and repairs the row. That
+    is the freshness proof _summary_from_row was built for, and list_summaries' own
+    docstring gives the reason it must live here too: without it "the CLI would list
+    entries the TUI, doctor and `run` all refuse, three faces disagreeing about what the
+    library contains" — `run` reaches the store through THIS function, and it used to be
+    the one door that never checked. A hand-edited meta name made `skit list` show an
+    entry that `skit show`/`skit run` called not-found, until some unrelated listing
+    happened to heal the index.
+
+    The hit path is unchanged (one registry read, one meta read). Only a miss — which is
+    about to raise, or about to be a lie — pays for the sweep.
+    """
+    entries = _load_registry()
+    if name_or_slug in entries:
+        return _entry_at(name_or_slug, name_or_slug)
+    matches = [s for s, e in entries.items() if e.get("name") == name_or_slug]
+    if len(matches) == 1:
+        entry = _entry_at(matches[0], name_or_slug)
+        if entry.meta.name == name_or_slug:
+            return entry
+    for summary in list_summaries():
+        if summary.name == name_or_slug:
+            return _entry_at(summary.slug, name_or_slug)
+    raise NotFoundError(gettext("Script not found: %(name)s") % {"name": name_or_slug})
 
 
 def remove(name_or_slug: str) -> str:

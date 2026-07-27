@@ -108,7 +108,7 @@ def test_declared_env_param_rides_along_after_placeholders():
 
 
 def test_declared_flag_row_is_dropped_for_templates():
-    # argv is not a template's interface (takes_argv=False): a flag row can only be a
+    # argv is not a template's interface (its parameters arrive as placeholders): a flag row can only be a
     # hand-edit mistake, and dropping beats assembling arguments the template never reads.
     rows = [ParamDecl(name="width", delivery="flag", flag="--width").to_meta_dict()]
     decls = declared_for_template(rows, ["file"])

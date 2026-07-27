@@ -109,9 +109,14 @@ Revision notes (v3 → v3.1, maintainer-decided after user feedback, 2026-07-20)
   once and expect it to stick, exactly as the last-picked runner does; a remembered `--model`
   is persistent config, not a one-off. So the reuse policy is now orthogonal to `takes_argv`:
   every kind remembers its tail (the TUI `r` rerun already did, ungated — the run form and
-  `skit run` now match it). `takes_argv=False` keeps its one real job — argv is not the kind's
-  parameter interface (`params.py`) — and nothing else. `--raw` still suppresses replay for its
-  clean-slate promise, and `--forget-args` still clears the remembered tail.
+  `skit run` now match it). `--raw` still suppresses replay for its clean-slate promise, and
+  `--forget-args` still clears the remembered tail.
+
+  **Correction (2026-07-27).** This note claimed `takes_argv=False` kept "one real job — argv
+  is not the kind's parameter interface". It kept none: after the de-conflation above, no code
+  read the field, while three comments went on citing it for a rule `params.declared_for_template`
+  actually enforces through its own delivery filter, routed there by `placeholder_params`. The
+  field has been removed. A trait no code consults is a story, not a contract.
 
 Revision notes (v3.1 → v3.2, issue
 [#19](https://github.com/t41372/skit/issues/19), 2026-07-24):
@@ -213,8 +218,8 @@ def _prompt_spec() -> LangSpec:
         # langs/prompt/analyzer.py as plain functions consumed directly by the
         # add/params/plan surfaces.
         supports_modes=True,
-        takes_argv=False,           # argv is not the kind's param interface; extra argv follows rule below
-        placeholder_params=True,    # opens the placeholder form path (see flows amendment)
+        placeholder_params=True,    # opens the placeholder form path; argv is not the param
+                                    # interface (see the 2026-07-27 correction above)
     )
 ```
 

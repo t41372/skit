@@ -1,8 +1,8 @@
 """Mutation-kill tests for the two zero-capability registry builders.
 
 `registry._exe_spec` and `registry._command_spec` bake fixed data into their LangSpecs
-(kind key, family, badge glyph, launch strategy, and — for command — the takes_argv=False
-affordance). Nothing else asserts these exact values, so each field is pinned here through
+(kind key, family, badge glyph, launch strategy, and — for command — the placeholder
+parameter surface). Nothing else asserts these exact values, so each field is pinned here through
 the real `registry.spec_for` resolution path. Field values are the English source of truth.
 """
 
@@ -31,10 +31,12 @@ def test_command_spec_fields_and_launch_strategy():
     assert isinstance(spec.launch, launch.TemplateLaunch)
 
 
-def test_command_spec_does_not_take_argv():
-    # takes_argv=False overrides the True default: a command's "arguments" are its
-    # placeholders, so an appended argv tail is not the kind's own interface (the
-    # parameter surface keys off this). `is False` also pins it against a None mutation.
+def test_command_spec_takes_its_parameters_from_placeholders():
+    # placeholder_params=True overrides the False default: a command's "arguments" ARE its
+    # template holes, and this trait is what every template/non-template decision keys off.
+    # `is True` also pins it against a None mutation. (Until 2026-07-27 a takes_argv=False
+    # flag sat beside it and was asserted here too — it was read by no code at all, so what
+    # this test pinned was a value, not a behaviour.)
     spec = registry.spec_for("command")
     assert spec is not None
-    assert spec.takes_argv is False
+    assert spec.placeholder_params is True

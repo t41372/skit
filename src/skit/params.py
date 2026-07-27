@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
 
     from .analysis import Candidate
 
@@ -420,9 +420,11 @@ def declared_for_template(
     (type/default/optional/secret override — the fix for the auto-secret-no-override
     defect). Declared env-delivery params ride along after the placeholders (an env
     variable is a legitimate second channel into a shell template's child process);
-    any other declared delivery is ignored here — argv is not a template's interface
-    (takes_argv=False), so a flag row can only be a hand-edit mistake, and dropping it
-    from the form beats assembling arguments the template never reads."""
+    any other declared delivery is ignored here — a kind whose parameters arrive through
+    placeholders has no argv of its own to put a flag on, so a flag row can only be a
+    hand-edit mistake, and dropping it from the form beats assembling arguments the
+    template never reads. (The rule is the placeholder interface itself, enforced by this
+    filter. It used to cite a LangSpec.takes_argv flag that no code read.)"""
     declared = {d.name: d for d in declared_from_meta(parameters)}
     out: list[ParamDecl] = []
     for name in placeholders:
@@ -514,6 +516,33 @@ class DeclEditResult:
     warnings: list[str]
 
 
+def _placeholder_decl(name: str) -> ParamDecl:
+    """The row a template placeholder gets the first time anything declares it — from an
+    explicit ``--add``, or from a tweak that had to materialize it. ONE constructor, because
+    the two doors used to disagree: only ``--add`` knew how to create the row, so every other
+    flag on an undeclared placeholder was skipped with a warning and a green exit.
+
+    binding "none" / type "str" are the ParamDecl defaults; passing them explicitly would only
+    add equivalent "drop the kwarg" mutants, so they are omitted. The behaviour-bearing
+    delivery/required stay explicit (required: a declared placeholder must never silently
+    assemble an empty slot) and are pinned by test_add_placeholder_row_defaults."""
+    return ParamDecl(name=name, delivery="placeholder", required=True)
+
+
+def _tweak_order(*sources: Iterable[str]) -> list[str]:
+    """Every name the tweak flags mention, first-mention order, deduplicated. Typed on the
+    NAMES alone (a NAME=value mapping iterates its keys), because that is all this is: the
+    order one pass edits rows in. That order is the contract — a name is edited once with
+    all its flags applied together, so a later flag can never re-run the whole tweak pass
+    over a row an earlier one already reverted."""
+    names: list[str] = []
+    for src in sources:
+        for name in src:
+            if name not in names:
+                names.append(name)
+    return names
+
+
 def edit_declared(  # noqa: PLR0912 — a fixed-order edit pipeline; the branches are the ops
     decls: list[ParamDecl],
     *,
@@ -537,11 +566,14 @@ def edit_declared(  # noqa: PLR0912 — a fixed-order edit pipeline; the branche
     """Pure edit ops on the declared [[parameters]] rows of an exe/command entry (never
     mutates the caller's decls — each is shallow-copied first, like reconcile.edit_specs).
 
-    Apply order is fixed: rm -> add -> per-name tweaks. A tweak/rm on an unknown name is a
-    ``not-declared`` warning; an add on an existing name is ``already-declared``. New adds
-    default to delivery = allowed_deliveries[0], binding="none", type="str"; an add whose
-    name IS a template placeholder takes delivery="placeholder" (and stays required, so a
-    declared placeholder can never silently assemble an empty slot). After the tweaks each
+    Apply order is fixed: rm -> add -> per-name tweaks. An ``rm`` of an unknown name is a
+    ``not-declared`` warning, and so is a tweak of a name that is neither declared nor a
+    PLACEHOLDER: a placeholder the entry asks for is an editable parameter, so tweaking one
+    materializes its row (see _placeholder_decl) instead of skipping the flag. An add on an
+    existing name is ``already-declared``. New adds default to delivery =
+    allowed_deliveries[0], binding="none", type="str"; an add whose name IS a template
+    placeholder takes delivery="placeholder" (and stays required, so a declared placeholder
+    can never silently assemble an empty slot). After the tweaks each
     touched decl is normalized and its invariants checked; a decl that comes out
     inconsistent is REVERTED to its pre-tweak state and warned about (never persist a
     broken row). env_source only means anything on a secret param (clearing secret clears
@@ -572,11 +604,7 @@ def edit_declared(  # noqa: PLR0912 — a fixed-order edit pipeline; the branche
             warnings.append(f"already-declared:{name}")
             continue
         if name in placeholders:
-            # binding "none" / type "str" are the ParamDecl defaults; passing them explicitly
-            # would only add equivalent "drop the kwarg" mutants, so omit them. The
-            # behaviour-bearing delivery/required stay explicit and are pinned by
-            # test_add_placeholder_row_defaults.
-            by_name[name] = ParamDecl(name=name, delivery="placeholder", required=True)
+            by_name[name] = _placeholder_decl(name)
         else:
             # binding "none" / type "str" are the ParamDecl defaults (omitted to avoid
             # equivalent drop-kwarg mutants). The delivery-fallback edge is pinned by
@@ -587,20 +615,33 @@ def edit_declared(  # noqa: PLR0912 — a fixed-order edit pipeline; the branche
             )
         order.append(name)
 
-    tweak_names: list[str] = []
-    for src in (deliveries, types, choices, defaults, flags, help_texts, prompts, env_sources):
-        for name in src:
-            if name not in tweak_names:
-                tweak_names.append(name)
-    for seq in (required, optional, secret, no_secret):
-        for name in seq:
-            if name not in tweak_names:
-                tweak_names.append(name)
-
+    tweak_names = _tweak_order(
+        deliveries,
+        types,
+        choices,
+        defaults,
+        flags,
+        help_texts,
+        prompts,
+        env_sources,
+        required,
+        optional,
+        secret,
+        no_secret,
+    )
     for name in tweak_names:
         if name not in by_name:
-            warnings.append(f"not-declared:{name}")
-            continue
+            if name not in placeholders:
+                warnings.append(f"not-declared:{name}")
+                continue
+            # A placeholder the entry ASKS FOR is an editable parameter, whether or not a
+            # row has been written for it yet — the same rule `add` applies eight lines up.
+            # Requiring `--add NAME` first made `--secret NAME` a no-op that still exited 0
+            # behind a green "Updated" line, and the value it was meant to protect then
+            # landed in the state file in plaintext (C3). An explicit flag must never
+            # vanish silently; here it also had a leak behind it.
+            by_name[name] = _placeholder_decl(name)
+            order.append(name)
         decl = by_name[name]
         pre = field_replace(decl)
         _apply_declared_tweaks(
