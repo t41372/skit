@@ -315,7 +315,9 @@ def _placeholder_body_plan(entry: Entry) -> FormPlan:
                 "No longer in the prompt (the value would be ignored): %(names)s — "
                 "edit the body or update parameters with: skit params %(name)s"
             )
-            % {"names": ", ".join(gone), "name": entry.meta.name}
+            # The slug, not the display name: this is a paste-able command, and a slug
+            # never needs quoting on any shell (a name with a space or an & does).
+            % {"names": ", ".join(gone), "name": entry.slug}
         ]
         if gone
         else []
@@ -415,7 +417,11 @@ def plan_for_entry(entry: Entry) -> FormPlan:  # noqa: PLR0911 — one return pe
     specs = lang.params_io.read(text)
     if specs:
         report = lang.analyzer.reconcile(text, specs)
-        drift = list(analysis.drift_lines(report, entry.meta.name)) if report.has_drift else []
+        drift = (
+            list(analysis.drift_lines(report, entry.meta.name, target=entry.slug))
+            if report.has_drift
+            else []
+        )
         fields = [FormField.from_decl(s) for s in report.usable]
         _refresh_defaults(fields, report.current_defaults, report.empty_uses_default)
         # MERGE: declared [[parameters]] flag/env rows ride along after the analyzer's in-file
@@ -588,7 +594,9 @@ def tail_looks_expandable(extra_args: list[str]) -> bool:
     over-fired on bare `{`) — plus the glob characters assemble's own glob pass acts
     on. Behind the "passed as-is" note both faces print for a literal-replay tail:
     replaying literally is the design, doing it silently was the bug."""
-    return any(tokens.has_tokens(piece) or any(ch in piece for ch in "*?[") for piece in extra_args)
+    return any(
+        tokens.has_tokens(piece) or any(ch in piece for ch in _GLOB_CHARS) for piece in extra_args
+    )
 
 
 def as_is_note() -> str:
@@ -1167,7 +1175,7 @@ def execute(  # noqa: PLR0911, PLR0912 — one early return/branch per injection
                         "The script and its form definitions don't match anymore: %(detail)s. "
                         "Run `skit params %(name)s --resync` to fix it."
                     )
-                    % {"name": entry.meta.name, "detail": str(exc)},
+                    % {"name": entry.slug, "detail": str(exc)},  # slug: paste-safe on any shell
                 )
             injected = result.path
             env_overlay.update(result.env)

@@ -38,7 +38,7 @@ from rich.prompt import Confirm, Prompt
 # reaches for — the analyzer, the form layer, the editor, the agent-skill installer — is
 # imported inside the command that uses it: `skit list` should not pay for `skit run`'s
 # dependencies (~18 modules on a path an agent calls constantly).
-from . import argstate, argv_text, config, editor, i18n, kindnames, launcher, models, store
+from . import argstate, config, editor, i18n, kindnames, launcher, models, store
 from .i18n import gettext, ngettext
 from .langs.registry import KNOWN_KINDS, spec_for
 from .params import ParamDecl, declared_from_meta, edit_declared, is_secret_name
@@ -1177,7 +1177,7 @@ def _onboard_prompt(
     elif flooded and managed is None:
         # The auto path tripped the flood cap: nothing was managed, say so honestly.
         console.print(
-            f"[dim]{gettext('Detected %(count)s placeholders — too many to manage automatically, so none were. Manage the ones you need with: skit params %(name)s --add NAME, or turn insertion off with --no-interpolate.') % {'count': len(detected), 'name': escape(entry.meta.name)}}[/dim]"
+            f"[dim]{gettext('Detected %(count)s placeholders — too many to manage automatically, so none were. Manage the ones you need with: skit params %(name)s --add NAME, or turn insertion off with --no-interpolate.') % {'count': len(detected), 'name': escape(entry.slug)}}[/dim]"
         )
     if runner:
         console.print(
@@ -2918,9 +2918,10 @@ def _resolve_run_runner(
         raise _fail(
             gettext(
                 "No runner selected for %(name)s. Pass --runner NAME, or pin one with: "
-                "skit params %(name)s --runner NAME"
+                "skit params %(target)s --runner NAME"
             )
-            % {"name": entry.meta.name},
+            # Prose gets the display name; the paste-able command gets the slug.
+            % {"name": entry.meta.name, "target": entry.slug},
             EXIT_NOT_EXECUTABLE,
         )
     found = next((r for r in runners if r.name == chosen), None)
@@ -4053,7 +4054,7 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
             )
     if self_locating:
         console.print(
-            f"[dim]{gettext('This script locates itself ($0 / BASH_SOURCE). Injecting a constant runs it from a temporary copy, so it would see that copy path instead. Rewriting the constant as NAME="${NAME:-value}" delivers the value through the environment with no copy at all — `skit params %(name)s --normalize NAME` does the rewrite for you on the stored copy.') % {'name': escape(entry.meta.name)}}[/dim]"
+            f"[dim]{gettext('This script locates itself ($0 / BASH_SOURCE). Injecting a constant runs it from a temporary copy, so it would see that copy path instead. Rewriting the constant as NAME="${NAME:-value}" delivers the value through the environment with no copy at all — `skit params %(name)s --normalize NAME` does the rewrite for you on the stored copy.') % {'name': escape(entry.slug)}}[/dim]"
         )
 
 
@@ -4537,17 +4538,17 @@ def _edit_params(
             # would hide the exact door that was built for it. ONE msgid, not two sentences
             # spliced with a hard-coded space: translators own the whole pair, including
             # its punctuation and order.
-            # %(target)s is quoted with THIS platform's convention (argv_text.join:
-            # shlex on POSIX, list2cmdline on Windows): the hint is a copy-pasteable
-            # command, and an entry named "my tool" must paste back as ONE argument in
-            # the shell the user is actually sitting in — shlex.quote's single quotes
-            # are word-splitting noise to cmd.exe.
+            # %(target)s is the SLUG: a paste-able command must survive every shell,
+            # and no quoting convention does (shlex's single quotes are noise to
+            # cmd.exe; list2cmdline leaves & | ^ bare for it). The slug's charset
+            # needs no quoting anywhere, and resolve() accepts it everywhere a name
+            # works. Prose keeps the display name.
             raise _fail(
                 gettext(
                     "%(name)s has no managed parameters — its kind has no analyzer to read "
                     "them from. Declare one instead: skit params %(target)s --add PARAM"
                 )
-                % {"name": entry.meta.name, "target": argv_text.join([entry.meta.name])},
+                % {"name": entry.meta.name, "target": entry.slug},
                 1,
             )
         raise _fail(

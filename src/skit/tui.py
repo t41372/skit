@@ -565,16 +565,14 @@ class MenuApp(App[int | PendingRun]):
             self._plan_cache[entry.slug] = (key, plan)
         return plan
 
-    @staticmethod
-    def _meta_unchanged(entry: Entry) -> bool:
+    def _meta_unchanged(self, entry: Entry) -> bool:
         """Whether the on-disk record still matches the entry a plan was just built
-        from (see _cached_plan). Unresolvable counts as unchanged: the snapshot IS the
-        best available generation then, and caching it is the fix for the
-        subprocess-per-highlight corrupt-meta case."""
-        try:
-            current = store.resolve(entry.slug)
-        except store.StoreError:
-            return True
+        from (see _cached_plan). Delegates the resolve-or-snapshot degrade to _fresh —
+        ONE policy for "what counts as the current generation": unresolvable degrades
+        to the snapshot there, which compares equal here, so it counts as unchanged
+        (the snapshot IS the best available generation then, and caching it is the fix
+        for the subprocess-per-highlight corrupt-meta case)."""
+        current = self._fresh(entry)
         return current.meta == entry.meta and current.dir == entry.dir
 
     def _has_drift(self, entry: Entry) -> bool:

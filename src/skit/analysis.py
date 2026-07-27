@@ -156,9 +156,16 @@ def effective_default(
     return current.get(spec.name, spec.default)
 
 
-def drift_lines(report: Report, name: str) -> list[str]:
+def drift_lines(report: Report, name: str, target: str | None = None) -> list[str]:
     """The display lines for a drift report (shared by CLI/TUI). The only copy exit point in this
-    module: plain-text old/new comparison; rich markup/color is wrapped by the caller."""
+    module: plain-text old/new comparison; rich markup/color is wrapped by the caller.
+
+    `name` is prose (the header); `target` is what the paste-able command line
+    interpolates — callers pass the entry SLUG, which never needs quoting on any
+    shell, where a display name with a space or an `&` breaks the pasted command.
+    Defaults to `name` for callers that only have one identity."""
+    if target is None:
+        target = name
     from .i18n import gettext
 
     lines = [
@@ -205,7 +212,7 @@ def drift_lines(report: Report, name: str) -> list[str]:
         for spec, cand in report.rebind
     )
     lines.append(
-        gettext("To refresh the definitions, run: skit params %(name)s --resync") % {"name": name}
+        gettext("To refresh the definitions, run: skit params %(name)s --resync") % {"name": target}
     )
     return lines
 
