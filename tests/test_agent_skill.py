@@ -148,3 +148,9 @@ def test_skill_teaches_executable_empty_value_spellings_for_clearing_pins():
     commands = [shlex.split(line, comments=True) for line in _skill_command_lines()]
     assert ["skit", "params", "<name>", "--runner", ""] in commands
     assert ["skit", "params", "<name>", "--interpreter", ""] in commands
+
+
+def test_skill_distinguishes_a_deliberate_no_from_an_aborted_flow():
+    text = ROOT_SKILL.read_text(encoding="utf-8")
+    assert '| 0 | success, including a deliberate "no" to a destructive confirmation |' in text
+    assert "| 130 | an interactive flow was aborted with Ctrl-C or EOF |" in text

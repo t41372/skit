@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from skit import cli, exitcodes, store
+from skit import cli, exitcodes, flows, store
 
 runner = CliRunner()
 
@@ -84,3 +84,19 @@ def test_destructive_no_is_clean_but_eof_is_abort(tmp_path: Path, monkeypatch) -
     aborted = runner.invoke(cli.app, ["remove", "job"])
     assert aborted.exit_code == exitcodes.EXIT_ABORTED
     assert store.resolve("job").meta.name == "job"
+
+
+@pytest.mark.parametrize("child_code", [1, 2, 125, 126, 127, 130])
+def test_launched_child_owns_even_codes_that_overlap_skit_contract(
+    child_code: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store.add_command("echo ready", name="child")
+    monkeypatch.setattr(
+        flows,
+        "execute",
+        lambda *_a, **_k: flows.RunOutcome(child_code),
+    )
+
+    result = runner.invoke(cli.app, ["run", "child", "--no-input"])
+
+    assert result.exit_code == child_code

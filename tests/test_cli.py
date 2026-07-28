@@ -816,7 +816,7 @@ def test_preset_save_command_with_params(tmp_path, tty, monkeypatch):
     # exercised through invoke() — the tty fixture + a direct call is the honest path.
     ent = store.add_command("echo {msg}", name="e")
     monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: "hello")
-    cli.preset_save("e", "prod", from_last=False)
+    cli.preset_save("e", "prod", from_last=False, no_input=False)
     assert argstate.load_state(ent.slug)["presets"]["prod"] == {"msg": "hello"}
 
 
@@ -1324,8 +1324,9 @@ def test_preset_list_escapes_markup_in_name_and_values(tmp_path):
     assert "[red]Taipei[/red]" in result.output
 
 
-def test_preset_save_command_escapes_markup_in_preset_name_and_entry_name(tmp_path):
+def test_preset_save_command_escapes_markup_in_preset_name_and_entry_name(tmp_path, monkeypatch):
     store.add_command("echo {msg}", name="[blue]e[/blue]")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     result = runner.invoke(
         cli.app, ["preset", "save", "[blue]e[/blue]", "[green]p[/green]"], input="hi\n"
     )
@@ -1515,7 +1516,7 @@ def test_preset_save_prompt_escapes_markup_in_placeholder_name(monkeypatch, tty)
         return "x"
 
     monkeypatch.setattr(cli.Prompt, "ask", fake_ask)
-    cli.preset_save("e", "p", from_last=False)
+    cli.preset_save("e", "p", from_last=False, no_input=False)
     assert captured["prompt"] == r"  \[red]msg\[/red]"
 
 

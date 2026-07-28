@@ -29,12 +29,12 @@ is *the user's curated space*: treat it like their dotfiles.
 3. **Before an entry's first run, `--dry-run` it** and show the user the exact command.
 4. **Never add, remove, or overwrite library entries without asking the user first.**
    Propose `skit add` when you've written something reusable; don't add it silently.
-5. **Pass `--no-input` on every `skit run` and `skit add`.** It guarantees those never
-   block on a prompt; if information is missing, skit fails fast with a named error
-   instead. The destructive commands (`remove`, `preset delete`, `runner remove`)
-   confirm unless you pass `-y`; non-interactively, a missing `-y` is a clean exit-2
-   refusal, never a hang. The read commands (`list`, `show`, `params`, …) never prompt
-   and don't take the flag.
+5. **Pass `--no-input` on every potentially prompting command.** For `run` and `add`
+   it guarantees skit never blocks; `preset save` also needs `--from-last`, and a
+   headless `agent install` needs an explicit target or `--to`. The destructive
+   commands (`remove`, `preset delete`, `runner remove`) confirm unless you pass `-y`;
+   non-interactively, a missing `-y` is a clean exit-2 refusal, never a hang. Read
+   commands (`list`, `show`, `params`, …) never prompt and don't take the flag.
 
 ## Discover entries
 
@@ -93,15 +93,16 @@ skit run <name> --forget-args --no-input            # erase the remembered extra
 ### Exit codes (docker convention)
 
 When the entry's target process actually ran, its exit code passes through **untouched**
-(even if it exits 125–127 — check stderr when in doubt). When it never launched:
+(even if it exits 125–127 or 130 — check stderr when in doubt). When it never launched:
 
 | code | meaning |
 | --- | --- |
+| 0 | success, including a deliberate "no" to a destructive confirmation |
 | 2 | usage error (bad flags, unknown `--set` name, unknown preset) |
 | 125 | skit-side failure: missing/invalid parameter value, drift, launch failure |
 | 126 | target exists but is not executable |
 | 127 | no such entry in the library (or launch target missing) |
-| 130 | user cancelled the interactive form |
+| 130 | an interactive flow was aborted with Ctrl-C or EOF |
 
 127 is the answer from **every** command that takes an entry name — `run`, `show`,
 `params`, `deps`, `describe`, `rename`, `remove`, `edit`, `preset save/list/delete` —

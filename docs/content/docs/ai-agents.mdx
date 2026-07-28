@@ -36,8 +36,9 @@ Every launch-menu action is also a CLI command, built to be driven by machines:
   returns a stable per-parameter schema (types, defaults, `delivers_empty`,
   secret marking, choices) documented in the [CLI reference](/en/docs/cli).
 - **Meaningful exit codes**, docker-convention: `skit run` passes the script's
-  own exit code through untouched; skit's own errors use 125/126/127, 130 means
-  the user cancelled, and signal death reports as `128+N` — full table in the
+  own exit code through untouched; skit's own errors use 125/126/127, Ctrl-C/EOF
+  during an interactive flow reports 130, and a deliberate “no” to a destructive
+  confirmation succeeds without changing anything — full table in the
   [CLI reference](/en/docs/cli#exit-codes).
 - **Deterministic value resolution**: `--set` → preset → last-used → declared
   default. An unknown parameter name exits 2; a bad value exits 125.

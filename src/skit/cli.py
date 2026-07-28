@@ -183,6 +183,12 @@ def _is_interactive() -> bool:
     return interaction.allowed()
 
 
+def _forbid_interaction(no_input: bool) -> None:
+    """Record one invocation-wide non-interactive verdict before command work starts."""
+    if no_input:
+        interaction.forbid()
+
+
 def _wants_tui_form() -> bool:
     """Whether an interactive flow should host a Textual mini-form/panel rather than
     line prompts: form=tui (the default) on a terminal that can render one — TERM=dumb
@@ -1689,8 +1695,7 @@ def add(
     # The non-interactive verdict crosses the layer boundary here, once: gates BELOW
     # cli.py (uvman's download consent) cannot see this flag and used to re-derive
     # interactivity from isatty, which blocked an agent's run on input() forever.
-    if no_input:
-        interaction.forbid()
+    _forbid_interaction(no_input)
     if prompt_kind and (edit_new or exe or cmd is not None or kind is not None):
         err_console.print(
             f"[red]{gettext('--prompt names the kind outright — drop --edit/--exe/--kind/--cmd.')}[/red]"
@@ -2678,8 +2683,7 @@ def remove(
     # One verdict for the whole invocation (interaction.allowed): gates BELOW
     # cli.py cannot see this flag, and used to re-derive interactivity from
     # isatty — which blocked an agent on input() under the flag that forbids it.
-    if no_input:
-        interaction.forbid()
+    _forbid_interaction(no_input)
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
@@ -2837,8 +2841,7 @@ def edit(
     # typing — an agent harness, a `script`-wrapped CI job — can say there is no human:
     # isatty is True there, so the terminal check alone cannot tell. Every sibling that
     # can prompt takes this flag; `edit` was the one that could prompt and didn't.
-    if no_input:
-        interaction.forbid()
+    _forbid_interaction(no_input)
     try:
         entry = store.resolve(name)
     except store.NotFoundError:
@@ -3154,8 +3157,7 @@ def run(
     # One verdict for the whole invocation (interaction.allowed): gates BELOW
     # cli.py cannot see this flag, and used to re-derive interactivity from
     # isatty — which blocked an agent on input() under the flag that forbids it.
-    if no_input:
-        interaction.forbid()
+    _forbid_interaction(no_input)
     from . import flows
 
     try:
@@ -3621,8 +3623,7 @@ def runner_remove(
     # One verdict for the whole invocation (interaction.allowed): gates BELOW
     # cli.py cannot see this flag, and used to re-derive interactivity from
     # isatty — which blocked an agent on input() under the flag that forbids it.
-    if no_input:
-        interaction.forbid()
+    _forbid_interaction(no_input)
     if (name is None) == (row_opt is None):
         raise _fail(gettext("Pass exactly one runner name or --row INDEX."), EXIT_USAGE)
     if name is not None and not name.strip():
@@ -3741,31 +3742,13 @@ preset_app = typer.Typer(
 app.add_typer(preset_app, name="preset")
 
 
-@preset_app.command("save", help=gettext("Save a set of parameter values as a named preset."))
-def preset_save(
-    name: str = _SCRIPT_ARG,
-    preset_name: str = typer.Argument(..., help=gettext("Preset name")),
-    from_last: bool = typer.Option(
-        False,
-        "--from-last",
-        help=gettext("Save the last run's values without asking (automation-friendly)"),
-    ),
-) -> None:
-    """Save a named preset: interactively, or straight from the last run with --from-last.
-    Secret values are never persisted (C3)."""
-    from . import flows, promptform
-
-    try:
-        entry = store.resolve(name)
-    except store.NotFoundError as exc:
-        raise _fail_not_found(exc) from exc
-    plan = flows.plan_for_entry(entry)
-    if not plan.fields:
-        raise _fail(
-            gettext("%(name)s has no form fields, so there's nothing to save.")
-            % {"name": entry.meta.name},
-            EXIT_USAGE,
-        )
+def _preset_values(
+    entry: store.Entry,
+    plan: flows.FormPlan,
+    *,
+    from_last: bool,
+) -> dict[str, str]:
+    """Resolve one preset snapshot without inventing user input in a headless process."""
     if from_last:
         state = argstate.load_state(entry.slug)
         if not state["last_run"] and not state["values"]:
@@ -3780,8 +3763,8 @@ def preset_save(
             # The exact accepted invocation, filtered only for fields removed since
             # that run. Never overlay today's defaults: a changed/new definition did
             # not participate in the historical run this command promises to save.
-            values = {k: str(v) for k, v in last_snapshot.items() if k in keys}
-        elif state["last_run"]:
+            return {k: str(v) for k, v in last_snapshot.items() if k in keys}
+        if state["last_run"]:
             # Legacy state with a run stamp but no exact snapshot cannot be rebuilt:
             # remembered values deliberately omitted accepted defaults. Asking for a
             # fresh run is honest; current defaults would fabricate history.
@@ -3790,16 +3773,51 @@ def preset_save(
                 % {"name": entry.meta.name},
                 EXIT_USAGE,
             )
-        else:
-            # Older state from before run stamps existed may still have explicit
-            # last-used values. Preserve that narrow compatibility lane without
-            # inventing missing defaults or newly-added fields.
-            values = {k: v for k, v in state["values"].items() if k in keys}
-    elif _is_interactive():
-        values = promptform.collect(plan, flows.prefill(plan, entry.slug), console=console)
-    else:
-        # Non-interactive contract: don't prompt — save what the prefill already knows.
-        values = flows.prefill(plan, entry.slug)
+        # Older state from before run stamps existed may still have explicit
+        # last-used values. Preserve that narrow compatibility lane without
+        # inventing missing defaults or newly-added fields.
+        return {k: v for k, v in state["values"].items() if k in keys}
+    if not _is_interactive():
+        raise _fail(
+            gettext(
+                "Saving current values needs an interactive terminal; pass --from-last "
+                "to save the last run instead."
+            ),
+            EXIT_USAGE,
+        )
+    from . import flows, promptform
+
+    return promptform.collect(plan, flows.prefill(plan, entry.slug), console=console)
+
+
+@preset_app.command("save", help=gettext("Save a set of parameter values as a named preset."))
+def preset_save(
+    name: str = _SCRIPT_ARG,
+    preset_name: str = typer.Argument(..., help=gettext("Preset name")),
+    from_last: bool = typer.Option(
+        False,
+        "--from-last",
+        help=gettext("Save the last run's values without asking (automation-friendly)"),
+    ),
+    no_input: bool = typer.Option(False, "--no-input", help=gettext("Never prompt")),
+) -> None:
+    """Save a named preset: interactively, or straight from the last run with --from-last.
+    Secret values are never persisted (C3)."""
+    _forbid_interaction(no_input)
+    from . import flows
+
+    try:
+        entry = store.resolve(name)
+    except store.NotFoundError as exc:
+        raise _fail_not_found(exc) from exc
+    plan = flows.plan_for_entry(entry)
+    if not plan.fields:
+        raise _fail(
+            gettext("%(name)s has no form fields, so there's nothing to save.")
+            % {"name": entry.meta.name},
+            EXIT_USAGE,
+        )
+    values = _preset_values(entry, plan, from_last=from_last)
     secret_overlap = plan.secret_names & values.keys()
     if secret_overlap:
         console.print(
@@ -3859,8 +3877,7 @@ def preset_delete(
     # One verdict for the whole invocation (interaction.allowed): gates BELOW
     # cli.py cannot see this flag, and used to re-derive interactivity from
     # isatty — which blocked an agent on input() under the flag that forbids it.
-    if no_input:
-        interaction.forbid()
+    _forbid_interaction(no_input)
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
@@ -5328,6 +5345,16 @@ def _agent_pick_target(candidates: list[agentskill.Target]) -> agentskill.Target
     return target
 
 
+def _agent_install_candidates(*, home: Path, cwd: Path, project: bool) -> list[agentskill.Target]:
+    """Detect only targets inside the scope the user selected."""
+    from . import agentskill
+
+    candidates = agentskill.detect_targets(home=home, cwd=cwd)
+    if project:
+        return [candidate for candidate in candidates if candidate.scope == "project"]
+    return candidates
+
+
 @agent_app.command(
     "install",
     help=gettext("Install skit's Agent Skill into an AI agent's skills directory."),
@@ -5354,10 +5381,12 @@ def agent_install(
             "Install into the current project (./.claude, ./.codex) instead of your home directory"
         ),
     ),
+    no_input: bool = typer.Option(False, "--no-input", help=gettext("Never prompt")),
 ) -> None:
     """Teach the user's AI agents to use skit. An explicit TARGET or --to is consent by
     itself; bare `skit agent install` detects agent directories and asks (principle #6:
     skit never touches another tool's directory uninvited)."""
+    _forbid_interaction(no_input)
     from . import agentskill
 
     if to is not None and (target or project):
@@ -5386,7 +5415,7 @@ def agent_install(
             f"[red]{gettext('Nothing installed: name a target (claude, codex, agents) or pass --to DIR.')}[/red]"
         )
         raise typer.Exit(EXIT_USAGE)
-    candidates = agentskill.detect_targets(home=home, cwd=cwd)
+    candidates = _agent_install_candidates(home=home, cwd=cwd, project=project)
     if not candidates:
         raise _fail(
             gettext(

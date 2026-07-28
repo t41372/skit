@@ -204,22 +204,22 @@ def test_run_with_valid_preset_succeeds(tmp_path, run_entry_spy):
 # --------------------------------------------------------------------------
 
 
-def test_preset_save_python_with_params_non_interactive_prefill(tmp_path):
+def test_preset_save_python_with_params_non_interactive_refuses(tmp_path):
     text = metawriter.write_params(
         'CITY = "Taipei"\nprint(CITY)\n',
         [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
     )
     ent = store.add_python(_py(tmp_path, text), name="a")
-    # CliRunner's stdin is not a tty, so _collect_param_form takes the non-interactive path and
-    # returns the prefill (the definition's default) without prompting.
+    # A definition default is not a value the user chose for this preset. In a pipe,
+    # the only honest automation spelling is --from-last.
     result = runner.invoke(cli.app, ["preset", "save", "a", "prod"])
-    assert result.exit_code == 0, result.output
-    assert argstate.load_state(ent.slug)["presets"]["prod"] == {"CITY": "Taipei"}
+    assert result.exit_code == 2
+    assert "--from-last" in result.output
+    assert argstate.load_state(ent.slug)["presets"] == {}
 
 
-def test_preset_save_piped_stdout_takes_prefill_not_the_prompt(tmp_path, monkeypatch):
-    """The interactive predicate is now _is_interactive() (stdin AND stdout): a tty stdin
-    with a PIPED stdout must NOT prompt — it takes the non-interactive prefill path."""
+def test_preset_save_piped_stdout_refuses_not_prompts(tmp_path, monkeypatch):
+    """A tty stdin with piped stdout cannot show the question, so it refuses."""
     text = metawriter.write_params(
         'CITY = "Taipei"\nprint(CITY)\n',
         [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
@@ -232,8 +232,9 @@ def test_preset_save_piped_stdout_takes_prefill_not_the_prompt(tmp_path, monkeyp
         "collect",
         lambda *a, **k: pytest.fail("piped stdout must not open the form"),
     )
-    cli.preset_save("a", "prod", from_last=False)
-    assert argstate.load_state(ent.slug)["presets"]["prod"] == {"CITY": "Taipei"}
+    result = runner.invoke(cli.app, ["preset", "save", "a", "prod"])
+    assert result.exit_code == 2
+    assert argstate.load_state(ent.slug)["presets"] == {}
 
 
 def test_preset_save_interactive_collects_the_form(tmp_path, monkeypatch):
@@ -250,7 +251,7 @@ def test_preset_save_interactive_collects_the_form(tmp_path, monkeypatch):
         "collect",
         lambda plan, prefill, console: called.setdefault("v", {"CITY": "Kyoto"}),
     )
-    cli.preset_save("a", "prod", from_last=False)
+    cli.preset_save("a", "prod", from_last=False, no_input=False)
     assert called["v"] == {"CITY": "Kyoto"}  # the form ran
     assert argstate.load_state(ent.slug)["presets"]["prod"] == {"CITY": "Kyoto"}
 
@@ -265,7 +266,7 @@ def test_preset_save_python_secret_param_excluded_with_notice(monkeypatch, tmp_p
     ent = store.add_python(_py(tmp_path, text), name="a")
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)  # take the form path
     monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: "typed-secret")
-    cli.preset_save("a", "prod", from_last=False)
+    cli.preset_save("a", "prod", from_last=False, no_input=False)
     assert "never stored in presets" in capsys.readouterr().out
     assert argstate.load_state(ent.slug)["presets"]["prod"] == {}
 
