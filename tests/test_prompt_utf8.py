@@ -320,7 +320,7 @@ async def test_library_edit_refuses_invalid_prompt_bytes_and_recovers_on_reedit(
 def test_cli_add_params_run_and_doctor_refuse_corrupt_prompt_cleanly(tmp_path, monkeypatch):
     path, offset = _invalid_prompt(tmp_path)
     added = runner.invoke(cli.app, ["add", str(path), "--prompt", "--no-input"])
-    assert added.exit_code == 125
+    assert added.exit_code == 2
     assert str(path.resolve()) in added.output.replace("\n", "")
     # rich wraps the long (absolute) path, so the "offset N" phrase can straddle a line
     # break on a narrow/Windows path — collapse whitespace runs before the substring check.

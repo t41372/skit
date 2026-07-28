@@ -1076,7 +1076,7 @@ def test_resolve_corrupt_meta_exact_message():
         tomllib.loads(bad)
     expected_error = str(parse_exc.value)
 
-    with pytest.raises(store.NotFoundError) as exc:
+    with pytest.raises(store.CorruptEntryError) as exc:
         store.resolve(entry.slug)
     assert str(exc.value) == (
         f"{entry.slug}: metadata is corrupt ({expected_error}); run skit doctor --rebuild"

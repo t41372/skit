@@ -1044,9 +1044,19 @@ class MenuApp(App[int | PendingRun]):
                 gettext("Last: %(name)s ✗ couldn't launch") % {"name": escape(entry.meta.name)}
             )
             return
-        flows.save_after_run(
-            entry.slug, plan, values, list(extra), code, at=models.now_iso(), extra_raw=extra_raw
+        persistence_error = flows.post_run_persistence_error(
+            lambda: flows.save_after_run(
+                entry.slug,
+                plan,
+                values,
+                list(extra),
+                code,
+                at=models.now_iso(),
+                extra_raw=extra_raw,
+            )
         )
+        if persistence_error is not None:
+            self.notify(persistence_error, severity="warning")
         self._reload()
         status = (
             gettext("Last: %(name)s ✓ finished")
@@ -1281,21 +1291,26 @@ def _finish_run(pending: PendingRun) -> int:
         warn=lambda line: print(line, flush=True),
         runner=pending.runner,
     )
-    if outcome.code is None:
+    code = outcome.code
+    if code is None:
         # Nothing ran: no phantom history, and the process exit code follows the same
         # docker convention as `skit run`.
         print(gettext("Error: %(error)s") % {"error": outcome.message}, flush=True)
-        return exitcodes.exit_code_for_failure(outcome.failure)
-    flows.save_after_run(
-        pending.entry.slug,
-        pending.plan,
-        pending.values,
-        list(pending.extra),
-        outcome.code,
-        at=models.now_iso(),
-        extra_raw=pending.extra_raw,
+        return exitcodes.exit_code_for_failure(flows.failure_reason(outcome))
+    persistence_error = flows.post_run_persistence_error(
+        lambda: flows.save_after_run(
+            pending.entry.slug,
+            pending.plan,
+            pending.values,
+            list(pending.extra),
+            code,
+            at=models.now_iso(),
+            extra_raw=pending.extra_raw,
+        )
     )
-    return outcome.code
+    if persistence_error is not None:
+        print(persistence_error, flush=True)
+    return code
 
 
 def run_menu() -> int:

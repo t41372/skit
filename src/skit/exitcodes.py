@@ -8,7 +8,7 @@ launch failure to that process contract.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Literal
+from typing import Literal, assert_never
 
 EXIT_SUCCESS = 0
 EXIT_USAGE = 2
@@ -34,15 +34,12 @@ class FailureReason(StrEnum):
     LAUNCH = "launch"
 
 
-def exit_code_for_failure(reason: FailureReason | str) -> Literal[125, 126, 127]:
-    """Map a typed launch refusal to its Docker-convention status.
-
-    The string fallback is defensive for a result produced by an extension or a
-    newer skit: an unknown skit-side failure is still 125, never a KeyError that
-    hides the original diagnostic.
-    """
+def exit_code_for_failure(reason: FailureReason) -> Literal[125, 126, 127]:
+    """Map the closed launch-refusal model to its Docker-convention status."""
+    if reason in (FailureReason.BAD_VALUE, FailureReason.DRIFT, FailureReason.LAUNCH):
+        return EXIT_SKIT
     if reason == FailureReason.NOT_EXECUTABLE:
         return EXIT_NOT_EXECUTABLE
     if reason == FailureReason.MISSING:
         return EXIT_NOT_FOUND
-    return EXIT_SKIT
+    assert_never(reason)

@@ -377,7 +377,7 @@ def test_a_corrupt_meta_keeps_its_own_message_through_either_path() -> None:
     entry = _cmd("one")
     (store.scripts_dir() / entry.slug / "meta.toml").write_text("oops = [", encoding="utf-8")
 
-    with pytest.raises(store.NotFoundError) as excinfo:
+    with pytest.raises(store.CorruptEntryError) as excinfo:
         store.resolve(entry.slug)
 
     assert "metadata is corrupt" in str(excinfo.value)
@@ -550,7 +550,7 @@ def test_the_corrupt_meta_message_names_what_the_user_typed() -> None:
     entry = _cmd("my tool")
     (store.scripts_dir() / entry.slug / "meta.toml").write_text("oops = [", encoding="utf-8")
 
-    with pytest.raises(store.NotFoundError) as excinfo:
+    with pytest.raises(store.CorruptEntryError) as excinfo:
         store.resolve("my tool")
 
     assert "my tool: metadata is corrupt" in str(excinfo.value)
@@ -575,7 +575,7 @@ def test_the_fallback_path_names_what_the_user_typed_too(monkeypatch: pytest.Mon
 
     monkeypatch.setattr(store, "_read_meta", flaky)
 
-    with pytest.raises(store.NotFoundError) as excinfo:
+    with pytest.raises(store.CorruptEntryError) as excinfo:
         store.resolve("hola")
 
     assert "hola: metadata is corrupt" in str(excinfo.value)

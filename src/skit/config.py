@@ -103,6 +103,10 @@ def save_config(doc: Mapping[str, Any]) -> None:
     atomic_write_toml(_config_path(), dict(doc))
 
 
+class ConfigWriteError(OSError):
+    """An expected filesystem failure while updating skit's own config."""
+
+
 _CONFIG_LOCK_POLL_SECONDS = 0.05
 
 
@@ -115,11 +119,16 @@ def _config_lock() -> Iterator[None]:
     replace then silently erase the earlier one. The persistent OS-backed lock is also
     used by i18n's language writer, store metadata, the registry, and JS installs.
     """
-    with advisory_file_lock(
-        _config_path().with_suffix(".lock"),
-        poll_seconds=_CONFIG_LOCK_POLL_SECONDS,
-    ):
-        yield
+    try:
+        with advisory_file_lock(
+            _config_path().with_suffix(".lock"),
+            poll_seconds=_CONFIG_LOCK_POLL_SECONDS,
+        ):
+            yield
+    except ConfigWriteError:
+        raise
+    except OSError as exc:
+        raise ConfigWriteError(exc.errno, exc.strerror or str(exc), exc.filename) from exc
 
 
 def _load_config_for_save() -> dict[str, Any]:

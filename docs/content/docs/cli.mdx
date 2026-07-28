@@ -29,9 +29,9 @@ the same actions, deterministic behavior.
 | Code | Meaning |
 | --- | --- |
 | `0` | success, including deliberately answering “no” to a destructive confirmation |
-| `2` | usage error — bad flag combination, unknown `--set` name, unknown preset, or any flag skit cannot honour (`skit params` refuses the whole invocation and writes nothing) |
-| `125` | skit-side failure — missing/invalid parameter value, drift, token expansion error, over-long rendered command |
-| `126` | the target exists but can't run — missing interpreter or JS runtime, a `needs` command absent from `PATH`, no runner resolvable for a prompt |
+| `2` | usage error — bad flag combination, unknown `--set` name, unknown preset, an explicit unknown `--runner`, or any flag skit cannot honour (`skit params` refuses the whole invocation and writes nothing) |
+| `125` | skit-side failure — missing/invalid parameter value, corrupt metadata, filesystem failure, drift, token expansion error, over-long rendered command |
+| `126` | the target exists but can't run — missing interpreter or JS runtime, a `needs` command absent from `PATH`, no prompt runner selected, or a saved runner pin that is no longer configured |
 | `127` | no such entry in the library, or its launch/edit target is gone from disk |
 | `130` | an interactive flow was aborted with Ctrl-C or EOF (128 + SIGINT) |
 
@@ -40,6 +40,10 @@ the same actions, deterministic behavior.
 by signal N reports `128+N`, matching POSIX shells. `skit doctor`'s exit code
 reflects uv availability only (0 = present or not needed, 1 = required but
 missing); per-entry warnings never change it.
+
+If saving remembered values or run history fails after the process has already
+finished, skit warns on stderr but still returns the process's status. Persistence
+cannot retroactively change what the child returned.
 
 `127` is the answer from **every** command that takes an entry name — `run`, `show`,
 `params`, `deps`, `describe`, `rename`, `remove`, `edit`, `preset save/list/delete` —

@@ -27,13 +27,14 @@ import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, NoReturn, cast, overload
+from typing import TYPE_CHECKING, Any, NoReturn, cast, overload
 
 import click
 import typer
 from rich.console import Console
 from rich.markup import escape
 from rich.prompt import Confirm, Prompt
+from typer.core import TyperGroup
 
 # Kept eager: every command needs the library and its config, and i18n must initialize
 # before the decorators below resolve their help strings. Everything else a command body
@@ -71,8 +72,32 @@ if TYPE_CHECKING:
     from . import agentskill, analysis, flows
     from .langs.base import LangSpec
 
+
+def _invoke_with_error_boundary(group: TyperGroup, ctx: Any) -> Any:
+    """Invoke the root group behind skit's expected-error boundary.
+
+    Kept as an undecorated function so the decisions remain visible to mutation
+    testing; the tiny class below only installs it as Typer's method hook.
+    """
+    try:
+        return TyperGroup.invoke(group, ctx)
+    except (EOFError, KeyboardInterrupt, click.exceptions.Abort):
+        raise _abort_interaction() from None
+    except store.StoreError as exc:
+        raise _fail_store(exc) from exc
+    except config.ConfigWriteError as exc:
+        raise _fail_operational(exc) from exc
+
+
+class _SkitGroup(TyperGroup):
+    """Root group with a mutation-visible invocation boundary."""
+
+    invoke = _invoke_with_error_boundary
+
+
 app = typer.Typer(
     name="skit",
+    cls=_SkitGroup,
     help=gettext(
         "skit — a launcher and parameter manager for scripts, prompts, programs, and commands. "
         "Run it without a subcommand to open the main menu."
@@ -102,6 +127,11 @@ def _exit_passthrough(code: int) -> typer.Exit:
     return typer.Exit(code)
 
 
+def _exit_doctor_health(code: int) -> typer.Exit:
+    """Doctor's one named exception to skit's process-status taxonomy."""
+    return typer.Exit(code)
+
+
 def _fail_not_found(exc: Exception) -> typer.Exit:
     """ "No such entry" — ONE exit code, wherever the lookup happened.
 
@@ -120,11 +150,26 @@ def _fail_store(exc: store.StoreError) -> typer.Exit:
     """Classify one store failure by meaning, independent of the command that caught it."""
     if isinstance(exc, store.NotFoundError):
         code = EXIT_NOT_FOUND
-    elif isinstance(exc, (store.StoreUsageError, store.NameConflictError)):
+    elif isinstance(exc, store.StoreUsageError):
         code = EXIT_USAGE
     else:
         code = EXIT_SKIT
     return _fail(str(exc), code)
+
+
+def _fail_operational(exc: OSError) -> typer.Exit:
+    """Turn an expected local filesystem failure into a clean skit-side refusal."""
+    return _fail(
+        gettext("skit couldn't complete the filesystem operation: %(error)s")
+        % {"error": exc.strerror or str(exc)},
+        EXIT_SKIT,
+    )
+
+
+def _abort_interaction() -> typer.Exit:
+    """One localized status for EOF/Ctrl-C escaping any CLI prompt implementation."""
+    console.print(f"[dim]{gettext('Cancelled.')}[/dim]")
+    return typer.Exit(EXIT_ABORTED)
 
 
 def _fail_authoring(exc: Exception) -> typer.Exit:
@@ -207,6 +252,12 @@ def _cancelled_add() -> NoReturn:
     raise typer.Exit(EXIT_CANCELLED)
 
 
+def _declined_add() -> NoReturn:
+    """A deliberate no to an optional add offer is success, with no side effects."""
+    console.print(f"[dim]{gettext('Nothing was added.')}[/dim]")
+    raise typer.Exit(exitcodes.EXIT_SUCCESS)
+
+
 def _confirm_destructive(question: str) -> None:
     """Ask before destroying something, and distinguish decline from abort.
 
@@ -284,7 +335,7 @@ def main(
         _maybe_first_run_setup()
         from .tui import run_menu
 
-        raise typer.Exit(run_menu())
+        raise _exit_passthrough(run_menu())
 
 
 # --------------------------------------------------------------------------
@@ -1224,7 +1275,7 @@ def _onboard_prompt(
     try:
         text = prompt_text.read(resolved)
     except prompt_text.PromptEncodingError as exc:
-        raise store.StoreError(str(exc)) from exc
+        raise store.StoreUsageError(str(exc)) from exc
     except OSError as exc:
         raise store.StoreError(
             gettext("Can't read %(path)s: %(error)s")
@@ -2003,7 +2054,7 @@ def add(
                     default=True,
                     console=console,
                 ):
-                    _cancelled_add()
+                    _declined_add()
                 kind = "exe"
             else:
                 _require_file(resolved)
@@ -3048,6 +3099,8 @@ def _resolve_run_runner(
     names = [r.name for r in runners]
     chosen = runner_opt.strip() if runner_opt is not None else entry.meta.runner
     picked = runner_opt is not None
+    if runner_opt is not None and not chosen:
+        raise _fail(gettext("--runner needs a configured runner name."), EXIT_USAGE)
     if not chosen and not no_input and _is_interactive() and names:
         last = argstate.load_last_runner()
         console.print(f"[dim]{_custom_runner_hint()}[/dim]")
@@ -3084,7 +3137,7 @@ def _resolve_run_runner(
                 "runners with: skit runner list"
             )
             % {"runner": chosen, "names": ", ".join(names) or "—"},
-            EXIT_NOT_EXECUTABLE,
+            EXIT_USAGE if runner_opt is not None else EXIT_NOT_EXECUTABLE,
         )
     if picked:
         argstate.save_last_runner(chosen)
@@ -3404,23 +3457,34 @@ def run(
         # values are still the values the user asked to keep (the rule below).
         # Without this, --save-preset on a server/watch script would be silently
         # dropped by the very keystroke that normally ends it.
-        _on_accepted()
+        persistence_error = flows.post_run_persistence_error(_on_accepted)
+        if persistence_error is not None:
+            err_console.print(f"[yellow]{escape(persistence_error)}[/yellow]")
         raise
     code = outcome.code
     if code is None:
-        raise _fail(outcome.message, exitcodes.exit_code_for_failure(outcome.failure))
+        raise _fail(
+            outcome.message,
+            exitcodes.exit_code_for_failure(flows.failure_reason(outcome)),
+        )
+
     # The launch was accepted (the script's own exit code is the script's business —
     # its values are still the values the user asked to keep).
-    _on_accepted()
-    if raw:
-        # The escape hatch leaves no fingerprints: it consulted no form memory, so it
-        # must not rewrite it either (values/extra args survive for the next real run).
-        # The run stamp still lands — Library sorting and `r` treat it as a run.
-        argstate.record_run(entry.slug, code, at=models.now_iso())
-    else:
-        flows.save_after_run(
-            entry.slug, plan, values, extra, code, at=models.now_iso(), extra_raw=extra_raw
-        )
+    def _persist_accepted_run() -> None:
+        _on_accepted()
+        if raw:
+            # The escape hatch leaves no fingerprints: it consulted no form memory, so it
+            # must not rewrite it either (values/extra args survive for the next real run).
+            # The run stamp still lands — Library sorting and `r` treat it as a run.
+            argstate.record_run(entry.slug, code, at=models.now_iso())
+        else:
+            flows.save_after_run(
+                entry.slug, plan, values, extra, code, at=models.now_iso(), extra_raw=extra_raw
+            )
+
+    persistence_error = flows.post_run_persistence_error(_persist_accepted_run)
+    if persistence_error is not None:
+        err_console.print(f"[yellow]{escape(persistence_error)}[/yellow]")
     if code != 0:
         err_console.print(
             f"[yellow]{gettext('Run exited with code %(code)s') % {'code': code}}[/yellow]"
@@ -5525,7 +5589,7 @@ def doctor(
                 ensure_ascii=False,
             )
         )
-        raise typer.Exit(_doctor_exit_code(uv, entries))
+        raise _exit_doctor_health(_doctor_exit_code(uv, entries))
     if uv:
         console.print(f"[green]✓ {gettext('uv: %(path)s') % {'path': escape(uv)}}[/green]")
     else:
@@ -5576,7 +5640,7 @@ def doctor(
     # do I back up?" was unanswerable from the tool that exists to answer it.
     console.print(gettext("Config: %(path)s") % {"path": escape(str(config_dir()))})
     console.print(gettext("State: %(path)s") % {"path": escape(str(state_dir()))})
-    raise typer.Exit(_doctor_exit_code(uv, entries))
+    raise _exit_doctor_health(_doctor_exit_code(uv, entries))
 
 
 # --------------------------------------------------------------------------

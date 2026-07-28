@@ -371,7 +371,7 @@ async def test_pending_run_carries_the_marker_into_the_deferred_save(tmp_path, m
     plan = flows.plan_for_entry(entry)
     asm = flows.assemble(plan, {}, ["out_{today}.txt"], cwd=tmp_path)
     monkeypatch.setattr("builtins.print", lambda *a, **k: None)
-    monkeypatch.setattr(flows, "execute", lambda *a, **k: flows.RunOutcome(0, "", ""))
+    monkeypatch.setattr(flows, "execute", lambda *a, **k: flows.RunOutcome(0))
 
     tui._finish_run(
         tui.PendingRun(entry, plan, asm, {}, ["out_{today}.txt"], extra_raw=True, show_drift=False)
@@ -1251,7 +1251,7 @@ def test_the_exit_after_run_path_prints_the_note_too(
     asm = flows.assemble(plan, {}, list(extra), cwd=tmp_path, expand_extra=extra_raw)
     rec = _PrintRecorder()
     monkeypatch.setattr("builtins.print", rec)
-    monkeypatch.setattr(flows, "execute", lambda *a, **k: flows.RunOutcome(0, "", ""))
+    monkeypatch.setattr(flows, "execute", lambda *a, **k: flows.RunOutcome(0))
 
     tui._finish_run(
         tui.PendingRun(entry, plan, asm, {}, list(extra), extra_raw=extra_raw, show_drift=False)

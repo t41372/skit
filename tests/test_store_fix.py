@@ -84,7 +84,7 @@ def test_doctor_rebuild_reports_missing_key_instead_of_crashing(sample_script, t
     assert any("bad-slug" in p for p in problems)
 
 
-def test_resolve_corrupt_missing_key_meta_raises_notfounderror_not_keyerror(tmp_path):
+def test_resolve_corrupt_missing_key_meta_raises_corruption_not_keyerror(tmp_path):
     from skit import store
     from skit.atomic import atomic_write_toml
     from skit.paths import registry_path
@@ -95,7 +95,7 @@ def test_resolve_corrupt_missing_key_meta_raises_notfounderror_not_keyerror(tmp_
         {"entries": {"bad-slug": {"name": "bad", "kind": "python", "description": ""}}},
     )
 
-    with pytest.raises(store.NotFoundError):
+    with pytest.raises(store.CorruptEntryError):
         store.resolve("bad-slug")
 
 
@@ -160,7 +160,7 @@ def test_doctor_rebuild_reports_scalar_params_instead_of_crashing(sample_script,
     assert any("bad-type-slug" in p for p in problems)
 
 
-def test_resolve_scalar_dependencies_meta_raises_notfounderror_not_typeerror(tmp_path):
+def test_resolve_scalar_dependencies_meta_raises_corruption_not_typeerror(tmp_path):
     from skit import store
     from skit.atomic import atomic_write_toml
     from skit.paths import registry_path
@@ -171,7 +171,7 @@ def test_resolve_scalar_dependencies_meta_raises_notfounderror_not_typeerror(tmp
         {"entries": {"bad-type-slug": {"name": "bad", "kind": "python", "description": ""}}},
     )
 
-    with pytest.raises(store.NotFoundError):
+    with pytest.raises(store.CorruptEntryError):
         store.resolve("bad-type-slug")
 
 

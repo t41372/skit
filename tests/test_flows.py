@@ -1093,7 +1093,7 @@ def test_execute_runs_and_returns_the_scripts_exit_code(tmp_path, monkeypatch):
     outcome = flows.execute(entry, flows.FormPlan(source="none"), flows.Assembly(), emit=emit)
     assert outcome.code == 7
     assert outcome.launched is True
-    assert outcome.failure == ""
+    assert outcome.failure is None
     assert lines  # the command line was emitted
 
 

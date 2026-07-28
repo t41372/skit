@@ -150,6 +150,38 @@ async def test_nonzero_exit_records_failed_status(tmp_path, stay_suspend, monkey
     assert status == "Last: a ✗ failed (code 3)"
 
 
+async def test_stay_run_state_failure_warns_without_losing_run_status(
+    tmp_path, stay_suspend, monkeypatch
+):
+    monkeypatch.setattr(launcher, "run_entry", lambda *a, **k: 0)
+
+    def denied(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError(13, "Permission denied", "state.toml")
+
+    notices: list[tuple[str, str]] = []
+    monkeypatch.setattr(flows, "save_after_run", denied)
+    monkeypatch.setattr(
+        tui.MenuApp,
+        "notify",
+        lambda _self, message, *, severity="information", **_kwargs: notices.append(
+            (str(message), severity)
+        ),
+    )
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="a")
+    plan = flows.FormPlan(source="none")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._execute(entry, plan, {}, [])
+        await pilot.pause()
+        status = str(app.query_one("#status", Static).render())
+
+    assert status == "Last: a ✓ finished"
+    assert notices == [
+        ("The entry ran, but skit couldn't save its state: Permission denied", "warning")
+    ]
+
+
 async def test_the_suspend_body_wires_the_warn_channel_to_a_flushed_print(
     tmp_path, stay_suspend, monkeypatch
 ):
@@ -162,7 +194,7 @@ async def test_the_suspend_body_wires_the_warn_channel_to_a_flushed_print(
 
     def warning_execute(_entry, _plan, _asm, *, emit, warn, invoke_cwd=None, runner=None):
         warn("WARN-SENTINEL")
-        return flows.RunOutcome(0, "", "")
+        return flows.RunOutcome(0)
 
     monkeypatch.setattr(tui.flows, "execute", warning_execute)
     entry = store.add_python(_py(tmp_path, "print(1)\n"), name="a")

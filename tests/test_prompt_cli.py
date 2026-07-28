@@ -735,12 +735,22 @@ def test_run_prompt_pin_resolves_without_touching_last_picked(tmp_path, spawn_sp
     assert argstate.load_last_runner() == ""  # using a pin is not a pick
 
 
-def test_run_prompt_unknown_runner_is_126_listing_names(tmp_path):
+def test_run_prompt_explicit_unknown_runner_is_usage_listing_names(tmp_path):
     _added(tmp_path)
     result = runner.invoke(cli.app, ["run", "p", "--runner", "ghost", "--set", "a=1", "--no-input"])
-    assert result.exit_code == 126
+    assert result.exit_code == 2
     assert "ghost" in result.output
     assert "claude" in result.output
+
+
+def test_run_prompt_explicit_empty_runner_is_usage(tmp_path):
+    _added(tmp_path)
+    result = runner.invoke(
+        cli.app,
+        ["run", "p", "--runner", " ", "--set", "a=1", "--no-input"],
+    )
+    assert result.exit_code == 2
+    assert "--runner needs a configured runner name" in result.output
 
 
 def test_run_prompt_pinned_but_removed_runner_is_126(tmp_path):

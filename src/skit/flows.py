@@ -909,12 +909,38 @@ class RunOutcome:
     script never launched (failure names why, message is user-ready and localized)."""
 
     code: int | None
-    failure: FailureReason | str = ""
+    failure: FailureReason | None = None
     message: str = ""
 
     @property
     def launched(self) -> bool:
         return self.code is not None
+
+
+def failure_reason(outcome: RunOutcome) -> FailureReason:
+    """Return the refusal reason after the caller established that nothing launched."""
+    if outcome.failure is None:
+        raise AssertionError("a launch refusal must carry a failure reason")
+    return outcome.failure
+
+
+def post_run_persistence_error(persist: Callable[[], None]) -> str | None:
+    """Attempt incidental state persistence without stealing an executed child's status.
+
+    A launched process owns its exit code. Remembered values and run history are useful,
+    but a full disk or unreadable state directory happens after that process has already
+    done real work and cannot retroactively turn its status into Click's generic exit 1.
+    Explicit accepted-point mutations are still supplied by the caller in ``persist``;
+    the warning therefore says state was not saved rather than pretending the request
+    succeeded.
+    """
+    try:
+        persist()
+    except OSError as exc:
+        return gettext("The entry ran, but skit couldn't save its state: %(error)s") % {
+            "error": exc.strerror or str(exc)
+        }
+    return None
 
 
 def transparency_lines(

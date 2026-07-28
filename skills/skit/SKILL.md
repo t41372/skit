@@ -98,9 +98,9 @@ When the entry's target process actually ran, its exit code passes through **unt
 | code | meaning |
 | --- | --- |
 | 0 | success, including a deliberate "no" to a destructive confirmation |
-| 2 | usage error (bad flags, unknown `--set` name, unknown preset) |
-| 125 | skit-side failure: missing/invalid parameter value, drift, launch failure |
-| 126 | target exists but is not executable |
+| 2 | usage error (bad flags, unknown `--set` name/preset, explicit unknown `--runner`) |
+| 125 | skit-side failure: corrupt metadata, filesystem failure, bad value, drift |
+| 126 | target exists but is not executable/resolvable, including a stale saved runner pin |
 | 127 | no such entry in the library (or launch target missing) |
 | 130 | an interactive flow was aborted with Ctrl-C or EOF |
 
@@ -241,7 +241,8 @@ skit params <name> --no-interpolate  # switch insertion off; --interpolate turns
 
 - **A run needs a runner.** Resolution is `--runner` > the entry's pin > exit 126 —
   never a guess (interactive terminals get asked; `--no-input` never does). Check
-  `runners_available` in `skit show <name> --json` before picking.
+  `runners_available` in `skit show <name> --json` before picking. Passing a name that
+  is not in that list is usage 2; a previously saved pin whose row was removed is 126.
 - Prompts contain code snippets, so a detected `{{hole}}` can be a false positive:
   unmanaged holes pass through to the agent verbatim, `--rm` unmanages, and
   `--no-interpolate` switches the whole entry to verbatim delivery. `skit params

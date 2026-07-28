@@ -176,7 +176,7 @@ def test_finish_run_wires_the_warn_channel_to_a_flushed_print(tmp_path, monkeypa
 
     def warning_execute(_entry, _plan, _asm, *, emit, warn, invoke_cwd=None, runner=None):
         warn("WARN-SENTINEL")
-        return flows.RunOutcome(0, "", "")
+        return flows.RunOutcome(0)
 
     monkeypatch.setattr(flows, "execute", warning_execute)
 
@@ -188,18 +188,19 @@ def test_finish_run_wires_the_warn_channel_to_a_flushed_print(tmp_path, monkeypa
     assert warned[1].get("flush") is True
 
 
-def test_finish_run_unmapped_failure_falls_back_to_generic_skit_error_code(tmp_path, monkeypatch):
-    """Defensive default: an unknown failure reason maps to 125, the generic
-    skit-error docker code — never None (would break the int contract) and never another
-    code. Reached by handing _finish_run an outcome carrying an unrecognized failure."""
-    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="weird")
+def test_finish_run_state_failure_warns_and_preserves_child_status(tmp_path, monkeypatch):
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="stateful")
     plan = flows.plan_for_entry(entry)
     asm = flows.assemble(plan, {}, [], cwd=tmp_path)
-    monkeypatch.setattr("builtins.print", lambda *a, **k: None)
-    monkeypatch.setattr(
-        flows,
-        "execute",
-        lambda *a, **k: flows.RunOutcome(None, "totally-unknown-failure", "boom"),
-    )
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: calls.append((a, k)))
+    monkeypatch.setattr(flows, "execute", lambda *_a, **_k: flows.RunOutcome(42))
+
+    def denied(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError(13, "Permission denied", "state.toml")
+
+    monkeypatch.setattr(flows, "save_after_run", denied)
     pending = tui.PendingRun(entry, plan, asm, {}, [], extra_raw=True, show_drift=False)
-    assert tui._finish_run(pending) == 125
+
+    assert tui._finish_run(pending) == 42
+    assert any("couldn't save its state" in str(args[0]) for args, _kwargs in calls if args)

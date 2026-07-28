@@ -54,7 +54,7 @@ class StoreUsageError(StoreError):
     the usage exit code so `skit deps` agrees with `skit add` on what a refusal looks like."""
 
 
-class NameConflictError(StoreError):
+class NameConflictError(StoreUsageError):
     pass
 
 
@@ -62,11 +62,21 @@ class NotFoundError(StoreError):
     pass
 
 
+class CorruptEntryError(StoreError):
+    """An indexed entry exists, but its authoritative metadata cannot be read."""
+
+
 def _hash_file(path: Path) -> str:
     h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):  # pragma: no mutate
-            h.update(chunk)
+    try:
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):  # pragma: no mutate
+                h.update(chunk)
+    except OSError as exc:
+        raise StoreError(
+            gettext("Can't read %(path)s: %(error)s")
+            % {"path": str(path), "error": exc.strerror or str(exc)}
+        ) from exc
     return f"sha256:{h.hexdigest()}"
 
 
@@ -572,7 +582,7 @@ def add_prompt(
     except prompt_text.PromptEncodingError as exc:
         # Validate before hashing, allocating an entry directory, or touching the
         # registry: invalid payload bytes are a clean all-or-nothing add refusal.
-        raise StoreError(str(exc)) from exc
+        raise StoreUsageError(str(exc)) from exc
     except OSError as exc:
         raise StoreError(
             gettext("Can't read %(path)s: %(error)s")
@@ -1132,8 +1142,10 @@ def _entry_at(slug: str, requested: str) -> Entry:
     entry_dir = scripts_dir() / slug
     try:
         meta = _read_meta(entry_dir)
+    except FileNotFoundError as exc:
+        raise NotFoundError(gettext("Script not found: %(name)s") % {"name": requested}) from exc
     except _META_CORRUPTION as exc:
-        raise NotFoundError(
+        raise CorruptEntryError(
             gettext("%(name)s: metadata is corrupt (%(error)s); run skit doctor --rebuild")
             % {"name": requested, "error": str(exc)}
         ) from exc
