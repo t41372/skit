@@ -124,7 +124,7 @@ def test_add_prompt_read_oserror_is_a_clean_store_error(tmp_path, monkeypatch):
     monkeypatch.setattr("skit.langs.prompt.text.read", denied)
     result = runner.invoke(cli.app, ["add", str(source), "--prompt", "--no-input"])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert "Can't read" in result.output
     assert str(source) in result.output.replace("\n", "")
     assert "permission denied" in result.output
@@ -320,7 +320,7 @@ def test_add_prompt_missing_file_is_clean_on_the_panel_face(tmp_path, monkeypatc
         lambda *a, **kw: pytest.fail("the panel must not open for a missing file"),
     )
     result = runner.invoke(cli.app, ["add", str(tmp_path / "typo.prompt.md")])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
     assert "File not found" in result.output
 
 
@@ -382,7 +382,7 @@ def test_missing_bare_md_is_refused_before_the_prompt_confirmation(tmp_path, mon
     monkeypatch.setattr(cli.Confirm, "ask", staticmethod(asked))
     missing = tmp_path / "missing.md"
     result = runner.invoke(cli.app, ["add", str(missing)])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
     assert "File not found:" in result.output
     assert "missing.md" in result.output
 
@@ -500,7 +500,7 @@ def test_add_kind_prompt_from_stdin_uses_the_prompt_contract(tmp_path):
 
 def test_add_prompt_from_stdin_empty_body(tmp_path):
     result = runner.invoke(cli.app, ["add", "-", "--prompt", "-n", "e"], input="  \n")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Nothing arrived on stdin" in result.output
 
 
@@ -556,7 +556,7 @@ def test_add_prompt_editor_lane_name_taken_refuses_before_the_editor(tmp_path, m
     store.add_prompt(tmp_path / "e.prompt.md", name="taken")
     monkeypatch.setattr(cli.editor, "open_in_editor", _never)  # must NOT be launched
     result = runner.invoke(cli.app, ["add", "--prompt", "-n", "taken"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "already taken" in result.output
     # _never raises AssertionError if the editor opens — a clean SystemExit proves refusal
     # happened before the editor.
@@ -580,7 +580,7 @@ def test_add_prompt_editor_lane_post_edit_failure_keeps_the_draft(tmp_path, monk
     monkeypatch.setattr(cli, "_onboard_prompt", onboard_boom)
     result = runner.invoke(cli.app, ["add", "--prompt", "-n", "keptprompt"])
     try:
-        assert result.exit_code == 1
+        assert result.exit_code == 125
         assert "Your draft was kept at" in result.output
         assert seen["path"].exists()  # the draft survived the failure
         assert store.list_entries() == []  # nothing added
@@ -598,7 +598,7 @@ def test_add_prompt_editor_lane_deleted_draft_is_a_clean_honest_failure(tmp_path
 
     monkeypatch.setattr(cli.editor, "open_in_editor", delete)
     result = runner.invoke(cli.app, ["add", "--prompt", "-n", "gone"])
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert "Can't read" in result.output
     assert "The draft is no longer at" in result.output
     assert "Your draft was kept at" not in result.output
@@ -1208,7 +1208,7 @@ def test_params_interpolate_with_json_emits_the_read_view(tmp_path):
 def test_params_runner_pin_validates_the_name(tmp_path):
     _added(tmp_path)
     result = runner.invoke(cli.app, ["params", "p", "--runner", "ghost"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "isn't configured" in result.output
     assert store.resolve("p").meta.runner == ""
 
@@ -1216,7 +1216,7 @@ def test_params_runner_pin_validates_the_name(tmp_path):
 def test_params_runner_pin_refused_on_non_prompt(tmp_path):
     store.add_command("echo {m}", name="cmd")
     result = runner.invoke(cli.app, ["params", "cmd", "--runner", "claude"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "--runner only applies to prompt entries" in result.output
 
 
@@ -1432,7 +1432,7 @@ def test_runner_add_preserves_bad_rows_and_force_repairs_matching_name(tmp_path)
     ]
 
     refused = runner.invoke(cli.app, ["runner", "add", "typo", "fixed", "{{prompt}}"])
-    assert refused.exit_code == 1
+    assert refused.exit_code == 2
     repaired = runner.invoke(
         cli.app,
         ["runner", "add", "typo", "--force", "--", "fixed", "{{prompt}}"],
@@ -1469,7 +1469,7 @@ def test_runner_add_validation_errors(tmp_path):
 
 def test_runner_add_duplicate_name_refused(tmp_path):
     result = runner.invoke(cli.app, ["runner", "add", "claude", "x", "{{prompt}}"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "already exists" in result.output
 
 
@@ -1483,7 +1483,7 @@ def test_runner_add_duplicate_name_refused(tmp_path):
 def test_runner_add_reports_malformed_config_container(tmp_path, prompt_value, needle):
     config.save_config({"prompt": prompt_value})
     result = runner.invoke(cli.app, ["runner", "add", "new", "new", "{{prompt}}"])
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert needle in result.output
     assert config.load_config()["prompt"] == prompt_value
 
@@ -1493,7 +1493,7 @@ def test_runner_remove_and_unknown(tmp_path):
     assert runner.invoke(cli.app, ["runner", "remove", " amp ", "-y"]).exit_code == 0
     assert config.find_prompt_runner("amp") is None
     result = runner.invoke(cli.app, ["runner", "remove", "amp", "-y"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Unknown runner" in result.output
 
 
@@ -1550,15 +1550,11 @@ def test_runner_remove_confirms_unless_yes(tmp_path, monkeypatch):
     assert "Runner amp removed." in result.output
 
 
-def test_runner_remove_abort_keeps_the_runner(tmp_path, monkeypatch):
-    """Answering "n" (or EOF) aborts: exit 1, nothing removed — the confirm really guards."""
+def test_runner_remove_decline_keeps_the_runner(tmp_path, monkeypatch):
+    """Answering "n" declines normally: exit 0, nothing removed."""
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     result = runner.invoke(cli.app, ["runner", "remove", "amp"], input="n\n")
-    # ROUND 12: 130, not 1. Declining a destructive question is the deliberate,
-    # correct answer to it — the add lanes have always answered 130 with a
-    # translated line, while these three died as click's untranslated red
-    # `Aborted.` at an exit code the docs reserve for the launched script.
-    assert result.exit_code == 130  # typer.confirm(abort=True) → Abort → exit 1
+    assert result.exit_code == 0
     assert config.find_prompt_runner("amp") is not None  # still configured
     assert "Runner amp removed." not in result.output
 
@@ -1599,7 +1595,7 @@ def test_runner_remove_raw_row_is_targeted_and_requires_yes_noninteractively(tmp
         "untouched",
     ]
     unknown = runner.invoke(cli.app, ["runner", "remove", "--row", "9", "--yes"])
-    assert unknown.exit_code == 1
+    assert unknown.exit_code == 2
     assert "runner list --all" in unknown.output
 
 
@@ -1660,7 +1656,7 @@ def test_runner_remove_raw_row_refuses_if_index_shifted_during_confirmation(tmp_
     monkeypatch.setattr(cli.typer, "confirm", shift_before_confirm)
     result = runner.invoke(cli.app, ["runner", "remove", "--row", "1"])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert "changed before it could be removed" in result.output
     assert config.load_config()["prompt"]["runners"] == [inserted, *original]
 
@@ -1677,7 +1673,7 @@ def test_runner_remove_name_refuses_if_key_is_replaced_during_confirmation(tmp_p
     monkeypatch.setattr(cli.typer, "confirm", replace_during_confirm)
     result = runner.invoke(cli.app, ["runner", "remove", "victim"])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert "changed before it could be removed" in result.output
     assert config.find_prompt_runner("victim") == replacement
 
@@ -1753,7 +1749,7 @@ def test_add_prompt_unreadable_file_is_a_store_error(tmp_path):
     trap = tmp_path / "dir.prompt.md"
     trap.mkdir()  # read_text raises IsADirectoryError (an OSError) while it "exists"
     result = runner.invoke(cli.app, ["add", str(trap), "--no-input"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Not a file" in result.output
 
 
@@ -1795,14 +1791,14 @@ def test_add_prompt_editor_lane_reports_store_errors(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.editor, "open_in_editor", lambda path: path.write_text("body {{x}}\n"))
     store.add_command("echo hi", name="taken")  # the editor lane's add will collide
     result = runner.invoke(cli.app, ["add", "--prompt"])  # name asked interactively
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "already taken" in result.output
 
 
 def test_add_prompt_stdin_lane_reports_store_errors(tmp_path):
     store.add_command("echo hi", name="taken")
     result = runner.invoke(cli.app, ["add", "-", "--prompt", "-n", "taken"], input="b\n")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "already taken" in result.output
 
 
@@ -1823,7 +1819,7 @@ def test_params_runner_pin_reports_store_errors(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli.store, "write_prompt_runner", boom)
     result = runner.invoke(cli.app, ["params", "p", "--runner", "claude"])
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert "disk on fire" in result.output
 
 
@@ -1955,14 +1951,14 @@ def test_params_interpolate_reports_store_errors(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli.store, "write_prompt_interpolate", boom)
     result = runner.invoke(cli.app, ["params", "p", "--no-interpolate"])
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert "disk on fire" in result.output
 
 
 def test_params_interpolate_refused_on_non_prompt(tmp_path):
     store.add_command("echo {m}", name="cmd")
     result = runner.invoke(cli.app, ["params", "cmd", "--no-interpolate"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "--interpolate only applies to prompt entries" in result.output
 
 
@@ -2039,7 +2035,7 @@ def test_params_schema_edits_refused_while_insertion_is_off(tmp_path):
     runner.invoke(cli.app, ["params", "p", "--no-interpolate"])
     for flags in (["--add", "b"], ["--rm", "a"], ["--deliver", "a=placeholder"]):
         result = runner.invoke(cli.app, ["params", "p", *flags])
-        assert result.exit_code == 1, flags
+        assert result.exit_code == 2, flags
         assert "Variable insertion is off" in result.output
     assert store.resolve("p").meta.params == ["a", "b"]  # nothing was mutated
     runner.invoke(cli.app, ["params", "p", "--interpolate"])

@@ -1185,7 +1185,7 @@ def test_create_in_editor_deleted_draft_is_a_clean_honest_failure(monkeypatch):
 
     monkeypatch.setattr(cli.editor, "open_in_editor", delete)
     result = runner.invoke(cli.app, ["add", "-e", "--name", "gone"])
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     output = _norm(result.output)
     assert "Can't read" in output
     assert "The draft is no longer at" in output
@@ -1432,7 +1432,7 @@ def test_edit_params_renders_reconcile_warning(tmp_path):
 def test_edit_params_non_python_message_exact():
     store.add_command("echo hi", name="c")
     result = runner.invoke(cli.app, ["params", "c", "--resync"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     out = _norm(result.output)
     assert "c has no managed parameters — its kind has no analyzer to read them from." in out
     assert "XX" not in out
@@ -1441,7 +1441,7 @@ def test_edit_params_non_python_message_exact():
 def test_edit_params_reference_message_exact(tmp_path):
     store.add_python(_py(tmp_path, 'CITY = "x"\nprint(CITY)\n'), name="r", mode="reference")
     result = runner.invoke(cli.app, ["params", "r", "--resync"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     out = _norm(result.output)
     assert (
         "r is in reference mode, and skit never writes the original file. Edit the [tool.skit] "
@@ -1455,7 +1455,7 @@ def test_edit_params_reference_regression_literal_tool_skit_visible(tmp_path):
     # not have it swallowed as (no-op) rich markup.
     store.add_python(_py(tmp_path, 'CITY = "x"\nprint(CITY)\n'), name="s", mode="reference")
     result = runner.invoke(cli.app, ["params", "s", "--resync"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     out = _norm(result.output)
     assert "[tool.skit]" in out
 
@@ -1464,7 +1464,7 @@ def test_edit_params_missing_copy_message_exact(tmp_path):
     ent = store.add_python(_py(tmp_path, 'CITY = "x"\nprint(CITY)\n'), name="a")
     ent.script_path.unlink()
     result = runner.invoke(cli.app, ["params", "a", "--resync"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
     out = _norm(result.output)
     assert "a has no stored copy to edit." in out
     assert "XX" not in out

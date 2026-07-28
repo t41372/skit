@@ -44,6 +44,7 @@ from . import (
     argstate,
     config,
     editor,
+    exitcodes,
     flows,
     kindnames,
     launcher,
@@ -1284,7 +1285,7 @@ def _finish_run(pending: PendingRun) -> int:
         # Nothing ran: no phantom history, and the process exit code follows the same
         # docker convention as `skit run`.
         print(gettext("Error: %(error)s") % {"error": outcome.message}, flush=True)
-        return flows.FAILURE_EXIT_CODES.get(outcome.failure, 125)
+        return exitcodes.exit_code_for_failure(outcome.failure)
     flows.save_after_run(
         pending.entry.slug,
         pending.plan,

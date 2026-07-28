@@ -566,7 +566,7 @@ def test_cli_python_declared_op_is_refused(tmp_path: Path):
     (tmp_path / "job.py").write_text(body, encoding="utf-8")
     store.add_python(tmp_path / "job.py", name="py")
     result = runner.invoke(cli.app, ["params", "py", "--add", "WIDTH"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "manages its parameters from the script itself" in result.output
 
 

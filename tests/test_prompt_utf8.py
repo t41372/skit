@@ -186,7 +186,7 @@ def test_invalid_utf8_prompt_stdin_fails_before_allocating_a_draft(tmp_path):
     )
 
     output = completed.stdout + completed.stderr
-    assert completed.returncode == 1
+    assert completed.returncode == 2
     assert b"<stdin>" in output
     assert b"offset 7" in output
     assert b"Traceback" not in output
@@ -203,7 +203,7 @@ def test_invalid_utf8_prompt_stdin_cli_boundary_maps_decode_error_to_clean_exit(
         input=b"Review \xff now\n",
     )
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "<stdin>" in result.output
     assert "offset 7" in " ".join(result.output.split())
     assert isinstance(result.exception, SystemExit)
@@ -264,7 +264,7 @@ def test_cli_edit_refuses_invalid_prompt_bytes_and_the_next_edit_can_repair_them
 
     refused = runner.invoke(cli.app, ["edit", entry.meta.name])
 
-    assert refused.exit_code == 1
+    assert refused.exit_code == 125
     assert "offset 7" in " ".join(refused.output.split())
     assert "Saved" not in refused.output
     assert target.read_bytes() == invalid  # authored bytes are kept for a corrective edit
@@ -320,7 +320,7 @@ async def test_library_edit_refuses_invalid_prompt_bytes_and_recovers_on_reedit(
 def test_cli_add_params_run_and_doctor_refuse_corrupt_prompt_cleanly(tmp_path, monkeypatch):
     path, offset = _invalid_prompt(tmp_path)
     added = runner.invoke(cli.app, ["add", str(path), "--prompt", "--no-input"])
-    assert added.exit_code == 1
+    assert added.exit_code == 125
     assert str(path.resolve()) in added.output.replace("\n", "")
     # rich wraps the long (absolute) path, so the "offset N" phrase can straddle a line
     # break on a narrow/Windows path — collapse whitespace runs before the substring check.
@@ -334,14 +334,14 @@ def test_cli_add_params_run_and_doctor_refuse_corrupt_prompt_cleanly(tmp_path, m
 
     for args in (["show", entry.meta.name], ["show", entry.meta.name, "--json"]):
         shown = runner.invoke(cli.app, args)
-        assert shown.exit_code == 1
+        assert shown.exit_code == 125
         assert "offset 7" in " ".join(shown.output.split())
         assert "fields" not in shown.output
         assert "No form fields" not in shown.output
         assert "�" not in shown.output
 
     shown = runner.invoke(cli.app, ["params", entry.meta.name, "--json"])
-    assert shown.exit_code == 1
+    assert shown.exit_code == 125
     assert "offset 7" in shown.output
     assert "�" not in shown.output
 

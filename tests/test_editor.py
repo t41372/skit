@@ -336,7 +336,7 @@ def test_edit_reports_editor_launch_failure(monkeypatch, tmp_path, at_a_terminal
     monkeypatch.setattr(cli.editor, "open_in_editor", fail)
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     result = runner.invoke(cli.app, ["edit", "a"])
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert "could not launch" in result.output
 
 
@@ -520,7 +520,7 @@ def test_add_edit_python_name_taken_refuses_before_the_editor(tmp_path, monkeypa
     store.add_python(_py(tmp_path, "print(1)\n", "orig.py"), name="taken")
     monkeypatch.setattr(cli.editor, "open_in_editor", _boom)  # must NOT be launched
     result = runner.invoke(cli.app, ["add", "-e", "--name", "taken"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "already taken" in result.output
     # _boom raises AssertionError if the editor is launched — a clean SystemExit means it
     # was refused before the editor ever opened.
@@ -546,7 +546,7 @@ def test_add_edit_python_post_edit_failure_keeps_the_draft(monkeypatch):
     monkeypatch.setattr(cli, "_onboard_python", onboard_boom)
     result = runner.invoke(cli.app, ["add", "-e", "--name", "keptpy"])
     try:
-        assert result.exit_code == 1
+        assert result.exit_code == 125
         assert "Your draft was kept at" in result.output
         assert seen["path"].exists()  # the draft survived the failure
         assert store.list_entries() == []  # nothing added
@@ -668,7 +668,7 @@ def test_add_edit_editor_error_exits_one(monkeypatch):
 
     monkeypatch.setattr(cli.editor, "open_in_editor", fail)
     result = runner.invoke(cli.app, ["add", "-e", "--name", "x"])
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert "cannot launch" in result.output
 
 
@@ -682,7 +682,7 @@ def test_add_edit_name_conflict_exits_one(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli.editor, "open_in_editor", write_script)
     result = runner.invoke(cli.app, ["add", "-e", "--name", "dup"])
-    assert result.exit_code == 1  # store.NameConflictError is a StoreError
+    assert result.exit_code == 2  # a name collision is invalid user input
     assert "dup" in result.output  # the name
     assert "taken" in result.output  # the StoreError is surfaced
 
@@ -714,12 +714,12 @@ def test_add_edit_writes_and_reports_managed_and_secret(monkeypatch, tmp_path):
 def test_params_edit_command_entry_refused():
     store.add_command("echo {x}", name="ec")
     result = runner.invoke(cli.app, ["params", "ec", "--resync"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
 
 
 def test_params_edit_missing_copy_refused(tmp_path):
     ent = store.add_python(_py(tmp_path, 'CITY = "x"\nprint(CITY)\n'), name="a")
     ent.script_path.unlink()
     result = runner.invoke(cli.app, ["params", "a", "--resync"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
     assert "no stored copy" in result.output

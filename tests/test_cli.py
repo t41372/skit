@@ -252,7 +252,7 @@ def test_add_exe_no_input_never_asks(tmp_path, monkeypatch):
 def test_add_exe_missing_path_errors_before_any_ask(tmp_path, monkeypatch):
     """The exe existence check is hoisted BEFORE the identity asks: adding a missing path
     with --exe interactively asks NOTHING (no name/description prompt lands, then a late
-    "File not found") and errors exit 1 — the ordering the prompt lane's _require_file
+    "File not found") and errors exit 127 — the ordering the prompt lane's _require_file
     discipline forbids."""
 
     def _boom(*a, **k):
@@ -262,7 +262,7 @@ def test_add_exe_missing_path_errors_before_any_ask(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.Prompt, "ask", _boom)
     missing = tmp_path / "ghost.bin"  # never created
     result = runner.invoke(cli.app, ["add", str(missing), "--exe"])
-    assert result.exit_code == 1, result.output
+    assert result.exit_code == 127, result.output
     assert "File not found" in result.output
 
 
@@ -290,7 +290,7 @@ def test_add_name_conflict_errors(tmp_path):
     p = _py(tmp_path, "print(1)\n")
     runner.invoke(cli.app, ["add", str(p), "--name", "dup"])
     result = runner.invoke(cli.app, ["add", str(p), "--name", "dup"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
 
 
 def test_add_missing_path_clean_error_not_traceback(tmp_path):
@@ -298,7 +298,7 @@ def test_add_missing_path_clean_error_not_traceback(tmp_path):
     # missing path's FileNotFoundError escaped as a bare traceback instead of a clean message.
     missing = tmp_path / "typo" / "path.py"
     result = runner.invoke(cli.app, ["add", str(missing)])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
     assert result.exception is None or isinstance(result.exception, SystemExit)
     assert "File not found" in result.output
 
@@ -306,12 +306,12 @@ def test_add_missing_path_clean_error_not_traceback(tmp_path):
 def test_add_directory_path_clean_error_not_traceback(tmp_path):
     # A directory is present but is not an acceptable source file. Report that truthfully,
     # without letting read_text raise a traceback or claiming the path is missing.
-    # The NAME claims a kind (adir.py -> python), so it keeps the "Not a file" exit 1 —
+    # The NAME claims a kind (adir.py -> python), so it gets a usage refusal —
     # a directory wearing a script extension is a typo, not a program to run directly.
     d = tmp_path / "adir.py"
     d.mkdir()
     result = runner.invoke(cli.app, ["add", str(d)])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert result.exception is None or isinstance(result.exception, SystemExit)
     assert "Not a file" in result.output
     assert "--exe" not in result.output  # a claimed-name dir is NOT offered the exe escape
@@ -350,7 +350,7 @@ def test_add_unreadable_file_clean_error_not_traceback(tmp_path):
         result = runner.invoke(cli.app, ["add", str(p)])
     finally:
         p.chmod(0o644)  # restore so tmp_path cleanup can remove it
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert result.exception is None or isinstance(result.exception, SystemExit)
     assert "Can't read" in result.output
 
@@ -375,7 +375,7 @@ def test_add_read_error_reports_clean_message(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Path, "read_text", failing_read_text)
     result = runner.invoke(cli.app, ["add", str(p)])
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert result.exception is None or isinstance(result.exception, SystemExit)
     assert "Can't read" in result.output
 
@@ -569,10 +569,10 @@ def test_remove_with_yes(tmp_path):
         store.resolve("a")
 
 
-def test_remove_confirm_abort(tmp_path):
+def test_remove_without_yes_refuses_in_a_pipe(tmp_path):
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     result = runner.invoke(cli.app, ["remove", "a"], input="n\n")
-    assert result.exit_code != 0  # abort
+    assert result.exit_code == 2
     assert store.resolve("a")  # still there
 
 
@@ -784,7 +784,7 @@ def test_preset_delete(tmp_path):
 def test_preset_delete_unknown(tmp_path):
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     result = runner.invoke(cli.app, ["preset", "delete", "a", "nope"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
 
 
 def test_preset_delete_not_found():
@@ -1337,7 +1337,7 @@ def test_preset_save_command_escapes_markup_in_preset_name_and_entry_name(tmp_pa
 def test_preset_delete_unknown_escapes_markup_in_preset_name():
     store.add_command("echo hi", name="a")
     result = runner.invoke(cli.app, ["preset", "delete", "a", "[red]nope[/red]"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "[red]nope[/red]" in result.output
 
 

@@ -153,7 +153,7 @@ def test_cli_params_edit_reference_refused(tmp_path):
     ent = store.add_python(script, mode="reference")
     runner = CliRunner()
     result = runner.invoke(cli.app, ["params", ent.meta.name, "--resync"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     # The original file must never be modified
     assert script.read_text(encoding="utf-8") == SCRIPT
 

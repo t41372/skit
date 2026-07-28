@@ -199,14 +199,14 @@ def test_add_stdin_requires_name():
 
 def test_add_stdin_empty_input_is_error():
     result = runner.invoke(cli.app, ["add", "-", "--name", "x"], input="")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Nothing arrived on stdin" in result.output
 
 
-def test_add_stdin_store_error_surfaces_as_exit_1():
+def test_add_stdin_store_error_surfaces_as_usage():
     runner.invoke(cli.app, ["add", "-", "--name", "dup"], input="print(1)\n")
     result = runner.invoke(cli.app, ["add", "-", "--name", "dup"], input="print(2)\n")
-    assert result.exit_code == 1  # duplicate name -> store.StoreError -> clean exit, not traceback
+    assert result.exit_code == 2  # duplicate name -> clean usage error, not traceback
 
 
 # --------------------------------------------------------------------------
@@ -357,7 +357,7 @@ def test_preset_save_from_last_without_values_errors(tmp_path):
     )
     store.add_python(_py(tmp_path, text), name="a")
     result = runner.invoke(cli.app, ["preset", "save", "a", "prod", "--from-last"])
-    assert result.exit_code == 1  # nothing remembered yet
+    assert result.exit_code == 2  # nothing remembered yet
     assert "no remembered values yet" in result.output
 
 

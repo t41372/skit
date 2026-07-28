@@ -131,7 +131,7 @@ def test_rename_success_keeps_presets_and_state(tmp_path):
 def test_rename_not_found(tmp_path):
     # 127 (round 10): rename catches the same store.NotFoundError every other command
     # does, and one error must not have two exit codes. Its OTHER refusal (a name
-    # collision, a StoreError) is a different failure and keeps 1.
+    # collision) is invalid user input and exits 2.
     result = runner.invoke(cli.app, ["rename", "ghost", "x"])
     assert result.exit_code == 127
 
@@ -140,7 +140,7 @@ def test_rename_conflict(tmp_path):
     _py(tmp_path, name="a")
     _py(tmp_path, name="b")
     result = runner.invoke(cli.app, ["rename", "a", "b"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "already taken" in result.output
     assert store.resolve("a").meta.name == "a"  # untouched
 
@@ -201,16 +201,16 @@ def test_params_workdir_absolute_path(tmp_path):
 def test_params_workdir_relative_is_clean_error(tmp_path):
     _shell(tmp_path)
     result = runner.invoke(cli.app, ["params", "sh", "--workdir", "rel/ative"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "origin, store, invoke, or an absolute path" in result.output
 
 
 def test_params_workdir_origin_on_a_command_fails_cleanly(tmp_path):
-    """`skit params <command> --workdir origin` fails cleanly (exit 1, StoreUsageError
+    """`skit params <command> --workdir origin` fails cleanly (exit 2, StoreUsageError
     surfaced) — a command has no original file for "origin" to mean."""
     runner.invoke(cli.app, ["add", "--cmd", "echo hi", "--name", "c", "--no-input"])
     result = runner.invoke(cli.app, ["params", "c", "--workdir", "origin"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "no original file — origin doesn't apply" in _flat(result.output)
     assert store.resolve("c").meta.workdir != "origin"  # nothing persisted
 
@@ -244,7 +244,7 @@ def test_params_interpreter_refused_on_python_and_prompt(tmp_path):
     _prompt(tmp_path, name="pr")
     for name in ("py", "pr"):
         result = runner.invoke(cli.app, ["params", name, "--interpreter", "zsh"])
-        assert result.exit_code == 1, (name, result.output)
+        assert result.exit_code == 2, (name, result.output)
         assert "pinnable interpreter" in result.output
 
 
@@ -256,7 +256,7 @@ def test_params_interpreter_refused_on_exe_and_command(tmp_path):
     store.add_command("echo {m}", name="cmd")
     for name in ("ex", "cmd"):
         result = runner.invoke(cli.app, ["params", name, "--interpreter", "zsh"])
-        assert result.exit_code == 1, (name, result.output)
+        assert result.exit_code == 2, (name, result.output)
         assert "pinnable interpreter" in result.output
 
 
@@ -274,14 +274,14 @@ def test_params_template_rewrite_reextracts_placeholders(tmp_path):
 def test_params_template_refused_on_non_command(tmp_path):
     _shell(tmp_path)
     result = runner.invoke(cli.app, ["params", "sh", "--template", "echo {x}"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "isn't a command entry" in result.output
 
 
 def test_params_template_empty_refused(tmp_path):
     store.add_command("echo {x}", name="cmd")
     result = runner.invoke(cli.app, ["params", "cmd", "--template", "   "])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert store.resolve("cmd").meta.template == "echo {x}"  # unchanged
 
 
@@ -421,7 +421,7 @@ def test_params_command_policy_group_is_atomic_when_interpreter_is_invalid(tmp_p
         ],
     )
 
-    assert result.exit_code == 1, result.output
+    assert result.exit_code == 2, result.output
     assert "pinnable interpreter" in result.output
     assert "Template updated" not in result.output
     assert "now runs in" not in result.output
@@ -451,7 +451,7 @@ def test_params_shell_policy_group_is_atomic_when_template_is_invalid(tmp_path):
         ],
     )
 
-    assert result.exit_code == 1, result.output
+    assert result.exit_code == 2, result.output
     assert "isn't a command entry" in result.output
     assert "Template updated" not in result.output
     assert "now runs in" not in result.output
@@ -552,7 +552,7 @@ def test_add_stdin_kind_duplicate_name_is_store_error(tmp_path):
     result = runner.invoke(
         cli.app, ["add", "-", "--kind", "shell", "-n", "dup"], input="#!/bin/bash\necho x\n"
     )
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "already taken" in result.output
 
 
@@ -573,7 +573,7 @@ def test_add_stdin_kind_missing_name(tmp_path):
 
 def test_add_stdin_kind_empty_input(tmp_path):
     result = runner.invoke(cli.app, ["add", "-", "--kind", "shell", "-n", "x"], input="   \n")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Nothing arrived on stdin" in result.output
 
 
@@ -762,7 +762,7 @@ def test_add_python_stdin_name_conflict_keeps_draft(tmp_path):
     materialized copy) under data_dir/drafts/ and says where — never destroys the paste."""
     _py(tmp_path, name="dup")
     result = runner.invoke(cli.app, ["add", "-", "-n", "dup"], input="print('hi')\n")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Your draft was kept at" in result.output
     from skit.paths import drafts_dir
 
@@ -775,7 +775,7 @@ def test_add_script_stdin_name_conflict_keeps_draft(tmp_path):
     """The non-python (script) stdin lane keeps its draft the same way."""
     _shell(tmp_path, name="dup")
     result = runner.invoke(cli.app, ["add", "-", "--kind", "shell", "-n", "dup"], input="echo hi\n")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Your draft was kept at" in result.output
     from skit.paths import drafts_dir
 
@@ -790,7 +790,7 @@ def test_add_prompt_stdin_name_conflict_keeps_draft(tmp_path):
     result = runner.invoke(
         cli.app, ["add", "-", "--prompt", "-n", "dup"], input="Summarize {{url}}\n"
     )
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Your draft was kept at" in result.output
     from skit.paths import drafts_dir
 
@@ -1345,7 +1345,7 @@ def test_runner_add_fresh_says_added(tmp_path):
 def test_runner_add_without_force_refuses_with_force_hint(tmp_path):
     config.ensure_prompt_runners_seeded()
     result = runner.invoke(cli.app, ["runner", "add", "codex", "--", "codex", "{{prompt}}"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "--force" in result.output
 
 

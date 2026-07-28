@@ -964,15 +964,11 @@ def test_remove_still_confirms_on_a_terminal(tmp_path: Path, monkeypatch: pytest
         store.resolve("a")
 
 
-def test_remove_abort_keeps_the_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_remove_decline_keeps_the_entry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _entry(tmp_path)
     _fake_tty(monkeypatch)
     result = runner.invoke(cli.app, ["remove", "a"], input="n\n")
-    # ROUND 12: 130, not 1. Declining a destructive question is the deliberate,
-    # correct answer to it — the add lanes have always answered 130 with a
-    # translated line, while these three died as click's untranslated red
-    # `Aborted.` at an exit code the docs reserve for the launched script.
-    assert result.exit_code == 130  # typer.confirm(abort=True) → Abort
+    assert result.exit_code == 0
     assert store.resolve("a").meta.name == "a"
 
 
@@ -1019,18 +1015,14 @@ def test_preset_delete_still_confirms_on_a_terminal(
     assert argstate.load_state(entry.slug)["presets"] == {}
 
 
-def test_preset_delete_abort_keeps_the_preset(
+def test_preset_delete_decline_keeps_the_preset(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     entry = _entry(tmp_path)
     argstate.save_preset(entry.slug, "prod", {"CITY": "Taipei"})
     _fake_tty(monkeypatch)
     result = runner.invoke(cli.app, ["preset", "delete", "a", "prod"], input="n\n")
-    # ROUND 12: 130, not 1. Declining a destructive question is the deliberate,
-    # correct answer to it — the add lanes have always answered 130 with a
-    # translated line, while these three died as click's untranslated red
-    # `Aborted.` at an exit code the docs reserve for the launched script.
-    assert result.exit_code == 130
+    assert result.exit_code == 0
     assert argstate.load_state(entry.slug)["presets"] == {"prod": {"CITY": "Taipei"}}
 
 
@@ -1048,7 +1040,7 @@ def test_preset_delete_unknown_name_fails_before_any_ask(
 
     result = runner.invoke(cli.app, ["preset", "delete", "a", "ghost"])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Unknown preset" in result.output
     assert "prod" in result.output  # ...and says what IS available
     assert asked == []  # never asked
@@ -1068,7 +1060,7 @@ def test_preset_delete_reports_the_same_error_when_it_vanishes_mid_flight(
 
     result = runner.invoke(cli.app, ["preset", "delete", "a", "prod", "--yes"])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Unknown preset" in result.output
 
 
@@ -1422,7 +1414,7 @@ def test_manage_on_an_exe_names_the_declared_lane_it_does_have(tmp_path: Path) -
     forward hid the exact door built for it."""
     _exe(tmp_path)
     result = runner.invoke(cli.app, ["params", "prog", "--manage", "WIDTH"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     out = " ".join(result.output.split())
     assert "prog has no managed parameters — its kind has no analyzer to read them from." in out
     assert "Declare one instead: skit params prog --add PARAM" in out
@@ -1440,7 +1432,7 @@ def test_the_add_hint_names_the_slug_so_it_needs_no_quoting(tmp_path: Path) -> N
     the command half names the slug, which is pasteable in every shell."""
     entry = _exe(tmp_path, name="my tool")
     result = runner.invoke(cli.app, ["params", "my tool", "--manage", "WIDTH"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     out = " ".join(result.output.split())
     assert "my tool has no managed parameters" in out  # prose half: the name as the user sees it
     assert f"Declare one instead: skit params {entry.slug} --add PARAM" in out
@@ -1459,7 +1451,7 @@ def test_the_pasted_hint_resolves_back_to_the_entry_it_came_from(tmp_path: Path)
 
     result = runner.invoke(cli.app, ["params", "a & b", "--manage", "WIDTH"])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     out = " ".join(result.output.split())
     hint = out.split("Declare one instead: ")[1]
     pasted = shlex.split(hint)[: len(["skit", "params", entry.slug, "--add", "PARAM"])]

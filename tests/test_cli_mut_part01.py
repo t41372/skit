@@ -58,7 +58,7 @@ def test_add_stdin_requires_name_exact_message():
 def test_add_stdin_empty_input_exact_message():
     """Empty stdin: the exact 'nothing arrived' message (no XX wrapper)."""
     result = runner.invoke(cli.app, ["add", "-", "--name", "x"], input="")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Nothing arrived on stdin, so there is nothing to add." in result.output
     assert "XX" not in result.output
 
@@ -99,7 +99,7 @@ def test_add_stdin_store_error_shows_real_message():
     """A duplicate name surfaces the store's own error text (not None / '1' / a crash)."""
     runner.invoke(cli.app, ["add", "-", "--name", "dup"], input="print(1)\n")
     result = runner.invoke(cli.app, ["add", "-", "--name", "dup"], input="print(2)\n")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "The name dup is already taken" in result.output
 
 

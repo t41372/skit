@@ -323,7 +323,7 @@ def test_a_name_collision_is_still_a_different_failure(tmp_path: Path) -> None:
 
     result = runner.invoke(cli.app, ["rename", "a", "b"])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "already taken" in result.output
 
 

@@ -341,30 +341,28 @@ def test_an_absolute_workdir_is_never_relabelled(tmp_path: Path) -> None:
 # ==========================================================================
 
 
-def test_declining_a_removal_is_translated_and_exits_130(
+def test_declining_a_removal_is_translated_and_exits_zero(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """click's `abort=True` died as a bare English `Aborted.` printed in RED — so the
-    correct, deliberate answer to a destructive question read as an error — at exit 1,
-    which the docs reserve for the launched script. The add lanes, which destroy nothing,
-    have always answered 130 with a translated line."""
+    correct, deliberate answer to a destructive question read as an error. It is a clean
+    decline (0); Ctrl-C/EOF remains an aborted interactive flow (130)."""
     store.add_python(_py(tmp_path), name="hello")
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     monkeypatch.setattr(cli.typer, "confirm", lambda *a, **k: False)
 
     result = runner.invoke(cli.app, ["remove", "hello"])
 
-    assert result.exit_code == 130
+    assert result.exit_code == 0
     assert "Aborted" not in result.output
     assert "nothing was removed" in result.output.lower()
     assert store.resolve("hello").meta.name == "hello"
 
 
-def test_ctrl_d_lands_in_the_same_place_as_a_typed_no(
+def test_ctrl_d_aborts_instead_of_becoming_a_typed_no(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """click raises Abort on EOF regardless of abort=True, so handling only the typed "n"
-    would have fixed half of it and left Ctrl+D on the old untranslated red exit 1."""
+    """click raises Abort on EOF: unlike a typed no, that is an aborted flow (130)."""
     import click
 
     store.add_python(_py(tmp_path), name="hello")

@@ -169,7 +169,7 @@ def test_edit_params_degraded_shell_spec_refuses_instead_of_crashing(tmp_path, m
             env_sources={},
             malformed=[],
         )
-    assert ei.value.exit_code == 1
+    assert ei.value.exit_code == 2
     err = _norm(capsys.readouterr().err)
     # The plain refusal, whole and exact — it is its OWN msgid now (the hinted variant is a
     # second, complete sentence pair), so nothing may be spliced onto either end of it.
@@ -199,7 +199,7 @@ def test_edit_params_none_spec_refuses_before_attribute_access(tmp_path, monkeyp
             env_sources={},
             malformed=[],
         )
-    assert ei.value.exit_code == 1
+    assert ei.value.exit_code == 2
     err = _norm(capsys.readouterr().err)
     assert err == "p has no managed parameters — its kind has no analyzer to read them from."
     # A kind skit doesn't know has no declared lane to point at either: the hint's guard
@@ -360,7 +360,7 @@ def test_declared_updated_message_all_removed_shows_dash(tmp_path):
 def test_normalize_non_shell_message_exact(tmp_path):
     store.add_python(_py(tmp_path, "WIDTH = 800\n"), name="py")
     result = runner.invoke(cli.app, ["params", "py", "--normalize", "WIDTH"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     out = _norm(result.output)
     assert 'py has no --normalize: it is a shell idiom (VAR=value -> VAR="${VAR:-value}").' in out
     assert "XX" not in out
@@ -369,7 +369,7 @@ def test_normalize_non_shell_message_exact(tmp_path):
 def test_normalize_reference_mode_message_exact(tmp_path):
     _shell(tmp_path, "#!/usr/bin/env bash\nWIDTH=800\n", name="rf", mode="reference")
     result = runner.invoke(cli.app, ["params", "rf", "--normalize", "WIDTH"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     out = _norm(result.output)
     assert (
         "rf is in reference mode, and skit never writes the original file. "
@@ -382,7 +382,7 @@ def test_normalize_no_stored_copy_message_exact(tmp_path):
     entry = _shell(tmp_path, "#!/usr/bin/env bash\nWIDTH=800\n", name="gone")
     entry.script_path.unlink()
     result = runner.invoke(cli.app, ["params", "gone", "--normalize", "WIDTH"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
     out = _norm(result.output)
     assert "gone has no stored copy to edit." in out
     assert "XX" not in out
@@ -390,14 +390,14 @@ def test_normalize_no_stored_copy_message_exact(tmp_path):
 
 def test_normalize_refuses_a_non_utf8_script_untouched(tmp_path):
     # A stored copy that isn't valid UTF-8 can't round-trip through the strict parse-and-splice
-    # pipeline, so --normalize refuses the whole file (exit 1) and leaves it byte-for-byte
+    # pipeline, so --normalize refuses the whole file (exit 125) and leaves it byte-for-byte
     # untouched — the errors="replace" read would have baked U+FFFD over the raw byte instead.
     src = tmp_path / "raw.sh"
     original = b"#!/usr/bin/env bash\nWIDTH=800\nprintf '\xff\\n'\necho \"$WIDTH\"\n"
     src.write_bytes(original)
     entry = store.add_script(src, kind="shell", name="raw")
     result = runner.invoke(cli.app, ["params", "raw", "--normalize", "WIDTH"])
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     out = _norm(result.output)
     assert (
         "raw isn't valid UTF-8, so --normalize can't rewrite it safely; nothing was changed "
@@ -537,5 +537,5 @@ def test_normalize_capability_guard_refuses_when_analyzer_missing(tmp_path, caps
     degraded = _degraded_shell_spec()
     with pytest.raises(typer.Exit) as ei:
         cli._normalize_params(entry, degraded, ["WIDTH"])
-    assert ei.value.exit_code == 1
+    assert ei.value.exit_code == 2
     assert "has no --normalize" in _norm(capsys.readouterr().err)

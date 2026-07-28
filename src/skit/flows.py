@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from . import analysis, argstate, config, launcher, params, tokens
+from .exitcodes import FailureReason
 from .i18n import gettext
 from .langs.base import (
     InjectError,
@@ -895,23 +896,11 @@ def save_after_run(
 # Why a code did not launch, so each renderer can classify without re-catching the
 # launcher/shim exception hierarchy (the CLI maps these to exit codes 125/126/127; the
 # TUI maps them to a status line). "" means the script actually ran.
-FAIL_BAD_VALUE = "bad_value"  # a value doesn't fit its declared type (shim rejected it)
-FAIL_DRIFT = "drift"  # injection targets no longer match the definitions
-FAIL_MISSING = "missing"  # the launch target is gone from disk
-FAIL_NOT_EXECUTABLE = "not_executable"  # an exe exists but isn't +x
-FAIL_LAUNCH = "launch"  # any other launch failure
-
-# Docker-convention process exit codes when the launch itself failed (the script's own
-# exit code passes through untouched whenever it did run): skit failures are 125, an
-# existing-but-unexecutable target 126, a missing target 127. Shared by `skit run` and
-# the TUI's exit-after-run path so the contract can't fork.
-FAILURE_EXIT_CODES = {
-    FAIL_BAD_VALUE: 125,
-    FAIL_DRIFT: 125,
-    FAIL_LAUNCH: 125,
-    FAIL_NOT_EXECUTABLE: 126,
-    FAIL_MISSING: 127,
-}
+FAIL_BAD_VALUE = FailureReason.BAD_VALUE
+FAIL_DRIFT = FailureReason.DRIFT
+FAIL_MISSING = FailureReason.MISSING
+FAIL_NOT_EXECUTABLE = FailureReason.NOT_EXECUTABLE
+FAIL_LAUNCH = FailureReason.LAUNCH
 
 
 @dataclass
@@ -920,7 +909,7 @@ class RunOutcome:
     script never launched (failure names why, message is user-ready and localized)."""
 
     code: int | None
-    failure: str = ""
+    failure: FailureReason | str = ""
     message: str = ""
 
     @property

@@ -347,8 +347,10 @@ def add_python(
     requires_python: str = "",
 ) -> Entry:
     source = source.expanduser().resolve()
+    if not source.exists():
+        raise NotFoundError(gettext("File not found: %(path)s") % {"path": str(source)})
     if not source.is_file():
-        raise StoreError(gettext("File not found: %(path)s") % {"path": str(source)})
+        raise StoreUsageError(gettext("Not a file: %(path)s") % {"path": str(source)})
     # The chokepoint belt (update_dependencies' rule, applied to the add-time writer
     # too): strip-and-drop empty entries, then refuse anything unparseable before a
     # block is built. Every shipped intake validates earlier — this line is what a
@@ -476,10 +478,12 @@ def add_script(
     # with a truthy stored_name (nor interpreted with a falsy one), so the three disjuncts can
     # never disagree between `or` and `and`.
     if spec is None or spec.family != "interpreted" or not spec.stored_name:  # pragma: no mutate
-        raise StoreError(gettext("Unknown entry kind: %(kind)s") % {"kind": kind})
+        raise StoreUsageError(gettext("Unknown entry kind: %(kind)s") % {"kind": kind})
     source = source.expanduser().resolve()
+    if not source.exists():
+        raise NotFoundError(gettext("File not found: %(path)s") % {"path": str(source)})
     if not source.is_file():
-        raise StoreError(gettext("File not found: %(path)s") % {"path": str(source)})
+        raise StoreUsageError(gettext("Not a file: %(path)s") % {"path": str(source)})
     text = source.read_text(encoding="utf-8", errors="replace")
     # The else literal is dead code: every interpreted kind reaching this line carries a
     # CommentSyntax, so `spec.comment is not None` is always true here.
@@ -550,8 +554,10 @@ def add_prompt(
     entry unrunnable; nothing is managed instead (an EXPLICIT `managed` list is always
     honored — the user asked)."""
     source = source.expanduser().resolve()
+    if not source.exists():
+        raise NotFoundError(gettext("File not found: %(path)s") % {"path": str(source)})
     if not source.is_file():
-        raise StoreError(gettext("File not found: %(path)s") % {"path": str(source)})
+        raise StoreUsageError(gettext("Not a file: %(path)s") % {"path": str(source)})
     from .langs.prompt import analyzer as prompt_analyzer
     from .langs.prompt import text as prompt_text
 
@@ -723,7 +729,7 @@ def update_launch_policy(
                     gettext("%(name)s isn't a command entry.") % {"name": entry.meta.name}
                 )
             if not template.strip():
-                raise StoreError(gettext("Command template must not be empty"))
+                raise StoreUsageError(gettext("Command template must not be empty"))
             template_value = template
             params_value = extract_placeholders(template) or None
 
@@ -763,7 +769,7 @@ def write_interpreter(name_or_slug: str, interpreter: str) -> Entry:
 def add_exe(source: Path, *, name: str | None = None, description: str = "") -> Entry:
     source = source.expanduser().resolve()
     if not source.exists():
-        raise StoreError(gettext("File not found: %(path)s") % {"path": str(source)})
+        raise NotFoundError(gettext("File not found: %(path)s") % {"path": str(source)})
     meta = ScriptMeta(
         name=name or source.stem,
         kind="exe",
@@ -790,7 +796,7 @@ def extract_placeholders(template: str) -> list[str]:
 
 def add_command(template: str, *, name: str, description: str = "") -> Entry:
     if not template.strip():
-        raise StoreError(gettext("Command template must not be empty"))
+        raise StoreUsageError(gettext("Command template must not be empty"))
     placeholders = extract_placeholders(template)
     meta = ScriptMeta(
         name=name,
@@ -1468,7 +1474,7 @@ def rename(name_or_slug: str, new_name: str) -> Entry:
     disk and remembered values/presets survive the rename."""
     new_name = new_name.strip()
     if not new_name:
-        raise StoreError(gettext("A name is required."))
+        raise StoreUsageError(gettext("A name is required."))
     with _locked_entry(name_or_slug) as entry:
         meta = entry.meta
         with _registry_lock():
@@ -1482,7 +1488,7 @@ def rename(name_or_slug: str, new_name: str) -> Entry:
                 s != entry.slug and e.get("name") == new_name for s, e in entries.items()
             )
             if taken:
-                raise StoreError(
+                raise NameConflictError(
                     gettext("The name %(name)s is already taken.") % {"name": new_name}
                 )
             meta.name = new_name

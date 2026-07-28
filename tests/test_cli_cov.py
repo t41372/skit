@@ -337,7 +337,7 @@ def test_params_view_no_new_candidates(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# deps: 891-893 (StoreError from update_dependencies surfaces as exit 1)
+# deps: StoreError from update_dependencies surfaces as skit failure 125
 # --------------------------------------------------------------------------
 
 
@@ -349,7 +349,7 @@ def test_deps_set_store_error(tmp_path, monkeypatch):
 
     monkeypatch.setattr(store, "update_dependencies", boom)
     result = runner.invoke(cli.app, ["deps", "a", "--dep", "requests"])
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert "nope" in result.output
 
 

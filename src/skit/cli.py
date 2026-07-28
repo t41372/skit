@@ -7,7 +7,8 @@ form layer (flows) so CLI and TUI behave identically.
 Command-surface contracts:
 - Exit codes (docker convention): `run` passes the script's exit code through PURE;
   skit's own failures are 125, a target that exists but isn't executable is 126, a
-  missing target/name is 127, usage errors are 2. Other commands: 0/1/2.
+  missing target/name is 127, usage errors are 2, and an aborted interactive flow is
+  130. Doctor alone uses 1 for its documented dependency-health check.
 - Every output has a --json twin where output exists.
 - Lists are repeatable flags (--dep), never comma-joined (PEP 508 specifiers contain
   commas).
@@ -39,7 +40,26 @@ from rich.prompt import Confirm, Prompt
 # reaches for — the analyzer, the form layer, the editor, the agent-skill installer — is
 # imported inside the command that uses it: `skit list` should not pay for `skit run`'s
 # dependencies (~18 modules on a path an agent calls constantly).
-from . import argstate, config, editor, i18n, interaction, kindnames, launcher, models, store
+from . import (
+    argstate,
+    config,
+    editor,
+    exitcodes,
+    i18n,
+    interaction,
+    kindnames,
+    launcher,
+    models,
+    store,
+)
+from .exitcodes import (
+    EXIT_ABORTED,
+    EXIT_NOT_EXECUTABLE,
+    EXIT_NOT_FOUND,
+    EXIT_SKIT,
+    EXIT_USAGE,
+    SkitExitCode,
+)
 from .i18n import gettext, ngettext
 from .langs.registry import KNOWN_KINDS, spec_for
 from .params import ParamDecl, declared_from_meta, edit_declared, is_secret_name
@@ -63,21 +83,22 @@ app = typer.Typer(
 console = Console()
 err_console = Console(stderr=True)
 
-# Exit-code contract for `skit run` (docker convention; the script's own code passes
-# through untouched, so these must stay out of the 0-124 range scripts commonly use).
-EXIT_USAGE = 2
-EXIT_SKIT = 125
-EXIT_NOT_EXECUTABLE = 126
-EXIT_NOT_FOUND = 127
-EXIT_CANCELLED = 130  # user cancelled the form (128+SIGINT convention) — not a skit failure
+# Backward-compatible Python name for tests and integrations. The process contract's
+# canonical spelling is EXIT_ABORTED in exitcodes.
+EXIT_CANCELLED = EXIT_ABORTED
 
 # Rich closing tags are case-insensitive, so a mutated-case variant is behaviorally identical.
 _DIM_CLOSE = "[/dim]"  # pragma: no mutate
 _RED_CLOSE = "[/red]"  # pragma: no mutate
 
 
-def _fail(message: str, code: int) -> typer.Exit:
+def _fail(message: str, code: SkitExitCode) -> typer.Exit:
     err_console.print(f"[red]{escape(message)}[/red]")
+    return typer.Exit(code)
+
+
+def _exit_passthrough(code: int) -> typer.Exit:
+    """The only exit route for a child process's arbitrary status."""
     return typer.Exit(code)
 
 
@@ -93,6 +114,30 @@ def _fail_not_found(exc: Exception) -> typer.Exit:
     them was the localized string it was told not to read. Nine identical `except ...:
     raise _fail(str(exc), 1)` blocks were nine chances to answer differently."""
     return _fail(str(exc), EXIT_NOT_FOUND)
+
+
+def _fail_store(exc: store.StoreError) -> typer.Exit:
+    """Classify one store failure by meaning, independent of the command that caught it."""
+    if isinstance(exc, store.NotFoundError):
+        code = EXIT_NOT_FOUND
+    elif isinstance(exc, (store.StoreUsageError, store.NameConflictError)):
+        code = EXIT_USAGE
+    else:
+        code = EXIT_SKIT
+    return _fail(str(exc), code)
+
+
+def _fail_authoring(exc: Exception) -> typer.Exit:
+    """Preserved-draft failures keep store semantics; editor/encoding failures are 125."""
+    if isinstance(exc, store.StoreError):
+        return _fail_store(exc)
+    return _fail(str(exc), EXIT_SKIT)
+
+
+def _fail_runner_changed() -> typer.Exit:
+    return _fail(
+        gettext("The runner row changed before it could be removed; inspect again."), EXIT_SKIT
+    )
 
 
 def _remove_question(entry: store.Entry) -> str:
@@ -157,23 +202,22 @@ def _cancelled_add() -> NoReturn:
 
 
 def _confirm_destructive(question: str) -> None:
-    """Ask before destroying something, and treat "no" as the deliberate answer it is.
+    """Ask before destroying something, and distinguish decline from abort.
 
     `typer.confirm(..., abort=True)` dies as click's own bare `Aborted.` — an untranslated
     English word, printed in RED so it reads as an error, at exit 1, which
     docs/content/docs/cli.mdx reserves for the launched script's own code. Declining a
-    destructive question is the correct and most common answer to it; the ADD lanes, which
-    destroy nothing, already get a translated line and 130 (_cancelled_add). This is their
-    twin, and it catches BOTH cancel paths: click raises Abort on EOF regardless of
-    abort=True, so handling only the typed "n" would fix half of it.
+    destructive question is the correct answer and exits 0. Ctrl-C/EOF instead aborts
+    an interactive flow already in progress and exits 130.
     """
     try:
         answered_yes = typer.confirm(question)
     except click.exceptions.Abort:  # Ctrl+D / EOF
-        answered_yes = False
+        console.print(f"[dim]{gettext('Cancelled — nothing was removed.')}[/dim]")
+        raise typer.Exit(EXIT_ABORTED) from None
     if not answered_yes:
         console.print(f"[dim]{gettext('Cancelled — nothing was removed.')}[/dim]")
-        raise typer.Exit(EXIT_CANCELLED)
+        raise typer.Exit(exitcodes.EXIT_SUCCESS)
 
 
 # --------------------------------------------------------------------------
@@ -491,15 +535,15 @@ def _drafts_home() -> str:
 
 def _require_file(resolved: Path) -> None:
     if not resolved.exists():
-        raise store.StoreError(gettext("File not found: %(path)s") % {"path": str(resolved)})
+        raise store.NotFoundError(gettext("File not found: %(path)s") % {"path": str(resolved)})
     if not resolved.is_file():
-        raise store.StoreError(gettext("Not a file: %(path)s") % {"path": str(resolved)})
+        raise store.StoreUsageError(gettext("Not a file: %(path)s") % {"path": str(resolved)})
 
 
 def _require_exists(resolved: Path) -> None:
     """The exe lane's twin of _require_file (add_exe accepts any existing path)."""
     if not resolved.exists():
-        raise store.StoreError(gettext("File not found: %(path)s") % {"path": str(resolved)})
+        raise store.NotFoundError(gettext("File not found: %(path)s") % {"path": str(resolved)})
 
 
 def _parse_selection(answer: str, count: int) -> list[int]:
@@ -860,7 +904,7 @@ def _create_python_in_editor(
             % {"name": escape(name)}
             + _RED_CLOSE
         )
-        raise typer.Exit(1)
+        raise typer.Exit(EXIT_USAGE)
     fd, tmp_name = tempfile.mkstemp(
         suffix=".py", prefix="skit-new-", dir=_drafts_home()
     )  # pragma: no mutate
@@ -932,7 +976,7 @@ def _create_python_in_editor(
         # The draft is the user's ONLY copy of what they just wrote — a failure must
         # never delete it. Tell them where it lives instead.
         _announce_kept_draft(tmp, resumable=True)
-        raise _fail(str(exc), 1) from exc
+        raise _fail_authoring(exc) from exc
     tmp.unlink(missing_ok=True)  # pragma: no mutate — success: the store holds the copy
     _print_add_summary(entry, deps, managed, secrets)
 
@@ -963,7 +1007,7 @@ def _add_from_stdin(
         err_console.print(
             f"[red]{gettext('Nothing arrived on stdin, so there is nothing to add.')}[/red]"
         )
-        raise typer.Exit(1)
+        raise typer.Exit(EXIT_USAGE)
     fd, tmp_name = tempfile.mkstemp(
         suffix=".py", prefix="skit-stdin-", dir=_drafts_home()
     )  # pragma: no mutate
@@ -982,7 +1026,7 @@ def _add_from_stdin(
         )
     except store.StoreError as exc:
         _announce_kept_draft(tmp, resumable=True)
-        raise _fail(str(exc), 1) from exc
+        raise _fail_store(exc) from exc
     tmp.unlink(missing_ok=True)  # pragma: no mutate — success: the store holds the copy
     _print_add_summary(entry, deps, managed, secrets)
 
@@ -1013,7 +1057,7 @@ def _add_script_from_stdin(
         err_console.print(
             f"[red]{gettext('Nothing arrived on stdin, so there is nothing to add.')}[/red]"
         )
-        raise typer.Exit(1)
+        raise typer.Exit(EXIT_USAGE)
     kind_spec = spec_for(kind)
     suffix = kind_spec.extensions[0] if kind_spec is not None and kind_spec.extensions else ".txt"
     fd, tmp_name = tempfile.mkstemp(
@@ -1046,7 +1090,7 @@ def _add_script_from_stdin(
         # a mid-operation failure must not destroy it. (Usage refusals exit before
         # anything materializes — they lose only what re-running the pipe re-supplies.)
         _announce_kept_draft(tmp, resumable=True)
-        raise _fail(str(exc), 1) from exc
+        raise _fail_store(exc) from exc
     tmp.unlink(missing_ok=True)  # pragma: no mutate — success: the store holds the copy
     _print_add_summary(entry, deps, [], [])
 
@@ -1296,7 +1340,7 @@ def _create_prompt_in_editor(
             % {"name": escape(name)}
             + _RED_CLOSE
         )
-        raise typer.Exit(1)
+        raise typer.Exit(EXIT_USAGE)
     fd, tmp_name = tempfile.mkstemp(
         suffix=".prompt.md", prefix="skit-new-", dir=_drafts_home()
     )  # pragma: no mutate
@@ -1335,7 +1379,7 @@ def _create_prompt_in_editor(
         # purpose: --runner was validated before the editor opened, and nothing else
         # in the prompt onboarding refuses — there is no post-editor exit to announce.)
         _announce_kept_draft(tmp, resumable=True)
-        raise _fail(str(exc), 1) from exc
+        raise _fail_authoring(exc) from exc
     tmp.unlink(missing_ok=True)  # pragma: no mutate — success: the store holds the copy
     _print_add_summary(entry, [], managed, [n for n in managed if is_secret_name(n)])
 
@@ -1370,12 +1414,12 @@ def _add_prompt_from_stdin(
     try:
         text = prompt_text.decode(raw, Path("<stdin>"))
     except prompt_text.PromptEncodingError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail(str(exc), EXIT_USAGE) from exc
     if not text.strip():
         err_console.print(
             f"[red]{gettext('Nothing arrived on stdin, so there is nothing to add.')}[/red]"
         )
-        raise typer.Exit(1)
+        raise typer.Exit(EXIT_USAGE)
     fd, tmp_name = tempfile.mkstemp(
         suffix=".prompt.md", prefix="skit-stdin-", dir=_drafts_home()
     )  # pragma: no mutate
@@ -1398,7 +1442,7 @@ def _add_prompt_from_stdin(
         # a mid-operation failure must not destroy it. (Usage refusals exit before
         # anything materializes — they lose only what re-running the pipe re-supplies.)
         _announce_kept_draft(tmp, resumable=True)
-        raise _fail(str(exc), 1) from exc
+        raise _fail_store(exc) from exc
     tmp.unlink(missing_ok=True)  # pragma: no mutate — success: the store holds the copy
     _print_add_summary(entry, [], managed, [n for n in managed if is_secret_name(n)])
 
@@ -2262,7 +2306,7 @@ def add(
                         no_input=no_input,
                     )
     except store.StoreError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail_store(exc) from exc
     if lane == "path" and entry.meta.mode == "copy":
         # A resumed draft that reached the store is done accumulating: the same
         # "success: the store holds the copy" unlink every authoring lane performs.
@@ -2651,7 +2695,7 @@ def remove(
         # A partly-deleted entry (a held-open file made rmtree a no-op) is a real, worded
         # failure with a recovery step in it — it must reach the user as skit's own error,
         # not as a traceback.
-        raise _fail(str(exc), 1) from exc
+        raise _fail_store(exc) from exc
     console.print(f"[green]{gettext('Removed: %(name)s') % {'name': escape(removed)}}[/green]")
 
 
@@ -2667,7 +2711,7 @@ def rename(
     except store.NotFoundError as exc:
         raise _fail_not_found(exc) from exc
     except store.StoreError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail_store(exc) from exc
     console.print(
         f"[green]{gettext('Renamed to %(name)s.') % {'name': escape(entry.meta.name)}}[/green]"
     )
@@ -2833,7 +2877,7 @@ def edit(
     try:
         editor.open_entry_in_editor(target, kind=entry.meta.kind)
     except (editor.EditorError, editor.EditedSourceError) as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail(str(exc), EXIT_SKIT) from exc
     console.print(
         f"[green]{gettext('Saved %(name)s.') % {'name': escape(entry.meta.name)}}[/green]"
     )
@@ -3362,10 +3406,7 @@ def run(
         raise
     code = outcome.code
     if code is None:
-        # How a RunOutcome failure maps to skit's exit-code contract (docker
-        # convention). The numbers live in flows so the TUI's exit-after-run path
-        # shares them.
-        raise _fail(outcome.message, flows.FAILURE_EXIT_CODES[outcome.failure])
+        raise _fail(outcome.message, exitcodes.exit_code_for_failure(outcome.failure))
     # The launch was accepted (the script's own exit code is the script's business —
     # its values are still the values the user asked to keep).
     _on_accepted()
@@ -3382,7 +3423,7 @@ def run(
         err_console.print(
             f"[yellow]{gettext('Run exited with code %(code)s') % {'code': code}}[/yellow]"
         )
-    raise typer.Exit(code)
+    raise _exit_passthrough(code)
 
 
 # --------------------------------------------------------------------------
@@ -3550,10 +3591,10 @@ def runner_add(
         raise _fail(
             gettext("The runner %(name)s already exists — pass --force to replace its command.")
             % {"name": name},
-            1,
+            EXIT_USAGE,
         ) from None
     except config.PromptRunnerConfigError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail(str(exc), EXIT_SKIT) from exc
     if exists:
         console.print(
             f"[green]{gettext('Runner %(name)s updated: %(command)s') % {'name': escape(name), 'command': escape(_join_runner_argv(list(argv)))}}[/green]"
@@ -3614,7 +3655,7 @@ def runner_remove(
             raise _fail(
                 gettext("Unknown runner row: %(row)s. Inspect with: skit runner list --all")
                 % {"row": row_ref},
-                1,
+                EXIT_USAGE,
             )
         target = targets[0]
         if target.invalid_reason is None:
@@ -3642,7 +3683,7 @@ def runner_remove(
             raise _fail(
                 gettext("Unknown runner: %(runner)s. Configured runners: %(names)s")
                 % {"runner": target_name, "names": ", ".join(configured) or "—"},
-                1,
+                EXIT_USAGE,
             )
         question = gettext('Remove the agent "%(name)s"?') % {"name": target_name}
     # Exact-row mode repairs one malformed row; it does not remove the active stable
@@ -3677,7 +3718,7 @@ def runner_remove(
     else:
         removed = config.remove_prompt_runner(target_name, expected=targets)
     if not removed:  # changed concurrently after the read above
-        raise _fail(gettext("The runner row changed before it could be removed; inspect again."), 1)
+        raise _fail_runner_changed()
     if row_opt is None:
         console.print(
             f"[green]{gettext('Runner %(name)s removed.') % {'name': escape(target_name)}}[/green]"
@@ -3731,7 +3772,7 @@ def preset_save(
             raise _fail(
                 gettext("%(name)s has no remembered values yet — run it once first.")
                 % {"name": entry.meta.name},
-                1,
+                EXIT_USAGE,
             )
         keys = {f.key for f in plan.fields}
         last_snapshot = state["last_run"].get("values")
@@ -3747,7 +3788,7 @@ def preset_save(
             raise _fail(
                 gettext("%(name)s has no remembered values yet — run it once first.")
                 % {"name": entry.meta.name},
-                1,
+                EXIT_USAGE,
             )
         else:
             # Older state from before run stamps existed may still have explicit
@@ -3862,7 +3903,7 @@ def _fail_unknown_preset(entry: store.Entry, preset_name: str) -> NoReturn:
         }
         + _RED_CLOSE
     )
-    raise typer.Exit(1)
+    raise typer.Exit(EXIT_USAGE)
 
 
 # --------------------------------------------------------------------------
@@ -3940,7 +3981,7 @@ def _prompt_body_placeholders(entry: store.Entry) -> list[str]:
     try:
         text = prompt_text.read(entry.script_path)
     except prompt_text.PromptEncodingError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail(str(exc), EXIT_SKIT) from exc
     except OSError:
         return []
     from .langs.prompt import analyzer as prompt_analyzer
@@ -4462,7 +4503,7 @@ def params(
                 "--unmanage, or edit the [tool.skit] block."
             )
             % {"name": entry.meta.name},
-            1,
+            EXIT_USAGE,
         )
     if (
         entry_spec is not None
@@ -4562,7 +4603,7 @@ def _edit_entry_policy(
                     f"[green]{gettext('%(name)s is back to automatic interpreter detection.') % {'name': escape(entry.meta.name)}}[/green]"
                 )
     except store.StoreError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail_store(exc) from exc
 
 
 def _pin_prompt_runner(entry: store.Entry, runner_pin: str, *, quiet: bool = False) -> None:
@@ -4571,7 +4612,7 @@ def _pin_prompt_runner(entry: store.Entry, runner_pin: str, *, quiet: bool = Fal
     exit 126 — validated against the configured list instead."""
     console = _maybe_quiet(quiet)
     if entry.meta.kind != "prompt":
-        raise _fail(gettext("--runner only applies to prompt entries."), 1)
+        raise _fail(gettext("--runner only applies to prompt entries."), EXIT_USAGE)
     name = runner_pin.strip()
     if name:
         names = [r.name for r in config.load_prompt_runners()]
@@ -4582,12 +4623,12 @@ def _pin_prompt_runner(entry: store.Entry, runner_pin: str, *, quiet: bool = Fal
                     "runners with: skit runner list"
                 )
                 % {"runner": name, "names": ", ".join(names) or "—"},
-                1,
+                EXIT_USAGE,
             )
     try:
         store.write_prompt_runner(entry.slug, name)
     except store.StoreError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail_store(exc) from exc
     if name:
         console.print(
             f"[green]{gettext('%(name)s now runs with %(runner)s.') % {'name': escape(entry.meta.name), 'runner': escape(name)}}[/green]"
@@ -4603,11 +4644,11 @@ def _set_prompt_interpolate(entry: store.Entry, interpolate: bool, *, quiet: boo
     master switch. The managed list survives an off/on round trip."""
     console = _maybe_quiet(quiet)
     if entry.meta.kind != "prompt":
-        raise _fail(gettext("--interpolate only applies to prompt entries."), 1)
+        raise _fail(gettext("--interpolate only applies to prompt entries."), EXIT_USAGE)
     try:
         store.write_prompt_interpolate(entry.slug, interpolate)
     except store.StoreError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail_store(exc) from exc
     if interpolate:
         console.print(
             f"[green]{gettext('Variable insertion is on — %(name)s fills its managed placeholders again.') % {'name': escape(entry.meta.name)}}[/green]"
@@ -4697,14 +4738,14 @@ def _edit_params(
                     "them from. Declare one instead: skit params %(target)s --add PARAM"
                 )
                 % {"name": entry.meta.name, "target": entry.slug},
-                1,
+                EXIT_USAGE,
             )
         raise _fail(
             gettext(
                 "%(name)s has no managed parameters — its kind has no analyzer to read them from."
             )
             % {"name": entry.meta.name},
-            1,
+            EXIT_USAGE,
         )
     if entry.meta.mode == "reference":
         raise _fail(
@@ -4713,11 +4754,14 @@ def _edit_params(
                 "Edit the [tool.skit] block in the source directly."
             )
             % {"name": entry.meta.name},
-            1,
+            EXIT_USAGE,
         )
     copy_path = entry.script_path
     if not copy_path.exists():
-        raise _fail(gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}, 1)
+        raise _fail(
+            gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name},
+            EXIT_NOT_FOUND,
+        )
     text = copy_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
     current = entry_spec.params_io.read(text)
     # Whether a MODELED reader form drove the run form before this edit — an explicit
@@ -4848,7 +4892,7 @@ def _normalize_params(
                 '%(name)s has no --normalize: it is a shell idiom (VAR=value -> VAR="${VAR:-value}").'
             )
             % {"name": entry.meta.name},
-            1,
+            EXIT_USAGE,
         )
     if entry.meta.mode == "reference":
         raise _fail(
@@ -4857,11 +4901,14 @@ def _normalize_params(
                 'Change the line to VAR="${VAR:-value}" in the source directly.'
             )
             % {"name": entry.meta.name},
-            1,
+            EXIT_USAGE,
         )
     copy_path = entry.script_path
     if not copy_path.exists():
-        raise _fail(gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}, 1)
+        raise _fail(
+            gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name},
+            EXIT_NOT_FOUND,
+        )
     # The shared read half, strict: --normalize rewrites the script's own text, and the
     # parse-and-splice pipeline is strict UTF-8 end to end — a script that doesn't decode
     # is refused whole (this lane's OWN policy; the comment-only edits keep their
@@ -4875,7 +4922,7 @@ def _normalize_params(
                 "was changed — its constants keep being injected into a temporary copy."
             )
             % {"name": entry.meta.name},
-            1,
+            EXIT_SKIT,
         ) from None
     result = entry_spec.normalizer.normalize(text, list(names))
     for warning in result.refused:
@@ -4992,7 +5039,7 @@ def _edit_declared_params(
                 "skit params %(name)s --interpolate"
             )
             % {"name": entry.meta.name},
-            1,
+            EXIT_USAGE,
         )
     allowed = ("env", "placeholder") if entry_spec.placeholder_params else ("flag", "env")
     managed = list(entry.meta.params or [])
@@ -5198,9 +5245,9 @@ def deps(
         try:
             entry = store.update_dependencies(entry.slug, new_deps, requires_python=python)
         except store.StoreUsageError as exc:
-            raise _fail(str(exc), EXIT_USAGE) from exc
+            raise _fail_store(exc) from exc
         except store.StoreError as exc:
-            raise _fail(str(exc), 1) from exc
+            raise _fail_store(exc) from exc
         if not as_json:
             # Per-axis confirmations: each line prints exactly when its axis was
             # edited — "Dependencies updated" for an edit that didn't happen was a
@@ -5251,7 +5298,8 @@ def _agent_install_confirmed(skills_dir: Path) -> None:
     except OSError as exc:
         # e.g. --to points at an existing file: a clean one-liner, not a traceback.
         raise _fail(
-            gettext("Could not write the skill there: %(error)s") % {"error": exc}, 1
+            gettext("Could not write the skill there: %(error)s") % {"error": exc},
+            EXIT_SKIT,
         ) from exc
     console.print(
         f"[green]{gettext('Installed the skit Agent Skill: %(path)s') % {'path': escape(str(written))}}[/green]"
@@ -5344,7 +5392,7 @@ def agent_install(
             gettext(
                 "No agent directories detected (~/.claude, ~/.codex, ./.agents, …). Pass --to DIR to choose one yourself."
             ),
-            1,
+            EXIT_NOT_EXECUTABLE,
         )
     picked = _agent_pick_target(candidates)
     if picked is None:
@@ -5367,6 +5415,13 @@ def _uv_required(entries: list[store.Entry]) -> bool:
     if not entries:
         return True
     return any(e.meta.kind == "python" for e in entries)
+
+
+def _doctor_exit_code(uv: str | None, entries: list[store.Entry]) -> int:
+    """Doctor's named check-command exception: 1 only when a required uv is absent."""
+    if uv or not _uv_required(entries):
+        return exitcodes.EXIT_SUCCESS
+    return exitcodes.EXIT_DOCTOR_UNHEALTHY
 
 
 @app.command(help=gettext("Check that uv is available and the entry library is intact."))
@@ -5441,7 +5496,7 @@ def doctor(
                 ensure_ascii=False,
             )
         )
-        raise typer.Exit(0 if uv or not _uv_required(entries) else 1)
+        raise typer.Exit(_doctor_exit_code(uv, entries))
     if uv:
         console.print(f"[green]✓ {gettext('uv: %(path)s') % {'path': escape(uv)}}[/green]")
     else:
@@ -5492,7 +5547,7 @@ def doctor(
     # do I back up?" was unanswerable from the tool that exists to answer it.
     console.print(gettext("Config: %(path)s") % {"path": escape(str(config_dir()))})
     console.print(gettext("State: %(path)s") % {"path": escape(str(state_dir()))})
-    raise typer.Exit(0 if uv or not _uv_required(entries) else 1)
+    raise typer.Exit(_doctor_exit_code(uv, entries))
 
 
 # --------------------------------------------------------------------------

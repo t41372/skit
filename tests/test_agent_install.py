@@ -143,7 +143,7 @@ def test_cli_install_to_a_file_fails_cleanly(tmp_path, monkeypatch):
     blocker = tmp_path / "afile"
     blocker.write_text("not a directory", encoding="utf-8")
     result = runner.invoke(cli.app, ["agent", "install", "--to", str(blocker)])
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert any(
         line.startswith("Could not write the skill there: ") for line in result.output.splitlines()
     )
@@ -198,10 +198,10 @@ def test_cli_bare_non_interactive_refuses(fake_home):
     assert list(fake_home.iterdir()) == []  # nothing was written anywhere
 
 
-def test_cli_bare_interactive_no_candidates_exits_1(fake_home, fake_cwd, monkeypatch):
+def test_cli_bare_interactive_no_candidates_exits_126(fake_home, fake_cwd, monkeypatch):
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     result = runner.invoke(cli.app, ["agent", "install"])
-    assert result.exit_code == 1
+    assert result.exit_code == 126
     assert "--to" in result.output
 
 

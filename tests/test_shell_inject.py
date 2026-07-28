@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from skit import cli, flows, store
+from skit import cli, exitcodes, flows, store
 from skit.langs.base import (
     InjectError,
     InjectGapError,
@@ -468,7 +468,7 @@ def test_execute_reports_a_whitespace_split_as_a_bad_value(tmp_path):
         cli.app,
         ["run", "exsh5", "--set", "input-1=John Paul", "--set", "input-2=Doe", "--no-input"],
     )
-    assert result.exit_code == flows.FAILURE_EXIT_CODES[flows.FAIL_BAD_VALUE]
+    assert result.exit_code == exitcodes.exit_code_for_failure(flows.FAIL_BAD_VALUE)
     assert "input-1" in result.output
 
 
@@ -969,7 +969,7 @@ def test_run_refuses_a_bad_value_before_it_ever_launches(tmp_path):
     _shell_entry(tmp_path, "#!/usr/bin/env bash\nWIDTH=800\n", name="exsh3")
     assert runner.invoke(cli.app, ["params", "exsh3", "--manage", "WIDTH"]).exit_code == 0
     bad = runner.invoke(cli.app, ["run", "exsh3", "--set", "WIDTH=abc", "--no-input"])
-    assert bad.exit_code == flows.FAILURE_EXIT_CODES[flows.FAIL_BAD_VALUE]
+    assert bad.exit_code == exitcodes.exit_code_for_failure(flows.FAIL_BAD_VALUE)
 
 
 @posix_only
@@ -1009,7 +1009,7 @@ def test_execute_reports_a_positional_gap_as_a_bad_value(tmp_path):
         == 0
     )
     result = runner.invoke(cli.app, ["run", "exsh4", "--set", "input-2=Lovelace", "--no-input"])
-    assert result.exit_code == flows.FAILURE_EXIT_CODES[flows.FAIL_BAD_VALUE]
+    assert result.exit_code == exitcodes.exit_code_for_failure(flows.FAIL_BAD_VALUE)
     assert "input-1" in result.output
 
 
@@ -1141,7 +1141,7 @@ def test_cli_normalize_refuses_a_non_shell_kind(tmp_path):
     src.write_text("WIDTH = 800\n", encoding="utf-8")
     store.add_python(src, name="cln5")
     result = runner.invoke(cli.app, ["params", "cln5", "--normalize", "WIDTH"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "normalize" in result.output
 
 
@@ -1150,7 +1150,7 @@ def test_cli_normalize_refuses_reference_mode(tmp_path):
     src.write_text("#!/usr/bin/env bash\nWIDTH=800\n", encoding="utf-8")
     store.add_script(src, kind="shell", name="cln6", mode="reference")
     result = runner.invoke(cli.app, ["params", "cln6", "--normalize", "WIDTH"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "reference mode" in result.output
     assert src.read_text(encoding="utf-8") == "#!/usr/bin/env bash\nWIDTH=800\n"
 
@@ -1159,7 +1159,7 @@ def test_cli_normalize_without_a_stored_copy(tmp_path):
     entry = _shell_entry(tmp_path, "#!/usr/bin/env bash\nWIDTH=800\n", name="cln7")
     entry.script_path.unlink()
     result = runner.invoke(cli.app, ["params", "cln7", "--normalize", "WIDTH"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
     assert "no stored copy" in result.output
 
 

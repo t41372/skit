@@ -189,7 +189,7 @@ def test_finish_run_wires_the_warn_channel_to_a_flushed_print(tmp_path, monkeypa
 
 
 def test_finish_run_unmapped_failure_falls_back_to_generic_skit_error_code(tmp_path, monkeypatch):
-    """Defensive default: a failure name outside FAILURE_EXIT_CODES maps to 125, the generic
+    """Defensive default: an unknown failure reason maps to 125, the generic
     skit-error docker code — never None (would break the int contract) and never another
     code. Reached by handing _finish_run an outcome carrying an unrecognized failure."""
     entry = store.add_python(_py(tmp_path, "print(1)\n"), name="weird")

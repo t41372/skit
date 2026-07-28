@@ -363,7 +363,7 @@ def test_preset_from_last_still_refuses_an_entry_that_never_ran(tmp_path: Path):
     specs = [ParamDecl(name="GREETING", binding="const", type="str", default="bonjour")]
     entry = _managed(tmp_path, body, specs, name="fresh")
     result = runner.invoke(cli.app, ["preset", "save", "fresh", "p", "--from-last"])
-    assert result.exit_code == 1, result.output
+    assert result.exit_code == 2, result.output
     assert "no remembered values yet" in result.output
     assert argstate.load_state(entry.slug)["presets"] == {}
 
@@ -396,7 +396,7 @@ def test_preset_from_legacy_run_without_snapshot_refuses_to_guess(tmp_path: Path
     )
     argstate.record_run(entry.slug, 0, at="2026-07-09T14:30:05+00:00")
     result = runner.invoke(cli.app, ["preset", "save", "legacy-history", "p", "--from-last"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "run it once first" in result.output
     assert argstate.load_state(entry.slug)["presets"] == {}
 
