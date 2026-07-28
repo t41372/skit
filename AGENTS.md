@@ -60,6 +60,24 @@ skipped under any contention, and convergent, so reads stay safe to run concurre
 testing with mutmut (zero surviving mutants), and the i18n coverage gate are all hard CI
 gates.
 
+**The mutation gate has a blind spot, and it is not a random one.** mutmut prunes every
+decorated function *and every decorated class*, subtree and all (`_skip_node_and_children`
+in `mutmut/mutation/file_mutation.py`): decorators run at definition time and the trampoline
+rewrite would break `@property`'s signature, so only a lone bare `@staticmethod`/
+`@classmethod` survives — and even that is lost inside a decorated class. Here that is
+**4,369 of 23,087 function-body lines (19%)**: *all* 2,252 lines of Typer command bodies
+(`@app.command` and friends), all 1,148 lines of `@override` (`compose`, `check_action`, …),
+every `@on` handler, and every method of the 44 `@dataclass` models. That is the CLI's front
+doors, the TUI's event surface, and the model layer — what users actually touch.
+`tests/test_mutation_blindspot.py` measures it and fails if it grows.
+
+Two consequences. **Keep decorated functions to wiring** — put the decisions in an
+undecorated helper (`_can_edit`, `removal_stake`, `plan_edit` are the pattern), or they are
+verified by coverage alone. And **coverage alone cannot tell a dead branch from a live
+one**: design-audit rounds 11 and 12 each shipped a branch that could never fire, both in
+this blind spot, both "covered" by a test that patched the very condition the unreachable
+code was guarding.
+
 **6. Self-contained and non-invasive.** skit stays out of the user's global environment. It
 never mutates global/system/another tool's settings (shell env, `~/.config/uv/`, …) without an
 explicit consent prompt。
