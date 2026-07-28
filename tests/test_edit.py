@@ -7,6 +7,7 @@ from typer.testing import CliRunner
 
 from skit import cli, store
 from skit.langs.python import metawriter, reconcile
+from skit.notices import NoticeCode, edit_notice
 from skit.params import Binding, ParamDecl, ParamType
 
 # Two candidates: CITY (const) and input-1 (order 0) — used by add/resync tests.
@@ -36,7 +37,7 @@ def test_resync_drops_missing_and_keeps_matching():
     res = reconcile.edit_specs(SCRIPT, specs, resync=True)
     names = [s.name for s in res.specs]
     assert names == ["CITY"]
-    assert "resync-dropped:GONE" in res.warnings
+    assert edit_notice(NoticeCode.RESYNC_DROPPED, "GONE") in res.notices
 
 
 def test_resync_updates_changed_type_preserving_customization():
@@ -64,8 +65,8 @@ def test_add_input_candidate_by_display_name():
 
 def test_add_already_managed_and_not_candidate_warn():
     res = reconcile.edit_specs(SCRIPT, [spec("CITY")], add=["CITY", "NOPE"])
-    assert "already-managed:CITY" in res.warnings
-    assert "not-a-candidate:NOPE" in res.warnings
+    assert edit_notice(NoticeCode.ALREADY_MANAGED, "CITY") in res.notices
+    assert edit_notice(NoticeCode.NOT_A_CANDIDATE, "NOPE") in res.notices
 
 
 def test_remove_and_secret_toggles():
@@ -81,7 +82,7 @@ def test_remove_and_secret_toggles():
 def test_no_secret_and_missing_name_warns():
     res = reconcile.edit_specs(SCRIPT, [spec("CITY", secret=True)], no_secret=["CITY", "GHOST"])
     assert res.specs[0].secret is False
-    assert "not-managed:GHOST" in res.warnings
+    assert edit_notice(NoticeCode.NOT_MANAGED, "GHOST") in res.notices
 
 
 def test_edit_specs_is_pure_no_mutation_of_input_list():

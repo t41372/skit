@@ -989,9 +989,9 @@ class ScriptSettingsScreen(Screen[bool]):
         self._specs = result.specs
         # Stash the outcome before recompose rebuilds the screen (updating the live Static
         # would be lost — recompose replaces it). compose re-emits self._resync_report.
-        if result.warnings:
+        if result.notices:
             self._resync_report = "\n".join(
-                escape(analysis.render_warning(w)) for w in result.warnings
+                escape(analysis.render_notice(notice)) for notice in result.notices
             )
         else:
             self._resync_report = gettext("Everything still matches the script.")

@@ -36,6 +36,8 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from .notices import EditNotice, NoticeCode, edit_notice
+
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
 
@@ -509,11 +511,10 @@ def coerce_default(value: str, type_name: str) -> str | int | float | bool:
 
 @dataclass
 class DeclEditResult:
-    """The result of edit_declared: the new decl list plus a closed set of ``code:name``
-    warnings the caller renders (the UI owns the human wording, like reconcile.EditResult)."""
+    """The result of edit_declared: the new declarations plus typed edit notices."""
 
     decls: list[ParamDecl]
-    warnings: list[str]
+    notices: list[EditNotice]
 
 
 def _placeholder_decl(name: str) -> ParamDecl:
@@ -588,7 +589,7 @@ def edit_declared(  # noqa: PLR0912 — a fixed-order edit pipeline; the branche
     env_sources = env_sources or {}
     placeholders = set(placeholder_names)
 
-    warnings: list[str] = []
+    notices: list[EditNotice] = []
     by_name: dict[str, ParamDecl] = {d.name: field_replace(d) for d in decls}
     order: list[str] = list(by_name)
 
@@ -602,11 +603,11 @@ def edit_declared(  # noqa: PLR0912 — a fixed-order edit pipeline; the branche
             # (nothing is declared under that name), while `--type GHOST=int` asks for
             # something that did not happen. One string for both meant the caller could
             # not tell an idempotent no-op from a refusal — and this command now refuses.
-            warnings.append(f"rm-not-declared:{name}")
+            notices.append(edit_notice(NoticeCode.RM_NOT_DECLARED, name))
 
     for name in add:
         if name in by_name:
-            warnings.append(f"already-declared:{name}")
+            notices.append(edit_notice(NoticeCode.ALREADY_DECLARED, name))
             continue
         if name in placeholders:
             by_name[name] = _placeholder_decl(name)
@@ -637,7 +638,7 @@ def edit_declared(  # noqa: PLR0912 — a fixed-order edit pipeline; the branche
     for name in tweak_names:
         if name not in by_name:
             if name not in placeholders:
-                warnings.append(f"not-declared:{name}")
+                notices.append(edit_notice(NoticeCode.NOT_DECLARED, name))
                 continue
             # A placeholder the entry ASKS FOR is an editable parameter, whether or not a
             # row has been written for it yet — the same rule `add` applies eight lines up.
@@ -652,7 +653,7 @@ def edit_declared(  # noqa: PLR0912 — a fixed-order edit pipeline; the branche
         _apply_declared_tweaks(
             decl,
             name,
-            warnings,
+            notices,
             deliveries=deliveries,
             types=types,
             choices=choices,
@@ -670,20 +671,20 @@ def edit_declared(  # noqa: PLR0912 — a fixed-order edit pipeline; the branche
         )
         unrepresentable = _apply_bool_flag_action(decl)
         if unrepresentable is not None:
-            warnings.append(f"{unrepresentable}:{name}")
+            notices.append(edit_notice(unrepresentable, name))
             by_name[name] = pre
             continue
         normalized = normalize(decl)
         if validate_invariants(normalized) is not None:
-            warnings.append(f"choice-without-choices:{name}")
+            notices.append(edit_notice(NoticeCode.CHOICE_WITHOUT_CHOICES, name))
             by_name[name] = pre
         else:
             by_name[name] = normalized
 
-    return DeclEditResult(decls=[by_name[n] for n in order], warnings=warnings)
+    return DeclEditResult(decls=[by_name[n] for n in order], notices=notices)
 
 
-def _apply_bool_flag_action(decl: ParamDecl) -> str | None:
+def _apply_bool_flag_action(decl: ParamDecl) -> NoticeCode | None:
     """Bool-flag action hygiene, in place. Returns a warning code when the declaration
     describes a toggle skit cannot deliver, and the caller then keeps the row unchanged.
 
@@ -698,7 +699,7 @@ def _apply_bool_flag_action(decl: ParamDecl) -> str | None:
     action."""
     if decl.type == "bool" and decl.delivery == "flag" and decl.flag and not decl.action:
         if decl.default:
-            return "bool-flag-on-by-default"
+            return NoticeCode.BOOL_FLAG_ON_BY_DEFAULT
         decl.action = "store_true"
     if decl.type != "bool":
         decl.action = ""
@@ -708,7 +709,7 @@ def _apply_bool_flag_action(decl: ParamDecl) -> str | None:
 def _apply_declared_tweaks(  # noqa: PLR0912 — one branch per editable field; a flat dispatch
     decl: ParamDecl,
     name: str,
-    warnings: list[str],
+    notices: list[EditNotice],
     *,
     deliveries: Mapping[str, str],
     types: Mapping[str, str],
@@ -730,15 +731,15 @@ def _apply_declared_tweaks(  # noqa: PLR0912 — one branch per editable field; 
     if name in deliveries:
         value = deliveries[name]
         if value not in allowed_deliveries:
-            warnings.append(f"bad-delivery:{name}")
+            notices.append(edit_notice(NoticeCode.BAD_DELIVERY, name))
         elif value == "placeholder" and name not in placeholders:
-            warnings.append(f"not-a-placeholder:{name}")
+            notices.append(edit_notice(NoticeCode.NOT_A_PLACEHOLDER, name))
         else:
             decl.delivery = _coerce_literal(value, _DELIVERIES, decl.delivery)
     if name in types:
         value = types[name]
         if value not in _TYPES:
-            warnings.append(f"bad-type:{name}")
+            notices.append(edit_notice(NoticeCode.BAD_TYPE, name))
         else:
             # `value` is guaranteed in _TYPES by the guard above; pick the matching literal so
             # the assignment is a real ParamType. Unlike _coerce_literal(value, _TYPES, decl.type)
@@ -751,7 +752,7 @@ def _apply_declared_tweaks(  # noqa: PLR0912 — one branch per editable field; 
         try:
             decl.default = coerce_default(defaults[name], decl.type)
         except ValueError:
-            warnings.append(f"bad-default:{name}")
+            notices.append(edit_notice(NoticeCode.BAD_DEFAULT, name))
     if name in flags:
         decl.flag = flags[name].strip()
     if name in required:
@@ -773,7 +774,7 @@ def _apply_declared_tweaks(  # noqa: PLR0912 — one branch per editable field; 
         else:
             # An explicit flag that does nothing must never vanish silently — the
             # in-file lane warns for exactly this case; the declared lane now does too.
-            warnings.append(f"env-source-not-secret:{name}")
+            notices.append(edit_notice(NoticeCode.ENV_SOURCE_NOT_SECRET, name))
 
 
 def _coerce_literal[T: str](value: str, allowed: tuple[T, ...], fallback: T) -> T:

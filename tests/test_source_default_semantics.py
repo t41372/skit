@@ -27,6 +27,7 @@ from pathlib import Path
 from skit import analysis, argstate, flows
 from skit.langs.python.analyzer import analyze as py_analyze
 from skit.langs.shell import analyzer as shell
+from skit.notices import NoticeCode, edit_notice
 from skit.params import ParamDecl
 
 NOW = datetime(2026, 7, 9, 14, 30, 5)
@@ -190,7 +191,7 @@ def test_resync_current_default_and_rebind_and_untouched_input_share_one_pass():
     assert by["CITY"].default == "Taipei"  # current_defaults elif fired
     assert (by["input-1"].order, by["input-1"].prompt) == (0, "Name: ")  # untouched fall-through
     assert (by["input-2"].order, by["input-2"].prompt) == (1, "New label: ")  # rebound to source
-    assert "resync-rebound:input-2" in result.warnings
+    assert edit_notice(NoticeCode.RESYNC_REBOUND, "input-2") in result.notices
 
 
 def test_reconcile_ok_const_without_a_default_is_not_recorded():

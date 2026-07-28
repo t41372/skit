@@ -28,6 +28,7 @@ import pytest
 from typer.testing import CliRunner
 
 from skit import analysis, cli, kindnames, launcher, store, tui
+from skit.notices import NoticeCode, edit_notice
 from skit.tui_settings import ScriptSettingsScreen
 
 runner = CliRunner()
@@ -129,16 +130,16 @@ def test_an_idempotent_request_is_not_a_refusal(flags: list[str], why: str) -> N
 def test_the_two_split_codes_read_the_same_but_answer_differently() -> None:
     """The split, at the level it was made. The user sees one sentence either way — they
     do not care which internal op asked — while the caller gets two different answers."""
-    assert analysis.render_warning("unmanage-not-managed:X") == analysis.render_warning(
-        "not-managed:X"
-    )
-    assert analysis.is_refusal("not-managed:X") is True
-    assert analysis.is_refusal("unmanage-not-managed:X") is False
-    assert cli._render_declared_warning("rm-not-declared:X") == cli._render_declared_warning(
-        "not-declared:X"
-    )
-    assert analysis.is_refusal("not-declared:X") is True
-    assert analysis.is_refusal("rm-not-declared:X") is False
+    assert analysis.render_notice(
+        edit_notice(NoticeCode.UNMANAGE_NOT_MANAGED, "X")
+    ) == analysis.render_notice(edit_notice(NoticeCode.NOT_MANAGED, "X"))
+    assert analysis.is_refusal(edit_notice(NoticeCode.NOT_MANAGED, "X")) is True
+    assert analysis.is_refusal(edit_notice(NoticeCode.UNMANAGE_NOT_MANAGED, "X")) is False
+    assert analysis.render_notice(
+        edit_notice(NoticeCode.RM_NOT_DECLARED, "X")
+    ) == analysis.render_notice(edit_notice(NoticeCode.NOT_DECLARED, "X"))
+    assert analysis.is_refusal(edit_notice(NoticeCode.NOT_DECLARED, "X")) is True
+    assert analysis.is_refusal(edit_notice(NoticeCode.RM_NOT_DECLARED, "X")) is False
 
 
 def test_env_source_answers_the_same_on_both_lanes(tmp_path: Path) -> None:

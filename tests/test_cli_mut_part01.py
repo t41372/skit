@@ -21,6 +21,7 @@ import pytest
 from typer.testing import CliRunner
 
 from skit import analysis, cli, config, flows, inlineform, promptform, store
+from skit.notices import NoticeCode, edit_notice
 from skit.params import ParamDecl
 
 runner = CliRunner()
@@ -149,8 +150,8 @@ def test_apply_env_sources_unmanaged_warning_exact():
     code is what decides whether the invocation is honourable."""
     specs = [ParamDecl(name="CITY", type="str")]
     warnings = cli._apply_env_sources(specs, {"GHOST": "OPENAI"})
-    assert warnings == ["env-source-not-managed:GHOST"]
-    assert analysis.render_warning(warnings[0]) == (
+    assert warnings == [edit_notice(NoticeCode.ENV_SOURCE_NOT_MANAGED, "GHOST")]
+    assert analysis.render_notice(warnings[0]) == (
         "GHOST isn't a managed parameter; --env-source skipped."
     )
     assert analysis.is_refusal(warnings[0]) is True
@@ -159,8 +160,8 @@ def test_apply_env_sources_unmanaged_warning_exact():
 def test_apply_env_sources_non_secret_warning_exact():
     specs = [ParamDecl(name="CITY", type="str", secret=False)]
     warnings = cli._apply_env_sources(specs, {"CITY": "OPENAI"})
-    assert warnings == ["env-source-not-secret:CITY"]
-    assert analysis.render_warning(warnings[0]) == (
+    assert warnings == [edit_notice(NoticeCode.ENV_SOURCE_NOT_SECRET, "CITY")]
+    assert analysis.render_notice(warnings[0]) == (
         "CITY isn't secret; --env-source only applies to secret parameters "
         "(mark it with --secret first)."
     )
@@ -176,7 +177,7 @@ def test_apply_env_sources_skips_but_keeps_processing_later_specs():
     ]
     warnings = cli._apply_env_sources(specs, {"GHOST": "X", "CITY": "Y", "API": "OPENAI_KEY"})
     # GHOST is unmanaged (spec is None -> continue); if that were a break, CITY never warns.
-    assert "env-source-not-secret:CITY" in warnings
+    assert edit_notice(NoticeCode.ENV_SOURCE_NOT_SECRET, "CITY") in warnings
     # CITY is non-secret (-> continue); if that were a break, API's env_source stays unset.
     assert specs[1].env_source == "OPENAI_KEY"
 

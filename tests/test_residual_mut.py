@@ -14,6 +14,7 @@ import pytest
 
 from skit import analysis, i18n, pep723
 from skit.langs.python import analyzer, metawriter, reconcile
+from skit.notices import NoticeCode, edit_notice
 from skit.params import ParamDecl
 
 # ---------------------------------------------------------------------------
@@ -434,28 +435,34 @@ def test_drift_lines_rebind_uses_input_read_wording():
 
 
 # ---------------------------------------------------------------------------
-# reconcile.render_warning
+# reconcile.render_notice
 # ---------------------------------------------------------------------------
 
 
-def test_render_warning_exact_messages_for_each_code():
+def test_render_notice_exact_messages_for_each_code():
     i18n.init("en")
-    assert reconcile.render_warning("not-managed:X") == "X isn't a managed parameter; skipped."
     assert (
-        reconcile.render_warning("resync-dropped:X")
+        reconcile.render_notice(edit_notice(NoticeCode.NOT_MANAGED, "X"))
+        == "X isn't a managed parameter; skipped."
+    )
+    assert (
+        reconcile.render_notice(edit_notice(NoticeCode.RESYNC_DROPPED, "X"))
         == "Dropped X: it no longer exists in the script."
     )
-    assert reconcile.render_warning("already-managed:X") == "X is already managed; skipped."
     assert (
-        reconcile.render_warning("not-a-candidate:X")
+        reconcile.render_notice(edit_notice(NoticeCode.ALREADY_MANAGED, "X"))
+        == "X is already managed; skipped."
+    )
+    assert (
+        reconcile.render_notice(edit_notice(NoticeCode.NOT_A_CANDIDATE, "X"))
         == "X isn't a detectable parameter in the current script; skipped."
     )
 
 
-def test_render_warning_partitions_on_first_colon_only():
+def test_render_notice_preserves_colons_in_subject():
     i18n.init("en")
     assert (
-        reconcile.render_warning("not-managed:foo:bar")
+        reconcile.render_notice(edit_notice(NoticeCode.NOT_MANAGED, "foo:bar"))
         == "foo:bar isn't a managed parameter; skipped."
     )
 
@@ -488,7 +495,7 @@ def test_edit_specs_resync_defaults_to_off():
     specs = [ParamDecl(name="GONE", binding="const", type="str")]
     result = reconcile.edit_specs(text, specs)
     assert [s.name for s in result.specs] == ["GONE"]
-    assert result.warnings == []
+    assert result.notices == []
 
 
 # ---------------------------------------------------------------------------

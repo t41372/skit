@@ -15,8 +15,9 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from skit import argstate, cli, flows, launcher, store
+from skit import analysis, argstate, cli, flows, launcher, store
 from skit.models import Entry, ScriptMeta
+from skit.notices import NoticeCode, edit_notice
 from skit.params import (
     ParamDecl,
     declared_for_template,
@@ -582,17 +583,17 @@ def test_cli_declared_malformed_value_warns(tmp_path: Path):
 
 
 def test_cli_declared_warning_codes_render(tmp_path: Path):
-    # Every closed warning code renders a distinct localized line (via _render_declared_warning).
+    # Every declared-schema notice renders through the shared parameter-notice renderer.
     for code in (
-        "not-declared:x",
-        "already-declared:x",
-        "bad-delivery:x",
-        "not-a-placeholder:x",
-        "bad-type:x",
-        "bad-default:x",
-        "choice-without-choices:x",
+        NoticeCode.NOT_DECLARED,
+        NoticeCode.ALREADY_DECLARED,
+        NoticeCode.BAD_DELIVERY,
+        NoticeCode.NOT_A_PLACEHOLDER,
+        NoticeCode.BAD_TYPE,
+        NoticeCode.BAD_DEFAULT,
+        NoticeCode.CHOICE_WITHOUT_CHOICES,
     ):
-        line = cli._render_declared_warning(code)
+        line = analysis.render_notice(edit_notice(code, "x"))
         assert "x" in line
         assert ":" not in line.split("x", 1)[0]  # the code prefix isn't leaked into the message
 

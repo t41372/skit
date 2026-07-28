@@ -11,23 +11,24 @@ Three things live here, shared by every analyzable language (python today, shell
   fields carry over. Moved here verbatim from the Python analyzer so a second language
   (shell) does not import the Python one just to name its result type.
 
-- **The reconcile machinery** — `Report`, `drift_lines`, `render_warning`, `EditResult`,
+- **The reconcile machinery** — `Report`, `drift_lines`, `render_notice`, `EditResult`,
   `edit_specs`, `reconcile`. All of it is language-agnostic *except* the one call to
   `analyze(text)`, which each caller supplies as an explicit `analyze` parameter. The
   per-language module (`langs/python/reconcile.py`, `langs/shell`) is a thin wiring shim
   that binds its own analyzer's `analyze` and re-exports the rest.
 
 This module only makes **decisions**; it does no I/O and produces no user copy beyond the
-two shared render helpers (`drift_lines`/`render_warning`), which are the only copy exit
+two shared render helpers (`drift_lines`/`render_notice`), which are the only copy exit
 points — presentation/markup is left to the CLI/TUI. Headless, stdlib + skit-neutral only.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, assert_never
 
 from .callmatch import match_calls
+from .notices import EditNotice, NoticeCode, NoticeSeverity, edit_notice
 from .params import ParamDecl, coerce_default
 
 if TYPE_CHECKING:
@@ -217,75 +218,81 @@ def drift_lines(report: Report, name: str, target: str | None = None) -> list[st
     return lines
 
 
-# Codes that mean "the thing you asked for did NOT happen". A `skit params` invocation
-# carrying any of these writes nothing and exits 2 — the validate-then-write rule the TUI's
-# own save has always followed, and the refuse-never-drop contract this command's siblings
-# (--set, --dep, --python, --preset, config) all keep. Everything NOT listed here is
-# informational: the requested end state holds (already-managed, already-declared,
-# rm-not-declared, unmanage-not-managed) or it is `--resync` REPORTING what it changed,
-# which is that flag's whole output rather than a refused request.
-REFUSAL_CODES = frozenset(
-    {
-        "not-managed",
-        "not-a-candidate",
-        "not-declared",
-        "not-a-placeholder",
-        "bad-delivery",
-        "bad-type",
-        "bad-default",
-        "choice-without-choices",
-        "bool-flag-on-by-default",
-        "env-source-not-managed",
-        "env-source-not-secret",
-    }
-)
+def is_refusal(notice: EditNotice) -> bool:
+    """Whether a requested edit did not happen."""
+    return notice.severity is NoticeSeverity.REFUSAL
 
 
-def is_refusal(warning: str) -> bool:
-    """Whether a "code:name" warning means the operation did not happen."""
-    return warning.partition(":")[0] in REFUSAL_CODES
-
-
-def render_warning(warning: str) -> str:
-    """Translate an EditResult warning ("code:name") into a user-facing line (shared by CLI/TUI).
-
-    The codes are the closed set emitted by edit_specs; keeping the message lookup here (rather than
-    a dynamic gettext(f"edit-warn-{code}")) lets Babel extract every string statically."""
+def render_notice(notice: EditNotice) -> str:  # noqa: PLR0912 — exhaustive closed outcome set
+    """Translate a typed edit notice into a user-facing line shared by CLI and TUI."""
     from .i18n import gettext
 
-    code, _, name = warning.partition(":")
-    return {
-        "not-managed": gettext("%(name)s isn't a managed parameter; skipped."),
-        "unmanage-not-managed": gettext("%(name)s isn't a managed parameter; skipped."),
-        "env-source-not-managed": gettext(
-            "%(name)s isn't a managed parameter; --env-source skipped."
-        ),
-        "env-source-not-secret": gettext(
-            "%(name)s isn't secret; --env-source only applies to secret parameters "
-            "(mark it with --secret first)."
-        ),
-        "resync-dropped": gettext("Dropped %(name)s: it no longer exists in the script."),
-        "already-managed": gettext("%(name)s is already managed; skipped."),
-        "not-a-candidate": gettext(
-            "%(name)s isn't a detectable parameter in the current script; skipped."
-        ),
-        "resync-skipped": gettext(
-            "Could not parse the script (syntax error); resync skipped. "
-            "Parameter definitions are unchanged."
-        ),
-        "resync-rebound": gettext(
-            "%(name)s: re-anchored to its current position after its prompt stopped matching "
-            "uniquely; double-check the prompt/secret assignment is still correct."
-        ),
-    }[code] % {"name": name}
+    match notice.code:
+        case NoticeCode.NOT_MANAGED | NoticeCode.UNMANAGE_NOT_MANAGED:
+            message = gettext("%(name)s isn't a managed parameter; skipped.")
+        case NoticeCode.ENV_SOURCE_NOT_MANAGED:
+            message = gettext("%(name)s isn't a managed parameter; --env-source skipped.")
+        case NoticeCode.ENV_SOURCE_NOT_SECRET:
+            message = gettext(
+                "%(name)s isn't secret; --env-source only applies to secret parameters "
+                "(mark it with --secret first)."
+            )
+        case NoticeCode.RESYNC_DROPPED:
+            message = gettext("Dropped %(name)s: it no longer exists in the script.")
+        case NoticeCode.ALREADY_MANAGED:
+            message = gettext("%(name)s is already managed; skipped.")
+        case NoticeCode.NOT_A_CANDIDATE:
+            message = gettext(
+                "%(name)s isn't a detectable parameter in the current script; skipped."
+            )
+        case NoticeCode.RESYNC_SKIPPED:
+            message = gettext(
+                "Could not parse the script (syntax error); resync skipped. "
+                "Parameter definitions are unchanged."
+            )
+        case NoticeCode.RESYNC_REBOUND:
+            message = gettext(
+                "%(name)s: re-anchored to its current position after its prompt stopped matching "
+                "uniquely; double-check the prompt/secret assignment is still correct."
+            )
+        case NoticeCode.NOT_DECLARED | NoticeCode.RM_NOT_DECLARED:
+            message = gettext("%(name)s isn't a declared parameter; skipped.")
+        case NoticeCode.ALREADY_DECLARED:
+            message = gettext("%(name)s is already declared; skipped.")
+        case NoticeCode.BAD_DELIVERY:
+            message = gettext("%(name)s: that delivery isn't available for this kind; skipped.")
+        case NoticeCode.NOT_A_PLACEHOLDER:
+            message = gettext(
+                "%(name)s isn't a template placeholder, so it can't use placeholder delivery; "
+                "skipped."
+            )
+        case NoticeCode.BAD_TYPE:
+            message = gettext(
+                "%(name)s: unknown type; skipped (use str, int, float, bool, choice, or path)."
+            )
+        case NoticeCode.BAD_DEFAULT:
+            message = gettext("%(name)s: the default doesn't fit its type; skipped.")
+        case NoticeCode.CHOICE_WITHOUT_CHOICES:
+            message = gettext(
+                "%(name)s: a choice parameter needs choices; set --choices %(name)s=a,b,c."
+            )
+        case NoticeCode.BOOL_FLAG_ON_BY_DEFAULT:
+            message = gettext(
+                "%(name)s is on by default, so its flag could only ever turn it on again. "
+                "Declare the flag that turns it OFF instead (--no-%(name)s and the like), with "
+                "default false."
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
+    return message % {"name": notice.name}
 
 
 @dataclass
 class EditResult:
     specs: list[ParamDecl]
-    warnings: list[str] = field(
+    notices: list[EditNotice] = field(
         default_factory=list
-    )  # unmatched names etc.; i18n key + value by CLI
+    )  # unmatched names etc.; typed outcomes rendered by CLI/TUI
 
 
 def edit_specs(
@@ -306,13 +313,13 @@ def edit_specs(
     Keys are always the **name** (const=variable name, input=input-N display name, matching
     `skit params`; an input's name is bound to its order, so it's unique for inputs too). The apply
     order is intentionally fixed: resync (prune/retype) -> remove -> add -> secret/no_secret/prompt
-    (tweaks). No I/O; unmatched names are collected into warnings for the caller to render.
+    (tweaks). No I/O; unmatched names are collected into notices for the caller to render.
 
     `analyze` is the language's detector — the one language-specific dependency, threaded through so
     this stays neutral (the Python/shell reconcile shims bind their own).
     """
     prompts = prompts or {}
-    warnings: list[str] = []
+    notices: list[EditNotice] = []
     # Shallow-copy each spec: this function claims to be pure and must never mutate the caller's
     # objects (resync changes type, tweaks change secret/prompt).
     by_name: dict[str, ParamDecl] = {s.name: replace(s) for s in specs}
@@ -327,7 +334,7 @@ def edit_specs(
     # 1) resync: prune missing and update changed types/defaults per the current script
     #    (keeping custom secret/prompt).
     if resync:
-        _apply_resync(text, specs, by_name, order, warnings, analyze=analyze)
+        _apply_resync(text, specs, by_name, order, notices, analyze=analyze)
 
     # 2) remove: explicit drop.
     for name in remove:
@@ -338,16 +345,16 @@ def edit_specs(
             # Distinct from the tweak-side "not-managed" below: `--unmanage GHOST` asks
             # for a state that already holds; `--secret GHOST` asks for something that did
             # not happen. Same sentence to the user, different answer to the caller.
-            warnings.append(f"unmanage-not-managed:{name}")
+            notices.append(edit_notice(NoticeCode.UNMANAGE_NOT_MANAGED, name))
 
     # 3) add: bring a currently detected candidate under management (skip if already managed).
     if add:
-        _apply_add(text, add, by_name, order, warnings, analyze=analyze)
+        _apply_add(text, add, by_name, order, notices, analyze=analyze)
 
     # 4) tweak secret / prompt (only for managed ones).
-    _apply_tweaks(by_name, warnings, secret=secret, no_secret=no_secret, prompts=prompts)
+    _apply_tweaks(by_name, notices, secret=secret, no_secret=no_secret, prompts=prompts)
 
-    return EditResult(specs=[by_name[n] for n in order], warnings=warnings)
+    return EditResult(specs=[by_name[n] for n in order], notices=notices)
 
 
 def _apply_resync(
@@ -355,7 +362,7 @@ def _apply_resync(
     specs: list[ParamDecl],
     by_name: dict[str, ParamDecl],
     order: list[str],
-    warnings: list[str],
+    notices: list[EditNotice],
     *,
     analyze: Callable[[str], Analysis],
 ) -> None:
@@ -368,14 +375,14 @@ def _apply_resync(
         # drops the entire [tool.skit] block once params is empty -- a transient parse error (e.g.
         # mid-edit) would silently destroy the user's managed-parameter definitions. Leave
         # by_name/order untouched and tell the user resync didn't run instead.
-        warnings.append("resync-skipped")
+        notices.append(edit_notice(NoticeCode.RESYNC_SKIPPED))
         return
     missing_names = {s.name for s in report.missing}
     changed_pairs = {spec.name: cand for spec, cand in report.changed}
     rebind_targets = {spec.name: cand for spec, cand in report.rebind}
     for name in list(order):
         if name in missing_names:
-            warnings.append(f"resync-dropped:{name}")
+            notices.append(edit_notice(NoticeCode.RESYNC_DROPPED, name))
             del by_name[name]
             order.remove(name)
         elif name in changed_pairs:
@@ -409,7 +416,7 @@ def _apply_resync(
             # currently supplied it, so the *next* run's plain reconcile() (no --resync) sees an
             # exact prompt match again instead of re-deriving the same fallback every time.
             cand = rebind_targets[name]
-            warnings.append(f"resync-rebound:{name}")
+            notices.append(edit_notice(NoticeCode.RESYNC_REBOUND, name))
             by_name[name].order = cand.order
             by_name[name].prompt = cand.prompt
 
@@ -419,24 +426,24 @@ def _apply_add(
     add: list[str] | tuple[str, ...],
     by_name: dict[str, ParamDecl],
     order: list[str],
-    warnings: list[str],
+    notices: list[EditNotice],
     *,
     analyze: Callable[[str], Analysis],
 ) -> None:
     candidates = {c.name: c for c in analyze(text).candidates}
     for name in add:
         if name in by_name:
-            warnings.append(f"already-managed:{name}")
+            notices.append(edit_notice(NoticeCode.ALREADY_MANAGED, name))
         elif name in candidates:
             by_name[name] = ParamDecl.from_candidate(candidates[name])
             order.append(name)
         else:
-            warnings.append(f"not-a-candidate:{name}")
+            notices.append(edit_notice(NoticeCode.NOT_A_CANDIDATE, name))
 
 
 def _apply_tweaks(
     by_name: dict[str, ParamDecl],
-    warnings: list[str],
+    notices: list[EditNotice],
     *,
     secret: list[str] | tuple[str, ...],
     no_secret: list[str] | tuple[str, ...],
@@ -446,13 +453,13 @@ def _apply_tweaks(
         if name in by_name:
             by_name[name].secret = True
         else:
-            warnings.append(f"not-managed:{name}")
+            notices.append(edit_notice(NoticeCode.NOT_MANAGED, name))
     for name in no_secret:
         if name in by_name:
             by_name[name].secret = False
             by_name[name].env_source = ""  # an env source only means anything on a secret
         else:
-            warnings.append(f"not-managed:{name}")
+            notices.append(edit_notice(NoticeCode.NOT_MANAGED, name))
     # Apply the final-state rule after both lists: `--secret X --no-secret X` ends
     # public and must keep its public default, while every explicit final transition
     # to secret removes the cached literal before the block/JSON surfaces can expose it.
@@ -463,7 +470,7 @@ def _apply_tweaks(
         if name in by_name:
             by_name[name].prompt = prompt
         else:
-            warnings.append(f"not-managed:{name}")
+            notices.append(edit_notice(NoticeCode.NOT_MANAGED, name))
 
 
 def _record_default(report: Report, spec: ParamDecl, cand: Candidate) -> None:

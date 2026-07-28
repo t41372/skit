@@ -1032,7 +1032,7 @@ def _prompt_secret_warning(plan: FormPlan, asm: Assembly) -> str:
 def _split_message(exc: InjectSplitError) -> str:
     """The user-facing wording for each way a `read` line would mangle a value. A closed dict of
     gettext literals (never gettext(reason)) so Babel can extract them — the same discipline
-    analysis.render_warning uses."""
+    analysis.render_notice uses."""
     return {
         "line-break": gettext(
             "%(name)s can't contain a line break: a shell `read` takes ONE line, so everything "

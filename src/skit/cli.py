@@ -27,7 +27,7 @@ import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NoReturn, cast, overload
+from typing import TYPE_CHECKING, Any, NoReturn, assert_never, cast, overload
 
 import click
 import typer
@@ -63,6 +63,13 @@ from .exitcodes import (
 )
 from .i18n import gettext, ngettext
 from .langs.registry import KNOWN_KINDS, spec_for
+from .notices import (
+    EditNotice,
+    NormalizeNotice,
+    NormalizeNoticeCode,
+    NoticeCode,
+    edit_notice,
+)
 from .params import ParamDecl, declared_from_meta, edit_declared, is_secret_name
 from .rewrite import read_for_block_edit, write_block_edit
 
@@ -4740,7 +4747,7 @@ def _set_prompt_interpolate(entry: store.Entry, interpolate: bool, *, quiet: boo
         )
 
 
-def _refuse_unhonoured(warnings: list[str], render) -> None:
+def _refuse_unhonoured(notices: list[EditNotice], render: Callable[[EditNotice], str]) -> None:
     """Refuse a `skit params` invocation that could not honour an explicit flag.
 
     Nothing is written and the exit is 2 — the same answer `--set`, `--dep`, `--python`,
@@ -4753,34 +4760,33 @@ def _refuse_unhonoured(warnings: list[str], render) -> None:
     All-or-nothing on purpose. A partial apply is only recoverable by reading which parts
     landed, from a localized line the agent is told not to parse; a refusal is recoverable
     by fixing the flag and running again."""
-    for w in warnings:
-        err_console.print(f"[yellow]{escape(render(w))}[/yellow]")
+    for notice in notices:
+        err_console.print(f"[yellow]{escape(render(notice))}[/yellow]")
     raise _fail(
         gettext("Nothing was changed — fix the flag(s) above and run it again."), EXIT_USAGE
     )
 
 
-def _apply_env_sources(specs: list[ParamDecl], env_sources: dict[str, str]) -> list[str]:
-    """Set/clear env_source on secret specs; returns "code:name" warnings for unusable
-    requests.
+def _apply_env_sources(specs: list[ParamDecl], env_sources: dict[str, str]) -> list[EditNotice]:
+    """Set/clear env_source on secret specs; return typed notices for unusable requests.
 
-    CODES, not rendered sentences. This was the third warning producer in `skit params`
+    Typed outcomes, not rendered sentences. This was the third notice producer in `skit params`
     and the only one that returned finished prose, so it was invisible to anything that
-    wanted to CLASSIFY warnings — which left `--env-source` warning-and-continuing on the
+    wanted to classify outcomes — which left `--env-source` warning-and-continuing on the
     python/shell/js lane while the very same flag refused on an exe entry, a polarity
     inversion inside one command."""
-    warnings: list[str] = []
+    notices: list[EditNotice] = []
     by_name = {s.name: s for s in specs}
     for pname, envvar in env_sources.items():
         spec = by_name.get(pname)
         if spec is None:
-            warnings.append(f"env-source-not-managed:{pname}")
+            notices.append(edit_notice(NoticeCode.ENV_SOURCE_NOT_MANAGED, pname))
             continue
         if not spec.secret:
-            warnings.append(f"env-source-not-secret:{pname}")
+            notices.append(edit_notice(NoticeCode.ENV_SOURCE_NOT_SECRET, pname))
             continue
         spec.env_source = envvar.strip()
-    return warnings
+    return notices
 
 
 def _edit_params(
@@ -4879,11 +4885,11 @@ def _edit_params(
     # COMPUTE, then decide, then write: the env-source pass mutates result.specs, so it
     # has to run before the decision — and no write may happen until every flag is known
     # to be honourable.
-    warnings = [*result.warnings, *_apply_env_sources(result.specs, env_sources)]
-    if any(analysis.is_refusal(w) for w in warnings):
-        _refuse_unhonoured(warnings, analysis.render_warning)
-    for w in warnings:
-        err_console.print(f"[yellow]{escape(analysis.render_warning(w))}[/yellow]")
+    notices = [*result.notices, *_apply_env_sources(result.specs, env_sources)]
+    if any(analysis.is_refusal(notice) for notice in notices):
+        _refuse_unhonoured(notices, analysis.render_notice)
+    for notice in notices:
+        err_console.print(f"[yellow]{escape(analysis.render_notice(notice))}[/yellow]")
     # `text` above was read with errors="replace" for the analyzer; writing THAT text back
     # would bake U+FFFD over every non-UTF-8 byte. Re-read through the shared byte-lossless
     # pair (rewrite.py) — params_io.write only touches the comment block, so unrelated bytes
@@ -4918,30 +4924,37 @@ def _edit_params(
         )
 
 
-def _render_normalize_warning(warning: str) -> str:
-    """Translate a normalizer refusal ("code:name") into a user-facing line. Static lookup (not
-    gettext(f"…{code}")) so Babel can extract every string — same discipline as the other two
-    warning renderers."""
-    code, _, name = warning.partition(":")
-    return {
-        "not-a-const": gettext(
-            "%(name)s isn't a plain constant with a literal value, so there's nothing to normalize; skipped."
-        ),
-        "multiple-assignments": gettext(
-            "%(name)s is assigned more than once at the top level; normalizing it would change which value wins. Skipped."
-        ),
-        "readonly": gettext(
-            "%(name)s is readonly, so the script could never take a value from the environment; skipped."
-        ),
-        "already-env": gettext("%(name)s already reads from the environment; nothing to do."),
-        "unsafe-literal": gettext(
-            "%(name)s's value contains a character that can't be moved into ${...:-...} safely "
-            '(one of } " ` $ \\ or a newline); skipped — it keeps being injected into a temporary copy.'
-        ),
-        "syntax-error": gettext(
-            "Could not parse the script (syntax error); nothing was normalized."
-        ),
-    }[code] % {"name": name}
+def _render_normalize_notice(notice: NormalizeNotice) -> str:
+    """Translate the normalizer's separate, closed notice vocabulary."""
+    match notice.code:
+        case NormalizeNoticeCode.NOT_A_CONST:
+            message = gettext(
+                "%(name)s isn't a plain constant with a literal value, so there's nothing to "
+                "normalize; skipped."
+            )
+        case NormalizeNoticeCode.MULTIPLE_ASSIGNMENTS:
+            message = gettext(
+                "%(name)s is assigned more than once at the top level; normalizing it would "
+                "change which value wins. Skipped."
+            )
+        case NormalizeNoticeCode.READONLY:
+            message = gettext(
+                "%(name)s is readonly, so the script could never take a value from the "
+                "environment; skipped."
+            )
+        case NormalizeNoticeCode.ALREADY_ENV:
+            message = gettext("%(name)s already reads from the environment; nothing to do.")
+        case NormalizeNoticeCode.UNSAFE_LITERAL:
+            message = gettext(
+                "%(name)s's value contains a character that can't be moved into ${...:-...} safely "
+                '(one of } " ` $ \\ or a newline); skipped — it keeps being injected into a '
+                "temporary copy."
+            )
+        case NormalizeNoticeCode.SYNTAX_ERROR:
+            message = gettext("Could not parse the script (syntax error); nothing was normalized.")
+        case _ as unreachable:
+            assert_never(unreachable)
+    return message % {"name": notice.name}
 
 
 def _reanchor_as_envdefault(spec: ParamDecl, cand: analysis.Candidate) -> ParamDecl:
@@ -5006,8 +5019,8 @@ def _normalize_params(
             EXIT_SKIT,
         ) from None
     result = entry_spec.normalizer.normalize(text, list(names))
-    for warning in result.refused:
-        err_console.print(f"[yellow]{escape(_render_normalize_warning(warning))}[/yellow]")
+    for notice in result.refused:
+        err_console.print(f"[yellow]{escape(_render_normalize_notice(notice))}[/yellow]")
     if not result.normalized:
         return  # every name was refused; the file is untouched (the warnings above said why)
     # Re-read the analyzer: each normalized name is now an ${NAME:-default} expansion, i.e. an
@@ -5032,37 +5045,6 @@ def _normalize_params(
     console.print(
         f"[green]{gettext('Normalized %(names)s in %(name)s: delivered as environment variables from now on (no temporary copy, and $0 stays your real file).') % {'names': ', '.join(escape(n) for n in result.normalized), 'name': escape(entry.meta.name)}}[/green]"
     )
-
-
-def _render_declared_warning(warning: str) -> str:
-    """Translate an edit_declared warning ("code:name") into a user-facing line. The codes are
-    the closed set params.edit_declared emits; a static lookup (not gettext(f"...{code}")) keeps
-    every string Babel-extractable, mirroring reconcile.render_warning."""
-    code, _, name = warning.partition(":")
-    return {
-        "not-declared": gettext("%(name)s isn't a declared parameter; skipped."),
-        "rm-not-declared": gettext("%(name)s isn't a declared parameter; skipped."),
-        "already-declared": gettext("%(name)s is already declared; skipped."),
-        "bad-delivery": gettext("%(name)s: that delivery isn't available for this kind; skipped."),
-        "not-a-placeholder": gettext(
-            "%(name)s isn't a template placeholder, so it can't use placeholder delivery; skipped."
-        ),
-        "bad-type": gettext(
-            "%(name)s: unknown type; skipped (use str, int, float, bool, choice, or path)."
-        ),
-        "bad-default": gettext("%(name)s: the default doesn't fit its type; skipped."),
-        "env-source-not-secret": gettext(
-            "%(name)s isn't secret; --env-source only applies to secret parameters (mark it with --secret first)."
-        ),
-        "choice-without-choices": gettext(
-            "%(name)s: a choice parameter needs choices; set --choices %(name)s=a,b,c."
-        ),
-        "bool-flag-on-by-default": gettext(
-            "%(name)s is on by default, so its flag could only ever turn it on again. "
-            "Declare the flag that turns it OFF instead (--no-%(name)s and the like), with "
-            "default false."
-        ),
-    }[code] % {"name": name}
 
 
 def _edit_declared_params(
@@ -5159,7 +5141,7 @@ def _edit_declared_params(
         allowed_deliveries=allowed,
         placeholder_names=placeholder_truth,
     )
-    warnings = list(result.warnings)
+    notices = list(result.notices)
     pending_managed: list[str] | None = None
     if is_prompt:
         # Maintain the managed list alongside the schema rows: an added body placeholder
@@ -5177,16 +5159,21 @@ def _edit_declared_params(
             # the tail unless this very call removed it (drift stays visible, never grows).
             new_managed += [n for n in keep if n not in body_placeholders]
             pending_managed = new_managed
-            warnings = [
-                w for w in warnings if w not in {f"rm-not-declared:{n}" for n in removed_managed}
+            removed_managed_set = set(removed_managed)
+            notices = [
+                notice
+                for notice in notices
+                if not (
+                    notice.code is NoticeCode.RM_NOT_DECLARED and notice.name in removed_managed_set
+                )
             ]
     # DECIDE before any write. The prompt managed-list write used to happen up there, on
     # the wrong side of this line, so `skit params p --rm noise --rm ghost` would unmanage
     # `noise` and only then refuse — the partial apply this whole change exists to stop.
-    if any(analysis.is_refusal(w) for w in warnings):
-        _refuse_unhonoured(warnings, _render_declared_warning)
-    for w in warnings:
-        err_console.print(f"[yellow]{escape(_render_declared_warning(w))}[/yellow]")
+    if any(analysis.is_refusal(notice) for notice in notices):
+        _refuse_unhonoured(notices, analysis.render_notice)
+    for notice in notices:
+        err_console.print(f"[yellow]{escape(analysis.render_notice(notice))}[/yellow]")
     if pending_managed is not None:
         store.write_prompt_managed(entry.slug, pending_managed)
     store.write_parameters(entry.slug, result.decls)

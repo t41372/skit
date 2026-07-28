@@ -199,7 +199,7 @@ class EditPlan:
 
     A reason ID rather than a sentence, because the two faces need different things from
     it: the CLI maps it to an exit code as well as copy, and the ID is what both maps key
-    off (the `_render_declared_warning` precedent).
+    off (the shared parameter-notice renderer precedent).
     """
 
     target: Path | None
@@ -225,7 +225,7 @@ def plan_edit(entry: Entry) -> EditPlan:
 
 def edit_refusal_message(refusal: EditRefusal, entry: Entry) -> str:
     """The refusal, worded once for both faces. A static lookup keeps every string
-    Babel-extractable (the _render_declared_warning rule)."""
+    Babel-extractable (the shared parameter-notice renderer rule)."""
     return {
         "not-editable": gettext(
             "%(name)s has no editable source (programs and command templates run as-is)."

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from skit import flows, params, tui_form
 from skit.langs.python import reconcile
+from skit.notices import NoticeCode, edit_notice
 from skit.params import ParamDecl
 
 
@@ -51,7 +52,7 @@ def test_edit_declared_accepts_path_type():
     decls = [ParamDecl(name="src", delivery="flag")]
     res = params.edit_declared(decls, types={"src": "path"})
     assert res.decls[0].type == "path"
-    assert res.warnings == []
+    assert res.notices == []
 
 
 # ---------- reconcile: refinement, not drift ----------
@@ -77,7 +78,7 @@ def test_resync_preserves_declared_path():
     s = res.specs[0]
     assert s.type == "path"  # the refinement survives --resync
     assert s.prompt == "Which file? "
-    assert "resync-dropped:SRC" not in res.warnings
+    assert edit_notice(NoticeCode.RESYNC_DROPPED, "SRC") not in res.notices
 
 
 def test_resync_still_corrects_real_type_drift():

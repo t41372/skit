@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from ..analysis import Analysis, ArgSpec, Report
     from ..config import PromptRunner
     from ..models import Entry
+    from ..notices import NormalizeNotice
     from ..params import ParamDecl
 
 
@@ -315,13 +316,11 @@ class Normalizer:
 
 @dataclass(frozen=True)
 class Normalization:
-    """A normalizer's result: the new text, the names actually rewritten, and coded
-    ``reason:name`` refusals the caller renders (same shape as analysis.EditResult warnings —
-    the UI owns the human wording)."""
+    """A normalizer's result: new text, rewritten names, and typed refusals."""
 
     text: str
     normalized: list[str] = field(default_factory=list)
-    refused: list[str] = field(default_factory=list)
+    refused: list[NormalizeNotice] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

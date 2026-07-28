@@ -33,6 +33,7 @@ from skit.langs.base import (
     InjectValueError,
 )
 from skit.langs.shell import analyzer, inject, normalize
+from skit.notices import NormalizeNoticeCode, normalize_refusal
 from skit.params import ParamDecl
 
 runner = CliRunner()
@@ -842,25 +843,28 @@ def test_normalized_script_still_runs_standalone(tmp_path):
 @pytest.mark.parametrize(
     ("src", "code"),
     [
-        ("A='literal $VAR'\n", "unsafe-literal"),  # a $ would start expanding once re-homed
-        ("A='say \"hi\"'\n", "unsafe-literal"),  # a quote would close the wrapper's quote
-        ("A='back\\slash'\n", "unsafe-literal"),
-        ("A='tick `x`'\n", "unsafe-literal"),
-        ("A='brace }'\n", "unsafe-literal"),  # would close the ${...} early
-        ("readonly A=1\n", "readonly"),
-        ("declare -r A=1\n", "readonly"),
-        ("A=1\nA=2\n", "multiple-assignments"),
-        ('A="${A:-1}"\n', "already-env"),  # it already IS the idiom
-        ("B=1\n", "not-a-const"),
-        ("A=$(date)\n", "not-a-const"),
-        ('A="pre${OTHER}post"\n', "not-a-const"),  # no literal RHS at all
-        ("A=\n", "not-a-const"),
-        ("A+=1\n", "not-a-const"),
+        (
+            "A='literal $VAR'\n",
+            NormalizeNoticeCode.UNSAFE_LITERAL,
+        ),  # a $ would start expanding once re-homed
+        ("A='say \"hi\"'\n", NormalizeNoticeCode.UNSAFE_LITERAL),
+        ("A='back\\slash'\n", NormalizeNoticeCode.UNSAFE_LITERAL),
+        ("A='tick `x`'\n", NormalizeNoticeCode.UNSAFE_LITERAL),
+        ("A='brace }'\n", NormalizeNoticeCode.UNSAFE_LITERAL),
+        ("readonly A=1\n", NormalizeNoticeCode.READONLY),
+        ("declare -r A=1\n", NormalizeNoticeCode.READONLY),
+        ("A=1\nA=2\n", NormalizeNoticeCode.MULTIPLE_ASSIGNMENTS),
+        ('A="${A:-1}"\n', NormalizeNoticeCode.ALREADY_ENV),
+        ("B=1\n", NormalizeNoticeCode.NOT_A_CONST),
+        ("A=$(date)\n", NormalizeNoticeCode.NOT_A_CONST),
+        ('A="pre${OTHER}post"\n', NormalizeNoticeCode.NOT_A_CONST),
+        ("A=\n", NormalizeNoticeCode.NOT_A_CONST),
+        ("A+=1\n", NormalizeNoticeCode.NOT_A_CONST),
     ],
 )
 def test_normalize_refuses_and_leaves_the_source_untouched(src, code):
     result = normalize.normalize_idiom(src, ["A"])
-    assert result.refused == [f"{code}:A"]
+    assert result.refused == [normalize_refusal(code, "A")]
     assert result.normalized == []
     assert result.text == src  # byte-identical: a refusal never half-rewrites
 
@@ -871,14 +875,14 @@ def test_normalize_ignores_array_and_valueless_assignments():
     src = "#!/usr/bin/env bash\nARR[0]=1\nWIDTH=800\n"
     result = normalize.normalize_idiom(src, ["WIDTH", "ARR"])
     assert result.normalized == ["WIDTH"]
-    assert result.refused == ["not-a-const:ARR"]
+    assert result.refused == [normalize_refusal(NormalizeNoticeCode.NOT_A_CONST, "ARR")]
     assert result.text == '#!/usr/bin/env bash\nARR[0]=1\nWIDTH="${WIDTH:-800}"\n'
 
 
 def test_normalize_on_an_unparseable_script_changes_nothing():
     src = "#!/usr/bin/env zsh\nif [[ -n $X ]] {\n  print hi\n}\nA=1\n"
     result = normalize.normalize_idiom(src, ["A"])
-    assert result.refused == ["syntax-error:A"]
+    assert result.refused == [normalize_refusal(NormalizeNoticeCode.SYNTAX_ERROR, "A")]
     assert result.text == src
 
 
@@ -886,7 +890,10 @@ def test_normalize_mixed_batch_reports_each_name():
     src = "#!/usr/bin/env bash\nWIDTH=800\nreadonly MAX=100\n"
     result = normalize.normalize_idiom(src, ["WIDTH", "MAX", "NOPE"])
     assert result.normalized == ["WIDTH"]
-    assert result.refused == ["readonly:MAX", "not-a-const:NOPE"]
+    assert result.refused == [
+        normalize_refusal(NormalizeNoticeCode.READONLY, "MAX"),
+        normalize_refusal(NormalizeNoticeCode.NOT_A_CONST, "NOPE"),
+    ]
     assert 'WIDTH="${WIDTH:-800}"' in result.text
     assert "readonly MAX=100" in result.text
 
@@ -1164,15 +1171,8 @@ def test_cli_normalize_without_a_stored_copy(tmp_path):
 
 
 def test_cli_normalize_warning_renderer_covers_every_code():
-    for code in (
-        "not-a-const",
-        "multiple-assignments",
-        "readonly",
-        "already-env",
-        "unsafe-literal",
-        "syntax-error",
-    ):
-        assert cli._render_normalize_warning(f"{code}:X")
+    for code in NormalizeNoticeCode:
+        assert cli._render_normalize_notice(normalize_refusal(code, "X"))
 
 
 def test_split_guard_refuses_only_what_the_shell_would_actually_mangle(tmp_path):
@@ -1220,7 +1220,7 @@ def test_normalize_refuses_shell_metacharacters(tmp_path):
     for meta in (";", "|", "&", "(", ")", "<", ">"):
         n = normalize.normalize_idiom(f"MSG='a{meta}b'\n", ["MSG"])
         assert n.normalized == []
-        assert n.refused == ["unsafe-literal:MSG"]
+        assert n.refused == [normalize_refusal(NormalizeNoticeCode.UNSAFE_LITERAL, "MSG")]
     ok = normalize.normalize_idiom("MSG='plain'\n", ["MSG"])
     assert ok.normalized == ["MSG"]
 

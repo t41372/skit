@@ -1,6 +1,6 @@
 """Behavioural tests targeting mutation-testing survivors in skit/cli.py (chunk 5/6).
 
-Covers four helpers: `_render_normalize_warning` (the shell --normalize refusal renderer),
+Covers four helpers: `_render_normalize_notice` (the shell --normalize refusal renderer),
 `_require_file` (the add-path existence guard), `_resolve_npm_dependencies` (the js/ts
 copy-add dependency resolver), and `_show_command_params` (the command-template read view).
 
@@ -18,6 +18,7 @@ import pytest
 
 from skit import argstate, cli, store
 from skit.langs.registry import spec_for
+from skit.notices import NormalizeNoticeCode, normalize_refusal
 from skit.params import ParamDecl
 
 _ = argstate  # imported for parity with sibling files; state helpers used indirectly via store
@@ -49,13 +50,13 @@ def _js_scanner():
 
 
 # ==========================================================================
-# _render_normalize_warning — the "code:name" -> user line renderer
+# _render_normalize_notice — typed normalizer notice -> user line
 # ==========================================================================
 
 
 def test_render_normalize_not_a_const_exact():
     # kills the XX-wrap mutant on the not-a-const entry.
-    out = cli._render_normalize_warning("not-a-const:V")
+    out = cli._render_normalize_notice(normalize_refusal(NormalizeNoticeCode.NOT_A_CONST, "V"))
     assert out == (
         "V isn't a plain constant with a literal value, so there's nothing to normalize; skipped."
     )
@@ -63,7 +64,9 @@ def test_render_normalize_not_a_const_exact():
 
 def test_render_normalize_multiple_assignments_exact():
     # kills both the XX-wrap and the "Skipped." -> "skipped." case mutant.
-    out = cli._render_normalize_warning("multiple-assignments:V")
+    out = cli._render_normalize_notice(
+        normalize_refusal(NormalizeNoticeCode.MULTIPLE_ASSIGNMENTS, "V")
+    )
     assert out == (
         "V is assigned more than once at the top level; "
         "normalizing it would change which value wins. Skipped."
@@ -72,20 +75,20 @@ def test_render_normalize_multiple_assignments_exact():
 
 
 def test_render_normalize_readonly_exact():
-    out = cli._render_normalize_warning("readonly:V")
+    out = cli._render_normalize_notice(normalize_refusal(NormalizeNoticeCode.READONLY, "V"))
     assert out == (
         "V is readonly, so the script could never take a value from the environment; skipped."
     )
 
 
 def test_render_normalize_already_env_exact():
-    out = cli._render_normalize_warning("already-env:V")
+    out = cli._render_normalize_notice(normalize_refusal(NormalizeNoticeCode.ALREADY_ENV, "V"))
     assert out == "V already reads from the environment; nothing to do."
 
 
 def test_render_normalize_unsafe_literal():
     # unsafe-literal is two concatenated string literals; pin both halves.
-    out = cli._render_normalize_warning("unsafe-literal:V")
+    out = cli._render_normalize_notice(normalize_refusal(NormalizeNoticeCode.UNSAFE_LITERAL, "V"))
     assert "XX" not in out  # kills the XX-wrap mutants on either half
     assert out.startswith("V's value contains a character that can't be moved into ")
     assert "or a newline); skipped" in out  # kills the UPPERCASE mutant on the second half
@@ -93,15 +96,15 @@ def test_render_normalize_unsafe_literal():
 
 def test_render_normalize_syntax_error_exact():
     # kills the XX-wrap and the two case mutants on the syntax-error entry.
-    out = cli._render_normalize_warning("syntax-error:V")
+    out = cli._render_normalize_notice(normalize_refusal(NormalizeNoticeCode.SYNTAX_ERROR, "V"))
     assert out == "Could not parse the script (syntax error); nothing was normalized."
 
 
-def test_render_normalize_splits_code_on_first_colon():
-    # A `--normalize FOO:BAR` typo on a syntactically-broken script reaches the renderer as
-    # "syntax-error:FOO:BAR" (normalize.py refuses every requested name verbatim). The code is
-    # the part before the FIRST colon; rpartition would read code="syntax-error:FOO" -> KeyError.
-    out = cli._render_normalize_warning("syntax-error:FOO:BAR")
+def test_render_normalize_preserves_colons_in_name():
+    # A `--normalize FOO:BAR` typo remains an intact subject, without delimiter parsing.
+    out = cli._render_normalize_notice(
+        normalize_refusal(NormalizeNoticeCode.SYNTAX_ERROR, "FOO:BAR")
+    )
     assert out == "Could not parse the script (syntax error); nothing was normalized."
 
 

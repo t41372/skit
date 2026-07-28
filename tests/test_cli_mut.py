@@ -1412,7 +1412,7 @@ def test_edit_params_no_secret_unsets(tmp_path):
 
 def test_edit_params_renders_reconcile_warning(tmp_path):
     # --secret on a name that isn't managed produces a reconcile warning that must be rendered
-    # (kills escape(render_warning(None)) / err_console.print(None) in the warnings loop).
+    # (kills escape(render_notice(None)) / err_console.print(None) in the notices loop).
     text = metawriter.write_params(
         "CITY = 'x'\nprint(CITY)\n", [ParamDecl(name="CITY", binding="const", type="str")]
     )
