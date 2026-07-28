@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, cast, override
+from typing import Any, NoReturn, cast, override
 
 import pytest
 from typer.testing import CliRunner
@@ -347,6 +347,28 @@ def test_post_run_state_failure_warns_without_stealing_real_child_status(
     assert result.exit_code == 42
     assert "couldn't save its state" in result.output
     assert "Traceback" not in result.output
+
+
+def test_interrupted_run_warns_when_accepted_values_cannot_be_persisted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store.add_command("echo ok", name="job")
+
+    def interrupted(*_args: object, **_kwargs: object) -> NoReturn:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(flows, "execute", interrupted)
+    monkeypatch.setattr(
+        flows,
+        "post_run_persistence_error",
+        lambda _action: "skit couldn't save its state: disk is read-only",
+    )
+
+    result = runner.invoke(cli.app, ["run", "job", "--no-input"])
+
+    assert result.exit_code == exitcodes.EXIT_ABORTED
+    assert "couldn't save its state" in result.output
+    assert "Cancelled." in result.output
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the real child uses a POSIX shell command")
