@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import errno
+import os
+import select
+import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, cast, override
 
@@ -155,6 +160,56 @@ def test_plain_form_eof_uses_the_shared_abort_status(tmp_path: Path, monkeypatch
     assert "Cancelled." in aborted.output
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="PTY EOF is a POSIX terminal contract")
+def test_rich_prompt_eof_on_a_real_pty_exits_130() -> None:
+    store.add_command("echo {value}", name="job")
+    master, slave = os.openpty()  # ty: ignore[possibly-missing-attribute]
+    process = subprocess.Popen(
+        [str(Path(sys.executable).with_name("skit")), "run", "job", "--plain"],
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        env=os.environ.copy(),
+        close_fds=True,
+    )
+    os.close(slave)
+    output = bytearray()
+    try:
+        deadline = time.monotonic() + 5
+        last_output = time.monotonic()
+        while time.monotonic() < deadline:
+            readable, _, _ = select.select([master], [], [], 0.1)
+            if readable:
+                output.extend(os.read(master, 4096))
+                last_output = time.monotonic()
+            elif output and time.monotonic() - last_output >= 0.3:
+                break
+        assert b"value" in output.lower(), output.decode(errors="replace")
+        os.write(master, b"\x04")
+        try:
+            returncode = process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+            pytest.fail("Rich Prompt waited after terminal EOF")
+        while True:
+            try:
+                chunk = os.read(master, 4096)
+            except OSError as exc:
+                if exc.errno == errno.EIO:
+                    break
+                raise
+            if not chunk:
+                break
+            output.extend(chunk)
+    finally:
+        os.close(master)
+
+    rendered = output.decode(errors="replace")
+    assert returncode == exitcodes.EXIT_ABORTED, rendered
+    assert "Traceback" not in rendered
+
+
 def test_declining_optional_directory_offer_is_clean_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -162,12 +217,33 @@ def test_declining_optional_directory_offer_is_clean_success(
     directory.mkdir()
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     monkeypatch.setattr(cli, "_wants_tui_form", lambda: False)
-    monkeypatch.setattr(cli.Confirm, "ask", lambda *_a, **_k: False)
 
-    declined = runner.invoke(cli.app, ["add", str(directory)])
+    declined = runner.invoke(cli.app, ["add", str(directory)], input="n\n")
 
     assert declined.exit_code == exitcodes.EXIT_SUCCESS
     assert store.list_entries() == []
+
+
+def test_rich_confirm_eof_reaches_the_shared_abort_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = tmp_path / "tool"
+    directory.mkdir()
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr(cli, "_wants_tui_form", lambda: False)
+
+    aborted = runner.invoke(cli.app, ["add", str(directory)], input="")
+
+    assert aborted.exit_code == exitcodes.EXIT_ABORTED
+    assert "Cancelled." in aborted.output
+    assert store.list_entries() == []
+
+
+def test_click_usage_error_does_not_enter_the_interaction_abort_boundary() -> None:
+    result = runner.invoke(cli.app, ["show", "--not-a-real-option"])
+
+    assert result.exit_code == exitcodes.EXIT_USAGE
+    assert "Cancelled." not in result.output
 
 
 @pytest.mark.parametrize(
@@ -271,3 +347,31 @@ def test_post_run_state_failure_warns_without_stealing_real_child_status(
     assert result.exit_code == 42
     assert "couldn't save its state" in result.output
     assert "Traceback" not in result.output
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the real child uses a POSIX shell command")
+def test_tui_post_run_state_failure_preserves_real_child_status(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from skit import tui
+
+    entry = store.add_command("sh -c 'exit 42'", name="child")
+    plan = flows.plan_for_entry(entry)
+    assembly = flows.assemble(plan, {}, [], cwd=tmp_path)
+
+    def denied(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError(13, "Permission denied", "values/child.toml")
+
+    printed: list[str] = []
+    monkeypatch.setattr(flows, "save_after_run", denied)
+    monkeypatch.setattr(
+        "builtins.print",
+        lambda *args, **_kwargs: printed.append(" ".join(str(arg) for arg in args)),
+    )
+
+    code = tui._finish_run(
+        tui.PendingRun(entry, plan, assembly, {}, [], extra_raw=False, show_drift=False)
+    )
+
+    assert code == 42
+    assert any("couldn't save its state" in line for line in printed)
