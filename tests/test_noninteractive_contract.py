@@ -15,6 +15,7 @@ import typer.main
 from typer.testing import CliRunner
 
 from skit import agentskill, argstate, cli, interaction, store
+from skit.paths import values_dir
 
 runner = CliRunner()
 
@@ -117,6 +118,19 @@ def test_preset_save_in_a_pipe_refuses_instead_of_inventing_current_values() -> 
     assert argstate.load_state(entry.slug)["presets"] == {}
 
 
+def test_preset_save_pipe_refusal_preserves_existing_state_byte_for_byte() -> None:
+    entry = store.add_command("echo {CITY}", name="say")
+    argstate.save_last(entry.slug, values={"CITY": "Taipei"})
+    argstate.save_preset(entry.slug, "existing", {"CITY": "Kyoto"})
+    state_path = values_dir() / f"{entry.slug}.toml"
+    before = state_path.read_bytes()
+
+    result = runner.invoke(cli.app, ["preset", "save", "say", "new"])
+
+    assert result.exit_code == 2
+    assert state_path.read_bytes() == before
+
+
 def test_preset_save_no_input_records_the_verdict_and_refuses() -> None:
     entry = store.add_command("echo {CITY}", name="say")
     result = runner.invoke(cli.app, ["preset", "save", "say", "prod", "--no-input"])
@@ -173,6 +187,27 @@ def test_agent_install_project_limits_bare_detection_to_project_targets(
 
     assert result.exit_code == 0, result.output
     assert seen == [[project_target]]
+
+
+def test_agent_install_project_never_falls_back_to_an_existing_home_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    cwd = tmp_path / "repo"
+    (home / ".claude").mkdir(parents=True)
+    cwd.mkdir()
+    monkeypatch.setattr(agentskill, "default_roots", lambda: (home, cwd))
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+    monkeypatch.setattr(
+        cli,
+        "_agent_pick_target",
+        lambda _targets: pytest.fail("a home target escaped the --project scope"),
+    )
+
+    result = runner.invoke(cli.app, ["agent", "install", "--project"])
+
+    assert result.exit_code == 126
+    assert not (home / ".claude" / "skills").exists()
 
 
 def _run_on_unanswered_pty(args: list[str], env: dict[str, str]) -> tuple[int, str]:
