@@ -27,6 +27,8 @@ skit add script.py   # put a script in the library
 skit                 # open the menu — pick, fill in the inputs, run
 ```
 
+Not a terminal person? That's fine — skit works like a GUI app that happens to live in your terminal: point, click, and type your way through everything. Hotkeys exist too — hinted right on screen — but there's nothing to learn or memorize.
+
 Your AI agent gets the same library: you use it from a menu, agents use it through a deterministic CLI and a skill, so scripts get saved and reused.
 
 <video src="https://github.com/user-attachments/assets/8a1f27cd-f2f2-42db-977a-b4f8ea207340" controls></video>
@@ -38,7 +40,7 @@ Your AI agent gets the same library: you use it from a menu, agents use it throu
 - **Remembers your last inputs.** Input parameters in the launch menu come back prefilled on the next run; `↺ default` (Ctrl+O) restores the script's own default. Save favorites as named presets — tokens like `{cwd}` and `{today}` keep them portable. Parameters marked secret are never saved: not in last-used values, presets, or run history.
 - **No environment mess.** Python scripts declare their dependencies inline (PEP 723) and run via uv in isolated environments; JS/TS scripts get a per-script `node_modules`, installed from their declared packages on first run. Nothing global either way. Other languages use the tools already on your machine — skit checks that declared external commands are on your `PATH` before running.
 - **Prompts as scripts.** Store a parameterized prompt (managed `{{placeholders}}` become input fields) and launch it with your coding agent — claude, codex, opencode, or any prompt runner you like.
-- **Mouse or keyboard, in your language.** Plain `skit` opens the full TUI; every key hint on screen is also a clickable button — you don't need to be a terminal expert. Ships in English, 繁體中文, and 简体中文 ([Languages](#languages)).
+- **Mouse or keyboard, in your language.** Plain `skit` opens the full TUI; every key hint on screen is also a clickable button. Ships in English, 繁體中文, and 简体中文 ([Languages](#languages)).
 - **Built for AI agents too.** Every TUI action is also a CLI command with `--json` output and meaningful exit codes, and the official [Agent Skill](https://agentskills.io) teaches Claude Code, Codex, Cursor, Gemini CLI, and friends to check your library first, run what's there, and save the good ones — see [Works with your AI agent](#works-with-your-ai-agent).
 
 | Problem | What skit does |
