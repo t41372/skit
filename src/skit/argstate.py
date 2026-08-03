@@ -324,7 +324,10 @@ def record_run(
             else:
                 kept = doc.get("last_run")
                 if isinstance(kept, dict) and isinstance(snapshot := kept.get("values"), dict):
-                    last_run["values"] = snapshot
+                    # The preserved snapshot is re-persisted by THIS write, so it goes
+                    # through the same strip as new values — C3's "every write entry
+                    # point" has no values=None loophole.
+                    last_run["values"] = _strip_secrets(snapshot, secret_names)
             doc["last_run"] = last_run
             _save_doc(slug, doc)
     except OSError as exc:

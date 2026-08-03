@@ -399,3 +399,21 @@ def test_the_rewrap_falls_back_to_the_exception_text_without_a_strerror(
         argstate.save_last_runner("amp")
 
     assert exc_info.value.strerror == "boom"
+
+
+def test_record_run_strips_the_preserved_snapshot_with_the_current_secret_set() -> None:
+    """The values=None branch re-persists the old snapshot — so it must apply the
+    caller's CURRENT secret set on the way through, exactly as the values branch does.
+    A key that became secret since the snapshot was written dies here; the rest,
+    including the stamp move, survives untouched (round 9's preservation promise)."""
+    slug = "raw-rerun"
+    argstate.record_run(
+        slug, 1, at="2026-01-01T00:00:00+00:00", values={"TOKEN": "plain", "WIDTH": "80"}
+    )
+
+    argstate.record_run(slug, 0, at="2026-02-01T00:00:00+00:00", secret_names={"TOKEN"})
+
+    state = argstate.load_state(slug)
+    assert state["last_run"]["values"] == {"WIDTH": "80"}  # TOKEN stripped, WIDTH kept
+    assert state["last_run"]["at"] == "2026-02-01T00:00:00+00:00"
+    assert state["last_run"]["exit"] == 0

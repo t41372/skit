@@ -3480,10 +3480,11 @@ def run(
     def _persist_accepted_run() -> None:
         _on_accepted()
         if raw:
-            # The escape hatch leaves no fingerprints: it consulted no form memory, so it
-            # must not rewrite it either (values/extra args survive for the next real run).
+            # The escape hatch leaves no fingerprints: it consulted no form memory, so
+            # it must not rewrite it either — values/extra args survive for the next
+            # real run, minus the C3 scrub of now-secret names every accepted run does.
             # The run stamp still lands — Library sorting and `r` treat it as a run.
-            argstate.record_run(entry.slug, code, at=models.now_iso())
+            flows.save_after_raw_run(entry, code, at=models.now_iso())
         else:
             flows.save_after_run(
                 entry.slug, plan, values, extra, code, at=models.now_iso(), extra_raw=extra_raw

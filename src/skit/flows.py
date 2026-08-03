@@ -889,6 +889,49 @@ def save_after_run(
     )
 
 
+def stored_secret_names(entry: Entry) -> set[str]:
+    """The names the entry's STORED schema declares secret, read without an analyzer.
+
+    The raw lane's strip set. Cheap on purpose: analyzers stay out of run paths (the A2
+    rule — launch is stdlib-only), so this reads exactly the surfaces a launch may touch:
+
+    - placeholder kinds: declared_for_template over the meta — the plan's own secrecy;
+    - kinds with a params_io: the declared rider rows plus the block's own secret flags
+      (the '#'/'//' comment-block engine is grammar-free and outside the import guard).
+      A deliberate superset: a spec reconcile would call MISSING still strips — stale
+      secrecy is safer honored than dropped;
+    - everything else: the declared rows alone.
+
+    Heuristic (is_secret_name) secrecy needs no lane here: it is deterministic, so any
+    key it would flag today it flagged when the snapshot was written — and C3 stripped
+    it then. The residue an analyzer-only transition can leave is scrubbed by the next
+    non-raw run's purge."""
+    lang = spec_for(entry.meta.kind)
+    if lang is not None and lang.placeholder_params:
+        decls = params.declared_for_template(entry.meta.parameters, entry.meta.params or [])
+        return {d.name for d in decls if d.secret}
+    secret = {d.name for d in params.declared_from_meta(entry.meta.parameters) if d.secret}
+    if lang is not None and lang.params_io is not None:
+        try:
+            text = entry.script_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return secret  # unreadable copy: the declared rows are still the truth we hold
+        secret |= {d.name for d in lang.params_io.read(text) if d.secret}
+    return secret
+
+
+def save_after_raw_run(entry: Entry, exit_code: int, *, at: str) -> None:
+    """The raw lane's twin of save_after_run: stamp the run, apply the CURRENT secret
+    set, and touch nothing else. --raw consulted no form memory, so it rewrites none
+    (no save_last) — but the C3 scrub is not form memory, it is the hygiene every
+    accepted run performs, and record_run re-persists the preserved last_run snapshot,
+    so that snapshot must pass through the same strip as any new write."""
+    secret_names = stored_secret_names(entry)
+    if secret_names:
+        argstate.purge_secret(entry.slug, secret_names)
+    argstate.record_run(entry.slug, exit_code, at=at, secret_names=secret_names)
+
+
 # --------------------------------------------------------------------------
 # execute — the single delivery pipeline (one flow, two renderings)
 # --------------------------------------------------------------------------

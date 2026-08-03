@@ -425,3 +425,120 @@ def test_the_happy_transition_still_scrubs_and_commits(tmp_path: Path) -> None:
     assert "Removed previously stored plaintext" in result.output
     assert _stored_secret_flag(entry) is True
     assert "TOKEN" not in argstate.load_state(entry.slug)["values"]
+
+
+# ==========================================================================
+# V. raw runs honor the C3 scrub
+# ==========================================================================
+
+
+def test_stored_secret_names_placeholder_kind_follows_the_declared_override(
+    tmp_path: Path,
+) -> None:
+    """Placeholder kinds read the meta exactly as the plan does: a declared row's
+    verdict beats the name heuristic (secret=False on a scary name stays public), a
+    managed hole with no row falls to the heuristic, and a plain name stays out."""
+    src = tmp_path / "p.prompt.md"
+    src.write_text("Use {{api_key}} for {{topic}} via {{api_token}}\n", encoding="utf-8")
+    entry = store.add_prompt(src, name="holes")
+    store.write_parameters(
+        entry.slug,
+        [ParamDecl(name="api_token", delivery="placeholder", secret=False)],  # explicit override
+        managed=["api_key", "topic", "api_token"],
+    )
+
+    assert flows.stored_secret_names(store.resolve(entry.slug)) == {"api_key"}
+
+
+def test_stored_secret_names_reads_the_block_without_an_analyzer(tmp_path: Path) -> None:
+    """A params_io kind unions the block's own secret flags with the declared rider
+    rows — grammar-free reads only, no tree-sitter, no analyzer."""
+    entry = _python_with_public_token(tmp_path)
+    assert flows.stored_secret_names(store.resolve(entry.slug)) == set()  # still public
+
+    runner.invoke(cli.app, ["params", entry.slug, "--secret", "TOKEN"])
+
+    assert flows.stored_secret_names(store.resolve(entry.slug)) == {"TOKEN"}
+
+
+def test_stored_secret_names_survives_an_unreadable_copy(tmp_path: Path) -> None:
+    """The helper is total: a copy that cannot be read degrades to the declared rows
+    instead of failing the run lane that asked."""
+    entry = _python_with_public_token(tmp_path)
+    entry.script_path.unlink()
+    entry.script_path.mkdir()  # exists, unreadable as a file → OSError on read
+
+    assert flows.stored_secret_names(store.resolve(entry.slug)) == set()
+
+
+def test_stored_secret_names_declared_only_kind(tmp_path: Path) -> None:
+    """No params_io, no placeholders (exe): the declared rows are the whole answer."""
+    tool = tmp_path / "mytool"
+    tool.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+    tool.chmod(0o755)
+    entry = store.add_exe(tool, name="prog")
+    store.write_parameters(
+        entry.slug,
+        [
+            ParamDecl(name="token", delivery="env", secret=True),
+            ParamDecl(name="region", delivery="env"),
+        ],
+    )
+
+    assert flows.stored_secret_names(store.resolve(entry.slug)) == {"token"}
+
+
+def test_save_after_raw_run_scrubs_and_stamps_but_rewrites_no_form_memory(
+    tmp_path: Path,
+) -> None:
+    """The raw twin: [values]/presets/last_run lose the now-secret plaintext (the same
+    purge every accepted run performs), the stamp lands — and extra_args, the form
+    memory --raw promises not to rewrite, survives byte-for-byte."""
+    entry = _python_with_public_token(tmp_path)
+    runner.invoke(cli.app, ["params", entry.slug, "--secret", "TOKEN"])
+    # Stale plaintext written while TOKEN was public (the purge-bypassing route: a
+    # $EDITOR edit of the stored copy, or a purge that died mid-transition).
+    argstate.save_last(entry.slug, values={"TOKEN": "plain"}, extra_args=["--fast"])
+    argstate.save_preset(entry.slug, "prod", {"TOKEN": "plain", "REGION": "eu"})
+    argstate.record_run(entry.slug, 1, at="2026-01-01T00:00:00+00:00", values={"TOKEN": "plain"})
+
+    flows.save_after_raw_run(store.resolve(entry.slug), 0, at="2026-02-01T00:00:00+00:00")
+
+    state = argstate.load_state(entry.slug)
+    assert "TOKEN" not in state["values"]
+    assert state["presets"] == {"prod": {"REGION": "eu"}}
+    assert "TOKEN" not in state["last_run"].get("values", {})
+    assert state["last_run"]["exit"] == 0  # the stamp landed
+    assert state["extra_args"] == ["--fast"]  # form memory untouched
+
+
+def test_a_raw_run_applies_the_current_secret_set_to_the_preserved_snapshot(
+    tmp_path: Path,
+) -> None:
+    """The finding end-to-end, on the CLI face: plaintext recorded while the parameter
+    was public, the schema flipped to secret out of band, then `run --raw` — the run
+    passes its code through and the re-persisted state carries no plaintext on any
+    surface."""
+    script = tmp_path / "job.sh"
+    script.write_text('#!/bin/sh\nTOKEN="x"\necho ok\n', encoding="utf-8")
+    result = runner.invoke(cli.app, ["add", str(script), "--name", "job"])
+    assert result.exit_code == 0
+    entry = store.resolve("job")
+    result = runner.invoke(cli.app, ["params", entry.slug, "--manage", "TOKEN"])
+    assert result.exit_code == 0
+    result = runner.invoke(cli.app, ["params", entry.slug, "--secret", "TOKEN"])
+    assert result.exit_code == 0
+    assert flows.stored_secret_names(store.resolve(entry.slug)) == {"TOKEN"}
+    # Plaintext that predates the transition, on every value-bearing surface — seeded
+    # AFTER the purge, as a hand edit of the block (no purge) would have left it.
+    argstate.save_last(entry.slug, values={"TOKEN": "plain"})
+    argstate.save_preset(entry.slug, "prod", {"TOKEN": "plain"})
+    argstate.record_run(entry.slug, 1, at="2026-01-01T00:00:00+00:00", values={"TOKEN": "plain"})
+
+    result = runner.invoke(cli.app, ["run", entry.slug, "--raw", "--no-input"])
+
+    assert result.exit_code == 0  # the script's own code, passed through
+    state = argstate.load_state(entry.slug)
+    assert "TOKEN" not in state["values"]
+    assert state["presets"] == {}  # the preset held only the secret → dropped whole
+    assert "TOKEN" not in state["last_run"].get("values", {})
