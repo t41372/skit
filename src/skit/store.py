@@ -58,6 +58,14 @@ class NameConflictError(StoreUsageError):
     pass
 
 
+class AmbiguousNameError(StoreUsageError):
+    """Two or more entries carry the requested display name, so resolving by NAME would
+    have to guess. Only hand-edited metadata can reach this state — add and rename both
+    refuse a taken name — and the remedy is the slug, which never collides. A usage
+    refusal like NameConflictError, its write-side twin: the request is answerable,
+    just not as asked."""
+
+
 class NotFoundError(StoreError):
     pass
 
@@ -1181,9 +1189,22 @@ def resolve(name_or_slug: str) -> Entry:
         entry = _entry_at(matches[0], name_or_slug)
         if entry.meta.name == name_or_slug:
             return entry
-    for summary in list_summaries():
-        if summary.name == name_or_slug:
-            return _entry_at(summary.slug, name_or_slug)
+    # The sweep serves hand-edited metas, so it must also survive what hand edits can
+    # break: two metas edited to one name. Collect every claimant before answering —
+    # returning the first hit would silently run whichever entry sorts lowest, and an
+    # entry picked by sort order is a guess, which resolution is never allowed to be.
+    candidates = [s.slug for s in list_summaries() if s.name == name_or_slug]
+    if len(candidates) > 1:
+        raise AmbiguousNameError(
+            gettext("The name %(name)s belongs to more than one entry (%(slugs)s) — use a slug.")
+            % {"name": name_or_slug, "slugs": ", ".join(sorted(candidates))}
+        )
+    if candidates:
+        entry = _entry_at(candidates[0], name_or_slug)
+        # Same freshness proof the registry hit pays a few lines up: the meta is the
+        # truth, and a rename between the sweep and this read makes the match a lie.
+        if entry.meta.name == name_or_slug:
+            return entry
     raise NotFoundError(gettext("Script not found: %(name)s") % {"name": name_or_slug})
 
 
