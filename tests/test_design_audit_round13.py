@@ -80,10 +80,12 @@ def test_two_metas_hand_edited_to_one_name_refuse_to_resolve() -> None:
 
     with pytest.raises(store.AmbiguousNameError) as exc_info:
         store.resolve("deploy")
-    message = str(exc_info.value)
-    assert "deploy" in message
-    expected = ", ".join(sorted([a.slug, b.slug]))
-    assert expected in message
+    # The WHOLE sentence: wording, sorted slug order, separator, and the remedy — a
+    # substring check would pass on a line that quietly became something else.
+    slugs = ", ".join(sorted([a.slug, b.slug]))
+    assert str(exc_info.value) == (
+        f"The name deploy belongs to more than one entry ({slugs}) — use a slug."
+    )
     # The write-side twin NameConflictError is a usage refusal; so is this one.
     assert isinstance(exc_info.value, store.StoreUsageError)
 
@@ -291,7 +293,7 @@ def test_managed_on_a_non_prompt_is_refused_before_any_write(tmp_path: Path) -> 
     entry = store.add_command("echo {A}", name="cmdjob")
     before = store.resolve(entry.slug).meta
 
-    with pytest.raises(store.StoreUsageError):
+    with pytest.raises(store.StoreUsageError, match=r"^cmdjob isn't a prompt entry\.$"):
         store.write_parameters(entry.slug, [ParamDecl(name="A")], managed=["A"])
 
     after = store.resolve(entry.slug).meta
@@ -542,3 +544,44 @@ def test_a_raw_run_applies_the_current_secret_set_to_the_preserved_snapshot(
     assert "TOKEN" not in state["values"]
     assert state["presets"] == {}  # the preset held only the secret → dropped whole
     assert "TOKEN" not in state["last_run"].get("values", {})
+
+
+def test_stored_secret_names_unions_the_block_with_declared_riders(tmp_path: Path) -> None:
+    """The two sources ACCUMULATE: a block-declared secret and a meta-declared rider
+    secret both strip. An overwrite of one set by the other would drop whichever source
+    happened to be read first."""
+    entry = _python_with_public_token(tmp_path)
+    runner.invoke(cli.app, ["params", entry.slug, "--secret", "TOKEN"])
+    store.write_parameters(entry.slug, [ParamDecl(name="EXTRA_KEY", delivery="env", secret=True)])
+
+    assert flows.stored_secret_names(store.resolve(entry.slug)) == {"TOKEN", "EXTRA_KEY"}
+
+
+def test_stored_secret_names_survives_a_non_utf8_copy(tmp_path: Path) -> None:
+    """errors="replace", behaviourally: a stored copy carrying non-UTF-8 bytes outside
+    the block still yields the block's own secret flags instead of raising — the same
+    tolerance every analyzer read applies."""
+    entry = _python_with_public_token(tmp_path)
+    runner.invoke(cli.app, ["params", entry.slug, "--secret", "TOKEN"])
+    raw = entry.script_path.read_bytes()
+    entry.script_path.write_bytes(raw + b"# caf\xe9 comment, latin-1 bytes\n")
+
+    assert flows.stored_secret_names(store.resolve(entry.slug)) == {"TOKEN"}
+
+
+def test_record_runs_own_strip_holds_even_if_the_purge_is_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """save_after_raw_run's record_run carries the secret set in its OWN right — the
+    C3 'every write entry point strips' line, not a rider on the purge. Proven by
+    removing the purge: the re-persisted snapshot still loses the now-secret key."""
+    entry = _python_with_public_token(tmp_path)
+    runner.invoke(cli.app, ["params", entry.slug, "--secret", "TOKEN"])
+    argstate.record_run(entry.slug, 1, at="2026-01-01T00:00:00+00:00", values={"TOKEN": "plain"})
+    monkeypatch.setattr(argstate, "purge_secret", lambda *_a, **_k: set())
+
+    flows.save_after_raw_run(store.resolve(entry.slug), 0, at="2026-02-01T00:00:00+00:00")
+
+    state = argstate.load_state(entry.slug)
+    assert "TOKEN" not in state["last_run"].get("values", {})
+    assert state["last_run"]["exit"] == 0

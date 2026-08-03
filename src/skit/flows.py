@@ -913,7 +913,12 @@ def stored_secret_names(entry: Entry) -> set[str]:
     secret = {d.name for d in params.declared_from_meta(entry.meta.parameters) if d.secret}
     if lang is not None and lang.params_io is not None:
         try:
-            text = entry.script_path.read_text(encoding="utf-8", errors="replace")
+            # encoding None/utf-8/UTF-8 decode identically under skit's UTF-8-mode
+            # runtime (cli.py:502's rule); errors="replace" is behaviourally pinned by
+            # test_stored_secret_names_survives_a_non_utf8_copy.
+            text = entry.script_path.read_text(  # pragma: no mutate
+                encoding="utf-8", errors="replace"
+            )
         except OSError:
             return secret  # unreadable copy: the declared rows are still the truth we hold
         secret |= {d.name for d in lang.params_io.read(text) if d.secret}

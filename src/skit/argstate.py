@@ -257,7 +257,9 @@ def _purge_secret_locked(slug: str, banned: set[str]) -> set[str]:
         # could copy the old plaintext back into a preset.
         last_run = dict(doc.get("last_run", {}))
         if "values" in last_run:
-            last_values = dict(last_run.get("values", {}))
+            # Subscript, not .get with a default: the `in` guard just proved the key,
+            # and _load_doc's shape chokepoint proved the value is a table.
+            last_values = dict(last_run["values"])
             removed |= banned & last_values.keys()
             last_run["values"] = _strip_secrets(last_values, banned)
             doc["last_run"] = last_run

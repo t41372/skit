@@ -417,3 +417,20 @@ def test_record_run_strips_the_preserved_snapshot_with_the_current_secret_set() 
     assert state["last_run"]["values"] == {"WIDTH": "80"}  # TOKEN stripped, WIDTH kept
     assert state["last_run"]["at"] == "2026-02-01T00:00:00+00:00"
     assert state["last_run"]["exit"] == 0
+
+
+def test_purge_secret_accumulates_hits_across_values_and_the_last_run_snapshot() -> None:
+    """`removed` is a UNION across every value-bearing surface. A hit found in the
+    last-run snapshot must not overwrite the hit already collected from [values] —
+    each surface holds a DIFFERENT banned name here, so any surface dropping its
+    accumulation shows up in the report."""
+    slug = "union-check"
+    argstate.save_last(slug, values={"ALPHA": "1"})
+    argstate.record_run(slug, 0, at="2026-01-01T00:00:00+00:00", values={"BETA": "2"})
+
+    removed = argstate.purge_secret(slug, ["ALPHA", "BETA"])
+
+    assert removed == {"ALPHA", "BETA"}
+    state = argstate.load_state(slug)
+    assert state["values"] == {}
+    assert state["last_run"].get("values", {}) == {}
