@@ -585,3 +585,107 @@ def test_record_runs_own_strip_holds_even_if_the_purge_is_gone(
     state = argstate.load_state(entry.slug)
     assert "TOKEN" not in state["last_run"].get("values", {})
     assert state["last_run"]["exit"] == 0
+
+
+def test_remove_reports_partial_success_when_state_cleanup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """forget joins the typed-writer contract, and remove answers its failure the way
+    the rmtree branch always has: the entry IS removed (registry and directory), and
+    the refusal says exactly what survived and how to finish the job — never a raw
+    traceback for cleanup that happened after the removal already succeeded."""
+    entry = _cmd("doomed")
+    argstate.save_last(entry.slug, values={"A": "1"})
+
+    def _boom_forget(_slug: str) -> None:
+        raise argstate.StateWriteError(13, "Permission denied", f"{entry.slug}.toml")
+
+    monkeypatch.setattr(argstate, "forget", _boom_forget)
+    result = runner.invoke(cli.app, ["remove", entry.slug, "--yes"])
+
+    assert result.exit_code == EXIT_SKIT
+    assert "couldn't be deleted" in result.output
+    assert "Traceback" not in result.output
+    with pytest.raises(store.NotFoundError):
+        store.resolve(entry.slug)  # the removal itself held
+
+
+def test_a_failed_pick_memory_never_vetoes_the_cli_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CLI twin of the TUI rule: remembering --runner is incidental prefill state,
+    so a state dir that cannot take the write warns and the run proceeds — before this,
+    the typed failure reached the boundary and vetoed the accepted run with 125."""
+    from skit import config
+
+    src = tmp_path / "p.prompt.md"
+    src.write_text("Say {{a}}\n", encoding="utf-8")
+    entry = store.add_prompt(src, name="p")
+    runner_name = config.load_prompt_runners()[0].name
+    monkeypatch.setattr(argstate, "atomic_write_toml", _state_boom)
+
+    result = runner.invoke(
+        cli.app,
+        ["run", entry.slug, "--runner", runner_name, "--set", "a=x", "--no-input", "--dry-run"],
+    )
+
+    assert result.exit_code == 0
+    assert "couldn't be remembered" in result.output
+
+
+def test_raw_persistence_reads_the_meta_fresh_at_stamp_time(tmp_path: Path) -> None:
+    """The entry object in hand predates a run that may have lasted hours. A parameter
+    flipped SECRET on disk mid-run must still be scrubbed at stamp time — the stale
+    launch-time verdict alone would re-persist the plaintext."""
+    entry = _python_with_public_token(tmp_path)
+    stale = store.resolve(entry.slug)  # public at launch
+    runner.invoke(cli.app, ["params", entry.slug, "--secret", "TOKEN"])
+    # Plaintext seeded AFTER the transition's purge — the stale snapshot the finding
+    # says a long raw run would re-persist.
+    argstate.record_run(entry.slug, 1, at="2026-01-01T00:00:00+00:00", values={"TOKEN": "plain"})
+
+    flows.save_after_raw_run(stale, 0, at="2026-02-01T00:00:00+00:00")
+
+    state = argstate.load_state(entry.slug)
+    assert "TOKEN" not in state["last_run"].get("values", {})
+    assert state["last_run"]["exit"] == 0
+
+
+def test_a_mid_run_unsecreting_cannot_cancel_the_scrub(tmp_path: Path) -> None:
+    """The union's other direction: a race can only WIDEN the scrub. A declared row
+    that was secret at launch and public by stamp time still strips — replacing the
+    set with the fresh reading alone would let the race talk a name out of secrecy.
+    (A prompt, because declared-row secrecy is what the held entry object actually
+    freezes: block-based kinds re-read their file either way.)"""
+    entry = _prompt(tmp_path)
+    store.write_parameters(
+        entry.slug,
+        [ParamDecl(name="topic", delivery="placeholder", secret=True)],
+        managed=["topic"],
+    )
+    stale = store.resolve(entry.slug)  # secret at launch
+    store.write_parameters(
+        entry.slug,
+        [ParamDecl(name="topic", delivery="placeholder", secret=False)],
+        managed=["topic"],
+    )
+    argstate.record_run(entry.slug, 1, at="2026-01-01T00:00:00+00:00", values={"topic": "plain"})
+
+    flows.save_after_raw_run(stale, 0, at="2026-02-01T00:00:00+00:00")
+
+    assert "topic" not in argstate.load_state(entry.slug)["last_run"].get("values", {})
+
+
+def test_a_removed_entry_gets_no_posthumous_state(tmp_path: Path) -> None:
+    """An entry removed mid-run gets no stamp: remove() just deleted the values file,
+    and writing state for a slug the library no longer claims would resurrect it as
+    an orphan."""
+    from skit.paths import values_dir
+
+    entry = _python_with_public_token(tmp_path)
+    stale = store.resolve(entry.slug)
+    store.remove(entry.slug)
+
+    flows.save_after_raw_run(stale, 0, at="2026-02-01T00:00:00+00:00")  # no raise
+
+    assert not (values_dir() / f"{entry.slug}.toml").exists()

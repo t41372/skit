@@ -241,6 +241,20 @@ def _forbid_interaction(no_input: bool) -> None:
         interaction.forbid()
 
 
+def _remember_runner_pick(name: str) -> None:
+    """Best-effort last-pick memory, every CLI lane's one door (the TUI twins hold the
+    same line): the pick only prefills the NEXT picker, so a state dir that cannot
+    take the write must never veto the add or run the pick rides on — warn that the
+    prefill was lost, and keep going."""
+    try:
+        argstate.save_last_runner(name)
+    except argstate.StateWriteError as exc:
+        message = gettext("The runner pick couldn't be remembered for next time: %(error)s") % {
+            "error": exc.strerror or str(exc)
+        }
+        err_console.print(f"[yellow]{escape(message)}[/yellow]")
+
+
 def _wants_tui_form() -> bool:
     """Whether an interactive flow should host a Textual mini-form/panel rather than
     line prompts: form=tui (the default) on a terminal that can render one — TERM=dumb
@@ -1257,7 +1271,7 @@ def _ask_prompt_runner(interactive: bool, runner_opt: str | None) -> str:
     )
     if picked == "-":
         return ""
-    argstate.save_last_runner(picked)
+    _remember_runner_pick(picked)
     return picked
 
 
@@ -3147,7 +3161,7 @@ def _resolve_run_runner(
             EXIT_USAGE if runner_opt is not None else EXIT_NOT_EXECUTABLE,
         )
     if picked:
-        argstate.save_last_runner(chosen)
+        _remember_runner_pick(chosen)
     return found
 
 
@@ -3345,7 +3359,7 @@ def run(
                     # Track the interaction, not final-value inequality: moving away
                     # and back to the pin is still a deliberate pick, while an
                     # untouched pin never writes last-picked state.
-                    argstate.save_last_runner(picked_runner)
+                    _remember_runner_pick(picked_runner)
     else:
         values = prefilled
         errors = _headless_validation_errors(plan, values, extra)

@@ -41,7 +41,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from . import analysis, argstate, config, launcher, params, tokens
+from . import analysis, argstate, config, launcher, params, store, tokens
 from .exitcodes import FailureReason
 from .i18n import gettext
 from .langs.base import (
@@ -930,8 +930,20 @@ def save_after_raw_run(entry: Entry, exit_code: int, *, at: str) -> None:
     set, and touch nothing else. --raw consulted no form memory, so it rewrites none
     (no save_last) — but the C3 scrub is not form memory, it is the hygiene every
     accepted run performs, and record_run re-persists the preserved last_run snapshot,
-    so that snapshot must pass through the same strip as any new write."""
+    so that snapshot must pass through the same strip as any new write.
+
+    "CURRENT" means at persistence time, not launch time: the entry object in hand
+    predates a run that may have lasted hours, so the slug is re-resolved and the
+    strip set is the UNION of both readings — a race can only widen the scrub, never
+    talk a name out of secrecy. An entry that resolves to nothing anymore (removed
+    mid-run, or its meta now unreadable) gets no stamp at all: writing state for it
+    would resurrect the very file remove() just deleted."""
     secret_names = stored_secret_names(entry)
+    try:
+        fresh = store.resolve(entry.slug)
+    except store.StoreError:
+        return
+    secret_names |= stored_secret_names(fresh)
     if secret_names:
         argstate.purge_secret(entry.slug, secret_names)
     argstate.record_run(entry.slug, exit_code, at=at, secret_names=secret_names)

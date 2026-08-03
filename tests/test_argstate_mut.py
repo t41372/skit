@@ -118,6 +118,8 @@ _RMW_MUTATORS: list[object] = [
         lambda slug: argstate.record_run(slug, 0, at="2026-01-01T00:00:00+00:00"),
         id="record_run",
     ),
+    # forget is a mutator too — an unlocked unlink raced a concurrent read-modify-write.
+    pytest.param(argstate.forget, id="forget"),
 ]
 
 
@@ -434,3 +436,21 @@ def test_purge_secret_accumulates_hits_across_values_and_the_last_run_snapshot()
     state = argstate.load_state(slug)
     assert state["values"] == {}
     assert state["last_run"].get("values", {}) == {}
+
+
+def test_forget_failure_is_typed_like_every_other_writer() -> None:
+    """forget joins the 'every writer fails typed' contract: a values file that cannot
+    be unlinked (here: the path is a DIRECTORY, the cross-platform stand-in for a held
+    or protected file) surfaces as StateWriteError, never a raw OSError."""
+    slug = "undeletable"
+    blocker = argstate.values_dir() / f"{slug}.toml"
+    blocker.mkdir(parents=True)
+
+    with pytest.raises(argstate.StateWriteError):
+        argstate.forget(slug)
+
+
+def test_forget_of_an_absent_file_is_a_clean_no_op() -> None:
+    """The already-gone case stays quiet — remove must not fail cleanup that has
+    nothing left to clean."""
+    argstate.forget("never-existed")  # no raise

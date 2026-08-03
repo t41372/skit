@@ -1246,7 +1246,23 @@ def _remove_locked_entry(entry: Entry) -> str:
             )
             % {"name": entry.meta.name, "path": str(entry.dir)}
         )
-    argstate.forget(entry.slug)  # drop the last-used values too
+    try:
+        argstate.forget(entry.slug)  # drop the last-used values too
+    except argstate.StateWriteError as exc:
+        # The entry is gone (registry and directory both); only its state rider
+        # survived. Honest partial success, the rmtree branch's shape: say what was
+        # done, what was not, and the recovery — never a raw traceback for cleanup.
+        raise StoreError(
+            gettext(
+                "%(name)s was removed from the library, but its remembered values "
+                "couldn't be deleted (%(error)s) — delete this file by hand: %(path)s"
+            )
+            % {
+                "name": entry.meta.name,
+                "error": exc.strerror or str(exc),
+                "path": str(paths.values_dir() / f"{entry.slug}.toml"),
+            }
+        ) from exc
     return entry.meta.name
 
 

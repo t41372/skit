@@ -337,6 +337,14 @@ def record_run(
 
 
 def forget(slug: str) -> None:
-    path = values_dir() / f"{slug}.toml"
-    with contextlib.suppress(FileNotFoundError):
-        path.unlink()
+    """Delete the entry's values file (remove's rider). The same values lock as every
+    other mutator — an unlocked unlink raced a concurrent read-modify-write, which
+    could rewrite the file right after it died — and the same typed failure; only a
+    file that is already gone is a clean no-op."""
+    try:
+        with advisory_file_lock(_values_lock_path(slug)):
+            path = values_dir() / f"{slug}.toml"
+            with contextlib.suppress(FileNotFoundError):
+                path.unlink()
+    except OSError as exc:
+        raise _rewrap(exc) from exc
