@@ -1551,7 +1551,9 @@ def test_the_prompt_body_drift_line_names_the_slug(tmp_path: Path) -> None:
     entry = store.add_prompt(body, name=_AWKWARD)
     runner.invoke(cli.app, ["params", entry.slug, "--manage", "topic", "--manage", "reader"])
     left = "Summarise nothing.\n"
-    store.resolve(entry.slug).script_path.write_text(left, encoding="utf-8")
+    # newline="" pins the LF fixture on Windows too: plan.text is byte-preserving by
+    # contract, so the bytes written here must be the bytes asserted below.
+    store.resolve(entry.slug).script_path.write_text(left, encoding="utf-8", newline="")
 
     plan = flows.plan_for_entry(store.resolve(entry.slug))
 
