@@ -36,6 +36,7 @@ from typer.testing import CliRunner
 
 from skit import argstate, cli, flows, store
 from skit.exitcodes import EXIT_SKIT, EXIT_USAGE
+from skit.params import ParamDecl
 
 runner = CliRunner()
 
@@ -233,3 +234,94 @@ def test_post_run_persistence_still_degrades_the_typed_state_failure() -> None:
     assert message is not None
     assert "couldn't save its state" in message
     assert "No space left on device" in message
+
+
+# ==========================================================================
+# T. a prompt's schema is one meta write
+# ==========================================================================
+
+
+def _prompt(tmp_path: Path, body: str = "Do {{topic}} then {{tone}}\n") -> store.Entry:
+    src = tmp_path / "p.prompt.md"
+    src.write_text(body, encoding="utf-8")
+    return store.add_prompt(src, name="p")
+
+
+def test_managed_list_and_declared_rows_land_in_one_meta_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The schema is one logical unit; the disk must see it as one transaction. The spy
+    counts the actual meta commits — one, carrying BOTH halves."""
+    entry = _prompt(tmp_path)
+    writes: list[object] = []
+    real = store._write_meta_and_row
+    monkeypatch.setattr(
+        store,
+        "_write_meta_and_row",
+        lambda entry_dir, slug, meta: (writes.append(slug), real(entry_dir, slug, meta))[1],
+    )
+
+    decls = [ParamDecl(name="topic", delivery="placeholder", help="the subject")]
+    updated = store.write_parameters(entry.slug, decls, managed=["topic"])
+
+    assert writes == [entry.slug]  # exactly one commit
+    assert updated.meta.params == ["topic"]
+    assert [d["name"] for d in updated.meta.parameters or []] == ["topic"]
+    fresh = store.resolve(entry.slug)
+    assert fresh.meta.params == ["topic"]
+    assert [d["name"] for d in fresh.meta.parameters or []] == ["topic"]
+
+
+def test_managed_none_leaves_the_list_alone_and_empty_clears_it(tmp_path: Path) -> None:
+    """The tri-state must not blur: None is "don't touch", [] is "clear" — exactly
+    write_prompt_managed's own storage rule (an empty list stores as absence)."""
+    entry = _prompt(tmp_path)
+    store.write_prompt_managed(entry.slug, ["topic", "tone"])
+
+    store.write_parameters(entry.slug, [ParamDecl(name="topic", delivery="placeholder")])
+    assert store.resolve(entry.slug).meta.params == ["topic", "tone"]  # None: untouched
+
+    store.write_parameters(entry.slug, [], managed=[])
+    assert store.resolve(entry.slug).meta.params is None  # []: cleared, stored as absence
+
+
+def test_managed_on_a_non_prompt_is_refused_before_any_write(tmp_path: Path) -> None:
+    """write_prompt_managed's prompt-only rule travels with the fold: a non-prompt
+    entry refuses the managed half, and the refusal happens before the meta moves."""
+    entry = store.add_command("echo {A}", name="cmdjob")
+    before = store.resolve(entry.slug).meta
+
+    with pytest.raises(store.StoreUsageError):
+        store.write_parameters(entry.slug, [ParamDecl(name="A")], managed=["A"])
+
+    after = store.resolve(entry.slug).meta
+    assert after.params == before.params
+    assert after.parameters == before.parameters
+
+
+def test_a_failed_schema_write_leaves_both_halves_old(tmp_path: Path) -> None:
+    """The finding's failure mode, injected: the meta commit dies — and the on-disk
+    schema stays WHOLLY old, managed list and declared rows alike. No half state."""
+    entry = _prompt(tmp_path)
+    store.write_parameters(
+        entry.slug, [ParamDecl(name="topic", delivery="placeholder")], managed=["topic"]
+    )
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise OSError(28, "No space left on device", "meta.toml")
+
+    # A private MonkeyPatch context: the function-scoped fixture also holds this
+    # test's SKIT_*_DIR env vars, and undoing those with the patch would point the
+    # post-failure read at the real library.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(store, "_write_meta_and_row", _boom)
+        with pytest.raises(OSError, match="No space left on device"):
+            store.write_parameters(
+                entry.slug,
+                [ParamDecl(name="tone", delivery="placeholder")],
+                managed=["tone"],
+            )
+
+    fresh = store.resolve(entry.slug)
+    assert fresh.meta.params == ["topic"]
+    assert [d["name"] for d in fresh.meta.parameters or []] == ["topic"]

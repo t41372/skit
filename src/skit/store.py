@@ -1481,15 +1481,29 @@ def update_needs(name_or_slug: str, needs: list[str]) -> Entry:
         return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
-def write_parameters(name_or_slug: str, decls: list[ParamDecl]) -> Entry:
+def write_parameters(
+    name_or_slug: str, decls: list[ParamDecl], *, managed: list[str] | None = None
+) -> Entry:
     """Persist declared parameter rows to meta.toml [[parameters]] (the schema home for
     kinds without a text body — exe/command). The legacy `params` placeholder-name list
     is deliberately NOT derived from decls: the template is the source of truth for
     WHICH placeholders exist (extract_placeholders at add time), and keeping it
     untouched is what lets an older skit still prompt for every placeholder
-    (downgrade safety) even when only some carry declared schema."""
+    (downgrade safety) even when only some carry declared schema.
+
+    `managed` folds a prompt's managed-list update into the SAME meta write: for a
+    prompt schema the two are one logical unit — the run form asks by the list, types
+    by the rows — and committing them as two transactions left a half-new schema when
+    the second write failed. None means don't touch `meta.params`; a list (empty
+    included) replaces it, under write_prompt_managed's prompt-only rule."""
     with _locked_entry(name_or_slug) as entry:
+        if managed is not None and entry.meta.kind != "prompt":
+            raise StoreUsageError(
+                gettext("%(name)s isn't a prompt entry.") % {"name": entry.meta.name}
+            )
         meta = entry.meta
+        if managed is not None:
+            meta.params = managed or None
         meta.parameters = [d.to_meta_dict() for d in decls] or None
         _write_meta_and_row(entry.dir, entry.slug, meta)
         return Entry(slug=entry.slug, meta=meta, dir=entry.dir)

@@ -1185,10 +1185,13 @@ class ScriptSettingsScreen(Screen[bool]):
             self._save_runner_pin()
         if pending_decls is not None:
             decls = pending_decls
+            managed: list[str] | None = None
             if self._is_prompt:
                 decls += self._ticked_prompt_candidates({d.name for d in decls})
-                self._save_prompt_managed(decls)
-            store.write_parameters(entry.slug, decls)
+                managed = self._prompt_managed_for(decls)
+            # One meta write: a prompt's managed list travels WITH its declared rows
+            # (they are one schema), never as a second transaction that can fail alone.
+            store.write_parameters(entry.slug, decls, managed=managed)
             try:
                 purged = argstate.purge_secret(entry.slug, {d.name for d in decls if d.secret})
             except argstate.StateWriteError as exc:
@@ -1339,15 +1342,15 @@ class ScriptSettingsScreen(Screen[bool]):
             _chosen,
         )
 
-    def _save_prompt_managed(self, decls: list[ParamDecl]) -> None:
-        """The managed list follows the kept placeholder rows: body order first, then any
-        managed name the body has lost but the user kept (drift stays visible, not grown)."""
-        entry = self._entry
+    def _prompt_managed_for(self, decls: list[ParamDecl]) -> list[str]:
+        """The managed list the kept placeholder rows imply: body order first, then any
+        managed name the body has lost but the user kept (drift stays visible, not
+        grown). Pure — the write rides along with the declared rows in action_save."""
         keep = [d.name for d in decls if d.delivery == "placeholder"]
         keep_set = set(keep)
         new_managed = [n for n in self._prompt_body_names if n in keep_set]
         new_managed += [n for n in keep if n not in set(self._prompt_body_names)]
-        store.write_prompt_managed(entry.slug, new_managed)
+        return new_managed
 
     def _save_runner_pin(self) -> None:
         """Persist the runner dropdown's pick. Value-keyed — no index mapping exists

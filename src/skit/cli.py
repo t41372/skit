@@ -5174,9 +5174,9 @@ def _edit_declared_params(
         _refuse_unhonoured(notices, analysis.render_notice)
     for notice in notices:
         err_console.print(f"[yellow]{escape(analysis.render_notice(notice))}[/yellow]")
-    if pending_managed is not None:
-        store.write_prompt_managed(entry.slug, pending_managed)
-    store.write_parameters(entry.slug, result.decls)
+    # One meta write for the whole schema: the managed list and the declared rows are
+    # one logical unit, and a failure between two writes used to leave them half new.
+    store.write_parameters(entry.slug, result.decls, managed=pending_managed)
     purged = argstate.purge_secret(entry.slug, {d.name for d in result.decls if d.secret})
     if purged:
         console.print(
