@@ -16,6 +16,7 @@ from typing import Any, NoReturn, cast, override
 import pytest
 from typer.testing import CliRunner
 
+from conftest import real_repo_root
 from skit import cli, config, exitcodes, flows, store
 
 runner = CliRunner()
@@ -45,8 +46,11 @@ def test_launch_failure_reason_is_a_closed_set() -> None:
 
 
 def test_cli_exit_routes_are_structurally_closed() -> None:
-    """Only typed skit helpers, child passthrough, and doctor's named exception vary status."""
-    path = Path(cli.__file__)
+    """Only typed skit helpers, child passthrough, and doctor's named exception vary status.
+
+    Read from the REAL tree, never cli.__file__: under mutmut's baseline that module is
+    the trampoline rewrite, whose x_-variants of _fail would trip this whitelist."""
+    path = real_repo_root() / "src" / "skit" / "cli.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
     arbitrary_exit_helpers = {"_fail", "_exit_passthrough", "_exit_doctor_health"}
     fixed_names = {

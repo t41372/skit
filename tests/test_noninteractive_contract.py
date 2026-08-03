@@ -14,6 +14,7 @@ import pytest
 import typer.main
 from typer.testing import CliRunner
 
+from conftest import real_repo_root
 from skit import agentskill, argstate, cli, interaction, store
 from skit.paths import values_dir
 
@@ -81,7 +82,9 @@ def test_every_cli_leaf_either_takes_no_input_or_is_proven_non_prompting() -> No
 
 
 def test_every_no_input_command_records_the_verdict_before_any_other_action() -> None:
-    tree = ast.parse(Path(cli.__file__).read_text(encoding="utf-8"))
+    # The real cli.py, never cli.__file__ — under mutmut's baseline that module is the
+    # trampoline rewrite (conftest.real_repo_root's contract).
+    tree = ast.parse((real_repo_root() / "src" / "skit" / "cli.py").read_text(encoding="utf-8"))
     functions = {
         node.name: node
         for node in tree.body

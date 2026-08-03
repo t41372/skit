@@ -179,6 +179,21 @@ def plan_cache_key(entry: Entry) -> tuple[int, int, int, int, str | None]:
     return (script.st_mtime_ns, script.st_size, meta.st_mtime_ns, meta.st_size, tool)
 
 
+def real_repo_root() -> Path:
+    """The repository root, even inside mutmut's mutants/ copy.
+
+    Meta-tests that read skit's SOURCE (AST walks, structural asserts, the blind-spot
+    measure) must read the REAL tree: inside mutants/ every undecorated function has
+    been trampoline-rewritten, so the copy describes mutmut's machinery, not the code
+    under test — and the ratchets those tests enforce would trip on the rewrite itself.
+    The strip-the-prefix idiom is round 10's `_gate_module`, shared here so every
+    source-reading test resolves the same way."""
+    root = Path(__file__).resolve().parent.parent
+    if "mutants" in root.parts:
+        root = Path(*root.parts[: root.parts.index("mutants")])
+    return root
+
+
 def footer_text(static: Static) -> str:
     """Rendered footer text with the pill glue (U+2800, one cell wide like a space)
     normalized back to spaces, so label assertions and click offsets read naturally.

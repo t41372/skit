@@ -20,7 +20,12 @@ from pathlib import Path
 
 import pytest
 
-SRC = Path(__file__).resolve().parent.parent / "src" / "skit"
+# The REAL tree, even under mutmut's own baseline (which runs this suite inside
+# mutants/, where the trampoline rewrite would both inflate the measure and BE the
+# blind spot). conftest.real_repo_root strips the mutants/ prefix.
+from conftest import real_repo_root
+
+SRC = real_repo_root() / "src" / "skit"
 
 # Measured on the tree this test shipped with. See the module docstring before changing.
 MAX_SKIPPED_LINES = 4369

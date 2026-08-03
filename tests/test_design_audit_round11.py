@@ -32,6 +32,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from conftest import real_repo_root
 from skit import cli, editor, interaction, launcher, store, tui
 from skit.tui_settings import ScriptSettingsScreen
 
@@ -449,7 +450,9 @@ def test_subprocess_is_never_reached_without_the_gate() -> None:
     """A structural check on the fix's placement: the refusal sits above the spawn in the
     ONE function every editor lane calls, so a future caller cannot route around it by
     forgetting a check of its own."""
-    source = Path(editor.__file__).read_text(encoding="utf-8")
+    # The real editor.py, never editor.__file__ — under mutmut's baseline that module
+    # is the trampoline rewrite, where `def open_in_editor` is a dispatcher shell.
+    source = (real_repo_root() / "src" / "skit" / "editor.py").read_text(encoding="utf-8")
     body = source.split("def open_in_editor")[1]
     assert body.index("interaction.allowed") < body.index("subprocess.run")
     assert isinstance(subprocess.run, type(subprocess.run))  # the real spawn, unpatched here
