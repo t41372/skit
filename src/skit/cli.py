@@ -4890,14 +4890,17 @@ def _edit_params(
         _refuse_unhonoured(notices, analysis.render_notice)
     for notice in notices:
         err_console.print(f"[yellow]{escape(analysis.render_notice(notice))}[/yellow]")
+    # Purge BEFORE the write commits the secret flag: every interruption then lands on
+    # public+value, public+no-value or secret+no-value — never "schema says secret,
+    # old plaintext still on disk", the one state the transition exists to forbid.
+    secret_now = {s.name for s in result.specs if s.secret}
+    purged = argstate.purge_secret(entry.slug, secret_now)
     # `text` above was read with errors="replace" for the analyzer; writing THAT text back
     # would bake U+FFFD over every non-UTF-8 byte. Re-read through the shared byte-lossless
     # pair (rewrite.py) — params_io.write only touches the comment block, so unrelated bytes
     # round-trip and the copy's own line-ending style survives.
     current, newline = read_for_block_edit(copy_path)
     write_block_edit(copy_path, entry_spec.params_io.write(current, result.specs), newline)
-    secret_now = {s.name for s in result.specs if s.secret}
-    purged = argstate.purge_secret(entry.slug, secret_now)
     if purged:
         console.print(
             "[dim]"
@@ -5174,10 +5177,12 @@ def _edit_declared_params(
         _refuse_unhonoured(notices, analysis.render_notice)
     for notice in notices:
         err_console.print(f"[yellow]{escape(analysis.render_notice(notice))}[/yellow]")
+    # Purge BEFORE the schema commits (the spec lane's rule): an interruption must
+    # never leave "schema says secret, old plaintext still on disk".
+    purged = argstate.purge_secret(entry.slug, {d.name for d in result.decls if d.secret})
     # One meta write for the whole schema: the managed list and the declared rows are
     # one logical unit, and a failure between two writes used to leave them half new.
     store.write_parameters(entry.slug, result.decls, managed=pending_managed)
-    purged = argstate.purge_secret(entry.slug, {d.name for d in result.decls if d.secret})
     if purged:
         console.print(
             "[dim]"

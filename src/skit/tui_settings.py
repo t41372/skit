@@ -1163,14 +1163,17 @@ class ScriptSettingsScreen(Screen[bool]):
             # The shared write half (rewrite.py): atomic + mode-preserving, the copy's own
             # line endings back on, surrogateescape bytes untouched — a comment-block edit
             # stays a comment-block edit rather than rewriting the whole file.
-            write_block_edit(
-                entry.script_path, spec.params_io.write(self._text, new_specs), self._newline
-            )
+            # Purge BEFORE the write commits the secret flag (the CLI lane's rule): a
+            # failed purge aborts the save with the schema still public — never
+            # "schema says secret, old plaintext still on disk".
             try:
                 purged = argstate.purge_secret(entry.slug, {s.name for s in new_specs if s.secret})
             except argstate.StateWriteError as exc:
                 self.notify(str(exc), severity="error")
                 return
+            write_block_edit(
+                entry.script_path, spec.params_io.write(self._text, new_specs), self._newline
+            )
             if purged:
                 self.notify(
                     gettext("Deleted previously remembered value(s): %(names)s")
@@ -1189,14 +1192,15 @@ class ScriptSettingsScreen(Screen[bool]):
             if self._is_prompt:
                 decls += self._ticked_prompt_candidates({d.name for d in decls})
                 managed = self._prompt_managed_for(decls)
-            # One meta write: a prompt's managed list travels WITH its declared rows
-            # (they are one schema), never as a second transaction that can fail alone.
-            store.write_parameters(entry.slug, decls, managed=managed)
+            # Purge first (the spec lane's rule just above), then one meta write: a
+            # prompt's managed list travels WITH its declared rows (one schema), never
+            # as a second transaction that can fail alone.
             try:
                 purged = argstate.purge_secret(entry.slug, {d.name for d in decls if d.secret})
             except argstate.StateWriteError as exc:
                 self.notify(str(exc), severity="error")
                 return
+            store.write_parameters(entry.slug, decls, managed=managed)
             if purged:
                 self.notify(
                     gettext("Deleted previously remembered value(s): %(names)s")

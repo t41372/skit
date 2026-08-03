@@ -1019,6 +1019,7 @@ async def test_spec_lane_purge_failure_notifies_and_keeps_the_screen(tmp_path, m
         [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
     )
     entry = store.add_python(_py(tmp_path, text), name="cfg")
+    before = entry.script_path.read_bytes()
     notes: list[str] = []
     monkeypatch.setattr(
         ScriptSettingsScreen, "notify", lambda self, message, **kw: notes.append(message)
@@ -1033,6 +1034,8 @@ async def test_spec_lane_purge_failure_notifies_and_keeps_the_screen(tmp_path, m
         await pilot.pause()
         assert isinstance(app.screen, ScriptSettingsScreen)  # not dismissed
     assert any("Read-only file system" in m for m in notes)
+    # Purge runs FIRST: its failure aborts the save with the copy's block untouched.
+    assert entry.script_path.read_bytes() == before
 
 
 async def test_declared_lane_purge_failure_notifies_and_keeps_the_screen(tmp_path, monkeypatch):
@@ -1053,6 +1056,9 @@ async def test_declared_lane_purge_failure_notifies_and_keeps_the_screen(tmp_pat
         await pilot.pause()
         assert isinstance(app.screen, ScriptSettingsScreen)
     assert any("Read-only file system" in m for m in notes)
+    # Purge runs FIRST here too: the merged meta write never happened.
+    assert [d.name for d in store.read_parameters(entry.slug)] == ["a"]
+    assert store.read_parameters(entry.slug)[0].secret is False
 
 
 async def test_preset_cleanup_failure_keeps_the_screen_and_the_boxes(tmp_path, monkeypatch):

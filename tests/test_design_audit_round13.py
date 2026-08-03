@@ -325,3 +325,103 @@ def test_a_failed_schema_write_leaves_both_halves_old(tmp_path: Path) -> None:
     fresh = store.resolve(entry.slug)
     assert fresh.meta.params == ["topic"]
     assert [d["name"] for d in fresh.meta.parameters or []] == ["topic"]
+
+
+# ==========================================================================
+# U. the secret transition purges before it commits
+# ==========================================================================
+
+
+def _python_with_public_token(tmp_path: Path) -> store.Entry:
+    from skit.langs.python import metawriter
+
+    text = metawriter.write_params(
+        'TOKEN = "t"\nprint(TOKEN)\n',
+        [ParamDecl(name="TOKEN", binding="const", type="str", default="t")],
+    )
+    script = tmp_path / "job.py"
+    script.write_text(text, encoding="utf-8")
+    entry = store.add_python(script, name="job")
+    # Plaintext remembered while TOKEN was public — the transition's whole subject.
+    argstate.save_last(entry.slug, values={"TOKEN": "plaintext"})
+    return entry
+
+
+def _stored_secret_flag(entry: store.Entry) -> bool:
+    from skit.langs.python import metawriter
+
+    text = entry.script_path.read_text(encoding="utf-8")
+    (spec,) = metawriter.read_params(text)
+    return spec.secret
+
+
+def test_spec_lane_interruption_never_leaves_secret_schema_with_plaintext(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The finding's exact window, injected at the schema write: the purge has already
+    run, so the failed transition lands on public+no-value — allowed — and never on
+    secret+plaintext. (This also PINS the order: were the write first, the plaintext
+    would still be on disk here.)"""
+    entry = _python_with_public_token(tmp_path)
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise OSError(28, "No space left on device", "script.py")
+
+    monkeypatch.setattr(cli, "write_block_edit", _boom)
+    result = runner.invoke(cli.app, ["params", entry.slug, "--secret", "TOKEN"])
+
+    assert result.exit_code != 0
+    assert _stored_secret_flag(entry) is False  # schema still public…
+    assert "TOKEN" not in argstate.load_state(entry.slug)["values"]  # …and the value is gone
+
+
+def test_declared_lane_interruption_never_leaves_secret_schema_with_plaintext(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Same invariant on the declared lane (prompt/exe/command rows), injected at the
+    one merged meta write."""
+    entry = _prompt(tmp_path)
+    argstate.save_last(entry.slug, values={"topic": "plaintext"})
+
+    def _boom(*_a: object, **_k: object) -> None:
+        raise OSError(28, "No space left on device", "meta.toml")
+
+    monkeypatch.setattr(store, "write_parameters", _boom)
+    result = runner.invoke(cli.app, ["params", entry.slug, "--secret", "topic"])
+
+    assert result.exit_code != 0
+    rows = store.resolve(entry.slug).meta.parameters or []
+    assert not any(r.get("secret") for r in rows)  # schema still public…
+    assert "topic" not in argstate.load_state(entry.slug)["values"]  # …value gone
+
+
+def test_a_failed_purge_aborts_the_transition_with_the_schema_still_public(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The other interruption point: the purge itself dies. The transition must stop
+    BEFORE the schema commits — operational exit, schema public, plaintext still there
+    (public+value is an allowed state; secret+value is not)."""
+    entry = _python_with_public_token(tmp_path)
+    # Injected under the purge's own write, so the failure arrives TYPED — the same
+    # StateWriteError lane every argstate writer feeds the boundary.
+    monkeypatch.setattr(argstate, "atomic_write_toml", _state_boom)
+
+    result = runner.invoke(cli.app, ["params", entry.slug, "--secret", "TOKEN"])
+
+    assert result.exit_code == EXIT_SKIT
+    assert "Traceback" not in result.output
+    assert _stored_secret_flag(entry) is False  # the write never ran
+    assert argstate.load_state(entry.slug)["values"] == {"TOKEN": "plaintext"}
+
+
+def test_the_happy_transition_still_scrubs_and_commits(tmp_path: Path) -> None:
+    """No interruption: the reorder must not change the destination — schema secret,
+    plaintext scrubbed, and the cleanup reported."""
+    entry = _python_with_public_token(tmp_path)
+
+    result = runner.invoke(cli.app, ["params", entry.slug, "--secret", "TOKEN"])
+
+    assert result.exit_code == 0
+    assert "Removed previously stored plaintext" in result.output
+    assert _stored_secret_flag(entry) is True
+    assert "TOKEN" not in argstate.load_state(entry.slug)["values"]
