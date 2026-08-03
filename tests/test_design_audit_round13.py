@@ -34,8 +34,8 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from skit import cli, store
-from skit.exitcodes import EXIT_USAGE
+from skit import argstate, cli, flows, store
+from skit.exitcodes import EXIT_SKIT, EXIT_USAGE
 
 runner = CliRunner()
 
@@ -180,3 +180,56 @@ def test_completion_swallows_the_ambiguous_refusal() -> None:
     # The honest Context stand-in from test_cli_gaps_cov: only .params is read.
     ctx = cast(typer.Context, types.SimpleNamespace(params={"name": "deploy"}))
     assert cli._complete_preset(ctx, "") == []
+
+
+# ==========================================================================
+# S. state-write failures join the exit taxonomy
+# ==========================================================================
+
+
+def _state_boom(*_args: object, **_kwargs: object) -> None:
+    raise OSError(30, "Read-only file system", "/state/values/x.toml")
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        pytest.param(
+            ["preset", "save", "{slug}", "fresh", "--from-last", "--no-input"],
+            id="preset-save",
+        ),
+        pytest.param(["preset", "delete", "{slug}", "prod", "--yes"], id="preset-delete"),
+    ],
+)
+def test_a_state_write_failure_is_an_operational_exit_not_a_traceback(
+    argv: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The commands whose ONLY job is a state write used to answer a read-only state
+    dir with a raw traceback and Click's generic exit 1 — outside the taxonomy every
+    other skit failure honors. StateWriteError now reaches the root boundary and maps
+    to the operational exit, same sentence as a config write failure."""
+    entry = store.add_command("echo {A}", name="job")
+    argstate.save_preset(entry.slug, "prod", {"A": "1"})
+    argstate.record_run(entry.slug, 0, at="2026-01-01T00:00:00+00:00", values={"A": "1"})
+    monkeypatch.setattr(argstate, "atomic_write_toml", _state_boom)
+
+    result = runner.invoke(cli.app, [a.format(slug=entry.slug) for a in argv])
+
+    assert result.exit_code == EXIT_SKIT
+    assert "filesystem operation" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_post_run_persistence_still_degrades_the_typed_state_failure() -> None:
+    """The run lane's contract must survive the typing: a StateWriteError from the
+    accepted-run persistence stays a warning that the entry ran but state wasn't saved
+    — never a raised error that would steal the script's own exit code."""
+
+    def _persist() -> None:
+        raise argstate.StateWriteError(28, "No space left on device", "x.toml")
+
+    message = flows.post_run_persistence_error(_persist)
+
+    assert message is not None
+    assert "couldn't save its state" in message
+    assert "No space left on device" in message

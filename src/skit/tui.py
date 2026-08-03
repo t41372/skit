@@ -911,7 +911,11 @@ class MenuApp(App[int | PendingRun]):
                 if runner_was_picked:
                     # The event is the truth: a user may move away and back to the
                     # pin, while an untouched pin merely supplies a default.
-                    argstate.save_last_runner(runner_name)
+                    try:
+                        argstate.save_last_runner(runner_name)
+                    except argstate.StateWriteError as exc:
+                        # Incidental prefill state must never veto the accepted run.
+                        self.notify(str(exc), severity="warning")
             if is_prompt:
                 try:
                     launcher.preflight(entry, runner=runner)

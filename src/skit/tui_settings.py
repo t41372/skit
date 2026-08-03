@@ -1166,7 +1166,11 @@ class ScriptSettingsScreen(Screen[bool]):
             write_block_edit(
                 entry.script_path, spec.params_io.write(self._text, new_specs), self._newline
             )
-            purged = argstate.purge_secret(entry.slug, {s.name for s in new_specs if s.secret})
+            try:
+                purged = argstate.purge_secret(entry.slug, {s.name for s in new_specs if s.secret})
+            except argstate.StateWriteError as exc:
+                self.notify(str(exc), severity="error")
+                return
             if purged:
                 self.notify(
                     gettext("Deleted previously remembered value(s): %(names)s")
@@ -1185,7 +1189,11 @@ class ScriptSettingsScreen(Screen[bool]):
                 decls += self._ticked_prompt_candidates({d.name for d in decls})
                 self._save_prompt_managed(decls)
             store.write_parameters(entry.slug, decls)
-            purged = argstate.purge_secret(entry.slug, {d.name for d in decls if d.secret})
+            try:
+                purged = argstate.purge_secret(entry.slug, {d.name for d in decls if d.secret})
+            except argstate.StateWriteError as exc:
+                self.notify(str(exc), severity="error")
+                return
             if purged:
                 self.notify(
                     gettext("Deleted previously remembered value(s): %(names)s")
@@ -1208,7 +1216,13 @@ class ScriptSettingsScreen(Screen[bool]):
             # checkbox the user actually saw.
             box = self.query(f"#st-preset-{i}")
             if box and not box.first(Checkbox).value:
-                argstate.delete_preset(entry.slug, name)
+                try:
+                    argstate.delete_preset(entry.slug, name)
+                except argstate.StateWriteError as exc:
+                    # Keep the screen: the unticked boxes still show what remains to
+                    # delete, so a retry after fixing the disk finishes the job.
+                    self.notify(str(exc), severity="error")
+                    return
         self.dismiss(True)
 
     def _ticked_prompt_candidates(self, taken: set[str]) -> list[ParamDecl]:

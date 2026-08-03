@@ -92,7 +92,7 @@ def _invoke_with_error_boundary(group: TyperGroup, ctx: Any) -> Any:
         raise _abort_interaction() from None
     except store.StoreError as exc:
         raise _fail_store(exc) from exc
-    except config.ConfigWriteError as exc:
+    except (config.ConfigWriteError, argstate.StateWriteError) as exc:
         raise _fail_operational(exc) from exc
 
 

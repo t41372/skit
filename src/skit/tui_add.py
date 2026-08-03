@@ -1628,7 +1628,12 @@ class PromptReviewScreen(Screen[str | None]):
             return
         if runner and self._runner_was_picked:
             # A real pick prefills the next picker (never a non-interactive resolve).
-            argstate.save_last_runner(runner)
+            try:
+                argstate.save_last_runner(runner)
+            except argstate.StateWriteError as exc:
+                # The entry is already added; losing a picker prefill must not
+                # strand the screen on a success it cannot un-happen.
+                self.notify(str(exc), severity="warning")
         self.dismiss(entry.slug)
 
     def action_cancel(self) -> None:

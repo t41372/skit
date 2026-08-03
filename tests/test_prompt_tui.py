@@ -2125,3 +2125,88 @@ async def test_library_edit_non_prompt_never_offers_the_picker(tmp_path, monkeyp
         await pilot.pause()
         assert len(app.screen_stack) == 1
         assert "Edited job." in str(app.query_one("#status", Static).render())
+
+
+# ---------------------------------------------------------------------------
+# a failed pick save warns and continues (round 13, finding S)
+# ---------------------------------------------------------------------------
+
+
+def _pick_save_boom(_name: str) -> None:
+    raise argstate.StateWriteError(30, "Read-only file system", "x.toml")
+
+
+async def test_review_accept_survives_a_failed_pick_save(tmp_path, monkeypatch):
+    """tui_add's accept: the entry is ALREADY added when the picker prefill is saved,
+    so a read-only state dir must not strand the review screen on a success it cannot
+    un-happen — warn, and dismiss as normal."""
+    src = tmp_path / "r.prompt.md"
+    src.write_text("Go {{a}}\n", encoding="utf-8")
+    notes: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        PromptReviewScreen,
+        "notify",
+        lambda self, message, severity="information", **kw: notes.append((severity, message)),
+    )
+    monkeypatch.setattr(argstate, "save_last_runner", _pick_save_boom)
+    app = tui.MenuApp()
+    async with app.run_test(size=(110, 40)) as pilot:
+        await pilot.pause()
+        app.push_screen(PromptReviewScreen(src))
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, PromptReviewScreen)
+        select = review.query_one("#pv-runner-select", Select)
+        names = [r.name for r in config.load_prompt_runners()]
+        select.value = names[0]  # a real pick, whose save is about to fail
+        await pilot.pause()
+        review.action_accept()
+        await pilot.pause()
+        assert not isinstance(app.screen, PromptReviewScreen)  # dismissed anyway
+
+    assert store.resolve("r").meta.runner == names[0]  # the add itself landed whole
+    assert any(sev == "warning" and "Read-only file system" in m for sev, m in notes)
+
+
+async def test_form_pick_save_failure_never_vetoes_the_accepted_run(
+    tmp_path, quiet_run, monkeypatch
+):
+    """tui.py's run lane: remembering the pick is incidental prefill state. When that
+    save fails, the run the user just accepted still executes — a warning, not a veto
+    (the exact doctrine post_run_persistence_error already applies after the run)."""
+    _prompt_entry(tmp_path)
+    argstate.save_last_runner("opencode")  # prefill BEFORE the writer is broken
+    notes: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        tui.MenuApp,
+        "notify",
+        lambda self, message, severity="information", **kw: notes.append((severity, message)),
+    )
+    monkeypatch.setattr(argstate, "save_last_runner", _pick_save_boom)
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.action_run()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        select = screen.query_one("#runner-select", Select)
+        select.focus()
+        await pilot.pause()
+        # A real keyboard pick (arming the dirt bit), as in the picker tests above.
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("down")
+        await pilot.press("enter")
+        await pilot.pause()
+        picked = _value(select)
+        assert picked != "opencode"
+        field = screen.query_one(Input)
+        field.value = "x"
+        field.focus()
+        await pilot.pause()
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+
+    assert quiet_run["runner"] == config.find_prompt_runner(picked)  # the run happened
+    assert any(sev == "warning" and "Read-only file system" in m for sev, m in notes)

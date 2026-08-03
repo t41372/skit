@@ -1200,3 +1200,44 @@ async def test_remove_reports_a_partial_deletion_in_the_status_instead_of_crashi
         await pilot.pause()
         assert len(app.screen_stack) == 1  # still alive, back on the Library
         assert "doctor --rebuild" in _static_text(app, "#status")
+
+
+# ---------------------------------------------------------------------------
+# tui_form: a preset that never landed gets no success toast (round 13, finding S)
+# ---------------------------------------------------------------------------
+
+
+async def test_a_preset_that_never_landed_gets_no_success_toast(tmp_path, quiet_run, monkeypatch):
+    """A read-only state dir used to crash the whole app out of the modal callback —
+    after an unconditional 'saved.' toast for a preset that never reached disk. The
+    typed failure is an error notify, the success toast is withheld, and the form
+    stays alive for a retry."""
+    entry = _argparse_entry(tmp_path)
+    notes: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        RunFormScreen,
+        "notify",
+        lambda self, message, severity="information", **kw: notes.append((severity, message)),
+    )
+
+    def _state_boom(*_a: object, **_k: object) -> None:
+        raise argstate.StateWriteError(30, "Read-only file system", "x.toml")
+
+    monkeypatch.setattr(argstate, "save_preset", _state_boom)
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.action_run()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        screen.action_save_preset()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PresetNameModal)
+        modal.query_one(Input).value = "doomed"
+        modal.action_save_name()
+        await pilot.pause()
+
+    assert any(sev == "error" and "Read-only file system" in m for sev, m in notes)
+    assert not any("saved" in m for _sev, m in notes)  # no toast for a phantom preset
+    assert argstate.load_state(entry.slug)["presets"] == {}

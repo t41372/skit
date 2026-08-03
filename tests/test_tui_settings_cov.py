@@ -999,3 +999,86 @@ async def test_settings_declared_editor_opens_for_an_interpreted_meta_kind(tmp_p
         assert [r.decl.name for r in rows] == ["GREETING"]
         # argv IS this kind's interface, so the Flag field must be editable (not template-hidden)
         assert rows[0].query(".d-flag")
+
+
+# ---------------------------------------------------------------------------
+# state-write failures notify and keep the screen (round 13, finding S)
+# ---------------------------------------------------------------------------
+
+
+def _purge_boom(*_a, **_k):
+    raise argstate.StateWriteError(30, "Read-only file system", "x.toml")
+
+
+async def test_spec_lane_purge_failure_notifies_and_keeps_the_screen(tmp_path, monkeypatch):
+    """The copy-mode analyzer lane: the C3 scrub after the block write fails typed —
+    the save stops with an error notify instead of crashing the app, and the screen
+    stays put so the user can retry once the disk is fixed."""
+    text = metawriter.write_params(
+        'CITY = "Taipei"\nprint(CITY)\n',
+        [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
+    )
+    entry = store.add_python(_py(tmp_path, text), name="cfg")
+    notes: list[str] = []
+    monkeypatch.setattr(
+        ScriptSettingsScreen, "notify", lambda self, message, **kw: notes.append(message)
+    )
+    monkeypatch.setattr(argstate, "purge_secret", _purge_boom)
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+        assert isinstance(app.screen, ScriptSettingsScreen)  # not dismissed
+    assert any("Read-only file system" in m for m in notes)
+
+
+async def test_declared_lane_purge_failure_notifies_and_keeps_the_screen(tmp_path, monkeypatch):
+    """The declared-rows lane (exe/command): same contract as the spec lane."""
+    entry = _exe(tmp_path)
+    entry = store.write_parameters(entry.slug, [ParamDecl(name="a", delivery="flag", type="str")])
+    notes: list[str] = []
+    monkeypatch.setattr(
+        ScriptSettingsScreen, "notify", lambda self, message, **kw: notes.append(message)
+    )
+    monkeypatch.setattr(argstate, "purge_secret", _purge_boom)
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+        assert isinstance(app.screen, ScriptSettingsScreen)
+    assert any("Read-only file system" in m for m in notes)
+
+
+async def test_preset_cleanup_failure_keeps_the_screen_and_the_boxes(tmp_path, monkeypatch):
+    """The unticked-preset deletion loop at the tail of the save: a typed failure keeps
+    the screen (the still-unticked boxes ARE the retry plan) instead of dismissing over
+    a half-done cleanup."""
+    entry = _exe(tmp_path, name="prog2")
+    argstate.save_preset(entry.slug, "alpha", {"a": "1"})
+    notes: list[str] = []
+    monkeypatch.setattr(
+        ScriptSettingsScreen, "notify", lambda self, message, **kw: notes.append(message)
+    )
+    monkeypatch.setattr(argstate, "delete_preset", _purge_boom)
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.query_one("#st-preset-0", Checkbox).value = False  # ask for the deletion
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+        confirm = app.screen
+        assert isinstance(confirm, PresetDeleteConfirm)  # round 10's destructive ask
+        confirm.action_confirm()
+        await pilot.pause()
+        assert isinstance(app.screen, ScriptSettingsScreen)  # not dismissed
+    assert any("Read-only file system" in m for m in notes)
+    assert argstate.load_state(entry.slug)["presets"] == {"alpha": {"a": "1"}}  # survived

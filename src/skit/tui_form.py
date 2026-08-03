@@ -983,14 +983,19 @@ class RunFormScreen(Screen[FormResult]):
         def _named(name: str | None) -> None:
             if not name:
                 return
-            argstate.save_preset(
-                self._entry.slug,
-                name,
-                # The exact snapshot the form is showing, a cleared field included —
-                # dropping empties republished the very value the user just cleared.
-                values,
-                secret_names=self._plan.secret_names,
-            )
+            try:
+                argstate.save_preset(
+                    self._entry.slug,
+                    name,
+                    # The exact snapshot the form is showing, a cleared field included —
+                    # dropping empties republished the very value the user just cleared.
+                    values,
+                    secret_names=self._plan.secret_names,
+                )
+            except argstate.StateWriteError as exc:
+                # No success toast for a preset that never landed on disk.
+                self.notify(str(exc), severity="error")
+                return
             self._presets = argstate.load_state(self._entry.slug)["presets"]
             self._refresh_preset_picker(name)
             self.notify(
