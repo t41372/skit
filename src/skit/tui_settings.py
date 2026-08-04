@@ -588,7 +588,7 @@ class ScriptSettingsScreen(Screen[bool]):
         box = self.query("#st-workdir")
         if not box:
             return
-        guard = self._entry.meta.id or None
+        guard = self._entry.meta.id
         if new_workdir != self._entry.meta.workdir:
             store.write_workdir(self._entry.slug, new_workdir, expected_id=guard)
         if self.query("#st-interpreter") and new_interp != self._entry.meta.interpreter:
@@ -1128,8 +1128,10 @@ class ScriptSettingsScreen(Screen[bool]):
         # a screen sits open — a mismatch fails that one write closed (StaleEntryError)
         # and the catch keeps the screen. One catch for the whole pass: each write is
         # individually atomic, whatever landed stays landed, and the screen survives so
-        # a retry (or a reopen, for a stale refusal) finishes the job.
-        guard = entry.meta.id or None
+        # a retry (or a reopen, for a stale refusal) finishes the job. The id passes
+        # verbatim — an unstamped "" is a real expectation that refuses a stamped
+        # stranger, never a way to switch the guard off (`id or None` was that hole).
+        guard = entry.meta.id
         try:
             if early_npm_clear and pending_deps is not None:  # pragma: no mutate — the second conjunct is ty's narrowing of what early_npm_clear's own definition already proves; and→or double-writes the same deps idempotently (both commits re-read disk), an equivalent  # fmt: skip
                 deps_changed = pending_deps[0]
@@ -1212,7 +1214,9 @@ class ScriptSettingsScreen(Screen[bool]):
                 # was reissued — unticking a checkbox here must not delete the new
                 # owner's presets. Same remedy as every stale refusal.
                 self.notify(
-                    gettext("%(name)s changed while this screen was open — close it and reopen.")
+                    gettext(
+                        "%(name)s changed while this edit was underway — reopen it and try again."
+                    )
                     % {"name": entry.meta.name},
                     severity="error",
                 )
@@ -1358,7 +1362,7 @@ class ScriptSettingsScreen(Screen[bool]):
         value = self.query_one("#st-runner-select", Select).value
         pin = "" if value is Select.NULL else str(value)
         if pin != current:
-            store.write_prompt_runner(entry.slug, pin, expected_id=entry.meta.id or None)
+            store.write_prompt_runner(entry.slug, pin, expected_id=entry.meta.id)
 
     def action_close(self) -> None:
         if not self._dirty:

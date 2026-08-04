@@ -867,8 +867,10 @@ def persistence_target(entry: Entry) -> Entry | None:
     Identity is EXACT match on meta.id — unknown identity may serve reads, but it
     cannot authorize a write. Held handles are stamped at hold-start
     (store.ensure_identity), so "" meets "" only on a library nothing can write to,
-    where the ids also cannot diverge; every asymmetric pairing means the handle and
-    the disk disagree about WHO the entry is, and the write fails closed.
+    where the ids also cannot diverge — and it PROVES no reincarnation happened,
+    because a reincarnated slug always meets this guard stamped (_add_entry cannot
+    write a meta without an id). Every asymmetric pairing means the handle and the
+    disk disagree about WHO the entry is, and the write fails closed.
 
     The doors call this INSIDE the entry lock (store.entry_lock_path) and keep holding
     it across their writes — the same lock every meta mutator and remove() itself

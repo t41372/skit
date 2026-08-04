@@ -156,13 +156,15 @@ _entry_lock_path = entry_lock_path  # internal name kept for the existing call s
 
 def _check_expected_id(entry: Entry, expected_id: str | None) -> None:
     """The write-authorization check (#39): a caller that has been HOLDING an entry
-    names the identity it means to mutate, and a mismatch fails closed. An empty
-    expected id never reaches here (callers pass None when they hold no stamped
-    identity — unknown identity cannot authorize, but it cannot refuse either;
-    persistence's own guard handles that side)."""
+    names the identity it means to mutate, and a mismatch fails closed. None means
+    the caller holds nothing (an immediate name-addressed command); an EMPTY string
+    is a real expectation — "I hold an unstamped handle" — and meeting a stamped
+    entry refuses, because the asymmetry proves the disk changed owners. Never
+    soften "" to None (the `id or None` idiom was exactly the hole this closes:
+    it switched the guard off for the one handle that most needed it)."""
     if expected_id is not None and entry.meta.id != expected_id:
         raise StaleEntryError(
-            gettext("%(name)s changed while this screen was open — close it and reopen.")
+            gettext("%(name)s changed while this edit was underway — reopen it and try again.")
             % {"name": entry.meta.name}
         )
 
@@ -205,6 +207,13 @@ def ensure_identity(name_or_slug: str) -> Entry:
                 _write_meta_and_row(fresh.dir, fresh.slug, fresh.meta)  # the door stamps
             return Entry(slug=fresh.slug, meta=fresh.meta, dir=fresh.dir)
     except (StoreError, OSError):
+        # The stamp is best-effort, the ANSWER is not: a half-landed stamp (meta
+        # written, registry row failed) must not hand back an unstamped handle while
+        # the disk is stamped — that handle would fail every later exact-match for
+        # its own entry. Re-read; only a library that cannot even be read again
+        # keeps the original handle.
+        with contextlib.suppress(StoreError):
+            return resolve(entry.slug)
         return entry
 
 
@@ -1646,6 +1655,32 @@ def write_source_params(
         text, newline = read_for_block_edit(entry.script_path)
         write_block_edit(entry.script_path, spec.params_io.write(text, specs), newline)
         return purged
+
+
+def rewrite_source(
+    name_or_slug: str,
+    transform: Callable[[str], str | None],
+    *,
+    expected_id: str | None = None,
+) -> None:
+    """The A5 lane's transaction: apply a semantic rewrite (--normalize) to the STORED
+    COPY under the entry lock, with the identity check first. The transform re-derives
+    from the FRESH text — never from bytes read before a consent prompt or an analysis
+    pass, which is exactly the window a concurrent edit (or a reincarnated slug) slips
+    through. Strict UTF-8, this lane's own policy: a copy that doesn't decode is
+    refused whole (UnicodeDecodeError propagates for the caller's refusal). None from
+    the transform means write nothing; otherwise the shared byte-discipline write half
+    lands it atomically with the copy's own newline style."""
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
+        try:
+            text, newline = read_for_block_edit(entry.script_path, errors="strict")
+        except FileNotFoundError as exc:
+            raise NotFoundError(
+                gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}
+            ) from exc
+        new = transform(text)
+        if new is not None:
+            write_block_edit(entry.script_path, new, newline)
 
 
 def read_parameters(name_or_slug: str) -> list[ParamDecl]:

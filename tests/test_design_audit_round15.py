@@ -279,7 +279,10 @@ def test_a_stale_expected_id_fails_the_mutation_closed(tmp_path: Path) -> None:
     new = _cmd("owner")
     with pytest.raises(store.StaleEntryError) as refusal:
         store.update_description(new.slug, "the old screen's text", expected_id=old.meta.id)
-    assert str(refusal.value) == "owner changed while this screen was open — close it and reopen."
+    assert (
+        str(refusal.value)
+        == "owner changed while this edit was underway — reopen it and try again."
+    )
     assert store.resolve(new.slug).meta.description == ""
 
 
@@ -339,7 +342,7 @@ async def test_a_settings_save_on_a_reincarnated_slug_refuses_and_touches_nothin
         await pilot.pause()
         notes = [(n.message, n.severity) for n in app._notifications]
         assert (
-            "screen changed while this screen was open — close it and reopen.",
+            "screen changed while this edit was underway — reopen it and try again.",
             "error",
         ) in notes
     assert store.resolve(new.slug).meta.description == ""
@@ -372,7 +375,7 @@ async def test_a_stale_preset_untick_reaches_the_guarded_door_and_stops(tmp_path
         await pilot.pause()
         notes = [(n.message, n.severity) for n in app._notifications]
         assert (
-            "presets changed while this screen was open — close it and reopen.",
+            "presets changed while this edit was underway — reopen it and try again.",
             "error",
         ) in notes
     assert not (values_dir() / f"{new.slug}.toml").exists()
@@ -392,7 +395,7 @@ async def test_a_reconcile_write_refusal_lands_on_the_status_line(
         await pilot.pause()
 
         def _stale(*_a: object, **_k: object) -> store.Entry:
-            raise store.StaleEntryError("p changed while this screen was open")
+            raise store.StaleEntryError("p changed while this edit was underway")
 
         monkeypatch.setattr(store, "write_prompt_managed", _stale)
         assert app._offer_prompt_reconcile(store.resolve(entry.slug))
@@ -402,7 +405,7 @@ async def test_a_reconcile_write_refusal_lands_on_the_status_line(
         from textual.widgets import Static
 
         status = str(app.query_one("#status", Static).render())
-        assert "changed while this screen was open" in status
+        assert "changed while this edit was underway" in status
     assert store.resolve(entry.slug).meta.params is None  # nothing was managed
 
 
@@ -547,7 +550,7 @@ async def test_a_stale_reconcile_pick_refuses_and_touches_nothing(
         from textual.widgets import Static
 
         status = str(app.query_one("#status", Static).render())
-        assert status == "Error: p2 changed while this screen was open — close it and reopen."
+        assert status == "Error: p2 changed while this edit was underway — reopen it and try again."
     assert store.resolve(new.slug).meta.params is None
 
 
@@ -621,7 +624,7 @@ async def test_the_reconcile_flood_guard_holds_its_exact_boundary(tmp_path: Path
 # makes that write land silently — these pin every axis, not just the first one a
 # combined save happens to hit.
 
-_STALE = "%s changed while this screen was open — close it and reopen."
+_STALE = "%s changed while this edit was underway — reopen it and try again."
 
 
 async def _stale_settings(

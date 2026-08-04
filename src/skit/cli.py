@@ -3235,10 +3235,7 @@ def run(
     from . import flows
 
     try:
-        # ensure_identity, not resolve: this handle outlives user-paced time (the
-        # inline form, the run itself), and its post-acceptance writes are authorized
-        # by exact id match — so a pre-id meta gets stamped here, at hold-start.
-        entry = store.ensure_identity(name)
+        entry = store.resolve(name)
     except store.NotFoundError as exc:
         raise _fail_not_found(exc) from exc
     _validate_preset(entry, preset)
@@ -3272,6 +3269,9 @@ def run(
             ) % {"kind": entry.meta.kind}
         err_console.print("[red]" + message + _RED_CLOSE)
         raise typer.Exit(EXIT_USAGE)
+    # Claimed AFTER every static refusal: a refused invocation leaves no fingerprints
+    # (_on_accepted's doctrine), and stamping a pre-id meta is a write.
+    entry = store.ensure_identity(entry.slug)
     # One interaction paradigm per run, not two glued in sequence: when the inline
     # mini-form is about to open for a prompt entry anyway, the runner question moves
     # INTO the form (the same picker row the TUI workbench shows) instead of a bare
@@ -3912,6 +3912,8 @@ def preset_save(
             % {"name": entry.meta.name},
             EXIT_USAGE,
         )
+    # Claimed at hold-start (post-refusal): the intake below can wait on a human.
+    entry = store.ensure_identity(entry.slug)
     values = _preset_values(entry, plan, from_last=from_last)
     secret_overlap = plan.secret_names & values.keys()
     if secret_overlap:
@@ -3921,17 +3923,7 @@ def preset_save(
             % {"names": ", ".join(escape(n) for n in sorted(secret_overlap))}
             + _DIM_CLOSE
         )
-    argstate.save_preset(
-        entry.slug,
-        preset_name,
-        # The exact snapshot, cleared fields included — one rule for every preset
-        # writer (the run form's Ctrl+S and `run --save-preset` store the same way).
-        values,
-        secret_names=plan.secret_names,
-    )
-    console.print(
-        f"[green]{gettext('Preset "%(preset)s" saved for %(name)s.') % {'preset': escape(preset_name), 'name': escape(entry.meta.name)}}[/green]"
-    )
+    _commit_preset_save(entry, preset_name, values, plan, console)
 
 
 @preset_app.command("list", help=gettext("List an entry's saved presets."))
@@ -3973,6 +3965,7 @@ def preset_delete(
     # cli.py cannot see this flag, and used to re-derive interactivity from
     # isatty — which blocked an agent on input() under the flag that forbids it.
     _forbid_interaction(no_input)
+
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
@@ -3982,6 +3975,8 @@ def preset_delete(
     # so a preset that vanishes between the two reads still lands in the same error.
     if preset_name not in argstate.load_state(entry.slug)["presets"]:
         _fail_unknown_preset(entry, preset_name)
+    # Claimed at hold-start (post-refusal): the ask below can wait on a human.
+    entry = store.ensure_identity(entry.slug)
     # A preset is unrecoverable user data; its deletion gets the same ask (and the same
     # non-interactive refusal) as removing an entry or a runner — the trivially
     # re-creatable config row must not be better guarded than the thing users typed in.
@@ -3993,7 +3988,50 @@ def preset_delete(
             gettext('Delete preset "%(preset)s" from %(name)s?')
             % {"preset": preset_name, "name": entry.meta.name}
         )
-    if argstate.delete_preset(entry.slug, preset_name):
+    _commit_preset_delete(entry, preset_name)
+
+
+def _commit_preset_save(
+    entry: store.Entry,
+    preset_name: str,
+    values: dict[str, str],
+    plan: flows.FormPlan,
+    console: Console,
+) -> None:
+    """preset save's commit, through the guarded door — never a bare argstate write.
+    The door re-proves the identity UNDER the entry lock and strips with the union of
+    launch-time and CURRENT secrecy, so a secret transition committing while the
+    intake waited can no longer be re-leaked by this save, and a reissued slug gets
+    nothing (the honest not-found refusal instead). The values are the exact
+    snapshot, cleared fields included — one rule for every preset writer."""
+    from . import flows
+
+    if not flows.save_preset_for(entry, preset_name, values, secret_names=plan.secret_names):
+        raise _fail(
+            gettext('Preset "%(preset)s" wasn\'t saved — %(name)s is no longer in the library.')
+            % {"preset": preset_name, "name": entry.meta.name},
+            EXIT_NOT_FOUND,
+        )
+    console.print(
+        f"[green]{gettext('Preset "%(preset)s" saved for %(name)s.') % {'preset': escape(preset_name), 'name': escape(entry.meta.name)}}[/green]"
+    )
+
+
+def _commit_preset_delete(entry: store.Entry, preset_name: str) -> None:
+    """preset delete's commit, through the guarded door: an entry that vanished — or a
+    slug reissued — while the ask sat open gets the stale refusal, because the user's
+    answer was never about the new owner's same-named preset. A preset that vanished
+    mid-ask lands in the same unknown-preset error the pre-ask check gives."""
+    from . import flows
+
+    deleted = flows.delete_presets_for(entry, [preset_name])
+    if deleted is None:
+        raise _fail(
+            gettext("%(name)s changed while this edit was underway — reopen it and try again.")
+            % {"name": entry.meta.name},
+            EXIT_NOT_FOUND,
+        )
+    if deleted:
         console.print(
             gettext('Preset "%(preset)s" deleted from %(name)s.')
             % {"preset": escape(preset_name), "name": escape(entry.meta.name)}
@@ -4548,6 +4586,10 @@ def params(
             + _RED_CLOSE
         )
         raise typer.Exit(EXIT_USAGE)
+    if own_ops or schema_ops:
+        # Claim BEFORE the read each edit lane's write depends on; every store call
+        # below authorizes against it. The read view stays a pure read: no stamp.
+        entry = store.ensure_identity(entry.slug)
     if interpolate_opt is not None:
         # Its own op, like --runner: flipping the master switch changes what the entry
         # IS at run time, so it never mixes into the schema-edit pass.
@@ -4696,6 +4738,7 @@ def _edit_entry_policy(
             workdir=workdir_opt,
             interpreter=interpreter_opt,
             template=template_opt,
+            expected_id=entry.meta.id,
         )
         if template_opt is not None:
             console.print(
@@ -4738,7 +4781,7 @@ def _pin_prompt_runner(entry: store.Entry, runner_pin: str, *, quiet: bool = Fal
                 EXIT_USAGE,
             )
     try:
-        store.write_prompt_runner(entry.slug, name)
+        store.write_prompt_runner(entry.slug, name, expected_id=entry.meta.id)
     except store.StoreError as exc:
         raise _fail_store(exc) from exc
     if name:
@@ -4758,7 +4801,7 @@ def _set_prompt_interpolate(entry: store.Entry, interpolate: bool, *, quiet: boo
     if entry.meta.kind != "prompt":
         raise _fail(gettext("--interpolate only applies to prompt entries."), EXIT_USAGE)
     try:
-        store.write_prompt_interpolate(entry.slug, interpolate)
+        store.write_prompt_interpolate(entry.slug, interpolate, expected_id=entry.meta.id)
     except store.StoreError as exc:
         raise _fail_store(exc) from exc
     if interpolate:
@@ -4919,7 +4962,7 @@ def _edit_params(
     # post-run persistence can land between "schema says secret" and "plaintext
     # scrubbed". The write half re-reads through the byte-lossless pair (rewrite.py),
     # so the errors="replace" text the analyzer saw never lands back on disk.
-    purged = store.write_source_params(entry.slug, result.specs)
+    purged = store.write_source_params(entry.slug, result.specs, expected_id=entry.meta.id)
     if purged:
         console.print(
             "[dim]"
@@ -5025,12 +5068,40 @@ def _normalize_params(
             gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name},
             EXIT_NOT_FOUND,
         )
-    # The shared read half, strict: --normalize rewrites the script's own text, and the
-    # parse-and-splice pipeline is strict UTF-8 end to end — a script that doesn't decode
-    # is refused whole (this lane's OWN policy; the comment-only edits keep their
-    # surrogateescape default), leaving the stored copy byte-for-byte untouched.
+    # Locals, not attribute reads: the refusal above proved these non-None, and the
+    # closure below must keep that proof (a captured attribute widens back to | None).
+    normalizer = entry_spec.normalizer
+    analyzer = entry_spec.analyzer
+    params_io = entry_spec.params_io
+    captured: list[Any] = []
+
+    def _transform(text: str) -> str | None:
+        # Everything this write depends on is re-derived from the FRESH text, inside
+        # the store transaction (rewrite_source: entry lock + identity check + strict
+        # UTF-8 read) — never from bytes read before an analysis pass or a slug that
+        # changed hands. None = every name was refused; the file goes untouched.
+        result = normalizer.normalize(text, list(names))
+        captured.append(result)
+        if not result.normalized:
+            return None
+        # Re-read the analyzer: each normalized name is now an ${NAME:-default} expansion,
+        # i.e. an envdefault candidate. A name that was MANAGED must follow it — otherwise
+        # its stored const definition would go missing on the very next run (loud, and
+        # rightly so).
+        envdefaults = {
+            c.name: c for c in analyzer.analyze(result.text).candidates if c.binding == "envdefault"
+        }
+        normalized = set(result.normalized)
+        specs = [
+            _reanchor_as_envdefault(s, envdefaults[s.name])
+            if s.name in normalized and s.name in envdefaults
+            else s
+            for s in params_io.read(result.text)
+        ]
+        return params_io.write(result.text, specs)
+
     try:
-        text, newline = read_for_block_edit(copy_path, errors="strict")
+        store.rewrite_source(entry.slug, _transform, expected_id=entry.meta.id)
     except UnicodeDecodeError:
         raise _fail(
             gettext(
@@ -5040,30 +5111,11 @@ def _normalize_params(
             % {"name": entry.meta.name},
             EXIT_SKIT,
         ) from None
-    result = entry_spec.normalizer.normalize(text, list(names))
+    result = captured[0]
     for notice in result.refused:
         err_console.print(f"[yellow]{escape(_render_normalize_notice(notice))}[/yellow]")
     if not result.normalized:
         return  # every name was refused; the file is untouched (the warnings above said why)
-    # Re-read the analyzer: each normalized name is now an ${NAME:-default} expansion, i.e. an
-    # envdefault candidate. A name that was MANAGED must follow it — otherwise its stored const
-    # definition would go missing on the very next run (loud, and rightly so).
-    envdefaults = {
-        c.name: c
-        for c in entry_spec.analyzer.analyze(result.text).candidates
-        if c.binding == "envdefault"
-    }
-    normalized = set(result.normalized)
-    specs = [
-        _reanchor_as_envdefault(s, envdefaults[s.name])
-        if s.name in normalized and s.name in envdefaults
-        else s
-        for s in entry_spec.params_io.read(result.text)
-    ]
-    # The shared write half (atomic + mode-preserving); the strict read above stays — a
-    # normalize that can't decode is refused whole, unlike the comment-only edits'
-    # surrogateescape round-trip.
-    write_block_edit(copy_path, entry_spec.params_io.write(result.text, specs), newline)
     console.print(
         f"[green]{gettext('Normalized %(names)s in %(name)s: delivered as environment variables from now on (no temporary copy, and $0 stays your real file).') % {'names': ', '.join(escape(n) for n in result.normalized), 'name': escape(entry.meta.name)}}[/green]"
     )
@@ -5199,7 +5251,9 @@ def _edit_declared_params(
     # One meta write for the whole schema — managed list, declared rows AND the C3
     # scrub in a single locked transaction (store.write_parameters): the purge still
     # precedes the commit, and nothing can interleave between them.
-    _, purged = store.write_parameters(entry.slug, result.decls, managed=pending_managed)
+    _, purged = store.write_parameters(
+        entry.slug, result.decls, managed=pending_managed, expected_id=entry.meta.id
+    )
     if purged:
         console.print(
             "[dim]"
@@ -5315,6 +5369,8 @@ def deps(
     if not deps_requested and not needs_requested:
         _deps_read_view(entry, supports_deps=supports_deps, as_json=as_json)
         return
+    # Mutating from here on: claim, and both axis writes authorize against it.
+    entry = store.ensure_identity(entry.slug)
     # Deps BEFORE needs: a --dep/--python refusal raises (StoreUsageError) at the top of
     # update_dependencies, before any write — so processing deps first means a refused request
     # aborts with NOTHING committed. Doing needs first would persist the needs write and then
@@ -5333,7 +5389,9 @@ def deps(
             # constraint line.
             new_deps = None
         try:
-            entry = store.update_dependencies(entry.slug, new_deps, requires_python=python)
+            entry = store.update_dependencies(
+                entry.slug, new_deps, requires_python=python, expected_id=entry.meta.id
+            )
         except store.StoreUsageError as exc:
             raise _fail_store(exc) from exc
         except store.StoreError as exc:
@@ -5355,7 +5413,7 @@ def deps(
         # the --json contract AND bricks the entry — `shutil.which("")` is None, so every run then
         # fails "Missing required command(s):" before the script starts.
         new_needs = [] if clear_needs else [n.strip() for n in (need or []) if n.strip()]
-        entry = store.update_needs(entry.slug, new_needs)
+        entry = store.update_needs(entry.slug, new_needs, expected_id=entry.meta.id)
         if not as_json:
             console.print(
                 f"[green]{gettext('Needs of %(name)s updated: %(needs)s') % {'name': escape(entry.meta.name), 'needs': ', '.join(escape(n) for n in new_needs) or '—'}}[/green]"

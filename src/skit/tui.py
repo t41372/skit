@@ -1154,7 +1154,7 @@ class MenuApp(App[int | PendingRun]):
                 store.write_prompt_managed(
                     held.slug,
                     existing + [n for n in chosen if n not in existing],
-                    expected_id=held.meta.id or None,
+                    expected_id=held.meta.id,
                 )
             except store.StoreError as exc:
                 self._refresh_status(gettext("Error: %(error)s") % {"error": escape(str(exc))})

@@ -446,7 +446,9 @@ def test_slug_keyed_argstate_writes_stay_behind_the_guarded_doors() -> None:
     so there is nothing to go stale. A new call site fails this census on purpose:
     either route it through a door, or add it here with that justification.
 
-    - cli.py: `preset save`/`preset delete` — resolve and write in one motion.
+    - flows.py: the guarded doors — the ONLY module that may write state for a held
+      entry, `preset save`/`preset delete` included (their asks and forms wait on a
+      human, so they hold exactly like a run does).
     - store.py: remove()'s own forget, and the C3 scrubs inside the two locked
       schema-commit transactions (write_parameters, write_source_params) — purge and
       commit under one entry lock, where nothing can interleave between them.
@@ -461,7 +463,6 @@ def test_slug_keyed_argstate_writes_stay_behind_the_guarded_doors() -> None:
         if counts:
             census[path.relative_to(root).as_posix()] = dict(counts)
     assert census == {
-        "cli.py": {"save_preset": 1, "delete_preset": 1},
         "flows.py": {
             "save_last": 2,
             "save_preset": 1,

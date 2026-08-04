@@ -1824,7 +1824,7 @@ def test_params_view_survives_an_unreadable_reference_body(tmp_path):
 def test_params_runner_pin_reports_store_errors(tmp_path, monkeypatch):
     _added(tmp_path)
 
-    def boom(slug, name):
+    def boom(slug, name, **_kwargs):
         raise store.StoreError("disk on fire")
 
     monkeypatch.setattr(cli.store, "write_prompt_runner", boom)
@@ -1956,7 +1956,7 @@ def test_params_interpolate_off_and_on(tmp_path):
 def test_params_interpolate_reports_store_errors(tmp_path, monkeypatch):
     _added(tmp_path)
 
-    def boom(slug, on):
+    def boom(slug, on, **_kwargs):
         raise store.StoreError("disk on fire")
 
     monkeypatch.setattr(cli.store, "write_prompt_interpolate", boom)
