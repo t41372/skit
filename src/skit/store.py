@@ -21,7 +21,12 @@ from pathlib import Path
 from typing import Any
 
 from . import argstate, paths, pep723
-from .atomic import advisory_file_lock, atomic_write_toml, try_advisory_file_lock
+from .atomic import (
+    advisory_file_lock,
+    atomic_write_bytes_keep_mode,
+    atomic_write_toml,
+    try_advisory_file_lock,
+)
 from .i18n import gettext
 from .langs import registry
 from .langs.registry import stored_name
@@ -187,34 +192,41 @@ def _locked_entry(name_or_slug: str, *, expected_id: str | None = None) -> Itera
         yield entry
 
 
-def ensure_identity(name_or_slug: str) -> Entry:
-    """The hold-start handshake: resolve the entry AND make sure the handle carries a
-    stamped identity, minting one for a pre-id meta on the spot. Every lane that keeps
-    an Entry across user-paced time (a run, an open form or settings screen) starts
-    here, so its later writes can be authorized by exact id match — a wildcard "" in a
-    held handle is exactly the hole a remove + same-slug re-add slips through.
+def claim_identity(entry: Entry) -> Entry:
+    """Compare-and-claim, the hold-start handshake: verify — under the entry lock —
+    that the disk still holds THE ENTRY the caller resolved (exact id; an unstamped
+    handle accepts only an unstamped disk), stamp a pre-id meta while the lock is
+    held, and return the claimed handle. Every lane that keeps an Entry across
+    user-paced time (a run, a form, a settings screen, an editor session, a
+    confirmation ask) claims here so its later writes authorize by exact match.
 
-    Best-effort on the stamp, honest on the resolve: not-found/corrupt raise exactly
-    like resolve(), but a library that cannot be written (read-only data dir) returns
-    the unstamped handle rather than failing the run — on such a library nothing else
-    can stamp the meta either, so exact match still holds as "" == ""."""
-    entry = resolve(name_or_slug)
-    if entry.meta.id:
-        return entry
+    Never claim-by-address: a claim that merely re-resolved the slug would adopt
+    whoever owns it NOW — a remove + same-name re-add between the caller's resolve
+    and its claim would be silently blessed, and every guard after it would protect
+    the stranger. A changed owner is a refusal (StaleEntryError); a vanished entry
+    is honest NotFoundError.
+
+    The stamp alone is best-effort: a library whose data dir cannot be written
+    (or even locked) still gets a VERIFIED handle — unstamped, which post-run
+    persistence then declines to trust (flows.persistence_target requires a stamped
+    match; an unwritable-by-us library is not provably unwritable by others)."""
     try:
-        with _locked_entry(entry.slug) as fresh:
-            if not fresh.meta.id:  # a concurrent writer may have healed it first
-                _write_meta_and_row(fresh.dir, fresh.slug, fresh.meta)  # the door stamps
+        with _locked_entry(entry.slug, expected_id=entry.meta.id) as fresh:
+            if not fresh.meta.id:
+                try:
+                    _write_meta_and_row(fresh.dir, fresh.slug, fresh.meta)  # the door stamps
+                except OSError:
+                    # The write may have mutated the in-memory id before failing;
+                    # answer with what the DISK says (atomic write: unchanged).
+                    return resolve(entry.slug)
             return Entry(slug=fresh.slug, meta=fresh.meta, dir=fresh.dir)
-    except (StoreError, OSError):
-        # The stamp is best-effort, the ANSWER is not: a half-landed stamp (meta
-        # written, registry row failed) must not hand back an unstamped handle while
-        # the disk is stamped — that handle would fail every later exact-match for
-        # its own entry. Re-read; only a library that cannot even be read again
-        # keeps the original handle.
-        with contextlib.suppress(StoreError):
-            return resolve(entry.slug)
-        return entry
+    except OSError:
+        # Could not even take the lock (a read-only .locks dir). Verify without it:
+        # the comparison is still exact, only unserialized — and a lock directory
+        # nobody can create is a library this process cannot mutate anyway.
+        fresh = resolve(entry.slug)
+        _check_expected_id(fresh, entry.meta.id)
+        return fresh
 
 
 def _load_registry() -> dict[str, dict[str, Any]]:
@@ -1290,8 +1302,12 @@ def resolve(name_or_slug: str) -> Entry:
     raise NotFoundError(gettext("Script not found: %(name)s") % {"name": name_or_slug})
 
 
-def remove(name_or_slug: str) -> str:
-    with _locked_entry(name_or_slug) as entry:
+def remove(name_or_slug: str, *, expected_id: str | None = None) -> str:
+    """Delete an entry — the most destructive slug-addressed write there is, so a
+    caller that held the entry across a confirmation ask authorizes it like any other
+    mutation: expected_id, checked under the entry lock, refuses to delete whoever
+    owns the slug by the time the user answered."""
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
         spec = registry.spec_for(entry.meta.kind)
         if spec is not None and spec.deps_flavor == "npm":
             from .langs.base import NotExecutableError
@@ -1681,6 +1697,23 @@ def rewrite_source(
         new = transform(text)
         if new is not None:
             write_block_edit(entry.script_path, new, newline)
+
+
+def commit_copy_edit(name_or_slug: str, payload: bytes, *, expected_id: str | None = None) -> Entry:
+    """Land an edited STORED COPY from a staged draft, atomically, under the entry
+    lock with the identity check first — the editor-session twin of rewrite_source.
+    The editor never touches the stored path itself (an editor session is the longest
+    user-paced hold there is, and its save must not land on a reincarnated slug); the
+    draft's bytes arrive here verbatim, and the stored copy keeps its own permission
+    bits (a staged draft carries the umask default, not the copy's mode)."""
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
+        target = entry.script_path
+        if not target.exists():
+            raise NotFoundError(
+                gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}
+            )
+        atomic_write_bytes_keep_mode(target, payload)
+        return Entry(slug=entry.slug, meta=entry.meta, dir=entry.dir)
 
 
 def read_parameters(name_or_slug: str) -> list[ParamDecl]:

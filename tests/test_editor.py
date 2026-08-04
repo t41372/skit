@@ -290,17 +290,27 @@ def test_save_editor_clear_when_absent_does_not_raise():
 
 
 def test_edit_opens_copy_source(monkeypatch, tmp_path, at_a_terminal):
-    opened: dict[str, Path] = {}
+    opened: dict[str, object] = {}
 
     def fake(p):
+        # Captured at call time: an unchanged draft is cleaned up on session end.
         opened["path"] = p
+        opened["bytes"] = p.read_bytes()
         return 0
 
     monkeypatch.setattr(cli.editor, "open_in_editor", fake)
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     result = runner.invoke(cli.app, ["edit", "a"])
     assert result.exit_code == 0, result.output
-    assert opened["path"] == store.resolve("a").dir / "script.py"
+    # The staged contract: a copy-mode session edits a DRAFT in skit's drafts dir —
+    # never the stored path itself — holding the copy's exact bytes.
+    from skit.paths import drafts_dir
+
+    draft = opened["path"]
+    assert isinstance(draft, Path)
+    assert draft.parent == drafts_dir()
+    assert draft.name.startswith("edit-a-")
+    assert opened["bytes"] == (store.resolve("a").dir / "script.py").read_bytes()
     assert "Saved a" in result.output
 
 

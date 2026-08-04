@@ -188,7 +188,7 @@ def test_an_unstamped_handle_cannot_authorize_against_a_stamped_entry(tmp_path: 
     write. A handle resolved before the meta carried an id meeting a stamped entry is
     exactly the pairing a remove + same-slug re-add of a legacy entry produces, so it
     fails closed. Legitimate lanes never hit this: they stamp at hold-start
-    (store.ensure_identity), so their handles are never unstamped on a writable
+    (store.claim_identity), so their handles are never unstamped on a writable
     library."""
     entry = _cmd("wild")
     _strip_id_line(entry.slug)
@@ -207,14 +207,14 @@ def test_a_stamped_handle_refuses_a_hand_stripped_meta(tmp_path: Path) -> None:
     assert flows.persistence_target(entry) is None
 
 
-def test_two_unstamped_readings_still_match(tmp_path: Path) -> None:
-    """ "" meets "" only where nothing can write the meta at all (a read-only library —
-    the one place ensure_identity leaves a handle unstamped), and there the ids cannot
-    diverge either: exact match holds, persistence still lands."""
+def test_two_unstamped_readings_are_no_authorization(tmp_path: Path) -> None:
+    """ "" meeting "" proves nothing across versions: an OLDER skit's adds write no
+    id, so a symmetric blank can be a reincarnation this version never saw. Unknown
+    identity never authorizes persistence."""
     entry = _cmd("readonly")
     _strip_id_line(entry.slug)
     held = store.resolve(entry.slug)
-    assert flows.persistence_target(held) is not None
+    assert flows.persistence_target(held) is None
 
 
 # ==========================================================================

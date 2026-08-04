@@ -267,9 +267,18 @@ def test_cli_edit_refuses_invalid_prompt_bytes_and_the_next_edit_can_repair_them
     assert refused.exit_code == 125
     assert "offset 7" in " ".join(refused.output.split())
     assert "Saved" not in refused.output
-    assert target.read_bytes() == invalid  # authored bytes are kept for a corrective edit
     if mode == "copy":
+        # The STAGED contract: invalid bytes never reach the stored copy — they stay
+        # in the draft the refusal names, and the original is untouched too.
+        assert target.read_bytes() == b"Review {{target}}\n"
         assert source.read_text(encoding="utf-8") == "Review {{target}}\n"
+        from skit.paths import drafts_dir
+
+        assert [d.read_bytes() for d in sorted(drafts_dir().glob("edit-*"))] == [invalid]
+    else:
+        # Reference mode edits the user's own file in place: the authored bytes are
+        # kept AT the source for a corrective edit, exactly as before.
+        assert target.read_bytes() == invalid
 
     repaired = b"Repaired {{target}}\n"
     monkeypatch.setattr(cli.editor, "open_in_editor", lambda opened: opened.write_bytes(repaired))
@@ -302,9 +311,13 @@ async def test_library_edit_refuses_invalid_prompt_bytes_and_recovers_on_reedit(
         assert status.startswith("Error:")
         assert "offset 7" in status
         assert "Edited" not in status
-        assert target.read_bytes() == invalid
         if mode == "copy":
+            # Staged: the stored copy never saw the invalid bytes (they live in the
+            # kept draft the refusal names); reference edits the original in place.
+            assert target.read_bytes() == b"Review {{target}}\n"
             assert source.read_text(encoding="utf-8") == "Review {{target}}\n"
+        else:
+            assert target.read_bytes() == invalid
 
         repaired = b"Repaired {{target}}\n"
         monkeypatch.setattr(

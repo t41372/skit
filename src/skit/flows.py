@@ -864,13 +864,14 @@ def persistence_target(entry: Entry) -> Entry | None:
     address may have been reissued to a LATER add (a removed entry's slug is legal to
     reuse), where a write would graft this launch's values onto a stranger.
 
-    Identity is EXACT match on meta.id — unknown identity may serve reads, but it
-    cannot authorize a write. Held handles are stamped at hold-start
-    (store.ensure_identity), so "" meets "" only on a library nothing can write to,
-    where the ids also cannot diverge — and it PROVES no reincarnation happened,
-    because a reincarnated slug always meets this guard stamped (_add_entry cannot
-    write a meta without an id). Every asymmetric pairing means the handle and the
-    disk disagree about WHO the entry is, and the write fails closed.
+    Identity is EXACT match on a STAMPED meta.id — unknown identity may serve reads,
+    but it cannot authorize a write, and "" == "" is no proof of anything: an OLDER
+    skit shares this library and its adds write no id, so a symmetric blank can be a
+    reincarnation this version never saw. Held handles are stamped at hold-start
+    (store.claim_identity); a handle that could not be stamped (an unwritable-by-us
+    data dir — which is not provably unwritable by other users or older versions)
+    simply does not persist. Every asymmetric pairing means the handle and the disk
+    disagree about WHO the entry is, and the write fails closed.
 
     The doors call this INSIDE the entry lock (store.entry_lock_path) and keep holding
     it across their writes — the same lock every meta mutator and remove() itself
@@ -881,7 +882,7 @@ def persistence_target(entry: Entry) -> Entry | None:
         fresh = store.resolve(entry.slug)
     except store.StoreError:
         return None
-    if entry.meta.id != fresh.meta.id:
+    if not entry.meta.id or entry.meta.id != fresh.meta.id:
         return None
     return fresh
 

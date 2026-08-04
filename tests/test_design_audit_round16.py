@@ -17,7 +17,7 @@ K. Every params/deps edit lane claims identity BEFORE the read its write depends
 L. `run` claims identity only after its static refusals: a refused invocation leaves
    no fingerprints, stamping included.
 M. Unknown identity softening is gone: `expected_id=""` is a real expectation (an
-   unstamped handle refuses a stamped stranger), and `ensure_identity` re-reads after
+   unstamped handle refuses a stamped stranger), and `claim_identity` answers from the disk after
    a failed stamp so a half-landed id can never strand a handle behind its own entry.
 """
 
@@ -155,7 +155,7 @@ def _reissue_and_hold(
     store.remove(old.slug)
     new = factory()
     assert new.slug == old.slug
-    monkeypatch.setattr(store, "ensure_identity", lambda _name: old)
+    monkeypatch.setattr(store, "claim_identity", lambda _entry: old)
     return old, new
 
 
@@ -329,7 +329,7 @@ def test_a_half_landed_stamp_still_returns_the_stamped_handle(
         raise OSError(28, "No space left on device", "registry.toml")
 
     monkeypatch.setattr(store, "_write_meta_and_row", _half)
-    held = store.ensure_identity(entry.slug)
+    held = store.claim_identity(store.resolve(entry.slug))
     assert held.meta.id
     assert held.meta.id == store.resolve(entry.slug).meta.id
 
@@ -368,12 +368,12 @@ def test_rewrite_source_names_a_missing_copy(tmp_path: Path) -> None:
         store.rewrite_source(entry.slug, lambda text: text)
 
 
-def test_a_stamp_failure_on_an_unreadable_library_keeps_the_held_handle(
+def test_a_stamp_failure_on_an_unreadable_library_fails_the_claim_honestly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The recovery's own floor: when the stamp fails AND the library cannot even be
-    read back, the original handle is still the honest answer — degrade, never raise
-    out of a best-effort handshake."""
+    """When the stamp fails AND the library cannot even be read back, the claim
+    RAISES — its answer is load-bearing (writes authorize against it), so a handle it
+    cannot verify is a refusal, never a guess."""
     entry = _cmd("degrade16")
     _strip_id_line(entry.slug)
     state = {"broken": False}
@@ -389,11 +389,11 @@ def test_a_stamp_failure_on_an_unreadable_library_keeps_the_held_handle(
             raise store.CorruptEntryError("unreadable after the failure")
         return real_resolve(name_or_slug)
 
+    held = store.resolve(entry.slug)
     monkeypatch.setattr(store, "_write_meta_and_row", _boom)
     monkeypatch.setattr(store, "resolve", _flaky)
-    held = store.ensure_identity(entry.slug)
-    assert held.meta.id == ""
-    assert held.slug == entry.slug
+    with pytest.raises(store.CorruptEntryError):
+        store.claim_identity(held)
 
 
 # ==========================================================================

@@ -1095,16 +1095,17 @@ async def test_rerun_launches_the_record_on_disk_not_the_library_snapshot(tmp_pa
 async def test_the_launch_paths_still_work_on_the_snapshot_when_the_record_wont_resolve(
     tmp_path, quiet_run, monkeypatch
 ):
-    """_fresh degrades rather than raising, and the launch paths carry on: an entry whose
-    meta.toml corrupts (or whose row vanishes) between the Library's reload and this keypress
-    must still reach the launcher's own missing/error handling, not crash a keypress handler.
-    The snapshot the app already holds is what launches — the parameter declared after it was
-    taken is invisible, exactly as it was before round 6 made freshness possible at all."""
+    """A CORRUPT record degrades rather than raising, and the launch paths carry on:
+    the claim cannot verify identity against an unreadable meta, so the snapshot the
+    app already holds is what launches — reaching the launcher's own missing/error
+    handling, never crashing a keypress handler. (A record that resolves to NOTHING is
+    different since round 17: gone/reissued rows STOP the lane — see
+    test_a_stale_library_row_stops_the_run_lane_and_refreshes.)"""
     entry = _exe(tmp_path)
     argstate.record_run(entry.slug, 0, at="2026-07-09T00:00:00+00:00")
 
     def unresolvable(_slug):
-        raise store.NotFoundError("meta corrupted mid-keypress")
+        raise store.CorruptEntryError("meta corrupted mid-keypress")
 
     app = tui.MenuApp()
     async with app.run_test(size=(100, 40)) as pilot:

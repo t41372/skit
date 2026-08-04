@@ -25,6 +25,7 @@ import dataclasses
 import json
 import os
 import sys
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, assert_never, cast, overload
@@ -239,6 +240,26 @@ def _forbid_interaction(no_input: bool) -> None:
     """Record one invocation-wide non-interactive verdict before command work starts."""
     if no_input:
         interaction.forbid()
+
+
+def _edit_stored_copy(entry: store.Entry, target: Path) -> store.Entry:
+    """`skit edit`'s copy-mode session: a stored copy is skit's own, reincarnatable
+    path, so the identity is claimed, the editor works on a STAGED draft, and the save
+    lands through the identity-checked commit — a slug reissued mid-session keeps the
+    edit in the draft (named in the refusal) instead of overwriting the stranger."""
+    entry = store.claim_identity(entry)
+    draft = editor.edit_draft_path(entry.slug, target.suffix)
+    try:
+        edited = editor.edit_copy_staged(target, draft, kind=entry.meta.kind)
+    except (editor.EditorError, editor.EditedSourceError) as exc:
+        raise _fail(str(exc), EXIT_SKIT) from exc
+    if edited is not None:
+        try:
+            store.commit_copy_edit(entry.slug, edited, expected_id=entry.meta.id)
+        except store.StaleEntryError as exc:
+            raise _fail(editor.stale_edit_kept(str(exc), draft), EXIT_SKIT) from exc
+        editor.discard_draft(draft)
+    return entry
 
 
 def _remember_runner_pick(name: str) -> None:
@@ -944,7 +965,6 @@ def _create_python_in_editor(
     exactly as a path-based python add would honor them. --no-input is refused outright:
     an editor session IS interaction, so the lane can't keep the never-prompt promise —
     the stdin lane is the non-interactive spelling."""
-    import tempfile
 
     if no_input:
         err_console.print(
@@ -1069,7 +1089,6 @@ def _add_from_stdin(
     """`skit add -`: ingest a script from stdin (e.g. `pbpaste | skit add - -n clip`).
     stdin is the script, so there is nobody to prompt: the non-interactive contract
     applies, and a name is required up front."""
-    import tempfile
 
     if not name:
         err_console.print(
@@ -1120,7 +1139,6 @@ def _add_script_from_stdin(
     lane existed, --kind on stdin was SILENTLY DROPPED and the text became a python
     entry — bash source stored as script.py and fed to `uv run --script` (a corrupted
     entry, in the codebase whose contract is refuse-never-drop)."""
-    import tempfile
 
     from .langs.registry import shebang_program
 
@@ -1386,7 +1404,6 @@ def _create_prompt_in_editor(
     on stdin instead (`skit add --prompt -n review < body.md`). --no-input in a terminal
     is refused with that same pipe spelling — an editor session IS interaction, and
     there is no body to read from a keyboard-attached stdin."""
-    import tempfile
 
     runner_opt = _validate_prompt_runner_opt(runner_opt)
     if not _is_interactive():
@@ -1471,7 +1488,6 @@ def _add_prompt_from_stdin(
 ) -> None:
     """The prompt twin of `skit add -`: the body arrives on stdin, so there is nobody to
     prompt — a name is required up front and every detected placeholder is managed."""
-    import tempfile
 
     if not name:
         err_console.print(
@@ -2766,7 +2782,9 @@ def remove(
     if not yes:
         _confirm_destructive(_remove_question(entry))
     try:
-        removed = store.remove(name)
+        # Authorized against the entry the ask NAMED: a slug reissued while the user
+        # was answering must not have the answer land on it (StaleEntryError instead).
+        removed = store.remove(name, expected_id=entry.meta.id)
     except store.StoreError as exc:
         # A partly-deleted entry (a held-open file made rmtree a no-op) is a real, worded
         # failure with a recovery step in it — it must reach the user as skit's own error,
@@ -2949,10 +2967,14 @@ def edit(
             % {"name": entry.meta.name, "path": str(target)},
             EXIT_USAGE,
         )
-    try:
-        editor.open_entry_in_editor(target, kind=entry.meta.kind)
-    except (editor.EditorError, editor.EditedSourceError) as exc:
-        raise _fail(str(exc), EXIT_SKIT) from exc
+    if plan.edits_original:
+        # Reference mode edits the user's OWN file — identity-independent, direct.
+        try:
+            editor.open_entry_in_editor(target, kind=entry.meta.kind)
+        except (editor.EditorError, editor.EditedSourceError) as exc:
+            raise _fail(str(exc), EXIT_SKIT) from exc
+    else:
+        entry = _edit_stored_copy(entry, target)
     console.print(
         f"[green]{gettext('Saved %(name)s.') % {'name': escape(entry.meta.name)}}[/green]"
     )
@@ -3271,7 +3293,7 @@ def run(
         raise typer.Exit(EXIT_USAGE)
     # Claimed AFTER every static refusal: a refused invocation leaves no fingerprints
     # (_on_accepted's doctrine), and stamping a pre-id meta is a write.
-    entry = store.ensure_identity(entry.slug)
+    entry = store.claim_identity(entry)
     # One interaction paradigm per run, not two glued in sequence: when the inline
     # mini-form is about to open for a prompt entry anyway, the runner question moves
     # INTO the form (the same picker row the TUI workbench shows) instead of a bare
@@ -3913,7 +3935,7 @@ def preset_save(
             EXIT_USAGE,
         )
     # Claimed at hold-start (post-refusal): the intake below can wait on a human.
-    entry = store.ensure_identity(entry.slug)
+    entry = store.claim_identity(entry)
     values = _preset_values(entry, plan, from_last=from_last)
     secret_overlap = plan.secret_names & values.keys()
     if secret_overlap:
@@ -3976,7 +3998,7 @@ def preset_delete(
     if preset_name not in argstate.load_state(entry.slug)["presets"]:
         _fail_unknown_preset(entry, preset_name)
     # Claimed at hold-start (post-refusal): the ask below can wait on a human.
-    entry = store.ensure_identity(entry.slug)
+    entry = store.claim_identity(entry)
     # A preset is unrecoverable user data; its deletion gets the same ask (and the same
     # non-interactive refusal) as removing an entry or a runner — the trivially
     # re-creatable config row must not be better guarded than the thing users typed in.
@@ -4589,7 +4611,7 @@ def params(
     if own_ops or schema_ops:
         # Claim BEFORE the read each edit lane's write depends on; every store call
         # below authorizes against it. The read view stays a pure read: no stamp.
-        entry = store.ensure_identity(entry.slug)
+        entry = store.claim_identity(entry)
     if interpolate_opt is not None:
         # Its own op, like --runner: flipping the master switch changes what the entry
         # IS at run time, so it never mixes into the schema-edit pass.
@@ -5370,7 +5392,7 @@ def deps(
         _deps_read_view(entry, supports_deps=supports_deps, as_json=as_json)
         return
     # Mutating from here on: claim, and both axis writes authorize against it.
-    entry = store.ensure_identity(entry.slug)
+    entry = store.claim_identity(entry)
     # Deps BEFORE needs: a --dep/--python refusal raises (StoreUsageError) at the top of
     # update_dependencies, before any write — so processing deps first means a refused request
     # aborts with NOTHING committed. Doing needs first would persist the needs write and then

@@ -6,7 +6,7 @@ found the two holes left in them, and #39's deferral was overruled:
 E. The legacy-id WILDCARD authorized writes: an unstamped held handle matched any
    stamped entry, so an upgrade user's long run could still land its state on a
    reincarnated slug. Identity is now EXACT match, and every lane that holds an entry
-   across user-paced time stamps it at hold-start (``store.ensure_identity``) — unknown
+   across user-paced time claims it at hold-start (``store.claim_identity``) — unknown
    identity may serve reads, but it cannot authorize a write.
 F. The guard was check-then-act: ``persistence_target`` verified, released everything,
    then wrote. The doors now hold the ENTRY LOCK — the same lock every meta mutator
@@ -64,16 +64,16 @@ def _strip_id_line(slug: str) -> None:
 
 
 # ==========================================================================
-# E. ensure_identity — the hold-start handshake
+# E. claim_identity — the hold-start handshake
 # ==========================================================================
 
 
-def test_ensure_identity_stamps_a_legacy_meta_at_hold_start(tmp_path: Path) -> None:
+def test_claim_identity_stamps_a_legacy_meta_at_hold_start(tmp_path: Path) -> None:
     """The wildcard's replacement: the handle a run/form/settings screen holds is
     stamped BEFORE the hold begins, so its later writes authorize by exact match."""
     entry = _cmd("legacy")
     _strip_id_line(entry.slug)
-    held = store.ensure_identity(entry.slug)
+    held = store.claim_identity(store.resolve(entry.slug))
     assert held.meta.id
     assert held.dir == entry.dir
     assert store.resolve(entry.slug).meta.id == held.meta.id  # stamped on disk, not just in hand
@@ -82,31 +82,33 @@ def test_ensure_identity_stamps_a_legacy_meta_at_hold_start(tmp_path: Path) -> N
     assert store._load_registry()[entry.slug] == store._registry_row(held.meta, entry.dir)
 
 
-def test_ensure_identity_never_rewrites_a_stamped_meta(tmp_path: Path) -> None:
+def test_claim_identity_never_rewrites_a_stamped_meta(tmp_path: Path) -> None:
     """Idempotent AND write-free on the hot path: every run starts here, so a stamped
     meta must not be rewritten (a gratuitous rewrite would churn the mtime the plan
     cache and the registry row stamp key on)."""
     entry = _cmd("stamped")
     meta_path = store.scripts_dir() / entry.slug / "meta.toml"
     before = os.stat(meta_path).st_mtime_ns
-    held = store.ensure_identity(entry.slug)
+    held = store.claim_identity(entry)
     assert held.meta.id == entry.meta.id
     assert os.stat(meta_path).st_mtime_ns == before
 
 
-def test_ensure_identity_is_honest_about_a_missing_entry(tmp_path: Path) -> None:
-    """Resolve failures pass through untouched — "can't find it" belongs to the
+def test_claim_identity_is_honest_about_a_missing_entry(tmp_path: Path) -> None:
+    """A vanished entry fails the claim as NotFound — "can't find it" belongs to the
     caller; only the STAMP is best-effort."""
+    entry = _cmd("ghost")
+    store.remove("ghost")
     with pytest.raises(store.NotFoundError):
-        store.ensure_identity("ghost")
+        store.claim_identity(entry)
 
 
-def test_ensure_identity_degrades_to_the_unstamped_handle_on_a_readonly_library(
+def test_claim_identity_degrades_to_a_verified_unstamped_handle_on_a_readonly_library(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A library that cannot be written returns the handle unstamped instead of
-    failing the run: nothing else can stamp such a meta either, so exact match still
-    holds as "" == "" (test_two_unstamped_readings_still_match)."""
+    """A library that cannot be written still gets a VERIFIED handle — unstamped,
+    which post-run persistence then declines to trust: unwritable-by-us is not
+    provably unwritable by other users or OLDER versions, whose adds write no id."""
     entry = _cmd("frozen")
     _strip_id_line(entry.slug)
 
@@ -114,9 +116,9 @@ def test_ensure_identity_degrades_to_the_unstamped_handle_on_a_readonly_library(
         raise OSError(30, "Read-only file system", "meta.toml")
 
     monkeypatch.setattr(store, "_write_meta_and_row", _denied)
-    held = store.ensure_identity(entry.slug)
+    held = store.claim_identity(store.resolve(entry.slug))
     assert held.meta.id == ""
-    assert flows.persistence_target(held) is not None  # persistence still lands
+    assert flows.persistence_target(held) is None  # unstamped cannot authorize
 
 
 def test_a_cli_run_stamps_a_legacy_entry_at_hold_start(
@@ -144,11 +146,12 @@ async def test_the_tui_claim_degrades_like_fresh_when_the_store_refuses(
     async with app.run_test() as pilot:
         await pilot.pause()
 
-        def _refuse(_slug: str) -> store.Entry:
+        def _refuse(_entry: store.Entry) -> store.Entry:
             raise store.CorruptEntryError("meta rotted mid-click")
 
-        monkeypatch.setattr(store, "ensure_identity", _refuse)
+        monkeypatch.setattr(store, "claim_identity", _refuse)
         held = app._claimed(store.resolve("held"))
+        assert held is not None
         assert held.meta.name == "held"
 
 
@@ -332,7 +335,7 @@ async def test_a_settings_save_on_a_reincarnated_slug_refuses_and_touches_nothin
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = ScriptSettingsScreen(store.ensure_identity(old.slug))
+        screen = ScriptSettingsScreen(store.claim_identity(old))
         app.push_screen(screen)
         await pilot.pause()
         store.remove("screen")
@@ -360,7 +363,7 @@ async def test_a_stale_preset_untick_reaches_the_guarded_door_and_stops(tmp_path
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = ScriptSettingsScreen(store.ensure_identity(old.slug))
+        screen = ScriptSettingsScreen(store.claim_identity(old))
         app.push_screen(screen)
         await pilot.pause()
         store.remove("presets")
@@ -409,34 +412,19 @@ async def test_a_reconcile_write_refusal_lands_on_the_status_line(
     assert store.resolve(entry.slug).meta.params is None  # nothing was managed
 
 
-def test_ensure_identity_defers_to_a_concurrent_heal(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The locked re-read is the one that decides: a writer that healed the id between
-    the first resolve and the lock wins, and ensure_identity adopts that id instead of
-    re-stamping (a second write would churn the meta for nothing)."""
+def test_claim_identity_refuses_a_handle_the_disk_outgrew(tmp_path: Path) -> None:
+    """A handle resolved while the meta was unstamped meeting a stamped disk REFUSES —
+    the asymmetry cannot distinguish a concurrent heal from an old entry's slug
+    reissued by a stamping add, and a claim must never guess. The retry is cheap and
+    honest: re-resolve, claim the stamped handle, proceed."""
     entry = _cmd("raced")
-    meta_path = store.scripts_dir() / entry.slug / "meta.toml"
-    real_resolve = store.resolve
-    first = {"pending": True}
-
-    def _laggy(name_or_slug: str) -> store.Entry:
-        resolved = real_resolve(name_or_slug)
-        if first["pending"]:
-            # The first, unlocked read raced a concurrent heal: it still sees no id.
-            first["pending"] = False
-            from dataclasses import replace
-
-            return store.Entry(
-                slug=resolved.slug, meta=replace(resolved.meta, id=""), dir=resolved.dir
-            )
-        return resolved
-
-    monkeypatch.setattr(store, "resolve", _laggy)
-    before = os.stat(meta_path).st_mtime_ns
-    held = store.ensure_identity(entry.slug)
-    assert held.meta.id == entry.meta.id  # the healer's id, not a fresh one
-    assert os.stat(meta_path).st_mtime_ns == before  # and no second write
+    _strip_id_line(entry.slug)
+    held = store.resolve(entry.slug)  # unstamped snapshot
+    store.update_description(entry.slug, "concurrently healed")  # stamps the disk
+    with pytest.raises(store.StaleEntryError):
+        store.claim_identity(held)
+    retried = store.claim_identity(store.resolve(entry.slug))
+    assert retried.meta.id  # the retry adopts the healed identity
 
 
 # ==========================================================================
@@ -632,7 +620,7 @@ async def _stale_settings(
 ) -> tuple[ScriptSettingsScreen, store.Entry]:
     """Open settings on a claimed entry, then reissue its slug behind the screen."""
     old = factory()
-    screen = ScriptSettingsScreen(store.ensure_identity(old.slug))
+    screen = ScriptSettingsScreen(store.claim_identity(old))
     app.push_screen(screen)
     await pilot.pause()
     store.remove(old.slug)
@@ -822,7 +810,7 @@ async def test_a_cleared_name_box_means_no_rename_not_an_error(tmp_path: Path) -
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = ScriptSettingsScreen(store.ensure_identity(entry.slug))
+        screen = ScriptSettingsScreen(store.claim_identity(entry))
         results: list[bool | None] = []
         app.push_screen(screen, results.append)
         await pilot.pause()
@@ -846,7 +834,7 @@ async def test_a_no_change_save_dismisses_true_and_leaves_the_meta_alone(tmp_pat
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = ScriptSettingsScreen(store.ensure_identity(entry.slug))
+        screen = ScriptSettingsScreen(store.claim_identity(entry))
         results: list[bool | None] = []
         app.push_screen(screen, results.append)
         await pilot.pause()
@@ -876,7 +864,7 @@ async def test_the_purge_notice_names_every_scrubbed_value_spec_lane(tmp_path: P
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = ScriptSettingsScreen(store.ensure_identity(entry.slug))
+        screen = ScriptSettingsScreen(store.claim_identity(entry))
         app.push_screen(screen)
         await pilot.pause()
         for row in screen.query(ParamRow):
@@ -910,7 +898,7 @@ async def test_the_purge_notice_names_every_scrubbed_value_declared_lane(tmp_pat
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        screen = ScriptSettingsScreen(store.ensure_identity(entry.slug))
+        screen = ScriptSettingsScreen(store.claim_identity(entry))
         app.push_screen(screen)
         await pilot.pause()
         for row in screen.query(DeclParamRow):

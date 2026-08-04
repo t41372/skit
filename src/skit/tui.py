@@ -552,14 +552,25 @@ class MenuApp(App[int | PendingRun]):
         except store.StoreError:
             return entry
 
-    def _claimed(self, entry: Entry) -> Entry:
+    def _claimed(self, entry: Entry) -> Entry | None:
         """_fresh for the lanes that HOLD the record across user-paced time (a run, an
-        open form or settings screen): same freshness, plus the identity handshake —
-        store.ensure_identity stamps a pre-id meta so the handle's later writes can be
-        authorized by exact id match. Never used by pure renders: a detail-pane read
-        must stay a read, and ensure_identity may write."""
+        open form or settings screen, an editor session): compare-and-claim
+        (store.claim_identity) — the handshake verifies the disk still holds THIS row's
+        entry and stamps a pre-id meta, so the lane's later writes authorize by exact
+        match. None = the row is a ghost (removed, or its slug reissued): the lane must
+        STOP — acting would hit the stranger — and the Library is reloaded with the
+        reason on the status line. Corrupt/unreadable degrades to the held snapshot so
+        the lane's own error paths can speak. Never used by pure renders: a detail-pane
+        read must stay a read, and a claim may write."""
         try:
-            return store.ensure_identity(entry.slug)
+            return store.claim_identity(entry)
+        except (store.StaleEntryError, store.NotFoundError):
+            self._reload()
+            self._refresh_status(
+                gettext("%(name)s changed or was removed — the list has been refreshed.")
+                % {"name": escape(entry.meta.name)}
+            )
+            return None
         except store.StoreError:
             return entry
 
@@ -871,7 +882,10 @@ class MenuApp(App[int | PendingRun]):
         # form built from the Library's stale snapshot would lack the parameter an
         # agent declared a second ago, contradicting the pane beside it. Claimed, not
         # just fresh: the form and the run hold this handle across user-paced time.
-        entry = self._claimed(entry)
+        claimed = self._claimed(entry)
+        if claimed is None:
+            return
+        entry = claimed
         is_prompt = entry.meta.kind == "prompt"
         # A prompt's actual executable is selected on the run form.  Checking its
         # entry pin here would let a stale/broken pin block the very picker that can
@@ -967,7 +981,10 @@ class MenuApp(App[int | PendingRun]):
         # Same freshness rule as action_run — claimed, the run holds it — and ONE
         # state read for the whole rerun (the last-run guard reads the same snapshot
         # instead of a second file open).
-        entry = self._claimed(entry)
+        claimed = self._claimed(entry)
+        if claimed is None:
+            return
+        entry = claimed
         state = argstate.load_state(entry.slug)
         if not state["last_run"]:
             self._refresh_status(
@@ -1110,11 +1127,19 @@ class MenuApp(App[int | PendingRun]):
         target = plan.target
         assert target is not None  # noqa: S101 — no refusal means plan_edit gave a target
         edit_error: str | None = None
-        with self.suspend():
-            try:
-                editor.open_entry_in_editor(target, kind=entry.meta.kind)
-            except (editor.EditorError, editor.EditedSourceError) as exc:
-                edit_error = str(exc)
+        if plan.edits_original:
+            # Reference mode edits the user's OWN file — identity-independent (a
+            # remove + re-add never moves the original), so the session stays direct.
+            with self.suspend():
+                try:
+                    editor.open_entry_in_editor(target, kind=entry.meta.kind)
+                except (editor.EditorError, editor.EditedSourceError) as exc:
+                    edit_error = str(exc)
+        else:
+            staged = self._staged_copy_edit(entry, target)
+            if staged is None:
+                return
+            entry, edit_error = staged
         self._plan_cache.pop(entry.slug, None)
         self._reload()
         if edit_error is not None:
@@ -1123,6 +1148,30 @@ class MenuApp(App[int | PendingRun]):
         if entry.meta.kind == "prompt" and self._offer_prompt_reconcile(entry):
             return  # the picker owns the status line once it is dismissed
         self._refresh_status(gettext("Edited %(name)s.") % {"name": escape(entry.meta.name)})
+
+    def _staged_copy_edit(self, entry: Entry, target: Path) -> tuple[Entry, str | None] | None:
+        """The copy-mode half of action_edit: a stored copy is skit's own,
+        reincarnatable path, so the identity is claimed, the editor works on a STAGED
+        draft, and the save lands through the identity-checked commit — a slug
+        reissued mid-session keeps the edit in the draft instead of overwriting the
+        stranger. None = the claim already stopped the lane (ghost row)."""
+        claimed = self._claimed(entry)
+        if claimed is None:
+            return None
+        entry = claimed
+        draft = editor.edit_draft_path(entry.slug, target.suffix)
+        with self.suspend():
+            try:
+                edited = editor.edit_copy_staged(target, draft, kind=entry.meta.kind)
+            except (editor.EditorError, editor.EditedSourceError) as exc:
+                return entry, str(exc)
+        if edited is not None:
+            try:
+                store.commit_copy_edit(entry.slug, edited, expected_id=entry.meta.id)
+            except store.StaleEntryError as exc:
+                return entry, editor.stale_edit_kept(str(exc), draft)
+            editor.discard_draft(draft)
+        return entry, None
 
     def _offer_prompt_reconcile(self, entry: Entry) -> bool:
         """After a prompt body edit, offer to manage the placeholders the edit added —
@@ -1133,6 +1182,8 @@ class MenuApp(App[int | PendingRun]):
         from .langs.prompt import analyzer as prompt_analyzer
 
         held = self._claimed(entry)  # the picker holds this handle while it sits open
+        if held is None:
+            return True  # the claim's status line already told the story
         new = store.unmanaged_prompt_placeholders(held)
         if not new:
             return False
@@ -1188,13 +1239,15 @@ class MenuApp(App[int | PendingRun]):
                 # lands in the status line like every other action's error. The reload still
                 # runs (the registry removal already happened) — and it runs BEFORE the
                 # message, because _refresh_status()'s own no-argument call would wipe it.
-                failure = ""
+                failure: str | None = None
                 try:
-                    store.remove(entry.slug)
+                    # Authorized against the row the modal SHOWED: a slug reissued
+                    # while the ask sat open refuses instead of deleting the stranger.
+                    store.remove(entry.slug, expected_id=entry.meta.id)
                 except store.StoreError as exc:
                     failure = str(exc)
                 self._reload()
-                if failure:
+                if failure is not None:
                     self._refresh_status(gettext("Error: %(error)s") % {"error": escape(failure)})
 
         self.push_screen(ConfirmRemove(entry), _done)
@@ -1217,7 +1270,10 @@ class MenuApp(App[int | PendingRun]):
             return
         # Claimed at open: the screen holds this handle for as long as it sits open,
         # and every save it makes is authorized against this identity (expected_id).
-        entry = self._claimed(entry)
+        claimed = self._claimed(entry)
+        if claimed is None:
+            return
+        entry = claimed
         from .tui_settings import ScriptSettingsScreen
 
         def _closed(_changed: bool | None) -> None:
