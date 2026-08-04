@@ -264,7 +264,7 @@ def test_managed_list_and_declared_rows_land_in_one_meta_write(
     )
 
     decls = [ParamDecl(name="topic", delivery="placeholder", help="the subject")]
-    updated = store.write_parameters(entry.slug, decls, managed=["topic"])
+    updated, _ = store.write_parameters(entry.slug, decls, managed=["topic"])
 
     assert writes == [entry.slug]  # exactly one commit
     assert updated.meta.params == ["topic"]
@@ -369,7 +369,7 @@ def test_spec_lane_interruption_never_leaves_secret_schema_with_plaintext(
     def _boom(*_a: object, **_k: object) -> None:
         raise OSError(28, "No space left on device", "script.py")
 
-    monkeypatch.setattr(cli, "write_block_edit", _boom)
+    monkeypatch.setattr(store, "write_block_edit", _boom)  # the write half of write_source_params
     result = runner.invoke(cli.app, ["params", entry.slug, "--secret", "TOKEN"])
 
     assert result.exit_code != 0
@@ -388,7 +388,7 @@ def test_declared_lane_interruption_never_leaves_secret_schema_with_plaintext(
     def _boom(*_a: object, **_k: object) -> None:
         raise OSError(28, "No space left on device", "meta.toml")
 
-    monkeypatch.setattr(store, "write_parameters", _boom)
+    monkeypatch.setattr(store, "_write_meta_and_row", _boom)  # write_parameters' commit half
     result = runner.invoke(cli.app, ["params", entry.slug, "--secret", "topic"])
 
     assert result.exit_code != 0

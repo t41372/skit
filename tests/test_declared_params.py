@@ -740,7 +740,7 @@ def test_cli_exe_show_masks_secret_default_and_last_value(tmp_path: Path):
 def test_cli_command_show_masks_secret_placeholder_and_undeclared(tmp_path: Path):
     # Covers _show_command_params secret masking + an undeclared placeholder's empty schema suffix.
     entry = store.add_command("login {password} {other}", name="lg")
-    entry = store.write_parameters(
+    entry, _ = store.write_parameters(
         entry.slug,
         [
             ParamDecl(

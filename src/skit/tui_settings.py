@@ -23,6 +23,7 @@ from . import (
     analysis,
     argstate,
     config,
+    flows,
     params,
     pep723,
     store,
@@ -35,7 +36,7 @@ from .langs.prompt import text as prompt_text
 from .langs.registry import spec_for
 from .models import Entry
 from .params import ParamDecl
-from .rewrite import read_for_block_edit, write_block_edit
+from .rewrite import read_for_block_edit
 
 
 class DiscardChangesModal(ModalScreen[bool]):
@@ -587,10 +588,11 @@ class ScriptSettingsScreen(Screen[bool]):
         box = self.query("#st-workdir")
         if not box:
             return
+        guard = self._entry.meta.id or None
         if new_workdir != self._entry.meta.workdir:
-            store.write_workdir(self._entry.slug, new_workdir)
+            store.write_workdir(self._entry.slug, new_workdir, expected_id=guard)
         if self.query("#st-interpreter") and new_interp != self._entry.meta.interpreter:
-            store.write_interpreter(self._entry.slug, new_interp)
+            store.write_interpreter(self._entry.slug, new_interp, expected_id=guard)
 
     def _compose_runner(self) -> ComposeResult:
         if not self._is_prompt:
@@ -1121,115 +1123,105 @@ class ScriptSettingsScreen(Screen[bool]):
             and self._spec.deps_flavor == "npm"
             and pending_deps[0] == []
         )
-        if early_npm_clear and pending_deps is not None:
-            deps_changed, python_changed = pending_deps
-            try:
-                store.update_dependencies(entry.slug, deps_changed, requires_python=python_changed)
-            except store.StoreError as exc:
-                # Explicit npm clear sweeps node_modules before its metadata write.
-                # Running that caught failure before every other write keeps the
-                # screen retryable without committing unrelated form edits.
-                self.notify(str(exc), severity="error")
-                return
-        if new_name and new_name != entry.meta.name:
-            try:
-                store.rename(entry.slug, new_name)
-            except store.StoreError as exc:
-                self.notify(str(exc), severity="error")
-                return
-        description = self.query_one("#st-desc", Input).value.strip()
-        if description != entry.meta.description:
-            store.update_description(entry.slug, description)
-        self._write_launch(launch)
-        if new_template is not None and new_template != entry.meta.template:
-            store.update_template(entry.slug, new_template)
-        # One narrowing point: an analyzable kind always carries params_io too (the registry pairs
-        # them), and a non-empty text with a live analyzer means reconcile always returns a report —
-        # so the capabilities are read straight off the narrowed spec, with no dead None-guards.
-        spec = self._spec
-        if (
-            spec is not None
-            and spec.analyzer is not None
-            and spec.params_io is not None
-            and entry.meta.mode == "copy"
-            and self._text
-        ):
-            new_specs = [s for row in self.query(ParamRow) if (s := row.collect()) is not None]
-            report = spec.analyzer.reconcile(self._text, self._specs)
-            for i, c in enumerate(report.new):
-                box = self.query(f"#st-new-{i}")
-                if box and box.first(Checkbox).value:
-                    new_specs.append(ParamDecl.from_candidate(c))
-            # The shared write half (rewrite.py): atomic + mode-preserving, the copy's own
-            # line endings back on, surrogateescape bytes untouched — a comment-block edit
-            # stays a comment-block edit rather than rewriting the whole file.
-            # Purge BEFORE the write commits the secret flag (the CLI lane's rule): a
-            # failed purge aborts the save with the schema still public — never
-            # "schema says secret, old plaintext still on disk".
-            try:
-                purged = argstate.purge_secret(entry.slug, {s.name for s in new_specs if s.secret})
-            except argstate.StateWriteError as exc:
-                self.notify(str(exc), severity="error")
-                return
-            write_block_edit(
-                entry.script_path, spec.params_io.write(self._text, new_specs), self._newline
-            )
-            if purged:
-                self.notify(
-                    gettext("Deleted previously remembered value(s): %(names)s")
-                    % {"names": ", ".join(sorted(purged))}
-                )
-        if self._is_prompt:
-            # The toggle is composed unconditionally for prompts, so query_one is safe.
-            if wants_interpolate != entry.meta.interpolate:
-                store.write_prompt_interpolate(entry.slug, wants_interpolate)
-            # The pin save lives HERE, not in the declared branch below: that branch is
-            # skipped when insertion is off, and a pin change must never be dropped for it.
-            self._save_runner_pin()
-        if pending_decls is not None:
-            decls = pending_decls
-            managed: list[str] | None = None
+        # Every write below is authorized against the identity this screen was OPENED
+        # on (#39): the slug alone is an address, and an address can change hands while
+        # a screen sits open — a mismatch fails that one write closed (StaleEntryError)
+        # and the catch keeps the screen. One catch for the whole pass: each write is
+        # individually atomic, whatever landed stays landed, and the screen survives so
+        # a retry (or a reopen, for a stale refusal) finishes the job.
+        guard = entry.meta.id or None
+        try:
+            if early_npm_clear and pending_deps is not None:  # pragma: no mutate — the second conjunct is ty's narrowing of what early_npm_clear's own definition already proves; and→or double-writes the same deps idempotently (both commits re-read disk), an equivalent  # fmt: skip
+                deps_changed = pending_deps[0]
+                # Explicit npm clear sweeps node_modules before its metadata write; a
+                # caught failure here keeps every other form edit uncommitted. No
+                # requires_python argument: the npm-clear lane has no python axis.
+                store.update_dependencies(entry.slug, deps_changed, expected_id=guard)
+            if new_name and new_name != entry.meta.name:
+                store.rename(entry.slug, new_name, expected_id=guard)
+            description = self.query_one("#st-desc", Input).value.strip()  # pragma: no mutate — expect_type is a pure runtime assertion: dropped or None returns the same unique widget (equivalents; tui.py _refresh_status's rule)  # fmt: skip
+            if description != entry.meta.description:
+                store.update_description(entry.slug, description, expected_id=guard)
+            self._write_launch(launch)
+            if new_template is not None and new_template != entry.meta.template:
+                store.update_template(entry.slug, new_template, expected_id=guard)
+            # One narrowing point: an analyzable kind always carries params_io too (the
+            # registry pairs them), and a non-empty text with a live analyzer means
+            # reconcile always returns a report — so the capabilities are read straight
+            # off the narrowed spec, with no dead None-guards.
+            spec = self._spec
+            if (
+                spec is not None
+                and spec.analyzer is not None
+                and spec.params_io is not None
+                and entry.meta.mode == "copy"
+                and self._text
+            ):
+                new_specs = [s for row in self.query(ParamRow) if (s := row.collect()) is not None]
+                report = spec.analyzer.reconcile(self._text, self._specs)
+                for i, c in enumerate(report.new):
+                    box = self.query(f"#st-new-{i}")
+                    if box and box.first(Checkbox).value:  # pragma: no mutate — expect_type is a pure runtime assertion: dropped or None returns the same unique widget (equivalents; tui.py _refresh_status's rule)  # fmt: skip
+                        new_specs.append(ParamDecl.from_candidate(c))
+                # One store transaction (write_source_params): the C3 scrub first, the
+                # byte-lossless block edit second, both under the entry lock — a failed
+                # scrub aborts with the schema still public, and nothing can interleave
+                # between scrub and commit.
+                purged = store.write_source_params(entry.slug, new_specs, expected_id=guard)
+                if purged:
+                    self.notify(
+                        gettext("Deleted previously remembered value(s): %(names)s")
+                        % {"names": ", ".join(sorted(purged))}
+                    )
             if self._is_prompt:
-                decls += self._ticked_prompt_candidates({d.name for d in decls})
-                managed = self._prompt_managed_for(decls)
-            # Purge first (the spec lane's rule just above), then one meta write: a
-            # prompt's managed list travels WITH its declared rows (one schema), never
-            # as a second transaction that can fail alone.
-            try:
-                purged = argstate.purge_secret(entry.slug, {d.name for d in decls if d.secret})
-            except argstate.StateWriteError as exc:
-                self.notify(str(exc), severity="error")
-                return
-            store.write_parameters(entry.slug, decls, managed=managed)
-            if purged:
-                self.notify(
-                    gettext("Deleted previously remembered value(s): %(names)s")
-                    % {"names": ", ".join(sorted(purged))}
+                # The toggle is composed unconditionally for prompts, so query_one is safe.
+                if wants_interpolate != entry.meta.interpolate:
+                    store.write_prompt_interpolate(entry.slug, wants_interpolate, expected_id=guard)
+                # The pin save lives HERE, not in the declared branch below: that branch
+                # is skipped when insertion is off, and a pin change must never be
+                # dropped for it.
+                self._save_runner_pin()
+            if pending_decls is not None:
+                decls = pending_decls
+                managed: list[str] | None = None
+                if self._is_prompt:
+                    decls += self._ticked_prompt_candidates({d.name for d in decls})
+                    managed = self._prompt_managed_for(decls)
+                # One meta write for the whole schema — managed list, declared rows AND
+                # the C3 scrub in a single locked transaction (the purge still precedes
+                # the commit; see store.write_parameters).
+                _, purged = store.write_parameters(
+                    entry.slug, decls, managed=managed, expected_id=guard
                 )
-        if pending_deps is not None and not early_npm_clear:
-            deps_changed, python_changed = pending_deps
-            try:
-                store.update_dependencies(entry.slug, deps_changed, requires_python=python_changed)
-            except store.StoreError as exc:
-                self.notify(str(exc), severity="error")
+                if purged:
+                    self.notify(
+                        gettext("Deleted previously remembered value(s): %(names)s")
+                        % {"names": ", ".join(sorted(purged))}
+                    )
+            if pending_deps is not None and not early_npm_clear:
+                deps_changed, python_changed = pending_deps
+                store.update_dependencies(
+                    entry.slug, deps_changed, requires_python=python_changed, expected_id=guard
+                )
+            needs_text = self.query_one("#st-needs", Input).value  # pragma: no mutate — expect_type is a pure runtime assertion: dropped or None returns the same unique widget (equivalents; tui.py _refresh_status's rule)  # fmt: skip
+            needs = [n.strip() for n in needs_text.split(",") if n.strip()]
+            if needs != (entry.meta.needs or []):
+                store.update_needs(entry.slug, needs, expected_id=guard)
+            if doomed and flows.delete_presets_for(entry, doomed) is None:
+                # The guarded door refused: this screen's entry is gone, or its slug
+                # was reissued — unticking a checkbox here must not delete the new
+                # owner's presets. Same remedy as every stale refusal.
+                self.notify(
+                    gettext("%(name)s changed while this screen was open — close it and reopen.")
+                    % {"name": entry.meta.name},
+                    severity="error",
+                )
                 return
-        needs = [
-            n.strip() for n in self.query_one("#st-needs", Input).value.split(",") if n.strip()
-        ]
-        if needs != (entry.meta.needs or []):
-            store.update_needs(entry.slug, needs)
-        for i, name in enumerate(self._preset_names):
-            # The compose-time names, not a fresh state read: index i belongs to the
-            # checkbox the user actually saw.
-            box = self.query(f"#st-preset-{i}")
-            if box and not box.first(Checkbox).value:
-                try:
-                    argstate.delete_preset(entry.slug, name)
-                except argstate.StateWriteError as exc:
-                    # Keep the screen: the unticked boxes still show what remains to
-                    # delete, so a retry after fixing the disk finishes the job.
-                    self.notify(str(exc), severity="error")
-                    return
+        except (store.StoreError, argstate.StateWriteError) as exc:
+            # Keep the screen: what remains unwritten is still on it, so a retry after
+            # fixing the cause (or reopening, for a stale refusal) finishes the job.
+            self.notify(str(exc), severity="error")
+            return
         self.dismiss(True)
 
     def _ticked_prompt_candidates(self, taken: set[str]) -> list[ParamDecl]:
@@ -1366,7 +1358,7 @@ class ScriptSettingsScreen(Screen[bool]):
         value = self.query_one("#st-runner-select", Select).value
         pin = "" if value is Select.NULL else str(value)
         if pin != current:
-            store.write_prompt_runner(entry.slug, pin)
+            store.write_prompt_runner(entry.slug, pin, expected_id=entry.meta.id or None)
 
     def action_close(self) -> None:
         if not self._dirty:

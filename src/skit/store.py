@@ -75,6 +75,14 @@ class CorruptEntryError(StoreError):
     """An indexed entry exists, but its authoritative metadata cannot be read."""
 
 
+class StaleEntryError(StoreError):
+    """The slug still resolves — but to a DIFFERENT entry than the one the caller has
+    been holding (its meta id no longer matches). A screen open across a remove +
+    same-name re-add reaches this state: the address survived, the identity did not,
+    and a write authorized against the old identity must fail closed instead of
+    landing on the stranger. The remedy is reopening the screen on the current entry."""
+
+
 def _hash_file(path: Path) -> str:
     h = hashlib.sha256()
     try:
@@ -128,7 +136,14 @@ def _write_meta_and_row(entry_dir: Path, slug: str, meta: ScriptMeta) -> None:
             _save_registry(entries)
 
 
-def _entry_lock_path(slug: str) -> Path:
+def entry_lock_path(slug: str) -> Path:
+    """This entry's cross-process RMW lock file — THE serialization point for everything
+    that mutates the entry or writes state in its name: every meta mutator holds it
+    (_locked_entry), remove() holds it through registry removal, rmtree AND the state
+    forget, and flows' post-acceptance persistence doors hold it across their whole
+    verify-then-write transaction, so a remove or a secret transition can never slip
+    between a door's identity check and its writes. The lock nests OUTSIDE both the
+    registry lock and argstate's per-slug values lock (the order remove() set)."""
     # Outside scripts/, never a child of the directory remove() deletes. Keeping the lock in
     # entry.dir would let rmtree unlink a live lock and a waiter acquire a replacement while
     # deletion is still in progress. doctor only scans scripts/ directories, so the
@@ -136,18 +151,61 @@ def _entry_lock_path(slug: str) -> Path:
     return scripts_dir().parent / ".locks" / f"{slug}.meta.lock"
 
 
+_entry_lock_path = entry_lock_path  # internal name kept for the existing call sites
+
+
+def _check_expected_id(entry: Entry, expected_id: str | None) -> None:
+    """The write-authorization check (#39): a caller that has been HOLDING an entry
+    names the identity it means to mutate, and a mismatch fails closed. An empty
+    expected id never reaches here (callers pass None when they hold no stamped
+    identity — unknown identity cannot authorize, but it cannot refuse either;
+    persistence's own guard handles that side)."""
+    if expected_id is not None and entry.meta.id != expected_id:
+        raise StaleEntryError(
+            gettext("%(name)s changed while this screen was open — close it and reopen.")
+            % {"name": entry.meta.name}
+        )
+
+
 @contextlib.contextmanager
-def _locked_entry(name_or_slug: str) -> Iterator[Entry]:
+def _locked_entry(name_or_slug: str, *, expected_id: str | None = None) -> Iterator[Entry]:
     """Yield fresh metadata while holding this entry's cross-process RMW lock.
 
     ``atomic_write_toml`` prevents torn TOML, but it cannot stop two setters from
     replacing each other's unrelated fields after both resolved the same old snapshot.
     Resolve once to locate the stable slug directory, acquire its lock, then resolve
-    again so every writer mutates the latest committed metadata.
-    """
+    again so every writer mutates the latest committed metadata. ``expected_id`` is the
+    holder's write authorization: when given, the LOCKED re-resolve must still carry
+    that identity or the mutation fails closed (StaleEntryError) — the slug alone is an
+    address, and an address can change hands while a screen sits open."""
     initial = resolve(name_or_slug)
-    with advisory_file_lock(_entry_lock_path(initial.slug)):
-        yield resolve(initial.slug)
+    with advisory_file_lock(entry_lock_path(initial.slug)):
+        entry = resolve(initial.slug)
+        _check_expected_id(entry, expected_id)
+        yield entry
+
+
+def ensure_identity(name_or_slug: str) -> Entry:
+    """The hold-start handshake: resolve the entry AND make sure the handle carries a
+    stamped identity, minting one for a pre-id meta on the spot. Every lane that keeps
+    an Entry across user-paced time (a run, an open form or settings screen) starts
+    here, so its later writes can be authorized by exact id match — a wildcard "" in a
+    held handle is exactly the hole a remove + same-slug re-add slips through.
+
+    Best-effort on the stamp, honest on the resolve: not-found/corrupt raise exactly
+    like resolve(), but a library that cannot be written (read-only data dir) returns
+    the unstamped handle rather than failing the run — on such a library nothing else
+    can stamp the meta either, so exact match still holds as "" == ""."""
+    entry = resolve(name_or_slug)
+    if entry.meta.id:
+        return entry
+    try:
+        with _locked_entry(entry.slug) as fresh:
+            if not fresh.meta.id:  # a concurrent writer may have healed it first
+                _write_meta_and_row(fresh.dir, fresh.slug, fresh.meta)  # the door stamps
+            return Entry(slug=fresh.slug, meta=fresh.meta, dir=fresh.dir)
+    except (StoreError, OSError):
+        return entry
 
 
 def _load_registry() -> dict[str, dict[str, Any]]:
@@ -640,12 +698,14 @@ def add_prompt(
     )
 
 
-def write_prompt_managed(name_or_slug: str, managed: list[str]) -> Entry:
+def write_prompt_managed(
+    name_or_slug: str, managed: list[str], *, expected_id: str | None = None
+) -> Entry:
     """Persist a prompt entry's MANAGED placeholder list (meta `params`) — the names the
     run form asks for and the renderer fills; everything else in the body stays verbatim.
     Prompt-only: a command template's placeholder list comes from the template itself and
     is never written through here."""
-    with _locked_entry(name_or_slug) as entry:
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
         if entry.meta.kind != "prompt":
             raise StoreUsageError(
                 gettext("%(name)s isn't a prompt entry.") % {"name": entry.meta.name}
@@ -656,10 +716,12 @@ def write_prompt_managed(name_or_slug: str, managed: list[str]) -> Entry:
         return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
-def write_prompt_interpolate(name_or_slug: str, interpolate: bool) -> Entry:
+def write_prompt_interpolate(
+    name_or_slug: str, interpolate: bool, *, expected_id: str | None = None
+) -> Entry:
     """Flip a prompt entry's insertion master switch. The managed list is deliberately
     NOT cleared on off — switching back on restores exactly what was managed before."""
-    with _locked_entry(name_or_slug) as entry:
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
         if entry.meta.kind != "prompt":
             raise StoreUsageError(
                 gettext("%(name)s isn't a prompt entry.") % {"name": entry.meta.name}
@@ -670,9 +732,9 @@ def write_prompt_interpolate(name_or_slug: str, interpolate: bool) -> Entry:
         return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
-def write_prompt_runner(name_or_slug: str, runner: str) -> Entry:
+def write_prompt_runner(name_or_slug: str, runner: str, *, expected_id: str | None = None) -> Entry:
     """Persist (or clear, when empty) a prompt entry's pinned runner name."""
-    with _locked_entry(name_or_slug) as entry:
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
         if entry.meta.kind != "prompt":
             raise StoreUsageError(
                 gettext("%(name)s isn't a prompt entry.") % {"name": entry.meta.name}
@@ -739,6 +801,7 @@ def update_launch_policy(
     workdir: str | None = None,
     interpreter: str | None = None,
     template: str | None = None,
+    expected_id: str | None = None,
 ) -> Entry:
     """Validate every supplied launch-policy axis, then persist them in one meta write.
 
@@ -746,7 +809,7 @@ def update_launch_policy(
     transaction prevents a later inapplicable value from leaving earlier values applied
     even though the command reports failure.
     """
-    with _locked_entry(name_or_slug) as entry:
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
         template_value = entry.meta.template
         params_value = entry.meta.params
         if template is not None:
@@ -778,18 +841,20 @@ def update_launch_policy(
         return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
-def write_workdir(name_or_slug: str, workdir: str) -> Entry:
+def write_workdir(name_or_slug: str, workdir: str, *, expected_id: str | None = None) -> Entry:
     """Persist an entry's working-directory policy: origin | store | invoke | an
     absolute path — the launch policy every kind honors (launcher._resolve_workdir),
     previously writable only by hand-editing meta.toml."""
-    return update_launch_policy(name_or_slug, workdir=workdir)
+    return update_launch_policy(name_or_slug, workdir=workdir, expected_id=expected_id)
 
 
-def write_interpreter(name_or_slug: str, interpreter: str) -> Entry:
+def write_interpreter(
+    name_or_slug: str, interpreter: str, *, expected_id: str | None = None
+) -> Entry:
     """Persist (or clear, when empty) an interpreted entry's interpreter/runtime pin
     (shell → the binary, js/ts → deno/bun/node). Refused for kinds that launch some
     other way — a pin must never be recorded where nothing reads it."""
-    return update_launch_policy(name_or_slug, interpreter=interpreter)
+    return update_launch_policy(name_or_slug, interpreter=interpreter, expected_id=expected_id)
 
 
 def add_exe(source: Path, *, name: str | None = None, description: str = "") -> Entry:
@@ -838,12 +903,12 @@ def add_command(template: str, *, name: str, description: str = "") -> Entry:
     return _add_entry(meta, payload=None)
 
 
-def update_template(name_or_slug: str, template: str) -> Entry:
+def update_template(name_or_slug: str, template: str, *, expected_id: str | None = None) -> Entry:
     """Rewrite a command entry's template — the actual program at the center of the
     kind, previously frozen forever at add time (the only fix was remove + re-add,
     destroying presets and history). Placeholders are re-extracted exactly like
     add_command; declared [[parameters]] rows for names that survive are kept."""
-    return update_launch_policy(name_or_slug, template=template)
+    return update_launch_policy(name_or_slug, template=template, expected_id=expected_id)
 
 
 def _add_entry(
@@ -1320,6 +1385,8 @@ def update_dependencies(
     name_or_slug: str,
     dependencies: list[str] | None,
     requires_python: str | None = None,
+    *,
+    expected_id: str | None = None,
 ) -> Entry:
     """Update an entry's dependency record (meta.toml). Python copy mode also syncs the copy's
     PEP 723 block; python reference mode only touches meta (the original can't be written, A7)
@@ -1333,7 +1400,7 @@ def update_dependencies(
     clear. One rule, stated twice — the constraint axis learned it first, and leaving
     the deps axis on always-replace let `skit deps x --python …` erase block-only
     add-time dependencies under a green line."""
-    with _locked_entry(name_or_slug) as entry:
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
         return _update_dependencies_entry(entry, dependencies, requires_python)
 
 
@@ -1493,12 +1560,12 @@ def _sync_python_block(
     )
 
 
-def update_needs(name_or_slug: str, needs: list[str]) -> Entry:
+def update_needs(name_or_slug: str, needs: list[str], *, expected_id: str | None = None) -> Entry:
     """Update an entry's `needs` list (external commands checked on PATH before launch).
     Mirrors update_dependencies' meta write, but applies to every kind — a shell script
     or a command template can need `ffmpeg` just as a python script can. An empty list
     clears the key (stored as None so the meta stays minimal)."""
-    with _locked_entry(name_or_slug) as entry:
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
         meta = entry.meta
         meta.needs = needs or None
         _write_meta_and_row(entry.dir, entry.slug, meta)
@@ -1506,8 +1573,12 @@ def update_needs(name_or_slug: str, needs: list[str]) -> Entry:
 
 
 def write_parameters(
-    name_or_slug: str, decls: list[ParamDecl], *, managed: list[str] | None = None
-) -> Entry:
+    name_or_slug: str,
+    decls: list[ParamDecl],
+    *,
+    managed: list[str] | None = None,
+    expected_id: str | None = None,
+) -> tuple[Entry, set[str]]:
     """Persist declared parameter rows to meta.toml [[parameters]] (the schema home for
     kinds without a text body — exe/command). The legacy `params` placeholder-name list
     is deliberately NOT derived from decls: the template is the source of truth for
@@ -1519,18 +1590,62 @@ def write_parameters(
     prompt schema the two are one logical unit — the run form asks by the list, types
     by the rows — and committing them as two transactions left a half-new schema when
     the second write failed. None means don't touch `meta.params`; a list (empty
-    included) replaces it, under write_prompt_managed's prompt-only rule."""
-    with _locked_entry(name_or_slug) as entry:
+    included) replaces it, under write_prompt_managed's prompt-only rule.
+
+    The C3 scrub travels INSIDE the same transaction: committing a row as secret purges
+    that name's stored plaintext first, under the entry lock, so no post-run persistence
+    (which holds the same lock) can interleave between the scrub and the commit — and a
+    schema that says secret can never coexist with plaintext the scrub missed. Returns
+    the entry plus the names the scrub actually removed (for the caller's notice)."""
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
         if managed is not None and entry.meta.kind != "prompt":
             raise StoreUsageError(
                 gettext("%(name)s isn't a prompt entry.") % {"name": entry.meta.name}
             )
+        # Purge BEFORE the schema commits (F2's rule, now under the entry lock): every
+        # interruption lands on public+value, public+no-value or secret+no-value.
+        purged = argstate.purge_secret(entry.slug, {d.name for d in decls if d.secret})
         meta = entry.meta
         if managed is not None:
             meta.params = managed or None
         meta.parameters = [d.to_meta_dict() for d in decls] or None
         _write_meta_and_row(entry.dir, entry.slug, meta)
-        return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
+        return Entry(slug=entry.slug, meta=meta, dir=entry.dir), purged
+
+
+def write_source_params(
+    name_or_slug: str, specs: list[ParamDecl], *, expected_id: str | None = None
+) -> set[str]:
+    """Commit an analyzable copy-mode entry's [tool.skit] schema into its STORED COPY —
+    the spec-lane twin of write_parameters, sharing its transaction shape: the C3 scrub
+    runs first, the block edit second, both under the entry lock, so a post-run
+    persistence door (same lock) can never interleave between scrub and commit, and no
+    interruption leaves "schema says secret, old plaintext still on disk". The write
+    half is the shared byte-lossless pair (rewrite.py): only the comment block changes,
+    unrelated bytes and the copy's own line endings survive. Returns the names the
+    scrub actually removed (for the caller's notice).
+
+    Copy-mode only, kept as a chokepoint guard (A5: skit edits its stored copy, never
+    the user's original) — callers pre-check to give their own richer refusals."""
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
+        spec = registry.spec_for(entry.meta.kind)
+        if spec is None or spec.params_io is None:
+            raise StoreUsageError(
+                gettext("%(name)s doesn't carry an editable [tool.skit] block.")
+                % {"name": entry.meta.name}
+            )
+        if entry.meta.mode != "copy":
+            raise StoreUsageError(
+                gettext(
+                    "%(name)s is in reference mode, and skit never writes the original file. "
+                    "Edit the [tool.skit] block in the source directly."
+                )
+                % {"name": entry.meta.name}
+            )
+        purged = argstate.purge_secret(entry.slug, {s.name for s in specs if s.secret})
+        text, newline = read_for_block_edit(entry.script_path)
+        write_block_edit(entry.script_path, spec.params_io.write(text, specs), newline)
+        return purged
 
 
 def read_parameters(name_or_slug: str) -> list[ParamDecl]:
@@ -1539,14 +1654,14 @@ def read_parameters(name_or_slug: str) -> list[ParamDecl]:
     return declared_from_meta(entry.meta.parameters)
 
 
-def rename(name_or_slug: str, new_name: str) -> Entry:
+def rename(name_or_slug: str, new_name: str, *, expected_id: str | None = None) -> Entry:
     """Rename an entry's display name. The slug is immutable after add — it keys the
     entry directory and the argstate values file, so keeping it means nothing moves on
     disk and remembered values/presets survive the rename."""
     new_name = new_name.strip()
     if not new_name:
         raise StoreUsageError(gettext("A name is required."))
-    with _locked_entry(name_or_slug) as entry:
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
         meta = entry.meta
         with _registry_lock():
             # The uniqueness decision sits INSIDE the registry lock: two entries renaming
@@ -1573,10 +1688,12 @@ def rename(name_or_slug: str, new_name: str) -> Entry:
         return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
-def update_description(name_or_slug: str, description: str) -> Entry:
+def update_description(
+    name_or_slug: str, description: str, *, expected_id: str | None = None
+) -> Entry:
     """Update an entry's description (meta.toml is the truth; the registry index row is
     refreshed too so `list` doesn't need a rebuild to show it)."""
-    with _locked_entry(name_or_slug) as entry:
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
         meta = entry.meta
         meta.description = description
         _write_meta_and_row(entry.dir, entry.slug, meta)

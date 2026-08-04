@@ -1216,10 +1216,10 @@ def test_a_meta_mutator_leaves_a_row_the_next_listing_serves_untouched(
 
     mutate = {
         "update_needs": lambda: store.update_needs(entry.slug, ["ffmpeg"]),
-        "write_parameters": lambda: store.write_parameters(entry.slug, [ParamDecl(name="CITY")]),
+        "write_parameters": lambda: store.write_parameters(entry.slug, [ParamDecl(name="CITY")])[0],
         "write_parameters_managed": lambda: store.write_parameters(
             entry.slug, [ParamDecl(name="topic", delivery="placeholder")], managed=["topic"]
-        ),
+        )[0],
         "update_dependencies": lambda: store.update_dependencies(entry.slug, ["httpx"]),
         "write_workdir": lambda: store.write_workdir(entry.slug, "store"),
         "update_description": lambda: store.update_description(entry.slug, "the new text"),

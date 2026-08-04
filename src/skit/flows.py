@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from . import analysis, argstate, config, launcher, params, store, tokens
+from .atomic import advisory_file_lock
 from .exitcodes import FailureReason
 from .i18n import gettext
 from .langs.base import (
@@ -862,19 +863,23 @@ def persistence_target(entry: Entry) -> Entry | None:
     state file, and a write now would resurrect the very file it deleted — or the
     address may have been reissued to a LATER add (a removed entry's slug is legal to
     reuse), where a write would graft this launch's values onto a stranger.
-    meta.id tells the two owners apart; an empty id (a meta from before ids existed)
-    matches anything, and only until that entry's next meta write stamps one.
 
-    Best-effort by design: the guard shrinks the stale window from run-length to the
-    write itself — argstate's per-slug lock keeps that write atomic, and the C3 strip
-    set is a union (a race can only widen a scrub, never talk a name out of secrecy).
-    Immediate resolve→write command lanes need no guard: they hold no handle long
-    enough for it to go stale."""
+    Identity is EXACT match on meta.id — unknown identity may serve reads, but it
+    cannot authorize a write. Held handles are stamped at hold-start
+    (store.ensure_identity), so "" meets "" only on a library nothing can write to,
+    where the ids also cannot diverge; every asymmetric pairing means the handle and
+    the disk disagree about WHO the entry is, and the write fails closed.
+
+    The doors call this INSIDE the entry lock (store.entry_lock_path) and keep holding
+    it across their writes — the same lock every meta mutator and remove() itself
+    holds — so nothing can remove, reincarnate, or flip secrecy between the check and
+    the last write. Immediate resolve→write command lanes need no guard: they hold no
+    handle long enough for it to go stale."""
     try:
         fresh = store.resolve(entry.slug)
     except store.StoreError:
         return None
-    if entry.meta.id and fresh.meta.id and entry.meta.id != fresh.meta.id:
+    if entry.meta.id != fresh.meta.id:
         return None
     return fresh
 
@@ -906,29 +911,32 @@ def save_after_run(
 
     The entry in hand predates a run that may have lasted hours, so nothing is written
     until persistence_target re-proves it, and the strip set is the union of launch-time
-    and persistence-time secrecy — a mid-run flip to secret scrubs NOW."""
-    fresh = persistence_target(entry)
-    if fresh is None:
-        return
-    secret_names = _post_accept_secret_names(entry, fresh, plan.secret_names)
-    # Retroactive C3 scrub: a placeholder/param that is secret NOW must not keep old
-    # plaintext in values or presets from the days it wasn't (purge is idempotent).
-    if secret_names:
-        argstate.purge_secret(entry.slug, secret_names)
-    argstate.save_last(
-        entry.slug,
-        values=remembered_values(plan, values),
-        extra_args=list(extra_args),
-        extra_args_raw=extra_raw,
-        secret_names=secret_names,
-    )
-    argstate.record_run(
-        entry.slug,
-        exit_code,
-        at=at,
-        values=dict(values),
-        secret_names=secret_names,
-    )
+    and persistence-time secrecy — a mid-run flip to secret scrubs NOW. The whole
+    verify-then-write transaction holds the entry lock (see persistence_target), so the
+    re-proof cannot go stale under it."""
+    with advisory_file_lock(store.entry_lock_path(entry.slug)):
+        fresh = persistence_target(entry)
+        if fresh is None:
+            return
+        secret_names = _post_accept_secret_names(entry, fresh, plan.secret_names)
+        # Retroactive C3 scrub: a placeholder/param that is secret NOW must not keep old
+        # plaintext in values or presets from the days it wasn't (purge is idempotent).
+        if secret_names:
+            argstate.purge_secret(entry.slug, secret_names)
+        argstate.save_last(
+            entry.slug,
+            values=remembered_values(plan, values),
+            extra_args=list(extra_args),
+            extra_args_raw=extra_raw,
+            secret_names=secret_names,
+        )
+        argstate.record_run(
+            entry.slug,
+            exit_code,
+            at=at,
+            values=dict(values),
+            secret_names=secret_names,
+        )
 
 
 def stored_secret_names(entry: Entry) -> set[str]:
@@ -974,16 +982,18 @@ def save_after_raw_run(entry: Entry, exit_code: int, *, at: str) -> None:
     accepted run performs, and record_run re-persists the preserved last_run snapshot,
     so that snapshot must pass through the same strip as any new write.
 
-    Same guard as every post-acceptance write (persistence_target): an entry that no
-    longer resolves — or a slug that now belongs to a later add — gets no stamp at all,
-    and the strip set unions launch-time and persistence-time readings."""
-    fresh = persistence_target(entry)
-    if fresh is None:
-        return
-    secret_names = _post_accept_secret_names(entry, fresh, frozenset())
-    if secret_names:
-        argstate.purge_secret(entry.slug, secret_names)
-    argstate.record_run(entry.slug, exit_code, at=at, secret_names=secret_names)
+    Same guard as every post-acceptance write (persistence_target, under the entry
+    lock): an entry that no longer resolves — or a slug that now belongs to a later
+    add — gets no stamp at all, and the strip set unions launch-time and
+    persistence-time readings."""
+    with advisory_file_lock(store.entry_lock_path(entry.slug)):
+        fresh = persistence_target(entry)
+        if fresh is None:
+            return
+        secret_names = _post_accept_secret_names(entry, fresh, frozenset())
+        if secret_names:
+            argstate.purge_secret(entry.slug, secret_names)
+        argstate.record_run(entry.slug, exit_code, at=at, secret_names=secret_names)
 
 
 def save_preset_for(
@@ -994,16 +1004,17 @@ def save_preset_for(
     other post-acceptance write. False means nothing was written: the entry is gone or
     its slug was reissued. The caller owns saying so — a preset is an EXPLICIT request,
     and eating one silently would be worse than the stale write the guard prevents."""
-    fresh = persistence_target(entry)
-    if fresh is None:
-        return False
-    argstate.save_preset(
-        entry.slug,
-        name,
-        dict(values),
-        secret_names=_post_accept_secret_names(entry, fresh, secret_names),
-    )
-    return True
+    with advisory_file_lock(store.entry_lock_path(entry.slug)):
+        fresh = persistence_target(entry)
+        if fresh is None:
+            return False
+        argstate.save_preset(
+            entry.slug,
+            name,
+            dict(values),
+            secret_names=_post_accept_secret_names(entry, fresh, secret_names),
+        )
+        return True
 
 
 def clear_remembered_tail(entry: Entry) -> None:
@@ -1012,9 +1023,21 @@ def clear_remembered_tail(entry: Entry) -> None:
     vacuous-truth twist: if the entry is gone, so is its whole state file (remove()
     forgot it) — the forgetting already happened, and writing the clear would resurrect
     the file just to hold an empty tail."""
-    if persistence_target(entry) is None:
-        return
-    argstate.save_last(entry.slug, extra_args=[])
+    with advisory_file_lock(store.entry_lock_path(entry.slug)):
+        if persistence_target(entry) is None:
+            return
+        argstate.save_last(entry.slug, extra_args=[])
+
+
+def delete_presets_for(entry: Entry, names: list[str]) -> list[str] | None:
+    """The settings screen's preset cleanup, through the same guarded door as every
+    other write against a HELD entry: delete the named presets, or None — the entry is
+    gone or its slug was reissued, and unticking a checkbox on the old screen must not
+    delete the new owner's presets. Returns the names that actually existed."""
+    with advisory_file_lock(store.entry_lock_path(entry.slug)):
+        if persistence_target(entry) is None:
+            return None
+        return [name for name in names if argstate.delete_preset(entry.slug, name)]
 
 
 # --------------------------------------------------------------------------

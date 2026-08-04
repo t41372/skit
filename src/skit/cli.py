@@ -3235,7 +3235,10 @@ def run(
     from . import flows
 
     try:
-        entry = store.resolve(name)
+        # ensure_identity, not resolve: this handle outlives user-paced time (the
+        # inline form, the run itself), and its post-acceptance writes are authorized
+        # by exact id match — so a pre-id meta gets stamped here, at hold-start.
+        entry = store.ensure_identity(name)
     except store.NotFoundError as exc:
         raise _fail_not_found(exc) from exc
     _validate_preset(entry, preset)
@@ -4911,17 +4914,12 @@ def _edit_params(
         _refuse_unhonoured(notices, analysis.render_notice)
     for notice in notices:
         err_console.print(f"[yellow]{escape(analysis.render_notice(notice))}[/yellow]")
-    # Purge BEFORE the write commits the secret flag: every interruption then lands on
-    # public+value, public+no-value or secret+no-value — never "schema says secret,
-    # old plaintext still on disk", the one state the transition exists to forbid.
-    secret_now = {s.name for s in result.specs if s.secret}
-    purged = argstate.purge_secret(entry.slug, secret_now)
-    # `text` above was read with errors="replace" for the analyzer; writing THAT text back
-    # would bake U+FFFD over every non-UTF-8 byte. Re-read through the shared byte-lossless
-    # pair (rewrite.py) — params_io.write only touches the comment block, so unrelated bytes
-    # round-trip and the copy's own line-ending style survives.
-    current, newline = read_for_block_edit(copy_path)
-    write_block_edit(copy_path, entry_spec.params_io.write(current, result.specs), newline)
+    # One store transaction (write_source_params): the C3 scrub runs first and the
+    # block edit second, both under the entry lock — no interruption or concurrent
+    # post-run persistence can land between "schema says secret" and "plaintext
+    # scrubbed". The write half re-reads through the byte-lossless pair (rewrite.py),
+    # so the errors="replace" text the analyzer saw never lands back on disk.
+    purged = store.write_source_params(entry.slug, result.specs)
     if purged:
         console.print(
             "[dim]"
@@ -5198,12 +5196,10 @@ def _edit_declared_params(
         _refuse_unhonoured(notices, analysis.render_notice)
     for notice in notices:
         err_console.print(f"[yellow]{escape(analysis.render_notice(notice))}[/yellow]")
-    # Purge BEFORE the schema commits (the spec lane's rule): an interruption must
-    # never leave "schema says secret, old plaintext still on disk".
-    purged = argstate.purge_secret(entry.slug, {d.name for d in result.decls if d.secret})
-    # One meta write for the whole schema: the managed list and the declared rows are
-    # one logical unit, and a failure between two writes used to leave them half new.
-    store.write_parameters(entry.slug, result.decls, managed=pending_managed)
+    # One meta write for the whole schema — managed list, declared rows AND the C3
+    # scrub in a single locked transaction (store.write_parameters): the purge still
+    # precedes the commit, and nothing can interleave between them.
+    _, purged = store.write_parameters(entry.slug, result.decls, managed=pending_managed)
     if purged:
         console.print(
             "[dim]"

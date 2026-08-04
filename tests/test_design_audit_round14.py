@@ -183,26 +183,38 @@ def test_a_corrupt_meta_is_no_target(tmp_path: Path) -> None:
     assert flows.persistence_target(entry) is None
 
 
-def test_a_handle_without_an_id_matches_the_stamped_entry(tmp_path: Path) -> None:
-    """The wildcard, held side: an entry resolved while its meta was still legacy is
-    the SAME entry after an edit backfills the id — skipping its persistence would
-    punish the upgrade."""
+def test_an_unstamped_handle_cannot_authorize_against_a_stamped_entry(tmp_path: Path) -> None:
+    """Identity is EXACT match — unknown identity may serve reads, never authorize a
+    write. A handle resolved before the meta carried an id meeting a stamped entry is
+    exactly the pairing a remove + same-slug re-add of a legacy entry produces, so it
+    fails closed. Legitimate lanes never hit this: they stamp at hold-start
+    (store.ensure_identity), so their handles are never unstamped on a writable
+    library."""
     entry = _cmd("wild")
     _strip_id_line(entry.slug)
-    held = store.resolve(entry.slug)  # id == "" — a pre-id handle
-    store.update_description(entry.slug, "heals the id")
+    held = store.resolve(entry.slug)  # id == "" — a pre-id handle, resolve() not claimed
+    store.update_description(entry.slug, "stamps the id")
     assert held.meta.id == ""
-    assert flows.persistence_target(held) is not None
+    assert flows.persistence_target(held) is None
 
 
-def test_a_stamped_handle_matches_a_legacy_meta(tmp_path: Path) -> None:
-    """The wildcard, fresh side: a hand-restored meta.toml without an id is still the
-    entry the handle launched — one empty side always means "cannot distinguish, so
-    do not refuse"."""
+def test_a_stamped_handle_refuses_a_hand_stripped_meta(tmp_path: Path) -> None:
+    """The other asymmetry: the disk lost the identity the handle was authorized
+    against (a hand edit). Cannot confirm — do not write."""
     entry = _cmd("wildback")
     assert entry.meta.id
     _strip_id_line(entry.slug)
-    assert flows.persistence_target(entry) is not None
+    assert flows.persistence_target(entry) is None
+
+
+def test_two_unstamped_readings_still_match(tmp_path: Path) -> None:
+    """ "" meets "" only where nothing can write the meta at all (a read-only library —
+    the one place ensure_identity leaves a handle unstamped), and there the ids cannot
+    diverge either: exact match holds, persistence still lands."""
+    entry = _cmd("readonly")
+    _strip_id_line(entry.slug)
+    held = store.resolve(entry.slug)
+    assert flows.persistence_target(held) is not None
 
 
 # ==========================================================================
@@ -434,12 +446,10 @@ def test_slug_keyed_argstate_writes_stay_behind_the_guarded_doors() -> None:
     so there is nothing to go stale. A new call site fails this census on purpose:
     either route it through a door, or add it here with that justification.
 
-    - cli.py: `preset save`/`preset delete` and the two `params` secret-transition
-      purges — all resolve and write in one motion.
-    - store.py: remove()'s own forget — the deletion this guard exists to respect.
-    - tui_settings.py: the settings screen's secret-transition purges and its
-      preset-cleanup loop (the screen-staleness window there is the recorded
-      follow-up, not an accident of this census).
+    - cli.py: `preset save`/`preset delete` — resolve and write in one motion.
+    - store.py: remove()'s own forget, and the C3 scrubs inside the two locked
+      schema-commit transactions (write_parameters, write_source_params) — purge and
+      commit under one entry lock, where nothing can interleave between them.
     """
     root = real_repo_root() / "src" / "skit"
     writer = re.compile(
@@ -451,8 +461,13 @@ def test_slug_keyed_argstate_writes_stay_behind_the_guarded_doors() -> None:
         if counts:
             census[path.relative_to(root).as_posix()] = dict(counts)
     assert census == {
-        "cli.py": {"save_preset": 1, "delete_preset": 1, "purge_secret": 2},
-        "flows.py": {"save_last": 2, "save_preset": 1, "record_run": 2, "purge_secret": 2},
-        "store.py": {"forget": 1},
-        "tui_settings.py": {"purge_secret": 2, "delete_preset": 1},
+        "cli.py": {"save_preset": 1, "delete_preset": 1},
+        "flows.py": {
+            "save_last": 2,
+            "save_preset": 1,
+            "record_run": 2,
+            "purge_secret": 2,
+            "delete_preset": 1,
+        },
+        "store.py": {"forget": 1, "purge_secret": 2},
     }

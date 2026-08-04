@@ -1146,7 +1146,7 @@ def test_update_needs_returns_entry_with_correct_slug_and_dir(sample_script):
 def test_write_parameters_returns_entry_with_correct_dir(sample_script):
     entry = store.add_python(sample_script, name="hi")
     decls = [ParamDecl(name="a", binding="const", type="str", default=None, secret=False)]
-    updated = store.write_parameters(entry.slug, decls)
+    updated, _ = store.write_parameters(entry.slug, decls)
     assert updated.dir == entry.dir
     assert updated.slug == entry.slug
 

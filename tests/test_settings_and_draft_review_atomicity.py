@@ -289,7 +289,7 @@ async def test_settings_rename_race_failure_stops_later_writes(tmp_path, monkeyp
         screen.query_one("#st-name", Input).value = "race-new"
         screen.query_one("#st-desc", Input).value = "must not land"
 
-        def fail_rename(name_or_slug, new_name):
+        def fail_rename(name_or_slug, new_name, **_kwargs):
             raise store.StoreError("name became taken")
 
         monkeypatch.setattr(store, "rename", fail_rename)
@@ -317,7 +317,7 @@ async def test_settings_late_dependency_store_failure_is_reported_and_stays_open
         notes = _capture_notify(monkeypatch, screen)
         screen.query_one("#st-deps", Input).value = "chalk"
 
-        def fail_update(name_or_slug, dependencies, requires_python=None):
+        def fail_update(name_or_slug, dependencies, requires_python=None, **_kwargs):
             raise store.StoreError("dependency metadata unavailable")
 
         monkeypatch.setattr(store, "update_dependencies", fail_update)

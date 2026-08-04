@@ -552,6 +552,17 @@ class MenuApp(App[int | PendingRun]):
         except store.StoreError:
             return entry
 
+    def _claimed(self, entry: Entry) -> Entry:
+        """_fresh for the lanes that HOLD the record across user-paced time (a run, an
+        open form or settings screen): same freshness, plus the identity handshake —
+        store.ensure_identity stamps a pre-id meta so the handle's later writes can be
+        authorized by exact id match. Never used by pure renders: a detail-pane read
+        must stay a read, and ensure_identity may write."""
+        try:
+            return store.ensure_identity(entry.slug)
+        except store.StoreError:
+            return entry
+
     def _plan_key(self, entry: Entry) -> tuple[int, int, int, int, str | None] | None:
         """The cache key: both files' (mtime_ns, size) — narrowing coarse-mtime blind
         spots to same-tick same-size writes — plus the kind's reader-tool fingerprint,
@@ -858,8 +869,9 @@ class MenuApp(App[int | PendingRun]):
             return
         # The LAUNCH reads the same fresh record the detail pane just described — a
         # form built from the Library's stale snapshot would lack the parameter an
-        # agent declared a second ago, contradicting the pane beside it.
-        entry = self._fresh(entry)
+        # agent declared a second ago, contradicting the pane beside it. Claimed, not
+        # just fresh: the form and the run hold this handle across user-paced time.
+        entry = self._claimed(entry)
         is_prompt = entry.meta.kind == "prompt"
         # A prompt's actual executable is selected on the run form.  Checking its
         # entry pin here would let a stale/broken pin block the very picker that can
@@ -952,9 +964,10 @@ class MenuApp(App[int | PendingRun]):
         entry = self._selected()
         if entry is None:
             return
-        # Same freshness rule as action_run, and ONE state read for the whole rerun
-        # (the last-run guard reads the same snapshot instead of a second file open).
-        entry = self._fresh(entry)
+        # Same freshness rule as action_run — claimed, the run holds it — and ONE
+        # state read for the whole rerun (the last-run guard reads the same snapshot
+        # instead of a second file open).
+        entry = self._claimed(entry)
         state = argstate.load_state(entry.slug)
         if not state["last_run"]:
             self._refresh_status(
@@ -1119,7 +1132,8 @@ class MenuApp(App[int | PendingRun]):
         deleted from the body keeps its run-form drift banner, owned by the form layer."""
         from .langs.prompt import analyzer as prompt_analyzer
 
-        new = store.unmanaged_prompt_placeholders(store.resolve(entry.slug))
+        held = self._claimed(entry)  # the picker holds this handle while it sits open
+        new = store.unmanaged_prompt_placeholders(held)
         if not new:
             return False
         flooded = len(new) > prompt_analyzer.AUTO_MANAGE_LIMIT
@@ -1132,10 +1146,19 @@ class MenuApp(App[int | PendingRun]):
                     gettext("Edited %(name)s.") % {"name": escape(entry.meta.name)}
                 )
                 return
-            existing = list(entry.meta.params or [])
-            store.write_prompt_managed(
-                entry.slug, existing + [n for n in chosen if n not in existing]
-            )
+            # The merge base is the claimed handle's list, and the write is authorized
+            # against its identity: a remove + same-slug re-add while the picker sat
+            # open must not graft this prompt's managed names onto the new owner.
+            existing = list(held.meta.params or [])
+            try:
+                store.write_prompt_managed(
+                    held.slug,
+                    existing + [n for n in chosen if n not in existing],
+                    expected_id=held.meta.id or None,
+                )
+            except store.StoreError as exc:
+                self._refresh_status(gettext("Error: %(error)s") % {"error": escape(str(exc))})
+                return
             self._reload()
             self._refresh_status(gettext("Now managed: %(names)s") % {"names": ", ".join(chosen)})
 
@@ -1192,6 +1215,9 @@ class MenuApp(App[int | PendingRun]):
         entry = self._selected()
         if entry is None:
             return
+        # Claimed at open: the screen holds this handle for as long as it sits open,
+        # and every save it makes is authorized against this identity (expected_id).
+        entry = self._claimed(entry)
         from .tui_settings import ScriptSettingsScreen
 
         def _closed(_changed: bool | None) -> None:
