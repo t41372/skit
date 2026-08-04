@@ -1126,7 +1126,7 @@ def test_save_after_run_threads_the_provenance_to_argstate(tmp_path: Path) -> No
     entry = store.add_command("echo {msg}", name="c")
     plan = flows.plan_for_entry(entry)
     flows.save_after_run(
-        entry.slug,
+        entry,
         plan,
         {"msg": "hi"},
         ["{today}"],
@@ -1137,7 +1137,7 @@ def test_save_after_run_threads_the_provenance_to_argstate(tmp_path: Path) -> No
     assert argstate.load_state(entry.slug)["extra_args_raw"] is True
 
     flows.save_after_run(
-        entry.slug,
+        entry,
         plan,
         {"msg": "hi"},
         ["*.png"],

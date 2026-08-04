@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: skit 0.4.1.dev0\n"
 "Report-Msgid-Bugs-To: EMAIL@ADDRESS\n"
-"POT-Creation-Date: 2026-08-03 20:40+0000\n"
+"POT-Creation-Date: 2026-08-04 13:24+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -214,7 +214,7 @@ msgstr ""
 msgid "%(kind)s entries don't take package dependencies — drop --dep."
 msgstr ""
 
-#: src/skit/cli.py:565 src/skit/store.py:1363
+#: src/skit/cli.py:565 src/skit/store.py:1371
 #, python-format
 msgid "A Python constraint doesn't apply to %(kind)s scripts."
 msgstr ""
@@ -229,15 +229,15 @@ msgstr ""
 msgid "Description (optional)"
 msgstr ""
 
-#: src/skit/cli.py:616 src/skit/cli.py:624 src/skit/store.py:369
-#: src/skit/store.py:502 src/skit/store.py:576 src/skit/store.py:790
+#: src/skit/cli.py:616 src/skit/cli.py:624 src/skit/store.py:377
+#: src/skit/store.py:510 src/skit/store.py:584 src/skit/store.py:798
 #: src/skit/tui_add.py:357
 #, python-format
 msgid "File not found: %(path)s"
 msgstr ""
 
-#: src/skit/cli.py:618 src/skit/store.py:371 src/skit/store.py:504
-#: src/skit/store.py:578
+#: src/skit/cli.py:618 src/skit/store.py:379 src/skit/store.py:512
+#: src/skit/store.py:586
 #, python-format
 msgid "Not a file: %(path)s"
 msgstr ""
@@ -315,13 +315,13 @@ msgstr ""
 msgid "Writing a new script in an editor needs an interactive terminal."
 msgstr ""
 
-#: src/skit/cli.py:970 src/skit/cli.py:1408 src/skit/cli.py:3670
-#: src/skit/cli.py:3718 src/skit/config.py:629 src/skit/store.py:1540
+#: src/skit/cli.py:970 src/skit/cli.py:1408 src/skit/cli.py:3676
+#: src/skit/cli.py:3724 src/skit/config.py:629 src/skit/store.py:1548
 #: src/skit/tui_add.py:447 src/skit/tui_runner.py:160
 msgid "A name is required."
 msgstr ""
 
-#: src/skit/cli.py:981 src/skit/cli.py:1417 src/skit/store.py:858
+#: src/skit/cli.py:981 src/skit/cli.py:1417 src/skit/store.py:866
 #, python-format
 msgid "The name %(name)s is already taken — pick another name."
 msgstr ""
@@ -332,7 +332,7 @@ msgstr ""
 
 #: src/skit/cli.py:1001 src/skit/cli.py:1302 src/skit/cli.py:1438
 #: src/skit/cli.py:2349 src/skit/editor.py:122 src/skit/langs/launch.py:720
-#: src/skit/store.py:85 src/skit/store.py:596 src/skit/tui_add.py:532
+#: src/skit/store.py:86 src/skit/store.py:604 src/skit/tui_add.py:532
 #: src/skit/tui_add.py:749 src/skit/tui_add.py:1095 src/skit/tui_add.py:1289
 #: src/skit/tui_add.py:1588 src/skit/tui_settings.py:424
 #, python-format
@@ -359,7 +359,7 @@ msgstr ""
 msgid "Custom agents: skit runner add mycli -- mycli run {{prompt}} (see skit runner --help)"
 msgstr ""
 
-#: src/skit/cli.py:1224 src/skit/cli.py:3771
+#: src/skit/cli.py:1224 src/skit/cli.py:3777
 #, python-format
 msgid "Unknown runner: %(runner)s. Configured runners: %(names)s"
 msgstr ""
@@ -543,7 +543,7 @@ msgstr ""
 msgid "A dependency (repeat for more; skips the interactive question)"
 msgstr ""
 
-#: src/skit/cli.py:1757 src/skit/cli.py:5269
+#: src/skit/cli.py:1757 src/skit/cli.py:5275
 msgid "Python version constraint, e.g. \">=3.11\""
 msgstr ""
 
@@ -728,9 +728,9 @@ msgstr ""
 msgid "List every registered entry."
 msgstr ""
 
-#: src/skit/cli.py:2449 src/skit/cli.py:2689 src/skit/cli.py:3532
-#: src/skit/cli.py:3931 src/skit/cli.py:5281 src/skit/cli.py:5532
-#: src/skit/cli.py:5897
+#: src/skit/cli.py:2449 src/skit/cli.py:2689 src/skit/cli.py:3538
+#: src/skit/cli.py:3937 src/skit/cli.py:5287 src/skit/cli.py:5538
+#: src/skit/cli.py:5903
 msgid "Output as JSON"
 msgstr ""
 
@@ -750,7 +750,7 @@ msgstr ""
 msgid "Name"
 msgstr ""
 
-#: src/skit/cli.py:2506 src/skit/cli.py:4282 src/skit/tui.py:402
+#: src/skit/cli.py:2506 src/skit/cli.py:4288 src/skit/tui.py:402
 #: src/skit/tui.py:1271
 msgid "Kind"
 msgstr ""
@@ -761,7 +761,7 @@ msgid "Description"
 msgstr ""
 
 #: src/skit/cli.py:2532 src/skit/cli.py:2533 src/skit/cli.py:2674
-#: src/skit/cli.py:4022 src/skit/cli.py:4023
+#: src/skit/cli.py:4028 src/skit/cli.py:4029
 msgid "yes"
 msgstr ""
 
@@ -780,7 +780,7 @@ msgstr ""
 msgid "Interpreter: %(program)s"
 msgstr ""
 
-#: src/skit/cli.py:2611 src/skit/cli.py:5247
+#: src/skit/cli.py:2611 src/skit/cli.py:5253
 #, python-format
 msgid "Python constraint: %(python)s"
 msgstr ""
@@ -829,11 +829,11 @@ msgstr ""
 msgid "Presets: %(names)s"
 msgstr ""
 
-#: src/skit/cli.py:2655 src/skit/cli.py:4061 src/skit/cli.py:4281
+#: src/skit/cli.py:2655 src/skit/cli.py:4067 src/skit/cli.py:4287
 msgid "Parameter"
 msgstr ""
 
-#: src/skit/cli.py:2656 src/skit/cli.py:4063 src/skit/cli.py:4283
+#: src/skit/cli.py:2656 src/skit/cli.py:4069 src/skit/cli.py:4289
 msgid "Type"
 msgstr ""
 
@@ -841,7 +841,7 @@ msgstr ""
 msgid "Required"
 msgstr ""
 
-#: src/skit/cli.py:2658 src/skit/cli.py:4064 src/skit/cli.py:4284
+#: src/skit/cli.py:2658 src/skit/cli.py:4070 src/skit/cli.py:4290
 msgid "Default"
 msgstr ""
 
@@ -849,7 +849,7 @@ msgstr ""
 msgid "Choices"
 msgstr ""
 
-#: src/skit/cli.py:2660 src/skit/cli.py:4065 src/skit/cli.py:4285
+#: src/skit/cli.py:2660 src/skit/cli.py:4071 src/skit/cli.py:4291
 msgid "Secret"
 msgstr ""
 
@@ -857,8 +857,8 @@ msgstr ""
 msgid "Help"
 msgstr ""
 
-#: src/skit/cli.py:2666 src/skit/cli.py:4029 src/skit/cli.py:4037
-#: src/skit/cli.py:4047 src/skit/cli.py:4289 src/skit/cli.py:4294
+#: src/skit/cli.py:2666 src/skit/cli.py:4035 src/skit/cli.py:4043
+#: src/skit/cli.py:4053 src/skit/cli.py:4295 src/skit/cli.py:4300
 msgid "•••"
 msgstr ""
 
@@ -874,12 +874,12 @@ msgstr ""
 msgid "Remove a registered entry (an original source file is left untouched)."
 msgstr ""
 
-#: src/skit/cli.py:2751 src/skit/cli.py:3706 src/skit/cli.py:3959
+#: src/skit/cli.py:2751 src/skit/cli.py:3712 src/skit/cli.py:3965
 msgid "Skip confirmation"
 msgstr ""
 
-#: src/skit/cli.py:2752 src/skit/cli.py:2908 src/skit/cli.py:3707
-#: src/skit/cli.py:3888 src/skit/cli.py:3960 src/skit/cli.py:5455
+#: src/skit/cli.py:2752 src/skit/cli.py:2908 src/skit/cli.py:3713
+#: src/skit/cli.py:3894 src/skit/cli.py:3966 src/skit/cli.py:5461
 msgid "Never prompt"
 msgstr ""
 
@@ -970,7 +970,7 @@ msgstr ""
 msgid "skit reconciles parameter drift at run time; review managed parameters with: skit params %(name)s"
 msgstr ""
 
-#: src/skit/cli.py:2981 src/skit/cli.py:3999
+#: src/skit/cli.py:2981 src/skit/cli.py:4005
 #, python-format
 msgid "Unknown preset \"%(preset)s\". Available: %(presets)s"
 msgstr ""
@@ -990,7 +990,7 @@ msgstr ""
 msgid "Parameters for %(name)s (press Enter to keep the value shown):"
 msgstr ""
 
-#: src/skit/cli.py:3116 src/skit/cli.py:4718
+#: src/skit/cli.py:3116 src/skit/cli.py:4724
 msgid "--runner only applies to prompt entries."
 msgstr ""
 
@@ -998,7 +998,7 @@ msgstr ""
 msgid "--runner needs a configured runner name."
 msgstr ""
 
-#: src/skit/cli.py:3138 src/skit/cli.py:3565 src/skit/cli.py:3597
+#: src/skit/cli.py:3138 src/skit/cli.py:3571 src/skit/cli.py:3603
 #: src/skit/langs/launch.py:671
 msgid "No agents are configured. Add one with: skit runner add mycli -- mycli run {{prompt}}"
 msgstr ""
@@ -1008,7 +1008,7 @@ msgstr ""
 msgid "No runner selected for %(name)s. Pass --runner NAME, or pin one with: skit params %(target)s --runner NAME"
 msgstr ""
 
-#: src/skit/cli.py:3157 src/skit/cli.py:3349 src/skit/cli.py:4725
+#: src/skit/cli.py:3157 src/skit/cli.py:3349 src/skit/cli.py:4731
 #: src/skit/langs/launch.py:686
 #, python-format
 msgid "The runner %(runner)s isn't configured (known: %(names)s). Manage runners with: skit runner list"
@@ -1080,7 +1080,7 @@ msgstr ""
 msgid "Raw mode: skipping the parameter form and injection."
 msgstr ""
 
-#: src/skit/cli.py:3302 src/skit/cli.py:3902 src/skit/tui_form.py:971
+#: src/skit/cli.py:3302 src/skit/cli.py:3908 src/skit/tui_form.py:971
 #, python-format
 msgid "%(name)s has no form fields, so there's nothing to save."
 msgstr ""
@@ -1090,912 +1090,917 @@ msgstr ""
 msgid "Reusing your last arguments: %(args)s"
 msgstr ""
 
-#: src/skit/cli.py:3437 src/skit/cli.py:3924
+#: src/skit/cli.py:3434 src/skit/tui_form.py:1005
+#, python-format
+msgid "Preset \"%(preset)s\" wasn't saved — %(name)s is no longer in the library."
+msgstr ""
+
+#: src/skit/cli.py:3443 src/skit/cli.py:3930
 #, python-format
 msgid "Preset \"%(preset)s\" saved for %(name)s."
 msgstr ""
 
-#: src/skit/cli.py:3512
+#: src/skit/cli.py:3518
 #, python-format
 msgid "Run exited with code %(code)s"
 msgstr ""
 
-#: src/skit/cli.py:3522
+#: src/skit/cli.py:3528
 msgid "Manage the agents (runners) that prompt entries run with."
 msgstr ""
 
-#: src/skit/cli.py:3529
+#: src/skit/cli.py:3535
 msgid "List the configured runners (seeds them into config on first use)."
 msgstr ""
 
-#: src/skit/cli.py:3536
+#: src/skit/cli.py:3542
 msgid "Include malformed raw rows and their repair indexes"
 msgstr ""
 
-#: src/skit/cli.py:3573
+#: src/skit/cli.py:3579
 msgid "Row"
 msgstr ""
 
-#: src/skit/cli.py:3574 src/skit/cli.py:3605
+#: src/skit/cli.py:3580 src/skit/cli.py:3611
 msgid "Runner"
 msgstr ""
 
-#: src/skit/cli.py:3575 src/skit/cli.py:3606 src/skit/kindnames.py:40
+#: src/skit/cli.py:3581 src/skit/cli.py:3612 src/skit/kindnames.py:40
 msgid "Command"
 msgstr ""
 
-#: src/skit/cli.py:3576
+#: src/skit/cli.py:3582
 msgid "Status"
 msgstr ""
 
-#: src/skit/cli.py:3579
+#: src/skit/cli.py:3585
 msgid "container"
 msgstr ""
 
-#: src/skit/cli.py:3613
+#: src/skit/cli.py:3619
 msgid "The built-in amp preset uses amp -x and runs the prompt once; it does not open an interactive session."
 msgstr ""
 
-#: src/skit/cli.py:3630
+#: src/skit/cli.py:3636
 msgid "A runner needs a command — e.g. skit runner add mycli mycli run {{prompt}}"
 msgstr ""
 
-#: src/skit/cli.py:3633
+#: src/skit/cli.py:3639
 msgid "A runner command must contain the {{prompt}} slot exactly once — that's where the rendered prompt lands."
 msgstr ""
 
-#: src/skit/cli.py:3637 src/skit/config.py:623 src/skit/tui_runner.py:42
+#: src/skit/cli.py:3643 src/skit/config.py:623 src/skit/tui_runner.py:42
 msgid "{{prompt}} can't be the command itself — the first word must be the program to run."
 msgstr ""
 
-#: src/skit/cli.py:3640 src/skit/config.py:626 src/skit/tui_runner.py:45
+#: src/skit/cli.py:3646 src/skit/config.py:626 src/skit/tui_runner.py:45
 msgid "Runner commands take only the {{prompt}} slot — single-brace text is literal, and other {{holes}} aren't supported."
 msgstr ""
 
-#: src/skit/cli.py:3649
+#: src/skit/cli.py:3655
 msgid "Register a runner: skit runner add NAME COMMAND… ({{prompt}} marks where the rendered prompt goes; each shell word becomes one argument, no shell involved)"
 msgstr ""
 
-#: src/skit/cli.py:3658
+#: src/skit/cli.py:3664
 msgid "Runner name (e.g. claude)"
 msgstr ""
 
-#: src/skit/cli.py:3660
+#: src/skit/cli.py:3666
 msgid "The command, word by word, with one {{prompt}} slot"
 msgstr ""
 
-#: src/skit/cli.py:3665
+#: src/skit/cli.py:3671
 msgid "Replace the runner if the name already exists (the edit path)"
 msgstr ""
 
-#: src/skit/cli.py:3680
+#: src/skit/cli.py:3686
 #, python-format
 msgid "The runner %(name)s already exists — pass --force to replace its command."
 msgstr ""
 
-#: src/skit/cli.py:3688
+#: src/skit/cli.py:3694
 #, python-format
 msgid "Runner %(name)s updated: %(command)s"
 msgstr ""
 
-#: src/skit/cli.py:3692
+#: src/skit/cli.py:3698
 #, python-format
 msgid "Runner %(name)s added: %(command)s"
 msgstr ""
 
-#: src/skit/cli.py:3696
+#: src/skit/cli.py:3702
 msgid "Remove a configured runner."
 msgstr ""
 
-#: src/skit/cli.py:3699
+#: src/skit/cli.py:3705
 msgid "Runner name"
 msgstr ""
 
-#: src/skit/cli.py:3704
+#: src/skit/cli.py:3710
 msgid "Remove one raw row index from 'runner list --all' (or 'container')"
 msgstr ""
 
-#: src/skit/cli.py:3714
+#: src/skit/cli.py:3720
 msgid "Pass exactly one runner name or --row INDEX."
 msgstr ""
 
-#: src/skit/cli.py:3734 src/skit/cli.py:3738
+#: src/skit/cli.py:3740 src/skit/cli.py:3744
 msgid "--row must be a non-negative index or 'container'."
 msgstr ""
 
-#: src/skit/cli.py:3743
+#: src/skit/cli.py:3749
 #, python-format
 msgid "Unknown runner row: %(row)s. Inspect with: skit runner list --all"
 msgstr ""
 
-#: src/skit/cli.py:3751
+#: src/skit/cli.py:3757
 #, python-format
 msgid "Runner row %(row)s is valid. Remove the agent by name instead: skit runner remove \"%(name)s\""
 msgstr ""
 
-#: src/skit/cli.py:3760 src/skit/tui_runner.py:315
+#: src/skit/cli.py:3766 src/skit/tui_runner.py:315
 msgid "Remove the malformed prompt runner container?"
 msgstr ""
 
-#: src/skit/cli.py:3762
+#: src/skit/cli.py:3768
 #, python-format
 msgid "Remove runner row %(row)d (\"%(name)s\")?"
 msgstr ""
 
-#: src/skit/cli.py:3775 src/skit/tui_runner.py:321
+#: src/skit/cli.py:3781 src/skit/tui_runner.py:321
 #, python-format
 msgid "Remove the agent \"%(name)s\"?"
 msgstr ""
 
-#: src/skit/cli.py:3785 src/skit/tui_runner.py:326
+#: src/skit/cli.py:3791 src/skit/tui_runner.py:326
 #, python-format
 msgid "%(count)d prompt pins this runner and will need another runner before it can run again."
 msgid_plural "%(count)d prompts pin this runner and will need another runner before they can run again."
 msgstr[0] ""
 msgstr[1] ""
 
-#: src/skit/cli.py:3793
+#: src/skit/cli.py:3799
 msgid "Confirmation is required; pass --yes to remove the runner."
-msgstr ""
-
-#: src/skit/cli.py:3811
-#, python-format
-msgid "Runner %(name)s removed."
-msgstr ""
-
-#: src/skit/cli.py:3814
-msgid "Malformed prompt runner container removed."
 msgstr ""
 
 #: src/skit/cli.py:3817
 #, python-format
+msgid "Runner %(name)s removed."
+msgstr ""
+
+#: src/skit/cli.py:3820
+msgid "Malformed prompt runner container removed."
+msgstr ""
+
+#: src/skit/cli.py:3823
+#, python-format
 msgid "Malformed runner row %(row)d removed."
 msgstr ""
 
-#: src/skit/cli.py:3826
+#: src/skit/cli.py:3832
 msgid "Manage named parameter presets for an entry."
 msgstr ""
 
-#: src/skit/cli.py:3842 src/skit/cli.py:3858
+#: src/skit/cli.py:3848 src/skit/cli.py:3864
 #, python-format
 msgid "%(name)s has no remembered values yet — run it once first."
 msgstr ""
 
-#: src/skit/cli.py:3869
+#: src/skit/cli.py:3875
 msgid "Saving current values needs an interactive terminal; pass --from-last to save the last run instead."
 msgstr ""
 
-#: src/skit/cli.py:3879
+#: src/skit/cli.py:3885
 msgid "Save a set of parameter values as a named preset."
 msgstr ""
 
-#: src/skit/cli.py:3882 src/skit/cli.py:3958 src/skit/tui_form.py:349
+#: src/skit/cli.py:3888 src/skit/cli.py:3964 src/skit/tui_form.py:349
 msgid "Preset name"
 msgstr ""
 
-#: src/skit/cli.py:3886
+#: src/skit/cli.py:3892
 msgid "Save the last run's values without asking (automation-friendly)"
 msgstr ""
 
-#: src/skit/cli.py:3911
+#: src/skit/cli.py:3917
 #, python-format
 msgid "Secret values are never stored in presets; skipped: %(names)s"
 msgstr ""
 
-#: src/skit/cli.py:3928
+#: src/skit/cli.py:3934
 msgid "List an entry's saved presets."
 msgstr ""
 
-#: src/skit/cli.py:3945
+#: src/skit/cli.py:3951
 #, python-format
 msgid "No presets for %(name)s yet. Create one with: skit run %(name)s --save-preset <preset>"
 msgstr ""
 
-#: src/skit/cli.py:3955
+#: src/skit/cli.py:3961
 msgid "Delete a named preset from an entry."
 msgstr ""
 
-#: src/skit/cli.py:3980
+#: src/skit/cli.py:3986
 msgid "Confirmation is required; pass --yes to delete the preset."
 msgstr ""
 
-#: src/skit/cli.py:3984
+#: src/skit/cli.py:3990
 #, python-format
 msgid "Delete preset \"%(preset)s\" from %(name)s?"
 msgstr ""
 
-#: src/skit/cli.py:3989
+#: src/skit/cli.py:3995
 #, python-format
 msgid "Preset \"%(preset)s\" deleted from %(name)s."
 msgstr ""
 
-#: src/skit/cli.py:4048
+#: src/skit/cli.py:4054
 #, python-format
 msgid "default %(value)s"
 msgstr ""
 
-#: src/skit/cli.py:4050
+#: src/skit/cli.py:4056
 msgid "optional"
 msgstr ""
 
-#: src/skit/cli.py:4052
+#: src/skit/cli.py:4058
 msgid "secret"
 msgstr ""
 
-#: src/skit/cli.py:4062
+#: src/skit/cli.py:4068
 msgid "Delivery"
 msgstr ""
 
-#: src/skit/cli.py:4066 src/skit/cli.py:4286
+#: src/skit/cli.py:4072 src/skit/cli.py:4292
 msgid "Last value"
 msgstr ""
 
-#: src/skit/cli.py:4110
+#: src/skit/cli.py:4116
 #, python-format
 msgid "Variable insertion is off — the body travels to the agent exactly as written. Turn it on with: skit params %(name)s --interpolate"
 msgstr ""
 
-#: src/skit/cli.py:4121 src/skit/cli.py:4257 src/skit/cli.py:4266
+#: src/skit/cli.py:4127 src/skit/cli.py:4263 src/skit/cli.py:4272
 #, python-format
 msgid "%(name)s has no managed parameters."
 msgstr ""
 
-#: src/skit/cli.py:4126
+#: src/skit/cli.py:4132
 msgid "Prompt placeholders (the run form asks for them):"
 msgstr ""
 
-#: src/skit/cli.py:4128
+#: src/skit/cli.py:4134
 msgid "Command template placeholders (the run form asks for them):"
 msgstr ""
 
-#: src/skit/cli.py:4135
+#: src/skit/cli.py:4141
 msgid "Declared environment variables (set on the run):"
 msgstr ""
 
-#: src/skit/cli.py:4145
+#: src/skit/cli.py:4151
 #, python-format
 msgid "Detected but not yet managed: %(names)s … and %(count)d more candidate (use --add to manage them)"
 msgid_plural "Detected but not yet managed: %(names)s … and %(count)d more candidates (use --add to manage them)"
 msgstr[0] ""
 msgstr[1] ""
 
-#: src/skit/cli.py:4153
+#: src/skit/cli.py:4159
 #, python-format
 msgid "Detected but not yet managed: %(names)s (use --add to manage them)"
 msgstr ""
 
-#: src/skit/cli.py:4158
+#: src/skit/cli.py:4164
 #, python-format
 msgid "No longer in the prompt (the value would be ignored): %(names)s — remove with --rm, or edit the body."
 msgstr ""
 
-#: src/skit/cli.py:4272
+#: src/skit/cli.py:4278
 #, python-format
 msgid "%(name)s has no managed parameters. Use --manage to bring a detected candidate under management."
 msgstr ""
 
-#: src/skit/cli.py:4310
+#: src/skit/cli.py:4316
 #, python-format
 msgid "Detected but not yet managed: %(names)s"
 msgstr ""
 
-#: src/skit/cli.py:4317
+#: src/skit/cli.py:4323
 msgid "Reference mode: skit never writes the original file — manage parameters by editing its [tool.skit] block in the source directly."
 msgstr ""
 
-#: src/skit/cli.py:4325
+#: src/skit/cli.py:4331
 #, python-format
 msgid "Detected but not yet managed: %(names)s (use --manage to manage them)"
 msgstr ""
 
-#: src/skit/cli.py:4330
+#: src/skit/cli.py:4336
 #, python-brace-format, python-format
 msgid "This script locates itself ($0 / BASH_SOURCE). Injecting a constant runs it from a temporary copy, so it would see that copy path instead. Rewriting the constant as NAME=\"${NAME:-value}\" delivers the value through the environment with no copy at all — `skit params %(name)s --normalize NAME` does the rewrite for you on the stored copy."
 msgstr ""
 
-#: src/skit/cli.py:4349
+#: src/skit/cli.py:4355
 msgid "Show or edit an entry's managed or declared parameters."
 msgstr ""
 
-#: src/skit/cli.py:4351
+#: src/skit/cli.py:4357
 msgid "Examples:  skit params resize --manage WIDTH  ·  skit params conv --add size --type size=int --deliver size=flag --flag size=--size"
 msgstr ""
 
-#: src/skit/cli.py:4359
+#: src/skit/cli.py:4365
 msgid "Prune definitions that no longer match the script and refresh changed types"
 msgstr ""
 
-#: src/skit/cli.py:4364
+#: src/skit/cli.py:4370
 msgid "Bring a currently detected candidate under management (repeatable)"
 msgstr ""
 
-#: src/skit/cli.py:4367
+#: src/skit/cli.py:4373
 msgid "Drop a managed parameter (repeatable)"
 msgstr ""
 
-#: src/skit/cli.py:4372
+#: src/skit/cli.py:4378
 msgid "Declare a new parameter on an exe/command entry, by name (repeatable)"
 msgstr ""
 
-#: src/skit/cli.py:4375
+#: src/skit/cli.py:4381
 msgid "Remove a declared parameter, by name (repeatable)"
 msgstr ""
 
-#: src/skit/cli.py:4380
+#: src/skit/cli.py:4386
 msgid "Set a declared parameter's type, as NAME=str|int|float|bool|choice|path"
 msgstr ""
 
-#: src/skit/cli.py:4383
+#: src/skit/cli.py:4389
 msgid "Set a declared parameter's default, as NAME=VALUE"
 msgstr ""
 
-#: src/skit/cli.py:4388
+#: src/skit/cli.py:4394
 msgid "Set a declared parameter's choices, as NAME=a,b,c (comma separated)"
 msgstr ""
 
-#: src/skit/cli.py:4394
+#: src/skit/cli.py:4400
 msgid "Set how a declared parameter reaches the program, as NAME=env|flag|placeholder"
 msgstr ""
 
-#: src/skit/cli.py:4400
+#: src/skit/cli.py:4406
 msgid "Set a declared flag parameter's option, as NAME=--out (empty = positional)"
 msgstr ""
 
-#: src/skit/cli.py:4403
+#: src/skit/cli.py:4409
 msgid "Mark a declared parameter as required (repeatable)"
 msgstr ""
 
-#: src/skit/cli.py:4406
+#: src/skit/cli.py:4412
 msgid "Mark a declared parameter as optional (repeatable)"
 msgstr ""
 
-#: src/skit/cli.py:4409
+#: src/skit/cli.py:4415
 msgid "Set a declared parameter's help text, as NAME=text"
 msgstr ""
 
-#: src/skit/cli.py:4412
+#: src/skit/cli.py:4418
 msgid "Mark a managed parameter as secret (repeatable)"
 msgstr ""
 
-#: src/skit/cli.py:4417
+#: src/skit/cli.py:4423
 msgid "Remove the secret mark from a managed parameter (repeatable)"
 msgstr ""
 
-#: src/skit/cli.py:4420
+#: src/skit/cli.py:4426
 msgid "Set a parameter's form prompt, as NAME=text (repeatable)"
 msgstr ""
 
-#: src/skit/cli.py:4426
+#: src/skit/cli.py:4432
 msgid "Read a secret parameter from an environment variable at run time, as NAME=ENVVAR (empty ENVVAR clears it; repeatable)"
 msgstr ""
 
-#: src/skit/cli.py:4433
+#: src/skit/cli.py:4439
 #, python-brace-format
 msgid "Shell only: rewrite a constant into the ${NAME:-default} idiom in the stored copy, so its value is delivered as an environment variable instead of a rewritten temporary copy (repeatable)"
 msgstr ""
 
-#: src/skit/cli.py:4440
+#: src/skit/cli.py:4446
 msgid "Prompt only: pin the agent this prompt runs with (empty value clears the pin)"
 msgstr ""
 
-#: src/skit/cli.py:4448
+#: src/skit/cli.py:4454
 msgid "Prompt only: turn variable insertion on/off for this prompt (off = the body travels exactly as written)"
 msgstr ""
 
-#: src/skit/cli.py:4456
+#: src/skit/cli.py:4462
 msgid "Set where the entry runs: origin (its own folder), store, invoke (where you run skit from), or an absolute path"
 msgstr ""
 
-#: src/skit/cli.py:4463
+#: src/skit/cli.py:4469
 #, python-brace-format
 msgid "Command only: rewrite the template ({placeholders} are re-read from it)"
 msgstr ""
 
-#: src/skit/cli.py:4469
+#: src/skit/cli.py:4475
 msgid "Pin the interpreter/runtime an interpreted entry runs with (e.g. zsh, bun; empty value returns to automatic)"
 msgstr ""
 
-#: src/skit/cli.py:4473
+#: src/skit/cli.py:4479
 msgid "Output the read view as JSON"
 msgstr ""
 
-#: src/skit/cli.py:4535
+#: src/skit/cli.py:4541
 #, python-format
 msgid "%(op)s is its own operation — run it in a separate skit params call (nothing was changed)."
 msgstr ""
 
-#: src/skit/cli.py:4605
+#: src/skit/cli.py:4611
 #, python-format
 msgid "%(name)s manages its parameters from the script itself — use --manage / --unmanage, or edit the [tool.skit] block."
 msgstr ""
 
-#: src/skit/cli.py:4693
+#: src/skit/cli.py:4699
 #, python-format
 msgid "Template updated. Placeholders: %(names)s"
 msgstr ""
 
-#: src/skit/cli.py:4697
+#: src/skit/cli.py:4703
 #, python-format
 msgid "%(name)s now runs in: %(dir)s"
 msgstr ""
 
-#: src/skit/cli.py:4702
+#: src/skit/cli.py:4708
 #, python-format
 msgid "%(name)s now runs with: %(program)s"
 msgstr ""
 
-#: src/skit/cli.py:4706
+#: src/skit/cli.py:4712
 #, python-format
 msgid "%(name)s is back to automatic interpreter detection."
 msgstr ""
 
-#: src/skit/cli.py:4737
+#: src/skit/cli.py:4743
 #, python-format
 msgid "%(name)s now runs with %(runner)s."
 msgstr ""
 
-#: src/skit/cli.py:4741
+#: src/skit/cli.py:4747
 #, python-format
 msgid "Cleared the runner pin — %(name)s asks at run time."
 msgstr ""
 
-#: src/skit/cli.py:4750
+#: src/skit/cli.py:4756
 msgid "--interpolate only applies to prompt entries."
 msgstr ""
 
-#: src/skit/cli.py:4757
+#: src/skit/cli.py:4763
 #, python-format
 msgid "Variable insertion is on — %(name)s fills its managed placeholders again."
 msgstr ""
 
-#: src/skit/cli.py:4761
+#: src/skit/cli.py:4767
 #, python-format
 msgid "Variable insertion is off — %(name)s travels to the agent exactly as written."
 msgstr ""
 
-#: src/skit/cli.py:4781 src/skit/cli.py:4887 src/skit/cli.py:5141
+#: src/skit/cli.py:4787 src/skit/cli.py:4893 src/skit/cli.py:5147
 msgid "Nothing was changed — fix the flag(s) above and run it again."
 msgstr ""
 
-#: src/skit/cli.py:4839
+#: src/skit/cli.py:4845
 #, python-format
 msgid "%(name)s has no managed parameters — its kind has no analyzer to read them from. Declare one instead: skit params %(target)s --add PARAM"
 msgstr ""
 
-#: src/skit/cli.py:4847
+#: src/skit/cli.py:4853
 #, python-format
 msgid "%(name)s has no managed parameters — its kind has no analyzer to read them from."
 msgstr ""
 
-#: src/skit/cli.py:4855
+#: src/skit/cli.py:4861
 #, python-format
 msgid "%(name)s is in reference mode, and skit never writes the original file. Edit the [tool.skit] block in the source directly."
 msgstr ""
 
-#: src/skit/cli.py:4864 src/skit/cli.py:5021 src/skit/launcher.py:236
+#: src/skit/cli.py:4870 src/skit/cli.py:5027 src/skit/launcher.py:236
 #, python-format
 msgid "%(name)s has no stored copy to edit."
 msgstr ""
 
-#: src/skit/cli.py:4884 src/skit/cli.py:5138
+#: src/skit/cli.py:4890 src/skit/cli.py:5144
 #, python-format
 msgid "Malformed value: %(item)s (expected %(shape)s)."
 msgstr ""
 
-#: src/skit/cli.py:4923 src/skit/cli.py:5205
+#: src/skit/cli.py:4929 src/skit/cli.py:5211
 #, python-format
 msgid "Removed previously stored plaintext value(s) for now-secret parameter(s): %(names)s"
 msgstr ""
 
-#: src/skit/cli.py:4930
+#: src/skit/cli.py:4936
 #, python-format
 msgid "Updated %(name)s. Managed parameters: %(names)s"
 msgstr ""
 
-#: src/skit/cli.py:4936
+#: src/skit/cli.py:4942
 #, python-format
 msgid "The run form now asks for the managed parameters — the script's own command-line form (%(frameworks)s) is set aside until they are removed (--unmanage)."
 msgstr ""
 
-#: src/skit/cli.py:4950
+#: src/skit/cli.py:4956
 #, python-format
 msgid "%(name)s isn't a plain constant with a literal value, so there's nothing to normalize; skipped."
 msgstr ""
 
-#: src/skit/cli.py:4955
+#: src/skit/cli.py:4961
 #, python-format
 msgid "%(name)s is assigned more than once at the top level; normalizing it would change which value wins. Skipped."
 msgstr ""
 
-#: src/skit/cli.py:4960
+#: src/skit/cli.py:4966
 #, python-format
 msgid "%(name)s is readonly, so the script could never take a value from the environment; skipped."
 msgstr ""
 
-#: src/skit/cli.py:4964
+#: src/skit/cli.py:4970
 #, python-format
 msgid "%(name)s already reads from the environment; nothing to do."
 msgstr ""
 
-#: src/skit/cli.py:4967
+#: src/skit/cli.py:4973
 #, python-format
 msgid "%(name)s's value contains a character that can't be moved into ${...:-...} safely (one of } \" ` $ \\ or a newline); skipped — it keeps being injected into a temporary copy."
 msgstr ""
 
-#: src/skit/cli.py:4972
+#: src/skit/cli.py:4978
 msgid "Could not parse the script (syntax error); nothing was normalized."
 msgstr ""
 
-#: src/skit/cli.py:5004
+#: src/skit/cli.py:5010
 #, python-brace-format, python-format
 msgid "%(name)s has no --normalize: it is a shell idiom (VAR=value -> VAR=\"${VAR:-value}\")."
 msgstr ""
 
-#: src/skit/cli.py:5012
+#: src/skit/cli.py:5018
 #, python-brace-format, python-format
 msgid "%(name)s is in reference mode, and skit never writes the original file. Change the line to VAR=\"${VAR:-value}\" in the source directly."
 msgstr ""
 
-#: src/skit/cli.py:5033
+#: src/skit/cli.py:5039
 #, python-format
 msgid "%(name)s isn't valid UTF-8, so --normalize can't rewrite it safely; nothing was changed — its constants keep being injected into a temporary copy."
 msgstr ""
 
-#: src/skit/cli.py:5064
+#: src/skit/cli.py:5070
 #, python-format
 msgid "Normalized %(names)s in %(name)s: delivered as environment variables from now on (no temporary copy, and $0 stays your real file)."
 msgstr ""
 
-#: src/skit/cli.py:5119
+#: src/skit/cli.py:5125
 #, python-format
 msgid "Variable insertion is off for %(name)s — turn it on first with: skit params %(name)s --interpolate"
 msgstr ""
 
-#: src/skit/cli.py:5212
+#: src/skit/cli.py:5218
 #, python-format
 msgid "Updated %(name)s. Declared parameters: %(names)s"
 msgstr ""
 
-#: src/skit/cli.py:5240
+#: src/skit/cli.py:5246
 #, python-format
 msgid "Dependencies of %(name)s: %(deps)s"
 msgstr ""
 
-#: src/skit/cli.py:5249
+#: src/skit/cli.py:5255
 #, python-format
 msgid "External commands needed by %(name)s: %(needs)s"
 msgstr ""
 
-#: src/skit/cli.py:5256
+#: src/skit/cli.py:5262
 msgid "View or update an entry's package dependencies, Python constraint, and needed commands."
 msgstr ""
 
-#: src/skit/cli.py:5259
+#: src/skit/cli.py:5265
 msgid "Examples:  skit deps tool --dep \"requests>=2,<3\" --dep rich  ·  skit deps clip --need jq"
 msgstr ""
 
-#: src/skit/cli.py:5265
+#: src/skit/cli.py:5271
 msgid "A dependency (repeat for more; replaces the whole list)"
 msgstr ""
 
-#: src/skit/cli.py:5267
+#: src/skit/cli.py:5273
 msgid "Remove every dependency"
 msgstr ""
 
-#: src/skit/cli.py:5275
+#: src/skit/cli.py:5281
 msgid "An external command the entry needs on PATH (repeat; replaces the whole list)"
 msgstr ""
 
-#: src/skit/cli.py:5279
+#: src/skit/cli.py:5285
 msgid "Remove every needed external command"
 msgstr ""
 
-#: src/skit/cli.py:5299
+#: src/skit/cli.py:5305
 #, python-format
 msgid "%(name)s doesn't take package dependencies — only --need applies here."
 msgstr ""
 
-#: src/skit/cli.py:5305
+#: src/skit/cli.py:5311
 msgid "Use --dep to set the list or --clear to empty it — not both."
 msgstr ""
 
-#: src/skit/cli.py:5310
+#: src/skit/cli.py:5316
 msgid "Use --need to set the list or --clear-needs to empty it — not both."
 msgstr ""
 
-#: src/skit/cli.py:5345
+#: src/skit/cli.py:5351
 #, python-format
 msgid "Dependencies of %(name)s updated: %(deps)s"
 msgstr ""
 
-#: src/skit/cli.py:5349
+#: src/skit/cli.py:5355
 #, python-format
 msgid "Python constraint of %(name)s updated: %(value)s"
 msgstr ""
 
-#: src/skit/cli.py:5359
+#: src/skit/cli.py:5365
 #, python-format
 msgid "Needs of %(name)s updated: %(needs)s"
 msgstr ""
 
-#: src/skit/cli.py:5372
+#: src/skit/cli.py:5378
 msgid "Connect skit to AI agents: install the official Agent Skill."
 msgstr ""
 
-#: src/skit/cli.py:5389
+#: src/skit/cli.py:5395
 #, python-format
 msgid "Could not write the skill there: %(error)s"
 msgstr ""
 
-#: src/skit/cli.py:5393 src/skit/tui_prefs.py:216
+#: src/skit/cli.py:5399 src/skit/tui_prefs.py:216
 #, python-format
 msgid "Installed the skit Agent Skill: %(path)s"
 msgstr ""
 
-#: src/skit/cli.py:5399 src/skit/tui_prefs.py:89
+#: src/skit/cli.py:5405 src/skit/tui_prefs.py:89
 msgid "user"
 msgstr ""
 
-#: src/skit/cli.py:5399 src/skit/tui_prefs.py:89
+#: src/skit/cli.py:5405 src/skit/tui_prefs.py:89
 msgid "project"
 msgstr ""
 
-#: src/skit/cli.py:5400
+#: src/skit/cli.py:5406
 msgid "Agent directories on this machine:"
 msgstr ""
 
-#: src/skit/cli.py:5404
+#: src/skit/cli.py:5410
 msgid "Install where?"
 msgstr ""
 
-#: src/skit/cli.py:5411
+#: src/skit/cli.py:5417
 #, python-format
 msgid "Write the skill into %(path)s?"
 msgstr ""
 
-#: src/skit/cli.py:5431
+#: src/skit/cli.py:5437
 msgid "Install skit's Agent Skill into an AI agent's skills directory."
 msgstr ""
 
-#: src/skit/cli.py:5433
+#: src/skit/cli.py:5439
 msgid "Examples:  skit agent install  ·  skit agent install claude  ·  skit agent install codex --project  ·  skit agent install --to ~/.claude/skills"
 msgstr ""
 
-#: src/skit/cli.py:5440
+#: src/skit/cli.py:5446
 msgid "Where to install: claude, codex, or agents (the cross-agent ./.agents directory)"
 msgstr ""
 
-#: src/skit/cli.py:5446
+#: src/skit/cli.py:5452
 msgid "Install into this skills directory instead of a named target"
 msgstr ""
 
-#: src/skit/cli.py:5452
+#: src/skit/cli.py:5458
 msgid "Install into the current project (./.claude, ./.codex) instead of your home directory"
 msgstr ""
 
-#: src/skit/cli.py:5465
+#: src/skit/cli.py:5471
 msgid "Use a named target (with optional --project) or --to — not both."
 msgstr ""
 
-#: src/skit/cli.py:5477
+#: src/skit/cli.py:5483
 #, python-format
 msgid "Unknown target %(name)s. Valid targets: claude, codex, agents."
 msgstr ""
 
-#: src/skit/cli.py:5486
+#: src/skit/cli.py:5492
 msgid "Nothing installed: name a target (claude, codex, agents) or pass --to DIR."
 msgstr ""
 
-#: src/skit/cli.py:5493
+#: src/skit/cli.py:5499
 msgid "No agent directories detected (~/.claude, ~/.codex, ./.agents, …). Pass --to DIR to choose one yourself."
 msgstr ""
 
-#: src/skit/cli.py:5499
+#: src/skit/cli.py:5505
 msgid "Cancelled — nothing was written."
 msgstr ""
 
-#: src/skit/cli.py:5527
+#: src/skit/cli.py:5533
 msgid "Check that uv is available and the entry library is intact."
 msgstr ""
 
-#: src/skit/cli.py:5530
+#: src/skit/cli.py:5536
 msgid "Rebuild the index from each entry's meta.toml"
 msgstr ""
 
-#: src/skit/cli.py:5547 src/skit/tui_health.py:212
+#: src/skit/cli.py:5553 src/skit/tui_health.py:212
 #, python-format
 msgid "Index rebuilt: %(count)s entry"
 msgid_plural "Index rebuilt: %(count)s entries"
 msgstr[0] ""
 msgstr[1] ""
 
-#: src/skit/cli.py:5601 src/skit/tui_health.py:62
+#: src/skit/cli.py:5607 src/skit/tui_health.py:62
 #, python-format
 msgid "uv: %(path)s"
 msgstr ""
 
-#: src/skit/cli.py:5604 src/skit/tui_health.py:65
+#: src/skit/cli.py:5610 src/skit/tui_health.py:65
 msgid "uv: not found. Install it from https://docs.astral.sh/uv/getting-started/installation/"
 msgstr ""
 
-#: src/skit/cli.py:5608 src/skit/tui_health.py:72
+#: src/skit/cli.py:5614 src/skit/tui_health.py:72
 #, python-format
 msgid "%(count)s entry registered"
 msgid_plural "%(count)s entries registered"
 msgstr[0] ""
 msgstr[1] ""
 
-#: src/skit/cli.py:5616
+#: src/skit/cli.py:5622
 #, python-format
 msgid "%(count)s stored entry is missing from the index and cannot be listed or run: %(slugs)s. Recover it with: skit doctor --rebuild"
 msgid_plural "%(count)s stored entries are missing from the index and cannot be listed or run: %(slugs)s. Recover them with: skit doctor --rebuild"
 msgstr[0] ""
 msgstr[1] ""
 
-#: src/skit/cli.py:5620
+#: src/skit/cli.py:5626
 #, python-format
 msgid "%(name)s: the launch target is gone from disk"
 msgstr ""
 
-#: src/skit/cli.py:5624
+#: src/skit/cli.py:5630
 #, python-format
 msgid "%(name)s: form definitions are out of sync — run: skit params %(name)s --resync"
 msgstr ""
 
-#: src/skit/cli.py:5628
+#: src/skit/cli.py:5634
 #, python-format
 msgid "%(name)s: missing external command(s): %(tools)s"
 msgstr ""
 
-#: src/skit/cli.py:5634
+#: src/skit/cli.py:5640
 #, python-format
 msgid "%(name)s: a run would refuse to start — %(reason)s"
 msgstr ""
 
-#: src/skit/cli.py:5638
+#: src/skit/cli.py:5644
 #, python-format
 msgid "Ignored malformed runner row(s) in config: %(rows)s. Inspect and repair with: skit runner list --all"
 msgstr ""
 
-#: src/skit/cli.py:5642 src/skit/tui_health.py:154
+#: src/skit/cli.py:5648 src/skit/tui_health.py:154
 #, python-format
 msgid "Library: %(path)s (%(count)s · %(size)s)"
 msgstr ""
 
-#: src/skit/cli.py:5648 src/skit/tui_health.py:165
+#: src/skit/cli.py:5654 src/skit/tui_health.py:165
 #, python-format
 msgid "Config: %(path)s"
 msgstr ""
 
-#: src/skit/cli.py:5649 src/skit/tui_health.py:168
+#: src/skit/cli.py:5655 src/skit/tui_health.py:168
 #, python-format
 msgid "State: %(path)s"
 msgstr ""
 
-#: src/skit/cli.py:5665
+#: src/skit/cli.py:5671
 #, python-format
 msgid "auto (%(locale)s)"
 msgstr ""
 
-#: src/skit/cli.py:5702
+#: src/skit/cli.py:5708
 msgid "default ($VISUAL / $EDITOR)"
 msgstr ""
 
-#: src/skit/cli.py:5718
+#: src/skit/cli.py:5724
 msgid "auto (bash on PATH)"
 msgstr ""
 
-#: src/skit/cli.py:5722
+#: src/skit/cli.py:5728
 msgid "auto (deno > bun > node)"
 msgstr ""
 
-#: src/skit/cli.py:5757
+#: src/skit/cli.py:5763
 msgid "Mirrors are switched off — run `skit config mirror on` to activate them."
 msgstr ""
 
-#: src/skit/cli.py:5770
+#: src/skit/cli.py:5776
 msgid "Nothing to enable: no mirror URLs are saved. Set an axis first: mirror.pypi / mirror.github / mirror.npm."
 msgstr ""
 
-#: src/skit/cli.py:5775
+#: src/skit/cli.py:5781
 #, python-format
 msgid "Unknown mirror value: %(name)s. \"mirror\" is the master switch (on / off); mirrors are picked per ecosystem: mirror.pypi (%(pypi)s), mirror.github (%(github)s), mirror.npm (%(npm)s) — each also takes a URL or \"off\"."
 msgstr ""
 
-#: src/skit/cli.py:5791
+#: src/skit/cli.py:5797
 #, python-format
 msgid "Unknown %(key)s value: %(name)s. Choose from: %(names)s, off — or give a full URL."
 msgstr ""
 
-#: src/skit/cli.py:5815
+#: src/skit/cli.py:5821
 #, python-format
 msgid "Unknown mirror.github value: %(name)s. Choose from: %(names)s, off — or give an https:// github-release base URL (the uv binary is downloaded and executed, so https:// is required)."
 msgstr ""
 
-#: src/skit/cli.py:5832
+#: src/skit/cli.py:5838
 #, python-format
 msgid "Unknown language: %(tag)s. Available: %(locales)s"
 msgstr ""
 
-#: src/skit/cli.py:5849
+#: src/skit/cli.py:5855
 #, python-format
 msgid "Unknown form style: %(value)s. Choose from: tui, plain"
 msgstr ""
 
-#: src/skit/cli.py:5859 src/skit/tui_prefs.py:509
+#: src/skit/cli.py:5865 src/skit/tui_prefs.py:509
 #, python-format
 msgid "No such file: %(path)s"
 msgstr ""
 
-#: src/skit/cli.py:5866
+#: src/skit/cli.py:5872
 #, python-format
 msgid "Unknown JS runner: %(value)s. Choose from: %(names)s"
 msgstr ""
 
-#: src/skit/cli.py:5873
+#: src/skit/cli.py:5879
 #, python-format
 msgid "Unknown after-run behavior: %(value)s. Choose from: exit, stay"
 msgstr ""
 
-#: src/skit/cli.py:5881
+#: src/skit/cli.py:5887
 msgid "Read or set skit's settings (language, editor, mirror, form style, after-run)."
 msgstr ""
 
-#: src/skit/cli.py:5883
+#: src/skit/cli.py:5889
 msgid "Examples:  skit config  ·  skit config lang zh-TW  ·  skit config mirror.pypi tsinghua"
 msgstr ""
 
-#: src/skit/cli.py:5890
+#: src/skit/cli.py:5896
 msgid "Setting name: lang / editor / mirror / mirror.pypi / mirror.github / mirror.npm / form / after_run / shell.bash_path / js.runner"
 msgstr ""
 
-#: src/skit/cli.py:5895
+#: src/skit/cli.py:5901
 msgid "New value (omit to read; lang also accepts \"auto\")"
 msgstr ""
 
-#: src/skit/cli.py:5912
+#: src/skit/cli.py:5918
 #, python-format
 msgid "Unknown setting: %(key)s. Available: %(keys)s"
 msgstr ""
 
-#: src/skit/cli.py:5944 src/skit/tui_prefs.py:439 src/skit/tui_prefs.py:479
+#: src/skit/cli.py:5950 src/skit/tui_prefs.py:439 src/skit/tui_prefs.py:479
 msgid "A custom choice needs a URL."
 msgstr ""
 
-#: src/skit/cli.py:5951 src/skit/tui_prefs.py:372
+#: src/skit/cli.py:5957 src/skit/tui_prefs.py:372
 msgid "github-release mirror base URL"
 msgstr ""
 
-#: src/skit/cli.py:5957 src/skit/tui_prefs.py:484
+#: src/skit/cli.py:5963 src/skit/tui_prefs.py:484
 #, python-format
 msgid "The uv binary is downloaded and executed, so the github-release base URL must use https:// (got: %(url)s)."
 msgstr ""
 
-#: src/skit/cli.py:5976 src/skit/tui_prefs.py:357
+#: src/skit/cli.py:5982 src/skit/tui_prefs.py:357
 msgid "PyPI index (Python packages)"
 msgstr ""
 
-#: src/skit/cli.py:5978 src/skit/tui_prefs.py:363
+#: src/skit/cli.py:5984 src/skit/tui_prefs.py:363
 msgid "PyPI index URL"
 msgstr ""
 
-#: src/skit/cli.py:5982 src/skit/tui_prefs.py:364
+#: src/skit/cli.py:5988 src/skit/tui_prefs.py:364
 msgid "GitHub releases (Python builds, the uv binary)"
 msgstr ""
 
-#: src/skit/cli.py:5991 src/skit/tui_prefs.py:375
+#: src/skit/cli.py:5997 src/skit/tui_prefs.py:375
 msgid "npm registry (JS/TS packages)"
 msgstr ""
 
-#: src/skit/cli.py:5993 src/skit/tui_prefs.py:381
+#: src/skit/cli.py:5999 src/skit/tui_prefs.py:381
 msgid "npm registry URL"
 msgstr ""
 
-#: src/skit/cli.py:6009
+#: src/skit/cli.py:6015
 msgid "Network to PyPI / GitHub looks slow or blocked."
 msgstr ""
 
-#: src/skit/cli.py:6011
+#: src/skit/cli.py:6017
 msgid "Configure mirrors for faster installs (mainland China)?"
 msgstr ""
 
@@ -2111,59 +2116,59 @@ msgstr ""
 msgid "%(name)s reads from the environment variable %(env)s, but it isn't set."
 msgstr ""
 
-#: src/skit/flows.py:1000
+#: src/skit/flows.py:1068
 #, python-format
 msgid "The entry ran, but skit couldn't save its state: %(error)s"
 msgstr ""
 
-#: src/skit/flows.py:1024
+#: src/skit/flows.py:1092
 #, python-format
 msgid "→ inject: %(pairs)s"
 msgstr ""
 
-#: src/skit/flows.py:1027
+#: src/skit/flows.py:1095
 msgid "  (written to a temporary copy, deleted after the run; your original file is untouched)"
 msgstr ""
 
-#: src/skit/flows.py:1087
+#: src/skit/flows.py:1155
 msgid "Secret-marked values are never saved by skit, but this prompt sends them to the selected agent as plaintext; the agent may log or sync them."
 msgstr ""
 
-#: src/skit/flows.py:1098
+#: src/skit/flows.py:1166
 #, python-format
 msgid "%(name)s can't contain a line break: a shell `read` takes ONE line, so everything after the break would be thrown away."
 msgstr ""
 
-#: src/skit/flows.py:1102
+#: src/skit/flows.py:1170
 #, python-format
 msgid "%(name)s is read on the same line as other values, so its value can't contain spaces or tabs — the shell would split it across the other fields. Only the LAST value on a `read` line may contain spaces."
 msgstr ""
 
-#: src/skit/flows.py:1107
+#: src/skit/flows.py:1175
 #, python-format
 msgid "%(name)s starts or ends with a space or tab, which a shell `read` strips off the line — the script would receive it trimmed. Remove the surrounding whitespace."
 msgstr ""
 
-#: src/skit/flows.py:1169
+#: src/skit/flows.py:1237
 msgid "The built-in amp runner is one-shot: amp -x runs this prompt once and does not open an interactive session."
 msgstr ""
 
-#: src/skit/flows.py:1216
+#: src/skit/flows.py:1284
 #, python-format
 msgid "%(value)s isn't a valid %(type)s for %(param)s."
 msgstr ""
 
-#: src/skit/flows.py:1228
+#: src/skit/flows.py:1296
 #, python-format
 msgid "%(empty)s is empty, but %(filled)s is filled and they are read on the same line — a shell `read` would hand your value to %(empty)s. Fill %(empty)s in, or clear %(filled)s."
 msgstr ""
 
-#: src/skit/flows.py:1242
+#: src/skit/flows.py:1310
 #, python-format
 msgid "skit refused to run its own injected copy: %(detail)s"
 msgstr ""
 
-#: src/skit/flows.py:1250
+#: src/skit/flows.py:1318
 #, python-format
 msgid "The script and its form definitions don't match anymore: %(detail)s. Run `skit params %(name)s --resync` to fix it."
 msgstr ""
@@ -2381,7 +2386,7 @@ msgstr ""
 msgid "⚠ This script reads its own location ($0 / $BASH_SOURCE), and the injected values run from a temporary copy — so it sees the copy's path, not the original's. Rewriting a constant as NAME=\"${NAME:-value}\" delivers the value through the environment instead, with no copy at all (`skit params <script> --normalize NAME` does the rewrite for you on a stored copy)."
 msgstr ""
 
-#: src/skit/launcher.py:92 src/skit/launcher.py:326 src/skit/store.py:499
+#: src/skit/launcher.py:92 src/skit/launcher.py:326 src/skit/store.py:507
 #, python-format
 msgid "Unknown entry kind: %(kind)s"
 msgstr ""
@@ -2411,12 +2416,12 @@ msgstr ""
 msgid "Missing required command(s): %(names)s — install them and retry."
 msgstr ""
 
-#: src/skit/models.py:125
+#: src/skit/models.py:134
 #, python-format
 msgid "meta.toml is missing required key(s): %(keys)s"
 msgstr ""
 
-#: src/skit/models.py:139
+#: src/skit/models.py:150
 #, python-format
 msgid "meta.toml has invalid type for key(s): %(keys)s"
 msgstr ""
@@ -2459,105 +2464,105 @@ msgstr ""
 msgid "Enter keeps it; to send an empty value, run with --set %(name)s="
 msgstr ""
 
-#: src/skit/store.py:493
+#: src/skit/store.py:501
 msgid "Prompt entries must be added with add_prompt()."
 msgstr ""
 
-#: src/skit/store.py:609
+#: src/skit/store.py:617
 #, python-format
 msgid "Not a placeholder in this prompt: %(names)s"
 msgstr ""
 
-#: src/skit/store.py:643 src/skit/store.py:657 src/skit/store.py:670
-#: src/skit/store.py:1518
+#: src/skit/store.py:651 src/skit/store.py:665 src/skit/store.py:678
+#: src/skit/store.py:1526
 #, python-format
 msgid "%(name)s isn't a prompt entry."
 msgstr ""
 
-#: src/skit/store.py:690
+#: src/skit/store.py:698
 #, python-format
 msgid "%(name)s has no original file — origin doesn't apply to its kind."
 msgstr ""
 
-#: src/skit/store.py:695
+#: src/skit/store.py:703
 #, python-format
 msgid "%(name)s has no stored copy — store doesn't apply to its kind."
 msgstr ""
 
-#: src/skit/store.py:702 src/skit/tui_settings.py:573
+#: src/skit/store.py:710 src/skit/tui_settings.py:573
 msgid "The working directory must be origin, store, invoke, or an absolute path."
 msgstr ""
 
-#: src/skit/store.py:722
+#: src/skit/store.py:730
 #, python-format
 msgid "%(name)s doesn't run through a pinnable interpreter."
 msgstr ""
 
-#: src/skit/store.py:747
+#: src/skit/store.py:755
 #, python-format
 msgid "%(name)s isn't a command entry."
 msgstr ""
 
-#: src/skit/store.py:750 src/skit/store.py:817 src/skit/tui_settings.py:1043
+#: src/skit/store.py:758 src/skit/store.py:825 src/skit/tui_settings.py:1043
 msgid "Command template must not be empty"
 msgstr ""
 
-#: src/skit/store.py:868
+#: src/skit/store.py:876
 #, python-format
 msgid "Refusing to reuse the existing, non-empty entry directory: %(path)s"
 msgstr ""
 
-#: src/skit/store.py:1154 src/skit/store.py:1208
+#: src/skit/store.py:1162 src/skit/store.py:1216
 #, python-format
 msgid "Script not found: %(name)s"
 msgstr ""
 
-#: src/skit/store.py:1157
+#: src/skit/store.py:1165
 #, python-format
 msgid "%(name)s: metadata is corrupt (%(error)s); run skit doctor --rebuild"
 msgstr ""
 
-#: src/skit/store.py:1199
+#: src/skit/store.py:1207
 #, python-format
 msgid "The name %(name)s belongs to more than one entry (%(slugs)s) — use a slug."
 msgstr ""
 
-#: src/skit/store.py:1243
+#: src/skit/store.py:1251
 #, python-format
 msgid "%(name)s was removed from the library, but its files couldn't be fully deleted: %(path)s — close any program using them, then delete the folder (or run `skit doctor --rebuild` to restore the entry and retry)."
 msgstr ""
 
-#: src/skit/store.py:1257
+#: src/skit/store.py:1265
 #, python-format
 msgid "%(name)s was removed from the library, but its remembered values couldn't be deleted (%(error)s) — delete this file by hand: %(path)s"
 msgstr ""
 
-#: src/skit/store.py:1369
+#: src/skit/store.py:1377
 #, python-format
 msgid "%(name)s is a reference-mode entry: it runs from its own project, which already provides its packages. Dependency management applies to copies."
 msgstr ""
 
-#: src/skit/store.py:1437
+#: src/skit/store.py:1445
 #, python-format
 msgid "%(name)s's stored copy isn't valid UTF-8, so skit can't rewrite the script's own dependency block — and that block is what uv reads. Edit it in the script itself: skit edit %(name)s"
 msgstr ""
 
-#: src/skit/store.py:1555 src/skit/tui_settings.py:1109
+#: src/skit/store.py:1563 src/skit/tui_settings.py:1109
 #, python-format
 msgid "The name %(name)s is already taken."
 msgstr ""
 
-#: src/skit/store.py:1596
+#: src/skit/store.py:1604
 #, python-format
 msgid "%(slug)s: meta.toml is missing; skipped"
 msgstr ""
 
-#: src/skit/store.py:1602
+#: src/skit/store.py:1610
 #, python-format
 msgid "%(slug)s: meta.toml is corrupt (%(error)s); skipped"
 msgstr ""
 
-#: src/skit/store.py:1608
+#: src/skit/store.py:1616
 #, python-format
 msgid "%(slug)s: the referenced source file is gone: %(path)s"
 msgstr ""
@@ -3258,7 +3263,7 @@ msgstr ""
 msgid "Preset:"
 msgstr ""
 
-#: src/skit/tui_form.py:780 src/skit/tui_form.py:1015
+#: src/skit/tui_form.py:780 src/skit/tui_form.py:1027
 msgid "↩ last values"
 msgstr ""
 
@@ -3266,7 +3271,7 @@ msgstr ""
 msgid "none yet — fill the form and press Ctrl+S to save one"
 msgstr ""
 
-#: src/skit/tui_form.py:1002
+#: src/skit/tui_form.py:1014
 #, python-format
 msgid "Preset \"%(preset)s\" saved."
 msgstr ""

@@ -14,6 +14,7 @@ import os
 import shutil
 import stat
 import tomllib
+import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
@@ -99,6 +100,13 @@ def _read_meta(entry_dir: Path) -> ScriptMeta:
 
 
 def _write_meta(entry_dir: Path, meta: ScriptMeta) -> None:
+    if not meta.id:
+        # Identity is minted at the ONE door every meta write passes through: an add
+        # reaches disk already stamped, an edit preserves what it read, and a meta from
+        # before ids existed heals on its next write (never on a read — reads stay
+        # reads). Mutating the caller's object is the point: the Entry handed back must
+        # say exactly what disk now says. See models.ScriptMeta.id for what it guards.
+        meta.id = uuid.uuid4().hex
     atomic_write_toml(entry_dir / "meta.toml", meta.to_toml_dict())
 
 

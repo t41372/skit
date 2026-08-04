@@ -3417,11 +3417,11 @@ def run(
         if forget_args:
             # The remembered argv tail is otherwise uneraseable from the CLI: an empty
             # `--` is indistinguishable from no `--` at all.
-            argstate.save_last(entry.slug, extra_args=[])
+            flows.clear_remembered_tail(entry)
         if not save_preset:
             return
-        argstate.save_preset(
-            entry.slug,
+        saved = flows.save_preset_for(
+            entry,
             save_preset,
             # A preset is the exact snapshot of this run — a cleared field included, so
             # it pins "stays cleared" over whatever last-used remembers (secrets are
@@ -3429,6 +3429,12 @@ def run(
             values,
             secret_names=plan.secret_names,
         )
+        if not saved:
+            message = gettext(
+                'Preset "%(preset)s" wasn\'t saved — %(name)s is no longer in the library.'
+            ) % {"preset": escape(save_preset), "name": escape(entry.meta.name)}
+            err_console.print(f"[yellow]{message}[/yellow]")
+            return
         # stderr, like every run-adjacent skit line ("Reusing your last arguments",
         # the drift banner): the script owns stdout, and on a normal run this prints
         # after the script's output — appending green chrome to a piped stream would
@@ -3501,7 +3507,7 @@ def run(
             flows.save_after_raw_run(entry, code, at=models.now_iso())
         else:
             flows.save_after_run(
-                entry.slug, plan, values, extra, code, at=models.now_iso(), extra_raw=extra_raw
+                entry, plan, values, extra, code, at=models.now_iso(), extra_raw=extra_raw
             )
 
     persistence_error = flows.post_run_persistence_error(_persist_accepted_run)

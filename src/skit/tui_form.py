@@ -984,8 +984,8 @@ class RunFormScreen(Screen[FormResult]):
             if not name:
                 return
             try:
-                argstate.save_preset(
-                    self._entry.slug,
+                saved = flows.save_preset_for(
+                    self._entry,
                     name,
                     # The exact snapshot the form is showing, a cleared field included —
                     # dropping empties republished the very value the user just cleared.
@@ -995,6 +995,18 @@ class RunFormScreen(Screen[FormResult]):
             except argstate.StateWriteError as exc:
                 # No success toast for a preset that never landed on disk.
                 self.notify(str(exc), severity="error")
+                return
+            if not saved:
+                # The form outlived its entry (removed — or its slug reissued — while
+                # the form sat open): an explicit Ctrl+S must hear that, not a toast
+                # for a preset that has no entry to belong to.
+                self.notify(
+                    gettext(
+                        'Preset "%(preset)s" wasn\'t saved — %(name)s is no longer in the library.'
+                    )
+                    % {"preset": name, "name": self._entry.meta.name},
+                    severity="error",
+                )
                 return
             self._presets = argstate.load_state(self._entry.slug)["presets"]
             self._refresh_preset_picker(name)

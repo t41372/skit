@@ -24,7 +24,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from skit import analysis, argstate, flows
+from skit import analysis, argstate, flows, store
 from skit.langs.python.analyzer import analyze as py_analyze
 from skit.langs.shell import analyzer as shell
 from skit.notices import NoticeCode, edit_notice
@@ -402,10 +402,12 @@ def test_last_used_keeps_a_cleared_empty_only_where_it_was_delivered():
 
 def test_save_after_run_persists_via_the_remembered_rule(tmp_path):
     # save_after_run stores last-used through remembered_values: a value equal to the default
-    # is dropped, a changed one is kept.
+    # is dropped, a changed one is kept. The entry is real — post-acceptance persistence
+    # re-proves its target before writing anything (flows.persistence_target).
+    entry = store.add_command("echo {GREETING}", name="rem")
     plan = _persist_plan()
     flows.save_after_run(
-        "rem",
+        entry,
         plan,
         {"GREETING": "bonjour", "WIDTH": "900"},
         [],

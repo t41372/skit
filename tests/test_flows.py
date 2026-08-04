@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from skit import argstate, flows
+from skit import argstate, flows, store
 from skit.langs.python import metawriter as _metawriter
 from skit.models import Entry, ScriptMeta
 from skit.params import ParamDecl, ParamType
@@ -510,10 +510,14 @@ def test_glob_feedback_counts(tmp_path):
 
 
 def test_save_after_run_persists_intent_and_stamps_run(tmp_path):
-    entry = _python_entry(tmp_path, MANAGED_SCRIPT)
+    # A REAL store entry: post-acceptance persistence re-proves its target before
+    # writing (flows.persistence_target), so a fabricated slug would persist nothing.
+    src = tmp_path / "orig.py"
+    src.write_text(MANAGED_SCRIPT, encoding="utf-8")
+    entry = store.add_python(src, name="s")
     plan = flows.plan_for_entry(entry)
     flows.save_after_run(
-        "s",
+        entry,
         plan,
         {"OUTPUT": "long_{today}.jpg", "WIDTH": "800", "API_KEY": "secret!"},
         ["--fast"],
@@ -940,10 +944,12 @@ def test_command_placeholders_are_required_and_secret_prechecked():
 
 
 def test_save_after_run_clears_cleared_extra_args(tmp_path):
-    entry = _python_entry(tmp_path, MANAGED_SCRIPT, slug="clr")
+    src = tmp_path / "orig.py"
+    src.write_text(MANAGED_SCRIPT, encoding="utf-8")
+    entry = store.add_python(src, name="clr")
     plan = flows.plan_for_entry(entry)
     flows.save_after_run(
-        "clr", plan, {"OUTPUT": "a"}, ["--fast"], 0, at="2026-01-01T00:00:00+00:00", extra_raw=True
+        entry, plan, {"OUTPUT": "a"}, ["--fast"], 0, at="2026-01-01T00:00:00+00:00", extra_raw=True
     )
     assert argstate.load_state("clr")["extra_args"] == ["--fast"]
     assert argstate.load_state("clr")["extra_args_raw"] is True  # the form's raw intent text
@@ -951,23 +957,20 @@ def test_save_after_run_clears_cleared_extra_args(tmp_path):
     # falsy-merge resurrected it forever) — and the provenance marker goes with it, so a
     # later CLI tail can never inherit the old form tail's expansion regime.
     flows.save_after_run(
-        "clr", plan, {"OUTPUT": "a"}, [], 0, at="2026-01-01T00:00:01+00:00", extra_raw=True
+        entry, plan, {"OUTPUT": "a"}, [], 0, at="2026-01-01T00:00:01+00:00", extra_raw=True
     )
     assert argstate.load_state("clr")["extra_args"] == []
     assert argstate.load_state("clr")["extra_args_raw"] is False
 
 
 def test_save_after_run_purges_secret_placeholder_from_presets(tmp_path):
-    from skit.models import ScriptMeta
-
-    meta = ScriptMeta(name="c3", kind="command", template="x {api_key}", params=["api_key"])
-    entry = Entry(slug="c3", meta=meta, dir=Path("/nonexistent"))
+    entry = store.add_command("x {api_key}", name="c3")
     # Plaintext saved back when the placeholder wasn't treated as secret yet.
     argstate.save_preset("c3", "old", {"api_key": "sk-123"})
     argstate.save_last("c3", values={"api_key": "sk-123"})
     plan = flows.plan_for_entry(entry)
     flows.save_after_run(
-        "c3", plan, {"api_key": "sk-456"}, [], 0, at="2026-01-01T00:00:00+00:00", extra_raw=False
+        entry, plan, {"api_key": "sk-456"}, [], 0, at="2026-01-01T00:00:00+00:00", extra_raw=False
     )
     state = argstate.load_state("c3")
     assert "api_key" not in state["values"]

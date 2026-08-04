@@ -1050,7 +1050,7 @@ class MenuApp(App[int | PendingRun]):
             return
         persistence_error = flows.post_run_persistence_error(
             lambda: flows.save_after_run(
-                entry.slug,
+                entry,
                 plan,
                 values,
                 list(extra),
@@ -1303,7 +1303,7 @@ def _finish_run(pending: PendingRun) -> int:
         return exitcodes.exit_code_for_failure(flows.failure_reason(outcome))
     persistence_error = flows.post_run_persistence_error(
         lambda: flows.save_after_run(
-            pending.entry.slug,
+            pending.entry,
             pending.plan,
             pending.values,
             list(pending.extra),

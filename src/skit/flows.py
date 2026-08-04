@@ -35,7 +35,7 @@ from __future__ import annotations
 import glob as _glob
 import os
 import shlex
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -853,8 +853,42 @@ def remembered_values(plan: FormPlan, values: Mapping[str, str]) -> dict[str, st
     return out
 
 
+def persistence_target(entry: Entry) -> Entry | None:
+    """The entry a HELD handle may still write state for — None means write NOTHING.
+
+    Every slug-keyed state write that lands a user-paced while after its resolve (a run
+    finishing hours later, a form's Ctrl+S) passes through here first. The slug in hand
+    is an ADDRESS, not an identity: the entry may be gone — remove() already forgot its
+    state file, and a write now would resurrect the very file it deleted — or the
+    address may have been reissued to a LATER add (a removed entry's slug is legal to
+    reuse), where a write would graft this launch's values onto a stranger.
+    meta.id tells the two owners apart; an empty id (a meta from before ids existed)
+    matches anything, and only until that entry's next meta write stamps one.
+
+    Best-effort by design: the guard shrinks the stale window from run-length to the
+    write itself — argstate's per-slug lock keeps that write atomic, and the C3 strip
+    set is a union (a race can only widen a scrub, never talk a name out of secrecy).
+    Immediate resolve→write command lanes need no guard: they hold no handle long
+    enough for it to go stale."""
+    try:
+        fresh = store.resolve(entry.slug)
+    except store.StoreError:
+        return None
+    if entry.meta.id and fresh.meta.id and entry.meta.id != fresh.meta.id:
+        return None
+    return fresh
+
+
+def _post_accept_secret_names(entry: Entry, fresh: Entry, launch: Collection[str]) -> set[str]:
+    """The C3 strip set for a post-acceptance write: whatever launch called secret plus
+    BOTH readings of the stored schema — the held handle's (its declared rows can carry
+    secrecy a reconcile would call missing) and the fresh one's (a mid-run flip to
+    secret must strip retroactively, not on the next run)."""
+    return set(launch) | stored_secret_names(entry) | stored_secret_names(fresh)
+
+
 def save_after_run(
-    slug: str,
+    entry: Entry,
     plan: FormPlan,
     values: Mapping[str, str],
     extra_args: list[str],
@@ -868,24 +902,32 @@ def save_after_run(
     key. extra_raw is the tail's provenance — True for the TUI form's raw intent text,
     False for a CLI tail the user's shell already processed — recorded so every later
     replay (either face) re-expands exactly the tails that were captured raw, and only
-    those (see argstate.load_state)."""
+    those (see argstate.load_state).
+
+    The entry in hand predates a run that may have lasted hours, so nothing is written
+    until persistence_target re-proves it, and the strip set is the union of launch-time
+    and persistence-time secrecy — a mid-run flip to secret scrubs NOW."""
+    fresh = persistence_target(entry)
+    if fresh is None:
+        return
+    secret_names = _post_accept_secret_names(entry, fresh, plan.secret_names)
     # Retroactive C3 scrub: a placeholder/param that is secret NOW must not keep old
     # plaintext in values or presets from the days it wasn't (purge is idempotent).
-    if plan.secret_names:
-        argstate.purge_secret(slug, plan.secret_names)
+    if secret_names:
+        argstate.purge_secret(entry.slug, secret_names)
     argstate.save_last(
-        slug,
+        entry.slug,
         values=remembered_values(plan, values),
         extra_args=list(extra_args),
         extra_args_raw=extra_raw,
-        secret_names=plan.secret_names,
+        secret_names=secret_names,
     )
     argstate.record_run(
-        slug,
+        entry.slug,
         exit_code,
         at=at,
         values=dict(values),
-        secret_names=plan.secret_names,
+        secret_names=secret_names,
     )
 
 
@@ -932,21 +974,47 @@ def save_after_raw_run(entry: Entry, exit_code: int, *, at: str) -> None:
     accepted run performs, and record_run re-persists the preserved last_run snapshot,
     so that snapshot must pass through the same strip as any new write.
 
-    "CURRENT" means at persistence time, not launch time: the entry object in hand
-    predates a run that may have lasted hours, so the slug is re-resolved and the
-    strip set is the UNION of both readings — a race can only widen the scrub, never
-    talk a name out of secrecy. An entry that resolves to nothing anymore (removed
-    mid-run, or its meta now unreadable) gets no stamp at all: writing state for it
-    would resurrect the very file remove() just deleted."""
-    secret_names = stored_secret_names(entry)
-    try:
-        fresh = store.resolve(entry.slug)
-    except store.StoreError:
+    Same guard as every post-acceptance write (persistence_target): an entry that no
+    longer resolves — or a slug that now belongs to a later add — gets no stamp at all,
+    and the strip set unions launch-time and persistence-time readings."""
+    fresh = persistence_target(entry)
+    if fresh is None:
         return
-    secret_names |= stored_secret_names(fresh)
+    secret_names = _post_accept_secret_names(entry, fresh, frozenset())
     if secret_names:
         argstate.purge_secret(entry.slug, secret_names)
     argstate.record_run(entry.slug, exit_code, at=at, secret_names=secret_names)
+
+
+def save_preset_for(
+    entry: Entry, name: str, values: Mapping[str, str], *, secret_names: Collection[str]
+) -> bool:
+    """Save a preset against a HELD entry (`run --save-preset` after the run ends, the
+    form's Ctrl+S however long the form sat open) — through the same guard as every
+    other post-acceptance write. False means nothing was written: the entry is gone or
+    its slug was reissued. The caller owns saying so — a preset is an EXPLICIT request,
+    and eating one silently would be worse than the stale write the guard prevents."""
+    fresh = persistence_target(entry)
+    if fresh is None:
+        return False
+    argstate.save_preset(
+        entry.slug,
+        name,
+        dict(values),
+        secret_names=_post_accept_secret_names(entry, fresh, secret_names),
+    )
+    return True
+
+
+def clear_remembered_tail(entry: Entry) -> None:
+    """--forget-args' deferred CLEAR (the acceptance-point half; suppressing the reuse
+    was decided before assembly). Guarded like every post-acceptance write, with a
+    vacuous-truth twist: if the entry is gone, so is its whole state file (remove()
+    forgot it) — the forgetting already happened, and writing the clear would resurrect
+    the file just to hold an empty tail."""
+    if persistence_target(entry) is None:
+        return
+    argstate.save_last(entry.slug, extra_args=[])
 
 
 # --------------------------------------------------------------------------
