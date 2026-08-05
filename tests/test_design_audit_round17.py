@@ -23,6 +23,7 @@ Q. ``"" == ""`` is no longer an authorization anywhere: an OLDER skit's adds wri
 from __future__ import annotations
 
 import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -284,12 +285,15 @@ def test_cli_edit_commits_a_staged_copy_edit(
 ) -> None:
     entry = _shell(tmp_path, "editok")
     entry.script_path.chmod(0o744)
+    # Whatever mode the platform actually applied is what must survive the commit
+    # (the test_atomic idiom: Windows folds permission bits, POSIX keeps them all).
+    expected_mode = stat.S_IMODE(os.stat(entry.script_path).st_mode)
     _fake_editor(monkeypatch, b'#!/bin/sh\necho "edited"\n')
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     result = runner.invoke(cli.app, ["edit", "editok"])
     assert result.exit_code == 0, result.output
     assert entry.script_path.read_bytes() == b'#!/bin/sh\necho "edited"\n'
-    assert os.stat(entry.script_path).st_mode & 0o777 == 0o744  # the copy keeps its mode
+    assert stat.S_IMODE(os.stat(entry.script_path).st_mode) == expected_mode
     assert not list(Path(store.scripts_dir().parent / "drafts").glob("edit-*"))  # cleaned up
 
 
@@ -396,9 +400,10 @@ def test_a_refused_prompt_edit_never_touches_the_stored_copy(
 def test_commit_copy_edit_is_identity_checked_and_mode_preserving(tmp_path: Path) -> None:
     entry = _shell(tmp_path, "commit17")
     entry.script_path.chmod(0o700)
+    expected_mode = stat.S_IMODE(os.stat(entry.script_path).st_mode)
     store.commit_copy_edit(entry.slug, b"#!/bin/sh\nnew\n", expected_id=entry.meta.id)
     assert entry.script_path.read_bytes() == b"#!/bin/sh\nnew\n"
-    assert os.stat(entry.script_path).st_mode & 0o777 == 0o700
+    assert stat.S_IMODE(os.stat(entry.script_path).st_mode) == expected_mode
     with pytest.raises(store.StaleEntryError):
         store.commit_copy_edit(entry.slug, b"#!/bin/sh\nother\n", expected_id="someone-else")
     assert entry.script_path.read_bytes() == b"#!/bin/sh\nnew\n"

@@ -259,6 +259,7 @@ def test_cli_edit_refuses_invalid_prompt_bytes_and_the_next_edit_can_repair_them
     source.write_text("Review {{target}}\n", encoding="utf-8")
     entry = store.add_prompt(source, name=f"cli-{mode}", mode=mode)
     target = entry.script_path
+    pristine = target.read_bytes()  # byte-exact, whatever newline style this OS wrote
     invalid = b"edited:\xff\n"
     monkeypatch.setattr(cli.editor, "open_in_editor", lambda opened: opened.write_bytes(invalid))
 
@@ -270,7 +271,7 @@ def test_cli_edit_refuses_invalid_prompt_bytes_and_the_next_edit_can_repair_them
     if mode == "copy":
         # The STAGED contract: invalid bytes never reach the stored copy — they stay
         # in the draft the refusal names, and the original is untouched too.
-        assert target.read_bytes() == b"Review {{target}}\n"
+        assert target.read_bytes() == pristine
         assert source.read_text(encoding="utf-8") == "Review {{target}}\n"
         from skit.paths import drafts_dir
 
@@ -297,6 +298,7 @@ async def test_library_edit_refuses_invalid_prompt_bytes_and_recovers_on_reedit(
     source.write_text("Review {{target}}\n", encoding="utf-8")
     entry = store.add_prompt(source, name=f"tui-{mode}", mode=mode)
     target = entry.script_path
+    pristine = target.read_bytes()  # byte-exact, whatever newline style this OS wrote
     invalid = b"edited:\xff\n"
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
     monkeypatch.setattr(tui.editor, "open_in_editor", lambda opened: opened.write_bytes(invalid))
@@ -314,7 +316,7 @@ async def test_library_edit_refuses_invalid_prompt_bytes_and_recovers_on_reedit(
         if mode == "copy":
             # Staged: the stored copy never saw the invalid bytes (they live in the
             # kept draft the refusal names); reference edits the original in place.
-            assert target.read_bytes() == b"Review {{target}}\n"
+            assert target.read_bytes() == pristine
             assert source.read_text(encoding="utf-8") == "Review {{target}}\n"
         else:
             assert target.read_bytes() == invalid
