@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from conftest import patch_run_entry
 from skit import cli, exitcodes, flows, store
 from skit.langs.base import (
     InjectError,
@@ -941,7 +942,6 @@ def test_execute_runs_a_managed_read_with_the_block_in_place(tmp_path, capfd):
 
 @posix_only
 def test_execute_env_delivery_writes_no_temp_copy(tmp_path, monkeypatch):
-    from skit import launcher
 
     seen: dict[str, object] = {}
 
@@ -959,7 +959,7 @@ def test_execute_env_delivery_writes_no_temp_copy(tmp_path, monkeypatch):
         seen["env"] = dict(env_overlay or {})
         return 0
 
-    monkeypatch.setattr(launcher, "run_entry", spy)
+    patch_run_entry(monkeypatch, spy)
     entry = _shell_entry(tmp_path, '#!/usr/bin/env bash\necho "${MODE:-auto}"\n', name="exsh2")
     assert runner.invoke(cli.app, ["params", "exsh2", "--manage", "MODE"]).exit_code == 0
     entry = store.resolve("exsh2")
@@ -1039,12 +1039,9 @@ def test_execute_surfaces_the_self_location_warning(tmp_path):
 
 @posix_only
 def test_execute_syntax_gate_failure_never_launches(tmp_path, monkeypatch):
-    from skit import launcher
 
     monkeypatch.setattr(inject, "quote", lambda value: f"'{value}")
-    monkeypatch.setattr(
-        launcher, "run_entry", lambda *a, **k: pytest.fail("the script must not launch")
-    )
+    patch_run_entry(monkeypatch, lambda *a, **k: pytest.fail("the script must not launch"))
     entry = _shell_entry(tmp_path, "#!/usr/bin/env bash\nTITLE=hello\n", name="exsh6")
     assert runner.invoke(cli.app, ["params", "exsh6", "--manage", "TITLE"]).exit_code == 0
     entry = store.resolve("exsh6")

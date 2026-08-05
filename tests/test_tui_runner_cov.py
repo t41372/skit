@@ -14,7 +14,8 @@ from types import SimpleNamespace
 import pytest
 from textual.widgets import Input, OptionList, Select, Static
 
-from skit import argv_text, config, launcher, store, tui, tui_footer
+from conftest import patch_run_entry
+from skit import argv_text, config, store, tui, tui_footer
 from skit.tui_form import RunFormScreen
 from skit.tui_runner import (
     RunnerActionModal,
@@ -81,11 +82,12 @@ def quiet_run(monkeypatch):
         prepared=None,
     ):
         calls["values"] = dict(values or {})
-        calls["runner"] = runner
+        # The effective runner: a prompt lane carries it INSIDE the prepared snapshot.
+        calls["runner"] = prepared.prompt_runner if prepared is not None else runner
         calls["prepared"] = prepared
         return 0
 
-    monkeypatch.setattr(launcher, "run_entry", fake_run)
+    patch_run_entry(monkeypatch, fake_run)
     monkeypatch.setattr("skit.langs.launch._which", lambda name: f"/bin/{name}")
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
     return calls

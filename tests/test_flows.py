@@ -8,10 +8,22 @@ from pathlib import Path
 
 import pytest
 
+from conftest import patch_run_entry
 from skit import argstate, flows, store
 from skit.langs.python import metawriter as _metawriter
 from skit.models import Entry, ScriptMeta
 from skit.params import ParamDecl, ParamType
+
+
+@pytest.fixture(autouse=True)
+def _open_launch_gate(monkeypatch: pytest.MonkeyPatch):
+    """These are UNIT tests of the delivery pipeline, built on fabricated Entry
+    objects that exist in no store — the launch identity gate would refuse every one
+    before the pipeline under test ran. Stub the gate open here; the gate itself is
+    integration-tested with real entries (test_design_audit_round18)."""
+    from skit import flows as _flows
+
+    monkeypatch.setattr(_flows, "_launch_refusal", lambda _entry: None)
 
 
 def metawriter_write(text: str, params: list[tuple[str, ParamType]]) -> str:
@@ -1088,10 +1100,9 @@ def test_transparency_lines_flag_source_is_single_command_line(tmp_path):
 
 
 def test_execute_runs_and_returns_the_scripts_exit_code(tmp_path, monkeypatch):
-    from skit import launcher
 
     entry = _python_entry(tmp_path, "print(1)\n", slug="ex")
-    monkeypatch.setattr(launcher, "run_entry", lambda *a, **k: 7)
+    patch_run_entry(monkeypatch, lambda *a, **k: 7)
     lines, emit = _emit_sink()
     outcome = flows.execute(entry, flows.FormPlan(source="none"), flows.Assembly(), emit=emit)
     assert outcome.code == 7
@@ -1102,7 +1113,6 @@ def test_execute_runs_and_returns_the_scripts_exit_code(tmp_path, monkeypatch):
 
 def test_command_template_secret_does_not_get_prompt_agent_warning(tmp_path, monkeypatch):
     """The prompt boundary warning must never be inferred from placeholder delivery alone."""
-    from skit import launcher
 
     entry = Entry(
         slug="cmd-secret",
@@ -1130,7 +1140,7 @@ def test_command_template_secret_does_not_get_prompt_agent_warning(tmp_path, mon
         command_values={"api_key": "hunter2"},
         masked_command_values={"api_key": "•••"},
     )
-    monkeypatch.setattr(launcher, "run_entry", lambda *a, **k: 0)
+    patch_run_entry(monkeypatch, lambda *a, **k: 0)
     lines, emit = _emit_sink()
     outcome = flows.execute(entry, plan, asm, emit=emit)
     assert outcome.code == 0
@@ -1139,13 +1149,13 @@ def test_command_template_secret_does_not_get_prompt_agent_warning(tmp_path, mon
 
 def test_pinned_amp_prompt_warns_on_runner_none_shared_execution_path(tmp_path, monkeypatch):
     """Form-free TUI reruns rely on PromptLaunch resolving the pin inside the strategy."""
-    from skit import launcher, store
+    from skit import store
 
     source = tmp_path / "amp.prompt.md"
     source.write_text("Do it\n", encoding="utf-8")
     entry = store.add_prompt(source, name="amp-task", runner="amp")
     monkeypatch.setattr("skit.langs.launch._which", lambda name: f"/bin/{name}")
-    monkeypatch.setattr(launcher, "run_entry", lambda *a, **k: 0)
+    patch_run_entry(monkeypatch, lambda *a, **k: 0)
     lines, emit = _emit_sink()
     outcome = flows.execute(
         entry,
@@ -1159,7 +1169,6 @@ def test_pinned_amp_prompt_warns_on_runner_none_shared_execution_path(tmp_path, 
 
 
 def test_execute_injects_then_cleans_up_the_temp_copy(tmp_path, monkeypatch):
-    from skit import launcher
 
     captured: dict[str, object] = {}
 
@@ -1178,7 +1187,7 @@ def test_execute_injects_then_cleans_up_the_temp_copy(tmp_path, monkeypatch):
         captured["existed_during_run"] = script_override.exists()
         return 0
 
-    monkeypatch.setattr(launcher, "run_entry", fake_run)
+    patch_run_entry(monkeypatch, fake_run)
     entry = _python_entry(tmp_path, MANAGED_SCRIPT, slug="exi")
     plan = flows.plan_for_entry(entry)
     asm = flows.assemble(
@@ -1201,7 +1210,7 @@ def test_execute_classifies_missing_target(tmp_path, monkeypatch):
     def boom(*a, **k):
         raise launcher.TargetMissingError("gone")
 
-    monkeypatch.setattr(launcher, "run_entry", boom)
+    patch_run_entry(monkeypatch, boom)
     _lines, emit = _emit_sink()
     outcome = flows.execute(
         _python_entry(tmp_path, "print(1)\n", slug="exm"),
@@ -1221,7 +1230,7 @@ def test_execute_classifies_not_executable(tmp_path, monkeypatch):
     def boom(*a, **k):
         raise launcher.NotExecutableError("not +x")
 
-    monkeypatch.setattr(launcher, "run_entry", boom)
+    patch_run_entry(monkeypatch, boom)
     _lines, emit = _emit_sink()
     outcome = flows.execute(
         _python_entry(tmp_path, "print(1)\n", slug="exx"),
@@ -1416,9 +1425,8 @@ def test_normal_prompt_transparency_is_compact_and_never_reads_the_body(tmp_path
 def test_execute_not_executable_message_carries_the_error(tmp_path, monkeypatch):
     from skit import launcher
 
-    monkeypatch.setattr(
-        launcher,
-        "run_entry",
+    patch_run_entry(
+        monkeypatch,
         lambda *a, **k: (_ for _ in ()).throw(launcher.NotExecutableError("chmod +x it")),
     )
     _lines, emit = _emit_sink()
@@ -1434,9 +1442,8 @@ def test_execute_not_executable_message_carries_the_error(tmp_path, monkeypatch)
 def test_execute_launch_error_message_carries_the_error(tmp_path, monkeypatch):
     from skit import launcher
 
-    monkeypatch.setattr(
-        launcher,
-        "run_entry",
+    patch_run_entry(
+        monkeypatch,
         lambda *a, **k: (_ for _ in ()).throw(launcher.LaunchError("workdir gone")),
     )
     _lines, emit = _emit_sink()
@@ -1451,7 +1458,6 @@ def test_execute_launch_error_message_carries_the_error(tmp_path, monkeypatch):
 
 
 def test_execute_forwards_invoke_cwd(tmp_path, monkeypatch):
-    from skit import launcher
 
     captured: dict[str, object] = {}
 
@@ -1468,7 +1474,7 @@ def test_execute_forwards_invoke_cwd(tmp_path, monkeypatch):
         captured["cwd"] = invoke_cwd
         return 0
 
-    monkeypatch.setattr(launcher, "run_entry", fake_run)
+    patch_run_entry(monkeypatch, fake_run)
     _lines, emit = _emit_sink()
     where = tmp_path / "run-here"
     where.mkdir()
@@ -1487,8 +1493,6 @@ def test_execute_inject_falls_back_to_entry_dir(tmp_path, monkeypatch):
     # fails. execute must pass entry.dir as the fallback (not None) — force the primary
     # mkstemp to fail and assert the temp copy lands next to the stored script.
     import tempfile
-
-    from skit import launcher
 
     real_mkstemp = tempfile.mkstemp
 
@@ -1514,7 +1518,7 @@ def test_execute_inject_falls_back_to_entry_dir(tmp_path, monkeypatch):
         landed["path"] = script_override
         return 0
 
-    monkeypatch.setattr(launcher, "run_entry", fake_run)
+    patch_run_entry(monkeypatch, fake_run)
     entry = _python_entry(tmp_path, MANAGED_SCRIPT, slug="exfb")
     plan = flows.plan_for_entry(entry)
     asm = flows.assemble(

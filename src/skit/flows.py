@@ -887,6 +887,31 @@ def persistence_target(entry: Entry) -> Entry | None:
     return fresh
 
 
+def _launch_refusal(entry: Entry) -> str | None:
+    """The identity gate the LAUNCH itself passes, called under the entry lock right
+    before the child is spawned: a form (or an inline prompt session) can sit open for
+    hours after the lane's claim, and executing whatever the slug points at by then
+    would run a stranger's program with this entry's checks — a wrong the post-run
+    guards cannot un-run. A proven mismatch (gone, or a different stamped identity)
+    refuses; a symmetric UNSTAMPED pair may still launch — an unstampable library
+    cannot be verified, and it still deserves to run — but persists nothing
+    (persistence_target's own rule). A meta unreadable at this moment refuses too:
+    cannot verify, will not exec."""
+    try:
+        fresh = store.resolve(entry.slug)
+    except store.NotFoundError:
+        return gettext(
+            "%(name)s changed or was removed while the form was open — nothing was run."
+        ) % {"name": entry.meta.name}
+    except store.StoreError as exc:
+        return str(exc)
+    if fresh.meta.id != entry.meta.id:
+        return gettext(
+            "%(name)s changed or was removed while the form was open — nothing was run."
+        ) % {"name": entry.meta.name}
+    return None
+
+
 def _post_accept_secret_names(entry: Entry, fresh: Entry, launch: Collection[str]) -> set[str]:
     """The C3 strip set for a post-acceptance write: whatever launch called secret plus
     BOTH readings of the stored schema — the held handle's (its declared rows can carry
@@ -1204,7 +1229,7 @@ def _split_message(exc: InjectSplitError) -> str:
     }[exc.reason] % {"name": exc.name}
 
 
-def execute(  # noqa: PLR0911, PLR0912 — one early return/branch per injection failure mode; a flat error dispatch
+def execute(  # noqa: PLR0911, PLR0912, PLR0915 — one early return/branch/statement per injection failure mode; a flat error dispatch
     entry: Entry,
     plan: FormPlan,
     asm: Assembly,
@@ -1233,162 +1258,164 @@ def execute(  # noqa: PLR0911, PLR0912 — one early return/branch per injection
     prepared: launcher.PreparedLaunch | None = None
     emit_warning = warn or emit
     try:
-        # The injector's env overlay rides ON TOP of the assembled env-delivered values:
-        # both are "set this variable on the child", and a shell entry can legitimately
-        # produce both at once (a declared env rider plus an envdefault param).
-        env_overlay = dict(asm.env_values)
-        spec = spec_for(entry.meta.kind)
-        if spec is not None and isinstance(spec.launch, PromptLaunch):
+        # Everything from the identity check to the SPAWN happens under the entry lock
+        # (the same lock every mutator, remove() and the persistence doors hold): the
+        # prompt body is read, the temp copy is written and the OS opens the program
+        # inside it, so nothing can swap the entry between "this is still the entry the
+        # form was about" and the exec. Only the WAIT happens outside — no lock may
+        # outlive a child.
+        with advisory_file_lock(store.entry_lock_path(entry.slug)):
+            refusal = _launch_refusal(entry)
+            if refusal is not None:
+                return RunOutcome(None, FAIL_MISSING, refusal)
+            # The injector's env overlay rides ON TOP of the assembled env-delivered values:
+            # both are "set this variable on the child", and a shell entry can legitimately
+            # produce both at once (a declared env rider plus an envdefault param).
+            env_overlay = dict(asm.env_values)
+            spec = spec_for(entry.meta.kind)
+            if spec is not None and isinstance(spec.launch, PromptLaunch):
+                try:
+                    # Cross the delivery boundary only after the exact runner/body argv,
+                    # executable, needs and cwd have all succeeded. run_entry consumes
+                    # this same snapshot below; it never re-reads or rebuilds the prompt.
+                    prepared = launcher.prepare_entry(
+                        entry,
+                        asm.args,
+                        values=asm.command_values,
+                        invoke_cwd=invoke_cwd,
+                        runner=runner,
+                    )
+                except launcher.TargetMissingError as exc:
+                    return RunOutcome(None, FAIL_MISSING, str(exc))
+                except launcher.NotExecutableError as exc:
+                    return RunOutcome(None, FAIL_NOT_EXECUTABLE, str(exc))
+                except launcher.LaunchError as exc:
+                    return RunOutcome(None, FAIL_LAUNCH, str(exc))
+                amp_seed = next(r for r in config.PROMPT_RUNNER_SEEDS if r.name == "amp")
+                if prepared.prompt_runner == amp_seed:
+                    emit_warning(
+                        gettext(
+                            "The built-in amp runner is one-shot: amp -x runs this prompt once "
+                            "and does not open an interactive session."
+                        )
+                    )
+                if prepared.warning:
+                    emit_warning(prepared.warning)
+                secret_warning = _prompt_secret_warning(plan, asm)
+                if secret_warning:
+                    emit_warning(secret_warning)
+            if (
+                plan.source == "inject"
+                and asm.inject_values
+                and spec is not None
+                and spec.injector is not None
+            ):
+                try:
+                    result = spec.injector.inject(
+                        InjectRequest(
+                            text=plan.text,
+                            specs=plan.specs,
+                            values=asm.inject_values,
+                            # entry.dir is write_injected's fallback directory (used only when
+                            # the OS temp dir isn't writable);
+                            # test_execute_inject_falls_back_to_entry_dir pins that this run
+                            # passes it through.
+                            entry_dir=entry.dir,
+                            interpreter=entry.meta.interpreter or spec.default_interpreter,
+                            # Deps-managed npm entries run their temp copy FROM entry_dir, so the
+                            # runner's upward module resolution still finds entry_dir/node_modules.
+                            # (A no-deps entry's temp copy stays in the OS temp dir — the secret-leftover
+                            # default; a consequence, shared with the Python injector's __file__, is that
+                            # `__dirname`/`import.meta.url` differ between an injected and a stored run.)
+                            prefer_entry_dir=(
+                                spec.deps_flavor == "npm"
+                                and entry.meta.mode == "copy"
+                                and bool(entry.meta.dependencies)
+                            ),
+                            # The original filename, so the JS/TS injector can give its temp copy an
+                            # .mjs/.cjs extension when the origin pinned a module flavor (the store
+                            # flattens the stored copy to script.js, losing that signal otherwise).
+                            source=entry.meta.source,
+                        )
+                    )
+                except InjectValueError as exc:
+                    return RunOutcome(
+                        None,
+                        FAIL_BAD_VALUE,
+                        gettext("%(value)s isn't a valid %(type)s for %(param)s.")
+                        % {
+                            "value": repr(exc.value),
+                            "type": exc.type_name,
+                            "param": exc.param_name,
+                        },
+                    )
+                except InjectGapError as exc:
+                    return RunOutcome(
+                        None,
+                        FAIL_BAD_VALUE,
+                        gettext(
+                            "%(empty)s is empty, but %(filled)s is filled and they are read on the "
+                            "same line — a shell `read` would hand your value to %(empty)s. Fill "
+                            "%(empty)s in, or clear %(filled)s."
+                        )
+                        % {"empty": exc.empty, "filled": exc.filled},
+                    )
+                except InjectSplitError as exc:
+                    return RunOutcome(None, FAIL_BAD_VALUE, _split_message(exc))
+                except InjectSyntaxError as exc:
+                    # skit corrupted the script (a quoting/escaping bug) — a resync fixes
+                    # nothing, so this must NOT carry the drift hint. Nothing was launched.
+                    return RunOutcome(
+                        None,
+                        FAIL_DRIFT,
+                        gettext("skit refused to run its own injected copy: %(detail)s")
+                        % {"detail": str(exc)},
+                    )
+                except InjectError as exc:
+                    return RunOutcome(
+                        None,
+                        FAIL_DRIFT,
+                        gettext(
+                            "The script and its form definitions don't match anymore: %(detail)s. "
+                            "Run `skit params %(name)s --resync` to fix it."
+                        )
+                        % {"name": entry.slug, "detail": str(exc)},  # slug: paste-safe on any shell
+                    )
+                injected = result.path
+                env_overlay.update(result.env)
+                for line in result.warnings:
+                    emit(line)
+            for line in transparency_lines(
+                entry,
+                asm,
+                injected,
+                runner=runner,
+                validated_prompt_command=(prepared.safe_display if prepared is not None else None),
+            ):
+                emit(line)
             try:
-                # Cross the delivery boundary only after the exact runner/body argv,
-                # executable, needs and cwd have all succeeded. run_entry consumes
-                # this same snapshot below; it never re-reads or rebuilds the prompt.
-                prepared = launcher.prepare_entry(
-                    entry,
-                    asm.args,
-                    values=asm.command_values,
-                    invoke_cwd=invoke_cwd,
-                    runner=runner,
-                )
+                if prepared is None:
+                    # The historical run_entry seam, split: the SPAWN happens here,
+                    # inside the lock (the OS opens the program before anything can
+                    # swap it); the wait joins it below, outside.
+                    started = launcher.start_entry(
+                        entry,
+                        asm.args,
+                        values=asm.command_values,
+                        invoke_cwd=invoke_cwd,
+                        script_override=injected,
+                        env_overlay=env_overlay,
+                        runner=runner,
+                    )
+                else:
+                    started = launcher.start_entry(entry, asm.args, values=asm.command_values, invoke_cwd=invoke_cwd, script_override=injected, env_overlay=env_overlay, runner=runner, prepared=prepared)  # pragma: no mutate — with prepared given, start_entry reads only prepared (+ the always-empty prompt env overlay); the rest keeps the historical spawn seam observable to tests. Arg mutants here are equivalents  # fmt: skip
             except launcher.TargetMissingError as exc:
                 return RunOutcome(None, FAIL_MISSING, str(exc))
             except launcher.NotExecutableError as exc:
                 return RunOutcome(None, FAIL_NOT_EXECUTABLE, str(exc))
             except launcher.LaunchError as exc:
                 return RunOutcome(None, FAIL_LAUNCH, str(exc))
-            amp_seed = next(r for r in config.PROMPT_RUNNER_SEEDS if r.name == "amp")
-            if prepared.prompt_runner == amp_seed:
-                emit_warning(
-                    gettext(
-                        "The built-in amp runner is one-shot: amp -x runs this prompt once "
-                        "and does not open an interactive session."
-                    )
-                )
-            if prepared.warning:
-                emit_warning(prepared.warning)
-            secret_warning = _prompt_secret_warning(plan, asm)
-            if secret_warning:
-                emit_warning(secret_warning)
-        if (
-            plan.source == "inject"
-            and asm.inject_values
-            and spec is not None
-            and spec.injector is not None
-        ):
-            try:
-                result = spec.injector.inject(
-                    InjectRequest(
-                        text=plan.text,
-                        specs=plan.specs,
-                        values=asm.inject_values,
-                        # entry.dir is write_injected's fallback directory (used only when
-                        # the OS temp dir isn't writable);
-                        # test_execute_inject_falls_back_to_entry_dir pins that this run
-                        # passes it through.
-                        entry_dir=entry.dir,
-                        interpreter=entry.meta.interpreter or spec.default_interpreter,
-                        # Deps-managed npm entries run their temp copy FROM entry_dir, so the
-                        # runner's upward module resolution still finds entry_dir/node_modules.
-                        # (A no-deps entry's temp copy stays in the OS temp dir — the secret-leftover
-                        # default; a consequence, shared with the Python injector's __file__, is that
-                        # `__dirname`/`import.meta.url` differ between an injected and a stored run.)
-                        prefer_entry_dir=(
-                            spec.deps_flavor == "npm"
-                            and entry.meta.mode == "copy"
-                            and bool(entry.meta.dependencies)
-                        ),
-                        # The original filename, so the JS/TS injector can give its temp copy an
-                        # .mjs/.cjs extension when the origin pinned a module flavor (the store
-                        # flattens the stored copy to script.js, losing that signal otherwise).
-                        source=entry.meta.source,
-                    )
-                )
-            except InjectValueError as exc:
-                return RunOutcome(
-                    None,
-                    FAIL_BAD_VALUE,
-                    gettext("%(value)s isn't a valid %(type)s for %(param)s.")
-                    % {
-                        "value": repr(exc.value),
-                        "type": exc.type_name,
-                        "param": exc.param_name,
-                    },
-                )
-            except InjectGapError as exc:
-                return RunOutcome(
-                    None,
-                    FAIL_BAD_VALUE,
-                    gettext(
-                        "%(empty)s is empty, but %(filled)s is filled and they are read on the "
-                        "same line — a shell `read` would hand your value to %(empty)s. Fill "
-                        "%(empty)s in, or clear %(filled)s."
-                    )
-                    % {"empty": exc.empty, "filled": exc.filled},
-                )
-            except InjectSplitError as exc:
-                return RunOutcome(None, FAIL_BAD_VALUE, _split_message(exc))
-            except InjectSyntaxError as exc:
-                # skit corrupted the script (a quoting/escaping bug) — a resync fixes
-                # nothing, so this must NOT carry the drift hint. Nothing was launched.
-                return RunOutcome(
-                    None,
-                    FAIL_DRIFT,
-                    gettext("skit refused to run its own injected copy: %(detail)s")
-                    % {"detail": str(exc)},
-                )
-            except InjectError as exc:
-                return RunOutcome(
-                    None,
-                    FAIL_DRIFT,
-                    gettext(
-                        "The script and its form definitions don't match anymore: %(detail)s. "
-                        "Run `skit params %(name)s --resync` to fix it."
-                    )
-                    % {"name": entry.slug, "detail": str(exc)},  # slug: paste-safe on any shell
-                )
-            injected = result.path
-            env_overlay.update(result.env)
-            for line in result.warnings:
-                emit(line)
-        for line in transparency_lines(
-            entry,
-            asm,
-            injected,
-            runner=runner,
-            validated_prompt_command=(prepared.safe_display if prepared is not None else None),
-        ):
-            emit(line)
-        try:
-            if prepared is None:
-                # Keep the established non-prompt call seam unchanged; many callers
-                # replace run_entry with a narrow adapter that knows no prepared kwarg.
-                code = launcher.run_entry(
-                    entry,
-                    asm.args,
-                    values=asm.command_values,
-                    invoke_cwd=invoke_cwd,
-                    script_override=injected,
-                    env_overlay=env_overlay,
-                    runner=runner,
-                )
-            else:
-                code = launcher.run_entry(
-                    entry,
-                    asm.args,
-                    values=asm.command_values,
-                    invoke_cwd=invoke_cwd,
-                    script_override=injected,
-                    env_overlay=env_overlay,
-                    runner=runner,
-                    prepared=prepared,
-                )
-        except launcher.TargetMissingError as exc:
-            return RunOutcome(None, FAIL_MISSING, str(exc))
-        except launcher.NotExecutableError as exc:
-            return RunOutcome(None, FAIL_NOT_EXECUTABLE, str(exc))
-        except launcher.LaunchError as exc:
-            return RunOutcome(None, FAIL_LAUNCH, str(exc))
-        return RunOutcome(code)
+        return RunOutcome(launcher.finish_entry(started))
     finally:
         if injected is not None and injected.exists():
             # missing_ok is redundant: exists() already gated this, and we created the

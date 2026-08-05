@@ -16,7 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from skit import argstate, flows, launcher, store, tui
+from conftest import patch_run_entry
+from skit import argstate, flows, store, tui
 from skit.models import Entry, ScriptMeta
 
 
@@ -96,7 +97,7 @@ def fake_launch(monkeypatch):
         state["ran"] = True
         return state.get("code", 0)
 
-    monkeypatch.setattr(launcher, "run_entry", fake_run)
+    patch_run_entry(monkeypatch, fake_run)
     return state
 
 

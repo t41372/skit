@@ -20,6 +20,7 @@ import pytest
 from rich.markup import escape
 from typer.testing import CliRunner
 
+from conftest import patch_run_entry
 from skit import (
     analysis,
     argstate,
@@ -594,15 +595,17 @@ def run_entry_spy(monkeypatch):
         script_override=None,
         env_overlay=None,
         runner=None,
+        prepared=None,
     ):
         calls["entry"] = entry
         calls["extra"] = list(extra_args or [])
         calls["values"] = dict(values or {})
         calls["override"] = script_override
-        calls["runner"] = runner
+        # The effective runner: a prompt lane carries it INSIDE the prepared snapshot.
+        calls["runner"] = prepared.prompt_runner if prepared is not None else runner
         return calls.get("code", 0)
 
-    monkeypatch.setattr(launcher, "run_entry", fake)
+    patch_run_entry(monkeypatch, fake)
     return calls
 
 
@@ -735,7 +738,7 @@ def test_run_launch_error(tmp_path, monkeypatch):
     def boom(*a, **k):
         raise launcher.LaunchError("bad")
 
-    monkeypatch.setattr(launcher, "run_entry", boom)
+    patch_run_entry(monkeypatch, boom)
     result = runner.invoke(cli.app, ["run", "j", "--no-input"])
     assert result.exit_code == 125
 

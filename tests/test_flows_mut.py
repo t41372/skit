@@ -13,6 +13,9 @@ import dataclasses
 from datetime import datetime
 from pathlib import Path
 
+import pytest
+
+from conftest import patch_run_entry
 from skit import flows
 from skit.langs.base import (
     CliReader,
@@ -60,6 +63,17 @@ WIDTH = 800
 API_KEY = 'xxx'
 print(OUTPUT, WIDTH, API_KEY)
 """
+
+
+@pytest.fixture(autouse=True)
+def _open_launch_gate(monkeypatch: pytest.MonkeyPatch):
+    """These are UNIT tests of the delivery pipeline, built on fabricated Entry
+    objects that exist in no store — the launch identity gate would refuse every one
+    before the pipeline under test ran. Stub the gate open here; the gate itself is
+    integration-tested with real entries (test_design_audit_round18)."""
+    from skit import flows as _flows
+
+    monkeypatch.setattr(_flows, "_launch_refusal", lambda _entry: None)
 
 
 def _python_entry(tmp_path: Path, text: str, slug: str = "s") -> Entry:
@@ -163,7 +177,6 @@ def test_split_message_exact_for_each_reason():
 
 
 def test_execute_forwards_interpreter_and_source_to_injector(tmp_path, monkeypatch):
-    from skit import launcher
 
     entry = _python_entry(tmp_path, MANAGED_SCRIPT, slug="req")
     entry.meta.interpreter = "python3.11"  # a truthy interpreter distinct from the "" default
@@ -184,7 +197,7 @@ def test_execute_forwards_interpreter_and_source_to_injector(tmp_path, monkeypat
         dataclasses.replace(real.resolved_capabilities, injector=Injector(inject=fake_inject))
     )
     monkeypatch.setattr(flows, "spec_for", lambda _kind: fake_spec)
-    monkeypatch.setattr(launcher, "run_entry", lambda *a, **k: 0)
+    patch_run_entry(monkeypatch, lambda *a, **k: 0)
 
     _lines, emit = _emit_sink()
     outcome = flows.execute(entry, plan, asm, emit=emit)

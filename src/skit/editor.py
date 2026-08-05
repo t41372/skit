@@ -10,6 +10,7 @@ Headless: imports neither CLI nor TUI, so store/launcher paths can use it too.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import os
 import shlex
 import shutil
@@ -132,7 +133,7 @@ def discard_draft(draft: Path) -> None:
         draft.unlink()
 
 
-def edit_copy_staged(source: Path, draft: Path, *, kind: str) -> bytes | None:
+def edit_copy_staged(source: Path, draft: Path, *, kind: str) -> tuple[bytes, str] | None:
     """Edit a STORED COPY through a staged draft — the editor never sees the stored
     path. An editor session is the longest user-paced hold skit has: editing the real
     path directly would let a save land on whatever entry owns that path by the time
@@ -141,8 +142,11 @@ def edit_copy_staged(source: Path, draft: Path, *, kind: str) -> bytes | None:
     every draft), the kind-specific payload validation runs against the DRAFT — so a
     refused prompt edit never lands replacement characters on the stored copy either —
     and the caller commits the returned bytes through store.commit_copy_edit's
-    identity-checked transaction. None = the editor left the draft byte-identical
-    (nothing to commit; the draft is cleaned up)."""
+    identity-AND-source-checked transaction: the second element is the sha256 of the
+    bytes the draft was staged FROM, so the commit can refuse a source another writer
+    changed while the editor sat open (a lost update, not just a lost identity).
+    None = the editor left the draft byte-identical (nothing to commit; the draft is
+    cleaned up)."""
     shutil.copy2(source, draft)  # the draft file itself was just minted (edit_draft_path)
     staged = draft.read_bytes()
     open_entry_in_editor(draft, kind=kind)  # validation refusals keep the draft
@@ -150,7 +154,7 @@ def edit_copy_staged(source: Path, draft: Path, *, kind: str) -> bytes | None:
     if edited == staged:
         discard_draft(draft)
         return None
-    return edited
+    return edited, hashlib.sha256(staged).hexdigest()
 
 
 def open_entry_in_editor(path: Path, *, kind: str) -> int:

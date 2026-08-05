@@ -21,8 +21,8 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from conftest import full_mirror
-from skit import analysis, argstate, cli, flows, inlineform, launcher, store
+from conftest import full_mirror, patch_run_entry
+from skit import analysis, argstate, cli, flows, inlineform, store
 from skit.langs.python import metawriter
 from skit.params import ParamDecl
 
@@ -69,7 +69,7 @@ def run_entry_spy(monkeypatch: pytest.MonkeyPatch):
         calls["override"] = script_override
         return calls.get("code", 0)
 
-    monkeypatch.setattr(launcher, "run_entry", fake)
+    patch_run_entry(monkeypatch, fake)
     return calls
 
 
@@ -328,7 +328,7 @@ def test_run_dry_run_prints_command_and_exits_0(tmp_path, monkeypatch):
     def never(*_a: object, **_k: object) -> int:
         raise AssertionError("dry-run must not execute the script")
 
-    monkeypatch.setattr(launcher, "run_entry", never)
+    patch_run_entry(monkeypatch, never)
     store.add_python(_py(tmp_path, "print(1)\n"), name="j")
     result = runner.invoke(cli.app, ["run", "j", "--no-input", "--dry-run"])
     assert result.exit_code == 0, result.output

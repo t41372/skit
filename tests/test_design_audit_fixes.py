@@ -46,8 +46,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from conftest import without_block
-from skit import analysis, argstate, cli, flows, launcher, params, rewrite, store, tokens
+from conftest import patch_run_entry, without_block
+from skit import analysis, argstate, cli, flows, params, rewrite, store, tokens
 from skit.langs.python import metawriter
 from skit.langs.registry import spec_for
 from skit.params import ParamDecl
@@ -85,7 +85,7 @@ def run_entry_spy(monkeypatch: pytest.MonkeyPatch):
         calls["values"] = dict(values or {})
         return 0
 
-    monkeypatch.setattr(launcher, "run_entry", fake)
+    patch_run_entry(monkeypatch, fake)
     return calls
 
 

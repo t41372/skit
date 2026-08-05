@@ -412,7 +412,11 @@ def test_build_shell_appends_extra_args_with_single_space_and_shell_quoting() ->
 
 
 class _FakeProc:
-    returncode = 0
+    def wait(self) -> int:
+        return 0
+
+    def kill(self) -> None:  # pragma: no cover — only the interrupt path
+        pass
 
 
 def _stub_run(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
@@ -425,7 +429,7 @@ def _stub_run(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
         captured.update(kwargs)
         return _FakeProc()
 
-    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+    monkeypatch.setattr(launcher.subprocess, "Popen", fake_run)
     return captured
 
 

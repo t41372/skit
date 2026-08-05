@@ -16,8 +16,8 @@ import pytest
 from textual.widgets import Checkbox, DataTable, Input, Select, Static
 from textual.widgets.data_table import RowKey
 
-from conftest import footer_text
-from skit import argstate, argv_text, config, flows, launcher, store, tui
+from conftest import footer_text, patch_run_entry
+from skit import argstate, argv_text, config, flows, store, tui
 from skit.langs.python import metawriter
 from skit.params import ParamDecl
 from skit.tui_form import (
@@ -72,7 +72,7 @@ def quiet_run(monkeypatch):
         calls["override"] = script_override
         return calls.get("code", 0)
 
-    monkeypatch.setattr(launcher, "run_entry", fake_run)
+    patch_run_entry(monkeypatch, fake_run)
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
     return calls
 

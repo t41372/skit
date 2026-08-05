@@ -63,7 +63,7 @@ from skit import (  # noqa: E402 — must import after the color scrub above
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from textual.widgets import Static
 
@@ -288,3 +288,30 @@ def _sweep_injected_temp_copies(monkeypatch: pytest.MonkeyPatch) -> Iterator[Non
     for path in created:
         with contextlib.suppress(OSError):
             path.unlink()
+
+
+class FakeChild:
+    """A started-child stand-in for the launcher's start/finish split: carries the
+    fake's exit code through the REAL finish_entry (wait/kill exist, so the KI-kill
+    discipline stays exercised)."""
+
+    def __init__(self, code: int) -> None:
+        self._code = code
+
+    def wait(self) -> int:
+        return self._code
+
+    def kill(self) -> None:  # pragma: no cover — only the interrupt path calls this
+        pass
+
+
+def patch_run_entry(monkeypatch: pytest.MonkeyPatch, fake: Callable[..., int]) -> None:
+    """Adapt the historical run_entry test seam onto the start/finish split: the fake
+    keeps run_entry's exact signature and return (an exit code, or a raise), and rides
+    through the real finish_entry as a started child."""
+    from skit import launcher
+
+    def _start(entry: object, extra_args: object = None, **kwargs: object) -> FakeChild:
+        return FakeChild(fake(entry, extra_args, **kwargs))
+
+    monkeypatch.setattr(launcher, "start_entry", _start)

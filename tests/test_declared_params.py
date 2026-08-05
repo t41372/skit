@@ -8,13 +8,13 @@ and env delivery is the zero-rewrite value channel every kind can use.
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
+from conftest import patch_run_entry
 from skit import analysis, argstate, cli, flows, launcher, store
 from skit.models import Entry, ScriptMeta
 from skit.notices import NoticeCode, edit_notice
@@ -56,7 +56,7 @@ def run_entry_spy(monkeypatch):
         calls["env_overlay"] = dict(env_overlay or {})
         return 0
 
-    monkeypatch.setattr(launcher, "run_entry", fake)
+    patch_run_entry(monkeypatch, fake)
     return calls
 
 
@@ -245,11 +245,18 @@ def test_assemble_command_with_env_rider(tmp_path: Path):
 def test_run_entry_env_overlay_wins_last(tmp_path: Path, monkeypatch):
     captured: dict[str, str] = {}
 
+    class _Started:
+        def wait(self):
+            return 0
+
+        def kill(self):  # pragma: no cover — only the interrupt path
+            pass
+
     def fake_run(cmd, **kwargs):
         captured.update(kwargs["env"])
-        return subprocess.CompletedProcess(cmd, 0)
+        return _Started()
 
-    monkeypatch.setattr("skit.launcher.subprocess.run", fake_run)
+    monkeypatch.setattr("skit.launcher.subprocess.Popen", fake_run)
     monkeypatch.setenv("WIDTH", "from-ambient")
     entry = store.add_command("echo hi", name="ov")
     code = launcher.run_entry(entry, invoke_cwd=tmp_path, env_overlay={"WIDTH": "800"})
@@ -313,7 +320,7 @@ def test_execute_passes_env_values_to_run_entry(tmp_path: Path, monkeypatch):
         seen["env_overlay"] = env_overlay
         return 0
 
-    monkeypatch.setattr("skit.flows.launcher.run_entry", fake_run_entry)
+    patch_run_entry(monkeypatch, fake_run_entry)
     entry = store.add_command("echo {m}", name="exec-env")
     store.write_parameters(entry.slug, [ParamDecl(name="N", delivery="env")])
     plan = flows.plan_for_entry(store.resolve(entry.slug))

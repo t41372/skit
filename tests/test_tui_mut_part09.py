@@ -16,8 +16,8 @@ import pytest
 from textual.containers import VerticalScroll
 from textual.widgets import DataTable, Input, Static
 
-from conftest import plan_cache_key
-from skit import argstate, config, flows, launcher, store, tui
+from conftest import patch_run_entry, plan_cache_key
+from skit import argstate, config, flows, store, tui
 from skit.langs.python import metawriter
 from skit.params import ParamDecl
 from skit.tui_form import FieldRow, RunFormScreen
@@ -67,10 +67,11 @@ def quiet_run(monkeypatch):
         calls["extra"] = list(extra_args or [])
         calls["values"] = dict(values or {})
         calls["override"] = script_override
-        calls["runner"] = runner
+        # The effective runner: a prompt lane carries it INSIDE the prepared snapshot.
+        calls["runner"] = prepared.prompt_runner if prepared is not None else runner
         return calls.get("code", 0)
 
-    monkeypatch.setattr(launcher, "run_entry", fake_run)
+    patch_run_entry(monkeypatch, fake_run)
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
     monkeypatch.setattr("builtins.input", lambda *a: "")
     return calls

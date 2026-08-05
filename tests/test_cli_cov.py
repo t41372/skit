@@ -12,7 +12,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from skit import argstate, cli, flows, launcher, promptform, store
+from conftest import patch_run_entry
+from skit import argstate, cli, flows, promptform, store
 from skit.langs.python import metawriter
 from skit.params import ParamDecl
 
@@ -61,7 +62,7 @@ def run_entry_spy(monkeypatch):
         calls["override"] = script_override
         return calls.get("code", 0)
 
-    monkeypatch.setattr(launcher, "run_entry", fake)
+    patch_run_entry(monkeypatch, fake)
     return calls
 
 

@@ -20,8 +20,8 @@ from pathlib import Path
 import pytest
 from textual.widgets import Static
 
-from conftest import plan_cache_key
-from skit import config, flows, launcher, store, tui
+from conftest import patch_run_entry, plan_cache_key
+from skit import config, flows, store, tui
 from skit.langs.python import metawriter
 from skit.langs.registry import spec_for
 from skit.params import ParamDecl
@@ -106,7 +106,7 @@ async def test_success_run_prints_flushed_banners_and_records_finished(
     lambda), and the `✓ finished` outcome banner (the stay path repaints immediately —
     no Enter-wait since #14); a clean run then
     stamps the exact `Last: <name> ✓ finished` status."""
-    monkeypatch.setattr(launcher, "run_entry", lambda *a, **k: 0)
+    patch_run_entry(monkeypatch, lambda *a, **k: 0)
     rec = _PrintRecorder()
     monkeypatch.setattr("builtins.print", rec)
     entry = store.add_python(_py(tmp_path, "print(1)\n"), name="a")
@@ -138,7 +138,7 @@ async def test_success_run_prints_flushed_banners_and_records_finished(
 async def test_nonzero_exit_records_failed_status(tmp_path, stay_suspend, monkeypatch):
     """A launched-but-nonzero run records the exact `Last: <name> ✗ failed (code N)`
     status (mutmut_124/125 wrap/lowercase that msgid)."""
-    monkeypatch.setattr(launcher, "run_entry", lambda *a, **k: 3)
+    patch_run_entry(monkeypatch, lambda *a, **k: 3)
     entry = store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     plan = flows.FormPlan(source="none")
     app = tui.MenuApp()
@@ -153,7 +153,7 @@ async def test_nonzero_exit_records_failed_status(tmp_path, stay_suspend, monkey
 async def test_stay_run_state_failure_warns_without_losing_run_status(
     tmp_path, stay_suspend, monkeypatch
 ):
-    monkeypatch.setattr(launcher, "run_entry", lambda *a, **k: 0)
+    patch_run_entry(monkeypatch, lambda *a, **k: 0)
 
     def denied(*_args: object, **_kwargs: object) -> None:
         raise PermissionError(13, "Permission denied", "state.toml")

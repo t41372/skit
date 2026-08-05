@@ -254,12 +254,35 @@ def _edit_stored_copy(entry: store.Entry, target: Path) -> store.Entry:
     except (editor.EditorError, editor.EditedSourceError) as exc:
         raise _fail(str(exc), EXIT_SKIT) from exc
     if edited is not None:
+        payload, base_hash = edited
         try:
-            store.commit_copy_edit(entry.slug, edited, expected_id=entry.meta.id)
+            store.commit_copy_edit(
+                entry.slug, payload, expected_id=entry.meta.id, expected_source_hash=base_hash
+            )
         except store.StaleEntryError as exc:
             raise _fail(editor.stale_edit_kept(str(exc), draft), EXIT_SKIT) from exc
         editor.discard_draft(draft)
     return entry
+
+
+def _claim_ask_and_remove(entry: store.Entry, name: str, *, yes: bool) -> str:
+    """remove's claimed, authorized tail: claim BEFORE the ask (stamping a legacy meta
+    so the deletion can be authorized by exact id — an empty expectation cannot
+    delete), ask, then delete against the identity the ask NAMED: a slug reissued
+    while the user answered refuses (StaleEntryError) instead of deleting the
+    stranger. A partly-deleted entry (a held-open file made rmtree a no-op) is a real,
+    worded failure with a recovery step in it — it reaches the user as skit's own
+    error, never a traceback."""
+    try:
+        entry = store.claim_identity(entry)
+    except store.StoreError as exc:
+        raise _fail_store(exc) from exc
+    if not yes:
+        _confirm_destructive(_remove_question(entry))
+    try:
+        return store.remove(name, expected_id=entry.meta.id)
+    except store.StoreError as exc:
+        raise _fail_store(exc) from exc
 
 
 def _remember_runner_pick(name: str) -> None:
@@ -2779,17 +2802,7 @@ def remove(
     _require_yes(
         yes, no_input, gettext("Confirmation is required; pass --yes to remove the entry.")
     )
-    if not yes:
-        _confirm_destructive(_remove_question(entry))
-    try:
-        # Authorized against the entry the ask NAMED: a slug reissued while the user
-        # was answering must not have the answer land on it (StaleEntryError instead).
-        removed = store.remove(name, expected_id=entry.meta.id)
-    except store.StoreError as exc:
-        # A partly-deleted entry (a held-open file made rmtree a no-op) is a real, worded
-        # failure with a recovery step in it — it must reach the user as skit's own error,
-        # not as a traceback.
-        raise _fail_store(exc) from exc
+    removed = _claim_ask_and_remove(entry, name, yes=yes)
     console.print(f"[green]{gettext('Removed: %(name)s') % {'name': escape(removed)}}[/green]")
 
 
@@ -2865,7 +2878,11 @@ def _reconcile_prompt_after_edit(entry: store.Entry) -> None:
     interactive names the new placeholders and points at the `--add` escape."""
     from .langs.prompt import analyzer as prompt_analyzer
 
-    new = store.unmanaged_prompt_placeholders(store.resolve(entry.slug))
+    # Claimed for the picker's own hold: the wait below is user-paced, and the write
+    # at its end must be authorized against THIS prompt — never whoever owns the slug
+    # by the time the user finishes picking.
+    entry = store.claim_identity(entry)
+    new = store.unmanaged_prompt_placeholders(entry)
     if not new:
         return
     # No non-interactive branch here, and there must not be one: `skit edit` refuses
@@ -2909,7 +2926,14 @@ def _reconcile_prompt_after_edit(entry: store.Entry) -> None:
     if not picked:
         return
     existing = list(entry.meta.params or [])
-    store.write_prompt_managed(entry.slug, existing + [n for n in picked if n not in existing])
+    try:
+        store.write_prompt_managed(
+            entry.slug,
+            existing + [n for n in picked if n not in existing],
+            expected_id=entry.meta.id,
+        )
+    except store.StaleEntryError as exc:
+        raise _fail(str(exc), EXIT_SKIT) from exc
     console.print(
         f"[green]{gettext('Now managed: %(names)s') % {'names': ', '.join(escape(n) for n in picked)}}[/green]"
     )

@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from conftest import patch_run_entry
 from skit import cli, exitcodes, flows, store
 from skit.langs.base import (
     InjectError,
@@ -419,12 +420,9 @@ def test_execute_refuses_a_bad_value_before_launch(tmp_path):
 
 
 def test_execute_syntax_gate_failure_never_launches(tmp_path, monkeypatch):
-    from skit import launcher
 
     monkeypatch.setattr(inject, "escape_string", lambda value: f'"{value}')
-    monkeypatch.setattr(
-        launcher, "run_entry", lambda *a, **k: pytest.fail("the script must not launch")
-    )
+    patch_run_entry(monkeypatch, lambda *a, **k: pytest.fail("the script must not launch"))
     entry = _js_entry(tmp_path, 'const TITLE = "hello";\n', name="jsx4")
     assert runner.invoke(cli.app, ["params", "jsx4", "--manage", "TITLE"]).exit_code == 0
     entry = store.resolve("jsx4")

@@ -136,11 +136,14 @@ def test_a_cli_run_stamps_a_legacy_entry_at_hold_start(
     assert argstate.load_state(entry.slug)["last_run"]["exit"] == 0
 
 
-async def test_the_tui_claim_degrades_like_fresh_when_the_store_refuses(
+async def test_the_tui_claim_fails_closed_when_the_store_refuses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """_claimed mirrors _fresh's degrade: a handshake that cannot even resolve falls
-    back to the held snapshot, and the lane's own missing/error paths then speak."""
+    """Round 18 flips the old degrade: a claim that cannot VERIFY stops the lane — a
+    held snapshot could belong to whoever owns the slug now. Only the pure-display
+    _fresh may degrade."""
+    from textual.widgets import Static
+
     _cmd("held")
     app = tui.MenuApp()
     async with app.run_test() as pilot:
@@ -150,9 +153,8 @@ async def test_the_tui_claim_degrades_like_fresh_when_the_store_refuses(
             raise store.CorruptEntryError("meta rotted mid-click")
 
         monkeypatch.setattr(store, "claim_identity", _refuse)
-        held = app._claimed(store.resolve("held"))
-        assert held is not None
-        assert held.meta.name == "held"
+        assert app._claimed(store.resolve("held")) is None
+        assert "meta rotted mid-click" in str(app.query_one("#status", Static).render())
 
 
 # ==========================================================================

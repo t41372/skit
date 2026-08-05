@@ -361,7 +361,7 @@ def prepare_entry(
     )
 
 
-def run_entry(
+def start_entry(
     entry: Entry,
     extra_args: list[str] | None = None,
     *,
@@ -371,8 +371,14 @@ def run_entry(
     env_overlay: Mapping[str, str] | None = None,
     runner: PromptRunner | None = None,
     prepared: PreparedLaunch | None = None,
-) -> int:
-    """Run straight through the terminal and return the exit code.
+) -> subprocess.Popen[bytes]:
+    """Spawn the child and return immediately — the launch half of run_entry.
+
+    The split exists for the identity guard: flows.execute verifies WHO the entry is
+    and starts the child under the entry lock (the OS opens the script/binary during
+    the spawn, so a remove or a re-add cannot swap the file between the check and the
+    exec), then releases the lock and waits with finish_entry — nothing may hold a
+    lock for a child's whole runtime.
 
     env_overlay: env-delivered parameter values, applied LAST — an explicitly set
     parameter is a deliberate override, so it wins over both the ambient environment
@@ -398,12 +404,49 @@ def run_entry(
         # A command entry is by definition "a shell command the user registered"; shell=True is a
         # feature, not a hole. The template was written by the user via `skit add`, so the trust
         # boundary is the same as the user's own shell history.
-        proc = subprocess.run(  # noqa: S602  # pragma: no mutate
-            launch.payload.command, shell=True, cwd=launch.cwd, check=False, env=env
+        return subprocess.Popen(  # noqa: S602  # pragma: no mutate
+            launch.payload.command, shell=True, cwd=launch.cwd, env=env
         )
-    else:
-        proc = subprocess.run(launch.payload.argv, cwd=launch.cwd, check=False, env=env)  # noqa: S603 — argv from a user entry  # pragma: no mutate — check=None is falsy-equivalent to False; omitting it matches subprocess.run's own default
-    return _normalize_exit_code(proc.returncode)
+    return subprocess.Popen(launch.payload.argv, cwd=launch.cwd, env=env)  # noqa: S603 — argv from a user entry  # pragma: no mutate
+
+
+def finish_entry(proc: subprocess.Popen[bytes]) -> int:
+    """Wait out a started child and normalize its exit code — subprocess.run's own
+    discipline, kept exactly: any interruption of the wait (Ctrl+C first among them)
+    kills the child before propagating, so a split launch can never leak a process
+    subprocess.run would have reaped."""
+    try:
+        return _normalize_exit_code(proc.wait())
+    except BaseException:
+        proc.kill()
+        proc.wait()
+        raise
+
+
+def run_entry(
+    entry: Entry,
+    extra_args: list[str] | None = None,
+    *,
+    values: dict[str, str] | None = None,
+    invoke_cwd: Path | None = None,
+    script_override: Path | None = None,
+    env_overlay: Mapping[str, str] | None = None,
+    runner: PromptRunner | None = None,
+) -> int:
+    """Run straight through the terminal and return the exit code (start + finish,
+    unsplit — the direct-call convenience; flows.execute uses the split itself, and
+    passes its PreparedLaunch to start_entry directly)."""
+    return finish_entry(
+        start_entry(
+            entry,
+            extra_args,
+            values=values,
+            invoke_cwd=invoke_cwd,
+            script_override=script_override,
+            env_overlay=env_overlay,
+            runner=runner,
+        )
+    )
 
 
 def _normalize_exit_code(returncode: int) -> int:

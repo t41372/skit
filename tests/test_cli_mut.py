@@ -14,7 +14,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from conftest import full_mirror
+from conftest import full_mirror, patch_run_entry
 from skit import (
     analysis,
     argstate,
@@ -22,7 +22,6 @@ from skit import (
     config,
     flows,
     i18n,
-    launcher,
     pep723,
     promptform,
     store,
@@ -304,7 +303,7 @@ def test_run_no_input_never_prompts_even_on_tty(tty, monkeypatch):
         captured["values"] = values
         return 0
 
-    monkeypatch.setattr(launcher, "run_entry", fake_run)
+    patch_run_entry(monkeypatch, fake_run)
 
     def boom(*_a: object, **_k: object) -> str:
         raise AssertionError("must not prompt under --no-input")
@@ -354,7 +353,7 @@ def test_run_threads_slug_and_preset_into_prefill(monkeypatch, tmp_path):
         captured["values"] = values
         return 0
 
-    monkeypatch.setattr(launcher, "run_entry", fake_run)
+    patch_run_entry(monkeypatch, fake_run)
     result = runner.invoke(cli.app, ["run", "e", "-p", "prod", "--no-input"])
     assert result.exit_code == 0, result.output
     assert captured["values"] == {"msg": "from-preset"}
@@ -782,9 +781,8 @@ def test_run_shim_error_message_exact(tmp_path, monkeypatch):
 
 
 def test_run_drift_warning_names_the_entry(tmp_path, monkeypatch):
-    from skit import launcher
 
-    monkeypatch.setattr(launcher, "run_entry", lambda *a, **k: 0)  # never actually launch anything
+    patch_run_entry(monkeypatch, lambda *a, **k: 0)  # never actually launch anything
     text = metawriter.write_params(
         'CITY = "Taipei"\nprint(CITY)\n', [ParamDecl(name="CITY", binding="const", type="str")]
     )

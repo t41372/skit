@@ -19,6 +19,7 @@ from textual.widgets import (
     Static,
 )
 
+from conftest import patch_run_entry
 from skit import argstate, config, flows, i18n, launcher, paths, store, tui, tui_footer
 from skit.tui_add import AddSourceScreen, KindPickModal, PromptReviewScreen
 from skit.tui_form import RunFormScreen
@@ -131,11 +132,12 @@ def quiet_run(monkeypatch):
         prepared=None,
     ):
         calls["values"] = dict(values or {})
-        calls["runner"] = runner
+        # The effective runner: a prompt lane carries it INSIDE the prepared snapshot.
+        calls["runner"] = prepared.prompt_runner if prepared is not None else runner
         calls["prepared"] = prepared
         return calls.get("code", 0)
 
-    monkeypatch.setattr(launcher, "run_entry", fake_run)
+    patch_run_entry(monkeypatch, fake_run)
     # The fixture replaces the actual spawn, so make preflight agree that the
     # synthetic runner binaries are launchable.  Individual refusal tests override
     # this seam with the missing binary they exercise.
@@ -513,7 +515,9 @@ async def test_rerun_pinned_prompt_skips_the_form_and_uses_the_pin(
         app.action_rerun()
         await pilot.pause()
     assert quiet_run["values"] == {"a": "1"}
-    assert quiet_run["runner"] is None  # the pin resolves inside PromptLaunch.build
+    # The spy reports the EFFECTIVE runner from the prepared snapshot: the pin,
+    # resolved — no picker ran, and the rerun launched with exactly the pinned agent.
+    assert quiet_run["runner"] == config.find_prompt_runner("claude")
 
 
 async def test_exit_mode_pending_run_carries_the_runner(tmp_path, monkeypatch):
@@ -540,7 +544,7 @@ async def test_exit_mode_pending_run_carries_the_runner(tmp_path, monkeypatch):
     seen: dict[str, object] = {}
 
     def fake_execute(entry, plan, asm, *, emit, warn=None, invoke_cwd=None, runner=None):
-        seen["runner"] = runner
+        seen["runner"] = runner  # flows.execute's own kwarg — this seam is above the spawn
         return flows.RunOutcome(0)
 
     monkeypatch.setattr(flows, "execute", fake_execute)

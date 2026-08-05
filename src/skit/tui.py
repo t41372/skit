@@ -571,8 +571,13 @@ class MenuApp(App[int | PendingRun]):
                 % {"name": escape(entry.meta.name)}
             )
             return None
-        except store.StoreError:
-            return entry
+        except store.StoreError as exc:
+            # Fail CLOSED on everything else too (a corrupt meta included): a claim
+            # that cannot verify must stop the lane — acting on the held snapshot
+            # could operate on whoever owns the slug now. Only the pure-display
+            # _fresh may degrade to a snapshot.
+            self._refresh_status(gettext("Error: %(error)s") % {"error": escape(str(exc))})
+            return None
 
     def _plan_key(self, entry: Entry) -> tuple[int, int, int, int, str | None] | None:
         """The cache key: both files' (mtime_ns, size) — narrowing coarse-mtime blind
@@ -1166,8 +1171,14 @@ class MenuApp(App[int | PendingRun]):
             except (editor.EditorError, editor.EditedSourceError) as exc:
                 return entry, str(exc)
         if edited is not None:
+            payload, base_hash = edited
             try:
-                store.commit_copy_edit(entry.slug, edited, expected_id=entry.meta.id)
+                store.commit_copy_edit(
+                    entry.slug,
+                    payload,
+                    expected_id=entry.meta.id,
+                    expected_source_hash=base_hash,
+                )
             except store.StaleEntryError as exc:
                 return entry, editor.stale_edit_kept(str(exc), draft)
             editor.discard_draft(draft)
@@ -1231,6 +1242,12 @@ class MenuApp(App[int | PendingRun]):
         entry = self._selected()
         if entry is None:
             return
+        # Claimed BEFORE the modal (stamping a legacy meta): the deletion is
+        # authorized by exact id, and an empty expectation cannot delete.
+        claimed = self._claimed(entry)
+        if claimed is None:
+            return
+        entry = claimed
 
         def _done(confirmed: bool | None) -> None:
             if confirmed:

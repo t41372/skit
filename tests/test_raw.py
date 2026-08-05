@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from typer.testing import CliRunner
 
+from conftest import patch_run_entry
 from skit import cli, store
 
 SCRIPT = 'CITY = "Taipei"\nprint(CITY)\n'
@@ -48,7 +49,7 @@ def _run(monkeypatch, args: list[str]):
         captured["values"] = values
         return 0
 
-    monkeypatch.setattr(cli.launcher, "run_entry", fake_run_entry)
+    patch_run_entry(monkeypatch, fake_run_entry)
     runner = CliRunner()
     result = runner.invoke(cli.app, ["run", *args])
     return result, captured

@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from conftest import patch_run_entry
 from skit import argstate, cli, config, i18n, store
 from skit.langs.base import ArgvLaunch
 from skit.langs.prompt import analyzer as prompt_analyzer
@@ -100,11 +101,12 @@ def spawn_spy(monkeypatch):
         calls["entry"] = entry
         calls["extra"] = list(extra_args or [])
         calls["values"] = dict(values or {})
-        calls["runner"] = runner
+        # The effective runner: a prompt lane carries it INSIDE the prepared snapshot.
+        calls["runner"] = prepared.prompt_runner if prepared is not None else runner
         calls["prepared"] = prepared
         return calls.get("code", 0)
 
-    monkeypatch.setattr(cli.launcher, "run_entry", fake)
+    patch_run_entry(monkeypatch, fake)
     monkeypatch.setattr("skit.langs.launch._which", lambda name: f"/bin/{name}")
     return calls
 

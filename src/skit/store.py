@@ -211,7 +211,8 @@ def claim_identity(entry: Entry) -> Entry:
     persistence then declines to trust (flows.persistence_target requires a stamped
     match; an unwritable-by-us library is not provably unwritable by others)."""
     try:
-        with _locked_entry(entry.slug, expected_id=entry.meta.id) as fresh:
+        with _locked_entry(entry.slug) as fresh:
+            _check_claimable(entry, fresh)
             if not fresh.meta.id:
                 try:
                     _write_meta_and_row(fresh.dir, fresh.slug, fresh.meta)  # the door stamps
@@ -225,8 +226,26 @@ def claim_identity(entry: Entry) -> Entry:
         # the comparison is still exact, only unserialized — and a lock directory
         # nobody can create is a library this process cannot mutate anyway.
         fresh = resolve(entry.slug)
-        _check_expected_id(fresh, entry.meta.id)
+        _check_claimable(entry, fresh)
         return fresh
+
+
+def _check_claimable(held: Entry, fresh: Entry) -> None:
+    """claim_identity's comparison: exact id for a stamped handle; for an UNSTAMPED
+    one, the whole meta by content — "" meeting "" is a cross-version ambiguity (an
+    older skit's adds write no id, so an idless re-add can hide behind the blank),
+    and blessing it by id alone would stamp the stranger and put every later guard on
+    the wrong side. A content-identical idless swap remains claimable: two entries
+    with the same name, kind, source, hash, timestamps and schema are operationally
+    the same entry — there is nothing left to protect one from the other with."""
+    if held.meta.id:
+        _check_expected_id(fresh, held.meta.id)
+        return
+    if fresh.meta.id or fresh.meta != held.meta:
+        raise StaleEntryError(
+            gettext("%(name)s changed while this edit was underway — reopen it and try again.")
+            % {"name": fresh.meta.name}
+        )
 
 
 def _load_registry() -> dict[str, dict[str, Any]]:
@@ -1306,7 +1325,14 @@ def remove(name_or_slug: str, *, expected_id: str | None = None) -> str:
     """Delete an entry — the most destructive slug-addressed write there is, so a
     caller that held the entry across a confirmation ask authorizes it like any other
     mutation: expected_id, checked under the entry lock, refuses to delete whoever
-    owns the slug by the time the user answered."""
+    owns the slug by the time the user answered. An EMPTY expectation refuses
+    outright: an unverified identity cannot authorize a deletion (claim first — the
+    claim stamps a legacy meta precisely so this authorization can exist)."""
+    if expected_id is not None and not expected_id:
+        raise StaleEntryError(
+            gettext("%(name)s changed while this edit was underway — reopen it and try again.")
+            % {"name": name_or_slug}
+        )
     with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
         spec = registry.spec_for(entry.meta.kind)
         if spec is not None and spec.deps_flavor == "npm":
@@ -1699,18 +1725,41 @@ def rewrite_source(
             write_block_edit(entry.script_path, new, newline)
 
 
-def commit_copy_edit(name_or_slug: str, payload: bytes, *, expected_id: str | None = None) -> Entry:
+def commit_copy_edit(
+    name_or_slug: str,
+    payload: bytes,
+    *,
+    expected_id: str | None = None,
+    expected_source_hash: str | None = None,
+) -> Entry:
     """Land an edited STORED COPY from a staged draft, atomically, under the entry
     lock with the identity check first — the editor-session twin of rewrite_source.
     The editor never touches the stored path itself (an editor session is the longest
     user-paced hold there is, and its save must not land on a reincarnated slug); the
     draft's bytes arrive here verbatim, and the stored copy keeps its own permission
-    bits (a staged draft carries the umask default, not the copy's mode)."""
+    bits (a staged draft carries the umask default, not the copy's mode).
+
+    expected_source_hash is the SECOND compare-and-swap, on the content: the identity
+    only proves WHICH entry this is, not that its source is still the version the
+    draft was staged from — a `params --normalize` or a settings save landing while
+    the editor sat open would be silently erased by a whole-file replace. A digest
+    mismatch refuses (the caller keeps the draft and says why) instead of losing the
+    other writer's work."""
     with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
         target = entry.script_path
         if not target.exists():
             raise NotFoundError(
                 gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}
+            )
+        if (
+            expected_source_hash is not None
+            and hashlib.sha256(target.read_bytes()).hexdigest() != expected_source_hash
+        ):
+            raise StaleEntryError(
+                gettext(
+                    "%(name)s's source changed while the editor was open — reopen it and try again."
+                )
+                % {"name": entry.meta.name}
             )
         atomic_write_bytes_keep_mode(target, payload)
         return Entry(slug=entry.slug, meta=entry.meta, dir=entry.dir)
