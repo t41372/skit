@@ -29,10 +29,12 @@ is *the user's curated space*: treat it like their dotfiles.
 3. **Before an entry's first run, `--dry-run` it** and show the user the exact command.
 4. **Never add, remove, or overwrite library entries without asking the user first.**
    Propose `skit add` when you've written something reusable; don't add it silently.
-5. **Pass `--no-input` on every `skit run` and `skit add`.** It guarantees those never
-   block on a prompt; if information is missing, skit fails fast with a named error
-   instead. `skit remove` confirms instead of taking `--no-input` — pass `-y`. The
-   read commands (`list`, `show`, `params`, …) never prompt and don't take the flag.
+5. **Pass `--no-input` on every potentially prompting command.** For `run` and `add`
+   it guarantees skit never blocks; `preset save` also needs `--from-last`, and a
+   headless `agent install` needs an explicit target or `--to`. The destructive
+   commands (`remove`, `preset delete`, `runner remove`) confirm unless you pass `-y`;
+   non-interactively, a missing `-y` is a clean exit-2 refusal, never a hang. Read
+   commands (`list`, `show`, `params`, …) never prompt and don't take the flag.
 
 ## Discover entries
 
@@ -91,15 +93,21 @@ skit run <name> --forget-args --no-input            # erase the remembered extra
 ### Exit codes (docker convention)
 
 When the entry's target process actually ran, its exit code passes through **untouched**
-(even if it exits 125–127 — check stderr when in doubt). When it never launched:
+(even if it exits 125–127 or 130 — check stderr when in doubt). When it never launched:
 
 | code | meaning |
 | --- | --- |
-| 2 | usage error (bad flags, unknown `--set` name, unknown preset) |
-| 125 | skit-side failure: missing/invalid parameter value, drift, launch failure |
-| 126 | target exists but is not executable |
+| 0 | success, including a deliberate "no" to a destructive confirmation |
+| 2 | usage error (bad flags, unknown `--set` name/preset, explicit unknown `--runner`) |
+| 125 | skit-side failure: corrupt metadata, filesystem failure, bad value, drift |
+| 126 | target exists but is not executable/resolvable, including a stale saved runner pin |
 | 127 | no such entry in the library (or launch target missing) |
-| 130 | user cancelled the interactive form |
+| 130 | an interactive flow was aborted with Ctrl-C or EOF |
+
+127 is the answer from **every** command that takes an entry name — `run`, `show`,
+`params`, `deps`, `describe`, `rename`, `remove`, `edit`, `preset save/list/delete` —
+not just `run`. (Before 0.4.1 the others answered 1, which is inside the band a launched script's
+own exit code uses, so "no such entry" and "the script failed" were indistinguishable.)
 
 ## Add entries to the library
 
@@ -200,7 +208,7 @@ Named value sets per entry, ideal for recurring jobs:
 skit run <name> --set a=1 --set b=2 --save-preset nightly --dry-run --no-input  # create without running
 skit preset list <name> --json
 skit run <name> -p nightly --no-input
-skit preset delete <name> nightly
+skit preset delete <name> nightly -y   # confirms without -y
 ```
 
 ## Prompts & runners
@@ -233,7 +241,8 @@ skit params <name> --no-interpolate  # switch insertion off; --interpolate turns
 
 - **A run needs a runner.** Resolution is `--runner` > the entry's pin > exit 126 —
   never a guess (interactive terminals get asked; `--no-input` never does). Check
-  `runners_available` in `skit show <name> --json` before picking.
+  `runners_available` in `skit show <name> --json` before picking. Passing a name that
+  is not in that list is usage 2; a previously saved pin whose row was removed is 126.
 - Prompts contain code snippets, so a detected `{{hole}}` can be a false positive:
   unmanaged holes pass through to the agent verbatim, `--rm` unmanages, and
   `--no-interpolate` switches the whole entry to verbatim delivery. `skit params
@@ -249,7 +258,7 @@ skit params <name> --no-interpolate  # switch insertion off; --interpolate turns
 skit runner list --json                       # [{"name": …, "argv": […]}]
 skit runner add mycli -- mycli run {{prompt}} # each word = one argument, no shell
 skit runner add mycli --force -- mycli run --model opus {{prompt}}  # --force replaces an existing runner (edit)
-skit runner remove mycli -y   # confirms without -y, like skit remove
+skit runner remove mycli -y   # confirms without -y, like skit remove and preset delete
 ```
 
 - The agent's own per-run flags pass through after `--`:
@@ -261,8 +270,9 @@ skit runner remove mycli -y   # confirms without -y, like skit remove
 ## Maintenance
 
 ```bash
-skit doctor --json     # health: uv, location, drift/missing, needs_missing, launch_blocked,
-                       # mirror {enabled + stored URLs; an axis applies iff enabled and its URL is set}
+skit doctor --json     # health: uv, location/config_dir/state_dir, drift/missing, needs_missing,
+                       # launch_blocked, unindexed, mirror {enabled + stored URLs; an axis
+                       # applies iff enabled and its URL is set}
 skit rename <name> <new-name>       # rename; presets, remembered values and history follow
 skit describe <name> "Nightly dump" # set/replace the description (an empty string clears it)
 skit remove <name> -y  # remove an entry (the user's original file is never deleted) — ask first
@@ -274,9 +284,25 @@ skit config shell.bash_path /path  # where bash lives on Windows (POSIX auto-det
 `doctor --json` adds `launch_blocked` — a `{name: reason}` map of entries whose run
 would refuse to start (uninstalled interpreter/JS runtime, a pinned agent binary that
 is gone, a vanished working directory) even though their target file is present.
+It also adds `unindexed` — slugs that are stored on disk but missing from the index
+(a lost or corrupt `registry.toml`). **Check it before concluding a library is empty:**
+`entries: 0` with a non-empty `unindexed` means the entries exist and are unreadable,
+not that the user has none — never offer to re-add scripts in that state. `skit doctor
+--rebuild` recovers them from the stored metas.
+
+`location`, `config_dir` and `state_dir` are the three resolved roots (library, config,
+state) — use them to answer "where does skit keep this?" instead of guessing paths.
+
 Note: doctor's EXIT CODE reflects uv availability only — per-entry warnings (missing
-targets, drift, launch_blocked) do not change it. Read `--json` for health, never the
-exit code.
+targets, drift, launch_blocked, unindexed) do not change it. Read `--json` for health,
+never the exit code.
+
+**`skit params` edits atomically.** Any flag it cannot honour (an unknown type, a
+default that does not fit, a name that is not a parameter, a malformed `NAME=VALUE`)
+makes the whole invocation exit `2` with **nothing written** — so a `params` call that
+exits 0 applied every flag you passed, and one that exits 2 applied none. Re-running a
+request that is already satisfied still exits 0. `skit edit` needs a terminal; pass
+`--no-input` to get a refusal instead of a hang.
 
 If `show`/`run` reports drift (the source changed and its managed parameter
 definitions no longer match), `skit params <name> --resync` refreshes them.

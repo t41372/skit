@@ -30,6 +30,11 @@ class HealthReport:
     # working directory. name → the exact refusal message a run would show.
     launch_blocked: dict[str, str] = field(default_factory=dict)
     invalid_runner_rows: list[str] = field(default_factory=list)
+    # Stored entries the index has lost track of — SLUGS, not names, because their metas
+    # are exactly what the index isn't carrying. Every other list here describes an entry
+    # skit can see; this one is the only check that can answer "is anything missing from
+    # the list itself?", which no face used to ask.
+    unindexed: list[str] = field(default_factory=list)
     # Kept alongside for renderers that need slugs (the TUI's jump-to-script list).
     needs_entries: list[store.Entry] = field(default_factory=list)
     blocked_entries: list[store.Entry] = field(default_factory=list)
@@ -95,4 +100,8 @@ def collect(entries: list[store.Entry]) -> HealthReport:
             report.launch_blocked[entry.meta.name] = str(exc)
             report.blocked_entries.append(entry)
     report.invalid_runner_rows = config.invalid_prompt_runners()
+    # Asked of the STORE, not of `entries`: an entry the index has lost was never in the
+    # list this function was handed, so no sweep over that list can ever find it. This is
+    # the check that makes "0 entries registered" a fact rather than a guess.
+    report.unindexed = store.unindexed_slugs()
     return report

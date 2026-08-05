@@ -1,7 +1,7 @@
 """Mutation-kill tests for skit.analysis.
 
 Pins the exact user-facing copy emitted by the two render helpers (`drift_lines`,
-`render_warning`) and two behavioural decisions (edit_specs' `resync` default, reconcile's
+`render_notice`) and two behavioural decisions (edit_specs' `resync` default, reconcile's
 env-coverage bookkeeping). Every assertion here exercises a real reconcile/render code path
 through the public language shims, mirroring tests/test_reconcile.py and
 tests/test_shell_analyzer.py. The conftest pins SKIT_LANG=en and resets the i18n catalog per
@@ -16,6 +16,7 @@ from skit import analysis
 from skit.langs.python import reconcile as pyrec
 from skit.langs.python.analyzer import analyze as py_analyze
 from skit.langs.shell import analyzer as shell
+from skit.notices import NoticeCode, edit_notice
 from skit.params import ParamDecl
 
 PY_SCRIPT = 'CITY = "Taipei"\nRETRIES = 3\nwho = input("Name: ")\nprint(CITY, RETRIES, who)\n'
@@ -57,30 +58,30 @@ def test_drift_lines_rebind_line_is_verbatim():
     assert expected in lines
 
 
-# ---------------------------------------------------------------- render_warning copy
+# ---------------------------------------------------------------- render_notice copy
 
 
-def test_render_warning_resync_skipped_is_verbatim():
+def test_render_notice_resync_skipped_is_verbatim():
     # Two-part message; pin both halves exactly (no %(name)s placeholder, so it stands alone).
-    assert pyrec.render_warning("resync-skipped") == (
+    assert pyrec.render_notice(edit_notice(NoticeCode.RESYNC_SKIPPED)) == (
         "Could not parse the script (syntax error); resync skipped. "
         "Parameter definitions are unchanged."
     )
 
 
-def test_render_warning_resync_rebound_is_verbatim():
+def test_render_notice_resync_rebound_is_verbatim():
     # Exercises the "resync-rebound" dict key (a mangled key would KeyError), the %(name)s
     # substitution (a mangled placeholder or gettext(None) would raise), and the full wording.
-    assert pyrec.render_warning("resync-rebound:input-1") == (
+    assert pyrec.render_notice(edit_notice(NoticeCode.RESYNC_REBOUND, "input-1")) == (
         "input-1: re-anchored to its current position after its prompt stopped matching "
         "uniquely; double-check the prompt/secret assignment is still correct."
     )
 
 
-def test_render_warning_rebound_key_resolves_for_every_name():
+def test_render_notice_rebound_key_resolves_for_every_name():
     # A second concrete name proves the key lookup + substitution really run (not a fluke of one
     # value); a broken key would raise KeyError here too.
-    msg = pyrec.render_warning("resync-rebound:API_KEY")
+    msg = pyrec.render_notice(edit_notice(NoticeCode.RESYNC_REBOUND, "API_KEY"))
     assert msg.startswith("API_KEY: re-anchored to its current position")
 
 
@@ -94,7 +95,7 @@ def test_edit_specs_resync_defaults_off():
     specs = [ParamDecl(name="GONE", binding="const", type="str")]
     result = analysis.edit_specs(PY_SCRIPT, specs, analyze=py_analyze)
     assert [s.name for s in result.specs] == ["GONE"]  # kept: resync did not run
-    assert result.warnings == []  # no "resync-dropped:GONE"
+    assert result.notices == []  # no dropped-name notice
 
 
 def test_edit_specs_resync_true_does_prune():
@@ -103,7 +104,7 @@ def test_edit_specs_resync_true_does_prune():
     specs = [ParamDecl(name="GONE", binding="const", type="str")]
     result = analysis.edit_specs(PY_SCRIPT, specs, resync=True, analyze=py_analyze)
     assert result.specs == []
-    assert "resync-dropped:GONE" in result.warnings
+    assert edit_notice(NoticeCode.RESYNC_DROPPED, "GONE") in result.notices
 
 
 # ---------------------------------------------------------------- reconcile env coverage

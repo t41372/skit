@@ -51,7 +51,7 @@ Every item below is a hard CI gate — all of them must be green before a merge.
 | Types | `uv run ty check` | ty in its strictest mode (`[tool.ty.rules] all = "error"`) |
 | Tests | `uv run pytest -q` | Runs across Linux/macOS/Windows × Python 3.12 / 3.13 |
 | Coverage | `uv run pytest --cov` | **Floor is 100%** (`fail_under = 100`); anything less fails |
-| Mutation testing | `uv run mutmut run` | Surviving mutants fail CI |
+| Mutation testing | `uv run mutmut run` | Surviving mutants fail CI — but mutmut skips every **decorated** function, so ~18% of the code (all Typer command bodies, all `@override`/`@on`) is never mutated. See AGENTS.md, principle 5. |
 | Workflow audit | `uv run zizmor .github/workflows` | Security scan for GitHub Actions |
 | i18n in sync | `uv run python scripts/i18n.py compile` | Committed `.mo` must match the `.po` sources (CI checks `git diff`) |
 | i18n coverage | `uv run python scripts/i18n_coverage.py` | Fresh `.pot`, 100% non-fuzzy translations, no unwrapped UI literals, no dynamic `gettext()` (mirrored by `tests/test_i18n.py`) |
@@ -84,6 +84,7 @@ The hooks cover ruff (lint + format), ty, a zizmor audit of `.github/workflows`,
 
 - **The 100% coverage floor is real, and padding is not accepted.** Never use `# pragma: no cover` to hide reachable branches, and never write hollow "import-only, assert-nothing" tests to game the number. Every test must make a meaningful assertion about observable behavior.
 - **Coverage only counts when it survives mutation testing.** Coverage proves "this line executed"; mutation testing proves "this line's logic is actually pinned down by an assertion". When adding code, make sure your assertions kill the mutants mutmut generates.
+- **…except where mutmut generates none.** It skips decorated functions entirely (AGENTS.md, principle 5), so for a Typer command body or an `@on` handler the advice above is vacuous — there are no mutants to kill, and coverage is the only thing checking you. Move the decision into an undecorated helper and test *that*; a decorated function should read as wiring.
 - `# pragma: no cover` is allowed only for genuinely unreachable or defensive branches, with an inline comment explaining why.
 - Secret-related behavior must have a "never touches disk" test (see the existing `argstate` tests).
 

@@ -44,6 +44,7 @@ from . import (
     argstate,
     config,
     editor,
+    exitcodes,
     flows,
     kindnames,
     launcher,
@@ -147,13 +148,19 @@ class ConfirmRemove(ModalScreen[bool]):
     @override
     def compose(self) -> ComposeResult:
         lines = [Label(gettext('Remove "%(name)s"?') % {"name": escape(self._entry.meta.name)})]
-        spec = spec_for(self._entry.meta.kind)
-        source = self._entry.meta.source
-        if (spec is None or spec.has_original_file) and source and Path(source).exists():
-            # Only when the original actually still exists: for a drafted entry the
-            # "original" was a temp file — reassuring the user about a file that is
-            # already gone would be a lie.
+        # The VERDICT is shared with `skit remove` (launcher.removal_stake); the sentences
+        # are this face's own. Round 11 shared the predicate and forked the answer, so the
+        # only-copy warning existed on the CLI — which makes you type a name — and not
+        # here, where Delete acts on whatever row the cursor happens to be on.
+        stake = launcher.removal_stake(self._entry)
+        if stake == "original-safe":
+            # For a drafted entry the "original" was a temp file: reassuring the user
+            # about a file that is already gone would be a lie.
             lines.append(Static(f"[dim]{gettext('Your original file will not be deleted.')}[/dim]"))
+        elif stake == "only-copy":
+            lines.append(
+                Static(f"[$warning]{gettext('skit holds the only copy — it will be gone.')}[/]")
+            )
         # The verb line IS the button row: y/Esc stay advertised, and each chip is
         # clickable — modals must not be the one place that suddenly demands keys.
         lines.append(
@@ -206,7 +213,7 @@ class HelpScreen(ModalScreen[None]):
             ("/", gettext("Search")),
             ("Tab", gettext("Detail pane")),
             (",", gettext("Preferences")),
-            ("D", gettext("Health check")),
+            (HEALTH_KEY, gettext("Health check")),
             ("Ctrl+C Ctrl+C / Esc", gettext("Quit")),
         ]
         body = "\n".join(f"[$accent]{k:>16}[/]  {escape(v)}" for k, v in rows)
@@ -235,6 +242,9 @@ class PendingRun:
     asm: flows.Assembly
     values: dict[str, str]
     extra: list[str]
+    # The tail's provenance (raw form text vs an already-processed replay), carried so
+    # the deferred save_after_run records the same bit an immediate save would have.
+    extra_raw: bool
     show_drift: bool
     runner: config.PromptRunner | None = None
 
@@ -247,6 +257,15 @@ class _LibraryScreen(Screen[None]):
     pushed screen, and the run form / add flow rely on "*" to focus their first field."""
 
     AUTO_FOCUS = "#entry-table"
+
+
+# The Health screen's key glyph, spelled ONCE. It was written out four times — the
+# Binding, the footer chip, the help overlay, and (round 9) a line of blank-state prose
+# that got it wrong: the panic pane told a user whose index had just vanished to "open
+# Health (h)", and h is bound to nothing. That is the one screen where the reader has a
+# single instruction and no patience. Prose that hand-writes a key glyph can drift from
+# the binding; prose that interpolates this cannot.
+HEALTH_KEY = "D"
 
 
 class MenuApp(App[int | PendingRun]):
@@ -336,7 +355,7 @@ class MenuApp(App[int | PendingRun]):
         Binding("s", "presets", gettext("Presets"), show=False),
         Binding("a", "add", gettext("Add entry"), show=False),
         Binding("comma", "preferences", gettext("Preferences"), show=False),
-        Binding("D", "health", gettext("Health check"), show=False),
+        Binding(HEALTH_KEY, "health", gettext("Health check"), show=False),
         Binding("question_mark", "help", gettext("Help"), show=False),
         Binding("slash", "focus_search", gettext("Search"), show=False),
         # priority: Textual's built-in Tab focus-nav would otherwise win. The Library's
@@ -351,7 +370,20 @@ class MenuApp(App[int | PendingRun]):
         self._entries: list[Entry] = []
         self._visible: list[Entry] = []
         self._ctrl_c_at: float = 0.0
-        self._drift_cache: dict[str, tuple[float, bool]] = {}  # slug -> (mtime, has_drift)
+        # slug -> (_plan_key(entry), plan). The detail
+        # pane re-renders on every RowHighlighted, and a plan build is a full parse —
+        # or, for a reader kind like PowerShell, a synchronous subprocess with a
+        # cold-start runtime — so it must never run uncached inside a cursor-movement
+        # handler. BOTH files key the cache: a plan is a function of the script body AND
+        # of meta.toml (declared [[parameters]] rows, a prompt's managed list /
+        # interpolate switch), and an agent editing the library from the CLI while the
+        # TUI sits open is the product's own coexistence story — the pane must pick that
+        # up, not only the TUI's own writes. mtime_ns + size (not float mtime alone)
+        # narrows the same-tick blind spot on coarse-mtime filesystems (FAT: 2 s) to
+        # same-tick same-size writes.
+        self._plan_cache: dict[
+            str, tuple[tuple[int, int, int, int, str | None], flows.FormPlan]
+        ] = {}
 
     @override
     def get_default_screen(self) -> Screen[None]:
@@ -433,7 +465,22 @@ class MenuApp(App[int | PendingRun]):
             status.update(message)
             return
         if not self._entries:
-            status.update(gettext("Your entries will appear here."))
+            # The status line is the surface that survives EVERY size tier (tui_layout:
+            # "the error/feedback channel that stays at every tier"), and the detail pane
+            # is display:none at -h-short/-h-tiny — so on a small terminal this is the
+            # only blank-state copy the user sees, and it was the one never taught the
+            # question. Round 9 fixed "both" blank surfaces; there were three.
+            lost = self._lost_index_count()
+            status.update(
+                ngettext(
+                    "The index lost %(count)s stored entry — press %(key)s to recover it",
+                    "The index lost %(count)s stored entries — press %(key)s to recover them",
+                    lost,
+                )
+                % {"count": lost, "key": HEALTH_KEY}
+                if lost
+                else gettext("Your entries will appear here.")
+            )
             return
         status.update(
             ngettext("%(shown)s/%(total)s entry", "%(shown)s/%(total)s entries", len(self._entries))
@@ -472,7 +519,12 @@ class MenuApp(App[int | PendingRun]):
             if argstate.last_run(entry.slug):
                 local.append(tui_footer.chip("app.rerun", "r", gettext("Rerun")))
             local.append(tui_footer.chip("app.settings", "p", gettext("Entry settings")))
-            local.append(tui_footer.chip("app.edit", "e", gettext("Edit source")))
+            if self._can_edit(entry):
+                # Round 11's rule, at the highest-traffic screen in the app: one predicate
+                # drives the chip AND check_action, so `e` is never a button that does
+                # nothing when clicked. It is also the door that produced the misleading
+                # "no editable source" message — an entry whose row offers editing.
+                local.append(tui_footer.chip("app.edit", "e", gettext("Edit source")))
             local.append(tui_footer.chip("app.remove", "Del", gettext("Remove")))
         globals_row = [
             tui_footer.chip("app.add", "a", gettext("Add entry")),
@@ -482,25 +534,116 @@ class MenuApp(App[int | PendingRun]):
             # tier auto-hides it, this chip is the visible way back.
             tui_footer.chip("app.toggle_detail", "Tab", gettext("Detail pane")),
             tui_footer.chip("app.preferences", ",", gettext("Preferences")),
-            tui_footer.chip("app.health", "D", gettext("Health check")),
+            tui_footer.chip("app.health", HEALTH_KEY, gettext("Health check")),
             tui_footer.chip("app.help", "?", gettext("Help")),
         ]
         keys_local.update(tui_footer.bar(*local))
         keys_global.update(tui_footer.bar(*globals_row))
 
+    def _fresh(self, entry: Entry) -> Entry:
+        """The current on-disk record for an interaction. The Library list is a snapshot
+        refreshed by _reload, but a detail render or a LAUNCH must see what an agent
+        editing the library concurrently just wrote — the pane and the run it advertises
+        must describe the same record. Degrades to the snapshot when the entry vanished
+        or its meta corrupted mid-render; the caller's own missing/error paths then
+        speak."""
+        try:
+            return store.resolve(entry.slug)
+        except store.StoreError:
+            return entry
+
+    def _claimed(self, entry: Entry) -> Entry | None:
+        """_fresh for the lanes that HOLD the record across user-paced time (a run, an
+        open form or settings screen, an editor session): compare-and-claim
+        (store.claim_identity) — the handshake verifies the disk still holds THIS row's
+        entry and stamps a pre-id meta, so the lane's later writes authorize by exact
+        match. None = the row is a ghost (removed, or its slug reissued): the lane must
+        STOP — acting would hit the stranger — and the Library is reloaded with the
+        reason on the status line. Corrupt/unreadable degrades to the held snapshot so
+        the lane's own error paths can speak. Never used by pure renders: a detail-pane
+        read must stay a read, and a claim may write."""
+        try:
+            return store.claim_identity(entry)
+        except (store.StaleEntryError, store.NotFoundError):
+            self._reload()
+            self._refresh_status(
+                gettext("%(name)s changed or was removed — the list has been refreshed.")
+                % {"name": escape(entry.meta.name)}
+            )
+            return None
+        except store.StoreError as exc:
+            # Fail CLOSED on everything else too (a corrupt meta included): a claim
+            # that cannot verify must stop the lane — acting on the held snapshot
+            # could operate on whoever owns the slug now. Only the pure-display
+            # _fresh may degrade to a snapshot.
+            self._refresh_status(gettext("Error: %(error)s") % {"error": escape(str(exc))})
+            return None
+
+    def _plan_key(self, entry: Entry) -> tuple[int, int, int, int, str | None] | None:
+        """The cache key: both files' (mtime_ns, size) — narrowing coarse-mtime blind
+        spots to same-tick same-size writes — plus the kind's reader-tool fingerprint,
+        because a reader plan (PowerShell) is a function of pwsh availability too: the
+        pane must re-probe when the tool appears mid-session, exactly like the add
+        panel's memo. None when a file can't be stat'ed (build fresh, cache nothing)."""
+        try:
+            s = entry.script_path.stat()
+            m = (entry.dir / "meta.toml").stat()
+        except OSError:
+            return None
+        spec = spec_for(entry.meta.kind)
+        fingerprint = (
+            spec.cli_reader.runtime_fingerprint
+            if spec is not None and spec.cli_reader is not None
+            else None
+        )
+        tool = fingerprint() if fingerprint is not None else None
+        return (s.st_mtime_ns, s.st_size, m.st_mtime_ns, m.st_size, tool)
+
+    def _cached_plan(self, entry: Entry) -> flows.FormPlan:
+        """plan_for_entry for DISPLAY (detail pane, drift badge): lazy, keyed by
+        _plan_key. Callers pass the entry they are rendering — _refresh_detail hands in
+        the _fresh() record, so the cached plan is built from the same generation the
+        pane's other lines show. Launches never read this cache (action_run/rerun build
+        fresh plans from their own _fresh() entry).
+
+        The key is validated by a SECOND stat after the build: a write landing between
+        the first stat and the plan's own reads would otherwise pin stale content under
+        the fresh key — the poison this cache once shipped. When the two keys disagree,
+        nothing is cached and the next highlight rebuilds."""
+        key = self._plan_key(entry)
+        if key is None:
+            return flows.plan_for_entry(entry)
+        cached = self._plan_cache.get(entry.slug)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        plan = flows.plan_for_entry(entry)
+        # Cache only when BOTH freshness proofs hold. The second stat catches a write
+        # after the first stat; the meta re-read catches the other half of the window —
+        # a meta.toml write landing between the caller's resolve and the first stat,
+        # which would otherwise pin a plan built from the OLD meta under the NEW key
+        # (stat equality alone can't see it: plan_for_entry reads declared params from
+        # the in-memory entry.meta, not from disk). Either proof failing just skips the
+        # cache — the next highlight rebuilds fresh.
+        if self._plan_key(entry) == key and self._meta_unchanged(entry):
+            self._plan_cache[entry.slug] = (key, plan)
+        return plan
+
+    def _meta_unchanged(self, entry: Entry) -> bool:
+        """Whether the on-disk record still matches the entry a plan was just built
+        from (see _cached_plan). Delegates the resolve-or-snapshot degrade to _fresh —
+        ONE policy for "what counts as the current generation": unresolvable degrades
+        to the snapshot there, which compares equal here, so it counts as unchanged
+        (the snapshot IS the best available generation then, and caching it is the fix
+        for the subprocess-per-highlight corrupt-meta case)."""
+        current = self._fresh(entry)
+        return current.meta == entry.meta and current.dir == entry.dir
+
     def _has_drift(self, entry: Entry) -> bool:
-        """Drift is the expensive check (read + reconcile): lazy, per-selection, mtime-cached."""
+        """Drift is the expensive check (read + reconcile): served off the plan cache."""
         spec = spec_for(entry.meta.kind)
         if spec is None or spec.analyzer is None or not entry.script_path.exists():
             return False
-        mtime = entry.script_path.stat().st_mtime
-        cached = self._drift_cache.get(entry.slug)
-        if cached is not None and cached[0] == mtime:
-            return cached[1]
-        plan = flows.plan_for_entry(entry)
-        drift = bool(plan.drift_lines)
-        self._drift_cache[entry.slug] = (mtime, drift)
-        return drift
+        return bool(self._cached_plan(entry).drift_lines)
 
     def _refresh_detail(self) -> None:
         # A queued RowHighlighted can reach this after the detail pane is gone — a
@@ -513,20 +656,52 @@ class MenuApp(App[int | PendingRun]):
         entry = self._selected()
         if entry is None:
             if not self._entries:
-                body.update(
-                    "\n".join(
-                        (
-                            f"[bold]{gettext('Your entries will appear here.')}[/bold]",
-                            "",
-                            gettext("Press a to add the first one,"),
-                            gettext("or run: skit add <path> in a terminal."),
-                        )
-                    )
-                )
+                # Same rule as `skit list`: never assert the library is empty without
+                # asking disk. A lost index empties this pane too, and inviting the user
+                # to add their first script is the worst possible answer to "where did
+                # all my scripts go?".
+                body.update("\n".join(self._blank_library_lines()))
             else:
                 body.update("")
             return
-        body.update("\n".join(self._detail_lines(entry)))
+        # ONE generation per render: description, deps, and the plan all come from the
+        # same _fresh() record — a fresh plan under a stale description would be two
+        # panes of one TUI disagreeing about one record.
+        body.update("\n".join(self._detail_lines(self._fresh(entry))))
+
+    @staticmethod
+    def _lost_index_count() -> int:
+        """How many stored entries the index has lost — THE question every blank-library
+        surface must ask before it says "empty", asked in one place so a surface cannot
+        answer it differently. Three render an answer today (the detail pane, the status
+        line that outlives it at -h-short/-h-tiny, and the Health screen); the round-9
+        fix taught two of them and left the third asserting a first run."""
+        return len(store.unindexed_slugs())
+
+    @staticmethod
+    def _blank_library_lines() -> list[str]:
+        """The empty-pane copy — which of the two blank states this actually is. A first
+        run and a lost index look identical to the list widget and could not be more
+        different to the user, so the pane asks disk instead of assuming (the same
+        question `skit list` and the Health screen ask; store.unindexed_slugs owns it).
+
+        The recovery line is a CHIP, not prose naming a key: the pane renders markup, so
+        the chip is a real click target (principle 2 — the mouse always has a path), and
+        its glyph comes from HEALTH_KEY instead of being typed out a fourth time. The
+        prose spelling shipped in round 9 said "h", which is bound to nothing."""
+        if MenuApp._lost_index_count():
+            return [
+                f"[bold]{gettext('The index lists no entries.')}[/bold]",
+                "",
+                gettext("Your stored scripts are still on disk."),
+                tui_footer.chip("app.health", HEALTH_KEY, gettext("Recover them")),
+            ]
+        return [
+            f"[bold]{gettext('Your entries will appear here.')}[/bold]",
+            "",
+            gettext("Press a to add the first one,"),
+            gettext("or run: skit add <path> in a terminal."),
+        ]
 
     def _detail_lines(self, entry: Entry) -> list[str]:
         glyph, kind_label = _kind_badge(entry.meta.kind)
@@ -558,7 +733,7 @@ class MenuApp(App[int | PendingRun]):
     def _detail_state_lines(self, entry: Entry) -> list[str]:
         lines: list[str] = []
         state = argstate.load_state(entry.slug)
-        plan = flows.plan_for_entry(entry)
+        plan = self._cached_plan(entry)
         if plan.fields:
             shown: list[str] = []
             for f in plan.fields[:6]:
@@ -654,8 +829,17 @@ class MenuApp(App[int | PendingRun]):
     @override
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Library keys act only on the Library: keys that bubble out of a pushed
-        screen's own widgets must not trigger surprise actions underneath it."""
-        return not (action in self._LIBRARY_ACTIONS and len(self.screen_stack) > 1)
+        screen's own widgets must not trigger surprise actions underneath it.
+
+        `e` is additionally gated on the kind having an editable source, from the same
+        predicate its chip is built from — one predicate behind the key and the button, so
+        neither can advertise what the other doesn't (the ScriptSettingsScreen rule)."""
+        if action in self._LIBRARY_ACTIONS and len(self.screen_stack) > 1:
+            return False
+        if action == "edit":
+            entry = self._selected()
+            return entry is None or self._can_edit(entry)
+        return True
 
     def _refresh_footer_on_focus_move(self) -> None:
         # The footer's advertised keys depend on who owns the keyboard (search box vs
@@ -699,6 +883,14 @@ class MenuApp(App[int | PendingRun]):
         entry = self._selected()
         if entry is None:
             return
+        # The LAUNCH reads the same fresh record the detail pane just described — a
+        # form built from the Library's stale snapshot would lack the parameter an
+        # agent declared a second ago, contradicting the pane beside it. Claimed, not
+        # just fresh: the form and the run hold this handle across user-paced time.
+        claimed = self._claimed(entry)
+        if claimed is None:
+            return
+        entry = claimed
         is_prompt = entry.meta.kind == "prompt"
         # A prompt's actual executable is selected on the run form.  Checking its
         # entry pin here would let a stale/broken pin block the very picker that can
@@ -729,12 +921,15 @@ class MenuApp(App[int | PendingRun]):
         # (the old skip-shortcut replayed them invisibly, forever). Enter on the fresh
         # form submits immediately, so the fast path costs one keypress; the truly
         # form-free rerun is the explicit `r` key.
-        prefill = flows.prefill(plan, entry.slug)
+        # ONE state read per interaction: prefill, the form's extra row, and the
+        # provenance baseline all come from the same snapshot.
+        state = argstate.load_state(entry.slug)
+        prefill = flows.prefill(plan, entry.slug, state=state)
 
         def _submitted(result: FormResult) -> None:
             if result is None:
                 return
-            values, extra, runner_name, runner_was_picked = result
+            values, extra, runner_name, runner_was_picked, extra_raw = result
             runner = None
             if runner_name is not None:
                 runner = config.find_prompt_runner(runner_name)
@@ -747,14 +942,25 @@ class MenuApp(App[int | PendingRun]):
                 if runner_was_picked:
                     # The event is the truth: a user may move away and back to the
                     # pin, while an untouched pin merely supplies a default.
-                    argstate.save_last_runner(runner_name)
+                    try:
+                        argstate.save_last_runner(runner_name)
+                    except argstate.StateWriteError as exc:
+                        # Incidental prefill state must never veto the accepted run.
+                        self.notify(str(exc), severity="warning")
             if is_prompt:
                 try:
                     launcher.preflight(entry, runner=runner)
                 except launcher.LaunchError as exc:
                     self._refresh_status(gettext("Error: %(error)s") % {"error": escape(str(exc))})
                     return
-            self._execute(entry, plan, values, extra, show_drift=False, runner=runner)
+            # extra_raw is the FORM's verdict (see FormResult): an untouched prefill
+            # keeps its stored provenance, an edited tail is form text. Judged by the
+            # form's own dirt bit against its compose-time snapshot — never by diffing
+            # values against freshly-reloaded state, which a concurrent CLI write (or a
+            # cleared-and-retyped identical tail) would fool.
+            self._execute(
+                entry, plan, values, extra, extra_raw=extra_raw, show_drift=False, runner=runner
+            )
 
         self.push_screen(
             RunFormScreen(
@@ -767,6 +973,7 @@ class MenuApp(App[int | PendingRun]):
                     if entry.meta.runner in runner_names
                     else argstate.load_last_runner()
                 ),
+                state=state,
             ),
             _submitted,
         )
@@ -776,7 +983,15 @@ class MenuApp(App[int | PendingRun]):
         entry = self._selected()
         if entry is None:
             return
-        if not argstate.last_run(entry.slug):
+        # Same freshness rule as action_run — claimed, the run holds it — and ONE
+        # state read for the whole rerun (the last-run guard reads the same snapshot
+        # instead of a second file open).
+        claimed = self._claimed(entry)
+        if claimed is None:
+            return
+        entry = claimed
+        state = argstate.load_state(entry.slug)
+        if not state["last_run"]:
             self._refresh_status(
                 gettext("%(name)s hasn't run yet — press Enter to fill the form first.")
                 % {"name": escape(entry.meta.name)}
@@ -793,13 +1008,16 @@ class MenuApp(App[int | PendingRun]):
             self._refresh_status(gettext("Error: %(error)s") % {"error": escape(str(exc))})
             return
         plan = flows.plan_for_entry(entry)
-        prefill = flows.prefill(plan, entry.slug)
+        prefill = flows.prefill(plan, entry.slug, state=state)
         if flows.validate(plan, prefill):
             # The last values no longer satisfy the form (e.g. a new required field):
             # fall back to the form rather than assembling a broken command.
             self.action_run()
             return
-        self._execute(entry, plan, prefill, argstate.load_state(entry.slug)["extra_args"])
+        # The replayed tail keeps its recorded provenance: a tail the CLI captured
+        # post-shell must not get a second token/glob pass just because the rerun
+        # happens from the TUI.
+        self._execute(entry, plan, prefill, state["extra_args"], extra_raw=state["extra_args_raw"])
 
     def _execute(
         self,
@@ -808,14 +1026,18 @@ class MenuApp(App[int | PendingRun]):
         values: dict[str, str],
         extra: list[str],
         *,
+        extra_raw: bool = True,
         show_drift: bool = True,
         runner: config.PromptRunner | None = None,
     ) -> None:
         """Suspend, deliver (inject/flags/template), pass the terminal through, record.
 
-        show_drift=False when the form was just shown (its banner already said it)."""
+        show_drift=False when the form was just shown (its banner already said it).
+        extra_raw=True is the form path (the extra field is raw intent text — tokens and
+        globs expand); a rerun replaying a CLI-captured tail passes False so the tail
+        stays literal, matching how it originally launched."""
         try:
-            asm = flows.assemble(plan, values, list(extra), cwd=Path.cwd())
+            asm = flows.assemble(plan, values, list(extra), cwd=Path.cwd(), expand_extra=extra_raw)
         except flows.FormError as exc:
             self._refresh_status(gettext("Error: %(error)s") % {"error": escape(str(exc))})
             return
@@ -823,13 +1045,22 @@ class MenuApp(App[int | PendingRun]):
             # A launcher hands the terminal back: quit the TUI FIRST, run after
             # (_finish_run). Running under suspend() and exiting would repaint the
             # whole app for one frame on resume — a visible flash.
-            self.exit(PendingRun(entry, plan, asm, dict(values), list(extra), show_drift, runner))
+            self.exit(
+                PendingRun(
+                    entry, plan, asm, dict(values), list(extra), extra_raw, show_drift, runner
+                )
+            )
             return
         with self.suspend():
             print(f"\n── {gettext('Run %(name)s') % {'name': entry.meta.name}} ──\n", flush=True)
             if show_drift:
                 for line in plan.drift_lines:
                     print(line, flush=True)
+            if not extra_raw and flows.tail_looks_expandable(list(extra)):
+                # The CLI replay's as-is note, on this face too: a literal-replay tail
+                # that LOOKS expandable must say it is passed through untouched — the
+                # replay-literally design was never the bug, doing it silently was.
+                print(flows.as_is_note(), flush=True)
             # The shared delivery pipeline: inject, transparency, run, cleanup. The TUI
             # just prints what it emits (bare, inside the suspend) and shows a banner.
             outcome = flows.execute(
@@ -852,7 +1083,19 @@ class MenuApp(App[int | PendingRun]):
                 gettext("Last: %(name)s ✗ couldn't launch") % {"name": escape(entry.meta.name)}
             )
             return
-        flows.save_after_run(entry.slug, plan, values, list(extra), code, at=models.now_iso())
+        persistence_error = flows.post_run_persistence_error(
+            lambda: flows.save_after_run(
+                entry,
+                plan,
+                values,
+                list(extra),
+                code,
+                at=models.now_iso(),
+                extra_raw=extra_raw,
+            )
+        )
+        if persistence_error is not None:
+            self.notify(persistence_error, severity="warning")
         self._reload()
         status = (
             gettext("Last: %(name)s ✓ finished")
@@ -877,22 +1120,32 @@ class MenuApp(App[int | PendingRun]):
         entry = self._selected()
         if entry is None:
             return
-        target = self._editable_source(entry)
-        if target is None or not target.exists():
-            self._refresh_status(
-                gettext(
-                    "%(name)s has no editable source (programs and command templates run as-is)."
-                )
-                % {"name": escape(entry.meta.name)}
-            )
+        plan = launcher.plan_edit(entry)
+        if plan.refusal is not None:
+            # THREE reasons, worded apart (launcher.edit_refusal_message): collapsing them
+            # told the owner of a reference-mode Python entry whose file had moved that it
+            # "has no editable source (programs and command templates run as-is)" — a
+            # sentence that denies the source exists and misclassifies the kind, about a
+            # script that is neither. The CLI named the path to restore; now both do.
+            self._refresh_status(escape(launcher.edit_refusal_message(plan.refusal, entry)))
             return
+        target = plan.target
+        assert target is not None  # noqa: S101 — no refusal means plan_edit gave a target
         edit_error: str | None = None
-        with self.suspend():
-            try:
-                editor.open_entry_in_editor(target, kind=entry.meta.kind)
-            except (editor.EditorError, editor.EditedSourceError) as exc:
-                edit_error = str(exc)
-        self._drift_cache.pop(entry.slug, None)
+        if plan.edits_original:
+            # Reference mode edits the user's OWN file — identity-independent (a
+            # remove + re-add never moves the original), so the session stays direct.
+            with self.suspend():
+                try:
+                    editor.open_entry_in_editor(target, kind=entry.meta.kind)
+                except (editor.EditorError, editor.EditedSourceError) as exc:
+                    edit_error = str(exc)
+        else:
+            staged = self._staged_copy_edit(entry, target)
+            if staged is None:
+                return
+            entry, edit_error = staged
+        self._plan_cache.pop(entry.slug, None)
         self._reload()
         if edit_error is not None:
             self._refresh_status(gettext("Error: %(error)s") % {"error": escape(edit_error)})
@@ -900,6 +1153,36 @@ class MenuApp(App[int | PendingRun]):
         if entry.meta.kind == "prompt" and self._offer_prompt_reconcile(entry):
             return  # the picker owns the status line once it is dismissed
         self._refresh_status(gettext("Edited %(name)s.") % {"name": escape(entry.meta.name)})
+
+    def _staged_copy_edit(self, entry: Entry, target: Path) -> tuple[Entry, str | None] | None:
+        """The copy-mode half of action_edit: a stored copy is skit's own,
+        reincarnatable path, so the identity is claimed, the editor works on a STAGED
+        draft, and the save lands through the identity-checked commit — a slug
+        reissued mid-session keeps the edit in the draft instead of overwriting the
+        stranger. None = the claim already stopped the lane (ghost row)."""
+        claimed = self._claimed(entry)
+        if claimed is None:
+            return None
+        entry = claimed
+        draft = editor.edit_draft_path(entry.slug, target.suffix)
+        with self.suspend():
+            try:
+                edited = editor.edit_copy_staged(target, draft, kind=entry.meta.kind)
+            except (editor.EditorError, editor.EditedSourceError) as exc:
+                return entry, str(exc)
+        if edited is not None:
+            payload, base_hash = edited
+            try:
+                store.commit_copy_edit(
+                    entry.slug,
+                    payload,
+                    expected_id=entry.meta.id,
+                    expected_source_hash=base_hash,
+                )
+            except store.StaleEntryError as exc:
+                return entry, editor.stale_edit_kept(str(exc), draft)
+            editor.discard_draft(draft)
+        return entry, None
 
     def _offer_prompt_reconcile(self, entry: Entry) -> bool:
         """After a prompt body edit, offer to manage the placeholders the edit added —
@@ -909,7 +1192,10 @@ class MenuApp(App[int | PendingRun]):
         deleted from the body keeps its run-form drift banner, owned by the form layer."""
         from .langs.prompt import analyzer as prompt_analyzer
 
-        new = store.unmanaged_prompt_placeholders(store.resolve(entry.slug))
+        held = self._claimed(entry)  # the picker holds this handle while it sits open
+        if held is None:
+            return True  # the claim's status line already told the story
+        new = store.unmanaged_prompt_placeholders(held)
         if not new:
             return False
         flooded = len(new) > prompt_analyzer.AUTO_MANAGE_LIMIT
@@ -922,22 +1208,33 @@ class MenuApp(App[int | PendingRun]):
                     gettext("Edited %(name)s.") % {"name": escape(entry.meta.name)}
                 )
                 return
-            existing = list(entry.meta.params or [])
-            store.write_prompt_managed(
-                entry.slug, existing + [n for n in chosen if n not in existing]
-            )
+            # The merge base is the claimed handle's list, and the write is authorized
+            # against its identity: a remove + same-slug re-add while the picker sat
+            # open must not graft this prompt's managed names onto the new owner.
+            existing = list(held.meta.params or [])
+            try:
+                store.write_prompt_managed(
+                    held.slug,
+                    existing + [n for n in chosen if n not in existing],
+                    expected_id=held.meta.id,
+                )
+            except store.StoreError as exc:
+                self._refresh_status(gettext("Error: %(error)s") % {"error": escape(str(exc))})
+                return
             self._reload()
             self._refresh_status(gettext("Now managed: %(names)s") % {"names": ", ".join(chosen)})
 
         self.push_screen(tui_prompt.PromptCandidatePickerModal(new, preselected), _picked)
         return True
 
-    def _editable_source(self, entry: Entry) -> Path | None:
-        spec = spec_for(entry.meta.kind)
-        if spec is None or not spec.editable:
-            return None
-        # script_path resolves both modes: the original in reference, the copy in copy.
-        return entry.script_path
+    @staticmethod
+    def _can_edit(entry: Entry) -> bool:
+        """Whether `e` has anywhere to go — the one predicate behind the chip and the
+        binding. The two GONE-FILE refusals stay reachable on purpose: a user cannot tell
+        from the row that a referenced file has moved, so that one is worth a sentence,
+        while "this kind has no source" is knowable from the badge and belongs in a chip
+        that simply isn't there."""
+        return launcher.plan_edit(entry).refusal != "not-editable"
 
     def action_remove(self) -> None:
         if len(self.screen_stack) > 1:
@@ -945,6 +1242,12 @@ class MenuApp(App[int | PendingRun]):
         entry = self._selected()
         if entry is None:
             return
+        # Claimed BEFORE the modal (stamping a legacy meta): the deletion is
+        # authorized by exact id, and an empty expectation cannot delete.
+        claimed = self._claimed(entry)
+        if claimed is None:
+            return
+        entry = claimed
 
         def _done(confirmed: bool | None) -> None:
             if confirmed:
@@ -953,13 +1256,15 @@ class MenuApp(App[int | PendingRun]):
                 # lands in the status line like every other action's error. The reload still
                 # runs (the registry removal already happened) — and it runs BEFORE the
                 # message, because _refresh_status()'s own no-argument call would wipe it.
-                failure = ""
+                failure: str | None = None
                 try:
-                    store.remove(entry.slug)
+                    # Authorized against the row the modal SHOWED: a slug reissued
+                    # while the ask sat open refuses instead of deleting the stranger.
+                    store.remove(entry.slug, expected_id=entry.meta.id)
                 except store.StoreError as exc:
                     failure = str(exc)
                 self._reload()
-                if failure:
+                if failure is not None:
                     self._refresh_status(gettext("Error: %(error)s") % {"error": escape(failure)})
 
         self.push_screen(ConfirmRemove(entry), _done)
@@ -980,10 +1285,16 @@ class MenuApp(App[int | PendingRun]):
         entry = self._selected()
         if entry is None:
             return
+        # Claimed at open: the screen holds this handle for as long as it sits open,
+        # and every save it makes is authorized against this identity (expected_id).
+        claimed = self._claimed(entry)
+        if claimed is None:
+            return
+        entry = claimed
         from .tui_settings import ScriptSettingsScreen
 
         def _closed(_changed: bool | None) -> None:
-            self._drift_cache.pop(entry.slug, None)
+            self._plan_cache.pop(entry.slug, None)
             self._reload()
 
         self.push_screen(ScriptSettingsScreen(entry, initial_section=section), _closed)
@@ -1073,6 +1384,8 @@ def _finish_run(pending: PendingRun) -> int:
     if pending.show_drift:
         for line in pending.plan.drift_lines:
             print(line, flush=True)
+    if not pending.extra_raw and flows.tail_looks_expandable(list(pending.extra)):
+        print(flows.as_is_note(), flush=True)
     outcome = flows.execute(
         pending.entry,
         pending.plan,
@@ -1081,20 +1394,26 @@ def _finish_run(pending: PendingRun) -> int:
         warn=lambda line: print(line, flush=True),
         runner=pending.runner,
     )
-    if outcome.code is None:
+    code = outcome.code
+    if code is None:
         # Nothing ran: no phantom history, and the process exit code follows the same
         # docker convention as `skit run`.
         print(gettext("Error: %(error)s") % {"error": outcome.message}, flush=True)
-        return flows.FAILURE_EXIT_CODES.get(outcome.failure, 125)
-    flows.save_after_run(
-        pending.entry.slug,
-        pending.plan,
-        pending.values,
-        list(pending.extra),
-        outcome.code,
-        at=models.now_iso(),
+        return exitcodes.exit_code_for_failure(flows.failure_reason(outcome))
+    persistence_error = flows.post_run_persistence_error(
+        lambda: flows.save_after_run(
+            pending.entry,
+            pending.plan,
+            pending.values,
+            list(pending.extra),
+            code,
+            at=models.now_iso(),
+            extra_raw=pending.extra_raw,
+        )
     )
-    return outcome.code
+    if persistence_error is not None:
+        print(persistence_error, flush=True)
+    return code
 
 
 def run_menu() -> int:

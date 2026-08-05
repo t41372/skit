@@ -8,9 +8,13 @@ exception, file contents, or returned model) rather than merely executing a line
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 
 import pytest
+
+from skit import store
 
 
 @pytest.fixture(autouse=True)
@@ -26,6 +30,19 @@ def sample_script(tmp_path: Path) -> Path:
     p = tmp_path / "hello.py"
     p.write_text('"""A greeter."""\nprint("hi")\n', encoding="utf-8")
     return p
+
+
+@pytest.mark.parametrize(
+    "add",
+    [
+        pytest.param(store.add_python, id="python"),
+        pytest.param(partial(store.add_script, kind="shell"), id="interpreted"),
+        pytest.param(store.add_prompt, id="prompt"),
+    ],
+)
+def test_add_source_must_be_a_file(tmp_path: Path, add: Callable[[Path], store.Entry]) -> None:
+    with pytest.raises(store.StoreUsageError, match="Not a file"):
+        add(tmp_path)
 
 
 # ---------- atomic.atomic_write_text (line 30) ----------

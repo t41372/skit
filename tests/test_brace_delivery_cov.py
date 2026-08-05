@@ -16,7 +16,8 @@ from pathlib import Path
 import pytest
 from textual.widgets import Input, OptionList, Static
 
-from skit import config, flows, launcher, store, tui
+from conftest import patch_run_entry
+from skit import config, flows, store, tui
 from skit.langs.python import metawriter
 from skit.params import ParamDecl
 from skit.tui_form import FieldRow, RunFormScreen
@@ -41,7 +42,7 @@ def _noop_suspend():
 @pytest.fixture
 def quiet_run(monkeypatch):
     config.save_after_run("stay")
-    monkeypatch.setattr(launcher, "run_entry", lambda *a, **k: 0)
+    patch_run_entry(monkeypatch, lambda *a, **k: 0)
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
 
 

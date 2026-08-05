@@ -118,6 +118,8 @@ _RMW_MUTATORS: list[object] = [
         lambda slug: argstate.record_run(slug, 0, at="2026-01-01T00:00:00+00:00"),
         id="record_run",
     ),
+    # forget is a mutator too — an unlocked unlink raced a concurrent read-modify-write.
+    pytest.param(argstate.forget, id="forget"),
 ]
 
 
@@ -207,6 +209,7 @@ def test_a_missing_state_file_is_empty_not_an_error() -> None:
     assert argstate.load_state("absent") == {
         "values": {},
         "extra_args": [],
+        "extra_args_raw": False,
         "presets": {},
         "last_run": {},
     }
@@ -227,7 +230,13 @@ def _write_values_file(slug: str, body: str) -> None:
     (values_dir() / f"{slug}.toml").write_text(body, encoding="utf-8")
 
 
-_EMPTY_STATE = {"values": {}, "extra_args": [], "presets": {}, "last_run": {}}
+_EMPTY_STATE = {
+    "values": {},
+    "extra_args": [],
+    "extra_args_raw": False,
+    "presets": {},
+    "last_run": {},
+}
 
 
 @pytest.mark.parametrize(
@@ -332,3 +341,116 @@ def test_purge_secret_survives_a_last_run_values_that_is_not_a_table() -> None:
     state = argstate.load_state(slug)
     assert state["values"] == {}
     assert state["last_run"] == {"at": "2026-07-25T00:00:00+00:00", "exit": 0}
+
+
+# ---------------------------------------------------------------------------
+# StateWriteError: every writer fails typed (round 13, finding S)
+# ---------------------------------------------------------------------------
+
+
+def _boom_write(*_args: object, **_kwargs: object) -> None:
+    raise OSError(30, "Read-only file system", "/state/values/x.toml")
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        pytest.param(lambda: argstate.save_last("s", values={"A": "1"}), id="save_last"),
+        pytest.param(lambda: argstate.save_preset("s", "p", {"A": "1"}), id="save_preset"),
+        pytest.param(lambda: argstate.delete_preset("s", "p"), id="delete_preset"),
+        pytest.param(lambda: argstate.purge_secret("s", ["A"]), id="purge_secret"),
+        pytest.param(
+            lambda: argstate.record_run("s", 0, at="2026-01-01T00:00:00+00:00"),
+            id="record_run",
+        ),
+        pytest.param(lambda: argstate.save_last_runner("amp"), id="save_last_runner"),
+    ],
+)
+def test_a_failed_state_write_raises_the_typed_error(
+    write: Callable[[], object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every argstate writer re-raises an OSError as StateWriteError — an OSError
+    subclass, config.ConfigWriteError's mirror — with errno/strerror/filename intact,
+    so the CLI boundary renders the same operational sentence it renders for a config
+    write and post_run_persistence_error's `except OSError` keeps catching it."""
+    argstate.save_preset("s", "p", {"KEEP": "1"})  # delete_preset needs a hit to write
+    monkeypatch.setattr(argstate, "atomic_write_toml", _boom_write)
+
+    with pytest.raises(argstate.StateWriteError) as exc_info:
+        write()
+
+    err = exc_info.value
+    assert isinstance(err, OSError)
+    assert err.errno == 30
+    assert err.strerror == "Read-only file system"
+    assert err.filename == "/state/values/x.toml"
+
+
+def test_the_rewrap_falls_back_to_the_exception_text_without_a_strerror(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare OSError("boom") carries no strerror; the rewrap must surface the message
+    anyway — a refusal whose sentence is empty helps nobody."""
+
+    def _bare_boom(*_args: object, **_kwargs: object) -> None:
+        raise OSError("boom")
+
+    monkeypatch.setattr(argstate, "atomic_write_toml", _bare_boom)
+
+    with pytest.raises(argstate.StateWriteError) as exc_info:
+        argstate.save_last_runner("amp")
+
+    assert exc_info.value.strerror == "boom"
+
+
+def test_record_run_strips_the_preserved_snapshot_with_the_current_secret_set() -> None:
+    """The values=None branch re-persists the old snapshot — so it must apply the
+    caller's CURRENT secret set on the way through, exactly as the values branch does.
+    A key that became secret since the snapshot was written dies here; the rest,
+    including the stamp move, survives untouched (round 9's preservation promise)."""
+    slug = "raw-rerun"
+    argstate.record_run(
+        slug, 1, at="2026-01-01T00:00:00+00:00", values={"TOKEN": "plain", "WIDTH": "80"}
+    )
+
+    argstate.record_run(slug, 0, at="2026-02-01T00:00:00+00:00", secret_names={"TOKEN"})
+
+    state = argstate.load_state(slug)
+    assert state["last_run"]["values"] == {"WIDTH": "80"}  # TOKEN stripped, WIDTH kept
+    assert state["last_run"]["at"] == "2026-02-01T00:00:00+00:00"
+    assert state["last_run"]["exit"] == 0
+
+
+def test_purge_secret_accumulates_hits_across_values_and_the_last_run_snapshot() -> None:
+    """`removed` is a UNION across every value-bearing surface. A hit found in the
+    last-run snapshot must not overwrite the hit already collected from [values] —
+    each surface holds a DIFFERENT banned name here, so any surface dropping its
+    accumulation shows up in the report."""
+    slug = "union-check"
+    argstate.save_last(slug, values={"ALPHA": "1"})
+    argstate.record_run(slug, 0, at="2026-01-01T00:00:00+00:00", values={"BETA": "2"})
+
+    removed = argstate.purge_secret(slug, ["ALPHA", "BETA"])
+
+    assert removed == {"ALPHA", "BETA"}
+    state = argstate.load_state(slug)
+    assert state["values"] == {}
+    assert state["last_run"].get("values", {}) == {}
+
+
+def test_forget_failure_is_typed_like_every_other_writer() -> None:
+    """forget joins the 'every writer fails typed' contract: a values file that cannot
+    be unlinked (here: the path is a DIRECTORY, the cross-platform stand-in for a held
+    or protected file) surfaces as StateWriteError, never a raw OSError."""
+    slug = "undeletable"
+    blocker = argstate.values_dir() / f"{slug}.toml"
+    blocker.mkdir(parents=True)
+
+    with pytest.raises(argstate.StateWriteError):
+        argstate.forget(slug)
+
+
+def test_forget_of_an_absent_file_is_a_clean_no_op() -> None:
+    """The already-gone case stays quiet — remove must not fail cleanup that has
+    nothing left to clean."""
+    argstate.forget("never-existed")  # no raise

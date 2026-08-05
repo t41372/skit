@@ -17,7 +17,8 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Checkbox, Input, OptionList, RadioButton, Select, Static
 
-from skit import argstate, config, flows, i18n, launcher, store, tui, tui_form
+from conftest import patch_run_entry
+from skit import argstate, config, flows, i18n, store, tui, tui_form
 from skit.langs.python import metawriter
 from skit.params import ParamDecl
 from skit.tui_form import EnvPickerModal, FieldRow, RunFormScreen, TokenMenuModal
@@ -53,7 +54,7 @@ def quiet_run(monkeypatch):
         calls["values"] = dict(values or {})
         return calls.get("code", 0)
 
-    monkeypatch.setattr(launcher, "run_entry", fake_run)
+    patch_run_entry(monkeypatch, fake_run)
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
     monkeypatch.setattr("builtins.input", lambda *a: "")
     return calls

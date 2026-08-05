@@ -8,15 +8,16 @@ and env delivery is the zero-rewrite value channel every kind can use.
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
-from skit import argstate, cli, flows, launcher, store
+from conftest import patch_run_entry
+from skit import analysis, argstate, cli, flows, launcher, store
 from skit.models import Entry, ScriptMeta
+from skit.notices import NoticeCode, edit_notice
 from skit.params import (
     ParamDecl,
     declared_for_template,
@@ -55,7 +56,7 @@ def run_entry_spy(monkeypatch):
         calls["env_overlay"] = dict(env_overlay or {})
         return 0
 
-    monkeypatch.setattr(launcher, "run_entry", fake)
+    patch_run_entry(monkeypatch, fake)
     return calls
 
 
@@ -108,7 +109,7 @@ def test_declared_env_param_rides_along_after_placeholders():
 
 
 def test_declared_flag_row_is_dropped_for_templates():
-    # argv is not a template's interface (takes_argv=False): a flag row can only be a
+    # argv is not a template's interface (its parameters arrive as placeholders): a flag row can only be a
     # hand-edit mistake, and dropping beats assembling arguments the template never reads.
     rows = [ParamDecl(name="width", delivery="flag", flag="--width").to_meta_dict()]
     decls = declared_for_template(rows, ["file"])
@@ -244,11 +245,18 @@ def test_assemble_command_with_env_rider(tmp_path: Path):
 def test_run_entry_env_overlay_wins_last(tmp_path: Path, monkeypatch):
     captured: dict[str, str] = {}
 
+    class _Started:
+        def wait(self):
+            return 0
+
+        def kill(self):  # pragma: no cover — only the interrupt path
+            pass
+
     def fake_run(cmd, **kwargs):
         captured.update(kwargs["env"])
-        return subprocess.CompletedProcess(cmd, 0)
+        return _Started()
 
-    monkeypatch.setattr("skit.launcher.subprocess.run", fake_run)
+    monkeypatch.setattr("skit.launcher.subprocess.Popen", fake_run)
     monkeypatch.setenv("WIDTH", "from-ambient")
     entry = store.add_command("echo hi", name="ov")
     code = launcher.run_entry(entry, invoke_cwd=tmp_path, env_overlay={"WIDTH": "800"})
@@ -312,7 +320,7 @@ def test_execute_passes_env_values_to_run_entry(tmp_path: Path, monkeypatch):
         seen["env_overlay"] = env_overlay
         return 0
 
-    monkeypatch.setattr("skit.flows.launcher.run_entry", fake_run_entry)
+    patch_run_entry(monkeypatch, fake_run_entry)
     entry = store.add_command("echo {m}", name="exec-env")
     store.write_parameters(entry.slug, [ParamDecl(name="N", delivery="env")])
     plan = flows.plan_for_entry(store.resolve(entry.slug))
@@ -463,15 +471,20 @@ def test_cli_env_source_on_non_secret_declared_param_warns(tmp_path: Path):
     entry = _exe(tmp_path)
     store.write_parameters(entry.slug, [ParamDecl(name="WIDTH", delivery="env")])
     result = runner.invoke(cli.app, ["params", "prog", "--env-source", "WIDTH=COLS"])
-    assert result.exit_code == 0, result.output
+    # ROUND 12: `skit params` refuses atomically now. A flag it cannot honour writes
+    # NOTHING and exits 2 — the refuse-never-drop answer every sibling intake gives —
+    # because warn-and-continue exited 0, wrote the rest, and then reported the state
+    # it had not written through --json.
+    assert result.exit_code == 2
     assert "WIDTH isn't secret" in result.stderr  # the no-op flag is surfaced, not dropped
-    # --json: stdout is exactly one JSON document; the warning stays on stderr, so the
-    # STDOUT stream (not the mixed .output) parses whole.
+    assert store.read_parameters(entry.slug)[0].env_source == ""  # …and nothing was written
+    # --json refuses too, and emits NO document. That is the point of the change: the old
+    # behaviour printed a read view describing state the write had not applied, to the one
+    # channel agents are told to trust. No payload is honest; a wrong payload is not.
     jr = runner.invoke(cli.app, ["params", "prog", "--env-source", "WIDTH=COLS", "--json"])
-    assert jr.exit_code == 0, jr.output
-    payload = json.loads(jr.stdout)  # stdout alone is pure JSON
-    assert any(p["name"] == "WIDTH" for p in payload["declared"])
-    assert "WIDTH isn't secret" in jr.stderr  # the warning rode stderr, not stdout
+    assert jr.exit_code == 2
+    assert jr.stdout.strip() == ""
+    assert "WIDTH isn't secret" in jr.stderr  # the reason still rides stderr
 
 
 def test_cli_python_manage_with_json_emits_the_final_read_view(tmp_path: Path):
@@ -561,29 +574,33 @@ def test_cli_python_declared_op_is_refused(tmp_path: Path):
     (tmp_path / "job.py").write_text(body, encoding="utf-8")
     store.add_python(tmp_path / "job.py", name="py")
     result = runner.invoke(cli.app, ["params", "py", "--add", "WIDTH"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "manages its parameters from the script itself" in result.output
 
 
 def test_cli_declared_malformed_value_warns(tmp_path: Path):
     _exe(tmp_path)
     result = runner.invoke(cli.app, ["params", "prog", "--type", "NOEQUALS"])
-    assert result.exit_code == 0, result.output
-    assert "Ignored a malformed value" in result.output
+    # ROUND 12: `skit params` refuses atomically now. A flag it cannot honour writes
+    # NOTHING and exits 2 — the refuse-never-drop answer every sibling intake gives —
+    # because warn-and-continue exited 0, wrote the rest, and then reported the state
+    # it had not written through --json.
+    assert result.exit_code == 2
+    assert "Malformed value" in result.output
 
 
 def test_cli_declared_warning_codes_render(tmp_path: Path):
-    # Every closed warning code renders a distinct localized line (via _render_declared_warning).
+    # Every declared-schema notice renders through the shared parameter-notice renderer.
     for code in (
-        "not-declared:x",
-        "already-declared:x",
-        "bad-delivery:x",
-        "not-a-placeholder:x",
-        "bad-type:x",
-        "bad-default:x",
-        "choice-without-choices:x",
+        NoticeCode.NOT_DECLARED,
+        NoticeCode.ALREADY_DECLARED,
+        NoticeCode.BAD_DELIVERY,
+        NoticeCode.NOT_A_PLACEHOLDER,
+        NoticeCode.BAD_TYPE,
+        NoticeCode.BAD_DEFAULT,
+        NoticeCode.CHOICE_WITHOUT_CHOICES,
     ):
-        line = cli._render_declared_warning(code)
+        line = analysis.render_notice(edit_notice(code, "x"))
         assert "x" in line
         assert ":" not in line.split("x", 1)[0]  # the code prefix isn't leaked into the message
 
@@ -592,7 +609,11 @@ def test_cli_bad_type_warns_and_skips(tmp_path: Path):
     entry = _exe(tmp_path)
     store.write_parameters(entry.slug, [ParamDecl(name="w", delivery="flag", type="str")])
     result = runner.invoke(cli.app, ["params", "prog", "--type", "w=integer"])
-    assert result.exit_code == 0, result.output
+    # ROUND 12: `skit params` refuses atomically now. A flag it cannot honour writes
+    # NOTHING and exits 2 — the refuse-never-drop answer every sibling intake gives —
+    # because warn-and-continue exited 0, wrote the rest, and then reported the state
+    # it had not written through --json.
+    assert result.exit_code == 2
     assert "unknown type" in result.output
     assert store.read_parameters(entry.slug)[0].type == "str"  # unchanged
 
@@ -726,7 +747,7 @@ def test_cli_exe_show_masks_secret_default_and_last_value(tmp_path: Path):
 def test_cli_command_show_masks_secret_placeholder_and_undeclared(tmp_path: Path):
     # Covers _show_command_params secret masking + an undeclared placeholder's empty schema suffix.
     entry = store.add_command("login {password} {other}", name="lg")
-    entry = store.write_parameters(
+    entry, _ = store.write_parameters(
         entry.slug,
         [
             ParamDecl(

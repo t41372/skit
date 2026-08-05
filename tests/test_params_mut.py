@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pytest
 
+from skit.notices import NoticeCode, edit_notice
 from skit.params import ParamDecl, coerce_default, edit_declared, synthesized_placeholder
 
 
@@ -95,7 +96,7 @@ def test_delivery_tweak_unknown_literal_keeps_current_delivery() -> None:
         deliveries={"a": "sideband"},
         allowed_deliveries=("flag", "sideband"),
     )
-    assert res.warnings == []
+    assert res.notices == []
     assert _by_name(res.decls)["a"].delivery == "flag"
 
 
@@ -105,7 +106,7 @@ def test_delivery_tweak_unknown_literal_keeps_current_delivery() -> None:
 def test_add_already_declared_continues_to_next_add() -> None:
     # The duplicate 'a' warns and continues; 'b' must still be added (a break would drop it).
     res = edit_declared([ParamDecl(name="a")], add=["a", "b"])
-    assert res.warnings == ["already-declared:a"]
+    assert res.notices == [edit_notice(NoticeCode.ALREADY_DECLARED, "a")]
     assert "b" in _by_name(res.decls)
 
 
@@ -115,5 +116,5 @@ def test_tweak_on_unknown_name_continues_to_next_tweak() -> None:
         [ParamDecl(name="a", type="str")],
         types={"ghost": "int", "a": "int"},
     )
-    assert "not-declared:ghost" in res.warnings
+    assert edit_notice(NoticeCode.NOT_DECLARED, "ghost") in res.notices
     assert _by_name(res.decls)["a"].type == "int"

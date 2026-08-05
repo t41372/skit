@@ -99,7 +99,7 @@ skit run review --runner codex --set target=src/app.py --no-input
 
 ## Install
 
-skit is built on [uv](https://docs.astral.sh/uv/) (tested against 0.11.26). Don't have it? skit asks first, then downloads a pinned uv into its own private directory — your `PATH` and global environment stay untouched. A system-wide [install](https://docs.astral.sh/uv/getting-started/installation/) is still preferred.
+skit is built on [uv](https://docs.astral.sh/uv/) (tested against 0.11.26). Don't have it? skit asks first, then downloads a pinned uv into its own private directory — your `PATH` and global environment stay untouched. (Non-interactive runs — CI, pipes — skip the question and download right away.) A system-wide [install](https://docs.astral.sh/uv/getting-started/installation/) is still preferred.
 
 ```bash
 # Install skit with uv tool from PyPI (the package is named skit-cli; the command is skit)

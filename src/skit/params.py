@@ -32,11 +32,14 @@ Headless, stdlib-only.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from .notices import EditNotice, NoticeCode, edit_notice
+
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
 
     from .analysis import Candidate
 
@@ -44,15 +47,179 @@ Binding = Literal["const", "input", "envdefault", "none"]
 Delivery = Literal["inject", "env", "flag", "placeholder"]
 ParamType = Literal["str", "int", "float", "bool", "choice", "path"]
 
-# Secret pre-check heuristic (matched against the upper-cased name / prompt). Universal:
-# python candidates, shell variables, command placeholders, and declared params all run
-# their names through the same rule, so "what counts as secret-looking" can never fork.
-_SECRET_HINTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD")
+# Secret pre-check heuristic (matched against the name / prompt). Universal: python
+# candidates, shell variables, command placeholders, reader-reflected CLI flags, and
+# declared params all run their names through the same rule, so "what counts as
+# secret-looking" can never fork. A false NEGATIVE here publishes a live literal into
+# current_defaults/--json/state files, so ambiguity errs toward secret.
+#
+# THREE word sources per non-alphanumeric-separated segment, matched together: the
+# JAMMED segment itself (apiKey/APIKey/APIkey are all the segment APIKEY, so no camel
+# convention can hide a compound), its camelCase sub-words (awsSecretKey →
+# AWS/SECRET/KEY, which no suffix rule on the jam could see), and its digit-split
+# parts (base64key → BASE/KEY). Each round that kept fewer sources regressed the
+# missing one's cases — matching wants every source; COUNT CONTEXT wants almost none
+# of them (see _judge_segment). One trailing S folds away everywhere so plural
+# credentials (API_KEYS, SECRETS, GITHUB_TOKENS) match like their singulars. Three
+# rules over the pooled words:
+# - SECRET/PASSWORD/PASSWD match as suffixes, exact word included (MYSECRET,
+#   DBPASSWORD, passwords, clientSecretValue's SECRET).
+# - KEY is too short for a bare suffix rule (MONKEY, TURKEY, HOTKEY, WHISKEY): it
+#   matches as the exact word (api_key, stripeKey — and yes, sort_key: the reader-lane
+#   override follow-up owns that class) or as a jammed compound behind a credential
+#   qualifier (APIkey, sshkey — never MONKEY, and not publickey/hostkey, which aren't
+#   secrets).
+# - TOKEN is the LLM-era collision: max_tokens/maxOutputTokens are counts,
+#   github_tokens/session_token/N8N_TOKEN are credentials. Judged per SEGMENT: a
+#   segment's own count words (fused nTokens, camel maxOutputTokens → MAX) veto its
+#   token hit in NAME shape (sentence prose masks); ONLY a segment that IS a count
+#   word (MAX, limit) is count context for its neighbors anywhere in a name — shards
+#   never leak out (N8N's stray N must not veto TOKEN next door), and a bare NUMBER
+#   counts only a PLURAL mention right after it ("2 tokens" is a count,
+#   STEP_2_TOKEN/GITHUB_TOKEN_2 are indexed credentials). In SENTENCE text only
+#   count-context IMMEDIATELY BEFORE a token segment suppresses that one mention, and
+#   any other mention keeps the ask secret ("Paste your GitHub token (rate limit 60
+#   tokens/min):" stays masked). A bare plural "tokens" reads as a count.
+_SECRET_SUFFIXES = ("SECRET", "PASSWORD", "PASSWD")
+_KEY_PREFIXES = frozenset(
+    {"API", "AUTH", "ACCESS", "SECRET", "PRIVATE", "PASS", "SSH", "GPG", "AWS", "MASTER",
+     "SIGNING", "LICENSE", "ENCRYPTION"}
+)  # fmt: skip
+_COUNT_WORDS = frozenset(
+    {"MAX", "MIN", "NUM", "N", "COUNT", "TOTAL", "LIMIT", "MANY", "NUMBER", "PER"}
+)
+# lower→Upper and ACRONYMWord boundaries only — NO digit→Upper rule: splitting at
+# digits shattered N8N-family acronyms into stray count-N fragments (N8NToken →
+# N8|N|Token). Digit-glued words are recovered by the third word source instead
+# (_digit_split: BASE64KEY → BASE/KEY).
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+_DIGIT_RUN = re.compile(r"[0-9]+")
+
+
+def _fold_plural(word: str) -> str:
+    return word[:-1] if word.endswith("S") else word
+
+
+def _forms(word: str) -> set[str]:
+    """The match variants of one word: itself, plural-folded, and digit-stripped
+    (api_key2 → KEY; digits never split a segment apart, but they must not hide a
+    credential word they're glued to)."""
+    stripped = _DIGIT_RUN.sub("", word)
+    return {v for v in (word, _fold_plural(word), stripped, _fold_plural(stripped)) if v}
+
+
+def _digit_split(jam: str) -> list[str]:
+    """The jam's digit-separated parts (BASE64KEY → BASE/KEY, N8NTOKEN → N/NTOKEN): the
+    third word source, for MATCHING only — a shard this short-lived must never supply
+    count context (see _judge_segment; the stray N from N8N is exactly that trap)."""
+    return [w for w in _DIGIT_RUN.split(jam) if w]
+
+
+def _token_form(form: str) -> bool:
+    """One variant ends in TOKEN and is not a single count qualifier fused onto it
+    (nTokens/maxTokens jam to NTOKENS/MAXTOKENS)."""
+    return form.endswith("TOKEN") and form[:-5] not in _COUNT_WORDS
+
+
+@dataclass(frozen=True)
+class _SegmentVerdict:
+    secret: bool  # a SECRET/PASSWORD/PASSWD/KEY rule hit — final, whole-name answer
+    token: bool  # a TOKEN mention this segment stands behind
+    token_plural: bool  # ...spelled as a plural (TOKENS) — what a bare number can count
+    internal_count: (
+        bool  # a count word INSIDE this segment (maxOutputTokens' MAX) — NAME-shape veto
+    )
+    county: bool  # a count WORD (MAX, limit) — qualifies a NAME from anywhere
+    numeric: bool  # a bare number — counts only a PLURAL mention that FOLLOWS it
+
+
+def _judge_segment(raw: str) -> _SegmentVerdict:
+    """One non-alphanumeric-separated segment, judged whole. THREE word sources: the
+    JAMMED segment (apiKey/APIKey/APIkey are all APIKEY — no camel convention can hide
+    a compound), its camelCase sub-words (awsSecretKey → AWS/SECRET/KEY), and its
+    digit-split parts (base64key → BASE/KEY) — all three feed secret/token MATCHING.
+
+    Count context is stricter, because every leak so far came from a shard posing as a
+    qualifier: county (visible to neighbors) is judged on the UNSTRIPPED jam only —
+    N26 must not strip to a count N; internal_count (this segment's own veto, applied
+    by is_secret_name in NAME shape only) accepts a camel word (nTokens' literal N,
+    maxOutputTokens' MAX) or a multi-letter shard (max64Tokens' MAX) — never a
+    ONE-LETTER remnant of stripping (N8N's N), which is the whole point of the length
+    test: `!= 1` is the boundary the domain has (N is the only single-letter count
+    word), not an arbitrary minimum."""
+    jam = raw.upper()
+    camel = [w.upper() for w in _CAMEL_BOUNDARY.sub(" ", raw).split(" ") if w]
+    digit_parts = _digit_split(jam)
+    all_forms = set(_forms(jam))
+    for w in (*camel, *digit_parts):
+        all_forms |= _forms(w)
+    secret = (
+        any(f.endswith(_SECRET_SUFFIXES) for f in all_forms)
+        or "KEY" in all_forms
+        or any(f.endswith("KEY") and f[:-3] in _KEY_PREFIXES for f in all_forms)
+    )
+    county = jam in _COUNT_WORDS or _fold_plural(jam) in _COUNT_WORDS
+    numeric = jam.isdigit()
+    internal_count = any(
+        v in _COUNT_WORDS
+        for w in camel
+        for v in _forms(w)
+        if len(v) != 1 or w == v  # a literal camel N counts; a stripped N8→N shard never
+    ) or any(v in _COUNT_WORDS and len(v) != 1 for w in digit_parts for v in _forms(w))
+    token = any(_token_form(f) for f in all_forms) and not county and not numeric
+    token_plural = token and any(w.endswith("TOKENS") for w in (jam, *camel, *digit_parts))
+    return _SegmentVerdict(
+        secret=secret,
+        token=token,
+        token_plural=token_plural,
+        internal_count=internal_count,
+        county=county,
+        numeric=numeric,
+    )
 
 
 def is_secret_name(text: str) -> bool:
-    up = text.upper()
-    return any(h in up for h in _SECRET_HINTS)
+    # Split on non-alphanumerics only: digits stay inside their segment (N8N, gpt4),
+    # where the three word sources recover what they join or hide.
+    raw_segments = [s for s in re.split(r"[^A-Za-z0-9]+", text) if s]
+    verdicts = [_judge_segment(s) for s in raw_segments]
+    if any(v.secret for v in verdicts):
+        return True
+    sentence = any(c.isspace() for c in text.strip())
+
+    def hit(v: _SegmentVerdict) -> bool:
+        """A live token mention. The internal count veto (maxOutputTokens' MAX) applies
+        in NAME shape only: sentence prose masks (a prompt spelling a camel name is
+        still an ask for that value), matching the documented prose-masks asymmetry."""
+        return v.token and not (v.internal_count and not sentence)
+
+    if not any(hit(v) for v in verdicts):
+        return False
+
+    def qualified(i: int) -> bool:
+        """This mention has count context IMMEDIATELY before it: a count word counts
+        anything ("many tokens"); a bare number counts only a PLURAL ("2 tokens",
+        "60 tokens") — before a singular it is an index (STEP_2_TOKEN, "step 2
+        token"), and an indexed credential must stay masked."""
+        if i == 0:
+            return False
+        prev = verdicts[i - 1]
+        return prev.county or (prev.numeric and verdicts[i].token_plural)
+
+    if sentence:
+        # A count segment immediately before a token segment suppresses THAT mention
+        # ("How many tokens?", "rate limit 60 tokens/min") — but any OTHER token
+        # mention with no count in front keeps the ask secret: the credential wins.
+        return any(hit(v) and not qualified(i) for i, v in enumerate(verdicts))
+    if any(v.county for v in verdicts):
+        return False  # max_tokens, token_limit, n_tokens — a count WORD anywhere
+    if all(qualified(i) for i, v in enumerate(verdicts) if hit(v)):
+        # 2_tokens: the number in front IS the count. A number elsewhere is an index —
+        # GITHUB_TOKEN_2 is a second GitHub token, and unmasking it would publish it.
+        return False
+    # A bare plural with no companion word ("tokens") is a count knob, not a credential;
+    # any qualifier that survived the count check (github_tokens) reads as one.
+    return not (len(raw_segments) == 1 and raw_segments[0].upper() == "TOKENS")
 
 
 _BINDINGS: tuple[Binding, ...] = ("const", "input", "envdefault", "none")
@@ -255,9 +422,11 @@ def declared_for_template(
     (type/default/optional/secret override — the fix for the auto-secret-no-override
     defect). Declared env-delivery params ride along after the placeholders (an env
     variable is a legitimate second channel into a shell template's child process);
-    any other declared delivery is ignored here — argv is not a template's interface
-    (takes_argv=False), so a flag row can only be a hand-edit mistake, and dropping it
-    from the form beats assembling arguments the template never reads."""
+    any other declared delivery is ignored here — a kind whose parameters arrive through
+    placeholders has no argv of its own to put a flag on, so a flag row can only be a
+    hand-edit mistake, and dropping it from the form beats assembling arguments the
+    template never reads. (The rule is the placeholder interface itself, enforced by this
+    filter. It used to cite a LangSpec.takes_argv flag that no code read.)"""
     declared = {d.name: d for d in declared_from_meta(parameters)}
     out: list[ParamDecl] = []
     for name in placeholders:
@@ -342,11 +511,37 @@ def coerce_default(value: str, type_name: str) -> str | int | float | bool:
 
 @dataclass
 class DeclEditResult:
-    """The result of edit_declared: the new decl list plus a closed set of ``code:name``
-    warnings the caller renders (the UI owns the human wording, like reconcile.EditResult)."""
+    """The result of edit_declared: the new declarations plus typed edit notices."""
 
     decls: list[ParamDecl]
-    warnings: list[str]
+    notices: list[EditNotice]
+
+
+def _placeholder_decl(name: str) -> ParamDecl:
+    """The row a template placeholder gets the first time anything declares it — from an
+    explicit ``--add``, or from a tweak that had to materialize it. ONE constructor, because
+    the two doors used to disagree: only ``--add`` knew how to create the row, so every other
+    flag on an undeclared placeholder was skipped with a warning and a green exit.
+
+    binding "none" / type "str" are the ParamDecl defaults; passing them explicitly would only
+    add equivalent "drop the kwarg" mutants, so they are omitted. The behaviour-bearing
+    delivery/required stay explicit (required: a declared placeholder must never silently
+    assemble an empty slot) and are pinned by test_add_placeholder_row_defaults."""
+    return ParamDecl(name=name, delivery="placeholder", required=True)
+
+
+def _tweak_order(*sources: Iterable[str]) -> list[str]:
+    """Every name the tweak flags mention, first-mention order, deduplicated. Typed on the
+    NAMES alone (a NAME=value mapping iterates its keys), because that is all this is: the
+    order one pass edits rows in. That order is the contract — a name is edited once with
+    all its flags applied together, so a later flag can never re-run the whole tweak pass
+    over a row an earlier one already reverted."""
+    names: list[str] = []
+    for src in sources:
+        for name in src:
+            if name not in names:
+                names.append(name)
+    return names
 
 
 def edit_declared(  # noqa: PLR0912 — a fixed-order edit pipeline; the branches are the ops
@@ -372,11 +567,14 @@ def edit_declared(  # noqa: PLR0912 — a fixed-order edit pipeline; the branche
     """Pure edit ops on the declared [[parameters]] rows of an exe/command entry (never
     mutates the caller's decls — each is shallow-copied first, like reconcile.edit_specs).
 
-    Apply order is fixed: rm -> add -> per-name tweaks. A tweak/rm on an unknown name is a
-    ``not-declared`` warning; an add on an existing name is ``already-declared``. New adds
-    default to delivery = allowed_deliveries[0], binding="none", type="str"; an add whose
-    name IS a template placeholder takes delivery="placeholder" (and stays required, so a
-    declared placeholder can never silently assemble an empty slot). After the tweaks each
+    Apply order is fixed: rm -> add -> per-name tweaks. An ``rm`` of an unknown name is a
+    ``not-declared`` warning, and so is a tweak of a name that is neither declared nor a
+    PLACEHOLDER: a placeholder the entry asks for is an editable parameter, so tweaking one
+    materializes its row (see _placeholder_decl) instead of skipping the flag. An add on an
+    existing name is ``already-declared``. New adds default to delivery =
+    allowed_deliveries[0], binding="none", type="str"; an add whose name IS a template
+    placeholder takes delivery="placeholder" (and stays required, so a declared placeholder
+    can never silently assemble an empty slot). After the tweaks each
     touched decl is normalized and its invariants checked; a decl that comes out
     inconsistent is REVERTED to its pre-tweak state and warned about (never persist a
     broken row). env_source only means anything on a secret param (clearing secret clears
@@ -391,7 +589,7 @@ def edit_declared(  # noqa: PLR0912 — a fixed-order edit pipeline; the branche
     env_sources = env_sources or {}
     placeholders = set(placeholder_names)
 
-    warnings: list[str] = []
+    notices: list[EditNotice] = []
     by_name: dict[str, ParamDecl] = {d.name: field_replace(d) for d in decls}
     order: list[str] = list(by_name)
 
@@ -400,18 +598,19 @@ def edit_declared(  # noqa: PLR0912 — a fixed-order edit pipeline; the branche
             del by_name[name]
             order.remove(name)
         else:
-            warnings.append(f"not-declared:{name}")
+            # A DISTINCT code from the tweak-side "not-declared" below, though the user
+            # reads the same sentence: `--rm GHOST` asks for a state that already holds
+            # (nothing is declared under that name), while `--type GHOST=int` asks for
+            # something that did not happen. One string for both meant the caller could
+            # not tell an idempotent no-op from a refusal — and this command now refuses.
+            notices.append(edit_notice(NoticeCode.RM_NOT_DECLARED, name))
 
     for name in add:
         if name in by_name:
-            warnings.append(f"already-declared:{name}")
+            notices.append(edit_notice(NoticeCode.ALREADY_DECLARED, name))
             continue
         if name in placeholders:
-            # binding "none" / type "str" are the ParamDecl defaults; passing them explicitly
-            # would only add equivalent "drop the kwarg" mutants, so omit them. The
-            # behaviour-bearing delivery/required stay explicit and are pinned by
-            # test_add_placeholder_row_defaults.
-            by_name[name] = ParamDecl(name=name, delivery="placeholder", required=True)
+            by_name[name] = _placeholder_decl(name)
         else:
             # binding "none" / type "str" are the ParamDecl defaults (omitted to avoid
             # equivalent drop-kwarg mutants). The delivery-fallback edge is pinned by
@@ -422,26 +621,39 @@ def edit_declared(  # noqa: PLR0912 — a fixed-order edit pipeline; the branche
             )
         order.append(name)
 
-    tweak_names: list[str] = []
-    for src in (deliveries, types, choices, defaults, flags, help_texts, prompts, env_sources):
-        for name in src:
-            if name not in tweak_names:
-                tweak_names.append(name)
-    for seq in (required, optional, secret, no_secret):
-        for name in seq:
-            if name not in tweak_names:
-                tweak_names.append(name)
-
+    tweak_names = _tweak_order(
+        deliveries,
+        types,
+        choices,
+        defaults,
+        flags,
+        help_texts,
+        prompts,
+        env_sources,
+        required,
+        optional,
+        secret,
+        no_secret,
+    )
     for name in tweak_names:
         if name not in by_name:
-            warnings.append(f"not-declared:{name}")
-            continue
+            if name not in placeholders:
+                notices.append(edit_notice(NoticeCode.NOT_DECLARED, name))
+                continue
+            # A placeholder the entry ASKS FOR is an editable parameter, whether or not a
+            # row has been written for it yet — the same rule `add` applies eight lines up.
+            # Requiring `--add NAME` first made `--secret NAME` a no-op that still exited 0
+            # behind a green "Updated" line, and the value it was meant to protect then
+            # landed in the state file in plaintext (C3). An explicit flag must never
+            # vanish silently; here it also had a leak behind it.
+            by_name[name] = _placeholder_decl(name)
+            order.append(name)
         decl = by_name[name]
         pre = field_replace(decl)
         _apply_declared_tweaks(
             decl,
             name,
-            warnings,
+            notices,
             deliveries=deliveries,
             types=types,
             choices=choices,
@@ -459,20 +671,20 @@ def edit_declared(  # noqa: PLR0912 — a fixed-order edit pipeline; the branche
         )
         unrepresentable = _apply_bool_flag_action(decl)
         if unrepresentable is not None:
-            warnings.append(f"{unrepresentable}:{name}")
+            notices.append(edit_notice(unrepresentable, name))
             by_name[name] = pre
             continue
         normalized = normalize(decl)
         if validate_invariants(normalized) is not None:
-            warnings.append(f"choice-without-choices:{name}")
+            notices.append(edit_notice(NoticeCode.CHOICE_WITHOUT_CHOICES, name))
             by_name[name] = pre
         else:
             by_name[name] = normalized
 
-    return DeclEditResult(decls=[by_name[n] for n in order], warnings=warnings)
+    return DeclEditResult(decls=[by_name[n] for n in order], notices=notices)
 
 
-def _apply_bool_flag_action(decl: ParamDecl) -> str | None:
+def _apply_bool_flag_action(decl: ParamDecl) -> NoticeCode | None:
     """Bool-flag action hygiene, in place. Returns a warning code when the declaration
     describes a toggle skit cannot deliver, and the caller then keeps the row unchanged.
 
@@ -487,7 +699,7 @@ def _apply_bool_flag_action(decl: ParamDecl) -> str | None:
     action."""
     if decl.type == "bool" and decl.delivery == "flag" and decl.flag and not decl.action:
         if decl.default:
-            return "bool-flag-on-by-default"
+            return NoticeCode.BOOL_FLAG_ON_BY_DEFAULT
         decl.action = "store_true"
     if decl.type != "bool":
         decl.action = ""
@@ -497,7 +709,7 @@ def _apply_bool_flag_action(decl: ParamDecl) -> str | None:
 def _apply_declared_tweaks(  # noqa: PLR0912 — one branch per editable field; a flat dispatch
     decl: ParamDecl,
     name: str,
-    warnings: list[str],
+    notices: list[EditNotice],
     *,
     deliveries: Mapping[str, str],
     types: Mapping[str, str],
@@ -519,15 +731,15 @@ def _apply_declared_tweaks(  # noqa: PLR0912 — one branch per editable field; 
     if name in deliveries:
         value = deliveries[name]
         if value not in allowed_deliveries:
-            warnings.append(f"bad-delivery:{name}")
+            notices.append(edit_notice(NoticeCode.BAD_DELIVERY, name))
         elif value == "placeholder" and name not in placeholders:
-            warnings.append(f"not-a-placeholder:{name}")
+            notices.append(edit_notice(NoticeCode.NOT_A_PLACEHOLDER, name))
         else:
             decl.delivery = _coerce_literal(value, _DELIVERIES, decl.delivery)
     if name in types:
         value = types[name]
         if value not in _TYPES:
-            warnings.append(f"bad-type:{name}")
+            notices.append(edit_notice(NoticeCode.BAD_TYPE, name))
         else:
             # `value` is guaranteed in _TYPES by the guard above; pick the matching literal so
             # the assignment is a real ParamType. Unlike _coerce_literal(value, _TYPES, decl.type)
@@ -540,7 +752,7 @@ def _apply_declared_tweaks(  # noqa: PLR0912 — one branch per editable field; 
         try:
             decl.default = coerce_default(defaults[name], decl.type)
         except ValueError:
-            warnings.append(f"bad-default:{name}")
+            notices.append(edit_notice(NoticeCode.BAD_DEFAULT, name))
     if name in flags:
         decl.flag = flags[name].strip()
     if name in required:
@@ -562,7 +774,7 @@ def _apply_declared_tweaks(  # noqa: PLR0912 — one branch per editable field; 
         else:
             # An explicit flag that does nothing must never vanish silently — the
             # in-file lane warns for exactly this case; the declared lane now does too.
-            warnings.append(f"env-source-not-secret:{name}")
+            notices.append(edit_notice(NoticeCode.ENV_SOURCE_NOT_SECRET, name))
 
 
 def _coerce_literal[T: str](value: str, allowed: tuple[T, ...], fallback: T) -> T:

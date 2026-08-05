@@ -1075,14 +1075,14 @@ def test_add_unknown_directory_plain_confirm_yes_adds_program(tmp_path, monkeypa
     assert entry.meta.description == "a dir-shaped tool"
 
 
-def test_add_unknown_directory_plain_confirm_no_cancels(tmp_path, monkeypatch):
+def test_add_unknown_directory_plain_confirm_no_declines_cleanly(tmp_path, monkeypatch):
     config.save_form("plain")
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     d = tmp_path / "bundle.dir"
     d.mkdir()
     monkeypatch.setattr(cli.Confirm, "ask", staticmethod(lambda *a, **kw: False))
     result = runner.invoke(cli.app, ["add", str(d)], env=_TERM)
-    assert result.exit_code == 130
+    assert result.exit_code == 0
     assert "nothing was added" in result.output.lower()
     assert store.list_entries() == []
 

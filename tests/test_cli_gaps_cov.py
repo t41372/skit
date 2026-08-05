@@ -21,8 +21,8 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from conftest import full_mirror
-from skit import analysis, argstate, cli, flows, inlineform, launcher, store
+from conftest import full_mirror, patch_run_entry
+from skit import analysis, argstate, cli, flows, inlineform, store
 from skit.langs.python import metawriter
 from skit.params import ParamDecl
 
@@ -69,7 +69,7 @@ def run_entry_spy(monkeypatch: pytest.MonkeyPatch):
         calls["override"] = script_override
         return calls.get("code", 0)
 
-    monkeypatch.setattr(launcher, "run_entry", fake)
+    patch_run_entry(monkeypatch, fake)
     return calls
 
 
@@ -199,14 +199,14 @@ def test_add_stdin_requires_name():
 
 def test_add_stdin_empty_input_is_error():
     result = runner.invoke(cli.app, ["add", "-", "--name", "x"], input="")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Nothing arrived on stdin" in result.output
 
 
-def test_add_stdin_store_error_surfaces_as_exit_1():
+def test_add_stdin_store_error_surfaces_as_usage():
     runner.invoke(cli.app, ["add", "-", "--name", "dup"], input="print(1)\n")
     result = runner.invoke(cli.app, ["add", "-", "--name", "dup"], input="print(2)\n")
-    assert result.exit_code == 1  # duplicate name -> store.StoreError -> clean exit, not traceback
+    assert result.exit_code == 2  # duplicate name -> clean usage error, not traceback
 
 
 # --------------------------------------------------------------------------
@@ -214,7 +214,11 @@ def test_add_stdin_store_error_surfaces_as_exit_1():
 # --------------------------------------------------------------------------
 
 
-def test_remove_command_entry_confirmed(tmp_path):
+def test_remove_command_entry_confirmed(tmp_path, monkeypatch):
+    # The confirm branch is now reachable only on a real terminal (in a pipe/CI a missing
+    # -y is a worded exit-2 refusal, never a prompt that eats piped stdin), so the tty
+    # answer has to be faked the way `runner remove`'s twin test does it.
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     store.add_command("echo hi", name="c")
     result = runner.invoke(cli.app, ["remove", "c"], input="y\n")
     assert result.exit_code == 0, result.output
@@ -324,7 +328,7 @@ def test_run_dry_run_prints_command_and_exits_0(tmp_path, monkeypatch):
     def never(*_a: object, **_k: object) -> int:
         raise AssertionError("dry-run must not execute the script")
 
-    monkeypatch.setattr(launcher, "run_entry", never)
+    patch_run_entry(monkeypatch, never)
     store.add_python(_py(tmp_path, "print(1)\n"), name="j")
     result = runner.invoke(cli.app, ["run", "j", "--no-input", "--dry-run"])
     assert result.exit_code == 0, result.output
@@ -353,7 +357,7 @@ def test_preset_save_from_last_without_values_errors(tmp_path):
     )
     store.add_python(_py(tmp_path, text), name="a")
     result = runner.invoke(cli.app, ["preset", "save", "a", "prod", "--from-last"])
-    assert result.exit_code == 1  # nothing remembered yet
+    assert result.exit_code == 2  # nothing remembered yet
     assert "no remembered values yet" in result.output
 
 
@@ -397,7 +401,11 @@ def test_params_env_source_on_unmanaged_warns(tmp_path):
     )
     store.add_python(_py(tmp_path, text), name="a")
     result = runner.invoke(cli.app, ["params", "a", "--env-source", "GHOST=OPENAI"])
-    assert result.exit_code == 0, result.output
+    # ROUND 12: `skit params` refuses atomically now. A flag it cannot honour writes
+    # NOTHING and exits 2 — the refuse-never-drop answer every sibling intake gives —
+    # because warn-and-continue exited 0, wrote the rest, and then reported the state
+    # it had not written through --json.
+    assert result.exit_code == 2
     assert "GHOST isn't a managed parameter; --env-source skipped." in result.output
 
 
@@ -407,7 +415,11 @@ def test_params_env_source_on_non_secret_warns(tmp_path):
     )
     store.add_python(_py(tmp_path, text), name="a")
     result = runner.invoke(cli.app, ["params", "a", "--env-source", "CITY=OPENAI"])
-    assert result.exit_code == 0, result.output
+    # ROUND 12: `skit params` refuses atomically now. A flag it cannot honour writes
+    # NOTHING and exits 2 — the refuse-never-drop answer every sibling intake gives —
+    # because warn-and-continue exited 0, wrote the rest, and then reported the state
+    # it had not written through --json.
+    assert result.exit_code == 2
     assert "CITY isn't secret" in result.output
 
 

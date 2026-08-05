@@ -186,7 +186,7 @@ def test_invalid_utf8_prompt_stdin_fails_before_allocating_a_draft(tmp_path):
     )
 
     output = completed.stdout + completed.stderr
-    assert completed.returncode == 1
+    assert completed.returncode == 2
     assert b"<stdin>" in output
     assert b"offset 7" in output
     assert b"Traceback" not in output
@@ -203,7 +203,7 @@ def test_invalid_utf8_prompt_stdin_cli_boundary_maps_decode_error_to_clean_exit(
         input=b"Review \xff now\n",
     )
 
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "<stdin>" in result.output
     assert "offset 7" in " ".join(result.output.split())
     assert isinstance(result.exception, SystemExit)
@@ -253,23 +253,33 @@ def test_changed_prompt_is_launch_blocked_and_health_reports_the_same_error(tmp_
 
 @pytest.mark.parametrize("mode", ["copy", "reference"])
 def test_cli_edit_refuses_invalid_prompt_bytes_and_the_next_edit_can_repair_them(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: Mode
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: Mode, at_a_terminal
 ):
     source = tmp_path / f"cli-{mode}.prompt.md"
     source.write_text("Review {{target}}\n", encoding="utf-8")
     entry = store.add_prompt(source, name=f"cli-{mode}", mode=mode)
     target = entry.script_path
+    pristine = target.read_bytes()  # byte-exact, whatever newline style this OS wrote
     invalid = b"edited:\xff\n"
     monkeypatch.setattr(cli.editor, "open_in_editor", lambda opened: opened.write_bytes(invalid))
 
     refused = runner.invoke(cli.app, ["edit", entry.meta.name])
 
-    assert refused.exit_code == 1
+    assert refused.exit_code == 125
     assert "offset 7" in " ".join(refused.output.split())
     assert "Saved" not in refused.output
-    assert target.read_bytes() == invalid  # authored bytes are kept for a corrective edit
     if mode == "copy":
+        # The STAGED contract: invalid bytes never reach the stored copy — they stay
+        # in the draft the refusal names, and the original is untouched too.
+        assert target.read_bytes() == pristine
         assert source.read_text(encoding="utf-8") == "Review {{target}}\n"
+        from skit.paths import drafts_dir
+
+        assert [d.read_bytes() for d in sorted(drafts_dir().glob("edit-*"))] == [invalid]
+    else:
+        # Reference mode edits the user's own file in place: the authored bytes are
+        # kept AT the source for a corrective edit, exactly as before.
+        assert target.read_bytes() == invalid
 
     repaired = b"Repaired {{target}}\n"
     monkeypatch.setattr(cli.editor, "open_in_editor", lambda opened: opened.write_bytes(repaired))
@@ -288,6 +298,7 @@ async def test_library_edit_refuses_invalid_prompt_bytes_and_recovers_on_reedit(
     source.write_text("Review {{target}}\n", encoding="utf-8")
     entry = store.add_prompt(source, name=f"tui-{mode}", mode=mode)
     target = entry.script_path
+    pristine = target.read_bytes()  # byte-exact, whatever newline style this OS wrote
     invalid = b"edited:\xff\n"
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
     monkeypatch.setattr(tui.editor, "open_in_editor", lambda opened: opened.write_bytes(invalid))
@@ -302,9 +313,13 @@ async def test_library_edit_refuses_invalid_prompt_bytes_and_recovers_on_reedit(
         assert status.startswith("Error:")
         assert "offset 7" in status
         assert "Edited" not in status
-        assert target.read_bytes() == invalid
         if mode == "copy":
+            # Staged: the stored copy never saw the invalid bytes (they live in the
+            # kept draft the refusal names); reference edits the original in place.
+            assert target.read_bytes() == pristine
             assert source.read_text(encoding="utf-8") == "Review {{target}}\n"
+        else:
+            assert target.read_bytes() == invalid
 
         repaired = b"Repaired {{target}}\n"
         monkeypatch.setattr(
@@ -320,7 +335,7 @@ async def test_library_edit_refuses_invalid_prompt_bytes_and_recovers_on_reedit(
 def test_cli_add_params_run_and_doctor_refuse_corrupt_prompt_cleanly(tmp_path, monkeypatch):
     path, offset = _invalid_prompt(tmp_path)
     added = runner.invoke(cli.app, ["add", str(path), "--prompt", "--no-input"])
-    assert added.exit_code == 1
+    assert added.exit_code == 2
     assert str(path.resolve()) in added.output.replace("\n", "")
     # rich wraps the long (absolute) path, so the "offset N" phrase can straddle a line
     # break on a narrow/Windows path — collapse whitespace runs before the substring check.
@@ -334,14 +349,14 @@ def test_cli_add_params_run_and_doctor_refuse_corrupt_prompt_cleanly(tmp_path, m
 
     for args in (["show", entry.meta.name], ["show", entry.meta.name, "--json"]):
         shown = runner.invoke(cli.app, args)
-        assert shown.exit_code == 1
+        assert shown.exit_code == 125
         assert "offset 7" in " ".join(shown.output.split())
         assert "fields" not in shown.output
         assert "No form fields" not in shown.output
         assert "�" not in shown.output
 
     shown = runner.invoke(cli.app, ["params", entry.meta.name, "--json"])
-    assert shown.exit_code == 1
+    assert shown.exit_code == 125
     assert "offset 7" in shown.output
     assert "�" not in shown.output
 

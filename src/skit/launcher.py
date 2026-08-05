@@ -15,7 +15,7 @@ import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from . import config
 from .i18n import gettext
@@ -131,6 +131,111 @@ def describe_command(
         # show the template (the only launch material meta itself carries), usually "".
         return entry.meta.template
     return spec.launch.describe(entry, extra_args or [], values, script_override, runner=runner)
+
+
+def original_survives(entry: ListedEntry) -> bool:
+    """Whether the user's OWN file still exists outside skit's library.
+
+    The one question behind every "your original file will not be deleted" reassurance.
+    The TUI's removal modal asked it (source set AND on disk); the CLI's `skit remove`
+    asked only whether the KIND has an original, so it repeated the promise for a
+    copy-mode entry whose original the user had since deleted — the one moment the
+    promise stops holding is the one moment it was printed, on the destructive door, in
+    the face that has no Esc. skit's whole copy-mode pitch is why people delete that
+    working file in the first place.
+
+    Only `source` is consulted. A kind with no original — a command template — never
+    records one, so a has_original_file guard here would be a branch that cannot fire;
+    mutation testing found it, and this audit has spent eleven rounds deleting exactly
+    that shape. The kind question still matters ONE level up, where `skit remove` decides
+    between "your original is safe" and "skit holds the only copy", and there it fires.
+    """
+    source = entry.source
+    return bool(source) and Path(source).exists()
+
+
+RemovalStake = Literal["original-safe", "only-copy", "nothing-of-yours"]
+
+
+def removal_stake(entry: Entry) -> RemovalStake:
+    """What a removal actually costs the user — the VERDICT, not the sentence.
+
+    Round 11 unified the predicate (original_survives) and left the ANSWER forked: the
+    CLI grew a third case ("skit holds the only copy") and the TUI modal kept two, so the
+    honest warning appeared only on the face that makes you type a name — while the
+    Library, where Delete acts on whatever row the cursor is on, said nothing. Unifying a
+    predicate and forking its answer is the same defect wearing a smaller hat.
+
+    A verdict, deliberately, not composed copy: cli.py already states the rule ("ONE
+    msgid, not two sentences spliced with a hard-coded space: translators own the whole
+    pair, including its punctuation and order"). Each face renders whole sentences it
+    owns; neither decides which case it is in.
+
+    Takes an Entry rather than the narrower ListedEntry its neighbour above uses, because
+    `mode` is part of the question — both call sites hold one.
+    """
+    if original_survives(entry):
+        return "original-safe"
+    if entry.meta.mode == "copy":
+        # The original is gone AND skit made a copy of it, so skit's copy is the only one
+        # left. Every copy-mode kind has an original file (exe and command are
+        # reference-only), so there is nothing further to test here.
+        return "only-copy"
+    return "nothing-of-yours"
+
+
+EditRefusal = Literal["not-editable", "reference-source-gone", "no-stored-copy"]
+
+
+@dataclass(frozen=True)
+class EditPlan:
+    """Where `skit edit` / the Library's `e` would take the user, or why they can't go.
+
+    THREE conditions, kept apart. The TUI collapsed them into one sentence, so the owner
+    of a reference-mode PYTHON entry whose file had moved was told it "has no editable
+    source (programs and command templates run as-is)" — a message that denies the entry
+    has a source AND misclassifies its kind, about a script that is neither a program nor
+    a template. The CLI, one function away, named the path they needed to restore.
+
+    A reason ID rather than a sentence, because the two faces need different things from
+    it: the CLI maps it to an exit code as well as copy, and the ID is what both maps key
+    off (the shared parameter-notice renderer precedent).
+    """
+
+    target: Path | None
+    refusal: EditRefusal | None
+    edits_original: bool = False  # reference mode: the file being opened is the USER's
+
+
+def plan_edit(entry: Entry) -> EditPlan:
+    """What editing this entry means. Shared by `cli.edit` and MenuApp.action_edit."""
+    spec = spec_for(entry.meta.kind)
+    if spec is None or not spec.editable:
+        return EditPlan(target=None, refusal="not-editable")
+    if entry.meta.mode == "reference":
+        source = Path(entry.meta.source)
+        if not source.exists():
+            return EditPlan(target=None, refusal="reference-source-gone")
+        return EditPlan(target=source, refusal=None, edits_original=True)
+    target = entry.script_path
+    if not target.exists():
+        return EditPlan(target=None, refusal="no-stored-copy")
+    return EditPlan(target=target, refusal=None)
+
+
+def edit_refusal_message(refusal: EditRefusal, entry: Entry) -> str:
+    """The refusal, worded once for both faces. A static lookup keeps every string
+    Babel-extractable (the shared parameter-notice renderer rule)."""
+    return {
+        "not-editable": gettext(
+            "%(name)s has no editable source (programs and command templates run as-is)."
+        )
+        % {"name": entry.meta.name},
+        "reference-source-gone": gettext("%(name)s: the referenced source file is gone: %(path)s")
+        % {"name": entry.meta.name, "path": entry.meta.source},
+        "no-stored-copy": gettext("%(name)s has no stored copy to edit.")
+        % {"name": entry.meta.name},
+    }[refusal]
 
 
 def target_missing(entry: ListedEntry) -> bool:
@@ -256,7 +361,7 @@ def prepare_entry(
     )
 
 
-def run_entry(
+def start_entry(
     entry: Entry,
     extra_args: list[str] | None = None,
     *,
@@ -266,8 +371,14 @@ def run_entry(
     env_overlay: Mapping[str, str] | None = None,
     runner: PromptRunner | None = None,
     prepared: PreparedLaunch | None = None,
-) -> int:
-    """Run straight through the terminal and return the exit code.
+) -> subprocess.Popen[bytes]:
+    """Spawn the child and return immediately — the launch half of run_entry.
+
+    The split exists for the identity guard: flows.execute verifies WHO the entry is
+    and starts the child under the entry lock (the OS opens the script/binary during
+    the spawn, so a remove or a re-add cannot swap the file between the check and the
+    exec), then releases the lock and waits with finish_entry — nothing may hold a
+    lock for a child's whole runtime.
 
     env_overlay: env-delivered parameter values, applied LAST — an explicitly set
     parameter is a deliberate override, so it wins over both the ambient environment
@@ -293,12 +404,49 @@ def run_entry(
         # A command entry is by definition "a shell command the user registered"; shell=True is a
         # feature, not a hole. The template was written by the user via `skit add`, so the trust
         # boundary is the same as the user's own shell history.
-        proc = subprocess.run(  # noqa: S602  # pragma: no mutate
-            launch.payload.command, shell=True, cwd=launch.cwd, check=False, env=env
+        return subprocess.Popen(  # noqa: S602  # pragma: no mutate
+            launch.payload.command, shell=True, cwd=launch.cwd, env=env
         )
-    else:
-        proc = subprocess.run(launch.payload.argv, cwd=launch.cwd, check=False, env=env)  # noqa: S603 — argv from a user entry  # pragma: no mutate — check=None is falsy-equivalent to False; omitting it matches subprocess.run's own default
-    return _normalize_exit_code(proc.returncode)
+    return subprocess.Popen(launch.payload.argv, cwd=launch.cwd, env=env)  # noqa: S603 — argv from a user entry  # pragma: no mutate
+
+
+def finish_entry(proc: subprocess.Popen[bytes]) -> int:
+    """Wait out a started child and normalize its exit code — subprocess.run's own
+    discipline, kept exactly: any interruption of the wait (Ctrl+C first among them)
+    kills the child before propagating, so a split launch can never leak a process
+    subprocess.run would have reaped."""
+    try:
+        return _normalize_exit_code(proc.wait())
+    except BaseException:
+        proc.kill()
+        proc.wait()
+        raise
+
+
+def run_entry(
+    entry: Entry,
+    extra_args: list[str] | None = None,
+    *,
+    values: dict[str, str] | None = None,
+    invoke_cwd: Path | None = None,
+    script_override: Path | None = None,
+    env_overlay: Mapping[str, str] | None = None,
+    runner: PromptRunner | None = None,
+) -> int:
+    """Run straight through the terminal and return the exit code (start + finish,
+    unsplit — the direct-call convenience; flows.execute uses the split itself, and
+    passes its PreparedLaunch to start_entry directly)."""
+    return finish_entry(
+        start_entry(
+            entry,
+            extra_args,
+            values=values,
+            invoke_cwd=invoke_cwd,
+            script_override=script_override,
+            env_overlay=env_overlay,
+            runner=runner,
+        )
+    )
 
 
 def _normalize_exit_code(returncode: int) -> int:

@@ -391,6 +391,13 @@ def test_manage_flip_note_names_the_reader_form_then_stays_quiet(tmp_path):
     assert first.exit_code == 0, first.output
     assert "The run form now asks for the managed parameters" in first.output
     assert "getopts" in first.output  # the reader form set aside is named
+    # The sentence WHOLE and exact, on its own line: it names a trade-off the user is about to
+    # live with and the flag that undoes it, so nothing may be spliced onto either end of it
+    # and "--unmanage" must stay the flag as typed.
+    assert (
+        "The run form now asks for the managed parameters — the script's own command-line "
+        "form (getopts) is set aside until they are removed (--unmanage)."
+    ) in first.output.splitlines()
 
     # A constant is already managed now → the entry is no longer reader-driven-only, so a
     # second manage prints no flip note.
@@ -405,6 +412,43 @@ def test_manage_flip_note_names_the_reader_form_then_stays_quiet(tmp_path):
     again = runner.invoke(cli.app, ["params", "second", "--manage", "PORT"])
     assert again.exit_code == 0, again.output
     assert "The run form now asks for the managed parameters" not in again.output
+
+
+def test_manage_flip_note_lists_every_framework_it_sets_aside(tmp_path):
+    """A script can carry more than one CLI framework, and the note names the form it is
+    replacing — so it has to name ALL of them, in a list a human reads. One framework can never
+    show whether the separator is right; two can."""
+    py = tmp_path / "both.py"
+    py.write_text(
+        "import argparse\nimport click\nCITY = 'Taipei'\n"
+        "parser = argparse.ArgumentParser()\nparser.add_argument('--n')\nprint(CITY)\n",
+        encoding="utf-8",
+    )
+    runner.invoke(cli.app, ["add", str(py), "-n", "twoframeworks", "--no-input"])
+
+    result = runner.invoke(cli.app, ["params", "twoframeworks", "--manage", "CITY"])
+
+    assert result.exit_code == 0, result.output
+    assert (
+        "The run form now asks for the managed parameters — the script's own command-line "
+        "form (argparse, click) is set aside until they are removed (--unmanage)."
+    ) in " ".join(result.output.split())
+
+
+def test_manage_flip_note_fires_on_a_single_option_reader_form(tmp_path):
+    """ "Reader-driven" is the shared modeled-form predicate — `reader_fields(...) > 0`, not
+    "more than one". A script whose own parser takes a SINGLE option still has a form that
+    managing replaces, so the trade-off note is owed there too; the one-field case is exactly
+    where a stricter threshold would go silent about a real replacement."""
+    sh = tmp_path / "one.sh"
+    sh.write_text(
+        '#!/usr/bin/env bash\nCITY=Taipei\nwhile getopts "n:" opt; do :; done\necho $CITY\n',
+        encoding="utf-8",
+    )
+    runner.invoke(cli.app, ["add", str(sh), "-n", "one", "--no-input"])
+    result = runner.invoke(cli.app, ["params", "one", "--manage", "CITY"])
+    assert result.exit_code == 0, result.output
+    assert "The run form now asks for the managed parameters" in result.output
 
 
 def test_manage_flip_json_stdout_is_exactly_one_document(tmp_path):

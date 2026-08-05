@@ -38,6 +38,26 @@ _GITHUB_CHOICES = [*config.GITHUB_RELEASE_PRESETS, "custom", "off"]
 _NPM_CHOICES = [*config.NPM_PRESETS, "custom", "off"]
 
 
+def _choice_label(token: str) -> str:
+    """What a mirror radio SHOWS, as against the token it stands for. Two vocabularies,
+    deliberately: the token is the stored value and the CLI's word (`skit config mirror
+    off`) and must never be localized; the label is UI copy and must always be.
+
+    They used to be one string, so on/off/custom rendered in English — eight untranslated
+    labels in the one section whose entire audience is Chinese-speaking users, directly
+    under a translated hint that explains them. Vendor names (tsinghua, npmmirror) are
+    proper nouns and pass through unchanged.
+
+    The msgids MUST be gettext() literals here rather than gettext(token) over a plain
+    dict: a dict lookup is invisible to Babel's extractor — the exact trap tui_form's
+    _type_label documents."""
+    return {
+        "on": gettext("on"),
+        "off": gettext("off"),
+        "custom": gettext("custom"),
+    }.get(token, token)
+
+
 class SkillInstallModal(ModalScreen[str | None]):
     """Pick an agent directory and install the Agent Skill into it (the TUI face of
     `skit agent install`). Dismisses with the written path, or None. Consent stays
@@ -119,12 +139,13 @@ class PreferencesScreen(Screen[bool]):
     BINDINGS = [
         Binding("escape", "close", gettext("Back")),
         Binding("ctrl+s", "save", gettext("Save"), priority=True),
-        # Ctrl+O/Ctrl+K, not Ctrl+N/Ctrl+T (those mean "New agent" / "insert value"
-        # elsewhere) — and NON-priority: Ctrl+K is every Input's delete-to-end-of-line,
-        # and a screen full of text fields must never answer an editing chord with a
-        # modal. The chips stay the mouse path; the chords fire from any non-Input focus.
-        Binding("ctrl+o", "manage_runners", gettext("Manage agents"), show=False),
-        Binding("ctrl+k", "install_skill", gettext("Teach an AI agent"), show=False),
+        # Ctrl+G/Ctrl+Y: chords with NO meaning anywhere else in skit — not the
+        # grammar chords (Ctrl+E/N/T/R/S, Ctrl+O = restore default, Ctrl+L = choose
+        # variables) and not an Input's own editing chords (Ctrl+A/E/K/U/W…), so they
+        # fire from inside a field without priority and never collide with muscle
+        # memory built on a sibling screen. The chips stay the mouse path.
+        Binding("ctrl+g", "manage_runners", gettext("Manage agents"), show=False),
+        Binding("ctrl+y", "install_skill", gettext("Teach an AI agent"), show=False),
         *tui_footer.FIELD_NAV_BINDINGS,
     ]
     # Boot on the language dropdown, not the "*" pick (the body scroll container).
@@ -180,14 +201,14 @@ class PreferencesScreen(Screen[bool]):
         )
 
     def action_manage_runners(self) -> None:
-        """Ctrl+O / the Manage agents… chip: the runner registry, whole (list, edit,
+        """Ctrl+G / the Manage agents… chip: the runner registry, whole (list, edit,
         remove, add) — settings must never be reachable only by hand-editing config."""
         from .tui_runner import RunnerManageScreen
 
         self.app.push_screen(RunnerManageScreen(), lambda _: self._refresh_runner_count())
 
     def action_install_skill(self) -> None:
-        """Ctrl+K / the Teach an AI agent… chip: install the Agent Skill from the TUI —
+        """Ctrl+Y / the Teach an AI agent… chip: install the Agent Skill from the TUI —
         a headline README feature that was CLI-only (`skit agent install`)."""
 
         def _installed(path: str | None) -> None:
@@ -287,9 +308,9 @@ class PreferencesScreen(Screen[bool]):
             yield Static("", id="pf-runner-count")
             yield Static(
                 tui_footer.bar(
-                    tui_footer.chip("screen.manage_runners", "Ctrl+O", gettext("Manage agents…")),
+                    tui_footer.chip("screen.manage_runners", "Ctrl+G", gettext("Manage agents…")),
                     tui_footer.chip(
-                        "screen.install_skill", "Ctrl+K", gettext("Teach an AI agent skit…")
+                        "screen.install_skill", "Ctrl+Y", gettext("Teach an AI agent skit…")
                     ),
                 ),
                 id="pf-runner-manage",
@@ -332,16 +353,20 @@ class PreferencesScreen(Screen[bool]):
         )
         with RadioSet(id="pf-mirror-master", classes="pf-mirror-row"):
             for choice in _MASTER_CHOICES:
-                yield RadioButton(choice, value=((choice == "on") == master_on))
+                yield RadioButton(_choice_label(choice), value=((choice == "on") == master_on))
         yield Static(gettext("PyPI index (Python packages)"), classes="pf-axis")
         with RadioSet(id="pf-mirror-pypi", classes="pf-mirror-row"):
             for choice in _PYPI_CHOICES:
-                yield RadioButton(choice, value=(choice == config.pypi_choice(mirror)))
+                yield RadioButton(
+                    _choice_label(choice), value=(choice == config.pypi_choice(mirror))
+                )
         yield Input(value=mirror.pypi, placeholder=gettext("PyPI index URL"), id="pf-pypi")
         yield Static(gettext("GitHub releases (Python builds, the uv binary)"), classes="pf-axis")
         with RadioSet(id="pf-mirror-github", classes="pf-mirror-row"):
             for choice in _GITHUB_CHOICES:
-                yield RadioButton(choice, value=(choice == config.github_choice(mirror)))
+                yield RadioButton(
+                    _choice_label(choice), value=(choice == config.github_choice(mirror))
+                )
         yield Input(
             value=config.github_base(mirror),
             placeholder=gettext("github-release mirror base URL"),
@@ -350,7 +375,9 @@ class PreferencesScreen(Screen[bool]):
         yield Static(gettext("npm registry (JS/TS packages)"), classes="pf-axis")
         with RadioSet(id="pf-mirror-npm", classes="pf-mirror-row"):
             for choice in _NPM_CHOICES:
-                yield RadioButton(choice, value=(choice == config.npm_choice(mirror)))
+                yield RadioButton(
+                    _choice_label(choice), value=(choice == config.npm_choice(mirror))
+                )
         yield Input(value=mirror.npm, placeholder=gettext("npm registry URL"), id="pf-npm")
         yield Static("", id="pf-mirror-error", classes="error")  # pragma: no mutate — empty Static("") == Static() (default renderable), so the dropped-literal mutant is equivalent; this line-anchored pragma also suppresses the same-line id/classes siblings, whose behavior the mirror-walk test still pins  # fmt: skip
 

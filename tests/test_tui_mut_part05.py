@@ -8,8 +8,8 @@ terminal before the child process writes (the file is entirely about terminal ha
 so an unflushed banner would interleave with the script's own output); a launch that
 never starts prints an error line and lands a "couldn't launch" status; a nonzero exit
 records a "failed (code N)" status; EOF at the "press Enter" prompt is swallowed rather
-than crashing the workbench; and the lazy, mtime-keyed drift cache is trusted only while
-fresh and reflects the plan's real drift.
+than crashing the workbench; and the lazy, mtime-keyed PLAN cache _has_drift is served
+off is trusted only while fresh and reflects the plan's real drift.
 """
 
 from __future__ import annotations
@@ -20,7 +20,8 @@ from pathlib import Path
 import pytest
 from textual.widgets import Static
 
-from skit import config, flows, launcher, store, tui
+from conftest import patch_run_entry, plan_cache_key
+from skit import config, flows, store, tui
 from skit.langs.python import metawriter
 from skit.langs.registry import spec_for
 from skit.params import ParamDecl
@@ -105,7 +106,7 @@ async def test_success_run_prints_flushed_banners_and_records_finished(
     lambda), and the `✓ finished` outcome banner (the stay path repaints immediately —
     no Enter-wait since #14); a clean run then
     stamps the exact `Last: <name> ✓ finished` status."""
-    monkeypatch.setattr(launcher, "run_entry", lambda *a, **k: 0)
+    patch_run_entry(monkeypatch, lambda *a, **k: 0)
     rec = _PrintRecorder()
     monkeypatch.setattr("builtins.print", rec)
     entry = store.add_python(_py(tmp_path, "print(1)\n"), name="a")
@@ -137,7 +138,7 @@ async def test_success_run_prints_flushed_banners_and_records_finished(
 async def test_nonzero_exit_records_failed_status(tmp_path, stay_suspend, monkeypatch):
     """A launched-but-nonzero run records the exact `Last: <name> ✗ failed (code N)`
     status (mutmut_124/125 wrap/lowercase that msgid)."""
-    monkeypatch.setattr(launcher, "run_entry", lambda *a, **k: 3)
+    patch_run_entry(monkeypatch, lambda *a, **k: 3)
     entry = store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     plan = flows.FormPlan(source="none")
     app = tui.MenuApp()
@@ -147,6 +148,65 @@ async def test_nonzero_exit_records_failed_status(tmp_path, stay_suspend, monkey
         await pilot.pause()
         status = str(app.query_one("#status", Static).render())
     assert status == "Last: a ✗ failed (code 3)"
+
+
+async def test_stay_run_state_failure_warns_without_losing_run_status(
+    tmp_path, stay_suspend, monkeypatch
+):
+    patch_run_entry(monkeypatch, lambda *a, **k: 0)
+
+    def denied(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError(13, "Permission denied", "state.toml")
+
+    notices: list[tuple[str, str]] = []
+    monkeypatch.setattr(flows, "save_after_run", denied)
+    monkeypatch.setattr(
+        tui.MenuApp,
+        "notify",
+        lambda _self, message, *, severity="information", **_kwargs: notices.append(
+            (str(message), severity)
+        ),
+    )
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="a")
+    plan = flows.FormPlan(source="none")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._execute(entry, plan, {}, [])
+        await pilot.pause()
+        status = str(app.query_one("#status", Static).render())
+
+    assert status == "Last: a ✓ finished"
+    assert notices == [
+        ("The entry ran, but skit couldn't save its state: Permission denied", "warning")
+    ]
+
+
+async def test_the_suspend_body_wires_the_warn_channel_to_a_flushed_print(
+    tmp_path, stay_suspend, monkeypatch
+):
+    """flows.execute has TWO output channels, and the suspend body owns both: `warn` (the amp
+    one-shot notice, a degraded delivery) must reach the terminal exactly like `emit` — its own
+    text, flushed. Wired to None it raises on the first warning; wired to a swallowing lambda
+    the notice is simply never seen, which is the failure mode nobody would report."""
+    rec = _PrintRecorder()
+    monkeypatch.setattr("builtins.print", rec)
+
+    def warning_execute(_entry, _plan, _asm, *, emit, warn, invoke_cwd=None, runner=None):
+        warn("WARN-SENTINEL")
+        return flows.RunOutcome(0)
+
+    monkeypatch.setattr(tui.flows, "execute", warning_execute)
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="a")
+    plan = flows.FormPlan(source="none")
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._execute(entry, plan, {}, [])
+        await pilot.pause()
+
+    assert "WARN-SENTINEL" in rec.lines  # the warning's own text, whole and alone
+    assert rec.flush_for("WARN-SENTINEL") is True
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +240,7 @@ async def test_launch_failure_prints_flushed_error_and_couldnt_launch_status(
 
 
 # ---------------------------------------------------------------------------
-# _has_drift: the guard and the lazy mtime-keyed cache
+# _has_drift: the guard and the lazy mtime-keyed plan cache it reads
 # ---------------------------------------------------------------------------
 
 
@@ -198,15 +258,15 @@ def test_has_drift_is_false_and_never_stats_a_missing_script(tmp_path):
 
 
 def test_has_drift_trusts_a_fresh_mtime_matching_cache(tmp_path):
-    """A cache entry whose stored mtime equals the file's current mtime is trusted verbatim —
-    the expensive plan/reconcile is skipped and the cached verdict returned. Planting True for
-    a script whose real drift is False proves the cache is honored: mutmut_9 (mtime=None),
-    mutmut_10 (cached=None), mutmut_11 (get(None)), mutmut_14 (cached[1]) and mutmut_15 (!=)
-    all miss the plant and recompute the real False."""
+    """A cache entry whose stored key equals the CURRENT (mtime_ns, size) pair of the script AND
+    of its meta.toml is trusted verbatim — the expensive plan/reconcile is skipped and the cached
+    plan's drift returned. Planting a drifting plan for a script whose real drift is empty proves
+    the cache is honored: any mutant that drops the key, the lookup or the equality test misses
+    the plant and recomputes the real False."""
     entry = store.add_python(_py(tmp_path, "print(1)\n"), name="clean")
-    mtime = entry.script_path.stat().st_mtime
+    key = plan_cache_key(entry)
     app = tui.MenuApp()
-    app._drift_cache[entry.slug] = (mtime, True)
+    app._plan_cache[entry.slug] = (key, flows.FormPlan(source="none", drift_lines=["planted"]))
     assert app._has_drift(entry) is True
 
 

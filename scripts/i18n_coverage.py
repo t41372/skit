@@ -228,6 +228,11 @@ _CALL_SINKS = {
     "Option": (0,),
     "Button": (0,),
 }
+# The subset whose first argument is a LABEL a person reads — never an id, a CSS class or
+# a slug, which is what the lowercase-identifier exemption in _NON_UI exists to tolerate.
+# So that exemption does not apply here: a bare `off` in a RadioButton is a word on screen,
+# and letting it pass is how eight English labels shipped in the mirror section.
+_LABEL_SINKS = frozenset(_CALL_SINKS)
 # Method sinks: method name -> positional arg indices.
 _METHOD_SINKS = {
     "notify": (0,),
@@ -256,6 +261,19 @@ _NON_UI = re.compile(
     re.VERBOSE,
 )
 
+# The same list MINUS the lowercase-identifier alternative, for LABEL sinks. A widget label
+# never carries a CSS class or a slug — that alternative exists to tolerate ids elsewhere —
+# so inside a label `off` is a word on screen, and letting it through is exactly how eight
+# English labels shipped in the Preferences mirror section.
+_NON_UI_LABEL = re.compile(
+    r"""^(
+        [\W\d_]* |                       # no letters at all (glyphs, punctuation, numbers)
+        [#.][\w\-]+ |                    # css id/class selector
+        utf-8 | UTF-8 | ascii |          # encodings
+        https?://.* )$""",
+    re.VERBOSE,
+)
+
 # Reviewed, intentionally-untranslated literals: input placeholders that show a universal
 # INPUT FORMAT (a path shape, a shell command), not prose. Translating them would be wrong.
 _ALLOWED = {
@@ -265,13 +283,16 @@ _ALLOWED = {
 }
 
 
-def _is_ui_prose(s: str) -> bool:
+def _is_ui_prose(s: str, *, label: bool = False) -> bool:
+    """Whether a literal is user-facing text. `label` drops the single-lowercase-token
+    exemption: in a widget label there are no CSS classes or slugs to protect, so `off`
+    is a word on screen rather than an identifier."""
     if s in _ALLOWED:
         return False
     s = _MARKUP_TAG.sub("", s).strip()  # drop rich markup tags, keep the prose between them
     if len(s) < 2 or not any(c.isalpha() for c in s):
         return False
-    return not _NON_UI.match(s)
+    return not (_NON_UI_LABEL if label else _NON_UI).match(s)
 
 
 def _wraps_gettext(node: ast.AST) -> bool:
@@ -290,13 +311,69 @@ def _wraps_gettext(node: ast.AST) -> bool:
     return False
 
 
-def _bare_ui_strings(node: ast.AST) -> list[str]:
-    """The user-facing string literals directly under `node` that are NOT gettext-wrapped."""
+def _module_literal_sequences(tree: ast.Module) -> dict[str, ast.AST]:
+    """Names that stand for a literal sequence: module constants, and the loop variables
+    that iterate one.
+
+    A sink argument that is a NAME used to be invisible, and the real shape needs BOTH
+    hops: `for choice in _MASTER_CHOICES: yield RadioButton(choice)` keeps its literals in
+    a module constant and hands the sink a loop variable. The scanner only inspected a
+    Constant/JoinedStr sitting directly in the argument, so it printed "every scanned UI
+    sink routes through gettext" while eight English labels rendered in the Preferences
+    mirror section. A gate that publishes a claim it never checked is worse than no gate,
+    and AGENTS.md names this one as a hard CI gate.
+
+    Deliberately these two hops and no more. A heuristic that chased arbitrary dataflow
+    would report things it cannot justify, and a gate nobody trusts gets suppressed.
+
+    Loop variables are collected WITHOUT scope analysis, so a name reused by several loops
+    (`for choice in _PYPI_CHOICES:` … `for choice in _NPM_CHOICES:`) resolves to whichever
+    bound it last. That under-reports: one offending row is named instead of all four. It
+    is enough — a failing gate sends the reader to the pattern, and they fix every row —
+    but it is not a promise of completeness, and nothing here should be read as one.
+    """
+    out: dict[str, ast.AST] = {}
+    for node in tree.body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if isinstance(node.value, (ast.List, ast.Tuple)):
+            for t in targets:
+                if isinstance(t, ast.Name):
+                    out[t.id] = node.value
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.For, ast.comprehension)):
+            continue
+        target = node.target
+        iterable = node.iter
+        if isinstance(iterable, ast.Name):
+            iterable = out.get(iterable.id)  # type: ignore[assignment]
+        if isinstance(target, ast.Name) and isinstance(iterable, (ast.List, ast.Tuple)):
+            out[target.id] = iterable
+    return out
+
+
+def _bare_ui_strings(
+    node: ast.AST, seqs: dict[str, ast.AST] | None = None, *, label: bool = False
+) -> list[str]:
+    """The user-facing string literals directly under `node` that are NOT gettext-wrapped.
+
+    `seqs` resolves ONE hop: a bare Name that a module constant binds to a literal
+    sequence is looked through, so `for choice in _CHOICES: Widget(choice)` is scanned
+    like `Widget("on")` would be. Deliberately one hop and module scope only — a
+    heuristic that chased arbitrary dataflow would start reporting things it cannot
+    justify, and a gate nobody trusts gets suppressed."""
+    if seqs is not None and isinstance(node, ast.Name) and node.id in seqs:
+        node = seqs[node.id]
     if _wraps_gettext(node):
         return []
     out: list[str] = []
+    if isinstance(node, (ast.List, ast.Tuple)):
+        for element in node.elts:
+            out.extend(_bare_ui_strings(element, label=label))
+        return out
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        if _is_ui_prose(node.value):
+        if _is_ui_prose(node.value, label=label):
             out.append(node.value)
     elif isinstance(node, ast.JoinedStr):  # f-string with no gettext inside
         for part in node.values:
@@ -317,6 +394,7 @@ def scan_unwrapped(src: Path = SRC) -> list[str]:
     anchor = src.parent.parent  # repo root, for tidy relative paths
     for py in sorted(src.rglob("*.py")):
         tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
+        seqs = _module_literal_sequences(tree)
         rel = py.relative_to(anchor) if anchor in py.parents else py.name
         for node in ast.walk(tree):
             hits: list[tuple[int, str]] = []
@@ -327,11 +405,11 @@ def scan_unwrapped(src: Path = SRC) -> list[str]:
                 idxs = _CALL_SINKS.get(cname or "", ()) or _METHOD_SINKS.get(mname or "", ())
                 for i in idxs:
                     if i < len(node.args):
-                        for s in _bare_ui_strings(node.args[i]):
+                        for s in _bare_ui_strings(node.args[i], seqs, label=cname in _LABEL_SINKS):
                             hits.append((node.lineno, s))
                 for kw in node.keywords:
                     if kw.arg in _KW_SINKS:
-                        for s in _bare_ui_strings(kw.value):
+                        for s in _bare_ui_strings(kw.value, seqs):
                             hits.append((node.lineno, s))
             elif isinstance(node, (ast.Assign, ast.AnnAssign)):
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
@@ -346,7 +424,7 @@ def scan_unwrapped(src: Path = SRC) -> list[str]:
                     for t in targets
                 }
                 if names & set(_ASSIGN_SINKS) and node.value is not None:
-                    for s in _bare_ui_strings(node.value):
+                    for s in _bare_ui_strings(node.value, seqs):
                         hits.append((node.lineno, s))
             for lineno, s in hits:
                 short = s if len(s) <= 60 else s[:57] + "..."

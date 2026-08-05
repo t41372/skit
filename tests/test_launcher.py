@@ -262,15 +262,19 @@ def test_run_entry_injects_mirror_env(py_entry, monkeypatch):
     config.save_mirror(full_mirror())
     seen_env: dict[str, str] = {}
 
-    class _Result:
-        returncode = 0
+    class _Started:
+        def wait(self):
+            return 0
+
+        def kill(self):  # pragma: no cover — only the interrupt path
+            pass
 
     def _fake_run(_cmd, **kw):
         seen_env.update(kw.get("env", {}))
-        return _Result()
+        return _Started()
 
     monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/fake/uv")
-    monkeypatch.setattr(launcher.subprocess, "run", _fake_run)
+    monkeypatch.setattr(launcher.subprocess, "Popen", _fake_run)
     launcher.run_entry(py_entry)
     assert seen_env["UV_DEFAULT_INDEX"] == config.PYPI_PRESETS["tsinghua"]
     assert seen_env["UV_PYTHON_INSTALL_MIRROR"] == config.PYTHON_INSTALL_MIRROR
@@ -285,15 +289,19 @@ def _capture_run_env(monkeypatch, py_entry) -> dict[str, str]:
 
     seen_env: dict[str, str] = {}
 
-    class _Result:
-        returncode = 0
+    class _Started:
+        def wait(self):
+            return 0
+
+        def kill(self):  # pragma: no cover — only the interrupt path
+            pass
 
     def _fake_run(_cmd, **kw):
         seen_env.update(kw.get("env", {}))
-        return _Result()
+        return _Started()
 
     monkeypatch.setattr("skit.langs.launch.find_uv", lambda: "/fake/uv")
-    monkeypatch.setattr(launcher.subprocess, "run", _fake_run)
+    monkeypatch.setattr(launcher.subprocess, "Popen", _fake_run)
     launcher.run_entry(py_entry)
     return seen_env
 

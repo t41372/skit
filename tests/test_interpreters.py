@@ -716,20 +716,20 @@ def test_show_interpreted_header_and_source(tmp_path: Path):
 # ==========================================================================
 
 
-def test_edit_program_refusal_is_kind_neutral(tmp_path: Path):
+def test_edit_program_refusal_is_kind_neutral(tmp_path: Path, at_a_terminal):
     prog = tmp_path / "thing"
     prog.write_text("bytes\n", encoding="utf-8")
     store.add_exe(prog, name="thing")
     result = runner.invoke(cli.app, ["edit", "thing"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "no editable source" in result.output
     assert "Python" not in result.output  # the old python-only wording is gone
 
 
-def test_edit_command_refusal_is_kind_neutral(tmp_path: Path):
+def test_edit_command_refusal_is_kind_neutral(tmp_path: Path, at_a_terminal):
     store.add_command("echo hi", name="c")
     result = runner.invoke(cli.app, ["edit", "c"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "no editable source" in result.output
 
 

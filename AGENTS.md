@@ -24,9 +24,13 @@ Key grammar: a chord keeps one meaning per context class — Ctrl+E always opens
 on the screen's current subject, Ctrl+N always creates the screen's primary object (a
 script on the add step, an agent on a runner picker), Ctrl+T always inserts a value,
 Ctrl+R re-runs/refreshes the screen's subject (the run form runs it; Script settings
-resyncs its definitions from the script), and Ctrl+S saves/commits the screen's work
-(the run form's save-as-preset included). Ctrl+A (cursor-home) and — while an Input has focus —
-Ctrl+E (end-of-line) belong to the Input: screen chords for them are never
+resyncs its definitions from the script), Ctrl+S saves/commits the screen's work
+(the run form's save-as-preset included), Ctrl+O always restores the screen's current
+field to its source default (README documents it on the run form — it must never mean
+anything else), and Ctrl+L always opens the screen's variable/candidate picker (the
+prompt review panel and Script settings). A new screen action takes an UNCLAIMED chord,
+never a second meaning for a claimed one. Ctrl+A (cursor-home) and — while an Input has
+focus — Ctrl+E (end-of-line) belong to the Input: screen chords for them are never
 priority-bound; the chip is the path mid-edit.
 Never bind a text-editing chord (Ctrl+K and friends) with `priority=True` on a screen
 full of Inputs — the Input's own editing wins there, and the chip stays the mouse path.
@@ -47,11 +51,32 @@ principles. What this means in practice:
 untouched; skit errors are 125/126/127), `--no-input`, `--dry-run`, and dynamic completion.
 The non-interactive contract is absolute: in a pipe, in CI, or under `--no-input`, never
 guess, never prompt, never silently assemble a broken command. When choosing between designs,
-prefer the one an agent can drive deterministically.
+prefer the one an agent can drive deterministically. One sanctioned bend, recorded like the
+A5 exception: read commands never prompt and never touch user data, but a listing may
+self-heal **skit's own registry index** (`store._repair_rows`) — atomic, lock-protected,
+skipped under any contention, and convergent, so reads stay safe to run concurrently.
 
 **5. Verification gate:** 100% test coverage floor, ruff, ty (strictest mode), mutation
 testing with mutmut (zero surviving mutants), and the i18n coverage gate are all hard CI
 gates.
+
+**The mutation gate has a blind spot, and it is not a random one.** mutmut prunes every
+decorated function *and every decorated class*, subtree and all (`_skip_node_and_children`
+in `mutmut/mutation/file_mutation.py`): decorators run at definition time and the trampoline
+rewrite would break `@property`'s signature, so only a lone bare `@staticmethod`/
+`@classmethod` survives — and even that is lost inside a decorated class. Here that is
+**4,369 of 23,087 function-body lines (19%)**: *all* 2,252 lines of Typer command bodies
+(`@app.command` and friends), all 1,148 lines of `@override` (`compose`, `check_action`, …),
+every `@on` handler, and every method of the 44 `@dataclass` models. That is the CLI's front
+doors, the TUI's event surface, and the model layer — what users actually touch.
+`tests/test_mutation_blindspot.py` measures it and fails if it grows.
+
+Two consequences. **Keep decorated functions to wiring** — put the decisions in an
+undecorated helper (`_can_edit`, `removal_stake`, `plan_edit` are the pattern), or they are
+verified by coverage alone. And **coverage alone cannot tell a dead branch from a live
+one**: design-audit rounds 11 and 12 each shipped a branch that could never fire, both in
+this blind spot, both "covered" by a test that patched the very condition the unreachable
+code was guarding.
 
 **6. Self-contained and non-invasive.** skit stays out of the user's global environment. It
 never mutates global/system/another tool's settings (shell env, `~/.config/uv/`, …) without an

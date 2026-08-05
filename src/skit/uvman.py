@@ -20,7 +20,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-from . import config
+from . import config, interaction
 from .i18n import gettext
 from .paths import private_bin_dir
 
@@ -61,15 +61,22 @@ class UvDeclinedError(UvDownloadError):
 
 
 def _ask_consent(dest_dir: Path) -> bool:
-    """Ask once before downloading on an interactive terminal; non-interactive (pipe/CI) keeps A9's
-    zero-action behavior but has already been told via stderr.
+    """Ask once before downloading when skit is allowed to ask; otherwise keep A9's
+    zero-action behavior (the user has already been told via stderr).
 
     - Pulling an executable from the network shouldn't be entirely silent, but the default is Y: the
       target user is someone who "grabbed a script and just wants to run it".
     - The prompt goes to stderr (stdout is reserved for the script's output); EOF counts as consent
       (common in semi-interactive environments).
+
+    The permission question is interaction.allowed(), not a local isatty pair: this is the
+    ONE interactive gate that lives below cli.py, so an isatty oracle here could not see
+    `--no-input` and blocked an agent's run on input() forever — the exact thing the
+    bundled Agent Skill promises cannot happen. Under a refusal this takes the path a pipe
+    already takes (proceed, silently), because A9 fixed what non-interactive means here
+    and `--no-input` is an assertion of exactly that.
     """
-    if not (sys.stdin.isatty() and sys.stderr.isatty()):
+    if not interaction.allowed(on=sys.stderr):
         return True
     print(
         gettext(

@@ -7,6 +7,7 @@ from typer.testing import CliRunner
 
 from skit import cli, store
 from skit.langs.python import metawriter, reconcile
+from skit.notices import NoticeCode, edit_notice
 from skit.params import Binding, ParamDecl, ParamType
 
 # Two candidates: CITY (const) and input-1 (order 0) — used by add/resync tests.
@@ -36,7 +37,7 @@ def test_resync_drops_missing_and_keeps_matching():
     res = reconcile.edit_specs(SCRIPT, specs, resync=True)
     names = [s.name for s in res.specs]
     assert names == ["CITY"]
-    assert "resync-dropped:GONE" in res.warnings
+    assert edit_notice(NoticeCode.RESYNC_DROPPED, "GONE") in res.notices
 
 
 def test_resync_updates_changed_type_preserving_customization():
@@ -64,8 +65,8 @@ def test_add_input_candidate_by_display_name():
 
 def test_add_already_managed_and_not_candidate_warn():
     res = reconcile.edit_specs(SCRIPT, [spec("CITY")], add=["CITY", "NOPE"])
-    assert "already-managed:CITY" in res.warnings
-    assert "not-a-candidate:NOPE" in res.warnings
+    assert edit_notice(NoticeCode.ALREADY_MANAGED, "CITY") in res.notices
+    assert edit_notice(NoticeCode.NOT_A_CANDIDATE, "NOPE") in res.notices
 
 
 def test_remove_and_secret_toggles():
@@ -81,7 +82,7 @@ def test_remove_and_secret_toggles():
 def test_no_secret_and_missing_name_warns():
     res = reconcile.edit_specs(SCRIPT, [spec("CITY", secret=True)], no_secret=["CITY", "GHOST"])
     assert res.specs[0].secret is False
-    assert "not-managed:GHOST" in res.warnings
+    assert edit_notice(NoticeCode.NOT_MANAGED, "GHOST") in res.notices
 
 
 def test_edit_specs_is_pure_no_mutation_of_input_list():
@@ -140,7 +141,11 @@ def test_cli_params_view_no_ops(entry):
 def test_cli_bad_prompt_is_warned_not_fatal(entry):
     runner = CliRunner()
     result = runner.invoke(cli.app, ["params", entry.meta.name, "--prompt", "no-equals-sign"])
-    assert result.exit_code == 0, result.output
+    # ROUND 12: `skit params` refuses atomically now. A flag it cannot honour writes
+    # NOTHING and exits 2 — the refuse-never-drop answer every sibling intake gives —
+    # because warn-and-continue exited 0, wrote the rest, and then reported the state
+    # it had not written through --json.
+    assert result.exit_code == 2
 
 
 def test_cli_params_edit_reference_refused(tmp_path):
@@ -149,18 +154,18 @@ def test_cli_params_edit_reference_refused(tmp_path):
     ent = store.add_python(script, mode="reference")
     runner = CliRunner()
     result = runner.invoke(cli.app, ["params", ent.meta.name, "--resync"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     # The original file must never be modified
     assert script.read_text(encoding="utf-8") == SCRIPT
 
 
-def test_cli_edit_command_entry_has_no_source(monkeypatch):
+def test_cli_edit_command_entry_has_no_source(monkeypatch, at_a_terminal):
     # `skit edit` on a non-Python entry must refuse before ever launching an editor.
     monkeypatch.setattr(cli.editor, "open_in_editor", lambda *a, **k: _no_editor())
     ent = store.add_command("echo {x}", name="ec")
     runner = CliRunner()
     result = runner.invoke(cli.app, ["edit", ent.meta.name])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
 
 
 def _no_editor():

@@ -1186,6 +1186,7 @@ def test_an_entry_whose_row_was_mangled_still_defends_its_name(sample_script: Pa
     [
         "update_needs",
         "write_parameters",
+        "write_parameters_managed",
         "update_dependencies",
         "write_workdir",
         "update_description",
@@ -1206,7 +1207,7 @@ def test_a_meta_mutator_leaves_a_row_the_next_listing_serves_untouched(
     from skit.params import ParamDecl
     from skit.paths import registry_path
 
-    if mutation == "write_prompt_managed":
+    if mutation in ("write_prompt_managed", "write_parameters_managed"):
         src = tmp_path / "ask.prompt.md"
         src.write_text("Summarize {{topic}}\n", encoding="utf-8")
         entry = store.add_prompt(src, name="subject", description="the old text")
@@ -1215,7 +1216,10 @@ def test_a_meta_mutator_leaves_a_row_the_next_listing_serves_untouched(
 
     mutate = {
         "update_needs": lambda: store.update_needs(entry.slug, ["ffmpeg"]),
-        "write_parameters": lambda: store.write_parameters(entry.slug, [ParamDecl(name="CITY")]),
+        "write_parameters": lambda: store.write_parameters(entry.slug, [ParamDecl(name="CITY")])[0],
+        "write_parameters_managed": lambda: store.write_parameters(
+            entry.slug, [ParamDecl(name="topic", delivery="placeholder")], managed=["topic"]
+        )[0],
         "update_dependencies": lambda: store.update_dependencies(entry.slug, ["httpx"]),
         "write_workdir": lambda: store.write_workdir(entry.slug, "store"),
         "update_description": lambda: store.update_description(entry.slug, "the new text"),

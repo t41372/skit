@@ -22,8 +22,8 @@ from typing import TYPE_CHECKING
 
 from tree_sitter import Parser
 
+from ...analysis import ArgSpec
 from ...params import ParamDecl, is_secret_name
-from ..python.argspec import ArgSpec
 from .analyzer import _LANGUAGE, _arguments, _literal_text, _text, _walk
 
 if TYPE_CHECKING:

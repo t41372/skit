@@ -56,12 +56,18 @@ import pytest
 for _var in ("FORCE_COLOR", "NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE"):
     os.environ.pop(_var, None)
 
-from skit import i18n, tui_footer  # noqa: E402 — must import after the color scrub above
+from skit import (  # noqa: E402 — must import after the color scrub above
+    i18n,
+    interaction,
+    tui_footer,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Callable, Iterator
 
     from textual.widgets import Static
+
+    from skit.store import Entry
 
 # NOTE: textual must NOT be imported at conftest top level. pytest loads conftest before
 # any test module, which makes it the process's first importer: skit/__init__ has to run
@@ -130,6 +136,64 @@ def full_mirror():
     )
 
 
+_BLOCK_OPEN = b"# /// script"
+_BLOCK_CLOSE = b"# ///"
+
+
+def without_block(raw: bytes, newline: bytes) -> bytes:
+    """Drop an inserted `# /// script` … `# ///` comment block, keeping every other byte —
+    terminators included — exactly where it lies, so a comparison against the original bytes
+    is a real byte-for-byte claim about the rest of the file rather than a normalized diff.
+
+    THE shared copy: the block-edit write-back is asserted from both the helper level
+    (tests/test_design_audit_fixes.py) and the screen level (tests/test_design_audit_tui.py),
+    and the two must not drift into two different notions of "everything else"."""
+    keep: list[bytes] = []
+    inside = False
+    for chunk in raw.split(newline):
+        if chunk == _BLOCK_OPEN:
+            inside = True
+            continue
+        if inside:
+            inside = chunk != _BLOCK_CLOSE
+            continue
+        keep.append(chunk)
+    return newline.join(keep)
+
+
+def plan_cache_key(entry: Entry) -> tuple[int, int, int, int, str | None]:
+    """The MenuApp._plan_cache key for `entry`: (mtime_ns, size) of the stored script AND of
+    its meta.toml — a display plan is a function of both files — plus the kind's reader-tool
+    fingerprint, because a reader plan (PowerShell) is a function of pwsh availability too.
+    mtime_ns + size (not a float mtime) narrows the same-tick blind spot on coarse-mtime
+    filesystems to same-tick same-size writes. Shared so the key's shape is spelled out in
+    exactly one place."""
+    from skit.langs.registry import spec_for  # deferred: see the import-order note above
+
+    script = entry.script_path.stat()
+    meta = (entry.dir / "meta.toml").stat()
+    spec = spec_for(entry.meta.kind)
+    reader = spec.cli_reader if spec is not None else None
+    fingerprint = reader.runtime_fingerprint if reader is not None else None
+    tool = fingerprint() if fingerprint is not None else None
+    return (script.st_mtime_ns, script.st_size, meta.st_mtime_ns, meta.st_size, tool)
+
+
+def real_repo_root() -> Path:
+    """The repository root, even inside mutmut's mutants/ copy.
+
+    Meta-tests that read skit's SOURCE (AST walks, structural asserts, the blind-spot
+    measure) must read the REAL tree: inside mutants/ every undecorated function has
+    been trampoline-rewritten, so the copy describes mutmut's machinery, not the code
+    under test — and the ratchets those tests enforce would trip on the rewrite itself.
+    The strip-the-prefix idiom is round 10's `_gate_module`, shared here so every
+    source-reading test resolves the same way."""
+    root = Path(__file__).resolve().parent.parent
+    if "mutants" in root.parts:
+        root = Path(*root.parts[: root.parts.index("mutants")])
+    return root
+
+
 def footer_text(static: Static) -> str:
     """Rendered footer text with the pill glue (U+2800, one cell wide like a space)
     normalized back to spaces, so label assertions and click offsets read naturally.
@@ -149,6 +213,32 @@ async def click_label(pilot, selector: str, needle: str) -> None:
     assert idx >= 0, (needle, plain)
     await pilot.click(selector, offset=(idx + 1, 0))
     await pilot.pause()
+
+
+@pytest.fixture
+def at_a_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Declare that this test sits at a real terminal.
+
+    Tests are non-interactive by default (CliRunner's stdin is not a tty), which is the
+    right default — it is what a pipe, CI and an agent all look like. Any test that drives
+    a lane skit will only run for a human (an editor session, an interactive prompt) has
+    to say so, because since round 11/12 those lanes REFUSE rather than blocking on a
+    stdin nobody is typing into."""
+    # Patch the CLI's own name for the question, not sys.*.isatty: CliRunner replaces the
+    # standard streams for the duration of invoke(), so a patched isatty on the outer
+    # objects never reaches the command. This is the seam 176 existing tests already use.
+    from skit import cli
+
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
+
+
+@pytest.fixture(autouse=True)
+def _reset_interaction() -> None:
+    """The non-interactive verdict is a process-global, like the locale below: a CLI test
+    that passes --no-input calls interaction.forbid(), and without this the NEXT test's
+    consent prompt would be silently suppressed by a flag it never set. (Same reason the
+    product exposes reset(): the TUI re-enters CLI code paths in-process.)"""
+    interaction.reset()
 
 
 @pytest.fixture(autouse=True)
@@ -198,3 +288,30 @@ def _sweep_injected_temp_copies(monkeypatch: pytest.MonkeyPatch) -> Iterator[Non
     for path in created:
         with contextlib.suppress(OSError):
             path.unlink()
+
+
+class FakeChild:
+    """A started-child stand-in for the launcher's start/finish split: carries the
+    fake's exit code through the REAL finish_entry (wait/kill exist, so the KI-kill
+    discipline stays exercised)."""
+
+    def __init__(self, code: int) -> None:
+        self._code = code
+
+    def wait(self) -> int:
+        return self._code
+
+    def kill(self) -> None:  # pragma: no cover — only the interrupt path calls this
+        pass
+
+
+def patch_run_entry(monkeypatch: pytest.MonkeyPatch, fake: Callable[..., int]) -> None:
+    """Adapt the historical run_entry test seam onto the start/finish split: the fake
+    keeps run_entry's exact signature and return (an exit code, or a raise), and rides
+    through the real finish_entry as a started child."""
+    from skit import launcher
+
+    def _start(entry: object, extra_args: object = None, **kwargs: object) -> FakeChild:
+        return FakeChild(fake(entry, extra_args, **kwargs))
+
+    monkeypatch.setattr(launcher, "start_entry", _start)

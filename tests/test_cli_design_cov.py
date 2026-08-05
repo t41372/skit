@@ -19,7 +19,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from skit import argstate, cli, config, i18n, store
+from conftest import patch_run_entry
+from skit import argstate, cli, config, i18n, kindnames, rewrite, store
 from skit.langs.registry import spec_for
 
 runner = CliRunner()
@@ -58,11 +59,12 @@ def spawn_spy(monkeypatch):
         calls["entry"] = entry
         calls["extra"] = list(extra_args or [])
         calls["values"] = dict(values or {})
-        calls["runner"] = runner
+        # The effective runner: a prompt lane carries it INSIDE the prepared snapshot.
+        calls["runner"] = prepared.prompt_runner if prepared is not None else runner
         calls["prepared"] = prepared
         return calls.get("code", 0)
 
-    monkeypatch.setattr(cli.launcher, "run_entry", fake)
+    patch_run_entry(monkeypatch, fake)
     # Prompt execution resolves the selected runner before crossing the delivery
     # boundary.  This fixture replaces the eventual process spawn, so keep that
     # earlier lookup hermetic as well instead of depending on the developer's PATH.
@@ -129,15 +131,18 @@ def test_rename_success_keeps_presets_and_state(tmp_path):
 
 
 def test_rename_not_found(tmp_path):
+    # 127 (round 10): rename catches the same store.NotFoundError every other command
+    # does, and one error must not have two exit codes. Its OTHER refusal (a name
+    # collision) is invalid user input and exits 2.
     result = runner.invoke(cli.app, ["rename", "ghost", "x"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
 
 
 def test_rename_conflict(tmp_path):
     _py(tmp_path, name="a")
     _py(tmp_path, name="b")
     result = runner.invoke(cli.app, ["rename", "a", "b"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "already taken" in result.output
     assert store.resolve("a").meta.name == "a"  # untouched
 
@@ -156,7 +161,7 @@ def test_describe_set_and_clear(tmp_path):
 
 def test_describe_not_found(tmp_path):
     result = runner.invoke(cli.app, ["describe", "ghost", "x"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
 
 
 # ============================================================ launch policy: workdir
@@ -164,11 +169,27 @@ def test_describe_not_found(tmp_path):
 
 @pytest.mark.parametrize("literal", ["origin", "store", "invoke"])
 def test_params_workdir_literals(tmp_path, literal):
+    """ROUND 12: the STORED value is the English token (the CLI accepts it and meta.toml
+    keeps it); what the user READS is a translated label. They used to be the same string,
+    so a Chinese user was told 工作目錄:store."""
     _shell(tmp_path)
     result = runner.invoke(cli.app, ["params", "sh", "--workdir", literal])
     assert result.exit_code == 0, result.output
-    assert f"now runs in: {literal}" in result.output
+    assert f"now runs in: {kindnames.workdir_label(literal)}" in result.output
+    assert kindnames.workdir_label(literal) != literal  # …and it really is a label
     assert store.resolve("sh").meta.workdir == literal
+
+
+def test_params_workdir_path_is_never_relabelled(tmp_path):
+    """The fall-through that keeps the labels safe: `workdir` also holds a user-typed
+    ABSOLUTE PATH, and translating that would corrupt the one value the user must be able
+    to read back verbatim."""
+    _shell(tmp_path)
+    wd = str(tmp_path / "wd")
+    result = runner.invoke(cli.app, ["params", "sh", "--workdir", wd])
+    assert result.exit_code == 0, result.output
+    assert wd in result.output
+    assert kindnames.workdir_label(wd) == wd
 
 
 def test_params_workdir_absolute_path(tmp_path):
@@ -182,16 +203,16 @@ def test_params_workdir_absolute_path(tmp_path):
 def test_params_workdir_relative_is_clean_error(tmp_path):
     _shell(tmp_path)
     result = runner.invoke(cli.app, ["params", "sh", "--workdir", "rel/ative"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "origin, store, invoke, or an absolute path" in result.output
 
 
 def test_params_workdir_origin_on_a_command_fails_cleanly(tmp_path):
-    """`skit params <command> --workdir origin` fails cleanly (exit 1, StoreUsageError
+    """`skit params <command> --workdir origin` fails cleanly (exit 2, StoreUsageError
     surfaced) — a command has no original file for "origin" to mean."""
     runner.invoke(cli.app, ["add", "--cmd", "echo hi", "--name", "c", "--no-input"])
     result = runner.invoke(cli.app, ["params", "c", "--workdir", "origin"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "no original file — origin doesn't apply" in _flat(result.output)
     assert store.resolve("c").meta.workdir != "origin"  # nothing persisted
 
@@ -225,7 +246,7 @@ def test_params_interpreter_refused_on_python_and_prompt(tmp_path):
     _prompt(tmp_path, name="pr")
     for name in ("py", "pr"):
         result = runner.invoke(cli.app, ["params", name, "--interpreter", "zsh"])
-        assert result.exit_code == 1, (name, result.output)
+        assert result.exit_code == 2, (name, result.output)
         assert "pinnable interpreter" in result.output
 
 
@@ -237,7 +258,7 @@ def test_params_interpreter_refused_on_exe_and_command(tmp_path):
     store.add_command("echo {m}", name="cmd")
     for name in ("ex", "cmd"):
         result = runner.invoke(cli.app, ["params", name, "--interpreter", "zsh"])
-        assert result.exit_code == 1, (name, result.output)
+        assert result.exit_code == 2, (name, result.output)
         assert "pinnable interpreter" in result.output
 
 
@@ -255,14 +276,14 @@ def test_params_template_rewrite_reextracts_placeholders(tmp_path):
 def test_params_template_refused_on_non_command(tmp_path):
     _shell(tmp_path)
     result = runner.invoke(cli.app, ["params", "sh", "--template", "echo {x}"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "isn't a command entry" in result.output
 
 
 def test_params_template_empty_refused(tmp_path):
     store.add_command("echo {x}", name="cmd")
     result = runner.invoke(cli.app, ["params", "cmd", "--template", "   "])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert store.resolve("cmd").meta.template == "echo {x}"  # unchanged
 
 
@@ -402,7 +423,7 @@ def test_params_command_policy_group_is_atomic_when_interpreter_is_invalid(tmp_p
         ],
     )
 
-    assert result.exit_code == 1, result.output
+    assert result.exit_code == 2, result.output
     assert "pinnable interpreter" in result.output
     assert "Template updated" not in result.output
     assert "now runs in" not in result.output
@@ -432,7 +453,7 @@ def test_params_shell_policy_group_is_atomic_when_template_is_invalid(tmp_path):
         ],
     )
 
-    assert result.exit_code == 1, result.output
+    assert result.exit_code == 2, result.output
     assert "isn't a command entry" in result.output
     assert "Template updated" not in result.output
     assert "now runs in" not in result.output
@@ -533,7 +554,7 @@ def test_add_stdin_kind_duplicate_name_is_store_error(tmp_path):
     result = runner.invoke(
         cli.app, ["add", "-", "--kind", "shell", "-n", "dup"], input="#!/bin/bash\necho x\n"
     )
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "already taken" in result.output
 
 
@@ -554,7 +575,7 @@ def test_add_stdin_kind_missing_name(tmp_path):
 
 def test_add_stdin_kind_empty_input(tmp_path):
     result = runner.invoke(cli.app, ["add", "-", "--kind", "shell", "-n", "x"], input="   \n")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Nothing arrived on stdin" in result.output
 
 
@@ -743,7 +764,7 @@ def test_add_python_stdin_name_conflict_keeps_draft(tmp_path):
     materialized copy) under data_dir/drafts/ and says where — never destroys the paste."""
     _py(tmp_path, name="dup")
     result = runner.invoke(cli.app, ["add", "-", "-n", "dup"], input="print('hi')\n")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Your draft was kept at" in result.output
     from skit.paths import drafts_dir
 
@@ -756,7 +777,7 @@ def test_add_script_stdin_name_conflict_keeps_draft(tmp_path):
     """The non-python (script) stdin lane keeps its draft the same way."""
     _shell(tmp_path, name="dup")
     result = runner.invoke(cli.app, ["add", "-", "--kind", "shell", "-n", "dup"], input="echo hi\n")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Your draft was kept at" in result.output
     from skit.paths import drafts_dir
 
@@ -771,7 +792,7 @@ def test_add_prompt_stdin_name_conflict_keeps_draft(tmp_path):
     result = runner.invoke(
         cli.app, ["add", "-", "--prompt", "-n", "dup"], input="Summarize {{url}}\n"
     )
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Your draft was kept at" in result.output
     from skit.paths import drafts_dir
 
@@ -1019,54 +1040,91 @@ def test_onboard_script_params_reference_forwards_frameworks_to_notice(tmp_path,
     assert seen["fw"] is not None  # the nulled-frameworks mutant passes None
 
 
-def test_onboard_script_params_write_back_is_byte_based_not_text_mode(tmp_path, monkeypatch):
-    """Onboarding's write-back must be BYTE-based (read_bytes + write_bytes), like _edit_params —
-    never text-mode write_text, which re-expands \\n to the host os.linesep. The only read_text on
-    the copy is the analyzer read (errors="replace"); the write-back re-reads raw bytes and writes
-    raw bytes, so a candidate tick neither bakes U+FFFD over raw bytes nor rewrites line endings."""
+@pytest.fixture
+def copy_io_spy(monkeypatch):
+    """Watch every read of and write to ONE stored copy: text reads (with their handlers),
+    byte reads, atomic mode-preserving writes (with their payload), plain byte writes and text
+    writes. Install it with the path to watch; it returns the record it fills.
+
+    THE shared scaffolding for the write-back tests below — onboarding and `params --manage`
+    make the same claim about the same seam (the copy is read and landed as BYTES, atomically),
+    so the instrumentation must be one thing; only the assertions are each test's own."""
+
+    def install(path: Path) -> dict[str, list[object]]:
+        seen: dict[str, list[object]] = {
+            "text_reads": [],  # {"encoding", "errors"} per read_text on the copy
+            "byte_reads": [],
+            "atomic_writes": [],  # the bytes handed to rewrite.atomic_write_bytes_keep_mode
+            "plain_byte_writes": [],  # a plain (non-atomic) byte write is a regression too
+            "text_writes": [],  # the regression: write_text must never touch a stored copy
+        }
+        real_read_text = Path.read_text
+        real_read_bytes = Path.read_bytes
+        real_write_bytes = Path.write_bytes
+        real_write_text = Path.write_text
+        real_atomic = rewrite.atomic_write_bytes_keep_mode
+
+        def read_text_spy(self, encoding=None, errors=None, *a, **k):
+            if self == path:
+                seen["text_reads"].append({"encoding": encoding, "errors": errors})
+            return real_read_text(self, *a, encoding=encoding, errors=errors, **k)
+
+        def read_bytes_spy(self):
+            if self == path:
+                seen["byte_reads"].append(self)
+            return real_read_bytes(self)
+
+        def atomic_spy(target, data):
+            if target == path:
+                seen["atomic_writes"].append(data)
+            return real_atomic(target, data)
+
+        def write_bytes_spy(self, data):
+            if self == path:
+                seen["plain_byte_writes"].append(self)
+            return real_write_bytes(self, data)
+
+        def write_text_spy(self, *a, **k):
+            if self == path:
+                seen["text_writes"].append(self)
+            return real_write_text(self, *a, **k)
+
+        monkeypatch.setattr(Path, "read_text", read_text_spy)
+        monkeypatch.setattr(Path, "read_bytes", read_bytes_spy)
+        monkeypatch.setattr(rewrite, "atomic_write_bytes_keep_mode", atomic_spy)
+        monkeypatch.setattr(Path, "write_bytes", write_bytes_spy)
+        monkeypatch.setattr(Path, "write_text", write_text_spy)
+        return seen
+
+    return install
+
+
+def test_onboard_script_params_write_back_is_byte_based_not_text_mode(
+    tmp_path, monkeypatch, copy_io_spy
+):
+    """Onboarding's write-back must be BYTE-based, like _edit_params — never text-mode
+    write_text, which re-expands \\n to the host os.linesep. The only read_text on the copy is
+    the analyzer read (errors="replace"); the write-back re-reads raw bytes and lands raw bytes
+    through the shared rewrite pair, so a candidate tick neither bakes U+FFFD over raw bytes nor
+    rewrites line endings. The landing is atomic + mode-preserving now (write_block_edit →
+    atomic_write_bytes_keep_mode), so neither Path.write_bytes nor Path.write_text may touch the
+    copy: a torn plain write could truncate the file a user just handed skit."""
     _two_const_shell(tmp_path)
     entry = store.resolve("d")  # resolve before spying, so only the copy read/write are captured
     _fake_tty(monkeypatch)
     monkeypatch.setattr(cli.Prompt, "ask", staticmethod(lambda *a, **k: "1"))  # pick one -> writes
-    text_reads: list[dict[str, object]] = []
-    byte_reads: list[Path] = []
-    byte_writes: list[bytes] = []
-    text_writes: list[Path] = []  # the regression: write_text must never touch the stored copy
-    real_read_text = Path.read_text
-    real_read_bytes = Path.read_bytes
-    real_write_bytes = Path.write_bytes
-    real_write_text = Path.write_text
+    seen = copy_io_spy(entry.script_path)
 
-    def read_text_spy(self, encoding=None, errors=None, *a, **k):
-        if self == entry.script_path:
-            text_reads.append({"encoding": encoding, "errors": errors})
-        return real_read_text(self, *a, encoding=encoding, errors=errors, **k)
-
-    def read_bytes_spy(self):
-        if self == entry.script_path:
-            byte_reads.append(self)
-        return real_read_bytes(self)
-
-    def write_bytes_spy(self, data):
-        if self == entry.script_path:
-            byte_writes.append(data)
-        return real_write_bytes(self, data)
-
-    def write_text_spy(self, *a, **k):
-        if self == entry.script_path:
-            text_writes.append(self)
-        return real_write_text(self, *a, **k)
-
-    monkeypatch.setattr(Path, "read_text", read_text_spy)
-    monkeypatch.setattr(Path, "read_bytes", read_bytes_spy)
-    monkeypatch.setattr(Path, "write_bytes", write_bytes_spy)
-    monkeypatch.setattr(Path, "write_text", write_text_spy)
     assert cli._onboard_script_params(entry, _spec("shell"), no_input=False) == ["WIDTH"]
-    assert [r["errors"] for r in text_reads] == ["replace"]  # analyzer read only; no text re-read
-    assert byte_reads  # the write-back re-read raw bytes
-    assert len(byte_writes) == 1  # a single byte write-back
-    assert b"[tool.skit]" in byte_writes[0]  # ...carrying the inserted block
-    assert text_writes == []  # write_text never touched the stored copy (no os.linesep expansion)
+
+    # analyzer read only; no text re-read
+    assert [r["errors"] for r in seen["text_reads"]] == ["replace"]
+    assert seen["byte_reads"]  # the write-back re-read raw bytes
+    assert len(seen["atomic_writes"]) == 1  # a single atomic, mode-preserving byte write-back
+    assert b"[tool.skit]" in seen["atomic_writes"][0]  # ...carrying the inserted block
+    assert seen["plain_byte_writes"] == []  # never a plain write_bytes (non-atomic: can tear)
+    # write_text never touched the stored copy (no os.linesep expansion)
+    assert seen["text_writes"] == []
 
 
 def test_onboard_script_params_preserves_a_crlf_copy(tmp_path, monkeypatch):
@@ -1107,53 +1165,28 @@ def test_onboard_script_params_preserves_non_utf8_source_bytes(tmp_path, monkeyp
 # ---- _edit_params: the write-back half must be byte-lossless (the onboard idiom) ----------
 
 
-def test_edit_params_write_back_is_byte_based_not_text_mode(tmp_path, monkeypatch):
-    """`params --manage`'s write-back must be BYTE-based (read_bytes + write_bytes), like
-    _normalize_params — never text-mode write_text, which re-expands \\n to os.linesep and would
-    CRLF-ify the whole stored copy on Windows. The only read_text on the copy is the analysis
-    read (errors="replace"); the write-back re-reads raw bytes and writes raw bytes, so a manage
-    edit can neither bake U+FFFD over raw bytes nor rewrite line endings to the host default."""
+def test_edit_params_write_back_is_byte_based_not_text_mode(tmp_path, copy_io_spy):
+    """`params --manage`'s write-back must be BYTE-based, like _normalize_params — never
+    text-mode write_text, which re-expands \\n to os.linesep and would CRLF-ify the whole stored
+    copy on Windows. The only read_text on the copy is the analysis read (errors="replace"); the
+    write-back re-reads raw bytes and lands raw bytes through the shared rewrite pair, so a
+    manage edit can neither bake U+FFFD over raw bytes nor rewrite line endings to the host
+    default — and the landing is atomic + mode-preserving, so neither Path.write_bytes nor
+    Path.write_text may touch the copy."""
     entry = _two_const_shell(tmp_path)
-    text_reads: list[dict[str, object]] = []
-    byte_reads: list[Path] = []
-    byte_writes: list[bytes] = []
-    text_writes: list[Path] = []  # the regression: write_text must never touch the stored copy
-    real_read_text = Path.read_text
-    real_read_bytes = Path.read_bytes
-    real_write_bytes = Path.write_bytes
-    real_write_text = Path.write_text
+    seen = copy_io_spy(entry.script_path)
 
-    def read_text_spy(self, encoding=None, errors=None, *a, **k):
-        if self == entry.script_path:
-            text_reads.append({"encoding": encoding, "errors": errors})
-        return real_read_text(self, *a, encoding=encoding, errors=errors, **k)
-
-    def read_bytes_spy(self):
-        if self == entry.script_path:
-            byte_reads.append(self)
-        return real_read_bytes(self)
-
-    def write_bytes_spy(self, data):
-        if self == entry.script_path:
-            byte_writes.append(data)
-        return real_write_bytes(self, data)
-
-    def write_text_spy(self, *a, **k):
-        if self == entry.script_path:
-            text_writes.append(self)
-        return real_write_text(self, *a, **k)
-
-    monkeypatch.setattr(Path, "read_text", read_text_spy)
-    monkeypatch.setattr(Path, "read_bytes", read_bytes_spy)
-    monkeypatch.setattr(Path, "write_bytes", write_bytes_spy)
-    monkeypatch.setattr(Path, "write_text", write_text_spy)
     result = runner.invoke(cli.app, ["params", "d", "--manage", "WIDTH"])
+
     assert result.exit_code == 0, result.output
-    assert [r["errors"] for r in text_reads] == ["replace"]  # analysis read only; no text re-read
-    assert byte_reads  # the write-back re-read raw bytes
-    assert len(byte_writes) == 1  # a single byte write-back
-    assert b"[tool.skit]" in byte_writes[0]  # ...carrying the rewritten block
-    assert text_writes == []  # write_text never touched the stored copy (no os.linesep expansion)
+    # analysis read only; no text re-read
+    assert [r["errors"] for r in seen["text_reads"]] == ["replace"]
+    assert seen["byte_reads"]  # the write-back re-read raw bytes
+    assert len(seen["atomic_writes"]) == 1  # a single atomic, mode-preserving byte write-back
+    assert b"[tool.skit]" in seen["atomic_writes"][0]  # ...carrying the rewritten block
+    assert seen["plain_byte_writes"] == []  # never a plain write_bytes (non-atomic: can tear)
+    # write_text never touched the stored copy (no os.linesep expansion)
+    assert seen["text_writes"] == []
 
 
 def test_edit_params_preserves_non_utf8_source_bytes(tmp_path):
@@ -1314,7 +1347,7 @@ def test_runner_add_fresh_says_added(tmp_path):
 def test_runner_add_without_force_refuses_with_force_hint(tmp_path):
     config.ensure_prompt_runners_seeded()
     result = runner.invoke(cli.app, ["runner", "add", "codex", "--", "codex", "{{prompt}}"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "--force" in result.output
 
 

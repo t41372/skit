@@ -23,6 +23,7 @@ from . import (
     analysis,
     argstate,
     config,
+    flows,
     params,
     pep723,
     store,
@@ -30,13 +31,12 @@ from . import (
     tui_prompt,
     tui_runner,
 )
-from .atomic import atomic_write_bytes_keep_mode
-from .i18n import gettext
+from .i18n import gettext, ngettext
 from .langs.prompt import text as prompt_text
 from .langs.registry import spec_for
 from .models import Entry
 from .params import ParamDecl
-from .rewrite import detect_newline, restore_newline
+from .rewrite import read_for_block_edit
 
 
 class DiscardChangesModal(ModalScreen[bool]):
@@ -67,6 +67,55 @@ class DiscardChangesModal(ModalScreen[bool]):
         self.dismiss(True)
 
     def action_keep(self) -> None:
+        self.dismiss(False)
+
+
+class PresetDeleteConfirm(ModalScreen[bool]):
+    """Unticking a preset destroys unrecoverable user data, so it gets the ask every
+    other destructive door in skit gets — `skit preset delete` (--yes or a confirm),
+    entry removal, runner removal, draft deletion. It was the fifth door and the only
+    one without one: an untick plus the Ctrl+S the user pressed for an unrelated edit
+    deleted the preset silently, with no undo. The names go IN the question, because
+    "are you sure?" about an unnamed thing is not a question anyone can answer."""
+
+    BINDINGS = [
+        Binding("y", "confirm", gettext("Delete")),
+        Binding("escape,n", "cancel", gettext("Keep")),
+    ]
+    DEFAULT_CSS = """
+    PresetDeleteConfirm { align: center middle; }
+    PresetDeleteConfirm > Vertical { border: round $skit-box-maroon; padding: 1 2; width: auto;
+        max-width: 100%; height: auto; max-height: 100%; background: $background; }
+    PresetDeleteConfirm Static { margin: 1 0 0 0; width: auto; }
+    """
+
+    def __init__(self, names: list[str]) -> None:
+        super().__init__()
+        self._names: list[str] = names
+
+    @override
+    def compose(self) -> ComposeResult:
+        with Vertical():
+            yield Label(
+                ngettext(
+                    "Delete the preset %(names)s? Saving cannot be undone.",
+                    "Delete these presets: %(names)s? Saving cannot be undone.",
+                    len(self._names),
+                )
+                % {"names": ", ".join(escape(n) for n in self._names)}
+            )
+            yield Static(
+                tui_footer.bar(
+                    tui_footer.chip("screen.confirm", "y", gettext("Delete")),
+                    tui_footer.chip("screen.cancel", "Esc", gettext("Keep")),
+                ),
+                markup=True,
+            )
+
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
         self.dismiss(False)
 
 
@@ -268,8 +317,10 @@ class ScriptSettingsScreen(Screen[bool]):
         Binding("ctrl+s", "save", gettext("Save"), priority=True),
         Binding("ctrl+r", "resync", gettext("Resync"), priority=True),
         Binding("ctrl+n", "new_runner", gettext("New agent"), show=False, priority=True),
+        # Ctrl+L, same meaning as on the prompt review panel (one chord, one meaning);
+        # Ctrl+O stays reserved for the run form's "restore the default".
         Binding(
-            "ctrl+o",
+            "ctrl+l",
             "choose_prompt_candidates",
             gettext("Choose variables…"),
             show=False,
@@ -305,20 +356,14 @@ class ScriptSettingsScreen(Screen[bool]):
         self._spec = spec_for(entry.meta.kind)
         self._is_prompt: bool = entry.meta.kind == "prompt"
         params_io = self._spec.params_io if self._spec is not None else None
-        # The newline style the copy actually uses, captured for the save below. Reading with
-        # universal newlines and errors="replace" (what this did) is fine for DISPLAY but
-        # cannot be written back: the save would flatten a CRLF script to LF on every
-        # checkbox tick and burn each non-UTF-8 byte down to U+FFFD. Same discipline as
-        # cli._edit_params — fold to LF for the LF-based block engine, restore on write.
+        # The newline style the copy actually uses, captured for the save below through the
+        # shared byte-lossless pair (rewrite.py): reading with universal newlines and
+        # errors="replace" is fine for DISPLAY but cannot be written back — the save would
+        # flatten a CRLF script to LF on every checkbox tick and burn each non-UTF-8 byte
+        # down to U+FFFD.
         self._newline: str = "\n"
         if params_io is not None and entry.script_path.exists():
-            raw = entry.script_path.read_bytes()
-            self._newline = detect_newline(raw)
-            self._text = (
-                raw.decode("utf-8", errors="surrogateescape")  # pragma: no mutate — codec alias
-                .replace("\r\n", "\n")
-                .replace("\r", "\n")
-            )
+            self._text, self._newline = read_for_block_edit(entry.script_path)
         # The ENTRY'S OWN params_io — never Python's. shell/fish carry their block in the same
         # '#' engine, but JS/TS carry it behind '//', so the Python reader would return [] for a
         # perfectly valid managed JS entry (TUI↔CLI parity: cli._edit_params already routes this way).
@@ -337,10 +382,26 @@ class ScriptSettingsScreen(Screen[bool]):
         # through THIS list, never a fresh state read (a preset added/deleted
         # mid-session must not shift which name an untick deletes).
         self._preset_names: list[str] = []
-        if self._is_prompt:
-            # Every MANAGED placeholder gets an editable row (undeclared ones as their
-            # synthesized schema), plus declared env riders — the exact field list the
-            # run form serves, so what you edit is what you get.
+        # The preset NAMES the user has already agreed to delete — not a boolean.
+        # A boolean is set once and never cleared, so a save that confirms `mobile` and
+        # then aborts on an unrelated validation error (an invalid workdir, a bad declared
+        # type, a taken name) leaves the flag standing: unticking `web` afterwards deletes
+        # it with no question ever naming it. Confirming against WHAT THIS SAVE WOULD
+        # DELETE is correct under retick/untick churn, where a reset-on-abort boolean
+        # still is not.
+        self._confirmed_presets: set[str] = set()
+        if self._spec is not None and self._spec.placeholder_params:
+            # Every placeholder the entry asks for gets an editable row (undeclared ones as
+            # their synthesized schema), plus declared env riders — the exact field list
+            # the run form serves, so what you edit is what you get.
+            #
+            # Keyed on the TRAIT, not on kind == "prompt". The kind test made this the
+            # prompt's exception instead of the screen's rule, so a `command` entry opened
+            # a section headed "Parameters (the run form's fields)" showing none of them:
+            # to give {width} a type you had to retype its name from memory into "Add a
+            # parameter", with no list in front of you — principle 3 inverted, on a screen
+            # whose own heading promised the list. AGENTS.md names this exact shape: these
+            # decisions key off placeholder_params, never off the kind or the family.
             self._declared_decls: list[ParamDecl] = params.declared_for_template(
                 entry.meta.parameters, entry.meta.params or []
             )
@@ -406,13 +467,7 @@ class ScriptSettingsScreen(Screen[bool]):
             yield from self._compose_deps()
             yield from self._compose_needs()
         chips = [tui_footer.chip("screen.save", "Ctrl+S", gettext("Save"))]
-        if (
-            self._spec is not None
-            and self._spec.analyzer is not None
-            and self._entry.meta.mode == "copy"
-        ):
-            # The same guard action_resync applies: advertising a key that silently
-            # no-ops (prompt/exe/command/reference entries) teaches a dead chord.
+        if self._can_resync():
             chips.append(tui_footer.chip("screen.resync", "Ctrl+R", gettext("Resync")))
         chips += [
             tui_footer.chip("screen.close", "Esc", gettext("Back")),
@@ -533,10 +588,11 @@ class ScriptSettingsScreen(Screen[bool]):
         box = self.query("#st-workdir")
         if not box:
             return
+        guard = self._entry.meta.id
         if new_workdir != self._entry.meta.workdir:
-            store.write_workdir(self._entry.slug, new_workdir)
+            store.write_workdir(self._entry.slug, new_workdir, expected_id=guard)
         if self.query("#st-interpreter") and new_interp != self._entry.meta.interpreter:
-            store.write_interpreter(self._entry.slug, new_interp)
+            store.write_interpreter(self._entry.slug, new_interp, expected_id=guard)
 
     def _compose_runner(self) -> ComposeResult:
         if not self._is_prompt:
@@ -591,8 +647,23 @@ class ScriptSettingsScreen(Screen[bool]):
         if self._declared:
             yield from self._compose_declared_editor()
             return
-        if self._spec is None or self._spec.analyzer is None:
-            yield Static(gettext("(programs have no managed parameters)"), classes="hint")
+        if self._spec is None:
+            yield Static(gettext("(this kind has no managed parameters)"), classes="hint")
+            return
+        if self._spec.analyzer is None:
+            # Every kind that HAS params_io also has an analyzer, so reaching here means
+            # the A2 degradation fired: the language's parser package failed to import and
+            # the kind's analysis capabilities became None instead of crashing the app.
+            # That is a temporary, environmental condition — saying "programs have no
+            # managed parameters" told a shell-script user something false about their
+            # script instead of something true about their install.
+            yield Static(
+                gettext(
+                    "(skit can't read this script's parameters right now — its language "
+                    "parser failed to load; run skit doctor)"
+                ),
+                classes="hint",
+            )
             return
         if meta.mode == "reference":
             yield Static(
@@ -699,7 +770,7 @@ class ScriptSettingsScreen(Screen[bool]):
                         value=candidate in self._pending_prompt_candidates,
                         id=f"st-prompt-new-{i}",
                     )
-                if len(unmanaged) > prompt_analyzer.LIST_PREVIEW_LIMIT:
+                if self._can_choose_candidates():
                     yield Static(
                         gettext("…and %(count)s more")
                         % {"count": len(unmanaged) - prompt_analyzer.LIST_PREVIEW_LIMIT},
@@ -708,7 +779,7 @@ class ScriptSettingsScreen(Screen[bool]):
                     yield Static(
                         tui_footer.chip(
                             "screen.choose_prompt_candidates",
-                            "Ctrl+O",
+                            "Ctrl+L",
                             gettext("Choose variables…"),
                         ),
                         id="st-choose-candidates",
@@ -906,24 +977,36 @@ class ScriptSettingsScreen(Screen[bool]):
     # ----------------------------------------------------------------- save
 
     def action_resync(self) -> None:
-        # One narrowing point (same idiom as action_save): the spec and its analyzer are proven
-        # together, so no second, unreachable None-guard is needed afterwards.
         spec = self._spec
-        if spec is None or spec.analyzer is None or self._entry.meta.mode != "copy":
+        if not self._can_resync():
             return
+        # One narrowing point (same idiom as action_save): _can_resync has already proven
+        # the spec and its analyzer together, so no second None-guard is needed — this one
+        # is for the type checker, which cannot follow the predicate.
+        assert spec is not None  # noqa: S101
+        assert spec.analyzer is not None  # noqa: S101
         result = analysis.edit_specs(
             self._text, self._specs, resync=True, analyze=spec.analyzer.analyze
         )
         self._specs = result.specs
         # Stash the outcome before recompose rebuilds the screen (updating the live Static
         # would be lost — recompose replaces it). compose re-emits self._resync_report.
-        if result.warnings:
+        if result.notices:
             self._resync_report = "\n".join(
-                escape(analysis.render_warning(w)) for w in result.warnings
+                escape(analysis.render_notice(notice)) for notice in result.notices
             )
         else:
             self._resync_report = gettext("Everything still matches the script.")
         self.refresh(recompose=True)
+
+    def _unticked_presets(self) -> list[str]:
+        """The presets this save would delete, by the compose-time names the user saw."""
+        out: list[str] = []
+        for i, name in enumerate(self._preset_names):
+            box = self.query(f"#st-preset-{i}")
+            if box and not box.first(Checkbox).value:
+                out.append(name)
+        return out
 
     def action_save(self) -> None:  # noqa: PLR0911, PLR0912, PLR0915 — one validated save across every section
         """Validate every predictable refusal before writing. An explicit npm clear
@@ -934,6 +1017,21 @@ class ScriptSettingsScreen(Screen[bool]):
         failure, unexpected I/O error, or a name collision created after the precheck
         can still interrupt the later independent atomic replacements."""
         entry = self._entry
+        # A preset deletion is unrecoverable user data, and this save can carry one it was
+        # never asked about (an untick, then a Ctrl+S meant for a description edit). Ask
+        # BEFORE the validation pass, so a refusal costs nothing, and re-enter on yes —
+        # the same push-and-resume shape action_close uses for DiscardChangesModal.
+        doomed = self._unticked_presets()
+        unasked = [n for n in doomed if n not in self._confirmed_presets]
+        if unasked:
+
+            def _decided(confirmed: bool | None) -> None:
+                if confirmed:
+                    self._confirmed_presets.update(unasked)
+                    self.action_save()
+
+            self.app.push_screen(PresetDeleteConfirm(unasked), _decided)
+            return
         new_name = self.query_one("#st-name", Input).value.strip()
         # ---- validation pass: no writes below may run unless ALL of these pass ----
         launch = self._validated_launch()
@@ -1025,98 +1123,109 @@ class ScriptSettingsScreen(Screen[bool]):
             and self._spec.deps_flavor == "npm"
             and pending_deps[0] == []
         )
-        if early_npm_clear and pending_deps is not None:
-            deps_changed, python_changed = pending_deps
-            try:
-                store.update_dependencies(entry.slug, deps_changed, requires_python=python_changed)
-            except store.StoreError as exc:
-                # Explicit npm clear sweeps node_modules before its metadata write.
-                # Running that caught failure before every other write keeps the
-                # screen retryable without committing unrelated form edits.
-                self.notify(str(exc), severity="error")
-                return
-        if new_name and new_name != entry.meta.name:
-            try:
-                store.rename(entry.slug, new_name)
-            except store.StoreError as exc:
-                self.notify(str(exc), severity="error")
-                return
-        description = self.query_one("#st-desc", Input).value.strip()
-        if description != entry.meta.description:
-            store.update_description(entry.slug, description)
-        self._write_launch(launch)
-        if new_template is not None and new_template != entry.meta.template:
-            store.update_template(entry.slug, new_template)
-        # One narrowing point: an analyzable kind always carries params_io too (the registry pairs
-        # them), and a non-empty text with a live analyzer means reconcile always returns a report —
-        # so the capabilities are read straight off the narrowed spec, with no dead None-guards.
-        spec = self._spec
-        if (
-            spec is not None
-            and spec.analyzer is not None
-            and spec.params_io is not None
-            and entry.meta.mode == "copy"
-            and self._text
-        ):
-            new_specs = [s for row in self.query(ParamRow) if (s := row.collect()) is not None]
-            report = spec.analyzer.reconcile(self._text, self._specs)
-            for i, c in enumerate(report.new):
-                box = self.query(f"#st-new-{i}")
-                if box and box.first(Checkbox).value:
-                    new_specs.append(ParamDecl.from_candidate(c))
-            # Atomic + mode-preserving: a torn write here could truncate the stored copy
-            # mid-save; tmp+replace leaves either the old script or the new one. Byte-lossless
-            # too — the copy's own line endings go back on, and surrogateescape carries any
-            # non-UTF-8 byte through untouched, so a comment-block edit stays a comment-block
-            # edit rather than rewriting the whole file.
-            written = restore_newline(spec.params_io.write(self._text, new_specs), self._newline)
-            atomic_write_bytes_keep_mode(
-                entry.script_path,
-                written.encode("utf-8", errors="surrogateescape"),  # pragma: no mutate — alias
-            )
-            purged = argstate.purge_secret(entry.slug, {s.name for s in new_specs if s.secret})
-            if purged:
-                self.notify(
-                    gettext("Deleted previously remembered value(s): %(names)s")
-                    % {"names": ", ".join(sorted(purged))}
-                )
-        if self._is_prompt:
-            # The toggle is composed unconditionally for prompts, so query_one is safe.
-            if wants_interpolate != entry.meta.interpolate:
-                store.write_prompt_interpolate(entry.slug, wants_interpolate)
-            # The pin save lives HERE, not in the declared branch below: that branch is
-            # skipped when insertion is off, and a pin change must never be dropped for it.
-            self._save_runner_pin()
-        if pending_decls is not None:
-            decls = pending_decls
+        # Every write below is authorized against the identity this screen was OPENED
+        # on (#39): the slug alone is an address, and an address can change hands while
+        # a screen sits open — a mismatch fails that one write closed (StaleEntryError)
+        # and the catch keeps the screen. One catch for the whole pass: each write is
+        # individually atomic, whatever landed stays landed, and the screen survives so
+        # a retry (or a reopen, for a stale refusal) finishes the job. The id passes
+        # verbatim — an unstamped "" is a real expectation that refuses a stamped
+        # stranger, never a way to switch the guard off (`id or None` was that hole).
+        guard = entry.meta.id
+        try:
+            if early_npm_clear and pending_deps is not None:  # pragma: no mutate — the second conjunct is ty's narrowing of what early_npm_clear's own definition already proves; and→or double-writes the same deps idempotently (both commits re-read disk), an equivalent  # fmt: skip
+                deps_changed = pending_deps[0]
+                # Explicit npm clear sweeps node_modules before its metadata write; a
+                # caught failure here keeps every other form edit uncommitted. No
+                # requires_python argument: the npm-clear lane has no python axis.
+                store.update_dependencies(entry.slug, deps_changed, expected_id=guard)
+            if new_name and new_name != entry.meta.name:
+                store.rename(entry.slug, new_name, expected_id=guard)
+            description = self.query_one("#st-desc", Input).value.strip()  # pragma: no mutate — expect_type is a pure runtime assertion: dropped or None returns the same unique widget (equivalents; tui.py _refresh_status's rule)  # fmt: skip
+            if description != entry.meta.description:
+                store.update_description(entry.slug, description, expected_id=guard)
+            self._write_launch(launch)
+            if new_template is not None and new_template != entry.meta.template:
+                store.update_template(entry.slug, new_template, expected_id=guard)
+            # One narrowing point: an analyzable kind always carries params_io too (the
+            # registry pairs them), and a non-empty text with a live analyzer means
+            # reconcile always returns a report — so the capabilities are read straight
+            # off the narrowed spec, with no dead None-guards.
+            spec = self._spec
+            if (
+                spec is not None
+                and spec.analyzer is not None
+                and spec.params_io is not None
+                and entry.meta.mode == "copy"
+                and self._text
+            ):
+                new_specs = [s for row in self.query(ParamRow) if (s := row.collect()) is not None]
+                report = spec.analyzer.reconcile(self._text, self._specs)
+                for i, c in enumerate(report.new):
+                    box = self.query(f"#st-new-{i}")
+                    if box and box.first(Checkbox).value:  # pragma: no mutate — expect_type is a pure runtime assertion: dropped or None returns the same unique widget (equivalents; tui.py _refresh_status's rule)  # fmt: skip
+                        new_specs.append(ParamDecl.from_candidate(c))
+                # One store transaction (write_source_params): the C3 scrub first, the
+                # byte-lossless block edit second, both under the entry lock — a failed
+                # scrub aborts with the schema still public, and nothing can interleave
+                # between scrub and commit.
+                purged = store.write_source_params(entry.slug, new_specs, expected_id=guard)
+                if purged:
+                    self.notify(
+                        gettext("Deleted previously remembered value(s): %(names)s")
+                        % {"names": ", ".join(sorted(purged))}
+                    )
             if self._is_prompt:
-                decls += self._ticked_prompt_candidates({d.name for d in decls})
-                self._save_prompt_managed(decls)
-            store.write_parameters(entry.slug, decls)
-            purged = argstate.purge_secret(entry.slug, {d.name for d in decls if d.secret})
-            if purged:
-                self.notify(
-                    gettext("Deleted previously remembered value(s): %(names)s")
-                    % {"names": ", ".join(sorted(purged))}
+                # The toggle is composed unconditionally for prompts, so query_one is safe.
+                if wants_interpolate != entry.meta.interpolate:
+                    store.write_prompt_interpolate(entry.slug, wants_interpolate, expected_id=guard)
+                # The pin save lives HERE, not in the declared branch below: that branch
+                # is skipped when insertion is off, and a pin change must never be
+                # dropped for it.
+                self._save_runner_pin()
+            if pending_decls is not None:
+                decls = pending_decls
+                managed: list[str] | None = None
+                if self._is_prompt:
+                    decls += self._ticked_prompt_candidates({d.name for d in decls})
+                    managed = self._prompt_managed_for(decls)
+                # One meta write for the whole schema — managed list, declared rows AND
+                # the C3 scrub in a single locked transaction (the purge still precedes
+                # the commit; see store.write_parameters).
+                _, purged = store.write_parameters(
+                    entry.slug, decls, managed=managed, expected_id=guard
                 )
-        if pending_deps is not None and not early_npm_clear:
-            deps_changed, python_changed = pending_deps
-            try:
-                store.update_dependencies(entry.slug, deps_changed, requires_python=python_changed)
-            except store.StoreError as exc:
-                self.notify(str(exc), severity="error")
+                if purged:
+                    self.notify(
+                        gettext("Deleted previously remembered value(s): %(names)s")
+                        % {"names": ", ".join(sorted(purged))}
+                    )
+            if pending_deps is not None and not early_npm_clear:
+                deps_changed, python_changed = pending_deps
+                store.update_dependencies(
+                    entry.slug, deps_changed, requires_python=python_changed, expected_id=guard
+                )
+            needs_text = self.query_one("#st-needs", Input).value  # pragma: no mutate — expect_type is a pure runtime assertion: dropped or None returns the same unique widget (equivalents; tui.py _refresh_status's rule)  # fmt: skip
+            needs = [n.strip() for n in needs_text.split(",") if n.strip()]
+            if needs != (entry.meta.needs or []):
+                store.update_needs(entry.slug, needs, expected_id=guard)
+            if doomed and flows.delete_presets_for(entry, doomed) is None:
+                # The guarded door refused: this screen's entry is gone, or its slug
+                # was reissued — unticking a checkbox here must not delete the new
+                # owner's presets. Same remedy as every stale refusal.
+                self.notify(
+                    gettext(
+                        "%(name)s changed while this edit was underway — reopen it and try again."
+                    )
+                    % {"name": entry.meta.name},
+                    severity="error",
+                )
                 return
-        needs = [
-            n.strip() for n in self.query_one("#st-needs", Input).value.split(",") if n.strip()
-        ]
-        if needs != (entry.meta.needs or []):
-            store.update_needs(entry.slug, needs)
-        for i, name in enumerate(self._preset_names):
-            # The compose-time names, not a fresh state read: index i belongs to the
-            # checkbox the user actually saw.
-            box = self.query(f"#st-preset-{i}")
-            if box and not box.first(Checkbox).value:
-                argstate.delete_preset(entry.slug, name)
+        except (store.StoreError, argstate.StateWriteError) as exc:
+            # Keep the screen: what remains unwritten is still on it, so a retry after
+            # fixing the cause (or reopening, for a stale refusal) finishes the job.
+            self.notify(str(exc), severity="error")
+            return
         self.dismiss(True)
 
     def _ticked_prompt_candidates(self, taken: set[str]) -> list[ParamDecl]:
@@ -1135,6 +1244,44 @@ class ScriptSettingsScreen(Screen[bool]):
             for candidate in unmanaged
             if candidate in self._pending_prompt_candidates and candidate not in taken
         ]
+
+    def _can_resync(self) -> bool:
+        """Whether Ctrl+R has anything to resync. The chip's own comment already stated
+        the rule ("advertising a key that silently no-ops teaches a dead chord") and the
+        action restated the condition in its own words — two spellings of one decision, in
+        a codebase that has spent twelve rounds deleting exactly that. Now three readers
+        (chip, action, check_action) share one."""
+        return (
+            self._spec is not None
+            and self._spec.analyzer is not None
+            and self._entry.meta.mode == "copy"
+        )
+
+    def _can_choose_candidates(self) -> bool:
+        """Whether the variable picker has anything to open — ONE predicate behind the
+        chord and the chip, so the keyboard can never advertise what the mouse doesn't
+        (and vice versa). Pure Python: check_action asks it on every render."""
+        from .langs.prompt import analyzer as prompt_analyzer
+
+        return (
+            self._is_prompt
+            and len(self._unmanaged_prompt_names()) > prompt_analyzer.LIST_PREVIEW_LIMIT
+        )
+
+    @override
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Disable the prompt-only chords on the screens that cannot service them, rather
+        than letting them fire into a DOM that has no such widgets. The Ctrl+R chip already
+        followed this rule in prose ("advertising a key that silently no-ops teaches a dead
+        chord"); this makes the binding list obey it too, from the same predicate the chip
+        is built from."""
+        if action == "choose_prompt_candidates":
+            return self._can_choose_candidates()
+        if action == "new_runner":
+            return self._is_prompt
+        if action == "resync":
+            return self._can_resync()
+        return True
 
     def _unmanaged_prompt_names(self) -> list[str]:
         managed = set(self._entry.meta.params or [])
@@ -1156,13 +1303,22 @@ class ScriptSettingsScreen(Screen[bool]):
                 self._pending_prompt_candidates.discard(candidate)
 
     def action_choose_prompt_candidates(self) -> None:
-        """Open all unmanaged prompt variables without teaching a CLI escape hatch."""
+        """Open all unmanaged prompt variables without teaching a CLI escape hatch.
+
+        The pure-Python guard comes FIRST (the order tui_add's twin already uses): this
+        chord is bound on every Entry settings screen, and #st-interpolate is composed only
+        for prompts, so reading the DOM first crashed the whole workbench — with every
+        unsaved edit on the screen — for python/shell/js/exe/command entries. Ctrl+L is
+        also the terminal's universal clear-screen reflex, so it gets pressed by people who
+        meant nothing by it. check_action now disables the chord where it cannot work; this
+        stays total anyway, because an action reachable programmatically must not depend on
+        its binding being filtered."""
         from .langs.prompt import analyzer as prompt_analyzer
 
+        if not self._can_choose_candidates():
+            return
         unmanaged = self._unmanaged_prompt_names()
         if not self.query_one("#st-interpolate", Checkbox).value:
-            return
-        if len(unmanaged) <= prompt_analyzer.LIST_PREVIEW_LIMIT:
             return
         self._remember_prompt_candidate_ticks()
         before = set(self._pending_prompt_candidates)
@@ -1186,15 +1342,15 @@ class ScriptSettingsScreen(Screen[bool]):
             _chosen,
         )
 
-    def _save_prompt_managed(self, decls: list[ParamDecl]) -> None:
-        """The managed list follows the kept placeholder rows: body order first, then any
-        managed name the body has lost but the user kept (drift stays visible, not grown)."""
-        entry = self._entry
+    def _prompt_managed_for(self, decls: list[ParamDecl]) -> list[str]:
+        """The managed list the kept placeholder rows imply: body order first, then any
+        managed name the body has lost but the user kept (drift stays visible, not
+        grown). Pure — the write rides along with the declared rows in action_save."""
         keep = [d.name for d in decls if d.delivery == "placeholder"]
         keep_set = set(keep)
         new_managed = [n for n in self._prompt_body_names if n in keep_set]
         new_managed += [n for n in keep if n not in set(self._prompt_body_names)]
-        store.write_prompt_managed(entry.slug, new_managed)
+        return new_managed
 
     def _save_runner_pin(self) -> None:
         """Persist the runner dropdown's pick. Value-keyed — no index mapping exists
@@ -1206,7 +1362,7 @@ class ScriptSettingsScreen(Screen[bool]):
         value = self.query_one("#st-runner-select", Select).value
         pin = "" if value is Select.NULL else str(value)
         if pin != current:
-            store.write_prompt_runner(entry.slug, pin)
+            store.write_prompt_runner(entry.slug, pin, expected_id=entry.meta.id)
 
     def action_close(self) -> None:
         if not self._dirty:

@@ -22,7 +22,7 @@ from typing import override
 
 import pytest
 
-from skit import argstate, config, store
+from skit import argstate, config, rewrite, store
 from skit.atomic import atomic_write_bytes
 from skit.models import ScriptMeta, now_iso, slugify
 from skit.params import ParamDecl
@@ -619,11 +619,13 @@ def test_update_dependencies_reference_mode_never_touches_disk(sample_script):
 
 def test_update_dependencies_reads_and_writes_script_py_as_utf8(sample_script, monkeypatch):
     """The copy-mode PEP 723 sync reads the stored copy as BYTES (strict utf-8 decode, so a
-    non-utf-8 byte is preserved instead of replaced) and writes it back through
-    atomic_write_bytes_keep_mode (atomic + permission-preserving, and byte-exact so the
-    copy's own line endings survive) — never a plain read_text/write_text. Its
-    mutation-killing purpose is retained: the stored copy still round-trips as UTF-8 with
-    the edit applied."""
+    non-utf-8 byte is preserved instead of replaced) and writes it back through the shared
+    rewrite.write_block_edit pair, whose write half is atomic_write_bytes_keep_mode (atomic +
+    permission-preserving, and byte-exact so the copy's own line endings survive) — never a
+    plain read_text/write_text. The spy sits on rewrite's own reference to the atomic writer,
+    so the assertion still reaches the real bytes the sync lands even though store.py now
+    calls it through write_block_edit. Its mutation-killing purpose is retained: the stored
+    copy still round-trips as UTF-8 with the edit applied."""
     entry = store.add_python(sample_script)
 
     read_bytes_paths: list[Path] = []
@@ -634,14 +636,14 @@ def test_update_dependencies_reads_and_writes_script_py_as_utf8(sample_script, m
         return real_read_bytes(self)
 
     keep_mode_writes: list[tuple[Path, bytes]] = []
-    real_keep_mode = store.atomic_write_bytes_keep_mode
+    real_keep_mode = rewrite.atomic_write_bytes_keep_mode
 
     def spy_keep_mode(path, data):
         keep_mode_writes.append((path, data))
         return real_keep_mode(path, data)
 
     monkeypatch.setattr(Path, "read_bytes", spy_read_bytes)
-    monkeypatch.setattr(store, "atomic_write_bytes_keep_mode", spy_keep_mode)
+    monkeypatch.setattr(rewrite, "atomic_write_bytes_keep_mode", spy_keep_mode)
     store.update_dependencies(entry.slug, ["httpx"], ">=3.11")
 
     assert any(p.name == "script.py" for p in read_bytes_paths), (
@@ -1074,7 +1076,7 @@ def test_resolve_corrupt_meta_exact_message():
         tomllib.loads(bad)
     expected_error = str(parse_exc.value)
 
-    with pytest.raises(store.NotFoundError) as exc:
+    with pytest.raises(store.CorruptEntryError) as exc:
         store.resolve(entry.slug)
     assert str(exc.value) == (
         f"{entry.slug}: metadata is corrupt ({expected_error}); run skit doctor --rebuild"
@@ -1144,7 +1146,7 @@ def test_update_needs_returns_entry_with_correct_slug_and_dir(sample_script):
 def test_write_parameters_returns_entry_with_correct_dir(sample_script):
     entry = store.add_python(sample_script, name="hi")
     decls = [ParamDecl(name="a", binding="const", type="str", default=None, secret=False)]
-    updated = store.write_parameters(entry.slug, decls)
+    updated, _ = store.write_parameters(entry.slug, decls)
     assert updated.dir == entry.dir
     assert updated.slug == entry.slug
 
@@ -1153,7 +1155,7 @@ def test_cli_remove_reports_a_partial_deletion_as_an_error_not_a_traceback(
     sample_script, monkeypatch, tmp_path
 ):
     """store.remove's leftover-dir StoreError reached neither caller. From the CLI that meant a
-    raw traceback and exit 1 instead of skit's own error line, so the recovery step the message
+    raw traceback instead of skit's own exit-125 error line, so the recovery step the message
     was written to deliver ("skit doctor --rebuild") never reached the user."""
     import shutil as shutil_mod
 
@@ -1166,6 +1168,6 @@ def test_cli_remove_reports_a_partial_deletion_as_an_error_not_a_traceback(
 
     result = CliRunner().invoke(app, ["remove", "hi", "--yes"])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert result.exception is None or isinstance(result.exception, SystemExit)
     assert "doctor --rebuild" in result.output

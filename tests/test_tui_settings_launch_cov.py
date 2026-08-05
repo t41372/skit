@@ -285,7 +285,7 @@ async def test_declared_choices_and_help_round_trip(tmp_path):
     tool = tmp_path / "prog"
     tool.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
     entry = store.add_exe(tool, name="prog")
-    entry = store.write_parameters(
+    entry, _ = store.write_parameters(
         entry.slug, [ParamDecl(name="fmt", delivery="flag", flag="--fmt", type="str")]
     )
     app = tui.MenuApp()
@@ -311,7 +311,9 @@ async def test_declared_choice_empty_choices_shows_new_message(tmp_path, monkeyp
     tool = tmp_path / "prog"
     tool.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
     entry = store.add_exe(tool, name="prog")
-    entry = store.write_parameters(entry.slug, [ParamDecl(name="a", delivery="flag", type="str")])
+    entry, _ = store.write_parameters(
+        entry.slug, [ParamDecl(name="a", delivery="flag", type="str")]
+    )
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         screen = ScriptSettingsScreen(entry)
@@ -379,7 +381,9 @@ async def test_save_refuses_invalid_declared_row_before_the_rename(tmp_path, mon
     tool = tmp_path / "prog"
     tool.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
     entry = store.add_exe(tool, name="prog")
-    entry = store.write_parameters(entry.slug, [ParamDecl(name="a", delivery="flag", type="str")])
+    entry, _ = store.write_parameters(
+        entry.slug, [ParamDecl(name="a", delivery="flag", type="str")]
+    )
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         screen = ScriptSettingsScreen(entry)

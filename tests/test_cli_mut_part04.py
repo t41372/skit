@@ -7,7 +7,7 @@ dropped-cell, and swapped-argument mutants:
 - ``_print_show_human`` — the ``skit show`` human view (the "Needs:" line).
 - ``_print_candidate`` — the onboarding candidate print (the demotion warning).
 - ``_refuse_unusable_add_flags`` — the add-flag refusal messages.
-- ``_render_declared_warning`` — the closed edit_declared warning renderer.
+- ``analysis.render_notice`` — the closed shared parameter-edit notice renderer.
 - ``_reanchor_as_envdefault`` — the --normalize re-anchor (user decisions survive).
 
 English catalog; assertions are on real rendered output / returned values through the
@@ -24,6 +24,7 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 from skit import analysis, cli, i18n, store
+from skit.notices import NoticeCode, edit_notice
 from skit.params import ParamDecl
 
 runner = CliRunner()
@@ -186,37 +187,39 @@ def test_refuse_python_constraint_message(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------
-# _render_declared_warning — the closed warning-code set
+# render_notice — the shared closed parameter-edit notice set
 # --------------------------------------------------------------------------
 
 
-def test_render_declared_warning_exact_line_per_code() -> None:
+def test_render_declared_notice_exact_line_per_code() -> None:
     """Every closed warning code renders exactly its English line with %(name)s filled in;
     a garbled msgid is observable as an unequal string."""
     expected = {
-        "not-declared": "w isn't a declared parameter; skipped.",
-        "already-declared": "w is already declared; skipped.",
-        "bad-delivery": "w: that delivery isn't available for this kind; skipped.",
-        "not-a-placeholder": (
+        NoticeCode.NOT_DECLARED: "w isn't a declared parameter; skipped.",
+        NoticeCode.ALREADY_DECLARED: "w is already declared; skipped.",
+        NoticeCode.BAD_DELIVERY: "w: that delivery isn't available for this kind; skipped.",
+        NoticeCode.NOT_A_PLACEHOLDER: (
             "w isn't a template placeholder, so it can't use placeholder delivery; skipped."
         ),
-        "bad-type": "w: unknown type; skipped (use str, int, float, bool, choice, or path).",
-        "bad-default": "w: the default doesn't fit its type; skipped.",
-        "choice-without-choices": "w: a choice parameter needs choices; set --choices w=a,b,c.",
-        "bool-flag-on-by-default": (
+        NoticeCode.BAD_TYPE: (
+            "w: unknown type; skipped (use str, int, float, bool, choice, or path)."
+        ),
+        NoticeCode.BAD_DEFAULT: "w: the default doesn't fit its type; skipped.",
+        NoticeCode.CHOICE_WITHOUT_CHOICES: (
+            "w: a choice parameter needs choices; set --choices w=a,b,c."
+        ),
+        NoticeCode.BOOL_FLAG_ON_BY_DEFAULT: (
             "w is on by default, so its flag could only ever turn it on again. Declare the "
             "flag that turns it OFF instead (--no-w and the like), with default false."
         ),
     }
     for code, line in expected.items():
-        assert cli._render_declared_warning(f"{code}:w") == line
+        assert analysis.render_notice(edit_notice(code, "w")) == line
 
 
-def test_render_declared_warning_splits_on_first_colon() -> None:
-    """The code is everything before the FIRST colon and the name is the remainder — a name
-    that itself contains a colon must round-trip whole (partition, not rpartition, which
-    would misread the code and raise KeyError)."""
-    assert cli._render_declared_warning("bad-type:na:me") == (
+def test_render_declared_notice_preserves_colons_in_name() -> None:
+    """The structured name field round-trips without parsing a mini-protocol."""
+    assert analysis.render_notice(edit_notice(NoticeCode.BAD_TYPE, "na:me")) == (
         "na:me: unknown type; skipped (use str, int, float, bool, choice, or path)."
     )
 

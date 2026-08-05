@@ -14,7 +14,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from conftest import full_mirror
+from conftest import full_mirror, patch_run_entry
 from skit import (
     analysis,
     argstate,
@@ -22,7 +22,6 @@ from skit import (
     config,
     flows,
     i18n,
-    launcher,
     pep723,
     promptform,
     store,
@@ -304,7 +303,7 @@ def test_run_no_input_never_prompts_even_on_tty(tty, monkeypatch):
         captured["values"] = values
         return 0
 
-    monkeypatch.setattr(launcher, "run_entry", fake_run)
+    patch_run_entry(monkeypatch, fake_run)
 
     def boom(*_a: object, **_k: object) -> str:
         raise AssertionError("must not prompt under --no-input")
@@ -354,7 +353,7 @@ def test_run_threads_slug_and_preset_into_prefill(monkeypatch, tmp_path):
         captured["values"] = values
         return 0
 
-    monkeypatch.setattr(launcher, "run_entry", fake_run)
+    patch_run_entry(monkeypatch, fake_run)
     result = runner.invoke(cli.app, ["run", "e", "-p", "prod", "--no-input"])
     assert result.exit_code == 0, result.output
     assert captured["values"] == {"msg": "from-preset"}
@@ -782,9 +781,8 @@ def test_run_shim_error_message_exact(tmp_path, monkeypatch):
 
 
 def test_run_drift_warning_names_the_entry(tmp_path, monkeypatch):
-    from skit import launcher
 
-    monkeypatch.setattr(launcher, "run_entry", lambda *a, **k: 0)  # never actually launch anything
+    patch_run_entry(monkeypatch, lambda *a, **k: 0)  # never actually launch anything
     text = metawriter.write_params(
         'CITY = "Taipei"\nprint(CITY)\n', [ParamDecl(name="CITY", binding="const", type="str")]
     )
@@ -1185,7 +1183,7 @@ def test_create_in_editor_deleted_draft_is_a_clean_honest_failure(monkeypatch):
 
     monkeypatch.setattr(cli.editor, "open_in_editor", delete)
     result = runner.invoke(cli.app, ["add", "-e", "--name", "gone"])
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     output = _norm(result.output)
     assert "Can't read" in output
     assert "The draft is no longer at" in output
@@ -1412,13 +1410,17 @@ def test_edit_params_no_secret_unsets(tmp_path):
 
 def test_edit_params_renders_reconcile_warning(tmp_path):
     # --secret on a name that isn't managed produces a reconcile warning that must be rendered
-    # (kills escape(render_warning(None)) / err_console.print(None) in the warnings loop).
+    # (kills escape(render_notice(None)) / err_console.print(None) in the notices loop).
     text = metawriter.write_params(
         "CITY = 'x'\nprint(CITY)\n", [ParamDecl(name="CITY", binding="const", type="str")]
     )
     store.add_python(_py(tmp_path, text), name="j")
     result = runner.invoke(cli.app, ["params", "j", "--secret", "GHOST"])
-    assert result.exit_code == 0, result.output
+    # ROUND 12: `skit params` refuses atomically now. A flag it cannot honour writes
+    # NOTHING and exits 2 — the refuse-never-drop answer every sibling intake gives —
+    # because warn-and-continue exited 0, wrote the rest, and then reported the state
+    # it had not written through --json.
+    assert result.exit_code == 2
     out = _norm(result.output)
     assert "GHOST" in out  # the offending name
     assert "skipped" in out  # the warning surfaced
@@ -1428,7 +1430,7 @@ def test_edit_params_renders_reconcile_warning(tmp_path):
 def test_edit_params_non_python_message_exact():
     store.add_command("echo hi", name="c")
     result = runner.invoke(cli.app, ["params", "c", "--resync"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     out = _norm(result.output)
     assert "c has no managed parameters — its kind has no analyzer to read them from." in out
     assert "XX" not in out
@@ -1437,7 +1439,7 @@ def test_edit_params_non_python_message_exact():
 def test_edit_params_reference_message_exact(tmp_path):
     store.add_python(_py(tmp_path, 'CITY = "x"\nprint(CITY)\n'), name="r", mode="reference")
     result = runner.invoke(cli.app, ["params", "r", "--resync"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     out = _norm(result.output)
     assert (
         "r is in reference mode, and skit never writes the original file. Edit the [tool.skit] "
@@ -1451,7 +1453,7 @@ def test_edit_params_reference_regression_literal_tool_skit_visible(tmp_path):
     # not have it swallowed as (no-op) rich markup.
     store.add_python(_py(tmp_path, 'CITY = "x"\nprint(CITY)\n'), name="s", mode="reference")
     result = runner.invoke(cli.app, ["params", "s", "--resync"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     out = _norm(result.output)
     assert "[tool.skit]" in out
 
@@ -1460,7 +1462,7 @@ def test_edit_params_missing_copy_message_exact(tmp_path):
     ent = store.add_python(_py(tmp_path, 'CITY = "x"\nprint(CITY)\n'), name="a")
     ent.script_path.unlink()
     result = runner.invoke(cli.app, ["params", "a", "--resync"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
     out = _norm(result.output)
     assert "a has no stored copy to edit." in out
     assert "XX" not in out
@@ -1472,16 +1474,20 @@ def test_edit_params_bad_prompt_warned_exact(tmp_path):
     )
     store.add_python(_py(tmp_path, text), name="j")
     result = runner.invoke(cli.app, ["params", "j", "--prompt", "no-equals-sign"])
-    assert result.exit_code == 0, result.output
+    # ROUND 12: `skit params` refuses atomically now. A flag it cannot honour writes
+    # NOTHING and exits 2 — the refuse-never-drop answer every sibling intake gives —
+    # because warn-and-continue exited 0, wrote the rest, and then reported the state
+    # it had not written through --json.
+    assert result.exit_code == 2
     out = _norm(result.output)
-    assert "Ignored a malformed value: --prompt: no-equals-sign (expected NAME=text)." in out
+    assert "Malformed value: --prompt: no-equals-sign (expected NAME=text)." in out
     assert "XX" not in out
 
 
 # --- edit (open source / create) -------------------------------------------
 
 
-def test_edit_saved_and_reconcile_hint_exact(monkeypatch, tmp_path):
+def test_edit_saved_and_reconcile_hint_exact(monkeypatch, tmp_path, at_a_terminal):
     monkeypatch.setattr(cli.editor, "open_in_editor", lambda p: 0)
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     result = runner.invoke(cli.app, ["edit", "a"])
@@ -1493,7 +1499,7 @@ def test_edit_saved_and_reconcile_hint_exact(monkeypatch, tmp_path):
     assert "XX" not in out
 
 
-def test_edit_reference_editing_original_message(monkeypatch, tmp_path):
+def test_edit_reference_editing_original_message(monkeypatch, tmp_path, at_a_terminal):
     src = _py(tmp_path, "print(1)\n", "orig.py")
     store.add_python(src, name="r", mode="reference")
     opened = {}
@@ -1506,10 +1512,10 @@ def test_edit_reference_editing_original_message(monkeypatch, tmp_path):
     assert opened["p"] == src.resolve()
 
 
-def test_edit_non_python_message_exact():
+def test_edit_non_python_message_exact(at_a_terminal):
     store.add_command("echo hi", name="c")
     result = runner.invoke(cli.app, ["edit", "c"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     out = _norm(result.output)
     # Kind-neutral now: shell/js ARE editable, so the refusal can't claim "Python only".
     assert "c has no editable source (programs and command templates run as-is)." in out
@@ -1519,7 +1525,10 @@ def test_edit_non_python_message_exact():
 def test_offer_create_non_interactive_message(monkeypatch):
     monkeypatch.setattr(cli, "_is_interactive", lambda: False)
     result = runner.invoke(cli.app, ["edit", "ghost"])
-    assert result.exit_code == 1
+    # ROUND 12: 127 — `skit edit <unknown>` answers the same question as the other ten
+    # entry-name commands, and now the same code. It never raises NotFoundError (it
+    # offers to create instead), which is why round 10's sweep could not see it.
+    assert result.exit_code == 127
     out = _norm(result.output)
     assert "No editable entry named ghost." in out
     assert "XX" not in out

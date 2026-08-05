@@ -11,6 +11,7 @@ import locale as _locale
 
 from skit import i18n, pep723
 from skit.langs.python import metawriter, reconcile
+from skit.notices import NoticeCode, edit_notice
 from skit.params import ParamDecl
 
 # =====================================================================================
@@ -242,10 +243,14 @@ class TestPep723Adversarial:
 
 class TestReconcileResidual:
     def test_edit_specs_remove_unmanaged_name_warns(self):
+        # ROUND 12: a DISTINCT code from the tweak-side one, though the user reads the
+        # same sentence — this asks for a state that already holds (idempotent, exit 0),
+        # while a tweak on an unknown name is a refusal (exit 2). One string could not
+        # carry both answers.
         text = 'CITY = "Taipei"\n'
         specs = [ParamDecl(name="CITY", binding="const", type="str")]
         result = reconcile.edit_specs(text, specs, remove=["GONE"])
-        assert result.warnings == ["not-managed:GONE"]
+        assert result.notices == [edit_notice(NoticeCode.UNMANAGE_NOT_MANAGED, "GONE")]
         # the managed one is untouched
         assert [s.name for s in result.specs] == ["CITY"]
 
@@ -258,7 +263,7 @@ class TestReconcileAdversarial:
         text = 'CITY = "Osaka"\n'
         specs = [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")]
         result = reconcile.edit_specs(text, specs, remove=["CITY"], add=["CITY"])
-        assert result.warnings == []
+        assert result.notices == []
         assert [s.name for s in result.specs] == ["CITY"]
         assert result.specs[0].default == "Osaka"
 
@@ -266,7 +271,7 @@ class TestReconcileAdversarial:
         text = 'CITY = "Osaka"\n'
         specs = [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")]
         result = reconcile.edit_specs(text, specs, add=["CITY"])
-        assert result.warnings == ["already-managed:CITY"]
+        assert result.notices == [edit_notice(NoticeCode.ALREADY_MANAGED, "CITY")]
         # original definition (default="Taipei") preserved, not clobbered by the source's current
         # value
         assert result.specs[0].default == "Taipei"
@@ -274,7 +279,7 @@ class TestReconcileAdversarial:
     def test_edit_specs_add_not_a_candidate_warns(self):
         text = 'CITY = "Osaka"\n'
         result = reconcile.edit_specs(text, [], add=["NOPE"])
-        assert result.warnings == ["not-a-candidate:NOPE"]
+        assert result.notices == [edit_notice(NoticeCode.NOT_A_CANDIDATE, "NOPE")]
         assert result.specs == []
 
     def test_edit_specs_resync_prunes_and_retypes_together(self):
@@ -284,7 +289,7 @@ class TestReconcileAdversarial:
             ParamDecl(name="RETRIES", binding="const", type="int", default=3),
         ]
         result = reconcile.edit_specs(text, specs, resync=True)
-        assert result.warnings == ["resync-dropped:CITY"]
+        assert result.notices == [edit_notice(NoticeCode.RESYNC_DROPPED, "CITY")]
         assert [s.name for s in result.specs] == ["RETRIES"]
         assert result.specs[0].type == "str"
 
@@ -308,16 +313,16 @@ class TestReconcileAdversarial:
         assert [s.name for s in result.specs] == ["TOKEN"]
         assert result.specs[0].secret is True
         assert result.specs[0].prompt == "Token: "
-        assert "resync-dropped:GONE" in result.warnings
+        assert edit_notice(NoticeCode.RESYNC_DROPPED, "GONE") in result.notices
 
-    def test_render_warning_all_known_codes(self):
+    def test_render_notice_all_known_codes(self):
         for code, name in [
-            ("not-managed", "X"),
-            ("resync-dropped", "Y"),
-            ("already-managed", "Z"),
-            ("not-a-candidate", "W"),
+            (NoticeCode.NOT_MANAGED, "X"),
+            (NoticeCode.RESYNC_DROPPED, "Y"),
+            (NoticeCode.ALREADY_MANAGED, "Z"),
+            (NoticeCode.NOT_A_CANDIDATE, "W"),
         ]:
-            text = reconcile.render_warning(f"{code}:{name}")
+            text = reconcile.render_notice(edit_notice(code, name))
             assert name in text
 
     def test_reconcile_const_and_input_conflict_together(self):

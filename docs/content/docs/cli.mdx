@@ -10,8 +10,12 @@ the same actions, deterministic behavior.
 
 - **`--json`** on every read command: `list`, `show`, `params`, `deps`,
   `preset list`, `runner list`, `doctor`, `config`.
-- **`--no-input`** on the commands that could prompt: `add`, `run`,
-  `runner remove`. Read commands never prompt and don't take it.
+- **`--no-input`** on every command that could prompt: `add`, `run`, `edit`,
+  `preset save`, `agent install`, and the destructive trio `remove`,
+  `preset delete`, `runner remove` (which confirm unless `--yes`). Read commands
+  never prompt and don't take it. On `edit` it means *refuse*, not *proceed*: an
+  editor session needs a terminal, and under a pty with nobody typing this is
+  the only way to say there is no human.
 - **`--dry-run`** on `run` only: prints the exact command — tokens and globs
   expanded — and runs nothing.
 - **Non-interactive contract**: in a pipe, in CI, or under `--no-input`, skit
@@ -24,18 +28,27 @@ the same actions, deterministic behavior.
 
 | Code | Meaning |
 | --- | --- |
-| `0` | success |
-| `2` | usage error — bad flag combination, unknown `--set` name, unknown preset, a flag refused for the entry's type |
-| `125` | skit-side failure — missing/invalid parameter value, drift, token expansion error, over-long rendered command |
-| `126` | the target exists but can't run — missing interpreter or JS runtime, a `needs` command absent from `PATH`, no runner resolvable for a prompt |
-| `127` | no such entry in the library |
-| `130` | user cancelled an interactive screen (128 + SIGINT) |
+| `0` | success, including deliberately answering “no” to a destructive confirmation |
+| `2` | usage error — bad flag combination, unknown `--set` name, unknown preset, an explicit unknown `--runner`, or any flag skit cannot honour (`skit params` refuses the whole invocation and writes nothing) |
+| `125` | skit-side failure — missing/invalid parameter value, corrupt metadata, filesystem failure, drift, token expansion error, over-long rendered command |
+| `126` | the target exists but can't run — missing interpreter or JS runtime, a `needs` command absent from `PATH`, no prompt runner selected, or a saved runner pin that is no longer configured |
+| `127` | no such entry in the library, or its launch/edit target is gone from disk |
+| `130` | an interactive flow was aborted with Ctrl-C or EOF (128 + SIGINT) |
 
 `skit run` passes the launched process's own exit code through untouched — even
-125–127 (docker convention: 1–124 always belong to your script). A script killed
+125–127 or 130 (docker convention: 1–124 always belong to your script). A script killed
 by signal N reports `128+N`, matching POSIX shells. `skit doctor`'s exit code
 reflects uv availability only (0 = present or not needed, 1 = required but
 missing); per-entry warnings never change it.
+
+If saving remembered values or run history fails after the process has already
+finished, skit warns on stderr but still returns the process's status. Persistence
+cannot retroactively change what the child returned.
+
+`127` is the answer from **every** command that takes an entry name — `run`, `show`,
+`params`, `deps`, `describe`, `rename`, `remove`, `edit`, `preset save/list/delete` —
+so "no such entry" never has to be told apart from a script's own failure by reading
+the (localized) message.
 
 ## skit add
 
@@ -95,19 +108,28 @@ never replays them.
 
 ## skit remove / rename / describe / edit
 
-- `skit remove NAME [--yes]` — remove an entry (the original file is untouched;
-  copy mode deletes skit's copy). Confirms unless `--yes`.
+- `skit remove NAME [--yes] [--no-input]` — remove an entry (the original file
+  is untouched; copy mode deletes skit's copy). Confirms unless `--yes`;
+  non-interactively, a missing `--yes` is a clean exit-2 refusal.
 - `skit rename NAME NEW` — presets, remembered values, and history follow.
 - `skit describe NAME TEXT` — set the description; empty text clears it.
-- `skit edit NAME` — open the stored source (the original, in reference mode) in
-  your editor; offers to create the entry if the name is new. Refused for
-  exe/command — there's no editable source.
+- `skit edit NAME [--no-input]` — open the stored source (the original, in
+  reference mode) in your editor; offers to create the entry if the name is new.
+  Refused with exit 2 for exe/command (there's no editable source) and when skit
+  may not prompt; exit 127 when the name is unknown or the file is gone.
 
 ## skit params
 
 `skit params NAME [--json]` shows managed parameters and last-used values.
 With flags it edits definitions — generally one editing operation per
-invocation:
+invocation.
+
+**Editing is all-or-nothing.** If any flag cannot be honoured — an unknown type, a
+default that does not fit its type, a delivery the kind does not offer, a name that
+is not a parameter, a malformed `NAME=VALUE` — skit writes **nothing**, prints the
+reason on stderr and exits `2`. Fix the flag and run it again. (Requests that are
+already satisfied — re-adding a declared parameter, removing one that is not there —
+are not failures and exit `0`.)
 
 | Flag | Effect |
 | --- | --- |
@@ -147,10 +169,12 @@ Package deps apply to Python and JS/TS entries; `--need` applies to every kind.
 
 ## skit preset
 
-- `skit preset save NAME PRESET [--from-last]` — `--from-last` snapshots the
-  last run's values without asking.
+- `skit preset save NAME PRESET [--from-last] [--no-input]` — an interactive
+  save asks for the current values. In a pipe, CI, or under `--no-input`, pass
+  `--from-last` to snapshot the last run instead; skit never guesses current
+  values from defaults or stale state.
 - `skit preset list NAME [--json]`
-- `skit preset delete NAME PRESET`
+- `skit preset delete NAME PRESET [--yes] [--no-input]` — confirms unless `--yes`.
 
 ## skit runner
 
@@ -164,18 +188,24 @@ Package deps apply to Python and JS/TS entries; `--need` applies to every kind.
 
 ## skit agent
 
-`skit agent install [TARGET]` — install the bundled Agent Skill. `TARGET` is
-`claude`, `codex`, or `agents`; `--to DIR` picks a directory explicitly;
-`--project` installs into the current repo (`./.claude` / `./.codex`) instead of
-home. The bare form detects agent directories on your machine and asks.
+`skit agent install [TARGET] [--project] [--to DIR] [--no-input]` — install the
+bundled Agent Skill. `TARGET` is `claude`, `codex`, or `agents`; an explicit
+target or directory is consent. The bare interactive form detects agent
+directories and asks; `--project` restricts that detection to project-local
+directories (`./.claude`, `./.codex`, `./.agents`).
 
 ## skit doctor
 
 `skit doctor [--json] [--rebuild]` — checks uv and library integrity, prints the
-resolved library path. `--rebuild` reconstructs the index from each entry's
-`meta.toml`. JSON keys include `uv`, `entries`, `missing`, `drift`,
-`needs_missing`, `launch_blocked`, `runner_rows_invalid`, `rebuilt`,
-`rebuild_problems`, `mirror`, `location`, `size_bytes`.
+resolved library, config and state paths. `--rebuild` reconstructs the index from
+each entry's `meta.toml`. JSON keys include `uv`, `entries`, `missing`, `drift`,
+`needs_missing`, `launch_blocked`, `unindexed`, `runner_rows_invalid`, `rebuilt`,
+`rebuild_problems`, `mirror`, `location`, `config_dir`, `state_dir`, `size_bytes`.
+
+`unindexed` lists slugs stored on disk but missing from the index — what a lost or
+corrupt `registry.toml` leaves behind. Those entries cannot be listed or run until
+`skit doctor --rebuild` recovers them from their stored `meta.toml`, so `entries: 0`
+beside a non-empty `unindexed` means "unreadable", not "empty".
 
 ## skit config
 

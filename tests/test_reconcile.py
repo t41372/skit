@@ -4,6 +4,7 @@ warned, new not counted as drift."""
 from __future__ import annotations
 
 from skit.langs.python import reconcile
+from skit.notices import NoticeCode, edit_notice
 from skit.params import Binding, ParamDecl, ParamType
 
 
@@ -153,7 +154,7 @@ def test_resync_reanchors_rebound_input_order_and_prompt():
     text = 'value = input("New label: ")\nprint(value)\n'
     specs = [spec("input-1", binding="input", order=0, prompt="Old label: ")]
     result = reconcile.edit_specs(text, specs, resync=True)
-    assert "resync-rebound:input-1" in result.warnings
+    assert edit_notice(NoticeCode.RESYNC_REBOUND, "input-1") in result.notices
     (s,) = result.specs
     assert s.prompt == "New label: "
     assert s.order == 0
@@ -238,21 +239,21 @@ def test_edit_specs_not_managed_in_secret_warning():
     text = 'CITY = "Taipei"\n'
     specs = [ParamDecl(name="CITY", binding="const", type="str")]
     result = reconcile.edit_specs(text, specs, secret=["GONE"])
-    assert any("not-managed" in w for w in result.warnings)
+    assert edit_notice(NoticeCode.NOT_MANAGED, "GONE") in result.notices
 
 
 def test_edit_specs_not_managed_in_no_secret_warning():
     text = 'CITY = "Taipei"\n'
     specs = [ParamDecl(name="CITY", binding="const", type="str")]
     result = reconcile.edit_specs(text, specs, no_secret=["GONE"])
-    assert any("not-managed" in w for w in result.warnings)
+    assert edit_notice(NoticeCode.NOT_MANAGED, "GONE") in result.notices
 
 
 def test_edit_specs_not_managed_in_prompts_warning():
     text = 'CITY = "Taipei"\n'
     specs = [ParamDecl(name="CITY", binding="const", type="str")]
     result = reconcile.edit_specs(text, specs, prompts={"GONE": "Enter city:"})
-    assert any("not-managed" in w for w in result.warnings)
+    assert edit_notice(NoticeCode.NOT_MANAGED, "GONE") in result.notices
 
 
 # ---------- Resync must not wipe definitions on a transient syntax error ----------
@@ -271,7 +272,7 @@ def test_resync_on_unparseable_script_leaves_definitions_untouched():
     result = reconcile.edit_specs(broken, specs, resync=True)
     assert [s.name for s in result.specs] == ["API_KEY", "RETRIES", "input-1"]
     assert result.specs[0].secret is True  # untouched, not rebuilt from a candidate
-    assert result.warnings == ["resync-skipped"]
+    assert result.notices == [edit_notice(NoticeCode.RESYNC_SKIPPED)]
 
 
 def test_resync_syntax_error_does_not_also_apply_other_edits_incorrectly():
@@ -284,11 +285,11 @@ def test_resync_syntax_error_does_not_also_apply_other_edits_incorrectly():
     broken = "def broken(:\n"
     result = reconcile.edit_specs(broken, specs, resync=True, remove=["Y"])
     assert [s.name for s in result.specs] == ["CITY"]
-    assert "resync-skipped" in result.warnings
+    assert edit_notice(NoticeCode.RESYNC_SKIPPED) in result.notices
 
 
-def test_render_warning_resync_skipped():
-    msg = reconcile.render_warning("resync-skipped")
+def test_render_notice_resync_skipped():
+    msg = reconcile.render_notice(edit_notice(NoticeCode.RESYNC_SKIPPED))
     assert msg
     assert "resync" in msg.lower()
 
@@ -304,7 +305,7 @@ def test_edit_specs_remove_with_duplicate_names_does_not_crash():
     specs = [spec("X"), spec("X"), spec("Y")]
     result = reconcile.edit_specs(text, specs, remove=["X"])
     assert [s.name for s in result.specs] == ["Y"]
-    assert result.warnings == []
+    assert result.notices == []
 
 
 def test_edit_specs_resync_drop_with_duplicate_names_does_not_crash():
@@ -313,7 +314,9 @@ def test_edit_specs_resync_drop_with_duplicate_names_does_not_crash():
     text = "Y = 5\n"  # X genuinely no longer exists
     result = reconcile.edit_specs(text, specs, resync=True)
     assert [s.name for s in result.specs] == ["Y"]
-    assert result.warnings == ["resync-dropped:X"]  # exactly one, not one per duplicate
+    assert result.notices == [
+        edit_notice(NoticeCode.RESYNC_DROPPED, "X")
+    ]  # exactly one, not one per duplicate
 
 
 def test_edit_specs_dedups_duplicate_names_even_when_untouched():

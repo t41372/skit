@@ -7,7 +7,8 @@ form layer (flows) so CLI and TUI behave identically.
 Command-surface contracts:
 - Exit codes (docker convention): `run` passes the script's exit code through PURE;
   skit's own failures are 125, a target that exists but isn't executable is 126, a
-  missing target/name is 127, usage errors are 2. Other commands: 0/1/2.
+  missing target/name is 127, usage errors are 2, and an aborted interactive flow is
+  130. Doctor alone uses 1 for its documented dependency-health check.
 - Every output has a --json twin where output exists.
 - Lists are repeatable flags (--dep), never comma-joined (PEP 508 specifiers contain
   commas).
@@ -24,25 +25,54 @@ import dataclasses
 import json
 import os
 import sys
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, NoReturn, cast, overload
+from typing import TYPE_CHECKING, Any, NoReturn, assert_never, cast, overload
 
+import click
 import typer
 from rich.console import Console
 from rich.markup import escape
 from rich.prompt import Confirm, Prompt
+from typer.core import TyperGroup
 
 # Kept eager: every command needs the library and its config, and i18n must initialize
 # before the decorators below resolve their help strings. Everything else a command body
 # reaches for — the analyzer, the form layer, the editor, the agent-skill installer — is
 # imported inside the command that uses it: `skit list` should not pay for `skit run`'s
 # dependencies (~18 modules on a path an agent calls constantly).
-from . import argstate, config, editor, i18n, kindnames, launcher, models, store
+from . import (
+    argstate,
+    config,
+    editor,
+    exitcodes,
+    i18n,
+    interaction,
+    kindnames,
+    launcher,
+    models,
+    store,
+)
+from .exitcodes import (
+    EXIT_ABORTED,
+    EXIT_NOT_EXECUTABLE,
+    EXIT_NOT_FOUND,
+    EXIT_SKIT,
+    EXIT_USAGE,
+    SkitExitCode,
+)
 from .i18n import gettext, ngettext
 from .langs.registry import KNOWN_KINDS, spec_for
+from .notices import (
+    EditNotice,
+    NormalizeNotice,
+    NormalizeNoticeCode,
+    NoticeCode,
+    edit_notice,
+)
 from .params import ParamDecl, declared_from_meta, edit_declared, is_secret_name
-from .rewrite import detect_newline, restore_newline
+from .rewrite import read_for_block_edit, write_block_edit
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -50,8 +80,32 @@ if TYPE_CHECKING:
     from . import agentskill, analysis, flows
     from .langs.base import LangSpec
 
+
+def _invoke_with_error_boundary(group: TyperGroup, ctx: Any) -> Any:
+    """Invoke the root group behind skit's expected-error boundary.
+
+    Kept as an undecorated function so the decisions remain visible to mutation
+    testing; the tiny class below only installs it as Typer's method hook.
+    """
+    try:
+        return TyperGroup.invoke(group, ctx)
+    except (EOFError, KeyboardInterrupt, click.exceptions.Abort):
+        raise _abort_interaction() from None
+    except store.StoreError as exc:
+        raise _fail_store(exc) from exc
+    except (config.ConfigWriteError, argstate.StateWriteError) as exc:
+        raise _fail_operational(exc) from exc
+
+
+class _SkitGroup(TyperGroup):
+    """Root group with a mutation-visible invocation boundary."""
+
+    invoke = _invoke_with_error_boundary
+
+
 app = typer.Typer(
     name="skit",
+    cls=_SkitGroup,
     help=gettext(
         "skit — a launcher and parameter manager for scripts, prompts, programs, and commands. "
         "Run it without a subcommand to open the main menu."
@@ -62,26 +116,187 @@ app = typer.Typer(
 console = Console()
 err_console = Console(stderr=True)
 
-# Exit-code contract for `skit run` (docker convention; the script's own code passes
-# through untouched, so these must stay out of the 0-124 range scripts commonly use).
-EXIT_USAGE = 2
-EXIT_SKIT = 125
-EXIT_NOT_EXECUTABLE = 126
-EXIT_NOT_FOUND = 127
-EXIT_CANCELLED = 130  # user cancelled the form (128+SIGINT convention) — not a skit failure
+# Backward-compatible Python name for tests and integrations. The process contract's
+# canonical spelling is EXIT_ABORTED in exitcodes.
+EXIT_CANCELLED = EXIT_ABORTED
 
 # Rich closing tags are case-insensitive, so a mutated-case variant is behaviorally identical.
 _DIM_CLOSE = "[/dim]"  # pragma: no mutate
 _RED_CLOSE = "[/red]"  # pragma: no mutate
 
 
-def _fail(message: str, code: int) -> typer.Exit:
+def _fail(message: str, code: SkitExitCode) -> typer.Exit:
     err_console.print(f"[red]{escape(message)}[/red]")
     return typer.Exit(code)
 
 
+def _exit_passthrough(code: int) -> typer.Exit:
+    """The only exit route for a child process's arbitrary status."""
+    return typer.Exit(code)
+
+
+def _exit_doctor_health(code: int) -> typer.Exit:
+    """Doctor's one named exception to skit's process-status taxonomy."""
+    return typer.Exit(code)
+
+
+def _fail_not_found(exc: Exception) -> typer.Exit:
+    """ "No such entry" — ONE exit code, wherever the lookup happened.
+
+    The same store.NotFoundError, from the same store.resolve, used to exit 127 from `run`
+    and 1 from show/remove/rename/describe/params/deps/preset {save,list,delete}. 127 is
+    what docs/content/docs/cli.mdx publishes CLI-wide, and 1 sits inside the 1-124 band
+    the same page reserves for the launched script's own exit code — so an agent told to
+    "trust exit codes, never output text" (SKILL.md) had no machine-readable way to tell
+    "not in the library" from "the script failed", and the only thing that distinguished
+    them was the localized string it was told not to read. Nine identical `except ...:
+    raise _fail(str(exc), 1)` blocks were nine chances to answer differently."""
+    return _fail(str(exc), EXIT_NOT_FOUND)
+
+
+def _fail_store(exc: store.StoreError) -> typer.Exit:
+    """Classify one store failure by meaning, independent of the command that caught it."""
+    if isinstance(exc, store.NotFoundError):
+        code = EXIT_NOT_FOUND
+    elif isinstance(exc, store.StoreUsageError):
+        code = EXIT_USAGE
+    else:
+        code = EXIT_SKIT
+    return _fail(str(exc), code)
+
+
+def _fail_operational(exc: OSError) -> typer.Exit:
+    """Turn an expected local filesystem failure into a clean skit-side refusal."""
+    return _fail(
+        gettext("skit couldn't complete the filesystem operation: %(error)s")
+        % {"error": exc.strerror or str(exc)},
+        EXIT_SKIT,
+    )
+
+
+def _abort_interaction() -> typer.Exit:
+    """One localized status for EOF/Ctrl-C escaping any CLI prompt implementation."""
+    console.print(f"[dim]{gettext('Cancelled.')}[/dim]")
+    return typer.Exit(EXIT_ABORTED)
+
+
+def _fail_authoring(exc: Exception) -> typer.Exit:
+    """Preserved-draft failures keep store semantics; editor/encoding failures are 125."""
+    if isinstance(exc, store.StoreError):
+        return _fail_store(exc)
+    return _fail(str(exc), EXIT_SKIT)
+
+
+def _fail_runner_changed() -> typer.Exit:
+    return _fail(
+        gettext("The runner row changed before it could be removed; inspect again."), EXIT_SKIT
+    )
+
+
+def _remove_question(entry: store.Entry) -> str:
+    """The removal ask, honest about what is actually at stake.
+
+    Three cases, not two. A kind with no original (a command template) has nothing to
+    promise about. A copy-mode entry whose original still exists gets the reassurance —
+    and that reassurance is exactly why people delete their working file, which is what
+    makes the third case matter: when the original is gone, skit's copy is the ONLY copy,
+    and repeating "your original file will not be deleted" there is the promise breaking
+    at the one moment it is load-bearing. The TUI modal already withheld the line;
+    launcher.original_survives is now the one predicate behind both faces.
+    """
+    name = entry.meta.name
+    stake = launcher.removal_stake(entry)
+    if stake == "original-safe":
+        return gettext('Remove "%(name)s"? Your original file will not be deleted.') % {
+            "name": name
+        }
+    if stake == "only-copy":
+        return gettext('Remove "%(name)s"? skit holds the only copy — it will be gone.') % {
+            "name": name
+        }
+    return gettext('Remove "%(name)s"?') % {"name": name}
+
+
+def _require_yes(yes: bool, no_input: bool, message: str) -> None:
+    """The destructive-command half of the non-interactive contract, in ONE place
+    (remove, preset delete, runner remove): in a pipe/CI or under --no-input, a missing
+    -y is a worded exit-2 refusal — never a typer.confirm that eats a line of piped
+    stdin or dies as click's bare "Aborted."."""
+    if not yes and (no_input or not _is_interactive()):
+        raise _fail(message, EXIT_USAGE)
+
+
 def _is_interactive() -> bool:
-    return sys.stdin.isatty() and sys.stdout.isatty()
+    """Whether skit may ask THIS user a question — on stdout, where every Prompt.ask and
+    Confirm.ask in this module writes.
+
+    Delegates to `interaction`, which is also what the gates BELOW cli.py read: two
+    implementations of "is anyone there?" disagreed about the same terminal in both
+    directions, and the flag that forbids prompting could only reach one of them."""
+    return interaction.allowed()
+
+
+def _forbid_interaction(no_input: bool) -> None:
+    """Record one invocation-wide non-interactive verdict before command work starts."""
+    if no_input:
+        interaction.forbid()
+
+
+def _edit_stored_copy(entry: store.Entry, target: Path) -> store.Entry:
+    """`skit edit`'s copy-mode session: a stored copy is skit's own, reincarnatable
+    path, so the identity is claimed, the editor works on a STAGED draft, and the save
+    lands through the identity-checked commit — a slug reissued mid-session keeps the
+    edit in the draft (named in the refusal) instead of overwriting the stranger."""
+    entry = store.claim_identity(entry)
+    draft = editor.edit_draft_path(entry.slug, target.suffix)
+    try:
+        edited = editor.edit_copy_staged(target, draft, kind=entry.meta.kind)
+    except (editor.EditorError, editor.EditedSourceError) as exc:
+        raise _fail(str(exc), EXIT_SKIT) from exc
+    if edited is not None:
+        payload, base_hash = edited
+        try:
+            store.commit_copy_edit(
+                entry.slug, payload, expected_id=entry.meta.id, expected_source_hash=base_hash
+            )
+        except store.StaleEntryError as exc:
+            raise _fail(editor.stale_edit_kept(str(exc), draft), EXIT_SKIT) from exc
+        editor.discard_draft(draft)
+    return entry
+
+
+def _claim_ask_and_remove(entry: store.Entry, name: str, *, yes: bool) -> str:
+    """remove's claimed, authorized tail: claim BEFORE the ask (stamping a legacy meta
+    so the deletion can be authorized by exact id — an empty expectation cannot
+    delete), ask, then delete against the identity the ask NAMED: a slug reissued
+    while the user answered refuses (StaleEntryError) instead of deleting the
+    stranger. A partly-deleted entry (a held-open file made rmtree a no-op) is a real,
+    worded failure with a recovery step in it — it reaches the user as skit's own
+    error, never a traceback."""
+    try:
+        entry = store.claim_identity(entry)
+    except store.StoreError as exc:
+        raise _fail_store(exc) from exc
+    if not yes:
+        _confirm_destructive(_remove_question(entry))
+    try:
+        return store.remove(name, expected_id=entry.meta.id)
+    except store.StoreError as exc:
+        raise _fail_store(exc) from exc
+
+
+def _remember_runner_pick(name: str) -> None:
+    """Best-effort last-pick memory, every CLI lane's one door (the TUI twins hold the
+    same line): the pick only prefills the NEXT picker, so a state dir that cannot
+    take the write must never veto the add or run the pick rides on — warn that the
+    prefill was lost, and keep going."""
+    try:
+        argstate.save_last_runner(name)
+    except argstate.StateWriteError as exc:
+        message = gettext("The runner pick couldn't be remembered for next time: %(error)s") % {
+            "error": exc.strerror or str(exc)
+        }
+        err_console.print(f"[yellow]{escape(message)}[/yellow]")
 
 
 def _wants_tui_form() -> bool:
@@ -100,6 +315,31 @@ def _cancelled_add() -> NoReturn:
     per lane."""
     console.print(f"[dim]{gettext('Cancelled — nothing was added.')}[/dim]")
     raise typer.Exit(EXIT_CANCELLED)
+
+
+def _declined_add() -> NoReturn:
+    """A deliberate no to an optional add offer is success, with no side effects."""
+    console.print(f"[dim]{gettext('Nothing was added.')}[/dim]")
+    raise typer.Exit(exitcodes.EXIT_SUCCESS)
+
+
+def _confirm_destructive(question: str) -> None:
+    """Ask before destroying something, and distinguish decline from abort.
+
+    `typer.confirm(..., abort=True)` dies as click's own bare `Aborted.` — an untranslated
+    English word, printed in RED so it reads as an error, at exit 1, which
+    docs/content/docs/cli.mdx reserves for the launched script's own code. Declining a
+    destructive question is the correct answer and exits 0. Ctrl-C/EOF instead aborts
+    an interactive flow already in progress and exits 130.
+    """
+    try:
+        answered_yes = typer.confirm(question)
+    except click.exceptions.Abort:  # Ctrl+D / EOF
+        console.print(f"[dim]{gettext('Cancelled — nothing was removed.')}[/dim]")
+        raise typer.Exit(EXIT_ABORTED) from None
+    if not answered_yes:
+        console.print(f"[dim]{gettext('Cancelled — nothing was removed.')}[/dim]")
+        raise typer.Exit(exitcodes.EXIT_SUCCESS)
 
 
 # --------------------------------------------------------------------------
@@ -160,7 +400,7 @@ def main(
         _maybe_first_run_setup()
         from .tui import run_menu
 
-        raise typer.Exit(run_menu())
+        raise _exit_passthrough(run_menu())
 
 
 # --------------------------------------------------------------------------
@@ -417,15 +657,15 @@ def _drafts_home() -> str:
 
 def _require_file(resolved: Path) -> None:
     if not resolved.exists():
-        raise store.StoreError(gettext("File not found: %(path)s") % {"path": str(resolved)})
+        raise store.NotFoundError(gettext("File not found: %(path)s") % {"path": str(resolved)})
     if not resolved.is_file():
-        raise store.StoreError(gettext("Not a file: %(path)s") % {"path": str(resolved)})
+        raise store.StoreUsageError(gettext("Not a file: %(path)s") % {"path": str(resolved)})
 
 
 def _require_exists(resolved: Path) -> None:
     """The exe lane's twin of _require_file (add_exe accepts any existing path)."""
     if not resolved.exists():
-        raise store.StoreError(gettext("File not found: %(path)s") % {"path": str(resolved)})
+        raise store.NotFoundError(gettext("File not found: %(path)s") % {"path": str(resolved)})
 
 
 def _parse_selection(answer: str, count: int) -> list[int]:
@@ -637,19 +877,11 @@ def _onboard_script_params(entry: store.Entry, kind_spec: LangSpec, no_input: bo
     if not specs:
         return []
     copy_path = entry.script_path
-    # This is a write-back path, so it must be byte-lossless (same discipline as _edit_params).
-    # Shell/fish scripts may legitimately contain arbitrary bytes; surrogateescape lets the
-    # comment-only metadata edit round-trip them instead of replacing each with U+FFFD. Fold to
-    # LF for the LF-based block engine, then restore the copy's own line-ending style so a CRLF
-    # script stays CRLF and the edit stays confined to the block it inserted.
-    raw = copy_path.read_bytes()
-    newline = detect_newline(raw)
-    current = raw.decode("utf-8", errors="surrogateescape")  # pragma: no mutate — codec alias
-    current = current.replace("\r\n", "\n").replace("\r", "\n")
-    written = restore_newline(kind_spec.params_io.write(current, specs), newline)
-    copy_path.write_bytes(
-        written.encode("utf-8", errors="surrogateescape")
-    )  # pragma: no mutate — codec alias
+    # Byte-lossless write-back through the one shared pair (rewrite.read_for_block_edit /
+    # write_block_edit): surrogateescape bytes, LF fold for the block engine, the copy's own
+    # newline style restored, atomic + mode-preserving.
+    current, newline = read_for_block_edit(copy_path)
+    write_block_edit(copy_path, kind_spec.params_io.write(current, specs), newline)
     return [s.name for s in specs]
 
 
@@ -694,16 +926,12 @@ def _onboard_python(
         params_specs = _onboard_params(text, entry.meta.name, no_input)
         if params_specs:
             copy_path = entry.script_path
-            # Byte-lossless write-back (same discipline as _edit_params): fold to LF for the
-            # LF-based PEP 723 block engine, then restore the copy's own line-ending style so a
-            # CRLF script stays CRLF instead of being re-expanded to the host os.linesep.
-            raw = copy_path.read_bytes()
-            newline = detect_newline(raw)
-            current = (
-                raw.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
-            )  # pragma: no mutate — codec alias
-            new_text = restore_newline(metawriter.write_params(current, params_specs), newline)
-            copy_path.write_bytes(new_text.encode("utf-8"))  # pragma: no mutate — codec alias
+            # The shared byte-lossless pair (rewrite.py) — surrogateescape included: the old
+            # strict decode here let a non-UTF-8 python file escape as a raw UnicodeDecodeError
+            # traceback after the entry was already stored, where the shell lane degraded
+            # gracefully on the same input.
+            current, newline = read_for_block_edit(copy_path)
+            write_block_edit(copy_path, metawriter.write_params(current, params_specs), newline)
             managed = [s.name for s in params_specs]
             secrets = [s.name for s in params_specs if s.secret]
     return entry, final_deps, managed, secrets
@@ -760,7 +988,6 @@ def _create_python_in_editor(
     exactly as a path-based python add would honor them. --no-input is refused outright:
     an editor session IS interaction, so the lane can't keep the never-prompt promise —
     the stdin lane is the non-interactive spelling."""
-    import tempfile
 
     if no_input:
         err_console.print(
@@ -798,7 +1025,7 @@ def _create_python_in_editor(
             % {"name": escape(name)}
             + _RED_CLOSE
         )
-        raise typer.Exit(1)
+        raise typer.Exit(EXIT_USAGE)
     fd, tmp_name = tempfile.mkstemp(
         suffix=".py", prefix="skit-new-", dir=_drafts_home()
     )  # pragma: no mutate
@@ -870,7 +1097,7 @@ def _create_python_in_editor(
         # The draft is the user's ONLY copy of what they just wrote — a failure must
         # never delete it. Tell them where it lives instead.
         _announce_kept_draft(tmp, resumable=True)
-        raise _fail(str(exc), 1) from exc
+        raise _fail_authoring(exc) from exc
     tmp.unlink(missing_ok=True)  # pragma: no mutate — success: the store holds the copy
     _print_add_summary(entry, deps, managed, secrets)
 
@@ -885,7 +1112,6 @@ def _add_from_stdin(
     """`skit add -`: ingest a script from stdin (e.g. `pbpaste | skit add - -n clip`).
     stdin is the script, so there is nobody to prompt: the non-interactive contract
     applies, and a name is required up front."""
-    import tempfile
 
     if not name:
         err_console.print(
@@ -901,7 +1127,7 @@ def _add_from_stdin(
         err_console.print(
             f"[red]{gettext('Nothing arrived on stdin, so there is nothing to add.')}[/red]"
         )
-        raise typer.Exit(1)
+        raise typer.Exit(EXIT_USAGE)
     fd, tmp_name = tempfile.mkstemp(
         suffix=".py", prefix="skit-stdin-", dir=_drafts_home()
     )  # pragma: no mutate
@@ -920,7 +1146,7 @@ def _add_from_stdin(
         )
     except store.StoreError as exc:
         _announce_kept_draft(tmp, resumable=True)
-        raise _fail(str(exc), 1) from exc
+        raise _fail_store(exc) from exc
     tmp.unlink(missing_ok=True)  # pragma: no mutate — success: the store holds the copy
     _print_add_summary(entry, deps, managed, secrets)
 
@@ -936,7 +1162,6 @@ def _add_script_from_stdin(
     lane existed, --kind on stdin was SILENTLY DROPPED and the text became a python
     entry — bash source stored as script.py and fed to `uv run --script` (a corrupted
     entry, in the codebase whose contract is refuse-never-drop)."""
-    import tempfile
 
     from .langs.registry import shebang_program
 
@@ -951,7 +1176,7 @@ def _add_script_from_stdin(
         err_console.print(
             f"[red]{gettext('Nothing arrived on stdin, so there is nothing to add.')}[/red]"
         )
-        raise typer.Exit(1)
+        raise typer.Exit(EXIT_USAGE)
     kind_spec = spec_for(kind)
     suffix = kind_spec.extensions[0] if kind_spec is not None and kind_spec.extensions else ".txt"
     fd, tmp_name = tempfile.mkstemp(
@@ -984,7 +1209,7 @@ def _add_script_from_stdin(
         # a mid-operation failure must not destroy it. (Usage refusals exit before
         # anything materializes — they lose only what re-running the pipe re-supplies.)
         _announce_kept_draft(tmp, resumable=True)
-        raise _fail(str(exc), 1) from exc
+        raise _fail_store(exc) from exc
     tmp.unlink(missing_ok=True)  # pragma: no mutate — success: the store holds the copy
     _print_add_summary(entry, deps, [], [])
 
@@ -1087,7 +1312,7 @@ def _ask_prompt_runner(interactive: bool, runner_opt: str | None) -> str:
     )
     if picked == "-":
         return ""
-    argstate.save_last_runner(picked)
+    _remember_runner_pick(picked)
     return picked
 
 
@@ -1112,7 +1337,7 @@ def _onboard_prompt(
     try:
         text = prompt_text.read(resolved)
     except prompt_text.PromptEncodingError as exc:
-        raise store.StoreError(str(exc)) from exc
+        raise store.StoreUsageError(str(exc)) from exc
     except OSError as exc:
         raise store.StoreError(
             gettext("Can't read %(path)s: %(error)s")
@@ -1180,7 +1405,7 @@ def _onboard_prompt(
     elif flooded and managed is None:
         # The auto path tripped the flood cap: nothing was managed, say so honestly.
         console.print(
-            f"[dim]{gettext('Detected %(count)s placeholders — too many to manage automatically, so none were. Manage the ones you need with: skit params %(name)s --add NAME, or turn insertion off with --no-interpolate.') % {'count': len(detected), 'name': escape(entry.meta.name)}}[/dim]"
+            f"[dim]{gettext('Detected %(count)s placeholders — too many to manage automatically, so none were. Manage the ones you need with: skit params %(name)s --add NAME, or turn insertion off with --no-interpolate.') % {'count': len(detected), 'name': escape(entry.slug)}}[/dim]"
         )
     if runner:
         console.print(
@@ -1202,7 +1427,6 @@ def _create_prompt_in_editor(
     on stdin instead (`skit add --prompt -n review < body.md`). --no-input in a terminal
     is refused with that same pipe spelling — an editor session IS interaction, and
     there is no body to read from a keyboard-attached stdin."""
-    import tempfile
 
     runner_opt = _validate_prompt_runner_opt(runner_opt)
     if not _is_interactive():
@@ -1234,7 +1458,7 @@ def _create_prompt_in_editor(
             % {"name": escape(name)}
             + _RED_CLOSE
         )
-        raise typer.Exit(1)
+        raise typer.Exit(EXIT_USAGE)
     fd, tmp_name = tempfile.mkstemp(
         suffix=".prompt.md", prefix="skit-new-", dir=_drafts_home()
     )  # pragma: no mutate
@@ -1273,7 +1497,7 @@ def _create_prompt_in_editor(
         # purpose: --runner was validated before the editor opened, and nothing else
         # in the prompt onboarding refuses — there is no post-editor exit to announce.)
         _announce_kept_draft(tmp, resumable=True)
-        raise _fail(str(exc), 1) from exc
+        raise _fail_authoring(exc) from exc
     tmp.unlink(missing_ok=True)  # pragma: no mutate — success: the store holds the copy
     _print_add_summary(entry, [], managed, [n for n in managed if is_secret_name(n)])
 
@@ -1287,7 +1511,6 @@ def _add_prompt_from_stdin(
 ) -> None:
     """The prompt twin of `skit add -`: the body arrives on stdin, so there is nobody to
     prompt — a name is required up front and every detected placeholder is managed."""
-    import tempfile
 
     if not name:
         err_console.print(
@@ -1308,12 +1531,12 @@ def _add_prompt_from_stdin(
     try:
         text = prompt_text.decode(raw, Path("<stdin>"))
     except prompt_text.PromptEncodingError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail(str(exc), EXIT_USAGE) from exc
     if not text.strip():
         err_console.print(
             f"[red]{gettext('Nothing arrived on stdin, so there is nothing to add.')}[/red]"
         )
-        raise typer.Exit(1)
+        raise typer.Exit(EXIT_USAGE)
     fd, tmp_name = tempfile.mkstemp(
         suffix=".prompt.md", prefix="skit-stdin-", dir=_drafts_home()
     )  # pragma: no mutate
@@ -1336,7 +1559,7 @@ def _add_prompt_from_stdin(
         # a mid-operation failure must not destroy it. (Usage refusals exit before
         # anything materializes — they lose only what re-running the pipe re-supplies.)
         _announce_kept_draft(tmp, resumable=True)
-        raise _fail(str(exc), 1) from exc
+        raise _fail_store(exc) from exc
     tmp.unlink(missing_ok=True)  # pragma: no mutate — success: the store holds the copy
     _print_add_summary(entry, [], managed, [n for n in managed if is_secret_name(n)])
 
@@ -1580,6 +1803,10 @@ def add(
     # Validate the whole lane x flag matrix up front. Pairwise, lane-local guards leave
     # unchecked combinations able to drop (or scanner-override) explicit flags.
     # Refuse-never-drop therefore applies to every cell in the table.
+    # The non-interactive verdict crosses the layer boundary here, once: gates BELOW
+    # cli.py (uvman's download consent) cannot see this flag and used to re-derive
+    # interactivity from isatty, which blocked an agent's run on input() forever.
+    _forbid_interaction(no_input)
     if prompt_kind and (edit_new or exe or cmd is not None or kind is not None):
         err_console.print(
             f"[red]{gettext('--prompt names the kind outright — drop --edit/--exe/--kind/--cmd.')}[/red]"
@@ -1887,7 +2114,7 @@ def add(
                     default=True,
                     console=console,
                 ):
-                    _cancelled_add()
+                    _declined_add()
                 kind = "exe"
             else:
                 _require_file(resolved)
@@ -2195,7 +2422,7 @@ def add(
                         no_input=no_input,
                     )
     except store.StoreError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail_store(exc) from exc
     if lane == "path" and entry.meta.mode == "copy":
         # A resumed draft that reached the store is done accumulating: the same
         # "success: the store holds the copy" unlink every authoring lane performs.
@@ -2216,7 +2443,7 @@ def _print_add_summary(
     """One consolidated block after a successful add."""
     entry_spec = spec_for(entry.meta.kind)
     mode_note = (
-        gettext("(%(mode)s mode)") % {"mode": entry.meta.mode}
+        gettext("(%(mode)s mode)") % {"mode": kindnames.mode_label(entry.meta.mode)}
         if entry_spec is not None and entry_spec.supports_modes
         else ""
     )
@@ -2265,6 +2492,22 @@ def list_cmd(
     # missing-target mark, all of which the index already holds. Reading a meta.toml per
     # entry to render them cost one file read each on the path agents call most.
     entries = store.list_summaries()
+    # An empty listing and an empty library are not the same fact — a lost index empties
+    # the listing while every entry sits untouched on disk — and neither face may assert
+    # the second having only observed the first. ONE msgid, two registers: stdout stays
+    # exactly one JSON array for machines, so the machine face carries the signal on
+    # stderr like every other skit-side warning (drift banner, malformed-value lines).
+    lost = [] if entries else store.unindexed_slugs()
+    lost_line = (
+        ngettext(
+            "The index lists no entries, but %(count)s stored entry is still on disk. Recover it with: skit doctor --rebuild",
+            "The index lists no entries, but %(count)s stored entries are still on disk. Recover them with: skit doctor --rebuild",
+            len(lost),
+        )
+        % {"count": len(lost)}
+        if lost
+        else ""
+    )
     if as_json:
         rows = []
         for e in entries:
@@ -2282,8 +2525,17 @@ def list_cmd(
                 }
             )
         console.print_json(json.dumps(rows, ensure_ascii=False))
+        if lost_line:
+            err_console.print(f"[yellow]{escape(lost_line)}[/yellow]")
         return
     if not entries:
+        # "No entries yet" is an ASSERTION about the library, and it was made without ever
+        # looking at it: a lost index emptied this listing and the copy then invited the
+        # user to re-add scripts they already own. The recovery is one command, and it is
+        # worth more than the invitation.
+        if lost_line:
+            console.print(lost_line)
+            return
         console.print(gettext("No entries yet. Add one with: skit add <path>"))
         return
     from rich.table import Table
@@ -2366,7 +2618,8 @@ def _field_to_dict(f: flows.FormField) -> dict[str, object]:
 def _print_show_human(entry: store.Entry, plan: flows.FormPlan, presets: list[str]) -> None:
     meta = entry.meta
     console.print(
-        f"[bold]{escape(meta.name)}[/bold]  [dim]({kindnames.kind_label(meta.kind)} · {meta.mode})[/dim]"
+        f"[bold]{escape(meta.name)}[/bold]  "
+        f"[dim]({kindnames.kind_label(meta.kind)} · {kindnames.mode_label(meta.mode)})[/dim]"
     )
     if meta.description:
         console.print(f"  {escape(meta.description)}")
@@ -2375,7 +2628,7 @@ def _print_show_human(entry: store.Entry, plan: flows.FormPlan, presets: list[st
         console.print(f"  {gettext('Source: %(path)s') % {'path': escape(str(meta.source))}}")
     if meta.workdir != "origin":
         console.print(
-            f"  {gettext('Working directory: %(dir)s') % {'dir': escape(str(meta.workdir))}}"
+            f"  {gettext('Working directory: %(dir)s') % {'dir': escape(kindnames.workdir_label(meta.workdir))}}"
         )
     if meta.interpreter:
         console.print(
@@ -2481,7 +2734,7 @@ def show(
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail_not_found(exc) from exc
     if entry.meta.kind == "prompt":
         # plan_for_entry deliberately stays total for TUI composition and degrades an
         # unreadable prompt to no fields.  `show` is a read contract, however: reporting
@@ -2535,28 +2788,21 @@ def show(
 def remove(
     name: str = _SCRIPT_ARG,
     yes: bool = typer.Option(False, "--yes", "-y", help=gettext("Skip confirmation")),
+    no_input: bool = typer.Option(False, "--no-input", help=gettext("Never prompt")),
 ) -> None:
     """Remove a script (copy mode deletes the copy in the store; the original is untouched)."""
+    # One verdict for the whole invocation (interaction.allowed): gates BELOW
+    # cli.py cannot see this flag, and used to re-derive interactivity from
+    # isatty — which blocked an agent on input() under the flag that forbids it.
+    _forbid_interaction(no_input)
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
-        raise _fail(str(exc), 1) from exc
-    if not yes:
-        entry_spec = spec_for(entry.meta.kind)
-        if entry_spec is not None and not entry_spec.has_original_file:
-            question = gettext('Remove "%(name)s"?') % {"name": entry.meta.name}
-        else:
-            question = gettext('Remove "%(name)s"? Your original file will not be deleted.') % {
-                "name": entry.meta.name
-            }
-        typer.confirm(question, abort=True)
-    try:
-        removed = store.remove(name)
-    except store.StoreError as exc:
-        # A partly-deleted entry (a held-open file made rmtree a no-op) is a real, worded
-        # failure with a recovery step in it — it must reach the user as skit's own error,
-        # not as a traceback.
-        raise _fail(str(exc), 1) from exc
+        raise _fail_not_found(exc) from exc
+    _require_yes(
+        yes, no_input, gettext("Confirmation is required; pass --yes to remove the entry.")
+    )
+    removed = _claim_ask_and_remove(entry, name, yes=yes)
     console.print(f"[green]{gettext('Removed: %(name)s') % {'name': escape(removed)}}[/green]")
 
 
@@ -2569,8 +2815,10 @@ def rename(
     and remove + re-add (the only workaround before) destroyed presets and history."""
     try:
         entry = store.rename(name, new_name)
-    except (store.NotFoundError, store.StoreError) as exc:
-        raise _fail(str(exc), 1) from exc
+    except store.NotFoundError as exc:
+        raise _fail_not_found(exc) from exc
+    except store.StoreError as exc:
+        raise _fail_store(exc) from exc
     console.print(
         f"[green]{gettext('Renamed to %(name)s.') % {'name': escape(entry.meta.name)}}[/green]"
     )
@@ -2586,7 +2834,7 @@ def describe(
     try:
         entry = store.update_description(name, text.strip())
     except store.NotFoundError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail_not_found(exc) from exc
     if entry.meta.description:
         console.print(
             f"[green]{gettext('Description updated for %(name)s.') % {'name': escape(entry.meta.name)}}[/green]"
@@ -2597,13 +2845,20 @@ def describe(
         )
 
 
-def _offer_create_in_editor(name: str) -> None:
-    """`skit edit <unknown>`: offer to create a brand-new script under that name."""
-    if not _is_interactive():
+def _offer_create_in_editor(name: str, *, no_input: bool = False) -> None:
+    """`skit edit <unknown>`: offer to create a brand-new script under that name.
+
+    With no one to ask, that offer cannot happen and the command is simply looking up a
+    name that is not there — the same condition every other entry-name command answers
+    127 for. It answered 1, which docs/content/docs/cli.mdx reserves for the launched
+    script's own exit code, so an agent could not tell "no such entry" from "your script
+    failed". `edit` never raises store.NotFoundError (it lands here instead), which is
+    why round 10's sweep across the other ten commands could not see it."""
+    if no_input or not _is_interactive():
         err_console.print(
             f"[red]{gettext('No editable entry named %(name)s.') % {'name': escape(name)}}[/red]"
         )
-        raise typer.Exit(1)
+        raise typer.Exit(EXIT_NOT_FOUND)
     if not Confirm.ask(
         gettext('No editable entry named "%(name)s". Create a script now?')
         % {"name": escape(name)},
@@ -2623,28 +2878,19 @@ def _reconcile_prompt_after_edit(entry: store.Entry) -> None:
     interactive names the new placeholders and points at the `--add` escape."""
     from .langs.prompt import analyzer as prompt_analyzer
 
-    new = store.unmanaged_prompt_placeholders(store.resolve(entry.slug))
+    # Claimed for the picker's own hold: the wait below is user-paced, and the write
+    # at its end must be authorized against THIS prompt — never whoever owns the slug
+    # by the time the user finishes picking.
+    entry = store.claim_identity(entry)
+    new = store.unmanaged_prompt_placeholders(entry)
     if not new:
         return
-    if not _is_interactive():
-        # The exact wording `skit params` prints — one rule, two surfaces, so an
-        # automated `skit edit` reports unmanaged variables the same way the inspector
-        # does (and points at the same `--add` escape).
-        names, remaining = prompt_analyzer.preview_names(new)
-        if remaining:
-            message = ngettext(
-                "Detected but not yet managed: %(names)s … and %(count)d more candidate "
-                "(use --add to manage them)",
-                "Detected but not yet managed: %(names)s … and %(count)d more candidates "
-                "(use --add to manage them)",
-                remaining,
-            ) % {"names": escape(names), "count": remaining}
-        else:
-            message = gettext(
-                "Detected but not yet managed: %(names)s (use --add to manage them)"
-            ) % {"names": escape(names)}
-        console.print(f"[dim]{message}[/dim]")
-        return
+    # No non-interactive branch here, and there must not be one: `skit edit` refuses
+    # before the editor opens unless skit may prompt (round 11's gate, round 12's front
+    # door), so reaching this line means we are at a terminal. The branch that used to
+    # sit here could only be entered by a test patching interactivity AFTER the gate had
+    # already passed — a state the product cannot be in. Coverage cannot tell an
+    # unreachable branch from a covered one; this audit has deleted several.
     flooded = len(new) > prompt_analyzer.AUTO_MANAGE_LIMIT
     if _wants_tui_form():
         # form=tui hosts the panel, plain keeps the line prompts — the add flow's
@@ -2680,7 +2926,14 @@ def _reconcile_prompt_after_edit(entry: store.Entry) -> None:
     if not picked:
         return
     existing = list(entry.meta.params or [])
-    store.write_prompt_managed(entry.slug, existing + [n for n in picked if n not in existing])
+    try:
+        store.write_prompt_managed(
+            entry.slug,
+            existing + [n for n in picked if n not in existing],
+            expected_id=entry.meta.id,
+        )
+    except store.StaleEntryError as exc:
+        raise _fail(str(exc), EXIT_SKIT) from exc
     console.print(
         f"[green]{gettext('Now managed: %(names)s') % {'names': ', '.join(escape(n) for n in picked)}}[/green]"
     )
@@ -2692,42 +2945,60 @@ def _reconcile_prompt_after_edit(entry: store.Entry) -> None:
     ),
     epilog=gettext("Example:  skit edit resize"),
 )
-def edit(name: str = _SCRIPT_ARG) -> None:
+def edit(
+    name: str = _SCRIPT_ARG,
+    no_input: bool = typer.Option(False, "--no-input", help=gettext("Never prompt")),
+) -> None:
     """Open a registered script or prompt source in your editor."""
+    # `edit` is inherently interactive, so --no-input here means "refuse, don't hang"
+    # rather than "proceed silently". It is the ONLY way a caller under a pty with nobody
+    # typing — an agent harness, a `script`-wrapped CI job — can say there is no human:
+    # isatty is True there, so the terminal check alone cannot tell. Every sibling that
+    # can prompt takes this flag; `edit` was the one that could prompt and didn't.
+    _forbid_interaction(no_input)
     try:
         entry = store.resolve(name)
     except store.NotFoundError:
-        _offer_create_in_editor(name)
+        _offer_create_in_editor(name, no_input=no_input)
         return
-    entry_spec = spec_for(entry.meta.kind)
-    if entry_spec is None or not entry_spec.editable:
+    plan = launcher.plan_edit(entry)
+    if plan.refusal is not None:
+        # Exit code per REASON, from the contract every other entry-name command follows:
+        # a kind that cannot be edited is a usage error (2); a target that is gone is the
+        # 127 `skit run` already answers for the same condition. `edit` used to answer 1
+        # for all of them — a code docs/content/docs/cli.mdx reserves for the launched
+        # script, so an agent could not tell "no such file" from "your script failed".
         raise _fail(
-            gettext("%(name)s has no editable source (programs and command templates run as-is).")
-            % {"name": entry.meta.name},
-            1,
+            launcher.edit_refusal_message(plan.refusal, entry),
+            EXIT_USAGE if plan.refusal == "not-editable" else EXIT_NOT_FOUND,
         )
-    if entry.meta.mode == "reference":
-        source = Path(entry.meta.source)
-        if not source.exists():
-            raise _fail(
-                gettext("%(name)s: the referenced source file is gone: %(path)s")
-                % {"name": entry.meta.name, "path": str(source)},
-                1,
-            )
+    target = plan.target
+    assert target is not None  # noqa: S101 — refusal is None, so plan_edit gave a target
+    if plan.edits_original:
         console.print(
-            f"[dim]{gettext('Editing the original file (reference mode): %(path)s') % {'path': escape(str(source))}}[/dim]"
+            f"[dim]{gettext('Editing the original file (reference mode): %(path)s') % {'path': escape(str(target))}}[/dim]"
         )
-        target = source
-    else:
-        target = entry.script_path
-        if not target.exists():
-            raise _fail(
-                gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}, 1
+    # The interactivity refusal belongs at the FRONT DOOR, not deep in editor.py: down
+    # there it shares one exception class with "the editor could not be launched", so the
+    # two could only ever get one exit code. Here it can name the resolved file, which is
+    # the thing a non-interactive caller can actually act on.
+    if no_input or not _is_interactive():
+        raise _fail(
+            gettext(
+                "Editing %(name)s needs an interactive terminal — not a pipe, CI, or "
+                "--no-input. Edit the file directly instead: %(path)s"
             )
-    try:
-        editor.open_entry_in_editor(target, kind=entry.meta.kind)
-    except (editor.EditorError, editor.EditedSourceError) as exc:
-        raise _fail(str(exc), 1) from exc
+            % {"name": entry.meta.name, "path": str(target)},
+            EXIT_USAGE,
+        )
+    if plan.edits_original:
+        # Reference mode edits the user's OWN file — identity-independent, direct.
+        try:
+            editor.open_entry_in_editor(target, kind=entry.meta.kind)
+        except (editor.EditorError, editor.EditedSourceError) as exc:
+            raise _fail(str(exc), EXIT_SKIT) from exc
+    else:
+        entry = _edit_stored_copy(entry, target)
     console.print(
         f"[green]{gettext('Saved %(name)s.') % {'name': escape(entry.meta.name)}}[/green]"
     )
@@ -2895,6 +3166,8 @@ def _resolve_run_runner(
     names = [r.name for r in runners]
     chosen = runner_opt.strip() if runner_opt is not None else entry.meta.runner
     picked = runner_opt is not None
+    if runner_opt is not None and not chosen:
+        raise _fail(gettext("--runner needs a configured runner name."), EXIT_USAGE)
     if not chosen and not no_input and _is_interactive() and names:
         last = argstate.load_last_runner()
         console.print(f"[dim]{_custom_runner_hint()}[/dim]")
@@ -2917,9 +3190,10 @@ def _resolve_run_runner(
         raise _fail(
             gettext(
                 "No runner selected for %(name)s. Pass --runner NAME, or pin one with: "
-                "skit params %(name)s --runner NAME"
+                "skit params %(target)s --runner NAME"
             )
-            % {"name": entry.meta.name},
+            # Prose gets the display name; the paste-able command gets the slug.
+            % {"name": entry.meta.name, "target": entry.slug},
             EXIT_NOT_EXECUTABLE,
         )
     found = next((r for r in runners if r.name == chosen), None)
@@ -2930,10 +3204,10 @@ def _resolve_run_runner(
                 "runners with: skit runner list"
             )
             % {"runner": chosen, "names": ", ".join(names) or "—"},
-            EXIT_NOT_EXECUTABLE,
+            EXIT_USAGE if runner_opt is not None else EXIT_NOT_EXECUTABLE,
         )
     if picked:
-        argstate.save_last_runner(chosen)
+        _remember_runner_pick(chosen)
     return found
 
 
@@ -3000,12 +3274,16 @@ def run(
 ) -> None:
     """Run an entry straight through the terminal. skit's own failures exit 125/126/127;
     the launched process's exit code passes through untouched."""
+    # One verdict for the whole invocation (interaction.allowed): gates BELOW
+    # cli.py cannot see this flag, and used to re-derive interactivity from
+    # isatty — which blocked an agent on input() under the flag that forbids it.
+    _forbid_interaction(no_input)
     from . import flows
 
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
-        raise _fail(str(exc), EXIT_NOT_FOUND) from exc
+        raise _fail_not_found(exc) from exc
     _validate_preset(entry, preset)
     # Form-shaped flags contradict "as-is": refusing beats silently dropping a preset
     # (or persisting an empty one) the way a bare warning-less run would. Checked before
@@ -3037,12 +3315,9 @@ def run(
             ) % {"kind": entry.meta.kind}
         err_console.print("[red]" + message + _RED_CLOSE)
         raise typer.Exit(EXIT_USAGE)
-    if forget_args:
-        # An imperative clear — but placed BELOW every usage gate: an exit-2
-        # invocation must leave no fingerprints (the same rule the --raw refusal
-        # states three lines up). The remembered argv tail was previously
-        # uneraseable from the CLI (an empty `--` is indistinguishable from none).
-        argstate.save_last(entry.slug, extra_args=[])
+    # Claimed AFTER every static refusal: a refused invocation leaves no fingerprints
+    # (_on_accepted's doctrine), and stamping a pre-id meta is a write.
+    entry = store.claim_identity(entry)
     # One interaction paradigm per run, not two glued in sequence: when the inline
     # mini-form is about to open for a prompt entry anyway, the runner question moves
     # INTO the form (the same picker row the TUI workbench shows) instead of a bare
@@ -3133,7 +3408,7 @@ def run(
                     # Track the interaction, not final-value inequality: moving away
                     # and back to the pin is still a deliberate pick, while an
                     # untouched pin never writes last-picked state.
-                    argstate.save_last_runner(picked_runner)
+                    _remember_runner_pick(picked_runner)
     else:
         values = prefilled
         errors = _headless_validation_errors(plan, values, extra)
@@ -3146,28 +3421,56 @@ def run(
     # Every other kind reuses its remembered tail — a script replays its argv, a prompt or
     # command its agent/command flags (a remembered `--model` is config, like the pinned
     # runner), matching the run form and the TUI's `r` rerun.
-    if not extra and not raw:
-        last_extra = argstate.load_state(entry.slug)["extra_args"]
+    # This run's own `-- args` came through the user's shell: never re-expanded
+    # (extra_raw=False). A replayed tail instead follows its recorded provenance, so a
+    # tail typed into the TUI form (raw intent — {today}, globs) expands here exactly
+    # as it does under `r`, and the two faces launch the same argv from the same state.
+    extra_raw = False
+    # --forget-args suppresses the REUSE too, not just the store: "forget it" that
+    # replayed the tail one last time — and then wrote it straight back after the run —
+    # would forget nothing. The CLEAR is deferred to _on_accepted so a refused invocation
+    # leaves the tail alone; this half has to be decided here, before assembly.
+    if not extra and not raw and not forget_args:
+        state = argstate.load_state(entry.slug)
+        last_extra = state["extra_args"]
         if last_extra:
             extra = last_extra
+            extra_raw = state["extra_args_raw"]
             # stderr, like the drift banner: skit chrome must not pollute the script's
             # own stdout, and agents watch stderr for skit-side signals (SKILL.md).
             err_console.print(
                 f"[dim]{gettext('Reusing your last arguments: %(args)s') % {'args': ' '.join(escape(a) for a in extra)}}[/dim]"
             )
+            if not extra_raw and flows.tail_looks_expandable(extra):
+                # De-silence the literal replay exactly where it could surprise: a tail
+                # with token/glob/leading-~ syntax but no raw marker (captured via the
+                # CLI — or remembered before provenance existed) passes untouched.
+                err_console.print(f"[dim]{escape(flows.as_is_note())}[/dim]")
     try:
-        asm = flows.assemble(plan, values, extra, cwd=Path.cwd(), expand_extra=False)
+        asm = flows.assemble(plan, values, extra, cwd=Path.cwd(), expand_extra=extra_raw)
     except flows.FormError as exc:
         raise _fail(str(exc), EXIT_SKIT) from exc
 
-    def _persist_preset() -> None:
-        # Deferred until validation/launch has ACCEPTED the invocation: a refusal
-        # leaves no fingerprints (the --forget-args rule ten lines up), and a preset
-        # written by a run that then exited 125 would be exactly such a fingerprint.
+    def _on_accepted() -> None:
+        """Every side effect this invocation is allowed to leave behind, in ONE place,
+        reached only once validation/launch has ACCEPTED it: a refused invocation leaves
+        no fingerprints.
+
+        --forget-args used to clear the remembered tail EAGERLY, above four gates that
+        can still refuse (an unresolvable runner → 126, --save-preset on a field-less
+        entry → 2, an unknown --set name → 2, a headless validation error → 125), so
+        `skit run x --forget-args --set typo=1` destroyed the tail and then exited 2.
+        The comment beside it stated the invariant it was breaking. A rule enforced by
+        WHERE a line sits is a rule the next gate can break by being added above it; one
+        acceptance point cannot be outflanked."""
+        if forget_args:
+            # The remembered argv tail is otherwise uneraseable from the CLI: an empty
+            # `--` is indistinguishable from no `--` at all.
+            flows.clear_remembered_tail(entry)
         if not save_preset:
             return
-        argstate.save_preset(
-            entry.slug,
+        saved = flows.save_preset_for(
+            entry,
             save_preset,
             # A preset is the exact snapshot of this run — a cleared field included, so
             # it pins "stays cleared" over whatever last-used remembers (secrets are
@@ -3175,6 +3478,12 @@ def run(
             values,
             secret_names=plan.secret_names,
         )
+        if not saved:
+            message = gettext(
+                'Preset "%(preset)s" wasn\'t saved — %(name)s is no longer in the library.'
+            ) % {"preset": escape(save_preset), "name": escape(entry.meta.name)}
+            err_console.print(f"[yellow]{message}[/yellow]")
+            return
         # stderr, like every run-adjacent skit line ("Reusing your last arguments",
         # the drift banner): the script owns stdout, and on a normal run this prints
         # after the script's output — appending green chrome to a piped stream would
@@ -3193,7 +3502,7 @@ def run(
             raise _fail(str(exc), EXIT_NOT_FOUND) from exc
         except launcher.LaunchError as exc:
             raise _fail(str(exc), EXIT_SKIT) from exc
-        _persist_preset()
+        _on_accepted()
         if validated_prompt is not None and validated_prompt[1]:
             err_console.print(f"[yellow]{escape(validated_prompt[1])}[/yellow]")
         # No temp copy is written for a dry run, so the command line shows the original
@@ -3224,29 +3533,40 @@ def run(
         # values are still the values the user asked to keep (the rule below).
         # Without this, --save-preset on a server/watch script would be silently
         # dropped by the very keystroke that normally ends it.
-        _persist_preset()
+        persistence_error = flows.post_run_persistence_error(_on_accepted)
+        if persistence_error is not None:
+            err_console.print(f"[yellow]{escape(persistence_error)}[/yellow]")
         raise
     code = outcome.code
     if code is None:
-        # How a RunOutcome failure maps to skit's exit-code contract (docker
-        # convention). The numbers live in flows so the TUI's exit-after-run path
-        # shares them.
-        raise _fail(outcome.message, flows.FAILURE_EXIT_CODES[outcome.failure])
+        raise _fail(
+            outcome.message,
+            exitcodes.exit_code_for_failure(flows.failure_reason(outcome)),
+        )
+
     # The launch was accepted (the script's own exit code is the script's business —
     # its values are still the values the user asked to keep).
-    _persist_preset()
-    if raw:
-        # The escape hatch leaves no fingerprints: it consulted no form memory, so it
-        # must not rewrite it either (values/extra args survive for the next real run).
-        # The run stamp still lands — Library sorting and `r` treat it as a run.
-        argstate.record_run(entry.slug, code, at=models.now_iso())
-    else:
-        flows.save_after_run(entry.slug, plan, values, extra, code, at=models.now_iso())
+    def _persist_accepted_run() -> None:
+        _on_accepted()
+        if raw:
+            # The escape hatch leaves no fingerprints: it consulted no form memory, so
+            # it must not rewrite it either — values/extra args survive for the next
+            # real run, minus the C3 scrub of now-secret names every accepted run does.
+            # The run stamp still lands — Library sorting and `r` treat it as a run.
+            flows.save_after_raw_run(entry, code, at=models.now_iso())
+        else:
+            flows.save_after_run(
+                entry, plan, values, extra, code, at=models.now_iso(), extra_raw=extra_raw
+            )
+
+    persistence_error = flows.post_run_persistence_error(_persist_accepted_run)
+    if persistence_error is not None:
+        err_console.print(f"[yellow]{escape(persistence_error)}[/yellow]")
     if code != 0:
         err_console.print(
             f"[yellow]{gettext('Run exited with code %(code)s') % {'code': code}}[/yellow]"
         )
-    raise typer.Exit(code)
+    raise _exit_passthrough(code)
 
 
 # --------------------------------------------------------------------------
@@ -3414,10 +3734,10 @@ def runner_add(
         raise _fail(
             gettext("The runner %(name)s already exists — pass --force to replace its command.")
             % {"name": name},
-            1,
+            EXIT_USAGE,
         ) from None
     except config.PromptRunnerConfigError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail(str(exc), EXIT_SKIT) from exc
     if exists:
         console.print(
             f"[green]{gettext('Runner %(name)s updated: %(command)s') % {'name': escape(name), 'command': escape(_join_runner_argv(list(argv)))}}[/green]"
@@ -3441,6 +3761,10 @@ def runner_remove(
     yes: bool = typer.Option(False, "--yes", "-y", help=gettext("Skip confirmation")),
     no_input: bool = typer.Option(False, "--no-input", help=gettext("Never prompt")),
 ) -> None:
+    # One verdict for the whole invocation (interaction.allowed): gates BELOW
+    # cli.py cannot see this flag, and used to re-derive interactivity from
+    # isatty — which blocked an agent on input() under the flag that forbids it.
+    _forbid_interaction(no_input)
     if (name is None) == (row_opt is None):
         raise _fail(gettext("Pass exactly one runner name or --row INDEX."), EXIT_USAGE)
     if name is not None and not name.strip():
@@ -3473,7 +3797,7 @@ def runner_remove(
             raise _fail(
                 gettext("Unknown runner row: %(row)s. Inspect with: skit runner list --all")
                 % {"row": row_ref},
-                1,
+                EXIT_USAGE,
             )
         target = targets[0]
         if target.invalid_reason is None:
@@ -3501,7 +3825,7 @@ def runner_remove(
             raise _fail(
                 gettext("Unknown runner: %(runner)s. Configured runners: %(names)s")
                 % {"runner": target_name, "names": ", ".join(configured) or "—"},
-                1,
+                EXIT_USAGE,
             )
         question = gettext('Remove the agent "%(name)s"?') % {"name": target_name}
     # Exact-row mode repairs one malformed row; it does not remove the active stable
@@ -3520,14 +3844,13 @@ def runner_remove(
             % {"count": pinned_count}
             + "[/yellow]"
         )
-    if not yes and (no_input or not _is_interactive()):
-        raise _fail(
-            gettext("Confirmation is required; pass --yes to remove the runner."), EXIT_USAGE
-        )
+    _require_yes(
+        yes, no_input, gettext("Confirmation is required; pass --yes to remove the runner.")
+    )
     if not yes:
         # The same ask its two siblings give: skit remove confirms unless -y, and the
         # TUI's agent removal confirms — deleting config rows is not a one-keystroke act.
-        typer.confirm(question, abort=True)
+        _confirm_destructive(question)
     if row_opt is not None:
         # The row branch assigns target after its non-empty lookup; cast carries that
         # proven invariant without an unreachable defensive branch that can never fire.
@@ -3537,7 +3860,7 @@ def runner_remove(
     else:
         removed = config.remove_prompt_runner(target_name, expected=targets)
     if not removed:  # changed concurrently after the read above
-        raise _fail(gettext("The runner row changed before it could be removed; inspect again."), 1)
+        raise _fail_runner_changed()
     if row_opt is None:
         console.print(
             f"[green]{gettext('Runner %(name)s removed.') % {'name': escape(target_name)}}[/green]"
@@ -3560,6 +3883,54 @@ preset_app = typer.Typer(
 app.add_typer(preset_app, name="preset")
 
 
+def _preset_values(
+    entry: store.Entry,
+    plan: flows.FormPlan,
+    *,
+    from_last: bool,
+) -> dict[str, str]:
+    """Resolve one preset snapshot without inventing user input in a headless process."""
+    if from_last:
+        state = argstate.load_state(entry.slug)
+        if not state["last_run"] and not state["values"]:
+            raise _fail(
+                gettext("%(name)s has no remembered values yet — run it once first.")
+                % {"name": entry.meta.name},
+                EXIT_USAGE,
+            )
+        keys = {f.key for f in plan.fields}
+        last_snapshot = state["last_run"].get("values")
+        if isinstance(last_snapshot, dict):
+            # The exact accepted invocation, filtered only for fields removed since
+            # that run. Never overlay today's defaults: a changed/new definition did
+            # not participate in the historical run this command promises to save.
+            return {k: str(v) for k, v in last_snapshot.items() if k in keys}
+        if state["last_run"]:
+            # Legacy state with a run stamp but no exact snapshot cannot be rebuilt:
+            # remembered values deliberately omitted accepted defaults. Asking for a
+            # fresh run is honest; current defaults would fabricate history.
+            raise _fail(
+                gettext("%(name)s has no remembered values yet — run it once first.")
+                % {"name": entry.meta.name},
+                EXIT_USAGE,
+            )
+        # Older state from before run stamps existed may still have explicit
+        # last-used values. Preserve that narrow compatibility lane without
+        # inventing missing defaults or newly-added fields.
+        return {k: v for k, v in state["values"].items() if k in keys}
+    if not _is_interactive():
+        raise _fail(
+            gettext(
+                "Saving current values needs an interactive terminal; pass --from-last "
+                "to save the last run instead."
+            ),
+            EXIT_USAGE,
+        )
+    from . import flows, promptform
+
+    return promptform.collect(plan, flows.prefill(plan, entry.slug), console=console)
+
+
 @preset_app.command("save", help=gettext("Save a set of parameter values as a named preset."))
 def preset_save(
     name: str = _SCRIPT_ARG,
@@ -3569,15 +3940,17 @@ def preset_save(
         "--from-last",
         help=gettext("Save the last run's values without asking (automation-friendly)"),
     ),
+    no_input: bool = typer.Option(False, "--no-input", help=gettext("Never prompt")),
 ) -> None:
     """Save a named preset: interactively, or straight from the last run with --from-last.
     Secret values are never persisted (C3)."""
-    from . import flows, promptform
+    _forbid_interaction(no_input)
+    from . import flows
 
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail_not_found(exc) from exc
     plan = flows.plan_for_entry(entry)
     if not plan.fields:
         raise _fail(
@@ -3585,40 +3958,9 @@ def preset_save(
             % {"name": entry.meta.name},
             EXIT_USAGE,
         )
-    if from_last:
-        state = argstate.load_state(entry.slug)
-        if not state["last_run"] and not state["values"]:
-            raise _fail(
-                gettext("%(name)s has no remembered values yet — run it once first.")
-                % {"name": entry.meta.name},
-                1,
-            )
-        keys = {f.key for f in plan.fields}
-        last_snapshot = state["last_run"].get("values")
-        if isinstance(last_snapshot, dict):
-            # The exact accepted invocation, filtered only for fields removed since
-            # that run. Never overlay today's defaults: a changed/new definition did
-            # not participate in the historical run this command promises to save.
-            values = {k: str(v) for k, v in last_snapshot.items() if k in keys}
-        elif state["last_run"]:
-            # Legacy state with a run stamp but no exact snapshot cannot be rebuilt:
-            # remembered values deliberately omitted accepted defaults. Asking for a
-            # fresh run is honest; current defaults would fabricate history.
-            raise _fail(
-                gettext("%(name)s has no remembered values yet — run it once first.")
-                % {"name": entry.meta.name},
-                1,
-            )
-        else:
-            # Older state from before run stamps existed may still have explicit
-            # last-used values. Preserve that narrow compatibility lane without
-            # inventing missing defaults or newly-added fields.
-            values = {k: v for k, v in state["values"].items() if k in keys}
-    elif _is_interactive():
-        values = promptform.collect(plan, flows.prefill(plan, entry.slug), console=console)
-    else:
-        # Non-interactive contract: don't prompt — save what the prefill already knows.
-        values = flows.prefill(plan, entry.slug)
+    # Claimed at hold-start (post-refusal): the intake below can wait on a human.
+    entry = store.claim_identity(entry)
+    values = _preset_values(entry, plan, from_last=from_last)
     secret_overlap = plan.secret_names & values.keys()
     if secret_overlap:
         console.print(
@@ -3627,17 +3969,7 @@ def preset_save(
             % {"names": ", ".join(escape(n) for n in sorted(secret_overlap))}
             + _DIM_CLOSE
         )
-    argstate.save_preset(
-        entry.slug,
-        preset_name,
-        # The exact snapshot, cleared fields included — one rule for every preset
-        # writer (the run form's Ctrl+S and `run --save-preset` store the same way).
-        values,
-        secret_names=plan.secret_names,
-    )
-    console.print(
-        f"[green]{gettext('Preset "%(preset)s" saved for %(name)s.') % {'preset': escape(preset_name), 'name': escape(entry.meta.name)}}[/green]"
-    )
+    _commit_preset_save(entry, preset_name, values, plan, console)
 
 
 @preset_app.command("list", help=gettext("List an entry's saved presets."))
@@ -3649,7 +3981,7 @@ def preset_list(
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail_not_found(exc) from exc
     presets = argstate.load_state(entry.slug)["presets"]
     if as_json:
         console.print_json(json.dumps(presets, ensure_ascii=False))
@@ -3671,31 +4003,103 @@ def preset_list(
 def preset_delete(
     name: str = _SCRIPT_ARG,
     preset_name: str = typer.Argument(..., help=gettext("Preset name")),
+    yes: bool = typer.Option(False, "--yes", "-y", help=gettext("Skip confirmation")),
+    no_input: bool = typer.Option(False, "--no-input", help=gettext("Never prompt")),
 ) -> None:
     """Delete a named preset."""
+    # One verdict for the whole invocation (interaction.allowed): gates BELOW
+    # cli.py cannot see this flag, and used to re-derive interactivity from
+    # isatty — which blocked an agent on input() under the flag that forbids it.
+    _forbid_interaction(no_input)
+
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
-        raise _fail(str(exc), 1) from exc
-    if argstate.delete_preset(entry.slug, preset_name):
+        raise _fail_not_found(exc) from exc
+    # Unknown-name feedback comes BEFORE the ask: confirming a deletion that then turns
+    # out to target nothing is a wasted question. delete_preset re-checks under the lock,
+    # so a preset that vanishes between the two reads still lands in the same error.
+    if preset_name not in argstate.load_state(entry.slug)["presets"]:
+        _fail_unknown_preset(entry, preset_name)
+    # Claimed at hold-start (post-refusal): the ask below can wait on a human.
+    entry = store.claim_identity(entry)
+    # A preset is unrecoverable user data; its deletion gets the same ask (and the same
+    # non-interactive refusal) as removing an entry or a runner — the trivially
+    # re-creatable config row must not be better guarded than the thing users typed in.
+    _require_yes(
+        yes, no_input, gettext("Confirmation is required; pass --yes to delete the preset.")
+    )
+    if not yes:
+        _confirm_destructive(
+            gettext('Delete preset "%(preset)s" from %(name)s?')
+            % {"preset": preset_name, "name": entry.meta.name}
+        )
+    _commit_preset_delete(entry, preset_name)
+
+
+def _commit_preset_save(
+    entry: store.Entry,
+    preset_name: str,
+    values: dict[str, str],
+    plan: flows.FormPlan,
+    console: Console,
+) -> None:
+    """preset save's commit, through the guarded door — never a bare argstate write.
+    The door re-proves the identity UNDER the entry lock and strips with the union of
+    launch-time and CURRENT secrecy, so a secret transition committing while the
+    intake waited can no longer be re-leaked by this save, and a reissued slug gets
+    nothing (the honest not-found refusal instead). The values are the exact
+    snapshot, cleared fields included — one rule for every preset writer."""
+    from . import flows
+
+    if not flows.save_preset_for(entry, preset_name, values, secret_names=plan.secret_names):
+        raise _fail(
+            gettext('Preset "%(preset)s" wasn\'t saved — %(name)s is no longer in the library.')
+            % {"preset": preset_name, "name": entry.meta.name},
+            EXIT_NOT_FOUND,
+        )
+    console.print(
+        f"[green]{gettext('Preset "%(preset)s" saved for %(name)s.') % {'preset': escape(preset_name), 'name': escape(entry.meta.name)}}[/green]"
+    )
+
+
+def _commit_preset_delete(entry: store.Entry, preset_name: str) -> None:
+    """preset delete's commit, through the guarded door: an entry that vanished — or a
+    slug reissued — while the ask sat open gets the stale refusal, because the user's
+    answer was never about the new owner's same-named preset. A preset that vanished
+    mid-ask lands in the same unknown-preset error the pre-ask check gives."""
+    from . import flows
+
+    deleted = flows.delete_presets_for(entry, [preset_name])
+    if deleted is None:
+        raise _fail(
+            gettext("%(name)s changed while this edit was underway — reopen it and try again.")
+            % {"name": entry.meta.name},
+            EXIT_NOT_FOUND,
+        )
+    if deleted:
         console.print(
             gettext('Preset "%(preset)s" deleted from %(name)s.')
             % {"preset": escape(preset_name), "name": escape(entry.meta.name)}
         )
     else:
-        err_console.print(
-            "[red]"
-            + gettext('Unknown preset "%(preset)s". Available: %(presets)s')
-            % {
-                "preset": escape(preset_name),
-                "presets": ", ".join(
-                    escape(p) for p in sorted(argstate.load_state(entry.slug)["presets"])
-                )
-                or "—",
-            }
-            + _RED_CLOSE
-        )
-        raise typer.Exit(1)
+        _fail_unknown_preset(entry, preset_name)
+
+
+def _fail_unknown_preset(entry: store.Entry, preset_name: str) -> NoReturn:
+    err_console.print(
+        "[red]"
+        + gettext('Unknown preset "%(preset)s". Available: %(presets)s')
+        % {
+            "preset": escape(preset_name),
+            "presets": ", ".join(
+                escape(p) for p in sorted(argstate.load_state(entry.slug)["presets"])
+            )
+            or "—",
+        }
+        + _RED_CLOSE
+    )
+    raise typer.Exit(EXIT_USAGE)
 
 
 # --------------------------------------------------------------------------
@@ -3773,7 +4177,7 @@ def _prompt_body_placeholders(entry: store.Entry) -> list[str]:
     try:
         text = prompt_text.read(entry.script_path)
     except prompt_text.PromptEncodingError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail(str(exc), EXIT_SKIT) from exc
     except OSError:
         return []
     from .langs.prompt import analyzer as prompt_analyzer
@@ -3903,7 +4307,12 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
     declared = declared_from_meta(entry.meta.parameters)
     if as_json:
         payload = {
-            "params": [s.to_block_dict() for s in specs],
+            # to_block_dict is the FROZEN on-disk row (its "kind" key carries the
+            # binding — const/input — for back-compat with existing user files). The
+            # JSON projection adds "binding" alongside it so an agent reading `show
+            # --json` (where "kind" is the entry's language) and this command never
+            # meets one key name carrying two different axes.
+            "params": [{**s.to_block_dict(), "binding": s.binding} for s in specs],
             # The SOURCE's current default per managed name (additive key). "params"
             # stays the verbatim stored record — an agent that wants the value a run
             # would actually prefill reads it here, same truth as the human table.
@@ -4011,7 +4420,7 @@ def _show_params(entry: store.Entry, as_json: bool) -> None:
             )
     if self_locating:
         console.print(
-            f"[dim]{gettext('This script locates itself ($0 / BASH_SOURCE). Injecting a constant runs it from a temporary copy, so it would see that copy path instead. Rewriting the constant as NAME="${NAME:-value}" delivers the value through the environment with no copy at all — `skit params %(name)s --normalize NAME` does the rewrite for you on the stored copy.') % {'name': escape(entry.meta.name)}}[/dim]"
+            f"[dim]{gettext('This script locates itself ($0 / BASH_SOURCE). Injecting a constant runs it from a temporary copy, so it would see that copy path instead. Rewriting the constant as NAME="${NAME:-value}" delivers the value through the environment with no copy at all — `skit params %(name)s --normalize NAME` does the rewrite for you on the stored copy.') % {'name': escape(entry.slug)}}[/dim]"
         )
 
 
@@ -4164,7 +4573,7 @@ def params(
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail_not_found(exc) from exc
     prompts, bad_prompts = _parse_kv_opts(prompt or [], "--prompt")
     env_sources, bad_env = _parse_kv_opts(env_source or [], "--env-source")
     types, bad_type = _parse_kv_opts(type_opt or [], "--type")
@@ -4223,6 +4632,10 @@ def params(
             + _RED_CLOSE
         )
         raise typer.Exit(EXIT_USAGE)
+    if own_ops or schema_ops:
+        # Claim BEFORE the read each edit lane's write depends on; every store call
+        # below authorizes against it. The read view stays a pure read: no stamp.
+        entry = store.claim_identity(entry)
     if interpolate_opt is not None:
         # Its own op, like --runner: flipping the master switch changes what the entry
         # IS at run time, so it never mixes into the schema-edit pass.
@@ -4290,7 +4703,7 @@ def params(
                 "--unmanage, or edit the [tool.skit] block."
             )
             % {"name": entry.meta.name},
-            1,
+            EXIT_USAGE,
         )
     if (
         entry_spec is not None
@@ -4371,6 +4784,7 @@ def _edit_entry_policy(
             workdir=workdir_opt,
             interpreter=interpreter_opt,
             template=template_opt,
+            expected_id=entry.meta.id,
         )
         if template_opt is not None:
             console.print(
@@ -4378,7 +4792,7 @@ def _edit_entry_policy(
             )
         if workdir_opt is not None:
             console.print(
-                f"[green]{gettext('%(name)s now runs in: %(dir)s') % {'name': escape(entry.meta.name), 'dir': escape(entry.meta.workdir)}}[/green]"
+                f"[green]{gettext('%(name)s now runs in: %(dir)s') % {'name': escape(entry.meta.name), 'dir': escape(kindnames.workdir_label(entry.meta.workdir))}}[/green]"
             )
         if interpreter_opt is not None:
             if entry.meta.interpreter:
@@ -4390,7 +4804,7 @@ def _edit_entry_policy(
                     f"[green]{gettext('%(name)s is back to automatic interpreter detection.') % {'name': escape(entry.meta.name)}}[/green]"
                 )
     except store.StoreError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail_store(exc) from exc
 
 
 def _pin_prompt_runner(entry: store.Entry, runner_pin: str, *, quiet: bool = False) -> None:
@@ -4399,7 +4813,7 @@ def _pin_prompt_runner(entry: store.Entry, runner_pin: str, *, quiet: bool = Fal
     exit 126 — validated against the configured list instead."""
     console = _maybe_quiet(quiet)
     if entry.meta.kind != "prompt":
-        raise _fail(gettext("--runner only applies to prompt entries."), 1)
+        raise _fail(gettext("--runner only applies to prompt entries."), EXIT_USAGE)
     name = runner_pin.strip()
     if name:
         names = [r.name for r in config.load_prompt_runners()]
@@ -4410,12 +4824,12 @@ def _pin_prompt_runner(entry: store.Entry, runner_pin: str, *, quiet: bool = Fal
                     "runners with: skit runner list"
                 )
                 % {"runner": name, "names": ", ".join(names) or "—"},
-                1,
+                EXIT_USAGE,
             )
     try:
-        store.write_prompt_runner(entry.slug, name)
+        store.write_prompt_runner(entry.slug, name, expected_id=entry.meta.id)
     except store.StoreError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail_store(exc) from exc
     if name:
         console.print(
             f"[green]{gettext('%(name)s now runs with %(runner)s.') % {'name': escape(entry.meta.name), 'runner': escape(name)}}[/green]"
@@ -4431,11 +4845,11 @@ def _set_prompt_interpolate(entry: store.Entry, interpolate: bool, *, quiet: boo
     master switch. The managed list survives an off/on round trip."""
     console = _maybe_quiet(quiet)
     if entry.meta.kind != "prompt":
-        raise _fail(gettext("--interpolate only applies to prompt entries."), 1)
+        raise _fail(gettext("--interpolate only applies to prompt entries."), EXIT_USAGE)
     try:
-        store.write_prompt_interpolate(entry.slug, interpolate)
+        store.write_prompt_interpolate(entry.slug, interpolate, expected_id=entry.meta.id)
     except store.StoreError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail_store(exc) from exc
     if interpolate:
         console.print(
             f"[green]{gettext('Variable insertion is on — %(name)s fills its managed placeholders again.') % {'name': escape(entry.meta.name)}}[/green]"
@@ -4446,28 +4860,46 @@ def _set_prompt_interpolate(entry: store.Entry, interpolate: bool, *, quiet: boo
         )
 
 
-def _apply_env_sources(specs: list[ParamDecl], env_sources: dict[str, str]) -> list[str]:
-    """Set/clear env_source on secret specs; returns warnings for unusable requests."""
-    warnings: list[str] = []
+def _refuse_unhonoured(notices: list[EditNotice], render: Callable[[EditNotice], str]) -> None:
+    """Refuse a `skit params` invocation that could not honour an explicit flag.
+
+    Nothing is written and the exit is 2 — the same answer `--set`, `--dep`, `--python`,
+    `--preset` and `skit config` already give a value they cannot use, and the same
+    validate-then-write rule ScriptSettingsScreen.action_save applies on the human face.
+    This command used to print the reason to stderr, write everything else, exit 0 and
+    then report the state it had NOT written through `--json`: an agent told to trust exit
+    codes and read `--json` was told twice that a rejected `--type` had been applied.
+
+    All-or-nothing on purpose. A partial apply is only recoverable by reading which parts
+    landed, from a localized line the agent is told not to parse; a refusal is recoverable
+    by fixing the flag and running again."""
+    for notice in notices:
+        err_console.print(f"[yellow]{escape(render(notice))}[/yellow]")
+    raise _fail(
+        gettext("Nothing was changed — fix the flag(s) above and run it again."), EXIT_USAGE
+    )
+
+
+def _apply_env_sources(specs: list[ParamDecl], env_sources: dict[str, str]) -> list[EditNotice]:
+    """Set/clear env_source on secret specs; return typed notices for unusable requests.
+
+    Typed outcomes, not rendered sentences. This was the third notice producer in `skit params`
+    and the only one that returned finished prose, so it was invisible to anything that
+    wanted to classify outcomes — which left `--env-source` warning-and-continuing on the
+    python/shell/js lane while the very same flag refused on an exe entry, a polarity
+    inversion inside one command."""
+    notices: list[EditNotice] = []
     by_name = {s.name: s for s in specs}
     for pname, envvar in env_sources.items():
         spec = by_name.get(pname)
         if spec is None:
-            warnings.append(
-                gettext("%(name)s isn't a managed parameter; --env-source skipped.")
-                % {"name": pname}
-            )
+            notices.append(edit_notice(NoticeCode.ENV_SOURCE_NOT_MANAGED, pname))
             continue
         if not spec.secret:
-            warnings.append(
-                gettext(
-                    "%(name)s isn't secret; --env-source only applies to secret parameters (mark it with --secret first)."
-                )
-                % {"name": pname}
-            )
+            notices.append(edit_notice(NoticeCode.ENV_SOURCE_NOT_SECRET, pname))
             continue
         spec.env_source = envvar.strip()
-    return warnings
+    return notices
 
 
 def _edit_params(
@@ -4489,12 +4921,31 @@ def _edit_params(
     console = _maybe_quiet(quiet)
     entry_spec = spec_for(entry.meta.kind)
     if entry_spec is None or entry_spec.params_io is None or entry_spec.analyzer is None:
+        if entry_spec is not None and entry_spec.params_io is None:
+            # The declared [[parameters]] lane IS this kind's parameter home (exe, command,
+            # prompt, the Tier-0 interpreted kinds) — a refusal that names no way forward
+            # would hide the exact door that was built for it. ONE msgid, not two sentences
+            # spliced with a hard-coded space: translators own the whole pair, including
+            # its punctuation and order.
+            # %(target)s is the SLUG: a paste-able command must survive every shell,
+            # and no quoting convention does (shlex's single quotes are noise to
+            # cmd.exe; list2cmdline leaves & | ^ bare for it). The slug's charset
+            # needs no quoting anywhere, and resolve() accepts it everywhere a name
+            # works. Prose keeps the display name.
+            raise _fail(
+                gettext(
+                    "%(name)s has no managed parameters — its kind has no analyzer to read "
+                    "them from. Declare one instead: skit params %(target)s --add PARAM"
+                )
+                % {"name": entry.meta.name, "target": entry.slug},
+                EXIT_USAGE,
+            )
         raise _fail(
             gettext(
                 "%(name)s has no managed parameters — its kind has no analyzer to read them from."
             )
             % {"name": entry.meta.name},
-            1,
+            EXIT_USAGE,
         )
     if entry.meta.mode == "reference":
         raise _fail(
@@ -4503,11 +4954,14 @@ def _edit_params(
                 "Edit the [tool.skit] block in the source directly."
             )
             % {"name": entry.meta.name},
-            1,
+            EXIT_USAGE,
         )
     copy_path = entry.script_path
     if not copy_path.exists():
-        raise _fail(gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}, 1)
+        raise _fail(
+            gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name},
+            EXIT_NOT_FOUND,
+        )
     text = copy_path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate
     current = entry_spec.params_io.read(text)
     # Whether a MODELED reader form drove the run form before this edit — an explicit
@@ -4518,9 +4972,17 @@ def _edit_params(
     # one would be its own overstatement.
     before = entry_spec.analyzer.analyze(text)
     was_reader_driven = not current and flows.reader_fields(entry_spec, text) > 0
-    for item in malformed:
-        err_console.print(
-            f"[yellow]{escape(gettext('Ignored a malformed value: %(item)s (expected NAME=text).') % {'item': item})}[/yellow]"
+    if malformed:
+        # A NAME=VALUE the parser could not read is a flag that cannot be honoured, so it
+        # refuses like the rest of them — the same answer `--set garbage` has always
+        # given. It fires BEFORE any analysis: there is nothing to compute for an
+        # invocation that is already going to be refused.
+        for item in malformed:
+            err_console.print(
+                f"[yellow]{escape(gettext('Malformed value: %(item)s (expected %(shape)s).') % {'item': item, 'shape': 'NAME=text'})}[/yellow]"
+            )
+        raise _fail(
+            gettext("Nothing was changed — fix the flag(s) above and run it again."), EXIT_USAGE
         )
     result = analysis.edit_specs(
         text,
@@ -4533,28 +4995,20 @@ def _edit_params(
         prompts=prompts,
         analyze=entry_spec.analyzer.analyze,
     )
-    for w in result.warnings:
-        err_console.print(f"[yellow]{escape(analysis.render_warning(w))}[/yellow]")
-    for w in _apply_env_sources(result.specs, env_sources):
-        err_console.print(f"[yellow]{escape(w)}[/yellow]")
-    # This is a write-back path, so it must be byte-lossless (same discipline as
-    # _onboard_script_params and _normalize_params): `text` above was read with errors="replace"
-    # for the analyzer, but writing THAT text back would bake U+FFFD over every non-UTF-8 byte.
-    # Re-read the raw bytes with surrogateescape — params_io.write only touches the comment block,
-    # so unrelated bytes round-trip. Fold to LF for the LF-based block engine, then restore the
-    # copy's own line-ending style: writing the folded LF back would rewrite every line of a CRLF
-    # script even though only the [tool.skit] block changed (and write_text, the old path, was
-    # worse still — it re-expanded \n to the HOST os.linesep, CRLF-ifying a copy on Windows).
-    raw = copy_path.read_bytes()
-    newline = detect_newline(raw)
-    current = raw.decode("utf-8", errors="surrogateescape")  # pragma: no mutate — codec alias
-    current = current.replace("\r\n", "\n").replace("\r", "\n")
-    written = restore_newline(entry_spec.params_io.write(current, result.specs), newline)
-    copy_path.write_bytes(
-        written.encode("utf-8", errors="surrogateescape")
-    )  # pragma: no mutate — codec alias
-    secret_now = {s.name for s in result.specs if s.secret}
-    purged = argstate.purge_secret(entry.slug, secret_now)
+    # COMPUTE, then decide, then write: the env-source pass mutates result.specs, so it
+    # has to run before the decision — and no write may happen until every flag is known
+    # to be honourable.
+    notices = [*result.notices, *_apply_env_sources(result.specs, env_sources)]
+    if any(analysis.is_refusal(notice) for notice in notices):
+        _refuse_unhonoured(notices, analysis.render_notice)
+    for notice in notices:
+        err_console.print(f"[yellow]{escape(analysis.render_notice(notice))}[/yellow]")
+    # One store transaction (write_source_params): the C3 scrub runs first and the
+    # block edit second, both under the entry lock — no interruption or concurrent
+    # post-run persistence can land between "schema says secret" and "plaintext
+    # scrubbed". The write half re-reads through the byte-lossless pair (rewrite.py),
+    # so the errors="replace" text the analyzer saw never lands back on disk.
+    purged = store.write_source_params(entry.slug, result.specs, expected_id=entry.meta.id)
     if purged:
         console.print(
             "[dim]"
@@ -4581,30 +5035,37 @@ def _edit_params(
         )
 
 
-def _render_normalize_warning(warning: str) -> str:
-    """Translate a normalizer refusal ("code:name") into a user-facing line. Static lookup (not
-    gettext(f"…{code}")) so Babel can extract every string — same discipline as the other two
-    warning renderers."""
-    code, _, name = warning.partition(":")
-    return {
-        "not-a-const": gettext(
-            "%(name)s isn't a plain constant with a literal value, so there's nothing to normalize; skipped."
-        ),
-        "multiple-assignments": gettext(
-            "%(name)s is assigned more than once at the top level; normalizing it would change which value wins. Skipped."
-        ),
-        "readonly": gettext(
-            "%(name)s is readonly, so the script could never take a value from the environment; skipped."
-        ),
-        "already-env": gettext("%(name)s already reads from the environment; nothing to do."),
-        "unsafe-literal": gettext(
-            "%(name)s's value contains a character that can't be moved into ${...:-...} safely "
-            '(one of } " ` $ \\ or a newline); skipped — it keeps being injected into a temporary copy.'
-        ),
-        "syntax-error": gettext(
-            "Could not parse the script (syntax error); nothing was normalized."
-        ),
-    }[code] % {"name": name}
+def _render_normalize_notice(notice: NormalizeNotice) -> str:
+    """Translate the normalizer's separate, closed notice vocabulary."""
+    match notice.code:
+        case NormalizeNoticeCode.NOT_A_CONST:
+            message = gettext(
+                "%(name)s isn't a plain constant with a literal value, so there's nothing to "
+                "normalize; skipped."
+            )
+        case NormalizeNoticeCode.MULTIPLE_ASSIGNMENTS:
+            message = gettext(
+                "%(name)s is assigned more than once at the top level; normalizing it would "
+                "change which value wins. Skipped."
+            )
+        case NormalizeNoticeCode.READONLY:
+            message = gettext(
+                "%(name)s is readonly, so the script could never take a value from the "
+                "environment; skipped."
+            )
+        case NormalizeNoticeCode.ALREADY_ENV:
+            message = gettext("%(name)s already reads from the environment; nothing to do.")
+        case NormalizeNoticeCode.UNSAFE_LITERAL:
+            message = gettext(
+                "%(name)s's value contains a character that can't be moved into ${...:-...} safely "
+                '(one of } " ` $ \\ or a newline); skipped — it keeps being injected into a '
+                "temporary copy."
+            )
+        case NormalizeNoticeCode.SYNTAX_ERROR:
+            message = gettext("Could not parse the script (syntax error); nothing was normalized.")
+        case _ as unreachable:
+            assert_never(unreachable)
+    return message % {"name": notice.name}
 
 
 def _reanchor_as_envdefault(spec: ParamDecl, cand: analysis.Candidate) -> ParamDecl:
@@ -4636,7 +5097,7 @@ def _normalize_params(
                 '%(name)s has no --normalize: it is a shell idiom (VAR=value -> VAR="${VAR:-value}").'
             )
             % {"name": entry.meta.name},
-            1,
+            EXIT_USAGE,
         )
     if entry.meta.mode == "reference":
         raise _fail(
@@ -4645,18 +5106,48 @@ def _normalize_params(
                 'Change the line to VAR="${VAR:-value}" in the source directly.'
             )
             % {"name": entry.meta.name},
-            1,
+            EXIT_USAGE,
         )
     copy_path = entry.script_path
     if not copy_path.exists():
-        raise _fail(gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}, 1)
-    # Bytes in, bytes out: --normalize rewrites the script's own text, and the whole
-    # parse-and-splice pipeline is strict UTF-8 end to end — a lossy read (errors="replace")
-    # would bake U+FFFD over every non-UTF-8 byte on write-back. A script that doesn't decode
-    # is refused whole instead, leaving the stored copy byte-for-byte untouched.
-    raw = copy_path.read_bytes()
+        raise _fail(
+            gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name},
+            EXIT_NOT_FOUND,
+        )
+    # Locals, not attribute reads: the refusal above proved these non-None, and the
+    # closure below must keep that proof (a captured attribute widens back to | None).
+    normalizer = entry_spec.normalizer
+    analyzer = entry_spec.analyzer
+    params_io = entry_spec.params_io
+    captured: list[Any] = []
+
+    def _transform(text: str) -> str | None:
+        # Everything this write depends on is re-derived from the FRESH text, inside
+        # the store transaction (rewrite_source: entry lock + identity check + strict
+        # UTF-8 read) — never from bytes read before an analysis pass or a slug that
+        # changed hands. None = every name was refused; the file goes untouched.
+        result = normalizer.normalize(text, list(names))
+        captured.append(result)
+        if not result.normalized:
+            return None
+        # Re-read the analyzer: each normalized name is now an ${NAME:-default} expansion,
+        # i.e. an envdefault candidate. A name that was MANAGED must follow it — otherwise
+        # its stored const definition would go missing on the very next run (loud, and
+        # rightly so).
+        envdefaults = {
+            c.name: c for c in analyzer.analyze(result.text).candidates if c.binding == "envdefault"
+        }
+        normalized = set(result.normalized)
+        specs = [
+            _reanchor_as_envdefault(s, envdefaults[s.name])
+            if s.name in normalized and s.name in envdefaults
+            else s
+            for s in params_io.read(result.text)
+        ]
+        return params_io.write(result.text, specs)
+
     try:
-        text = raw.decode("utf-8")  # pragma: no mutate — codec alias
+        store.rewrite_source(entry.slug, _transform, expected_id=entry.meta.id)
     except UnicodeDecodeError:
         raise _fail(
             gettext(
@@ -4664,71 +5155,16 @@ def _normalize_params(
                 "was changed — its constants keep being injected into a temporary copy."
             )
             % {"name": entry.meta.name},
-            1,
+            EXIT_SKIT,
         ) from None
-    # The comment-block engine below is LF-based (its block regex never matches "# ///\r"), so
-    # fold every terminator to LF — \r\n AND lone \r (classic-Mac) -> \n, or a CRLF/CR copy
-    # leaves "# ///\r" unmatched and normalizes nothing. The copy's own style is captured first
-    # and restored at write-back, so a CRLF script stays CRLF and skit's edit stays confined to
-    # the one constant it rewrote (write_text, the old path, re-expanded \n to the HOST os.linesep
-    # instead, CRLF-ifying the whole copy on Windows and skipping the next re-anchor silently).
-    newline = detect_newline(raw)
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    result = entry_spec.normalizer.normalize(text, list(names))
-    for warning in result.refused:
-        err_console.print(f"[yellow]{escape(_render_normalize_warning(warning))}[/yellow]")
+    result = captured[0]
+    for notice in result.refused:
+        err_console.print(f"[yellow]{escape(_render_normalize_notice(notice))}[/yellow]")
     if not result.normalized:
         return  # every name was refused; the file is untouched (the warnings above said why)
-    # Re-read the analyzer: each normalized name is now an ${NAME:-default} expansion, i.e. an
-    # envdefault candidate. A name that was MANAGED must follow it — otherwise its stored const
-    # definition would go missing on the very next run (loud, and rightly so).
-    envdefaults = {
-        c.name: c
-        for c in entry_spec.analyzer.analyze(result.text).candidates
-        if c.binding == "envdefault"
-    }
-    normalized = set(result.normalized)
-    specs = [
-        _reanchor_as_envdefault(s, envdefaults[s.name])
-        if s.name in normalized and s.name in envdefaults
-        else s
-        for s in entry_spec.params_io.read(result.text)
-    ]
-    new_text = restore_newline(entry_spec.params_io.write(result.text, specs), newline)
-    copy_path.write_bytes(new_text.encode("utf-8"))  # pragma: no mutate — codec alias
     console.print(
         f"[green]{gettext('Normalized %(names)s in %(name)s: delivered as environment variables from now on (no temporary copy, and $0 stays your real file).') % {'names': ', '.join(escape(n) for n in result.normalized), 'name': escape(entry.meta.name)}}[/green]"
     )
-
-
-def _render_declared_warning(warning: str) -> str:
-    """Translate an edit_declared warning ("code:name") into a user-facing line. The codes are
-    the closed set params.edit_declared emits; a static lookup (not gettext(f"...{code}")) keeps
-    every string Babel-extractable, mirroring reconcile.render_warning."""
-    code, _, name = warning.partition(":")
-    return {
-        "not-declared": gettext("%(name)s isn't a declared parameter; skipped."),
-        "already-declared": gettext("%(name)s is already declared; skipped."),
-        "bad-delivery": gettext("%(name)s: that delivery isn't available for this kind; skipped."),
-        "not-a-placeholder": gettext(
-            "%(name)s isn't a template placeholder, so it can't use placeholder delivery; skipped."
-        ),
-        "bad-type": gettext(
-            "%(name)s: unknown type; skipped (use str, int, float, bool, choice, or path)."
-        ),
-        "bad-default": gettext("%(name)s: the default doesn't fit its type; skipped."),
-        "env-source-not-secret": gettext(
-            "%(name)s isn't secret; --env-source only applies to secret parameters (mark it with --secret first)."
-        ),
-        "choice-without-choices": gettext(
-            "%(name)s: a choice parameter needs choices; set --choices %(name)s=a,b,c."
-        ),
-        "bool-flag-on-by-default": gettext(
-            "%(name)s is on by default, so its flag could only ever turn it on again. "
-            "Declare the flag that turns it OFF instead (--no-%(name)s and the like), with "
-            "default false."
-        ),
-    }[code] % {"name": name}
 
 
 def _edit_declared_params(
@@ -4772,6 +5208,8 @@ def _edit_declared_params(
     maintain the MANAGED list (meta `params`) — managing a detected placeholder / unmanaging one
     is exactly the add/remove of its row. An --rm of a managed-but-undeclared name (the common
     synthesized case) is therefore real work for a prompt, not a `not-declared` warning."""
+    from . import analysis  # the refusal classification both param lanes share
+
     console = _maybe_quiet(quiet)
     is_prompt = entry.meta.kind == "prompt"
     if is_prompt and not entry.meta.interpolate:
@@ -4784,7 +5222,7 @@ def _edit_declared_params(
                 "skit params %(name)s --interpolate"
             )
             % {"name": entry.meta.name},
-            1,
+            EXIT_USAGE,
         )
     allowed = ("env", "placeholder") if entry_spec.placeholder_params else ("flag", "env")
     managed = list(entry.meta.params or [])
@@ -4792,9 +5230,17 @@ def _edit_declared_params(
     placeholder_truth = (
         sorted(set(body_placeholders) | set(managed)) if is_prompt else entry.meta.params or []
     )
-    for item in malformed:
-        err_console.print(
-            f"[yellow]{escape(gettext('Ignored a malformed value: %(item)s (expected NAME=VALUE).') % {'item': item})}[/yellow]"
+    if malformed:
+        # A NAME=VALUE the parser could not read is a flag that cannot be honoured, so it
+        # refuses like the rest of them — the same answer `--set garbage` has always
+        # given. It fires BEFORE any analysis: there is nothing to compute for an
+        # invocation that is already going to be refused.
+        for item in malformed:
+            err_console.print(
+                f"[yellow]{escape(gettext('Malformed value: %(item)s (expected %(shape)s).') % {'item': item, 'shape': 'NAME=VALUE'})}[/yellow]"
+            )
+        raise _fail(
+            gettext("Nothing was changed — fix the flag(s) above and run it again."), EXIT_USAGE
         )
     result = edit_declared(
         store.read_parameters(entry.slug),
@@ -4815,7 +5261,8 @@ def _edit_declared_params(
         allowed_deliveries=allowed,
         placeholder_names=placeholder_truth,
     )
-    warnings = list(result.warnings)
+    notices = list(result.notices)
+    pending_managed: list[str] | None = None
     if is_prompt:
         # Maintain the managed list alongside the schema rows: an added body placeholder
         # becomes managed (in body order); a removed name stops being asked for. An --rm
@@ -4831,14 +5278,28 @@ def _edit_declared_params(
             # A managed name the body has already lost isn't in body order — keep it at
             # the tail unless this very call removed it (drift stays visible, never grows).
             new_managed += [n for n in keep if n not in body_placeholders]
-            store.write_prompt_managed(entry.slug, new_managed)
-            warnings = [
-                w for w in warnings if w not in {f"not-declared:{n}" for n in removed_managed}
+            pending_managed = new_managed
+            removed_managed_set = set(removed_managed)
+            notices = [
+                notice
+                for notice in notices
+                if not (
+                    notice.code is NoticeCode.RM_NOT_DECLARED and notice.name in removed_managed_set
+                )
             ]
-    for w in warnings:
-        err_console.print(f"[yellow]{escape(_render_declared_warning(w))}[/yellow]")
-    store.write_parameters(entry.slug, result.decls)
-    purged = argstate.purge_secret(entry.slug, {d.name for d in result.decls if d.secret})
+    # DECIDE before any write. The prompt managed-list write used to happen up there, on
+    # the wrong side of this line, so `skit params p --rm noise --rm ghost` would unmanage
+    # `noise` and only then refuse — the partial apply this whole change exists to stop.
+    if any(analysis.is_refusal(notice) for notice in notices):
+        _refuse_unhonoured(notices, analysis.render_notice)
+    for notice in notices:
+        err_console.print(f"[yellow]{escape(analysis.render_notice(notice))}[/yellow]")
+    # One meta write for the whole schema — managed list, declared rows AND the C3
+    # scrub in a single locked transaction (store.write_parameters): the purge still
+    # precedes the commit, and nothing can interleave between them.
+    _, purged = store.write_parameters(
+        entry.slug, result.decls, managed=pending_managed, expected_id=entry.meta.id
+    )
     if purged:
         console.print(
             "[dim]"
@@ -4928,7 +5389,7 @@ def deps(
     try:
         entry = store.resolve(name)
     except store.NotFoundError as exc:
-        raise _fail(str(exc), 1) from exc
+        raise _fail_not_found(exc) from exc
     deps_spec = spec_for(entry.meta.kind)
     supports_deps = deps_spec is not None and deps_spec.supports_deps
     deps_requested = dep is not None or clear or python is not None
@@ -4954,6 +5415,8 @@ def deps(
     if not deps_requested and not needs_requested:
         _deps_read_view(entry, supports_deps=supports_deps, as_json=as_json)
         return
+    # Mutating from here on: claim, and both axis writes authorize against it.
+    entry = store.claim_identity(entry)
     # Deps BEFORE needs: a --dep/--python refusal raises (StoreUsageError) at the top of
     # update_dependencies, before any write — so processing deps first means a refused request
     # aborts with NOTHING committed. Doing needs first would persist the needs write and then
@@ -4972,11 +5435,13 @@ def deps(
             # constraint line.
             new_deps = None
         try:
-            entry = store.update_dependencies(entry.slug, new_deps, requires_python=python)
+            entry = store.update_dependencies(
+                entry.slug, new_deps, requires_python=python, expected_id=entry.meta.id
+            )
         except store.StoreUsageError as exc:
-            raise _fail(str(exc), EXIT_USAGE) from exc
+            raise _fail_store(exc) from exc
         except store.StoreError as exc:
-            raise _fail(str(exc), 1) from exc
+            raise _fail_store(exc) from exc
         if not as_json:
             # Per-axis confirmations: each line prints exactly when its axis was
             # edited — "Dependencies updated" for an edit that didn't happen was a
@@ -4994,7 +5459,7 @@ def deps(
         # the --json contract AND bricks the entry — `shutil.which("")` is None, so every run then
         # fails "Missing required command(s):" before the script starts.
         new_needs = [] if clear_needs else [n.strip() for n in (need or []) if n.strip()]
-        entry = store.update_needs(entry.slug, new_needs)
+        entry = store.update_needs(entry.slug, new_needs, expected_id=entry.meta.id)
         if not as_json:
             console.print(
                 f"[green]{gettext('Needs of %(name)s updated: %(needs)s') % {'name': escape(entry.meta.name), 'needs': ', '.join(escape(n) for n in new_needs) or '—'}}[/green]"
@@ -5027,7 +5492,8 @@ def _agent_install_confirmed(skills_dir: Path) -> None:
     except OSError as exc:
         # e.g. --to points at an existing file: a clean one-liner, not a traceback.
         raise _fail(
-            gettext("Could not write the skill there: %(error)s") % {"error": exc}, 1
+            gettext("Could not write the skill there: %(error)s") % {"error": exc},
+            EXIT_SKIT,
         ) from exc
     console.print(
         f"[green]{gettext('Installed the skit Agent Skill: %(path)s') % {'path': escape(str(written))}}[/green]"
@@ -5056,6 +5522,16 @@ def _agent_pick_target(candidates: list[agentskill.Target]) -> agentskill.Target
     return target
 
 
+def _agent_install_candidates(*, home: Path, cwd: Path, project: bool) -> list[agentskill.Target]:
+    """Detect only targets inside the scope the user selected."""
+    from . import agentskill
+
+    candidates = agentskill.detect_targets(home=home, cwd=cwd)
+    if project:
+        return [candidate for candidate in candidates if candidate.scope == "project"]
+    return candidates
+
+
 @agent_app.command(
     "install",
     help=gettext("Install skit's Agent Skill into an AI agent's skills directory."),
@@ -5082,10 +5558,12 @@ def agent_install(
             "Install into the current project (./.claude, ./.codex) instead of your home directory"
         ),
     ),
+    no_input: bool = typer.Option(False, "--no-input", help=gettext("Never prompt")),
 ) -> None:
     """Teach the user's AI agents to use skit. An explicit TARGET or --to is consent by
     itself; bare `skit agent install` detects agent directories and asks (principle #6:
     skit never touches another tool's directory uninvited)."""
+    _forbid_interaction(no_input)
     from . import agentskill
 
     if to is not None and (target or project):
@@ -5114,13 +5592,13 @@ def agent_install(
             f"[red]{gettext('Nothing installed: name a target (claude, codex, agents) or pass --to DIR.')}[/red]"
         )
         raise typer.Exit(EXIT_USAGE)
-    candidates = agentskill.detect_targets(home=home, cwd=cwd)
+    candidates = _agent_install_candidates(home=home, cwd=cwd, project=project)
     if not candidates:
         raise _fail(
             gettext(
                 "No agent directories detected (~/.claude, ~/.codex, ./.agents, …). Pass --to DIR to choose one yourself."
             ),
-            1,
+            EXIT_NOT_EXECUTABLE,
         )
     picked = _agent_pick_target(candidates)
     if picked is None:
@@ -5145,6 +5623,13 @@ def _uv_required(entries: list[store.Entry]) -> bool:
     return any(e.meta.kind == "python" for e in entries)
 
 
+def _doctor_exit_code(uv: str | None, entries: list[store.Entry]) -> int:
+    """Doctor's named check-command exception: 1 only when a required uv is absent."""
+    if uv or not _uv_required(entries):
+        return exitcodes.EXIT_SUCCESS
+    return exitcodes.EXIT_DOCTOR_UNHEALTHY
+
+
 @app.command(help=gettext("Check that uv is available and the entry library is intact."))
 def doctor(
     rebuild: bool = typer.Option(
@@ -5154,7 +5639,7 @@ def doctor(
 ) -> None:
     """Environment self-check (the CLI face of the TUI health-check screen)."""
     from . import healthcheck
-    from .paths import scripts_dir
+    from .paths import config_dir, scripts_dir, state_dir
 
     uv = launcher.find_uv()
     rebuilt: tuple[int, list[str]] | None = None
@@ -5191,6 +5676,10 @@ def doctor(
                     "needs_missing": needs_missing,
                     "launch_blocked": report.launch_blocked,
                     "runner_rows_invalid": bad_runners,
+                    # Additive key: stored entries the index has lost. An agent reading
+                    # `entries: 0` needs to be able to tell "the library is empty" from
+                    # "the library is unreadable", and this is the only key that says so.
+                    "unindexed": report.unindexed,
                     "rebuilt": rebuilt[0] if rebuilt else None,
                     "rebuild_problems": rebuilt[1] if rebuilt else [],
                     # The stored per-axis URLs plus the master switch — all three states
@@ -5204,12 +5693,16 @@ def doctor(
                         "npm": mirror.npm,
                     },
                     "location": str(location),
+                    # The other two roots the docs have always said doctor prints, and
+                    # which nothing else exposes: "what do I back up?" had no answer.
+                    "config_dir": str(config_dir()),
+                    "state_dir": str(state_dir()),
                     "size_bytes": size,
                 },
                 ensure_ascii=False,
             )
         )
-        raise typer.Exit(0 if uv or not _uv_required(entries) else 1)
+        raise _exit_doctor_health(_doctor_exit_code(uv, entries))
     if uv:
         console.print(f"[green]✓ {gettext('uv: %(path)s') % {'path': escape(uv)}}[/green]")
     else:
@@ -5221,6 +5714,13 @@ def doctor(
         + ngettext("%(count)s entry registered", "%(count)s entries registered", len(entries))
         % {"count": len(entries)}
     )
+    if report.unindexed:
+        # The one check that can contradict the line above. A ✓ next to "0 entries
+        # registered" printed by the command whose job is checking the library is intact
+        # certified the exact state it exists to detect — and the repair was named nowhere.
+        console.print(
+            f"  [yellow]⚠ {ngettext('%(count)s stored entry is missing from the index and cannot be listed or run: %(slugs)s. Recover it with: skit doctor --rebuild', '%(count)s stored entries are missing from the index and cannot be listed or run: %(slugs)s. Recover them with: skit doctor --rebuild', len(report.unindexed)) % {'count': len(report.unindexed), 'slugs': ', '.join(escape(s) for s in report.unindexed)}}[/yellow]"
+        )
     for m in missing:
         console.print(
             f"  [yellow]⚠ {gettext('%(name)s: the launch target is gone from disk') % {'name': escape(m)}}[/yellow]"
@@ -5248,7 +5748,12 @@ def doctor(
         gettext("Library: %(path)s (%(count)s · %(size)s)")
         % {"path": escape(str(location)), "count": len(entries), "size": store.human_size(size)}
     )
-    raise typer.Exit(0 if uv or not _uv_required(entries) else 1)
+    # Three roots, because there are three. Two docs pages have always said doctor prints
+    # them, and nothing in skit did — so "where is my config.toml / my presets, and what
+    # do I back up?" was unanswerable from the tool that exists to answer it.
+    console.print(gettext("Config: %(path)s") % {"path": escape(str(config_dir()))})
+    console.print(gettext("State: %(path)s") % {"path": escape(str(state_dir()))})
+    raise _exit_doctor_health(_doctor_exit_code(uv, entries))
 
 
 # --------------------------------------------------------------------------

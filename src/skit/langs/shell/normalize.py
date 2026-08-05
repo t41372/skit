@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING
 
 from tree_sitter import Parser
 
+from ...notices import NormalizeNotice, NormalizeNoticeCode, normalize_refusal
 from ...rewrite import ByteSpan, apply_byte_spans
 from ..base import Normalization
 from .analyzer import (
@@ -63,11 +64,14 @@ def normalize_idiom(text: str, names: list[str]) -> Normalization:
     # is an equivalent mutant; the parse expression itself is exercised by every normalize test.
     root = Parser(_LANGUAGE).parse(text.encode("utf-8")).root_node  # pragma: no mutate
     if root.has_error:
-        return Normalization(text=text, refused=[f"syntax-error:{name}" for name in names])
+        return Normalization(
+            text=text,
+            refused=[normalize_refusal(NormalizeNoticeCode.SYNTAX_ERROR, name) for name in names],
+        )
     assignments = _by_name(root)
     spans: list[ByteSpan] = []
     normalized: list[str] = []
-    refused: list[str] = []
+    refused: list[NormalizeNotice] = []
     for name in names:
         # A missing name yields the get-default; [] and None are both falsy at _span_for's
         # "if not found", so mutating that default (-> None, or dropped) is an equivalent mutant.
@@ -94,34 +98,33 @@ def _by_name(root: Node) -> dict[str, list[tuple[Node, bool]]]:
     return out
 
 
-def _span_for(name: str, found: list[tuple[Node, bool]], refused: list[str]) -> ByteSpan | None:
+def _span_for(
+    name: str, found: list[tuple[Node, bool]], refused: list[NormalizeNotice]
+) -> ByteSpan | None:
     """The one value-span rewrite for `name`, or None with a coded refusal appended. A single
     refusal chain with one success exit: every branch below is a distinct, tested reason the
     `${NAME:-…}` form would not mean exactly what the plain assignment meant."""
-    # Dead initial value: every path that reaches refused.append reassigns `code` first, so a
-    # mutation of this literal (-> None, "XXXX") can never be observed — an equivalent mutant.
-    code = ""  # pragma: no mutate
     if not found:
-        code = "not-a-const"
+        code = NormalizeNoticeCode.NOT_A_CONST
     elif len(found) > 1:
-        code = "multiple-assignments"
+        code = NormalizeNoticeCode.MULTIPLE_ASSIGNMENTS
     elif found[0][1]:
-        code = "readonly"
+        code = NormalizeNoticeCode.READONLY
     else:
         value = found[0][0].child_by_field_name("value")
         if value is None:
-            code = "not-a-const"  # `VAR=` — no value at all
+            code = NormalizeNoticeCode.NOT_A_CONST  # `VAR=` — no value at all
         elif _references(value, name):
             # Checked BEFORE the literal test: `VAR="${VAR:-x}"` has no literal RHS either, but
             # "it already IS the idiom" is the useful thing to say about it.
-            code = "already-env"
+            code = NormalizeNoticeCode.ALREADY_ENV
         else:
             literal = _literal_text(value)
             if not literal:
-                code = "not-a-const"  # an expansion / array / command substitution — no literal
+                code = NormalizeNoticeCode.NOT_A_CONST
             elif any(ch in literal for ch in _UNSAFE):
-                code = "unsafe-literal"
+                code = NormalizeNoticeCode.UNSAFE_LITERAL
             else:
                 return ByteSpan(value.start_byte, value.end_byte, f'"${{{name}:-{literal}}}"')
-    refused.append(f"{code}:{name}")
+    refused.append(normalize_refusal(code, name))
     return None

@@ -18,7 +18,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from skit import cli, flows, store
+from conftest import patch_run_entry
+from skit import cli, exitcodes, flows, store
 from skit.langs.base import (
     InjectError,
     InjectRequest,
@@ -415,16 +416,13 @@ def test_execute_refuses_a_bad_value_before_launch(tmp_path):
     _js_entry(tmp_path, "const WIDTH = 800;\n", name="jsx3")
     assert runner.invoke(cli.app, ["params", "jsx3", "--manage", "WIDTH"]).exit_code == 0
     bad = runner.invoke(cli.app, ["run", "jsx3", "--set", "WIDTH=abc", "--no-input"])
-    assert bad.exit_code == flows.FAILURE_EXIT_CODES[flows.FAIL_BAD_VALUE]
+    assert bad.exit_code == exitcodes.exit_code_for_failure(flows.FAIL_BAD_VALUE)
 
 
 def test_execute_syntax_gate_failure_never_launches(tmp_path, monkeypatch):
-    from skit import launcher
 
     monkeypatch.setattr(inject, "escape_string", lambda value: f'"{value}')
-    monkeypatch.setattr(
-        launcher, "run_entry", lambda *a, **k: pytest.fail("the script must not launch")
-    )
+    patch_run_entry(monkeypatch, lambda *a, **k: pytest.fail("the script must not launch"))
     entry = _js_entry(tmp_path, 'const TITLE = "hello";\n', name="jsx4")
     assert runner.invoke(cli.app, ["params", "jsx4", "--manage", "TITLE"]).exit_code == 0
     entry = store.resolve("jsx4")

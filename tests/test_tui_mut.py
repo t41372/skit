@@ -12,8 +12,8 @@ import contextlib
 import pytest
 from textual.widgets import Checkbox, DataTable, Input, Static
 
-from conftest import click_label, footer_text
-from skit import argstate, config, flows, launcher, store, tui
+from conftest import click_label, footer_text, patch_run_entry
+from skit import argstate, config, flows, store, tui
 from skit.langs.python import metawriter
 from skit.params import ParamDecl
 from skit.tui_form import FieldRow, RunFormScreen
@@ -63,7 +63,7 @@ def quiet_run(monkeypatch):
         calls["override"] = script_override
         return calls.get("code", 0)
 
-    monkeypatch.setattr(launcher, "run_entry", fake_run)
+    patch_run_entry(monkeypatch, fake_run)
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
     return calls
 
@@ -863,7 +863,7 @@ def test_finish_run_executes_records_and_passes_the_code_through(tmp_path, quiet
     quiet_run["code"] = 7
     printed: list[str] = []
     monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
-    pending = tui.PendingRun(entry, plan, asm, {}, [], show_drift=True)
+    pending = tui.PendingRun(entry, plan, asm, {}, [], extra_raw=True, show_drift=True)
     monkeypatch.setattr(tui.MenuApp, "run", lambda self: pending)
     assert tui.run_menu() == 7
     assert "values" in quiet_run
@@ -881,7 +881,9 @@ def test_finish_run_launch_failure_uses_docker_codes_and_records_nothing(tmp_pat
     printed: list[str] = []
     monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(map(str, a))))
     monkeypatch.setattr(
-        tui.MenuApp, "run", lambda self: tui.PendingRun(entry, plan, asm, {}, [], False)
+        tui.MenuApp,
+        "run",
+        lambda self: tui.PendingRun(entry, plan, asm, {}, [], extra_raw=True, show_drift=False),
     )
     assert tui.run_menu() == 127
     assert argstate.load_state(entry.slug)["last_run"] == {}

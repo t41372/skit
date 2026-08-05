@@ -84,7 +84,7 @@ def test_doctor_rebuild_reports_missing_key_instead_of_crashing(sample_script, t
     assert any("bad-slug" in p for p in problems)
 
 
-def test_resolve_corrupt_missing_key_meta_raises_notfounderror_not_keyerror(tmp_path):
+def test_resolve_corrupt_missing_key_meta_raises_corruption_not_keyerror(tmp_path):
     from skit import store
     from skit.atomic import atomic_write_toml
     from skit.paths import registry_path
@@ -95,7 +95,7 @@ def test_resolve_corrupt_missing_key_meta_raises_notfounderror_not_keyerror(tmp_
         {"entries": {"bad-slug": {"name": "bad", "kind": "python", "description": ""}}},
     )
 
-    with pytest.raises(store.NotFoundError):
+    with pytest.raises(store.CorruptEntryError):
         store.resolve("bad-slug")
 
 
@@ -160,7 +160,7 @@ def test_doctor_rebuild_reports_scalar_params_instead_of_crashing(sample_script,
     assert any("bad-type-slug" in p for p in problems)
 
 
-def test_resolve_scalar_dependencies_meta_raises_notfounderror_not_typeerror(tmp_path):
+def test_resolve_scalar_dependencies_meta_raises_corruption_not_typeerror(tmp_path):
     from skit import store
     from skit.atomic import atomic_write_toml
     from skit.paths import registry_path
@@ -171,7 +171,7 @@ def test_resolve_scalar_dependencies_meta_raises_notfounderror_not_typeerror(tmp
         {"entries": {"bad-type-slug": {"name": "bad", "kind": "python", "description": ""}}},
     )
 
-    with pytest.raises(store.NotFoundError):
+    with pytest.raises(store.CorruptEntryError):
         store.resolve("bad-type-slug")
 
 
@@ -514,7 +514,8 @@ def test_concurrent_add_python_both_succeed_with_distinct_slugs(tmp_path):
 
 def test_update_dependencies_copy_non_utf8_leaves_stored_copy_byte_identical(tmp_path):
     """`skit deps` on a copy-mode python entry syncs the copy's PEP 723 block — but only after a
-    STRICT re-decode (read_bytes().decode('utf-8')). A copy that isn't valid UTF-8 makes that
+    STRICT read (the shared read_for_block_edit(errors="strict"), this lane's own policy on the
+    one read half every block edit goes through). A copy that isn't valid UTF-8 makes that
     decode raise, and the sync RETURNS silently, leaving the copy byte-exact. The previous
     errors='replace' round-trip would have rewritten every non-UTF-8 byte as U+FFFD (real
     corruption). The dependency edit still lands in meta (delivered via --with at run time)."""
@@ -529,6 +530,28 @@ def test_update_dependencies_copy_non_utf8_leaves_stored_copy_byte_identical(tmp
 
     assert entry.script_path.read_bytes() == before  # byte-identical: no U+FFFD corruption
     assert updated.meta.dependencies == ["requests"]  # recorded in meta instead
+
+
+def test_update_dependencies_copy_crlf_syncs_the_block_and_stays_crlf(tmp_path):
+    """The strict read still folds to LF for the block engine and reports the copy's own style,
+    which write_block_edit restores: a CRLF copy comes back CRLF with only the block changed.
+    Handing the LF-based engine CRLF text made parse_block find nothing, so the "update"
+    prepended a SECOND `# /// script` block and left the [tool.skit] params below it
+    unreadable — every managed parameter silently gone, on every CRLF copy."""
+    from skit import store
+
+    src = tmp_path / "crlf.py"
+    src.write_bytes(b"# /// script\r\n# dependencies = []\r\n# ///\r\nprint(1)\r\n")
+    entry = store.add_python(src)
+
+    updated = store.update_dependencies(entry.slug, ["httpx"])
+
+    raw = updated.script_path.read_bytes()
+    assert b"httpx" in raw
+    assert raw.count(b"# /// script") == 1  # ONE block, rewritten in place
+    stripped = raw.replace(b"\r\n", b"")  # ...and no bare terminator was introduced
+    assert b"\r" not in stripped
+    assert b"\n" not in stripped
 
 
 def test_update_dependencies_copy_utf8_syncs_block_and_stays_utf8(tmp_path):

@@ -21,7 +21,7 @@ Type hints render in muted text and only turn loud on a validation error.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, Any, override
 
 from rich.markup import escape
 from textual import on
@@ -50,9 +50,15 @@ if TYPE_CHECKING:
     from .models import Entry
 
 # The submit result: raw field values, extra passthrough args, selected runner name,
-# and whether the runner picker was actually changed; or None on cancel. The runner
-# is None unless the form showed that picker.
-FormResult = tuple[dict[str, str], list[str], str | None, bool] | None
+# whether the runner picker was actually changed, and the extra tail's provenance
+# (True = the user EDITED the extra field, so the tail is form text that expands;
+# False = the prefilled tail went through untouched and keeps the provenance it was
+# stored with); or None on cancel. The runner is None unless the form showed that
+# picker. The form owns the provenance judgment because only it knows both what it
+# prefilled and whether the user actually touched the field — a caller diffing values
+# against freshly-reloaded state mistakes a concurrent CLI write for a user edit, and
+# mistakes a cleared-and-retyped identical tail for an untouched one.
+FormResult = tuple[dict[str, str], list[str], str | None, bool, bool] | None
 
 _EXTRA_KEY = "__extra_args__"
 
@@ -618,11 +624,25 @@ class RunFormScreen(Screen[FormResult]):
         include_extra: bool = True,
         runners: list[str] | None = None,
         runner_default: str = "",
+        state: dict[str, Any] | None = None,
     ) -> None:
         super().__init__()
         self._entry: Entry = entry
         self._plan: flows.FormPlan = plan
         self._prefill: dict[str, str] = prefill
+        # ONE state read per form (the caller may pass the copy it already loaded):
+        # presets, the extra tail, and the tail's provenance all come from the same
+        # snapshot, taken at compose time — the baseline for "did the user edit it".
+        self._state: dict[str, Any] = (
+            state if state is not None else argstate.load_state(entry.slug)
+        )
+        self._extra_prefill_raw: bool = bool(self._state["extra_args_raw"])
+        # The extra field's dirt bit: armed after mount (compose-time value settling
+        # must not count — the tui_settings dirt idiom), set by any user edit of the
+        # extra row, and NEVER cleared — a clear-and-retype of the identical text is
+        # still a deliberate act of typing into the launch menu.
+        self._extra_armed: bool = False
+        self._extra_dirty: bool = False
         # The inline (CLI) frame hides the extra-args row: argv already owns passthrough
         # args there, and two sources for the same thing would fight.
         self._include_extra: bool = include_extra
@@ -636,7 +656,7 @@ class RunFormScreen(Screen[FormResult]):
         # the picker event itself, after initial composition has settled.
         self._runner_pick_armed: bool = False
         self._runner_was_picked: bool = False
-        self._presets: dict[str, dict[str, str]] = argstate.load_state(entry.slug)["presets"]
+        self._presets: dict[str, dict[str, str]] = self._state["presets"]
         # The completion roots, computed once per form (path.md §3): bare relative
         # paths complete where the child resolves them; tokens expand at the invoke cwd.
         self._path_ctx: tui_pathpick.PathContext = tui_pathpick.PathContext.for_entry(entry)
@@ -654,11 +674,24 @@ class RunFormScreen(Screen[FormResult]):
             "name": escape(self._entry.meta.name)
         }
         self.call_after_refresh(setattr, self, "_runner_pick_armed", True)
+        self.call_after_refresh(setattr, self, "_extra_armed", True)
 
     @on(Select.Changed, "#runner-select")
     def _runner_changed(self, _event: Select.Changed) -> None:
         if self._runner_pick_armed:
             self._runner_was_picked = True
+
+    @on(Input.Changed)
+    def _extra_edited(self, event: Input.Changed) -> None:
+        """The extra row's dirt bit: the EVENT is the truth (the _runner_was_picked
+        rule) — comparing submitted text against the prefill would mistake a
+        cleared-and-retyped identical tail for an untouched one, and a token-insert or
+        path-pick lands here through the same Input.Changed as typing."""
+        if not self._extra_armed:
+            return
+        row = next((a for a in event.input.ancestors if isinstance(a, FieldRow)), None)
+        if row is not None and row.field.key == _EXTRA_KEY:
+            self._extra_dirty = True
 
     @override
     def compose(self) -> ComposeResult:
@@ -715,7 +748,7 @@ class RunFormScreen(Screen[FormResult]):
                     # a prompt/command its agent/command flags — a remembered `--model` is
                     # persistent config, like the pinned runner, not a per-run surprise.
                     # The `r` rerun (tui.py) has always replayed it ungated; form and CLI match.
-                    last_extra = argstate.load_state(self._entry.slug)["extra_args"]
+                    last_extra: list[str] = list(self._state["extra_args"])
                     # The matching split in collect() keeps one argument with spaces
                     # intact and preserves Windows path backslashes.
                     yield FieldRow(extra_field, argv_text.join(last_extra), path_ctx=self._path_ctx)
@@ -833,7 +866,10 @@ class RunFormScreen(Screen[FormResult]):
             for row in self._rows():
                 row.show_error(errors.get(row.field.key))
             return
-        self.dismiss((values, extra, self.picked_runner(), self._runner_was_picked))
+        # An untouched prefill keeps the provenance it was stored with; only a tail the
+        # user actually edited is re-captured as form text (see FormResult).
+        extra_raw = True if self._extra_dirty else self._extra_prefill_raw
+        self.dismiss((values, extra, self.picked_runner(), self._runner_was_picked, extra_raw))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -947,14 +983,31 @@ class RunFormScreen(Screen[FormResult]):
         def _named(name: str | None) -> None:
             if not name:
                 return
-            argstate.save_preset(
-                self._entry.slug,
-                name,
-                # The exact snapshot the form is showing, a cleared field included —
-                # dropping empties republished the very value the user just cleared.
-                values,
-                secret_names=self._plan.secret_names,
-            )
+            try:
+                saved = flows.save_preset_for(
+                    self._entry,
+                    name,
+                    # The exact snapshot the form is showing, a cleared field included —
+                    # dropping empties republished the very value the user just cleared.
+                    values,
+                    secret_names=self._plan.secret_names,
+                )
+            except argstate.StateWriteError as exc:
+                # No success toast for a preset that never landed on disk.
+                self.notify(str(exc), severity="error")
+                return
+            if not saved:
+                # The form outlived its entry (removed — or its slug reissued — while
+                # the form sat open): an explicit Ctrl+S must hear that, not a toast
+                # for a preset that has no entry to belong to.
+                self.notify(
+                    gettext(
+                        'Preset "%(preset)s" wasn\'t saved — %(name)s is no longer in the library.'
+                    )
+                    % {"preset": name, "name": self._entry.meta.name},
+                    severity="error",
+                )
+                return
             self._presets = argstate.load_state(self._entry.slug)["presets"]
             self._refresh_preset_picker(name)
             self.notify(

@@ -20,7 +20,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from skit import cli, config, flows, inlineform, promptform, store
+from skit import analysis, cli, config, flows, inlineform, promptform, store
+from skit.notices import NoticeCode, edit_notice
 from skit.params import ParamDecl
 
 runner = CliRunner()
@@ -58,7 +59,7 @@ def test_add_stdin_requires_name_exact_message():
 def test_add_stdin_empty_input_exact_message():
     """Empty stdin: the exact 'nothing arrived' message (no XX wrapper)."""
     result = runner.invoke(cli.app, ["add", "-", "--name", "x"], input="")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Nothing arrived on stdin, so there is nothing to add." in result.output
     assert "XX" not in result.output
 
@@ -99,7 +100,7 @@ def test_add_stdin_store_error_shows_real_message():
     """A duplicate name surfaces the store's own error text (not None / '1' / a crash)."""
     runner.invoke(cli.app, ["add", "-", "--name", "dup"], input="print(1)\n")
     result = runner.invoke(cli.app, ["add", "-", "--name", "dup"], input="print(2)\n")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "The name dup is already taken" in result.output
 
 
@@ -142,18 +143,29 @@ def test_add_stdin_forwards_summary_args_verbatim(monkeypatch):
 
 
 def test_apply_env_sources_unmanaged_warning_exact():
+    """ROUND 12: CODES, not finished sentences. This was the third warning producer in
+    `skit params` and the only one returning rendered prose, so nothing could CLASSIFY it
+    — which left --env-source warning-and-continuing on the analyzer lane while the same
+    flag refused on an exe entry. The wording now lives with every other code's, and the
+    code is what decides whether the invocation is honourable."""
     specs = [ParamDecl(name="CITY", type="str")]
     warnings = cli._apply_env_sources(specs, {"GHOST": "OPENAI"})
-    assert warnings == ["GHOST isn't a managed parameter; --env-source skipped."]
+    assert warnings == [edit_notice(NoticeCode.ENV_SOURCE_NOT_MANAGED, "GHOST")]
+    assert analysis.render_notice(warnings[0]) == (
+        "GHOST isn't a managed parameter; --env-source skipped."
+    )
+    assert analysis.is_refusal(warnings[0]) is True
 
 
 def test_apply_env_sources_non_secret_warning_exact():
     specs = [ParamDecl(name="CITY", type="str", secret=False)]
     warnings = cli._apply_env_sources(specs, {"CITY": "OPENAI"})
-    assert warnings == [
+    assert warnings == [edit_notice(NoticeCode.ENV_SOURCE_NOT_SECRET, "CITY")]
+    assert analysis.render_notice(warnings[0]) == (
         "CITY isn't secret; --env-source only applies to secret parameters "
         "(mark it with --secret first)."
-    ]
+    )
+    assert analysis.is_refusal(warnings[0]) is True
 
 
 def test_apply_env_sources_skips_but_keeps_processing_later_specs():
@@ -165,7 +177,7 @@ def test_apply_env_sources_skips_but_keeps_processing_later_specs():
     ]
     warnings = cli._apply_env_sources(specs, {"GHOST": "X", "CITY": "Y", "API": "OPENAI_KEY"})
     # GHOST is unmanaged (spec is None -> continue); if that were a break, CITY never warns.
-    assert any("CITY isn't secret" in w for w in warnings)
+    assert edit_notice(NoticeCode.ENV_SOURCE_NOT_SECRET, "CITY") in warnings
     # CITY is non-secret (-> continue); if that were a break, API's env_source stays unset.
     assert specs[1].env_source == "OPENAI_KEY"
 

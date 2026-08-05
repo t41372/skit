@@ -41,8 +41,8 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ...analysis import ArgSpec
 from ...params import ParamType, is_secret_name
-from ..python.argspec import ArgSpec
 
 if TYPE_CHECKING:
     from ...params import ParamDecl
@@ -151,6 +151,13 @@ def read_cli(text: str) -> ArgSpec | None:
         # missing_ok is unreachable-defensive: the temp file always exists here (mkstemp
         # created it), so True / False / None / absent are all equivalent.
         tmp.unlink(missing_ok=True)  # pragma: no mutate
+
+
+def runtime_fingerprint() -> str | None:
+    """The resolved tool identity for memo keys (see base.CliReader.runtime_fingerprint):
+    read_cli's verdict is a function of the text AND of which PowerShell answers, so a
+    cached verdict must be invalidated when the tool appears, disappears, or moves."""
+    return _find_powershell()
 
 
 def _find_powershell() -> str | None:

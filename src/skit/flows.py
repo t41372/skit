@@ -35,13 +35,15 @@ from __future__ import annotations
 import glob as _glob
 import os
 import shlex
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from . import analysis, argstate, config, launcher, params, tokens
+from . import analysis, argstate, config, launcher, params, store, tokens
+from .atomic import advisory_file_lock
+from .exitcodes import FailureReason
 from .i18n import gettext
 from .langs.base import (
     InjectError,
@@ -315,7 +317,9 @@ def _placeholder_body_plan(entry: Entry) -> FormPlan:
                 "No longer in the prompt (the value would be ignored): %(names)s — "
                 "edit the body or update parameters with: skit params %(name)s"
             )
-            % {"names": ", ".join(gone), "name": entry.meta.name}
+            # The slug, not the display name: this is a paste-able command, and a slug
+            # never needs quoting on any shell (a name with a space or an & does).
+            % {"names": ", ".join(gone), "name": entry.slug}
         ]
         if gone
         else []
@@ -415,7 +419,11 @@ def plan_for_entry(entry: Entry) -> FormPlan:  # noqa: PLR0911 — one return pe
     specs = lang.params_io.read(text)
     if specs:
         report = lang.analyzer.reconcile(text, specs)
-        drift = list(analysis.drift_lines(report, entry.meta.name)) if report.has_drift else []
+        drift = (
+            list(analysis.drift_lines(report, entry.meta.name, target=entry.slug))
+            if report.has_drift
+            else []
+        )
         fields = [FormField.from_decl(s) for s in report.usable]
         _refresh_defaults(fields, report.current_defaults, report.empty_uses_default)
         # MERGE: declared [[parameters]] flag/env rows ride along after the analyzer's in-file
@@ -482,11 +490,19 @@ def _refresh_defaults(
 # --------------------------------------------------------------------------
 
 
-def prefill(plan: FormPlan, slug: str, preset: str | None = None) -> dict[str, str]:
+def prefill(
+    plan: FormPlan,
+    slug: str,
+    preset: str | None = None,
+    *,
+    state: dict[str, Any] | None = None,
+) -> dict[str, str]:
     """Definition default < last-used < preset. Secrets are never prefilled — their
     values are never on disk (C3), and echoing a remembered secret would defeat the
-    point of masking."""
-    state = argstate.load_state(slug)
+    point of masking. `state` lets a caller that already holds the entry's loaded
+    state (the TUI reads it once per interaction) skip a second file read."""
+    if state is None:
+        state = argstate.load_state(slug)
     keys = {f.key for f in plan.fields}
     secret = plan.secret_names
     out: dict[str, str] = {}
@@ -573,6 +589,26 @@ def glob_feedback(value: str, cwd: Path) -> int | None:
     return count
 
 
+def tail_looks_expandable(extra_args: list[str]) -> bool:
+    """Whether a tail carries syntax the launch menu WOULD alter: token/escape/tilde
+    grammar is tokens.has_tokens — THE authority on what expand() changes, so this
+    predicate can never fork from it (a hand-rolled brace check missed `}}` halving and
+    over-fired on bare `{`) — plus the glob characters assemble's own glob pass acts
+    on. Behind the "passed as-is" note both faces print for a literal-replay tail:
+    replaying literally is the design, doing it silently was the bug."""
+    return any(
+        tokens.has_tokens(piece) or any(ch in piece for ch in _GLOB_CHARS) for piece in extra_args
+    )
+
+
+def as_is_note() -> str:
+    """The literal-replay transparency line, ONE msgid for both faces (CLI replay,
+    TUI r-rerun/exit-after-run) — resolved at call time so the active locale applies."""
+    return gettext(
+        "(passed as-is — a remembered tail only expands {tokens} and globs when it was typed into the launch menu)"
+    )
+
+
 # --------------------------------------------------------------------------
 # assemble
 # --------------------------------------------------------------------------
@@ -613,6 +649,9 @@ def assemble(
     # expand_extra=False: the CLI's `-- args` already went through the user's shell —
     # a second token/glob pass would rewrite what they deliberately quoted (and --raw
     # must be genuinely raw). The TUI's extra-args field has no shell, so it expands.
+    # A REPLAYED tail follows its recorded provenance (argstate's extra_args_raw), not
+    # the face replaying it: the caller passes that bit here, so a TUI-saved {today}
+    # still expands under `skit run` and a CLI-quoted *.png never globs under `r`.
     if expand_extra:
         expanded_extra: list[str] = []
         for item in extra_args:
@@ -815,34 +854,218 @@ def remembered_values(plan: FormPlan, values: Mapping[str, str]) -> dict[str, st
     return out
 
 
+def persistence_target(entry: Entry) -> Entry | None:
+    """The entry a HELD handle may still write state for — None means write NOTHING.
+
+    Every slug-keyed state write that lands a user-paced while after its resolve (a run
+    finishing hours later, a form's Ctrl+S) passes through here first. The slug in hand
+    is an ADDRESS, not an identity: the entry may be gone — remove() already forgot its
+    state file, and a write now would resurrect the very file it deleted — or the
+    address may have been reissued to a LATER add (a removed entry's slug is legal to
+    reuse), where a write would graft this launch's values onto a stranger.
+
+    Identity is EXACT match on a STAMPED meta.id — unknown identity may serve reads,
+    but it cannot authorize a write, and "" == "" is no proof of anything: an OLDER
+    skit shares this library and its adds write no id, so a symmetric blank can be a
+    reincarnation this version never saw. Held handles are stamped at hold-start
+    (store.claim_identity); a handle that could not be stamped (an unwritable-by-us
+    data dir — which is not provably unwritable by other users or older versions)
+    simply does not persist. Every asymmetric pairing means the handle and the disk
+    disagree about WHO the entry is, and the write fails closed.
+
+    The doors call this INSIDE the entry lock (store.entry_lock_path) and keep holding
+    it across their writes — the same lock every meta mutator and remove() itself
+    holds — so nothing can remove, reincarnate, or flip secrecy between the check and
+    the last write. Immediate resolve→write command lanes need no guard: they hold no
+    handle long enough for it to go stale."""
+    try:
+        fresh = store.resolve(entry.slug)
+    except store.StoreError:
+        return None
+    if not entry.meta.id or entry.meta.id != fresh.meta.id:
+        return None
+    return fresh
+
+
+def _launch_refusal(entry: Entry) -> str | None:
+    """The identity gate the LAUNCH itself passes, called under the entry lock right
+    before the child is spawned: a form (or an inline prompt session) can sit open for
+    hours after the lane's claim, and executing whatever the slug points at by then
+    would run a stranger's program with this entry's checks — a wrong the post-run
+    guards cannot un-run. A proven mismatch (gone, or a different stamped identity)
+    refuses; a symmetric UNSTAMPED pair may still launch — an unstampable library
+    cannot be verified, and it still deserves to run — but persists nothing
+    (persistence_target's own rule). A meta unreadable at this moment refuses too:
+    cannot verify, will not exec."""
+    try:
+        fresh = store.resolve(entry.slug)
+    except store.NotFoundError:
+        return gettext(
+            "%(name)s changed or was removed while the form was open — nothing was run."
+        ) % {"name": entry.meta.name}
+    except store.StoreError as exc:
+        return str(exc)
+    if fresh.meta.id != entry.meta.id:
+        return gettext(
+            "%(name)s changed or was removed while the form was open — nothing was run."
+        ) % {"name": entry.meta.name}
+    return None
+
+
+def _post_accept_secret_names(entry: Entry, fresh: Entry, launch: Collection[str]) -> set[str]:
+    """The C3 strip set for a post-acceptance write: whatever launch called secret plus
+    BOTH readings of the stored schema — the held handle's (its declared rows can carry
+    secrecy a reconcile would call missing) and the fresh one's (a mid-run flip to
+    secret must strip retroactively, not on the next run)."""
+    return set(launch) | stored_secret_names(entry) | stored_secret_names(fresh)
+
+
 def save_after_run(
-    slug: str,
+    entry: Entry,
     plan: FormPlan,
     values: Mapping[str, str],
     extra_args: list[str],
     exit_code: int,
     *,
     at: str,
+    extra_raw: bool,
 ) -> None:
-    """Persist intent (raw token/glob text), never expansion; secrets structurally
-    stripped by argstate (C3); stamp the run for Library sorting and the r key."""
-    # Retroactive C3 scrub: a placeholder/param that is secret NOW must not keep old
-    # plaintext in values or presets from the days it wasn't (purge is idempotent).
-    if plan.secret_names:
-        argstate.purge_secret(slug, plan.secret_names)
-    argstate.save_last(
-        slug,
-        values=remembered_values(plan, values),
-        extra_args=list(extra_args),
-        secret_names=plan.secret_names,
-    )
-    argstate.record_run(
-        slug,
-        exit_code,
-        at=at,
-        values=dict(values),
-        secret_names=plan.secret_names,
-    )
+    """Persist intent for field values (raw token/glob text), never expansion; secrets
+    structurally stripped by argstate (C3); stamp the run for Library sorting and the r
+    key. extra_raw is the tail's provenance — True for the TUI form's raw intent text,
+    False for a CLI tail the user's shell already processed — recorded so every later
+    replay (either face) re-expands exactly the tails that were captured raw, and only
+    those (see argstate.load_state).
+
+    The entry in hand predates a run that may have lasted hours, so nothing is written
+    until persistence_target re-proves it, and the strip set is the union of launch-time
+    and persistence-time secrecy — a mid-run flip to secret scrubs NOW. The whole
+    verify-then-write transaction holds the entry lock (see persistence_target), so the
+    re-proof cannot go stale under it."""
+    with advisory_file_lock(store.entry_lock_path(entry.slug)):
+        fresh = persistence_target(entry)
+        if fresh is None:
+            return
+        secret_names = _post_accept_secret_names(entry, fresh, plan.secret_names)
+        # Retroactive C3 scrub: a placeholder/param that is secret NOW must not keep old
+        # plaintext in values or presets from the days it wasn't (purge is idempotent).
+        if secret_names:
+            argstate.purge_secret(entry.slug, secret_names)
+        argstate.save_last(
+            entry.slug,
+            values=remembered_values(plan, values),
+            extra_args=list(extra_args),
+            extra_args_raw=extra_raw,
+            secret_names=secret_names,
+        )
+        argstate.record_run(
+            entry.slug,
+            exit_code,
+            at=at,
+            values=dict(values),
+            secret_names=secret_names,
+        )
+
+
+def stored_secret_names(entry: Entry) -> set[str]:
+    """The names the entry's STORED schema declares secret, read without an analyzer.
+
+    The raw lane's strip set. Cheap on purpose: analyzers stay out of run paths (the A2
+    rule — launch is stdlib-only), so this reads exactly the surfaces a launch may touch:
+
+    - placeholder kinds: declared_for_template over the meta — the plan's own secrecy;
+    - kinds with a params_io: the declared rider rows plus the block's own secret flags
+      (the '#'/'//' comment-block engine is grammar-free and outside the import guard).
+      A deliberate superset: a spec reconcile would call MISSING still strips — stale
+      secrecy is safer honored than dropped;
+    - everything else: the declared rows alone.
+
+    Heuristic (is_secret_name) secrecy needs no lane here: it is deterministic, so any
+    key it would flag today it flagged when the snapshot was written — and C3 stripped
+    it then. The residue an analyzer-only transition can leave is scrubbed by the next
+    non-raw run's purge."""
+    lang = spec_for(entry.meta.kind)
+    if lang is not None and lang.placeholder_params:
+        decls = params.declared_for_template(entry.meta.parameters, entry.meta.params or [])
+        return {d.name for d in decls if d.secret}
+    secret = {d.name for d in params.declared_from_meta(entry.meta.parameters) if d.secret}
+    if lang is not None and lang.params_io is not None:
+        try:
+            # encoding None/utf-8/UTF-8 decode identically under skit's UTF-8-mode
+            # runtime (cli.py:502's rule); errors="replace" is behaviourally pinned by
+            # test_stored_secret_names_survives_a_non_utf8_copy.
+            text = entry.script_path.read_text(  # pragma: no mutate
+                encoding="utf-8", errors="replace"
+            )
+        except OSError:
+            return secret  # unreadable copy: the declared rows are still the truth we hold
+        secret |= {d.name for d in lang.params_io.read(text) if d.secret}
+    return secret
+
+
+def save_after_raw_run(entry: Entry, exit_code: int, *, at: str) -> None:
+    """The raw lane's twin of save_after_run: stamp the run, apply the CURRENT secret
+    set, and touch nothing else. --raw consulted no form memory, so it rewrites none
+    (no save_last) — but the C3 scrub is not form memory, it is the hygiene every
+    accepted run performs, and record_run re-persists the preserved last_run snapshot,
+    so that snapshot must pass through the same strip as any new write.
+
+    Same guard as every post-acceptance write (persistence_target, under the entry
+    lock): an entry that no longer resolves — or a slug that now belongs to a later
+    add — gets no stamp at all, and the strip set unions launch-time and
+    persistence-time readings."""
+    with advisory_file_lock(store.entry_lock_path(entry.slug)):
+        fresh = persistence_target(entry)
+        if fresh is None:
+            return
+        secret_names = _post_accept_secret_names(entry, fresh, frozenset())
+        if secret_names:
+            argstate.purge_secret(entry.slug, secret_names)
+        argstate.record_run(entry.slug, exit_code, at=at, secret_names=secret_names)
+
+
+def save_preset_for(
+    entry: Entry, name: str, values: Mapping[str, str], *, secret_names: Collection[str]
+) -> bool:
+    """Save a preset against a HELD entry (`run --save-preset` after the run ends, the
+    form's Ctrl+S however long the form sat open) — through the same guard as every
+    other post-acceptance write. False means nothing was written: the entry is gone or
+    its slug was reissued. The caller owns saying so — a preset is an EXPLICIT request,
+    and eating one silently would be worse than the stale write the guard prevents."""
+    with advisory_file_lock(store.entry_lock_path(entry.slug)):
+        fresh = persistence_target(entry)
+        if fresh is None:
+            return False
+        argstate.save_preset(
+            entry.slug,
+            name,
+            dict(values),
+            secret_names=_post_accept_secret_names(entry, fresh, secret_names),
+        )
+        return True
+
+
+def clear_remembered_tail(entry: Entry) -> None:
+    """--forget-args' deferred CLEAR (the acceptance-point half; suppressing the reuse
+    was decided before assembly). Guarded like every post-acceptance write, with a
+    vacuous-truth twist: if the entry is gone, so is its whole state file (remove()
+    forgot it) — the forgetting already happened, and writing the clear would resurrect
+    the file just to hold an empty tail."""
+    with advisory_file_lock(store.entry_lock_path(entry.slug)):
+        if persistence_target(entry) is None:
+            return
+        argstate.save_last(entry.slug, extra_args=[])
+
+
+def delete_presets_for(entry: Entry, names: list[str]) -> list[str] | None:
+    """The settings screen's preset cleanup, through the same guarded door as every
+    other write against a HELD entry: delete the named presets, or None — the entry is
+    gone or its slug was reissued, and unticking a checkbox on the old screen must not
+    delete the new owner's presets. Returns the names that actually existed."""
+    with advisory_file_lock(store.entry_lock_path(entry.slug)):
+        if persistence_target(entry) is None:
+            return None
+        return [name for name in names if argstate.delete_preset(entry.slug, name)]
 
 
 # --------------------------------------------------------------------------
@@ -852,23 +1075,11 @@ def save_after_run(
 # Why a code did not launch, so each renderer can classify without re-catching the
 # launcher/shim exception hierarchy (the CLI maps these to exit codes 125/126/127; the
 # TUI maps them to a status line). "" means the script actually ran.
-FAIL_BAD_VALUE = "bad_value"  # a value doesn't fit its declared type (shim rejected it)
-FAIL_DRIFT = "drift"  # injection targets no longer match the definitions
-FAIL_MISSING = "missing"  # the launch target is gone from disk
-FAIL_NOT_EXECUTABLE = "not_executable"  # an exe exists but isn't +x
-FAIL_LAUNCH = "launch"  # any other launch failure
-
-# Docker-convention process exit codes when the launch itself failed (the script's own
-# exit code passes through untouched whenever it did run): skit failures are 125, an
-# existing-but-unexecutable target 126, a missing target 127. Shared by `skit run` and
-# the TUI's exit-after-run path so the contract can't fork.
-FAILURE_EXIT_CODES = {
-    FAIL_BAD_VALUE: 125,
-    FAIL_DRIFT: 125,
-    FAIL_LAUNCH: 125,
-    FAIL_NOT_EXECUTABLE: 126,
-    FAIL_MISSING: 127,
-}
+FAIL_BAD_VALUE = FailureReason.BAD_VALUE
+FAIL_DRIFT = FailureReason.DRIFT
+FAIL_MISSING = FailureReason.MISSING
+FAIL_NOT_EXECUTABLE = FailureReason.NOT_EXECUTABLE
+FAIL_LAUNCH = FailureReason.LAUNCH
 
 
 @dataclass
@@ -877,12 +1088,38 @@ class RunOutcome:
     script never launched (failure names why, message is user-ready and localized)."""
 
     code: int | None
-    failure: str = ""
+    failure: FailureReason | None = None
     message: str = ""
 
     @property
     def launched(self) -> bool:
         return self.code is not None
+
+
+def failure_reason(outcome: RunOutcome) -> FailureReason:
+    """Return the refusal reason after the caller established that nothing launched."""
+    if outcome.failure is None:
+        raise AssertionError("a launch refusal must carry a failure reason")
+    return outcome.failure
+
+
+def post_run_persistence_error(persist: Callable[[], None]) -> str | None:
+    """Attempt incidental state persistence without stealing an executed child's status.
+
+    A launched process owns its exit code. Remembered values and run history are useful,
+    but a full disk or unreadable state directory happens after that process has already
+    done real work and cannot retroactively turn its status into Click's generic exit 1.
+    Explicit accepted-point mutations are still supplied by the caller in ``persist``;
+    the warning therefore says state was not saved rather than pretending the request
+    succeeded.
+    """
+    try:
+        persist()
+    except OSError as exc:
+        return gettext("The entry ran, but skit couldn't save its state: %(error)s") % {
+            "error": exc.strerror or str(exc)
+        }
+    return None
 
 
 def transparency_lines(
@@ -974,7 +1211,7 @@ def _prompt_secret_warning(plan: FormPlan, asm: Assembly) -> str:
 def _split_message(exc: InjectSplitError) -> str:
     """The user-facing wording for each way a `read` line would mangle a value. A closed dict of
     gettext literals (never gettext(reason)) so Babel can extract them — the same discipline
-    analysis.render_warning uses."""
+    analysis.render_notice uses."""
     return {
         "line-break": gettext(
             "%(name)s can't contain a line break: a shell `read` takes ONE line, so everything "
@@ -992,7 +1229,7 @@ def _split_message(exc: InjectSplitError) -> str:
     }[exc.reason] % {"name": exc.name}
 
 
-def execute(  # noqa: PLR0911, PLR0912 — one early return/branch per injection failure mode; a flat error dispatch
+def execute(  # noqa: PLR0911, PLR0912, PLR0915 — one early return/branch/statement per injection failure mode; a flat error dispatch
     entry: Entry,
     plan: FormPlan,
     asm: Assembly,
@@ -1021,162 +1258,164 @@ def execute(  # noqa: PLR0911, PLR0912 — one early return/branch per injection
     prepared: launcher.PreparedLaunch | None = None
     emit_warning = warn or emit
     try:
-        # The injector's env overlay rides ON TOP of the assembled env-delivered values:
-        # both are "set this variable on the child", and a shell entry can legitimately
-        # produce both at once (a declared env rider plus an envdefault param).
-        env_overlay = dict(asm.env_values)
-        spec = spec_for(entry.meta.kind)
-        if spec is not None and isinstance(spec.launch, PromptLaunch):
+        # Everything from the identity check to the SPAWN happens under the entry lock
+        # (the same lock every mutator, remove() and the persistence doors hold): the
+        # prompt body is read, the temp copy is written and the OS opens the program
+        # inside it, so nothing can swap the entry between "this is still the entry the
+        # form was about" and the exec. Only the WAIT happens outside — no lock may
+        # outlive a child.
+        with advisory_file_lock(store.entry_lock_path(entry.slug)):
+            refusal = _launch_refusal(entry)
+            if refusal is not None:
+                return RunOutcome(None, FAIL_MISSING, refusal)
+            # The injector's env overlay rides ON TOP of the assembled env-delivered values:
+            # both are "set this variable on the child", and a shell entry can legitimately
+            # produce both at once (a declared env rider plus an envdefault param).
+            env_overlay = dict(asm.env_values)
+            spec = spec_for(entry.meta.kind)
+            if spec is not None and isinstance(spec.launch, PromptLaunch):
+                try:
+                    # Cross the delivery boundary only after the exact runner/body argv,
+                    # executable, needs and cwd have all succeeded. run_entry consumes
+                    # this same snapshot below; it never re-reads or rebuilds the prompt.
+                    prepared = launcher.prepare_entry(
+                        entry,
+                        asm.args,
+                        values=asm.command_values,
+                        invoke_cwd=invoke_cwd,
+                        runner=runner,
+                    )
+                except launcher.TargetMissingError as exc:
+                    return RunOutcome(None, FAIL_MISSING, str(exc))
+                except launcher.NotExecutableError as exc:
+                    return RunOutcome(None, FAIL_NOT_EXECUTABLE, str(exc))
+                except launcher.LaunchError as exc:
+                    return RunOutcome(None, FAIL_LAUNCH, str(exc))
+                amp_seed = next(r for r in config.PROMPT_RUNNER_SEEDS if r.name == "amp")
+                if prepared.prompt_runner == amp_seed:
+                    emit_warning(
+                        gettext(
+                            "The built-in amp runner is one-shot: amp -x runs this prompt once "
+                            "and does not open an interactive session."
+                        )
+                    )
+                if prepared.warning:
+                    emit_warning(prepared.warning)
+                secret_warning = _prompt_secret_warning(plan, asm)
+                if secret_warning:
+                    emit_warning(secret_warning)
+            if (
+                plan.source == "inject"
+                and asm.inject_values
+                and spec is not None
+                and spec.injector is not None
+            ):
+                try:
+                    result = spec.injector.inject(
+                        InjectRequest(
+                            text=plan.text,
+                            specs=plan.specs,
+                            values=asm.inject_values,
+                            # entry.dir is write_injected's fallback directory (used only when
+                            # the OS temp dir isn't writable);
+                            # test_execute_inject_falls_back_to_entry_dir pins that this run
+                            # passes it through.
+                            entry_dir=entry.dir,
+                            interpreter=entry.meta.interpreter or spec.default_interpreter,
+                            # Deps-managed npm entries run their temp copy FROM entry_dir, so the
+                            # runner's upward module resolution still finds entry_dir/node_modules.
+                            # (A no-deps entry's temp copy stays in the OS temp dir — the secret-leftover
+                            # default; a consequence, shared with the Python injector's __file__, is that
+                            # `__dirname`/`import.meta.url` differ between an injected and a stored run.)
+                            prefer_entry_dir=(
+                                spec.deps_flavor == "npm"
+                                and entry.meta.mode == "copy"
+                                and bool(entry.meta.dependencies)
+                            ),
+                            # The original filename, so the JS/TS injector can give its temp copy an
+                            # .mjs/.cjs extension when the origin pinned a module flavor (the store
+                            # flattens the stored copy to script.js, losing that signal otherwise).
+                            source=entry.meta.source,
+                        )
+                    )
+                except InjectValueError as exc:
+                    return RunOutcome(
+                        None,
+                        FAIL_BAD_VALUE,
+                        gettext("%(value)s isn't a valid %(type)s for %(param)s.")
+                        % {
+                            "value": repr(exc.value),
+                            "type": exc.type_name,
+                            "param": exc.param_name,
+                        },
+                    )
+                except InjectGapError as exc:
+                    return RunOutcome(
+                        None,
+                        FAIL_BAD_VALUE,
+                        gettext(
+                            "%(empty)s is empty, but %(filled)s is filled and they are read on the "
+                            "same line — a shell `read` would hand your value to %(empty)s. Fill "
+                            "%(empty)s in, or clear %(filled)s."
+                        )
+                        % {"empty": exc.empty, "filled": exc.filled},
+                    )
+                except InjectSplitError as exc:
+                    return RunOutcome(None, FAIL_BAD_VALUE, _split_message(exc))
+                except InjectSyntaxError as exc:
+                    # skit corrupted the script (a quoting/escaping bug) — a resync fixes
+                    # nothing, so this must NOT carry the drift hint. Nothing was launched.
+                    return RunOutcome(
+                        None,
+                        FAIL_DRIFT,
+                        gettext("skit refused to run its own injected copy: %(detail)s")
+                        % {"detail": str(exc)},
+                    )
+                except InjectError as exc:
+                    return RunOutcome(
+                        None,
+                        FAIL_DRIFT,
+                        gettext(
+                            "The script and its form definitions don't match anymore: %(detail)s. "
+                            "Run `skit params %(name)s --resync` to fix it."
+                        )
+                        % {"name": entry.slug, "detail": str(exc)},  # slug: paste-safe on any shell
+                    )
+                injected = result.path
+                env_overlay.update(result.env)
+                for line in result.warnings:
+                    emit(line)
+            for line in transparency_lines(
+                entry,
+                asm,
+                injected,
+                runner=runner,
+                validated_prompt_command=(prepared.safe_display if prepared is not None else None),
+            ):
+                emit(line)
             try:
-                # Cross the delivery boundary only after the exact runner/body argv,
-                # executable, needs and cwd have all succeeded. run_entry consumes
-                # this same snapshot below; it never re-reads or rebuilds the prompt.
-                prepared = launcher.prepare_entry(
-                    entry,
-                    asm.args,
-                    values=asm.command_values,
-                    invoke_cwd=invoke_cwd,
-                    runner=runner,
-                )
+                if prepared is None:
+                    # The historical run_entry seam, split: the SPAWN happens here,
+                    # inside the lock (the OS opens the program before anything can
+                    # swap it); the wait joins it below, outside.
+                    started = launcher.start_entry(
+                        entry,
+                        asm.args,
+                        values=asm.command_values,
+                        invoke_cwd=invoke_cwd,
+                        script_override=injected,
+                        env_overlay=env_overlay,
+                        runner=runner,
+                    )
+                else:
+                    started = launcher.start_entry(entry, asm.args, values=asm.command_values, invoke_cwd=invoke_cwd, script_override=injected, env_overlay=env_overlay, runner=runner, prepared=prepared)  # pragma: no mutate — with prepared given, start_entry reads only prepared (+ the always-empty prompt env overlay); the rest keeps the historical spawn seam observable to tests. Arg mutants here are equivalents  # fmt: skip
             except launcher.TargetMissingError as exc:
                 return RunOutcome(None, FAIL_MISSING, str(exc))
             except launcher.NotExecutableError as exc:
                 return RunOutcome(None, FAIL_NOT_EXECUTABLE, str(exc))
             except launcher.LaunchError as exc:
                 return RunOutcome(None, FAIL_LAUNCH, str(exc))
-            amp_seed = next(r for r in config.PROMPT_RUNNER_SEEDS if r.name == "amp")
-            if prepared.prompt_runner == amp_seed:
-                emit_warning(
-                    gettext(
-                        "The built-in amp runner is one-shot: amp -x runs this prompt once "
-                        "and does not open an interactive session."
-                    )
-                )
-            if prepared.warning:
-                emit_warning(prepared.warning)
-            secret_warning = _prompt_secret_warning(plan, asm)
-            if secret_warning:
-                emit_warning(secret_warning)
-        if (
-            plan.source == "inject"
-            and asm.inject_values
-            and spec is not None
-            and spec.injector is not None
-        ):
-            try:
-                result = spec.injector.inject(
-                    InjectRequest(
-                        text=plan.text,
-                        specs=plan.specs,
-                        values=asm.inject_values,
-                        # entry.dir is write_injected's fallback directory (used only when
-                        # the OS temp dir isn't writable);
-                        # test_execute_inject_falls_back_to_entry_dir pins that this run
-                        # passes it through.
-                        entry_dir=entry.dir,
-                        interpreter=entry.meta.interpreter or spec.default_interpreter,
-                        # Deps-managed npm entries run their temp copy FROM entry_dir, so the
-                        # runner's upward module resolution still finds entry_dir/node_modules.
-                        # (A no-deps entry's temp copy stays in the OS temp dir — the secret-leftover
-                        # default; a consequence, shared with the Python injector's __file__, is that
-                        # `__dirname`/`import.meta.url` differ between an injected and a stored run.)
-                        prefer_entry_dir=(
-                            spec.deps_flavor == "npm"
-                            and entry.meta.mode == "copy"
-                            and bool(entry.meta.dependencies)
-                        ),
-                        # The original filename, so the JS/TS injector can give its temp copy an
-                        # .mjs/.cjs extension when the origin pinned a module flavor (the store
-                        # flattens the stored copy to script.js, losing that signal otherwise).
-                        source=entry.meta.source,
-                    )
-                )
-            except InjectValueError as exc:
-                return RunOutcome(
-                    None,
-                    FAIL_BAD_VALUE,
-                    gettext("%(value)s isn't a valid %(type)s for %(param)s.")
-                    % {
-                        "value": repr(exc.value),
-                        "type": exc.type_name,
-                        "param": exc.param_name,
-                    },
-                )
-            except InjectGapError as exc:
-                return RunOutcome(
-                    None,
-                    FAIL_BAD_VALUE,
-                    gettext(
-                        "%(empty)s is empty, but %(filled)s is filled and they are read on the "
-                        "same line — a shell `read` would hand your value to %(empty)s. Fill "
-                        "%(empty)s in, or clear %(filled)s."
-                    )
-                    % {"empty": exc.empty, "filled": exc.filled},
-                )
-            except InjectSplitError as exc:
-                return RunOutcome(None, FAIL_BAD_VALUE, _split_message(exc))
-            except InjectSyntaxError as exc:
-                # skit corrupted the script (a quoting/escaping bug) — a resync fixes
-                # nothing, so this must NOT carry the drift hint. Nothing was launched.
-                return RunOutcome(
-                    None,
-                    FAIL_DRIFT,
-                    gettext("skit refused to run its own injected copy: %(detail)s")
-                    % {"detail": str(exc)},
-                )
-            except InjectError as exc:
-                return RunOutcome(
-                    None,
-                    FAIL_DRIFT,
-                    gettext(
-                        "The script and its form definitions don't match anymore: %(detail)s. "
-                        "Run `skit params %(name)s --resync` to fix it."
-                    )
-                    % {"name": entry.meta.name, "detail": str(exc)},
-                )
-            injected = result.path
-            env_overlay.update(result.env)
-            for line in result.warnings:
-                emit(line)
-        for line in transparency_lines(
-            entry,
-            asm,
-            injected,
-            runner=runner,
-            validated_prompt_command=(prepared.safe_display if prepared is not None else None),
-        ):
-            emit(line)
-        try:
-            if prepared is None:
-                # Keep the established non-prompt call seam unchanged; many callers
-                # replace run_entry with a narrow adapter that knows no prepared kwarg.
-                code = launcher.run_entry(
-                    entry,
-                    asm.args,
-                    values=asm.command_values,
-                    invoke_cwd=invoke_cwd,
-                    script_override=injected,
-                    env_overlay=env_overlay,
-                    runner=runner,
-                )
-            else:
-                code = launcher.run_entry(
-                    entry,
-                    asm.args,
-                    values=asm.command_values,
-                    invoke_cwd=invoke_cwd,
-                    script_override=injected,
-                    env_overlay=env_overlay,
-                    runner=runner,
-                    prepared=prepared,
-                )
-        except launcher.TargetMissingError as exc:
-            return RunOutcome(None, FAIL_MISSING, str(exc))
-        except launcher.NotExecutableError as exc:
-            return RunOutcome(None, FAIL_NOT_EXECUTABLE, str(exc))
-        except launcher.LaunchError as exc:
-            return RunOutcome(None, FAIL_LAUNCH, str(exc))
-        return RunOutcome(code)
+        return RunOutcome(launcher.finish_entry(started))
     finally:
         if injected is not None and injected.exists():
             # missing_ok is redundant: exists() already gated this, and we created the

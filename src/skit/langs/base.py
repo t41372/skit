@@ -29,11 +29,11 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from ..analysis import Analysis, Report
+    from ..analysis import Analysis, ArgSpec, Report
     from ..config import PromptRunner
     from ..models import Entry
+    from ..notices import NormalizeNotice
     from ..params import ParamDecl
-    from .python.argspec import ArgSpec
 
 
 class LaunchError(Exception):
@@ -250,6 +250,12 @@ class CliReader:
     """Static reader for the script's OWN argument parser (argparse tier)."""
 
     read_cli: Callable[[str], ArgSpec | None]
+    # Non-None only when read_cli's answer depends on an external tool (PowerShell's
+    # parser subprocess): returns the resolved tool identity (path, or None when absent)
+    # so a caller that MEMOIZES read_cli results can key on it — otherwise a pwsh
+    # installed mid-session would keep serving the tool-less verdict from the memo.
+    # Purely-static readers leave it None and memoize on text alone.
+    runtime_fingerprint: Callable[[], str | None] | None = None
 
 
 @dataclass(frozen=True)
@@ -310,13 +316,11 @@ class Normalizer:
 
 @dataclass(frozen=True)
 class Normalization:
-    """A normalizer's result: the new text, the names actually rewritten, and coded
-    ``reason:name`` refusals the caller renders (same shape as analysis.EditResult warnings —
-    the UI owns the human wording)."""
+    """A normalizer's result: new text, rewritten names, and typed refusals."""
 
     text: str
     normalized: list[str] = field(default_factory=list)
-    refused: list[str] = field(default_factory=list)
+    refused: list[NormalizeNotice] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -410,7 +414,6 @@ class LangSpec:
     # Package-dependency management: "uv" (PEP 723, python), "npm" (package.json materialized
     # next to the stored copy, js/ts), or "" (no package deps — needs-only, like every other kind).
     deps_flavor: Literal["", "uv", "npm"] = ""
-    takes_argv: bool = True  # False: appended args are not this kind's interface
     # Placeholder-delivered parameters are this kind's form interface: `{name}` holes
     # become fields via params.declared_for_template (command templates and prompts).
     # This trait — not `family` — is what every template/non-template decision keys off

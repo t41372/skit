@@ -33,6 +33,7 @@ from . import (
     config,
     editor,
     pep723,
+    rewrite,
     store,
     theme,
     tui_footer,
@@ -740,6 +741,7 @@ class AddReviewScreen(Screen[str | None]):
 
         self._spec = spec_for(kind)
         self._text_error: str = ""
+        self._reader_modeled_memo: tuple[tuple[str, str | None], bool] | None = None
         try:
             self._text = path.read_text(encoding="utf-8", errors="replace")  # pragma: no mutate — encoding None/utf-8/UTF-8 decode identically under skit's UTF-8-mode runtime (equivalent); the errors="replace" handler stays behaviourally pinned by test_add_review_screen_reads_invalid_utf8_with_replace  # fmt: skip
         except OSError as exc:
@@ -790,10 +792,24 @@ class AddReviewScreen(Screen[str | None]):
     def _reader_modeled(self) -> bool:
         """Whether the entry's own reader models a form from the current text — the
         shared trap predicate (flows.reader_fields) the tick list and its Space chip
-        both key on."""
+        both key on. Memoized per (text, reader tool): for a reader kind (PowerShell)
+        each read is a synchronous subprocess, and this fires on every mode toggle —
+        the panel must not freeze for seconds because a radio button was clicked. The
+        text half recomputes the Ctrl+E edit→rescan path; the tool half (the reader's
+        runtime_fingerprint, a cheap PATH scan) re-probes when pwsh appears or vanishes
+        mid-session, so the panel never keeps claiming "no form" after the user
+        installs the tool in another terminal."""
+        reader = self._spec.cli_reader if self._spec is not None else None
+        fingerprint = reader.runtime_fingerprint if reader is not None else None
+        key = (self._text, fingerprint() if fingerprint is not None else None)
+        memo = self._reader_modeled_memo
+        if memo is not None and memo[0] == key:
+            return memo[1]
         from . import flows
 
-        return flows.reader_fields(self._spec, self._text) > 0
+        modeled = flows.reader_fields(self._spec, self._text) > 0
+        self._reader_modeled_memo = (key, modeled)
+        return modeled
 
     def _suggest_description(self) -> str:
         if self._kind == "python":
@@ -1185,10 +1201,14 @@ class AddReviewScreen(Screen[str | None]):
             if picked:
                 specs = [ParamDecl.from_candidate(c) for c in picked]
                 copy_path = entry.script_path
-                # This is a write-back path, so preserve arbitrary shell/fish bytes while
-                # inserting the comment-only metadata block.
-                current = copy_path.read_text(encoding="utf-8", errors="surrogateescape")  # pragma: no mutate — utf-8 equivalence  # fmt: skip
-                copy_path.write_text(self._spec.params_io.write(current, specs), encoding="utf-8", errors="surrogateescape")  # pragma: no mutate — utf-8 equivalence  # fmt: skip
+                # Byte-lossless write-back through the one shared pair (rewrite.py):
+                # read_text/write_text here silently rewrote every line ending of the
+                # just-stored copy — the exact corruption the CLI twin of this add
+                # (_onboard_script_params) documents and avoids.
+                current, newline = rewrite.read_for_block_edit(copy_path)
+                rewrite.write_block_edit(
+                    copy_path, self._spec.params_io.write(current, specs), newline
+                )
         self.dismiss(entry.slug)
 
     def action_cancel(self) -> None:
@@ -1209,8 +1229,12 @@ class PromptReviewScreen(Screen[str | None]):
         Binding("ctrl+e", "edit_source", gettext("Edit prompt")),
         Binding("ctrl+s", "accept", gettext("Add"), priority=True),
         Binding("ctrl+n", "new_runner", gettext("New agent"), show=False, priority=True),
+        # Ctrl+L, not Ctrl+O: Ctrl+O is the grammar chord for "restore the default"
+        # (README documents it on the run form) and must not mean anything else on a
+        # sibling screen. Ctrl+L is no Input editing chord, so it fires from inside a
+        # field without priority; the chip stays the mouse path.
         Binding(
-            "ctrl+o",
+            "ctrl+l",
             "choose_prompt_candidates",
             gettext("Choose variables…"),
             show=False,
@@ -1418,7 +1442,7 @@ class PromptReviewScreen(Screen[str | None]):
                 value=self._tick_overrides.get(hole_name, not flooded),
                 id=f"pv-hole-{i}",
             )
-        if len(detected) > len(self._shown_names):
+        if self._can_choose_candidates():
             yield Static(
                 gettext("…and %(count)s more") % {"count": len(detected) - len(self._shown_names)},
                 classes="hint",
@@ -1426,7 +1450,7 @@ class PromptReviewScreen(Screen[str | None]):
             yield Static(
                 tui_footer.chip(
                     "screen.choose_prompt_candidates",
-                    "Ctrl+O",
+                    "Ctrl+L",
                     gettext("Choose variables…"),
                 ),
                 id="pv-choose-candidates",
@@ -1466,9 +1490,30 @@ class PromptReviewScreen(Screen[str | None]):
         flooded = len(self._detected) > prompt_analyzer.AUTO_MANAGE_LIMIT
         return {name for name in self._detected if self._tick_overrides.get(name, not flooded)}
 
+    def _can_choose_candidates(self) -> bool:
+        """Whether the inline preview is CAPPED, i.e. whether the picker has anything to
+        show that is not already on screen.
+
+        One predicate for the chip, the action and check_action. They had two: the chip
+        appeared when the list was capped (`len(detected) > len(_shown_names)`, which
+        happens only when flooded), while the action ran whenever the list merely exceeded
+        LIST_PREVIEW_LIMIT. Between those two thresholds Ctrl+L opened a picker that no
+        chip advertised — a keyboard-only path (principle 2) onto a list the user could
+        already see in full. Narrowed to the chip's meaning, because the chip's own words
+        are "…and N more": with nothing more, there is nothing to choose."""
+        return len(self._detected) > prompt_analyzer.AUTO_MANAGE_LIMIT
+
+    @override
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Disable the chord where its chip is not offered — same predicate, so the
+        keyboard and the mouse advertise exactly the same thing."""
+        if action == "choose_prompt_candidates":
+            return self._can_choose_candidates()
+        return True
+
     def action_choose_prompt_candidates(self) -> None:
         """Open the complete searchable choice when the inline preview is capped."""
-        if len(self._detected) <= prompt_analyzer.LIST_PREVIEW_LIMIT:
+        if not self._can_choose_candidates():
             return
         self._remember_visible_ticks()
 
@@ -1583,7 +1628,12 @@ class PromptReviewScreen(Screen[str | None]):
             return
         if runner and self._runner_was_picked:
             # A real pick prefills the next picker (never a non-interactive resolve).
-            argstate.save_last_runner(runner)
+            try:
+                argstate.save_last_runner(runner)
+            except argstate.StateWriteError as exc:
+                # The entry is already added; losing a picker prefill must not
+                # strand the screen on a success it cannot un-happen.
+                self.notify(str(exc), severity="warning")
         self.dismiss(entry.slug)
 
     def action_cancel(self) -> None:

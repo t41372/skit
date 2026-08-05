@@ -42,6 +42,13 @@ class ScriptMeta:
     source: str = ""  # provenance: original path at add time (also for exe/command)
     source_hash: str = ""  # "sha256:…"; empty for command entries
     added_at: str = ""
+    # The entry's identity, immutable for life: stamped (uuid4 hex) by the store's one
+    # meta-write door and never rewritten after. A slug is an ADDRESS — a removed
+    # entry's slug may be legally reissued to a later add — and added_at cannot tell
+    # two owners apart (now_iso drops sub-second precision), so state written against
+    # a held Entry compares THIS (flows.persistence_target) before touching disk.
+    # "" = a meta written before ids existed; its next meta write heals it.
+    id: str = ""
     workdir: Workdir = "origin"
     description: str = ""
     template: str = ""  # command template when kind=command
@@ -93,6 +100,8 @@ class ScriptMeta:
             "workdir": self.workdir,
             "description": self.description,
         }
+        if self.id:
+            d["id"] = self.id
         if self.template:
             d["template"] = self.template
         if self.dependencies:
@@ -127,7 +136,9 @@ class ScriptMeta:
             )
         invalid = [key for key in ("name", "kind") if not isinstance(d[key], str)]
         invalid += [
-            key for key in ("runner",) if d.get(key) is not None and not isinstance(d[key], str)
+            key
+            for key in ("runner", "id")
+            if d.get(key) is not None and not isinstance(d[key], str)
         ]
         invalid += [
             key
@@ -146,6 +157,7 @@ class ScriptMeta:
             source=d.get("source", ""),
             source_hash=d.get("source_hash", ""),
             added_at=d.get("added_at", ""),
+            id=d.get("id", ""),
             workdir=d.get("workdir", "origin"),
             description=d.get("description", ""),
             template=d.get("template", ""),

@@ -3,7 +3,7 @@
 The machinery is language-neutral and lives in `skit.analysis`; this module is the thin wiring
 that binds the Python analyzer's `analyze` and re-exports the shared pieces, so the many existing
 imports (`reconcile.reconcile`, `reconcile.edit_specs`, `reconcile.drift_lines`,
-`reconcile.render_warning`, `reconcile.Report`, `reconcile.Candidate`, …) keep resolving with no
+`reconcile.render_notice`, `reconcile.Report`, `reconcile.Candidate`, …) keep resolving with no
 churn. See `skit.analysis` for the reconcile rules and the drift categories.
 """
 
@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ... import analysis
-from ...analysis import Candidate, EditResult, Report, drift_lines, render_warning
+from ...analysis import Candidate, EditResult, Report, drift_lines, render_notice
 from .analyzer import analyze
 
 if TYPE_CHECKING:
@@ -25,7 +25,7 @@ __all__ = [
     "drift_lines",
     "edit_specs",
     "reconcile",
-    "render_warning",
+    "render_notice",
 ]
 
 

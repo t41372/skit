@@ -21,7 +21,7 @@ from textual.widgets.option_list import Option
 
 from . import config, healthcheck, launcher, store, tui_footer
 from .i18n import gettext, ngettext
-from .paths import scripts_dir
+from .paths import config_dir, scripts_dir, state_dir
 
 
 class HealthScreen(Screen[str | None]):
@@ -78,6 +78,25 @@ class HealthScreen(Screen[str | None]):
             # previously swept separately and disagreed — this screen skipped prompt
             # drift, runtime resolution, and invalid runner rows entirely.
             report = healthcheck.collect(entries)
+            if report.unindexed:
+                # The one row that can contradict the count above it, so it sits directly
+                # under it. Same fact as doctor's, this face's remedy: the rebuild chord
+                # is right there in the footer (module contract — shared facts, own hints).
+                yield Static(
+                    "⚠ "
+                    + ngettext(
+                        "%(count)s stored entry is missing from the index and cannot be "
+                        "listed or run: %(slugs)s — rebuild it with Ctrl+R",
+                        "%(count)s stored entries are missing from the index and cannot be "
+                        "listed or run: %(slugs)s — rebuild them with Ctrl+R",
+                        len(report.unindexed),
+                    )
+                    % {
+                        "count": len(report.unindexed),
+                        "slugs": ", ".join(escape(s) for s in report.unindexed),
+                    },
+                    classes="warn",
+                )
             issues: list[Option] = [
                 Option(
                     f"⚠ {escape(e.meta.name)} — " + gettext("the launch target is gone from disk"),
@@ -115,6 +134,7 @@ class HealthScreen(Screen[str | None]):
                 )
                 for e in report.blocked_entries
             ]
+            self._has_issues = bool(issues)
             if issues:
                 yield Static(gettext("Issues (Enter jumps to the entry):"), classes="warn")
                 yield OptionList(*issues, id="hc-issues")
@@ -139,11 +159,31 @@ class HealthScreen(Screen[str | None]):
                 },
                 classes="hint",
             )
+            # The other two roots, same as doctor's — "what do I back up?" must have the
+            # same answer on both faces.
+            yield Static(
+                gettext("Config: %(path)s") % {"path": escape(str(config_dir()))}, classes="hint"
+            )
+            yield Static(
+                gettext("State: %(path)s") % {"path": escape(str(state_dir()))}, classes="hint"
+            )
             yield Static(getattr(self, "_rebuilt_report", ""), id="hc-rebuilt", classes="ok")
         yield tui_footer.KeysBar(
             Static(
                 tui_footer.bar(
-                    tui_footer.chip("screen.jump", "Enter", gettext("Jump to entry")),
+                    # The FIRST chip on this screen was dead whenever the library was
+                    # healthy — i.e. most of the time — because Enter jumps into an issue
+                    # list that isn't composed. A button that does nothing when clicked
+                    # costs more (principle 2) than a hint shown only when it is true; the
+                    # heading above already teaches "Enter jumps" alongside the list, so
+                    # the affordance and its lesson appear together. Chip-only: Enter here
+                    # is an OptionList selection, not a Binding, so there is no action to
+                    # disable — a check_action would be a branch that cannot fire.
+                    *(
+                        [tui_footer.chip("screen.jump", "Enter", gettext("Jump to entry"))]
+                        if self._has_issues
+                        else []
+                    ),
                     tui_footer.chip("screen.rebuild", "Ctrl+R", gettext("Rebuild index")),
                     tui_footer.chip("screen.close", "Esc", gettext("Back")),
                 ),

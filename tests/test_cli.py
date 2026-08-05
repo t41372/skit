@@ -20,6 +20,7 @@ import pytest
 from rich.markup import escape
 from typer.testing import CliRunner
 
+from conftest import patch_run_entry
 from skit import (
     analysis,
     argstate,
@@ -252,7 +253,7 @@ def test_add_exe_no_input_never_asks(tmp_path, monkeypatch):
 def test_add_exe_missing_path_errors_before_any_ask(tmp_path, monkeypatch):
     """The exe existence check is hoisted BEFORE the identity asks: adding a missing path
     with --exe interactively asks NOTHING (no name/description prompt lands, then a late
-    "File not found") and errors exit 1 — the ordering the prompt lane's _require_file
+    "File not found") and errors exit 127 — the ordering the prompt lane's _require_file
     discipline forbids."""
 
     def _boom(*a, **k):
@@ -262,7 +263,7 @@ def test_add_exe_missing_path_errors_before_any_ask(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.Prompt, "ask", _boom)
     missing = tmp_path / "ghost.bin"  # never created
     result = runner.invoke(cli.app, ["add", str(missing), "--exe"])
-    assert result.exit_code == 1, result.output
+    assert result.exit_code == 127, result.output
     assert "File not found" in result.output
 
 
@@ -290,7 +291,7 @@ def test_add_name_conflict_errors(tmp_path):
     p = _py(tmp_path, "print(1)\n")
     runner.invoke(cli.app, ["add", str(p), "--name", "dup"])
     result = runner.invoke(cli.app, ["add", str(p), "--name", "dup"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
 
 
 def test_add_missing_path_clean_error_not_traceback(tmp_path):
@@ -298,7 +299,7 @@ def test_add_missing_path_clean_error_not_traceback(tmp_path):
     # missing path's FileNotFoundError escaped as a bare traceback instead of a clean message.
     missing = tmp_path / "typo" / "path.py"
     result = runner.invoke(cli.app, ["add", str(missing)])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
     assert result.exception is None or isinstance(result.exception, SystemExit)
     assert "File not found" in result.output
 
@@ -306,12 +307,12 @@ def test_add_missing_path_clean_error_not_traceback(tmp_path):
 def test_add_directory_path_clean_error_not_traceback(tmp_path):
     # A directory is present but is not an acceptable source file. Report that truthfully,
     # without letting read_text raise a traceback or claiming the path is missing.
-    # The NAME claims a kind (adir.py -> python), so it keeps the "Not a file" exit 1 —
+    # The NAME claims a kind (adir.py -> python), so it gets a usage refusal —
     # a directory wearing a script extension is a typo, not a program to run directly.
     d = tmp_path / "adir.py"
     d.mkdir()
     result = runner.invoke(cli.app, ["add", str(d)])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert result.exception is None or isinstance(result.exception, SystemExit)
     assert "Not a file" in result.output
     assert "--exe" not in result.output  # a claimed-name dir is NOT offered the exe escape
@@ -350,7 +351,7 @@ def test_add_unreadable_file_clean_error_not_traceback(tmp_path):
         result = runner.invoke(cli.app, ["add", str(p)])
     finally:
         p.chmod(0o644)  # restore so tmp_path cleanup can remove it
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert result.exception is None or isinstance(result.exception, SystemExit)
     assert "Can't read" in result.output
 
@@ -375,7 +376,7 @@ def test_add_read_error_reports_clean_message(tmp_path, monkeypatch):
 
     monkeypatch.setattr(Path, "read_text", failing_read_text)
     result = runner.invoke(cli.app, ["add", str(p)])
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert result.exception is None or isinstance(result.exception, SystemExit)
     assert "Can't read" in result.output
 
@@ -554,8 +555,11 @@ def test_list_table_name_column_escapes_markup(tmp_path):
 
 
 def test_remove_not_found():
+    # ROUND 10: 127, not 1 — one exit code for one store.NotFoundError, whichever
+    # command caught it (docs/content/docs/cli.mdx has always published 127 CLI-wide,
+    # and 1 sits inside the band reserved for the launched script's own code).
     result = runner.invoke(cli.app, ["remove", "ghost"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
 
 
 def test_remove_with_yes(tmp_path):
@@ -566,10 +570,10 @@ def test_remove_with_yes(tmp_path):
         store.resolve("a")
 
 
-def test_remove_confirm_abort(tmp_path):
+def test_remove_without_yes_refuses_in_a_pipe(tmp_path):
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     result = runner.invoke(cli.app, ["remove", "a"], input="n\n")
-    assert result.exit_code != 0  # abort
+    assert result.exit_code == 2
     assert store.resolve("a")  # still there
 
 
@@ -591,15 +595,17 @@ def run_entry_spy(monkeypatch):
         script_override=None,
         env_overlay=None,
         runner=None,
+        prepared=None,
     ):
         calls["entry"] = entry
         calls["extra"] = list(extra_args or [])
         calls["values"] = dict(values or {})
         calls["override"] = script_override
-        calls["runner"] = runner
+        # The effective runner: a prompt lane carries it INSIDE the prepared snapshot.
+        calls["runner"] = prepared.prompt_runner if prepared is not None else runner
         return calls.get("code", 0)
 
-    monkeypatch.setattr(launcher, "run_entry", fake)
+    patch_run_entry(monkeypatch, fake)
     return calls
 
 
@@ -673,7 +679,7 @@ def test_run_passes_and_remembers_extra_args(tmp_path, run_entry_spy):
 def test_run_command_reuses_last_extra_args(tmp_path, run_entry_spy):
     """A command template remembers its appended tail too (docs/design/prompt.md v3.1):
     passing none on the next run replays it, matching the run form and the `r` rerun.
-    Before v3.1 the command kind refused to replay because takes_argv=False."""
+    Before v3.1 the command kind refused to replay: the tail was tied to the param surface."""
     store.add_command("echo ready", name="cmd")
     first = runner.invoke(cli.app, ["run", "cmd", "--no-input", "--", "--loud"])
     assert first.exit_code == 0, first.output
@@ -732,7 +738,7 @@ def test_run_launch_error(tmp_path, monkeypatch):
     def boom(*a, **k):
         raise launcher.LaunchError("bad")
 
-    monkeypatch.setattr(launcher, "run_entry", boom)
+    patch_run_entry(monkeypatch, boom)
     result = runner.invoke(cli.app, ["run", "j", "--no-input"])
     assert result.exit_code == 125
 
@@ -765,13 +771,15 @@ def test_preset_list_shows(tmp_path):
 
 def test_preset_list_not_found():
     result = runner.invoke(cli.app, ["preset", "list", "ghost"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
 
 
 def test_preset_delete(tmp_path):
     ent = store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     argstate.save_preset(ent.slug, "prod", {"CITY": "Taipei"})
-    result = runner.invoke(cli.app, ["preset", "delete", "a", "prod"])
+    # A preset is unrecoverable user data: deleting it non-interactively takes -y, the same
+    # ceremony `remove` and `runner remove` ask for.
+    result = runner.invoke(cli.app, ["preset", "delete", "a", "prod", "--yes"])
     assert result.exit_code == 0
     assert argstate.load_state(ent.slug)["presets"] == {}
 
@@ -779,17 +787,17 @@ def test_preset_delete(tmp_path):
 def test_preset_delete_unknown(tmp_path):
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     result = runner.invoke(cli.app, ["preset", "delete", "a", "nope"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
 
 
 def test_preset_delete_not_found():
     result = runner.invoke(cli.app, ["preset", "delete", "ghost", "p"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
 
 
 def test_preset_save_not_found():
     result = runner.invoke(cli.app, ["preset", "save", "ghost", "p"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
 
 
 def test_preset_save_python_no_params(tmp_path):
@@ -811,7 +819,7 @@ def test_preset_save_command_with_params(tmp_path, tty, monkeypatch):
     # exercised through invoke() — the tty fixture + a direct call is the honest path.
     ent = store.add_command("echo {msg}", name="e")
     monkeypatch.setattr(cli.Prompt, "ask", lambda *a, **k: "hello")
-    cli.preset_save("e", "prod", from_last=False)
+    cli.preset_save("e", "prod", from_last=False, no_input=False)
     assert argstate.load_state(ent.slug)["presets"]["prod"] == {"msg": "hello"}
 
 
@@ -822,7 +830,7 @@ def test_preset_save_command_with_params(tmp_path, tty, monkeypatch):
 
 def test_params_not_found():
     result = runner.invoke(cli.app, ["params", "ghost"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
 
 
 def test_params_empty(tmp_path):
@@ -933,7 +941,7 @@ def test_deps_view(tmp_path):
 
 def test_deps_not_found():
     result = runner.invoke(cli.app, ["deps", "ghost"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
 
 
 def test_deps_not_python(tmp_path):
@@ -1271,7 +1279,7 @@ def test_not_found_error_escapes_markup_in_argument():
     """store.NotFoundError embeds the raw name_or_slug the user typed; a markup-bearing CLI
     argument must render literally in the error, not be interpreted."""
     result = runner.invoke(cli.app, ["deps", "[red]ghost[/red]"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
     assert "[red]ghost[/red]" in result.output
 
 
@@ -1319,8 +1327,9 @@ def test_preset_list_escapes_markup_in_name_and_values(tmp_path):
     assert "[red]Taipei[/red]" in result.output
 
 
-def test_preset_save_command_escapes_markup_in_preset_name_and_entry_name(tmp_path):
+def test_preset_save_command_escapes_markup_in_preset_name_and_entry_name(tmp_path, monkeypatch):
     store.add_command("echo {msg}", name="[blue]e[/blue]")
+    monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     result = runner.invoke(
         cli.app, ["preset", "save", "[blue]e[/blue]", "[green]p[/green]"], input="hi\n"
     )
@@ -1332,7 +1341,7 @@ def test_preset_save_command_escapes_markup_in_preset_name_and_entry_name(tmp_pa
 def test_preset_delete_unknown_escapes_markup_in_preset_name():
     store.add_command("echo hi", name="a")
     result = runner.invoke(cli.app, ["preset", "delete", "a", "[red]nope[/red]"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "[red]nope[/red]" in result.output
 
 
@@ -1399,7 +1408,7 @@ def test_config_set_unknown_mirror_escapes_markup():
     assert "[red]nope[/red]" in result.output
 
 
-def test_edit_reports_escape_markup_in_name(tmp_path, monkeypatch):
+def test_edit_reports_escape_markup_in_name(tmp_path, monkeypatch, at_a_terminal):
     store.add_python(_py(tmp_path, "print(1)\n"), name="[blue]a[/blue]")
     monkeypatch.setattr(cli.editor, "open_in_editor", lambda p: None)
     result = runner.invoke(cli.app, ["edit", "[blue]a[/blue]"])
@@ -1407,7 +1416,7 @@ def test_edit_reports_escape_markup_in_name(tmp_path, monkeypatch):
     assert "[blue]a[/blue]" in result.output
 
 
-def test_edit_reference_mode_escapes_markup_in_name_and_path(tmp_path, monkeypatch):
+def test_edit_reference_mode_escapes_markup_in_name_and_path(tmp_path, monkeypatch, at_a_terminal):
     script = tmp_path / "[red]weird[bold]" / "job.py"
     script.parent.mkdir()
     script.write_text("print(1)\n", encoding="utf-8")
@@ -1418,14 +1427,14 @@ def test_edit_reference_mode_escapes_markup_in_name_and_path(tmp_path, monkeypat
     assert "[red]weird[bold]" in result.output
 
 
-def test_edit_missing_reference_source_escapes_markup_in_path(tmp_path):
+def test_edit_missing_reference_source_escapes_markup_in_path(tmp_path, at_a_terminal):
     script = tmp_path / "[red]weird[bold]" / "job.py"
     script.parent.mkdir()
     script.write_text("print(1)\n", encoding="utf-8")
     store.add_python(script, mode="reference", name="refjob")
     script.unlink()
     result = runner.invoke(cli.app, ["edit", "refjob"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
     assert "[red]weird[bold]" in result.output
 
 
@@ -1445,7 +1454,11 @@ def test_edit_params_malformed_prompt_escapes_markup(tmp_path):
     )
     store.add_python(_py(tmp_path, text), name="a")
     result = runner.invoke(cli.app, ["params", "a", "--prompt", "[red]bad[/red]"])
-    assert result.exit_code == 0, result.output
+    # ROUND 12: `skit params` refuses atomically now. A flag it cannot honour writes
+    # NOTHING and exits 2 — the refuse-never-drop answer every sibling intake gives —
+    # because warn-and-continue exited 0, wrote the rest, and then reported the state
+    # it had not written through --json.
+    assert result.exit_code == 2
     assert "[red]bad[/red]" in result.output
 
 
@@ -1506,7 +1519,7 @@ def test_preset_save_prompt_escapes_markup_in_placeholder_name(monkeypatch, tty)
         return "x"
 
     monkeypatch.setattr(cli.Prompt, "ask", fake_ask)
-    cli.preset_save("e", "p", from_last=False)
+    cli.preset_save("e", "p", from_last=False, no_input=False)
     assert captured["prompt"] == r"  \[red]msg\[/red]"
 
 

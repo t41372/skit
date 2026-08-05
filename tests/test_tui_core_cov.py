@@ -16,8 +16,8 @@ import pytest
 from textual.widgets import Checkbox, DataTable, Input, Select, Static
 from textual.widgets.data_table import RowKey
 
-from conftest import footer_text
-from skit import argstate, argv_text, config, flows, launcher, store, tui
+from conftest import footer_text, patch_run_entry
+from skit import argstate, argv_text, config, flows, store, tui
 from skit.langs.python import metawriter
 from skit.params import ParamDecl
 from skit.tui_form import (
@@ -72,7 +72,7 @@ def quiet_run(monkeypatch):
         calls["override"] = script_override
         return calls.get("code", 0)
 
-    monkeypatch.setattr(launcher, "run_entry", fake_run)
+    patch_run_entry(monkeypatch, fake_run)
     monkeypatch.setattr(tui.MenuApp, "suspend", lambda self: _noop_suspend())
     return calls
 
@@ -1098,7 +1098,7 @@ async def test_extra_argument_labels_name_the_actual_receiver(tmp_path):
 async def test_prompt_and_command_forms_prefill_remembered_extra_args(tmp_path):
     """The run form prefills the last extra-args tail for prompt and command too — a
     remembered `--model` is config, like the pinned runner (docs/design/prompt.md v3.1).
-    Before v3.1 the takes_argv=False kinds opened this field blank."""
+    Before v3.1 the placeholder kinds opened this field blank."""
     command = store.add_command("echo ready", name="cmd")
     argstate.save_last(command.slug, extra_args=["--loud"])
     prompt_path = tmp_path / "review.prompt.md"
@@ -1200,3 +1200,44 @@ async def test_remove_reports_a_partial_deletion_in_the_status_instead_of_crashi
         await pilot.pause()
         assert len(app.screen_stack) == 1  # still alive, back on the Library
         assert "doctor --rebuild" in _static_text(app, "#status")
+
+
+# ---------------------------------------------------------------------------
+# tui_form: a preset that never landed gets no success toast (round 13, finding S)
+# ---------------------------------------------------------------------------
+
+
+async def test_a_preset_that_never_landed_gets_no_success_toast(tmp_path, quiet_run, monkeypatch):
+    """A read-only state dir used to crash the whole app out of the modal callback —
+    after an unconditional 'saved.' toast for a preset that never reached disk. The
+    typed failure is an error notify, the success toast is withheld, and the form
+    stays alive for a retry."""
+    entry = _argparse_entry(tmp_path)
+    notes: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        RunFormScreen,
+        "notify",
+        lambda self, message, severity="information", **kw: notes.append((severity, message)),
+    )
+
+    def _state_boom(*_a: object, **_k: object) -> None:
+        raise argstate.StateWriteError(30, "Read-only file system", "x.toml")
+
+    monkeypatch.setattr(argstate, "save_preset", _state_boom)
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        app.action_run()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        screen.action_save_preset()
+        await pilot.pause()
+        modal = app.screen
+        assert isinstance(modal, PresetNameModal)
+        modal.query_one(Input).value = "doomed"
+        modal.action_save_name()
+        await pilot.pause()
+
+    assert any(sev == "error" and "Read-only file system" in m for sev, m in notes)
+    assert not any("saved" in m for _sev, m in notes)  # no toast for a phantom preset
+    assert argstate.load_state(entry.slug)["presets"] == {}

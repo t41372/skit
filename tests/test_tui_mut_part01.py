@@ -16,7 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from skit import argstate, flows, launcher, store, tui
+from conftest import patch_run_entry
+from skit import argstate, flows, store, tui
 from skit.models import Entry, ScriptMeta
 
 
@@ -96,7 +97,7 @@ def fake_launch(monkeypatch):
         state["ran"] = True
         return state.get("code", 0)
 
-    monkeypatch.setattr(launcher, "run_entry", fake_run)
+    patch_run_entry(monkeypatch, fake_run)
     return state
 
 
@@ -116,7 +117,7 @@ def test_finish_run_prints_banner_drift_and_transparency_all_flushed(
     calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
     monkeypatch.setattr("builtins.print", lambda *a, **k: calls.append((a, k)))
 
-    pending = tui.PendingRun(entry, plan, asm, {}, [], show_drift=True)
+    pending = tui.PendingRun(entry, plan, asm, {}, [], extra_raw=True, show_drift=True)
     assert tui._finish_run(pending) == 0  # the script's own code passes through
 
     # The run banner: exact framing + msgid, flushed.
@@ -152,7 +153,7 @@ def test_finish_run_launch_failure_prints_error_and_uses_docker_code(tmp_path, m
     calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
     monkeypatch.setattr("builtins.print", lambda *a, **k: calls.append((a, k)))
 
-    pending = tui.PendingRun(entry, plan, asm, {}, [], show_drift=False)
+    pending = tui.PendingRun(entry, plan, asm, {}, [], extra_raw=True, show_drift=False)
     assert tui._finish_run(pending) == 127  # docker code for a missing target
 
     err = next(((a, k) for a, k in calls if a and str(a[0]).startswith("Error:")), None)
@@ -162,18 +163,45 @@ def test_finish_run_launch_failure_prints_error_and_uses_docker_code(tmp_path, m
     assert argstate.load_state(entry.slug)["last_run"] == {}  # nothing ran, nothing recorded
 
 
-def test_finish_run_unmapped_failure_falls_back_to_generic_skit_error_code(tmp_path, monkeypatch):
-    """Defensive default: a failure name outside FAILURE_EXIT_CODES maps to 125, the generic
-    skit-error docker code — never None (would break the int contract) and never another
-    code. Reached by handing _finish_run an outcome carrying an unrecognized failure."""
-    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="weird")
+def test_finish_run_wires_the_warn_channel_to_a_flushed_print(tmp_path, monkeypatch):
+    """flows.execute has TWO output channels, and the exit tail owns both: `warn` (the amp
+    one-shot notice, a degraded delivery) must reach the terminal exactly like `emit` — its own
+    text, flushed. Wired to None it raises on the first warning; wired to a swallowing lambda
+    the notice is simply never seen, which is the failure mode nobody would report."""
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="warny")
     plan = flows.plan_for_entry(entry)
     asm = flows.assemble(plan, {}, [], cwd=tmp_path)
-    monkeypatch.setattr("builtins.print", lambda *a, **k: None)
-    monkeypatch.setattr(
-        flows,
-        "execute",
-        lambda *a, **k: flows.RunOutcome(None, "totally-unknown-failure", "boom"),
-    )
-    pending = tui.PendingRun(entry, plan, asm, {}, [], show_drift=False)
-    assert tui._finish_run(pending) == 125
+
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: calls.append((a, k)))
+
+    def warning_execute(_entry, _plan, _asm, *, emit, warn, invoke_cwd=None, runner=None):
+        warn("WARN-SENTINEL")
+        return flows.RunOutcome(0)
+
+    monkeypatch.setattr(flows, "execute", warning_execute)
+
+    pending = tui.PendingRun(entry, plan, asm, {}, [], extra_raw=True, show_drift=False)
+    assert tui._finish_run(pending) == 0
+
+    warned = next(((a, k) for a, k in calls if a and str(a[0]) == "WARN-SENTINEL"), None)
+    assert warned is not None  # the warning's own text, not None and not an empty line
+    assert warned[1].get("flush") is True
+
+
+def test_finish_run_state_failure_warns_and_preserves_child_status(tmp_path, monkeypatch):
+    entry = store.add_python(_py(tmp_path, "print(1)\n"), name="stateful")
+    plan = flows.plan_for_entry(entry)
+    asm = flows.assemble(plan, {}, [], cwd=tmp_path)
+    calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: calls.append((a, k)))
+    monkeypatch.setattr(flows, "execute", lambda *_a, **_k: flows.RunOutcome(42))
+
+    def denied(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError(13, "Permission denied", "state.toml")
+
+    monkeypatch.setattr(flows, "save_after_run", denied)
+    pending = tui.PendingRun(entry, plan, asm, {}, [], extra_raw=True, show_drift=False)
+
+    assert tui._finish_run(pending) == 42
+    assert any("couldn't save its state" in str(args[0]) for args, _kwargs in calls if args)

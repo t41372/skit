@@ -11,6 +11,7 @@ import re
 import pytest
 
 from skit import params
+from skit.notices import NoticeCode, edit_notice
 from skit.params import ParamDecl, coerce_default, edit_declared
 
 
@@ -23,7 +24,7 @@ def _by_name(decls: list[ParamDecl]) -> dict[str, ParamDecl]:
 
 def test_add_defaults_to_first_allowed_delivery_for_a_binary():
     res = edit_declared([], add=["width"], allowed_deliveries=("flag", "env"))
-    assert res.warnings == []
+    assert res.notices == []
     d = res.decls[0]
     assert (d.name, d.delivery, d.binding, d.type, d.required) == (
         "width",
@@ -53,7 +54,7 @@ def test_add_non_placeholder_name_on_a_template_uses_first_allowed_delivery():
 
 def test_add_existing_name_warns_already_declared():
     res = edit_declared([ParamDecl(name="a")], add=["a"])
-    assert res.warnings == ["already-declared:a"]
+    assert res.notices == [edit_notice(NoticeCode.ALREADY_DECLARED, "a")]
     assert [d.name for d in res.decls] == ["a"]
 
 
@@ -63,8 +64,16 @@ def test_rm_drops_the_row():
 
 
 def test_rm_unknown_name_warns_not_declared():
+
+    # ROUND 12: a DISTINCT code from the tweak-side one, though the user reads the
+
+    # same sentence — this asks for a state that already holds (idempotent, exit 0),
+
+    # while a tweak on an unknown name is a refusal (exit 2). One string could not
+
+    # carry both answers.
     res = edit_declared([ParamDecl(name="a")], rm=["ghost"])
-    assert res.warnings == ["not-declared:ghost"]
+    assert res.notices == [edit_notice(NoticeCode.RM_NOT_DECLARED, "ghost")]
     assert [d.name for d in res.decls] == ["a"]
 
 
@@ -105,7 +114,7 @@ def test_delivery_outside_allowed_set_warns_bad_delivery():
         deliveries={"a": "placeholder"},
         allowed_deliveries=("flag", "env"),
     )
-    assert res.warnings == ["bad-delivery:a"]
+    assert res.notices == [edit_notice(NoticeCode.BAD_DELIVERY, "a")]
     assert _by_name(res.decls)["a"].delivery == "flag"  # unchanged
 
 
@@ -116,7 +125,7 @@ def test_placeholder_delivery_on_a_non_placeholder_name_warns():
         allowed_deliveries=("placeholder", "env"),
         placeholder_names=["other"],
     )
-    assert res.warnings == ["not-a-placeholder:a"]
+    assert res.notices == [edit_notice(NoticeCode.NOT_A_PLACEHOLDER, "a")]
     assert _by_name(res.decls)["a"].delivery == "env"
 
 
@@ -137,7 +146,7 @@ def test_type_tweak_valid():
 
 def test_type_tweak_invalid_warns_bad_type():
     res = edit_declared([ParamDecl(name="a", type="str")], types={"a": "integer"})
-    assert res.warnings == ["bad-type:a"]
+    assert res.notices == [edit_notice(NoticeCode.BAD_TYPE, "a")]
     assert _by_name(res.decls)["a"].type == "str"
 
 
@@ -162,7 +171,7 @@ def test_default_type_set_in_same_call_applies_before_coercion():
 
 def test_default_bad_value_warns_bad_default_and_keeps_old():
     res = edit_declared([ParamDecl(name="a", type="int", default=3)], defaults={"a": "notanint"})
-    assert res.warnings == ["bad-default:a"]
+    assert res.notices == [edit_notice(NoticeCode.BAD_DEFAULT, "a")]
     assert _by_name(res.decls)["a"].default == 3
 
 
@@ -202,7 +211,7 @@ def test_env_source_on_a_non_secret_param_warns_and_leaves_it_unset():
     warns exactly like the in-file lane, so an explicit flag that no-ops is surfaced."""
     res = edit_declared([ParamDecl(name="a", secret=False)], env_sources={"a": "VAR"})
     assert _by_name(res.decls)["a"].env_source == ""  # only means anything on a secret param
-    assert "env-source-not-secret:a" in res.warnings  # the no-op flag is surfaced, not dropped
+    assert edit_notice(NoticeCode.ENV_SOURCE_NOT_SECRET, "a") in res.notices
 
 
 def test_no_secret_clears_the_env_source():
@@ -216,7 +225,7 @@ def test_no_secret_clears_the_env_source():
 
 def test_tweak_on_unknown_name_warns_not_declared():
     res = edit_declared([ParamDecl(name="a")], types={"ghost": "int"})
-    assert res.warnings == ["not-declared:ghost"]
+    assert res.notices == [edit_notice(NoticeCode.NOT_DECLARED, "ghost")]
 
 
 def test_a_name_touched_by_two_ops_is_listed_once_and_both_apply():
@@ -241,7 +250,7 @@ def test_choice_type_without_choices_reverts_and_warns():
         types={"a": "choice"},
         help_texts={"a": "changed"},
     )
-    assert res.warnings == ["choice-without-choices:a"]
+    assert res.notices == [edit_notice(NoticeCode.CHOICE_WITHOUT_CHOICES, "a")]
     d = _by_name(res.decls)["a"]
     assert d.type == "str"  # reverted to pre-tweak state
     assert d.help == "keep me"  # the whole row reverted, so the help edit is dropped too
@@ -249,7 +258,7 @@ def test_choice_type_without_choices_reverts_and_warns():
 
 def test_choice_type_with_choices_in_the_same_call_is_valid():
     res = edit_declared([ParamDecl(name="a")], types={"a": "choice"}, choices={"a": ["r", "g"]})
-    assert res.warnings == []
+    assert res.notices == []
     d = _by_name(res.decls)["a"]
     assert d.type == "choice"
     assert d.choices == ("r", "g")
@@ -380,7 +389,7 @@ def test_bool_flag_that_is_on_by_default_is_refused_not_stamped():
     pre = ParamDecl(name="verbose", delivery="flag", flag="--verbose")
     res = edit_declared([pre], types={"verbose": "bool"}, defaults={"verbose": "true"})
     d = _by_name(res.decls)["verbose"]
-    assert res.warnings == ["bool-flag-on-by-default:verbose"]
+    assert res.notices == [edit_notice(NoticeCode.BOOL_FLAG_ON_BY_DEFAULT, "verbose")]
     assert d.action == ""  # nothing stamped
     assert d.type == "str"  # and the whole row rolled back, like every refused edit
 
@@ -393,5 +402,23 @@ def test_bool_flag_that_is_off_by_default_still_gets_store_true():
         defaults={"verbose": "false"},
     )
     d = _by_name(res.decls)["verbose"]
-    assert res.warnings == []
+    assert res.notices == []
     assert (d.type, d.default, d.action) == ("bool", False, "store_true")
+
+
+def test_one_refused_row_reverts_itself_and_the_edit_carries_on():
+    """A refused row is reverted and SKIPPED, not a stop sign for the whole edit: one bad
+    `--type v=bool` in a batch must not silently drop every tweak the user asked for after it.
+    (Ordering is the tweak loop's own — `verbose` comes first because it is declared first.)"""
+    res = edit_declared(
+        [
+            ParamDecl(name="verbose", delivery="flag", flag="--verbose"),
+            ParamDecl(name="width", delivery="flag", flag="--width"),
+        ],
+        types={"verbose": "bool", "width": "int"},
+        defaults={"verbose": "true", "width": "800"},
+    )
+    by = _by_name(res.decls)
+    assert res.notices == [edit_notice(NoticeCode.BOOL_FLAG_ON_BY_DEFAULT, "verbose")]
+    assert (by["verbose"].type, by["verbose"].action) == ("str", "")  # rolled back
+    assert (by["width"].type, by["width"].default) == ("int", 800)  # ...and the next one applied

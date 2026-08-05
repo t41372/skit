@@ -19,6 +19,7 @@ from textual.widgets import (
     Static,
 )
 
+from conftest import patch_run_entry
 from skit import argstate, config, flows, i18n, launcher, paths, store, tui, tui_footer
 from skit.tui_add import AddSourceScreen, KindPickModal, PromptReviewScreen
 from skit.tui_form import RunFormScreen
@@ -131,11 +132,12 @@ def quiet_run(monkeypatch):
         prepared=None,
     ):
         calls["values"] = dict(values or {})
-        calls["runner"] = runner
+        # The effective runner: a prompt lane carries it INSIDE the prepared snapshot.
+        calls["runner"] = prepared.prompt_runner if prepared is not None else runner
         calls["prepared"] = prepared
         return calls.get("code", 0)
 
-    monkeypatch.setattr(launcher, "run_entry", fake_run)
+    patch_run_entry(monkeypatch, fake_run)
     # The fixture replaces the actual spawn, so make preflight agree that the
     # synthetic runner binaries are launchable.  Individual refusal tests override
     # this seam with the missing binary they exercise.
@@ -513,7 +515,9 @@ async def test_rerun_pinned_prompt_skips_the_form_and_uses_the_pin(
         app.action_rerun()
         await pilot.pause()
     assert quiet_run["values"] == {"a": "1"}
-    assert quiet_run["runner"] is None  # the pin resolves inside PromptLaunch.build
+    # The spy reports the EFFECTIVE runner from the prepared snapshot: the pin,
+    # resolved — no picker ran, and the rerun launched with exactly the pinned agent.
+    assert quiet_run["runner"] == config.find_prompt_runner("claude")
 
 
 async def test_exit_mode_pending_run_carries_the_runner(tmp_path, monkeypatch):
@@ -540,7 +544,7 @@ async def test_exit_mode_pending_run_carries_the_runner(tmp_path, monkeypatch):
     seen: dict[str, object] = {}
 
     def fake_execute(entry, plan, asm, *, emit, warn=None, invoke_cwd=None, runner=None):
-        seen["runner"] = runner
+        seen["runner"] = runner  # flows.execute's own kwarg — this seam is above the spawn
         return flows.RunOutcome(0)
 
     monkeypatch.setattr(flows, "execute", fake_execute)
@@ -1010,7 +1014,7 @@ async def test_settings_candidate_picker_reaches_a_hidden_name_and_waits_for_out
     async with app.run_test(size=(110, 40)) as pilot:
         await pilot.pause()
         screen = await _open_settings(app, pilot)
-        await pilot.press("ctrl+o")
+        await pilot.press("ctrl+l")
         await pilot.pause()
         modal = app.screen
         assert isinstance(modal, PromptCandidatePickerModal)
@@ -1072,13 +1076,13 @@ async def test_settings_candidate_picker_cancel_and_unchanged_done_are_noops(tmp
         await pilot.pause()
         screen = await _open_settings(app, pilot)
 
-        await pilot.press("ctrl+o", "escape")
+        await pilot.press("ctrl+l", "escape")
         await pilot.pause()
         assert app.screen is screen
         assert screen._pending_prompt_candidates == set()
         assert screen._dirty is False
 
-        await pilot.press("ctrl+o", "ctrl+s")
+        await pilot.press("ctrl+l", "ctrl+s")
         await pilot.pause()
         assert app.screen is screen
         assert screen._pending_prompt_candidates == set()
@@ -1088,7 +1092,7 @@ async def test_settings_candidate_picker_cancel_and_unchanged_done_are_noops(tmp
 
 
 async def test_settings_candidate_picker_tolerates_preview_recompose(tmp_path):
-    """A queued Ctrl+O/Done can straddle a responsive recompose.  Missing old preview
+    """A queued Ctrl+L/Done can straddle a responsive recompose.  Missing old preview
     widgets are skipped by name while the full modal selection still survives."""
     from skit.langs.prompt.analyzer import LIST_PREVIEW_LIMIT
 
@@ -1100,7 +1104,7 @@ async def test_settings_candidate_picker_tolerates_preview_recompose(tmp_path):
         await pilot.pause()
         screen = await _open_settings(app, pilot)
         await screen.query_one("#st-prompt-new-0", Checkbox).remove()
-        await pilot.press("ctrl+o")
+        await pilot.press("ctrl+l")
         await pilot.pause()
         modal = app.screen
         assert isinstance(modal, PromptCandidatePickerModal)
@@ -1123,13 +1127,13 @@ async def test_settings_choose_variables_key_is_harmless_when_off_or_short(tmp_p
         insertion = screen.query_one("#st-interpolate", Checkbox)
         insertion.value = False
         await pilot.pause()
-        await pilot.press("ctrl+o")
+        await pilot.press("ctrl+l")
         await pilot.pause()
         assert app.screen is screen
 
         insertion.value = True
         await pilot.pause()
-        await pilot.press("ctrl+o")
+        await pilot.press("ctrl+l")
         await pilot.pause()
         assert app.screen is screen
         await pilot.press("escape")
@@ -1191,7 +1195,7 @@ async def test_review_candidate_picker_keyboard_reaches_a_hidden_name(tmp_path):
         await pilot.pause()
         app.push_screen(PromptReviewScreen(src))
         await pilot.pause()
-        await pilot.press("ctrl+o")  # the advertised full-list keyboard path
+        await pilot.press("ctrl+l")  # the advertised full-list keyboard path
         await pilot.pause()
         modal = app.screen
         assert isinstance(modal, PromptCandidatePickerModal)
@@ -1257,7 +1261,7 @@ async def test_review_candidate_picker_keeps_search_and_footer_usable_on_tiny_sc
         await pilot.pause()
         app.push_screen(PromptReviewScreen(src))
         await pilot.pause()
-        await pilot.press("ctrl+o")
+        await pilot.press("ctrl+l")
         await pilot.pause()
         modal = app.screen
         assert isinstance(modal, PromptCandidatePickerModal)
@@ -1289,7 +1293,7 @@ async def test_review_candidate_picker_empty_search_and_cancel_are_keyboard_oper
         await pilot.pause()
         review = app.screen
         assert isinstance(review, PromptReviewScreen)
-        await pilot.press("ctrl+o")
+        await pilot.press("ctrl+l")
         await pilot.pause()
         modal = app.screen
         assert isinstance(modal, PromptCandidatePickerModal)
@@ -1325,7 +1329,7 @@ async def test_review_candidate_picker_tolerates_preview_recompose(tmp_path):
         review = PromptReviewScreen(src)
         app.push_screen(review)
         await pilot.pause()
-        await pilot.press("ctrl+o")
+        await pilot.press("ctrl+l")
         await pilot.pause()
         modal = app.screen
         assert isinstance(modal, PromptCandidatePickerModal)
@@ -1349,7 +1353,7 @@ async def test_review_choose_variables_key_is_harmless_for_a_short_prompt(tmp_pa
         review = PromptReviewScreen(src)
         app.push_screen(review)
         await pilot.pause()
-        await pilot.press("ctrl+o")
+        await pilot.press("ctrl+l")
         await pilot.pause()
         assert app.screen is review
         await pilot.press("escape")
@@ -2125,3 +2129,88 @@ async def test_library_edit_non_prompt_never_offers_the_picker(tmp_path, monkeyp
         await pilot.pause()
         assert len(app.screen_stack) == 1
         assert "Edited job." in str(app.query_one("#status", Static).render())
+
+
+# ---------------------------------------------------------------------------
+# a failed pick save warns and continues (round 13, finding S)
+# ---------------------------------------------------------------------------
+
+
+def _pick_save_boom(_name: str) -> None:
+    raise argstate.StateWriteError(30, "Read-only file system", "x.toml")
+
+
+async def test_review_accept_survives_a_failed_pick_save(tmp_path, monkeypatch):
+    """tui_add's accept: the entry is ALREADY added when the picker prefill is saved,
+    so a read-only state dir must not strand the review screen on a success it cannot
+    un-happen — warn, and dismiss as normal."""
+    src = tmp_path / "r.prompt.md"
+    src.write_text("Go {{a}}\n", encoding="utf-8")
+    notes: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        PromptReviewScreen,
+        "notify",
+        lambda self, message, severity="information", **kw: notes.append((severity, message)),
+    )
+    monkeypatch.setattr(argstate, "save_last_runner", _pick_save_boom)
+    app = tui.MenuApp()
+    async with app.run_test(size=(110, 40)) as pilot:
+        await pilot.pause()
+        app.push_screen(PromptReviewScreen(src))
+        await pilot.pause()
+        review = app.screen
+        assert isinstance(review, PromptReviewScreen)
+        select = review.query_one("#pv-runner-select", Select)
+        names = [r.name for r in config.load_prompt_runners()]
+        select.value = names[0]  # a real pick, whose save is about to fail
+        await pilot.pause()
+        review.action_accept()
+        await pilot.pause()
+        assert not isinstance(app.screen, PromptReviewScreen)  # dismissed anyway
+
+    assert store.resolve("r").meta.runner == names[0]  # the add itself landed whole
+    assert any(sev == "warning" and "Read-only file system" in m for sev, m in notes)
+
+
+async def test_form_pick_save_failure_never_vetoes_the_accepted_run(
+    tmp_path, quiet_run, monkeypatch
+):
+    """tui.py's run lane: remembering the pick is incidental prefill state. When that
+    save fails, the run the user just accepted still executes — a warning, not a veto
+    (the exact doctrine post_run_persistence_error already applies after the run)."""
+    _prompt_entry(tmp_path)
+    argstate.save_last_runner("opencode")  # prefill BEFORE the writer is broken
+    notes: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        tui.MenuApp,
+        "notify",
+        lambda self, message, severity="information", **kw: notes.append((severity, message)),
+    )
+    monkeypatch.setattr(argstate, "save_last_runner", _pick_save_boom)
+    app = tui.MenuApp()
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        app.action_run()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, RunFormScreen)
+        select = screen.query_one("#runner-select", Select)
+        select.focus()
+        await pilot.pause()
+        # A real keyboard pick (arming the dirt bit), as in the picker tests above.
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("down")
+        await pilot.press("enter")
+        await pilot.pause()
+        picked = _value(select)
+        assert picked != "opencode"
+        field = screen.query_one(Input)
+        field.value = "x"
+        field.focus()
+        await pilot.pause()
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+
+    assert quiet_run["runner"] == config.find_prompt_runner(picked)  # the run happened
+    assert any(sev == "warning" and "Read-only file system" in m for sev, m in notes)

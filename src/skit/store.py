@@ -14,6 +14,7 @@ import os
 import shutil
 import stat
 import tomllib
+import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
@@ -41,7 +42,7 @@ from .models import (
 )
 from .params import ParamDecl, declared_from_meta
 from .paths import registry_path, scripts_dir
-from .rewrite import detect_newline, restore_newline
+from .rewrite import detect_newline, read_for_block_edit, restore_newline, write_block_edit
 
 # Corruption/error types every meta.toml reader must treat the same way: valid-but-unreadable file,
 # invalid TOML, or valid TOML missing a required key are all "this entry is corrupt" — never a bare
@@ -59,19 +60,45 @@ class StoreUsageError(StoreError):
     the usage exit code so `skit deps` agrees with `skit add` on what a refusal looks like."""
 
 
-class NameConflictError(StoreError):
+class NameConflictError(StoreUsageError):
     pass
+
+
+class AmbiguousNameError(StoreUsageError):
+    """Two or more entries carry the requested display name, so resolving by NAME would
+    have to guess. Only hand-edited metadata can reach this state — add and rename both
+    refuse a taken name — and the remedy is the slug, which never collides. A usage
+    refusal like NameConflictError, its write-side twin: the request is answerable,
+    just not as asked."""
 
 
 class NotFoundError(StoreError):
     pass
 
 
+class CorruptEntryError(StoreError):
+    """An indexed entry exists, but its authoritative metadata cannot be read."""
+
+
+class StaleEntryError(StoreError):
+    """The slug still resolves — but to a DIFFERENT entry than the one the caller has
+    been holding (its meta id no longer matches). A screen open across a remove +
+    same-name re-add reaches this state: the address survived, the identity did not,
+    and a write authorized against the old identity must fail closed instead of
+    landing on the stranger. The remedy is reopening the screen on the current entry."""
+
+
 def _hash_file(path: Path) -> str:
     h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):  # pragma: no mutate
-            h.update(chunk)
+    try:
+        with path.open("rb") as f:
+            for chunk in iter(lambda: f.read(65536), b""):  # pragma: no mutate
+                h.update(chunk)
+    except OSError as exc:
+        raise StoreError(
+            gettext("Can't read %(path)s: %(error)s")
+            % {"path": str(path), "error": exc.strerror or str(exc)}
+        ) from exc
     return f"sha256:{h.hexdigest()}"
 
 
@@ -86,6 +113,13 @@ def _read_meta(entry_dir: Path) -> ScriptMeta:
 
 
 def _write_meta(entry_dir: Path, meta: ScriptMeta) -> None:
+    if not meta.id:
+        # Identity is minted at the ONE door every meta write passes through: an add
+        # reaches disk already stamped, an edit preserves what it read, and a meta from
+        # before ids existed heals on its next write (never on a read — reads stay
+        # reads). Mutating the caller's object is the point: the Entry handed back must
+        # say exactly what disk now says. See models.ScriptMeta.id for what it guards.
+        meta.id = uuid.uuid4().hex
     atomic_write_toml(entry_dir / "meta.toml", meta.to_toml_dict())
 
 
@@ -107,7 +141,14 @@ def _write_meta_and_row(entry_dir: Path, slug: str, meta: ScriptMeta) -> None:
             _save_registry(entries)
 
 
-def _entry_lock_path(slug: str) -> Path:
+def entry_lock_path(slug: str) -> Path:
+    """This entry's cross-process RMW lock file — THE serialization point for everything
+    that mutates the entry or writes state in its name: every meta mutator holds it
+    (_locked_entry), remove() holds it through registry removal, rmtree AND the state
+    forget, and flows' post-acceptance persistence doors hold it across their whole
+    verify-then-write transaction, so a remove or a secret transition can never slip
+    between a door's identity check and its writes. The lock nests OUTSIDE both the
+    registry lock and argstate's per-slug values lock (the order remove() set)."""
     # Outside scripts/, never a child of the directory remove() deletes. Keeping the lock in
     # entry.dir would let rmtree unlink a live lock and a waiter acquire a replacement while
     # deletion is still in progress. doctor only scans scripts/ directories, so the
@@ -115,18 +156,96 @@ def _entry_lock_path(slug: str) -> Path:
     return scripts_dir().parent / ".locks" / f"{slug}.meta.lock"
 
 
+_entry_lock_path = entry_lock_path  # internal name kept for the existing call sites
+
+
+def _check_expected_id(entry: Entry, expected_id: str | None) -> None:
+    """The write-authorization check (#39): a caller that has been HOLDING an entry
+    names the identity it means to mutate, and a mismatch fails closed. None means
+    the caller holds nothing (an immediate name-addressed command); an EMPTY string
+    is a real expectation — "I hold an unstamped handle" — and meeting a stamped
+    entry refuses, because the asymmetry proves the disk changed owners. Never
+    soften "" to None (the `id or None` idiom was exactly the hole this closes:
+    it switched the guard off for the one handle that most needed it)."""
+    if expected_id is not None and entry.meta.id != expected_id:
+        raise StaleEntryError(
+            gettext("%(name)s changed while this edit was underway — reopen it and try again.")
+            % {"name": entry.meta.name}
+        )
+
+
 @contextlib.contextmanager
-def _locked_entry(name_or_slug: str) -> Iterator[Entry]:
+def _locked_entry(name_or_slug: str, *, expected_id: str | None = None) -> Iterator[Entry]:
     """Yield fresh metadata while holding this entry's cross-process RMW lock.
 
     ``atomic_write_toml`` prevents torn TOML, but it cannot stop two setters from
     replacing each other's unrelated fields after both resolved the same old snapshot.
     Resolve once to locate the stable slug directory, acquire its lock, then resolve
-    again so every writer mutates the latest committed metadata.
-    """
+    again so every writer mutates the latest committed metadata. ``expected_id`` is the
+    holder's write authorization: when given, the LOCKED re-resolve must still carry
+    that identity or the mutation fails closed (StaleEntryError) — the slug alone is an
+    address, and an address can change hands while a screen sits open."""
     initial = resolve(name_or_slug)
-    with advisory_file_lock(_entry_lock_path(initial.slug)):
-        yield resolve(initial.slug)
+    with advisory_file_lock(entry_lock_path(initial.slug)):
+        entry = resolve(initial.slug)
+        _check_expected_id(entry, expected_id)
+        yield entry
+
+
+def claim_identity(entry: Entry) -> Entry:
+    """Compare-and-claim, the hold-start handshake: verify — under the entry lock —
+    that the disk still holds THE ENTRY the caller resolved (exact id; an unstamped
+    handle accepts only an unstamped disk), stamp a pre-id meta while the lock is
+    held, and return the claimed handle. Every lane that keeps an Entry across
+    user-paced time (a run, a form, a settings screen, an editor session, a
+    confirmation ask) claims here so its later writes authorize by exact match.
+
+    Never claim-by-address: a claim that merely re-resolved the slug would adopt
+    whoever owns it NOW — a remove + same-name re-add between the caller's resolve
+    and its claim would be silently blessed, and every guard after it would protect
+    the stranger. A changed owner is a refusal (StaleEntryError); a vanished entry
+    is honest NotFoundError.
+
+    The stamp alone is best-effort: a library whose data dir cannot be written
+    (or even locked) still gets a VERIFIED handle — unstamped, which post-run
+    persistence then declines to trust (flows.persistence_target requires a stamped
+    match; an unwritable-by-us library is not provably unwritable by others)."""
+    try:
+        with _locked_entry(entry.slug) as fresh:
+            _check_claimable(entry, fresh)
+            if not fresh.meta.id:
+                try:
+                    _write_meta_and_row(fresh.dir, fresh.slug, fresh.meta)  # the door stamps
+                except OSError:
+                    # The write may have mutated the in-memory id before failing;
+                    # answer with what the DISK says (atomic write: unchanged).
+                    return resolve(entry.slug)
+            return Entry(slug=fresh.slug, meta=fresh.meta, dir=fresh.dir)
+    except OSError:
+        # Could not even take the lock (a read-only .locks dir). Verify without it:
+        # the comparison is still exact, only unserialized — and a lock directory
+        # nobody can create is a library this process cannot mutate anyway.
+        fresh = resolve(entry.slug)
+        _check_claimable(entry, fresh)
+        return fresh
+
+
+def _check_claimable(held: Entry, fresh: Entry) -> None:
+    """claim_identity's comparison: exact id for a stamped handle; for an UNSTAMPED
+    one, the whole meta by content — "" meeting "" is a cross-version ambiguity (an
+    older skit's adds write no id, so an idless re-add can hide behind the blank),
+    and blessing it by id alone would stamp the stranger and put every later guard on
+    the wrong side. A content-identical idless swap remains claimable: two entries
+    with the same name, kind, source, hash, timestamps and schema are operationally
+    the same entry — there is nothing left to protect one from the other with."""
+    if held.meta.id:
+        _check_expected_id(fresh, held.meta.id)
+        return
+    if fresh.meta.id or fresh.meta != held.meta:
+        raise StaleEntryError(
+            gettext("%(name)s changed while this edit was underway — reopen it and try again.")
+            % {"name": fresh.meta.name}
+        )
 
 
 def _load_registry() -> dict[str, dict[str, Any]]:
@@ -281,6 +400,31 @@ def _fs_truth(entries: dict[str, dict[str, Any]]) -> tuple[set[str], set[str]]:
     return slugs, names
 
 
+def unindexed_slugs() -> list[str]:
+    """Stored entries that exist under scripts/ but are absent from the index.
+
+    The READ side of the cross-check _fs_truth already performs for writes. The index is
+    only a rebuildable projection (module docstring), and _fs_truth trusts disk over it so
+    a lost registry can't let `add` overwrite a stored script — but nothing ever told the
+    USER about the same divergence. A missing or corrupt registry.toml made every entry
+    vanish from `list`, `run` and `show` while `doctor` cheerfully reported a healthy
+    library of zero entries, and the one command that repairs it (`doctor --rebuild`) was
+    named nowhere. A promise the code makes to itself is not a promise to the user.
+
+    Only directories that hold a meta.toml count: that is precisely what doctor_rebuild can
+    recover. A directory without one is a crashed-mid-add leftover, not a lost entry.
+    """
+    entries = _load_registry()
+    root = scripts_dir()
+    if not root.is_dir():
+        return []
+    return sorted(
+        p.name
+        for p in root.iterdir()
+        if p.is_dir() and p.name not in entries and (p / "meta.toml").exists()
+    )
+
+
 def _extract_description(script_text: str) -> str:
     """Take the first line of the module docstring as a suggested description (empty on failure)."""
     import ast
@@ -327,8 +471,10 @@ def add_python(
     requires_python: str = "",
 ) -> Entry:
     source = source.expanduser().resolve()
+    if not source.exists():
+        raise NotFoundError(gettext("File not found: %(path)s") % {"path": str(source)})
     if not source.is_file():
-        raise StoreError(gettext("File not found: %(path)s") % {"path": str(source)})
+        raise StoreUsageError(gettext("Not a file: %(path)s") % {"path": str(source)})
     # The chokepoint belt (update_dependencies' rule, applied to the add-time writer
     # too): strip-and-drop empty entries, then refuse anything unparseable before a
     # block is built. Every shipped intake validates earlier — this line is what a
@@ -456,10 +602,12 @@ def add_script(
     # with a truthy stored_name (nor interpreted with a falsy one), so the three disjuncts can
     # never disagree between `or` and `and`.
     if spec is None or spec.family != "interpreted" or not spec.stored_name:  # pragma: no mutate
-        raise StoreError(gettext("Unknown entry kind: %(kind)s") % {"kind": kind})
+        raise StoreUsageError(gettext("Unknown entry kind: %(kind)s") % {"kind": kind})
     source = source.expanduser().resolve()
+    if not source.exists():
+        raise NotFoundError(gettext("File not found: %(path)s") % {"path": str(source)})
     if not source.is_file():
-        raise StoreError(gettext("File not found: %(path)s") % {"path": str(source)})
+        raise StoreUsageError(gettext("Not a file: %(path)s") % {"path": str(source)})
     text = source.read_text(encoding="utf-8", errors="replace")
     # The else literal is dead code: every interpreted kind reaching this line carries a
     # CommentSyntax, so `spec.comment is not None` is always true here.
@@ -530,8 +678,10 @@ def add_prompt(
     entry unrunnable; nothing is managed instead (an EXPLICIT `managed` list is always
     honored — the user asked)."""
     source = source.expanduser().resolve()
+    if not source.exists():
+        raise NotFoundError(gettext("File not found: %(path)s") % {"path": str(source)})
     if not source.is_file():
-        raise StoreError(gettext("File not found: %(path)s") % {"path": str(source)})
+        raise StoreUsageError(gettext("Not a file: %(path)s") % {"path": str(source)})
     from .langs.prompt import analyzer as prompt_analyzer
     from .langs.prompt import text as prompt_text
 
@@ -546,7 +696,7 @@ def add_prompt(
     except prompt_text.PromptEncodingError as exc:
         # Validate before hashing, allocating an entry directory, or touching the
         # registry: invalid payload bytes are a clean all-or-nothing add refusal.
-        raise StoreError(str(exc)) from exc
+        raise StoreUsageError(str(exc)) from exc
     except OSError as exc:
         raise StoreError(
             gettext("Can't read %(path)s: %(error)s")
@@ -588,12 +738,14 @@ def add_prompt(
     )
 
 
-def write_prompt_managed(name_or_slug: str, managed: list[str]) -> Entry:
+def write_prompt_managed(
+    name_or_slug: str, managed: list[str], *, expected_id: str | None = None
+) -> Entry:
     """Persist a prompt entry's MANAGED placeholder list (meta `params`) — the names the
     run form asks for and the renderer fills; everything else in the body stays verbatim.
     Prompt-only: a command template's placeholder list comes from the template itself and
     is never written through here."""
-    with _locked_entry(name_or_slug) as entry:
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
         if entry.meta.kind != "prompt":
             raise StoreUsageError(
                 gettext("%(name)s isn't a prompt entry.") % {"name": entry.meta.name}
@@ -604,10 +756,12 @@ def write_prompt_managed(name_or_slug: str, managed: list[str]) -> Entry:
         return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
-def write_prompt_interpolate(name_or_slug: str, interpolate: bool) -> Entry:
+def write_prompt_interpolate(
+    name_or_slug: str, interpolate: bool, *, expected_id: str | None = None
+) -> Entry:
     """Flip a prompt entry's insertion master switch. The managed list is deliberately
     NOT cleared on off — switching back on restores exactly what was managed before."""
-    with _locked_entry(name_or_slug) as entry:
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
         if entry.meta.kind != "prompt":
             raise StoreUsageError(
                 gettext("%(name)s isn't a prompt entry.") % {"name": entry.meta.name}
@@ -618,9 +772,9 @@ def write_prompt_interpolate(name_or_slug: str, interpolate: bool) -> Entry:
         return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
-def write_prompt_runner(name_or_slug: str, runner: str) -> Entry:
+def write_prompt_runner(name_or_slug: str, runner: str, *, expected_id: str | None = None) -> Entry:
     """Persist (or clear, when empty) a prompt entry's pinned runner name."""
-    with _locked_entry(name_or_slug) as entry:
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
         if entry.meta.kind != "prompt":
             raise StoreUsageError(
                 gettext("%(name)s isn't a prompt entry.") % {"name": entry.meta.name}
@@ -687,6 +841,7 @@ def update_launch_policy(
     workdir: str | None = None,
     interpreter: str | None = None,
     template: str | None = None,
+    expected_id: str | None = None,
 ) -> Entry:
     """Validate every supplied launch-policy axis, then persist them in one meta write.
 
@@ -694,7 +849,7 @@ def update_launch_policy(
     transaction prevents a later inapplicable value from leaving earlier values applied
     even though the command reports failure.
     """
-    with _locked_entry(name_or_slug) as entry:
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
         template_value = entry.meta.template
         params_value = entry.meta.params
         if template is not None:
@@ -703,7 +858,7 @@ def update_launch_policy(
                     gettext("%(name)s isn't a command entry.") % {"name": entry.meta.name}
                 )
             if not template.strip():
-                raise StoreError(gettext("Command template must not be empty"))
+                raise StoreUsageError(gettext("Command template must not be empty"))
             template_value = template
             params_value = extract_placeholders(template) or None
 
@@ -726,24 +881,26 @@ def update_launch_policy(
         return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
-def write_workdir(name_or_slug: str, workdir: str) -> Entry:
+def write_workdir(name_or_slug: str, workdir: str, *, expected_id: str | None = None) -> Entry:
     """Persist an entry's working-directory policy: origin | store | invoke | an
     absolute path — the launch policy every kind honors (launcher._resolve_workdir),
     previously writable only by hand-editing meta.toml."""
-    return update_launch_policy(name_or_slug, workdir=workdir)
+    return update_launch_policy(name_or_slug, workdir=workdir, expected_id=expected_id)
 
 
-def write_interpreter(name_or_slug: str, interpreter: str) -> Entry:
+def write_interpreter(
+    name_or_slug: str, interpreter: str, *, expected_id: str | None = None
+) -> Entry:
     """Persist (or clear, when empty) an interpreted entry's interpreter/runtime pin
     (shell → the binary, js/ts → deno/bun/node). Refused for kinds that launch some
     other way — a pin must never be recorded where nothing reads it."""
-    return update_launch_policy(name_or_slug, interpreter=interpreter)
+    return update_launch_policy(name_or_slug, interpreter=interpreter, expected_id=expected_id)
 
 
 def add_exe(source: Path, *, name: str | None = None, description: str = "") -> Entry:
     source = source.expanduser().resolve()
     if not source.exists():
-        raise StoreError(gettext("File not found: %(path)s") % {"path": str(source)})
+        raise NotFoundError(gettext("File not found: %(path)s") % {"path": str(source)})
     meta = ScriptMeta(
         name=name or source.stem,
         kind="exe",
@@ -770,7 +927,7 @@ def extract_placeholders(template: str) -> list[str]:
 
 def add_command(template: str, *, name: str, description: str = "") -> Entry:
     if not template.strip():
-        raise StoreError(gettext("Command template must not be empty"))
+        raise StoreUsageError(gettext("Command template must not be empty"))
     placeholders = extract_placeholders(template)
     meta = ScriptMeta(
         name=name,
@@ -786,12 +943,12 @@ def add_command(template: str, *, name: str, description: str = "") -> Entry:
     return _add_entry(meta, payload=None)
 
 
-def update_template(name_or_slug: str, template: str) -> Entry:
+def update_template(name_or_slug: str, template: str, *, expected_id: str | None = None) -> Entry:
     """Rewrite a command entry's template — the actual program at the center of the
     kind, previously frozen forever at add time (the only fix was remove + re-add,
     destroying presets and history). Placeholders are re-extracted exactly like
     add_command; declared [[parameters]] rows for names that survive are kept."""
-    return update_launch_policy(name_or_slug, template=template)
+    return update_launch_policy(name_or_slug, template=template, expected_id=expected_id)
 
 
 def _add_entry(
@@ -1100,30 +1257,83 @@ def unmanaged_prompt_placeholders(entry: Entry) -> list[str]:
     return [name for name in prompt_analyzer.placeholder_names(text) if name not in managed]
 
 
-def resolve(name_or_slug: str) -> Entry:
-    entries = _load_registry()
-    slug = None
-    if name_or_slug in entries:
-        slug = name_or_slug
-    else:
-        matches = [s for s, e in entries.items() if e.get("name") == name_or_slug]
-        if len(matches) == 1:
-            slug = matches[0]
-    if slug is None:
-        raise NotFoundError(gettext("Script not found: %(name)s") % {"name": name_or_slug})
+def _entry_at(slug: str, requested: str) -> Entry:
+    """The stored entry under one slug, read from its meta (the truth). `requested` is
+    only for the corrupt-meta message: it names the entry the way the user asked for it."""
     entry_dir = scripts_dir() / slug
     try:
         meta = _read_meta(entry_dir)
+    except FileNotFoundError as exc:
+        raise NotFoundError(gettext("Script not found: %(name)s") % {"name": requested}) from exc
     except _META_CORRUPTION as exc:
-        raise NotFoundError(
+        raise CorruptEntryError(
             gettext("%(name)s: metadata is corrupt (%(error)s); run skit doctor --rebuild")
-            % {"name": name_or_slug, "error": str(exc)}
+            % {"name": requested, "error": str(exc)}
         ) from exc
     return Entry(slug=slug, meta=meta, dir=entry_dir)
 
 
-def remove(name_or_slug: str) -> str:
-    with _locked_entry(name_or_slug) as entry:
+def resolve(name_or_slug: str) -> Entry:
+    """The entry a NAME or SLUG refers to.
+
+    A slug is the directory name — there is no projection of it that can go stale, so a
+    slug hit is served straight from the index. A NAME is a projection, and this function
+    already reads the meta a line later, so verifying it costs nothing: if the meta no
+    longer carries that name, the row is stale and the match was a lie.
+
+    The MISS path then pays for the truth once, via list_summaries — which stats every
+    meta, falls back to it when the stamp says the row is stale, and repairs the row. That
+    is the freshness proof _summary_from_row was built for, and list_summaries' own
+    docstring gives the reason it must live here too: without it "the CLI would list
+    entries the TUI, doctor and `run` all refuse, three faces disagreeing about what the
+    library contains" — `run` reaches the store through THIS function, and it used to be
+    the one door that never checked. A hand-edited meta name made `skit list` show an
+    entry that `skit show`/`skit run` called not-found, until some unrelated listing
+    happened to heal the index.
+
+    The hit path is unchanged (one registry read, one meta read). Only a miss — which is
+    about to raise, or about to be a lie — pays for the sweep.
+    """
+    entries = _load_registry()
+    if name_or_slug in entries:
+        return _entry_at(name_or_slug, name_or_slug)
+    matches = [s for s, e in entries.items() if e.get("name") == name_or_slug]
+    if len(matches) == 1:
+        entry = _entry_at(matches[0], name_or_slug)
+        if entry.meta.name == name_or_slug:
+            return entry
+    # The sweep serves hand-edited metas, so it must also survive what hand edits can
+    # break: two metas edited to one name. Collect every claimant before answering —
+    # returning the first hit would silently run whichever entry sorts lowest, and an
+    # entry picked by sort order is a guess, which resolution is never allowed to be.
+    candidates = [s.slug for s in list_summaries() if s.name == name_or_slug]
+    if len(candidates) > 1:
+        raise AmbiguousNameError(
+            gettext("The name %(name)s belongs to more than one entry (%(slugs)s) — use a slug.")
+            % {"name": name_or_slug, "slugs": ", ".join(sorted(candidates))}
+        )
+    if candidates:
+        entry = _entry_at(candidates[0], name_or_slug)
+        # Same freshness proof the registry hit pays a few lines up: the meta is the
+        # truth, and a rename between the sweep and this read makes the match a lie.
+        if entry.meta.name == name_or_slug:
+            return entry
+    raise NotFoundError(gettext("Script not found: %(name)s") % {"name": name_or_slug})
+
+
+def remove(name_or_slug: str, *, expected_id: str | None = None) -> str:
+    """Delete an entry — the most destructive slug-addressed write there is, so a
+    caller that held the entry across a confirmation ask authorizes it like any other
+    mutation: expected_id, checked under the entry lock, refuses to delete whoever
+    owns the slug by the time the user answered. An EMPTY expectation refuses
+    outright: an unverified identity cannot authorize a deletion (claim first — the
+    claim stamps a legacy meta precisely so this authorization can exist)."""
+    if expected_id is not None and not expected_id:
+        raise StaleEntryError(
+            gettext("%(name)s changed while this edit was underway — reopen it and try again.")
+            % {"name": name_or_slug}
+        )
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
         spec = registry.spec_for(entry.meta.kind)
         if spec is not None and spec.deps_flavor == "npm":
             from .langs.base import NotExecutableError
@@ -1160,7 +1370,23 @@ def _remove_locked_entry(entry: Entry) -> str:
             )
             % {"name": entry.meta.name, "path": str(entry.dir)}
         )
-    argstate.forget(entry.slug)  # drop the last-used values too
+    try:
+        argstate.forget(entry.slug)  # drop the last-used values too
+    except argstate.StateWriteError as exc:
+        # The entry is gone (registry and directory both); only its state rider
+        # survived. Honest partial success, the rmtree branch's shape: say what was
+        # done, what was not, and the recovery — never a raw traceback for cleanup.
+        raise StoreError(
+            gettext(
+                "%(name)s was removed from the library, but its remembered values "
+                "couldn't be deleted (%(error)s) — delete this file by hand: %(path)s"
+            )
+            % {
+                "name": entry.meta.name,
+                "error": exc.strerror or str(exc),
+                "path": str(paths.values_dir() / f"{entry.slug}.toml"),
+            }
+        ) from exc
     return entry.meta.name
 
 
@@ -1210,6 +1436,8 @@ def update_dependencies(
     name_or_slug: str,
     dependencies: list[str] | None,
     requires_python: str | None = None,
+    *,
+    expected_id: str | None = None,
 ) -> Entry:
     """Update an entry's dependency record (meta.toml). Python copy mode also syncs the copy's
     PEP 723 block; python reference mode only touches meta (the original can't be written, A7)
@@ -1223,7 +1451,7 @@ def update_dependencies(
     clear. One rule, stated twice — the constraint axis learned it first, and leaving
     the deps axis on always-replace let `skit deps x --python …` erase block-only
     add-time dependencies under a green line."""
-    with _locked_entry(name_or_slug) as entry:
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
         return _update_dependencies_entry(entry, dependencies, requires_python)
 
 
@@ -1356,26 +1584,16 @@ def _sync_python_block(
     if not script.exists():
         return
     try:
-        # pragma: the surviving mutant is decode("UTF-8"), a genuine equivalent (codec
-        # names are case-insensitive — codecs.lookup normalizes them); mirrors atomic.py's
-        # utf-8/UTF-8 alias pragma. The co-generated decode("XXutf-8XX") is killable
-        # (LookupError) and dies by coverage on the identical unpragma'd add_python:239.
-        raw = script.read_bytes()
-        text = raw.decode("utf-8")  # pragma: no mutate — utf-8/UTF-8 alias
-    except (OSError, UnicodeDecodeError):
-        # add_python's encoding rule, applied to the sync path too: re-encoding a lossy
-        # errors="replace" decode would swap every non-UTF-8 byte in the copy for U+FFFD.
-        # Leave the copy byte-exact; the edit is already in meta, which the launcher
-        # passes via --with/--python exactly like a reference-mode entry. The case where
-        # meta CAN'T stand in — a copy that carries its own block — never reaches here:
+        # The shared read half, strict (add_python's encoding rule, applied to the sync
+        # path too): re-encoding a lossy errors="replace" decode would swap every
+        # non-UTF-8 byte in the copy for U+FFFD, so a copy that doesn't decode bails out
+        # whole — the edit is already in meta, which the launcher passes via
+        # --with/--python exactly like a reference-mode entry. The case where meta CAN'T
+        # stand in — a copy that carries its own block — never reaches here:
         # _refuse_unsyncable_block turned it away before meta was written.
+        text, newline = read_for_block_edit(script, errors="strict")
+    except (OSError, UnicodeDecodeError):
         return
-    # Fold for the LF-based block engine, restore the copy's own style on the way out.
-    # Handing it CRLF text made parse_block find nothing, so the "update" prepended a
-    # SECOND `# /// script` block and left the [tool.skit] params below it unreadable —
-    # every managed parameter silently gone, on every CRLF copy.
-    newline = detect_newline(raw)
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
     block = pep723.parse_block(text) or {}
     constraint = meta.requires_python
     if not constraint and requires_python is None:
@@ -1385,40 +1603,166 @@ def _sync_python_block(
         block_deps = list(meta.dependencies or []) or [
             str(d) for d in (block.get("dependencies") or [])
         ]
-    # Atomic, mode-preserving: a plain write can tear the stored copy on a crash, and a
-    # tmp+replace without the chmod would drop the bits copy2 preserved at add.
-    atomic_write_bytes_keep_mode(
-        script,
-        restore_newline(
-            pep723.set_dependencies(text, block_deps, requires_python=constraint), newline
-        ).encode("utf-8"),  # pragma: no mutate — codec alias
+    # The shared write half (rewrite.write_block_edit): atomic + mode-preserving. The strict
+    # read above stays deliberately different from read_for_block_edit — a copy that doesn't
+    # decode bails out whole and meta stands in (the add_python encoding rule).
+    write_block_edit(
+        script, pep723.set_dependencies(text, block_deps, requires_python=constraint), newline
     )
 
 
-def update_needs(name_or_slug: str, needs: list[str]) -> Entry:
+def update_needs(name_or_slug: str, needs: list[str], *, expected_id: str | None = None) -> Entry:
     """Update an entry's `needs` list (external commands checked on PATH before launch).
     Mirrors update_dependencies' meta write, but applies to every kind — a shell script
     or a command template can need `ffmpeg` just as a python script can. An empty list
     clears the key (stored as None so the meta stays minimal)."""
-    with _locked_entry(name_or_slug) as entry:
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
         meta = entry.meta
         meta.needs = needs or None
         _write_meta_and_row(entry.dir, entry.slug, meta)
         return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
-def write_parameters(name_or_slug: str, decls: list[ParamDecl]) -> Entry:
+def write_parameters(
+    name_or_slug: str,
+    decls: list[ParamDecl],
+    *,
+    managed: list[str] | None = None,
+    expected_id: str | None = None,
+) -> tuple[Entry, set[str]]:
     """Persist declared parameter rows to meta.toml [[parameters]] (the schema home for
     kinds without a text body — exe/command). The legacy `params` placeholder-name list
     is deliberately NOT derived from decls: the template is the source of truth for
     WHICH placeholders exist (extract_placeholders at add time), and keeping it
     untouched is what lets an older skit still prompt for every placeholder
-    (downgrade safety) even when only some carry declared schema."""
-    with _locked_entry(name_or_slug) as entry:
+    (downgrade safety) even when only some carry declared schema.
+
+    `managed` folds a prompt's managed-list update into the SAME meta write: for a
+    prompt schema the two are one logical unit — the run form asks by the list, types
+    by the rows — and committing them as two transactions left a half-new schema when
+    the second write failed. None means don't touch `meta.params`; a list (empty
+    included) replaces it, under write_prompt_managed's prompt-only rule.
+
+    The C3 scrub travels INSIDE the same transaction: committing a row as secret purges
+    that name's stored plaintext first, under the entry lock, so no post-run persistence
+    (which holds the same lock) can interleave between the scrub and the commit — and a
+    schema that says secret can never coexist with plaintext the scrub missed. Returns
+    the entry plus the names the scrub actually removed (for the caller's notice)."""
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
+        if managed is not None and entry.meta.kind != "prompt":
+            raise StoreUsageError(
+                gettext("%(name)s isn't a prompt entry.") % {"name": entry.meta.name}
+            )
+        # Purge BEFORE the schema commits (F2's rule, now under the entry lock): every
+        # interruption lands on public+value, public+no-value or secret+no-value.
+        purged = argstate.purge_secret(entry.slug, {d.name for d in decls if d.secret})
         meta = entry.meta
+        if managed is not None:
+            meta.params = managed or None
         meta.parameters = [d.to_meta_dict() for d in decls] or None
         _write_meta_and_row(entry.dir, entry.slug, meta)
-        return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
+        return Entry(slug=entry.slug, meta=meta, dir=entry.dir), purged
+
+
+def write_source_params(
+    name_or_slug: str, specs: list[ParamDecl], *, expected_id: str | None = None
+) -> set[str]:
+    """Commit an analyzable copy-mode entry's [tool.skit] schema into its STORED COPY —
+    the spec-lane twin of write_parameters, sharing its transaction shape: the C3 scrub
+    runs first, the block edit second, both under the entry lock, so a post-run
+    persistence door (same lock) can never interleave between scrub and commit, and no
+    interruption leaves "schema says secret, old plaintext still on disk". The write
+    half is the shared byte-lossless pair (rewrite.py): only the comment block changes,
+    unrelated bytes and the copy's own line endings survive. Returns the names the
+    scrub actually removed (for the caller's notice).
+
+    Copy-mode only, kept as a chokepoint guard (A5: skit edits its stored copy, never
+    the user's original) — callers pre-check to give their own richer refusals."""
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
+        spec = registry.spec_for(entry.meta.kind)
+        if spec is None or spec.params_io is None:
+            raise StoreUsageError(
+                gettext("%(name)s doesn't carry an editable [tool.skit] block.")
+                % {"name": entry.meta.name}
+            )
+        if entry.meta.mode != "copy":
+            raise StoreUsageError(
+                gettext(
+                    "%(name)s is in reference mode, and skit never writes the original file. "
+                    "Edit the [tool.skit] block in the source directly."
+                )
+                % {"name": entry.meta.name}
+            )
+        purged = argstate.purge_secret(entry.slug, {s.name for s in specs if s.secret})
+        text, newline = read_for_block_edit(entry.script_path)
+        write_block_edit(entry.script_path, spec.params_io.write(text, specs), newline)
+        return purged
+
+
+def rewrite_source(
+    name_or_slug: str,
+    transform: Callable[[str], str | None],
+    *,
+    expected_id: str | None = None,
+) -> None:
+    """The A5 lane's transaction: apply a semantic rewrite (--normalize) to the STORED
+    COPY under the entry lock, with the identity check first. The transform re-derives
+    from the FRESH text — never from bytes read before a consent prompt or an analysis
+    pass, which is exactly the window a concurrent edit (or a reincarnated slug) slips
+    through. Strict UTF-8, this lane's own policy: a copy that doesn't decode is
+    refused whole (UnicodeDecodeError propagates for the caller's refusal). None from
+    the transform means write nothing; otherwise the shared byte-discipline write half
+    lands it atomically with the copy's own newline style."""
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
+        try:
+            text, newline = read_for_block_edit(entry.script_path, errors="strict")
+        except FileNotFoundError as exc:
+            raise NotFoundError(
+                gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}
+            ) from exc
+        new = transform(text)
+        if new is not None:
+            write_block_edit(entry.script_path, new, newline)
+
+
+def commit_copy_edit(
+    name_or_slug: str,
+    payload: bytes,
+    *,
+    expected_id: str | None = None,
+    expected_source_hash: str | None = None,
+) -> Entry:
+    """Land an edited STORED COPY from a staged draft, atomically, under the entry
+    lock with the identity check first — the editor-session twin of rewrite_source.
+    The editor never touches the stored path itself (an editor session is the longest
+    user-paced hold there is, and its save must not land on a reincarnated slug); the
+    draft's bytes arrive here verbatim, and the stored copy keeps its own permission
+    bits (a staged draft carries the umask default, not the copy's mode).
+
+    expected_source_hash is the SECOND compare-and-swap, on the content: the identity
+    only proves WHICH entry this is, not that its source is still the version the
+    draft was staged from — a `params --normalize` or a settings save landing while
+    the editor sat open would be silently erased by a whole-file replace. A digest
+    mismatch refuses (the caller keeps the draft and says why) instead of losing the
+    other writer's work."""
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
+        target = entry.script_path
+        if not target.exists():
+            raise NotFoundError(
+                gettext("%(name)s has no stored copy to edit.") % {"name": entry.meta.name}
+            )
+        if (
+            expected_source_hash is not None
+            and hashlib.sha256(target.read_bytes()).hexdigest() != expected_source_hash
+        ):
+            raise StaleEntryError(
+                gettext(
+                    "%(name)s's source changed while the editor was open — reopen it and try again."
+                )
+                % {"name": entry.meta.name}
+            )
+        atomic_write_bytes_keep_mode(target, payload)
+        return Entry(slug=entry.slug, meta=entry.meta, dir=entry.dir)
 
 
 def read_parameters(name_or_slug: str) -> list[ParamDecl]:
@@ -1427,14 +1771,14 @@ def read_parameters(name_or_slug: str) -> list[ParamDecl]:
     return declared_from_meta(entry.meta.parameters)
 
 
-def rename(name_or_slug: str, new_name: str) -> Entry:
+def rename(name_or_slug: str, new_name: str, *, expected_id: str | None = None) -> Entry:
     """Rename an entry's display name. The slug is immutable after add — it keys the
     entry directory and the argstate values file, so keeping it means nothing moves on
     disk and remembered values/presets survive the rename."""
     new_name = new_name.strip()
     if not new_name:
-        raise StoreError(gettext("A name is required."))
-    with _locked_entry(name_or_slug) as entry:
+        raise StoreUsageError(gettext("A name is required."))
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
         meta = entry.meta
         with _registry_lock():
             # The uniqueness decision sits INSIDE the registry lock: two entries renaming
@@ -1447,7 +1791,7 @@ def rename(name_or_slug: str, new_name: str) -> Entry:
                 s != entry.slug and e.get("name") == new_name for s, e in entries.items()
             )
             if taken:
-                raise StoreError(
+                raise NameConflictError(
                     gettext("The name %(name)s is already taken.") % {"name": new_name}
                 )
             meta.name = new_name
@@ -1461,10 +1805,12 @@ def rename(name_or_slug: str, new_name: str) -> Entry:
         return Entry(slug=entry.slug, meta=meta, dir=entry.dir)
 
 
-def update_description(name_or_slug: str, description: str) -> Entry:
+def update_description(
+    name_or_slug: str, description: str, *, expected_id: str | None = None
+) -> Entry:
     """Update an entry's description (meta.toml is the truth; the registry index row is
     refreshed too so `list` doesn't need a rebuild to show it)."""
-    with _locked_entry(name_or_slug) as entry:
+    with _locked_entry(name_or_slug, expected_id=expected_id) as entry:
         meta = entry.meta
         meta.description = description
         _write_meta_and_row(entry.dir, entry.slug, meta)

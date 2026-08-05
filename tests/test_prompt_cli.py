@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from conftest import patch_run_entry
 from skit import argstate, cli, config, i18n, store
 from skit.langs.base import ArgvLaunch
 from skit.langs.prompt import analyzer as prompt_analyzer
@@ -100,11 +101,12 @@ def spawn_spy(monkeypatch):
         calls["entry"] = entry
         calls["extra"] = list(extra_args or [])
         calls["values"] = dict(values or {})
-        calls["runner"] = runner
+        # The effective runner: a prompt lane carries it INSIDE the prepared snapshot.
+        calls["runner"] = prepared.prompt_runner if prepared is not None else runner
         calls["prepared"] = prepared
         return calls.get("code", 0)
 
-    monkeypatch.setattr(cli.launcher, "run_entry", fake)
+    patch_run_entry(monkeypatch, fake)
     monkeypatch.setattr("skit.langs.launch._which", lambda name: f"/bin/{name}")
     return calls
 
@@ -124,7 +126,7 @@ def test_add_prompt_read_oserror_is_a_clean_store_error(tmp_path, monkeypatch):
     monkeypatch.setattr("skit.langs.prompt.text.read", denied)
     result = runner.invoke(cli.app, ["add", str(source), "--prompt", "--no-input"])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert "Can't read" in result.output
     assert str(source) in result.output.replace("\n", "")
     assert "permission denied" in result.output
@@ -320,7 +322,7 @@ def test_add_prompt_missing_file_is_clean_on_the_panel_face(tmp_path, monkeypatc
         lambda *a, **kw: pytest.fail("the panel must not open for a missing file"),
     )
     result = runner.invoke(cli.app, ["add", str(tmp_path / "typo.prompt.md")])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
     assert "File not found" in result.output
 
 
@@ -382,7 +384,7 @@ def test_missing_bare_md_is_refused_before_the_prompt_confirmation(tmp_path, mon
     monkeypatch.setattr(cli.Confirm, "ask", staticmethod(asked))
     missing = tmp_path / "missing.md"
     result = runner.invoke(cli.app, ["add", str(missing)])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
     assert "File not found:" in result.output
     assert "missing.md" in result.output
 
@@ -500,7 +502,7 @@ def test_add_kind_prompt_from_stdin_uses_the_prompt_contract(tmp_path):
 
 def test_add_prompt_from_stdin_empty_body(tmp_path):
     result = runner.invoke(cli.app, ["add", "-", "--prompt", "-n", "e"], input="  \n")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Nothing arrived on stdin" in result.output
 
 
@@ -556,7 +558,7 @@ def test_add_prompt_editor_lane_name_taken_refuses_before_the_editor(tmp_path, m
     store.add_prompt(tmp_path / "e.prompt.md", name="taken")
     monkeypatch.setattr(cli.editor, "open_in_editor", _never)  # must NOT be launched
     result = runner.invoke(cli.app, ["add", "--prompt", "-n", "taken"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "already taken" in result.output
     # _never raises AssertionError if the editor opens — a clean SystemExit proves refusal
     # happened before the editor.
@@ -580,7 +582,7 @@ def test_add_prompt_editor_lane_post_edit_failure_keeps_the_draft(tmp_path, monk
     monkeypatch.setattr(cli, "_onboard_prompt", onboard_boom)
     result = runner.invoke(cli.app, ["add", "--prompt", "-n", "keptprompt"])
     try:
-        assert result.exit_code == 1
+        assert result.exit_code == 125
         assert "Your draft was kept at" in result.output
         assert seen["path"].exists()  # the draft survived the failure
         assert store.list_entries() == []  # nothing added
@@ -598,7 +600,7 @@ def test_add_prompt_editor_lane_deleted_draft_is_a_clean_honest_failure(tmp_path
 
     monkeypatch.setattr(cli.editor, "open_in_editor", delete)
     result = runner.invoke(cli.app, ["add", "--prompt", "-n", "gone"])
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert "Can't read" in result.output
     assert "The draft is no longer at" in result.output
     assert "Your draft was kept at" not in result.output
@@ -735,12 +737,22 @@ def test_run_prompt_pin_resolves_without_touching_last_picked(tmp_path, spawn_sp
     assert argstate.load_last_runner() == ""  # using a pin is not a pick
 
 
-def test_run_prompt_unknown_runner_is_126_listing_names(tmp_path):
+def test_run_prompt_explicit_unknown_runner_is_usage_listing_names(tmp_path):
     _added(tmp_path)
     result = runner.invoke(cli.app, ["run", "p", "--runner", "ghost", "--set", "a=1", "--no-input"])
-    assert result.exit_code == 126
+    assert result.exit_code == 2
     assert "ghost" in result.output
     assert "claude" in result.output
+
+
+def test_run_prompt_explicit_empty_runner_is_usage(tmp_path):
+    _added(tmp_path)
+    result = runner.invoke(
+        cli.app,
+        ["run", "p", "--runner", " ", "--set", "a=1", "--no-input"],
+    )
+    assert result.exit_code == 2
+    assert "--runner needs a configured runner name" in result.output
 
 
 def test_run_prompt_pinned_but_removed_runner_is_126(tmp_path):
@@ -924,7 +936,7 @@ def test_run_prompt_extra_args_pass_through_after_dashes(tmp_path, spawn_spy):
 def test_run_prompt_reuses_last_extra_agent_args(tmp_path, spawn_spy):
     """A remembered `--model` is persistent config, like the pinned runner: passing no tail
     on the next run replays the last agent flags (docs/design/prompt.md v3.1). Before v3.1
-    the prompt kind refused to replay because takes_argv=False."""
+    the prompt kind refused to replay: the tail was tied to the param surface."""
     _added(tmp_path, pin="claude")
     first = runner.invoke(
         cli.app, ["run", "p", "--set", "a=1", "--no-input", "--", "--model", "opus"]
@@ -1208,7 +1220,7 @@ def test_params_interpolate_with_json_emits_the_read_view(tmp_path):
 def test_params_runner_pin_validates_the_name(tmp_path):
     _added(tmp_path)
     result = runner.invoke(cli.app, ["params", "p", "--runner", "ghost"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "isn't configured" in result.output
     assert store.resolve("p").meta.runner == ""
 
@@ -1216,7 +1228,7 @@ def test_params_runner_pin_validates_the_name(tmp_path):
 def test_params_runner_pin_refused_on_non_prompt(tmp_path):
     store.add_command("echo {m}", name="cmd")
     result = runner.invoke(cli.app, ["params", "cmd", "--runner", "claude"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "--runner only applies to prompt entries" in result.output
 
 
@@ -1432,7 +1444,7 @@ def test_runner_add_preserves_bad_rows_and_force_repairs_matching_name(tmp_path)
     ]
 
     refused = runner.invoke(cli.app, ["runner", "add", "typo", "fixed", "{{prompt}}"])
-    assert refused.exit_code == 1
+    assert refused.exit_code == 2
     repaired = runner.invoke(
         cli.app,
         ["runner", "add", "typo", "--force", "--", "fixed", "{{prompt}}"],
@@ -1469,7 +1481,7 @@ def test_runner_add_validation_errors(tmp_path):
 
 def test_runner_add_duplicate_name_refused(tmp_path):
     result = runner.invoke(cli.app, ["runner", "add", "claude", "x", "{{prompt}}"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "already exists" in result.output
 
 
@@ -1483,7 +1495,7 @@ def test_runner_add_duplicate_name_refused(tmp_path):
 def test_runner_add_reports_malformed_config_container(tmp_path, prompt_value, needle):
     config.save_config({"prompt": prompt_value})
     result = runner.invoke(cli.app, ["runner", "add", "new", "new", "{{prompt}}"])
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert needle in result.output
     assert config.load_config()["prompt"] == prompt_value
 
@@ -1493,7 +1505,7 @@ def test_runner_remove_and_unknown(tmp_path):
     assert runner.invoke(cli.app, ["runner", "remove", " amp ", "-y"]).exit_code == 0
     assert config.find_prompt_runner("amp") is None
     result = runner.invoke(cli.app, ["runner", "remove", "amp", "-y"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Unknown runner" in result.output
 
 
@@ -1550,11 +1562,11 @@ def test_runner_remove_confirms_unless_yes(tmp_path, monkeypatch):
     assert "Runner amp removed." in result.output
 
 
-def test_runner_remove_abort_keeps_the_runner(tmp_path, monkeypatch):
-    """Answering "n" (or EOF) aborts: exit 1, nothing removed — the confirm really guards."""
+def test_runner_remove_decline_keeps_the_runner(tmp_path, monkeypatch):
+    """Answering "n" declines normally: exit 0, nothing removed."""
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
     result = runner.invoke(cli.app, ["runner", "remove", "amp"], input="n\n")
-    assert result.exit_code == 1  # typer.confirm(abort=True) → Abort → exit 1
+    assert result.exit_code == 0
     assert config.find_prompt_runner("amp") is not None  # still configured
     assert "Runner amp removed." not in result.output
 
@@ -1595,7 +1607,7 @@ def test_runner_remove_raw_row_is_targeted_and_requires_yes_noninteractively(tmp
         "untouched",
     ]
     unknown = runner.invoke(cli.app, ["runner", "remove", "--row", "9", "--yes"])
-    assert unknown.exit_code == 1
+    assert unknown.exit_code == 2
     assert "runner list --all" in unknown.output
 
 
@@ -1656,7 +1668,7 @@ def test_runner_remove_raw_row_refuses_if_index_shifted_during_confirmation(tmp_
     monkeypatch.setattr(cli.typer, "confirm", shift_before_confirm)
     result = runner.invoke(cli.app, ["runner", "remove", "--row", "1"])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert "changed before it could be removed" in result.output
     assert config.load_config()["prompt"]["runners"] == [inserted, *original]
 
@@ -1673,7 +1685,7 @@ def test_runner_remove_name_refuses_if_key_is_replaced_during_confirmation(tmp_p
     monkeypatch.setattr(cli.typer, "confirm", replace_during_confirm)
     result = runner.invoke(cli.app, ["runner", "remove", "victim"])
 
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert "changed before it could be removed" in result.output
     assert config.find_prompt_runner("victim") == replacement
 
@@ -1749,7 +1761,7 @@ def test_add_prompt_unreadable_file_is_a_store_error(tmp_path):
     trap = tmp_path / "dir.prompt.md"
     trap.mkdir()  # read_text raises IsADirectoryError (an OSError) while it "exists"
     result = runner.invoke(cli.app, ["add", str(trap), "--no-input"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "Not a file" in result.output
 
 
@@ -1791,14 +1803,14 @@ def test_add_prompt_editor_lane_reports_store_errors(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.editor, "open_in_editor", lambda path: path.write_text("body {{x}}\n"))
     store.add_command("echo hi", name="taken")  # the editor lane's add will collide
     result = runner.invoke(cli.app, ["add", "--prompt"])  # name asked interactively
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "already taken" in result.output
 
 
 def test_add_prompt_stdin_lane_reports_store_errors(tmp_path):
     store.add_command("echo hi", name="taken")
     result = runner.invoke(cli.app, ["add", "-", "--prompt", "-n", "taken"], input="b\n")
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "already taken" in result.output
 
 
@@ -1814,12 +1826,12 @@ def test_params_view_survives_an_unreadable_reference_body(tmp_path):
 def test_params_runner_pin_reports_store_errors(tmp_path, monkeypatch):
     _added(tmp_path)
 
-    def boom(slug, name):
+    def boom(slug, name, **_kwargs):
         raise store.StoreError("disk on fire")
 
     monkeypatch.setattr(cli.store, "write_prompt_runner", boom)
     result = runner.invoke(cli.app, ["params", "p", "--runner", "claude"])
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert "disk on fire" in result.output
 
 
@@ -1946,19 +1958,19 @@ def test_params_interpolate_off_and_on(tmp_path):
 def test_params_interpolate_reports_store_errors(tmp_path, monkeypatch):
     _added(tmp_path)
 
-    def boom(slug, on):
+    def boom(slug, on, **_kwargs):
         raise store.StoreError("disk on fire")
 
     monkeypatch.setattr(cli.store, "write_prompt_interpolate", boom)
     result = runner.invoke(cli.app, ["params", "p", "--no-interpolate"])
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert "disk on fire" in result.output
 
 
 def test_params_interpolate_refused_on_non_prompt(tmp_path):
     store.add_command("echo {m}", name="cmd")
     result = runner.invoke(cli.app, ["params", "cmd", "--no-interpolate"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "--interpolate only applies to prompt entries" in result.output
 
 
@@ -2035,7 +2047,7 @@ def test_params_schema_edits_refused_while_insertion_is_off(tmp_path):
     runner.invoke(cli.app, ["params", "p", "--no-interpolate"])
     for flags in (["--add", "b"], ["--rm", "a"], ["--deliver", "a=placeholder"]):
         result = runner.invoke(cli.app, ["params", "p", *flags])
-        assert result.exit_code == 1, flags
+        assert result.exit_code == 2, flags
         assert "Variable insertion is off" in result.output
     assert store.resolve("p").meta.params == ["a", "b"]  # nothing was mutated
     runner.invoke(cli.app, ["params", "p", "--interpolate"])
@@ -2073,7 +2085,9 @@ def _editor_appending(text: str):
     return fake
 
 
-def test_edit_prompt_interactive_offers_and_manages_a_new_placeholder(tmp_path, monkeypatch):
+def test_edit_prompt_interactive_offers_and_manages_a_new_placeholder(
+    tmp_path, monkeypatch, at_a_terminal
+):
     config.save_form("plain")  # the line-prompt path (form=tui hosts the picker modal)
     slug = store.add_prompt(_write(tmp_path, "Say hello.\n"), name="greet").slug
     monkeypatch.setattr(
@@ -2087,7 +2101,9 @@ def test_edit_prompt_interactive_offers_and_manages_a_new_placeholder(tmp_path, 
     assert "Now managed: username" in result.output
 
 
-def test_edit_prompt_interactive_none_leaves_the_placeholder_literal(tmp_path, monkeypatch):
+def test_edit_prompt_interactive_none_leaves_the_placeholder_literal(
+    tmp_path, monkeypatch, at_a_terminal
+):
     config.save_form("plain")  # the line-prompt path (form=tui hosts the picker modal)
     slug = store.add_prompt(_write(tmp_path, "Say hello.\n"), name="greet").slug
     monkeypatch.setattr(cli.editor, "open_entry_in_editor", _editor_appending("\n{{username}}\n"))
@@ -2099,7 +2115,9 @@ def test_edit_prompt_interactive_none_leaves_the_placeholder_literal(tmp_path, m
     assert "Now managed" not in result.output
 
 
-def test_edit_prompt_interactive_numbers_manage_the_named_ones(tmp_path, monkeypatch):
+def test_edit_prompt_interactive_numbers_manage_the_named_ones(
+    tmp_path, monkeypatch, at_a_terminal
+):
     config.save_form("plain")  # the line-prompt path (form=tui hosts the picker modal)
     slug = store.add_prompt(_write(tmp_path, "Base.\n"), name="greet").slug
     monkeypatch.setattr(
@@ -2112,7 +2130,9 @@ def test_edit_prompt_interactive_numbers_manage_the_named_ones(tmp_path, monkeyp
     assert store.resolve(slug).meta.params == ["a", "c"]
 
 
-def test_edit_prompt_preserves_existing_managed_and_adds_the_new_one(tmp_path, monkeypatch):
+def test_edit_prompt_preserves_existing_managed_and_adds_the_new_one(
+    tmp_path, monkeypatch, at_a_terminal
+):
     config.save_form("plain")  # the line-prompt path (form=tui hosts the picker modal)
     entry = store.add_prompt(_write(tmp_path, "{{kept}}\n"), name="greet", managed=["kept"])
     monkeypatch.setattr(cli.editor, "open_entry_in_editor", _editor_appending("\n{{added}}\n"))
@@ -2123,29 +2143,26 @@ def test_edit_prompt_preserves_existing_managed_and_adds_the_new_one(tmp_path, m
     assert store.resolve(entry.slug).meta.params == ["kept", "added"]
 
 
-def test_edit_prompt_non_interactive_names_the_unmanaged_variable(tmp_path, monkeypatch):
+def test_edit_prompt_non_interactive_refuses_before_touching_anything(tmp_path, monkeypatch):
+    """ROUND 12. There is no non-interactive `skit edit`: an editor session needs a
+    terminal, so the command refuses at the front door rather than running an editor
+    against a stdin nobody is typing into. The prompt's managed list is therefore
+    untouched — which is what this test always meant by "manages nothing", now asserted
+    against a state the product can actually be in."""
     slug = store.add_prompt(_write(tmp_path, "Say hello.\n"), name="greet").slug
-    monkeypatch.setattr(cli.editor, "open_entry_in_editor", _editor_appending("\n{{username}}\n"))
+    monkeypatch.setattr(
+        cli.editor, "open_entry_in_editor", lambda *a, **k: pytest.fail("editor opened")
+    )
     monkeypatch.setattr(cli, "_is_interactive", lambda: False)
     result = runner.invoke(cli.app, ["edit", "greet"])
-    assert result.exit_code == 0, result.output
-    assert store.resolve(slug).meta.params is None  # non-interactive manages nothing
-    assert "Detected but not yet managed: username" in result.output
+    assert result.exit_code == 2
+    assert "needs an interactive terminal" in result.output
+    assert store.resolve(slug).meta.params is None
 
 
-def test_edit_prompt_non_interactive_flood_previews_with_a_tail(tmp_path, monkeypatch):
-    from skit.langs.prompt.analyzer import LIST_PREVIEW_LIMIT
-
-    store.add_prompt(_write(tmp_path, "Base.\n"), name="greet")
-    holes = " ".join("{{h" + str(i) + "}}" for i in range(LIST_PREVIEW_LIMIT + 4))
-    monkeypatch.setattr(cli.editor, "open_entry_in_editor", _editor_appending("\n" + holes + "\n"))
-    monkeypatch.setattr(cli, "_is_interactive", lambda: False)
-    result = runner.invoke(cli.app, ["edit", "greet"])
-    assert result.exit_code == 0, result.output
-    assert "and 4 more candidates" in result.output
-
-
-def test_edit_prompt_interactive_flood_previews_secret_mark_and_tail(tmp_path, monkeypatch):
+def test_edit_prompt_interactive_flood_previews_secret_mark_and_tail(
+    tmp_path, monkeypatch, at_a_terminal
+):
     from skit.langs.prompt.analyzer import LIST_PREVIEW_LIMIT
 
     config.save_form("plain")  # the line-prompt path (form=tui hosts the picker modal)
@@ -2164,7 +2181,9 @@ def test_edit_prompt_interactive_flood_previews_secret_mark_and_tail(tmp_path, m
     ]
 
 
-def test_edit_prompt_tui_reconcile_manages_the_pickers_selection(tmp_path, monkeypatch):
+def test_edit_prompt_tui_reconcile_manages_the_pickers_selection(
+    tmp_path, monkeypatch, at_a_terminal
+):
     """Under form=tui the reconcile hosts run_candidate_picker; its returned set is what
     gets managed (preselection = every new name when not flooded)."""
     config.save_form("tui")
@@ -2189,7 +2208,7 @@ def test_edit_prompt_tui_reconcile_manages_the_pickers_selection(tmp_path, monke
     assert "Now managed: a, c" in result.output
 
 
-def test_edit_prompt_tui_reconcile_none_manages_nothing(tmp_path, monkeypatch):
+def test_edit_prompt_tui_reconcile_none_manages_nothing(tmp_path, monkeypatch, at_a_terminal):
     """Cancelling the picker (None) manages nothing — no 'Now managed' line."""
     config.save_form("tui")
     slug = store.add_prompt(_write(tmp_path, "Say hello.\n"), name="greet").slug
@@ -2202,7 +2221,7 @@ def test_edit_prompt_tui_reconcile_none_manages_nothing(tmp_path, monkeypatch):
     assert "Now managed" not in result.output
 
 
-def test_edit_prompt_tui_reconcile_flood_preselects_nothing(tmp_path, monkeypatch):
+def test_edit_prompt_tui_reconcile_flood_preselects_nothing(tmp_path, monkeypatch, at_a_terminal):
     """Above AUTO_MANAGE_LIMIT new names, the picker opens with an EMPTY preselection."""
     from skit.langs.prompt.analyzer import AUTO_MANAGE_LIMIT
 
@@ -2222,7 +2241,7 @@ def test_edit_prompt_tui_reconcile_flood_preselects_nothing(tmp_path, monkeypatc
     assert seen["selected"] == set()  # flooded → nothing preselected
 
 
-def test_edit_prompt_with_no_new_placeholders_is_silent(tmp_path, monkeypatch):
+def test_edit_prompt_with_no_new_placeholders_is_silent(tmp_path, monkeypatch, at_a_terminal):
     slug = store.add_prompt(_write(tmp_path, "{{a}}\n"), name="greet", managed=["a"]).slug
     monkeypatch.setattr(cli.editor, "open_entry_in_editor", _editor_appending("\nmore prose\n"))
     monkeypatch.setattr(cli, "_is_interactive", lambda: True)
@@ -2233,7 +2252,7 @@ def test_edit_prompt_with_no_new_placeholders_is_silent(tmp_path, monkeypatch):
     assert store.resolve(slug).meta.params == ["a"]
 
 
-def test_edit_non_prompt_keeps_the_generic_drift_hint(tmp_path, monkeypatch):
+def test_edit_non_prompt_keeps_the_generic_drift_hint(tmp_path, monkeypatch, at_a_terminal):
     script = tmp_path / "s.py"
     script.write_text("print(1)\n", encoding="utf-8")
     store.add_python(script, name="job")

@@ -5,6 +5,7 @@ of `normalize_idiom` through its public surface."""
 from __future__ import annotations
 
 from skit.langs.shell import normalize
+from skit.notices import NormalizeNoticeCode, normalize_refusal
 
 
 def test_plusassign_before_a_const_does_not_abort_the_scan():
@@ -28,5 +29,5 @@ def test_subscript_target_is_not_grouped_as_a_normalizable_const():
     src = "X[0]=hello\n"
     result = normalize.normalize_idiom(src, ["X[0]"])
     assert result.normalized == []
-    assert result.refused == ["not-a-const:X[0]"]
+    assert result.refused == [normalize_refusal(NormalizeNoticeCode.NOT_A_CONST, "X[0]")]
     assert result.text == src  # a refusal never touches a single byte

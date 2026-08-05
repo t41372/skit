@@ -215,7 +215,14 @@ def _ts_spec() -> LangSpec:
 def _powershell_caps() -> Capabilities:
     from .powershell import cli_reader
 
-    return Capabilities(cli_reader=CliReader(read_cli=cli_reader.read_cli))
+    return Capabilities(
+        cli_reader=CliReader(
+            read_cli=cli_reader.read_cli,
+            # The read shells out to pwsh, so a memoized verdict is stale the moment
+            # the tool appears/disappears — the fingerprint lets memo keys see that.
+            runtime_fingerprint=cli_reader.runtime_fingerprint,
+        )
+    )
 
 
 def _powershell_spec() -> LangSpec:
@@ -258,16 +265,17 @@ def _exe_spec() -> LangSpec:
 
 
 def _command_spec() -> LangSpec:
-    # takes_argv=False: a command's "arguments" are its placeholders, so an appended argv
-    # tail is not the kind's own interface — the parameter surface comes from the template
-    # holes (params.py keys off this). The remembered extra-args tail is orthogonal: it
-    # replays for every kind (see cli run / RunFormScreen), a command's tail included.
+    # placeholder_params: a command's "arguments" ARE its template holes, and that trait is
+    # what every surface keys off. (There used to be a takes_argv=False beside it, carried
+    # since before v3.1 de-conflated the remembered extra-args tail from the param surface.
+    # Nothing read it afterwards — a tail replays for every kind, a command's included —
+    # while three comments went on crediting it with the rule placeholder_params enforces.
+    # A trait no code consults is a story, not a contract; it is gone.)
     return LangSpec(
         kind="command",
         family="template",
         glyph="$",
         launch=launch.TemplateLaunch(),
-        takes_argv=False,
         placeholder_params=True,
     )
 
@@ -288,7 +296,6 @@ def _prompt_spec() -> LangSpec:
         extensions=(".prompt.md", ".prompt"),
         stored_name="prompt.md",
         supports_modes=True,
-        takes_argv=False,
         placeholder_params=True,
     )
 

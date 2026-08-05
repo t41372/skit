@@ -23,7 +23,9 @@ Precedence details:
 - **Editor**: the `editor` config key → `VISUAL` → `EDITOR` → platform default
   (`notepad` on Windows, `vi` elsewhere). Blank values count as unset.
 
-`skit doctor` prints the resolved data/state/config paths.
+`skit doctor` prints the resolved library, config and state paths — and carries them as
+`location`, `config_dir` and `state_dir` under `--json`. The TUI's Health screen shows the
+same three.
 
 ## Variables skit sets for the processes it launches
 

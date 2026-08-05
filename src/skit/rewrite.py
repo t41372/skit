@@ -21,6 +21,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from .atomic import atomic_write_bytes_keep_mode
+
 _UTF8 = "utf-8"  # pragma: no mutate — "utf-8"/"UTF-8" codec alias
 
 # The exact set of newline sequences CPython's tokenizer/AST count as a line break: \r\n, \r, \n
@@ -57,6 +59,39 @@ def restore_newline(text: str, newline: str) -> str:
     # literal is therefore equivalent — it can only route an LF copy through an identity
     # replace.
     return text if newline == "\n" else text.replace("\n", newline)  # pragma: no mutate
+
+
+def read_for_block_edit(path: Path, *, errors: str = "surrogateescape") -> tuple[str, str]:
+    """Read a stored copy for a comment-block edit: (LF-folded text, detected newline style).
+
+    THE shared read half of every [tool.skit]/PEP 723 write-back — CLI onboarding, `params`
+    edits, the TUI add-review panel and Script settings all go through this pair instead of
+    re-implementing the discipline: raw bytes, surrogateescape by default (arbitrary
+    shell/fish bytes round-trip instead of burning down to U+FFFD), folded to LF for the
+    LF-based block engines. Pair with write_block_edit, which restores the newline style
+    captured here.
+
+    The two STRICT lanes (`--normalize`, the deps sync) pass errors="strict" and own the
+    resulting UnicodeDecodeError policy themselves (refuse whole / bail to meta) — the
+    mechanics stay shared so a newline-handling fix can never miss a lane again."""
+    raw = path.read_bytes()
+    text = raw.decode(_UTF8, errors=errors)  # pragma: no mutate — codec alias
+    return text.replace("\r\n", "\n").replace("\r", "\n"), detect_newline(raw)
+
+
+def write_block_edit(path: Path, edited: str, newline: str) -> None:
+    """Write back an LF-based block edit: re-apply the copy's own newline style, encode with
+    surrogateescape, and land atomically with the permission bits preserved (a torn write must
+    not truncate a stored copy; mkstemp's 0600 must not strip its execute bit). Path.write_text
+    is never acceptable on this path: universal-newline reads plus os.linesep re-expansion
+    rewrite every line of the file — CRLF-ifying an LF script on Windows — when the edit only
+    meant to touch the comment block."""
+    atomic_write_bytes_keep_mode(
+        path,
+        restore_newline(edited, newline).encode(
+            _UTF8, errors="surrogateescape"
+        ),  # pragma: no mutate — codec alias
+    )
 
 
 def _physical_lines(text: str) -> list[str]:

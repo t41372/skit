@@ -292,8 +292,12 @@ async def test_key_e_opens_shell_script_source(tmp_path, monkeypatch):
     copy is editable, so pressing `e` hands it to the editor."""
     import contextlib
 
-    opened: list[object] = []
-    monkeypatch.setattr(tui.editor, "open_in_editor", opened.append)
+    opened: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        tui.editor,
+        "open_in_editor",
+        lambda p: opened.append((str(p), p.read_text(encoding="utf-8"))),
+    )
 
     @contextlib.contextmanager
     def _noop(self):
@@ -308,7 +312,12 @@ async def test_key_e_opens_shell_script_source(tmp_path, monkeypatch):
         await pilot.press("e")
         await pilot.pause()
         assert len(opened) == 1
-        assert str(opened[0]).endswith("script.sh")  # the stored shell copy
+        # The staged contract: a draft carrying the stored copy's bytes and suffix,
+        # never the stored path itself (captured at call time — an unchanged draft
+        # is cleaned up when the session ends).
+        draft_path, draft_text = opened[0]
+        assert draft_path.endswith(".sh")
+        assert draft_text == "#!/bin/bash\necho hi\n"
 
 
 async def test_enter_in_search_runs_top_match_and_refocuses_table(tmp_path, monkeypatch):

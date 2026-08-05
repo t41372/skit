@@ -172,6 +172,17 @@ def test_resolve_editor_unbalanced_quotes_falls_back_to_raw(monkeypatch):
 # --------------------------------------------------------------------------
 
 
+@pytest.fixture
+def _at_a_terminal(monkeypatch):
+    """open_in_editor refuses when skit may not prompt (round 11): an editor session IS
+    interaction, and under a pipe / CI / --no-input it used to spawn $EDITOR against a
+    stdin nobody was typing into — `vi` hung forever, `cat` dumped the file into the
+    caller's stdout, and skit then printed "Saved". These tests are about the spawn, so
+    they sit at a terminal."""
+    monkeypatch.setattr(editor.interaction, "allowed", lambda **_: True)
+
+
+@pytest.mark.usefixtures("_at_a_terminal")
 def test_open_in_editor_appends_path_and_returns_code(monkeypatch, tmp_path):
     captured: dict[str, object] = {}
 
@@ -192,6 +203,7 @@ def test_open_in_editor_appends_path_and_returns_code(monkeypatch, tmp_path):
     assert captured["check"] is False
 
 
+@pytest.mark.usefixtures("_at_a_terminal")
 def test_open_in_editor_returns_nonzero_without_raising(monkeypatch, tmp_path):
     class _Result:
         returncode = 3
@@ -201,6 +213,7 @@ def test_open_in_editor_returns_nonzero_without_raising(monkeypatch, tmp_path):
     assert editor.open_in_editor(tmp_path / "x.py") == 3
 
 
+@pytest.mark.usefixtures("_at_a_terminal")
 def test_open_in_editor_launch_failure_message_exact(monkeypatch, tmp_path):
     def raise_oserror(*_a, **_k):
         raise FileNotFoundError("boom-err")
@@ -276,22 +289,32 @@ def test_save_editor_clear_when_absent_does_not_raise():
 # --------------------------------------------------------------------------
 
 
-def test_edit_opens_copy_source(monkeypatch, tmp_path):
-    opened: dict[str, Path] = {}
+def test_edit_opens_copy_source(monkeypatch, tmp_path, at_a_terminal):
+    opened: dict[str, object] = {}
 
     def fake(p):
+        # Captured at call time: an unchanged draft is cleaned up on session end.
         opened["path"] = p
+        opened["bytes"] = p.read_bytes()
         return 0
 
     monkeypatch.setattr(cli.editor, "open_in_editor", fake)
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     result = runner.invoke(cli.app, ["edit", "a"])
     assert result.exit_code == 0, result.output
-    assert opened["path"] == store.resolve("a").dir / "script.py"
+    # The staged contract: a copy-mode session edits a DRAFT in skit's drafts dir —
+    # never the stored path itself — holding the copy's exact bytes.
+    from skit.paths import drafts_dir
+
+    draft = opened["path"]
+    assert isinstance(draft, Path)
+    assert draft.parent == drafts_dir()
+    assert draft.name.startswith("edit-a-")
+    assert opened["bytes"] == (store.resolve("a").dir / "script.py").read_bytes()
     assert "Saved a" in result.output
 
 
-def test_edit_opens_reference_original(monkeypatch, tmp_path):
+def test_edit_opens_reference_original(monkeypatch, tmp_path, at_a_terminal):
     src = _py(tmp_path, "print(1)\n", "orig.py")
     store.add_python(src, name="r", mode="reference")
     opened: dict[str, Path] = {}
@@ -306,24 +329,24 @@ def test_edit_opens_reference_original(monkeypatch, tmp_path):
     assert opened["path"] == src.resolve()
 
 
-def test_edit_reference_source_gone(monkeypatch, tmp_path):
+def test_edit_reference_source_gone(monkeypatch, tmp_path, at_a_terminal):
     src = _py(tmp_path, "print(1)\n", "orig.py")
     store.add_python(src, name="r", mode="reference")
     src.unlink()
     monkeypatch.setattr(cli.editor, "open_in_editor", _boom)
     result = runner.invoke(cli.app, ["edit", "r"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
     assert "gone" in result.output
 
 
-def test_edit_reports_editor_launch_failure(monkeypatch, tmp_path):
+def test_edit_reports_editor_launch_failure(monkeypatch, tmp_path, at_a_terminal):
     def fail(_p):
         raise editor.EditorError("could not launch")
 
     monkeypatch.setattr(cli.editor, "open_in_editor", fail)
     store.add_python(_py(tmp_path, "print(1)\n"), name="a")
     result = runner.invoke(cli.app, ["edit", "a"])
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert "could not launch" in result.output
 
 
@@ -362,7 +385,10 @@ def test_edit_unknown_non_interactive_errors(monkeypatch):
     monkeypatch.setattr(cli, "_is_interactive", lambda: False)
     monkeypatch.setattr(cli.editor, "open_in_editor", _boom)
     result = runner.invoke(cli.app, ["edit", "ghost"])
-    assert result.exit_code == 1
+    # ROUND 12: 127 — `skit edit <unknown>` answers the same question as the other ten
+    # entry-name commands, and now the same code. It never raises NotFoundError (it
+    # offers to create instead), which is why round 10's sweep could not see it.
+    assert result.exit_code == 127
 
 
 # --------------------------------------------------------------------------
@@ -504,7 +530,7 @@ def test_add_edit_python_name_taken_refuses_before_the_editor(tmp_path, monkeypa
     store.add_python(_py(tmp_path, "print(1)\n", "orig.py"), name="taken")
     monkeypatch.setattr(cli.editor, "open_in_editor", _boom)  # must NOT be launched
     result = runner.invoke(cli.app, ["add", "-e", "--name", "taken"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
     assert "already taken" in result.output
     # _boom raises AssertionError if the editor is launched — a clean SystemExit means it
     # was refused before the editor ever opened.
@@ -530,7 +556,7 @@ def test_add_edit_python_post_edit_failure_keeps_the_draft(monkeypatch):
     monkeypatch.setattr(cli, "_onboard_python", onboard_boom)
     result = runner.invoke(cli.app, ["add", "-e", "--name", "keptpy"])
     try:
-        assert result.exit_code == 1
+        assert result.exit_code == 125
         assert "Your draft was kept at" in result.output
         assert seen["path"].exists()  # the draft survived the failure
         assert store.list_entries() == []  # nothing added
@@ -652,7 +678,7 @@ def test_add_edit_editor_error_exits_one(monkeypatch):
 
     monkeypatch.setattr(cli.editor, "open_in_editor", fail)
     result = runner.invoke(cli.app, ["add", "-e", "--name", "x"])
-    assert result.exit_code == 1
+    assert result.exit_code == 125
     assert "cannot launch" in result.output
 
 
@@ -666,7 +692,7 @@ def test_add_edit_name_conflict_exits_one(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli.editor, "open_in_editor", write_script)
     result = runner.invoke(cli.app, ["add", "-e", "--name", "dup"])
-    assert result.exit_code == 1  # store.NameConflictError is a StoreError
+    assert result.exit_code == 2  # a name collision is invalid user input
     assert "dup" in result.output  # the name
     assert "taken" in result.output  # the StoreError is surfaced
 
@@ -698,12 +724,12 @@ def test_add_edit_writes_and_reports_managed_and_secret(monkeypatch, tmp_path):
 def test_params_edit_command_entry_refused():
     store.add_command("echo {x}", name="ec")
     result = runner.invoke(cli.app, ["params", "ec", "--resync"])
-    assert result.exit_code == 1
+    assert result.exit_code == 2
 
 
 def test_params_edit_missing_copy_refused(tmp_path):
     ent = store.add_python(_py(tmp_path, 'CITY = "x"\nprint(CITY)\n'), name="a")
     ent.script_path.unlink()
     result = runner.invoke(cli.app, ["params", "a", "--resync"])
-    assert result.exit_code == 1
+    assert result.exit_code == 127
     assert "no stored copy" in result.output

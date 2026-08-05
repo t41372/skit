@@ -12,6 +12,11 @@
   parameter was public can outlive it becoming secret.
 - Value resolution (this run's input > preset > last-used > definition default) lives in
   flows.prefill; this module only stores and strips.
+- Writers fail typed: an OSError under any write (the lock, the atomic replacement) is
+  re-raised as StateWriteError — an OSError subclass, mirroring config.ConfigWriteError —
+  so the CLI's root boundary maps it to the operational exit and the TUI can notify
+  instead of dying, while every existing `except OSError` (flows.post_run_persistence_error)
+  keeps catching it unchanged. Readers stay untyped on purpose: they already degrade.
 """
 
 from __future__ import annotations
@@ -24,6 +29,17 @@ from typing import Any
 
 from .atomic import advisory_file_lock, atomic_write_toml
 from .paths import state_dir, values_dir
+
+
+class StateWriteError(OSError):
+    """An expected filesystem failure while updating skit's per-entry state."""
+
+
+def _rewrap(exc: OSError) -> StateWriteError:
+    """The one OSError→StateWriteError spelling (config._config_lock's shape): errno,
+    strerror and filename survive, so _fail_operational renders the same sentence it
+    renders for a config write."""
+    return StateWriteError(exc.errno, exc.strerror or str(exc), exc.filename)
 
 
 def _values_lock_path(slug: str) -> Path:
@@ -79,14 +95,25 @@ def _strip_secrets(values: dict[str, str], secret_names: Iterable[str]) -> dict[
 
 
 def load_state(slug: str) -> dict[str, Any]:
-    """Return {"values": {…}, "extra_args": […], "presets": {name: {…}}, "last_run": {…}}.
+    """Return {"values": {…}, "extra_args": […], "extra_args_raw": bool,
+    "presets": {name: {…}}, "last_run": {…}}.
 
     last_run is {"at": ISO-8601 str, "exit": int} after the first recorded run, else {}.
+    extra_args_raw says HOW the remembered tail was captured: True = raw intent text
+    (the TUI's extra field — tokens/globs expand on replay), False/absent = already
+    shell-processed (the CLI's `-- args` — replays literally, in both faces). Without
+    it, one stored tail replayed under two different expansion regimes depending on
+    which face happened to rerun it.
     """
     doc = _load_doc(slug)
     return {
         "values": dict(doc.get("values", {})),
         "extra_args": list(doc.get("extra_args", [])),
+        # `is True`, not bool(): the house rule for hand-editable bools (models.py's
+        # interpolate, config.py's enabled). A hand-edited `extra_args_raw = "no"`
+        # must degrade to the safe literal-replay default, never coerce truthy toward
+        # re-expansion — the exact direction the provenance marker exists to prevent.
+        "extra_args_raw": doc.get("extra_args_raw") is True,
         "presets": {k: dict(v) for k, v in doc.get("presets", {}).items()},
         "last_run": dict(doc.get("last_run", {})),
     }
@@ -107,6 +134,7 @@ def save_last(
     *,
     values: dict[str, str] | None = None,
     extra_args: list[str] | None = None,
+    extra_args_raw: bool = False,
     secret_names: Iterable[str] = (),
 ) -> None:
     """Remember last-used (read-modify-write, keeping presets). Secret keys are stripped (C3).
@@ -116,20 +144,33 @@ def save_last(
     check made cleared extra args resurrect forever: the form saved nothing, the next
     run re-read the old value, reused it, and wrote it back.)
 
+    extra_args_raw records the tail's provenance (see load_state) and travels WITH the
+    tail: it is written or cleared exactly when extra_args is, so a marker can never
+    describe a tail it didn't come with.
+
     Even on a call that carries no new values, any name in secret_names is dropped from
     the previously-stored values — a value saved while a parameter was public must not
     survive on disk after it becomes secret.
     """
-    with advisory_file_lock(_values_lock_path(slug)):
-        doc = _load_doc(slug)
-        banned = set(secret_names)
-        if values is not None:
-            doc["values"] = _strip_secrets(values, banned)
-        elif banned:
-            doc["values"] = _strip_secrets(doc.get("values", {}), banned)
-        if extra_args is not None:
-            doc["extra_args"] = extra_args
-        _save_doc(slug, doc)
+    try:
+        with advisory_file_lock(_values_lock_path(slug)):
+            doc = _load_doc(slug)
+            banned = set(secret_names)
+            if values is not None:
+                doc["values"] = _strip_secrets(values, banned)
+            elif banned:
+                doc["values"] = _strip_secrets(doc.get("values", {}), banned)
+            if extra_args is not None:
+                doc["extra_args"] = extra_args
+                if extra_args and extra_args_raw:
+                    doc["extra_args_raw"] = True
+                else:
+                    # _save_doc prunes falsy values, so False is stored as absence; pop so a
+                    # cleared/processed tail never inherits a stale raw marker.
+                    doc.pop("extra_args_raw", None)
+            _save_doc(slug, doc)
+    except OSError as exc:
+        raise _rewrap(exc) from exc
 
 
 def save_preset(
@@ -140,24 +181,30 @@ def save_preset(
     secret_names: Iterable[str] = (),
 ) -> None:
     """Save one named preset. Secret keys are stripped (C3)."""
-    with advisory_file_lock(_values_lock_path(slug)):
-        doc = _load_doc(slug)
-        presets = dict(doc.get("presets", {}))
-        presets[preset] = _strip_secrets(values, secret_names)
-        doc["presets"] = presets
-        _save_doc(slug, doc)
+    try:
+        with advisory_file_lock(_values_lock_path(slug)):
+            doc = _load_doc(slug)
+            presets = dict(doc.get("presets", {}))
+            presets[preset] = _strip_secrets(values, secret_names)
+            doc["presets"] = presets
+            _save_doc(slug, doc)
+    except OSError as exc:
+        raise _rewrap(exc) from exc
 
 
 def delete_preset(slug: str, preset: str) -> bool:
-    with advisory_file_lock(_values_lock_path(slug)):
-        doc = _load_doc(slug)
-        presets = dict(doc.get("presets", {}))
-        if preset not in presets:
-            return False
-        del presets[preset]
-        doc["presets"] = presets
-        _save_doc(slug, doc)
-        return True
+    try:
+        with advisory_file_lock(_values_lock_path(slug)):
+            doc = _load_doc(slug)
+            presets = dict(doc.get("presets", {}))
+            if preset not in presets:
+                return False
+            del presets[preset]
+            doc["presets"] = presets
+            _save_doc(slug, doc)
+            return True
+    except OSError as exc:
+        raise _rewrap(exc) from exc
 
 
 def purge_secret(slug: str, names: Iterable[str]) -> set[str]:
@@ -175,6 +222,13 @@ def purge_secret(slug: str, names: Iterable[str]) -> set[str]:
     banned = set(names)
     if not banned:
         return set()
+    try:
+        return _purge_secret_locked(slug, banned)
+    except OSError as exc:
+        raise _rewrap(exc) from exc
+
+
+def _purge_secret_locked(slug: str, banned: set[str]) -> set[str]:
     with advisory_file_lock(_values_lock_path(slug)):
         doc = _load_doc(slug)
         removed: set[str] = set()
@@ -203,7 +257,9 @@ def purge_secret(slug: str, names: Iterable[str]) -> set[str]:
         # could copy the old plaintext back into a preset.
         last_run = dict(doc.get("last_run", {}))
         if "values" in last_run:
-            last_values = dict(last_run.get("values", {}))
+            # Subscript, not .get with a default: the `in` guard just proved the key,
+            # and _load_doc's shape chokepoint proved the value is a table.
+            last_values = dict(last_run["values"])
             removed |= banned & last_values.keys()
             last_run["values"] = _strip_secrets(last_values, banned)
             doc["last_run"] = last_run
@@ -232,7 +288,10 @@ def load_last_runner() -> str:
 def save_last_runner(name: str) -> None:
     """Remember an explicit runner pick (add-time picker, `--runner`, the run form's
     picker). Using a PIN is not a pick and never lands here."""
-    atomic_write_toml(state_dir() / "prompt.toml", {"last_runner": name})
+    try:
+        atomic_write_toml(state_dir() / "prompt.toml", {"last_runner": name})
+    except OSError as exc:
+        raise _rewrap(exc) from exc
 
 
 def record_run(
@@ -245,20 +304,47 @@ def record_run(
 ) -> None:
     """Remember when the entry last ran and how it exited (Library sort order, detail pane,
     and the r-rerun context key all read this). Stored as a table — a bare `last_exit = 0`
-    top-level key would be dropped by _save_doc's empty-section pruning (0 is falsy)."""
-    with advisory_file_lock(_values_lock_path(slug)):
-        doc = _load_doc(slug)
-        last_run: dict[str, Any] = {"at": at, "exit": exit_code}
-        if values is not None:
-            # Unlike last-used [values], this is the exact accepted invocation: values
-            # equal to defaults and delivered empty strings stay so --from-last can pin
-            # what actually ran instead of reconstructing it from a later source version.
-            last_run["values"] = _strip_secrets(values, secret_names)
-        doc["last_run"] = last_run
-        _save_doc(slug, doc)
+    top-level key would be dropped by _save_doc's empty-section pruning (0 is falsy).
+
+    `values=None` follows the convention save_last states one screen up: "no new data —
+    leave the stored value alone". It used to REPLACE the whole table, so `skit run --raw`
+    — whose call site promises the escape hatch "leaves no fingerprints … values survive
+    for the next real run" — deleted the snapshot on its way past. What it left behind was
+    exactly the shape `preset save --from-last` documents as legacy state, so that command
+    then refused with "no remembered values yet — run it once first" about an entry whose
+    values were sitting in the same file and which had just run twice.
+    """
+    try:
+        with advisory_file_lock(_values_lock_path(slug)):
+            doc = _load_doc(slug)
+            last_run: dict[str, Any] = {"at": at, "exit": exit_code}
+            if values is not None:
+                # Unlike last-used [values], this is the exact accepted invocation: values
+                # equal to defaults and delivered empty strings stay so --from-last can pin
+                # what actually ran instead of reconstructing it from a later source version.
+                last_run["values"] = _strip_secrets(values, secret_names)
+            else:
+                kept = doc.get("last_run")
+                if isinstance(kept, dict) and isinstance(snapshot := kept.get("values"), dict):
+                    # The preserved snapshot is re-persisted by THIS write, so it goes
+                    # through the same strip as new values — C3's "every write entry
+                    # point" has no values=None loophole.
+                    last_run["values"] = _strip_secrets(snapshot, secret_names)
+            doc["last_run"] = last_run
+            _save_doc(slug, doc)
+    except OSError as exc:
+        raise _rewrap(exc) from exc
 
 
 def forget(slug: str) -> None:
-    path = values_dir() / f"{slug}.toml"
-    with contextlib.suppress(FileNotFoundError):
-        path.unlink()
+    """Delete the entry's values file (remove's rider). The same values lock as every
+    other mutator — an unlocked unlink raced a concurrent read-modify-write, which
+    could rewrite the file right after it died — and the same typed failure; only a
+    file that is already gone is a clean no-op."""
+    try:
+        with advisory_file_lock(_values_lock_path(slug)):
+            path = values_dir() / f"{slug}.toml"
+            with contextlib.suppress(FileNotFoundError):
+                path.unlink()
+    except OSError as exc:
+        raise _rewrap(exc) from exc

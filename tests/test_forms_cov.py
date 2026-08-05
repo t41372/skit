@@ -305,15 +305,16 @@ def test_promptform_degraded_field_prints_leave_empty_hint(monkeypatch):
 
 def test_inline_collect_returns_values_when_form_submits(monkeypatch):
     """collect opens the app in inline mode and, on submit, unpacks the (values, extra) result
-    down to just the values dict (the inline frame's extra-args are dropped — argv owns them)."""
+    down to just the values dict (the inline frame's extra-args are dropped — argv owns them,
+    and with them the tail-provenance bit only the fullscreen TUI has a use for)."""
     entry = _command_entry()
     plan = flows.FormPlan(source="command", fields=[flows.FormField(key="m", label="m")])
 
     def fake_run(
         _self: object, **kwargs: object
-    ) -> tuple[dict[str, str], list[str], str | None, bool]:
+    ) -> tuple[dict[str, str], list[str], str | None, bool, bool]:
         assert kwargs.get("inline") is True  # opened in inline mode, not fullscreen
-        return {"m": "hi"}, ["--extra"], None, False
+        return {"m": "hi"}, ["--extra"], None, False, True
 
     monkeypatch.setattr(inlineform._InlineFormApp, "run", fake_run)
     result = inlineform.collect(entry, plan, {"m": "seed"})
@@ -351,8 +352,12 @@ async def test_inline_app_pushes_form_and_submit_exits_with_result(tmp_path):
 
     result = app.return_value
     assert result is not None  # _done forwarded the submit result into app.exit
-    values, extra, picked_runner, runner_was_picked = result
+    values, extra, picked_runner, runner_was_picked, extra_raw = result
     assert extra == []  # include_extra=False: the inline frame hides the extra-args row
     assert picked_runner is None  # no runner picker on a non-prompt form
     assert runner_was_picked is False
+    # The 5th element is the tail's provenance verdict. The inline frame composes no
+    # extra row at all, so nothing can dirty it: the verdict is the stored marker, which
+    # for a never-run entry is False. collect() drops it — argv owns the tail here.
+    assert extra_raw is False
     assert set(values) == {"width", "fast", "mode"}  # the plan's fields were collected

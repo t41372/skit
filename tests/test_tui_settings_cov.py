@@ -19,6 +19,7 @@ from skit.tui_settings import (
     DeclParamRow,
     DiscardChangesModal,
     ParamRow,
+    PresetDeleteConfirm,
     ScriptSettingsScreen,
 )
 
@@ -250,7 +251,14 @@ async def test_untick_preset_deletes_it_on_save(tmp_path):
         assert "alpha" in str(alpha_box.label)
         alpha_box.value = False  # mark alpha for deletion
         await pilot.pause()
+        # ROUND 10: the deletion is unrecoverable user data, so it now gets the ask every
+        # other destructive door gets — a save that carries one confirms first.
         screen.action_save()
+        await pilot.pause()
+        confirm = app.screen
+        assert isinstance(confirm, PresetDeleteConfirm)
+        assert "alpha" in _body(confirm)
+        confirm.action_confirm()
         await pilot.pause()
 
     assert argstate.load_state(entry.slug)["presets"] == {"beta": {"Y": "2"}}  # only alpha gone
@@ -277,6 +285,10 @@ async def test_untick_preset_is_name_keyed_against_a_concurrent_add(tmp_path):
         beta_box.value = False  # untick beta for deletion
         await pilot.pause()
         screen.action_save()
+        await pilot.pause()
+        confirm = app.screen
+        assert isinstance(confirm, PresetDeleteConfirm)
+        confirm.action_confirm()
         await pilot.pause()
 
     survivors = argstate.load_state(entry.slug)["presets"]
@@ -397,7 +409,7 @@ async def test_unknown_kind_entry_states_no_managed_parameters(tmp_path):
         screen = ScriptSettingsScreen(entry)
         app.push_screen(screen)
         await pilot.pause()
-        assert "programs have no managed parameters" in _body(screen)
+        assert "this kind has no managed parameters" in _body(screen)
 
 
 async def test_reference_entry_is_read_only_and_linked(tmp_path):
@@ -544,7 +556,7 @@ async def test_exe_declared_editor_shows_rows_and_saves_edits(tmp_path):
     """An exe with declared flag params shows one editable row each (with a Flag field), and one
     atomic save writes the edited type/default/flag/required/prompt back to meta.toml."""
     entry = _exe(tmp_path)
-    entry = store.write_parameters(
+    entry, _ = store.write_parameters(
         entry.slug,
         [ParamDecl(name="width", delivery="flag", flag="--width", type="int", default=800)],
     )
@@ -581,7 +593,7 @@ async def test_command_declared_placeholder_row_has_no_flag_field(tmp_path):
     """A command's declared placeholder row omits the Flag field (argv is not a template's
     interface), and its delivery is shown read-only in the header."""
     entry = store.add_command("convert {size}", name="conv")
-    entry = store.write_parameters(
+    entry, _ = store.write_parameters(
         entry.slug, [ParamDecl(name="size", delivery="placeholder", type="str")]
     )
     app = tui.MenuApp()
@@ -636,7 +648,7 @@ def test_new_declared_delivery_defaults(tmp_path):
 
 async def test_declared_row_removed_when_unticked(tmp_path):
     entry = _exe(tmp_path)
-    entry = store.write_parameters(
+    entry, _ = store.write_parameters(
         entry.slug,
         [ParamDecl(name="a", delivery="flag"), ParamDecl(name="b", delivery="flag")],
     )
@@ -656,7 +668,9 @@ async def test_declared_row_removed_when_unticked(tmp_path):
 
 async def test_declared_invalid_type_notifies_and_stays(tmp_path, monkeypatch):
     entry = _exe(tmp_path)
-    entry = store.write_parameters(entry.slug, [ParamDecl(name="a", delivery="flag", type="str")])
+    entry, _ = store.write_parameters(
+        entry.slug, [ParamDecl(name="a", delivery="flag", type="str")]
+    )
     notes: list[str] = []
     monkeypatch.setattr(
         ScriptSettingsScreen, "notify", lambda self, message, **kw: notes.append(message)
@@ -677,7 +691,9 @@ async def test_declared_invalid_type_notifies_and_stays(tmp_path, monkeypatch):
 
 async def test_declared_bad_default_notifies_and_stays(tmp_path, monkeypatch):
     entry = _exe(tmp_path)
-    entry = store.write_parameters(entry.slug, [ParamDecl(name="a", delivery="flag", type="int")])
+    entry, _ = store.write_parameters(
+        entry.slug, [ParamDecl(name="a", delivery="flag", type="int")]
+    )
     notes: list[str] = []
     monkeypatch.setattr(
         ScriptSettingsScreen, "notify", lambda self, message, **kw: notes.append(message)
@@ -697,7 +713,9 @@ async def test_declared_bad_default_notifies_and_stays(tmp_path, monkeypatch):
 
 async def test_declared_choice_without_choices_notifies(tmp_path, monkeypatch):
     entry = _exe(tmp_path)
-    entry = store.write_parameters(entry.slug, [ParamDecl(name="a", delivery="flag", type="str")])
+    entry, _ = store.write_parameters(
+        entry.slug, [ParamDecl(name="a", delivery="flag", type="str")]
+    )
     notes: list[str] = []
     monkeypatch.setattr(
         ScriptSettingsScreen, "notify", lambda self, message, **kw: notes.append(message)
@@ -718,7 +736,7 @@ async def test_declared_choice_without_choices_notifies(tmp_path, monkeypatch):
 async def test_declared_existing_choice_with_choices_saves(tmp_path):
     """An existing choice row keeps its (non-editable) choices, so it validates and saves."""
     entry = _exe(tmp_path)
-    entry = store.write_parameters(
+    entry, _ = store.write_parameters(
         entry.slug,
         [ParamDecl(name="a", delivery="flag", type="choice", choices=("x", "y"))],
     )
@@ -736,7 +754,7 @@ async def test_declared_existing_choice_with_choices_saves(tmp_path):
 async def test_declared_bool_default_round_trips_text(tmp_path):
     """A bool default renders as the true/false word the editor round-trips through save."""
     entry = _exe(tmp_path)
-    entry = store.write_parameters(
+    entry, _ = store.write_parameters(
         entry.slug, [ParamDecl(name="flag", delivery="flag", type="bool", default=True)]
     )
     app = tui.MenuApp()
@@ -752,7 +770,7 @@ async def test_declared_bool_default_round_trips_text(tmp_path):
 
 async def test_declared_secret_toggle_purges_and_notes(tmp_path, monkeypatch):
     entry = _exe(tmp_path)
-    entry = store.write_parameters(
+    entry, _ = store.write_parameters(
         entry.slug, [ParamDecl(name="TOKEN", delivery="env", type="str")]
     )
     argstate.save_last(entry.slug, values={"TOKEN": "plaintext"})
@@ -788,7 +806,9 @@ async def test_declared_secret_toggle_purges_and_notes(tmp_path, monkeypatch):
 async def test_declared_editor_is_keyboard_reachable(tmp_path):
     """Every declared-editor widget is Tab-reachable (full keyboard operability)."""
     entry = _exe(tmp_path)
-    entry = store.write_parameters(entry.slug, [ParamDecl(name="a", delivery="flag", type="str")])
+    entry, _ = store.write_parameters(
+        entry.slug, [ParamDecl(name="a", delivery="flag", type="str")]
+    )
     app = tui.MenuApp()
     async with app.run_test() as pilot:
         screen = ScriptSettingsScreen(entry)
@@ -987,3 +1007,94 @@ async def test_settings_declared_editor_opens_for_an_interpreted_meta_kind(tmp_p
         assert [r.decl.name for r in rows] == ["GREETING"]
         # argv IS this kind's interface, so the Flag field must be editable (not template-hidden)
         assert rows[0].query(".d-flag")
+
+
+# ---------------------------------------------------------------------------
+# state-write failures notify and keep the screen (round 13, finding S)
+# ---------------------------------------------------------------------------
+
+
+def _purge_boom(*_a, **_k):
+    raise argstate.StateWriteError(30, "Read-only file system", "x.toml")
+
+
+async def test_spec_lane_purge_failure_notifies_and_keeps_the_screen(tmp_path, monkeypatch):
+    """The copy-mode analyzer lane: the C3 scrub after the block write fails typed —
+    the save stops with an error notify instead of crashing the app, and the screen
+    stays put so the user can retry once the disk is fixed."""
+    text = metawriter.write_params(
+        'CITY = "Taipei"\nprint(CITY)\n',
+        [ParamDecl(name="CITY", binding="const", type="str", default="Taipei")],
+    )
+    entry = store.add_python(_py(tmp_path, text), name="cfg")
+    before = entry.script_path.read_bytes()
+    notes: list[str] = []
+    monkeypatch.setattr(
+        ScriptSettingsScreen, "notify", lambda self, message, **kw: notes.append(message)
+    )
+    monkeypatch.setattr(argstate, "purge_secret", _purge_boom)
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+        assert isinstance(app.screen, ScriptSettingsScreen)  # not dismissed
+    assert any("Read-only file system" in m for m in notes)
+    # Purge runs FIRST: its failure aborts the save with the copy's block untouched.
+    assert entry.script_path.read_bytes() == before
+
+
+async def test_declared_lane_purge_failure_notifies_and_keeps_the_screen(tmp_path, monkeypatch):
+    """The declared-rows lane (exe/command): same contract as the spec lane."""
+    entry = _exe(tmp_path)
+    entry, _ = store.write_parameters(
+        entry.slug, [ParamDecl(name="a", delivery="flag", type="str")]
+    )
+    notes: list[str] = []
+    monkeypatch.setattr(
+        ScriptSettingsScreen, "notify", lambda self, message, **kw: notes.append(message)
+    )
+    monkeypatch.setattr(argstate, "purge_secret", _purge_boom)
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+        assert isinstance(app.screen, ScriptSettingsScreen)
+    assert any("Read-only file system" in m for m in notes)
+    # Purge runs FIRST here too: the merged meta write never happened.
+    assert [d.name for d in store.read_parameters(entry.slug)] == ["a"]
+    assert store.read_parameters(entry.slug)[0].secret is False
+
+
+async def test_preset_cleanup_failure_keeps_the_screen_and_the_boxes(tmp_path, monkeypatch):
+    """The unticked-preset deletion loop at the tail of the save: a typed failure keeps
+    the screen (the still-unticked boxes ARE the retry plan) instead of dismissing over
+    a half-done cleanup."""
+    entry = _exe(tmp_path, name="prog2")
+    argstate.save_preset(entry.slug, "alpha", {"a": "1"})
+    notes: list[str] = []
+    monkeypatch.setattr(
+        ScriptSettingsScreen, "notify", lambda self, message, **kw: notes.append(message)
+    )
+    monkeypatch.setattr(argstate, "delete_preset", _purge_boom)
+    app = tui.MenuApp()
+    async with app.run_test() as pilot:
+        screen = ScriptSettingsScreen(entry)
+        app.push_screen(screen)
+        await pilot.pause()
+        screen.query_one("#st-preset-0", Checkbox).value = False  # ask for the deletion
+        await pilot.pause()
+        screen.action_save()
+        await pilot.pause()
+        confirm = app.screen
+        assert isinstance(confirm, PresetDeleteConfirm)  # round 10's destructive ask
+        confirm.action_confirm()
+        await pilot.pause()
+        assert isinstance(app.screen, ScriptSettingsScreen)  # not dismissed
+    assert any("Read-only file system" in m for m in notes)
+    assert argstate.load_state(entry.slug)["presets"] == {"alpha": {"a": "1"}}  # survived

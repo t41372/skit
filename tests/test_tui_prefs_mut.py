@@ -496,7 +496,7 @@ async def test_install_skill_notify_is_letter_exact(tmp_path, monkeypatch):
     async with app.run_test() as pilot:
         await _open_prefs(app)
         await pilot.pause()
-        await pilot.press("ctrl+k")
+        await pilot.press("ctrl+y")
         await pilot.pause()
         options = app.screen.query_one(OptionList)
         options.highlighted = 0
