@@ -109,8 +109,7 @@ fn a_fresh_registry_row_lists_without_opening_meta_toml() {
     fs::remove_file(&meta).unwrap();
     fs::create_dir(&meta).unwrap();
     let mut document = registry(&root);
-    row_mut(&mut document, "fast")
-        .insert("mtime_ns".to_owned(), Value::Integer(mtime_ns(&meta)));
+    row_mut(&mut document, "fast").insert("mtime_ns".to_owned(), Value::Integer(mtime_ns(&meta)));
     write_registry(&root, &document);
 
     let scan = store.scan().unwrap();
