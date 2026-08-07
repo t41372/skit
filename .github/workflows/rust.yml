@@ -92,4 +92,5 @@ jobs:
         run: >-
           cargo llvm-cov --workspace --all-features
           --fail-under-lines 90
+          --show-missing-lines
           --ignore-filename-regex 'crates/skit-cli/src/main.rs|crates/skit-tui/src/terminal.rs'
