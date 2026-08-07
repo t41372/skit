@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 use skit_domain::parameters::{
-    ParameterBinding, ParameterDelivery, ParameterInvariant, ParameterType, ParameterValue,
-    ParamDecl, coerce_default,
+    ParamDecl, ParameterBinding, ParameterDelivery, ParameterInvariant, ParameterType,
+    ParameterValue, coerce_default,
 };
 
 fn map(value: Value) -> BTreeMap<String, Value> {
@@ -29,7 +29,10 @@ fn block_shapes_are_frozen_and_round_trip_with_implied_delivery() {
             "secret": true
         }))
     );
-    assert_eq!(ParamDecl::from_block_map(&constant.to_block_map()), constant);
+    assert_eq!(
+        ParamDecl::from_block_map(&constant.to_block_map()),
+        constant
+    );
 
     let input = ParamDecl {
         binding: ParameterBinding::Input,
