@@ -41,8 +41,8 @@ Every behavior slice lands in this order:
 3. refactoring while the test remains green;
 4. differential tests against the Python baseline when the behavior already exists there.
 
-The first slice gates line coverage at 90%; each migration slice must ratchet it upward, and cutover
-requires the same 100% floor as the Python implementation.
+The first slice gated line coverage at 90%; the parameter-domain slice has ratcheted the enforced
+floor to 93%, and cutover requires the same 100% floor as the Python implementation.
 
 A test that merely snapshots an implementation detail is not a contract. Store tests use real
 temporary directories; UI tests drive the reducer and Ratatui `TestBackend`; process tests use a
@@ -75,6 +75,10 @@ fake launcher until the final spawn boundary test.
 | 7 | Cutover | differential matrix green; Python implementation removed |
 | 8 | Tauri adapter | invokes the same application ports; no duplicated business rules |
 
+## Implemented migration notes
+
+### Registry-backed reads
+
 The read path began with authoritative `meta.toml` scans, then introduced the rebuildable
 `registry.toml` projection only after its trust boundary was contract-tested. Listing trusts a row
 only when its shape and exact metadata timestamp match, falls back per entry to authoritative
@@ -84,3 +88,18 @@ candidate; a stale claim, miss, or multiple claimants trigger the same authorita
 sweep and deterministic ambiguity refusal as listing. A fast unique hit never sweeps or repairs
 unrelated rows. Differential performance evidence remains a separate release gate: functional fast
 paths are not, by themselves, proof that the application is lightweight.
+
+### Parameter domain kernel
+
+`skit-domain::parameters` now owns the frontend-neutral declaration vocabulary: source binding,
+runtime delivery, scalar type, typed defaults, invariant symbols, and the environment-target rule.
+It freezes both existing serialization surfaces without importing TOML into the domain crate:
+`[tool.skit]` block maps use the historical `kind` spelling and implied delivery, while full
+`meta.toml [[parameters]]` maps preserve the independent binding/delivery axes and omit default
+fields. Both decoders are total on hand-edited scalar garbage, and default coercion shares one
+strict integer, finite-float, boolean, string, choice, and path contract.
+
+This is deliberately the model kernel, not the whole parameter product. Language-specific declared
+parameter extraction, template synthesis, token expansion, presets, remembered values, secret
+heuristics and non-persistence, form assembly, and launch-time delivery remain separate unchecked
+contracts.
