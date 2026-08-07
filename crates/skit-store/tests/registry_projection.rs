@@ -38,8 +38,7 @@ fn request(
 
 fn registry(root: &TempDir) -> Table {
     toml::from_str(
-        &fs::read_to_string(root.path().join("registry.toml"))
-            .expect("registry.toml should exist"),
+        &fs::read_to_string(root.path().join("registry.toml")).expect("registry.toml should exist"),
     )
     .expect("registry.toml should be valid TOML")
 }
