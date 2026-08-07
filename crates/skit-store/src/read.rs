@@ -10,7 +10,7 @@ use serde::Deserialize;
 use skit_application::{Diagnostic, DiagnosticCode, EntryRepository, LibraryScan, RepositoryError};
 use skit_domain::{Entry, EntryId, EntryKind, EntryMeta, EntrySummary, Slug, StorageMode};
 
-use crate::mutations::registry::{metadata_mtime_ns, Registry};
+use crate::mutations::registry::{Registry, metadata_mtime_ns};
 
 /// Filesystem adapter for an existing skit data directory.
 #[derive(Clone, Debug)]
@@ -164,9 +164,10 @@ impl EntryRepository for FileStore {
                     continue;
                 }
             };
-            if let Some(summary) = registry.as_ref().and_then(|registry| {
-                registry.summary(&slug, mtime_ns)
-            }) {
+            if let Some(summary) = registry
+                .as_ref()
+                .and_then(|registry| registry.summary(&slug, mtime_ns))
+            {
                 scan.entries.push(summary);
                 continue;
             }
