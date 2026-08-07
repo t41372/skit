@@ -10,6 +10,8 @@ use serde::Deserialize;
 use skit_application::{Diagnostic, DiagnosticCode, EntryRepository, LibraryScan, RepositoryError};
 use skit_domain::{Entry, EntryId, EntryKind, EntryMeta, EntrySummary, Slug, StorageMode};
 
+use crate::mutations::registry::{Registry, metadata_mtime_ns};
+
 /// Filesystem adapter for an existing skit data directory.
 #[derive(Clone, Debug)]
 pub struct FileStore {
@@ -113,6 +115,8 @@ impl EntryRepository for FileStore {
             }
         };
 
+        let registry = Registry::read(self.data_dir());
+        let mut repairs = Vec::new();
         let mut scan = LibraryScan::default();
         for item in reader {
             let item = match item {
@@ -152,12 +156,31 @@ impl EntryRepository for FileStore {
                     continue;
                 }
             };
+            let meta_path = item.path().join("meta.toml");
+            let mtime_ns = match metadata_mtime_ns(&meta_path) {
+                Ok(mtime_ns) => mtime_ns,
+                Err(error) => {
+                    scan.diagnostics.push(diagnostic_from(error, &slug));
+                    continue;
+                }
+            };
+            if let Some(summary) = registry
+                .as_ref()
+                .and_then(|registry| registry.summary(&slug, mtime_ns))
+            {
+                scan.entries.push(summary);
+                continue;
+            }
 
             match self.read_entry(slug.clone()) {
-                Ok(entry) => scan.entries.push(summary_from(&entry)),
+                Ok(entry) => {
+                    scan.entries.push(summary_from(&entry));
+                    repairs.push((entry, mtime_ns));
+                }
                 Err(error) => scan.diagnostics.push(diagnostic_from(error, &slug)),
             }
         }
+        Registry::try_repair(self.data_dir(), &repairs);
         Ok(scan)
     }
 
