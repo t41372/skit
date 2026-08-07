@@ -40,9 +40,10 @@ fn key_detection_accepts_credential_compounds_without_matching_ordinary_key_word
         "stripeKey",
         "sshkey",
         "base64key",
+        "publickey",
         "sort_key",
     ]);
-    assert_public(&["MONKEY", "TURKEY", "HOTKEY", "WHISKEY", "publickey", "hostkey"]);
+    assert_public(&["MONKEY", "TURKEY", "HOTKEY", "WHISKEY", "hostkey"]);
 }
 
 #[test]
@@ -68,13 +69,10 @@ fn token_names_distinguish_credentials_from_count_knobs() {
 }
 
 #[test]
-fn sentence_prompts_only_suppress_the_count_qualified_token_mention() {
-    assert_public(&[
-        "How many tokens?",
-        "rate limit 60 tokens/min",
-        "2 tokens",
-    ]);
+fn sentence_prompts_only_suppress_an_immediately_count_qualified_token_mention() {
+    assert_public(&["rate tokens", "rate limit 60 tokens/min", "2 tokens"]);
     assert_secret(&[
+        "How many tokens?",
         "Paste your GitHub token (rate limit 60 tokens/min):",
         "step 2 token",
         "Enter session token",
