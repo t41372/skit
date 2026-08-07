@@ -1,6 +1,6 @@
 mod atomic;
 mod hash;
-mod registry;
+pub(crate) mod registry;
 
 use std::{
     collections::BTreeMap,
