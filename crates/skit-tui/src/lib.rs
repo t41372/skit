@@ -73,9 +73,11 @@ fn render_header(frame: &mut Frame, area: Rect, state: &LibraryState) {
         InputMode::Browse => "Library",
         InputMode::Search => "Search",
     };
-    let cursor = (state.input_mode() == InputMode::Search)
-        .then_some("▌")
-        .unwrap_or_default();
+    let cursor = if state.input_mode() == InputMode::Search {
+        "▌"
+    } else {
+        ""
+    };
     let text = if state.query().is_empty() {
         format!("{mode}: all entries{cursor}")
     } else {
