@@ -76,6 +76,26 @@ impl Registry {
         })
     }
 
+    /// Return canonical slugs whose rows claim this exact display name.
+    pub(crate) fn name_claimants(&self, name: &str) -> Vec<Slug> {
+        let mut claimants = self
+            .entries()
+            .iter()
+            .filter_map(|(slug, value)| {
+                let claimed_name = value
+                    .as_table()
+                    .and_then(|row| row.get("name"))
+                    .and_then(Value::as_str);
+                if claimed_name != Some(name) {
+                    return None;
+                }
+                Slug::parse(slug.clone()).ok()
+            })
+            .collect::<Vec<_>>();
+        claimants.sort_by(|left, right| left.as_str().cmp(right.as_str()));
+        claimants
+    }
+
     /// Attempt one nonblocking, batch self-heal after a listing fell back to metadata.
     pub(crate) fn try_repair(data_dir: &Path, repairs: &[(Entry, i64)]) {
         if repairs.is_empty() {
