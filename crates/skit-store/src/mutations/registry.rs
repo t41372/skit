@@ -5,20 +5,29 @@ use std::{
 };
 
 use skit_application::RepositoryError;
-use skit_domain::{Entry, Slug, StorageMode};
+use skit_domain::{Entry, EntryKind, EntrySummary, Slug, StorageMode};
 use toml::{Table, Value};
 
-use super::atomic::{atomic_write_bytes, io_error};
+use super::atomic::{atomic_write_bytes, io_error, try_acquire_lock};
 
 /// The Python-compatible, rebuildable `registry.toml` projection.
 #[derive(Clone, Debug)]
-pub(super) struct Registry {
+pub(crate) struct Registry {
     path: PathBuf,
     document: Table,
 }
 
 impl Registry {
-    /// Load the current projection, backing up corrupt bytes before starting fresh.
+    /// Read the current projection without changing a corrupt or unreadable file.
+    pub(crate) fn read(data_dir: &Path) -> Option<Self> {
+        let path = data_dir.join("registry.toml");
+        let text = fs::read_to_string(&path).ok()?;
+        let mut document = toml::from_str::<Table>(&text).ok()?;
+        normalize_entries(&mut document);
+        Some(Self { path, document })
+    }
+
+    /// Load the current projection for a writer, backing up corrupt bytes before starting fresh.
     pub(super) fn load(data_dir: &Path) -> Result<Self, RepositoryError> {
         let path = data_dir.join("registry.toml");
         let mut document = match fs::read_to_string(&path) {
@@ -35,10 +44,54 @@ impl Registry {
                 Table::new()
             }
         };
-        if !matches!(document.get("entries"), Some(Value::Table(_))) {
-            document.insert("entries".to_owned(), Value::Table(Table::new()));
-        }
+        normalize_entries(&mut document);
         Ok(Self { path, document })
+    }
+
+    /// Return a trusted listing row only when its shape and metadata stamp are exact.
+    pub(crate) fn summary(&self, slug: &Slug, mtime_ns: i64) -> Option<EntrySummary> {
+        let row = self.entries().get(slug.as_str())?.as_table()?;
+        if row.get("mtime_ns")?.as_integer()? != mtime_ns {
+            return None;
+        }
+        let name = row.get("name")?.as_str()?.to_owned();
+        let kind = EntryKind::parse(row.get("kind")?.as_str()?.to_owned()).ok()?;
+        let description = row.get("description")?.as_str()?.to_owned();
+        let mode = match row.get("mode")?.as_str()? {
+            "copy" => StorageMode::Copy,
+            "reference" => StorageMode::Reference,
+            _ => return None,
+        };
+        let target = match mode {
+            StorageMode::Copy => None,
+            StorageMode::Reference => Some(row.get("target")?.as_str()?.to_owned()),
+        };
+        Some(EntrySummary {
+            slug: slug.clone(),
+            name,
+            kind,
+            mode,
+            description,
+            target,
+        })
+    }
+
+    /// Attempt one nonblocking, batch self-heal after a listing fell back to metadata.
+    pub(crate) fn try_repair(data_dir: &Path, repairs: &[(Entry, i64)]) {
+        if repairs.is_empty() {
+            return;
+        }
+        let lock_path = data_dir.join("registry.native.lock");
+        let Ok(Some(_lock)) = try_acquire_lock(&lock_path) else {
+            return;
+        };
+        let Ok(mut registry) = Self::load(data_dir) else {
+            return;
+        };
+        for (entry, mtime_ns) in repairs {
+            registry.project_with_mtime(entry, *mtime_ns);
+        }
+        let _ = registry.save();
     }
 
     /// Return the slug of a row that already claims `name`, excluding one held entry.
@@ -65,10 +118,8 @@ impl Registry {
         entry: &Entry,
         entry_dir: &Path,
     ) -> Result<(), RepositoryError> {
-        self.entries_mut().insert(
-            entry.slug.as_str().to_owned(),
-            Value::Table(row_for(entry, entry_dir)?),
-        );
+        let mtime_ns = metadata_mtime_ns(&entry_dir.join("meta.toml"))?;
+        self.project_with_mtime(entry, mtime_ns);
         Ok(())
     }
 
@@ -87,22 +138,35 @@ impl Registry {
         atomic_write_bytes(&self.path, text.as_bytes())
     }
 
+    fn project_with_mtime(&mut self, entry: &Entry, mtime_ns: i64) {
+        self.entries_mut().insert(
+            entry.slug.as_str().to_owned(),
+            Value::Table(row_for(entry, mtime_ns)),
+        );
+    }
+
     fn entries(&self) -> &Table {
         self.document
             .get("entries")
             .and_then(Value::as_table)
-            .expect("Registry::load normalizes entries to a table")
+            .expect("Registry constructors normalize entries to a table")
     }
 
     fn entries_mut(&mut self) -> &mut Table {
         self.document
             .get_mut("entries")
             .and_then(Value::as_table_mut)
-            .expect("Registry::load normalizes entries to a table")
+            .expect("Registry constructors normalize entries to a table")
     }
 }
 
-fn row_for(entry: &Entry, entry_dir: &Path) -> Result<Table, RepositoryError> {
+fn normalize_entries(document: &mut Table) {
+    if !matches!(document.get("entries"), Some(Value::Table(_))) {
+        document.insert("entries".to_owned(), Value::Table(Table::new()));
+    }
+}
+
+fn row_for(entry: &Entry, mtime_ns: i64) -> Table {
     let mut row = Table::new();
     row.insert("name".to_owned(), Value::String(entry.meta.name.clone()));
     row.insert(
@@ -123,20 +187,17 @@ fn row_for(entry: &Entry, entry_dir: &Path) -> Result<Table, RepositoryError> {
         "description".to_owned(),
         Value::String(entry.meta.description.clone()),
     );
-    row.insert(
-        "mtime_ns".to_owned(),
-        Value::Integer(metadata_mtime_ns(&entry_dir.join("meta.toml"))?),
-    );
+    row.insert("mtime_ns".to_owned(), Value::Integer(mtime_ns));
     if entry.meta.mode == StorageMode::Reference {
         row.insert(
             "target".to_owned(),
             Value::String(entry.meta.source.clone()),
         );
     }
-    Ok(row)
+    row
 }
 
-fn metadata_mtime_ns(path: &Path) -> Result<i64, RepositoryError> {
+pub(crate) fn metadata_mtime_ns(path: &Path) -> Result<i64, RepositoryError> {
     let modified = fs::metadata(path)
         .and_then(|metadata| metadata.modified())
         .map_err(|error| io_error("inspect", path, error))?;
