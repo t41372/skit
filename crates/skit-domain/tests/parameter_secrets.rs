@@ -22,12 +22,13 @@ fn password_and_secret_suffixes_survive_plural_camel_and_jammed_shapes() {
     assert_secret(&[
         "DB_PASSWORD",
         "PASSWORDS",
+        "PASSWORD_HINT_TEXT",
         "MYSECRET",
         "clientSecretValue",
         "dbPasswd",
         "awsSecretKey",
     ]);
-    assert_public(&["secretary", "password_hint_text", "username"]);
+    assert_public(&["secretary", "passage", "username"]);
 }
 
 #[test]
