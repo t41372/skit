@@ -41,15 +41,16 @@ impl Registry {
         Ok(Self { path, document })
     }
 
-    /// Whether an index row other than `excluded` already claims this display name.
-    pub(super) fn name_is_taken(&self, name: &str, excluded: Option<&Slug>) -> bool {
-        self.entries().iter().any(|(slug, value)| {
-            excluded.is_none_or(|excluded| excluded.as_str() != slug)
-                && value
-                    .as_table()
-                    .and_then(|row| row.get("name"))
-                    .and_then(Value::as_str)
-                    == Some(name)
+    /// Return the slug of a row that already claims `name`, excluding one held entry.
+    pub(super) fn name_owner(&self, name: &str, excluded: Option<&Slug>) -> Option<String> {
+        self.entries().iter().find_map(|(slug, value)| {
+            let belongs_to_other_entry = excluded.is_none_or(|excluded| excluded.as_str() != slug);
+            let same_name = value
+                .as_table()
+                .and_then(|row| row.get("name"))
+                .and_then(Value::as_str)
+                == Some(name);
+            (belongs_to_other_entry && same_name).then(|| slug.clone())
         })
     }
 
@@ -110,11 +111,13 @@ fn row_for(entry: &Entry, entry_dir: &Path) -> Result<Table, RepositoryError> {
     );
     row.insert(
         "mode".to_owned(),
-        Value::String(match entry.meta.mode {
-            StorageMode::Copy => "copy",
-            StorageMode::Reference => "reference",
-        }
-        .to_owned()),
+        Value::String(
+            match entry.meta.mode {
+                StorageMode::Copy => "copy",
+                StorageMode::Reference => "reference",
+            }
+            .to_owned(),
+        ),
     );
     row.insert(
         "description".to_owned(),
