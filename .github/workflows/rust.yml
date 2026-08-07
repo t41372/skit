@@ -73,7 +73,7 @@ jobs:
         run: cargo test --locked --workspace --all-features
 
   coverage:
-    name: coverage (90% line gate; ratchets to 100% before cutover)
+    name: coverage (93% line gate; ratchets to 100% before cutover)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -91,6 +91,6 @@ jobs:
       - name: Enforce line coverage
         run: >-
           cargo llvm-cov --locked --workspace --all-features
-          --fail-under-lines 90
+          --fail-under-lines 93
           --show-missing-lines
           --ignore-filename-regex 'crates/skit-cli/src/main.rs|crates/skit-tui/src/terminal.rs'
