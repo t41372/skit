@@ -127,7 +127,10 @@ fn legacy_claim_stamps_once_and_old_handles_cannot_touch_a_reincarnation() {
 
     let claimed = store.claim_identity(&held).unwrap();
     let old_id = claimed.meta.id.clone().unwrap();
-    assert_eq!(store.resolve("legacy").unwrap().meta.id, Some(old_id.clone()));
+    assert_eq!(
+        store.resolve("legacy").unwrap().meta.id,
+        Some(old_id.clone())
+    );
 
     store.remove(&claimed).unwrap();
     let replacement = store.create(request("Legacy", b"replacement")).unwrap();
