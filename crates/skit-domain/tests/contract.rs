@@ -1,7 +1,5 @@
 use proptest::prelude::*;
-use skit_domain::{
-    DomainError, EntryId, EntryKind, EntryMeta, EntrySummary, Slug, StorageMode,
-};
+use skit_domain::{DomainError, EntryId, EntryKind, EntryMeta, EntrySummary, Slug, StorageMode};
 
 #[test]
 fn slugify_matches_the_existing_address_rules() {
@@ -107,7 +105,10 @@ fn entry_projections_round_trip_without_losing_open_kinds() {
         target: Some("/tmp/hello".to_owned()),
     };
     let json = serde_json::to_string(&summary).unwrap();
-    assert_eq!(serde_json::from_str::<EntrySummary>(&json).unwrap(), summary);
+    assert_eq!(
+        serde_json::from_str::<EntrySummary>(&json).unwrap(),
+        summary
+    );
 }
 
 #[test]

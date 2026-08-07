@@ -99,11 +99,7 @@ fn list(service: &LibraryService<FileStore>, json: bool) -> Result<(), CliError>
     Ok(())
 }
 
-fn show(
-    service: &LibraryService<FileStore>,
-    selector: &str,
-    json: bool,
-) -> Result<(), CliError> {
+fn show(service: &LibraryService<FileStore>, selector: &str, json: bool) -> Result<(), CliError> {
     let entry = service.show(selector)?;
     let stdout = io::stdout();
     let mut output = stdout.lock();
@@ -147,9 +143,11 @@ fn platform_data_dir() -> Option<PathBuf> {
 
 #[cfg(target_os = "macos")]
 fn platform_data_dir() -> Option<PathBuf> {
-    env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|path| path.join("Library").join("Application Support").join("skit"))
+    env::var_os("HOME").map(PathBuf::from).map(|path| {
+        path.join("Library")
+            .join("Application Support")
+            .join("skit")
+    })
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]

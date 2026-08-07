@@ -2,7 +2,7 @@ use ratatui::{
     Terminal,
     backend::TestBackend,
     crossterm::event::{
-        self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
         MouseEventKind,
     },
     layout::Rect,
@@ -181,11 +181,7 @@ fn search_keyboard_events_edit_or_finish_without_triggering_browse_shortcuts() {
         Some(Action::FinishSearch)
     );
     assert_eq!(
-        map_event(
-            key(KeyCode::Esc, KeyModifiers::NONE),
-            &searching,
-            &geometry
-        ),
+        map_event(key(KeyCode::Esc, KeyModifiers::NONE), &searching, &geometry),
         Some(Action::FinishSearch)
     );
     assert_eq!(
@@ -266,19 +262,11 @@ fn mouse_wheel_rows_and_footer_hits_map_to_frontend_neutral_actions() {
     let state = state();
 
     assert_eq!(
-        map_event(
-            mouse(MouseEventKind::ScrollUp, 40, 20),
-            &state,
-            &geometry
-        ),
+        map_event(mouse(MouseEventKind::ScrollUp, 40, 20), &state, &geometry),
         Some(Action::Previous)
     );
     assert_eq!(
-        map_event(
-            mouse(MouseEventKind::ScrollDown, 40, 20),
-            &state,
-            &geometry
-        ),
+        map_event(mouse(MouseEventKind::ScrollDown, 40, 20), &state, &geometry),
         Some(Action::Next)
     );
     assert_eq!(

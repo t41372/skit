@@ -175,7 +175,12 @@ fn render_footer(frame: &mut Frame, area: Rect, state: &LibraryState) -> Vec<Hit
             Style::default().add_modifier(Modifier::BOLD),
         ));
         hits.push(HitRegion {
-            rect: Rect::new(x, inner.y, width.min(rect_right(inner).saturating_sub(x)), 1),
+            rect: Rect::new(
+                x,
+                inner.y,
+                width.min(rect_right(inner).saturating_sub(x)),
+                1,
+            ),
             action,
         });
         x = x.saturating_add(width);
@@ -200,15 +205,9 @@ fn render_footer(frame: &mut Frame, area: Rect, state: &LibraryState) -> Vec<Hit
 
 /// Translate Crossterm input into frontend-neutral actions.
 #[must_use]
-pub fn map_event(
-    event: Event,
-    state: &LibraryState,
-    geometry: &ViewGeometry,
-) -> Option<Action> {
+pub fn map_event(event: Event, state: &LibraryState, geometry: &ViewGeometry) -> Option<Action> {
     match event {
-        Event::Key(key) if key.kind != KeyEventKind::Release => {
-            map_key(key, state.input_mode())
-        }
+        Event::Key(key) if key.kind != KeyEventKind::Release => map_key(key, state.input_mode()),
         Event::Mouse(mouse) => map_mouse(mouse, geometry),
         Event::FocusGained
         | Event::FocusLost

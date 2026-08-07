@@ -49,7 +49,9 @@ fn show_json_reads_the_existing_metadata_layout() {
         .assert()
         .success()
         .stdout(predicate::str::contains(r#""name":"Hello""#))
-        .stdout(predicate::str::contains(r#""id":"0123456789abcdef0123456789abcdef""#));
+        .stdout(predicate::str::contains(
+            r#""id":"0123456789abcdef0123456789abcdef""#,
+        ));
 }
 
 #[test]
