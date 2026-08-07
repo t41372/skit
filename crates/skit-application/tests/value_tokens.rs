@@ -15,7 +15,9 @@ fn context() -> TokenContext {
 #[test]
 fn named_tokens_expand_and_unknown_braces_pass_through() {
     let mut context = context();
-    context.env.insert("API_KEY".to_owned(), "abc123".to_owned());
+    context
+        .env
+        .insert("API_KEY".to_owned(), "abc123".to_owned());
 
     assert_eq!(
         expand("{cwd}/out_{today}_{now}.png", &context, true).unwrap(),
