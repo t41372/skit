@@ -4,6 +4,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod parameters;
+
 use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
