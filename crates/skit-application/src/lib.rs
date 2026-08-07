@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 mod mutations;
+pub mod tokens;
 
 use std::fmt::Debug;
 
