@@ -97,11 +97,7 @@ fn token_names_distinguish_credentials_from_the_exact_count_lexicon() {
 
 #[test]
 fn sentence_prompts_only_suppress_an_immediately_count_qualified_token_mention() {
-    assert_public(&[
-        "How many tokens?",
-        "rate limit 60 tokens/min",
-        "2 tokens",
-    ]);
+    assert_public(&["How many tokens?", "rate limit 60 tokens/min", "2 tokens"]);
     assert_secret(&[
         "rate tokens",
         "available tokens",
