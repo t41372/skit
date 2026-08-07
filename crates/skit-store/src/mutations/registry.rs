@@ -140,11 +140,12 @@ fn metadata_mtime_ns(path: &Path) -> Result<i64, RepositoryError> {
     let modified = fs::metadata(path)
         .and_then(|metadata| metadata.modified())
         .map_err(|error| io_error("inspect", path, error))?;
-    let nanos = modified.duration_since(UNIX_EPOCH).map_err(|error| {
-        RepositoryError::InvalidMutation {
-            reason: format!("metadata timestamp predates the Unix epoch: {error}"),
-        }
-    })?;
+    let nanos =
+        modified
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| RepositoryError::InvalidMutation {
+                reason: format!("metadata timestamp predates the Unix epoch: {error}"),
+            })?;
     i64::try_from(nanos.as_nanos()).map_err(|error| RepositoryError::InvalidMutation {
         reason: format!("metadata timestamp does not fit registry.toml: {error}"),
     })
