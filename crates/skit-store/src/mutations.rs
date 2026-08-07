@@ -75,11 +75,7 @@ impl EntryMutationRepository for FileStore {
         let source = self.entry_dir(&fresh.slug);
         let trash_root = self.data_dir().join(".trash");
         create_dir_all(&trash_root, "create")?;
-        let trash = trash_root.join(format!(
-            "{}-{}",
-            fresh.slug,
-            EntryId::generate().as_str()
-        ));
+        let trash = trash_root.join(format!("{}-{}", fresh.slug, EntryId::generate().as_str()));
         fs::rename(&source, &trash).map_err(|error| io_error("remove", &source, error))?;
         fs::remove_dir_all(&trash).map_err(|error| io_error("clean", &trash, error))?;
         Ok(name)
@@ -94,7 +90,9 @@ impl EntryMutationRepository for FileStore {
         let _entry = self.entry_lock(&entry.slug)?;
         let mut fresh = self.claim_locked(entry)?;
         if fresh.meta.mode != StorageMode::Copy {
-            return Err(invalid("reference entries are edited at their original path"));
+            return Err(invalid(
+                "reference entries are edited at their original path",
+            ));
         }
 
         let target = self.stored_path(&fresh)?;
@@ -198,11 +196,7 @@ impl FileStore {
         Ok(())
     }
 
-    fn allocate_slug(
-        &self,
-        base: Slug,
-        excluded: Option<&Slug>,
-    ) -> Result<Slug, RepositoryError> {
+    fn allocate_slug(&self, base: Slug, excluded: Option<&Slug>) -> Result<Slug, RepositoryError> {
         if excluded == Some(&base) || !self.entry_dir(&base).exists() {
             return Ok(base);
         }
@@ -230,8 +224,8 @@ impl FileStore {
         }
 
         let mut files = Vec::new();
-        let reader = fs::read_dir(&directory)
-            .map_err(|error| io_error("scan", &directory, error))?;
+        let reader =
+            fs::read_dir(&directory).map_err(|error| io_error("scan", &directory, error))?;
         for item in reader {
             let item = item.map_err(|error| io_error("scan", &directory, error))?;
             if item.file_name().to_string_lossy() == "meta.toml" {
