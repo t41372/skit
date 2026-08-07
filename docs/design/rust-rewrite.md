@@ -41,8 +41,8 @@ Every behavior slice lands in this order:
 3. refactoring while the test remains green;
 4. differential tests against the Python baseline when the behavior already exists there.
 
-The first slice gated line coverage at 90%; the parameter-domain slice has ratcheted the enforced
-floor to 93%, and cutover requires the same 100% floor as the Python implementation.
+The first slice gated line coverage at 90%; the declared-parameter slice has ratcheted the enforced
+floor to 94%, and cutover requires the same 100% floor as the Python implementation.
 
 A test that merely snapshots an implementation detail is not a contract. Store tests use real
 temporary directories; UI tests drive the reducer and Ratatui `TestBackend`; process tests use a
@@ -99,7 +99,7 @@ It freezes both existing serialization surfaces without importing TOML into the 
 fields. Both decoders are total on hand-edited scalar garbage, and default coercion shares one
 strict integer, finite-float, boolean, string, choice, and path contract.
 
-The same domain module now carries the frozen universal secret-name heuristic used by placeholder
+The same domain module carries the frozen universal secret-name heuristic used by placeholder
 synthesis and later form assembly. It matches the Python baseline's separator, camelCase, jammed,
 plural, and digit-split recognition; exact password/secret suffixes; exact `KEY` word and jammed-key
 prefix allowlist; and the two-mode `TOKEN` count-context rules for names versus sentence prompts.
@@ -108,7 +108,15 @@ actual secret persistence and scrubbing are still enforced by later application/
 Implicit command-template placeholders are required, placeholder-delivery string declarations whose
 secret bit is computed by this one shared detector.
 
-This is deliberately the model kernel, not the whole parameter product. Language-specific declared
-parameter extraction, template synthesis beyond implicit placeholders, token expansion, presets,
-remembered values, secret non-persistence, form assembly, and launch-time delivery remain separate
-unchecked contracts.
+Declared metadata extraction now mirrors Python's ordering behavior exactly. Nameless rows are
+dropped, while ordinary order and duplicate rows are preserved at the extraction boundary. Template
+synthesis then applies Python-dict semantics deliberately rather than accidentally sorting:
+duplicate names keep their first insertion slot but the last schema wins. Placeholder order, case,
+and multiplicity come from the template; a same-name declaration overrides the synthesized schema
+only when its delivery is `placeholder`. Wrong-delivery rows are replaced and cannot reappear as
+environment riders. Only unconsumed `env` declarations follow the placeholder fields; flag rows and
+stray placeholder declarations are excluded.
+
+This remains the parameter model and declaration kernel, not the whole parameter product. Token
+expansion, presets, remembered values, secret non-persistence, form assembly, language-specific
+analysis/injection, and launch-time delivery remain separate unchecked contracts.
