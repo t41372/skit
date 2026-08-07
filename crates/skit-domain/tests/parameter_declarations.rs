@@ -68,7 +68,11 @@ fn undeclared_placeholders_synthesize_the_historical_schema_in_template_order() 
             .iter()
             .all(|declaration| declaration.delivery == ParameterDelivery::Placeholder)
     );
-    assert!(declarations.iter().all(|declaration| declaration.required));
+    assert!(
+        declarations
+            .iter()
+            .all(|declaration| declaration.required)
+    );
     assert!(!declarations[0].secret);
     assert!(declarations[1].secret);
 }
@@ -96,7 +100,11 @@ fn declared_placeholder_rows_override_the_entire_synthesized_schema() {
         }
         .to_meta_map(),
     ];
-    let placeholders = vec!["token_file".to_owned(), "size".to_owned(), "host".to_owned()];
+    let placeholders = vec![
+        "token_file".to_owned(),
+        "size".to_owned(),
+        "host".to_owned(),
+    ];
 
     let declarations = declared_for_template(Some(&rows), &placeholders);
 
@@ -121,12 +129,14 @@ fn declared_placeholder_rows_override_the_entire_synthesized_schema() {
 
 #[test]
 fn wrong_delivery_for_a_placeholder_is_replaced_and_not_readded_as_an_env_rider() {
-    let rows = vec![ParamDecl {
-        delivery: ParameterDelivery::Env,
-        default: Some(ParameterValue::String("wrong channel".to_owned())),
-        ..ParamDecl::new("file")
-    }
-    .to_meta_map()];
+    let rows = vec![
+        ParamDecl {
+            delivery: ParameterDelivery::Env,
+            default: Some(ParameterValue::String("wrong channel".to_owned())),
+            ..ParamDecl::new("file")
+        }
+        .to_meta_map(),
+    ];
     let placeholders = vec!["file".to_owned()];
 
     let declarations = declared_for_template(Some(&rows), &placeholders);
@@ -200,12 +210,14 @@ fn duplicate_names_use_the_last_schema_without_moving_the_first_insertion_slot()
 
 #[test]
 fn placeholder_multiplicity_and_case_are_preserved_exactly() {
-    let rows = vec![ParamDecl {
-        delivery: ParameterDelivery::Placeholder,
-        required: false,
-        ..ParamDecl::new("name")
-    }
-    .to_meta_map()];
+    let rows = vec![
+        ParamDecl {
+            delivery: ParameterDelivery::Placeholder,
+            required: false,
+            ..ParamDecl::new("name")
+        }
+        .to_meta_map(),
+    ];
     let placeholders = vec!["name".to_owned(), "Name".to_owned(), "name".to_owned()];
 
     let declarations = declared_for_template(Some(&rows), &placeholders);
