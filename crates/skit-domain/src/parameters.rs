@@ -379,10 +379,7 @@ impl ParamDecl {
             ParameterType::parse(&string_value(input.get("type"), "str"), ParameterType::Str);
         declaration.default = input.get("default").and_then(ParameterValue::from_json);
         declaration.choices = match input.get("choices") {
-            Some(Value::Array(values)) => values
-                .iter()
-                .map(stringify)
-                .collect::<Vec<_>>(),
+            Some(Value::Array(values)) => values.iter().map(stringify).collect::<Vec<_>>(),
             _ => Vec::new(),
         };
         declaration.order = integer_value(input.get("order")).unwrap_or(-1);
