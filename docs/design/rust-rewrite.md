@@ -75,6 +75,12 @@ fake launcher until the final spawn boundary test.
 | 7 | Cutover | differential matrix green; Python implementation removed |
 | 8 | Tauri adapter | invokes the same application ports; no duplicated business rules |
 
-This first vertical slice intentionally scans authoritative `meta.toml` files. The optimized
-`registry.toml` projection is introduced only with differential freshness/self-heal tests; a fast
-path is not allowed to disagree with the authoritative slow path.
+The read path began with authoritative `meta.toml` scans, then introduced the rebuildable
+`registry.toml` projection only after its trust boundary was contract-tested. Listing trusts a row
+only when its shape and exact metadata timestamp match, falls back per entry to authoritative
+metadata, and attempts one nonblocking batch repair. Exact slug resolution still opens the selected
+metadata directly. Exact display-name resolution uses registry rows only to select a unique
+candidate; a stale claim, miss, or multiple claimants trigger the same authoritative freshness
+sweep and deterministic ambiguity refusal as listing. A fast unique hit never sweeps or repairs
+unrelated rows. Differential performance evidence remains a separate release gate: functional fast
+paths are not, by themselves, proof that the application is lightweight.
