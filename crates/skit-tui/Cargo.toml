@@ -1,0 +1,21 @@
+[package]
+name = "skit-tui"
+description = "Ratatui frontend adapter for skit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+ratatui.workspace = true
+thiserror.workspace = true
+skit-application.workspace = true
+skit-ui.workspace = true
+
+[dev-dependencies]
+skit-domain.workspace = true
+
+[lints]
+workspace = true
