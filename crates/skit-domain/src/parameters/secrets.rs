@@ -35,10 +35,7 @@ pub fn is_secret_name(text: &str) -> bool {
     }
 
     let sentence = text.trim().chars().any(char::is_whitespace);
-    if !verdicts
-        .iter()
-        .any(|verdict| token_hit(verdict, sentence))
-    {
+    if !verdicts.iter().any(|verdict| token_hit(verdict, sentence)) {
         return false;
     }
 
@@ -86,11 +83,10 @@ fn judge_segment(raw: &str) -> SegmentVerdict {
         all_forms.extend(word_forms(word));
     }
 
-    let secret = all_forms.iter().any(|form| {
-        SECRET_SUFFIXES
-            .iter()
-            .any(|suffix| form.ends_with(suffix))
-    }) || all_forms.contains("KEY")
+    let secret = all_forms
+        .iter()
+        .any(|form| SECRET_SUFFIXES.iter().any(|suffix| form.ends_with(suffix)))
+        || all_forms.contains("KEY")
         || all_forms.iter().any(|form| {
             form.strip_suffix("KEY")
                 .is_some_and(is_credential_key_prefix)
@@ -98,9 +94,9 @@ fn judge_segment(raw: &str) -> SegmentVerdict {
     let county = is_count_word(&jam) || is_count_word(fold_plural(&jam));
     let numeric = jam.bytes().all(|byte| byte.is_ascii_digit());
     let internal_count = camel.iter().any(|word| {
-        word_forms(word).into_iter().any(|variant| {
-            is_count_word(&variant) && (variant.len() != 1 || word == &variant)
-        })
+        word_forms(word)
+            .into_iter()
+            .any(|variant| is_count_word(&variant) && (variant.len() != 1 || word == &variant))
     }) || digit_parts.iter().any(|word| {
         word_forms(word)
             .into_iter()
