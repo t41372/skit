@@ -1,5 +1,6 @@
 mod atomic;
 mod hash;
+mod registry;
 
 use std::{
     collections::BTreeMap,
@@ -12,6 +13,7 @@ use atomic::{
     write_new_file, write_new_metadata,
 };
 pub use hash::content_hash;
+use registry::Registry;
 use skit_application::{CreateEntry, EntryMutationRepository, EntryPayload, RepositoryError};
 use skit_domain::{Entry, EntryId, EntryMeta, Slug, StorageMode};
 
@@ -20,63 +22,95 @@ use super::FileStore;
 impl EntryMutationRepository for FileStore {
     fn create(&self, request: CreateEntry) -> Result<Entry, RepositoryError> {
         let _namespace = self.namespace_lock()?;
-        self.create_locked(request)
+        let mut registry = Registry::load(self.data_dir())?;
+        self.create_locked(request, &mut registry)
     }
 
     fn claim_identity(&self, entry: &Entry) -> Result<Entry, RepositoryError> {
         let _entry = self.entry_lock(&entry.slug)?;
-        self.claim_locked(entry)
+        let fresh = self.verify_claim_locked(entry)?;
+        if fresh.meta.id.is_some() {
+            return Ok(fresh);
+        }
+        let _namespace = self.namespace_lock()?;
+        let mut registry = Registry::load(self.data_dir())?;
+        self.stamp_identity_locked(fresh, &mut registry)
     }
 
     fn describe(&self, entry: &Entry, description: &str) -> Result<Entry, RepositoryError> {
         let _entry = self.entry_lock(&entry.slug)?;
-        let mut fresh = self.claim_locked(entry)?;
-        fresh.meta.description = description.to_owned();
-        self.write_meta(&fresh)?;
-        Ok(fresh)
+        let _namespace = self.namespace_lock()?;
+        let mut registry = Registry::load(self.data_dir())?;
+        let fresh = self.claim_for_mutation(entry, &mut registry)?;
+        let before = fresh.clone();
+        let mut after = fresh;
+        after.meta.description = description.to_owned();
+        self.commit_meta_projection(&before, &after, &mut registry)?;
+        Ok(after)
     }
 
     fn rename(&self, entry: &Entry, name: &str) -> Result<Entry, RepositoryError> {
         let name = validated_name(name)?;
         let _entry = self.entry_lock(&entry.slug)?;
         let _namespace = self.namespace_lock()?;
-        let mut fresh = self.claim_locked(entry)?;
-        self.ensure_name_available(&name, Some(&fresh.slug))?;
-        let new_slug = self.allocate_slug(Slug::from_display_name(&name), Some(&fresh.slug))?;
+        let mut registry = Registry::load(self.data_dir())?;
+        let fresh = self.claim_for_mutation(entry, &mut registry)?;
+        self.ensure_name_available(&name, Some(&fresh.slug), &registry)?;
+        let new_slug = self.allocate_slug(
+            Slug::from_display_name(&name),
+            Some(&fresh.slug),
+            &registry,
+        )?;
 
-        let old_slug = fresh.slug.clone();
-        let old_meta = fresh.meta.clone();
-        fresh.meta.name = name;
-        if old_slug == new_slug {
-            self.write_meta(&fresh)?;
-            return Ok(fresh);
+        let before = fresh.clone();
+        let mut after = fresh;
+        after.meta.name = name;
+        if before.slug == new_slug {
+            self.commit_meta_projection(&before, &after, &mut registry)?;
+            return Ok(after);
         }
 
-        let old_dir = self.entry_dir(&old_slug);
+        let old_dir = self.entry_dir(&before.slug);
         let new_dir = self.entry_dir(&new_slug);
-        self.write_meta(&fresh)?;
+        self.write_meta(&after)?;
         if let Err(error) = fs::rename(&old_dir, &new_dir) {
-            let rollback = Entry {
-                slug: old_slug,
-                meta: old_meta,
-            };
-            let _ = self.write_meta(&rollback);
-            return Err(io_error("rename", &old_dir, error));
+            let primary = io_error("rename", &old_dir, error);
+            return Err(rollback_error(primary, self.write_meta(&before), &old_dir));
         }
-        fresh.slug = new_slug;
-        Ok(fresh)
+        after.slug = new_slug;
+        registry.remove(&before.slug);
+        let projection = registry
+            .project(&after, &new_dir)
+            .and_then(|()| registry.save());
+        if let Err(error) = projection {
+            let move_back = fs::rename(&new_dir, &old_dir)
+                .map_err(|rollback| io_error("rollback rename", &new_dir, rollback));
+            if let Err(rollback) = move_back {
+                return Err(rollback_error(error, Err(rollback), &old_dir));
+            }
+            return Err(rollback_error(error, self.write_meta(&before), &old_dir));
+        }
+        Ok(after)
     }
 
     fn remove(&self, entry: &Entry) -> Result<String, RepositoryError> {
         let _entry = self.entry_lock(&entry.slug)?;
         let _namespace = self.namespace_lock()?;
-        let fresh = self.claim_locked(entry)?;
+        let mut registry = Registry::load(self.data_dir())?;
+        let fresh = self.claim_for_mutation(entry, &mut registry)?;
         let name = fresh.meta.name.clone();
         let source = self.entry_dir(&fresh.slug);
         let trash_root = self.data_dir().join(".trash");
         create_dir_all(&trash_root, "create")?;
         let trash = trash_root.join(format!("{}-{}", fresh.slug, EntryId::generate().as_str()));
         fs::rename(&source, &trash).map_err(|error| io_error("remove", &source, error))?;
+
+        registry.remove(&fresh.slug);
+        if let Err(error) = registry.save() {
+            let rollback = fs::rename(&trash, &source)
+                .map_err(|rollback| io_error("rollback remove", &trash, rollback));
+            return Err(rollback_error(error, rollback, &source));
+        }
         fs::remove_dir_all(&trash).map_err(|error| io_error("clean", &trash, error))?;
         Ok(name)
     }
@@ -88,7 +122,9 @@ impl EntryMutationRepository for FileStore {
         expected_source_hash: &str,
     ) -> Result<Entry, RepositoryError> {
         let _entry = self.entry_lock(&entry.slug)?;
-        let mut fresh = self.claim_locked(entry)?;
+        let _namespace = self.namespace_lock()?;
+        let mut registry = Registry::load(self.data_dir())?;
+        let fresh = self.claim_for_mutation(entry, &mut registry)?;
         if fresh.meta.mode != StorageMode::Copy {
             return Err(invalid(
                 "reference entries are edited at their original path",
@@ -106,22 +142,45 @@ impl EntryMutationRepository for FileStore {
             });
         }
 
+        let before = fresh.clone();
+        let mut after = fresh;
         atomic_write_bytes(&target, bytes)?;
-        fresh.meta.source_hash = content_hash(bytes);
-        if let Err(error) = self.write_meta(&fresh) {
-            let _ = atomic_write_bytes(&target, &original);
-            return Err(error);
+        after.meta.source_hash = content_hash(bytes);
+        if let Err(error) = self.write_meta(&after) {
+            return Err(rollback_error(
+                error,
+                atomic_write_bytes(&target, &original),
+                &target,
+            ));
         }
-        Ok(fresh)
+        let projection = registry
+            .project(&after, &self.entry_dir(&after.slug))
+            .and_then(|()| registry.save());
+        if let Err(error) = projection {
+            let source_rollback = atomic_write_bytes(&target, &original);
+            if let Err(rollback) = source_rollback {
+                return Err(rollback_error(error, Err(rollback), &target));
+            }
+            return Err(rollback_error(
+                error,
+                self.write_meta(&before),
+                &self.entry_dir(&before.slug),
+            ));
+        }
+        Ok(after)
     }
 }
 
 impl FileStore {
-    fn create_locked(&self, mut request: CreateEntry) -> Result<Entry, RepositoryError> {
+    fn create_locked(
+        &self,
+        mut request: CreateEntry,
+        registry: &mut Registry,
+    ) -> Result<Entry, RepositoryError> {
         request.name = validated_name(&request.name)?;
-        self.ensure_name_available(&request.name, None)?;
+        self.ensure_name_available(&request.name, None, registry)?;
         validate_payload(request.mode, request.payload.as_ref())?;
-        let slug = self.allocate_slug(Slug::from_display_name(&request.name), None)?;
+        let slug = self.allocate_slug(Slug::from_display_name(&request.name), None, registry)?;
         let id = EntryId::generate();
         let source_hash = request
             .payload
@@ -159,35 +218,93 @@ impl FileStore {
         let scripts = self.scripts_dir();
         create_dir_all(&scripts, "create")?;
         let destination = scripts.join(slug.as_str());
+        self.remove_empty_destination(&destination)?;
         fs::rename(stage.path(), &destination)
             .map_err(|error| io_error("commit", &destination, error))?;
+        let entry = Entry { slug, meta };
+        let projection = registry
+            .project(&entry, &destination)
+            .and_then(|()| registry.save());
+        if let Err(error) = projection {
+            let rollback = fs::remove_dir_all(&destination)
+                .map_err(|rollback| io_error("rollback create", &destination, rollback));
+            return Err(rollback_error(error, rollback, &destination));
+        }
         stage.commit();
-        Ok(Entry { slug, meta })
+        Ok(entry)
     }
 
-    fn claim_locked(&self, held: &Entry) -> Result<Entry, RepositoryError> {
+    fn verify_claim_locked(&self, held: &Entry) -> Result<Entry, RepositoryError> {
         let directory = self.entry_dir(&held.slug);
         if !directory.is_dir() {
             return Err(stale(&held.slug));
         }
-        let mut fresh = self.read_entry(held.slug.clone())?;
+        let fresh = self.read_entry(held.slug.clone())?;
         match held.meta.id.as_ref() {
             Some(expected) if fresh.meta.id.as_ref() == Some(expected) => Ok(fresh),
             Some(_) => Err(stale(&held.slug)),
-            None if fresh.meta.id.is_none() && fresh.meta == held.meta => {
-                fresh.meta.id = Some(EntryId::generate());
-                self.write_meta(&fresh)?;
-                Ok(fresh)
-            }
+            None if fresh.meta.id.is_none() && fresh.meta == held.meta => Ok(fresh),
             None => Err(stale(&held.slug)),
         }
+    }
+
+    fn claim_for_mutation(
+        &self,
+        held: &Entry,
+        registry: &mut Registry,
+    ) -> Result<Entry, RepositoryError> {
+        let fresh = self.verify_claim_locked(held)?;
+        if fresh.meta.id.is_some() {
+            Ok(fresh)
+        } else {
+            self.stamp_identity_locked(fresh, registry)
+        }
+    }
+
+    fn stamp_identity_locked(
+        &self,
+        before: Entry,
+        registry: &mut Registry,
+    ) -> Result<Entry, RepositoryError> {
+        let mut after = before.clone();
+        after.meta.id = Some(EntryId::generate());
+        self.commit_meta_projection(&before, &after, registry)?;
+        Ok(after)
+    }
+
+    fn commit_meta_projection(
+        &self,
+        before: &Entry,
+        after: &Entry,
+        registry: &mut Registry,
+    ) -> Result<(), RepositoryError> {
+        self.write_meta(after)?;
+        let entry_dir = self.entry_dir(&after.slug);
+        let projection = registry
+            .project(after, &entry_dir)
+            .and_then(|()| registry.save());
+        if let Err(error) = projection {
+            return Err(rollback_error(
+                error,
+                self.write_meta(before),
+                &self.entry_dir(&before.slug),
+            ));
+        }
+        Ok(())
     }
 
     fn ensure_name_available(
         &self,
         name: &str,
         excluded: Option<&Slug>,
+        registry: &Registry,
     ) -> Result<(), RepositoryError> {
+        if let Some(slug) = registry.name_owner(name, excluded) {
+            return Err(RepositoryError::Conflict {
+                name: name.to_owned(),
+                slug,
+            });
+        }
         for existing in self.scan_entries()? {
             if existing.meta.name == name && excluded != Some(&existing.slug) {
                 return Err(conflict(name, &existing.slug));
@@ -196,8 +313,15 @@ impl FileStore {
         Ok(())
     }
 
-    fn allocate_slug(&self, base: Slug, excluded: Option<&Slug>) -> Result<Slug, RepositoryError> {
-        if excluded == Some(&base) || !self.entry_dir(&base).exists() {
+    fn allocate_slug(
+        &self,
+        base: Slug,
+        excluded: Option<&Slug>,
+        registry: &Registry,
+    ) -> Result<Slug, RepositoryError> {
+        if !registry.slug_is_taken(&base, excluded)
+            && !self.slug_path_is_taken(&base, excluded)?
+        {
             return Ok(base);
         }
 
@@ -205,13 +329,50 @@ impl FileStore {
         loop {
             let candidate = Slug::parse(format!("{}-{suffix}", base.as_str()))
                 .map_err(|error| invalid(error.to_string()))?;
-            if excluded == Some(&candidate) || !self.entry_dir(&candidate).exists() {
+            if !registry.slug_is_taken(&candidate, excluded)
+                && !self.slug_path_is_taken(&candidate, excluded)?
+            {
                 return Ok(candidate);
             }
             suffix = suffix
                 .checked_add(1)
                 .ok_or_else(|| invalid("entry slug suffix space is exhausted"))?;
         }
+    }
+
+    fn slug_path_is_taken(
+        &self,
+        slug: &Slug,
+        excluded: Option<&Slug>,
+    ) -> Result<bool, RepositoryError> {
+        if excluded == Some(slug) {
+            return Ok(false);
+        }
+        let path = self.entry_dir(slug);
+        if !path.exists() {
+            return Ok(false);
+        }
+        if !path.is_dir() {
+            return Ok(true);
+        }
+        let mut items = fs::read_dir(&path).map_err(|error| io_error("scan", &path, error))?;
+        Ok(items.next().transpose().map_err(|error| io_error("scan", &path, error))?.is_some())
+    }
+
+    fn remove_empty_destination(&self, path: &Path) -> Result<(), RepositoryError> {
+        if !path.is_dir() {
+            return Ok(());
+        }
+        let mut items = fs::read_dir(path).map_err(|error| io_error("scan", path, error))?;
+        if items
+            .next()
+            .transpose()
+            .map_err(|error| io_error("scan", path, error))?
+            .is_none()
+        {
+            fs::remove_dir(path).map_err(|error| io_error("reuse", path, error))?;
+        }
+        Ok(())
     }
 
     fn stored_path(&self, entry: &Entry) -> Result<PathBuf, RepositoryError> {
@@ -337,5 +498,20 @@ fn conflict(name: &str, slug: &Slug) -> RepositoryError {
 fn stale(slug: &Slug) -> RepositoryError {
     RepositoryError::StaleEntry {
         slug: slug.as_str().to_owned(),
+    }
+}
+
+fn rollback_error(
+    primary: RepositoryError,
+    rollback: Result<(), RepositoryError>,
+    path: &Path,
+) -> RepositoryError {
+    match rollback {
+        Ok(()) => primary,
+        Err(rollback) => RepositoryError::Io {
+            operation: "rollback",
+            path: path.display().to_string(),
+            reason: format!("{primary}; rollback also failed: {rollback}"),
+        },
     }
 }
