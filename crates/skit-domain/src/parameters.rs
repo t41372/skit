@@ -171,10 +171,12 @@ impl ParameterValue {
         match value {
             Value::String(value) => Some(Self::String(value.clone())),
             Value::Bool(value) => Some(Self::Bool(*value)),
-            Value::Number(value) => value
-                .as_i64()
-                .map(Self::Integer)
-                .or_else(|| value.as_f64().filter(|number| number.is_finite()).map(Self::Float)),
+            Value::Number(value) => value.as_i64().map(Self::Integer).or_else(|| {
+                value
+                    .as_f64()
+                    .filter(|number| number.is_finite())
+                    .map(Self::Float)
+            }),
             Value::Null | Value::Array(_) | Value::Object(_) => None,
         }
     }
@@ -306,10 +308,8 @@ impl ParamDecl {
         declaration.delivery = binding
             .implied_delivery()
             .unwrap_or(ParameterDelivery::Flag);
-        declaration.parameter_type = ParameterType::parse(
-            &string_value(input.get("type"), "str"),
-            ParameterType::Str,
-        );
+        declaration.parameter_type =
+            ParameterType::parse(&string_value(input.get("type"), "str"), ParameterType::Str);
         declaration.default = input.get("default").and_then(ParameterValue::from_json);
         declaration.prompt = string_value(input.get("prompt"), "");
         declaration.order = integer_value(input.get("order")).unwrap_or(-1);
@@ -344,13 +344,7 @@ impl ParamDecl {
         if !self.choices.is_empty() {
             output.insert(
                 "choices".to_owned(),
-                Value::Array(
-                    self.choices
-                        .iter()
-                        .cloned()
-                        .map(Value::String)
-                        .collect(),
-                ),
+                Value::Array(self.choices.iter().cloned().map(Value::String).collect()),
             );
         }
         if self.order >= 0 {
@@ -381,15 +375,13 @@ impl ParamDecl {
             &string_value(input.get("delivery"), "flag"),
             ParameterDelivery::Flag,
         );
-        declaration.parameter_type = ParameterType::parse(
-            &string_value(input.get("type"), "str"),
-            ParameterType::Str,
-        );
+        declaration.parameter_type =
+            ParameterType::parse(&string_value(input.get("type"), "str"), ParameterType::Str);
         declaration.default = input.get("default").and_then(ParameterValue::from_json);
         declaration.choices = match input.get("choices") {
             Some(Value::Array(values)) => values
                 .iter()
-                .map(|value| stringify(value))
+                .map(stringify)
                 .collect::<Vec<_>>(),
             _ => Vec::new(),
         };
