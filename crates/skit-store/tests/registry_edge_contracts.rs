@@ -334,6 +334,7 @@ fn reference_rows_keep_the_original_target_without_copying_payload() {
         ))
         .unwrap();
 
+    assert_eq!(entry.meta.mode, StorageMode::Reference);
     assert!(!root.path().join("scripts/reference/artifact.bin").exists());
     let registry = read_registry(&root);
     let target = registry
