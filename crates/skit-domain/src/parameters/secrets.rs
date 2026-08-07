@@ -136,10 +136,18 @@ fn word_forms(word: &str) -> BTreeSet<String> {
         .chars()
         .filter(|character| !character.is_ascii_digit())
         .collect::<String>();
-    let mut forms = BTreeSet::from([word.to_owned(), fold_plural(word).to_owned()]);
+    let mut forms = BTreeSet::new();
+    for variant in [word, fold_plural(word)] {
+        if !variant.is_empty() {
+            forms.insert(variant.to_owned());
+        }
+    }
     if !stripped.is_empty() {
         forms.insert(stripped.clone());
-        forms.insert(fold_plural(&stripped).to_owned());
+        let singular = fold_plural(&stripped);
+        if !singular.is_empty() {
+            forms.insert(singular.to_owned());
+        }
     }
     forms
 }
@@ -187,18 +195,16 @@ fn is_credential_key_prefix(prefix: &str) -> bool {
         "API"
             | "AUTH"
             | "ACCESS"
+            | "SECRET"
             | "PRIVATE"
-            | "PUBLIC"
+            | "PASS"
             | "SSH"
-            | "PGP"
-            | "SIGNING"
-            | "ENCRYPTION"
-            | "DECRYPTION"
-            | "STRIPE"
+            | "GPG"
             | "AWS"
-            | "GCP"
-            | "AZURE"
-            | "BASE"
+            | "MASTER"
+            | "SIGNING"
+            | "LICENSE"
+            | "ENCRYPTION"
     )
 }
 
@@ -208,35 +214,12 @@ fn is_count_word(word: &str) -> bool {
         "MAX"
             | "MIN"
             | "NUM"
-            | "NUMBER"
-            | "COUNT"
-            | "LIMIT"
-            | "LENGTH"
-            | "SIZE"
-            | "TOTAL"
-            | "AVAILABLE"
-            | "REMAINING"
-            | "USED"
-            | "USAGE"
-            | "BUDGET"
-            | "INPUT"
-            | "OUTPUT"
-            | "PROMPT"
-            | "COMPLETION"
-            | "RATE"
-            | "PER"
-            | "SECONDS"
-            | "SECOND"
-            | "MINUTES"
-            | "MINUTE"
-            | "HOUR"
-            | "HOURS"
-            | "DAY"
-            | "DAYS"
-            | "MONTH"
-            | "MONTHS"
-            | "YEAR"
-            | "YEARS"
             | "N"
+            | "COUNT"
+            | "TOTAL"
+            | "LIMIT"
+            | "MANY"
+            | "NUMBER"
+            | "PER"
     )
 }
