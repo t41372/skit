@@ -68,11 +68,7 @@ fn undeclared_placeholders_synthesize_the_historical_schema_in_template_order() 
             .iter()
             .all(|declaration| declaration.delivery == ParameterDelivery::Placeholder)
     );
-    assert!(
-        declarations
-            .iter()
-            .all(|declaration| declaration.required)
-    );
+    assert!(declarations.iter().all(|declaration| declaration.required));
     assert!(!declarations[0].secret);
     assert!(declarations[1].secret);
 }
