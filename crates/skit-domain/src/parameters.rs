@@ -5,8 +5,10 @@
 //! axis free. This module intentionally deals in generic JSON-shaped maps rather than TOML so the
 //! domain crate remains independent of storage adapters.
 
+mod declarations;
 mod secrets;
 
+pub use declarations::{declared_for_template, declared_from_meta};
 pub use secrets::{is_secret_name, synthesized_placeholder};
 
 use std::collections::BTreeMap;
