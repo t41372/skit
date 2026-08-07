@@ -192,20 +192,42 @@ impl EntryRepository for FileStore {
             }
         }
 
-        let mut matches = self
-            .scan_entries()?
+        if let Some(registry) = Registry::read(self.data_dir()) {
+            let claimants = registry.name_claimants(query);
+            if let [slug] = claimants.as_slice() {
+                let entry = self.read_entry((*slug).clone())?;
+                if entry.meta.name == query {
+                    return Ok(entry);
+                }
+            }
+        }
+
+        let mut candidates = self
+            .scan()?
+            .entries
             .into_iter()
-            .filter(|entry| entry.meta.name == query)
+            .filter(|entry| entry.name == query)
+            .map(|entry| entry.slug)
             .collect::<Vec<_>>();
-        match matches.len() {
+        match candidates.len() {
             0 => Err(RepositoryError::NotFound {
                 query: query.to_owned(),
             }),
-            1 => Ok(matches.pop().expect("length checked")),
+            1 => {
+                let slug = candidates.pop().expect("length checked");
+                let entry = self.read_entry(slug)?;
+                if entry.meta.name == query {
+                    Ok(entry)
+                } else {
+                    Err(RepositoryError::NotFound {
+                        query: query.to_owned(),
+                    })
+                }
+            }
             _ => {
-                let mut candidates = matches
+                let mut candidates = candidates
                     .into_iter()
-                    .map(|entry| entry.slug.as_str().to_owned())
+                    .map(|slug| slug.as_str().to_owned())
                     .collect::<Vec<_>>();
                 candidates.sort();
                 Err(RepositoryError::Ambiguous {
