@@ -164,10 +164,9 @@ impl EntryRepository for FileStore {
                     continue;
                 }
             };
-            if let Some(summary) = registry
-                .as_ref()
-                .and_then(|registry| registry.summary(&slug, mtime_ns))
-            {
+            if let Some(summary) = registry.as_ref().and_then(|registry| {
+                registry.summary(&slug, mtime_ns)
+            }) {
                 scan.entries.push(summary);
                 continue;
             }
