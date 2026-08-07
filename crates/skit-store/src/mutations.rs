@@ -56,11 +56,8 @@ impl EntryMutationRepository for FileStore {
         let mut registry = Registry::load(self.data_dir())?;
         let fresh = self.claim_for_mutation(entry, &mut registry)?;
         self.ensure_name_available(&name, Some(&fresh.slug), &registry)?;
-        let new_slug = self.allocate_slug(
-            Slug::from_display_name(&name),
-            Some(&fresh.slug),
-            &registry,
-        )?;
+        let new_slug =
+            self.allocate_slug(Slug::from_display_name(&name), Some(&fresh.slug), &registry)?;
 
         let before = fresh.clone();
         let mut after = fresh;
@@ -319,9 +316,7 @@ impl FileStore {
         excluded: Option<&Slug>,
         registry: &Registry,
     ) -> Result<Slug, RepositoryError> {
-        if !registry.slug_is_taken(&base, excluded)
-            && !self.slug_path_is_taken(&base, excluded)?
-        {
+        if !registry.slug_is_taken(&base, excluded) && !self.slug_path_is_taken(&base, excluded)? {
             return Ok(base);
         }
 
@@ -356,7 +351,11 @@ impl FileStore {
             return Ok(true);
         }
         let mut items = fs::read_dir(&path).map_err(|error| io_error("scan", &path, error))?;
-        Ok(items.next().transpose().map_err(|error| io_error("scan", &path, error))?.is_some())
+        Ok(items
+            .next()
+            .transpose()
+            .map_err(|error| io_error("scan", &path, error))?
+            .is_some())
     }
 
     fn remove_empty_destination(&self, path: &Path) -> Result<(), RepositoryError> {
