@@ -16,8 +16,9 @@ Legend: ✅ implemented and contract-tested · 🟡 designed/partial · ⬜ not 
 | Add / remove / rename / describe | ✅ | `skit-store/tests/mutations.rs`, `skit-store/tests/mutation_refusals.rs`, `skit-cli/tests/mutations_cli.rs` |
 | Identity claim + source compare-and-swap | ✅ | `skit-store/tests/mutations.rs`, `skit-store/tests/mutation_refusals.rs` |
 | Universal parameter model, serialization, and typed defaults | ✅ | `skit-domain/tests/parameters.rs`, `skit-domain/tests/parameter_serialization_edges.rs` |
+| Secret-name heuristic + synthesized placeholders | ✅ | `skit-domain/tests/parameter_secrets.rs` |
 | Declared parameter extraction and template synthesis | ⬜ | `tests/test_declared_params.py`, language analyzer tests |
-| Presets, remembered values, secret scrubbing, and form assembly | ⬜ | Python params/argstate/flows tests |
+| Presets, remembered values, secret non-persistence, and form assembly | ⬜ | Python params/argstate/flows tests |
 | Staged external-editor UX | ⬜ | PR #34 round 17–18 tests |
 | Differential performance evidence | ⬜ | Python performance tests and future Rust benchmark harness |
 | Language analysis and injection | ⬜ | `tests/corpus`, analyzer tests |
