@@ -45,7 +45,9 @@ fn add_copy_then_describe_rename_and_remove_is_a_complete_cli_slice() {
         .args(["show", "greeting-tool", "--json"])
         .assert()
         .success()
-        .stdout(predicate::str::contains(r#""description":"Friendly script""#));
+        .stdout(predicate::str::contains(
+            r#""description":"Friendly script""#,
+        ));
 
     command(&root)
         .args(["remove", "greeting-tool"])
