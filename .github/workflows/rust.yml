@@ -46,9 +46,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - name: Documentation
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --workspace --all-features --no-deps
 
   test:
     name: test (${{ matrix.os }})
@@ -70,7 +70,7 @@ jobs:
           rustup toolchain install 1.97.1 --profile minimal
           rustup default 1.97.1
       - name: Test workspace
-        run: cargo test --workspace --all-features
+        run: cargo test --locked --workspace --all-features
 
   coverage:
     name: coverage (90% line gate; ratchets to 100% before cutover)
@@ -90,7 +90,7 @@ jobs:
         run: cargo install cargo-llvm-cov --locked --version 0.8.6
       - name: Enforce line coverage
         run: >-
-          cargo llvm-cov --workspace --all-features
+          cargo llvm-cov --locked --workspace --all-features
           --fail-under-lines 90
           --show-missing-lines
           --ignore-filename-regex 'crates/skit-cli/src/main.rs|crates/skit-tui/src/terminal.rs'
