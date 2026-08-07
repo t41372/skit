@@ -1,4 +1,4 @@
-use std::{fs, path::Path};
+use std::fs;
 
 use skit_application::{
     CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, SourcePermissions,
@@ -183,7 +183,10 @@ fn empty_stale_directories_are_reused_but_regular_files_stay_reserved() {
 
     assert_eq!(reused.slug.as_str(), "reuse");
     assert_eq!(suffixed.slug.as_str(), "taken-2");
-    assert_eq!(fs::read(scripts.join("taken")).unwrap(), b"not an entry directory");
+    assert_eq!(
+        fs::read(scripts.join("taken")).unwrap(),
+        b"not an entry directory"
+    );
 }
 
 #[test]
@@ -331,11 +334,7 @@ fn reference_rows_keep_the_original_target_without_copying_payload() {
         ))
         .unwrap();
 
-    assert!(!
-        root.path()
-            .join("scripts/reference/artifact.bin")
-            .exists()
-    );
+    assert!(!root.path().join("scripts/reference/artifact.bin").exists());
     let registry = read_registry(&root);
     let target = registry
         .get("entries")
@@ -345,8 +344,4 @@ fn reference_rows_keep_the_original_target_without_copying_payload() {
         .and_then(|row| row.get("target"))
         .and_then(Value::as_str);
     assert_eq!(target, Some("/original/artifact.bin"));
-}
-
-fn _assert_path_is_within(root: &Path, candidate: &Path) {
-    assert!(candidate.starts_with(root));
 }
