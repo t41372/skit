@@ -1,8 +1,4 @@
-use std::{
-    fs,
-    path::Path,
-    time::UNIX_EPOCH,
-};
+use std::{fs, path::Path, time::UNIX_EPOCH};
 
 use skit_application::{
     CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, SourcePermissions,
@@ -134,7 +130,11 @@ fn poison_registry(root: &TempDir) {
     fs::create_dir(&path).unwrap();
     let backup = root.path().join("registry.toml.corrupt");
     fs::create_dir(&backup).unwrap();
-    fs::write(backup.join("occupied"), b"do not replace a non-empty directory").unwrap();
+    fs::write(
+        backup.join("occupied"),
+        b"do not replace a non-empty directory",
+    )
+    .unwrap();
 }
 
 #[test]
@@ -203,15 +203,7 @@ fn mutations_refresh_rows_move_keys_and_preserve_unrelated_registry_content() {
     let claimed = store.claim_identity(&entry).unwrap();
     let described = store.describe(&claimed, "after").unwrap();
 
-    assert_python_row(
-        &root,
-        "alpha",
-        "Alpha",
-        "python",
-        "copy",
-        "after",
-        None,
-    );
+    assert_python_row(&root, "alpha", "Alpha", "python", "copy", "after", None);
     let renamed = store.rename(&described, "Renamed Tool").unwrap();
     let document = registry(&root);
     assert!(!entries(&document).contains_key("alpha"));
@@ -273,9 +265,7 @@ mtime_ns = {}
     let claimed = store.claim_identity(&held).unwrap();
 
     assert!(claimed.meta.id.is_some());
-    assert_python_row(
-        &root, "legacy", "Legacy", "python", "copy", "legacy", None,
-    );
+    assert_python_row(&root, "legacy", "Legacy", "python", "copy", "legacy", None);
 }
 
 #[test]
