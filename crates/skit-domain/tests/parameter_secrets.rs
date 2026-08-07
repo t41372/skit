@@ -32,22 +32,44 @@ fn password_and_secret_suffixes_survive_plural_camel_and_jammed_shapes() {
 }
 
 #[test]
-fn key_detection_accepts_credential_compounds_without_matching_ordinary_key_words() {
+fn key_detection_uses_exact_words_or_the_frozen_jammed_prefix_allowlist() {
     assert_secret(&[
         "api_key",
         "apiKeys",
         "APIkey",
         "stripeKey",
-        "sshkey",
+        "publicKey",
         "base64key",
-        "publickey",
         "sort_key",
+        "authkey",
+        "accesskey",
+        "privatekey",
+        "passkey",
+        "sshkey",
+        "gpgkey",
+        "awskey",
+        "masterkey",
+        "signingkey",
+        "licensekey",
+        "encryptionkey",
     ]);
-    assert_public(&["MONKEY", "TURKEY", "HOTKEY", "WHISKEY", "hostkey"]);
+    assert_public(&[
+        "MONKEY",
+        "TURKEY",
+        "HOTKEY",
+        "WHISKEY",
+        "publickey",
+        "hostkey",
+        "stripekey",
+        "gcpkey",
+        "azurekey",
+        "basekey",
+        "decryptionkey",
+    ]);
 }
 
 #[test]
-fn token_names_distinguish_credentials_from_count_knobs() {
+fn token_names_distinguish_credentials_from_the_exact_count_lexicon() {
     assert_secret(&[
         "github_tokens",
         "session_token",
@@ -55,6 +77,8 @@ fn token_names_distinguish_credentials_from_count_knobs() {
         "N8NToken",
         "GITHUB_TOKEN_2",
         "STEP_2_TOKEN",
+        "available_tokens",
+        "rate_tokens",
     ]);
     assert_public(&[
         "max_tokens",
@@ -65,14 +89,22 @@ fn token_names_distinguish_credentials_from_count_knobs() {
         "max64Tokens",
         "2_tokens",
         "tokens",
+        "many_tokens",
+        "number_tokens",
+        "tokens_per",
     ]);
 }
 
 #[test]
 fn sentence_prompts_only_suppress_an_immediately_count_qualified_token_mention() {
-    assert_public(&["rate tokens", "rate limit 60 tokens/min", "2 tokens"]);
-    assert_secret(&[
+    assert_public(&[
         "How many tokens?",
+        "rate limit 60 tokens/min",
+        "2 tokens",
+    ]);
+    assert_secret(&[
+        "rate tokens",
+        "available tokens",
         "Paste your GitHub token (rate limit 60 tokens/min):",
         "step 2 token",
         "Enter session token",
