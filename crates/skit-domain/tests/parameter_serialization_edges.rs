@@ -32,11 +32,7 @@ fn every_parameter_axis_has_one_stable_spelling() {
 #[test]
 fn every_scalar_default_round_trips_through_the_meta_shape() {
     let cases = [
-        (
-            ParameterType::Int,
-            ParameterValue::Integer(42),
-            json!(42),
-        ),
+        (ParameterType::Int, ParameterValue::Integer(42), json!(42)),
         (
             ParameterType::Float,
             ParameterValue::Float(2.5),
