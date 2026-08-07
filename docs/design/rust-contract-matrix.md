@@ -15,9 +15,11 @@ Legend: ✅ implemented and contract-tested · 🟡 designed/partial · ⬜ not 
 | Registry projection, recovery, and rollback | ✅ | `skit-store/tests/registry_projection.rs`, `skit-store/tests/registry_edge_contracts.rs` |
 | Add / remove / rename / describe | ✅ | `skit-store/tests/mutations.rs`, `skit-store/tests/mutation_refusals.rs`, `skit-cli/tests/mutations_cli.rs` |
 | Identity claim + source compare-and-swap | ✅ | `skit-store/tests/mutations.rs`, `skit-store/tests/mutation_refusals.rs` |
+| Universal parameter model, serialization, and typed defaults | ✅ | `skit-domain/tests/parameters.rs`, `skit-domain/tests/parameter_serialization_edges.rs` |
+| Declared parameter extraction and template synthesis | ⬜ | `tests/test_declared_params.py`, language analyzer tests |
+| Presets, remembered values, secret scrubbing, and form assembly | ⬜ | Python params/argstate/flows tests |
 | Staged external-editor UX | ⬜ | PR #34 round 17–18 tests |
 | Differential performance evidence | ⬜ | Python performance tests and future Rust benchmark harness |
-| Parameters, presets, secret scrubbing | ⬜ | Python params/argstate/flows tests |
 | Language analysis and injection | ⬜ | `tests/corpus`, analyzer tests |
 | Prompt runners | ⬜ | prompt design and runner tests |
 | Spawn-under-lock / wait-outside | ⬜ | PR #34 round 18 tests |
