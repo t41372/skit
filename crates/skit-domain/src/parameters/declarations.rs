@@ -6,9 +6,7 @@ use super::{ParamDecl, ParameterDelivery, synthesized_placeholder};
 
 /// Decode declared metadata rows, dropping nameless rows while preserving order and duplicates.
 #[must_use]
-pub fn declared_from_meta(
-    parameters: Option<&[BTreeMap<String, Value>]>,
-) -> Vec<ParamDecl> {
+pub fn declared_from_meta(parameters: Option<&[BTreeMap<String, Value>]>) -> Vec<ParamDecl> {
     parameters
         .unwrap_or_default()
         .iter()
