@@ -116,7 +116,11 @@ fn a_fresh_registry_row_lists_without_opening_meta_toml() {
     let scan = store.scan().unwrap();
 
     assert_eq!(description(&scan, "fast"), "from the row");
-    assert!(scan.diagnostics.is_empty());
+    assert!(
+        scan.diagnostics.is_empty(),
+        "fresh registry row produced diagnostics: {:?}",
+        scan.diagnostics
+    );
 }
 
 #[test]
