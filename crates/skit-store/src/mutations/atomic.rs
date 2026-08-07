@@ -16,6 +16,21 @@ pub(super) struct FileLock {
 }
 
 pub(super) fn acquire_lock(path: &Path) -> Result<FileLock, RepositoryError> {
+    let file = open_lock_file(path)?;
+    file.lock().map_err(|error| io_error("lock", path, error))?;
+    Ok(FileLock { _file: file })
+}
+
+pub(super) fn try_acquire_lock(path: &Path) -> Result<Option<FileLock>, RepositoryError> {
+    let file = open_lock_file(path)?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(FileLock { _file: file })),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
+        Err(error) => Err(io_error("lock", path, error)),
+    }
+}
+
+fn open_lock_file(path: &Path) -> Result<File, RepositoryError> {
     let parent = path
         .parent()
         .ok_or_else(|| invalid("lock path has no parent directory"))?;
@@ -36,8 +51,7 @@ pub(super) fn acquire_lock(path: &Path) -> Result<FileLock, RepositoryError> {
         file.set_len(1)
             .map_err(|error| io_error("initialize", path, error))?;
     }
-    file.lock().map_err(|error| io_error("lock", path, error))?;
-    Ok(FileLock { _file: file })
+    Ok(file)
 }
 
 #[derive(Debug)]
