@@ -157,7 +157,9 @@ fn stale_and_malformed_rows_fall_back_per_entry_and_repair_together() {
         row(&repaired, "stale")
             .get("mtime_ns")
             .and_then(Value::as_integer),
-        Some(mtime_ns(&root.path().join("scripts/stale/meta.toml")))
+        Some(mtime_ns(
+            &root.path().join("scripts/stale/meta.toml")
+        ))
     );
     assert_eq!(
         row(&repaired, "malformed")
