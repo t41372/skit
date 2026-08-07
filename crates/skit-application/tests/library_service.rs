@@ -126,7 +126,7 @@ fn show_delegates_the_exact_selector_to_the_repository() {
 }
 
 #[test]
-fn repository_failures_keep_the_cli_exit_contract() {
+fn repository_failures_keep_the_cli_exit_and_display_contracts() {
     let errors = [
         (
             RepositoryError::NotFound {
@@ -142,6 +142,37 @@ fn repository_failures_keep_the_cli_exit_contract() {
             },
             ExitClass::Usage,
             "entry name \"same\" is ambiguous",
+        ),
+        (
+            RepositoryError::Conflict {
+                name: "Taken".to_owned(),
+                slug: "taken".to_owned(),
+            },
+            ExitClass::Usage,
+            "entry \"Taken\" already exists at slug \"taken\"",
+        ),
+        (
+            RepositoryError::InvalidMutation {
+                reason: "reference entries cannot be edited as copies".to_owned(),
+            },
+            ExitClass::Usage,
+            "invalid entry mutation: reference entries cannot be edited as copies",
+        ),
+        (
+            RepositoryError::StaleEntry {
+                slug: "reused".to_owned(),
+            },
+            ExitClass::Skit,
+            "entry \"reused\" changed while this operation was underway",
+        ),
+        (
+            RepositoryError::SourceChanged {
+                slug: "edited".to_owned(),
+                expected: "sha256:old".to_owned(),
+                actual: "sha256:new".to_owned(),
+            },
+            ExitClass::Skit,
+            "entry \"edited\" source changed while this edit was underway (expected sha256:old, found sha256:new)",
         ),
         (
             RepositoryError::Corrupt {
