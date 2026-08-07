@@ -111,7 +111,9 @@ fn expand_current_user_home(text: &str, home: Option<&str>) -> Option<String> {
     if text == "~" {
         return Some(home.to_owned());
     }
-    let tail = text.strip_prefix("~/").or_else(|| text.strip_prefix("~\\"))?;
+    let tail = text
+        .strip_prefix("~/")
+        .or_else(|| text.strip_prefix("~\\"))?;
     let separator = text.as_bytes().get(1).copied().unwrap_or(b'/') as char;
     Some(format!("{home}{separator}{tail}"))
 }
