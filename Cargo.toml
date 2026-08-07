@@ -1,0 +1,55 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/skit-domain",
+    "crates/skit-application",
+    "crates/skit-store",
+    "crates/skit-ui",
+    "crates/skit-tui",
+    "crates/skit-cli",
+]
+default-members = ["crates/skit-cli"]
+
+[workspace.package]
+version = "0.5.0-alpha.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT"
+authors = ["Yi-Ting Chiu <mytim710@gmail.com>"]
+repository = "https://github.com/t41372/skit"
+
+[workspace.dependencies]
+clap = { version = "4.6.4", features = ["derive"] }
+ratatui = "0.30.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+toml = "0.9"
+uuid = { version = "1.18", features = ["serde", "v4"] }
+
+assert_cmd = "2.0"
+predicates = "3.1"
+proptest = "1.7"
+tempfile = "3.20"
+
+skit-domain = { path = "crates/skit-domain" }
+skit-application = { path = "crates/skit-application" }
+skit-store = { path = "crates/skit-store" }
+skit-ui = { path = "crates/skit-ui" }
+skit-tui = { path = "crates/skit-tui" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "allow", priority = -1 }
+nursery = { level = "allow", priority = -1 }
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
