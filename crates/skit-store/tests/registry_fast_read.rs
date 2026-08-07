@@ -109,10 +109,8 @@ fn a_fresh_registry_row_lists_without_opening_meta_toml() {
     fs::remove_file(&meta).unwrap();
     fs::create_dir(&meta).unwrap();
     let mut document = registry(&root);
-    row_mut(&mut document, "fast").insert(
-        "mtime_ns".to_owned(),
-        Value::Integer(mtime_ns(&meta)),
-    );
+    row_mut(&mut document, "fast")
+        .insert("mtime_ns".to_owned(), Value::Integer(mtime_ns(&meta)));
     write_registry(&root, &document);
 
     let scan = store.scan().unwrap();
@@ -135,7 +133,10 @@ fn stale_and_malformed_rows_fall_back_per_entry_and_repair_together() {
 
     let mut document = registry(&root);
     let stale = row_mut(&mut document, "stale");
-    stale.insert("description".to_owned(), Value::String("old row".to_owned()));
+    stale.insert(
+        "description".to_owned(),
+        Value::String("old row".to_owned()),
+    );
     stale.insert("mtime_ns".to_owned(), Value::Integer(0));
     row_mut(&mut document, "malformed").insert("name".to_owned(), Value::Integer(7));
     write_registry(&root, &document);
@@ -157,9 +158,7 @@ fn stale_and_malformed_rows_fall_back_per_entry_and_repair_together() {
         row(&repaired, "stale")
             .get("mtime_ns")
             .and_then(Value::as_integer),
-        Some(mtime_ns(
-            &root.path().join("scripts/stale/meta.toml")
-        ))
+        Some(mtime_ns(&root.path().join("scripts/stale/meta.toml")))
     );
     assert_eq!(
         row(&repaired, "malformed")
@@ -201,7 +200,10 @@ fn a_busy_registry_lock_never_blocks_listing_and_defers_self_heal() {
     set_meta_description(&root, "busy", "after hand edit");
     let mut document = registry(&root);
     let busy = row_mut(&mut document, "busy");
-    busy.insert("description".to_owned(), Value::String("old row".to_owned()));
+    busy.insert(
+        "description".to_owned(),
+        Value::String("old row".to_owned()),
+    );
     busy.insert("mtime_ns".to_owned(), Value::Integer(0));
     write_registry(&root, &document);
 
@@ -218,7 +220,9 @@ fn a_busy_registry_lock_never_blocks_listing_and_defers_self_heal() {
     let received = receiver.recv_timeout(Duration::from_secs(2));
     drop(lock);
     worker.join().unwrap();
-    let scan = received.expect("listing blocked on registry.native.lock").unwrap();
+    let scan = received
+        .expect("listing blocked on registry.native.lock")
+        .unwrap();
     assert_eq!(description(&scan, "busy"), "after hand edit");
     assert_eq!(
         row(&registry(&root), "busy")
@@ -248,10 +252,8 @@ fn invalid_mode_and_missing_reference_target_fall_back_and_self_heal() {
         .unwrap();
 
     let mut document = registry(&root);
-    row_mut(&mut document, "copy").insert(
-        "mode".to_owned(),
-        Value::String("future-mode".to_owned()),
-    );
+    row_mut(&mut document, "copy")
+        .insert("mode".to_owned(), Value::String("future-mode".to_owned()));
     row_mut(&mut document, "linked").remove("target");
     write_registry(&root, &document);
 
