@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File, OpenOptions, TryLockError},
     io::{self, Write as _},
     path::{Path, PathBuf},
 };
@@ -25,8 +25,8 @@ pub(super) fn try_acquire_lock(path: &Path) -> Result<Option<FileLock>, Reposito
     let file = open_lock_file(path)?;
     match file.try_lock() {
         Ok(()) => Ok(Some(FileLock { _file: file })),
-        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
-        Err(error) => Err(io_error("lock", path, error)),
+        Err(TryLockError::WouldBlock) => Ok(None),
+        Err(TryLockError::Error(error)) => Err(io_error("lock", path, error)),
     }
 }
 
