@@ -24,6 +24,21 @@ impl EntryRepository for FakeRepository {
     }
 }
 
+#[derive(Debug)]
+struct FailingRepository {
+    error: RepositoryError,
+}
+
+impl EntryRepository for FailingRepository {
+    fn scan(&self) -> Result<LibraryScan, RepositoryError> {
+        Err(self.error.clone())
+    }
+
+    fn resolve(&self, _query: &str) -> Result<Entry, RepositoryError> {
+        Err(self.error.clone())
+    }
+}
+
 fn summary(slug: &str, name: &str) -> EntrySummary {
     EntrySummary {
         slug: Slug::parse(slug).unwrap(),
@@ -44,15 +59,30 @@ fn entry() -> Entry {
 
 #[test]
 fn list_is_deterministic_and_keeps_diagnostics() {
-    let diagnostic = Diagnostic {
-        code: DiagnosticCode::CorruptMetadata,
-        slug: Some("broken".to_owned()),
-        message: "bad TOML".to_owned(),
-    };
     let repository = FakeRepository {
         scan: LibraryScan {
-            entries: vec![summary("zulu", "zulu"), summary("alpha", "Alpha")],
-            diagnostics: vec![diagnostic.clone()],
+            entries: vec![
+                summary("zulu", "zulu"),
+                summary("beta", "Alpha"),
+                summary("alpha", "Alpha"),
+            ],
+            diagnostics: vec![
+                Diagnostic {
+                    code: DiagnosticCode::CorruptMetadata,
+                    slug: Some("zulu".to_owned()),
+                    message: "later".to_owned(),
+                },
+                Diagnostic {
+                    code: DiagnosticCode::Io,
+                    slug: None,
+                    message: "global".to_owned(),
+                },
+                Diagnostic {
+                    code: DiagnosticCode::InvalidSlug,
+                    slug: Some("alpha".to_owned()),
+                    message: "first".to_owned(),
+                },
+            ],
         },
         resolved: entry(),
         queries: Mutex::new(Vec::new()),
@@ -61,9 +91,20 @@ fn list_is_deterministic_and_keeps_diagnostics() {
 
     let scan = service.list().unwrap();
 
-    assert_eq!(scan.entries[0].slug.as_str(), "alpha");
-    assert_eq!(scan.entries[1].slug.as_str(), "zulu");
-    assert_eq!(scan.diagnostics, vec![diagnostic]);
+    assert_eq!(
+        scan.entries
+            .iter()
+            .map(|entry| entry.slug.as_str())
+            .collect::<Vec<_>>(),
+        ["alpha", "beta", "zulu"]
+    );
+    assert_eq!(
+        scan.diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.slug.as_deref())
+            .collect::<Vec<_>>(),
+        [None, Some("alpha"), Some("zulu")]
+    );
 }
 
 #[test]
@@ -78,32 +119,87 @@ fn show_delegates_the_exact_selector_to_the_repository() {
     let shown = service.show("Alpha").unwrap();
 
     assert_eq!(shown.slug.as_str(), "alpha");
-    assert_eq!(service.repository().queries.lock().unwrap().as_slice(), ["Alpha"]);
+    assert_eq!(
+        service.repository().queries.lock().unwrap().as_slice(),
+        ["Alpha"]
+    );
 }
 
 #[test]
 fn repository_failures_keep_the_cli_exit_contract() {
+    let errors = [
+        (
+            RepositoryError::NotFound {
+                query: "missing".to_owned(),
+            },
+            ExitClass::NotFound,
+            "entry not found: missing",
+        ),
+        (
+            RepositoryError::Ambiguous {
+                query: "same".to_owned(),
+                candidates: vec!["a".to_owned(), "b".to_owned()],
+            },
+            ExitClass::Usage,
+            "entry name \"same\" is ambiguous",
+        ),
+        (
+            RepositoryError::Corrupt {
+                slug: "bad".to_owned(),
+                reason: "bad TOML".to_owned(),
+            },
+            ExitClass::Skit,
+            "entry \"bad\" has corrupt metadata",
+        ),
+        (
+            RepositoryError::Io {
+                operation: "read",
+                path: "/tmp/meta.toml".to_owned(),
+                reason: "denied".to_owned(),
+            },
+            ExitClass::Skit,
+            "could not read /tmp/meta.toml: denied",
+        ),
+    ];
+
+    for (error, class, message) in errors {
+        assert_eq!(error.exit_class(), class);
+        assert!(error.to_string().contains(message));
+    }
+}
+
+#[test]
+fn all_non_child_exit_codes_are_stable() {
+    assert_eq!(ExitClass::Usage.code(), 2);
+    assert_eq!(ExitClass::Skit.code(), 125);
+    assert_eq!(ExitClass::NotExecutable.code(), 126);
+    assert_eq!(ExitClass::NotFound.code(), 127);
+    assert_eq!(ExitClass::Aborted.code(), 130);
+}
+
+#[test]
+fn repository_errors_are_propagated_without_frontend_guessing() {
+    let error = RepositoryError::Io {
+        operation: "scan",
+        path: "/library".to_owned(),
+        reason: "offline".to_owned(),
+    };
+    let service = LibraryService::new(FailingRepository {
+        error: error.clone(),
+    });
+
+    assert_eq!(service.list().unwrap_err(), error);
+    assert_eq!(service.show("anything").unwrap_err(), error);
+}
+
+#[test]
+fn diagnostic_codes_keep_stable_machine_spelling() {
     assert_eq!(
-        RepositoryError::NotFound {
-            query: "missing".to_owned()
-        }
-        .exit_class(),
-        ExitClass::NotFound
+        serde_json::to_string(&DiagnosticCode::InvalidSlug).unwrap(),
+        "\"invalid_slug\""
     );
     assert_eq!(
-        RepositoryError::Ambiguous {
-            query: "same".to_owned(),
-            candidates: vec!["a".to_owned(), "b".to_owned()]
-        }
-        .exit_class(),
-        ExitClass::Usage
-    );
-    assert_eq!(
-        RepositoryError::Corrupt {
-            slug: "bad".to_owned(),
-            reason: "bad TOML".to_owned()
-        }
-        .exit_class(),
-        ExitClass::Skit
+        serde_json::from_str::<DiagnosticCode>("\"corrupt_metadata\"").unwrap(),
+        DiagnosticCode::CorruptMetadata
     );
 }

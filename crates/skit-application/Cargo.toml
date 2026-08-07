@@ -14,6 +14,7 @@ thiserror.workspace = true
 skit-domain.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 uuid.workspace = true
 
 [lints]
