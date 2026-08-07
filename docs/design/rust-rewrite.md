@@ -99,7 +99,16 @@ It freezes both existing serialization surfaces without importing TOML into the 
 fields. Both decoders are total on hand-edited scalar garbage, and default coercion shares one
 strict integer, finite-float, boolean, string, choice, and path contract.
 
+The same domain module now carries the frozen universal secret-name heuristic used by placeholder
+synthesis and later form assembly. It matches the Python baseline's separator, camelCase, jammed,
+plural, and digit-split recognition; exact password/secret suffixes; exact `KEY` word and jammed-key
+prefix allowlist; and the two-mode `TOKEN` count-context rules for names versus sentence prompts.
+The detector remains deliberately conservative: a positive heuristic marks a value secret, while
+actual secret persistence and scrubbing are still enforced by later application/store contracts.
+Implicit command-template placeholders are required, placeholder-delivery string declarations whose
+secret bit is computed by this one shared detector.
+
 This is deliberately the model kernel, not the whole parameter product. Language-specific declared
-parameter extraction, template synthesis, token expansion, presets, remembered values, secret
-heuristics and non-persistence, form assembly, and launch-time delivery remain separate unchecked
-contracts.
+parameter extraction, template synthesis beyond implicit placeholders, token expansion, presets,
+remembered values, secret non-persistence, form assembly, and launch-time delivery remain separate
+unchecked contracts.
