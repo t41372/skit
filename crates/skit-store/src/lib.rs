@@ -12,9 +12,7 @@ use std::{
 };
 
 use serde::Deserialize;
-use skit_application::{
-    Diagnostic, DiagnosticCode, EntryRepository, LibraryScan, RepositoryError,
-};
+use skit_application::{Diagnostic, DiagnosticCode, EntryRepository, LibraryScan, RepositoryError};
 use skit_domain::{Entry, EntryId, EntryKind, EntryMeta, EntrySummary, Slug, StorageMode};
 
 /// Read-only filesystem adapter for an existing skit data directory.

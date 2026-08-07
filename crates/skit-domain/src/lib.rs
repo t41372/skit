@@ -40,7 +40,9 @@ impl Slug {
             && !value.starts_with('-')
             && !value.ends_with('-')
             && !value.contains("--")
-            && value.chars().all(|character| character.is_alphanumeric() || character == '-');
+            && value
+                .chars()
+                .all(|character| character.is_alphanumeric() || character == '-');
         if valid {
             Ok(Self(value))
         } else {

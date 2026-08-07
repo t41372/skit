@@ -8,9 +8,7 @@ use ratatui::{
     crossterm::{
         event::{self, DisableMouseCapture, EnableMouseCapture},
         execute,
-        terminal::{
-            EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-        },
+        terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
     },
 };
 use skit_application::LibraryScan;
