@@ -14,6 +14,9 @@ use skit_store::FileStore;
 use skit_ui::LibraryState;
 use thiserror::Error;
 
+#[cfg(test)]
+mod tests;
+
 /// Run the real command-line entry point and return its stable process status.
 #[must_use]
 pub fn entry() -> u8 {
