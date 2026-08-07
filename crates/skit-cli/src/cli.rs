@@ -172,14 +172,14 @@ fn add(
     name: Option<String>,
     reference: bool,
 ) -> Result<(), CliError> {
-    let source = fs::canonicalize(source).map_err(|error| source_error("resolve", source, error))?;
+    let source =
+        fs::canonicalize(source).map_err(|error| source_error("resolve", source, error))?;
     let (bytes, permissions) = read_source(&source)?;
     let name = name.unwrap_or_else(|| source_default_name(&source));
-    let kind = EntryKind::parse(kind.to_owned()).map_err(|error| {
-        RepositoryError::InvalidMutation {
+    let kind =
+        EntryKind::parse(kind.to_owned()).map_err(|error| RepositoryError::InvalidMutation {
             reason: error.to_string(),
-        }
-    })?;
+        })?;
     let stored_name = stored_name(kind.as_str(), &source);
     let mode = if reference {
         StorageMode::Reference
@@ -215,11 +215,7 @@ fn describe(
     Ok(())
 }
 
-fn rename(
-    service: &LibraryService<FileStore>,
-    selector: &str,
-    name: &str,
-) -> Result<(), CliError> {
+fn rename(service: &LibraryService<FileStore>, selector: &str, name: &str) -> Result<(), CliError> {
     let held = service.show(selector)?;
     let claimed = service.claim_identity(&held)?;
     let entry = service.rename(&claimed, name)?;
@@ -227,11 +223,7 @@ fn rename(
     Ok(())
 }
 
-fn remove(
-    service: &LibraryService<FileStore>,
-    selector: &str,
-    yes: bool,
-) -> Result<(), CliError> {
+fn remove(service: &LibraryService<FileStore>, selector: &str, yes: bool) -> Result<(), CliError> {
     if !yes {
         return Err(CliError::ConfirmationRequired);
     }
