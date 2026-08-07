@@ -70,7 +70,13 @@ fn source_helpers_preserve_bytes_names_and_storage_conventions() {
 
     let missing = root.path().join("missing");
     let error = read_source(&missing).unwrap_err();
-    assert!(matches!(error, CliError::Source { operation: "open", .. }));
+    assert!(matches!(
+        error,
+        CliError::Source {
+            operation: "open",
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -136,7 +142,10 @@ fn data_directory_mode_and_error_taxonomy_helpers_are_stable() {
         ),
         (CliError::ConfirmationRequired, ExitClass::Usage.code()),
         (CliError::Json(json_error), ExitClass::Skit.code()),
-        (CliError::Io(io::Error::other("output")), ExitClass::Skit.code()),
+        (
+            CliError::Io(io::Error::other("output")),
+            ExitClass::Skit.code(),
+        ),
         (
             CliError::Tui(skit_tui::TuiError::Io(io::Error::other("terminal"))),
             ExitClass::Skit.code(),
