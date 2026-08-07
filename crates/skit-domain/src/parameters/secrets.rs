@@ -211,15 +211,6 @@ fn is_credential_key_prefix(prefix: &str) -> bool {
 fn is_count_word(word: &str) -> bool {
     matches!(
         word,
-        "MAX"
-            | "MIN"
-            | "NUM"
-            | "N"
-            | "COUNT"
-            | "TOTAL"
-            | "LIMIT"
-            | "MANY"
-            | "NUMBER"
-            | "PER"
+        "MAX" | "MIN" | "NUM" | "N" | "COUNT" | "TOTAL" | "LIMIT" | "MANY" | "NUMBER" | "PER"
     )
 }
