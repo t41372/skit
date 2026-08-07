@@ -10,7 +10,7 @@ use serde::Deserialize;
 use skit_application::{Diagnostic, DiagnosticCode, EntryRepository, LibraryScan, RepositoryError};
 use skit_domain::{Entry, EntryId, EntryKind, EntryMeta, EntrySummary, Slug, StorageMode};
 
-use crate::mutations::registry::{Registry, metadata_mtime_ns};
+use crate::mutations::registry::{metadata_mtime_ns, Registry};
 
 /// Filesystem adapter for an existing skit data directory.
 #[derive(Clone, Debug)]
