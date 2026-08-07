@@ -71,10 +71,7 @@ impl Drop for StagedDirectory {
     }
 }
 
-pub(super) fn write_new_file(
-    path: &Path,
-    payload: &EntryPayload,
-) -> Result<(), RepositoryError> {
+pub(super) fn write_new_file(path: &Path, payload: &EntryPayload) -> Result<(), RepositoryError> {
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -87,10 +84,7 @@ pub(super) fn write_new_file(
         .map_err(|error| io_error("sync", path, error))
 }
 
-pub(super) fn write_new_metadata(
-    path: &Path,
-    meta: &EntryMeta,
-) -> Result<(), RepositoryError> {
+pub(super) fn write_new_metadata(path: &Path, meta: &EntryMeta) -> Result<(), RepositoryError> {
     let text = toml::to_string_pretty(meta)
         .map_err(|error| invalid(format!("could not encode metadata: {error}")))?;
     let mut file = OpenOptions::new()
@@ -177,10 +171,7 @@ fn unique_sibling(path: &Path, suffix: &str) -> Result<PathBuf, RepositoryError>
     )))
 }
 
-pub(super) fn create_dir_all(
-    path: &Path,
-    operation: &'static str,
-) -> Result<(), RepositoryError> {
+pub(super) fn create_dir_all(path: &Path, operation: &'static str) -> Result<(), RepositoryError> {
     fs::create_dir_all(path).map_err(|error| io_error(operation, path, error))
 }
 
@@ -190,11 +181,7 @@ pub(super) fn invalid(reason: impl Into<String>) -> RepositoryError {
     }
 }
 
-pub(super) fn io_error(
-    operation: &'static str,
-    path: &Path,
-    error: io::Error,
-) -> RepositoryError {
+pub(super) fn io_error(operation: &'static str, path: &Path, error: io::Error) -> RepositoryError {
     RepositoryError::Io {
         operation,
         path: path.display().to_string(),
