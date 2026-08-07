@@ -2,8 +2,11 @@
 
 #![forbid(unsafe_code)]
 
+mod mutations;
+
 use std::fmt::Debug;
 
+pub use mutations::{CreateEntry, EntryMutationRepository, EntryPayload, SourcePermissions};
 use serde::{Deserialize, Serialize};
 use skit_domain::{Entry, EntrySummary};
 use thiserror::Error;
@@ -82,6 +85,38 @@ pub enum RepositoryError {
         /// Deterministic candidate slug list.
         candidates: Vec<String>,
     },
+    /// A create or rename would collide with an existing entry.
+    #[error("entry {name:?} already exists at slug {slug:?}")]
+    Conflict {
+        /// Requested display name.
+        name: String,
+        /// Conflicting stable address.
+        slug: String,
+    },
+    /// A requested mutation could not satisfy the storage contract.
+    #[error("invalid entry mutation: {reason}")]
+    InvalidMutation {
+        /// Stable, user-facing refusal detail.
+        reason: String,
+    },
+    /// A held entry now resolves to a different incarnation.
+    #[error("entry {slug:?} changed while this operation was underway")]
+    StaleEntry {
+        /// Address that changed owners.
+        slug: String,
+    },
+    /// A staged copy edit no longer matches the source version it started from.
+    #[error(
+        "entry {slug:?} source changed while this edit was underway (expected {expected}, found {actual})"
+    )]
+    SourceChanged {
+        /// Address of the edited entry.
+        slug: String,
+        /// Source digest captured when editing started.
+        expected: String,
+        /// Digest of the current stored bytes.
+        actual: String,
+    },
     /// A selected entry exists but its authoritative metadata is corrupt.
     #[error("entry {slug:?} has corrupt metadata: {reason}")]
     Corrupt {
@@ -108,15 +143,18 @@ impl RepositoryError {
     pub const fn exit_class(&self) -> ExitClass {
         match self {
             Self::NotFound { .. } => ExitClass::NotFound,
-            Self::Ambiguous { .. } => ExitClass::Usage,
-            Self::Corrupt { .. } | Self::Io { .. } => ExitClass::Skit,
+            Self::Ambiguous { .. } | Self::Conflict { .. } | Self::InvalidMutation { .. } => {
+                ExitClass::Usage
+            }
+            Self::StaleEntry { .. }
+            | Self::SourceChanged { .. }
+            | Self::Corrupt { .. }
+            | Self::Io { .. } => ExitClass::Skit,
         }
     }
 }
 
-/// Persistence port used by read-only library use cases.
-///
-/// Mutation and launch ports are added only alongside their race/refusal contract tests.
+/// Read-side persistence port shared by every frontend.
 pub trait EntryRepository: Debug {
     /// Scan every entry, isolating per-entry corruption as diagnostics.
     fn scan(&self) -> Result<LibraryScan, RepositoryError>;
@@ -125,7 +163,7 @@ pub trait EntryRepository: Debug {
     fn resolve(&self, query: &str) -> Result<Entry, RepositoryError>;
 }
 
-/// Read-only library use cases shared by CLI, Ratatui, and the future Tauri adapter.
+/// Application use cases shared by CLI, Ratatui, and the future Tauri adapter.
 #[derive(Debug)]
 pub struct LibraryService<R> {
     repository: R,
