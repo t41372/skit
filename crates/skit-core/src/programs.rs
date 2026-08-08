@@ -1,4 +1,5 @@
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::{Platform, ProgramResolver};
@@ -107,28 +108,38 @@ impl ProgramSearch {
 
 impl ProgramResolver for ProgramSearch {
     fn resolve(&self, name: &str) -> Option<PathBuf> {
-        self.candidates(name)
-            .into_iter()
-            .find(|candidate| executable(candidate, self.platform))
+        self.candidates(name).into_iter().find_map(|candidate| {
+            if self.platform == Platform::Windows {
+                windows_existing_file(&candidate)
+            } else {
+                posix_executable(&candidate).then_some(candidate)
+            }
+        })
     }
 }
 
-fn executable(path: &Path, platform: Platform) -> bool {
-    if !path.is_file() {
-        return false;
+fn windows_existing_file(path: &Path) -> Option<PathBuf> {
+    if path.is_file() {
+        return Some(path.to_owned());
     }
-    if platform == Platform::Windows {
-        return true;
-    }
-    posix_executable(path)
+    let parent = path.parent()?;
+    let wanted = path.file_name()?.to_string_lossy();
+    let directory = fs::read_dir(parent).ok()?;
+    directory.filter_map(Result::ok).find_map(|entry| {
+        let name = entry.file_name();
+        let matches = name.to_string_lossy().eq_ignore_ascii_case(&wanted);
+        (matches && entry.path().is_file()).then(|| entry.path())
+    })
 }
 
 #[cfg(unix)]
 fn posix_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
 
-    path.metadata()
-        .is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+    path.is_file()
+        && path
+            .metadata()
+            .is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(not(unix))]
