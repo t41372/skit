@@ -1,12 +1,15 @@
 //! Filesystem and TOML adapters for skit.
 //!
-//! The authoritative read path is `scripts/<slug>/meta.toml`. `registry.toml` remains an
-//! optimization to port only after freshness and self-heal differential tests exist.
+//! Entry data and user state are separate roots. Library metadata remains authoritative under the
+//! data root, while form values/presets use an independently locked state adapter.
 
 #![forbid(unsafe_code)]
 
+mod fs_ops;
 mod mutations;
 mod read;
+mod state;
 
 pub use mutations::content_hash;
 pub use read::FileStore;
+pub use state::FileFormStateStore;
