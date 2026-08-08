@@ -90,6 +90,18 @@ pub enum LanguageError {
     /// A selected source binding no longer exists.
     #[error("parameter {name:?} no longer has a matching source binding")]
     BindingNotFound { name: String },
+    /// Inline metadata is malformed or cannot be encoded.
+    #[error("inline metadata is not valid: {reason}")]
+    InvalidMetadata { reason: String },
+}
+
+/// Effective PEP 723 fields used by Python copy entries.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct UvMetadata {
+    /// PEP 508 dependency strings.
+    pub dependencies: Vec<String>,
+    /// Python version constraint.
+    pub requires_python: String,
 }
 
 /// Infer a known kind from a path, optional shebang, and executable status.
@@ -260,6 +272,126 @@ pub fn write_managed_params(
     output.push_str(&block);
     output.push_str(&text[insert_at..]);
     Ok(output)
+}
+
+/// Read PEP 723 dependency fields without evaluating source code.
+#[must_use]
+pub fn read_uv_metadata(text: &str) -> Option<UvMetadata> {
+    let table = parse_inline_metadata(text, "#")?;
+    Some(UvMetadata {
+        dependencies: table
+            .get("dependencies")
+            .and_then(TomlValue::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(TomlValue::as_str)
+            .map(str::to_owned)
+            .collect(),
+        requires_python: table
+            .get("requires-python")
+            .and_then(TomlValue::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+    })
+}
+
+/// Replace PEP 723 dependency fields and preserve other inline metadata tables.
+pub fn write_uv_metadata(
+    text: &str,
+    dependencies: &[String],
+    requires_python: &str,
+) -> Result<String, LanguageError> {
+    let mut table = match block_regex("#").captures(text) {
+        Some(captures) => {
+            let body = captures.name("body").map_or("", |capture| capture.as_str());
+            let stripped = body
+                .lines()
+                .map(|line| strip_comment_prefix(line, "#"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            toml::from_str::<toml::Table>(&stripped).map_err(|error| {
+                LanguageError::InvalidMetadata {
+                    reason: error.to_string(),
+                }
+            })?
+        }
+        None => toml::Table::new(),
+    };
+    if dependencies.is_empty() {
+        table.remove("dependencies");
+    } else {
+        table.insert(
+            "dependencies".to_owned(),
+            TomlValue::Array(
+                dependencies
+                    .iter()
+                    .cloned()
+                    .map(TomlValue::String)
+                    .collect(),
+            ),
+        );
+    }
+    if requires_python.is_empty() {
+        table.remove("requires-python");
+    } else {
+        table.insert(
+            "requires-python".to_owned(),
+            TomlValue::String(requires_python.to_owned()),
+        );
+    }
+    rewrite_inline_metadata(text, "#", &table)
+}
+
+fn rewrite_inline_metadata(
+    text: &str,
+    leader: &str,
+    table: &toml::Table,
+) -> Result<String, LanguageError> {
+    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let encoded = toml::to_string(table).map_err(|error| LanguageError::InvalidMetadata {
+        reason: error.to_string(),
+    })?;
+    let block = format!(
+        "{leader} /// script{newline}{}{leader} ///{newline}",
+        commentify(&encoded, leader, newline)
+    );
+    let pattern = block_regex(leader);
+    if let Some(found) = pattern.find(text) {
+        let mut output = String::with_capacity(text.len() + block.len());
+        output.push_str(&text[..found.start()]);
+        output.push_str(&block);
+        output.push_str(&text[found.end()..]);
+        return Ok(output);
+    }
+    let insert_at = if text.starts_with("#!") {
+        text.find('\n').map_or(text.len(), |index| index + 1)
+    } else {
+        0
+    };
+    let mut output = String::with_capacity(text.len() + block.len());
+    output.push_str(&text[..insert_at]);
+    output.push_str(&block);
+    output.push_str(&text[insert_at..]);
+    Ok(output)
+}
+
+/// Convert one shell constant to an environment-default expression.
+pub fn normalize_shell_default(text: &str, name: &str) -> Result<String, LanguageError> {
+    let name_pattern = regex::escape(name);
+    let pattern = Regex::new(&format!(
+        r"(?m)^([ \t]*{name_pattern}[ \t]*=[ \t]*)([^#$\r\n][^#\r\n]*?)([ \t]*(?:#.*)?)(\r?)$"
+    ))
+    .expect("an escaped parameter name is a valid regular expression");
+    replace_first(text, &pattern, |captures| {
+        let prefix = captures.get(1).map_or("", |item| item.as_str());
+        let value = captures.get(2).map_or("", |item| item.as_str()).trim_end();
+        let suffix = captures.get(3).map_or("", |item| item.as_str());
+        let carriage_return = captures.get(4).map_or("", |item| item.as_str());
+        format!("{prefix}${{{name}:-{value}}}{suffix}{carriage_return}")
+    })
+    .ok_or_else(|| LanguageError::BindingNotFound {
+        name: name.to_owned(),
+    })
 }
 
 fn metadata_leader(kind: &str) -> Option<&'static str> {

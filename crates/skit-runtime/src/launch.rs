@@ -171,7 +171,7 @@ pub fn build_launch_plan<P: ProgramProbe>(
     let kind = entry.meta.kind.as_str();
 
     let (program, args, display_args) = match kind {
-        "python" => python_plan(entry, paths, assembly, &settings, probe)?,
+        "python" => python_plan(paths, assembly, &settings, probe)?,
         "shell" => interpreted_plan(paths, assembly, interpreter(&settings, "bash"), &[], probe)?,
         "fish" => interpreted_plan(paths, assembly, interpreter(&settings, "fish"), &[], probe)?,
         "powershell" => interpreted_plan(
@@ -213,7 +213,6 @@ pub fn build_launch_plan<P: ProgramProbe>(
 }
 
 fn python_plan<P: ProgramProbe>(
-    entry: &Entry,
     paths: &LaunchPaths,
     assembly: &Assembly,
     settings: &EntrySettings,
@@ -226,11 +225,9 @@ fn python_plan<P: ProgramProbe>(
         prefix.push("--python".to_owned());
         prefix.push(settings.requires_python.clone());
     }
-    if entry.meta.mode == StorageMode::Reference {
-        for dependency in &settings.dependencies {
-            prefix.push("--with".to_owned());
-            prefix.push(dependency.clone());
-        }
+    for dependency in &settings.dependencies {
+        prefix.push("--with".to_owned());
+        prefix.push(dependency.clone());
     }
     prefix.push("--script".to_owned());
     prefix.push(paths.script.display().to_string());

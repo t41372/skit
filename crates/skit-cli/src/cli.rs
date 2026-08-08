@@ -17,7 +17,10 @@ use skit_domain::{
     parameters::{ParamDecl, ParameterDelivery, ParameterType, coerce_default},
 };
 use skit_form::form_params;
-use skit_language::{infer_kind, placeholder_params};
+use skit_language::{
+    detect_candidates, infer_kind, managed_params, normalize_shell_default, placeholder_params,
+    read_uv_metadata, write_managed_params, write_uv_metadata,
+};
 use skit_store::{ConfigError, FileConfigStore, FileFormStateStore, PromptRunner};
 use skit_store::{FileStore, stored_filename};
 use skit_ui::LibraryState;
@@ -213,6 +216,18 @@ struct DepsArgs {
 struct ParamsArgs {
     /// Entry slug or display name.
     selector: String,
+    /// Reconcile managed definitions with the current source.
+    #[arg(long)]
+    resync: bool,
+    /// Manage one detected source parameter.
+    #[arg(long = "manage")]
+    manage: Vec<String>,
+    /// Stop managing one source parameter.
+    #[arg(long = "unmanage")]
+    unmanage: Vec<String>,
+    /// Normalize one shell constant to an environment default.
+    #[arg(long = "normalize")]
+    normalize: Vec<String>,
     /// Add a hand-declared parameter.
     #[arg(long = "add")]
     add: Vec<String>,
@@ -435,7 +450,7 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             Ok(0)
         }
         Some(Command::Deps(args)) => {
-            deps(&service, args)?;
+            deps(&service, &store, args)?;
             Ok(0)
         }
         Some(Command::Doctor { json, rebuild }) => {
@@ -922,13 +937,19 @@ fn edit(
     Ok(())
 }
 
-fn deps(service: &LibraryService<FileStore>, args: DepsArgs) -> Result<(), CliError> {
-    let held = service.show(&args.selector)?;
+fn deps(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    args: DepsArgs,
+) -> Result<(), CliError> {
+    let mut held = service.show(&args.selector)?;
     let mut settings = EntrySettings::from_meta(&held.meta);
-    let kind = held.meta.kind.as_str();
+    let kind = held.meta.kind.as_str().to_owned();
+    let had_legacy_package_metadata =
+        !settings.dependencies.is_empty() || !settings.requires_python.is_empty();
     let package_change =
         !args.dependencies.is_empty() || args.clear || args.requires_python.is_some();
-    if package_change && !matches!(kind, "python" | "js" | "ts") {
+    if package_change && !matches!(kind.as_str(), "python" | "js" | "ts") {
         return Err(CliError::Usage(format!(
             "{} does not take package dependencies; only --need applies",
             held.meta.name
@@ -947,29 +968,69 @@ fn deps(service: &LibraryService<FileStore>, args: DepsArgs) -> Result<(), CliEr
             "use --need or --clear-needs, not both".to_owned(),
         ));
     }
-    let changed = !args.dependencies.is_empty()
-        || args.clear
-        || args.requires_python.is_some()
-        || !args.needs.is_empty()
-        || args.clear_needs;
+    let mut effective_dependencies = settings.dependencies.clone();
+    let mut effective_python = settings.requires_python.clone();
+    let python_copy = kind == "python" && held.meta.mode == StorageMode::Copy;
+    let source = python_copy
+        .then(|| source_path(store, &held))
+        .flatten()
+        .and_then(|path| fs::read_to_string(path).ok());
+    if let Some(metadata) = source.as_deref().and_then(read_uv_metadata) {
+        effective_dependencies = metadata.dependencies;
+        effective_python = metadata.requires_python;
+    }
     if args.clear {
-        settings.dependencies.clear();
+        effective_dependencies.clear();
     } else if !args.dependencies.is_empty() {
-        settings.dependencies = args.dependencies;
+        effective_dependencies = args
+            .dependencies
+            .iter()
+            .map(|item| item.trim().to_owned())
+            .filter(|item| !item.is_empty())
+            .collect();
     }
-    if let Some(version) = args.requires_python {
-        settings.requires_python = version;
+    if let Some(version) = &args.requires_python {
+        effective_python = if matches!(version.trim(), "-" | "none") {
+            String::new()
+        } else {
+            version.trim().to_owned()
+        };
     }
+    if package_change && python_copy {
+        let source = source.ok_or_else(|| {
+            CliError::Usage("the Python stored copy is not readable UTF-8".to_owned())
+        })?;
+        let rewritten = write_uv_metadata(&source, &effective_dependencies, &effective_python)
+            .map_err(|error| CliError::Usage(error.to_string()))?;
+        if rewritten != source {
+            let claimed = service.claim_identity(&held)?;
+            held =
+                service.commit_copy_edit(&claimed, rewritten.as_bytes(), &held.meta.source_hash)?;
+        }
+        settings.dependencies.clear();
+        settings.requires_python.clear();
+    } else if package_change {
+        settings.dependencies = effective_dependencies.clone();
+        settings.requires_python = effective_python.clone();
+    }
+    let needs_changed = !args.needs.is_empty() || args.clear_needs;
     if args.clear_needs {
         settings.needs.clear();
     } else if !args.needs.is_empty() {
         settings.needs = args.needs;
     }
-    if changed {
+    let metadata_changed = needs_changed
+        || (package_change && !python_copy)
+        || (package_change && python_copy && had_legacy_package_metadata);
+    if metadata_changed {
         let claimed = service.claim_identity(&held)?;
-        service.update_settings(&claimed, &settings, &held.meta.workdir)?;
+        held = service.update_settings(&claimed, &settings, &held.meta.workdir)?;
     }
-    write_deps(&settings, args.json)
+    let mut output = EntrySettings::from_meta(&held.meta);
+    output.dependencies = effective_dependencies;
+    output.requires_python = effective_python;
+    output.needs = settings.needs;
+    write_deps(&output, args.json)
 }
 
 fn write_deps(settings: &EntrySettings, json: bool) -> Result<(), CliError> {
@@ -995,11 +1056,109 @@ fn params(
     store: &FileStore,
     args: ParamsArgs,
 ) -> Result<(), CliError> {
-    let held = service.show(&args.selector)?;
-    let mut settings = EntrySettings::from_meta(&held.meta);
-    let source = source_path(store, &held)
+    let mut held = service.show(&args.selector)?;
+    let mut source = source_path(store, &held)
         .and_then(|path| fs::read_to_string(path).ok())
         .unwrap_or_default();
+    let has_source_operation = args.resync
+        || !args.manage.is_empty()
+        || !args.unmanage.is_empty()
+        || !args.normalize.is_empty();
+    let has_other_operation = !args.add.is_empty()
+        || !args.remove.is_empty()
+        || !args.parameter_types.is_empty()
+        || !args.defaults.is_empty()
+        || !args.choices.is_empty()
+        || !args.delivery.is_empty()
+        || !args.flags.is_empty()
+        || !args.help_text.is_empty()
+        || !args.prompts.is_empty()
+        || !args.env_sources.is_empty()
+        || !args.required.is_empty()
+        || !args.optional.is_empty()
+        || !args.secret.is_empty()
+        || !args.no_secret.is_empty()
+        || args.workdir.is_some()
+        || args.template.is_some()
+        || args.interpreter.is_some()
+        || args.runner.is_some()
+        || args.interpolate
+        || args.no_interpolate;
+    if has_source_operation && has_other_operation {
+        return Err(CliError::Usage(
+            "source management must be a separate params operation".to_owned(),
+        ));
+    }
+    if has_source_operation {
+        if held.meta.mode == StorageMode::Reference {
+            return Err(CliError::Usage(
+                "source management applies only to a stored copy".to_owned(),
+            ));
+        }
+        let kind = held.meta.kind.as_str();
+        let mut managed = managed_params(kind, &source);
+        let candidates = detect_candidates(kind, &source);
+        if args.resync {
+            managed = managed
+                .into_iter()
+                .filter_map(|current| {
+                    candidates
+                        .iter()
+                        .find(|candidate| candidate.name == current.name)
+                        .cloned()
+                        .map(|mut candidate| {
+                            candidate.secret = current.secret;
+                            candidate.env_source = current.env_source;
+                            if !current.prompt.is_empty() {
+                                candidate.prompt = current.prompt;
+                            }
+                            candidate
+                        })
+                })
+                .collect();
+        }
+        for name in &args.manage {
+            if managed.iter().any(|item| item.name == *name) {
+                continue;
+            }
+            let candidate = candidates
+                .iter()
+                .find(|item| item.name == *name)
+                .cloned()
+                .ok_or_else(|| CliError::Usage(format!("unknown source parameter: {name}")))?;
+            managed.push(candidate);
+        }
+        if !args.unmanage.is_empty() {
+            managed.retain(|item| !args.unmanage.contains(&item.name));
+        }
+        for name in &args.normalize {
+            if kind != "shell" {
+                return Err(CliError::Usage(
+                    "--normalize applies only to shell entries".to_owned(),
+                ));
+            }
+            source = normalize_shell_default(&source, name)
+                .map_err(|error| CliError::Usage(error.to_string()))?;
+            let normalized = detect_candidates(kind, &source)
+                .into_iter()
+                .find(|item| item.name == *name)
+                .ok_or_else(|| CliError::Usage(format!("could not normalize {name}")))?;
+            if let Some(item) = managed.iter_mut().find(|item| item.name == *name) {
+                *item = normalized;
+            } else {
+                managed.push(normalized);
+            }
+        }
+        let rewritten = write_managed_params(kind, &source, &managed)
+            .map_err(|error| CliError::Usage(error.to_string()))?;
+        if rewritten != source {
+            let claimed = service.claim_identity(&held)?;
+            held =
+                service.commit_copy_edit(&claimed, rewritten.as_bytes(), &held.meta.source_hash)?;
+            source = rewritten;
+        }
+    }
+    let mut settings = EntrySettings::from_meta(&held.meta);
     let mut declarations = form_params(held.meta.kind.as_str(), &source, &settings);
     for item in &settings.parameters {
         if !declarations.iter().any(|current| current.name == item.name) {
