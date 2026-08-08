@@ -40,9 +40,10 @@ jobs:
           from pathlib import Path
           path = Path('crates/skit-cli/src/run/command.rs')
           text = path.read_text()
-          old = '''    let script = staged
-                  .as_ref()
-                  .map_or_else(|| data_store.payload_path(&entry), |value| Ok(value.path.clone()))?;
+          old = '''    let script = staged.as_ref().map_or_else(
+              || data_store.payload_path(&entry),
+              |value| Ok(value.path.clone()),
+          )?;
           '''
           new = '''    let script = if let Some(staged) = staged.as_ref() {
               staged.path.clone()
@@ -53,7 +54,7 @@ jobs:
           };
           '''
           if old not in text:
-              raise SystemExit('expected run-path block was not found')
+              raise SystemExit('expected formatted run-path block was not found')
           path.write_text(text.replace(old, new, 1))
           PY
           cargo fmt --all
