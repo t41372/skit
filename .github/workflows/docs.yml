@@ -43,6 +43,8 @@ jobs:
           node-version: '26.5.0'
           cache: npm
           cache-dependency-path: docs/package-lock.json
+      - name: Use current npm
+        run: npm install --global npm@12.0.2
       - name: Install dependencies
         run: npm ci
         working-directory: docs
