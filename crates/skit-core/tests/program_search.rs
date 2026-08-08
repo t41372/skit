@@ -28,6 +28,36 @@ fn posix_search_uses_path_order_and_execute_bit() -> Result<(), Box<dyn std::err
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn fallback_directory_is_lower_priority_than_existing_path_entries()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempdir()?;
+    let path_bin = root.path().join("path-bin");
+    let private_bin = root.path().join("private-bin");
+    fs::create_dir_all(&path_bin)?;
+    fs::create_dir_all(&private_bin)?;
+    for (directory, body) in [(&path_bin, b"path".as_slice()), (&private_bin, b"private".as_slice())] {
+        let tool = directory.join("uv");
+        fs::write(&tool, body)?;
+        fs::set_permissions(&tool, fs::Permissions::from_mode(0o755))?;
+    }
+
+    let path_first = ProgramSearch::new(
+        Platform::Linux,
+        vec![path_bin.clone()],
+        Vec::<String>::new(),
+    )
+    .with_fallback_path(private_bin.clone());
+    assert_eq!(path_first.resolve("uv"), Some(path_bin.join("uv")));
+
+    fs::remove_file(path_bin.join("uv"))?;
+    assert_eq!(path_first.resolve("uv"), Some(private_bin.join("uv")));
+    Ok(())
+}
+
 #[test]
 fn windows_search_uses_pathext_case_insensitively_without_posix_execute_bits()
 -> Result<(), Box<dyn std::error::Error>> {
