@@ -25,5 +25,6 @@ jobs:
         run: cargo update --dry-run --verbose
       - name: Explain generic-array constraint
         run: |
-          cargo tree --invert generic-array@0.14.7 --edges normal,build,dev
+          cargo tree --target all --invert generic-array@0.14.7 --edges normal,build,dev
           cargo info generic-array@0.14.9
+          cargo info generic-array@1.4.4
