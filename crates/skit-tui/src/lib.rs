@@ -86,7 +86,9 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
     frame.render_widget(title, areas[0]);
 
     let items = if app.entries.is_empty() {
-        vec![ListItem::new("  No entries yet. Add one with: skit add <path>")]
+        vec![ListItem::new(
+            "  No entries yet. Add one with: skit add <path>",
+        )]
     } else {
         app.entries
             .iter()
@@ -126,15 +128,18 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
 pub fn run(store: &Store) -> io::Result<()> {
     let entries = store.list().map_err(io::Error::other)?;
     let mut app = App::new(entries);
-    ratatui::run(|mut terminal| loop {
-        terminal.draw(|frame| render(frame, &mut app))?;
-        match event::read()? {
-            Event::Key(key) if key.kind == KeyEventKind::Press => {
-                if app.handle_key(key) == Action::Quit {
+    ratatui::run(|terminal| {
+        loop {
+            terminal.draw(|frame| render(frame, &mut app))?;
+            match event::read()? {
+                Event::Key(key)
+                    if key.kind == KeyEventKind::Press
+                        && app.handle_key(key) == Action::Quit =>
+                {
                     break Ok(());
                 }
+                _ => {}
             }
-            _ => {}
         }
     })
 }
