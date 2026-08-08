@@ -53,9 +53,11 @@ fn definition_defaults_render_with_stable_python_compatible_scalar_spelling() {
     let integer = declaration("integer", Some(ParameterValue::Integer(-7)));
     let float = declaration("float", Some(ParameterValue::Float(1.0)));
     let decimal = declaration("decimal", Some(ParameterValue::Float(1.25)));
-    let boolean = declaration("boolean", Some(ParameterValue::Boolean(true)));
-    let choice = declaration("choice", Some(ParameterValue::Choice("fast".to_owned())));
-    let path = declaration("path", Some(ParameterValue::Path("./out".to_owned())));
+    let boolean = declaration("boolean", Some(ParameterValue::Bool(true)));
+    let mut choice = declaration("choice", Some(ParameterValue::String("fast".to_owned())));
+    choice.parameter_type = ParameterType::Choice;
+    let mut path = declaration("path", Some(ParameterValue::String("./out".to_owned())));
+    path.parameter_type = ParameterType::Path;
 
     assert_eq!(
         prefill(
@@ -169,7 +171,7 @@ fn defaulted_nontext_fields_do_not_treat_empty_as_an_explicit_delivered_value() 
     let mut integer = declaration("count", Some(ParameterValue::Integer(3)));
     integer.parameter_type = ParameterType::Int;
 
-    let mut boolean = declaration("enabled", Some(ParameterValue::Boolean(true)));
+    let mut boolean = declaration("enabled", Some(ParameterValue::Bool(true)));
     boolean.parameter_type = ParameterType::Bool;
 
     assert!(
