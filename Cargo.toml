@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/skit-core", "crates/skit"]
+members = ["crates/skit-core", "crates/skit-tui", "crates/skit"]
 resolver = "3"
 
 [workspace.package]
@@ -11,7 +11,9 @@ repository = "https://github.com/t41372/skit"
 
 [workspace.dependencies]
 clap = { version = "=4.6.4", features = ["derive"] }
+crossterm = "=0.29.0"
 dirs = "=6.0.0"
+ratatui = "=0.30.2"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 toml = "=1.1.3"
