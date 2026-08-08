@@ -96,7 +96,8 @@ fn managed_const_run_materializes_one_ephemeral_snapshot_without_touching_store(
             .windows(2)
             .find(|pair| pair[0] == "--script")
             .map(|pair| pair[1].as_str());
-        assert_eq!(actual_script, Some(temp_path.to_string_lossy().as_ref()));
+        let expected_script = temp_path.to_string_lossy().into_owned();
+        assert_eq!(actual_script, Some(expected_script.as_str()));
         assert_eq!(masked_script, actual_script);
     }
     assert!(!temp_path.exists());
@@ -170,9 +171,10 @@ fn unmanaged_python_keeps_the_stored_script_without_temp_materialization()
         &programs,
     )?;
     assert!(execution.injected_path().is_none());
+    let expected_script = entry.script_path().to_string_lossy().into_owned();
     assert_eq!(
         execution.run.launch.argv.last().map(String::as_str),
-        Some(entry.script_path().to_string_lossy().as_ref())
+        Some(expected_script.as_str())
     );
     Ok(())
 }
