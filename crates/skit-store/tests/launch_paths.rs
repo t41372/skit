@@ -1,8 +1,8 @@
 use std::fs;
 
 use skit_application::{CreateEntry, EntryMutationRepository, EntryPayload, SourcePermissions};
-use skit_domain::{EntryKind, StorageMode, stored_filename};
-use skit_store::FileStore;
+use skit_domain::{EntryKind, StorageMode};
+use skit_store::{FileStore, stored_filename};
 use tempfile::TempDir;
 
 #[test]
