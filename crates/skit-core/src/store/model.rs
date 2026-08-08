@@ -119,13 +119,32 @@ pub struct ScriptMeta {
 pub struct EntryDraft {
     pub meta: ScriptMeta,
     pub payload: Option<Vec<u8>>,
+    pub(crate) payload_readonly: bool,
+    pub(crate) payload_unix_mode: Option<u32>,
 }
 
 impl EntryDraft {
     /// Create a draft from complete metadata and an optional copied payload.
     #[must_use]
     pub fn new(meta: ScriptMeta, payload: Option<Vec<u8>>) -> Self {
-        Self { meta, payload }
+        Self {
+            meta,
+            payload,
+            payload_readonly: false,
+            payload_unix_mode: None,
+        }
+    }
+
+    /// Attach the source file's permission snapshot to a copied payload.
+    #[must_use]
+    pub(crate) fn with_payload_permissions(
+        mut self,
+        readonly: bool,
+        unix_mode: Option<u32>,
+    ) -> Self {
+        self.payload_readonly = readonly;
+        self.payload_unix_mode = unix_mode;
+        self
     }
 }
 
