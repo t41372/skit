@@ -44,8 +44,10 @@ impl From<StateError> for PresetFromLastError {
 /// A current field filter is applied so removed parameters never resurrect. Definition
 /// defaults are deliberately not overlaid: this operation promises history, not today's
 /// form. Before run snapshots existed, explicit last-used values are accepted as a narrow
-/// compatibility fallback. Secret names are purged from every persisted state surface
-/// before the preset is written.
+/// compatibility fallback only when there is no run stamp at all. A legacy run stamp that
+/// lacks `last_run.values` is refused because reconstructing accepted defaults would invent
+/// history. Secret names are purged from every persisted state surface before the preset is
+/// written.
 ///
 /// # Errors
 ///
@@ -68,6 +70,9 @@ pub fn save_preset_from_last(
         .map(|field| field.key.as_str())
         .collect::<BTreeSet<_>>();
     let snapshot = if let Some(last_run) = &state.last_run {
+        if !last_run.values_recorded {
+            return Err(PresetFromLastError::NoRememberedValues);
+        }
         last_run
             .values
             .iter()
