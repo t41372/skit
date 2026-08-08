@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod add_command;
+mod params_command;
 mod preset_command;
 
 use std::io::{self, Write};
@@ -90,6 +91,8 @@ enum Command {
         /// New description. Use an empty string to clear it.
         text: String,
     },
+    /// Inspect or edit declared parameter schema.
+    Params(params_command::ParamsArgs),
     /// Manage named parameter presets for an entry.
     Preset(preset_command::PresetArgs),
 }
@@ -186,6 +189,7 @@ fn run() -> Result<(), CliFailure> {
         Some(Command::Describe { name, text }) => {
             describe(&store, &name, &text).map_err(CliFailure::operational)
         }
+        Some(Command::Params(args)) => params_command::run(&store, args),
         Some(Command::Preset(args)) => preset_command::run(&store, args),
         None => skit_tui::run(&store).map_err(|error| CliFailure::operational(error.to_string())),
     }
@@ -231,7 +235,7 @@ fn list(store: &Store, as_json: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn show(store: &Store, name: &str, as_json: bool) -> Result<(), String> {
+pub(crate) fn show(store: &Store, name: &str, as_json: bool) -> Result<(), String> {
     let entry = store.resolve(name).map_err(|error| error.to_string())?;
     let plan = plan_for_entry(&entry);
     let state_store = StateStore::new(store.roots().clone());
