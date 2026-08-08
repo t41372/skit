@@ -13,10 +13,7 @@ fn write(path: &Path, content: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn exe_fixture(
-    root: &Path,
-    fields: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+fn exe_fixture(root: &Path, fields: &str) -> Result<(), Box<dyn std::error::Error>> {
     let source = env::current_exe()?.to_string_lossy().into_owned();
     write(
         &root.join("data/scripts/demo/meta.toml"),
@@ -145,8 +142,8 @@ fn child_nonzero_exit_is_silent_and_passes_through() -> Result<(), Box<dyn std::
 }
 
 #[test]
-fn save_preset_is_deferred_until_after_a_real_child_run()
--> Result<(), Box<dyn std::error::Error>> {
+fn save_preset_is_deferred_until_after_a_real_child_run() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = tempdir()?;
     exe_fixture(
         root.path(),
@@ -177,8 +174,8 @@ required = true
 }
 
 #[test]
-fn secret_set_value_reaches_child_but_never_state_bytes()
--> Result<(), Box<dyn std::error::Error>> {
+fn secret_set_value_reaches_child_but_never_state_bytes() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = tempdir()?;
     exe_fixture(
         root.path(),
@@ -243,8 +240,8 @@ fn unknown_set_name_is_usage_and_never_launches() -> Result<(), Box<dyn std::err
 }
 
 #[test]
-fn missing_required_value_is_skit_125_and_never_launches()
--> Result<(), Box<dyn std::error::Error>> {
+fn missing_required_value_is_skit_125_and_never_launches() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = tempdir()?;
     exe_fixture(
         root.path(),
@@ -264,8 +261,8 @@ required = true
 }
 
 #[test]
-fn command_and_prompt_launch_remain_explicit_125_refusals()
--> Result<(), Box<dyn std::error::Error>> {
+fn command_and_prompt_launch_remain_explicit_125_refusals() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = tempdir()?;
     write(
         &root.path().join("data/scripts/cmd/meta.toml"),
