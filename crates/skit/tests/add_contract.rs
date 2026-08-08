@@ -216,16 +216,34 @@ fn conflicting_kind_selectors_are_usage_error_and_write_nothing()
 }
 
 #[test]
-fn python_intake_refuses_before_writing_until_deep_lane_is_complete()
+fn ordinary_python_file_is_accepted_without_fabricating_metadata()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempdir()?;
     let roots = Roots::new(root.path());
     let source = root.path().join("job.py");
-    fs::write(&source, "print('hi')\n")?;
+    let bytes = b"print('hi')\n";
+    fs::write(&source, bytes)?;
 
     let output = run_add(&roots, &[source.to_string_lossy().as_ref()])?;
-    assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8(output.stderr)?.contains("PEP 723"));
-    assert_eq!(roots.list_json()?, serde_json::json!([]));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stdout)?,
+        "Added: job (copy mode)\n  Run it: skit run job\n"
+    );
+    assert_eq!(
+        fs::read(roots.data.join("scripts/job/script.py"))?,
+        bytes
+    );
+    let shown = roots.show_json("job")?;
+    assert_eq!(shown["kind"], "python");
+    assert_eq!(shown["mode"], "copy");
+    assert_eq!(shown["dependencies"], serde_json::json!([]));
+    assert_eq!(shown["requires_python"], "");
+    assert_eq!(shown["param_source"], "none");
     Ok(())
 }
