@@ -19,35 +19,50 @@ fn flag(name: &str) -> ParamDecl {
 }
 
 #[test]
-fn command_and_prompt_placeholders_control_order_and_accept_env_riders() {
+fn command_and_prompt_use_only_managed_placeholder_names_and_accept_env_riders() {
     let mut declared_name = ParamDecl::new("name");
     declared_name.delivery = ParameterDelivery::Placeholder;
     declared_name.help = "Declared help".to_owned();
     let settings = EntrySettings {
+        params: vec!["name".to_owned(), "managed".to_owned()],
         parameters: vec![env("token"), declared_name],
         ..EntrySettings::default()
     };
 
-    let command = form_params("command", "tool {name} {implicit}", &settings);
+    let command = form_params("command", "tool {name} {unmanaged}", &settings);
     assert_eq!(
         command
             .iter()
             .map(|item| item.name.as_str())
             .collect::<Vec<_>>(),
-        ["name", "implicit", "token"]
+        ["name", "managed", "token"]
     );
     assert_eq!(command[0].help, "Declared help");
     assert_eq!(command[1].delivery, ParameterDelivery::Placeholder);
     assert_eq!(command[2].delivery, ParameterDelivery::Env);
 
-    let prompt = form_params("prompt", "Hello {{name}} {{implicit}}", &settings);
+    let prompt = form_params("prompt", "Hello {{name}} {{unmanaged}}", &settings);
     assert_eq!(
         prompt
             .iter()
             .map(|item| item.name.as_str())
             .collect::<Vec<_>>(),
-        ["name", "implicit", "token"]
+        ["name", "managed", "token"]
     );
+}
+
+#[test]
+fn a_prompt_with_interpolation_disabled_has_no_value_fields() {
+    let mut placeholder = ParamDecl::new("name");
+    placeholder.delivery = ParameterDelivery::Placeholder;
+    let settings = EntrySettings {
+        params: vec!["name".to_owned()],
+        parameters: vec![placeholder, env("token")],
+        interpolate: false,
+        ..EntrySettings::default()
+    };
+
+    assert!(form_params("prompt", "Hello {{name}}", &settings).is_empty());
 }
 
 #[test]
