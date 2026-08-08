@@ -17,6 +17,7 @@ use skit_domain::{
     parameters::{ParamDecl, ParameterDelivery, ParameterType, coerce_default},
 };
 use skit_form::form_params;
+use skit_i18n::{Locale, detect_locale, render as localize};
 use skit_language::{
     detect_candidates, infer_kind, managed_params, normalize_shell_default, placeholder_params,
     read_uv_metadata, write_managed_params, write_uv_metadata,
@@ -34,14 +35,44 @@ mod tests;
 /// Run the command-line entry point and return its process status.
 #[must_use]
 pub fn entry() -> i32 {
-    let cli = Cli::parse();
+    let locale = active_locale();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => {
+            let output = localize(locale, &error.to_string());
+            if error.use_stderr() {
+                eprint!("{output}");
+            } else {
+                print!("{output}");
+            }
+            return error.exit_code();
+        }
+    };
     match execute(cli) {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("{error}");
+            eprintln!("{}", localize(locale, &error.to_string()));
             error.exit_code()
         }
     }
+}
+
+fn active_locale() -> Locale {
+    if let Some(language) = env::var_os("SKIT_LANG") {
+        return detect_locale(language.to_str());
+    }
+    if let Ok(directory) = resolve_config_dir()
+        && let Ok(language) = FileConfigStore::new(directory).get("lang")
+        && language != "auto"
+    {
+        return detect_locale(Some(&language));
+    }
+    for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
+        if let Some(language) = env::var_os(key) {
+            return detect_locale(language.to_str());
+        }
+    }
+    Locale::En
 }
 
 #[derive(Debug, Parser)]
@@ -1639,7 +1670,7 @@ fn summary_missing(store: &FileStore, entry: &EntrySummary) -> bool {
 
 fn tui(service: &LibraryService<FileStore>) -> Result<(), CliError> {
     let state = LibraryState::from_scan(service.list()?);
-    skit_tui::run(state, || service.list())?;
+    skit_tui::run(state, || service.list(), active_locale())?;
     Ok(())
 }
 

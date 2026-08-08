@@ -14,6 +14,7 @@ ratatui-widgets.workspace = true
 ratatui-crossterm.workspace = true
 thiserror.workspace = true
 skit-application.workspace = true
+skit-i18n.workspace = true
 skit-ui.workspace = true
 
 [dev-dependencies]

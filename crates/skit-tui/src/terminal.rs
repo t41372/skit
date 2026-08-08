@@ -12,10 +12,11 @@ use ratatui_crossterm::{
     },
 };
 use skit_application::LibraryScan;
+use skit_i18n::Locale;
 use skit_ui::{Action, Effect, LibraryState};
 use thiserror::Error;
 
-use crate::{ViewGeometry, map_event, render};
+use crate::{ViewGeometry, map_event, render_localized};
 
 /// A terminal lifecycle or input failure.
 #[derive(Debug, Error)]
@@ -26,7 +27,7 @@ pub enum TuiError {
 }
 
 /// Run the terminal frontend, using the callback only when the user explicitly refreshes.
-pub fn run<F, E>(mut state: LibraryState, mut reload: F) -> Result<(), TuiError>
+pub fn run<F, E>(mut state: LibraryState, mut reload: F, locale: Locale) -> Result<(), TuiError>
 where
     F: FnMut() -> Result<LibraryScan, E>,
     E: Display,
@@ -40,7 +41,7 @@ where
 
     loop {
         let mut geometry = ViewGeometry::default();
-        terminal.draw(|frame| geometry = render(frame, &state))?;
+        terminal.draw(|frame| geometry = render_localized(frame, &state, locale))?;
         let Some(action) = map_event(event::read()?, &state, &geometry) else {
             continue;
         };

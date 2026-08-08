@@ -1133,6 +1133,7 @@ dependencies = [
  "skit-application",
  "skit-domain",
  "skit-form",
+ "skit-i18n",
  "skit-language",
  "skit-runtime",
  "skit-store",
@@ -1161,6 +1162,10 @@ dependencies = [
  "skit-domain",
  "skit-language",
 ]
+
+[[package]]
+name = "skit-i18n"
+version = "0.5.0"
 
 [[package]]
 name = "skit-language"
@@ -1208,6 +1213,7 @@ dependencies = [
  "ratatui-widgets",
  "skit-application",
  "skit-domain",
+ "skit-i18n",
  "skit-ui",
  "thiserror",
 ]

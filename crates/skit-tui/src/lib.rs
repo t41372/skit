@@ -19,6 +19,7 @@ use ratatui_widgets::{
     list::{List, ListItem, ListState},
     paragraph::{Paragraph, Wrap},
 };
+use skit_i18n::{Locale, text};
 use skit_ui::{Action, InputMode, LibraryState};
 
 pub use terminal::{TuiError, run};
@@ -57,6 +58,12 @@ pub struct ViewGeometry {
 /// Draw the library browser and return its mouse hit map.
 #[must_use]
 pub fn render(frame: &mut Frame, state: &LibraryState) -> ViewGeometry {
+    render_localized(frame, state, Locale::En)
+}
+
+/// Draw the library browser with one explicit presentation locale.
+#[must_use]
+pub fn render_localized(frame: &mut Frame, state: &LibraryState, locale: Locale) -> ViewGeometry {
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -66,16 +73,16 @@ pub fn render(frame: &mut Frame, state: &LibraryState) -> ViewGeometry {
         ])
         .split(frame.area());
 
-    render_header(frame, areas[0], state);
-    let mut geometry = render_body(frame, areas[1], state);
-    geometry.hits = render_footer(frame, areas[2], state);
+    render_header(frame, areas[0], state, locale);
+    let mut geometry = render_body(frame, areas[1], state, locale);
+    geometry.hits = render_footer(frame, areas[2], state, locale);
     geometry
 }
 
-fn render_header(frame: &mut Frame, area: Rect, state: &LibraryState) {
+fn render_header(frame: &mut Frame, area: Rect, state: &LibraryState, locale: Locale) {
     let mode = match state.input_mode() {
-        InputMode::Browse => "Library",
-        InputMode::Search => "Search",
+        InputMode::Browse => text(locale, "Library"),
+        InputMode::Search => text(locale, "Search"),
     };
     let cursor = if state.input_mode() == InputMode::Search {
         "▌"
@@ -83,7 +90,7 @@ fn render_header(frame: &mut Frame, area: Rect, state: &LibraryState) {
         ""
     };
     let text = if state.query().is_empty() {
-        format!("{mode}: all entries{cursor}")
+        format!("{mode}: {}{cursor}", text(locale, "all entries"))
     } else {
         format!("{mode}: {}{cursor}", state.query())
     };
@@ -93,7 +100,12 @@ fn render_header(frame: &mut Frame, area: Rect, state: &LibraryState) {
     );
 }
 
-fn render_body(frame: &mut Frame, area: Rect, state: &LibraryState) -> ViewGeometry {
+fn render_body(
+    frame: &mut Frame,
+    area: Rect,
+    state: &LibraryState,
+    locale: Locale,
+) -> ViewGeometry {
     let panes = if area.width >= 80 {
         Layout::default()
             .direction(Direction::Horizontal)
@@ -106,7 +118,9 @@ fn render_body(frame: &mut Frame, area: Rect, state: &LibraryState) -> ViewGeome
             .split(area)
     };
 
-    let list_block = Block::default().borders(Borders::ALL).title(" Entries ");
+    let list_block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {} ", text(locale, "Entries")));
     let rows = list_block.inner(panes[0]);
     let items = state
         .visible_entries()
@@ -141,12 +155,14 @@ fn render_body(frame: &mut Frame, area: Rect, state: &LibraryState) -> ViewGeome
             Line::from(""),
             Line::from(entry.description.as_str()),
         ],
-        None => vec![Line::from("No matching entries")],
+        None => vec![Line::from(text(locale, "No matching entries"))],
     };
     frame.render_widget(
-        Paragraph::new(detail)
-            .wrap(Wrap { trim: false })
-            .block(Block::default().borders(Borders::ALL).title(" Details ")),
+        Paragraph::new(detail).wrap(Wrap { trim: false }).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" {} ", text(locale, "Details"))),
+        ),
         panes[1],
     );
 
@@ -157,15 +173,20 @@ fn render_body(frame: &mut Frame, area: Rect, state: &LibraryState) -> ViewGeome
     }
 }
 
-fn render_footer(frame: &mut Frame, area: Rect, state: &LibraryState) -> Vec<HitRegion> {
+fn render_footer(
+    frame: &mut Frame,
+    area: Rect,
+    state: &LibraryState,
+    locale: Locale,
+) -> Vec<HitRegion> {
     let block = Block::default().borders(Borders::ALL);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
     let labels = [
-        ("[q] Quit", HitAction::Quit),
-        ("[r] Reload", HitAction::Reload),
-        ("[/] Search", HitAction::Search),
+        (format!("[q] {}", text(locale, "Quit")), HitAction::Quit),
+        (format!("[r] {}", text(locale, "Reload")), HitAction::Reload),
+        (format!("[/] {}", text(locale, "Search")), HitAction::Search),
     ];
     let mut spans = Vec::new();
     let mut hits = Vec::new();
@@ -196,7 +217,11 @@ fn render_footer(frame: &mut Frame, area: Rect, state: &LibraryState) -> Vec<Hit
     if let Some(status) = state.status() {
         frame.render_widget(Paragraph::new(status), inner);
     } else if !state.diagnostics().is_empty() && inner.width > 50 {
-        let note = format!("{} damaged entries hidden", state.diagnostics().len());
+        let note = format!(
+            "{} {}",
+            state.diagnostics().len(),
+            text(locale, "damaged entries hidden")
+        );
         let width = u16::try_from(note.chars().count()).unwrap_or(u16::MAX);
         let note_area = Rect::new(
             rect_right(inner).saturating_sub(width.min(inner.width)),

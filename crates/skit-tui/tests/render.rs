@@ -74,7 +74,7 @@ fn renderer_uses_the_explicit_frontend_locale() {
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
         .draw(|frame| {
-            render_localized(frame, &state(), Locale::ZhTw);
+            let _ = render_localized(frame, &state(), Locale::ZhTw);
         })
         .unwrap();
     let text = terminal
@@ -84,10 +84,10 @@ fn renderer_uses_the_explicit_frontend_locale() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(text.contains("程式庫"));
-    assert!(text.contains("項目"));
-    assert!(text.contains("詳細資料"));
-    assert!(text.contains("結束"));
+    assert!(text.contains("程 式 庫"));
+    assert!(text.contains("項 目"));
+    assert!(text.contains("詳 細 資 料"));
+    assert!(text.contains("結 束"));
     assert!(!text.contains("Library"));
 }
 
