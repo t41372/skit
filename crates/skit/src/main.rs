@@ -3,6 +3,7 @@
 mod add_command;
 mod params_command;
 mod preset_command;
+mod run_command;
 
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -18,22 +19,36 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug)]
 pub(crate) struct CliFailure {
-    message: String,
+    message: Option<String>,
     code: u8,
 }
 
 impl CliFailure {
     pub(crate) fn operational(message: impl Into<String>) -> Self {
         Self {
-            message: message.into(),
+            message: Some(message.into()),
             code: 1,
         }
     }
 
     pub(crate) fn usage(message: impl Into<String>) -> Self {
         Self {
-            message: message.into(),
+            message: Some(message.into()),
             code: 2,
+        }
+    }
+
+    pub(crate) fn coded(message: impl Into<String>, code: u8) -> Self {
+        Self {
+            message: Some(message.into()),
+            code,
+        }
+    }
+
+    pub(crate) fn status(code: i32) -> Self {
+        Self {
+            message: None,
+            code: code.rem_euclid(256) as u8,
         }
     }
 }
@@ -72,6 +87,8 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Run an entry through its resolved argv launch plan.
+    Run(run_command::RunArgs),
     /// Remove a registered entry. The original source file stays unchanged.
     Remove {
         /// Entry name or slug.
@@ -162,7 +179,9 @@ fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(failure) => {
-            eprintln!("{}", failure.message);
+            if let Some(message) = failure.message {
+                eprintln!("{message}");
+            }
             ExitCode::from(failure.code)
         }
     }
@@ -183,6 +202,7 @@ fn run() -> Result<(), CliFailure> {
         Some(Command::Show { name, json }) => {
             show(&store, &name, json).map_err(CliFailure::operational)
         }
+        Some(Command::Run(args)) => run_command::run(&store, args),
         Some(Command::Remove { name, yes }) => {
             remove(&store, &name, yes).map_err(CliFailure::operational)
         }
