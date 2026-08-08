@@ -19,8 +19,8 @@ use ratatui_widgets::{
     list::{List, ListItem, ListState},
     paragraph::{Paragraph, Wrap},
 };
-use skit_i18n::{Locale, render as localize, text};
-use skit_ui::{Action, FormView, InputMode, LibraryState, ReportView, Screen};
+use skit_i18n::{Locale, format_text, render as localize, text};
+use skit_ui::{Action, FormField, FormView, InputMode, LibraryState, ReportView, Screen};
 use unicode_width::UnicodeWidthStr as _;
 
 pub use terminal::{TuiError, collect_form, run};
@@ -133,7 +133,7 @@ fn render_header(frame: &mut Frame, area: Rect, state: &LibraryState, locale: Lo
                 format!("{mode}: {}{cursor}", state.query())
             }
         }
-        Screen::Form(form) => localize(locale, &form.title),
+        Screen::Form(form) => form_title(locale, form),
         Screen::Report(report) => localize(locale, &report.title),
         Screen::ConfirmRemove { .. } => text(locale, "Confirm removal").to_owned(),
     };
@@ -221,7 +221,7 @@ fn render_library(
 fn render_form(frame: &mut Frame, area: Rect, form: &FormView, locale: Locale) -> ViewGeometry {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" {} ", localize(locale, &form.title)));
+        .title(format!(" {} ", form_title(locale, form)));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let row_height = 2_u16;
@@ -254,7 +254,7 @@ fn render_form(frame: &mut Frame, area: Rect, form: &FormView, locale: Locale) -
         } else {
             field.value.replace('\n', " ↵ ")
         };
-        let line = format!("{marker} {}: {value}", localize(locale, &field.label));
+        let line = format!("{marker} {}: {value}", field_label(locale, field));
         frame.render_widget(
             Paragraph::new(line).style(if index == form.focused {
                 Style::default().add_modifier(Modifier::BOLD)
@@ -275,6 +275,30 @@ fn render_form(frame: &mut Frame, area: Rect, form: &FormView, locale: Locale) -
     }
 }
 
+fn field_label(locale: Locale, field: &FormField) -> String {
+    if !field.translate_label {
+        return field.label.clone();
+    }
+    let arguments = field
+        .label_arguments
+        .iter()
+        .map(|value| value as &dyn std::fmt::Display)
+        .collect::<Vec<_>>();
+    format_text(locale, &field.label, &arguments)
+}
+
+fn form_title(locale: Locale, form: &FormView) -> String {
+    if !form.translate_title {
+        return form.title.clone();
+    }
+    let arguments = form
+        .title_arguments
+        .iter()
+        .map(|value| value as &dyn std::fmt::Display)
+        .collect::<Vec<_>>();
+    format_text(locale, &form.title, &arguments)
+}
+
 fn render_report(
     frame: &mut Frame,
     area: Rect,
@@ -288,8 +312,16 @@ fn render_report(
             Line::from(format!(
                 "[{}] {}: {}",
                 localize(locale, &item.status),
-                localize(locale, &item.label),
-                localize(locale, &item.detail)
+                if item.translate_label {
+                    localize(locale, &item.label)
+                } else {
+                    item.label.clone()
+                },
+                if item.translate_detail {
+                    localize(locale, &item.detail)
+                } else {
+                    item.detail.clone()
+                }
             ))
         })
         .collect::<Vec<_>>();

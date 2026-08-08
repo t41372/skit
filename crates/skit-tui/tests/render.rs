@@ -114,8 +114,14 @@ fn renderer_uses_the_explicit_frontend_locale() {
     form_state.update(Action::Present(Screen::Form(FormView {
         purpose: FormPurpose::Add,
         title: "Add an entry".to_owned(),
+        title_arguments: Vec::new(),
+        translate_title: true,
         selector: None,
-        fields: vec![FormField::text("source", "Source path", "")],
+        fields: vec![
+            FormField::text("source", "Source path", ""),
+            FormField::text_raw("raw", "Library", "value"),
+            FormField::text_with_arguments("typed", "{} type", vec!["Library".to_owned()], "str"),
+        ],
         focused: 0,
         submit_label: "Save".to_owned(),
     })));
@@ -134,6 +140,9 @@ fn renderer_uses_the_explicit_frontend_locale() {
         .collect::<String>();
     assert!(text.contains("新 增 項 目"));
     assert!(text.contains("來 源 路 徑"), "{text:?}");
+    assert!(text.contains("Library"), "{text:?}");
+    assert!(!text.contains("程 式 庫 類 型"), "{text:?}");
+    assert!(text.contains("Library 類 型"), "{text:?}");
     assert!(text.contains("儲 存"), "{text:?}");
 }
 
@@ -430,6 +439,8 @@ fn form_state() -> LibraryState {
     state.update(Action::Present(Screen::Form(FormView {
         purpose: FormPurpose::Settings,
         title: "Script settings".to_owned(),
+        title_arguments: Vec::new(),
+        translate_title: true,
         selector: Some("hello".to_owned()),
         fields: vec![
             FormField::text("name", "Name", "Hello"),
@@ -450,7 +461,9 @@ fn form_report_and_confirmation_screens_render_inside_small_terminals() {
         items: vec![ReportItem {
             status: "ok".to_owned(),
             label: "Library".to_owned(),
+            translate_label: true,
             detail: "Ready".to_owned(),
+            translate_detail: true,
         }],
     })));
     let mut confirm = state();

@@ -21,7 +21,7 @@ use skit_domain::{
     },
 };
 use skit_form::form_params;
-use skit_i18n::{Locale, detect_locale, render as localize};
+use skit_i18n::{Locale, detect_locale, format_text, render as localize};
 use skit_language::{
     detect_candidates, external_dependencies, infer_kind, managed_params, normalize_shell_default,
     placeholder_params, read_uv_metadata, write_managed_params, write_uv_metadata,
@@ -39,6 +39,18 @@ use skit_ui::{
 use thiserror::Error;
 
 use crate::run::{RunArgs, RunError};
+
+macro_rules! humanln {
+    ($message:literal $(, $value:expr)* $(,)?) => {
+        println!("{}", format_text(active_locale(), $message, &[$(&$value as &dyn std::fmt::Display),*]))
+    };
+}
+
+macro_rules! humanerrln {
+    ($message:literal $(, $value:expr)* $(,)?) => {
+        eprintln!("{}", format_text(active_locale(), $message, &[$(&$value as &dyn std::fmt::Display),*]))
+    };
+}
 
 #[cfg(test)]
 mod tests;
@@ -78,7 +90,7 @@ pub fn entry() -> i32 {
     }
 }
 
-fn active_locale() -> Locale {
+pub(crate) fn active_locale() -> Locale {
     if let Some(language) = env::var_os("SKIT_LANG") {
         return detect_locale(language.to_str());
     }
@@ -559,7 +571,7 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
         }
         let mut output = File::create(&path)?;
         write_completion(shell, &mut output);
-        println!("Installed completion: {}", path.display());
+        humanln!("Installed completion: {}", path.display());
         return Ok(0);
     }
     let data_dir = resolve_data_dir(cli.data_dir)?;
@@ -767,7 +779,7 @@ fn add_draft(
     if result.is_ok() {
         fs::remove_file(&draft)?;
     } else {
-        eprintln!("Your draft was kept at {}", draft.display());
+        humanerrln!("Your draft was kept at {}", draft.display());
     }
     result
 }
@@ -888,7 +900,7 @@ fn run_entry(
         let mut input = stdin.lock();
         let stdout = io::stdout();
         let mut output = stdout.lock();
-        collect_plain_form(&form, &mut input, &mut output, |_| {
+        collect_plain_form(&form, active_locale(), &mut input, &mut output, |_| {
             rpassword::read_password()
         })
         .map_err(|error| {
@@ -1003,6 +1015,7 @@ fn apply_interactive_run_values(
 
 fn collect_plain_form<R, W, F>(
     form: &FormView,
+    locale: Locale,
     input: &mut R,
     output: &mut W,
     mut read_secret: F,
@@ -1014,14 +1027,24 @@ where
 {
     let mut values = BTreeMap::new();
     for field in &form.fields {
-        if field.value.is_empty() || field.secret {
-            write!(output, "{}: ", field.label)?;
+        let arguments = field
+            .label_arguments
+            .iter()
+            .map(|value| value as &dyn std::fmt::Display)
+            .collect::<Vec<_>>();
+        let label = if field.translate_label {
+            format_text(locale, &field.label, &arguments)
         } else {
-            write!(output, "{} [{}]: ", field.label, field.value)?;
+            field.label.clone()
+        };
+        if field.value.is_empty() || field.secret {
+            write!(output, "{label}: ")?;
+        } else {
+            write!(output, "{label} [{}]: ", field.value)?;
         }
         output.flush()?;
         let value = if field.secret {
-            read_secret(&field.label)?
+            read_secret(&label)?
         } else {
             let mut line = String::new();
             if input.read_line(&mut line)? == 0 {
@@ -1081,7 +1104,11 @@ fn list(
         let stderr = io::stderr();
         let mut errors = stderr.lock();
         for diagnostic in &scan.diagnostics {
-            writeln!(errors, "warning: {}", diagnostic.message)?;
+            writeln!(
+                errors,
+                "{}",
+                format_text(active_locale(), "warning: {}", &[&diagnostic.message])
+            )?;
         }
     }
     Ok(())
@@ -1157,8 +1184,20 @@ fn show(
         writeln!(output)?;
     } else {
         writeln!(output, "{} ({})", entry.meta.name, entry.slug)?;
-        writeln!(output, "kind: {}", entry.meta.kind)?;
-        writeln!(output, "mode: {}", mode_name(entry.meta.mode))?;
+        writeln!(
+            output,
+            "{}",
+            format_text(active_locale(), "Kind: {}", &[&entry.meta.kind])
+        )?;
+        writeln!(
+            output,
+            "{}",
+            format_text(
+                active_locale(),
+                "Storage mode: {}",
+                &[&mode_name(entry.meta.mode)]
+            )
+        )?;
         if !entry.meta.description.is_empty() {
             writeln!(output, "{}", entry.meta.description)?;
         }
@@ -1285,7 +1324,7 @@ fn add(service: &LibraryService<FileStore>, options: AddOptions) -> Result<(), C
         };
         let claimed = service.claim_identity(&entry)?;
         let entry = service.update_settings(&claimed, &settings, "invoke")?;
-        println!("Added: {} ({})", entry.meta.name, entry.slug);
+        humanln!("Added: {} ({})", entry.meta.name, entry.slug);
         return Ok(());
     }
 
@@ -1402,7 +1441,7 @@ fn add(service: &LibraryService<FileStore>, options: AddOptions) -> Result<(), C
     } else {
         entry
     };
-    println!("Added: {} ({})", entry.meta.name, entry.slug);
+    humanln!("Added: {} ({})", entry.meta.name, entry.slug);
     Ok(())
 }
 
@@ -1414,7 +1453,7 @@ fn describe(
     let held = service.show(selector)?;
     let claimed = service.claim_identity(&held)?;
     let entry = service.describe(&claimed, description)?;
-    println!("Described: {} ({})", entry.meta.name, entry.slug);
+    humanln!("Description updated: {} ({})", entry.meta.name, entry.slug);
     Ok(())
 }
 
@@ -1422,7 +1461,7 @@ fn rename(service: &LibraryService<FileStore>, selector: &str, name: &str) -> Re
     let held = service.show(selector)?;
     let claimed = service.claim_identity(&held)?;
     let entry = service.rename(&claimed, name)?;
-    println!("Renamed: {} ({})", entry.meta.name, entry.slug);
+    humanln!("Renamed: {} ({})", entry.meta.name, entry.slug);
     Ok(())
 }
 
@@ -1435,7 +1474,7 @@ fn user_confirmed(answer: &str, default: bool) -> bool {
 }
 
 fn prompt_confirmation(question: &str, default: bool) -> Result<bool, CliError> {
-    print!("{}", localize(active_locale(), question));
+    print!("{question}");
     io::stdout().flush()?;
     let mut answer = String::new();
     if io::stdin().read_line(&mut answer)? == 0 {
@@ -1455,14 +1494,18 @@ fn remove(
         if no_input || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
             return Err(CliError::ConfirmationRequired);
         }
-        let question = format!("Remove {:?}? [y/N]: ", held.meta.name);
+        let question = format_text(
+            active_locale(),
+            "Remove \"{}\"? [y/N]: ",
+            &[&held.meta.name],
+        );
         if !prompt_confirmation(&question, false)? {
             return Err(CliError::Aborted);
         }
     }
     let claimed = service.claim_identity(&held)?;
     let name = service.remove(&claimed)?;
-    println!("Removed: {name}");
+    humanln!("Removed: {}", name);
     Ok(())
 }
 
@@ -1480,8 +1523,11 @@ fn edit(
                     "no editable entry is named {selector:?}"
                 )));
             }
-            let question =
-                format!("No editable entry is named {selector:?}. Create a script now? [Y/n]: ");
+            let question = format_text(
+                active_locale(),
+                "No editable entry is named \"{}\". Create a script now? [Y/n]: ",
+                &[&selector],
+            );
             if !prompt_confirmation(&question, true)? {
                 return Err(CliError::Aborted);
             }
@@ -1567,7 +1613,7 @@ fn edit(
     if edited != original {
         let claimed = service.claim_identity(&held)?;
         service.commit_copy_edit(&claimed, &edited, &held.meta.source_hash)?;
-        println!("Edited: {} ({})", held.meta.name, held.slug);
+        humanln!("Edited: {} ({})", held.meta.name, held.slug);
     }
     Ok(())
 }
@@ -1722,9 +1768,9 @@ fn write_deps(settings: &EntrySettings, json: bool) -> Result<(), CliError> {
             })
         );
     } else {
-        println!("dependencies: {}", settings.dependencies.join(", "));
-        println!("requires_python: {}", settings.requires_python);
-        println!("needs: {}", settings.needs.join(", "));
+        humanln!("Dependencies: {}", settings.dependencies.join(", "));
+        humanln!("Python constraint: {}", settings.requires_python);
+        humanln!("Required commands: {}", settings.needs.join(", "));
     }
     Ok(())
 }
@@ -2074,7 +2120,7 @@ fn config(key: Option<&str>, value: Option<&str>, json: bool) -> Result<(), CliE
             if json {
                 println!("{}", serde_json::json!({"key": key, "value": value}));
             } else {
-                println!("Set: {key}={value}");
+                humanln!("Set: {}={}", key, value);
             }
         }
         (Some(key), None) => {
@@ -2125,7 +2171,7 @@ fn runner(command: RunnerCommand) -> Result<(), CliError> {
                 },
                 force,
             )?;
-            println!("Added runner: {name}");
+            humanln!("Added runner: {}", name);
         }
         RunnerCommand::Remove {
             name,
@@ -2136,14 +2182,16 @@ fn runner(command: RunnerCommand) -> Result<(), CliError> {
                 if no_input || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
                     return Err(CliError::ConfirmationRequiredFor("runner removal"));
                 }
-                if !prompt_confirmation(&format!("Remove runner {name:?}? [y/N]: "), false)? {
+                let question =
+                    format_text(active_locale(), "Remove runner \"{}\"? [y/N]: ", &[&name]);
+                if !prompt_confirmation(&question, false)? {
                     return Err(CliError::Aborted);
                 }
             }
             if !store.remove_runner(&name)? {
                 return Err(CliError::Usage(format!("unknown prompt runner: {name}")));
             }
-            println!("Removed runner: {name}");
+            humanln!("Removed runner: {}", name);
         }
     }
     Ok(())
@@ -2170,7 +2218,7 @@ fn preset(
                 &current.values
             };
             state.save_preset(&entry.slug, &name, &declarations, values)?;
-            println!("Saved preset: {name}");
+            humanln!("Saved preset: {}", name);
         }
         PresetCommand::List { selector, json } => {
             let entry = service.show(&selector)?;
@@ -2193,7 +2241,9 @@ fn preset(
                 if no_input || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
                     return Err(CliError::ConfirmationRequiredFor("preset deletion"));
                 }
-                if !prompt_confirmation(&format!("Delete preset {name:?}? [y/N]: "), false)? {
+                let question =
+                    format_text(active_locale(), "Delete preset \"{}\"? [y/N]: ", &[&name]);
+                if !prompt_confirmation(&question, false)? {
                     return Err(CliError::Aborted);
                 }
             }
@@ -2201,7 +2251,7 @@ fn preset(
             if !state.delete_preset(&entry.slug, &name)? {
                 return Err(CliError::Usage(format!("unknown preset: {name}")));
             }
-            println!("Deleted preset: {name}");
+            humanln!("Deleted preset: {}", name);
         }
     }
     Ok(())
@@ -2311,38 +2361,41 @@ fn doctor(
         );
     } else {
         match uv {
-            Some(path) => println!("OK uv: {}", path.display()),
-            None => println!("ERROR uv: not found"),
+            Some(path) => humanln!("OK uv: {}", path.display()),
+            None => humanln!("ERROR uv: not found"),
         }
-        println!("Entries: {}", scan.entries.len());
-        println!("Library: {} ({} bytes)", scripts.display(), size);
-        println!("State: {}", state_location.display());
-        println!("Config: {}", config_location.display());
+        humanln!("Entries: {}", scan.entries.len());
+        humanln!("Library: {} ({} bytes)", scripts.display(), size);
+        humanln!("State: {}", state_location.display());
+        humanln!("Config: {}", config_location.display());
         if let Some(count) = rebuilt_entries {
-            println!("Registry rebuilt: {count}");
+            humanln!("Registry rebuilt: {}", count);
         }
         for name in missing {
-            println!("WARN {name}: the launch target is gone from disk");
+            humanln!("WARN {}: the launch target is gone from disk", name);
         }
         for name in drift {
-            println!(
-                "WARN {name}: form definitions are out of sync; run: skit params {name} --resync"
+            humanln!(
+                "WARN {}: form definitions are out of sync; run: skit params {} --resync",
+                name,
+                name
             );
         }
         for (name, tools) in needs_missing {
-            println!(
-                "WARN {name}: missing external commands: {}",
+            humanln!(
+                "WARN {}: missing external commands: {}",
+                name,
                 tools.join(", ")
             );
         }
         for (name, reason) in launch_blocked {
-            println!("WARN {name}: a run would refuse to start: {reason}");
+            humanln!("WARN {}: a run would refuse to start: {}", name, reason);
         }
         if !bad_runners.is_empty() {
-            println!("WARN malformed prompt runners: {}", bad_runners.join(", "));
+            humanln!("WARN malformed prompt runners: {}", bad_runners.join(", "));
         }
         for problem in rebuild_problems {
-            println!("WARN {problem}");
+            humanln!("WARN {}", problem);
         }
     }
     Ok(code)
@@ -2489,7 +2542,7 @@ fn agent(command: AgentCommand) -> Result<(), CliError> {
             }
             fs::write(&path, include_bytes!("../../../skills/skit/SKILL.md"))
                 .map_err(|error| source_error("write", &path, error))?;
-            println!("Installed Agent Skill: {}", path.display());
+            humanln!("Installed Agent Skill: {}", path.display());
         }
     }
     Ok(())
@@ -2670,7 +2723,9 @@ fn tui_open(
             let entry = service.show(tui_selector(&selector)?)?;
             Ok(Screen::Form(FormView {
                 purpose: FormPurpose::Rename,
-                title: format!("Rename {}", entry.meta.name),
+                title: "Rename {}".to_owned(),
+                title_arguments: vec![entry.meta.name.clone()],
+                translate_title: true,
                 selector: Some(entry.slug.as_str().to_owned()),
                 fields: vec![FormField::text("name", "Name", entry.meta.name)],
                 focused: 0,
@@ -2707,18 +2762,20 @@ fn tui_run_form(
                 saved.get(&parameter.name).cloned().unwrap_or_default()
             };
             if parameter.secret {
-                FormField::secret(format!("value:{}", parameter.name), label, value)
+                FormField::secret_raw(format!("value:{}", parameter.name), label, value)
             } else {
-                FormField::text(format!("value:{}", parameter.name), label, value)
+                FormField::text_raw(format!("value:{}", parameter.name), label, value)
             }
         })
         .collect::<Vec<_>>();
     fields.extend([
-        FormField::text("_skit_preset", tui_options_label("Preset", presets), ""),
+        tui_options_field("_skit_preset", "Preset", "Preset choices: {}", presets, ""),
         FormField::text("_skit_save_preset", "Save as preset", ""),
-        FormField::text(
+        tui_options_field(
             "_skit_runner",
-            tui_options_label("Prompt runner", runners),
+            "Prompt runner",
+            "Prompt runner choices: {}",
+            runners,
             runners.first().cloned().unwrap_or_default(),
         ),
         FormField::text("_skit_args", "Extra arguments", ""),
@@ -2726,7 +2783,9 @@ fn tui_run_form(
     ]);
     Screen::Form(FormView {
         purpose: FormPurpose::Run,
-        title: format!("Run {}", entry.meta.name),
+        title: "Run {}".to_owned(),
+        title_arguments: vec![entry.meta.name.clone()],
+        translate_title: true,
         selector: Some(entry.slug.as_str().to_owned()),
         fields,
         focused: 0,
@@ -2738,6 +2797,8 @@ fn tui_add_form() -> Screen {
     Screen::Form(FormView {
         purpose: FormPurpose::Add,
         title: "Add an entry".to_owned(),
+        title_arguments: Vec::new(),
+        translate_title: true,
         selector: None,
         fields: vec![
             FormField::text("source", "Source path", ""),
@@ -2791,94 +2852,112 @@ fn tui_settings_form(store: &FileStore, entry: &Entry) -> Screen {
         let prefix = format!("parameter:{index}");
         let subject = &parameter.name;
         fields.extend([
-            FormField::text(
+            FormField::text_with_arguments(
                 format!("{prefix}:name"),
-                format!("Parameter {index} name"),
+                "Parameter {} name",
+                vec![index.to_string()],
                 subject,
             ),
-            FormField::text(
+            FormField::text_with_arguments(
                 format!("{prefix}:binding"),
-                format!("{subject} source binding"),
+                "{} source binding",
+                vec![subject.clone()],
                 parameter.binding.as_str(),
             ),
-            FormField::text(
+            FormField::text_with_arguments(
                 format!("{prefix}:delivery"),
-                format!("{subject} delivery"),
+                "{} delivery",
+                vec![subject.clone()],
                 parameter.delivery.as_str(),
             ),
-            FormField::text(
+            FormField::text_with_arguments(
                 format!("{prefix}:type"),
-                format!("{subject} type"),
+                "{} type",
+                vec![subject.clone()],
                 parameter.parameter_type.as_str(),
             ),
-            FormField::text(
+            FormField::text_with_arguments(
                 format!("{prefix}:default"),
-                format!("{subject} default"),
+                "{} default",
+                vec![subject.clone()],
                 parameter
                     .default
                     .as_ref()
                     .map_or_else(String::new, tui_parameter_value),
             ),
-            FormField::text(
+            FormField::text_with_arguments(
                 format!("{prefix}:choices"),
-                format!("{subject} choices"),
+                "{} choices",
+                vec![subject.clone()],
                 parameter.choices.join(", "),
             ),
-            FormField::text(
+            FormField::text_with_arguments(
                 format!("{prefix}:required"),
-                format!("{subject} is required"),
+                "{} is required",
+                vec![subject.clone()],
                 parameter.required.to_string(),
             ),
-            FormField::text(
+            FormField::text_with_arguments(
                 format!("{prefix}:multiple"),
-                format!("{subject} takes multiple values"),
+                "{} takes multiple values",
+                vec![subject.clone()],
                 parameter.multiple.to_string(),
             ),
-            FormField::text(
+            FormField::text_with_arguments(
                 format!("{prefix}:repeat"),
-                format!("{subject} repeats its flag"),
+                "{} repeats its flag",
+                vec![subject.clone()],
                 parameter.repeat.to_string(),
             ),
-            FormField::text(
+            FormField::text_with_arguments(
                 format!("{prefix}:prompt"),
-                format!("{subject} prompt"),
+                "{} prompt",
+                vec![subject.clone()],
                 &parameter.prompt,
             ),
-            FormField::multiline(
+            FormField::multiline_with_arguments(
                 format!("{prefix}:help"),
-                format!("{subject} help"),
+                "{} help",
+                vec![subject.clone()],
                 &parameter.help,
             ),
-            FormField::text(
+            FormField::text_with_arguments(
                 format!("{prefix}:secret"),
-                format!("{subject} is secret"),
+                "{} is secret",
+                vec![subject.clone()],
                 parameter.secret.to_string(),
             ),
-            FormField::text(
+            FormField::text_with_arguments(
                 format!("{prefix}:env_source"),
-                format!("{subject} secret environment source"),
+                "{} secret environment source",
+                vec![subject.clone()],
                 &parameter.env_source,
             ),
-            FormField::text(
+            FormField::text_with_arguments(
                 format!("{prefix}:env_target"),
-                format!("{subject} environment target"),
+                "{} environment target",
+                vec![subject.clone()],
                 &parameter.env_target,
             ),
-            FormField::text(
+            FormField::text_with_arguments(
                 format!("{prefix}:flag"),
-                format!("{subject} flag"),
+                "{} flag",
+                vec![subject.clone()],
                 &parameter.flag,
             ),
-            FormField::text(
+            FormField::text_with_arguments(
                 format!("{prefix}:action"),
-                format!("{subject} flag action"),
+                "{} flag action",
+                vec![subject.clone()],
                 &parameter.action,
             ),
         ]);
     }
     Screen::Form(FormView {
         purpose: FormPurpose::Settings,
-        title: format!("Settings for {}", entry.meta.name),
+        title: "Settings for {}".to_owned(),
+        title_arguments: vec![entry.meta.name.clone()],
+        translate_title: true,
         selector: Some(entry.slug.as_str().to_owned()),
         fields,
         focused: 0,
@@ -2891,10 +2970,27 @@ fn tui_preferences_form() -> Result<Screen, CliError> {
     Ok(Screen::Form(FormView {
         purpose: FormPurpose::Preferences,
         title: "Preferences".to_owned(),
+        title_arguments: Vec::new(),
+        translate_title: true,
         selector: None,
         fields: settings
             .into_iter()
-            .map(|(key, value)| FormField::text(key.clone(), key, value))
+            .map(|(key, value)| {
+                let label = match key.as_str() {
+                    "lang" => "Language",
+                    "editor" => "Editor command",
+                    "form" => "Form style",
+                    "after_run" => "After run",
+                    "shell.bash_path" => "Bash path",
+                    "js.runner" => "JavaScript runtime",
+                    "mirror" => "Mirror",
+                    "mirror.pypi" => "PyPI mirror",
+                    "mirror.github" => "GitHub mirror",
+                    "mirror.npm" => "npm mirror",
+                    _ => return FormField::text_raw(key.clone(), key, value),
+                };
+                FormField::text(key, label, value)
+            })
             .collect(),
         focused: 0,
         submit_label: "Save".to_owned(),
@@ -2915,23 +3011,31 @@ fn tui_health_report(
         ReportItem {
             status: "ok".to_owned(),
             label: "Entries".to_owned(),
+            translate_label: true,
             detail: scan.entries.len().to_string(),
+            translate_detail: false,
         },
         ReportItem {
             status: if missing == 0 { "ok" } else { "error" }.to_owned(),
             label: "Missing targets".to_owned(),
+            translate_label: true,
             detail: missing.to_string(),
+            translate_detail: false,
         },
         ReportItem {
             status: "ok".to_owned(),
             label: "Data directory".to_owned(),
+            translate_label: true,
             detail: store.data_dir().display().to_string(),
+            translate_detail: false,
         },
     ];
     items.extend(scan.diagnostics.into_iter().map(|diagnostic| ReportItem {
         status: "error".to_owned(),
         label: diagnostic.slug.unwrap_or_else(|| "Library".to_owned()),
+        translate_label: false,
         detail: diagnostic.message,
+        translate_detail: false,
     }));
     Ok(Screen::Report(ReportView {
         title: "Health".to_owned(),
@@ -2947,7 +3051,9 @@ fn tui_runners_form() -> Result<Screen, CliError> {
         .collect::<Vec<_>>();
     Ok(Screen::Form(FormView {
         purpose: FormPurpose::Runners,
-        title: format!("Prompt runners: {}", runners.join("; ")),
+        title: "Prompt runners: {}".to_owned(),
+        title_arguments: vec![runners.join("; ")],
+        translate_title: true,
         selector: None,
         fields: vec![
             FormField::text("name", "Runner name", ""),
@@ -2962,7 +3068,9 @@ fn tui_runners_form() -> Result<Screen, CliError> {
 fn tui_presets_form(entry: &Entry, presets: &[String]) -> Screen {
     Screen::Form(FormView {
         purpose: FormPurpose::Presets,
-        title: format!("Presets for {}: {}", entry.meta.name, presets.join(", ")),
+        title: "Presets for {}: {}".to_owned(),
+        title_arguments: vec![entry.meta.name.clone(), presets.join(", ")],
+        translate_title: true,
         selector: Some(entry.slug.as_str().to_owned()),
         fields: vec![
             FormField::text("name", "Preset name", ""),
@@ -2973,11 +3081,17 @@ fn tui_presets_form(entry: &Entry, presets: &[String]) -> Screen {
     })
 }
 
-fn tui_options_label(label: &str, options: &[String]) -> String {
+fn tui_options_field(
+    key: &str,
+    label: &str,
+    options_label: &str,
+    options: &[String],
+    value: impl Into<String>,
+) -> FormField {
     if options.is_empty() {
-        label.to_owned()
+        FormField::text(key, label, value)
     } else {
-        format!("{label} ({})", options.join(", "))
+        FormField::text_with_arguments(key, options_label, vec![options.join(", ")], value)
     }
 }
 

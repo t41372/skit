@@ -1,4 +1,4 @@
-use skit_i18n::{Locale, catalog, detect_locale, render, text};
+use skit_i18n::{Locale, catalog, detect_locale, format_text, render, text};
 
 #[test]
 fn locale_detection_accepts_existing_and_standard_spellings() {
@@ -45,4 +45,46 @@ fn exact_text_and_longest_first_rendering_are_deterministic() {
         render(Locale::ZhCn, "No matching entries. Press [q] Quit."),
         "没有匹配的条目。按 [q] 退出。"
     );
+}
+
+#[test]
+fn formatted_messages_translate_the_template_without_translating_user_values() {
+    assert_eq!(
+        format_text(Locale::ZhTw, "Added: {} ({})", &[&"Library", &"library"]),
+        "已新增：Library (library)"
+    );
+    assert_eq!(
+        format_text(Locale::En, "Added: {} ({})", &[&"Alpha", &"alpha"]),
+        "Added: Alpha (alpha)"
+    );
+    assert_eq!(
+        format_text(Locale::ZhTw, "Unknown {}", &[&"value"]),
+        "Unknown value"
+    );
+}
+
+#[test]
+fn every_cli_human_message_macro_uses_a_complete_catalog_template() {
+    let source = include_str!("../../skit-cli/src/cli.rs");
+    let translated = catalog()
+        .iter()
+        .map(|row| row.english)
+        .collect::<std::collections::BTreeSet<_>>();
+    for macro_name in ["humanln!(", "humanerrln!("] {
+        let mut rest = source;
+        while let Some(index) = rest.find(macro_name) {
+            rest = &rest[index + macro_name.len()..];
+            let quote = rest
+                .find('"')
+                .expect("human macro needs a literal template");
+            rest = &rest[quote + 1..];
+            let end = rest.find('"').expect("human macro literal must end");
+            let template = &rest[..end];
+            assert!(
+                translated.contains(template),
+                "missing CLI translation template: {template}"
+            );
+            rest = &rest[end + 1..];
+        }
+    }
 }

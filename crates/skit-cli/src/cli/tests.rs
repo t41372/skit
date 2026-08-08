@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, fs, io, path::Path};
 
-use clap::Parser as _;
+use clap::{CommandFactory as _, Parser as _};
 use skit_application::{ExitClass, LibraryService, RepositoryError};
 use skit_domain::{
     Entry, EntryKind, EntryMeta, Slug, StorageMode,
@@ -114,6 +114,45 @@ fn destructive_and_create_prompts_have_explicit_automation_paths() {
         edit.command,
         Some(Command::Edit { no_input: true, .. })
     ));
+}
+
+#[test]
+fn every_clap_help_message_has_complete_chinese_catalog_rows() {
+    fn collect(command: &clap::Command, output: &mut Vec<String>) {
+        if let Some(about) = command.get_about() {
+            output.push(about.to_string());
+        }
+        if let Some(about) = command.get_long_about() {
+            output.push(about.to_string());
+        }
+        for argument in command.get_arguments() {
+            if let Some(help) = argument.get_help() {
+                output.push(help.to_string());
+            }
+            if let Some(help) = argument.get_long_help() {
+                output.push(help.to_string());
+            }
+        }
+        for child in command.get_subcommands() {
+            collect(child, output);
+        }
+    }
+
+    let mut messages = Vec::new();
+    collect(&Cli::command(), &mut messages);
+    messages.sort();
+    messages.dedup();
+    let missing = messages
+        .into_iter()
+        .filter(|message| {
+            skit_i18n::text(skit_i18n::Locale::ZhCn, message) == message
+                || skit_i18n::text(skit_i18n::Locale::ZhTw, message) == message
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        missing.is_empty(),
+        "missing help translations:\n{missing:#?}"
+    );
 }
 
 #[test]
@@ -547,6 +586,8 @@ fn plain_form_collection_uses_defaults_masks_secrets_and_refuses_end_of_input() 
     let form = FormView {
         purpose: FormPurpose::Run,
         title: "Run".to_owned(),
+        title_arguments: Vec::new(),
+        translate_title: true,
         selector: Some("alpha".to_owned()),
         fields: vec![
             FormField::text("name", "Name", "default"),
@@ -556,9 +597,13 @@ fn plain_form_collection_uses_defaults_masks_secrets_and_refuses_end_of_input() 
         submit_label: "Run".to_owned(),
     };
     let mut output = Vec::new();
-    let values = collect_plain_form(&form, &mut "\n".as_bytes(), &mut output, |_| {
-        Ok("hidden".to_owned())
-    })
+    let values = collect_plain_form(
+        &form,
+        skit_i18n::Locale::En,
+        &mut "\n".as_bytes(),
+        &mut output,
+        |_| Ok("hidden".to_owned()),
+    )
     .unwrap();
     assert_eq!(values["name"], "default");
     assert_eq!(values["token"], "hidden");
@@ -567,9 +612,13 @@ fn plain_form_collection_uses_defaults_masks_secrets_and_refuses_end_of_input() 
     assert!(output.contains("Token: "));
     assert!(!output.contains("hidden"));
 
-    let error = collect_plain_form(&form, &mut "".as_bytes(), &mut Vec::new(), |_| {
-        Ok(String::new())
-    })
+    let error = collect_plain_form(
+        &form,
+        skit_i18n::Locale::En,
+        &mut "".as_bytes(),
+        &mut Vec::new(),
+        |_| Ok(String::new()),
+    )
     .unwrap_err();
     assert!(
         error

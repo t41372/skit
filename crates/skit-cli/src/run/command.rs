@@ -188,8 +188,12 @@ pub(crate) fn run(
             (mirror.enabled && !mirror.uv_binary.is_empty()).then_some(mirror.uv_binary.as_str());
         if !managed_uv_path(data_store.data_dir()).is_file() {
             eprintln!(
-                "First Python run: download private uv {}",
-                skit_runtime::UV_VERSION
+                "{}",
+                skit_i18n::format_text(
+                    crate::cli::active_locale(),
+                    "First Python run: download private uv {}",
+                    &[&skit_runtime::UV_VERSION],
+                )
             );
         }
         settings.interpreter = ensure_managed_uv(data_store.data_dir(), mirror_base)?

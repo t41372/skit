@@ -70,6 +70,12 @@ pub struct FormField {
     pub key: String,
     /// User-visible field label.
     pub label: String,
+    /// Values inserted into a catalog label template.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub label_arguments: Vec<String>,
+    /// Translate the label as application text instead of preserving user text.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub translate_label: bool,
     /// Current text value.
     pub value: String,
     /// Hide the value during presentation.
@@ -89,9 +95,38 @@ impl FormField {
         Self {
             key: key.into(),
             label: label.into(),
+            label_arguments: Vec::new(),
+            translate_label: true,
             value: value.into(),
             secret: false,
             multiline: false,
+        }
+    }
+
+    /// Create one text field whose catalog label takes user-data arguments.
+    #[must_use]
+    pub fn text_with_arguments(
+        key: impl Into<String>,
+        label: impl Into<String>,
+        label_arguments: Vec<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        Self {
+            label_arguments,
+            ..Self::text(key, label, value)
+        }
+    }
+
+    /// Create one field whose label is user-authored text.
+    #[must_use]
+    pub fn text_raw(
+        key: impl Into<String>,
+        label: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        Self {
+            translate_label: false,
+            ..Self::text(key, label, value)
         }
     }
 
@@ -108,6 +143,19 @@ impl FormField {
         }
     }
 
+    /// Create one masked field whose label is user-authored text.
+    #[must_use]
+    pub fn secret_raw(
+        key: impl Into<String>,
+        label: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        Self {
+            secret: true,
+            ..Self::text_raw(key, label, value)
+        }
+    }
+
     /// Create one multiline text field.
     #[must_use]
     pub fn multiline(
@@ -120,6 +168,28 @@ impl FormField {
             ..Self::text(key, label, value)
         }
     }
+
+    /// Create one multiline field whose catalog label takes user-data arguments.
+    #[must_use]
+    pub fn multiline_with_arguments(
+        key: impl Into<String>,
+        label: impl Into<String>,
+        label_arguments: Vec<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        Self {
+            multiline: true,
+            ..Self::text_with_arguments(key, label, label_arguments, value)
+        }
+    }
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+const fn is_true(value: &bool) -> bool {
+    *value
 }
 
 /// One complete form that any frontend can render.
@@ -129,6 +199,12 @@ pub struct FormView {
     pub purpose: FormPurpose,
     /// User-visible form title.
     pub title: String,
+    /// Values inserted into a catalog title template.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub title_arguments: Vec<String>,
+    /// Translate the title as application text instead of preserving user text.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub translate_title: bool,
     /// Entry selector when the form owns an existing entry.
     pub selector: Option<String>,
     /// Fields in navigation order.
@@ -146,8 +222,14 @@ pub struct ReportItem {
     pub status: String,
     /// User-visible check name.
     pub label: String,
+    /// Translate the check name as application text.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub translate_label: bool,
     /// User-visible result detail.
     pub detail: String,
+    /// Translate the result detail as application text.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub translate_detail: bool,
 }
 
 /// A read-only report that a frontend can present.

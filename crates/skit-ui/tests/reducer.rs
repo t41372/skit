@@ -259,6 +259,8 @@ fn forms_are_frontend_neutral_editable_models_and_submit_typed_requests() {
     state.update(Action::Present(Screen::Form(FormView {
         purpose: FormPurpose::Run,
         title: "Run Alpha".to_owned(),
+        title_arguments: Vec::new(),
+        translate_title: true,
         selector: Some("alpha".to_owned()),
         fields: vec![
             FormField::text("name", "Name", "old"),
@@ -305,7 +307,9 @@ fn reports_and_remove_confirmation_have_keyboard_and_mouse_ready_actions() {
         items: vec![ReportItem {
             status: "ok".to_owned(),
             label: "Library".to_owned(),
+            translate_label: true,
             detail: "Ready".to_owned(),
+            translate_detail: true,
         }],
     })));
     assert!(matches!(state.screen(), Screen::Report(_)));
@@ -330,6 +334,8 @@ fn host_completion_returns_to_the_library_and_can_replace_the_scan() {
     state.update(Action::Present(Screen::Form(FormView {
         purpose: FormPurpose::Rename,
         title: "Rename".to_owned(),
+        title_arguments: Vec::new(),
+        translate_title: true,
         selector: Some("alpha".to_owned()),
         fields: vec![],
         focused: 0,
@@ -360,6 +366,8 @@ fn public_ui_contract_round_trips_through_json_for_a_future_tauri_adapter() {
     let screen = Screen::Form(FormView {
         purpose: FormPurpose::Preferences,
         title: "Preferences".to_owned(),
+        title_arguments: Vec::new(),
+        translate_title: true,
         selector: None,
         fields: vec![FormField::text("lang", "Language", "auto")],
         focused: 0,
