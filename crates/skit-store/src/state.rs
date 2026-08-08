@@ -66,6 +66,18 @@ impl FormStateRepository for FileFormStateStore {
             .map_err(|error| io_error("write", &path, error.to_string()))?;
         Ok(result)
     }
+
+    fn forget(&self, slug: &Slug) -> Result<(), StateWriteError> {
+        let lock_path = self.lock_path(slug);
+        let _lock = acquire_lock(&lock_path)
+            .map_err(|error| io_error("lock", &lock_path, error.to_string()))?;
+        let path = self.values_path(slug);
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(io_error("remove", &path, error.to_string())),
+        }
+    }
 }
 
 fn load_document(path: &std::path::Path) -> Table {
