@@ -148,8 +148,8 @@ fn invalid_type_is_usage_and_does_not_materialize_parameter_rows()
 }
 
 #[test]
-fn secret_transition_scrubs_every_old_state_value_surface()
--> Result<(), Box<dyn std::error::Error>> {
+fn secret_transition_scrubs_every_old_state_value_surface() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = tempdir()?;
     command_fixture(root.path())?;
     write(

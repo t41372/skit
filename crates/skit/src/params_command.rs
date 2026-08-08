@@ -1,9 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use clap::Args;
-use skit_core::{
-    DeclaredEdits, Delivery, ParamType, StateStore, Store,
-};
+use skit_core::{DeclaredEdits, Delivery, ParamType, StateStore, Store};
 
 use crate::CliFailure;
 
@@ -152,10 +150,16 @@ fn build_edits(args: &ParamsArgs) -> Result<DeclaredEdits, CliFailure> {
     let mut edits = DeclaredEdits {
         add: clean_names(&args.add, "--add")?,
         remove: clean_names(&args.remove, "--rm")?,
-        required: clean_names(&args.required, "--required")?.into_iter().collect(),
-        optional: clean_names(&args.optional, "--optional")?.into_iter().collect(),
+        required: clean_names(&args.required, "--required")?
+            .into_iter()
+            .collect(),
+        optional: clean_names(&args.optional, "--optional")?
+            .into_iter()
+            .collect(),
         secret: clean_names(&args.secret, "--secret")?.into_iter().collect(),
-        no_secret: clean_names(&args.no_secret, "--no-secret")?.into_iter().collect(),
+        no_secret: clean_names(&args.no_secret, "--no-secret")?
+            .into_iter()
+            .collect(),
         ..DeclaredEdits::default()
     };
 
@@ -225,17 +229,12 @@ fn assignment_map(values: &[String], option: &str) -> Result<BTreeMap<String, St
     Ok(assignments(values, option)?.into_iter().collect())
 }
 
-fn assignments(
-    values: &[String],
-    option: &str,
-) -> Result<Vec<(String, String)>, CliFailure> {
+fn assignments(values: &[String], option: &str) -> Result<Vec<(String, String)>, CliFailure> {
     values
         .iter()
         .map(|value| {
             let Some((name, assigned)) = value.split_once('=') else {
-                return Err(CliFailure::usage(format!(
-                    "{option} expects NAME=VALUE."
-                )));
+                return Err(CliFailure::usage(format!("{option} expects NAME=VALUE.")));
             };
             let name = name.trim();
             if name.is_empty() {
