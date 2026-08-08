@@ -1,3 +1,14 @@
+use std::fs;
+use std::io::Read;
+use std::path::Path;
+
+/// The executable-file rule for one operating-system family.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutablePolicy<'a> {
+    Posix,
+    Windows(&'a str),
+}
+
 /// A language family. It controls source-file and template behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Family {
@@ -275,6 +286,101 @@ pub fn kind_for_extension(filename: &str) -> Option<&'static str> {
     None
 }
 
+/// Infer a kind from a path with an explicit executable-file policy.
+///
+/// Registered extensions win over shebangs. A registered shebang wins over the
+/// executable fallback. The explicit `force_exe` flag wins over all inference.
+#[must_use]
+pub fn infer_kind_with_policy(
+    path: &Path,
+    force_exe: bool,
+    policy: ExecutablePolicy<'_>,
+) -> &'static str {
+    if force_exe {
+        return "exe";
+    }
+    if let Some(filename) = path.file_name().and_then(|name| name.to_str())
+        && let Some(kind) = kind_for_extension(filename)
+    {
+        return kind;
+    }
+    if path.is_file() {
+        if let Some(kind) = shebang_kind(path) {
+            return kind;
+        }
+        if is_executable_file(path, policy) {
+            return "exe";
+        }
+    }
+    "unknown"
+}
+
+/// Infer a kind with the current platform's executable-file rule.
+#[must_use]
+pub fn infer_kind(path: &Path, force_exe: bool) -> &'static str {
+    #[cfg(windows)]
+    {
+        let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_owned());
+        return infer_kind_with_policy(path, force_exe, ExecutablePolicy::Windows(&pathext));
+    }
+    #[cfg(unix)]
+    {
+        infer_kind_with_policy(path, force_exe, ExecutablePolicy::Posix)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        infer_kind_with_policy(path, force_exe, ExecutablePolicy::Windows(""))
+    }
+}
+
+fn shebang_kind(path: &Path) -> Option<&'static str> {
+    let file = fs::File::open(path).ok()?;
+    let mut bytes = Vec::with_capacity(512);
+    file.take(512).read_to_end(&mut bytes).ok()?;
+    let end = bytes
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .unwrap_or(bytes.len());
+    let line = String::from_utf8_lossy(&bytes[..end]);
+    let program = shebang_program_from_line(&line)?;
+    kind_for_program(program)
+}
+
+fn is_executable_file(path: &Path, policy: ExecutablePolicy<'_>) -> bool {
+    if !path.is_file() {
+        return false;
+    }
+    match policy {
+        ExecutablePolicy::Windows(pathext) => {
+            let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
+                return false;
+            };
+            let pathext = if pathext.is_empty() {
+                ".COM;.EXE;.BAT;.CMD"
+            } else {
+                pathext
+            };
+            pathext
+                .split(';')
+                .filter(|item| !item.is_empty())
+                .any(|item| item.trim_start_matches('.').eq_ignore_ascii_case(extension))
+        }
+        ExecutablePolicy::Posix => posix_executable(path),
+    }
+}
+
+#[cfg(unix)]
+fn posix_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::metadata(path).is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn posix_executable(_path: &Path) -> bool {
+    false
+}
+
 /// Return the executable basename from one shebang line.
 #[must_use]
 pub fn shebang_program_from_line(line: &str) -> Option<&str> {
@@ -309,7 +415,10 @@ pub fn python_version_pin(program: Option<&str>) -> String {
     let Ok(minor) = minor_text.parse::<u32>() else {
         return String::new();
     };
-    if parts.clone().any(|part| part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit())) {
+    if parts
+        .clone()
+        .any(|part| part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()))
+    {
         return String::new();
     }
     format!(">=3.{version},<3.{}", minor + 1)
