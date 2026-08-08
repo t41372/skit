@@ -175,10 +175,7 @@ fn defaulted_nontext_fields_do_not_treat_empty_as_an_explicit_delivered_value() 
     boolean.parameter_type = ParameterType::Bool;
 
     assert!(
-        remembered_values(
-            &[integer, boolean],
-            &map(&[("count", ""), ("enabled", "")]),
-        )
-        .is_empty()
+        remembered_values(&[integer, boolean], &map(&[("count", ""), ("enabled", "")]),)
+            .is_empty()
     );
 }
