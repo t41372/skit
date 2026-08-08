@@ -199,7 +199,7 @@ fn const_targets<'a>(block: Node<'a>, source: &str, wanted: &str) -> Vec<Node<'a
         let Some(right) = assignment.child_by_field_name("right") else {
             continue;
         };
-        if is_injectable_literal(right) {
+        if is_injectable_literal(right, source) {
             output.push(right);
         }
     }
@@ -219,11 +219,18 @@ fn assignment_node(statement: Node<'_>) -> Option<Node<'_>> {
         .find(|child| child.kind() == "assignment")
 }
 
-fn is_injectable_literal(node: Node<'_>) -> bool {
-    matches!(
-        node.kind(),
-        "string" | "integer" | "float" | "true" | "false" | "unary_operator"
-    )
+fn is_injectable_literal(node: Node<'_>, source: &str) -> bool {
+    match node.kind() {
+        "string" | "integer" | "float" | "true" | "false" => true,
+        "unary_operator" => node_text(node, source).is_some_and(|text| {
+            let cleaned = text.replace('_', "");
+            cleaned.parse::<i64>().is_ok()
+                || cleaned
+                    .parse::<f64>()
+                    .is_ok_and(|value| value.is_finite())
+        }),
+        _ => false,
+    }
 }
 
 fn main_guard_block<'a>(root: Node<'a>, source: &str) -> Option<Node<'a>> {
@@ -234,20 +241,23 @@ fn main_guard_block<'a>(root: Node<'a>, source: &str) -> Option<Node<'a>> {
 }
 
 fn is_main_guard(node: Node<'_>, source: &str) -> bool {
-    let condition = node.child_by_field_name("condition")?;
-    let text = node_text(condition, source)?;
+    let Some(condition) = node.child_by_field_name("condition") else {
+        return false;
+    };
+    let Some(text) = node_text(condition, source) else {
+        return false;
+    };
     let compact = text
         .chars()
         .filter(|character| !character.is_whitespace())
         .collect::<String>();
-    Some(matches!(
+    matches!(
         compact.as_str(),
         "__name__==\"__main__\""
             | "__name__=='__main__'"
             | "\"__main__\"==__name__"
             | "'__main__'==__name__"
-    ))
-    .unwrap_or(false)
+    )
 }
 
 fn node_text<'a>(node: Node<'_>, source: &'a str) -> Option<&'a str> {
