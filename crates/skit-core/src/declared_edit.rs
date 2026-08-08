@@ -113,7 +113,8 @@ pub fn edit_declared(initial: &[ParamDecl], edits: &DeclaredEdits) -> DeclaredEd
         if let Some(delivery) = edits.deliveries.get(&name).copied() {
             if !edits.allowed_deliveries.contains(&delivery) {
                 warnings.push(format!("invalid-delivery:{name}"));
-            } else if delivery == Delivery::Placeholder && !edits.placeholder_names.contains(&name) {
+            } else if delivery == Delivery::Placeholder && !edits.placeholder_names.contains(&name)
+            {
                 warnings.push(format!("not-a-placeholder:{name}"));
             } else {
                 decl.delivery = delivery;
