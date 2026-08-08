@@ -1,0 +1,7 @@
+{
+  "head_sha": "390acc1af9a1f0dcb2f60646ef096d323ad01c73",
+  "run_id": 31235193072,
+  "artifact_id": 9015128682,
+  "rust": "1.97.1",
+  "target": "x86_64-unknown-linux-gnu"
+}
