@@ -15,6 +15,7 @@ added_at = "2026-07-22T00:00:00+00:00"
 workdir = "invoke"
 description = ""
 template = "echo {NAME}"
+params = ["NAME"]
 "#;
 
 fn write(path: &Path, content: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -73,6 +74,93 @@ fn preset_list_without_values_keeps_the_existing_guidance() -> Result<(), Box<dy
         String::from_utf8(output.stdout)?,
         "No presets for Demo yet. Create one with: skit run Demo --save-preset <preset>\n"
     );
+    Ok(())
+}
+
+#[test]
+fn preset_save_from_last_captures_exact_snapshot() -> Result<(), Box<dyn std::error::Error>> {
+    let root = fixture(Some(
+        "[last_run]\nat = \"2026-08-08T05:00:00+00:00\"\nexit = 0\n\n[last_run.values]\nNAME = \"Ada\"\n",
+    ))?;
+    let output = run(
+        root.path(),
+        &["preset", "save", "Demo", "prod", "--from-last"],
+    )?;
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(
+        String::from_utf8(output.stdout)?,
+        "Preset \"prod\" saved for Demo.\n"
+    );
+    let listed = run(root.path(), &["preset", "list", "Demo", "--json"])?;
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&listed.stdout)?,
+        json!({"prod": {"NAME": "Ada"}})
+    );
+    Ok(())
+}
+
+#[test]
+fn preset_save_from_last_preserves_an_exact_empty_snapshot()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = fixture(Some(
+        "[last_run]\nat = \"2026-08-08T05:00:00+00:00\"\nexit = 0\n\n[last_run.values]\n",
+    ))?;
+    let output = run(
+        root.path(),
+        &["preset", "save", "Demo", "empty", "--from-last"],
+    )?;
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let listed = run(root.path(), &["preset", "list", "Demo", "--json"])?;
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&listed.stdout)?,
+        json!({"empty": {}})
+    );
+    Ok(())
+}
+
+#[test]
+fn preset_save_from_last_refuses_before_first_run() -> Result<(), Box<dyn std::error::Error>> {
+    let root = fixture(None)?;
+    let output = run(
+        root.path(),
+        &["preset", "save", "Demo", "prod", "--from-last"],
+    )?;
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr)?,
+        "Demo has no remembered values yet — run it once first.\n"
+    );
+    Ok(())
+}
+
+#[test]
+fn preset_save_from_last_refuses_legacy_stamp_without_snapshot()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = fixture(Some(
+        "[values]\nNAME = \"last-used\"\n\n[last_run]\nat = \"2026-07-01T00:00:00+00:00\"\nexit = 0\n",
+    ))?;
+    let output = run(
+        root.path(),
+        &["preset", "save", "Demo", "prod", "--from-last"],
+    )?;
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8(output.stderr)?.contains("run it once first"));
+    let listed = run(root.path(), &["preset", "list", "Demo", "--json"])?;
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&listed.stdout)?, json!({}));
+    Ok(())
+}
+
+#[test]
+fn preset_save_without_from_last_is_usage_error_and_writes_nothing()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = fixture(Some("[values]\nNAME = \"Ada\"\n"))?;
+    let output = run(root.path(), &["preset", "save", "Demo", "prod"])?;
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8(output.stderr)?.contains("pass --from-last"));
+    let listed = run(root.path(), &["preset", "list", "Demo", "--json"])?;
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&listed.stdout)?, json!({}));
     Ok(())
 }
 
