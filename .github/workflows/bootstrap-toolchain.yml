@@ -1,0 +1,63 @@
+name: Rewrite Rust toolchain
+
+on:
+  push:
+    branches:
+      - rewrite/rust-ratatui
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rewrite-rust-toolchain
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Package Rust 1.97.1 toolchain
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: true
+      - name: Install pinned toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
+          sysroot="$(rustc +1.97.1 --print sysroot)"
+          tar -C "$(dirname "$sysroot")" -czf rust-1.97.1-x86_64-unknown-linux-gnu.tar.gz "$(basename "$sysroot")"
+          sha256sum rust-1.97.1-x86_64-unknown-linux-gnu.tar.gz > rust-1.97.1-x86_64-unknown-linux-gnu.tar.gz.sha256
+      - name: Upload toolchain
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rust-1.97.1-x86_64-unknown-linux-gnu
+          path: |
+            rust-1.97.1-x86_64-unknown-linux-gnu.tar.gz
+            rust-1.97.1-x86_64-unknown-linux-gnu.tar.gz.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Publish run identity
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        run: |
+          set -euo pipefail
+          mkdir -p .rewrite-bootstrap
+          cat > .rewrite-bootstrap/toolchain.json <<EOF
+          {
+            "head_sha": "${GITHUB_SHA}",
+            "run_id": ${GITHUB_RUN_ID},
+            "artifact_id": ${ARTIFACT_ID},
+            "rust": "1.97.1",
+            "target": "x86_64-unknown-linux-gnu"
+          }
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .rewrite-bootstrap/toolchain.json
+          git commit -m "chore(rewrite): record Rust toolchain artifact"
+          git push
