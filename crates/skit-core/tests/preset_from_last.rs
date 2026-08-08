@@ -66,6 +66,7 @@ API_KEY = "run-secret"
 
     let loaded = state.load("demo");
     assert_eq!(loaded.presets["prod"], saved);
+    assert!(!loaded.presets["prod"].contains_key("REMOVED"));
     assert!(!loaded.values.contains_key("API_KEY"));
     assert!(
         loaded
@@ -73,10 +74,15 @@ API_KEY = "run-secret"
             .as_ref()
             .is_some_and(|run| run.values_recorded && !run.values.contains_key("API_KEY"))
     );
+    assert!(
+        loaded
+            .last_run
+            .as_ref()
+            .is_some_and(|run| run.values.get("REMOVED").is_some_and(|value| value == "gone"))
+    );
     let text = fs::read_to_string(path)?;
     assert!(!text.contains("old-plaintext"));
     assert!(!text.contains("run-secret"));
-    assert!(!text.contains("REMOVED"));
     Ok(())
 }
 
