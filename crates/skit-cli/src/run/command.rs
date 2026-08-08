@@ -262,7 +262,7 @@ pub(crate) fn run(
         .as_deref()
         .or_else(|| (!settings.runner.is_empty()).then_some(settings.runner.as_str()));
     let runner = runner_name.map(configured_runner).transpose()?;
-    let plan = build_launch_plan(
+    let mut plan = build_launch_plan(
         &entry,
         &LaunchPaths {
             script,
@@ -274,6 +274,12 @@ pub(crate) fn run(
         runner.as_ref(),
         &SystemProbe,
     )?;
+    let base_environment = env::vars().collect::<BTreeMap<_, _>>();
+    for (key, value) in
+        FileConfigStore::new(resolve_config_dir()?).mirror_environment(&base_environment)?
+    {
+        plan.env.entry(key).or_insert(value);
+    }
 
     if args.dry_run {
         println!("{}", plan.display);

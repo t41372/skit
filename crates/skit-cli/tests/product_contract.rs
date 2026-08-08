@@ -272,14 +272,49 @@ fn doctor_rebuilds_the_registry_and_reports_all_owned_paths() {
     sandbox.write_command_entry();
     let report = sandbox.command_json(&["doctor", "--rebuild", "--json"]);
     assert_eq!(report["entries"], 1);
-    assert_eq!(report["rebuilt"], true);
+    assert_eq!(report["rebuilt"], 1);
     assert_eq!(
         report["location"],
-        sandbox.data.path().display().to_string()
+        sandbox.data.path().join("scripts").display().to_string()
     );
+    for key in [
+        "uv",
+        "missing",
+        "drift",
+        "needs_missing",
+        "launch_blocked",
+        "runner_rows_invalid",
+        "rebuild_problems",
+        "mirror",
+        "size_bytes",
+    ] {
+        assert!(report.get(key).is_some(), "missing doctor key: {key}");
+    }
+    assert_eq!(report["mirror"]["enabled"], false);
     assert!(report.get("state_location").is_some());
     assert!(report.get("config_location").is_some());
     assert!(sandbox.data.path().join("registry.toml").is_file());
+}
+
+#[test]
+fn doctor_requires_uv_only_for_empty_or_python_libraries() {
+    let empty = Sandbox::new();
+    empty
+        .command()
+        .env("PATH", empty.data.path())
+        .args(["doctor", "--json"])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("\"uv\":null"));
+
+    let commands = Sandbox::new();
+    commands.write_command_entry();
+    commands
+        .command()
+        .env("PATH", commands.data.path())
+        .args(["doctor", "--json"])
+        .assert()
+        .success();
 }
 
 #[test]

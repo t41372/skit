@@ -22,7 +22,10 @@ use skit_language::{
     detect_candidates, infer_kind, managed_params, normalize_shell_default, placeholder_params,
     read_uv_metadata, write_managed_params, write_uv_metadata,
 };
-use skit_runtime::{DependencyError, clear_javascript_dependencies};
+use skit_runtime::{
+    DependencyError, ProgramProbe, SystemProbe, clear_javascript_dependencies,
+    resolve_javascript_runtime,
+};
 use skit_store::{ConfigError, FileConfigStore, FileFormStateStore, PromptRunner};
 use skit_store::{FileStore, stored_filename, stored_filenames};
 use skit_ui::{
@@ -488,10 +491,7 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             deps(&service, &store, args)?;
             Ok(0)
         }
-        Some(Command::Doctor { json, rebuild }) => {
-            doctor(&service, &store, json, rebuild)?;
-            Ok(0)
-        }
+        Some(Command::Doctor { json, rebuild }) => doctor(&service, &store, json, rebuild),
         Some(Command::Config { key, value, json }) => {
             config(key.as_deref(), value.as_deref(), json)?;
             Ok(0)
@@ -1722,37 +1722,251 @@ fn doctor(
     store: &FileStore,
     json: bool,
     rebuild: bool,
-) -> Result<(), CliError> {
+) -> Result<i32, CliError> {
+    let before = service.list()?;
+    let rebuild_problems = if rebuild {
+        before
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.message.clone())
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     let rebuilt_entries = rebuild.then(|| store.rebuild_registry()).transpose()?;
     let scan = service.list()?;
     let state_location = resolve_state_dir()?;
     let config_location = resolve_config_dir()?;
+    let config = FileConfigStore::new(&config_location);
+    let probe = SystemProbe;
+    let uv = probe.find_program("uv");
+    let entries = scan
+        .entries
+        .iter()
+        .filter_map(|summary| service.show(summary.slug.as_str()).ok())
+        .collect::<Vec<_>>();
+    let missing = scan
+        .entries
+        .iter()
+        .filter(|entry| summary_missing(store, entry))
+        .map(|entry| entry.name.clone())
+        .collect::<Vec<_>>();
+    let drift = entries
+        .iter()
+        .filter(|entry| doctor_entry_drifted(store, entry))
+        .map(|entry| entry.meta.name.clone())
+        .collect::<Vec<_>>();
+    let mut needs_missing = BTreeMap::<String, Vec<String>>::new();
+    let mut launch_blocked = BTreeMap::<String, String>::new();
+    for entry in &entries {
+        let settings = EntrySettings::from_meta(&entry.meta);
+        let absent = settings
+            .needs
+            .iter()
+            .filter(|name| probe.find_program(name).is_none())
+            .cloned()
+            .collect::<Vec<_>>();
+        if !absent.is_empty() {
+            needs_missing.insert(entry.meta.name.clone(), absent);
+        } else if !missing.contains(&entry.meta.name)
+            && let Some(reason) = doctor_launch_block(entry, &settings, &config, &probe)?
+        {
+            launch_blocked.insert(entry.meta.name.clone(), reason);
+        }
+    }
+    let bad_runners = config.invalid_runner_rows()?;
+    let mirror = config.mirror()?;
+    let scripts = store.data_dir().join("scripts");
+    let size = directory_size(&scripts);
+    let uv_required = entries.is_empty()
+        || entries
+            .iter()
+            .any(|entry| entry.meta.kind.as_str() == "python");
+    let code = if uv.is_some() || !uv_required { 0 } else { 1 };
     if json {
         println!(
             "{}",
             serde_json::json!({
+                "uv": uv,
                 "entries": scan.entries.len(),
-                "diagnostics": scan.diagnostics,
-                "rebuilt": rebuild,
-                "rebuilt_entries": rebuilt_entries,
-                "location": store.data_dir(),
+                "missing": missing,
+                "drift": drift,
+                "needs_missing": needs_missing,
+                "launch_blocked": launch_blocked,
+                "runner_rows_invalid": bad_runners,
+                "rebuilt": rebuilt_entries,
+                "rebuild_problems": rebuild_problems,
+                "mirror": {
+                    "enabled": mirror.enabled,
+                    "pypi": mirror.pypi,
+                    "python_install": mirror.python_install,
+                    "uv_binary": mirror.uv_binary,
+                    "npm": mirror.npm,
+                },
+                "location": scripts,
+                "size_bytes": size,
                 "state_location": state_location,
                 "config_location": config_location,
+                "diagnostics": scan.diagnostics,
             })
         );
     } else {
+        match uv {
+            Some(path) => println!("OK uv: {}", path.display()),
+            None => println!("ERROR uv: not found"),
+        }
         println!("Entries: {}", scan.entries.len());
-        println!("Data: {}", store.data_dir().display());
+        println!("Library: {} ({} bytes)", scripts.display(), size);
         println!("State: {}", state_location.display());
         println!("Config: {}", config_location.display());
-        if rebuild {
-            println!("Registry rebuilt.");
+        if let Some(count) = rebuilt_entries {
+            println!("Registry rebuilt: {count}");
         }
-        for diagnostic in scan.diagnostics {
-            eprintln!("warning: {}", diagnostic.message);
+        for name in missing {
+            println!("WARN {name}: the launch target is gone from disk");
+        }
+        for name in drift {
+            println!(
+                "WARN {name}: form definitions are out of sync; run: skit params {name} --resync"
+            );
+        }
+        for (name, tools) in needs_missing {
+            println!(
+                "WARN {name}: missing external commands: {}",
+                tools.join(", ")
+            );
+        }
+        for (name, reason) in launch_blocked {
+            println!("WARN {name}: a run would refuse to start: {reason}");
+        }
+        if !bad_runners.is_empty() {
+            println!("WARN malformed prompt runners: {}", bad_runners.join(", "));
+        }
+        for problem in rebuild_problems {
+            println!("WARN {problem}");
         }
     }
-    Ok(())
+    Ok(code)
+}
+
+fn doctor_entry_drifted(store: &FileStore, entry: &Entry) -> bool {
+    let Some(path) = source_path(store, entry) else {
+        return false;
+    };
+    let Ok(source) = fs::read_to_string(path) else {
+        return false;
+    };
+    let settings = EntrySettings::from_meta(&entry.meta);
+    if entry.meta.kind.as_str() == "prompt" {
+        if !settings.interpolate {
+            return false;
+        }
+        let fresh = placeholder_params("prompt", &source)
+            .into_iter()
+            .map(|parameter| parameter.name)
+            .collect::<Vec<_>>();
+        return settings.params.iter().any(|name| !fresh.contains(name));
+    }
+    let managed = managed_params(entry.meta.kind.as_str(), &source);
+    if managed.is_empty() {
+        return false;
+    }
+    let detected = detect_candidates(entry.meta.kind.as_str(), &source);
+    managed.iter().any(|parameter| {
+        !detected.iter().any(|candidate| {
+            candidate.name == parameter.name && candidate.binding == parameter.binding
+        })
+    })
+}
+
+fn doctor_launch_block<P: ProgramProbe>(
+    entry: &Entry,
+    settings: &EntrySettings,
+    config: &FileConfigStore,
+    probe: &P,
+) -> Result<Option<String>, CliError> {
+    if !matches!(entry.meta.workdir.as_str(), "invoke" | "store" | "origin") {
+        let path = Path::new(&entry.meta.workdir);
+        if !path.is_absolute() {
+            return Ok(Some(
+                "the custom working directory is not absolute".to_owned(),
+            ));
+        }
+        if !probe.is_dir(path) {
+            return Ok(Some(format!(
+                "working directory does not exist: {}",
+                path.display()
+            )));
+        }
+    }
+    let required = match entry.meta.kind.as_str() {
+        "python" => Some("uv".to_owned()),
+        "shell" => Some(if settings.interpreter.is_empty() {
+            let configured = config.get("shell.bash_path")?;
+            if configured.is_empty() {
+                "bash".to_owned()
+            } else {
+                configured
+            }
+        } else {
+            settings.interpreter.clone()
+        }),
+        "fish" => Some(interpreter_name(settings, "fish")),
+        "powershell" => Some(interpreter_name(settings, "pwsh")),
+        "ruby" => Some(interpreter_name(settings, "ruby")),
+        "perl" => Some(interpreter_name(settings, "perl")),
+        "lua" => Some(interpreter_name(settings, "lua")),
+        "r" => Some(interpreter_name(settings, "Rscript")),
+        "command" => Some(if cfg!(windows) { "cmd.exe" } else { "sh" }.to_owned()),
+        "js" | "ts" => match resolve_javascript_runtime(settings, probe) {
+            Ok(_) => None,
+            Err(error) => return Ok(Some(error.to_string())),
+        },
+        "prompt" if !settings.runner.is_empty() => {
+            let runner = config
+                .runners()?
+                .into_iter()
+                .find(|runner| runner.name == settings.runner);
+            let Some(runner) = runner else {
+                return Ok(Some(format!(
+                    "prompt runner is not configured: {}",
+                    settings.runner
+                )));
+            };
+            runner.argv.first().cloned()
+        }
+        "prompt" | "exe" => None,
+        kind => return Ok(Some(format!("unknown entry kind: {kind}"))),
+    };
+    Ok(required.and_then(|name| {
+        probe
+            .find_program(&name)
+            .is_none()
+            .then(|| format!("required program was not found: {name}"))
+    }))
+}
+
+fn interpreter_name(settings: &EntrySettings, default: &str) -> String {
+    if settings.interpreter.is_empty() {
+        default.to_owned()
+    } else {
+        settings.interpreter.clone()
+    }
+}
+
+fn directory_size(path: &Path) -> u64 {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if metadata.is_file() || metadata.file_type().is_symlink() {
+        return metadata.len();
+    }
+    fs::read_dir(path).map_or(0, |items| {
+        items
+            .filter_map(Result::ok)
+            .map(|item| directory_size(&item.path()))
+            .fold(0_u64, u64::saturating_add)
+    })
 }
 
 fn agent(command: AgentCommand) -> Result<(), CliError> {
