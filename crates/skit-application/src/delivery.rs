@@ -7,8 +7,10 @@
 
 use std::collections::BTreeMap;
 
-use skit_domain::parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType};
+use skit_domain::parameters::{ParamDecl, ParameterDelivery, ParameterType};
 use thiserror::Error;
+
+use crate::form_state::delivers_empty;
 
 const MASK: &str = "•••";
 
@@ -206,22 +208,6 @@ fn flag_pieces(
         }
         None => Ok(Vec::new()),
     }
-}
-
-fn delivers_empty(declaration: &ParamDecl) -> bool {
-    declaration.default.is_some()
-        && !declaration.secret
-        && !declaration.degraded
-        && !declaration.multiple
-        && declaration.binding != ParameterBinding::Input
-        && matches!(
-            declaration.parameter_type,
-            ParameterType::Str | ParameterType::Path
-        )
-        && matches!(
-            declaration.delivery,
-            ParameterDelivery::Inject | ParameterDelivery::Flag | ParameterDelivery::Env
-        )
 }
 
 fn truthy(value: &str) -> bool {
