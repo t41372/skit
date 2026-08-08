@@ -104,8 +104,8 @@ fn managed_const_run_materializes_one_ephemeral_snapshot_without_touching_store(
 }
 
 #[test]
-fn supplied_managed_input_materializes_one_shot_wrapper()
--> Result<(), Box<dyn std::error::Error>> {
+fn supplied_managed_input_materializes_one_shot_wrapper() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = tempdir()?;
     let params = vec![ParamDecl {
         name: "input-1".to_owned(),

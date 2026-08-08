@@ -31,14 +31,24 @@ fn prompt_match_survives_inserted_earlier_input_and_preamble_follows_future_impo
         &BTreeMap::from([("input-1".to_owned(), "s3cret".to_owned())]),
     )?;
 
-    let docs = output.find("\"\"\"module docs\"\"\"").ok_or("docs missing")?;
-    let future = output.find("from __future__ import annotations").ok_or("future missing")?;
-    let preamble = output.find("import sys as _skit_s").ok_or("preamble missing")?;
-    let first_call = output.find("new = input('New: ')").ok_or("new input changed")?;
+    let docs = output
+        .find("\"\"\"module docs\"\"\"")
+        .ok_or("docs missing")?;
+    let future = output
+        .find("from __future__ import annotations")
+        .ok_or("future missing")?;
+    let preamble = output
+        .find("import sys as _skit_s")
+        .ok_or("preamble missing")?;
+    let first_call = output
+        .find("new = input('New: ')")
+        .ok_or("new input changed")?;
     let managed_call = output
         .find("password = _skit_i[1]('Password: ')")
         .ok_or("managed input not rebound by prompt")?;
-    assert!(docs < future && future < preamble && preamble < first_call && first_call < managed_call);
+    assert!(
+        docs < future && future < preamble && preamble < first_call && first_call < managed_call
+    );
     assert!(output.contains("1: (\"s3cret\", True)"));
     assert!(output.contains("'***' if _skit_q[k][1]"));
     assert!(!analyze_python_managed(&output).syntax_error);
