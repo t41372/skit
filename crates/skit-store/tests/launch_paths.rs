@@ -2,7 +2,7 @@ use std::fs;
 
 use skit_application::{CreateEntry, EntryMutationRepository, EntryPayload, SourcePermissions};
 use skit_domain::{EntryKind, StorageMode};
-use skit_store::{FileStore, stored_filename};
+use skit_store::{FileStore, stored_filename, stored_filenames};
 use tempfile::TempDir;
 
 #[test]
@@ -20,6 +20,14 @@ fn stored_filenames_match_the_v040_library_layout() {
     assert_eq!(stored_filename("prompt"), Some("prompt.md"));
     assert_eq!(stored_filename("exe"), None);
     assert_eq!(stored_filename("command"), None);
+    assert_eq!(
+        stored_filenames("js"),
+        ["script.js", "script.mjs", "script.cjs"]
+    );
+    assert_eq!(
+        stored_filenames("ts"),
+        ["script.ts", "script.mts", "script.cts"]
+    );
 }
 
 #[test]
@@ -65,4 +73,36 @@ fn payload_path_uses_the_original_for_references_and_the_stored_copy_for_copies(
         })
         .unwrap();
     assert_eq!(store.payload_path(&referenced).unwrap(), source);
+}
+
+#[test]
+fn payload_path_preserves_javascript_module_extensions_and_ignores_private_support_files() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let source = root.path().join("module.mjs");
+    fs::write(&source, b"export default 1;\n").unwrap();
+    let copied = store
+        .create(CreateEntry {
+            name: "Module".to_owned(),
+            kind: EntryKind::parse("js").unwrap(),
+            mode: StorageMode::Copy,
+            source: source.display().to_string(),
+            description: String::new(),
+            workdir: "invoke".to_owned(),
+            payload: Some(EntryPayload {
+                bytes: fs::read(&source).unwrap(),
+                stored_name: Some("script.mjs".to_owned()),
+                permissions: SourcePermissions::default(),
+            }),
+        })
+        .unwrap();
+    let directory = store.entry_dir_path(&copied.slug);
+    fs::write(directory.join("package.json"), "{}\n").unwrap();
+    fs::write(directory.join("package-lock.json"), "{}\n").unwrap();
+    fs::write(directory.join(".skit-deps"), "stamp\n").unwrap();
+
+    assert_eq!(
+        store.payload_path(&copied).unwrap(),
+        directory.join("script.mjs")
+    );
 }

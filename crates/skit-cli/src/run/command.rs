@@ -15,7 +15,9 @@ use skit_domain::{Entry, EntryId, EntrySettings};
 use skit_form::form_params;
 use skit_language::{LanguageError, inject_values};
 use skit_runtime::{
-    LaunchError, LaunchPaths, PromptRunner, SystemProbe, build_launch_plan, execute_launch,
+    DependencyError, LaunchError, LaunchPaths, PromptRunner, SystemDependencyCommandRunner,
+    SystemProbe, build_launch_plan, ensure_javascript_dependencies, execute_launch,
+    resolve_javascript_runtime,
 };
 use skit_store::{ConfigError, FileConfigStore, FileFormStateStore, FileGlobExpander, FileStore};
 use thiserror::Error;
@@ -81,6 +83,8 @@ pub(crate) enum RunError {
     Language(#[from] LanguageError),
     #[error(transparent)]
     Launch(#[from] LaunchError),
+    #[error(transparent)]
+    Dependencies(#[from] DependencyError),
     #[error("--set needs NAME=VALUE; got {value:?}")]
     InvalidSet { value: String },
     #[error("unknown parameter in --set: {name}")]
@@ -126,6 +130,7 @@ impl RunError {
             | Self::RawUnsupported { .. }
             | Self::RawConflict => 2,
             Self::Launch(error) => error.exit_code(),
+            Self::Dependencies(DependencyError::InstallerNotFound { .. }) => 126,
             Self::RunnerNotFound { .. } => 126,
             Self::State(_)
             | Self::Language(_)
@@ -134,7 +139,8 @@ impl RunError {
             | Self::Stage { .. }
             | Self::StateDirectoryUnavailable
             | Self::Config(_)
-            | Self::ConfigDirectoryUnavailable => 125,
+            | Self::ConfigDirectoryUnavailable
+            | Self::Dependencies(_) => 125,
         }
     }
 }
@@ -163,6 +169,23 @@ pub(crate) fn run(
     let saved = state.load(&entry.slug);
 
     let source = source_text(data_store, &entry, &settings)?;
+    if matches!(entry.meta.kind.as_str(), "js" | "ts") {
+        if entry.meta.mode == skit_domain::StorageMode::Reference
+            && !settings.dependencies.is_empty()
+        {
+            return Err(DependencyError::CopyStorageRequired.into());
+        }
+        if entry.meta.mode == skit_domain::StorageMode::Copy {
+            let runtime = resolve_javascript_runtime(&settings, &SystemProbe)?;
+            ensure_javascript_dependencies(
+                &data_store.entry_dir_path(&entry.slug),
+                &runtime,
+                &settings.dependencies,
+                &SystemProbe,
+                &SystemDependencyCommandRunner,
+            )?;
+        }
+    }
     let declarations = if args.raw {
         Vec::new()
     } else {

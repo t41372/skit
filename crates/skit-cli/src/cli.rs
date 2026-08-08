@@ -22,8 +22,9 @@ use skit_language::{
     detect_candidates, infer_kind, managed_params, normalize_shell_default, placeholder_params,
     read_uv_metadata, write_managed_params, write_uv_metadata,
 };
+use skit_runtime::{DependencyError, clear_javascript_dependencies};
 use skit_store::{ConfigError, FileConfigStore, FileFormStateStore, PromptRunner};
-use skit_store::{FileStore, stored_filename};
+use skit_store::{FileStore, stored_filename, stored_filenames};
 use skit_ui::{
     Action as UiAction, Effect as UiEffect, FormField, FormPurpose, FormView, HostRequest,
     LibraryState, ReportItem, ReportView, Screen,
@@ -994,6 +995,15 @@ fn deps(
             "a Python constraint does not apply to {kind} entries"
         )));
     }
+    if package_change
+        && matches!(kind.as_str(), "js" | "ts")
+        && held.meta.mode == StorageMode::Reference
+        && !args.clear
+    {
+        return Err(CliError::Usage(
+            "managed dependencies require copy storage".to_owned(),
+        ));
+    }
     if args.clear && !args.dependencies.is_empty() {
         return Err(CliError::Usage("use --dep or --clear, not both".to_owned()));
     }
@@ -1059,6 +1069,9 @@ fn deps(
     if metadata_changed {
         let claimed = service.claim_identity(&held)?;
         held = service.update_settings(&claimed, &settings, &held.meta.workdir)?;
+    }
+    if package_change && matches!(kind.as_str(), "js" | "ts") && effective_dependencies.is_empty() {
+        clear_javascript_dependencies(&store.entry_dir_path(&held.slug))?;
     }
     let mut output = EntrySettings::from_meta(&held.meta);
     output.dependencies = effective_dependencies;
@@ -1660,14 +1673,11 @@ fn summary_missing(store: &FileStore, entry: &EntrySummary) -> bool {
     match entry.kind.as_str() {
         "command" => false,
         "exe" => true,
-        kind => stored_filename(kind).is_some_and(|name| {
-            !store
-                .data_dir()
-                .join("scripts")
-                .join(entry.slug.as_str())
-                .join(name)
-                .is_file()
-        }),
+        kind => {
+            let directory = store.data_dir().join("scripts").join(entry.slug.as_str());
+            let names = stored_filenames(kind);
+            !names.is_empty() && !names.iter().any(|name| directory.join(name).is_file())
+        }
     }
 }
 
@@ -2196,6 +2206,12 @@ fn fallback_stored_name(source: &Path) -> String {
 }
 
 fn stored_name(kind: &str, source: &Path) -> String {
+    if matches!(kind, "js" | "ts")
+        && let Some(extension) = source.extension().and_then(|value| value.to_str())
+        && matches!(extension, "js" | "mjs" | "cjs" | "ts" | "mts" | "cts")
+    {
+        return format!("script.{extension}");
+    }
     stored_filename(kind)
         .map(str::to_owned)
         .unwrap_or_else(|| fallback_stored_name(source))
@@ -2351,6 +2367,8 @@ enum CliError {
     Repository(#[from] RepositoryError),
     #[error(transparent)]
     Run(#[from] RunError),
+    #[error(transparent)]
+    Dependencies(#[from] DependencyError),
     #[error("could not encode JSON output: {0}")]
     Json(#[from] serde_json::Error),
     #[error("could not write output: {0}")]
@@ -2385,6 +2403,7 @@ impl CliError {
         match self {
             Self::Repository(error) => error.exit_class().code() as i32,
             Self::Run(error) => error.exit_code(),
+            Self::Dependencies(_) => ExitClass::Skit.code() as i32,
             Self::ConfirmationRequired | Self::ConfirmationRequiredFor(_) | Self::Usage(_) => {
                 ExitClass::Usage.code() as i32
             }

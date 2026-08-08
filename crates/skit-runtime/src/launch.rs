@@ -266,17 +266,8 @@ fn javascript_plan<P: ProgramProbe>(
     probe: &P,
 ) -> Result<(PathBuf, Vec<String>, Vec<String>), LaunchError> {
     require_file(&paths.script, probe)?;
-    let runtime = if !settings.interpreter.is_empty() {
-        settings.interpreter.as_str()
-    } else {
-        ["deno", "bun", "node"]
-            .into_iter()
-            .find(|name| probe.find_program(name).is_some())
-            .ok_or_else(|| LaunchError::ProgramNotFound {
-                name: "deno, bun, or node".to_owned(),
-            })?
-    };
-    let program = require_program(runtime, probe)?;
+    let runtime = resolve_javascript_runtime(settings, probe)?;
+    let program = require_program(&runtime, probe)?;
     let mut prefix = if runtime == "deno" {
         vec!["run".to_owned(), "--allow-all".to_owned()]
     } else {
@@ -288,6 +279,24 @@ fn javascript_plan<P: ProgramProbe>(
     let mut display = prefix;
     display.extend(assembly.masked_args.iter().cloned());
     Ok((program, args, display))
+}
+
+/// Select the JavaScript runtime by entry pin and deterministic availability order.
+pub fn resolve_javascript_runtime<P: ProgramProbe>(
+    settings: &EntrySettings,
+    probe: &P,
+) -> Result<String, LaunchError> {
+    if !settings.interpreter.is_empty() {
+        require_program(&settings.interpreter, probe)?;
+        return Ok(settings.interpreter.clone());
+    }
+    ["deno", "bun", "node"]
+        .into_iter()
+        .find(|name| probe.find_program(name).is_some())
+        .map(str::to_owned)
+        .ok_or_else(|| LaunchError::ProgramNotFound {
+            name: "deno, bun, or node".to_owned(),
+        })
 }
 
 fn direct_plan<P: ProgramProbe>(

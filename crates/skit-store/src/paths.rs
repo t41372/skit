@@ -27,6 +27,26 @@ pub fn stored_filename(kind: &str) -> Option<&'static str> {
     }
 }
 
+/// Return all payload filenames accepted for one known entry kind.
+#[must_use]
+pub fn stored_filenames(kind: &str) -> &'static [&'static str] {
+    match kind {
+        "js" => &["script.js", "script.mjs", "script.cjs"],
+        "ts" => &["script.ts", "script.mts", "script.cts"],
+        "python" => &["script.py"],
+        "shell" => &["script.sh"],
+        "fish" => &["script.fish"],
+        "powershell" => &["script.ps1"],
+        "ruby" => &["script.rb"],
+        "perl" => &["script.pl"],
+        "lua" => &["script.lua"],
+        "r" => &["script.r"],
+        "prompt" => &["prompt.md"],
+        "exe" | "command" => &[],
+        _ => &["payload"],
+    }
+}
+
 impl FileStore {
     /// Return the directory that owns one entry.
     #[must_use]
@@ -41,7 +61,7 @@ impl FileStore {
         }
 
         let directory = self.entry_dir_path(&entry.slug);
-        if let Some(name) = stored_filename(entry.meta.kind.as_str()) {
+        for name in stored_filenames(entry.meta.kind.as_str()) {
             let path = directory.join(name);
             if path.is_file() {
                 return Ok(path);
@@ -53,7 +73,7 @@ impl FileStore {
         let mut files = Vec::new();
         for item in reader {
             let item = item.map_err(|error| io_error("scan", &directory, error))?;
-            if item.file_name().to_string_lossy() == "meta.toml" {
+            if is_support_file(&item.file_name().to_string_lossy()) {
                 continue;
             }
             let file_type = item
@@ -74,6 +94,19 @@ impl FileStore {
             }),
         }
     }
+}
+
+fn is_support_file(name: &str) -> bool {
+    matches!(
+        name,
+        "meta.toml"
+            | "package.json"
+            | "package-lock.json"
+            | "bun.lock"
+            | "bun.lockb"
+            | "deno.lock"
+            | ".skit-deps"
+    ) || name.starts_with(".skit-deps.tmp-")
 }
 
 fn io_error(

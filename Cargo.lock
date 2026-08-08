@@ -1183,6 +1183,7 @@ dependencies = [
 name = "skit-runtime"
 version = "0.5.0"
 dependencies = [
+ "serde_json",
  "shlex",
  "skit-application",
  "skit-domain",

@@ -252,4 +252,8 @@ fn tui_add_form_and_list_parser_cover_all_authoring_axes() {
         tui_split_list("alpha, beta\ngamma  delta"),
         ["alpha", "beta", "gamma", "delta"]
     );
+    assert_eq!(stored_name("js", Path::new("module.mjs")), "script.mjs");
+    assert_eq!(stored_name("js", Path::new("module.cjs")), "script.cjs");
+    assert_eq!(stored_name("ts", Path::new("module.mts")), "script.mts");
+    assert_eq!(stored_name("ts", Path::new("module.cts")), "script.cts");
 }
