@@ -23,3 +23,7 @@ jobs:
           rustup default 1.97.1
       - name: Explain any versions behind the registry latest
         run: cargo update --dry-run --verbose
+      - name: Explain generic-array constraint
+        run: |
+          cargo tree --invert generic-array@0.14.7 --edges normal,build,dev
+          cargo info generic-array@0.14.9
