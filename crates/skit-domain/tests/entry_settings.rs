@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
-use skit_domain::{EntryKind, EntryMeta, EntrySettings};
 use skit_domain::parameters::{ParamDecl, ParameterDelivery, ParameterType};
+use skit_domain::{EntryKind, EntryMeta, EntrySettings};
 
 fn meta() -> EntryMeta {
     EntryMeta::minimal("Demo", EntryKind::parse("shell").unwrap())
@@ -74,7 +74,8 @@ fn malformed_optional_fields_use_safe_defaults() {
 #[test]
 fn writing_settings_preserves_unknown_extension_fields_and_legacy_omission_rules() {
     let mut meta = meta();
-    meta.extra.insert("future".to_owned(), json!({"keep": true}));
+    meta.extra
+        .insert("future".to_owned(), json!({"keep": true}));
     let mut parameter = ParamDecl::new("count");
     parameter.parameter_type = ParameterType::Int;
     parameter.delivery = ParameterDelivery::Flag;

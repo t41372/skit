@@ -174,20 +174,8 @@ pub fn build_launch_plan<P: ProgramProbe>(
 
     let (program, args, display_args) = match kind {
         "python" => python_plan(entry, paths, assembly, &settings, probe)?,
-        "shell" => interpreted_plan(
-            paths,
-            assembly,
-            interpreter(&settings, "bash"),
-            &[],
-            probe,
-        )?,
-        "fish" => interpreted_plan(
-            paths,
-            assembly,
-            interpreter(&settings, "fish"),
-            &[],
-            probe,
-        )?,
+        "shell" => interpreted_plan(paths, assembly, interpreter(&settings, "bash"), &[], probe)?,
+        "fish" => interpreted_plan(paths, assembly, interpreter(&settings, "fish"), &[], probe)?,
         "powershell" => interpreted_plan(
             paths,
             assembly,
@@ -195,27 +183,9 @@ pub fn build_launch_plan<P: ProgramProbe>(
             &["-File"],
             probe,
         )?,
-        "ruby" => interpreted_plan(
-            paths,
-            assembly,
-            interpreter(&settings, "ruby"),
-            &[],
-            probe,
-        )?,
-        "perl" => interpreted_plan(
-            paths,
-            assembly,
-            interpreter(&settings, "perl"),
-            &[],
-            probe,
-        )?,
-        "lua" => interpreted_plan(
-            paths,
-            assembly,
-            interpreter(&settings, "lua"),
-            &[],
-            probe,
-        )?,
+        "ruby" => interpreted_plan(paths, assembly, interpreter(&settings, "ruby"), &[], probe)?,
+        "perl" => interpreted_plan(paths, assembly, interpreter(&settings, "perl"), &[], probe)?,
+        "lua" => interpreted_plan(paths, assembly, interpreter(&settings, "lua"), &[], probe)?,
         "r" => interpreted_plan(
             paths,
             assembly,
@@ -377,7 +347,12 @@ fn prompt_plan<P: ProgramProbe>(
         .iter()
         .filter(|value| value.as_str() == "{{prompt}}")
         .count();
-    if prompt_count != 1 || runner.argv.first().is_none_or(|value| value == "{{prompt}}") {
+    if prompt_count != 1
+        || runner
+            .argv
+            .first()
+            .is_none_or(|value| value == "{{prompt}}")
+    {
         return Err(LaunchError::InvalidPromptRunner {
             name: runner.name.clone(),
         });
@@ -437,7 +412,11 @@ pub fn render_command_template(
             continue;
         }
         if character == '\'' && !cfg!(windows) && quote != Some('"') {
-            quote = if quote == Some('\'') { None } else { Some('\'') };
+            quote = if quote == Some('\'') {
+                None
+            } else {
+                Some('\'')
+            };
             output.push(character);
             index += 1;
             continue;

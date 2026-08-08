@@ -357,7 +357,8 @@ impl EntrySettings {
         insert_string(&mut meta.extra, "interpreter", &self.interpreter);
         insert_string(&mut meta.extra, "runner", &self.runner);
         if !self.interpolate {
-            meta.extra.insert("interpolate".to_owned(), Value::Bool(false));
+            meta.extra
+                .insert("interpolate".to_owned(), Value::Bool(false));
         }
         insert_string_list(&mut meta.extra, "needs", &self.needs);
         if !self.parameters.is_empty() {
