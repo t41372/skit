@@ -3,8 +3,7 @@ use std::fs;
 
 use skit_core::{
     Binding, Delivery, Entry, EntryState, LaunchOptions, ParamDecl, ParamDefault, ParamType,
-    Platform, PrepareExecutionError, PythonInjectError, RunRequest, ScriptMeta, prepare_execution,
-    write_python_params,
+    Platform, RunRequest, ScriptMeta, prepare_execution, write_python_params,
 };
 use tempfile::tempdir;
 
@@ -105,7 +104,7 @@ fn managed_const_run_materializes_one_ephemeral_snapshot_without_touching_store(
 }
 
 #[test]
-fn supplied_managed_input_refuses_before_a_temp_snapshot_exists()
+fn supplied_managed_input_materializes_one_shot_wrapper()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempdir()?;
     let params = vec![ParamDecl {
@@ -116,34 +115,38 @@ fn supplied_managed_input_refuses_before_a_temp_snapshot_exists()
         order: 0,
         ..ParamDecl::default()
     }];
-    let entry = python_entry(
-        root.path(),
-        &write_python_params("name = input('Name: ')\n", &params),
-    )?;
+    let stored_text = write_python_params("name = input('Name: ')\n", &params);
+    let entry = python_entry(root.path(), &stored_text)?;
     let state = EntryState::default();
     let explicit = BTreeMap::from([("input-1".to_owned(), "Ada".to_owned())]);
     let environment = BTreeMap::new();
     let options = LaunchOptions::new(Platform::Linux, root.path());
     let uv = root.path().join("fake-uv");
     let programs = |name: &str| (name == "uv").then(|| uv.clone());
-    let result = prepare_execution(
-        &entry,
-        RunRequest {
-            state: &state,
-            preset: None,
-            explicit: &explicit,
-            extra_args: &[],
-            environment: &environment,
-            launch_options: &options,
-        },
-        &programs,
-    );
-    assert!(matches!(
-        result,
-        Err(PrepareExecutionError::PythonInject(
-            PythonInjectError::ManagedInputUnsupported(name)
-        )) if name == "input-1"
-    ));
+    let temp_path;
+    {
+        let execution = prepare_execution(
+            &entry,
+            RunRequest {
+                state: &state,
+                preset: None,
+                explicit: &explicit,
+                extra_args: &[],
+                environment: &environment,
+                launch_options: &options,
+            },
+            &programs,
+        )?;
+        temp_path = execution
+            .injected_path()
+            .ok_or("expected injected temp snapshot")?
+            .to_owned();
+        let injected = fs::read_to_string(&temp_path)?;
+        assert!(injected.contains("0: (\"Ada\", False)"));
+        assert!(injected.contains("name = _skit_i[0]('Name: ')"));
+        assert_eq!(fs::read_to_string(entry.script_path())?, stored_text);
+    }
+    assert!(!temp_path.exists());
     Ok(())
 }
 
