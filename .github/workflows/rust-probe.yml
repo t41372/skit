@@ -1,0 +1,71 @@
+name: Rust Probe
+
+on:
+  push:
+    branches:
+      - "rewrite/rust-ratatui-sol-20260807"
+    paths:
+      - "Cargo.toml"
+      - "rust-toolchain.toml"
+      - "crates/**"
+      - ".github/workflows/rust-probe.yml"
+
+permissions: {}
+
+concurrency:
+  group: rust-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout isolated rewrite branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: true
+
+      - name: Install Rust 1.97.1
+        run: rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
+
+      - name: Run and capture Rust gates
+        shell: bash
+        run: |
+          mkdir -p .ci
+          log=.ci/rust-probe.txt
+          : > "$log"
+          set +e
+
+          echo '$ cargo +1.97.1 fmt --all --check' >> "$log"
+          cargo +1.97.1 fmt --all --check >> "$log" 2>&1
+          fmt_code=$?
+          echo >> "$log"
+
+          echo '$ cargo +1.97.1 clippy --workspace --all-targets --all-features -- -D warnings' >> "$log"
+          cargo +1.97.1 clippy --workspace --all-targets --all-features -- -D warnings >> "$log" 2>&1
+          clippy_code=$?
+          echo >> "$log"
+
+          echo '$ cargo +1.97.1 test --workspace --all-features' >> "$log"
+          cargo +1.97.1 test --workspace --all-features >> "$log" 2>&1
+          test_code=$?
+          echo >> "$log"
+
+          printf 'fmt=%s clippy=%s test=%s\n' "$fmt_code" "$clippy_code" "$test_code" >> "$log"
+
+      - name: Commit probe log and generated lockfile
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .ci/rust-probe.txt
+          if [ -f Cargo.lock ]; then
+            git add Cargo.lock
+          fi
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -m "chore(rust): record temporary probe result"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
