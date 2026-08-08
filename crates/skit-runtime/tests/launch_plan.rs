@@ -149,6 +149,7 @@ fn direct_and_interpreted_kinds_use_the_expected_program_shapes() {
     let mut exe = entry("exe");
     exe.meta.mode = StorageMode::Reference;
     exe.meta.source = "/bin/demo".to_owned();
+    exe.meta.workdir = "invoke".to_owned();
     let probe = probe_for("/bin/demo");
     let plan = build_launch_plan(
         &exe,
@@ -326,6 +327,8 @@ fn unknown_kinds_and_missing_runtimes_are_typed_refusals() {
         ),
         Err(LaunchError::UnknownKind { .. })
     ));
+
+    let shell_probe = probe_for("/copy/script.sh");
     assert!(matches!(
         build_launch_plan(
             &entry("shell"),
@@ -333,7 +336,7 @@ fn unknown_kinds_and_missing_runtimes_are_typed_refusals() {
             &Assembly::default(),
             None,
             None,
-            &probe,
+            &shell_probe,
         ),
         Err(LaunchError::ProgramNotFound { .. })
     ));
