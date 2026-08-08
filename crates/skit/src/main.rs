@@ -73,6 +73,7 @@ fn list(store: &Store, as_json: bool) -> Result<(), String> {
         let rows = entries
             .into_iter()
             .map(|entry| {
+                let missing = entry.target_missing();
                 let last = store.last_run(&entry.slug);
                 ListRow {
                     name: entry.name,
@@ -80,7 +81,7 @@ fn list(store: &Store, as_json: bool) -> Result<(), String> {
                     kind: entry.kind,
                     mode: entry.mode,
                     description: entry.description,
-                    missing: entry.target_missing(),
+                    missing,
                     last_run_at: last.as_ref().map(|run| run.at.clone()),
                     last_exit: last.map(|run| run.exit),
                 }
