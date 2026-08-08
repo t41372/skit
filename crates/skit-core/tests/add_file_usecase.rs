@@ -12,7 +12,6 @@ fn roots(root: &Path) -> LibraryRoots {
 
 fn preparation() -> AddPreparation {
     AddPreparation {
-        source_hash: "sha256:known".to_owned(),
         added_at: "2026-08-08T04:05:06+00:00".to_owned(),
     }
 }
@@ -45,7 +44,10 @@ fn shell_copy_infers_kind_interpreter_description_and_invoke_workdir()
     assert_eq!(entry.meta.kind, "shell");
     assert_eq!(entry.meta.mode, "copy");
     assert_eq!(entry.meta.source, source.canonicalize()?.to_string_lossy());
-    assert_eq!(entry.meta.source_hash, "sha256:known");
+    assert_eq!(
+        entry.meta.source_hash,
+        "sha256:4a620db15b686fb0c489ab7bb0af6e9d287e81870c24f2f07a28ba5adffa2859"
+    );
     assert_eq!(entry.meta.added_at, "2026-08-08T04:05:06+00:00");
     assert_eq!(entry.meta.workdir, "invoke");
     assert_eq!(entry.meta.description, "Ship it");
