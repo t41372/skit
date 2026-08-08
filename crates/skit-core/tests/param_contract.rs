@@ -84,5 +84,5 @@ fn synthesized_placeholder_keeps_required_and_secret_heuristic() {
     let secret = synthesized_placeholder("api_key");
     assert!(secret.secret);
     assert!(is_secret_name("PasswordFile"));
-    assert!(!is_secret_name("monkey"));
+    assert!(!is_secret_name("city"));
 }
