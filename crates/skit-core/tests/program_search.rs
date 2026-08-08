@@ -39,7 +39,10 @@ fn fallback_directory_is_lower_priority_than_existing_path_entries()
     let private_bin = root.path().join("private-bin");
     fs::create_dir_all(&path_bin)?;
     fs::create_dir_all(&private_bin)?;
-    for (directory, body) in [(&path_bin, b"path".as_slice()), (&private_bin, b"private".as_slice())] {
+    for (directory, body) in [
+        (&path_bin, b"path".as_slice()),
+        (&private_bin, b"private".as_slice()),
+    ] {
         let tool = directory.join("uv");
         fs::write(&tool, body)?;
         fs::set_permissions(&tool, fs::Permissions::from_mode(0o755))?;

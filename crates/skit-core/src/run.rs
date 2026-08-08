@@ -105,18 +105,8 @@ pub fn prepare_run(
         return Err(PrepareRunError::UnknownPreset(name.to_owned()));
     }
     let form = plan_for_entry(entry);
-    let values = resolve_values(
-        &form,
-        request.state,
-        request.preset,
-        request.explicit,
-    )?;
-    let assembly = assemble_delivery(
-        &form,
-        &values,
-        request.extra_args,
-        request.environment,
-    )?;
+    let values = resolve_values(&form, request.state, request.preset, request.explicit)?;
+    let assembly = assemble_delivery(&form, &values, request.extra_args, request.environment)?;
     let launch = build_launch_plan(entry, &assembly, request.launch_options, programs)?;
     Ok(PreparedRun {
         form,
