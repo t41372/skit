@@ -47,7 +47,7 @@ pub enum StateWriteError {
     /// A filesystem operation failed.
     #[error("could not {operation} state at {path}: {reason}")]
     Io {
-        /// Operation such as create, lock, write, or replace.
+        /// Operation such as create, lock, write, replace, or remove.
         operation: &'static str,
         /// Affected path.
         path: String,
@@ -75,6 +75,128 @@ pub trait FormStateRepository: Debug {
     fn update<T, F>(&self, slug: &Slug, update: F) -> Result<T, StateWriteError>
     where
         F: FnOnce(&mut PersistedFormState) -> T;
+
+    /// Remove all per-entry state while holding the same transaction lock used by updates.
+    fn forget(&self, slug: &Slug) -> Result<(), StateWriteError>;
+}
+
+/// Final shared state use-cases for CLI, Ratatui, and future Tauri frontends.
+#[derive(Debug)]
+pub struct FormStateService<R> {
+    repository: R,
+}
+
+impl<R> FormStateService<R>
+where
+    R: FormStateRepository,
+{
+    /// Construct the service around one concrete state repository.
+    #[must_use]
+    pub const fn new(repository: R) -> Self {
+        Self { repository }
+    }
+
+    /// Load the complete state for one entry.
+    #[must_use]
+    pub fn load(&self, slug: &Slug) -> PersistedFormState {
+        self.repository.load(slug)
+    }
+
+    /// Save last-used values and/or the remembered argument tail.
+    ///
+    /// `None` means leave that surface unchanged; `Some(empty)` is an explicit clear. Existing
+    /// last-used values are still scrubbed for parameters that are secret now even when no new
+    /// values were supplied.
+    pub fn save_last(
+        &self,
+        slug: &Slug,
+        declarations: &[ParamDecl],
+        values: Option<&BTreeMap<String, String>>,
+        extra_args: Option<Vec<String>>,
+        extra_args_raw: bool,
+    ) -> Result<(), StateWriteError> {
+        let remembered = values.map(|values| remembered_values(declarations, values));
+        let secret_names = secret_names(declarations);
+        self.repository.update(slug, move |state| {
+            if let Some(values) = remembered {
+                state.values = values;
+            } else {
+                strip_secret_names(&mut state.values, &secret_names);
+            }
+            if let Some(extra_args) = extra_args {
+                state.extra_args = extra_args;
+                state.extra_args_raw = !state.extra_args.is_empty() && extra_args_raw;
+            }
+        })
+    }
+
+    /// Save one named preset with exact current public values, including defaults and empties.
+    pub fn save_preset(
+        &self,
+        slug: &Slug,
+        name: &str,
+        declarations: &[ParamDecl],
+        values: &BTreeMap<String, String>,
+    ) -> Result<(), StateWriteError> {
+        let values = preset_values(declarations, values);
+        let name = name.to_owned();
+        self.repository.update(slug, move |state| {
+            state.presets.insert(name, values);
+        })
+    }
+
+    /// Delete one named preset and report whether it existed.
+    pub fn delete_preset(&self, slug: &Slug, name: &str) -> Result<bool, StateWriteError> {
+        let name = name.to_owned();
+        self.repository
+            .update(slug, move |state| state.presets.remove(&name).is_some())
+    }
+
+    /// Retroactively scrub every persistent value surface for parameters that are secret now.
+    pub fn purge_secrets(
+        &self,
+        slug: &Slug,
+        declarations: &[ParamDecl],
+    ) -> Result<BTreeSet<String>, StateWriteError> {
+        self.repository
+            .update(slug, |state| scrub_secrets(declarations, state))
+    }
+
+    /// Record the latest run stamp and optionally replace its exact accepted-value snapshot.
+    ///
+    /// `values=None` preserves the previous snapshot but still removes any value that is secret now.
+    pub fn record_run(
+        &self,
+        slug: &Slug,
+        exit: i64,
+        at: &str,
+        declarations: &[ParamDecl],
+        values: Option<&BTreeMap<String, String>>,
+    ) -> Result<(), StateWriteError> {
+        let values = values.map(|values| preset_values(declarations, values));
+        let secret_names = secret_names(declarations);
+        let at = at.to_owned();
+        self.repository.update(slug, move |state| {
+            state.last_run.at = Some(at);
+            state.last_run.exit = Some(exit);
+            if let Some(values) = values {
+                state.last_run.values = values;
+            } else {
+                strip_secret_names(&mut state.last_run.values, &secret_names);
+            }
+        })
+    }
+
+    /// Remove all remembered state for one entry.
+    pub fn forget(&self, slug: &Slug) -> Result<(), StateWriteError> {
+        self.repository.forget(slug)
+    }
+
+    /// Expose the repository for composition-level inspection and focused tests.
+    #[must_use]
+    pub const fn repository(&self) -> &R {
+        &self.repository
+    }
 }
 
 /// Build the next form's values with the stable precedence:
@@ -165,11 +287,7 @@ pub fn scrub_secrets(
     declarations: &[ParamDecl],
     state: &mut PersistedFormState,
 ) -> BTreeSet<String> {
-    let secret_names: BTreeSet<&str> = declarations
-        .iter()
-        .filter(|declaration| declaration.secret)
-        .map(|declaration| declaration.name.as_str())
-        .collect();
+    let secret_names = secret_names(declarations);
     let mut removed = BTreeSet::new();
 
     scrub_map(&mut state.values, &secret_names, &mut removed);
@@ -196,6 +314,18 @@ pub(crate) fn delivers_empty(declaration: &ParamDecl) -> bool {
             declaration.delivery,
             ParameterDelivery::Inject | ParameterDelivery::Flag | ParameterDelivery::Env
         )
+}
+
+fn secret_names(declarations: &[ParamDecl]) -> BTreeSet<&str> {
+    declarations
+        .iter()
+        .filter(|declaration| declaration.secret)
+        .map(|declaration| declaration.name.as_str())
+        .collect()
+}
+
+fn strip_secret_names(values: &mut BTreeMap<String, String>, secret_names: &BTreeSet<&str>) {
+    values.retain(|name, _| !secret_names.contains(name.as_str()));
 }
 
 fn scrub_map(
