@@ -66,9 +66,11 @@ fn python_uses_uv_no_project_and_keeps_reference_dependencies() {
     entry.meta.mode = StorageMode::Reference;
     entry.meta.source = "/project/tool.py".to_owned();
     entry.meta.workdir = "invoke".to_owned();
-    let mut settings = EntrySettings::default();
-    settings.requires_python = ">=3.13".to_owned();
-    settings.dependencies = vec!["httpx>=0.28".to_owned(), "rich".to_owned()];
+    let settings = EntrySettings {
+        requires_python: ">=3.13".to_owned(),
+        dependencies: vec!["httpx>=0.28".to_owned(), "rich".to_owned()],
+        ..EntrySettings::default()
+    };
     settings.write_to_meta(&mut entry.meta);
     let mut probe = probe_for("/project/tool.py");
     probe
@@ -119,7 +121,7 @@ fn direct_and_interpreted_kinds_use_the_expected_program_shapes() {
         ("ruby", "ruby", vec!["/copy/script.rb"]),
         ("perl", "perl", vec!["/copy/script.pl"]),
         ("lua", "lua", vec!["/copy/script.lua"]),
-        ("r", "Rscript", vec!["/copy/script.R"]),
+        ("r", "Rscript", vec!["/copy/script.r"]),
     ];
 
     for (kind, program, expected_prefix) in cases {
@@ -194,8 +196,10 @@ fn javascript_runtime_order_is_deno_then_bun_then_node_and_a_pin_wins() {
     assert_eq!(plan.args, ["/copy/script.js"]);
 
     let mut pinned = entry("js");
-    let mut settings = EntrySettings::default();
-    settings.interpreter = "node".to_owned();
+    let settings = EntrySettings {
+        interpreter: "node".to_owned(),
+        ..EntrySettings::default()
+    };
     settings.write_to_meta(&mut pinned.meta);
     let plan = build_launch_plan(
         &pinned,
@@ -288,8 +292,10 @@ fn needs_workdir_and_target_checks_fail_before_spawn() {
     let mut shell = entry("shell");
     shell.meta.source = "/old/script.sh".to_owned();
     shell.meta.workdir = "origin".to_owned();
-    let mut settings = EntrySettings::default();
-    settings.needs = vec!["jq".to_owned()];
+    let settings = EntrySettings {
+        needs: vec!["jq".to_owned()],
+        ..EntrySettings::default()
+    };
     settings.write_to_meta(&mut shell.meta);
     let mut probe = probe_for("/copy/script.sh");
     probe
