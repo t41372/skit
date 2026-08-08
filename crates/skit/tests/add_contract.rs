@@ -235,10 +235,7 @@ fn ordinary_python_file_is_accepted_without_fabricating_metadata()
         String::from_utf8(output.stdout)?,
         "Added: job (copy mode)\n  Run it: skit run job\n"
     );
-    assert_eq!(
-        fs::read(roots.data.join("scripts/job/script.py"))?,
-        bytes
-    );
+    assert_eq!(fs::read(roots.data.join("scripts/job/script.py"))?, bytes);
     let shown = roots.show_json("job")?;
     assert_eq!(shown["kind"], "python");
     assert_eq!(shown["mode"], "copy");
