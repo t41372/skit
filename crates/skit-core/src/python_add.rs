@@ -32,10 +32,7 @@ pub struct PythonAddRequest {
 ///
 /// Returns an error if the source is not a regular file, cannot be read, or the shared
 /// store transaction fails.
-pub fn add_python_file(
-    store: &Store,
-    request: PythonAddRequest,
-) -> Result<Entry, AddUseCaseError> {
+pub fn add_python_file(store: &Store, request: PythonAddRequest) -> Result<Entry, AddUseCaseError> {
     if !request.source.is_file() {
         return Err(AddUseCaseError::SourceNotFile(request.source));
     }
@@ -86,10 +83,7 @@ pub fn add_python_file(
             let Some(text) = strict_text else {
                 unreachable!("inject_metadata requires strict UTF-8");
             };
-            Some(
-                inject_pep723(text, &dependencies, &request.requires_python, "#")
-                    .into_bytes(),
-            )
+            Some(inject_pep723(text, &dependencies, &request.requires_python, "#").into_bytes())
         }
         AddMode::Copy => Some(source_bytes),
     };

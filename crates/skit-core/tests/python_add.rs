@@ -72,7 +72,10 @@ fn existing_block_is_byte_identical_and_explicit_meta_axes_win()
 
     let entry = add_python_file(&store, input)?;
     assert_eq!(fs::read(entry.dir.join("script.py"))?, original);
-    assert_eq!(entry.meta.dependencies, Some(vec!["override-dep".to_owned()]));
+    assert_eq!(
+        entry.meta.dependencies,
+        Some(vec!["override-dep".to_owned()])
+    );
     assert_eq!(entry.meta.requires_python, ">=3.13");
     assert_eq!(
         effective_uv_metadata(&entry),
@@ -157,7 +160,10 @@ fn python_copy_preserves_source_permission_bits() -> Result<(), Box<dyn std::err
 
     let entry = add_python_file(&store, request(&source))?;
     let source_mode = fs::metadata(&source)?.permissions().mode() & 0o777;
-    let stored_mode = fs::metadata(entry.dir.join("script.py"))?.permissions().mode() & 0o777;
+    let stored_mode = fs::metadata(entry.dir.join("script.py"))?
+        .permissions()
+        .mode()
+        & 0o777;
     assert_eq!(stored_mode, source_mode);
     Ok(())
 }
