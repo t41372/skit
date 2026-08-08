@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 /// The dependency metadata skit reads from an inline PEP 723 script block.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Pep723Metadata {
     pub dependencies: Vec<String>,
     pub requires_python: String,
@@ -108,7 +108,7 @@ pub fn inject_pep723(
     let byte_offset = lines.get(insert_at).map_or(text.len(), |line| line.start);
     let prefix = &text[..byte_offset];
     let suffix = &text[byte_offset..];
-    let separator = if suffix.is_empty() || suffix.starts_with(['\r', '\n']) {
+    let separator = if suffix.is_empty() || suffix.starts_with('\r') || suffix.starts_with('\n') {
         ""
     } else {
         newline
@@ -121,15 +121,17 @@ fn block_body(text: &str, leader: &str) -> Option<String> {
     let block = &text[start..end];
     let mut lines = block.lines();
     lines.next()?;
+    let closer = format!("{leader} ///");
+    let prefix = format!("{leader} ");
     let mut body = Vec::new();
     for line in lines {
         let clean = line.trim_end_matches('\r');
-        if clean.trim_end_matches([' ', '\t']) == format!("{leader} ///") {
+        if clean.trim_end_matches([' ', '\t']) == closer {
             break;
         }
         if clean == leader {
             body.push(String::new());
-        } else if let Some(rest) = clean.strip_prefix(&format!("{leader} ")) {
+        } else if let Some(rest) = clean.strip_prefix(&prefix) {
             body.push(rest.to_owned());
         } else {
             return None;
@@ -141,25 +143,23 @@ fn block_body(text: &str, leader: &str) -> Option<String> {
 fn block_bounds(text: &str, leader: &str) -> Option<(usize, usize)> {
     let opener = format!("{leader} /// script");
     let closer = format!("{leader} ///");
+    let prefix = format!("{leader} ");
     let lines = physical_lines(text);
     let mut opening = None;
     for (index, line) in lines.iter().enumerate() {
         let content = line.content.trim_end_matches([' ', '\t', '\r']);
         if opening.is_none() {
             if content == opener {
-                opening = Some((index, line.start));
+                opening = Some(line.start);
             }
             continue;
         }
         if content == closer {
             let end = lines.get(index + 1).map_or(text.len(), |next| next.start);
-            return opening.map(|(_, start)| (start, end));
+            return opening.map(|start| (start, end));
         }
-        if content != leader && !content.starts_with(&format!("{leader} ")) {
-            opening = None;
-            if content == opener {
-                opening = Some((index, line.start));
-            }
+        if content != leader && !content.starts_with(&prefix) {
+            opening = (content == opener).then_some(line.start);
         }
     }
     None
@@ -194,7 +194,11 @@ fn coding_declaration(line: &str) -> bool {
 }
 
 fn source_newline(text: &str) -> &'static str {
-    if text.contains("\r\n") { "\r\n" } else { "\n" }
+    if text.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    }
 }
 
 fn toml_basic_string(value: &str) -> String {
