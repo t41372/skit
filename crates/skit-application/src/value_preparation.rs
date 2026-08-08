@@ -106,7 +106,8 @@ fn prepare_one(
 
 fn validate_type(declaration: &ParamDecl, value: &str) -> Result<(), ValuePreparationError> {
     if declaration.parameter_type == ParameterType::Choice {
-        if !declaration.choices.is_empty() && !declaration.choices.iter().any(|choice| choice == value)
+        if !declaration.choices.is_empty()
+            && !declaration.choices.iter().any(|choice| choice == value)
         {
             return Err(ValuePreparationError::InvalidChoice {
                 name: declaration.name.clone(),
