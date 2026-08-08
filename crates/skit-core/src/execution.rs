@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::{
     Entry, LaunchPlanError, PrepareRunError, PreparedRun, ProgramResolver, PythonInjectError,
-    RunRequest, TempScript, TempScriptError, build_launch_plan, inject_python_consts,
+    RunRequest, TempScript, TempScriptError, build_launch_plan, inject_python_managed,
     materialize_temp_script, prepare_run, read_python_params,
 };
 
@@ -133,7 +133,7 @@ pub fn prepare_execution(
             source,
         })?;
     let specs = read_python_params(&source);
-    let injected_text = inject_python_consts(&source, &specs, &run.assembly.inject_values)?;
+    let injected_text = inject_python_managed(&source, &specs, &run.assembly.inject_values)?;
     let injected = materialize_temp_script(&injected_text, ".py")?;
 
     let mut options = request.launch_options.clone();
