@@ -25,7 +25,7 @@ use skit_store::{ConfigError, FileConfigStore, FileFormStateStore, FileGlobExpan
 use thiserror::Error;
 use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 
-use crate::cli::entry_candidates;
+use crate::cli::{entry_candidates, preset_candidates, runner_candidates};
 
 /// Options for `skit run`.
 #[derive(Debug, Args)]
@@ -39,7 +39,11 @@ pub(crate) struct RunArgs {
     pub(crate) values: Vec<String>,
 
     /// Load one named preset.
-    #[arg(long, short = 'p')]
+    #[arg(
+        long,
+        short = 'p',
+        add = ArgValueCandidates::new(preset_candidates)
+    )]
     pub(crate) preset: Option<String>,
 
     /// Save accepted values as a named preset after the run.
@@ -47,7 +51,7 @@ pub(crate) struct RunArgs {
     pub(crate) save_preset: Option<String>,
 
     /// Select a prompt runner for this run.
-    #[arg(long)]
+    #[arg(long, add = ArgValueCandidates::new(runner_candidates))]
     pub(crate) runner: Option<String>,
 
     /// Print the masked launch command and do not start a child.

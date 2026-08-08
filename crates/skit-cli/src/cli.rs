@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     env,
     fs::{self, File, Metadata},
     io::{self, IsTerminal as _, Read as _, Write as _},
@@ -171,7 +171,7 @@ enum Command {
         #[arg(long)]
         exe: bool,
         /// Pin a prompt runner.
-        #[arg(long)]
+        #[arg(long, add = ArgValueCandidates::new(runner_candidates))]
         runner: Option<String>,
         /// Disable prompt placeholder insertion.
         #[arg(long)]
@@ -210,14 +210,20 @@ enum Command {
         #[arg(add = ArgValueCandidates::new(entry_candidates))]
         selector: String,
         /// Confirm the destructive operation.
-        #[arg(long)]
+        #[arg(long, short = 'y')]
         yes: bool,
+        /// Refuse to ask for confirmation.
+        #[arg(long)]
+        no_input: bool,
     },
     /// Open an entry source in the configured editor.
     Edit {
         /// Entry slug or display name.
         #[arg(add = ArgValueCandidates::new(entry_candidates))]
         selector: String,
+        /// Refuse to offer creation when the entry does not exist.
+        #[arg(long)]
+        no_input: bool,
     },
     /// Read or edit managed and declared parameters.
     Params(Box<ParamsArgs>),
@@ -355,7 +361,7 @@ struct ParamsArgs {
     #[arg(long)]
     interpreter: Option<String>,
     /// Pin a prompt runner. An empty value clears the pin.
-    #[arg(long)]
+    #[arg(long, add = ArgValueCandidates::new(runner_candidates))]
     runner: Option<String>,
     /// Enable prompt interpolation.
     #[arg(long, conflicts_with = "no_interpolate")]
@@ -393,9 +399,10 @@ enum RunnerCommand {
     /// Remove one configured prompt runner.
     Remove {
         /// Stable runner name.
+        #[arg(add = ArgValueCandidates::new(runner_candidates))]
         name: String,
         /// Confirm removal.
-        #[arg(long)]
+        #[arg(long, short = 'y')]
         yes: bool,
         /// Refuse to prompt.
         #[arg(long)]
@@ -431,9 +438,10 @@ enum PresetCommand {
         #[arg(add = ArgValueCandidates::new(entry_candidates))]
         selector: String,
         /// Preset name.
+        #[arg(add = ArgValueCandidates::new(preset_candidates))]
         name: String,
         /// Confirm deletion.
-        #[arg(long)]
+        #[arg(long, short = 'y')]
         yes: bool,
         /// Refuse to prompt.
         #[arg(long)]
@@ -482,6 +490,60 @@ fn entry_candidates_from(store: &FileStore) -> Vec<CompletionCandidate> {
                 .collect()
         },
     )
+}
+
+pub(crate) fn runner_candidates() -> Vec<CompletionCandidate> {
+    resolve_config_dir().map_or_else(
+        |_| Vec::new(),
+        |directory| runner_candidates_from(&FileConfigStore::new(directory)),
+    )
+}
+
+fn runner_candidates_from(store: &FileConfigStore) -> Vec<CompletionCandidate> {
+    store.runners().map_or_else(
+        |_| Vec::new(),
+        |runners| {
+            runners
+                .into_iter()
+                .map(|runner| CompletionCandidate::new(runner.name))
+                .collect()
+        },
+    )
+}
+
+pub(crate) fn preset_candidates() -> Vec<CompletionCandidate> {
+    resolve_state_dir().map_or_else(
+        |_| Vec::new(),
+        |directory| preset_candidates_from(&directory),
+    )
+}
+
+fn preset_candidates_from(state_dir: &Path) -> Vec<CompletionCandidate> {
+    let Ok(files) = fs::read_dir(state_dir.join("values")) else {
+        return Vec::new();
+    };
+    let mut names = BTreeSet::new();
+    for file in files.flatten() {
+        let path = file.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("toml") {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(path) else {
+            continue;
+        };
+        let Ok(document) = text.parse::<toml::Table>() else {
+            continue;
+        };
+        if let Some(presets) = document.get("presets").and_then(toml::Value::as_table) {
+            names.extend(
+                presets
+                    .iter()
+                    .filter(|(_, value)| value.is_table())
+                    .map(|(name, _)| name.clone()),
+            );
+        }
+    }
+    names.into_iter().map(CompletionCandidate::new).collect()
 }
 
 fn execute(cli: Cli) -> Result<i32, CliError> {
@@ -561,12 +623,16 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             rename(&service, &selector, &name)?;
             Ok(0)
         }
-        Some(Command::Remove { selector, yes }) => {
-            remove(&service, &selector, yes)?;
+        Some(Command::Remove {
+            selector,
+            yes,
+            no_input,
+        }) => {
+            remove(&service, &selector, yes, no_input)?;
             Ok(0)
         }
-        Some(Command::Edit { selector }) => {
-            edit(&service, &store, &selector)?;
+        Some(Command::Edit { selector, no_input }) => {
+            edit(&service, &store, &selector, no_input)?;
             Ok(0)
         }
         Some(Command::Params(args)) => {
@@ -1360,11 +1426,40 @@ fn rename(service: &LibraryService<FileStore>, selector: &str, name: &str) -> Re
     Ok(())
 }
 
-fn remove(service: &LibraryService<FileStore>, selector: &str, yes: bool) -> Result<(), CliError> {
-    if !yes {
-        return Err(CliError::ConfirmationRequired);
+fn user_confirmed(answer: &str, default: bool) -> bool {
+    let answer = answer.trim();
+    if answer.is_empty() {
+        return default;
     }
+    matches!(answer.to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+fn prompt_confirmation(question: &str, default: bool) -> Result<bool, CliError> {
+    print!("{}", localize(active_locale(), question));
+    io::stdout().flush()?;
+    let mut answer = String::new();
+    if io::stdin().read_line(&mut answer)? == 0 {
+        return Err(CliError::Aborted);
+    }
+    Ok(user_confirmed(&answer, default))
+}
+
+fn remove(
+    service: &LibraryService<FileStore>,
+    selector: &str,
+    yes: bool,
+    no_input: bool,
+) -> Result<(), CliError> {
     let held = service.show(selector)?;
+    if !yes {
+        if no_input || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+            return Err(CliError::ConfirmationRequired);
+        }
+        let question = format!("Remove {:?}? [y/N]: ", held.meta.name);
+        if !prompt_confirmation(&question, false)? {
+            return Err(CliError::Aborted);
+        }
+    }
     let claimed = service.claim_identity(&held)?;
     let name = service.remove(&claimed)?;
     println!("Removed: {name}");
@@ -1375,8 +1470,43 @@ fn edit(
     service: &LibraryService<FileStore>,
     store: &FileStore,
     selector: &str,
+    no_input: bool,
 ) -> Result<(), CliError> {
-    let held = service.show(selector)?;
+    let held = match service.show(selector) {
+        Ok(entry) => entry,
+        Err(RepositoryError::NotFound { .. }) => {
+            if no_input || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+                return Err(CliError::Usage(format!(
+                    "no editable entry is named {selector:?}"
+                )));
+            }
+            let question =
+                format!("No editable entry is named {selector:?}. Create a script now? [Y/n]: ");
+            if !prompt_confirmation(&question, true)? {
+                return Err(CliError::Aborted);
+            }
+            return add_command(
+                service,
+                AddOptions {
+                    source: None,
+                    kind: None,
+                    name: Some(selector.to_owned()),
+                    description: String::new(),
+                    reference: false,
+                    command_template: None,
+                    prompt: false,
+                    executable: false,
+                    runner: None,
+                    no_interpolate: false,
+                    dependencies: Vec::new(),
+                    requires_python: None,
+                },
+                true,
+                false,
+            );
+        }
+        Err(error) => return Err(error.into()),
+    };
     let target = source_path(store, &held).ok_or_else(|| {
         CliError::Usage(format!(
             "entry {} does not have an editable source",
@@ -2000,10 +2130,15 @@ fn runner(command: RunnerCommand) -> Result<(), CliError> {
         RunnerCommand::Remove {
             name,
             yes,
-            no_input: _,
+            no_input,
         } => {
             if !yes {
-                return Err(CliError::ConfirmationRequiredFor("runner removal"));
+                if no_input || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+                    return Err(CliError::ConfirmationRequiredFor("runner removal"));
+                }
+                if !prompt_confirmation(&format!("Remove runner {name:?}? [y/N]: "), false)? {
+                    return Err(CliError::Aborted);
+                }
             }
             if !store.remove_runner(&name)? {
                 return Err(CliError::Usage(format!("unknown prompt runner: {name}")));
@@ -2052,10 +2187,15 @@ fn preset(
             selector,
             name,
             yes,
-            no_input: _,
+            no_input,
         } => {
             if !yes {
-                return Err(CliError::ConfirmationRequiredFor("preset deletion"));
+                if no_input || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+                    return Err(CliError::ConfirmationRequiredFor("preset deletion"));
+                }
+                if !prompt_confirmation(&format!("Delete preset {name:?}? [y/N]: "), false)? {
+                    return Err(CliError::Aborted);
+                }
             }
             let entry = service.show(&selector)?;
             if !state.delete_preset(&entry.slug, &name)? {
@@ -2464,11 +2604,11 @@ fn tui_effect(
             service, store, request, selector,
         )?)),
         UiEffect::Edit { selector } => {
-            edit(service, store, &selector)?;
+            edit(service, store, &selector, true)?;
             Ok(tui_complete(service, "Source saved")?)
         }
         UiEffect::Remove { selector } => {
-            remove(service, &selector, true)?;
+            remove(service, &selector, true, true)?;
             Ok(tui_complete(service, "Entry removed")?)
         }
         UiEffect::Submit {

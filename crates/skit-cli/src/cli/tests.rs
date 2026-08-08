@@ -1,5 +1,6 @@
 use std::{collections::BTreeMap, fs, io, path::Path};
 
+use clap::Parser as _;
 use skit_application::{ExitClass, LibraryService, RepositoryError};
 use skit_domain::{
     Entry, EntryKind, EntryMeta, Slug, StorageMode,
@@ -11,9 +12,10 @@ use tempfile::TempDir;
 
 use super::{
     AddOptions, Cli, CliError, Command, add, apply_source_management, collect_plain_form,
-    entry_candidates_from, execute, list, mode_name, platform_data_dir, read_source,
-    resolve_data_dir, show, source_default_name, source_error, stored_name, tui_add_form,
-    tui_declarations_from_values, tui_run_form, tui_settings_form, tui_split_list,
+    entry_candidates_from, execute, list, mode_name, platform_data_dir, preset_candidates_from,
+    read_source, resolve_data_dir, runner_candidates_from, show, source_default_name, source_error,
+    stored_name, tui_add_form, tui_declarations_from_values, tui_run_form, tui_settings_form,
+    tui_split_list, user_confirmed,
 };
 
 fn write_meta(root: &TempDir, slug: &str, name: &str, description: &str) {
@@ -44,6 +46,74 @@ fn completion_candidates_include_each_entry_slug_and_display_name() {
             .iter()
             .all(|candidate| candidate.get_help().is_some())
     );
+}
+
+#[test]
+fn completion_candidates_include_prompt_runners_and_saved_presets() {
+    let root = TempDir::new().unwrap();
+    fs::write(
+        root.path().join("config.toml"),
+        concat!(
+            "[[prompt.runners]]\n",
+            "name = \"codex\"\n",
+            "argv = [\"codex\", \"{{prompt}}\"]\n",
+        ),
+    )
+    .unwrap();
+    let runners = runner_candidates_from(&skit_store::FileConfigStore::new(root.path()))
+        .into_iter()
+        .map(|candidate| candidate.get_value().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert!(runners.contains(&"codex".to_owned()));
+    assert_eq!(
+        runners
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        runners.len()
+    );
+
+    let values = root.path().join("state/values");
+    fs::create_dir_all(&values).unwrap();
+    fs::write(
+        values.join("alpha.toml"),
+        "[presets.fast]\ncount = \"1\"\n[presets.safe]\ncount = \"2\"\n",
+    )
+    .unwrap();
+    fs::write(
+        values.join("beta.toml"),
+        "[presets.fast]\ncount = \"3\"\n[presets.thorough]\ncount = \"4\"\n",
+    )
+    .unwrap();
+    let presets = preset_candidates_from(&root.path().join("state"))
+        .into_iter()
+        .map(|candidate| candidate.get_value().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(presets, ["fast", "safe", "thorough"]);
+}
+
+#[test]
+fn destructive_and_create_prompts_have_explicit_automation_paths() {
+    assert!(user_confirmed("y", false));
+    assert!(user_confirmed("YES", false));
+    assert!(user_confirmed("", true));
+    assert!(!user_confirmed("", false));
+    assert!(!user_confirmed("no", true));
+
+    let remove = Cli::try_parse_from(["skit", "remove", "alpha", "-y", "--no-input"]).unwrap();
+    assert!(matches!(
+        remove.command,
+        Some(Command::Remove {
+            yes: true,
+            no_input: true,
+            ..
+        })
+    ));
+    let edit = Cli::try_parse_from(["skit", "edit", "new-tool", "--no-input"]).unwrap();
+    assert!(matches!(
+        edit.command,
+        Some(Command::Edit { no_input: true, .. })
+    ));
 }
 
 #[test]
