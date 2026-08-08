@@ -10,9 +10,9 @@ use skit_ui::{FormField, FormPurpose, FormView, Screen};
 use tempfile::TempDir;
 
 use super::{
-    AddOptions, Cli, CliError, Command, add, collect_plain_form, execute, list, mode_name,
-    platform_data_dir, read_source, resolve_data_dir, show, source_default_name, source_error,
-    stored_name, tui_add_form, tui_run_form, tui_split_list,
+    AddOptions, Cli, CliError, Command, add, collect_plain_form, entry_candidates_from, execute,
+    list, mode_name, platform_data_dir, read_source, resolve_data_dir, show, source_default_name,
+    source_error, stored_name, tui_add_form, tui_run_form, tui_split_list,
 };
 
 fn write_meta(root: &TempDir, slug: &str, name: &str, description: &str) {
@@ -25,6 +25,24 @@ fn write_meta(root: &TempDir, slug: &str, name: &str, description: &str) {
         ),
     )
     .unwrap();
+}
+
+#[test]
+fn completion_candidates_include_each_entry_slug_and_display_name() {
+    let root = TempDir::new().unwrap();
+    write_meta(&root, "alpha", "Alpha tool", "Human description");
+    let candidates = entry_candidates_from(&FileStore::new(root.path()));
+    let values = candidates
+        .iter()
+        .map(|candidate| candidate.get_value().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+
+    assert_eq!(values, ["alpha", "Alpha tool"]);
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.get_help().is_some())
+    );
 }
 
 #[test]
@@ -131,6 +149,8 @@ fn tui_composition_refuses_before_terminal_start_when_the_library_cannot_scan() 
     for command in [Some(Command::Tui), None] {
         let error = execute(Cli {
             data_dir: Some(root.path().to_path_buf()),
+            install_completion: false,
+            show_completion: false,
             command,
         })
         .unwrap_err();

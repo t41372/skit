@@ -5,6 +5,7 @@ use std::{
 };
 
 use clap::Args;
+use clap_complete::ArgValueCandidates;
 use skit_application::{
     LibraryService, RepositoryError,
     form_state::{FormStateService, StateWriteError, prefill},
@@ -23,10 +24,13 @@ use skit_store::{ConfigError, FileConfigStore, FileFormStateStore, FileGlobExpan
 use thiserror::Error;
 use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 
+use crate::cli::entry_candidates;
+
 /// Options for `skit run`.
 #[derive(Debug, Args)]
 pub(crate) struct RunArgs {
     /// Entry slug or display name.
+    #[arg(add = ArgValueCandidates::new(entry_candidates))]
     pub(crate) selector: String,
 
     /// Set one field for this run.

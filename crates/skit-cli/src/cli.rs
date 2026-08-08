@@ -7,7 +7,8 @@ use std::{
     process::Command as ProcessCommand,
 };
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory as _, Parser, Subcommand};
+use clap_complete::{ArgValueCandidates, CompleteEnv, CompletionCandidate, Shell, generate};
 use skit_application::{
     CreateEntry, EntryPayload, ExitClass, LibraryService, RepositoryError, SourcePermissions,
     form_state::{FormStateService, StateWriteError, prefill},
@@ -42,6 +43,16 @@ mod tests;
 /// Run the command-line entry point and return its process status.
 #[must_use]
 pub fn entry() -> i32 {
+    match CompleteEnv::with_factory(Cli::command)
+        .try_complete(env::args_os(), env::current_dir().ok().as_deref())
+    {
+        Ok(true) => return 0,
+        Ok(false) => {}
+        Err(error) => {
+            let _ = error.print();
+            return error.exit_code();
+        }
+    }
     let locale = active_locale();
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -95,6 +106,14 @@ struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     data_dir: Option<PathBuf>,
 
+    /// Install completion for the current shell.
+    #[arg(long, conflicts_with = "show_completion")]
+    install_completion: bool,
+
+    /// Print completion for the current shell.
+    #[arg(long)]
+    show_completion: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -110,6 +129,7 @@ enum Command {
     /// Show one entry by exact slug or exact display name.
     Show {
         /// Entry slug or display name.
+        #[arg(add = ArgValueCandidates::new(entry_candidates))]
         selector: String,
         /// Emit stable machine-readable output.
         #[arg(long)]
@@ -128,6 +148,13 @@ enum Command {
         /// Description shown in the library.
         #[arg(long, short = 'd')]
         description: Option<String>,
+        /// Write a new source in the configured editor, then add it.
+        #[arg(
+            long,
+            short = 'e',
+            conflicts_with_all = ["source", "command_template", "prompt", "reference", "exe", "kind", "runner"]
+        )]
+        edit: bool,
         /// Reference the original instead of storing a copy.
         #[arg(long = "ref", alias = "reference")]
         reference: bool,
@@ -161,6 +188,7 @@ enum Command {
     /// Replace one entry description.
     Describe {
         /// Entry slug or display name.
+        #[arg(add = ArgValueCandidates::new(entry_candidates))]
         selector: String,
         /// Replacement description.
         description: String,
@@ -168,6 +196,7 @@ enum Command {
     /// Rename one entry and derive its new slug.
     Rename {
         /// Entry slug or display name.
+        #[arg(add = ArgValueCandidates::new(entry_candidates))]
         selector: String,
         /// Replacement display name.
         name: String,
@@ -175,6 +204,7 @@ enum Command {
     /// Remove one entry.
     Remove {
         /// Entry slug or display name.
+        #[arg(add = ArgValueCandidates::new(entry_candidates))]
         selector: String,
         /// Confirm the destructive operation.
         #[arg(long)]
@@ -183,6 +213,7 @@ enum Command {
     /// Open an entry source in the configured editor.
     Edit {
         /// Entry slug or display name.
+        #[arg(add = ArgValueCandidates::new(entry_candidates))]
         selector: String,
     },
     /// Read or edit managed and declared parameters.
@@ -230,6 +261,7 @@ enum Command {
 #[derive(Debug, Args)]
 struct DepsArgs {
     /// Entry slug or display name.
+    #[arg(add = ArgValueCandidates::new(entry_candidates))]
     selector: String,
     /// Replace package dependencies. Repeat for more than one value.
     #[arg(long = "dep")]
@@ -254,6 +286,7 @@ struct DepsArgs {
 #[derive(Debug, Args)]
 struct ParamsArgs {
     /// Entry slug or display name.
+    #[arg(add = ArgValueCandidates::new(entry_candidates))]
     selector: String,
     /// Reconcile managed definitions with the current source.
     #[arg(long)]
@@ -372,6 +405,7 @@ enum PresetCommand {
     /// Save a named preset.
     Save {
         /// Entry slug or display name.
+        #[arg(add = ArgValueCandidates::new(entry_candidates))]
         selector: String,
         /// Preset name.
         name: String,
@@ -382,6 +416,7 @@ enum PresetCommand {
     /// List named presets.
     List {
         /// Entry slug or display name.
+        #[arg(add = ArgValueCandidates::new(entry_candidates))]
         selector: String,
         /// Emit stable machine-readable output.
         #[arg(long)]
@@ -390,6 +425,7 @@ enum PresetCommand {
     /// Delete one named preset.
     Delete {
         /// Entry slug or display name.
+        #[arg(add = ArgValueCandidates::new(entry_candidates))]
         selector: String,
         /// Preset name.
         name: String,
@@ -417,7 +453,50 @@ enum AgentCommand {
     },
 }
 
+pub(crate) fn entry_candidates() -> Vec<CompletionCandidate> {
+    resolve_data_dir(None).map_or_else(
+        |_| Vec::new(),
+        |directory| entry_candidates_from(&FileStore::new(directory)),
+    )
+}
+
+fn entry_candidates_from(store: &FileStore) -> Vec<CompletionCandidate> {
+    LibraryService::new(store.clone()).list().map_or_else(
+        |_| Vec::new(),
+        |scan| {
+            scan.entries
+                .into_iter()
+                .flat_map(|entry| {
+                    let help = clap::builder::StyledStr::from(format!(
+                        "{} — {}",
+                        entry.kind, entry.description
+                    ));
+                    [
+                        CompletionCandidate::new(entry.slug.as_str()).help(Some(help.clone())),
+                        CompletionCandidate::new(entry.name).help(Some(help)),
+                    ]
+                })
+                .collect()
+        },
+    )
+}
+
 fn execute(cli: Cli) -> Result<i32, CliError> {
+    if cli.show_completion {
+        write_completion(detect_shell()?, &mut io::stdout());
+        return Ok(0);
+    }
+    if cli.install_completion {
+        let shell = detect_shell()?;
+        let path = completion_path(shell)?;
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut output = File::create(&path)?;
+        write_completion(shell, &mut output);
+        println!("Installed completion: {}", path.display());
+        return Ok(0);
+    }
     let data_dir = resolve_data_dir(cli.data_dir)?;
     let store = FileStore::new(data_dir);
     let service = LibraryService::new(store.clone());
@@ -435,6 +514,7 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             kind,
             name,
             description,
+            edit,
             reference,
             command_template,
             prompt,
@@ -443,9 +523,9 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             no_interpolate,
             dependencies,
             python,
-            no_input: _,
+            no_input,
         }) => {
-            add(
+            add_command(
                 &service,
                 AddOptions {
                     source,
@@ -461,6 +541,8 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
                     dependencies,
                     requires_python: python,
                 },
+                edit,
+                no_input,
             )?;
             Ok(0)
         }
@@ -514,6 +596,208 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             Ok(0)
         }
     }
+}
+
+fn add_command(
+    service: &LibraryService<FileStore>,
+    mut options: AddOptions,
+    edit: bool,
+    no_input: bool,
+) -> Result<(), CliError> {
+    if edit && no_input {
+        return Err(CliError::Usage(
+            "--edit needs an editor; use standard input as `skit add - --name NAME`".to_owned(),
+        ));
+    }
+    if edit {
+        return add_draft(service, options, false);
+    }
+    if options.source.is_none() && options.command_template.is_none() {
+        if options.prompt {
+            validate_prompt_runner(options.runner.as_deref())?;
+            if !io::stdin().is_terminal() {
+                options.source = Some(PathBuf::from("-"));
+                return add(service, options);
+            }
+            if no_input {
+                return Err(CliError::Usage(
+                    "a prompt body is required; pipe it to `skit add - --prompt --name NAME`"
+                        .to_owned(),
+                ));
+            }
+            return add_draft(service, options, true);
+        }
+        if no_input || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+            return Err(CliError::Usage(
+                "add needs a source path, standard input as `-`, --edit, --prompt, or --cmd"
+                    .to_owned(),
+            ));
+        }
+        let Screen::Form(form) = tui_add_form() else {
+            unreachable!("the add screen is a form")
+        };
+        let values = skit_tui::collect_form(form, active_locale())?.ok_or(CliError::Aborted)?;
+        let source = tui_nonempty_owned(&values, "source").map(PathBuf::from);
+        let template = tui_nonempty_owned(&values, "template");
+        return add(
+            service,
+            AddOptions {
+                source,
+                kind: tui_nonempty_owned(&values, "kind"),
+                name: tui_nonempty_owned(&values, "name"),
+                description: tui_value(&values, "description").to_owned(),
+                reference: tui_value(&values, "mode").eq_ignore_ascii_case("reference"),
+                command_template: template,
+                prompt: tui_value(&values, "kind").eq_ignore_ascii_case("prompt"),
+                executable: tui_value(&values, "kind").eq_ignore_ascii_case("exe"),
+                runner: tui_nonempty_owned(&values, "runner"),
+                no_interpolate: false,
+                dependencies: tui_split_list(tui_value(&values, "dependencies")),
+                requires_python: tui_nonempty_owned(&values, "python"),
+            },
+        );
+    }
+    add(service, options)
+}
+
+fn add_draft(
+    service: &LibraryService<FileStore>,
+    mut options: AddOptions,
+    prompt: bool,
+) -> Result<(), CliError> {
+    validate_prompt_runner(options.runner.as_deref())?;
+    let drafts = resolve_state_dir()?.join("drafts");
+    fs::create_dir_all(&drafts)?;
+    let suffix = if prompt { ".prompt.md" } else { "" };
+    let draft = drafts.join(format!(
+        "skit-{}{}",
+        skit_domain::EntryId::generate().as_str(),
+        suffix
+    ));
+    fs::write(&draft, [])?;
+    open_editor(&draft)?;
+    if fs::metadata(&draft)?.len() == 0 {
+        return Err(CliError::Usage(format!(
+            "the draft is empty and was kept at {}",
+            draft.display()
+        )));
+    }
+    if !prompt {
+        let text =
+            fs::read_to_string(&draft).map_err(|error| source_error("read", &draft, error))?;
+        let shebang = text.lines().next().filter(|line| line.starts_with("#!"));
+        options.kind = Some(
+            infer_kind(&draft, shebang, false)
+                .unwrap_or("python")
+                .to_owned(),
+        );
+    }
+    options.source = Some(draft.clone());
+    options.prompt = prompt;
+    let result = add(service, options);
+    if result.is_ok() {
+        fs::remove_file(&draft)?;
+    } else {
+        eprintln!("Your draft was kept at {}", draft.display());
+    }
+    result
+}
+
+fn validate_prompt_runner(name: Option<&str>) -> Result<(), CliError> {
+    let Some(name) = name else {
+        return Ok(());
+    };
+    let exists = FileConfigStore::new(resolve_config_dir()?)
+        .runners()?
+        .iter()
+        .any(|runner| runner.name == name);
+    if exists {
+        Ok(())
+    } else {
+        Err(CliError::Usage(format!(
+            "prompt runner {name:?} is not configured"
+        )))
+    }
+}
+
+fn write_completion(shell: Shell, output: &mut dyn io::Write) {
+    let mut command = Cli::command();
+    generate(shell, &mut command, "skit", output);
+}
+
+fn detect_shell() -> Result<Shell, CliError> {
+    if env::var_os("PSModulePath").is_some() {
+        return Ok(Shell::PowerShell);
+    }
+    let name = env::var_os("SHELL")
+        .and_then(|value| PathBuf::from(value).file_name().map(ToOwned::to_owned))
+        .and_then(|value| value.to_str().map(str::to_ascii_lowercase))
+        .unwrap_or_default();
+    match name.as_str() {
+        "bash" => Ok(Shell::Bash),
+        "elvish" => Ok(Shell::Elvish),
+        "fish" => Ok(Shell::Fish),
+        "pwsh" | "powershell" | "powershell.exe" | "pwsh.exe" => Ok(Shell::PowerShell),
+        "zsh" => Ok(Shell::Zsh),
+        _ => Err(CliError::Usage(
+            "could not detect the shell; set SHELL before completion setup".to_owned(),
+        )),
+    }
+}
+
+fn completion_path(shell: Shell) -> Result<PathBuf, CliError> {
+    let home = user_home().ok_or_else(|| {
+        CliError::Usage("could not determine the home directory for completion setup".to_owned())
+    })?;
+    let path = match shell {
+        Shell::Bash => env::var_os("XDG_DATA_HOME").map_or_else(
+            || {
+                home.join(".local")
+                    .join("share")
+                    .join("bash-completion")
+                    .join("completions")
+                    .join("skit")
+            },
+            |root| {
+                PathBuf::from(root)
+                    .join("bash-completion")
+                    .join("completions")
+                    .join("skit")
+            },
+        ),
+        Shell::Fish => env::var_os("XDG_CONFIG_HOME")
+            .map_or_else(|| home.join(".config"), PathBuf::from)
+            .join("fish")
+            .join("completions")
+            .join("skit.fish"),
+        Shell::Zsh => env::var_os("XDG_DATA_HOME")
+            .map_or_else(|| home.join(".local").join("share"), PathBuf::from)
+            .join("zsh")
+            .join("site-functions")
+            .join("_skit"),
+        Shell::Elvish => env::var_os("XDG_CONFIG_HOME")
+            .map_or_else(|| home.join(".config"), PathBuf::from)
+            .join("elvish")
+            .join("lib")
+            .join("skit.elv"),
+        Shell::PowerShell => home
+            .join("Documents")
+            .join("PowerShell")
+            .join("Completions")
+            .join("_skit.ps1"),
+        _ => {
+            return Err(CliError::Usage(
+                "the detected shell does not have an installation path".to_owned(),
+            ));
+        }
+    };
+    Ok(path)
+}
+
+fn user_home() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
 }
 
 fn run_entry(
@@ -903,6 +1187,9 @@ fn add(service: &LibraryService<FileStore>, options: AddOptions) -> Result<(), C
         .map(|item| item.trim().to_owned())
         .filter(|item| !item.is_empty())
         .collect::<Vec<_>>();
+    if prompt {
+        validate_prompt_runner(runner.as_deref())?;
+    }
 
     if let Some(template) = command_template {
         if !dependencies.is_empty() || requires_python.is_some() {
@@ -996,6 +1283,9 @@ fn add(service: &LibraryService<FileStore>, options: AddOptions) -> Result<(), C
         return Err(CliError::Usage(
             "--runner only applies to prompt entries".to_owned(),
         ));
+    }
+    if kind_name == "prompt" {
+        validate_prompt_runner(runner.as_deref())?;
     }
     let stored_name = stored_name(&kind_name, &source);
     let mode = if reference {
@@ -1144,6 +1434,37 @@ fn edit(
         println!("Edited: {} ({})", held.meta.name, held.slug);
     }
     Ok(())
+}
+
+fn open_editor(target: &Path) -> Result<(), CliError> {
+    let configured = FileConfigStore::new(resolve_config_dir()?)
+        .get("editor")
+        .unwrap_or_default();
+    let editor = if configured.trim().is_empty() {
+        env::var("VISUAL")
+            .or_else(|_| env::var("EDITOR"))
+            .map_err(|_| CliError::Usage("configure an editor before you use --edit".to_owned()))?
+    } else {
+        configured
+    };
+    let mut argv = shlex::split(&editor)
+        .ok_or_else(|| CliError::Usage("the editor command has invalid quoting".to_owned()))?;
+    if argv.is_empty() {
+        return Err(CliError::Usage("the editor command is empty".to_owned()));
+    }
+    let status = ProcessCommand::new(argv.remove(0))
+        .args(argv)
+        .arg(target)
+        .status()
+        .map_err(|error| source_error("start editor for", target, error))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(CliError::Usage(format!(
+            "the editor exited with status {}",
+            status.code().unwrap_or(1)
+        )))
+    }
 }
 
 fn deps(

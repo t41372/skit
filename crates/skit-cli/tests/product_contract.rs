@@ -85,7 +85,9 @@ fn help_and_version_expose_the_complete_automation_surface() {
         .stdout(predicate::str::contains("runner"))
         .stdout(predicate::str::contains("preset"))
         .stdout(predicate::str::contains("agent"))
-        .stdout(predicate::str::contains("edit"));
+        .stdout(predicate::str::contains("edit"))
+        .stdout(predicate::str::contains("--install-completion"))
+        .stdout(predicate::str::contains("--show-completion"));
 
     sandbox
         .command()
@@ -93,6 +95,18 @@ fn help_and_version_expose_the_complete_automation_surface() {
         .assert()
         .success()
         .stdout(predicate::str::contains("skit 0.5.0"));
+}
+
+#[test]
+fn completion_scripts_are_available_without_opening_the_tui() {
+    let sandbox = Sandbox::new();
+    sandbox
+        .command()
+        .env("SHELL", "/bin/bash")
+        .arg("--show-completion")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("_skit"));
 }
 
 #[test]
