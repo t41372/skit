@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/skit-i18n",
     "crates/skit-domain",
     "crates/skit-application",
     "crates/skit-language",
@@ -42,6 +43,7 @@ proptest = "1.11.0"
 tempfile = "3.27.0"
 
 skit-domain = { path = "crates/skit-domain" }
+skit-i18n = { path = "crates/skit-i18n" }
 skit-application = { path = "crates/skit-application" }
 skit-language = { path = "crates/skit-language" }
 skit-form = { path = "crates/skit-form" }
