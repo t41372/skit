@@ -12,6 +12,7 @@ mod paths;
 mod pep723;
 mod presets;
 mod programs;
+mod python_add;
 mod state;
 mod store;
 mod uv;
@@ -40,6 +41,7 @@ pub use pep723::{
 };
 pub use presets::{PresetFromLastError, save_preset_from_last};
 pub use programs::ProgramSearch;
+pub use python_add::{PythonAddRequest, add_python_file};
 pub use state::{EntryState, LastRun, StateError, StateStore};
 pub use store::{
     Entry, EntryDraft, EntrySummary, Error, LibraryRoots, RunStamp, ScriptMeta, Store,
