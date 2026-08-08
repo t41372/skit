@@ -4,7 +4,8 @@ use ratatui_crossterm::crossterm::event::{
 };
 use skit_application::{Diagnostic, DiagnosticCode, LibraryScan};
 use skit_domain::{EntryKind, EntrySummary, Slug, StorageMode};
-use skit_tui::{HitAction, HitRegion, ViewGeometry, map_event, render};
+use skit_i18n::Locale;
+use skit_tui::{HitAction, HitRegion, ViewGeometry, map_event, render, render_localized};
 use skit_ui::{Action, LibraryState};
 
 fn state() -> LibraryState {
@@ -65,6 +66,29 @@ fn renderer_exposes_rows_and_clickable_footer_chips() {
             .iter()
             .any(|hit| hit.action == HitAction::Search)
     );
+}
+
+#[test]
+fn renderer_uses_the_explicit_frontend_locale() {
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| {
+            render_localized(frame, &state(), Locale::ZhTw);
+        })
+        .unwrap();
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(text.contains("程式庫"));
+    assert!(text.contains("項目"));
+    assert!(text.contains("詳細資料"));
+    assert!(text.contains("結束"));
+    assert!(!text.contains("Library"));
 }
 
 #[test]
