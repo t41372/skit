@@ -7,9 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use skit_domain::parameters::{
-    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType,
-};
+use skit_domain::parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType};
 use thiserror::Error;
 
 const MASK: &str = "•••";
