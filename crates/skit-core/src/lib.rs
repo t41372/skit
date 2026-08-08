@@ -1,10 +1,12 @@
 #![forbid(unsafe_code)]
 
+mod add;
 mod language;
 mod paths;
 mod state;
 mod store;
 
+pub use add::{AddFileRequest, AddMode, AddPreparation, AddUseCaseError, add_file};
 pub use language::{
     DepsFlavor, ExecutablePolicy, Family, LanguageSpec, infer_kind, infer_kind_with_policy,
     kind_for_extension, kind_for_shebang_text, known_kinds, python_version_pin,
