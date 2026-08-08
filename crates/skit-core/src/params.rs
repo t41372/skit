@@ -11,7 +11,9 @@ pub enum Binding {
 }
 
 impl Binding {
-    const fn as_str(self) -> &'static str {
+    /// Stable metadata spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Const => "const",
             Self::Input => "input",
@@ -41,7 +43,9 @@ pub enum Delivery {
 }
 
 impl Delivery {
-    pub(crate) const fn as_str(self) -> &'static str {
+    /// Stable metadata and machine-interface spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Inject => "inject",
             Self::Env => "env",
@@ -73,7 +77,9 @@ pub enum ParamType {
 }
 
 impl ParamType {
-    pub(crate) const fn as_str(self) -> &'static str {
+    /// Stable metadata and machine-interface spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::String => "str",
             Self::Integer => "int",
@@ -178,7 +184,7 @@ impl ParamDecl {
         let choices = row
             .get("choices")
             .and_then(toml::Value::as_array)
-            .map(|items| items.iter().filter_map(scalar_text).collect())
+            .map(|items| items.iter().filter_map(|item| scalar_text(Some(item))).collect())
             .unwrap_or_default();
         Self {
             name,
@@ -263,10 +269,13 @@ impl ParamDecl {
     }
 }
 
-/// Read every valid table from metadata without letting one malformed row break peers.
+/// Read valid metadata rows while dropping nameless rows that cannot key a field.
 #[must_use]
 pub fn declared_from_meta(rows: &[toml::Table]) -> Vec<ParamDecl> {
-    rows.iter().map(ParamDecl::from_meta_table).collect()
+    rows.iter()
+        .map(ParamDecl::from_meta_table)
+        .filter(|decl| !decl.name.is_empty())
+        .collect()
 }
 
 /// Create the declaration for a template placeholder that has no explicit schema row.
