@@ -7,34 +7,36 @@ use skit_tui::{Action, App, render};
 fn entries() -> Vec<EntrySummary> {
     vec![
         EntrySummary {
-            slug: "alpha".to_owned(),
-            name: "Alpha".to_owned(),
-            kind: "python".to_owned(),
-            mode: "copy".to_owned(),
-            description: "First script".to_owned(),
-            source: "/tmp/alpha.py".to_owned(),
+            slug: "alpha".into(),
+            name: "Alpha".into(),
+            kind: "python".into(),
+            mode: "copy".into(),
+            description: "First script".into(),
+            source: "/tmp/alpha.py".into(),
+            dir: std::path::PathBuf::from("/tmp/alpha"),
         },
         EntrySummary {
-            slug: "beta".to_owned(),
-            name: "Beta".to_owned(),
-            kind: "shell".to_owned(),
-            mode: "reference".to_owned(),
-            description: "Second script".to_owned(),
-            source: "/tmp/beta.sh".to_owned(),
+            slug: "beta".into(),
+            name: "Beta".into(),
+            kind: "shell".into(),
+            mode: "reference".into(),
+            description: "Second script".into(),
+            source: "/tmp/beta.sh".into(),
+            dir: std::path::PathBuf::from("/tmp/beta"),
         },
     ]
 }
 
 #[test]
-fn library_screen_renders_entries_and_visible_key_hints() -> Result<(), Box<dyn std::error::Error>> {
+fn library_screen_renders_entries_and_visible_key_hints() -> Result<(), Box<dyn std::error::Error>>
+{
     let backend = TestBackend::new(64, 12);
     let mut terminal = Terminal::new(backend)?;
     let mut app = App::new(entries());
-
     terminal.draw(|frame| render(frame, &mut app))?;
-
-    let buffer = terminal.backend().buffer();
-    let text = buffer
+    let text = terminal
+        .backend()
+        .buffer()
         .content
         .iter()
         .map(|cell| cell.symbol())
@@ -50,29 +52,34 @@ fn library_screen_renders_entries_and_visible_key_hints() -> Result<(), Box<dyn 
 #[test]
 fn keyboard_navigation_moves_selection_and_quits() {
     let mut app = App::new(entries());
-    assert_eq!(app.selected().map(|entry| entry.slug.as_str()), Some("alpha"));
-
-    let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
-    assert_eq!(app.handle_key(down), Action::None);
-    assert_eq!(app.selected().map(|entry| entry.slug.as_str()), Some("beta"));
-
-    let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
-    assert_eq!(app.handle_key(up), Action::None);
-    assert_eq!(app.selected().map(|entry| entry.slug.as_str()), Some("alpha"));
-
-    let quit = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
-    assert_eq!(app.handle_key(quit), Action::Quit);
-
-    let escape = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-    assert_eq!(app.handle_key(escape), Action::Quit);
+    assert_eq!(app.selected().map(|e| e.slug.as_str()), Some("alpha"));
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+        Action::None
+    );
+    assert_eq!(app.selected().map(|e| e.slug.as_str()), Some("beta"));
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)),
+        Action::None
+    );
+    assert_eq!(app.selected().map(|e| e.slug.as_str()), Some("alpha"));
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+        Action::Quit
+    );
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+        Action::Quit
+    )
 }
 
 #[test]
 fn empty_library_navigation_is_safe() {
     let mut app = App::new(Vec::new());
     assert!(app.selected().is_none());
-
-    let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
-    assert_eq!(app.handle_key(down), Action::None);
-    assert!(app.selected().is_none());
+    assert_eq!(
+        app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)),
+        Action::None
+    );
+    assert!(app.selected().is_none())
 }
