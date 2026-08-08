@@ -29,9 +29,7 @@ pub fn suggest_python_dependencies(text: &str, script_dir: Option<&Path>) -> Vec
     imports
         .into_iter()
         .filter(|module| {
-            !module.starts_with('_')
-                && !is_stdlib(module)
-                && !is_local_module(script_dir, module)
+            !module.starts_with('_') && !is_stdlib(module) && !is_local_module(script_dir, module)
         })
         .map(|module| distribution_for_import(&module).to_owned())
         .filter(|name| valid_distribution_name(name))

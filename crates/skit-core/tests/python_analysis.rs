@@ -81,8 +81,8 @@ fn sibling_modules_packages_and_namespace_portions_are_local()
 }
 
 #[test]
-fn data_only_directory_does_not_hide_a_real_distribution()
--> Result<(), Box<dyn std::error::Error>> {
+fn data_only_directory_does_not_hide_a_real_distribution() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = tempdir()?;
     fs::create_dir(root.path().join("rich"))?;
     fs::write(root.path().join("rich/notes.txt"), "data\n")?;
