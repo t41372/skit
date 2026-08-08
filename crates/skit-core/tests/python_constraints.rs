@@ -30,7 +30,10 @@ fn malformed_requirement_is_rejected_before_storage() {
 #[test]
 fn valid_requires_python_is_trimmed_and_automatic_tokens_normalize_empty()
 -> Result<(), Box<dyn std::error::Error>> {
-    assert_eq!(normalize_requires_python("  >=3.12,<3.13  ")?, ">=3.12,<3.13");
+    assert_eq!(
+        normalize_requires_python("  >=3.12,<3.13  ")?,
+        ">=3.12,<3.13"
+    );
     assert_eq!(normalize_requires_python("")?, "");
     assert_eq!(normalize_requires_python("-")?, "");
     assert_eq!(normalize_requires_python("NONE")?, "");
