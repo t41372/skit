@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 regex.workspace = true
+serde_json.workspace = true
 toml.workspace = true
 thiserror.workspace = true
 skit-domain.workspace = true
