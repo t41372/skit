@@ -122,12 +122,7 @@ fn raw_extra_tail_expands_tokens_then_globs_without_shell_splitting() {
 
     assert_eq!(
         expanded,
-        [
-            "a.txt",
-            "b.txt",
-            "/work/out_2026-08-07.log",
-            "two words",
-        ]
+        ["a.txt", "b.txt", "/work/out_2026-08-07.log", "two words",]
     );
 }
 
