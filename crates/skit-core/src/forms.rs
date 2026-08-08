@@ -367,13 +367,11 @@ fn validate_value(field: &FormField, value: &str) -> Option<String> {
                 field.choices.join(", ")
             ))
         }
-        ParamType::String
-        | ParamType::Choice
-        | ParamType::Path => None,
+        ParamType::String | ParamType::Choice | ParamType::Path => None,
     }
 }
 
-fn shellish_split(value: &str) -> Vec<String> {
+pub(crate) fn shellish_split(value: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current = String::new();
     let mut quote = None;
@@ -405,7 +403,7 @@ fn shellish_split(value: &str) -> Vec<String> {
     parts
 }
 
-fn is_bool_text(value: &str) -> bool {
+pub(crate) fn is_bool_text(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
         "true" | "1" | "yes" | "y" | "on" | "false" | "0" | "no" | "n" | "off"
@@ -430,10 +428,13 @@ fn default_truthy(default: Option<&ParamDefault>) -> bool {
         Some(ParamDefault::Boolean(value)) => *value,
         Some(ParamDefault::Integer(value)) => *value != 0,
         Some(ParamDefault::Float(value)) => *value != 0.0,
-        Some(ParamDefault::String(value)) => is_bool_text(value) && !matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "false" | "0" | "no" | "n" | "off"
-        ),
+        Some(ParamDefault::String(value)) => {
+            is_bool_text(value)
+                && !matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "false" | "0" | "no" | "n" | "off"
+                )
+        }
         None => false,
     }
 }
