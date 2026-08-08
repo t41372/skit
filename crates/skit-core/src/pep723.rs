@@ -131,10 +131,9 @@ fn block_body(text: &str, leader: &str) -> Option<String> {
         }
         if clean == leader {
             body.push(String::new());
-        } else if let Some(rest) = clean.strip_prefix(&prefix) {
-            body.push(rest.to_owned());
         } else {
-            return None;
+            let rest = clean.strip_prefix(&prefix)?;
+            body.push(rest.to_owned());
         }
     }
     Some(body.join("\n"))
