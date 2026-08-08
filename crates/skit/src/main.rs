@@ -1,13 +1,11 @@
 #![forbid(unsafe_code)]
 
-use std::env;
 use std::io::{self, Write};
-use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use serde::Serialize;
-use skit_core::{LibraryRoots, Store};
+use skit_core::{Store, discover_roots};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -63,7 +61,7 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
 
-    let store = Store::new(resolve_roots()?);
+    let store = Store::new(discover_roots().map_err(|error| error.to_string())?);
     match cli.command {
         Some(Command::List { json }) => list(&store, json),
         None => skit_tui::run(&store).map_err(|error| error.to_string()),
@@ -111,66 +109,4 @@ fn list(store: &Store, as_json: bool) -> Result<(), String> {
         println!("{}\t{}\t{description}", entry.name, entry.kind);
     }
     Ok(())
-}
-
-fn resolve_roots() -> Result<LibraryRoots, String> {
-    if let (Some(data), Some(state), Some(config)) = (
-        env_root("SKIT_DATA_DIR"),
-        env_root("SKIT_STATE_DIR"),
-        env_root("SKIT_CONFIG_DIR"),
-    ) {
-        return Ok(LibraryRoots::new(data, state, config));
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let root = env_root("LOCALAPPDATA")
-            .ok_or_else(|| "Cannot find the user data directory.".to_owned())?;
-        return Ok(LibraryRoots::new(
-            env_root("SKIT_DATA_DIR").unwrap_or_else(|| root.join("skit")),
-            env_root("SKIT_STATE_DIR").unwrap_or_else(|| root.join("skit")),
-            env_root("SKIT_CONFIG_DIR").unwrap_or_else(|| root.join("skit")),
-        ));
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let home = env_root("HOME").ok_or_else(|| "Cannot find the home directory.".to_owned())?;
-        let root = home
-            .join("Library")
-            .join("Application Support")
-            .join("skit");
-        return Ok(LibraryRoots::new(
-            env_root("SKIT_DATA_DIR").unwrap_or_else(|| root.clone()),
-            env_root("SKIT_STATE_DIR").unwrap_or_else(|| root.clone()),
-            env_root("SKIT_CONFIG_DIR").unwrap_or(root),
-        ));
-    }
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let home = env_root("HOME").ok_or_else(|| "Cannot find the home directory.".to_owned())?;
-        let data = env_root("SKIT_DATA_DIR").unwrap_or_else(|| {
-            env_root("XDG_DATA_HOME")
-                .unwrap_or_else(|| home.join(".local/share"))
-                .join("skit")
-        });
-        let state = env_root("SKIT_STATE_DIR").unwrap_or_else(|| {
-            env_root("XDG_STATE_HOME")
-                .unwrap_or_else(|| home.join(".local/state"))
-                .join("skit")
-        });
-        let config = env_root("SKIT_CONFIG_DIR").unwrap_or_else(|| {
-            env_root("XDG_CONFIG_HOME")
-                .unwrap_or_else(|| home.join(".config"))
-                .join("skit")
-        });
-        Ok(LibraryRoots::new(data, state, config))
-    }
-}
-
-fn env_root(name: &str) -> Option<PathBuf> {
-    env::var_os(name)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
 }
