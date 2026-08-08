@@ -1,0 +1,68 @@
+name: Refactor run module
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/refactor-run-module.yml'
+
+permissions: {}
+
+jobs:
+  refactor:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.head_ref }}
+          persist-credentials: true
+      - name: Install Rust formatter
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt
+          rustup default 1.97.1
+      - name: Split module and fix command launch path
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p crates/skit-cli/src/run
+          git mv crates/skit-cli/src/run.rs crates/skit-cli/src/run/command.rs
+          cat > crates/skit-cli/src/run.rs <<'EOF'
+          //! Compose the `skit run` command without exposing Clap to core crates.
+
+          mod command;
+
+          pub(crate) use command::{RunArgs, RunError, run};
+          EOF
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('crates/skit-cli/src/run/command.rs')
+          text = path.read_text()
+          old = '''    let script = staged
+                  .as_ref()
+                  .map_or_else(|| data_store.payload_path(&entry), |value| Ok(value.path.clone()))?;
+          '''
+          new = '''    let script = if let Some(staged) = staged.as_ref() {
+              staged.path.clone()
+          } else if entry.meta.kind.as_str() == "command" {
+              PathBuf::new()
+          } else {
+              data_store.payload_path(&entry)?
+          };
+          '''
+          if old not in text:
+              raise SystemExit('expected run-path block was not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+          cargo fmt --all
+      - name: Commit refactor
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add crates/skit-cli/src/run.rs crates/skit-cli/src/run/command.rs
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'refactor(rust): isolate run command composition'
+          git push origin "HEAD:${{ github.head_ref }}"
