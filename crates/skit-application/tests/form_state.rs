@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use skit_application::form_state::{
-    PersistedFormState, prefill, preset_values, remembered_values, scrub_secrets,
+    LastRunState, PersistedFormState, prefill, preset_values, remembered_values, scrub_secrets,
 };
 use skit_domain::parameters::{
     ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
@@ -131,7 +131,7 @@ fn presets_pin_submitted_values_but_never_persist_secrets_or_removed_fields() {
 }
 
 #[test]
-fn secret_transition_scrubs_last_used_and_every_preset_and_reports_what_was_removed() {
+fn secret_transition_scrubs_all_value_surfaces_without_touching_tail_or_run_metadata() {
     let public = declaration("public", None);
     let mut token = declaration("token", None);
     token.secret = true;
@@ -144,6 +144,8 @@ fn secret_transition_scrubs_last_used_and_every_preset_and_reports_what_was_remo
             ("token", "old-token"),
             ("unknown", "forward-compatible"),
         ]),
+        extra_args: vec!["--literal".to_owned()],
+        extra_args_raw: true,
         presets: BTreeMap::from([
             (
                 "mixed".to_owned(),
@@ -151,7 +153,11 @@ fn secret_transition_scrubs_last_used_and_every_preset_and_reports_what_was_remo
             ),
             ("secret-only".to_owned(), map(&[("token", "old-token")])),
         ]),
-        ..PersistedFormState::default()
+        last_run: LastRunState {
+            at: Some("2026-08-07T17:22:00Z".to_owned()),
+            exit: Some(7),
+            values: map(&[("token", "old-token"), ("public", "keep")]),
+        },
     };
 
     let removed = scrub_secrets(&[public, token, password], &mut state);
@@ -165,22 +171,11 @@ fn secret_transition_scrubs_last_used_and_every_preset_and_reports_what_was_remo
         state.presets,
         BTreeMap::from([("mixed".to_owned(), map(&[("public", "keep")]))])
     );
-}
-
-#[test]
-fn secret_transition_scrubs_the_last_run_snapshot_too() {
-    let mut token = declaration("token", None);
-    token.secret = true;
-    let public = declaration("public", None);
-    let mut state = PersistedFormState {
-        last_run_values: map(&[("token", "old-token"), ("public", "keep")]),
-        ..PersistedFormState::default()
-    };
-
-    let removed = scrub_secrets(&[token, public], &mut state);
-
-    assert_eq!(removed, ["token".to_owned()].into());
-    assert_eq!(state.last_run_values, map(&[("public", "keep")]));
+    assert_eq!(state.last_run.values, map(&[("public", "keep")]));
+    assert_eq!(state.last_run.at.as_deref(), Some("2026-08-07T17:22:00Z"));
+    assert_eq!(state.last_run.exit, Some(7));
+    assert_eq!(state.extra_args, ["--literal"]);
+    assert!(state.extra_args_raw);
 }
 
 #[test]
