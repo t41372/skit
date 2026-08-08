@@ -17,6 +17,8 @@ pub struct PersistedFormState {
     pub values: BTreeMap<String, String>,
     /// Named presets.
     pub presets: BTreeMap<String, BTreeMap<String, String>>,
+    /// Exact values captured in the most recent accepted run.
+    pub last_run_values: BTreeMap<String, String>,
 }
 
 /// Build the next form's values with the stable precedence:
@@ -99,8 +101,10 @@ pub fn preset_values(
 /// Retroactively remove values for declarations that are secret now.
 ///
 /// Unknown keys are preserved for forward compatibility. A preset containing only newly-secret
-/// values is removed entirely instead of leaving a meaningless empty preset behind. The return set
-/// identifies names for which plaintext was actually removed from at least one persistent surface.
+/// values is removed entirely instead of leaving a meaningless empty preset behind. Last-run
+/// snapshots are scrubbed too, so a later "save preset from last run" path cannot resurrect a value
+/// that was persisted while its parameter was still public. The return set identifies names for
+/// which plaintext was actually removed from at least one persistent surface.
 pub fn scrub_secrets(
     declarations: &[ParamDecl],
     state: &mut PersistedFormState,
@@ -112,24 +116,12 @@ pub fn scrub_secrets(
         .collect();
     let mut removed = BTreeSet::new();
 
-    state.values.retain(|name, _| {
-        let secret = secret_names.contains(name.as_str());
-        if secret {
-            removed.insert(name.clone());
-        }
-        !secret
-    });
-
+    scrub_map(&mut state.values, &secret_names, &mut removed);
     state.presets.retain(|_, values| {
-        values.retain(|name, _| {
-            let secret = secret_names.contains(name.as_str());
-            if secret {
-                removed.insert(name.clone());
-            }
-            !secret
-        });
+        scrub_map(values, &secret_names, &mut removed);
         !values.is_empty()
     });
+    scrub_map(&mut state.last_run_values, &secret_names, &mut removed);
 
     removed
 }
@@ -148,6 +140,20 @@ pub(crate) fn delivers_empty(declaration: &ParamDecl) -> bool {
             declaration.delivery,
             ParameterDelivery::Inject | ParameterDelivery::Flag | ParameterDelivery::Env
         )
+}
+
+fn scrub_map(
+    values: &mut BTreeMap<String, String>,
+    secret_names: &BTreeSet<&str>,
+    removed: &mut BTreeSet<String>,
+) {
+    values.retain(|name, _| {
+        let secret = secret_names.contains(name.as_str());
+        if secret {
+            removed.insert(name.clone());
+        }
+        !secret
+    });
 }
 
 fn active_public_fields(declarations: &[ParamDecl]) -> BTreeSet<&str> {
