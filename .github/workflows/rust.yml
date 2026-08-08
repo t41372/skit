@@ -40,7 +40,7 @@ jobs:
       - name: Check formatting
         run: cargo +1.97.1 fmt --all --check
       - name: Run Clippy
-        run: cargo +1.97.1 clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo +1.97.1 clippy --locked --workspace --all-targets --all-features -- -D warnings
 
   test:
     name: test (${{ matrix.os }})
@@ -59,4 +59,4 @@ jobs:
       - name: Install Rust 1.97.1
         run: rustup toolchain install 1.97.1 --profile minimal
       - name: Run tests
-        run: cargo +1.97.1 test --workspace --all-features
+        run: cargo +1.97.1 test --locked --workspace --all-features
