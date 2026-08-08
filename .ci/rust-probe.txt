@@ -3,229 +3,229 @@ $ cargo +1.97.1 fmt --all
 $ cargo +1.97.1 clippy --workspace --all-targets --all-features -- -D warnings
     Updating crates.io index
  Downloading crates ...
-  Downloaded cpufeatures v0.2.17
-  Downloaded phf_codegen v0.11.3
-  Downloaded phf_generator v0.11.3
-  Downloaded generic-array v0.14.7
-  Downloaded memmem v0.1.1
-  Downloaded fixedbitset v0.4.2
   Downloaded anstream v1.0.0
-  Downloaded anstyle v1.0.14
   Downloaded anstyle-parse v1.0.0
-  Downloaded fastrand v2.5.0
-  Downloaded instability v0.3.13
-  Downloaded allocator-api2 v0.2.21
-  Downloaded pest_derive v2.8.8
-  Downloaded pest_generator v2.8.8
-  Downloaded mio v1.2.2
-  Downloaded pest_meta v2.8.8
-  Downloaded syn v1.0.109
-  Downloaded thiserror-impl v2.0.20
-  Downloaded signal-hook-mio v0.2.5
-  Downloaded unicode-ident v1.0.24
+  Downloaded anstyle v1.0.14
   Downloaded aho-corasick v1.1.5
-  Downloaded itertools v0.14.0
-  Downloaded phf v0.11.3
-  Downloaded ratatui-macros v0.7.2
-  Downloaded ryu v1.0.23
-  Downloaded palette v0.7.7
-  Downloaded indoc v2.0.7
-  Downloaded ratatui-termwiz v0.1.2
-  Downloaded rustversion v1.0.23
-  Downloaded filedescriptor v0.8.3
+  Downloaded allocator-api2 v0.2.21
+  Downloaded bitflags v2.13.1
+  Downloaded crypto-common v0.1.7
+  Downloaded bytemuck v1.25.2
+  Downloaded block-buffer v0.10.4
+  Downloaded cfg-if v1.0.4
+  Downloaded clap_lex v1.1.0
+  Downloaded powerfmt v0.2.0
+  Downloaded darling v0.24.0
+  Downloaded derive_more-impl v2.1.1
+  Downloaded either v1.17.0
+  Downloaded anstyle-query v1.1.5
+  Downloaded atomic v0.6.1
+  Downloaded colorchoice v1.0.5
+  Downloaded phf_codegen v0.11.3
+  Downloaded bit-set v0.5.3
+  Downloaded pest_generator v2.8.8
+  Downloaded finl_unicode v1.4.0
+  Downloaded hashbrown v0.16.1
+  Downloaded strsim v0.11.1
+  Downloaded rand_chacha v0.9.0
+  Downloaded rand_core v0.6.4
+  Downloaded signal-hook-mio v0.2.5
+  Downloaded by_address v1.2.1
+  Downloaded critical-section v1.2.0
+  Downloaded darling_core v0.24.0
   Downloaded is_terminal_polyfill v1.70.2
+  Downloaded pest_derive v2.8.8
+  Downloaded quote v1.0.47
+  Downloaded rand_core v0.9.5
   Downloaded ratatui-crossterm v0.1.2
-  Downloaded kasuari v0.4.12
-  Downloaded rand v0.9.5
-  Downloaded castaway v0.2.4
+  Downloaded approx v0.5.1
+  Downloaded autocfg v1.5.1
+  Downloaded base64 v0.22.1
+  Downloaded hex v0.4.3
+  Downloaded indexmap v2.14.0
+  Downloaded lab v0.11.0
   Downloaded lazy_static v1.5.0
   Downloaded lock_api v0.4.14
-  Downloaded num-conv v0.2.2
-  Downloaded libm v0.2.16
-  Downloaded wezterm-dynamic v0.2.1
-  Downloaded wezterm-dynamic-derive v0.1.1
-  Downloaded palette_math v0.7.7
-  Downloaded phf_macros v0.11.3
-  Downloaded ratatui-termina v0.1.0
-  Downloaded rustc_version v0.4.1
-  Downloaded scopeguard v1.2.0
-  Downloaded bytemuck v1.25.2
-  Downloaded rand_core v0.9.5
-  Downloaded clap_lex v1.1.0
-  Downloaded sha2 v0.10.9
-  Downloaded lab v0.11.0
-  Downloaded mac_address v1.1.8
-  Downloaded finl_unicode v1.4.0
-  Downloaded nom v7.1.3
-  Downloaded litrs v1.0.0
-  Downloaded itoa v1.0.18
-  Downloaded strsim v0.11.1
-  Downloaded wezterm-blob-leases v0.1.1
-  Downloaded cfg-if v1.0.4
-  Downloaded parking_lot v0.12.5
-  Downloaded approx v0.5.1
-  Downloaded darling_macro v0.24.0
-  Downloaded lru v0.18.2
-  Downloaded either v1.17.0
-  Downloaded palette_derive v0.7.7
-  Downloaded by_address v1.2.1
-  Downloaded deranged v0.5.8
-  Downloaded num-derive v0.4.2
-  Downloaded getrandom v0.3.4
-  Downloaded ordered-float v4.6.0
-  Downloaded bit-vec v0.6.3
-  Downloaded block-buffer v0.10.4
-  Downloaded cfg_aliases v0.2.2
-  Downloaded equivalent v1.0.2
-  Downloaded ident_case v1.0.1
   Downloaded num_threads v0.1.7
-  Downloaded rand_core v0.6.4
-  Downloaded strum v0.28.0
-  Downloaded powerfmt v0.2.0
-  Downloaded critical-section v1.2.0
-  Downloaded fnv v1.0.7
-  Downloaded siphasher v1.0.3
-  Downloaded time-core v0.1.9
-  Downloaded utf8parse v0.2.2
-  Downloaded document-features v0.2.12
-  Downloaded heck v0.5.0
-  Downloaded signal-hook v0.3.18
-  Downloaded wezterm-color-types v0.3.0
-  Downloaded autocfg v1.5.1
-  Downloaded ppv-lite86 v0.2.21
-  Downloaded serde_spanned v1.1.1
-  Downloaded phf_shared v0.11.3
+  Downloaded parking_lot_core v0.9.12
+  Downloaded phf v0.11.3
+  Downloaded phf_generator v0.11.3
+  Downloaded proc-macro2 v1.0.107
   Downloaded ratatui v0.30.2
-  Downloaded termios v0.3.3
-  Downloaded thiserror-impl v1.0.69
-  Downloaded version_check v0.9.5
-  Downloaded wezterm-bidi v0.2.3
-  Downloaded vtparse v0.6.2
-  Downloaded rand_chacha v0.9.0
-  Downloaded semver v1.0.28
-  Downloaded thiserror v1.0.69
-  Downloaded toml_datetime v1.1.1+spec-1.1.0
-  Downloaded unicode-truncate v2.0.1
-  Downloaded wezterm-input-types v0.1.0
-  Downloaded zmij v1.0.23
-  Downloaded strum_macros v0.28.0
-  Downloaded terminfo v0.9.0
-  Downloaded thiserror v2.0.20
-  Downloaded toml_writer v1.1.2+spec-1.1.0
-  Downloaded bitflags v1.3.2
-  Downloaded signal-hook-registry v1.4.8
-  Downloaded smallvec v1.15.2
-  Downloaded static_assertions v1.1.0
-  Downloaded ucd-trie v0.1.7
-  Downloaded anstyle-query v1.1.5
-  Downloaded quote v1.0.47
-  Downloaded serde_derive v1.0.229
-  Downloaded tempfile v3.27.0
-  Downloaded toml_parser v1.1.3+spec-1.1.0
   Downloaded serde_core v1.0.229
-  Downloaded uuid v1.24.0
+  Downloaded unicode-ident v1.0.24
+  Downloaded bitflags v1.3.2
+  Downloaded clap v4.6.6
+  Downloaded mac_address v1.1.8
+  Downloaded nix v0.29.0
+  Downloaded nix v0.30.1
+  Downloaded once_cell v1.21.4
+  Downloaded palette_derive v0.7.7
+  Downloaded pest_meta v2.8.8
+  Downloaded clap_derive v4.6.4
+  Downloaded fastrand v2.5.0
+  Downloaded log v0.4.33
+  Downloaded crossterm v0.29.0
+  Downloaded deranged v0.5.8
+  Downloaded errno v0.3.14
+  Downloaded libc v0.2.189
+  Downloaded ratatui-core v0.1.2
+  Downloaded portable-atomic v1.14.0
+  Downloaded siphasher v1.0.3
+  Downloaded cpufeatures v0.2.17
+  Downloaded deltae v0.3.2
+  Downloaded digest v0.10.7
+  Downloaded generic-array v0.14.7
+  Downloaded indoc v2.0.7
+  Downloaded rustc_version v0.4.1
+  Downloaded time-core v0.1.9
+  Downloaded heck v0.5.0
+  Downloaded signal-hook-registry v1.4.8
+  Downloaded thiserror-impl v1.0.69
+  Downloaded phf_macros v0.11.3
+  Downloaded ratatui-macros v0.7.2
+  Downloaded smallvec v1.15.2
+  Downloaded anyhow v1.0.104
+  Downloaded csscolorparser v0.6.2
+  Downloaded rand v0.9.5
+  Downloaded syn v1.0.109
   Downloaded toml v1.1.4+spec-1.1.0
   Downloaded atomic-write-file v0.3.0
-  Downloaded bit-set v0.5.3
-  Downloaded colorchoice v1.0.5
-  Downloaded crypto-common v0.1.7
-  Downloaded proc-macro2 v1.0.107
-  Downloaded termina v0.3.3
-  Downloaded typenum v1.20.1
-  Downloaded errno v0.3.14
-  Downloaded memoffset v0.9.1
-  Downloaded nix v0.30.1
-  Downloaded rand v0.8.7
-  Downloaded serde v1.0.229
-  Downloaded serde_json v1.0.151
-  Downloaded unicode-segmentation v1.13.3
+  Downloaded cfg_aliases v0.2.2
   Downloaded convert_case v0.10.0
-  Downloaded regex v1.13.1
-  Downloaded regex-automata v0.4.18
-  Downloaded atomic v0.6.1
-  Downloaded ratatui-core v0.1.2
-  Downloaded csscolorparser v0.6.2
-  Downloaded darling v0.24.0
-  Downloaded digest v0.10.7
-  Downloaded foldhash v0.2.0
-  Downloaded line-clipping v0.3.8
-  Downloaded winnow v1.0.4
-  Downloaded clap_derive v4.6.4
-  Downloaded hex v0.4.3
-  Downloaded ratatui-widgets v0.3.2
-  Downloaded bitflags v2.13.1
-  Downloaded once_cell v1.21.4
-  Downloaded syn v2.0.119
-  Downloaded unicode-width v0.2.2
+  Downloaded fixedbitset v0.4.2
+  Downloaded fnv v1.0.7
+  Downloaded num-conv v0.2.2
+  Downloaded itoa v1.0.18
+  Downloaded ratatui-termina v0.1.0
+  Downloaded serde_spanned v1.1.1
+  Downloaded strum v0.28.0
+  Downloaded unicode-truncate v2.0.1
+  Downloaded utf8parse v0.2.2
+  Downloaded euclid v0.22.14
+  Downloaded num-traits v0.2.19
+  Downloaded phf_shared v0.11.3
+  Downloaded castaway v0.2.4
+  Downloaded itertools v0.14.0
+  Downloaded palette v0.7.7
+  Downloaded scopeguard v1.2.0
+  Downloaded wezterm-blob-leases v0.1.1
+  Downloaded wezterm-color-types v0.3.0
+  Downloaded bit-vec v0.6.3
+  Downloaded equivalent v1.0.2
+  Downloaded libm v0.2.16
+  Downloaded memchr v2.8.3
+  Downloaded rustversion v1.0.23
+  Downloaded sha2 v0.10.9
+  Downloaded strum_macros v0.28.0
+  Downloaded terminfo v0.9.0
+  Downloaded vtparse v0.6.2
+  Downloaded ident_case v1.0.1
+  Downloaded static_assertions v1.1.0
+  Downloaded termios v0.3.3
+  Downloaded thiserror v1.0.69
+  Downloaded thiserror-impl v2.0.20
+  Downloaded toml_datetime v1.1.1+spec-1.1.0
+  Downloaded version_check v0.9.5
+  Downloaded wezterm-dynamic v0.2.1
+  Downloaded wezterm-dynamic-derive v0.1.1
+  Downloaded clap_builder v4.6.6
+  Downloaded compact_str v0.9.1
+  Downloaded darling_macro v0.24.0
+  Downloaded document-features v0.2.12
+  Downloaded ratatui-termwiz v0.1.2
+  Downloaded thiserror v2.0.20
+  Downloaded wezterm-input-types v0.1.0
+  Downloaded derive_more v2.1.1
+  Downloaded parking_lot v0.12.5
+  Downloaded tempfile v3.27.0
+  Downloaded toml_writer v1.1.2+spec-1.1.0
   Downloaded zerocopy v0.8.56
+  Downloaded zmij v1.0.23
+  Downloaded lru v0.18.2
+  Downloaded memmem v0.1.1
+  Downloaded ppv-lite86 v0.2.21
+  Downloaded serde v1.0.229
+  Downloaded signal-hook v0.3.18
+  Downloaded toml_parser v1.1.3+spec-1.1.0
+  Downloaded ucd-trie v0.1.7
+  Downloaded getrandom v0.4.3
+  Downloaded litrs v1.0.0
+  Downloaded nom v7.1.3
+  Downloaded ryu v1.0.23
+  Downloaded serde_derive v1.0.229
+  Downloaded termina v0.3.3
+  Downloaded uuid v1.24.0
+  Downloaded wezterm-bidi v0.2.3
+  Downloaded line-clipping v0.3.8
+  Downloaded rand v0.8.7
+  Downloaded semver v1.0.28
+  Downloaded typenum v1.20.1
+  Downloaded unicode-segmentation v1.13.3
+  Downloaded kasuari v0.4.12
+  Downloaded ordered-float v4.6.0
+  Downloaded palette_math v0.7.7
+  Downloaded serde_json v1.0.151
+  Downloaded hashbrown v0.17.1
+  Downloaded memoffset v0.9.1
+  Downloaded mio v1.2.2
+  Downloaded regex v1.13.1
+  Downloaded winnow v1.0.4
+  Downloaded filedescriptor v0.8.3
+  Downloaded instability v0.3.13
+  Downloaded minimal-lexical v0.2.1
+  Downloaded pest v2.8.8
+  Downloaded fancy-regex v0.11.0
+  Downloaded foldhash v0.2.0
+  Downloaded ratatui-widgets v0.3.2
+  Downloaded num-derive v0.4.2
   Downloaded time v0.3.55
-  Downloaded anyhow v1.0.104
-  Downloaded parking_lot_core v0.9.12
-  Downloaded syn v3.0.3
+  Downloaded unicode-width v0.2.2
+  Downloaded syn v2.0.119
+  Downloaded getrandom v0.3.4
   Downloaded regex-syntax v0.8.11
+  Downloaded syn v3.0.3
+  Downloaded regex-automata v0.4.18
   Downloaded termwiz v0.23.3
   Downloaded rustix v1.1.4
-  Downloaded derive_more v2.1.1
-  Downloaded fancy-regex v0.11.0
-  Downloaded clap v4.6.6
-  Downloaded getrandom v0.4.3
-  Downloaded num-traits v0.2.19
-  Downloaded base64 v0.22.1
-  Downloaded darling_core v0.24.0
-  Downloaded log v0.4.33
-  Downloaded minimal-lexical v0.2.1
-  Downloaded euclid v0.22.14
-  Downloaded compact_str v0.9.1
-  Downloaded crossterm v0.29.0
-  Downloaded indexmap v2.14.0
-  Downloaded derive_more-impl v2.1.1
-  Downloaded memchr v2.8.3
-  Downloaded pest v2.8.8
-  Downloaded hashbrown v0.16.1
-  Downloaded nix v0.29.0
-  Downloaded hashbrown v0.17.1
-  Downloaded clap_builder v4.6.6
-  Downloaded libc v0.2.189
-  Downloaded deltae v0.3.2
   Downloaded linux-raw-sys v0.12.1
-  Downloaded portable-atomic v1.14.0
    Compiling proc-macro2 v1.0.107
-   Compiling quote v1.0.47
    Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
    Compiling libc v0.2.189
     Checking cfg-if v1.0.4
     Checking bitflags v2.13.1
    Compiling serde_core v1.0.229
    Compiling getrandom v0.3.4
    Compiling zerocopy v0.8.56
-   Compiling syn v3.0.3
    Compiling rustix v1.1.4
-    Checking linux-raw-sys v0.12.1
+   Compiling syn v3.0.3
    Compiling cfg_aliases v0.2.2
+    Checking linux-raw-sys v0.12.1
    Compiling nix v0.30.1
     Checking rand_core v0.9.5
    Compiling serde v1.0.229
     Checking winnow v1.0.4
     Checking toml_parser v1.1.3+spec-1.1.0
-    Checking toml_datetime v1.1.1+spec-1.1.0
     Checking serde_spanned v1.1.1
+    Checking toml_datetime v1.1.1+spec-1.1.0
     Checking toml_writer v1.1.2+spec-1.1.0
-   Compiling getrandom v0.4.3
     Checking toml v1.1.4+spec-1.1.0
+   Compiling getrandom v0.4.3
+    Checking ppv-lite86 v0.2.21
     Checking once_cell v1.21.4
     Checking fastrand v2.5.0
-    Checking ppv-lite86 v0.2.21
-    Checking tempfile v3.27.0
-   Compiling syn v2.0.119
     Checking rand_chacha v0.9.0
-   Compiling heck v0.5.0
+   Compiling syn v2.0.119
+    Checking tempfile v3.27.0
     Checking rand v0.9.5
+   Compiling rustversion v1.0.23
     Checking allocator-api2 v0.2.21
+    Checking atomic-write-file v0.3.0
     Checking equivalent v1.0.2
+   Compiling heck v0.5.0
     Checking foldhash v0.2.0
    Compiling serde_derive v1.0.229
-    Checking atomic-write-file v0.3.0
-   Compiling rustversion v1.0.23
    Compiling thiserror v2.0.20
    Compiling strsim v0.11.1
    Compiling ident_case v1.0.1
@@ -237,70 +237,98 @@ $ cargo +1.97.1 clippy --workspace --all-targets --all-features -- -D warnings
    Compiling strum_macros v0.28.0
     Checking castaway v0.2.4
     Checking hashbrown v0.17.1
-    Checking skit-core v0.5.0 (/home/runner/work/skit/skit/crates/skit-core)
    Compiling darling_macro v0.24.0
+    Checking skit-core v0.5.0 (/home/runner/work/skit/skit/crates/skit-core)
     Checking hashbrown v0.16.1
     Checking errno v0.3.14
+   Compiling instability v0.3.13
+   Compiling unicode-segmentation v1.13.3
    Compiling parking_lot_core v0.9.12
    Compiling signal-hook v0.3.18
-    Checking unicode-segmentation v1.13.3
-    Checking ryu v1.0.23
-   Compiling instability v0.3.13
     Checking static_assertions v1.1.0
+    Checking ryu v1.0.23
     Checking unicode-width v0.2.2
+   Compiling convert_case v0.10.0
     Checking compact_str v0.9.1
     Checking unicode-truncate v2.0.1
-   Compiling convert_case v0.10.0
     Checking kasuari v0.4.12
     Checking strum v0.28.0
     Checking signal-hook-registry v1.4.8
-   Compiling darling v0.24.0
     Checking lru v0.18.2
-   Compiling indoc v2.0.7
-    Checking scopeguard v1.2.0
-    Checking critical-section v1.2.0
-    Checking log v0.4.33
+   Compiling darling v0.24.0
     Checking smallvec v1.15.2
-    Checking ratatui-core v0.1.2
+    Checking scopeguard v1.2.0
+    Checking log v0.4.33
+   Compiling indoc v2.0.7
+    Checking critical-section v1.2.0
     Checking mio v1.2.2
+    Checking ratatui-core v0.1.2
     Checking lock_api v0.4.14
    Compiling derive_more-impl v2.1.1
-    Checking time-core v0.1.9
-    Checking deranged v0.5.8
-    Checking powerfmt v0.2.0
    Compiling litrs v1.0.0
-    Checking num_threads v0.1.7
+    Checking powerfmt v0.2.0
     Checking num-conv v0.2.2
+    Checking num_threads v0.1.7
+    Checking deranged v0.5.8
+    Checking time-core v0.1.9
+   Compiling document-features v0.2.12
     Checking derive_more v2.1.1
     Checking signal-hook-mio v0.2.5
     Checking parking_lot v0.12.5
     Checking line-clipping v0.3.8
     Checking utf8parse v0.2.2
-   Compiling zmij v1.0.23
-    Checking anstyle-parse v1.0.0
-    Checking anstyle v1.0.14
-   Compiling document-features v0.2.12
     Checking colorchoice v1.0.5
+    Checking anstyle-parse v1.0.0
     Checking is_terminal_polyfill v1.70.2
+   Compiling zmij v1.0.23
+    Checking anstyle v1.0.14
+    Checking crossterm v0.29.0
     Checking anstyle-query v1.1.5
     Checking anstream v1.0.0
    Compiling serde_json v1.0.151
     Checking clap_lex v1.1.0
     Checking clap_builder v4.6.6
-    Checking crossterm v0.29.0
-    Checking time v0.3.55
    Compiling clap_derive v4.6.4
     Checking ratatui-crossterm v0.1.2
-    Checking ratatui-widgets v0.3.2
+    Checking time v0.3.55
     Checking memchr v2.8.3
-error[E0432]: unresolved imports `skit_core::DeclaredEdits`, `skit_core::edit_declared`
- --> crates/skit-core/tests/declared_edit.rs:3:17
-  |
-3 | use skit_core::{DeclaredEdits, Delivery, ParamDecl, ParamDefault, ParamType, edit_declared};
-  |                 ^^^^^^^^^^^^^ no `DeclaredEdits` in the root                 ^^^^^^^^^^^^^ no `edit_declared` in the root
+    Checking ratatui-widgets v0.3.2
+    Checking ratatui-macros v0.7.2
+    Checking ratatui v0.30.2
+error[E0599]: no method named `write_parameters` found for struct `skit_core::Store` in the current scope
+  --> crates/skit-core/tests/parameter_store.rs:58:25
+   |
+58 |     let updated = store.write_parameters("Demo", &decls)?;
+   |                         ^^^^^^^^^^^^^^^^ method not found in `skit_core::Store`
 
-For more information about this error, try `rustc --explain E0432`.
-error: could not compile `skit-core` (test "declared_edit") due to 1 previous error
+error[E0599]: no method named `read_parameters` found for struct `skit_core::Store` in the current scope
+  --> crates/skit-core/tests/parameter_store.rs:59:22
+   |
+59 |     assert_eq!(store.read_parameters("Demo")?, decls);
+   |                      ^^^^^^^^^^^^^^^ method not found in `skit_core::Store`
+
+    Checking skit-tui v0.5.0 (/home/runner/work/skit/skit/crates/skit-tui)
+error[E0599]: no method named `write_parameters` found for struct `skit_core::Store` in the current scope
+   --> crates/skit-core/tests/parameter_store.rs:104:25
+    |
+104 |     let updated = store.write_parameters("demo", &[])?;
+    |                         ^^^^^^^^^^^^^^^^ method not found in `skit_core::Store`
+
+error[E0599]: no method named `read_parameters` found for struct `skit_core::Store` in the current scope
+   --> crates/skit-core/tests/parameter_store.rs:106:19
+    |
+106 |     assert!(store.read_parameters("demo")?.is_empty());
+    |                   ^^^^^^^^^^^^^^^ method not found in `skit_core::Store`
+
+error[E0599]: no method named `read_parameters` found for struct `skit_core::Store` in the current scope
+   --> crates/skit-core/tests/parameter_store.rs:132:23
+    |
+132 |     let decls = store.read_parameters("Demo")?;
+    |                       ^^^^^^^^^^^^^^^ method not found in `skit_core::Store`
+
+    Checking clap v4.6.6
+For more information about this error, try `rustc --explain E0599`.
+error: could not compile `skit-core` (test "parameter_store") due to 5 previous errors
 warning: build failed, waiting for other jobs to finish...
 
 $ cargo +1.97.1 test --workspace --all-features
@@ -319,34 +347,34 @@ $ cargo +1.97.1 test --workspace --all-features
    Compiling toml_datetime v1.1.1+spec-1.1.0
    Compiling nix v0.30.1
    Compiling toml_writer v1.1.2+spec-1.1.0
-   Compiling serde v1.0.229
    Compiling toml v1.1.4+spec-1.1.0
+   Compiling serde v1.0.229
    Compiling getrandom v0.4.3
-   Compiling fastrand v2.5.0
    Compiling ppv-lite86 v0.2.21
    Compiling once_cell v1.21.4
-   Compiling tempfile v3.27.0
+   Compiling fastrand v2.5.0
    Compiling rand_chacha v0.9.0
+   Compiling tempfile v3.27.0
    Compiling strsim v0.11.1
    Compiling rand v0.9.5
    Compiling unicode-segmentation v1.13.3
-   Compiling equivalent v1.0.2
    Compiling allocator-api2 v0.2.21
    Compiling foldhash v0.2.0
+   Compiling equivalent v1.0.2
    Compiling darling_core v0.24.0
    Compiling either v1.17.0
-   Compiling atomic-write-file v0.3.0
    Compiling itoa v1.0.18
+   Compiling thiserror v2.0.20
+   Compiling atomic-write-file v0.3.0
    Compiling itertools v0.14.0
+   Compiling castaway v0.2.4
    Compiling skit-core v0.5.0 (/home/runner/work/skit/skit/crates/skit-core)
    Compiling hashbrown v0.17.1
    Compiling hashbrown v0.16.1
-   Compiling thiserror v2.0.20
-   Compiling castaway v0.2.4
    Compiling errno v0.3.14
-   Compiling unicode-width v0.2.2
    Compiling ryu v1.0.23
    Compiling static_assertions v1.1.0
+   Compiling unicode-width v0.2.2
    Compiling compact_str v0.9.1
    Compiling unicode-truncate v2.0.1
    Compiling signal-hook-registry v1.4.8
@@ -354,43 +382,43 @@ $ cargo +1.97.1 test --workspace --all-features
    Compiling kasuari v0.4.12
    Compiling lru v0.18.2
    Compiling convert_case v0.10.0
-   Compiling smallvec v1.15.2
-   Compiling critical-section v1.2.0
    Compiling scopeguard v1.2.0
    Compiling log v0.4.33
-   Compiling parking_lot_core v0.9.12
-   Compiling mio v1.2.2
-   Compiling lock_api v0.4.14
+   Compiling critical-section v1.2.0
+   Compiling smallvec v1.15.2
    Compiling ratatui-core v0.1.2
+   Compiling parking_lot_core v0.9.12
    Compiling darling_macro v0.24.0
-   Compiling derive_more-impl v2.1.1
+   Compiling mio v1.2.2
    Compiling darling v0.24.0
    Compiling instability v0.3.13
+   Compiling lock_api v0.4.14
+   Compiling derive_more-impl v2.1.1
    Compiling signal-hook v0.3.18
    Compiling num-conv v0.2.2
    Compiling deranged v0.5.8
-   Compiling time-core v0.1.9
-   Compiling powerfmt v0.2.0
    Compiling num_threads v0.1.7
-   Compiling signal-hook-mio v0.2.5
+   Compiling powerfmt v0.2.0
+   Compiling time-core v0.1.9
    Compiling derive_more v2.1.1
+   Compiling signal-hook-mio v0.2.5
    Compiling parking_lot v0.12.5
    Compiling line-clipping v0.3.8
-   Compiling crossterm v0.29.0
    Compiling utf8parse v0.2.2
    Compiling anstyle-parse v1.0.0
-   Compiling time v0.3.55
+   Compiling crossterm v0.29.0
    Compiling anstyle-query v1.1.5
    Compiling is_terminal_polyfill v1.70.2
-   Compiling colorchoice v1.0.5
    Compiling anstyle v1.0.14
+   Compiling colorchoice v1.0.5
    Compiling clap_lex v1.1.0
-   Compiling ratatui-crossterm v0.1.2
    Compiling anstream v1.0.0
+   Compiling time v0.3.55
    Compiling zmij v1.0.23
    Compiling clap_builder v4.6.6
-   Compiling ratatui-widgets v0.3.2
+   Compiling ratatui-crossterm v0.1.2
    Compiling memchr v2.8.3
+   Compiling ratatui-widgets v0.3.2
    Compiling serde_json v1.0.151
    Compiling ratatui-macros v0.7.2
    Compiling ratatui v0.30.2
