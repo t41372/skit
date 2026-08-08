@@ -1,13 +1,18 @@
-use std::{fs, io, path::Path};
+use std::{collections::BTreeMap, fs, io, path::Path};
 
 use skit_application::{ExitClass, LibraryService, RepositoryError};
-use skit_domain::StorageMode;
+use skit_domain::{
+    Entry, EntryKind, EntryMeta, Slug, StorageMode,
+    parameters::{ParamDecl, ParameterType},
+};
 use skit_store::FileStore;
+use skit_ui::{FormPurpose, Screen};
 use tempfile::TempDir;
 
 use super::{
     AddOptions, Cli, CliError, Command, add, execute, list, mode_name, platform_data_dir,
     read_source, resolve_data_dir, show, source_default_name, source_error, stored_name,
+    tui_add_form, tui_run_form, tui_split_list,
 };
 
 fn write_meta(root: &TempDir, slug: &str, name: &str, description: &str) {
@@ -179,4 +184,72 @@ fn data_directory_mode_and_error_taxonomy_helpers_are_stable() {
         assert_eq!(error.exit_code(), i32::from(expected));
         assert!(!error.to_string().is_empty());
     }
+}
+
+#[test]
+fn tui_run_forms_preserve_saved_values_but_never_prefill_secrets() {
+    let entry = Entry {
+        slug: Slug::parse("alpha").unwrap(),
+        meta: EntryMeta::minimal("Alpha", EntryKind::parse("command").unwrap()),
+    };
+    let mut token = ParamDecl::new("token");
+    token.secret = true;
+    let mut count = ParamDecl::new("count");
+    count.parameter_type = ParameterType::Int;
+    count.prompt = "Count".to_owned();
+    let saved = BTreeMap::from([
+        ("token".to_owned(), "do-not-show".to_owned()),
+        ("count".to_owned(), "4".to_owned()),
+    ]);
+
+    let Screen::Form(form) = tui_run_form(
+        &entry,
+        &[token, count],
+        &saved,
+        &["codex".to_owned()],
+        &["fast".to_owned()],
+    ) else {
+        panic!("run must use a form");
+    };
+    assert_eq!(form.purpose, FormPurpose::Run);
+    assert_eq!(form.selector.as_deref(), Some("alpha"));
+    let fields = form
+        .fields
+        .iter()
+        .map(|field| (field.key.as_str(), field.value.as_str(), field.secret))
+        .collect::<Vec<_>>();
+    assert!(fields.contains(&("value:token", "", true)));
+    assert!(fields.contains(&("value:count", "4", false)));
+    assert!(fields.contains(&("_skit_runner", "codex", false)));
+    assert!(fields.contains(&("_skit_preset", "", false)));
+}
+
+#[test]
+fn tui_add_form_and_list_parser_cover_all_authoring_axes() {
+    let Screen::Form(form) = tui_add_form() else {
+        panic!("add must use a form");
+    };
+    assert_eq!(form.purpose, FormPurpose::Add);
+    let keys = form
+        .fields
+        .iter()
+        .map(|field| field.key.as_str())
+        .collect::<Vec<_>>();
+    for key in [
+        "source",
+        "name",
+        "kind",
+        "description",
+        "mode",
+        "template",
+        "runner",
+        "dependencies",
+        "python",
+    ] {
+        assert!(keys.contains(&key));
+    }
+    assert_eq!(
+        tui_split_list("alpha, beta\ngamma  delta"),
+        ["alpha", "beta", "gamma", "delta"]
+    );
 }

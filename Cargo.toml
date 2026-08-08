@@ -36,6 +36,7 @@ thiserror = "2.0.19"
 time = { version = "0.3.55", features = ["formatting", "local-offset"] }
 toml = "1.1.4"
 uuid = { version = "1.24.0", features = ["serde", "v4"] }
+unicode-width = "0.2.2"
 
 assert_cmd = "2.2.2"
 predicates = "3.1.4"

@@ -11,7 +11,6 @@ use ratatui_crossterm::{
         terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
     },
 };
-use skit_application::LibraryScan;
 use skit_i18n::Locale;
 use skit_ui::{Action, Effect, LibraryState};
 use thiserror::Error;
@@ -26,10 +25,10 @@ pub enum TuiError {
     Io(#[from] io::Error),
 }
 
-/// Run the terminal frontend, using the callback only when the user explicitly refreshes.
-pub fn run<F, E>(mut state: LibraryState, mut reload: F, locale: Locale) -> Result<(), TuiError>
+/// Run the terminal frontend and send each requested effect to its host adapter.
+pub fn run<F, E>(mut state: LibraryState, mut host: F, locale: Locale) -> Result<(), TuiError>
 where
-    F: FnMut() -> Result<LibraryScan, E>,
+    F: FnMut(Effect) -> Result<Action, E>,
     E: Display,
 {
     enable_raw_mode()?;
@@ -45,18 +44,25 @@ where
         let Some(action) = map_event(event::read()?, &state, &geometry) else {
             continue;
         };
-        match state.update(action) {
+        let effect = state.update(action);
+        match effect {
             Effect::None => {}
             Effect::Quit => break,
-            Effect::Reload => match reload() {
-                Ok(scan) => {
-                    state.update(Action::Replace(scan));
-                    state.update(Action::ClearStatus);
+            effect => {
+                terminal.show_cursor()?;
+                suspend_terminal()?;
+                let result = host(effect);
+                resume_terminal()?;
+                terminal.clear()?;
+                match result {
+                    Ok(action) => {
+                        state.update(action);
+                    }
+                    Err(error) => {
+                        state.update(Action::SetStatus(error.to_string()));
+                    }
                 }
-                Err(error) => {
-                    state.update(Action::SetStatus(error.to_string()));
-                }
-            },
+            }
         }
     }
     terminal.show_cursor()?;
@@ -65,6 +71,16 @@ where
 
 #[derive(Debug)]
 struct RestoreTerminal;
+
+fn suspend_terminal() -> io::Result<()> {
+    disable_raw_mode()?;
+    execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture)
+}
+
+fn resume_terminal() -> io::Result<()> {
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)
+}
 
 impl Drop for RestoreTerminal {
     fn drop(&mut self) {

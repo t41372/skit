@@ -1,6 +1,9 @@
 use skit_application::{Diagnostic, DiagnosticCode, LibraryScan};
 use skit_domain::{EntryKind, EntrySummary, Slug, StorageMode};
-use skit_ui::{Action, Effect, InputMode, LibraryState};
+use skit_ui::{
+    Action, Effect, FormField, FormPurpose, FormView, HostRequest, InputMode, LibraryState,
+    ReportItem, ReportView, Screen,
+};
 
 fn entry_with_kind(slug: &str, name: &str, kind: &str, description: &str) -> EntrySummary {
     EntrySummary {
@@ -174,4 +177,194 @@ fn direct_row_selection_uses_a_visible_index() {
     assert_eq!(state.selected().unwrap().slug.as_str(), "gamma");
     state.update(Action::SelectVisible(999));
     assert_eq!(state.selected().unwrap().slug.as_str(), "gamma");
+}
+
+#[test]
+fn library_commands_request_host_data_without_embedding_an_adapter() {
+    let mut state = state();
+    let selected = Some("alpha".to_owned());
+
+    let cases = [
+        (Action::OpenRun, HostRequest::Run),
+        (Action::OpenSettings, HostRequest::Settings),
+        (Action::OpenPresets, HostRequest::Presets),
+        (Action::OpenRename, HostRequest::Rename),
+    ];
+    for (action, request) in cases {
+        assert_eq!(
+            state.update(action),
+            Effect::Open {
+                request,
+                selector: selected.clone(),
+            }
+        );
+    }
+
+    assert_eq!(
+        state.update(Action::OpenAdd),
+        Effect::Open {
+            request: HostRequest::Add,
+            selector: None,
+        }
+    );
+    assert_eq!(
+        state.update(Action::OpenPreferences),
+        Effect::Open {
+            request: HostRequest::Preferences,
+            selector: None,
+        }
+    );
+    assert_eq!(
+        state.update(Action::OpenHealth),
+        Effect::Open {
+            request: HostRequest::Health,
+            selector: None,
+        }
+    );
+    assert_eq!(
+        state.update(Action::OpenRunners),
+        Effect::Open {
+            request: HostRequest::Runners,
+            selector: None,
+        }
+    );
+    assert_eq!(
+        state.update(Action::Edit),
+        Effect::Edit {
+            selector: "alpha".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn entry_commands_are_inert_when_the_library_has_no_selection() {
+    let mut state = LibraryState::default();
+
+    for action in [
+        Action::OpenRun,
+        Action::OpenSettings,
+        Action::OpenPresets,
+        Action::OpenRename,
+        Action::Edit,
+        Action::AskRemove,
+    ] {
+        assert_eq!(state.update(action), Effect::None);
+    }
+    assert_eq!(state.screen(), &Screen::Library);
+}
+
+#[test]
+fn forms_are_frontend_neutral_editable_models_and_submit_typed_requests() {
+    let mut state = state();
+    state.update(Action::Present(Screen::Form(FormView {
+        purpose: FormPurpose::Run,
+        title: "Run Alpha".to_owned(),
+        selector: Some("alpha".to_owned()),
+        fields: vec![
+            FormField::text("name", "Name", "old"),
+            FormField::secret("token", "Token", ""),
+        ],
+        focused: 0,
+        submit_label: "Run".to_owned(),
+    })));
+
+    assert_eq!(state.input_mode(), InputMode::Form);
+    state.update(Action::Backspace);
+    state.update(Action::Input('!'));
+    state.update(Action::FocusNext);
+    state.update(Action::Input('x'));
+    state.update(Action::FocusField(99));
+    assert_eq!(state.form().unwrap().focused, 1);
+    state.update(Action::FocusField(0));
+
+    let Effect::Submit {
+        purpose,
+        selector,
+        values,
+    } = state.update(Action::Submit)
+    else {
+        panic!("the form must request a submission");
+    };
+    assert_eq!(purpose, FormPurpose::Run);
+    assert_eq!(selector.as_deref(), Some("alpha"));
+    assert_eq!(values["name"], "ol!");
+    assert_eq!(values["token"], "x");
+
+    state.update(Action::FocusPrevious);
+    assert_eq!(state.form().unwrap().focused, 0);
+    state.update(Action::Back);
+    assert_eq!(state.screen(), &Screen::Library);
+    assert_eq!(state.input_mode(), InputMode::Browse);
+}
+
+#[test]
+fn reports_and_remove_confirmation_have_keyboard_and_mouse_ready_actions() {
+    let mut state = state();
+    state.update(Action::Present(Screen::Report(ReportView {
+        title: "Health".to_owned(),
+        items: vec![ReportItem {
+            status: "ok".to_owned(),
+            label: "Library".to_owned(),
+            detail: "Ready".to_owned(),
+        }],
+    })));
+    assert!(matches!(state.screen(), Screen::Report(_)));
+    state.update(Action::Back);
+    assert_eq!(state.screen(), &Screen::Library);
+
+    state.update(Action::AskRemove);
+    assert!(matches!(state.screen(), Screen::ConfirmRemove { .. }));
+    assert_eq!(
+        state.update(Action::Submit),
+        Effect::Remove {
+            selector: "alpha".to_owned(),
+        }
+    );
+    state.update(Action::Back);
+    assert_eq!(state.screen(), &Screen::Library);
+}
+
+#[test]
+fn host_completion_returns_to_the_library_and_can_replace_the_scan() {
+    let mut state = state();
+    state.update(Action::Present(Screen::Form(FormView {
+        purpose: FormPurpose::Rename,
+        title: "Rename".to_owned(),
+        selector: Some("alpha".to_owned()),
+        fields: vec![],
+        focused: 0,
+        submit_label: "Save".to_owned(),
+    })));
+    state.update(Action::Complete {
+        scan: Some(LibraryScan {
+            entries: vec![entry("renamed", "Renamed", "done")],
+            diagnostics: vec![],
+        }),
+        message: "Saved".to_owned(),
+    });
+
+    assert_eq!(state.screen(), &Screen::Library);
+    assert_eq!(state.status(), Some("Saved"));
+    assert_eq!(state.selected().unwrap().slug.as_str(), "renamed");
+}
+
+#[test]
+fn public_ui_contract_round_trips_through_json_for_a_future_tauri_adapter() {
+    let effect = Effect::Open {
+        request: HostRequest::Settings,
+        selector: Some("alpha".to_owned()),
+    };
+    let encoded = serde_json::to_string(&effect).unwrap();
+    assert_eq!(serde_json::from_str::<Effect>(&encoded).unwrap(), effect);
+
+    let screen = Screen::Form(FormView {
+        purpose: FormPurpose::Preferences,
+        title: "Preferences".to_owned(),
+        selector: None,
+        fields: vec![FormField::text("lang", "Language", "auto")],
+        focused: 0,
+        submit_label: "Save".to_owned(),
+    });
+    let encoded = serde_json::to_string(&screen).unwrap();
+    assert_eq!(serde_json::from_str::<Screen>(&encoded).unwrap(), screen);
 }

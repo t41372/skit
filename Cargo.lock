@@ -1216,6 +1216,7 @@ dependencies = [
  "skit-i18n",
  "skit-ui",
  "thiserror",
+ "unicode-width",
 ]
 
 [[package]]
@@ -1223,6 +1224,7 @@ name = "skit-ui"
 version = "0.5.0"
 dependencies = [
  "serde",
+ "serde_json",
  "skit-application",
  "skit-domain",
 ]

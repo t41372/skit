@@ -13,5 +13,8 @@ serde.workspace = true
 skit-domain.workspace = true
 skit-application.workspace = true
 
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true

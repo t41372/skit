@@ -6,7 +6,9 @@ use skit_application::{Diagnostic, DiagnosticCode, LibraryScan};
 use skit_domain::{EntryKind, EntrySummary, Slug, StorageMode};
 use skit_i18n::Locale;
 use skit_tui::{HitAction, HitRegion, ViewGeometry, map_event, render, render_localized};
-use skit_ui::{Action, LibraryState};
+use skit_ui::{
+    Action, FormField, FormPurpose, FormView, LibraryState, ReportItem, ReportView, Screen,
+};
 
 fn state() -> LibraryState {
     LibraryState::from_scan(LibraryScan {
@@ -66,6 +68,24 @@ fn renderer_exposes_rows_and_clickable_footer_chips() {
             .iter()
             .any(|hit| hit.action == HitAction::Search)
     );
+
+    for action in [
+        HitAction::Run,
+        HitAction::Add,
+        HitAction::Edit,
+        HitAction::Settings,
+        HitAction::Presets,
+        HitAction::Rename,
+        HitAction::Remove,
+        HitAction::Preferences,
+        HitAction::Health,
+        HitAction::Runners,
+    ] {
+        assert!(
+            geometry.hits.iter().any(|hit| hit.action == action),
+            "missing footer action {action:?}"
+        );
+    }
 }
 
 #[test]
@@ -159,6 +179,36 @@ fn browse_keyboard_events_cover_navigation_commands_and_ignored_input() {
         ),
         None
     );
+}
+
+#[test]
+fn every_library_footer_command_has_a_positive_keyboard_mapping() {
+    let browse = state();
+    let geometry = ViewGeometry::default();
+    let cases = [
+        (KeyCode::Enter, KeyModifiers::NONE, Action::OpenRun),
+        (KeyCode::Char('n'), KeyModifiers::CONTROL, Action::OpenAdd),
+        (KeyCode::Char('e'), KeyModifiers::CONTROL, Action::Edit),
+        (KeyCode::Char('s'), KeyModifiers::NONE, Action::OpenSettings),
+        (KeyCode::Char('p'), KeyModifiers::NONE, Action::OpenPresets),
+        (KeyCode::F(2), KeyModifiers::NONE, Action::OpenRename),
+        (KeyCode::Delete, KeyModifiers::NONE, Action::AskRemove),
+        (
+            KeyCode::Char(','),
+            KeyModifiers::NONE,
+            Action::OpenPreferences,
+        ),
+        (KeyCode::Char('h'), KeyModifiers::NONE, Action::OpenHealth),
+        (KeyCode::Char('a'), KeyModifiers::NONE, Action::OpenRunners),
+        (KeyCode::Char('r'), KeyModifiers::CONTROL, Action::Reload),
+    ];
+
+    for (code, modifiers, action) in cases {
+        assert_eq!(
+            map_event(key(code, modifiers), &browse, &geometry),
+            Some(action)
+        );
+    }
 }
 
 #[test]
@@ -346,5 +396,144 @@ fn unsupported_mouse_gestures_are_ignored() {
 
     for kind in kinds {
         assert_eq!(map_event(mouse(kind, 0, 0), &state, &geometry), None);
+    }
+}
+
+fn form_state() -> LibraryState {
+    let mut state = state();
+    state.update(Action::Present(Screen::Form(FormView {
+        purpose: FormPurpose::Settings,
+        title: "Script settings".to_owned(),
+        selector: Some("hello".to_owned()),
+        fields: vec![
+            FormField::text("name", "Name", "Hello"),
+            FormField::secret("token", "Token", "secret"),
+            FormField::multiline("description", "Description", "Line one"),
+        ],
+        focused: 0,
+        submit_label: "Save".to_owned(),
+    })));
+    state
+}
+
+#[test]
+fn form_report_and_confirmation_screens_render_inside_small_terminals() {
+    let mut report = state();
+    report.update(Action::Present(Screen::Report(ReportView {
+        title: "Health".to_owned(),
+        items: vec![ReportItem {
+            status: "ok".to_owned(),
+            label: "Library".to_owned(),
+            detail: "Ready".to_owned(),
+        }],
+    })));
+    let mut confirm = state();
+    confirm.update(Action::AskRemove);
+
+    for view in [form_state(), report, confirm] {
+        let backend = TestBackend::new(38, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut geometry = None;
+        terminal
+            .draw(|frame| geometry = Some(render(frame, &view)))
+            .unwrap();
+        let geometry = geometry.unwrap();
+        assert!(
+            geometry
+                .hits
+                .iter()
+                .all(|hit| hit.rect.right() <= 38 && hit.rect.bottom() <= 12)
+        );
+    }
+}
+
+#[test]
+fn form_keys_preserve_text_editing_and_advertised_screen_chords() {
+    let form = form_state();
+    let geometry = ViewGeometry::default();
+    let cases = [
+        (KeyCode::Tab, KeyModifiers::NONE, Action::FocusNext),
+        (KeyCode::BackTab, KeyModifiers::SHIFT, Action::FocusPrevious),
+        (KeyCode::Backspace, KeyModifiers::NONE, Action::Backspace),
+        (KeyCode::Char('s'), KeyModifiers::CONTROL, Action::Submit),
+        (KeyCode::Esc, KeyModifiers::NONE, Action::Back),
+        (KeyCode::Char('x'), KeyModifiers::NONE, Action::Input('x')),
+    ];
+    for (code, modifiers, action) in cases {
+        assert_eq!(
+            map_event(key(code, modifiers), &form, &geometry),
+            Some(action)
+        );
+    }
+    assert_eq!(
+        map_event(
+            key(KeyCode::Char('e'), KeyModifiers::CONTROL),
+            &form,
+            &geometry
+        ),
+        None,
+        "Ctrl+E must remain available to the input"
+    );
+}
+
+#[test]
+fn report_and_confirmation_keys_match_their_footer_actions() {
+    let geometry = ViewGeometry::default();
+    let mut report = state();
+    report.update(Action::Present(Screen::Report(ReportView {
+        title: "Health".to_owned(),
+        items: vec![],
+    })));
+    assert_eq!(
+        map_event(key(KeyCode::Esc, KeyModifiers::NONE), &report, &geometry),
+        Some(Action::Back)
+    );
+    assert_eq!(
+        map_event(
+            key(KeyCode::Char('r'), KeyModifiers::CONTROL),
+            &report,
+            &geometry
+        ),
+        Some(Action::Reload)
+    );
+
+    let mut confirm = state();
+    confirm.update(Action::AskRemove);
+    assert_eq!(
+        map_event(key(KeyCode::Enter, KeyModifiers::NONE), &confirm, &geometry),
+        Some(Action::Submit)
+    );
+    assert_eq!(
+        map_event(key(KeyCode::Esc, KeyModifiers::NONE), &confirm, &geometry),
+        Some(Action::Back)
+    );
+}
+
+#[test]
+fn every_rendered_chip_and_form_row_is_clickable() {
+    for view in [state(), form_state()] {
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut geometry = None;
+        terminal
+            .draw(|frame| geometry = Some(render(frame, &view)))
+            .unwrap();
+        let geometry = geometry.unwrap();
+        assert!(!geometry.hits.is_empty());
+        for hit in &geometry.hits {
+            assert!(
+                map_event(
+                    mouse(
+                        MouseEventKind::Down(MouseButton::Left),
+                        hit.rect.x,
+                        hit.rect.y,
+                    ),
+                    &view,
+                    &geometry,
+                )
+                .is_some(),
+                "unmapped hit {hit:?}"
+            );
+        }
     }
 }

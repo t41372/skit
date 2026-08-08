@@ -24,7 +24,10 @@ use skit_language::{
 };
 use skit_store::{ConfigError, FileConfigStore, FileFormStateStore, PromptRunner};
 use skit_store::{FileStore, stored_filename};
-use skit_ui::LibraryState;
+use skit_ui::{
+    Action as UiAction, Effect as UiEffect, FormField, FormPurpose, FormView, HostRequest,
+    LibraryState, ReportItem, ReportView, Screen,
+};
 use thiserror::Error;
 
 use crate::run::{RunArgs, RunError};
@@ -1670,8 +1673,499 @@ fn summary_missing(store: &FileStore, entry: &EntrySummary) -> bool {
 
 fn tui(service: &LibraryService<FileStore>) -> Result<(), CliError> {
     let state = LibraryState::from_scan(service.list()?);
-    skit_tui::run(state, || service.list(), active_locale())?;
+    let store = service.repository();
+    skit_tui::run(
+        state,
+        |effect| tui_effect(service, store, effect),
+        active_locale(),
+    )?;
     Ok(())
+}
+
+fn tui_effect(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    effect: UiEffect,
+) -> Result<UiAction, CliError> {
+    match effect {
+        UiEffect::None | UiEffect::Quit => Ok(UiAction::ClearStatus),
+        UiEffect::Reload => Ok(UiAction::Replace(service.list()?)),
+        UiEffect::Open { request, selector } => Ok(UiAction::Present(tui_open(
+            service, store, request, selector,
+        )?)),
+        UiEffect::Edit { selector } => {
+            edit(service, store, &selector)?;
+            Ok(tui_complete(service, "Source saved")?)
+        }
+        UiEffect::Remove { selector } => {
+            remove(service, &selector, true)?;
+            Ok(tui_complete(service, "Entry removed")?)
+        }
+        UiEffect::Submit {
+            purpose,
+            selector,
+            values,
+        } => tui_submit(service, store, purpose, selector, &values),
+    }
+}
+
+fn tui_open(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    request: HostRequest,
+    selector: Option<String>,
+) -> Result<Screen, CliError> {
+    match request {
+        HostRequest::Run => {
+            let entry = service.show(tui_selector(&selector)?)?;
+            let declarations = entry_parameters(store, &entry);
+            let saved = FormStateService::new(FileFormStateStore::new(resolve_state_dir()?))
+                .load(&entry.slug);
+            let settings = EntrySettings::from_meta(&entry.meta);
+            let mut runners = FileConfigStore::new(resolve_config_dir()?)
+                .runners()?
+                .into_iter()
+                .map(|runner| runner.name)
+                .collect::<Vec<_>>();
+            if !settings.runner.is_empty() {
+                runners.retain(|name| name != &settings.runner);
+                runners.insert(0, settings.runner);
+            }
+            Ok(tui_run_form(
+                &entry,
+                &declarations,
+                &saved.values,
+                &runners,
+                &saved.presets.keys().cloned().collect::<Vec<_>>(),
+            ))
+        }
+        HostRequest::Add => Ok(tui_add_form()),
+        HostRequest::Settings => {
+            let entry = service.show(tui_selector(&selector)?)?;
+            Ok(tui_settings_form(&entry))
+        }
+        HostRequest::Preferences => tui_preferences_form(),
+        HostRequest::Health => tui_health_report(service, store),
+        HostRequest::Runners => tui_runners_form(),
+        HostRequest::Presets => {
+            let entry = service.show(tui_selector(&selector)?)?;
+            let saved = FormStateService::new(FileFormStateStore::new(resolve_state_dir()?))
+                .load(&entry.slug);
+            Ok(tui_presets_form(
+                &entry,
+                &saved.presets.keys().cloned().collect::<Vec<_>>(),
+            ))
+        }
+        HostRequest::Rename => {
+            let entry = service.show(tui_selector(&selector)?)?;
+            Ok(Screen::Form(FormView {
+                purpose: FormPurpose::Rename,
+                title: format!("Rename {}", entry.meta.name),
+                selector: Some(entry.slug.as_str().to_owned()),
+                fields: vec![FormField::text("name", "Name", entry.meta.name)],
+                focused: 0,
+                submit_label: "Rename".to_owned(),
+            }))
+        }
+    }
+}
+
+fn tui_selector(selector: &Option<String>) -> Result<&str, CliError> {
+    selector
+        .as_deref()
+        .ok_or_else(|| CliError::Usage("select an entry first".to_owned()))
+}
+
+fn tui_run_form(
+    entry: &Entry,
+    declarations: &[ParamDecl],
+    saved: &BTreeMap<String, String>,
+    runners: &[String],
+    presets: &[String],
+) -> Screen {
+    let mut fields = declarations
+        .iter()
+        .map(|parameter| {
+            let label = if parameter.prompt.is_empty() {
+                parameter.name.clone()
+            } else {
+                parameter.prompt.clone()
+            };
+            let value = if parameter.secret {
+                String::new()
+            } else {
+                saved.get(&parameter.name).cloned().unwrap_or_default()
+            };
+            if parameter.secret {
+                FormField::secret(format!("value:{}", parameter.name), label, value)
+            } else {
+                FormField::text(format!("value:{}", parameter.name), label, value)
+            }
+        })
+        .collect::<Vec<_>>();
+    fields.extend([
+        FormField::text("_skit_preset", tui_options_label("Preset", presets), ""),
+        FormField::text("_skit_save_preset", "Save as preset", ""),
+        FormField::text(
+            "_skit_runner",
+            tui_options_label("Prompt runner", runners),
+            runners.first().cloned().unwrap_or_default(),
+        ),
+        FormField::text("_skit_args", "Extra arguments", ""),
+        FormField::text("_skit_dry_run", "Dry run (true or false)", "false"),
+    ]);
+    Screen::Form(FormView {
+        purpose: FormPurpose::Run,
+        title: format!("Run {}", entry.meta.name),
+        selector: Some(entry.slug.as_str().to_owned()),
+        fields,
+        focused: 0,
+        submit_label: "Run".to_owned(),
+    })
+}
+
+fn tui_add_form() -> Screen {
+    Screen::Form(FormView {
+        purpose: FormPurpose::Add,
+        title: "Add an entry".to_owned(),
+        selector: None,
+        fields: vec![
+            FormField::text("source", "Source path", ""),
+            FormField::text("name", "Name", ""),
+            FormField::text("kind", "Kind", ""),
+            FormField::multiline("description", "Description", ""),
+            FormField::text("mode", "Storage mode (copy or reference)", "copy"),
+            FormField::multiline("template", "Command template", ""),
+            FormField::text("runner", "Prompt runner", ""),
+            FormField::text("dependencies", "Package dependencies", ""),
+            FormField::text("python", "Python constraint", ""),
+        ],
+        focused: 0,
+        submit_label: "Add".to_owned(),
+    })
+}
+
+fn tui_settings_form(entry: &Entry) -> Screen {
+    let settings = EntrySettings::from_meta(&entry.meta);
+    Screen::Form(FormView {
+        purpose: FormPurpose::Settings,
+        title: format!("Settings for {}", entry.meta.name),
+        selector: Some(entry.slug.as_str().to_owned()),
+        fields: vec![
+            FormField::text("name", "Name", &entry.meta.name),
+            FormField::multiline("description", "Description", &entry.meta.description),
+            FormField::text("workdir", "Working directory", &entry.meta.workdir),
+            FormField::text("interpreter", "Interpreter", settings.interpreter),
+            FormField::text("runner", "Prompt runner", settings.runner),
+            FormField::text(
+                "dependencies",
+                "Package dependencies",
+                settings.dependencies.join(", "),
+            ),
+            FormField::text("python", "Python constraint", settings.requires_python),
+            FormField::text("needs", "Required commands", settings.needs.join(", ")),
+            FormField::multiline("template", "Command template", settings.template),
+            FormField::text(
+                "interpolate",
+                "Prompt interpolation (true or false)",
+                settings.interpolate.to_string(),
+            ),
+        ],
+        focused: 0,
+        submit_label: "Save".to_owned(),
+    })
+}
+
+fn tui_preferences_form() -> Result<Screen, CliError> {
+    let settings = FileConfigStore::new(resolve_config_dir()?).settings()?;
+    Ok(Screen::Form(FormView {
+        purpose: FormPurpose::Preferences,
+        title: "Preferences".to_owned(),
+        selector: None,
+        fields: settings
+            .into_iter()
+            .map(|(key, value)| FormField::text(key.clone(), key, value))
+            .collect(),
+        focused: 0,
+        submit_label: "Save".to_owned(),
+    }))
+}
+
+fn tui_health_report(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+) -> Result<Screen, CliError> {
+    let scan = service.list()?;
+    let missing = scan
+        .entries
+        .iter()
+        .filter(|entry| summary_missing(store, entry))
+        .count();
+    let mut items = vec![
+        ReportItem {
+            status: "ok".to_owned(),
+            label: "Entries".to_owned(),
+            detail: scan.entries.len().to_string(),
+        },
+        ReportItem {
+            status: if missing == 0 { "ok" } else { "error" }.to_owned(),
+            label: "Missing targets".to_owned(),
+            detail: missing.to_string(),
+        },
+        ReportItem {
+            status: "ok".to_owned(),
+            label: "Data directory".to_owned(),
+            detail: store.data_dir().display().to_string(),
+        },
+    ];
+    items.extend(scan.diagnostics.into_iter().map(|diagnostic| ReportItem {
+        status: "error".to_owned(),
+        label: diagnostic.slug.unwrap_or_else(|| "Library".to_owned()),
+        detail: diagnostic.message,
+    }));
+    Ok(Screen::Report(ReportView {
+        title: "Health".to_owned(),
+        items,
+    }))
+}
+
+fn tui_runners_form() -> Result<Screen, CliError> {
+    let runners = FileConfigStore::new(resolve_config_dir()?)
+        .runners()?
+        .into_iter()
+        .map(|runner| format!("{}={}", runner.name, runner.argv.join(" ")))
+        .collect::<Vec<_>>();
+    Ok(Screen::Form(FormView {
+        purpose: FormPurpose::Runners,
+        title: format!("Prompt runners: {}", runners.join("; ")),
+        selector: None,
+        fields: vec![
+            FormField::text("name", "Runner name", ""),
+            FormField::text("argv", "Arguments", ""),
+            FormField::text("remove", "Remove (true or false)", "false"),
+        ],
+        focused: 0,
+        submit_label: "Save".to_owned(),
+    }))
+}
+
+fn tui_presets_form(entry: &Entry, presets: &[String]) -> Screen {
+    Screen::Form(FormView {
+        purpose: FormPurpose::Presets,
+        title: format!("Presets for {}: {}", entry.meta.name, presets.join(", ")),
+        selector: Some(entry.slug.as_str().to_owned()),
+        fields: vec![
+            FormField::text("name", "Preset name", ""),
+            FormField::text("action", "Action (save or delete)", "save"),
+        ],
+        focused: 0,
+        submit_label: "Apply".to_owned(),
+    })
+}
+
+fn tui_options_label(label: &str, options: &[String]) -> String {
+    if options.is_empty() {
+        label.to_owned()
+    } else {
+        format!("{label} ({})", options.join(", "))
+    }
+}
+
+fn tui_split_list(value: &str) -> Vec<String> {
+    value
+        .split(|character: char| character == ',' || character.is_whitespace())
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn tui_submit(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    purpose: FormPurpose,
+    selector: Option<String>,
+    values: &BTreeMap<String, String>,
+) -> Result<UiAction, CliError> {
+    match purpose {
+        FormPurpose::Run => tui_submit_run(service, store, tui_selector(&selector)?, values),
+        FormPurpose::Add => {
+            let source = tui_value(values, "source");
+            let template = tui_value(values, "template");
+            let kind = tui_value(values, "kind");
+            add(
+                service,
+                AddOptions {
+                    source: (!source.is_empty()).then(|| PathBuf::from(source)),
+                    kind: (!kind.is_empty()).then_some(kind.to_owned()),
+                    name: tui_nonempty_owned(values, "name"),
+                    description: tui_value(values, "description").to_owned(),
+                    reference: tui_value(values, "mode").eq_ignore_ascii_case("reference"),
+                    command_template: (!template.is_empty()).then_some(template.to_owned()),
+                    prompt: kind == "prompt",
+                    executable: kind == "exe",
+                    runner: tui_nonempty_owned(values, "runner"),
+                    no_interpolate: false,
+                    dependencies: tui_split_list(tui_value(values, "dependencies")),
+                    requires_python: tui_nonempty_owned(values, "python"),
+                },
+            )?;
+            Ok(tui_complete(service, "Entry added")?)
+        }
+        FormPurpose::Settings => {
+            tui_submit_settings(service, tui_selector(&selector)?, values)?;
+            Ok(tui_complete(service, "Settings saved")?)
+        }
+        FormPurpose::Preferences => {
+            let config = FileConfigStore::new(resolve_config_dir()?);
+            for (key, value) in values {
+                config.set(key, value)?;
+            }
+            Ok(tui_complete(service, "Preferences saved")?)
+        }
+        FormPurpose::Runners => {
+            let config = FileConfigStore::new(resolve_config_dir()?);
+            let name = tui_required(values, "name")?;
+            if tui_bool(tui_value(values, "remove")) {
+                if !config.remove_runner(name)? {
+                    return Err(CliError::Usage(format!("unknown prompt runner: {name}")));
+                }
+            } else {
+                let argv = shlex::split(tui_required(values, "argv")?).ok_or_else(|| {
+                    CliError::Usage("the runner arguments have invalid quoting".to_owned())
+                })?;
+                config.set_runner(
+                    PromptRunner {
+                        name: name.to_owned(),
+                        argv,
+                    },
+                    true,
+                )?;
+            }
+            Ok(tui_complete(service, "Prompt runners saved")?)
+        }
+        FormPurpose::Presets => {
+            let selector = tui_selector(&selector)?;
+            let entry = service.show(selector)?;
+            let declarations = entry_parameters(store, &entry);
+            let state = FormStateService::new(FileFormStateStore::new(resolve_state_dir()?));
+            let name = tui_required(values, "name")?;
+            if tui_value(values, "action").eq_ignore_ascii_case("delete") {
+                if !state.delete_preset(&entry.slug, name)? {
+                    return Err(CliError::Usage(format!("unknown preset: {name}")));
+                }
+            } else {
+                let current = state.load(&entry.slug);
+                state.save_preset(&entry.slug, name, &declarations, &current.values)?;
+            }
+            Ok(tui_complete(service, "Presets saved")?)
+        }
+        FormPurpose::Rename => {
+            rename(
+                service,
+                tui_selector(&selector)?,
+                tui_required(values, "name")?,
+            )?;
+            Ok(tui_complete(service, "Entry renamed")?)
+        }
+    }
+}
+
+fn tui_submit_run(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    selector: &str,
+    values: &BTreeMap<String, String>,
+) -> Result<UiAction, CliError> {
+    let run_values = values
+        .iter()
+        .filter_map(|(key, value)| {
+            key.strip_prefix("value:")
+                .filter(|_| !value.is_empty())
+                .map(|name| format!("{name}={value}"))
+        })
+        .collect();
+    let extra_args = shlex::split(tui_value(values, "_skit_args"))
+        .ok_or_else(|| CliError::Usage("extra arguments have invalid quoting".to_owned()))?;
+    let exit = crate::run::run(
+        service,
+        store,
+        RunArgs {
+            selector: selector.to_owned(),
+            values: run_values,
+            preset: tui_nonempty_owned(values, "_skit_preset"),
+            save_preset: tui_nonempty_owned(values, "_skit_save_preset"),
+            runner: tui_nonempty_owned(values, "_skit_runner"),
+            dry_run: tui_bool(tui_value(values, "_skit_dry_run")),
+            no_input: true,
+            plain: true,
+            raw: false,
+            forget_args: false,
+            extra_args,
+        },
+    )?;
+    tui_complete(service, &format!("Run finished with exit status {exit}"))
+}
+
+fn tui_submit_settings(
+    service: &LibraryService<FileStore>,
+    selector: &str,
+    values: &BTreeMap<String, String>,
+) -> Result<(), CliError> {
+    let mut entry = service.show(selector)?;
+    let name = tui_required(values, "name")?;
+    if name != entry.meta.name {
+        let claimed = service.claim_identity(&entry)?;
+        entry = service.rename(&claimed, name)?;
+    }
+    let description = tui_value(values, "description");
+    if description != entry.meta.description {
+        let claimed = service.claim_identity(&entry)?;
+        entry = service.describe(&claimed, description)?;
+    }
+    let mut settings = EntrySettings::from_meta(&entry.meta);
+    settings.interpreter = tui_value(values, "interpreter").to_owned();
+    settings.runner = tui_value(values, "runner").to_owned();
+    settings.dependencies = tui_split_list(tui_value(values, "dependencies"));
+    settings.requires_python = tui_value(values, "python").to_owned();
+    settings.needs = tui_split_list(tui_value(values, "needs"));
+    settings.template = tui_value(values, "template").to_owned();
+    settings.interpolate = tui_bool(tui_value(values, "interpolate"));
+    let claimed = service.claim_identity(&entry)?;
+    service.update_settings(&claimed, &settings, tui_value(values, "workdir"))?;
+    Ok(())
+}
+
+fn tui_complete(service: &LibraryService<FileStore>, message: &str) -> Result<UiAction, CliError> {
+    Ok(UiAction::Complete {
+        scan: Some(service.list()?),
+        message: message.to_owned(),
+    })
+}
+
+fn tui_value<'a>(values: &'a BTreeMap<String, String>, key: &str) -> &'a str {
+    values.get(key).map_or("", String::as_str).trim()
+}
+
+fn tui_nonempty_owned(values: &BTreeMap<String, String>, key: &str) -> Option<String> {
+    let value = tui_value(values, key);
+    (!value.is_empty()).then(|| value.to_owned())
+}
+
+fn tui_required<'a>(values: &'a BTreeMap<String, String>, key: &str) -> Result<&'a str, CliError> {
+    let value = tui_value(values, key);
+    if value.is_empty() {
+        Err(CliError::Usage(format!("{key} is required")))
+    } else {
+        Ok(value)
+    }
+}
+
+fn tui_bool(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "true" | "yes" | "1" | "on"
+    )
 }
 
 fn read_source(path: &Path) -> Result<(Vec<u8>, SourcePermissions), CliError> {
