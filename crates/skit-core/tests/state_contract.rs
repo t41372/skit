@@ -44,8 +44,12 @@ fn secrets_never_reach_last_values_presets_or_run_history() -> Result<(), Box<dy
     assert_eq!(loaded.extra_args, vec!["--fast"]);
     assert_eq!(loaded.presets["daily"], values(&[("NAME", "Ada")]));
     assert_eq!(
-        loaded.last_run.as_ref().and_then(|run| run.values.get("NAME")),
-        Some(&"Ada".to_owned())
+        loaded
+            .last_run
+            .as_ref()
+            .and_then(|run| run.values.get("NAME"))
+            .map(String::as_str),
+        Some("Ada")
     );
     assert!(
         loaded
