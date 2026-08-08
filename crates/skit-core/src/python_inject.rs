@@ -4,7 +4,7 @@ use std::fmt;
 
 use tree_sitter::{Node, Parser};
 
-use crate::python_managed::{PythonInputSite, python_input_sites};
+use crate::python_managed::python_input_sites;
 use crate::{Binding, ParamDecl, ParamType, analyze_python_managed, match_calls};
 
 /// A managed Python value cannot be safely injected into the current source.
@@ -384,6 +384,3 @@ fn is_main_guard(node: Node<'_>, source: &str) -> bool {
 fn node_text<'a>(node: Node<'_>, source: &'a str) -> Option<&'a str> {
     source.get(node.start_byte()..node.end_byte())
 }
-
-#[allow(dead_code)]
-fn _site_type_check(_site: &PythonInputSite) {}
