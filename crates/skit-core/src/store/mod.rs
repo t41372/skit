@@ -3,8 +3,8 @@ mod persistence;
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::io;
-use std::path::PathBuf;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 
 use model::StateFile;
 pub use model::{Entry, EntryDraft, EntrySummary, Error, LibraryRoots, RunStamp, ScriptMeta};
@@ -198,10 +198,12 @@ impl Store {
         let result = (|| {
             if let Some(payload) = &draft.payload {
                 let payload_path = entry_dir.join(stored_name(&draft.meta.kind));
-                fs::write(&payload_path, payload).map_err(|source| Error::Io {
-                    path: payload_path,
-                    source,
-                })?;
+                write_payload(
+                    &payload_path,
+                    payload,
+                    draft.payload_readonly,
+                    draft.payload_unix_mode,
+                )?;
             }
             write_meta(&entry_dir.join("meta.toml"), &draft.meta)?;
             let entry = Entry {
@@ -420,4 +422,76 @@ impl Store {
         set_registry_row(&mut document, entry)?;
         write_registry_document(&self.registry_path(), &document)
     }
+}
+
+#[cfg(unix)]
+fn write_payload(
+    path: &Path,
+    payload: &[u8],
+    readonly: bool,
+    unix_mode: Option<u32>,
+) -> Result<(), Error> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let requested_mode = unix_mode.unwrap_or(0o666);
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true).mode(requested_mode);
+    let mut file = options.open(path).map_err(|source| Error::Io {
+        path: path.to_owned(),
+        source,
+    })?;
+    file.write_all(payload).map_err(|source| Error::Io {
+        path: path.to_owned(),
+        source,
+    })?;
+    if let Some(mode) = unix_mode {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|source| Error::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+    } else if readonly {
+        let mut permissions = file.metadata().map_err(|source| Error::Io {
+            path: path.to_owned(),
+            source,
+        })?.permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(path, permissions).map_err(|source| Error::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_payload(
+    path: &Path,
+    payload: &[u8],
+    readonly: bool,
+    _unix_mode: Option<u32>,
+) -> Result<(), Error> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|source| Error::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+    file.write_all(payload).map_err(|source| Error::Io {
+        path: path.to_owned(),
+        source,
+    })?;
+    if readonly {
+        let mut permissions = file.metadata().map_err(|source| Error::Io {
+            path: path.to_owned(),
+            source,
+        })?.permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(path, permissions).map_err(|source| Error::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+    }
+    Ok(())
 }
