@@ -58,9 +58,10 @@ impl FormStateRepository for FileFormStateStore {
         let mut state = state_from_document(&document);
         let result = update(&mut state);
         merge_state(&mut document, &state);
-        let encoded = toml::to_string_pretty(&document).map_err(|error| StateWriteError::Encode {
-            reason: error.to_string(),
-        })?;
+        let encoded =
+            toml::to_string_pretty(&document).map_err(|error| StateWriteError::Encode {
+                reason: error.to_string(),
+            })?;
         atomic_write_bytes(&path, encoded.as_bytes())
             .map_err(|error| io_error("write", &path, error.to_string()))?;
         Ok(result)
@@ -96,7 +97,9 @@ fn sanitize_document(document: &mut Table) {
 
     remove_unless_table(document, "last_run");
     if let Some(Value::Table(last_run)) = document.get_mut("last_run")
-        && last_run.get("values").is_some_and(|value| !value.is_table())
+        && last_run
+            .get("values")
+            .is_some_and(|value| !value.is_table())
     {
         last_run.remove("values");
     }
@@ -165,11 +168,7 @@ fn state_from_document(document: &Table) -> PersistedFormState {
 fn string_map(table: &Table) -> BTreeMap<String, String> {
     table
         .iter()
-        .filter_map(|(name, value)| {
-            value
-                .as_str()
-                .map(|value| (name.clone(), value.to_owned()))
-        })
+        .filter_map(|(name, value)| value.as_str().map(|value| (name.clone(), value.to_owned())))
         .collect()
 }
 
