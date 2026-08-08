@@ -10,6 +10,7 @@ repository.workspace = true
 
 [dependencies]
 serde.workspace = true
+shlex.workspace = true
 thiserror.workspace = true
 skit-domain.workspace = true
 
