@@ -1,11 +1,6 @@
-use ratatui::{
-    Terminal,
-    backend::TestBackend,
-    crossterm::event::{
-        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
-        MouseEventKind,
-    },
-    layout::Rect,
+use ratatui_core::{backend::TestBackend, layout::Rect, terminal::Terminal};
+use ratatui_crossterm::crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use skit_application::{Diagnostic, DiagnosticCode, LibraryScan};
 use skit_domain::{EntryKind, EntrySummary, Slug, StorageMode};
