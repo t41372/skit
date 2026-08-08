@@ -70,9 +70,7 @@ pub(crate) fn run(store: &Store, args: AddArgs) -> Result<(), CliFailure> {
             ));
         }
         _ if spec_for(&kind).is_none() => {
-            return Err(CliFailure::usage(format!(
-                "Unknown kind: {kind}."
-            )));
+            return Err(CliFailure::usage(format!("Unknown kind: {kind}.")));
         }
         _ => {}
     }
@@ -108,12 +106,13 @@ pub(crate) fn run(store: &Store, args: AddArgs) -> Result<(), CliFailure> {
 }
 
 fn classify_add_error(error: AddUseCaseError) -> CliFailure {
+    let message = error.to_string();
     match error {
         AddUseCaseError::UnknownKind | AddUseCaseError::UnsupportedKind(_) => {
-            CliFailure::usage(error.to_string())
+            CliFailure::usage(message)
         }
         AddUseCaseError::SourceNotFile(_)
         | AddUseCaseError::Io { .. }
-        | AddUseCaseError::Store(_) => CliFailure::operational(error.to_string()),
+        | AddUseCaseError::Store(_) => CliFailure::operational(message),
     }
 }
