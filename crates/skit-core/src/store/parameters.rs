@@ -62,7 +62,7 @@ impl Store {
         entry.meta.parameters = if decls.is_empty() {
             None
         } else {
-            Some(ParamDecl::tables(decls))
+            Some(decls.iter().map(ParamDecl::to_meta_table).collect())
         };
         write_meta(&entry.dir.join("meta.toml"), &entry.meta)?;
         self.sync_registry_row(&entry)?;
@@ -77,14 +77,4 @@ fn parameter_decls(entry: &Entry) -> Vec<ParamDecl> {
         .as_deref()
         .map(declared_from_meta)
         .unwrap_or_default()
-}
-
-trait ParamTables {
-    fn tables(decls: &[ParamDecl]) -> Vec<toml::Table>;
-}
-
-impl ParamTables for ParamDecl {
-    fn tables(decls: &[ParamDecl]) -> Vec<toml::Table> {
-        decls.iter().map(ParamDecl::to_meta_table).collect()
-    }
 }
