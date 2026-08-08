@@ -5,6 +5,7 @@ mod assembly;
 mod forms;
 mod integrity;
 mod language;
+mod launch;
 mod params;
 mod paths;
 mod presets;
@@ -22,6 +23,9 @@ pub use language::{
     DepsFlavor, ExecutablePolicy, Family, LanguageSpec, infer_kind, infer_kind_with_policy,
     kind_for_extension, kind_for_shebang_text, known_kinds, python_version_pin,
     shebang_program_from_line, spec_for, stored_name,
+};
+pub use launch::{
+    LaunchOptions, LaunchPlan, LaunchPlanError, ProgramResolver, build_launch_plan,
 };
 pub use params::{
     Binding, Delivery, ParamDecl, ParamDefault, ParamType, declared_from_meta, is_secret_name,
