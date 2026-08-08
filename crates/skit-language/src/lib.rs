@@ -879,7 +879,7 @@ fn shell_cli_params(text: &str) -> Vec<ParamDecl> {
     while index < chars.len() {
         let character = chars[index];
         if character == ':' {
-            index += 1;
+            index = index.saturating_add(1);
             continue;
         }
         let takes_value = chars.get(index + 1) == Some(&':');
@@ -891,7 +891,9 @@ fn shell_cli_params(text: &str) -> Vec<ParamDecl> {
             declaration.action = "store_true".to_owned();
         }
         output.push(declaration);
-        index += usize::from(takes_value) + 1;
+        index = index
+            .saturating_add(usize::from(takes_value))
+            .saturating_add(1);
     }
     output
 }
@@ -1334,13 +1336,13 @@ fn shell_read(line: &str) -> Option<(String, Vec<String>, bool)> {
         let flags = option.trim_start_matches('-');
         secret |= flags.contains('s');
         interactive |= flags.contains('s') || flags.contains('p');
-        index += 1;
+        index = index.saturating_add(1);
         if flags.contains('p') {
             prompt = words.get(index).cloned().unwrap_or_default();
             if prompt.contains('$') {
                 prompt.clear();
             }
-            index += 1;
+            index = index.saturating_add(1);
         }
     }
     if !interactive {
@@ -1587,7 +1589,7 @@ pub fn render_prompt_body(
     let mut index = 0;
     while index < bytes.len() {
         if !bytes[index..].starts_with(b"{{") {
-            index += 1;
+            index = index.saturating_add(1);
             continue;
         }
         let start = index + 2;
@@ -1604,7 +1606,7 @@ pub fn render_prompt_body(
             output.push_str(value);
             copied_until = end + 2;
         }
-        index = end + 2;
+        index = end.saturating_add(2);
     }
     output.push_str(&text[copied_until..]);
     output
@@ -1619,11 +1621,11 @@ fn scan_placeholders(text: &str, doubled: bool) -> Vec<String> {
         let open: &[u8] = if doubled { b"{{" } else { b"{" };
         let close: &[u8] = if doubled { b"}}" } else { b"}" };
         if !bytes[index..].starts_with(open) {
-            index += 1;
+            index = index.saturating_add(1);
             continue;
         }
         if !doubled && bytes[index..].starts_with(b"{{") {
-            index += 2;
+            index = index.saturating_add(2);
             continue;
         }
         let start = index + open.len();
@@ -1638,7 +1640,7 @@ fn scan_placeholders(text: &str, doubled: bool) -> Vec<String> {
         if valid_identifier(name) && seen.insert(name.to_owned()) {
             output.push(name.to_owned());
         }
-        index = end + close.len();
+        index = end.saturating_add(close.len());
     }
     output
 }
@@ -2534,7 +2536,7 @@ fn call_bodies(text: &str, needle: &str) -> Vec<String> {
         if let Some(body) = parenthesized_body(text, open) {
             output.push(body.to_owned());
         }
-        offset = open + 1;
+        offset = open.saturating_add(1);
     }
     output
 }
@@ -2552,12 +2554,12 @@ fn parenthesized_body(text: &str, open: usize) -> Option<&str> {
         let character = bytes[index] as char;
         if escaped {
             escaped = false;
-            index += 1;
+            index = index.saturating_add(1);
             continue;
         }
         if character == '\\' && quote.is_some() {
             escaped = true;
-            index += 1;
+            index = index.saturating_add(1);
             continue;
         }
         if matches!(character, '\'' | '"') {
@@ -2566,7 +2568,7 @@ fn parenthesized_body(text: &str, open: usize) -> Option<&str> {
             } else if quote.is_none() {
                 quote = Some(character);
             }
-            index += 1;
+            index = index.saturating_add(1);
             continue;
         }
         if quote.is_none() {
@@ -2579,7 +2581,7 @@ fn parenthesized_body(text: &str, open: usize) -> Option<&str> {
                 }
             }
         }
-        index += 1;
+        index = index.saturating_add(1);
     }
     None
 }

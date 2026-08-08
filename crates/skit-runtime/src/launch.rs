@@ -676,13 +676,13 @@ pub fn render_command_template(
         if !cfg!(windows) && escaped {
             output.push(character);
             escaped = false;
-            index += 1;
+            index = index.saturating_add(1);
             continue;
         }
         if !cfg!(windows) && character == '\\' && quote != Some('\'') {
             output.push(character);
             escaped = true;
-            index += 1;
+            index = index.saturating_add(1);
             continue;
         }
         if character == '\'' && !cfg!(windows) && quote != Some('"') {
@@ -692,23 +692,23 @@ pub fn render_command_template(
                 Some('\'')
             };
             output.push(character);
-            index += 1;
+            index = index.saturating_add(1);
             continue;
         }
         if character == '"' && quote != Some('\'') {
             quote = if quote == Some('"') { None } else { Some('"') };
             output.push(character);
-            index += 1;
+            index = index.saturating_add(1);
             continue;
         }
         if character == '{' && chars.get(index + 1) == Some(&'{') {
             output.push('{');
-            index += 2;
+            index = index.saturating_add(2);
             continue;
         }
         if character == '}' && chars.get(index + 1) == Some(&'}') {
             output.push('}');
-            index += 2;
+            index = index.saturating_add(2);
             continue;
         }
         if character == '{'
@@ -724,12 +724,12 @@ pub fn render_command_template(
                     .get(&name)
                     .ok_or_else(|| LaunchError::MissingTemplateValue { name: name.clone() })?;
                 output.push_str(&quote_shell_arg(value));
-                index = end + 1;
+                index = end.saturating_add(1);
                 continue;
             }
         }
         output.push(character);
-        index += 1;
+        index = index.saturating_add(1);
     }
     Ok(output)
 }

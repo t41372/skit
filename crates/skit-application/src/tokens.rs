@@ -61,35 +61,36 @@ pub fn expand(
 ) -> Result<String, TokenError> {
     let expanded_home = expand_current_user_home(text, context.home.as_deref());
     let text = expanded_home.as_deref().unwrap_or(text);
-    let bytes = text.as_bytes();
     let mut output = String::with_capacity(text.len());
-    let mut index = 0;
+    let mut rest = text;
 
-    while index < bytes.len() {
-        if bytes[index..].starts_with(b"{{") {
+    while !rest.is_empty() {
+        if let Some(tail) = rest.strip_prefix("{{") {
             output.push_str(if brace_escapes { "{" } else { "{{" });
-            index += 2;
+            rest = tail;
             continue;
         }
-        if bytes[index..].starts_with(b"}}") {
+        if let Some(tail) = rest.strip_prefix("}}") {
             output.push_str(if brace_escapes { "}" } else { "}}" });
-            index += 2;
+            rest = tail;
             continue;
         }
-        if bytes[index] == b'{'
-            && let Some((replacement, end)) = resolve_at(text, index, context)?
+        if rest.starts_with('{')
+            && let Some((replacement, tail)) = resolve_prefix(rest, context)?
         {
             output.push_str(replacement);
-            index = end;
+            rest = tail;
             continue;
         }
 
-        let character = text[index..]
+        let character = rest
             .chars()
             .next()
-            .expect("index is inside the string");
+            .expect("the remaining text is not empty");
         output.push(character);
-        index += character.len_utf8();
+        rest = rest
+            .strip_prefix(character)
+            .expect("the character is the prefix of the remaining text");
     }
 
     Ok(output)
@@ -114,7 +115,7 @@ pub fn preview(
 #[must_use]
 pub fn has_tokens(text: &str) -> bool {
     text.starts_with('~')
-        || known_token_start(text).is_some()
+        || contains_known_token(text)
         || text.contains("{{")
         || text.contains("}}")
 }
@@ -131,71 +132,74 @@ fn expand_current_user_home(text: &str, home: Option<&str>) -> Option<String> {
     Some(format!("{home}{separator}{tail}"))
 }
 
-fn resolve_at<'a>(
-    text: &'a str,
-    start: usize,
-    context: &'a TokenContext,
-) -> Result<Option<(&'a str, usize)>, TokenError> {
-    let rest = &text[start..];
+fn resolve_prefix<'text, 'context>(
+    rest: &'text str,
+    context: &'context TokenContext,
+) -> Result<Option<(&'context str, &'text str)>, TokenError> {
     for (token, value) in [
         ("{cwd}", context.cwd.as_str()),
         ("{today}", context.today.as_str()),
         ("{now}", context.now.as_str()),
     ] {
-        if rest.starts_with(token) {
-            return Ok(Some((value, start + token.len())));
+        if let Some(tail) = rest.strip_prefix(token) {
+            return Ok(Some((value, tail)));
         }
     }
 
     let Some(after_prefix) = rest.strip_prefix("{env:") else {
         return Ok(None);
     };
-    let Some(close) = after_prefix.find('}') else {
+    let Some((name, tail)) = after_prefix.split_once('}') else {
         return Ok(None);
     };
-    let name = &after_prefix[..close];
     if !valid_environment_name(name) {
         return Ok(None);
     }
-    let token_len = "{env:".len() + name.len() + 1;
-    let token = &rest[..token_len];
+    let token = format!("{{env:{name}}}");
     let value = context
         .env
         .get(name)
         .ok_or_else(|| TokenError::MissingEnvironment {
             name: name.to_owned(),
-            token: token.to_owned(),
+            token,
         })?;
-    Ok(Some((value, start + token_len)))
+    Ok(Some((value, tail)))
 }
 
-fn known_token_start(text: &str) -> Option<usize> {
-    let bytes = text.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index..].starts_with(b"{{") {
-            index += 2;
+fn contains_known_token(text: &str) -> bool {
+    let mut rest = text;
+    while !rest.is_empty() {
+        if let Some(tail) = rest.strip_prefix("{{") {
+            rest = tail;
             continue;
         }
-        if bytes[index] == b'{' && known_token_len(&text[index..]).is_some() {
-            return Some(index);
+        if rest.starts_with('{') && is_known_token(rest) {
+            return true;
         }
-        let character = text[index..].chars().next()?;
-        index += character.len_utf8();
+        let character = rest
+            .chars()
+            .next()
+            .expect("the remaining text is not empty");
+        rest = rest
+            .strip_prefix(character)
+            .expect("the character is the prefix of the remaining text");
     }
-    None
+    false
 }
 
-fn known_token_len(rest: &str) -> Option<usize> {
+fn is_known_token(rest: &str) -> bool {
     for token in ["{cwd}", "{today}", "{now}"] {
         if rest.starts_with(token) {
-            return Some(token.len());
+            return true;
         }
     }
-    let after_prefix = rest.strip_prefix("{env:")?;
-    let close = after_prefix.find('}')?;
-    let name = &after_prefix[..close];
-    valid_environment_name(name).then_some("{env:".len() + name.len() + 1)
+    let Some(after_prefix) = rest.strip_prefix("{env:") else {
+        return false;
+    };
+    let Some((name, _)) = after_prefix.split_once('}') else {
+        return false;
+    };
+    valid_environment_name(name)
 }
 
 fn valid_environment_name(name: &str) -> bool {

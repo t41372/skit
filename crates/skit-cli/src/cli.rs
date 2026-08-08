@@ -1174,7 +1174,7 @@ fn split_windows_arguments(value: &str) -> Result<Vec<String>, CliError> {
     let mut index = 0;
     loop {
         while index < characters.len() && matches!(characters[index], ' ' | '\t') {
-            index += 1;
+            index = index.saturating_add(1);
         }
         if index == characters.len() {
             break;
@@ -1189,7 +1189,7 @@ fn split_windows_arguments(value: &str) -> Result<Vec<String>, CliError> {
             if character == '\\' {
                 let start = index;
                 while index < characters.len() && characters[index] == '\\' {
-                    index += 1;
+                    index = index.saturating_add(1);
                 }
                 let backslashes = index - start;
                 if index < characters.len() && characters[index] == '"' {
@@ -1199,7 +1199,7 @@ fn split_windows_arguments(value: &str) -> Result<Vec<String>, CliError> {
                     } else {
                         quoted = !quoted;
                     }
-                    index += 1;
+                    index = index.saturating_add(1);
                 } else {
                     argument.extend(std::iter::repeat_n('\\', backslashes));
                 }
@@ -1208,15 +1208,15 @@ fn split_windows_arguments(value: &str) -> Result<Vec<String>, CliError> {
             if character == '"' {
                 if quoted && index + 1 < characters.len() && characters[index + 1] == '"' {
                     argument.push('"');
-                    index += 2;
+                    index = index.saturating_add(2);
                     continue;
                 }
                 quoted = !quoted;
-                index += 1;
+                index = index.saturating_add(1);
                 continue;
             }
             argument.push(character);
-            index += 1;
+            index = index.saturating_add(1);
         }
         if quoted {
             return Err(CliError::Usage(Message::new(
