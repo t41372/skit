@@ -204,10 +204,7 @@ fn python_argv(
     for dependency in dependencies {
         argv.extend(["--with".to_owned(), dependency]);
     }
-    argv.extend([
-        "--script".to_owned(),
-        script.to_string_lossy().into_owned(),
-    ]);
+    argv.extend(["--script".to_owned(), script.to_string_lossy().into_owned()]);
     argv.extend(extra.iter().cloned());
     Ok(argv)
 }
