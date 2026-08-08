@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
 
+mod add_command;
+
 use std::io::{self, Write};
 use std::process::ExitCode;
 
@@ -10,6 +12,28 @@ use skit_core::{
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[derive(Debug)]
+pub(crate) struct CliFailure {
+    message: String,
+    code: u8,
+}
+
+impl CliFailure {
+    pub(crate) fn operational(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            code: 1,
+        }
+    }
+
+    pub(crate) fn usage(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            code: 2,
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -26,6 +50,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Add an existing script or executable to the library.
+    Add(add_command::AddArgs),
     /// List every registered entry.
     List {
         /// Output as JSON.
@@ -149,29 +175,43 @@ struct ShowRow {
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
-        Err(message) => {
-            eprintln!("{message}");
-            ExitCode::FAILURE
+        Err(failure) => {
+            eprintln!("{}", failure.message);
+            ExitCode::from(failure.code)
         }
     }
 }
 
-fn run() -> Result<(), String> {
+fn run() -> Result<(), CliFailure> {
     let cli = Cli::parse();
     if cli.version {
         println!("skit {VERSION}");
         return Ok(());
     }
 
-    let store = Store::new(discover_roots().map_err(|error| error.to_string())?);
+    let store = Store::new(
+        discover_roots().map_err(|error| CliFailure::operational(error.to_string()))?,
+    );
     match cli.command {
-        Some(Command::List { json }) => list(&store, json),
-        Some(Command::Show { name, json }) => show(&store, &name, json),
-        Some(Command::Remove { name, yes }) => remove(&store, &name, yes),
-        Some(Command::Rename { name, new_name }) => rename(&store, &name, &new_name),
-        Some(Command::Describe { name, text }) => describe(&store, &name, &text),
-        Some(Command::Preset { command }) => preset(&store, command),
-        None => skit_tui::run(&store).map_err(|error| error.to_string()),
+        Some(Command::Add(args)) => add_command::run(&store, args),
+        Some(Command::List { json }) => list(&store, json).map_err(CliFailure::operational),
+        Some(Command::Show { name, json }) => {
+            show(&store, &name, json).map_err(CliFailure::operational)
+        }
+        Some(Command::Remove { name, yes }) => {
+            remove(&store, &name, yes).map_err(CliFailure::operational)
+        }
+        Some(Command::Rename { name, new_name }) => {
+            rename(&store, &name, &new_name).map_err(CliFailure::operational)
+        }
+        Some(Command::Describe { name, text }) => {
+            describe(&store, &name, &text).map_err(CliFailure::operational)
+        }
+        Some(Command::Preset { command }) => {
+            preset(&store, command).map_err(CliFailure::operational)
+        }
+        None => skit_tui::run(&store)
+            .map_err(|error| CliFailure::operational(error.to_string())),
     }
 }
 
