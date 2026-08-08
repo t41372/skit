@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use serde::Serialize;
-use skit_core::{Store, discover_roots};
+use skit_core::{StateStore, Store, discover_roots};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -52,6 +52,30 @@ enum Command {
         /// New description. Use an empty string to clear it.
         text: String,
     },
+    /// Manage named parameter presets for an entry.
+    Preset {
+        #[command(subcommand)]
+        command: PresetCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PresetCommand {
+    /// List an entry's saved presets.
+    List {
+        /// Entry name or slug.
+        name: String,
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete a named preset from an entry.
+    Delete {
+        /// Entry name or slug.
+        name: String,
+        /// Preset name.
+        preset_name: String,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -89,6 +113,7 @@ fn run() -> Result<(), String> {
         Some(Command::Remove { name, yes }) => remove(&store, &name, yes),
         Some(Command::Rename { name, new_name }) => rename(&store, &name, &new_name),
         Some(Command::Describe { name, text }) => describe(&store, &name, &text),
+        Some(Command::Preset { command }) => preset(&store, command),
         None => skit_tui::run(&store).map_err(|error| error.to_string()),
     }
 }
@@ -190,5 +215,76 @@ fn confirm(question: &str) -> Result<bool, String> {
     Ok(matches!(
         answer.trim().to_ascii_lowercase().as_str(),
         "y" | "yes"
+    ))
+}
+
+fn preset(store: &Store, command: PresetCommand) -> Result<(), String> {
+    let state = StateStore::new(store.roots().clone());
+    match command {
+        PresetCommand::List { name, json } => preset_list(store, &state, &name, json),
+        PresetCommand::Delete { name, preset_name } => {
+            preset_delete(store, &state, &name, &preset_name)
+        }
+    }
+}
+
+fn preset_list(store: &Store, state: &StateStore, name: &str, as_json: bool) -> Result<(), String> {
+    let entry = store.resolve(name).map_err(|error| error.to_string())?;
+    let presets = state.load(&entry.slug).presets;
+    if as_json {
+        let stdout = io::stdout();
+        let mut writer = stdout.lock();
+        serde_json::to_writer(&mut writer, &presets).map_err(|error| error.to_string())?;
+        writeln!(writer).map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    if presets.is_empty() {
+        println!(
+            "No presets for {} yet. Create one with: skit run {} --save-preset <preset>",
+            entry.meta.name, entry.meta.name
+        );
+        return Ok(());
+    }
+
+    for (preset_name, values) in presets {
+        let pairs = values
+            .into_iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("  {preset_name}: {pairs}");
+    }
+    Ok(())
+}
+
+fn preset_delete(
+    store: &Store,
+    state: &StateStore,
+    name: &str,
+    preset_name: &str,
+) -> Result<(), String> {
+    let entry = store.resolve(name).map_err(|error| error.to_string())?;
+    if state
+        .delete_preset(&entry.slug, preset_name)
+        .map_err(|error| error.to_string())?
+    {
+        println!("Preset \"{preset_name}\" deleted from {}.", entry.meta.name);
+        return Ok(());
+    }
+
+    let available = state
+        .load(&entry.slug)
+        .presets
+        .into_keys()
+        .collect::<Vec<_>>()
+        .join(", ");
+    Err(format!(
+        "Unknown preset \"{preset_name}\". Available: {}",
+        if available.is_empty() {
+            "—"
+        } else {
+            &available
+        }
     ))
 }
