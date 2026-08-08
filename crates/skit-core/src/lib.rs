@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod add;
+mod assembly;
 mod forms;
 mod integrity;
 mod language;
@@ -11,6 +12,7 @@ mod state;
 mod store;
 
 pub use add::{AddFileRequest, AddMode, AddPreparation, AddUseCaseError, add_file};
+pub use assembly::{Assembly, AssemblyError, assemble_delivery};
 pub use forms::{
     FormField, FormPlan, PlanSource, ResolveError, plan_for_entry, prefill, resolve_values,
     validate_values,
