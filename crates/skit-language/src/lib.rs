@@ -49,10 +49,8 @@ static PYTHON_ASSIGN: LazyLock<Regex> = LazyLock::new(|| {
         .expect("fixed Python assignment pattern")
 });
 static SHELL_ENV_DEFAULT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\$\{([A-Za-z_][A-Za-z0-9_]*):-([^}]*)\}\s*$",
-    )
-    .expect("fixed shell environment-default pattern")
+    Regex::new(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\$\{([A-Za-z_][A-Za-z0-9_]*):-([^}]*)\}\s*$")
+        .expect("fixed shell environment-default pattern")
 });
 static SHELL_READ: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -65,10 +63,8 @@ static SHELL_ASSIGN: LazyLock<Regex> = LazyLock::new(|| {
         .expect("fixed shell assignment pattern")
 });
 static JS_CONST: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"^\s*(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([^;\r\n]+)\s*;?\s*$",
-    )
-    .expect("fixed JavaScript constant pattern")
+    Regex::new(r"^\s*(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([^;\r\n]+)\s*;?\s*$")
+        .expect("fixed JavaScript constant pattern")
 });
 static FISH_ENV_DEFAULT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -98,11 +94,7 @@ pub enum LanguageError {
 
 /// Infer a known kind from a path, optional shebang, and executable status.
 #[must_use]
-pub fn infer_kind(
-    path: &Path,
-    shebang: Option<&str>,
-    executable: bool,
-) -> Option<&'static str> {
+pub fn infer_kind(path: &Path, shebang: Option<&str>, executable: bool) -> Option<&'static str> {
     let name = path
         .file_name()
         .and_then(|value| value.to_str())
@@ -310,8 +302,7 @@ fn strip_skit_section(body: &str, leader: &str) -> String {
     for line in body.lines() {
         let stripped = strip_comment_prefix(line, leader).trim();
         if stripped.starts_with('[') {
-            skipping = stripped.starts_with("[tool.skit]")
-                || stripped.starts_with("[[tool.skit.");
+            skipping = stripped.starts_with("[tool.skit]") || stripped.starts_with("[[tool.skit.");
         }
         if !skipping {
             output.push(line.trim_end_matches('\r'));
@@ -640,9 +631,7 @@ fn powershell_cli_params(text: &str) -> Vec<ParamDecl> {
                 "bool" | "switch" => ParameterType::Bool,
                 _ => ParameterType::Str,
             };
-            declaration.required = attributes
-                .to_ascii_lowercase()
-                .contains("mandatory=$true");
+            declaration.required = attributes.to_ascii_lowercase().contains("mandatory=$true");
             if type_name.eq_ignore_ascii_case("switch") {
                 declaration.action = "store_true".to_owned();
             }
@@ -924,7 +913,9 @@ fn inject_python(
             name: declaration.name.clone(),
         });
     };
-    let source = captures.get(2).map_or("", |capture| capture.as_str().trim());
+    let source = captures
+        .get(2)
+        .map_or("", |capture| capture.as_str().trim());
     let literal = replacement_literal(source, value, quote_python_string);
     replace_first(text, &pattern, |captures| {
         format!(
@@ -939,11 +930,7 @@ fn inject_python(
     })
 }
 
-fn inject_shell(
-    text: &str,
-    declaration: &ParamDecl,
-    value: &str,
-) -> Result<String, LanguageError> {
+fn inject_shell(text: &str, declaration: &ParamDecl, value: &str) -> Result<String, LanguageError> {
     let name = regex::escape(&declaration.name);
     let pattern = if declaration.binding == ParameterBinding::Input {
         Regex::new(&format!(
@@ -995,7 +982,9 @@ fn inject_javascript(
             name: declaration.name.clone(),
         });
     };
-    let source = captures.get(2).map_or("", |capture| capture.as_str().trim());
+    let source = captures
+        .get(2)
+        .map_or("", |capture| capture.as_str().trim());
     let literal = replacement_literal(source, value, quote_javascript_string);
     replace_first(text, &pattern, |captures| {
         format!(
@@ -1314,9 +1303,7 @@ fn parse_powershell_value(value: &str, parameter_type: ParameterType) -> Option<
             parameter_type,
             ParameterType::Str | ParameterType::Choice | ParameterType::Path
         )
-        .then(|| {
-            ParameterValue::String(value.trim_matches(&['\'', '"'][..]).to_owned())
-        })
+        .then(|| ParameterValue::String(value.trim_matches(&['\'', '"'][..]).to_owned()))
     })
 }
 

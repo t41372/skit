@@ -3,7 +3,8 @@ use std::{collections::BTreeMap, path::PathBuf};
 use skit_application::delivery::Assembly;
 use skit_domain::{Entry, EntryKind, EntryMeta, EntrySettings, Slug, StorageMode};
 use skit_runtime::{
-    LaunchError, LaunchPaths, ProgramProbe, PromptRunner, build_launch_plan, render_command_template,
+    LaunchError, LaunchPaths, ProgramProbe, PromptRunner, build_launch_plan,
+    render_command_template,
 };
 
 #[derive(Debug, Default)]
@@ -50,7 +51,10 @@ fn paths(script: &str) -> LaunchPaths {
 fn probe_for(script: &str) -> FakeProbe {
     FakeProbe {
         files: vec![PathBuf::from(script)],
-        dirs: vec![PathBuf::from("/invoke"), PathBuf::from("/data/scripts/demo")],
+        dirs: vec![
+            PathBuf::from("/invoke"),
+            PathBuf::from("/data/scripts/demo"),
+        ],
         executable: vec![PathBuf::from(script)],
         ..FakeProbe::default()
     }
@@ -171,8 +175,12 @@ fn direct_and_interpreted_kinds_use_the_expected_program_shapes() {
 #[test]
 fn javascript_runtime_order_is_deno_then_bun_then_node_and_a_pin_wins() {
     let mut probe = probe_for("/copy/script.js");
-    probe.programs.insert("node".to_owned(), PathBuf::from("/bin/node"));
-    probe.programs.insert("bun".to_owned(), PathBuf::from("/bin/bun"));
+    probe
+        .programs
+        .insert("node".to_owned(), PathBuf::from("/bin/node"));
+    probe
+        .programs
+        .insert("bun".to_owned(), PathBuf::from("/bin/bun"));
     let plan = build_launch_plan(
         &entry("js"),
         &paths("/copy/script.js"),
@@ -300,7 +308,9 @@ fn needs_workdir_and_target_checks_fail_before_spawn() {
         Err(LaunchError::MissingNeed { name }) if name == "jq"
     ));
 
-    probe.programs.insert("jq".to_owned(), PathBuf::from("/bin/jq"));
+    probe
+        .programs
+        .insert("jq".to_owned(), PathBuf::from("/bin/jq"));
     let plan = build_launch_plan(
         &shell,
         &paths("/copy/script.sh"),

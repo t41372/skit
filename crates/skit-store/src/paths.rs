@@ -48,7 +48,8 @@ impl FileStore {
             }
         }
 
-        let reader = fs::read_dir(&directory).map_err(|error| io_error("scan", &directory, error))?;
+        let reader =
+            fs::read_dir(&directory).map_err(|error| io_error("scan", &directory, error))?;
         let mut files = Vec::new();
         for item in reader {
             let item = item.map_err(|error| io_error("scan", &directory, error))?;
@@ -75,7 +76,11 @@ impl FileStore {
     }
 }
 
-fn io_error(operation: &'static str, path: &std::path::Path, error: std::io::Error) -> RepositoryError {
+fn io_error(
+    operation: &'static str,
+    path: &std::path::Path,
+    error: std::io::Error,
+) -> RepositoryError {
     RepositoryError::Io {
         operation,
         path: path.display().to_string(),

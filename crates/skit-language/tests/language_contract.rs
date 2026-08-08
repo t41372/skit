@@ -4,8 +4,8 @@ use skit_domain::parameters::{
     ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
 };
 use skit_language::{
-    cli_params, detect_candidates, external_dependencies, infer_kind, inject_values, managed_params,
-    placeholder_params, write_managed_params,
+    cli_params, detect_candidates, external_dependencies, infer_kind, inject_values,
+    managed_params, placeholder_params, write_managed_params,
 };
 
 #[test]
@@ -24,10 +24,20 @@ fn kind_inference_covers_extensions_compound_prompt_names_and_shebangs() {
         ("tool.lua", None, false, Some("lua")),
         ("tool.r", None, false, Some("r")),
         ("review.prompt.md", None, false, Some("prompt")),
-        ("plain", Some("#!/usr/bin/env python3"), false, Some("python")),
+        (
+            "plain",
+            Some("#!/usr/bin/env python3"),
+            false,
+            Some("python"),
+        ),
         ("plain", Some("#!/bin/zsh"), false, Some("shell")),
         ("plain", Some("#!/usr/bin/env node"), false, Some("js")),
-        ("plain", Some("#!/usr/bin/env pwsh"), false, Some("powershell")),
+        (
+            "plain",
+            Some("#!/usr/bin/env pwsh"),
+            false,
+            Some("powershell"),
+        ),
         ("plain", None, true, Some("exe")),
         ("plain.txt", None, false, None),
     ];
@@ -66,7 +76,11 @@ fn managed_block_round_trips_python_shell_and_javascript_comment_dialects() {
         assert_eq!(read, [secret, count], "kind={kind}\n{written}");
         assert!(written.contains("[tool.skit]"));
         assert!(written.contains("[[tool.skit.params]]"));
-        let leader = if matches!(kind, "js" | "ts") { "//" } else { "#" };
+        let leader = if matches!(kind, "js" | "ts") {
+            "//"
+        } else {
+            "#"
+        };
         assert!(written.lines().any(|line| line.starts_with(leader)));
         let removed = write_managed_params(kind, &written, &[]).unwrap();
         assert!(!removed.contains("[tool.skit]"));
@@ -106,7 +120,10 @@ def main(name): pass
     let params = cli_params("python", click);
     assert_eq!(params.len(), 1);
     assert_eq!(params[0].name, "name");
-    assert_eq!(params[0].default, Some(ParameterValue::String("world".to_owned())));
+    assert_eq!(
+        params[0].default,
+        Some(ParameterValue::String("world".to_owned()))
+    );
     assert!(params[0].required);
 
     let typer = r#"
@@ -132,7 +149,10 @@ while getopts "vf:o:" opt; do
 done
 "#;
     let params = cli_params("shell", shell);
-    assert_eq!(params.iter().map(|p| p.flag.as_str()).collect::<Vec<_>>(), ["-v", "-f", "-o"]);
+    assert_eq!(
+        params.iter().map(|p| p.flag.as_str()).collect::<Vec<_>>(),
+        ["-v", "-f", "-o"]
+    );
     assert_eq!(params[0].parameter_type, ParameterType::Bool);
 
     let js = r#"
@@ -196,12 +216,21 @@ fn candidate_detection_covers_rewrite_and_environment_idioms() {
 #[test]
 fn placeholder_detection_preserves_order_and_secret_heuristics() {
     let command = placeholder_params("command", "tool {name} {name} {API_TOKEN}");
-    assert_eq!(command.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["name", "API_TOKEN"]);
+    assert_eq!(
+        command.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+        ["name", "API_TOKEN"]
+    );
     assert_eq!(command[0].delivery, ParameterDelivery::Placeholder);
     assert!(command[1].secret);
 
-    let prompt = placeholder_params("prompt", "Review {{path}} then use {{API_KEY}} and {{path}}.");
-    assert_eq!(prompt.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["path", "API_KEY"]);
+    let prompt = placeholder_params(
+        "prompt",
+        "Review {{path}} then use {{API_KEY}} and {{path}}.",
+    );
+    assert_eq!(
+        prompt.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+        ["path", "API_KEY"]
+    );
     assert!(prompt[1].secret);
 }
 
@@ -262,7 +291,10 @@ fn dependency_scanner_finds_python_pep723_and_js_package_imports() {
 # ///
 print('ok')
 "#;
-    assert_eq!(external_dependencies("python", python), ["httpx>=0.28", "rich"]);
+    assert_eq!(
+        external_dependencies("python", python),
+        ["httpx>=0.28", "rich"]
+    );
 
     let js = r#"
 import React from "react";
@@ -271,5 +303,8 @@ import local from "./local.js";
 const fs = require("node:fs");
 const chalk = require("chalk");
 "#;
-    assert_eq!(external_dependencies("js", js), ["@scope/pkg", "chalk", "react"]);
+    assert_eq!(
+        external_dependencies("js", js),
+        ["@scope/pkg", "chalk", "react"]
+    );
 }
