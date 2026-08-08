@@ -44,7 +44,8 @@ impl From<StateError> for PresetFromLastError {
 /// A current field filter is applied so removed parameters never resurrect. Definition
 /// defaults are deliberately not overlaid: this operation promises history, not today's
 /// form. Before run snapshots existed, explicit last-used values are accepted as a narrow
-/// compatibility fallback.
+/// compatibility fallback. Secret names are purged from every persisted state surface
+/// before the preset is written.
 ///
 /// # Errors
 ///
@@ -85,6 +86,9 @@ pub fn save_preset_from_last(
     };
 
     let secrets = plan.secret_names();
+    if !secrets.is_empty() {
+        state_store.purge_secret(slug, &secrets)?;
+    }
     state_store.save_preset(slug, preset_name, &snapshot, &secrets)?;
     let persisted = snapshot
         .into_iter()
