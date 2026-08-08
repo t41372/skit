@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::error::Error as StdError;
 use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use crate::{
@@ -113,10 +113,26 @@ pub fn add_file(store: &Store, request: AddFileRequest) -> Result<Entry, AddUseC
             path: request.source.clone(),
             source: source_error,
         })?;
-    let bytes = fs::read(&source).map_err(|source_error| AddUseCaseError::Io {
+    let mut stream = fs::File::open(&source).map_err(|source_error| AddUseCaseError::Io {
         path: source.clone(),
         source: source_error,
     })?;
+    let mut bytes = Vec::new();
+    stream
+        .read_to_end(&mut bytes)
+        .map_err(|source_error| AddUseCaseError::Io {
+            path: source.clone(),
+            source: source_error,
+        })?;
+    let permissions = stream
+        .metadata()
+        .map_err(|source_error| AddUseCaseError::Io {
+            path: source.clone(),
+            source: source_error,
+        })?
+        .permissions();
+    let payload_readonly = permissions.readonly();
+    let payload_unix_mode = unix_mode(&permissions);
     let source_hash = sha256_source_hash(&bytes);
 
     let kind = resolve_kind(&source, request.kind.as_deref())?;
@@ -160,9 +176,13 @@ pub fn add_file(store: &Store, request: AddFileRequest) -> Result<Entry, AddUseC
         parameters: None,
         extra: BTreeMap::new(),
     };
-    store
-        .insert_entry(EntryDraft::new(meta, payload))
-        .map_err(AddUseCaseError::from)
+    let draft = EntryDraft::new(meta, payload);
+    let draft = if mode == AddMode::Copy {
+        draft.with_payload_permissions(payload_readonly, payload_unix_mode)
+    } else {
+        draft
+    };
+    store.insert_entry(draft).map_err(AddUseCaseError::from)
 }
 
 fn resolve_kind(source: &Path, explicit: Option<&str>) -> Result<String, AddUseCaseError> {
@@ -234,4 +254,16 @@ fn infer_interpreter(source: &Path, text: &str, kind: &str) -> String {
         };
     }
     String::new()
+}
+
+#[cfg(unix)]
+fn unix_mode(permissions: &fs::Permissions) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+
+    Some(permissions.mode())
+}
+
+#[cfg(not(unix))]
+fn unix_mode(_permissions: &fs::Permissions) -> Option<u32> {
+    None
 }
