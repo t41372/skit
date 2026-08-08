@@ -168,7 +168,11 @@ pub(crate) fn run(
     let (extra_args, expand_extra, new_tail) = if args.forget_args {
         (Vec::new(), false, Some(Vec::new()))
     } else if !args.extra_args.is_empty() {
-        (args.extra_args.clone(), false, Some(args.extra_args.clone()))
+        (
+            args.extra_args.clone(),
+            false,
+            Some(args.extra_args.clone()),
+        )
     } else {
         (saved.extra_args.clone(), saved.extra_args_raw, None)
     };
@@ -193,17 +197,23 @@ pub(crate) fn run(
     };
 
     let staged = stage_injected_source(data_store, &entry, &source, &declarations, &assembly)?;
-    let script = staged
-        .as_ref()
-        .map_or_else(|| data_store.payload_path(&entry), |value| Ok(value.path.clone()))?;
+    let script = staged.as_ref().map_or_else(
+        || data_store.payload_path(&entry),
+        |value| Ok(value.path.clone()),
+    )?;
     let prompt_body = if entry.meta.kind.as_str() == "prompt" {
-        Some(render_prompt(&source, &assembly.command_values, settings.interpolate))
+        Some(render_prompt(
+            &source,
+            &assembly.command_values,
+            settings.interpolate,
+        ))
     } else {
         None
     };
-    let runner_name = args.runner.as_deref().or_else(|| {
-        (!settings.runner.is_empty()).then_some(settings.runner.as_str())
-    });
+    let runner_name = args
+        .runner
+        .as_deref()
+        .or_else(|| (!settings.runner.is_empty()).then_some(settings.runner.as_str()));
     let runner = runner_name.map(prompt_runner).transpose()?;
     let plan = build_launch_plan(
         &entry,
@@ -399,7 +409,12 @@ fn token_context() -> TokenContext {
         home: home_dir().map(|path| path.display().to_string()),
         env: env::vars().collect(),
         today: local.date().to_string(),
-        now: format!("{:02}-{:02}-{:02}", time.hour(), time.minute(), time.second()),
+        now: format!(
+            "{:02}-{:02}-{:02}",
+            time.hour(),
+            time.minute(),
+            time.second()
+        ),
     }
 }
 
@@ -426,9 +441,11 @@ fn platform_state_dir() -> Option<PathBuf> {
 
 #[cfg(target_os = "macos")]
 fn platform_state_dir() -> Option<PathBuf> {
-    env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|path| path.join("Library").join("Application Support").join("skit"))
+    env::var_os("HOME").map(PathBuf::from).map(|path| {
+        path.join("Library")
+            .join("Application Support")
+            .join("skit")
+    })
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]

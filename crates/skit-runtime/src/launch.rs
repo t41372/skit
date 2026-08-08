@@ -115,7 +115,9 @@ pub enum LaunchError {
     #[error("prompt body is required")]
     PromptBodyRequired,
     /// A prompt runner does not have one valid prompt token.
-    #[error("prompt runner {name:?} must contain exactly one {{prompt}} marker outside the program token")]
+    #[error(
+        "prompt runner {name:?} must contain exactly one {{prompt}} marker outside the program token"
+    )]
     InvalidPromptRunner { name: String },
     /// The child process could not start or wait.
     #[error("could not {operation} child process: {source}")]
@@ -170,20 +172,8 @@ pub fn build_launch_plan<P: ProgramProbe>(
 
     let (program, args, display_args) = match kind {
         "python" => python_plan(entry, paths, assembly, &settings, probe)?,
-        "shell" => interpreted_plan(
-            paths,
-            assembly,
-            interpreter(&settings, "bash"),
-            &[],
-            probe,
-        )?,
-        "fish" => interpreted_plan(
-            paths,
-            assembly,
-            interpreter(&settings, "fish"),
-            &[],
-            probe,
-        )?,
+        "shell" => interpreted_plan(paths, assembly, interpreter(&settings, "bash"), &[], probe)?,
+        "fish" => interpreted_plan(paths, assembly, interpreter(&settings, "fish"), &[], probe)?,
         "powershell" => interpreted_plan(
             paths,
             assembly,
@@ -191,27 +181,9 @@ pub fn build_launch_plan<P: ProgramProbe>(
             &["-File"],
             probe,
         )?,
-        "ruby" => interpreted_plan(
-            paths,
-            assembly,
-            interpreter(&settings, "ruby"),
-            &[],
-            probe,
-        )?,
-        "perl" => interpreted_plan(
-            paths,
-            assembly,
-            interpreter(&settings, "perl"),
-            &[],
-            probe,
-        )?,
-        "lua" => interpreted_plan(
-            paths,
-            assembly,
-            interpreter(&settings, "lua"),
-            &[],
-            probe,
-        )?,
+        "ruby" => interpreted_plan(paths, assembly, interpreter(&settings, "ruby"), &[], probe)?,
+        "perl" => interpreted_plan(paths, assembly, interpreter(&settings, "perl"), &[], probe)?,
+        "lua" => interpreted_plan(paths, assembly, interpreter(&settings, "lua"), &[], probe)?,
         "r" => interpreted_plan(
             paths,
             assembly,
@@ -369,9 +341,12 @@ fn prompt_plan<P: ProgramProbe>(
     let body = prompt_body.ok_or(LaunchError::PromptBodyRequired)?;
     let runner = runner.ok_or(LaunchError::PromptRunnerRequired)?;
     let marker = "{{prompt}}";
-    let program_token = runner.argv.first().ok_or_else(|| LaunchError::InvalidPromptRunner {
-        name: runner.name.clone(),
-    })?;
+    let program_token = runner
+        .argv
+        .first()
+        .ok_or_else(|| LaunchError::InvalidPromptRunner {
+            name: runner.name.clone(),
+        })?;
     let marker_count = runner
         .argv
         .iter()

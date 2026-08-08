@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, path::{Path, PathBuf}};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use skit_application::delivery::Assembly;
 use skit_domain::{Entry, EntryKind, EntryMeta, Slug};
@@ -114,5 +117,8 @@ fn prompt_runner_environment_is_only_the_assembly_environment() {
         &Probe,
     )
     .unwrap();
-    assert_eq!(plan.env, BTreeMap::from([("MODE".to_owned(), "safe".to_owned())]));
+    assert_eq!(
+        plan.env,
+        BTreeMap::from([("MODE".to_owned(), "safe".to_owned())])
+    );
 }
