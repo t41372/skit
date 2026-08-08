@@ -14,6 +14,7 @@ mod presets;
 mod programs;
 mod state;
 mod store;
+mod uv;
 
 pub use add::{AddFileRequest, AddMode, AddPreparation, AddUseCaseError, add_file};
 pub use assembly::{Assembly, AssemblyError, assemble_delivery};
@@ -41,3 +42,4 @@ pub use state::{EntryState, LastRun, StateError, StateStore};
 pub use store::{
     Entry, EntryDraft, EntrySummary, Error, LibraryRoots, RunStamp, ScriptMeta, Store,
 };
+pub use uv::effective_uv_metadata;
