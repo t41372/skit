@@ -6,9 +6,10 @@ use std::time::SystemTime;
 
 use clap::Args;
 use skit_core::{
-    AssemblyError, LaunchOptions, LaunchPlanError, Platform, PrepareRunError, ProgramSearch,
-    RunError, RunRequest, StateStore, Store, format_utc_timestamp, load_launch_config,
-    plan_for_entry, prepare_run, remembered_values, resolve_extra_args, run_launch,
+    AssemblyError, LaunchOptions, LaunchPlan, LaunchPlanError, Platform, PrepareRunError,
+    ProgramSearch, RunError, RunRequest, StateStore, Store, format_utc_timestamp,
+    load_launch_config, plan_for_entry, prepare_raw_run, prepare_run, remembered_values,
+    resolve_extra_args, run_launch,
 };
 
 use crate::CliFailure;
@@ -26,15 +27,23 @@ pub(crate) struct RunArgs {
     #[arg(long, short = 'p')]
     preset: Option<String>,
 
-    /// Save the accepted values as a preset after the child is launched.
+    /// Save the accepted values as a preset after launch validation.
     #[arg(long = "save-preset", value_name = "NAME")]
     save_preset: Option<String>,
+
+    /// Validate and print the masked immutable launch snapshot without spawning.
+    #[arg(long = "dry-run")]
+    dry_run: bool,
+
+    /// Bypass forms, remembered values, presets, and remembered arguments.
+    #[arg(long)]
+    raw: bool,
 
     /// Never ask for missing values. This Rust slice is headless either way.
     #[arg(long = "no-input")]
     no_input: bool,
 
-    /// Ignore the remembered `--` tail before this run.
+    /// Ignore and erase the remembered `--` tail before this run.
     #[arg(long = "forget-args")]
     forget_args: bool,
 
@@ -57,6 +66,11 @@ pub(crate) fn run(store: &Store, args: RunArgs) -> Result<(), CliFailure> {
             125,
         ));
     }
+    if args.raw && (!args.set.is_empty() || args.preset.is_some() || args.save_preset.is_some()) {
+        return Err(CliFailure::usage(
+            "--raw cannot be combined with --set, --preset, or --save-preset.",
+        ));
+    }
 
     let explicit = parse_set_values(&args.set)?;
     let state_store = StateStore::new(store.roots().clone());
@@ -66,13 +80,6 @@ pub(crate) fn run(store: &Store, args: RunArgs) -> Result<(), CliFailure> {
             .save_last(&entry.slug, None, Some(&[]), &BTreeSet::new())
             .map_err(|error| CliFailure::operational(error.to_string()))?;
         state.extra_args.clear();
-    }
-    let extra = resolve_extra_args(&state, &args.extra_args, args.forget_args);
-    if extra.replayed {
-        eprintln!(
-            "Reusing remembered extra arguments: {}",
-            extra.args.join(" ")
-        );
     }
 
     if let Some(preset_name) = args.save_preset.as_deref() {
@@ -97,6 +104,25 @@ pub(crate) fn run(store: &Store, args: RunArgs) -> Result<(), CliFailure> {
     launch_options.windows_bash = config.windows_bash;
     let programs = ProgramSearch::from_environment(platform)
         .with_fallback_path(store.roots().data_dir().join("bin"));
+
+    if args.raw {
+        let launch = prepare_raw_run(&entry, &args.extra_args, &launch_options, &programs)
+            .map_err(classify_launch_error)?;
+        if args.dry_run {
+            return print_launch(&launch);
+        }
+        let code = execute_launch(&launch)?;
+        record_raw_run(&state_store, &entry.slug, code)?;
+        return finish_with_status(code);
+    }
+
+    let extra = resolve_extra_args(&state, &args.extra_args, args.forget_args);
+    if extra.replayed {
+        eprintln!(
+            "Reusing remembered extra arguments: {}",
+            extra.args.join(" ")
+        );
+    }
     let environment = unicode_environment();
     let prepared = prepare_run(
         &entry,
@@ -112,14 +138,27 @@ pub(crate) fn run(store: &Store, args: RunArgs) -> Result<(), CliFailure> {
     )
     .map_err(classify_prepare_error)?;
 
-    let interrupted = Arc::new(AtomicBool::new(false));
-    let signal = Arc::clone(&interrupted);
-    ctrlc::set_handler(move || signal.store(true, Ordering::SeqCst)).map_err(|error| {
-        CliFailure::coded(format!("cannot install Ctrl-C handler: {error}"), 125)
-    })?;
-    let code = run_launch(&prepared.launch, &interrupted).map_err(classify_run_error)?;
-
     let secret_names = prepared.form.secret_names();
+    if args.dry_run {
+        if let Some(preset_name) = args.save_preset.as_deref() {
+            state_store
+                .save_preset(
+                    &entry.slug,
+                    preset_name.trim(),
+                    &prepared.values,
+                    &secret_names,
+                )
+                .map_err(|error| CliFailure::operational(error.to_string()))?;
+            eprintln!(
+                "Preset \"{}\" saved for {}.",
+                preset_name.trim(),
+                entry.meta.name
+            );
+        }
+        return print_launch(&prepared.masked_launch);
+    }
+
+    let code = execute_launch(&prepared.launch)?;
     if !secret_names.is_empty() {
         state_store
             .purge_secret(&entry.slug, &secret_names)
@@ -155,12 +194,45 @@ pub(crate) fn run(store: &Store, args: RunArgs) -> Result<(), CliFailure> {
             )
             .map_err(|error| CliFailure::operational(error.to_string()))?;
     }
+    finish_with_status(code)
+}
 
+fn execute_launch(launch: &LaunchPlan) -> Result<i32, CliFailure> {
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let signal = Arc::clone(&interrupted);
+    ctrlc::set_handler(move || signal.store(true, Ordering::SeqCst)).map_err(|error| {
+        CliFailure::coded(format!("cannot install Ctrl-C handler: {error}"), 125)
+    })?;
+    run_launch(launch, &interrupted).map_err(classify_run_error)
+}
+
+fn record_raw_run(state: &StateStore, slug: &str, code: i32) -> Result<(), CliFailure> {
+    let at = format_utc_timestamp(SystemTime::now())
+        .map_err(|error| CliFailure::operational(error.to_string()))?;
+    state
+        .record_run(slug, code, &at, None, &BTreeSet::new())
+        .map_err(|error| CliFailure::operational(error.to_string()))
+}
+
+fn finish_with_status(code: i32) -> Result<(), CliFailure> {
     if code == 0 {
         Ok(())
     } else {
         Err(CliFailure::status(code))
     }
+}
+
+fn print_launch(launch: &LaunchPlan) -> Result<(), CliFailure> {
+    let argv = serde_json::to_string(&launch.argv)
+        .map_err(|error| CliFailure::operational(error.to_string()))?;
+    println!("argv={argv}");
+    println!("cwd={}", launch.cwd.display());
+    if !launch.env_overlay.is_empty() {
+        let environment = serde_json::to_string(&launch.env_overlay)
+            .map_err(|error| CliFailure::operational(error.to_string()))?;
+        println!("env={environment}");
+    }
+    Ok(())
 }
 
 fn parse_set_values(values: &[String]) -> Result<BTreeMap<String, String>, CliFailure> {
