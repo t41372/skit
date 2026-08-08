@@ -57,23 +57,26 @@ pub fn analyze_python_managed(text: &str) -> PythonManagedAnalysis {
     let mut inputs = Vec::new();
     collect_input_scopes(root, text, false, &mut inputs);
     inputs.sort_by_key(|hit| hit.0);
-    constants.extend(inputs.into_iter().enumerate().map(
-        |(order, (_start, prompt, line))| PythonManagedCandidate {
-            decl: ParamDecl {
-                name: format!("input-{}", order + 1),
-                binding: Binding::Input,
-                delivery: Delivery::Inject,
-                param_type: ParamType::String,
-                prompt: prompt.clone(),
-                order: i64::try_from(order).unwrap_or(i64::MAX),
-                secret: is_secret_name(&prompt),
-                ..ParamDecl::default()
-            },
-            line,
-            demoted: false,
-            demotion: String::new(),
-        },
-    ));
+    constants.extend(
+        inputs
+            .into_iter()
+            .enumerate()
+            .map(|(order, (_start, prompt, line))| PythonManagedCandidate {
+                decl: ParamDecl {
+                    name: format!("input-{}", order + 1),
+                    binding: Binding::Input,
+                    delivery: Delivery::Inject,
+                    param_type: ParamType::String,
+                    prompt: prompt.clone(),
+                    order: i64::try_from(order).unwrap_or(i64::MAX),
+                    secret: is_secret_name(&prompt),
+                    ..ParamDecl::default()
+                },
+                line,
+                demoted: false,
+                demotion: String::new(),
+            }),
+    );
     constants.sort_by_key(source_sort_key);
 
     PythonManagedAnalysis {
@@ -207,16 +210,17 @@ fn literal_value(node: Node<'_>, source: &str) -> Option<(ParamType, ParamDefaul
         "false" => Some((ParamType::Boolean, ParamDefault::Boolean(false))),
         "integer" => parse_python_integer(text)
             .map(|value| (ParamType::Integer, ParamDefault::Integer(value))),
-        "float" => parse_python_float(text)
-            .map(|value| (ParamType::Float, ParamDefault::Float(value))),
+        "float" => {
+            parse_python_float(text).map(|value| (ParamType::Float, ParamDefault::Float(value)))
+        }
         "unary_operator" => parse_python_integer(text)
             .map(|value| (ParamType::Integer, ParamDefault::Integer(value)))
             .or_else(|| {
-                parse_python_float(text)
-                    .map(|value| (ParamType::Float, ParamDefault::Float(value)))
+                parse_python_float(text).map(|value| (ParamType::Float, ParamDefault::Float(value)))
             }),
-        "string" => parse_python_string(text)
-            .map(|value| (ParamType::String, ParamDefault::String(value))),
+        "string" => {
+            parse_python_string(text).map(|value| (ParamType::String, ParamDefault::String(value)))
+        }
         _ => None,
     }
 }
@@ -227,24 +231,16 @@ fn parse_python_integer(text: &str) -> Option<i64> {
         .strip_prefix('-')
         .map_or((false, cleaned.as_str()), |body| (true, body));
     let body = body.strip_prefix('+').unwrap_or(body);
-    let (radix, digits) = if let Some(digits) = body
-        .strip_prefix("0x")
-        .or_else(|| body.strip_prefix("0X"))
-    {
-        (16, digits)
-    } else if let Some(digits) = body
-        .strip_prefix("0o")
-        .or_else(|| body.strip_prefix("0O"))
-    {
-        (8, digits)
-    } else if let Some(digits) = body
-        .strip_prefix("0b")
-        .or_else(|| body.strip_prefix("0B"))
-    {
-        (2, digits)
-    } else {
-        (10, body)
-    };
+    let (radix, digits) =
+        if let Some(digits) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
+            (16, digits)
+        } else if let Some(digits) = body.strip_prefix("0o").or_else(|| body.strip_prefix("0O")) {
+            (8, digits)
+        } else if let Some(digits) = body.strip_prefix("0b").or_else(|| body.strip_prefix("0B")) {
+            (2, digits)
+        } else {
+            (10, body)
+        };
     let magnitude = i64::from_str_radix(digits, radix).ok()?;
     Some(if negative { -magnitude } else { magnitude })
 }
@@ -263,13 +259,9 @@ fn parse_python_string(text: &str) -> Option<String> {
     {
         return None;
     }
-    let raw = prefix
-        .chars()
-        .any(|ch| ch.eq_ignore_ascii_case(&'r'));
+    let raw = prefix.chars().any(|ch| ch.eq_ignore_ascii_case(&'r'));
     let rest = &text[quote_at..];
-    let (delimiter, inner) = if rest.starts_with("'''")
-        && rest.ends_with("'''")
-        && rest.len() >= 6
+    let (delimiter, inner) = if rest.starts_with("'''") && rest.ends_with("'''") && rest.len() >= 6
     {
         ("'''", &rest[3..rest.len() - 3])
     } else if rest.starts_with("\"\"\"") && rest.ends_with("\"\"\"") && rest.len() >= 6 {
@@ -351,12 +343,7 @@ fn mutated_names(root: Node<'_>, source: &str) -> BTreeSet<String> {
     output
 }
 
-fn collect_mutations(
-    node: Node<'_>,
-    source: &str,
-    in_loop: bool,
-    output: &mut BTreeSet<String>,
-) {
+fn collect_mutations(node: Node<'_>, source: &str, in_loop: bool, output: &mut BTreeSet<String>) {
     let now_in_loop = in_loop || matches!(node.kind(), "for_statement" | "while_statement");
     if (node.kind() == "augmented_assignment" || (now_in_loop && node.kind() == "assignment"))
         && let Some(left) = node.child_by_field_name("left")
