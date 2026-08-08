@@ -104,10 +104,7 @@ fn malformed_or_non_utf8_python_source_invents_no_managed_fields()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempdir()?;
     let source = root.path().join("bad.py");
-    fs::write(
-        &source,
-        b"# /// script\n# tool = 5\n# ///\nprint('ok')\n",
-    )?;
+    fs::write(&source, b"# /// script\n# tool = 5\n# ///\nprint('ok')\n")?;
     let malformed = plan_for_entry(&entry(root.path(), "reference", &source));
     assert_eq!(malformed.source, PlanSource::None);
     assert!(malformed.fields.is_empty());

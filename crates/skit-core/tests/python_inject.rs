@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 
-use skit_core::{
-    Binding, Delivery, ParamDecl, ParamType, PythonInjectError, inject_python_consts,
-};
+use skit_core::{Binding, Delivery, ParamDecl, ParamType, PythonInjectError, inject_python_consts};
 
 fn const_spec(name: &str, param_type: ParamType) -> ParamDecl {
     ParamDecl {

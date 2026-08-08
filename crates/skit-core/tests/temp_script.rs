@@ -12,7 +12,10 @@ fn injected_temp_script_is_private_ephemeral_and_byte_exact()
         let guard = materialize_temp_script(content, ".py")?;
         path = guard.path().to_owned();
         assert_eq!(path.parent(), Some(temp_dir.as_path()));
-        assert_eq!(path.extension().and_then(|value| value.to_str()), Some("py"));
+        assert_eq!(
+            path.extension().and_then(|value| value.to_str()),
+            Some("py")
+        );
         assert_eq!(fs::read(&path)?, content.as_bytes());
 
         #[cfg(unix)]

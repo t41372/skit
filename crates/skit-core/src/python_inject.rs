@@ -225,9 +225,7 @@ fn is_injectable_literal(node: Node<'_>, source: &str) -> bool {
         "unary_operator" => node_text(node, source).is_some_and(|text| {
             let cleaned = text.replace('_', "");
             cleaned.parse::<i64>().is_ok()
-                || cleaned
-                    .parse::<f64>()
-                    .is_ok_and(|value| value.is_finite())
+                || cleaned.parse::<f64>().is_ok_and(|value| value.is_finite())
         }),
         _ => false,
     }

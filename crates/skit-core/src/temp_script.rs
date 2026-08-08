@@ -95,7 +95,9 @@ pub fn materialize_temp_script(text: &str, suffix: &str) -> Result<TempScript, T
     }
     Err(TempScriptError {
         path: last_path,
-        source: last_error.unwrap_or_else(|| io::Error::new(io::ErrorKind::AlreadyExists, "temporary filename collision")),
+        source: last_error.unwrap_or_else(|| {
+            io::Error::new(io::ErrorKind::AlreadyExists, "temporary filename collision")
+        }),
     })
 }
 

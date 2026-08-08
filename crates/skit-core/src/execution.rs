@@ -41,13 +41,20 @@ impl fmt::Display for PrepareExecutionError {
         match self {
             Self::Prepare(source) => source.fmt(formatter),
             Self::SourceIo { path, source } => {
-                write!(formatter, "cannot read managed source {}: {source}", path.display())
+                write!(
+                    formatter,
+                    "cannot read managed source {}: {source}",
+                    path.display()
+                )
             }
             Self::PythonInject(source) => source.fmt(formatter),
             Self::Temp(source) => source.fmt(formatter),
             Self::Launch(source) => source.fmt(formatter),
             Self::UnsupportedInjectionKind(kind) => {
-                write!(formatter, "managed injection is not implemented for kind: {kind}")
+                write!(
+                    formatter,
+                    "managed injection is not implemented for kind: {kind}"
+                )
             }
         }
     }
@@ -120,12 +127,11 @@ pub fn prepare_execution(
     }
 
     let source_path = entry.script_path();
-    let source = fs::read_to_string(&source_path).map_err(|source| {
-        PrepareExecutionError::SourceIo {
+    let source =
+        fs::read_to_string(&source_path).map_err(|source| PrepareExecutionError::SourceIo {
             path: source_path.clone(),
             source,
-        }
-    })?;
+        })?;
     let specs = read_python_params(&source);
     let injected_text = inject_python_consts(&source, &specs, &run.assembly.inject_values)?;
     let injected = materialize_temp_script(&injected_text, ".py")?;
