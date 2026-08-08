@@ -109,8 +109,10 @@ fn rename_refuses_a_duplicate_display_name() -> Result<(), Box<dyn std::error::E
         "schema = 1\nname = \"Taken\"\nkind = \"command\"\nmode = \"copy\"\nsource = \"\"\nsource_hash = \"\"\nadded_at = \"\"\nworkdir = \"origin\"\ndescription = \"\"\ntemplate = \"echo ok\"\n",
     )?;
 
-    let error = store.rename("original", "Taken").expect_err("duplicate name must fail");
-    assert!(matches!(error, Error::NameConflict { name } if name == "Taken"));
+    match store.rename("original", "Taken") {
+        Err(Error::NameConflict { name }) => assert_eq!(name, "Taken"),
+        other => panic!("unexpected rename result: {other:?}"),
+    }
     assert_eq!(store.resolve("original")?.meta.name, "Original");
     Ok(())
 }
