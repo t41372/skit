@@ -21,7 +21,7 @@ const config = {
   // No Image Optimization server exists in a static export.
   images: { unoptimized: true },
   // In production the site root redirects to /en/ via public/index.html, but
-  // `next dev` doesn't serve that file, leaving the root a 404. Mirror the
+  // `next dev` does not serve that file. This leaves the root as a 404. Mirror the
   // redirect here — dev only, because `output: 'export'` builds reject
   // `redirects()`.
   ...(process.env.NODE_ENV === 'development'

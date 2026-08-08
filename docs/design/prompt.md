@@ -1,5 +1,9 @@
 # Prompts as first-class entries — final design
 
+> Historical version 0.4 design record. Python module paths and Textual screens in this document
+> describe the removed implementation. Current prompt rules use the Rust application, language,
+> UI, runtime, and CLI crates. See [rust-rewrite.md](rust-rewrite.md).
+
 Status: **approved** (v3, 2026-07-17). Resolves
 [#6](https://github.com/t41372/skit/issues/6) — "Make prompts a part of skit?". This
 document is the single source of truth for the design, and supersedes the v1 proposal.
@@ -84,7 +88,7 @@ Revision notes (v2.2 → v3, maintainer-decided after using the shipped v2.2):
   identifiers that are not parameters). Runner argv slots follow: `{{prompt}}`. The
   command kind's shipped `{name}` grammar is untouched — two surfaces, two grammars,
   documented as such.
-- **No escape sequences on the prompt surface.** Anything that isn't a MANAGED
+- **No escape sequences on the prompt surface.** Anything that is not a MANAGED
   `{{name}}` — unmanaged holes, single braces, triple-stache — travels byte-identical.
   Nothing in a body ever needs escaping; residual false positives cost a candidate-list
   entry, never a text mutation. (The `{{`/`}}` escape rule of v2.2 is gone with the
@@ -133,7 +137,7 @@ Cross-surface verification requirements (v2.1 → v2.2):
   amendment below). Leaving any behind splits the read/run experience.
 - `show --json` wording corrected (`fields`, not `parameters`); `PromptRunner` is
   annotated under `TYPE_CHECKING` in the launch layer; the P1 stub also implements
-  `describe`/`target` so `--dry-run`/peek don't crash.
+  `describe`/`target` so `--dry-run`/peek do not crash.
 
 ## Mission
 
@@ -243,7 +247,7 @@ body order; `--set`/`--no-input` reach the render; mutation-tested).
 
 The same template/non-template decision recurs at **four more sites**, and the trait
 migration covers all of them in P1 — leaving any one behind splits the read/run
-experience (the run form prompts for a placeholder that `skit params` doesn't list, or
+experience (the run form prompts for a placeholder that `skit params` does not list, or
 the settings editor offers a flag input on a placeholder row):
 
 - `cli.py:1588` — `skit params <name>`'s human view routes template kinds to
@@ -297,7 +301,7 @@ grammar is deliberately INDEPENDENT of `TemplateLaunch`'s single-brace pattern (
 snippets full of `{x}`/`${VAR}`/JSON braces are never candidates. Each distinct `{{name}}`
 becomes a declared-param candidate offered in the existing tick-to-manage add panel;
 unticked candidates are left verbatim at render time, and there are NO escape sequences —
-what isn't managed is never touched. No tree-sitter, no import guard: a pure stdlib regex
+what is not managed is never touched. No tree-sitter, no import guard: a pure stdlib regex
 scan living in `langs/prompt/`, never degrading to `None`.
 
 Reserved name: **`prompt` is never a placeholder in a prompt body.** Not a mechanical
@@ -710,7 +714,7 @@ translated.
 - **P1 — the prompt kind, static (no runner yet).** `_prompt_spec` in the registry with a
   **stub launch strategy**: `build`/`preflight` raise `NotExecutableError` ("no runner
   configured yet" → the honest 126) until P2 replaces it, while `describe`/`target`
-  answer benignly (a "no runner" line / the prompt path) so `--dry-run` and peek don't
+  answer benignly (a "no runner" line / the prompt path) so `--dry-run` and peek do not
   crash; the `registry.infer_kind` compound-suffix amendment; `langs/prompt/` regex
   placeholder analyzer + reconcile; the `LangSpec.placeholder_params` trait across **all
   five** `family == "template"` decision sites (`flows._declared_plan`, the two `cli.py`

@@ -1,0 +1,95 @@
+---
+title: 程式類型
+description: 什麼可以執行、什麼會被偵測，以及值如何到達程式。
+---
+
+skit 可以啟動十幾種項目。Python、shell 與 JS/TS 得到最深入的支援 ——
+skit 透過讀取程式碼找到它們的參數。其他每種類型都能開箱即用地啟動，
+並且可以使用手動宣告的參數。
+
+## 支援一覽 [#support-at-a-glance]
+
+| 程式類型 | 如何執行 | skit 偵測到的參數 |
+| --- | --- | --- |
+| **Python** | uv（`uv run --script`） | CLI 選項（argparse · click · typer）、`input()` 提問、常數 |
+| **Shell**（bash/sh/zsh） | 相符的 shell | CLI 選項（getopts）、`read` 提問、常數、`${VAR:-}` 環境預設值 |
+| **JS / TS** | deno、bun 或 node —— 先找到者 | CLI 選項（`util.parseArgs`）、`const` 值 |
+| **fish** | fish | CLI 選項（`argparse`）、`set -q` 環境預設值 |
+| **PowerShell** | pwsh | `param()` 定義 |
+| **Ruby · Perl · Lua · R** | 各自的直譯器 | —— |
+| **執行檔** | 直接執行 | —— |
+| **命令範本** | skit 填空後執行該命令 | —— |
+| **提示詞** | 你的編碼代理（claude · codex · …） | `{{預留位置}}` |
+
+## 值如何到達程式 [#how-values-reach-the-script]
+
+根據偵測到的內容，你在啟動選單中設定的值會走以下三條路徑之一 ——
+在選單中都看不出區別，但它們解釋了各類型之間的深度差異：
+
+- **改寫的值。** 對於 Python、shell 與 JS/TS，skit 可以在啟動時改寫其儲存副本中
+  偵測到的常數（例如 `WIDTH = 800`）。這正是「硬寫的常數變成欄位」得以實現的原因 ——
+  也是這三種類型最深入的原因。
+- **環境變數。** 環境預設值寫法 —— shell 的 `${VAR:-default}` 與
+  fish 的 `set -q NAME; or set NAME default` —— 會先讀取環境，
+  因此 skit 以環境變數傳遞該值，而不觸碰程式。
+- **命令列引數。** 當 skit 讀取程式自身的 CLI 定義時
+  （argparse/click/typer、getopts、`util.parseArgs`、fish 的 `argparse`、
+  PowerShell 的 `param()`），值作為一般引數傳入，由程式自己解析。
+  手動宣告的參數走同樣的路徑。
+
+這就是 fish 與 Python 之間差異的全部原因：fish 程式中硬寫的
+`set width 800` 不會出現在啟動選單裡（skit 不改寫 fish 程式碼），
+但它的 `argparse` 選項與 `set -q` 環境預設值會出現。
+
+## 宣告的參數 [#declared-parameters]
+
+你的類型沒有自動偵測？那就手動宣告參數 —— 每種類型都得到相同的
+啟動選單 / 預設 / `--set` 體驗，哪怕是一個普通的執行檔：
+
+```bash
+skit params my_tool --add FORMAT --choices FORMAT=png,jpg,webp --default FORMAT=png
+```
+
+## 外部命令（「needs」） [#external-commands-needs]
+
+任何項目都可以列出它相依的外部命令（`ffmpeg`、`jq`、…）。
+skit 在每次執行前檢查它們是否在你的 `PATH` 中 —— 對每種類型都如此。
+
+## 每個程式獨立的套件相依性 [#per-script-package-dependencies]
+
+Python 與 JS/TS 擁有隔離的、依程式劃分的套件相依性：
+
+- **Python**：相依套件在程式中內嵌宣告（PEP 723），由 uv 解析到一個隔離環境中。
+  沒有任何全域改動。
+- **JS/TS**：npm 風格的相依套件在首次執行時安裝到儲存副本旁的 `node_modules`
+  （`skit add` 會根據程式自身的匯入給出建議）。受管相依套件適用於複製的項目 ——
+  被參照的程式繼續使用它自己專案的 `node_modules`。
+
+兩個安全與一致性細節：
+
+- 安裝從不執行套件生命週期指令稿：npm 與 bun 使用 `--ignore-scripts`，
+  deno 預設略過它們。
+- 當 skit 選擇 deno 作為執行器時，它會傳遞 `--allow-all`，
+  這樣同一個程式在 deno、bun 與 node 下表現一致。
+
+如果你沒有 uv，skit 會為 Python 引導安裝它，但從不安裝 JS 執行環境 ——
+node、bun 或 deno 由你提供。
+
+## 固定執行環境 [#pinning-the-runtime]
+
+- JS/TS 執行器順序是 deno → bun → node，取 `PATH` 上先找到的那個；
+  `js.runner` 組態鍵可以全域強制指定一個。
+- 直譯型類型在新增時根據 shebang 或副檔名記錄其直譯器 ——
+  一個 `#!/bin/zsh` 程式會一直在 zsh 下執行。用
+  `skit params NAME --interpreter BINARY` 固定或重設它（為空回到自動；
+  python 與提示詞項目拒絕該選項，它們不透過可固定的直譯器執行）。
+
+## 平台說明 [#platform-notes]
+
+- **Windows，shell 項目**：skit 先在 `PATH` 上找 bash，然後看
+  `shell.bash_path` 組態鍵，然後以結束碼 126 拒絕 —— 它從不改道走 WSL。
+  PowerShell 項目需要 `pwsh` / `powershell.exe`。
+- **Windows，執行檔**：檔案是否可執行由 `PATHEXT` 決定 ——
+  執行位元在那裡沒有意義。
+- **行尾與編碼**：skit 的編輯限制在 `[tool.skit]` 註解區塊內，
+  並保留檔案自身的行尾（包括 CRLF）與非 UTF-8 位元組。

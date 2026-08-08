@@ -10,8 +10,10 @@ the same actions, deterministic behavior.
 
 - **`--json`** on every read command: `list`, `show`, `params`, `deps`,
   `preset list`, `runner list`, `doctor`, `config`.
-- **`--no-input`** on the commands that could prompt: `add`, `run`,
-  `runner remove`. Read commands never prompt and don't take it.
+- **`--no-input`** on commands that can prompt: `add`, `run`, `remove`, `edit`,
+  `runner remove`, and `preset delete`. Read commands never prompt and do not take it.
+- **`-y` or `--yes`** confirms `remove`, `runner remove`, and `preset delete`.
+  Use this option only after the user approves the operation.
 - **`--dry-run`** on `run` only: prints the exact command — tokens and globs
   expanded — and runs nothing.
 - **Non-interactive contract**: in a pipe, in CI, or under `--no-input`, skit
@@ -27,7 +29,7 @@ the same actions, deterministic behavior.
 | `0` | success |
 | `2` | usage error — bad flag combination, unknown `--set` name, unknown preset, a flag refused for the entry's type |
 | `125` | skit-side failure — missing/invalid parameter value, drift, token expansion error, over-long rendered command |
-| `126` | the target exists but can't run — missing interpreter or JS runtime, a `needs` command absent from `PATH`, no runner resolvable for a prompt |
+| `126` | the target exists but cannot run — missing interpreter or JS runtime, a `needs` command absent from `PATH`, no runner resolvable for a prompt |
 | `127` | no such entry in the library |
 | `130` | user cancelled an interactive screen (128 + SIGINT) |
 
@@ -59,7 +61,7 @@ missing); per-entry warnings never change it.
 | `--no-input` | never prompt |
 
 The lane selectors — a file path, `-`, `--cmd`, `--edit` — are mutually
-exclusive (exit 2), and per-lane flags are refused with a hint when they don't
+exclusive (exit 2), and per-lane flags are refused with a hint when they do not
 apply to the chosen lane.
 
 ## skit run
@@ -101,7 +103,7 @@ never replays them.
 - `skit describe NAME TEXT` — set the description; empty text clears it.
 - `skit edit NAME` — open the stored source (the original, in reference mode) in
   your editor; offers to create the entry if the name is new. Refused for
-  exe/command — there's no editable source.
+  exe/command — there is no editable source.
 
 ## skit params
 
@@ -167,7 +169,8 @@ Package deps apply to Python and JS/TS entries; `--need` applies to every kind.
 `skit agent install [TARGET]` — install the bundled Agent Skill. `TARGET` is
 `claude`, `codex`, or `agents`; `--to DIR` picks a directory explicitly;
 `--project` installs into the current repo (`./.claude` / `./.codex`) instead of
-home. The bare form detects agent directories on your machine and asks.
+home. The bare form uses the directory only when it finds exactly one supported
+directory. If it finds none or more than one, it requires an explicit target.
 
 ## skit doctor
 

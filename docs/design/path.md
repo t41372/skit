@@ -1,5 +1,9 @@
 # Path-aware parameter entry — design
 
+> Historical version 0.4 design record. References to Textual, CSS, and Python module paths describe
+> the removed implementation. The active Rust behavior and its documented presentation differences
+> are in [rust-rewrite.md](rust-rewrite.md).
+
 Status: **shipped in 0.3.0, entry point revised in v6** (2026-07-21). Resolves [#7](https://github.com/t41372/skit/issues/7) — "Make file
 selector more intuitive". Read `docs/design/multilang.md` first (the `ParamDecl`
 universal model and the kind registry) and `docs/design/prompt.md` for the run form's
@@ -116,7 +120,7 @@ CODE, folded back into the spec):
 - **Beyond-doc implementation decisions, now recorded** (§4/§5): an empty piece
   never suggests (a ghost extends what the user started, it never opens the
   bidding); the shlexy trailing piece is whitespace-split and a quote-in-progress
-  piece refuses to complete (appended ghost text can't be re-quoted honestly); the
+  piece refuses to complete (appended ghost text cannot be re-quoted honestly); the
   pinned *"(use this directory)"* row appears only while the filter is empty, and
   the highlight lands on the first real entry (unfiltered) or the first match
   (filtered) so Enter never surprises; the picked spelling of the browse root

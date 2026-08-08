@@ -2,11 +2,10 @@
 
 [![CI](https://github.com/t41372/skit/actions/workflows/ci.yml/badge.svg)](https://github.com/t41372/skit/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/t41372/skit/branch/main/graph/badge.svg)](https://codecov.io/gh/t41372/skit)
-[![Mutation tested: mutmut](https://img.shields.io/badge/mutation%20tested-mutmut-blue)](https://github.com/boxed/mutmut)
+[![Mutation tested: cargo-mutants](https://img.shields.io/badge/mutation%20tested-cargo--mutants-blue)](https://github.com/sourcefrog/cargo-mutants)
 [![PyPI](https://img.shields.io/pypi/v/skit-cli)](https://pypi.org/project/skit-cli/)
-[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
-[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
-[![Types: ty](https://img.shields.io/badge/types-ty-261230.svg)](https://github.com/astral-sh/ty)
+[![Rust 1.97.1](https://img.shields.io/badge/rust-1.97.1-orange)](https://www.rust-lang.org/)
+[![TUI: Ratatui](https://img.shields.io/badge/TUI-Ratatui-blue)](https://ratatui.rs/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
 
 [English](./README.md) | [繁體中文](./README.zh-TW.md) | **简体中文**
@@ -34,9 +33,9 @@ skit                 # 打开菜单——选、填、跑
 
 ## 它做什么
 
-- **收纳脚本与提示词**。`skit add` 把散落各处的脚本与提示词收进同一个可搜索的库（支持模糊搜索）。
-- **不用背命令行参数，也不用为了改个值打开编辑器**。命令行参数、`input()`、你选择管理的常量，全部变成启动菜单里的字段——有类型、有说明、全自动。choices 变选择器、布尔变复选框；路径边打边补全，还有文件浏览器。
-- **记住你上次填的值**。启动菜单里的参数下次会自动带回；`↺ 默认值`（Ctrl+O）一键改回脚本自己的默认。常用的存成命名组合——`{cwd}`、`{today}` 这类 token 让组合跨机器、跨目录通用。标记为机密的参数永不保存：上次的值、组合、运行历史里都不会有它。
+- **收纳脚本与提示词**。`skit add` 把散落各处的脚本与提示词收进同一个可搜索的库。
+- **不用背命令行参数，也不用为了改个值打开编辑器**。命令行参数、`input()`、你选择管理的常量，全部变成启动菜单里有类型、有说明的字段。Ratatui 表单会在提交时验证布尔值、选项、数字和路径。
+- **记住你上次填的值**。启动菜单里的参数下次会自动带回；清除覆盖值即可使用脚本当前的默认值。常用的存成命名组合——`{cwd}`、`{today}` 这类 token 让组合跨机器、跨目录通用。标记为机密的参数永不保存：上次的值、组合、运行历史里都不会有它。
 - **环境零污染**。Python 脚本的依赖以 PEP 723 语法声明在脚本开头，由 uv 在隔离环境里解析；JS/TS 脚本则有按脚本隔离的 `node_modules`，首次运行时按声明的包自动安装。两者都不往全局装任何东西。其他语言沿用你机器上已有的工具——skit 会在运行前检查脚本声明的外部命令是否在 `PATH` 上。
 - **提示词当脚本用**。存一份带参数的提示词（管理中的 `{{占位符}}` 变成输入字段），交给你的 coding agent 启动——claude、codex、opencode，或设置任何你喜欢的执行器。
 - **鼠标键盘皆可，多语言支持**。直接运行 `skit` 就是完整 TUI；画面上每个快捷键提示同时也是可点的按钮。界面有 English、繁體中文、简体中文（[语言](#语言)）。
@@ -50,17 +49,6 @@ skit                 # 打开菜单——选、填、跑
 | AI 帮你写的脚本随对话结束石沉大海，下次又重写一遍 | agent 先查库再动手，现成的直接重用；值得留的收进库里——一次性脚本变成永久的、参数化的工具 |
 
 不需要专门为了 skit 修改脚本 —— 我们会搞定，如果有必要我们会问你。
-
-| ![工具库](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-library-zh.png) | ![启动菜单](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-form-zh.png) |
-|:--:|:--:|
-| **工具库**——每个动作都在画面上，鼠标键盘皆可 | **启动菜单**——从脚本自己的参数生成 |
-| ![加入脚本](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-add-zh.png) | ![脚本设置](https://raw.githubusercontent.com/t41372/skit/main/docs/assets/tui-settings-zh.png) |
-| **加入脚本**——静态检测参数；哪些交给 skit 管理由你决定 | **脚本设置**——参数、机密、组合、依赖 |
-
-<p align="center">
-  <img width="480" alt="只用鼠标操作 skit——画面上每个控件都是可点击的目标" src="https://raw.githubusercontent.com/t41372/skit/main/docs/assets/demo-mouse.gif"><br>
-  <em>完全鼠标可操作性——画面上每个按键提示，也都是可点的按钮。</em>
-</p>
 
 ## 支持的脚本类型
 
@@ -98,7 +86,7 @@ skit run review --runner codex --set target=src/app.py --no-input
 
 ## 安装
 
-skit 建立在 [uv](https://docs.astral.sh/uv/) 之上（以 0.11.26 版本测试）。还没装 uv？skit 会先征得你同意，再把锁定版本的 uv 下载到自己的私有目录——不碰你的 `PATH`，也不碰全局环境。当然，参考[官方文档](https://docs.astral.sh/uv/getting-started/installation/) 安装 uv 会更好。
+skit 使用 [uv](https://docs.astral.sh/uv/) 0.12.3。如果没有安装 uv，skit 会先征得你同意，再把这个版本下载到自己的私有目录。skit 不会改动你的 `PATH` 或全局环境。仍建议参考[官方文档](https://docs.astral.sh/uv/getting-started/installation/)在系统中安装 uv。
 
 ```bash
 # 用 uv tool 从 PyPI 安装 skit（包名是 skit-cli，装好的命令是 skit）
@@ -127,6 +115,17 @@ skit --version             # 看当前版本
 ```
 
 `uv tool upgrade` 会跟随你当初的安装来源：从 PyPI 装的追 PyPI 正式版，`git+…` 装的会重新拉取 main 分支。
+
+## 从 0.4 升级
+
+0.5 版用 Rust、Ratatui 和 Crossterm 完整替代 Python 和 Textual。运行 `uv tool upgrade skit-cli`
+即可，不需要导出或导入数据。skit 会原地读取相同的程序库、配置、预设、上次
+使用值和 metadata；未知 TOML 字段也会保留，启动时不会重写旧数据。
+
+终端交互变得更直接：搜索改为不区分大小写的子字符串匹配；所有标量类型共用文本编辑器，
+提交时才验证。第一个 Rust 版本不显示旧的复选框、选项列表或文件浏览器。添加画面改为
+单一表单；添加后可在设置画面管理检测到的源字段。这些显示差异不会改动脚本或状态。
+完整兼容边界见[切换设计](./docs/design/rust-rewrite.md)。
 
 ## 用法
 
@@ -162,8 +161,8 @@ Cursor、Gemini CLI 等）先查你的库再动手写新的一次性脚本、直
 脚本，并在征得你同意后把它写出的实用脚本收进库里——不再随 session 结束而消失。
 
 ```bash
-skit agent install            # 从机器上检测到的 agent 目录里挑一个
-skit agent install claude     # 或直接指名：claude / codex / agents（--project 只装进这个 repo）
+skit agent install            # 仅检测到一个 agent 目录时使用它；否则要求明确选择
+skit agent install claude     # 选择 claude / codex / agents（--project 只装进这个 repo）
 npx skills add t41372/skit    # 或通过 skills.sh 安装到 70+ 种 agent
 ```
 
@@ -234,12 +233,13 @@ skit 源自 [linux.do 上的一个帖子](https://linux.do/t/topic/2512255)
 
 ## 开发
 
-开发流程完全跑在 uv 上——完整工作流与质量关卡（ruff、ty 最严格模式、pytest 覆盖率下限 100%、mutmut 变异测试、zizmor 审计的 workflows）见 [CONTRIBUTING.md](./CONTRIBUTING.md)。
+开发使用固定版本的 Rust 工具链。TDD 流程、完整覆盖率、cargo-mutants、供应链、wheel、
+文档和性能关卡见 [CONTRIBUTING.md](./CONTRIBUTING.md)。
 
 ```bash
-uv sync --dev
-uv run pytest -q
-uv run python scripts/serve_preview.py   # TUI 网页预览（textual-serve，localhost:8000）
+cargo build --locked
+cargo test --locked --workspace --all-targets --all-features
+cargo run -p skit-cli-rs -- --help
 ```
 
 ## 许可证

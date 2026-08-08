@@ -1,32 +1,26 @@
 # Rust compatibility matrix
 
-Legend: ✅ implemented and contract-tested · 🟡 designed/partial · ⬜ not ported
+Each row names the tests that hold its contract. Run them before a release; this table records
+where the evidence is, not that a release has shipped.
 
-| Surface | Status | Contract source |
-| --- | --- | --- |
-| Read legacy and current `meta.toml` | ✅ | `skit-store/tests/file_store.rs` |
-| Open-ended entry kinds | ✅ | `skit-domain/tests/contract.rs` |
-| Per-entry corruption isolation | ✅ | `skit-store/tests/file_store.rs` |
-| Resolve by slug, then exact display name | ✅ | `skit-store/tests/file_store.rs`, `skit-store/tests/registry_resolve.rs` |
-| Ambiguous display-name refusal | ✅ | `skit-store/tests/file_store.rs`, `skit-store/tests/registry_resolve.rs` |
-| Stable `list --json` / `show --json` | ✅ | `skit-cli/tests/cli.rs` |
-| Ratatui keyboard and mouse browsing | ✅ | `skit-ui/tests/reducer.rs`, `skit-tui/tests/render.rs` |
-| Registry-backed list + exact-name resolve | ✅ | `skit-store/tests/registry_fast_read.rs`, `skit-store/tests/registry_resolve.rs` |
-| Registry projection, recovery, and rollback | ✅ | `skit-store/tests/registry_projection.rs`, `skit-store/tests/registry_edge_contracts.rs` |
-| Add / remove / rename / describe | ✅ | `skit-store/tests/mutations.rs`, `skit-store/tests/mutation_refusals.rs`, `skit-cli/tests/mutations_cli.rs` |
-| Identity claim + source compare-and-swap | ✅ | `skit-store/tests/mutations.rs`, `skit-store/tests/mutation_refusals.rs` |
-| Universal parameter model, serialization, and typed defaults | ✅ | `skit-domain/tests/parameters.rs`, `skit-domain/tests/parameter_serialization_edges.rs` |
-| Secret-name heuristic + synthesized placeholders | ✅ | `skit-domain/tests/parameter_secrets.rs` |
-| Declared parameter extraction and template synthesis | ✅ | `skit-domain/tests/parameter_declarations.rs` |
-| Token expansion and launch-time parameter delivery | ⬜ | Python params/flows/language-launch tests |
-| Presets, remembered values, secret non-persistence, and form assembly | ⬜ | Python params/argstate/flows tests |
-| Staged external-editor UX | ⬜ | PR #34 round 17–18 tests |
-| Differential performance evidence | ⬜ | Python performance tests and future Rust benchmark harness |
-| Language analysis and injection | ⬜ | `tests/corpus`, analyzer tests |
-| Prompt runners | ⬜ | prompt design and runner tests |
-| Spawn-under-lock / wait-outside | ⬜ | PR #34 round 18 tests |
-| Config, i18n, doctor, agent skill | ⬜ | current Python gates |
-| Future Tauri adapter | 🟡 | dependency direction in `rust-rewrite.md` |
+| Surface | Main contract tests |
+| --- | --- |
+| Version 0.4 metadata, state, configuration, and skill paths | `skit-cli/tests/v040_compatibility.rs` |
+| Open entry kinds, identity, and serialization | `skit-domain/tests/contract.rs` |
+| Registry reads, repair, recovery, and rollback | `skit-store/tests/registry_*.rs` |
+| Add, remove, rename, describe, edit, identity, and source CAS | `skit-store/tests/mutations.rs`, `skit-cli/tests/mutations_cli.rs` |
+| Parameters, declarations, defaults, secrets, and delivery | `skit-domain/tests/parameter_*.rs`, `skit-application/tests/*.rs` |
+| Presets, remembered values, and state recovery | `skit-store/tests/form_state_*.rs` |
+| Python, shell, JS/TS, fish, PowerShell, prompt, and long-tail analysis | `skit-language/tests/*.rs` |
+| Injection, shell normalization, prompt rendering, and byte preservation | `skit-language/tests/*.rs` |
+| Python uv bootstrap and JavaScript dependency installation | `skit-runtime/tests/*.rs`, `skit-cli/tests/edge_workflows.rs` |
+| Process plans, runner resolution, locks, and exit codes | `skit-runtime/tests/launch_plan.rs`, `skit-cli/tests/run_cli.rs` |
+| Stable CLI, JSON, no-input, dry-run, and completion | `skit-cli/tests/product_contract.rs`, `terminal_pty.rs` |
+| Ratatui keyboard, mouse, narrow layout, forms, and host effects | `skit-ui/tests/reducer.rs`, `skit-tui/tests/render.rs` |
+| Config, mirrors, doctor, editor drafts, Agent Skill, and i18n | `skit-cli/tests/edge_workflows.rs`, `skit-cli/tests/surface_edges.rs`, `skit-i18n/tests/catalog.rs` |
+| Typed message catalog completeness and per-locale error text | `skit-i18n/tests/catalog.rs`, `skit-*/tests/localization.rs`, `skit-cli/tests/typed_error_locales.rs` |
+| PyPI and `uv tool` compatibility without Python product source | CI wheel smoke job and repository Python-file gate |
+| Future Tauri adapter seam | serializable `skit-ui` JSON round-trip tests |
 
-The matrix is a release gate, not a progress badge. A row becomes ✅ only when its tests exercise
-both the ordinary path and its important refusal/race/corruption path.
+The matrix is a release contract. New frontends and new entry kinds must use the same application
+ports and stable machine surfaces.

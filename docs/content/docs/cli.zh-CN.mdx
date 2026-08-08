@@ -1,0 +1,178 @@
+---
+title: CLI 参考
+description: 每个命令、选项与退出码。
+---
+
+直接运行 `skit` 会打开 TUI 菜单。下面是可脚本化的界面 —— 相同的操作，确定的行为。
+
+## 约定 [#conventions]
+
+- **`--json`** 适用于每个读取命令：`list`、`show`、`params`、`deps`、
+  `preset list`、`runner list`、`doctor`、`config`。
+- **`--no-input`** 适用于可能提问的命令：`add`、`run`、`remove`、`edit`、
+  `runner remove` 与 `preset delete`。读取命令从不提问，也不接受该选项。
+- **`-y` 或 `--yes`** 用于确认 `remove`、`runner remove` 与 `preset delete`。
+  请仅在用户批准该操作之后使用这个选项。
+- **`--dry-run`** 仅用于 `run`：打印准确的命令 —— 已展开记号与通配符 —— 并且什么也不运行。
+- **非交互约定**：在管道中、在 CI 中，或在 `--no-input` 下，skit 从不提问，
+  也从不猜测 —— 它以具名错误快速失败。
+  “交互式”要求标准输入与标准输出都是 TTY。
+- **Shell 补全**是动态的：条目名称、预设名称与运行器名称都可以补全。
+
+## 退出码 [#exit-codes]
+
+| 退出码 | 含义 |
+| --- | --- |
+| `0` | 成功 |
+| `2` | 用法错误 —— 选项组合错误、未知的 `--set` 名称、未知预设，或该条目类型拒绝的选项 |
+| `125` | skit 侧失败 —— 参数值缺失或无效、漂移、记号展开错误、渲染后的命令过长 |
+| `126` | 目标存在但无法运行 —— 缺少解释器或 JS 运行时、`needs` 命令不在 `PATH` 中，或提示词没有可解析的运行器 |
+| `127` | 程序库中没有这个条目 |
+| `130` | 用户取消了交互界面（128 + SIGINT） |
+
+`skit run` 原样传递被启动进程自身的退出码 —— 包括 125–127
+（docker 约定：1–124 始终属于你的脚本）。被信号 N 终止的脚本报告
+`128+N`，与 POSIX shell 一致。`skit doctor` 的退出码只反映 uv 可用性
+（0 = 存在或不需要，1 = 需要但缺失）；单个条目的警告从不改变它。
+
+## skit add [#skit-add]
+
+`skit add [PATH]` —— 添加脚本、可执行文件、提示词或命令模板。
+`PATH` 可以是文件、代表标准输入的 `-`，或在终端中省略以由 skit 询问。
+
+| 选项 | 作用 |
+| --- | --- |
+| `--name`、`-n` | 条目名称（默认：从文件名派生） |
+| `--description`、`-d` | 程序库中显示的说明 |
+| `--ref` | 就地引用原文件，而不是复制 |
+| `--kind KIND` | 强制指定语言类型 |
+| `--exe` | 强制指定可执行文件类型 |
+| `--cmd 'TEMPLATE'` | 注册命令模板 |
+| `--prompt` | 作为 AI 代理提示词添加 |
+| `--edit`、`-e` | 在编辑器中起草新脚本 |
+| `--runner NAME` | 固定提示词使用的代理 |
+| `--no-interpolate` | 提示词：原样传递，不插入占位符 |
+| `--dep SPEC` | 软件包依赖项（可重复） |
+| `--python 'CONSTRAINT'` | Python 版本约束 |
+| `--no-input` | 从不提问 |
+
+各条通道选择项 —— 文件路径、`-`、`--cmd`、`--edit` —— 互相排斥（退出码 2），
+并且当每条通道特有的选项不适用于所选通道时，skit 会带提示地拒绝它们。
+
+## skit run [#skit-run]
+
+`skit run NAME [flags] [-- ARGS]`
+
+| 选项 | 作用 |
+| --- | --- |
+| `--set NAME=VALUE` | 设置一个参数（可重复；[记号](/zh-CN/docs/parameters#value-tokens)会展开；在类型支持时，`--set NAME=` 传递真正的空值） |
+| `--preset`、`-p NAME` | 应用已保存的预设 |
+| `--save-preset NAME` | 将本次运行的值保存为预设 |
+| `--runner NAME` | 提示词：为本次运行覆盖已固定的运行器 |
+| `--dry-run` | 打印准确的命令，什么也不运行 |
+| `--no-input` | 从不提问；必填值没有来源时以 125 失败 |
+| `--plain` | 使用逐行提问，而不是 TUI 小表单 |
+| `--raw` | 原样运行存储的副本：不注入、不使用记住的参数；提示词与命令条目拒绝该选项（退出码 2），并且它与 `--set`/`-p`/`--save-preset` 不兼容 |
+| `--forget-args` | 在本次运行前清除记住的 `--` 尾部参数 |
+
+值的解析顺序，最高者胜出：`--set` → 预设 → 上次使用值 → 声明的默认值。
+额外的 `-- ARGS` 会按条目记住，并在下一次不带参数的运行中重放
+（并在标准错误上给出说明）；`--forget-args` 清除它们，`--raw` 从不重放它们。
+
+## skit list / show [#skit-list-show]
+
+- `skit list [--json]` —— 每个条目的名称、类型与说明。
+- `skit show NAME [--json]` —— 完整元数据、依赖项、参数与预设。
+  JSON 结构是稳定的；每个参数带有 `key`、`label`、`type`、
+  `source`、`required`、`secret`、`multiple`、`repeat`、`degraded`、`choices`、
+  `default`、`help`、`flag`、`action`、`env_source`、`delivers_empty`，
+  以及顶层的 `param_origin`、`degraded_reason` 与 `needs`。提示词条目还有
+  `runner`、`runners_available` 与 `interpolate`。
+
+## skit remove / rename / describe / edit [#skit-remove-rename-describe-edit]
+
+- `skit remove NAME [--yes]` —— 删除条目（原文件不受影响；
+  副本模式会删除 skit 的副本）。除非使用 `--yes`，否则会请求确认。
+- `skit rename NAME NEW` —— 预设、记住的值与历史记录一并跟随。
+- `skit describe NAME TEXT` —— 设置说明；空文本会清除它。
+- `skit edit NAME` —— 在编辑器中打开存储的源文件（引用模式下打开原文件）；
+  当名称是新的时，会提议创建条目。可执行文件与命令条目拒绝该操作 ——
+  它们没有可编辑的源文件。
+
+## skit params [#skit-params]
+
+`skit params NAME [--json]` 显示受管参数与上次使用的值。
+带选项时它会编辑定义 —— 通常每次调用只做一种编辑操作：
+
+| 选项 | 作用 |
+| --- | --- |
+| `--resync` | 精简或刷新定义，使其与脚本当前的源文件一致 |
+| `--manage NAME` / `--unmanage NAME` | 管理或放弃一个检测到的常量或提问（可重复） |
+| `--add NAME` / `--rm NAME` | 手动声明或删除参数（可执行文件、命令等类型） |
+| `--type NAME=T` | `str`、`int`、`float`、`bool`、`choice`、`path` |
+| `--default NAME=VALUE` | 声明的默认值 |
+| `--choices NAME=a,b,c` | 可选值 |
+| `--deliver NAME=env\|flag\|placeholder` | 值如何到达脚本 |
+| `--flag NAME=--out` | 要组装的 CLI 选项（为空则表示位置参数） |
+| `--required NAME` / `--optional NAME` | 是否必填 |
+| `--help-text NAME=TEXT` / `--prompt NAME=TEXT` | 描述文本 |
+| `--secret NAME` / `--no-secret NAME` | 敏感值标记（参见[敏感值](/zh-CN/docs/parameters#secrets)） |
+| `--env-source NAME=ENVVAR` | 运行时从环境变量读取该值（为空则清除） |
+| `--normalize NAME` | 仅 shell：在**存储的副本**中把裸写的 `NAME=value` 改写为 `${NAME:-value}` —— 需要同意，且从不改动原文件 |
+| `--runner NAME` | 提示词：固定一个运行器（为空则清除固定设置） |
+| `--interpolate` / `--no-interpolate` | 提示词：开启或关闭占位符插入 |
+| `--workdir origin\|store\|invoke\|/abs/path` | 工作目录策略 |
+| `--template 'T'` | 命令条目：替换模板 |
+| `--interpreter NAME` | 为解释型类型固定解释器（为空则自动；python 与提示词条目拒绝该选项） |
+
+## skit deps [#skit-deps]
+
+`skit deps NAME [--json]` —— 软件包依赖项、Python 版本约束与所需的外部命令。
+
+| 选项 | 作用 |
+| --- | --- |
+| `--dep SPEC` | 可重复；**替换**整个依赖项列表 |
+| `--clear` | 删除所有软件包依赖项 |
+| `--python 'CONSTRAINT'` | Python 版本约束 |
+| `--need CMD` | 可重复；**替换**整个所需命令列表 |
+| `--clear-needs` | 删除所有所需命令 |
+
+软件包依赖项适用于 Python 与 JS/TS 条目；`--need` 适用于每种类型。
+
+## skit preset [#skit-preset]
+
+- `skit preset save NAME PRESET [--from-last]` —— `--from-last` 直接快照
+  上一次运行的值，不再询问。
+- `skit preset list NAME [--json]`
+- `skit preset delete NAME PRESET`
+
+## skit runner [#skit-runner]
+
+- `skit runner list [--json] [--all]` —— 已配置的提示词运行器；`--all` 还会
+  显示格式错误的原始行及其修复索引。
+- `skit runner add NAME COMMAND…` —— 注册一个运行器。每个词是一个 argv
+  参数（不经过 shell）；必须正好有一个参数是 `{{prompt}}` —— 参见
+  [提示词 → 运行器](/zh-CN/docs/prompts#runners)。`--force` 会替换同名项。
+- `skit runner remove [NAME] [--row INDEX] [--yes] [--no-input]`
+
+## skit agent [#skit-agent]
+
+`skit agent install [TARGET]` —— 安装随附的 Agent Skill。`TARGET` 可以是
+`claude`、`codex` 或 `agents`；`--to DIR` 明确指定目录；
+`--project` 安装到当前仓库（`./.claude` / `./.codex`），而不是主目录。
+不带参数的形式只在恰好找到一个受支持目录时才使用该目录。
+如果一个也没找到，或者找到多个，它要求明确的目标。
+
+## skit doctor [#skit-doctor]
+
+`skit doctor [--json] [--rebuild]` —— 检查 uv 与程序库完整性，并打印解析后的
+程序库路径。`--rebuild` 会从每个条目的 `meta.toml` 重建索引。JSON 键包括
+`uv`、`entries`、`missing`、`drift`、`needs_missing`、`launch_blocked`、
+`runner_rows_invalid`、`rebuilt`、`rebuild_problems`、`mirror`、`location`、
+`size_bytes`。
+
+## skit config [#skit-config]
+
+采用 git-config 语法：`skit config` 列出全部，`skit config KEY` 读取，
+`skit config KEY VALUE` 写入；`--json` 供机器使用。每个键都记录在
+[配置](/zh-CN/docs/configuration)中。

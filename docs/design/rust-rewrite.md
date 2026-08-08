@@ -1,122 +1,111 @@
-# Rust + Ratatui rewrite
+# Rust and Ratatui cutover
 
-Status: **migration in progress**. The Python implementation remains the release implementation
-until the compatibility matrix is green. The Rust workspace is additive and must not silently
-change an existing user's library.
+Status: **in review**. Version 0.5.0 is the first Rust-only release. The Python implementation and
+Python development toolchain are removed. PyPI still distributes `skit-cli` as a Maturin binary
+wheel so existing `uv tool` installation commands continue to work.
 
-## Baseline
+Do not read this document as a record of a completed release. It states the architecture, the
+compatibility boundary, and the gates a release must pass. The pull request that proposes a release
+carries the gate evidence.
 
-The rewrite follows the behavior of `fix/design-audit` at
-`b47eab53eadc583bff19ade742ef8f225f0cceb2`, not an older `main` snapshot. In particular, the
-Rust design treats a slug as an address rather than an identity, preserves the launch-boundary
-identity check, keeps the entry lock only through spawn (never through child wait), and requires
-identity plus source-version compare-and-swap for staged edits.
-
-## Dependency direction
+## Architecture
 
 ```text
 skit-domain          pure values and invariants
       ↑
 skit-application     use cases, ports, errors, stable frontend data
       ↑              ↑
-skit-store       skit-ui (pure reducer / serializable view model)
-      ↑              ↑
-      └──────── skit-tui (Ratatui adapter)
-                       ↑
-                    skit-cli (composition root)
+skit-store       skit-ui (pure reducer and serializable view model)
+skit-runtime         ↑
+      ↑          skit-tui (Ratatui adapter)
+      └──────────────↑
+                  skit-cli (composition root)
 
-future: skit-tauri ──→ skit-application + skit-ui
+future: skit-tauri → skit-application + skit-ui
 ```
 
-`skit-application` must never depend on Clap, Ratatui, Crossterm, Tauri, TOML, or a concrete
-filesystem. `skit-ui` contains no terminal concepts. Ratatui and the future Tauri shell are peers:
-both translate user input into application/UI actions and render serializable state.
+`skit-application` has no frontend, parser, TOML, or filesystem dependency. `skit-ui` has no
+terminal dependency. It serializes actions, effects, screens, forms, and library state. Ratatui is
+one adapter. A future Tauri crate can be a peer adapter and can use the same application ports.
 
-## TDD rule
+## Compatibility boundary
 
-Every behavior slice lands in this order:
+The cutover reads the version 0.4 data, state, and configuration layout in place. It does not run a
+bulk migration and does not rewrite data during startup.
 
-1. a contract test that fails for the intended reason;
-2. the smallest implementation that makes it pass;
-3. refactoring while the test remains green;
-4. differential tests against the Python baseline when the behavior already exists there.
+- `SKIT_DATA_DIR/scripts/<slug>/meta.toml` remains authoritative.
+- `registry.toml` remains a rebuildable projection. Stale rows fall back to metadata and repair in
+  one nonblocking batch.
+- Missing entry IDs remain valid legacy data. The first mutation stamps an ID under a lock.
+- Unknown entry kinds and unknown TOML fields remain intact.
+- Stored script bytes, line endings, and Unix permissions remain intact.
+- Presets, last values, secret scrubbing, and state files keep the version 0.4 schema.
+- Mutations use atomic replacement, identity checks, and source-hash compare-and-swap.
+- One corrupt entry produces one diagnostic. It cannot hide other entries.
+- A launched child keeps its exit code. Pre-launch errors keep codes 2, 125, 126, 127, and 130.
 
-The first slice gated line coverage at 90%; the declared-parameter slice has ratcheted the enforced
-floor to 94%, and cutover requires the same 100% floor as the Python implementation.
+Compatibility tests use version 0.4 fixtures and run read, run, mutation, state, configuration, and
+Agent Skill paths against them.
 
-A test that merely snapshots an implementation detail is not a contract. Store tests use real
-temporary directories; UI tests drive the reducer and Ratatui `TestBackend`; process tests use a
-fake launcher until the final spawn boundary test.
+## Behavior changes from version 0.4
 
-## Compatibility constraints
+The product capabilities remain available, but some presentation behavior is different:
 
-- Existing `SKIT_DATA_DIR/scripts/<slug>/meta.toml` files remain readable.
-- `kind` is an open string. A newer/unknown kind can still list, show, and remove cleanly.
-- A missing `id` is a legacy entry, not malformed metadata.
-- Corruption is isolated per entry during listing and becomes a diagnostic; one bad entry cannot
-  hide the rest of the library.
-- Non-interactive interfaces never prompt or guess. Machine output stays structured and English.
-- Exit classification remains 2 / 125 / 126 / 127 / 130, while a launched child keeps its own
-  exit code untouched.
-- User-authored bytes, line endings, and permissions are preserved by write paths. No write path
-  may be introduced without an identity/CAS test.
+- The TUI now uses Ratatui and Crossterm. It does not use Textual or CSS.
+- Library search uses deterministic case-insensitive substring matching. It does not use fuzzy
+  ranking.
+- Forms use one consistent text editor. Boolean, choice, numeric, and path fields show their type
+  and validate at submission. The first Rust release does not show separate checkbox, choice-list,
+  or file-browser widgets.
+- The add screen is one direct form. Source analysis still runs, and the settings screen can manage
+  detected fields after the add. The old multi-step review choreography is removed.
+- Responsive layout is computed by Ratatui constraints. Narrow terminals stack the library panes.
+- TUI actions keep keyboard and mouse paths. Footer chips and form rows are click targets.
+- Human output remains localized. Machine JSON remains an English contract.
+- A typed error carries a stable message template and its values. skit translates the template and
+  then inserts the values. Version 0.4 translated rendered text by substring replacement, which
+  could rewrite a user value or part of an English word.
 
-## Migration slices
+These changes do not alter stored data. A user can install version 0.5 over version 0.4 and use the
+same library without an export or import.
 
-| Slice | Scope | Exit criterion |
-| --- | --- | --- |
-| 0 | Architecture + contract inventory | dependency rules and CI are enforced |
-| 1 | Read-only library vertical slice | compatible `list`, `show`, and Ratatui browser |
-| 2 | Store mutations | atomic writes, locks, identity claim, remove/rename/edit CAS |
-| 3 | Parameters | typed schema, token expansion, presets, secret non-persistence |
-| 4 | Language adapters | Python/shell/JS/TS analyzers, injectors, normalizers, golden corpus |
-| 5 | Launch | deterministic planning, runner resolution, spawn-under-lock/wait-outside |
-| 6 | Remaining product surfaces | config, i18n, doctor, agent skill, completion, benchmarks |
-| 7 | Cutover | differential matrix green; Python implementation removed |
-| 8 | Tauri adapter | invokes the same application ports; no duplicated business rules |
+## Localized messages
 
-## Implemented migration notes
+`skit-i18n` owns one static catalog and two presentation types:
 
-### Registry-backed reads
+- `Message` holds a stable English template, its ordered values, and optional nested messages.
+  `Message::localize` translates the template with an exact catalog lookup, then inserts the values
+  unchanged. A value is user data, so it never reaches the translator.
+- `Localize` is the trait each user-visible error implements. The `message` method matches on every
+  variant, so a new variant needs a new template, and the compiler enforces that.
 
-The read path began with authoritative `meta.toml` scans, then introduced the rebuildable
-`registry.toml` projection only after its trust boundary was contract-tested. Listing trusts a row
-only when its shape and exact metadata timestamp match, falls back per entry to authoritative
-metadata, and attempts one nonblocking batch repair. Exact slug resolution still opens the selected
-metadata directly. Exact display-name resolution uses registry rows only to select a unique
-candidate; a stale claim, miss, or multiple claimants trigger the same authoritative freshness
-sweep and deterministic ambiguity refusal as listing. A fast unique hit never sweeps or repairs
-unrelated rows. Differential performance evidence remains a separate release gate: functional fast
-paths are not, by themselves, proof that the application is lightweight.
+`skit-i18n/tests/catalog.rs` walks each crate's `src` tree, collects every `Message::new` template
+outside `#[cfg(test)]` modules, and fails when the catalog has no complete row for one of them. Each
+crate also has a `localization` test that builds every error variant and checks that the English
+text matches the `thiserror` display, that each locale fills every hole, and that each value stays
+byte-identical.
 
-### Parameter domain kernel
+Clap composes its own usage report from skit-authored text. `skit-cli` translates the command tree
+with exact lookups before parsing, so a token such as `--help` never changes. Only the framework
+headings still use `skit_i18n::render`, which replaces a catalog row that is marked `composable`
+and only at word boundaries.
 
-`skit-domain::parameters` now owns the frontend-neutral declaration vocabulary: source binding,
-runtime delivery, scalar type, typed defaults, invariant symbols, and the environment-target rule.
-It freezes both existing serialization surfaces without importing TOML into the domain crate:
-`[tool.skit]` block maps use the historical `kind` spelling and implied delivery, while full
-`meta.toml [[parameters]]` maps preserve the independent binding/delivery axes and omit default
-fields. Both decoders are total on hand-edited scalar garbage, and default coercion shares one
-strict integer, finite-float, boolean, string, choice, and path contract.
+## TDD and verification
 
-The same domain module carries the frozen universal secret-name heuristic used by placeholder
-synthesis and later form assembly. It matches the Python baseline's separator, camelCase, jammed,
-plural, and digit-split recognition; exact password/secret suffixes; exact `KEY` word and jammed-key
-prefix allowlist; and the two-mode `TOKEN` count-context rules for names versus sentence prompts.
-The detector remains deliberately conservative: a positive heuristic marks a value secret, while
-actual secret persistence and scrubbing are still enforced by later application/store contracts.
-Implicit command-template placeholders are required, placeholder-delivery string declarations whose
-secret bit is computed by this one shared detector.
+Each port started with a failing contract test. Tests cover ordinary paths and important refusal,
+corruption, rollback, concurrency, terminal, and process boundaries. A release must pass every gate
+below, and the pull request must report the result of each one:
 
-Declared metadata extraction now mirrors Python's ordering behavior exactly. Nameless rows are
-dropped, while ordinary order and duplicate rows are preserved at the extraction boundary. Template
-synthesis then applies Python-dict semantics deliberately rather than accidentally sorting:
-duplicate names keep their first insertion slot but the last schema wins. Placeholder order, case,
-and multiplicity come from the template; a same-name declaration overrides the synthesized schema
-only when its delivery is `placeholder`. Wrong-delivery rows are replaced and cannot reappear as
-environment riders. Only unconsumed `env` declarations follow the placeholder fields; flag rows and
-stray placeholder declarations are excluded.
+- Rustfmt and Clippy with warnings as errors;
+- Rustdoc with warnings as errors;
+- all workspace tests on Linux, macOS, and Windows;
+- complete executable-source line coverage after LCOV records are merged;
+- cargo-mutants with zero survivors;
+- complete English, Simplified Chinese, and Traditional Chinese catalogs;
+- cargo-deny, cargo-audit, and zizmor;
+- Maturin wheel, source archive, and `uv tool install` smoke tests;
+- release and macro benchmark budgets.
 
-This remains the parameter model and declaration kernel, not the whole parameter product. Token
-expansion, presets, remembered values, secret non-persistence, form assembly, language-specific
-analysis/injection, and launch-time delivery remain separate unchecked contracts.
+LLVM can assign counters to a closing brace, a blank line, a function signature, or the first line
+of a covered multiline call. The coverage gate ignores only these structural mappings. It rejects
+all uncovered executable source lines. Mutation testing independently checks behavior assertions.

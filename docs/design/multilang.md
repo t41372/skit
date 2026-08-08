@@ -1,5 +1,9 @@
 # Multi-language support — design & implementation plan
 
+> Historical version 0.4 design record. Python module paths and Python quality commands in this
+> document describe the removed implementation. Current adapters are in `crates/skit-language` and
+> `crates/skit-runtime`. See [rust-rewrite.md](rust-rewrite.md).
+
 Status: **shipped** on branch `feat/multilang` (see the "Status: shipped" section at the
 end for what landed vs. what was deferred). This document is the single source of
 truth for the design decisions; it was synthesized from three independent architecture
