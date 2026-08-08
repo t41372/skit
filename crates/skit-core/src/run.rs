@@ -8,6 +8,17 @@ use crate::{
     plan_for_entry, resolve_values,
 };
 
+/// Frontend-supplied inputs for one headless run preparation.
+#[derive(Debug, Clone, Copy)]
+pub struct RunRequest<'a> {
+    pub state: &'a EntryState,
+    pub preset: Option<&'a str>,
+    pub explicit: &'a BTreeMap<String, String>,
+    pub extra_args: &'a [String],
+    pub environment: &'a BTreeMap<String, String>,
+    pub launch_options: &'a LaunchOptions,
+}
+
 /// A fully resolved run snapshot before the process boundary.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreparedRun {
@@ -85,23 +96,28 @@ impl From<LaunchPlanError> for PrepareRunError {
 /// environment source, or launch preflight/runtime failure.
 pub fn prepare_run(
     entry: &Entry,
-    state: &EntryState,
-    preset: Option<&str>,
-    explicit: &BTreeMap<String, String>,
-    extra_args: &[String],
-    environment: &BTreeMap<String, String>,
-    launch_options: &LaunchOptions,
+    request: RunRequest<'_>,
     programs: &impl ProgramResolver,
 ) -> Result<PreparedRun, PrepareRunError> {
-    if let Some(name) = preset
-        && !state.presets.contains_key(name)
+    if let Some(name) = request.preset
+        && !request.state.presets.contains_key(name)
     {
         return Err(PrepareRunError::UnknownPreset(name.to_owned()));
     }
     let form = plan_for_entry(entry);
-    let values = resolve_values(&form, state, preset, explicit)?;
-    let assembly = assemble_delivery(&form, &values, extra_args, environment)?;
-    let launch = build_launch_plan(entry, &assembly, launch_options, programs)?;
+    let values = resolve_values(
+        &form,
+        request.state,
+        request.preset,
+        request.explicit,
+    )?;
+    let assembly = assemble_delivery(
+        &form,
+        &values,
+        request.extra_args,
+        request.environment,
+    )?;
+    let launch = build_launch_plan(entry, &assembly, request.launch_options, programs)?;
     Ok(PreparedRun {
         form,
         values,
