@@ -21,6 +21,25 @@ pub struct PythonManagedAnalysis {
     pub syntax_error: bool,
 }
 
+/// One builtin `input()` call site after scope-aware shadow filtering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PythonInputSite {
+    pub order: i64,
+    pub prompt: String,
+    pub line: usize,
+    pub callee_start: usize,
+    pub callee_end: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InputHit {
+    start: usize,
+    prompt: String,
+    line: usize,
+    callee_start: usize,
+    callee_end: usize,
+}
+
 /// Detect Python constants, builtin `input()` calls, and CLI frameworks.
 ///
 /// Parsing is lazy at this call boundary. A syntax error returns an empty analysis with
@@ -54,29 +73,23 @@ pub fn analyze_python_managed(text: &str) -> PythonManagedAnalysis {
         );
     }
 
-    let mut inputs = Vec::new();
-    collect_input_scopes(root, text, false, &mut inputs);
-    inputs.sort_by_key(|hit| hit.0);
-    constants.extend(
-        inputs
-            .into_iter()
-            .enumerate()
-            .map(|(order, (_start, prompt, line))| PythonManagedCandidate {
-                decl: ParamDecl {
-                    name: format!("input-{}", order + 1),
-                    binding: Binding::Input,
-                    delivery: Delivery::Inject,
-                    param_type: ParamType::String,
-                    prompt: prompt.clone(),
-                    order: i64::try_from(order).unwrap_or(i64::MAX),
-                    secret: is_secret_name(&prompt),
-                    ..ParamDecl::default()
-                },
-                line,
-                demoted: false,
-                demotion: String::new(),
-            }),
-    );
+    constants.extend(input_sites_from_tree(root, text).into_iter().map(|site| {
+        PythonManagedCandidate {
+            decl: ParamDecl {
+                name: format!("input-{}", site.order + 1),
+                binding: Binding::Input,
+                delivery: Delivery::Inject,
+                param_type: ParamType::String,
+                prompt: site.prompt.clone(),
+                order: site.order,
+                secret: is_secret_name(&site.prompt),
+                ..ParamDecl::default()
+            },
+            line: site.line,
+            demoted: false,
+            demotion: String::new(),
+        }
+    }));
     constants.sort_by_key(source_sort_key);
 
     PythonManagedAnalysis {
@@ -84,6 +97,29 @@ pub fn analyze_python_managed(text: &str) -> PythonManagedAnalysis {
         frameworks: framework_names(root, text),
         syntax_error: false,
     }
+}
+
+/// Return the exact builtin-input sites the injector may target. `None` means syntax
+/// failure, so callers can distinguish "no input calls" from "source cannot be trusted".
+pub(crate) fn python_input_sites(text: &str) -> Option<Vec<PythonInputSite>> {
+    let tree = parse_python(text)?;
+    (!tree.root_node().has_error()).then(|| input_sites_from_tree(tree.root_node(), text))
+}
+
+fn input_sites_from_tree(root: Node<'_>, source: &str) -> Vec<PythonInputSite> {
+    let mut hits = Vec::new();
+    collect_input_scopes(root, source, false, &mut hits);
+    hits.sort_by_key(|hit| hit.start);
+    hits.into_iter()
+        .enumerate()
+        .map(|(order, hit)| PythonInputSite {
+            order: i64::try_from(order).unwrap_or(i64::MAX),
+            prompt: hit.prompt,
+            line: hit.line,
+            callee_start: hit.callee_start,
+            callee_end: hit.callee_end,
+        })
+        .collect()
 }
 
 fn syntax_error() -> PythonManagedAnalysis {
@@ -373,7 +409,7 @@ fn collect_input_scopes(
     scope: Node<'_>,
     source: &str,
     inherited_shadow: bool,
-    output: &mut Vec<(usize, String, usize)>,
+    output: &mut Vec<InputHit>,
 ) {
     let shadowed = inherited_shadow || scope_binds_input(scope, source);
     collect_scope_calls(scope, source, shadowed, output);
@@ -388,7 +424,7 @@ fn recurse_nested_scopes(
     node: Node<'_>,
     source: &str,
     inherited_shadow: bool,
-    output: &mut Vec<(usize, String, usize)>,
+    output: &mut Vec<InputHit>,
 ) {
     if is_scope_node(node) {
         collect_input_scopes(node, source, inherited_shadow, output);
@@ -404,7 +440,7 @@ fn collect_scope_calls(
     node: Node<'_>,
     source: &str,
     shadowed: bool,
-    output: &mut Vec<(usize, String, usize)>,
+    output: &mut Vec<InputHit>,
 ) {
     if node.kind() == "call"
         && !shadowed
@@ -412,8 +448,13 @@ fn collect_scope_calls(
         && function.kind() == "identifier"
         && node_text(function, source) == Some("input")
     {
-        let prompt = input_prompt(node, source).unwrap_or_default();
-        output.push((node.start_byte(), prompt, node.start_position().row + 1));
+        output.push(InputHit {
+            start: node.start_byte(),
+            prompt: input_prompt(node, source).unwrap_or_default(),
+            line: node.start_position().row + 1,
+            callee_start: function.start_byte(),
+            callee_end: function.end_byte(),
+        });
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
