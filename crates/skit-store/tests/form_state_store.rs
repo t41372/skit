@@ -120,7 +120,10 @@ city = "Paris"
     assert_eq!(doc["future"].as_str(), Some("keep-me"));
     assert!(doc.get("extra_args_raw").is_none());
     assert_eq!(doc["extra_args"].as_array().unwrap().len(), 2);
-    assert_eq!(doc["extra_args"].as_array().unwrap()[0].as_str(), Some("--fresh"));
+    assert_eq!(
+        doc["extra_args"].as_array().unwrap()[0].as_str(),
+        Some("--fresh")
+    );
     assert_eq!(
         doc["extra_args"].as_array().unwrap()[1].as_str(),
         Some("two words")
@@ -137,7 +140,10 @@ city = "Paris"
     assert_eq!(round_trip.extra_args, ["--fresh", "two words"]);
     assert!(!round_trip.extra_args_raw);
     assert_eq!(round_trip.presets["travel"]["city"], "Tokyo");
-    assert_eq!(round_trip.last_run.at.as_deref(), Some("2026-08-08T01:30:00Z"));
+    assert_eq!(
+        round_trip.last_run.at.as_deref(),
+        Some("2026-08-08T01:30:00Z")
+    );
     assert_eq!(round_trip.last_run.exit, Some(0));
     assert_eq!(round_trip.last_run.values["city"], "Tokyo");
 }
@@ -198,7 +204,10 @@ fn concurrent_read_modify_write_updates_do_not_drop_sibling_presets() {
     let state = store.load(&slug);
     assert_eq!(state.presets.len(), 16);
     for index in 0..16 {
-        assert_eq!(state.presets[&format!("preset-{index}")]["value"], index.to_string());
+        assert_eq!(
+            state.presets[&format!("preset-{index}")]["value"],
+            index.to_string()
+        );
     }
 }
 
