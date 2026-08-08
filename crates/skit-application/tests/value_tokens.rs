@@ -15,7 +15,9 @@ fn context() -> TokenContext {
 #[test]
 fn named_tokens_expand_and_unknown_braces_pass_through() {
     let mut context = context();
-    context.env.insert("API_KEY".to_owned(), "abc123".to_owned());
+    context
+        .env
+        .insert("API_KEY".to_owned(), "abc123".to_owned());
 
     assert_eq!(
         expand("{cwd}/out_{today}_{now}.png", &context, true).unwrap(),
@@ -57,10 +59,7 @@ fn brace_escape_policy_is_orthogonal_to_named_token_expansion() {
     assert_eq!(expand("{{{{", &context, true).unwrap(), "{{");
     assert_eq!(expand("}}{{", &context, true).unwrap(), "}{");
     assert_eq!(expand("a{{", &context, true).unwrap(), "a{");
-    assert_eq!(
-        expand("{today}}}", &context, true).unwrap(),
-        "2026-07-09}"
-    );
+    assert_eq!(expand("{today}}}", &context, true).unwrap(), "2026-07-09}");
 
     assert_eq!(expand("{{cwd}}", &context, false).unwrap(), "{{cwd}}");
     assert_eq!(expand("a{{b}}c", &context, false).unwrap(), "a{{b}}c");
