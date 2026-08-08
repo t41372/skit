@@ -200,13 +200,7 @@ fn record_run_replaces_stamp_but_none_preserves_the_previous_value_snapshot() {
     );
 
     service
-        .record_run(
-            &slug(),
-            0,
-            "2026-08-08T02:00:00Z",
-            &declarations(),
-            None,
-        )
+        .record_run(&slug(), 0, "2026-08-08T02:00:00Z", &declarations(), None)
         .unwrap();
     assert_eq!(
         service.load(&slug()).last_run,
@@ -222,12 +216,7 @@ fn record_run_replaces_stamp_but_none_preserves_the_previous_value_snapshot() {
 fn forget_removes_all_per_entry_state() {
     let service = FormStateService::new(MemoryState::default());
     service
-        .save_preset(
-            &slug(),
-            "one",
-            &declarations(),
-            &map(&[("city", "Tokyo")]),
-        )
+        .save_preset(&slug(), "one", &declarations(), &map(&[("city", "Tokyo")]))
         .unwrap();
     service.forget(&slug()).unwrap();
     assert_eq!(service.load(&slug()), PersistedFormState::default());
