@@ -189,7 +189,10 @@ fn is_main_guard(node: Node<'_>, source: &str) -> bool {
     let Some(text) = node_text(condition, source) else {
         return false;
     };
-    let compact = text.chars().filter(|character| !character.is_whitespace()).collect::<String>();
+    let compact = text
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .collect::<String>();
     matches!(
         compact.as_str(),
         "__name__==\"__main__\""
@@ -206,18 +209,19 @@ fn literal_value(node: Node<'_>, source: &str) -> Option<(ParamType, ParamDefaul
         "false" => Some((ParamType::Boolean, ParamDefault::Boolean(false))),
         "integer" => parse_python_integer(text)
             .map(|value| (ParamType::Integer, ParamDefault::Integer(value))),
-        "float" => parse_python_float(text)
-            .map(|value| (ParamType::Float, ParamDefault::Float(value))),
+        "float" => {
+            parse_python_float(text).map(|value| (ParamType::Float, ParamDefault::Float(value)))
+        }
         "unary_operator" => {
             if let Some(value) = parse_python_integer(text) {
                 Some((ParamType::Integer, ParamDefault::Integer(value)))
             } else {
-                parse_python_float(text)
-                    .map(|value| (ParamType::Float, ParamDefault::Float(value)))
+                parse_python_float(text).map(|value| (ParamType::Float, ParamDefault::Float(value)))
             }
         }
-        "string" => parse_python_string(text)
-            .map(|value| (ParamType::String, ParamDefault::String(value))),
+        "string" => {
+            parse_python_string(text).map(|value| (ParamType::String, ParamDefault::String(value)))
+        }
         _ => None,
     }
 }
@@ -228,15 +232,16 @@ fn parse_python_integer(text: &str) -> Option<i64> {
         .strip_prefix('-')
         .map_or((false, cleaned.as_str()), |body| (true, body));
     let body = body.strip_prefix('+').unwrap_or(body);
-    let (radix, digits) = if let Some(digits) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
-        (16, digits)
-    } else if let Some(digits) = body.strip_prefix("0o").or_else(|| body.strip_prefix("0O")) {
-        (8, digits)
-    } else if let Some(digits) = body.strip_prefix("0b").or_else(|| body.strip_prefix("0B")) {
-        (2, digits)
-    } else {
-        (10, body)
-    };
+    let (radix, digits) =
+        if let Some(digits) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
+            (16, digits)
+        } else if let Some(digits) = body.strip_prefix("0o").or_else(|| body.strip_prefix("0O")) {
+            (8, digits)
+        } else if let Some(digits) = body.strip_prefix("0b").or_else(|| body.strip_prefix("0B")) {
+            (2, digits)
+        } else {
+            (10, body)
+        };
     let magnitude = i64::from_str_radix(digits, radix).ok()?;
     negative.then_some(-magnitude).or(Some(magnitude))
 }
@@ -249,12 +254,16 @@ fn parse_python_float(text: &str) -> Option<f64> {
 fn parse_python_string(text: &str) -> Option<String> {
     let quote_at = text.find(['\'', '"'])?;
     let prefix = &text[..quote_at];
-    if prefix.chars().any(|ch| matches!(ch.to_ascii_lowercase(), 'b' | 'f')) {
+    if prefix
+        .chars()
+        .any(|ch| matches!(ch.to_ascii_lowercase(), 'b' | 'f'))
+    {
         return None;
     }
     let raw = prefix.chars().any(|ch| ch.eq_ignore_ascii_case(&'r'));
     let rest = &text[quote_at..];
-    let (delimiter, inner) = if rest.starts_with("'''" ) && rest.ends_with("'''" ) && rest.len() >= 6 {
+    let (delimiter, inner) = if rest.starts_with("'''") && rest.ends_with("'''") && rest.len() >= 6
+    {
         ("'''", &rest[3..rest.len() - 3])
     } else if rest.starts_with("\"\"\"") && rest.ends_with("\"\"\"") && rest.len() >= 6 {
         ("\"\"\"", &rest[3..rest.len() - 3])
@@ -300,8 +309,12 @@ fn decode_python_escapes(text: &str, quote: char) -> Option<String> {
             '0'..='7' => {
                 let mut value = escaped.to_digit(8)?;
                 for _ in 0..2 {
-                    let Some(next) = chars.peek().copied() else { break; };
-                    let Some(digit) = next.to_digit(8) else { break; };
+                    let Some(next) = chars.peek().copied() else {
+                        break;
+                    };
+                    let Some(digit) = next.to_digit(8) else {
+                        break;
+                    };
                     chars.next();
                     value = value * 8 + digit;
                 }
@@ -333,12 +346,7 @@ fn mutated_names(root: Node<'_>, source: &str) -> BTreeSet<String> {
     output
 }
 
-fn collect_mutations(
-    node: Node<'_>,
-    source: &str,
-    in_loop: bool,
-    output: &mut BTreeSet<String>,
-) {
+fn collect_mutations(node: Node<'_>, source: &str, in_loop: bool, output: &mut BTreeSet<String>) {
     let now_in_loop = in_loop || matches!(node.kind(), "for_statement" | "while_statement");
     if node.kind() == "augmented_assignment" || (now_in_loop && node.kind() == "assignment") {
         if let Some(left) = node.child_by_field_name("left") {
@@ -484,15 +492,21 @@ fn import_binds_name(node: Node<'_>, source: &str, wanted: &str) -> bool {
         return false;
     };
     if node.kind() == "import_statement" {
-        return text
-            .trim_start_matches("import")
-            .split(',')
-            .any(|part| {
-                let mut words = part.split_whitespace();
-                let imported = words.next().unwrap_or_default().split('.').next().unwrap_or_default();
-                let alias = if words.next() == Some("as") { words.next() } else { None };
-                alias.unwrap_or(imported) == wanted
-            });
+        return text.trim_start_matches("import").split(',').any(|part| {
+            let mut words = part.split_whitespace();
+            let imported = words
+                .next()
+                .unwrap_or_default()
+                .split('.')
+                .next()
+                .unwrap_or_default();
+            let alias = if words.next() == Some("as") {
+                words.next()
+            } else {
+                None
+            };
+            alias.unwrap_or(imported) == wanted
+        });
     }
     let Some((_, imported)) = text.split_once(" import ") else {
         return false;
@@ -501,7 +515,11 @@ fn import_binds_name(node: Node<'_>, source: &str, wanted: &str) -> bool {
         || imported.split(',').any(|part| {
             let mut words = part.trim().split_whitespace();
             let name = words.next().unwrap_or_default();
-            let alias = if words.next() == Some("as") { words.next() } else { None };
+            let alias = if words.next() == Some("as") {
+                words.next()
+            } else {
+                None
+            };
             alias.unwrap_or(name) == wanted
         })
 }

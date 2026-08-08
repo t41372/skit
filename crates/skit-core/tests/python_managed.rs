@@ -1,6 +1,4 @@
-use skit_core::{
-    Binding, ParamDefault, ParamType, analyze_python_managed,
-};
+use skit_core::{Binding, ParamDefault, ParamType, analyze_python_managed};
 
 fn names(source: &str) -> Vec<String> {
     analyze_python_managed(source)
@@ -50,10 +48,7 @@ fn annotated_assignments_and_string_escapes_are_literals() {
         .map(|candidate| (candidate.decl.name.as_str(), &candidate.decl))
         .collect::<std::collections::BTreeMap<_, _>>();
     assert_eq!(by_name["count"].default, Some(ParamDefault::Integer(10)));
-    assert_eq!(
-        by_name["flag"].default,
-        Some(ParamDefault::Boolean(false))
-    );
+    assert_eq!(by_name["flag"].default, Some(ParamDefault::Boolean(false)));
     assert_eq!(
         by_name["TEXT"].default,
         Some(ParamDefault::String("a\nb!".to_owned()))
@@ -145,12 +140,10 @@ fn builtin_input_calls_keep_source_order_prompt_and_secret_hint() {
 #[test]
 fn input_shadowing_is_scope_aware() {
     assert!(
-        analyze_python_managed(
-            "def input(prompt=''):\n    return 'x'\nname = input('Name: ')\n",
-        )
-        .candidates
-        .iter()
-        .all(|candidate| candidate.decl.binding != Binding::Input)
+        analyze_python_managed("def input(prompt=''):\n    return 'x'\nname = input('Name: ')\n",)
+            .candidates
+            .iter()
+            .all(|candidate| candidate.decl.binding != Binding::Input)
     );
 
     let analysis = analyze_python_managed(
@@ -200,7 +193,9 @@ fn comprehension_and_lambda_bindings_do_not_shadow_module_input() {
 
 #[test]
 fn framework_detection_preserves_first_source_occurrence() {
-    let analysis = analyze_python_managed("import typer, click\nimport os\nfrom argparse import ArgumentParser\n");
+    let analysis = analyze_python_managed(
+        "import typer, click\nimport os\nfrom argparse import ArgumentParser\n",
+    );
     assert_eq!(analysis.frameworks, ["typer", "click", "argparse"]);
 }
 
