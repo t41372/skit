@@ -20,6 +20,7 @@ repository = "https://github.com/t41372/skit"
 
 [workspace.dependencies]
 clap = { version = "4.6.6", features = ["derive"] }
+glob = "0.3.4"
 ratatui-core = { version = "0.1.2", features = ["std", "layout-cache"] }
 ratatui-widgets = { version = "0.3.2", default-features = false, features = ["std"] }
 ratatui-crossterm = "0.1.2"
