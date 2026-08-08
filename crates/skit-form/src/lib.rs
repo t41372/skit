@@ -50,13 +50,13 @@ pub fn form_params(kind: &str, text: &str, settings: &EntrySettings) -> Vec<Para
 fn with_riders(mut fields: Vec<ParamDecl>, declared: &[ParamDecl]) -> Vec<ParamDecl> {
     let mut taken = fields
         .iter()
-        .map(|item| item.name.as_str())
+        .map(|item| item.name.clone())
         .collect::<BTreeSet<_>>();
     for item in declared {
         if matches!(
             item.delivery,
             ParameterDelivery::Flag | ParameterDelivery::Env
-        ) && taken.insert(item.name.as_str())
+        ) && taken.insert(item.name.clone())
         {
             fields.push(item.clone());
         }

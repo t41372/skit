@@ -44,8 +44,8 @@ fn source_helpers_preserve_bytes_names_and_storage_conventions() {
             ("ruby", "script.rb"),
             ("perl", "script.pl"),
             ("lua", "script.lua"),
-            ("r", "script.R"),
-            ("future-kind", "archive.custom"),
+            ("r", "script.r"),
+            ("future-kind", "payload"),
         ]
         .map(|(kind, _)| stored_name(kind, &source)),
         [
@@ -58,8 +58,8 @@ fn source_helpers_preserve_bytes_names_and_storage_conventions() {
             "script.rb",
             "script.pl",
             "script.lua",
-            "script.R",
-            "archive.custom",
+            "script.r",
+            "payload",
         ]
         .map(str::to_owned)
     );
@@ -158,7 +158,7 @@ fn data_directory_mode_and_error_taxonomy_helpers_are_stable() {
     ];
 
     for (error, expected) in errors {
-        assert_eq!(error.exit_code(), expected);
+        assert_eq!(error.exit_code(), i32::from(expected));
         assert!(!error.to_string().is_empty());
     }
 }

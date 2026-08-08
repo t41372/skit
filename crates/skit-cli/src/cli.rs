@@ -210,9 +210,7 @@ fn add(
         EntryKind::parse(kind.to_owned()).map_err(|error| RepositoryError::InvalidMutation {
             reason: error.to_string(),
         })?;
-    let stored_name = stored_filename(kind.as_str())
-        .map(str::to_owned)
-        .unwrap_or_else(|| fallback_stored_name(&source));
+    let stored_name = stored_name(kind.as_str(), &source);
     let mode = if reference {
         StorageMode::Reference
     } else {
@@ -297,6 +295,12 @@ fn fallback_stored_name(source: &Path) -> String {
         .and_then(|name| name.to_str())
         .unwrap_or("script")
         .to_owned()
+}
+
+fn stored_name(kind: &str, source: &Path) -> String {
+    stored_filename(kind)
+        .map(str::to_owned)
+        .unwrap_or_else(|| fallback_stored_name(source))
 }
 
 fn source_error(operation: &'static str, path: &Path, source: io::Error) -> CliError {

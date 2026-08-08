@@ -187,7 +187,7 @@ fn malformed_set_and_unknown_preset_are_usage_errors() {
         .args(["run", "demo", "--set", "not-an-assignment", "--dry-run"])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("name=value"));
+        .stderr(predicate::str::contains("NAME=VALUE"));
 
     skit(&data, &state)
         .args(["run", "demo", "--preset", "missing", "--dry-run"])
