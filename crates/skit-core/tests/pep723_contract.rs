@@ -27,7 +27,8 @@ print("ok")
 
 #[test]
 fn parser_accepts_crlf_without_rewriting_the_input() {
-    let text = "# /// script\r\n# dependencies = [\r\n#   \"rich\",\r\n# ]\r\n# ///\r\nprint(1)\r\n";
+    let text =
+        "# /// script\r\n# dependencies = [\r\n#   \"rich\",\r\n# ]\r\n# ///\r\nprint(1)\r\n";
     let before = text.as_bytes().to_vec();
     let Some(metadata) = parse_pep723(text, "#") else {
         panic!("expected CRLF block");
@@ -63,9 +64,9 @@ fn block_builder_escapes_toml_strings_and_round_trips() {
 fn injection_follows_shebang_and_python_coding_declaration() {
     let source = "#!/usr/bin/env python3\n# -*- coding: utf-8 -*-\nprint('ok')\n";
     let injected = inject_pep723(source, &["rich".to_owned()], ">=3.12", "#");
-    assert!(injected.starts_with(
-        "#!/usr/bin/env python3\n# -*- coding: utf-8 -*-\n# /// script\n"
-    ));
+    assert!(
+        injected.starts_with("#!/usr/bin/env python3\n# -*- coding: utf-8 -*-\n# /// script\n")
+    );
     assert!(injected.contains("# requires-python = \">=3.12\"\n"));
     assert!(injected.contains("#     \"rich\",\n"));
     assert!(injected.ends_with("\nprint('ok')\n"));

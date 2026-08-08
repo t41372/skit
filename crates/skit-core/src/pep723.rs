@@ -92,7 +92,10 @@ pub fn inject_pep723(
     let block = build_pep723(dependencies, requires_python, leader).replace('\n', newline);
     let lines = physical_lines(text);
     let mut insert_at = 0;
-    if lines.first().is_some_and(|line| line.content.starts_with("#!")) {
+    if lines
+        .first()
+        .is_some_and(|line| line.content.starts_with("#!"))
+    {
         insert_at = 1;
     }
     if leader == "#"
@@ -102,9 +105,7 @@ pub fn inject_pep723(
     {
         insert_at += 1;
     }
-    let byte_offset = lines
-        .get(insert_at)
-        .map_or(text.len(), |line| line.start);
+    let byte_offset = lines.get(insert_at).map_or(text.len(), |line| line.start);
     let prefix = &text[..byte_offset];
     let suffix = &text[byte_offset..];
     let separator = if suffix.is_empty() || suffix.starts_with(['\r', '\n']) {
@@ -151,9 +152,7 @@ fn block_bounds(text: &str, leader: &str) -> Option<(usize, usize)> {
             continue;
         }
         if content == closer {
-            let end = lines
-                .get(index + 1)
-                .map_or(text.len(), |next| next.start);
+            let end = lines.get(index + 1).map_or(text.len(), |next| next.start);
             return opening.map(|(_, start)| (start, end));
         }
         if content != leader && !content.starts_with(&format!("{leader} ")) {
@@ -195,11 +194,7 @@ fn coding_declaration(line: &str) -> bool {
 }
 
 fn source_newline(text: &str) -> &'static str {
-    if text.contains("\r\n") {
-        "\r\n"
-    } else {
-        "\n"
-    }
+    if text.contains("\r\n") { "\r\n" } else { "\n" }
 }
 
 fn toml_basic_string(value: &str) -> String {
@@ -212,8 +207,9 @@ fn toml_basic_string(value: &str) -> String {
             '\n' => output.push_str("\\n"),
             '\r' => output.push_str("\\r"),
             '\t' => output.push_str("\\t"),
-            character if character < ' '
-                || matches!(character, '\u{7f}' | '\u{85}' | '\u{2028}' | '\u{2029}') =>
+            character
+                if character < ' '
+                    || matches!(character, '\u{7f}' | '\u{85}' | '\u{2028}' | '\u{2029}') =>
             {
                 use std::fmt::Write as _;
                 let _ = write!(output, "\\u{:04X}", u32::from(character));
