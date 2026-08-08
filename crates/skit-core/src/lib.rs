@@ -3,11 +3,12 @@
 use std::collections::BTreeMap;
 use std::error::Error as StdError;
 use std::fmt;
-use std::fs;
-use std::io;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use atomic_write_file::AtomicWriteFile;
+use serde::{Deserialize, Serialize};
 
 /// The filesystem roots that skit owns.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,12 +67,16 @@ fn interpolation_enabled() -> bool {
     true
 }
 
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
 /// The schema stored in one `scripts/<slug>/meta.toml` file.
 ///
-/// Only `name` and `kind` are required. The remaining fields use the same defaults as
-/// the Python implementation. Unknown fields are retained so a newer schema does not
+/// Only `name` and `kind` are required when reading. Other fields use the same defaults
+/// as the Python implementation. Unknown fields are retained so a newer schema does not
 /// become unreadable only because this build does not know one key yet.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct ScriptMeta {
     #[serde(default = "schema_v1")]
     pub schema: u32,
@@ -89,23 +94,26 @@ pub struct ScriptMeta {
     pub workdir: String,
     #[serde(default)]
     pub description: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub template: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dependencies: Option<Vec<String>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub requires_python: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub params: Option<Vec<String>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub interpreter: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub runner: String,
-    #[serde(default = "interpolation_enabled")]
+    #[serde(
+        default = "interpolation_enabled",
+        skip_serializing_if = "is_true"
+    )]
     pub interpolate: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub needs: Option<Vec<String>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parameters: Option<Vec<toml::Table>>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, toml::Value>,
@@ -165,6 +173,14 @@ pub enum Error {
         path: PathBuf,
         source: toml::de::Error,
     },
+    SerializeMeta {
+        path: PathBuf,
+        source: toml::ser::Error,
+    },
+    InvalidName,
+    NameConflict {
+        name: String,
+    },
     NotFound {
         query: String,
     },
@@ -173,10 +189,17 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Io { path, source } => write!(formatter, "cannot access {}: {source}", path.display()),
+            Self::Io { path, source } => {
+                write!(formatter, "cannot access {}: {source}", path.display())
+            }
             Self::InvalidMeta { path, source } => {
                 write!(formatter, "cannot parse {}: {source}", path.display())
             }
+            Self::SerializeMeta { path, source } => {
+                write!(formatter, "cannot encode {}: {source}", path.display())
+            }
+            Self::InvalidName => write!(formatter, "a name is required"),
+            Self::NameConflict { name } => write!(formatter, "the name is already in use: {name}"),
             Self::NotFound { query } => write!(formatter, "library entry not found: {query}"),
         }
     }
@@ -187,15 +210,13 @@ impl StdError for Error {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::InvalidMeta { source, .. } => Some(source),
-            Self::NotFound { .. } => None,
+            Self::SerializeMeta { source, .. } => Some(source),
+            Self::InvalidName | Self::NameConflict { .. } | Self::NotFound { .. } => None,
         }
     }
 }
 
-/// A read-only view of the skit library.
-///
-/// Write APIs will be added only after compatibility tests define their atomicity and
-/// downgrade behavior. Reads never repair or migrate old files.
+/// A filesystem view of the skit library.
 #[derive(Debug, Clone)]
 pub struct Store {
     roots: LibraryRoots,
@@ -216,8 +237,8 @@ impl Store {
 
     /// List valid entries without changing the registry or metadata files.
     ///
-    /// Corrupt entry metadata is skipped. This matches the existing library behavior:
-    /// one damaged entry must not make every healthy entry disappear.
+    /// Corrupt entry metadata is skipped. One damaged entry must not hide healthy
+    /// entries.
     ///
     /// # Errors
     ///
@@ -255,9 +276,8 @@ impl Store {
             let Ok(meta) = read_meta(&meta_path) else {
                 continue;
             };
-            let slug = item.file_name().to_string_lossy().into_owned();
             entries.push(EntrySummary {
-                slug,
+                slug: item.file_name().to_string_lossy().into_owned(),
                 name: meta.name,
                 kind: meta.kind,
                 mode: meta.mode,
@@ -339,10 +359,131 @@ impl Store {
     /// Missing or corrupt state is treated as no history, as in the Python version.
     #[must_use]
     pub fn last_run(&self, slug: &str) -> Option<RunStamp> {
-        let path = self.roots.state_dir.join("values").join(format!("{slug}.toml"));
+        let path = self
+            .roots
+            .state_dir
+            .join("values")
+            .join(format!("{slug}.toml"));
         let text = fs::read_to_string(path).ok()?;
         toml::from_str::<StateFile>(&text).ok()?.last_run
     }
+
+    /// Change an entry description without changing any other metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the entry cannot be resolved, locked, encoded, or written.
+    pub fn update_description(&self, query: &str, description: &str) -> Result<Entry, Error> {
+        let initial = self.resolve(query)?;
+        let lock_path = self.entry_lock_path(&initial.slug);
+        let _lock = acquire_lock(&lock_path)?;
+        let mut entry = self.resolve(&initial.slug)?;
+        entry.meta.description = description.trim().to_owned();
+        write_meta(&entry.dir.join("meta.toml"), &entry.meta)?;
+        Ok(entry)
+    }
+
+    /// Change an entry display name. The slug and state path do not change.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty or duplicate name, or when the metadata cannot be
+    /// locked, encoded, or written.
+    pub fn rename(&self, query: &str, new_name: &str) -> Result<Entry, Error> {
+        let new_name = new_name.trim();
+        if new_name.is_empty() {
+            return Err(Error::InvalidName);
+        }
+
+        let initial = self.resolve(query)?;
+        let entry_lock_path = self.entry_lock_path(&initial.slug);
+        let _entry_lock = acquire_lock(&entry_lock_path)?;
+        let mut entry = self.resolve(&initial.slug)?;
+
+        let registry_lock_path = self.roots.data_dir.join("registry.native.lock");
+        let _registry_lock = acquire_lock(&registry_lock_path)?;
+        if self
+            .list()?
+            .iter()
+            .any(|other| other.slug != entry.slug && other.name == new_name)
+        {
+            return Err(Error::NameConflict {
+                name: new_name.to_owned(),
+            });
+        }
+
+        entry.meta.name = new_name.to_owned();
+        write_meta(&entry.dir.join("meta.toml"), &entry.meta)?;
+        Ok(entry)
+    }
+
+    /// Remove an entry and its remembered values.
+    ///
+    /// A reference entry stores only metadata in the library. Its original source is
+    /// outside the entry directory and is never removed here.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the entry cannot be resolved, locked, or removed.
+    pub fn remove(&self, query: &str) -> Result<String, Error> {
+        let initial = self.resolve(query)?;
+        let lock_path = self.entry_lock_path(&initial.slug);
+        let _lock = acquire_lock(&lock_path)?;
+        let entry = self.resolve(&initial.slug)?;
+        let removed_name = entry.meta.name.clone();
+
+        fs::remove_dir_all(&entry.dir).map_err(|source| Error::Io {
+            path: entry.dir.clone(),
+            source,
+        })?;
+        let state_path = self
+            .roots
+            .state_dir
+            .join("values")
+            .join(format!("{}.toml", entry.slug));
+        match fs::remove_file(&state_path) {
+            Ok(()) => {}
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(Error::Io {
+                    path: state_path,
+                    source,
+                });
+            }
+        }
+        Ok(removed_name)
+    }
+
+    fn entry_lock_path(&self, slug: &str) -> PathBuf {
+        self.roots
+            .data_dir
+            .join(".locks")
+            .join(format!("{slug}.meta.lock"))
+    }
+}
+
+fn acquire_lock(path: &Path) -> Result<File, Error> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|source| Error::Io {
+            path: parent.to_owned(),
+            source,
+        })?;
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|source| Error::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+    file.lock().map_err(|source| Error::Io {
+        path: path.to_owned(),
+        source,
+    })?;
+    Ok(file)
 }
 
 fn read_meta(path: &Path) -> Result<ScriptMeta, Error> {
@@ -351,6 +492,25 @@ fn read_meta(path: &Path) -> Result<ScriptMeta, Error> {
         source,
     })?;
     toml::from_str(&text).map_err(|source| Error::InvalidMeta {
+        path: path.to_owned(),
+        source,
+    })
+}
+
+fn write_meta(path: &Path, meta: &ScriptMeta) -> Result<(), Error> {
+    let text = toml::to_string(meta).map_err(|source| Error::SerializeMeta {
+        path: path.to_owned(),
+        source,
+    })?;
+    let mut file = AtomicWriteFile::open(path).map_err(|source| Error::Io {
+        path: path.to_owned(),
+        source,
+    })?;
+    file.write_all(text.as_bytes()).map_err(|source| Error::Io {
+        path: path.to_owned(),
+        source,
+    })?;
+    file.commit().map_err(|source| Error::Io {
         path: path.to_owned(),
         source,
     })
