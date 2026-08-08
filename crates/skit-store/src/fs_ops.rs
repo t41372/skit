@@ -38,10 +38,7 @@ pub(crate) fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("state");
-    let temp = parent.join(format!(
-        ".{name}.{}.tmp",
-        EntryId::generate().as_str()
-    ));
+    let temp = parent.join(format!(".{name}.{}.tmp", EntryId::generate().as_str()));
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
