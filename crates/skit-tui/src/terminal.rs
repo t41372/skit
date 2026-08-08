@@ -52,11 +52,16 @@ where
                 terminal.show_cursor()?;
                 suspend_terminal()?;
                 let result = host(effect);
+                if result.as_ref().is_ok_and(|action| *action == Action::Quit) {
+                    return Ok(());
+                }
                 resume_terminal()?;
                 terminal.clear()?;
                 match result {
                     Ok(action) => {
-                        state.update(action);
+                        if state.update(action) == Effect::Quit {
+                            break;
+                        }
                     }
                     Err(error) => {
                         state.update(Action::SetStatus(error.to_string()));

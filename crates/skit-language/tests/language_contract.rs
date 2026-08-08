@@ -296,6 +296,13 @@ print('ok')
         external_dependencies("python", python),
         ["httpx>=0.28", "rich"]
     );
+    assert_eq!(
+        external_dependencies(
+            "python",
+            "import requests\nimport os, json\nfrom rich.console import Console\nfrom .local import value\n",
+        ),
+        ["requests", "rich"]
+    );
 
     let js = r#"
 import React from "react";
@@ -308,6 +315,22 @@ const chalk = require("chalk");
         external_dependencies("js", js),
         ["@scope/pkg", "chalk", "react"]
     );
+}
+
+#[test]
+fn parser_backed_languages_degrade_together_for_invalid_source() {
+    for (kind, source) in [
+        ("shell", "if then\nNAME=value\n"),
+        ("js", "const value = {;\nimport x from 'pkg';\n"),
+        ("ts", "interface X { value: ; }\nimport x from 'pkg';\n"),
+    ] {
+        assert!(cli_params(kind, source).is_empty(), "kind={kind}");
+        assert!(detect_candidates(kind, source).is_empty(), "kind={kind}");
+        assert!(
+            external_dependencies(kind, source).is_empty(),
+            "kind={kind}"
+        );
+    }
 }
 
 #[test]

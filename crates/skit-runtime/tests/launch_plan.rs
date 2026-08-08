@@ -113,6 +113,32 @@ fn python_uses_uv_no_project_and_keeps_reference_dependencies() {
 }
 
 #[test]
+fn python_can_use_a_verified_private_uv_path() {
+    let mut entry = entry("python");
+    let settings = EntrySettings {
+        interpreter: "/data/bin/uv".to_owned(),
+        ..EntrySettings::default()
+    };
+    settings.write_to_meta(&mut entry.meta);
+    let mut probe = probe_for("/data/scripts/demo/script.py");
+    probe
+        .programs
+        .insert("/data/bin/uv".to_owned(), PathBuf::from("/data/bin/uv"));
+
+    let plan = build_launch_plan(
+        &entry,
+        &paths("/data/scripts/demo/script.py"),
+        &Assembly::default(),
+        None,
+        None,
+        &probe,
+    )
+    .unwrap();
+
+    assert_eq!(plan.program, PathBuf::from("/data/bin/uv"));
+}
+
+#[test]
 fn direct_and_interpreted_kinds_use_the_expected_program_shapes() {
     let cases = [
         ("shell", "bash", vec!["/copy/script.sh"]),

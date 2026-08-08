@@ -93,6 +93,9 @@ pub enum LanguageError {
     /// Inline metadata is malformed or cannot be encoded.
     #[error("inline metadata is not valid: {reason}")]
     InvalidMetadata { reason: String },
+    /// A parser-backed source has syntax errors.
+    #[error("source is not valid {kind} syntax")]
+    InvalidSource { kind: String },
 }
 
 /// Effective PEP 723 fields used by Python copy entries.
@@ -177,6 +180,9 @@ fn basename(value: &str) -> &str {
 /// Read managed parameter declarations from the inline metadata block.
 #[must_use]
 pub fn managed_params(kind: &str, text: &str) -> Vec<ParamDecl> {
+    if !parser_accepts(kind, text) {
+        return Vec::new();
+    }
     let Some(leader) = metadata_leader(kind) else {
         return Vec::new();
     };
@@ -377,6 +383,7 @@ fn rewrite_inline_metadata(
 
 /// Convert one shell constant to an environment-default expression.
 pub fn normalize_shell_default(text: &str, name: &str) -> Result<String, LanguageError> {
+    require_valid_source("shell", text)?;
     let name_pattern = regex::escape(name);
     let pattern = Regex::new(&format!(
         r"(?m)^([ \t]*{name_pattern}[ \t]*=[ \t]*)([^#$\r\n][^#\r\n]*?)([ \t]*(?:#.*)?)(\r?)$"
@@ -528,6 +535,9 @@ fn toml_to_json(value: &TomlValue) -> JsonValue {
 /// Read a static CLI declaration for a supported language.
 #[must_use]
 pub fn cli_params(kind: &str, text: &str) -> Vec<ParamDecl> {
+    if !parser_accepts(kind, text) {
+        return Vec::new();
+    }
     match kind {
         "python" => python_cli_params(text),
         "shell" => shell_cli_params(text),
@@ -781,6 +791,9 @@ fn powershell_cli_params(text: &str) -> Vec<ParamDecl> {
 /// Detect source-bound values that skit can manage.
 #[must_use]
 pub fn detect_candidates(kind: &str, text: &str) -> Vec<ParamDecl> {
+    if !parser_accepts(kind, text) {
+        return Vec::new();
+    }
     match kind {
         "python" => python_candidates(text),
         "shell" => shell_candidates(text),
@@ -990,6 +1003,7 @@ pub fn inject_values(
     declarations: &[ParamDecl],
     values: &BTreeMap<String, String>,
 ) -> Result<String, LanguageError> {
+    require_valid_source(kind, text)?;
     let mut output = text.to_owned();
     for declaration in declarations {
         if declaration.delivery != ParameterDelivery::Inject {
@@ -1195,18 +1209,242 @@ fn quote_posix(value: &str) -> String {
 /// Return declared package dependencies found in source text.
 #[must_use]
 pub fn external_dependencies(kind: &str, text: &str) -> Vec<String> {
+    if !parser_accepts(kind, text) {
+        return Vec::new();
+    }
     match kind {
-        "python" => parse_inline_metadata(text, "#")
-            .and_then(|table| table.get("dependencies").cloned())
-            .and_then(|value| value.as_array().cloned())
-            .into_iter()
-            .flatten()
-            .filter_map(|value| value.as_str().map(str::to_owned))
-            .collect(),
+        "python" => {
+            let inline = parse_inline_metadata(text, "#")
+                .and_then(|table| table.get("dependencies").cloned())
+                .and_then(|value| value.as_array().cloned())
+                .into_iter()
+                .flatten()
+                .filter_map(|value| value.as_str().map(str::to_owned))
+                .collect::<Vec<_>>();
+            if inline.is_empty() {
+                python_dependencies(text)
+            } else {
+                inline
+            }
+        }
         "js" | "ts" => javascript_dependencies(text),
         _ => Vec::new(),
     }
 }
+
+fn require_valid_source(kind: &str, text: &str) -> Result<(), LanguageError> {
+    if parser_accepts(kind, text) {
+        Ok(())
+    } else {
+        Err(LanguageError::InvalidSource {
+            kind: kind.to_owned(),
+        })
+    }
+}
+
+fn parser_accepts(kind: &str, text: &str) -> bool {
+    let language = match kind {
+        "shell" => Some(tree_sitter_bash::LANGUAGE),
+        "js" => Some(tree_sitter_javascript::LANGUAGE),
+        "ts" => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT),
+        _ => None,
+    };
+    let Some(language) = language else {
+        return true;
+    };
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&language.into()).is_ok()
+        && parser
+            .parse(text, None)
+            .is_some_and(|tree| !tree.root_node().has_error())
+}
+
+fn python_dependencies(text: &str) -> Vec<String> {
+    let mut output = BTreeSet::new();
+    for line in text.lines().map(str::trim) {
+        if let Some(imports) = line.strip_prefix("import ") {
+            for item in imports.split(',') {
+                if let Some(name) = item.split_whitespace().next() {
+                    add_python_dependency(&mut output, name);
+                }
+            }
+        } else if let Some(from) = line.strip_prefix("from ")
+            && let Some(name) = from.split_whitespace().next()
+            && !name.starts_with('.')
+        {
+            add_python_dependency(&mut output, name);
+        }
+    }
+    output.into_iter().collect()
+}
+
+fn add_python_dependency(output: &mut BTreeSet<String>, import: &str) {
+    let name = import.split('.').next().unwrap_or_default();
+    if !name.is_empty() && !PYTHON_STDLIB.contains(&name) {
+        output.insert(name.to_owned());
+    }
+}
+
+const PYTHON_STDLIB: &[&str] = &[
+    "__future__",
+    "_thread",
+    "abc",
+    "argparse",
+    "array",
+    "ast",
+    "asyncio",
+    "base64",
+    "binascii",
+    "bisect",
+    "builtins",
+    "bz2",
+    "calendar",
+    "cmath",
+    "cmd",
+    "code",
+    "codecs",
+    "collections",
+    "colorsys",
+    "compileall",
+    "concurrent",
+    "configparser",
+    "contextlib",
+    "contextvars",
+    "copy",
+    "csv",
+    "ctypes",
+    "curses",
+    "dataclasses",
+    "datetime",
+    "decimal",
+    "difflib",
+    "dis",
+    "doctest",
+    "email",
+    "encodings",
+    "enum",
+    "errno",
+    "faulthandler",
+    "fcntl",
+    "filecmp",
+    "fileinput",
+    "fnmatch",
+    "fractions",
+    "ftplib",
+    "functools",
+    "gc",
+    "getopt",
+    "getpass",
+    "gettext",
+    "glob",
+    "graphlib",
+    "grp",
+    "gzip",
+    "hashlib",
+    "heapq",
+    "hmac",
+    "html",
+    "http",
+    "imaplib",
+    "importlib",
+    "inspect",
+    "io",
+    "ipaddress",
+    "itertools",
+    "json",
+    "keyword",
+    "linecache",
+    "locale",
+    "logging",
+    "lzma",
+    "mailbox",
+    "math",
+    "mimetypes",
+    "mmap",
+    "multiprocessing",
+    "netrc",
+    "numbers",
+    "operator",
+    "os",
+    "pathlib",
+    "pdb",
+    "pickle",
+    "pickletools",
+    "pkgutil",
+    "platform",
+    "plistlib",
+    "pprint",
+    "profile",
+    "pstats",
+    "pty",
+    "pwd",
+    "py_compile",
+    "pyclbr",
+    "queue",
+    "quopri",
+    "random",
+    "re",
+    "readline",
+    "reprlib",
+    "resource",
+    "rlcompleter",
+    "runpy",
+    "sched",
+    "secrets",
+    "select",
+    "selectors",
+    "shelve",
+    "shlex",
+    "shutil",
+    "signal",
+    "site",
+    "smtplib",
+    "socket",
+    "socketserver",
+    "sqlite3",
+    "ssl",
+    "stat",
+    "statistics",
+    "string",
+    "stringprep",
+    "struct",
+    "subprocess",
+    "sys",
+    "sysconfig",
+    "tarfile",
+    "tempfile",
+    "textwrap",
+    "threading",
+    "time",
+    "timeit",
+    "tkinter",
+    "token",
+    "tokenize",
+    "tomllib",
+    "trace",
+    "traceback",
+    "tracemalloc",
+    "tty",
+    "turtle",
+    "types",
+    "typing",
+    "unicodedata",
+    "unittest",
+    "urllib",
+    "uuid",
+    "venv",
+    "warnings",
+    "wave",
+    "weakref",
+    "webbrowser",
+    "xml",
+    "xmlrpc",
+    "zipapp",
+    "zipfile",
+    "zipimport",
+    "zlib",
+    "zoneinfo",
+];
 
 fn javascript_dependencies(text: &str) -> Vec<String> {
     let mut output = BTreeSet::new();

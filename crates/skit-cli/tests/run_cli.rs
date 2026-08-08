@@ -195,3 +195,47 @@ fn malformed_set_and_unknown_preset_are_usage_errors() {
         .code(2)
         .stderr(predicate::str::contains("preset"));
 }
+
+#[test]
+fn python_uses_an_existing_verified_private_uv_when_path_has_no_uv() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let entry = data.path().join("scripts/python-demo");
+    fs::create_dir_all(&entry).unwrap();
+    fs::write(entry.join("script.py"), "print('ok')\n").unwrap();
+    fs::write(
+        entry.join("meta.toml"),
+        r#"
+schema = 1
+name = "Python demo"
+kind = "python"
+mode = "copy"
+source = "/old/tool.py"
+source_hash = ""
+added_at = "2026-08-08T00:00:00Z"
+id = "0123456789abcdef0123456789abcdef"
+workdir = "invoke"
+description = ""
+"#,
+    )
+    .unwrap();
+    let bin = data.path().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let uv = bin.join(if cfg!(windows) { "uv.exe" } else { "uv" });
+    fs::write(&uv, "private uv").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut permissions = fs::metadata(&uv).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&uv, permissions).unwrap();
+    }
+
+    skit(&data, &state)
+        .env("PATH", "")
+        .env("SKIT_CONFIG_DIR", state.path())
+        .args(["run", "python-demo", "--dry-run", "--no-input"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(uv.display().to_string()));
+}

@@ -16,8 +16,9 @@ use skit_domain::{Entry, EntryId, EntrySettings};
 use skit_form::form_params;
 use skit_language::{LanguageError, inject_values};
 use skit_runtime::{
-    DependencyError, LaunchError, LaunchPaths, PromptRunner, SystemDependencyCommandRunner,
-    SystemProbe, build_launch_plan, ensure_javascript_dependencies, execute_launch,
+    DependencyError, LaunchError, LaunchPaths, ProgramProbe, PromptRunner,
+    SystemDependencyCommandRunner, SystemProbe, UvBootstrapError, build_launch_plan,
+    ensure_javascript_dependencies, ensure_managed_uv, execute_launch, managed_uv_path,
     resolve_javascript_runtime,
 };
 use skit_store::{ConfigError, FileConfigStore, FileFormStateStore, FileGlobExpander, FileStore};
@@ -89,6 +90,8 @@ pub(crate) enum RunError {
     Launch(#[from] LaunchError),
     #[error(transparent)]
     Dependencies(#[from] DependencyError),
+    #[error(transparent)]
+    Uv(#[from] UvBootstrapError),
     #[error("--set needs NAME=VALUE; got {value:?}")]
     InvalidSet { value: String },
     #[error("unknown parameter in --set: {name}")]
@@ -134,7 +137,10 @@ impl RunError {
             | Self::RawUnsupported { .. }
             | Self::RawConflict => 2,
             Self::Launch(error) => error.exit_code(),
-            Self::Dependencies(DependencyError::InstallerNotFound { .. }) => 126,
+            Self::Dependencies(DependencyError::InstallerNotFound { .. })
+            | Self::Dependencies(DependencyError::InstallFailed { .. })
+            | Self::Dependencies(DependencyError::Io { .. })
+            | Self::Uv(_) => 126,
             Self::RunnerNotFound { .. } => 126,
             Self::State(_)
             | Self::Language(_)
@@ -167,8 +173,26 @@ pub(crate) fn run(
         });
     }
     let config = FileConfigStore::new(resolve_config_dir()?);
-    let entry = apply_runtime_defaults(service.claim_identity(&held)?, &config.settings()?);
-    let settings = EntrySettings::from_meta(&entry.meta);
+    let mut entry = apply_runtime_defaults(service.claim_identity(&held)?, &config.settings()?);
+    let mut settings = EntrySettings::from_meta(&entry.meta);
+    if entry.meta.kind.as_str() == "python"
+        && settings.interpreter.is_empty()
+        && SystemProbe.find_program("uv").is_none()
+    {
+        let mirror = config.mirror()?;
+        let mirror_base =
+            (mirror.enabled && !mirror.uv_binary.is_empty()).then_some(mirror.uv_binary.as_str());
+        if !managed_uv_path(data_store.data_dir()).is_file() {
+            eprintln!(
+                "First Python run: download private uv {}",
+                skit_runtime::UV_VERSION
+            );
+        }
+        settings.interpreter = ensure_managed_uv(data_store.data_dir(), mirror_base)?
+            .display()
+            .to_string();
+        settings.write_to_meta(&mut entry.meta);
+    }
     let state_root = resolve_state_dir()?;
     let state = FormStateService::new(FileFormStateStore::new(&state_root));
     let saved = state.load(&entry.slug);

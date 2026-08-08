@@ -83,7 +83,7 @@ fn edit_creates_a_python_draft_and_removes_it_after_copying() {
         fs::read(sandbox.data.path().join("scripts/draft/script.py")).unwrap(),
         b"print(42)\n"
     );
-    let drafts = sandbox.state.path().join("drafts");
+    let drafts = sandbox.data.path().join("drafts");
     assert!(
         !drafts.exists() || fs::read_dir(drafts).unwrap().next().is_none(),
         "a copied draft must not remain after success"
@@ -105,4 +105,25 @@ fn add_lane_selectors_are_mutually_exclusive() {
         .args(["add", source.to_str().unwrap(), "--edit"])
         .assert()
         .code(2);
+}
+
+#[test]
+fn copied_javascript_adds_static_external_imports_as_private_dependencies() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.data.path().join("tool.mjs");
+    fs::write(
+        &source,
+        "import chalk from 'chalk';\nimport local from './local.mjs';\n",
+    )
+    .unwrap();
+
+    sandbox
+        .command()
+        .args(["add", source.to_str().unwrap(), "--name", "Color"])
+        .assert()
+        .success();
+
+    let meta = fs::read_to_string(sandbox.data.path().join("scripts/color/meta.toml")).unwrap();
+    assert!(meta.contains("dependencies = [\"chalk\"]"));
+    assert!(!meta.contains("./local.mjs"));
 }

@@ -20,11 +20,11 @@ use skit_domain::{
 use skit_form::form_params;
 use skit_i18n::{Locale, detect_locale, render as localize};
 use skit_language::{
-    detect_candidates, infer_kind, managed_params, normalize_shell_default, placeholder_params,
-    read_uv_metadata, write_managed_params, write_uv_metadata,
+    detect_candidates, external_dependencies, infer_kind, managed_params, normalize_shell_default,
+    placeholder_params, read_uv_metadata, write_managed_params, write_uv_metadata,
 };
 use skit_runtime::{
-    DependencyError, ProgramProbe, SystemProbe, clear_javascript_dependencies,
+    DependencyError, ProgramProbe, SystemProbe, clear_javascript_dependencies, managed_uv_path,
     resolve_javascript_runtime,
 };
 use skit_store::{ConfigError, FileConfigStore, FileFormStateStore, PromptRunner};
@@ -666,7 +666,7 @@ fn add_draft(
     prompt: bool,
 ) -> Result<(), CliError> {
     validate_prompt_runner(options.runner.as_deref())?;
-    let drafts = resolve_state_dir()?.join("drafts");
+    let drafts = service.repository().data_dir().join("drafts");
     fs::create_dir_all(&drafts)?;
     let suffix = if prompt { ".prompt.md" } else { "" };
     let draft = drafts.join(format!(
@@ -1182,7 +1182,7 @@ fn add(service: &LibraryService<FileStore>, options: AddOptions) -> Result<(), C
         dependencies,
         requires_python,
     } = options;
-    let dependencies = dependencies
+    let mut dependencies = dependencies
         .into_iter()
         .map(|item| item.trim().to_owned())
         .filter(|item| !item.is_empty())
@@ -1263,6 +1263,9 @@ fn add(service: &LibraryService<FileStore>, options: AddOptions) -> Result<(), C
             reason: error.to_string(),
         })?;
     let kind_name = kind.as_str().to_owned();
+    if dependencies.is_empty() {
+        dependencies = external_dependencies(&kind_name, &source_text);
+    }
     let supports_dependencies = matches!(kind_name.as_str(), "python" | "js" | "ts");
     if !dependencies.is_empty() && !supports_dependencies {
         return Err(CliError::Usage(format!(
@@ -2061,7 +2064,10 @@ fn doctor(
     let config_location = resolve_config_dir()?;
     let config = FileConfigStore::new(&config_location);
     let probe = SystemProbe;
-    let uv = probe.find_program("uv");
+    let private_uv = managed_uv_path(store.data_dir());
+    let uv = probe
+        .find_program("uv")
+        .or_else(|| probe.is_executable(&private_uv).then_some(private_uv));
     let entries = scan
         .entries
         .iter()
@@ -2081,7 +2087,13 @@ fn doctor(
     let mut needs_missing = BTreeMap::<String, Vec<String>>::new();
     let mut launch_blocked = BTreeMap::<String, String>::new();
     for entry in &entries {
-        let settings = EntrySettings::from_meta(&entry.meta);
+        let mut settings = EntrySettings::from_meta(&entry.meta);
+        if entry.meta.kind.as_str() == "python"
+            && settings.interpreter.is_empty()
+            && let Some(path) = &uv
+        {
+            settings.interpreter = path.display().to_string();
+        }
         let absent = settings
             .needs
             .iter()
@@ -2222,7 +2234,7 @@ fn doctor_launch_block<P: ProgramProbe>(
         }
     }
     let required = match entry.meta.kind.as_str() {
-        "python" => Some("uv".to_owned()),
+        "python" => Some(interpreter_name(settings, "uv")),
         "shell" => Some(if settings.interpreter.is_empty() {
             let configured = config.get("shell.bash_path")?;
             if configured.is_empty() {
@@ -2823,7 +2835,11 @@ fn tui_submit_run(
             extra_args,
         },
     )?;
-    tui_complete(service, &format!("Run finished with exit status {exit}"))
+    if FileConfigStore::new(resolve_config_dir()?).get("after_run")? == "exit" {
+        Ok(UiAction::Quit)
+    } else {
+        tui_complete(service, &format!("Run finished with exit status {exit}"))
+    }
 }
 
 fn tui_submit_settings(

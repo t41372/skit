@@ -332,6 +332,30 @@ fn doctor_requires_uv_only_for_empty_or_python_libraries() {
 }
 
 #[test]
+fn doctor_accepts_the_v040_private_uv_location() {
+    let sandbox = Sandbox::new();
+    let bin = sandbox.data.path().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let uv = bin.join(if cfg!(windows) { "uv.exe" } else { "uv" });
+    fs::write(&uv, "private uv").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut permissions = fs::metadata(&uv).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&uv, permissions).unwrap();
+    }
+
+    sandbox
+        .command()
+        .env("PATH", "")
+        .args(["doctor", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(uv.display().to_string()));
+}
+
+#[test]
 fn agent_install_writes_the_exact_bundled_skill_to_an_explicit_target() {
     let sandbox = Sandbox::new();
     let target = sandbox.data.path().join("agent");

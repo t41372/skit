@@ -109,6 +109,32 @@ fn renderer_uses_the_explicit_frontend_locale() {
     assert!(text.contains("詳 細 資 料"));
     assert!(text.contains("結 束"));
     assert!(!text.contains("Library"));
+
+    let mut form_state = state();
+    form_state.update(Action::Present(Screen::Form(FormView {
+        purpose: FormPurpose::Add,
+        title: "Add an entry".to_owned(),
+        selector: None,
+        fields: vec![FormField::text("source", "Source path", "")],
+        focused: 0,
+        submit_label: "Save".to_owned(),
+    })));
+    terminal.clear().unwrap();
+    terminal
+        .draw(|frame| {
+            let _ = render_localized(frame, &form_state, Locale::ZhTw);
+        })
+        .unwrap();
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(text.contains("新 增 項 目"));
+    assert!(text.contains("來 源 路 徑"), "{text:?}");
+    assert!(text.contains("儲 存"), "{text:?}");
 }
 
 #[test]

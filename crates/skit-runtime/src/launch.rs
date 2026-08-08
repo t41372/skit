@@ -219,7 +219,7 @@ fn python_plan<P: ProgramProbe>(
     probe: &P,
 ) -> Result<(PathBuf, Vec<String>, Vec<String>), LaunchError> {
     require_file(&paths.script, probe)?;
-    let uv = require_program("uv", probe)?;
+    let uv = require_program(interpreter(settings, "uv"), probe)?;
     let mut prefix = vec!["run".to_owned(), "--no-project".to_owned()];
     if !settings.requires_python.is_empty() {
         prefix.push("--python".to_owned());

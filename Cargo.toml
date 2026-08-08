@@ -26,6 +26,7 @@ repository = "https://github.com/t41372/skit"
 clap = { version = "4.6.6", features = ["derive"] }
 clap_complete = { version = "4.6.9", features = ["unstable-dynamic"] }
 glob = "0.3.4"
+flate2 = "1.1.9"
 ratatui-core = { version = "0.1.2", features = ["std", "layout-cache"] }
 ratatui-widgets = { version = "0.3.2", default-features = false, features = ["std"] }
 ratatui-crossterm = "0.1.2"
@@ -33,10 +34,15 @@ regex = "1.13.1"
 rpassword = "7.5.4"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+sha2 = "0.11.0"
 shlex = "2.0.1"
-thiserror = "2.0.19"
+thiserror = "2.0.20"
 time = { version = "0.3.55", features = ["formatting", "local-offset"] }
 toml = "1.1.4"
+tree-sitter = "0.26.11"
+tree-sitter-bash = "0.25.1"
+tree-sitter-javascript = "0.25.0"
+tree-sitter-typescript = "0.23.2"
 uuid = { version = "1.24.0", features = ["serde", "v4"] }
 unicode-width = "0.2.2"
 
@@ -44,6 +50,9 @@ assert_cmd = "2.2.2"
 predicates = "3.1.4"
 proptest = "1.11.0"
 tempfile = "3.27.0"
+tar = "0.4.46"
+ureq = { version = "3.3.0", default-features = false, features = ["rustls"] }
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 skit-domain = { path = "crates/skit-domain" }
 skit-i18n = { path = "crates/skit-i18n" }

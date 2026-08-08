@@ -19,7 +19,7 @@ use ratatui_widgets::{
     list::{List, ListItem, ListState},
     paragraph::{Paragraph, Wrap},
 };
-use skit_i18n::{Locale, text};
+use skit_i18n::{Locale, render as localize, text};
 use skit_ui::{Action, FormView, InputMode, LibraryState, ReportView, Screen};
 use unicode_width::UnicodeWidthStr as _;
 
@@ -104,8 +104,8 @@ pub fn render_localized(frame: &mut Frame, state: &LibraryState, locale: Locale)
     render_header(frame, areas[0], state, locale);
     let mut geometry = match state.screen() {
         Screen::Library => render_library(frame, areas[1], state, locale),
-        Screen::Form(form) => render_form(frame, areas[1], form),
-        Screen::Report(report) => render_report(frame, areas[1], report),
+        Screen::Form(form) => render_form(frame, areas[1], form, locale),
+        Screen::Report(report) => render_report(frame, areas[1], report, locale),
         Screen::ConfirmRemove { name, .. } => render_confirmation(frame, areas[1], name, locale),
     };
     geometry
@@ -133,8 +133,8 @@ fn render_header(frame: &mut Frame, area: Rect, state: &LibraryState, locale: Lo
                 format!("{mode}: {}{cursor}", state.query())
             }
         }
-        Screen::Form(form) => form.title.clone(),
-        Screen::Report(report) => report.title.clone(),
+        Screen::Form(form) => localize(locale, &form.title),
+        Screen::Report(report) => localize(locale, &report.title),
         Screen::ConfirmRemove { .. } => text(locale, "Confirm removal").to_owned(),
     };
     frame.render_widget(
@@ -192,9 +192,11 @@ fn render_library(
                 entry.name.as_str(),
                 Style::default().add_modifier(Modifier::BOLD),
             )]),
-            Line::from(format!("slug: {}", entry.slug)),
-            Line::from(format!("kind: {}", entry.kind)),
-            Line::from(format!("mode: {:?}", entry.mode).to_lowercase()),
+            Line::from(format!("{}: {}", text(locale, "Slug"), entry.slug)),
+            Line::from(format!("{}: {}", text(locale, "Kind"), entry.kind)),
+            Line::from(
+                format!("{}: {:?}", text(locale, "Storage mode"), entry.mode).to_lowercase(),
+            ),
             Line::from(""),
             Line::from(entry.description.as_str()),
         ],
@@ -216,10 +218,10 @@ fn render_library(
     }
 }
 
-fn render_form(frame: &mut Frame, area: Rect, form: &FormView) -> ViewGeometry {
+fn render_form(frame: &mut Frame, area: Rect, form: &FormView, locale: Locale) -> ViewGeometry {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" {} ", form.title));
+        .title(format!(" {} ", localize(locale, &form.title)));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let row_height = 2_u16;
@@ -252,7 +254,7 @@ fn render_form(frame: &mut Frame, area: Rect, form: &FormView) -> ViewGeometry {
         } else {
             field.value.replace('\n', " ↵ ")
         };
-        let line = format!("{marker} {}: {value}", field.label);
+        let line = format!("{marker} {}: {value}", localize(locale, &field.label));
         frame.render_widget(
             Paragraph::new(line).style(if index == form.focused {
                 Style::default().add_modifier(Modifier::BOLD)
@@ -273,11 +275,23 @@ fn render_form(frame: &mut Frame, area: Rect, form: &FormView) -> ViewGeometry {
     }
 }
 
-fn render_report(frame: &mut Frame, area: Rect, report: &ReportView) -> ViewGeometry {
+fn render_report(
+    frame: &mut Frame,
+    area: Rect,
+    report: &ReportView,
+    locale: Locale,
+) -> ViewGeometry {
     let lines = report
         .items
         .iter()
-        .map(|item| Line::from(format!("[{}] {}: {}", item.status, item.label, item.detail)))
+        .map(|item| {
+            Line::from(format!(
+                "[{}] {}: {}",
+                localize(locale, &item.status),
+                localize(locale, &item.label),
+                localize(locale, &item.detail)
+            ))
+        })
         .collect::<Vec<_>>();
     frame.render_widget(
         Paragraph::new(lines)
@@ -337,7 +351,7 @@ fn render_footer(
 
     if let Some(status) = state.status() {
         let status_area = Rect::new(inner.x, inner.bottom().saturating_sub(1), inner.width, 1);
-        frame.render_widget(Paragraph::new(status), status_area);
+        frame.render_widget(Paragraph::new(localize(locale, status)), status_area);
     } else if matches!(state.screen(), Screen::Library)
         && !state.diagnostics().is_empty()
         && inner.width > 50
@@ -362,7 +376,7 @@ fn render_footer(
 fn footer_labels(state: &LibraryState, locale: Locale, compact: bool) -> Vec<(String, HitAction)> {
     let chip = |wide: &str, short: &str, label: &str, action| {
         let key = if compact { short } else { wide };
-        (format!("[{key}] {}", text(locale, label)), action)
+        (format!("[{key}] {}", localize(locale, label)), action)
     };
     match state.screen() {
         Screen::Library => vec![
