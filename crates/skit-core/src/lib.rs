@@ -55,7 +55,9 @@ pub use pep723::{
 pub use presets::{PresetFromLastError, save_preset_from_last};
 pub use process::{RunError, run_launch};
 pub use programs::ProgramSearch;
-pub use python_add::{PythonAddRequest, add_python_file};
+pub use python_add::{
+    PythonAddError, PythonAddRequest, add_python_file, add_python_file_with_params,
+};
 pub use python_analysis::suggest_python_dependencies;
 pub use python_inject::{PythonInjectError, inject_python_consts, inject_python_managed};
 pub use python_managed::{PythonManagedAnalysis, PythonManagedCandidate, analyze_python_managed};
