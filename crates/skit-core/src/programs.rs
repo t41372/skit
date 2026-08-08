@@ -57,6 +57,17 @@ impl ProgramSearch {
         Self::new(platform, paths, pathext)
     }
 
+    /// Append one lower-priority program directory.
+    ///
+    /// Existing PATH-derived directories stay first. Frontends use this for skit's
+    /// private `data/bin` runtime cache so a user's explicit PATH always wins while
+    /// Python-era managed tools such as `uv` remain discoverable after upgrade.
+    #[must_use]
+    pub fn with_fallback_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.paths.push(path.into());
+        self
+    }
+
     fn candidates(&self, name: &str) -> Vec<PathBuf> {
         let name_path = Path::new(name);
         let has_parent = name_path
