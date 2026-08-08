@@ -242,10 +242,8 @@ fn input_preamble_offset(root: Node<'_>, source: &str) -> usize {
     }
     while statements.get(index).is_some_and(|statement| {
         statement.kind() == "import_from_statement"
-            && statement
-                .child_by_field_name("module_name")
-                .and_then(|module| node_text(module, source))
-                == Some("__future__")
+            && node_text(*statement, source)
+                .is_some_and(|text| text.trim_start().starts_with("from __future__ import "))
     }) {
         index += 1;
     }
