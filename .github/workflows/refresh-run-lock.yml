@@ -1,0 +1,43 @@
+name: Refresh run lock
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/refresh-run-lock.yml'
+
+permissions: {}
+
+jobs:
+  refresh:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.head_ref }}
+          persist-credentials: true
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup default 1.97.1
+      - name: Refresh Cargo lock
+        run: cargo update
+      - name: Check new packages
+        run: |
+          cargo tree -p skit-form
+          cargo tree -p skit-cli-rs | grep -E 'skit-form|skit-language|skit-runtime|time v0.3.55'
+      - name: Commit Cargo lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add Cargo.lock
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'build: lock run composition dependencies'
+          git push origin "HEAD:${{ github.head_ref }}"
