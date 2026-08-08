@@ -205,7 +205,7 @@ fn candidate_detection_covers_rewrite_and_environment_idioms() {
     assert_eq!(candidates.len(), 2);
     assert_eq!(candidates[0].binding, ParameterBinding::EnvDefault);
     assert_eq!(candidates[0].delivery, ParameterDelivery::Env);
-    assert_eq!(candidates[0].env_target, "COLOR");
+    assert_eq!(candidates[0].env_var(), "COLOR");
     assert_eq!(candidates[1].binding, ParameterBinding::Input);
 
     let js = "const PORT = 3000;\n";

@@ -16,6 +16,7 @@ thiserror.workspace = true
 tree-sitter.workspace = true
 tree-sitter-bash.workspace = true
 tree-sitter-javascript.workspace = true
+tree-sitter-python.workspace = true
 tree-sitter-typescript.workspace = true
 skit-domain.workspace = true
 

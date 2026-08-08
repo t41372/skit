@@ -859,7 +859,6 @@ fn shell_candidates(text: &str) -> Vec<ParamDecl> {
             declaration.binding = ParameterBinding::EnvDefault;
             declaration.delivery = ParameterDelivery::Env;
             declaration.default = Some(ParameterValue::String(unquote_shell(default)));
-            declaration.env_target = name.to_owned();
             push_unique(&mut output, declaration);
             continue;
         }
@@ -932,7 +931,6 @@ fn fish_candidates(text: &str) -> Vec<ParamDecl> {
             let mut declaration = ParamDecl::new(name);
             declaration.binding = ParameterBinding::EnvDefault;
             declaration.delivery = ParameterDelivery::Env;
-            declaration.env_target = name.to_owned();
             declaration.default = Some(ParameterValue::String(unquote_shell(
                 captures.get(3)?.as_str().trim(),
             )));
@@ -1023,6 +1021,7 @@ pub fn inject_values(
             }
         };
     }
+    require_valid_source(kind, &output)?;
     Ok(output)
 }
 
@@ -1034,15 +1033,16 @@ fn inject_python(
     let name = regex::escape(&declaration.name);
     if declaration.binding == ParameterBinding::Input {
         let pattern = Regex::new(&format!(
-            r"(?m)^([ \t]*{name}[ \t]*=[ \t]*)input[ \t]*\([^\r\n]*\)([ \t]*(?:#.*)?$)"
+            r"(?m)^([ \t]*{name}[ \t]*=[ \t]*)input[ \t]*\([^\r\n]*\)([ \t]*(?:#[^\r\n]*)?)(\r?)$"
         ))
         .expect("escaped Python input pattern");
         return replace_first(text, &pattern, |captures| {
             format!(
-                "{}{}{}",
+                "{}{}{}{}",
                 captures.get(1).map_or("", |item| item.as_str()),
                 quote_python_string(value),
-                captures.get(2).map_or("", |item| item.as_str())
+                captures.get(2).map_or("", |item| item.as_str()),
+                captures.get(3).map_or("", |item| item.as_str())
             )
         })
         .ok_or_else(|| LanguageError::BindingNotFound {
@@ -1051,7 +1051,7 @@ fn inject_python(
     }
 
     let pattern = Regex::new(&format!(
-        r"(?m)^([ \t]*{name}[ \t]*=[ \t]*)([^#\r\n]+?)([ \t]*(?:#.*)?$)"
+        r"(?m)^([ \t]*{name}[ \t]*=[ \t]*)([^#\r\n]+?)([ \t]*(?:#[^\r\n]*)?)(\r?)$"
     ))
     .expect("escaped Python assignment pattern");
     let Some(captures) = pattern.captures(text) else {
@@ -1065,10 +1065,11 @@ fn inject_python(
     let literal = replacement_literal(source, value, quote_python_string);
     replace_first(text, &pattern, |captures| {
         format!(
-            "{}{}{}",
+            "{}{}{}{}",
             captures.get(1).map_or("", |item| item.as_str()),
             literal,
-            captures.get(3).map_or("", |item| item.as_str())
+            captures.get(3).map_or("", |item| item.as_str()),
+            captures.get(4).map_or("", |item| item.as_str())
         )
     })
     .ok_or_else(|| LanguageError::BindingNotFound {
@@ -1080,11 +1081,11 @@ fn inject_shell(text: &str, declaration: &ParamDecl, value: &str) -> Result<Stri
     let name = regex::escape(&declaration.name);
     let pattern = if declaration.binding == ParameterBinding::Input {
         Regex::new(&format!(
-            r"(?m)^([ \t]*)read(?:[ \t]+-r)?[ \t]+-p[ \t]+[^\r\n]+[ \t]+{name}[ \t]*$"
+            r"(?m)^([ \t]*)read(?:[ \t]+-r)?[ \t]+-p[ \t]+[^\r\n]+[ \t]+{name}[ \t]*(\r?)$"
         ))
         .expect("escaped shell read pattern")
     } else {
-        Regex::new(&format!(r"(?m)^([ \t]*{name}=)[^\r\n]*$"))
+        Regex::new(&format!(r"(?m)^([ \t]*{name}=)[^\r\n]*(\r?)$"))
             .expect("escaped shell assignment pattern")
     };
     let Some(captures) = pattern.captures(text) else {
@@ -1094,16 +1095,18 @@ fn inject_shell(text: &str, declaration: &ParamDecl, value: &str) -> Result<Stri
     };
     let replacement = if declaration.binding == ParameterBinding::Input {
         format!(
-            "{}{}={}",
+            "{}{}={}{}",
             captures.get(1).map_or("", |item| item.as_str()),
             declaration.name,
-            quote_posix(value)
+            quote_posix(value),
+            captures.get(2).map_or("", |item| item.as_str())
         )
     } else {
         format!(
-            "{}{}",
+            "{}{}{}",
             captures.get(1).map_or("", |item| item.as_str()),
-            quote_posix(value)
+            quote_posix(value),
+            captures.get(2).map_or("", |item| item.as_str())
         )
     };
     replace_first(text, &pattern, |_| replacement.clone()).ok_or_else(|| {
@@ -1120,7 +1123,7 @@ fn inject_javascript(
 ) -> Result<String, LanguageError> {
     let name = regex::escape(&declaration.name);
     let pattern = Regex::new(&format!(
-        r"(?m)^([ \t]*(?:const|let)[ \t]+{name}[ \t]*=[ \t]*)([^;\r\n]+)(;?[ \t]*)$"
+        r"(?m)^([ \t]*(?:const|let)[ \t]+{name}[ \t]*=[ \t]*)([^;\r\n]+)(;?[ \t]*)(\r?)$"
     ))
     .expect("escaped JavaScript constant pattern");
     let Some(captures) = pattern.captures(text) else {
@@ -1134,10 +1137,11 @@ fn inject_javascript(
     let literal = replacement_literal(source, value, quote_javascript_string);
     replace_first(text, &pattern, |captures| {
         format!(
-            "{}{}{}",
+            "{}{}{}{}",
             captures.get(1).map_or("", |item| item.as_str()),
             literal,
-            captures.get(3).map_or("", |item| item.as_str())
+            captures.get(3).map_or("", |item| item.as_str()),
+            captures.get(4).map_or("", |item| item.as_str())
         )
     })
     .ok_or_else(|| LanguageError::BindingNotFound {
@@ -1242,8 +1246,18 @@ fn require_valid_source(kind: &str, text: &str) -> Result<(), LanguageError> {
     }
 }
 
+/// Report whether a parser accepts the complete source text.
+///
+/// Kinds without a parser-backed analyzer accept all source text. Parser-backed
+/// analyzer, injector, and dependency features use this same gate.
+#[must_use]
+pub fn source_is_valid(kind: &str, text: &str) -> bool {
+    parser_accepts(kind, text)
+}
+
 fn parser_accepts(kind: &str, text: &str) -> bool {
     let language = match kind {
+        "python" => Some(tree_sitter_python::LANGUAGE),
         "shell" => Some(tree_sitter_bash::LANGUAGE),
         "js" => Some(tree_sitter_javascript::LANGUAGE),
         "ts" => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT),
