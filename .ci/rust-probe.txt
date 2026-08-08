@@ -1,208 +1,208 @@
-source_head=b795957faf905ee7717fdac2342449bb22ba8931
+source_head=54fc2274c82185ab0fa04230ddd1b1d965ebebff
 
 $ cargo +1.97.1 fmt --all
 
 $ cargo +1.97.1 clippy --locked --workspace --all-targets --all-features -- -D warnings
     Updating crates.io index
  Downloading crates ...
-  Downloaded cfg-if v1.0.4
-  Downloaded bit-set v0.5.3
-  Downloaded autocfg v1.5.1
-  Downloaded cfg_aliases v0.2.2
-  Downloaded allocator-api2 v0.2.21
-  Downloaded block-buffer v0.10.4
-  Downloaded castaway v0.2.4
   Downloaded anstyle-parse v1.0.0
-  Downloaded bitflags v1.3.2
+  Downloaded bit-set v0.5.3
+  Downloaded block-buffer v0.10.4
   Downloaded by_address v1.2.1
-  Downloaded atomic-write-file v0.3.0
-  Downloaded base64 v0.22.1
-  Downloaded bit-vec v0.6.3
-  Downloaded bytemuck v1.25.2
-  Downloaded clap v4.6.6
-  Downloaded clap_derive v4.6.4
-  Downloaded phf_generator v0.11.3
-  Downloaded anstream v1.0.0
-  Downloaded bitflags v2.13.1
-  Downloaded clap_builder v4.6.6
-  Downloaded aho-corasick v1.1.5
-  Downloaded anstyle v1.0.14
-  Downloaded version_check v0.9.5
-  Downloaded scopeguard v1.2.0
-  Downloaded wezterm-blob-leases v0.1.1
-  Downloaded signal-hook-mio v0.2.5
-  Downloaded pest_derive v2.8.8
-  Downloaded pest_generator v2.8.8
-  Downloaded ppv-lite86 v0.2.21
-  Downloaded quote v1.0.47
-  Downloaded rand_chacha v0.9.0
-  Downloaded rustversion v1.0.23
-  Downloaded parking_lot_core v0.9.12
-  Downloaded wezterm-dynamic-derive v0.1.1
-  Downloaded termios v0.3.3
-  Downloaded thiserror v2.0.20
-  Downloaded toml_datetime v1.1.1+spec-1.1.0
-  Downloaded serde_core v1.0.229
-  Downloaded utf8parse v0.2.2
-  Downloaded wezterm-color-types v0.3.0
-  Downloaded rand v0.8.7
-  Downloaded rand_core v0.9.5
-  Downloaded ratatui-termwiz v0.1.2
-  Downloaded tempfile v3.27.0
-  Downloaded phf v0.11.3
+  Downloaded phf_macros v0.11.3
   Downloaded powerfmt v0.2.0
-  Downloaded rand v0.9.5
-  Downloaded ratatui v0.30.2
-  Downloaded phf_codegen v0.11.3
-  Downloaded smallvec v1.15.2
-  Downloaded time-core v0.1.9
-  Downloaded unicode-segmentation v1.13.3
-  Downloaded colorchoice v1.0.5
-  Downloaded crypto-common v0.1.7
-  Downloaded ratatui-crossterm v0.1.2
-  Downloaded ryu v1.0.23
-  Downloaded serde v1.0.229
-  Downloaded siphasher v1.0.3
-  Downloaded terminfo v0.9.0
-  Downloaded toml v1.1.4+spec-1.1.0
-  Downloaded toml_parser v1.1.3+spec-1.1.0
-  Downloaded typenum v1.20.1
-  Downloaded pest v2.8.8
+  Downloaded atomic v0.6.1
   Downloaded anstyle-query v1.1.5
-  Downloaded csscolorparser v0.6.2
-  Downloaded ctrlc v3.5.2
-  Downloaded darling_core v0.24.0
-  Downloaded document-features v0.2.12
-  Downloaded fancy-regex v0.11.0
-  Downloaded getrandom v0.3.4
-  Downloaded hex v0.4.3
+  Downloaded quote v1.0.47
+  Downloaded approx v0.5.1
+  Downloaded anstream v1.0.0
+  Downloaded atomic-write-file v0.3.0
+  Downloaded bit-vec v0.6.3
+  Downloaded cfg-if v1.0.4
   Downloaded memoffset v0.9.1
+  Downloaded autocfg v1.5.1
+  Downloaded phf_generator v0.11.3
+  Downloaded anstyle v1.0.14
+  Downloaded anyhow v1.0.104
+  Downloaded cfg_aliases v0.2.2
+  Downloaded ident_case v1.0.1
+  Downloaded bitflags v1.3.2
+  Downloaded bitflags v2.13.1
+  Downloaded fastrand v2.5.0
+  Downloaded rustc_version v0.4.1
+  Downloaded castaway v0.2.4
+  Downloaded hex v0.4.3
+  Downloaded clap_lex v1.1.0
+  Downloaded darling_macro v0.24.0
+  Downloaded lab v0.11.0
+  Downloaded cpufeatures v0.2.17
+  Downloaded errno v0.3.14
+  Downloaded phf_codegen v0.11.3
+  Downloaded allocator-api2 v0.2.21
+  Downloaded clap_derive v4.6.4
+  Downloaded num-conv v0.2.2
+  Downloaded filedescriptor v0.8.3
+  Downloaded ratatui-macros v0.7.2
+  Downloaded ratatui-termina v0.1.0
+  Downloaded crypto-common v0.1.7
+  Downloaded instability v0.3.13
+  Downloaded colorchoice v1.0.5
+  Downloaded fnv v1.0.7
+  Downloaded lru v0.18.2
+  Downloaded phf v0.11.3
+  Downloaded ppv-lite86 v0.2.21
+  Downloaded rand_core v0.9.5
+  Downloaded heck v0.5.0
+  Downloaded phf_shared v0.11.3
+  Downloaded ratatui-termwiz v0.1.2
+  Downloaded is_terminal_polyfill v1.70.2
+  Downloaded ctrlc v3.5.2
+  Downloaded mac_address v1.1.8
+  Downloaded itoa v1.0.18
+  Downloaded equivalent v1.0.2
+  Downloaded num_threads v0.1.7
+  Downloaded fixedbitset v0.4.2
+  Downloaded generic-array v0.14.7
+  Downloaded num-derive v0.4.2
+  Downloaded deranged v0.5.8
+  Downloaded digest v0.10.7
+  Downloaded document-features v0.2.12
+  Downloaded lazy_static v1.5.0
+  Downloaded parking_lot v0.12.5
+  Downloaded base64 v0.22.1
+  Downloaded siphasher v1.0.3
+  Downloaded strum v0.28.0
+  Downloaded convert_case v0.10.0
+  Downloaded either v1.17.0
+  Downloaded signal-hook-mio v0.2.5
+  Downloaded wezterm-dynamic-derive v0.1.1
+  Downloaded critical-section v1.2.0
+  Downloaded palette_math v0.7.7
+  Downloaded scopeguard v1.2.0
+  Downloaded indoc v2.0.7
+  Downloaded palette_derive v0.7.7
+  Downloaded foldhash v0.2.0
+  Downloaded kasuari v0.4.12
+  Downloaded line-clipping v0.3.8
+  Downloaded litrs v1.0.0
+  Downloaded memmem v0.1.1
+  Downloaded num-traits v0.2.19
+  Downloaded ordered-float v4.6.0
+  Downloaded csscolorparser v0.6.2
+  Downloaded lock_api v0.4.14
+  Downloaded wezterm-color-types v0.3.0
+  Downloaded once_cell v1.21.4
+  Downloaded utf8parse v0.2.2
+  Downloaded wezterm-blob-leases v0.1.1
+  Downloaded ratatui-crossterm v0.1.2
+  Downloaded rand_chacha v0.9.0
+  Downloaded clap v4.6.6
+  Downloaded darling v0.24.0
+  Downloaded getrandom v0.3.4
+  Downloaded getrandom v0.4.3
+  Downloaded log v0.4.33
+  Downloaded bytemuck v1.25.2
+  Downloaded finl_unicode v1.4.0
+  Downloaded compact_str v0.9.1
+  Downloaded minimal-lexical v0.2.1
+  Downloaded parking_lot_core v0.9.12
+  Downloaded serde_spanned v1.1.1
+  Downloaded vtparse v0.6.2
+  Downloaded fancy-regex v0.11.0
+  Downloaded wezterm-dynamic v0.2.1
+  Downloaded time-core v0.1.9
+  Downloaded derive_more v2.1.1
+  Downloaded euclid v0.22.14
+  Downloaded mio v1.2.2
+  Downloaded derive_more-impl v2.1.1
+  Downloaded indexmap v2.14.0
+  Downloaded darling_core v0.24.0
+  Downloaded aho-corasick v1.1.5
+  Downloaded memchr v2.8.3
+  Downloaded hashbrown v0.16.1
+  Downloaded nom v7.1.3
+  Downloaded pest v2.8.8
+  Downloaded strsim v0.11.1
+  Downloaded strum_macros v0.28.0
+  Downloaded crossterm v0.29.0
+  Downloaded hashbrown v0.17.1
+  Downloaded itertools v0.14.0
+  Downloaded sha2 v0.10.9
+  Downloaded static_assertions v1.1.0
+  Downloaded termios v0.3.3
+  Downloaded thiserror-impl v1.0.69
+  Downloaded toml_writer v1.1.2+spec-1.1.0
+  Downloaded version_check v0.9.5
+  Downloaded libm v0.2.16
+  Downloaded clap_builder v4.6.6
+  Downloaded rand_core v0.6.4
+  Downloaded signal-hook-registry v1.4.8
+  Downloaded toml_datetime v1.1.1+spec-1.1.0
+  Downloaded unicode-truncate v2.0.1
+  Downloaded pest_derive v2.8.8
+  Downloaded palette v0.7.7
+  Downloaded nix v0.29.0
+  Downloaded nix v0.31.3
+  Downloaded nix v0.30.1
+  Downloaded thiserror v1.0.69
+  Downloaded thiserror-impl v2.0.20
+  Downloaded wezterm-input-types v0.1.0
+  Downloaded zmij v1.0.23
+  Downloaded pest_generator v2.8.8
+  Downloaded smallvec v1.15.2
+  Downloaded tempfile v3.27.0
+  Downloaded thiserror v2.0.20
+  Downloaded pest_meta v2.8.8
+  Downloaded ucd-trie v0.1.7
   Downloaded semver v1.0.28
-  Downloaded syn v2.0.119
+  Downloaded libc v0.2.189
+  Downloaded rustversion v1.0.23
+  Downloaded toml_parser v1.1.3+spec-1.1.0
+  Downloaded signal-hook v0.3.18
+  Downloaded proc-macro2 v1.0.107
+  Downloaded ratatui v0.30.2
+  Downloaded wezterm-bidi v0.2.3
+  Downloaded serde_derive v1.0.229
+  Downloaded toml v1.1.4+spec-1.1.0
+  Downloaded rand v0.8.7
+  Downloaded rand v0.9.5
+  Downloaded ryu v1.0.23
+  Downloaded serde_core v1.0.229
+  Downloaded terminfo v0.9.0
+  Downloaded unicode-ident v1.0.24
+  Downloaded uuid v1.24.0
+  Downloaded deltae v0.3.2
+  Downloaded linux-raw-sys v0.12.1
+  Downloaded serde v1.0.229
+  Downloaded termina v0.3.3
+  Downloaded unicode-segmentation v1.13.3
+  Downloaded typenum v1.20.1
+  Downloaded serde_json v1.0.151
+  Downloaded portable-atomic v1.14.0
+  Downloaded ratatui-core v0.1.2
+  Downloaded regex v1.13.1
+  Downloaded winnow v1.0.4
+  Downloaded ratatui-widgets v0.3.2
+  Downloaded syn v1.0.109
   Downloaded time v0.3.55
   Downloaded unicode-width v0.2.2
   Downloaded zerocopy v0.8.56
-  Downloaded clap_lex v1.1.0
-  Downloaded darling v0.24.0
-  Downloaded regex-syntax v0.8.11
-  Downloaded equivalent v1.0.2
-  Downloaded errno v0.3.14
-  Downloaded fastrand v2.5.0
-  Downloaded filedescriptor v0.8.3
-  Downloaded fnv v1.0.7
-  Downloaded litrs v1.0.0
-  Downloaded strum_macros v0.28.0
-  Downloaded rustc_version v0.4.1
-  Downloaded derive_more-impl v2.1.1
-  Downloaded instability v0.3.13
-  Downloaded once_cell v1.21.4
-  Downloaded palette_math v0.7.7
-  Downloaded termwiz v0.23.3
-  Downloaded toml_writer v1.1.2+spec-1.1.0
-  Downloaded generic-array v0.14.7
-  Downloaded num-conv v0.2.2
-  Downloaded ratatui-macros v0.7.2
-  Downloaded rand_core v0.6.4
-  Downloaded serde_derive v1.0.229
-  Downloaded strsim v0.11.1
-  Downloaded phf_shared v0.11.3
-  Downloaded ratatui-termina v0.1.0
-  Downloaded signal-hook v0.3.18
-  Downloaded strum v0.28.0
-  Downloaded signal-hook-registry v1.4.8
-  Downloaded unicode-truncate v2.0.1
-  Downloaded vtparse v0.6.2
-  Downloaded wezterm-bidi v0.2.3
-  Downloaded wezterm-dynamic v0.2.1
-  Downloaded serde_spanned v1.1.1
-  Downloaded uuid v1.24.0
-  Downloaded wezterm-input-types v0.1.0
-  Downloaded sha2 v0.10.9
-  Downloaded static_assertions v1.1.0
-  Downloaded thiserror-impl v1.0.69
-  Downloaded thiserror-impl v2.0.20
-  Downloaded critical-section v1.2.0
-  Downloaded deranged v0.5.8
-  Downloaded kasuari v0.4.12
-  Downloaded ordered-float v4.6.0
-  Downloaded zmij v1.0.23
-  Downloaded pest_meta v2.8.8
-  Downloaded phf_macros v0.11.3
-  Downloaded proc-macro2 v1.0.107
-  Downloaded serde_json v1.0.151
-  Downloaded regex v1.13.1
-  Downloaded termina v0.3.3
-  Downloaded thiserror v1.0.69
-  Downloaded unicode-ident v1.0.24
-  Downloaded heck v0.5.0
-  Downloaded ratatui-core v0.1.2
-  Downloaded darling_macro v0.24.0
-  Downloaded fixedbitset v0.4.2
-  Downloaded portable-atomic v1.14.0
-  Downloaded ratatui-widgets v0.3.2
-  Downloaded syn v1.0.109
-  Downloaded regex-automata v0.4.18
-  Downloaded lock_api v0.4.14
-  Downloaded ucd-trie v0.1.7
-  Downloaded convert_case v0.10.0
-  Downloaded cpufeatures v0.2.17
-  Downloaded digest v0.10.7
   Downloaded syn v3.0.3
-  Downloaded is_terminal_polyfill v1.70.2
-  Downloaded lab v0.11.0
-  Downloaded memmem v0.1.1
-  Downloaded num_threads v0.1.7
-  Downloaded num-derive v0.4.2
-  Downloaded approx v0.5.1
+  Downloaded syn v2.0.119
+  Downloaded regex-syntax v0.8.11
   Downloaded rustix v1.1.4
-  Downloaded mac_address v1.1.8
-  Downloaded getrandom v0.4.3
-  Downloaded indoc v2.0.7
-  Downloaded lazy_static v1.5.0
-  Downloaded line-clipping v0.3.8
-  Downloaded palette_derive v0.7.7
-  Downloaded anyhow v1.0.104
-  Downloaded either v1.17.0
-  Downloaded foldhash v0.2.0
-  Downloaded log v0.4.33
-  Downloaded num-traits v0.2.19
-  Downloaded indexmap v2.14.0
-  Downloaded compact_str v0.9.1
-  Downloaded derive_more v2.1.1
-  Downloaded euclid v0.22.14
-  Downloaded finl_unicode v1.4.0
-  Downloaded memchr v2.8.3
-  Downloaded winnow v1.0.4
-  Downloaded nom v7.1.3
-  Downloaded crossterm v0.29.0
-  Downloaded hashbrown v0.16.1
-  Downloaded nix v0.30.1
-  Downloaded nix v0.29.0
-  Downloaded libc v0.2.189
-  Downloaded mio v1.2.2
-  Downloaded atomic v0.6.1
-  Downloaded itertools v0.14.0
-  Downloaded hashbrown v0.17.1
-  Downloaded ident_case v1.0.1
-  Downloaded deltae v0.3.2
-  Downloaded linux-raw-sys v0.12.1
-  Downloaded parking_lot v0.12.5
-  Downloaded itoa v1.0.18
-  Downloaded lru v0.18.2
-  Downloaded minimal-lexical v0.2.1
-  Downloaded palette v0.7.7
-  Downloaded nix v0.31.3
-  Downloaded libm v0.2.16
+  Downloaded termwiz v0.23.3
+  Downloaded regex-automata v0.4.18
    Compiling proc-macro2 v1.0.107
-   Compiling quote v1.0.47
    Compiling libc v0.2.189
+   Compiling quote v1.0.47
    Compiling unicode-ident v1.0.24
     Checking cfg-if v1.0.4
     Checking bitflags v2.13.1
    Compiling cfg_aliases v0.2.2
    Compiling serde_core v1.0.229
-   Compiling zerocopy v0.8.56
    Compiling getrandom v0.3.4
+   Compiling zerocopy v0.8.56
    Compiling rustix v1.1.4
    Compiling syn v3.0.3
     Checking linux-raw-sys v0.12.1
@@ -215,96 +215,96 @@ $ cargo +1.97.1 clippy --locked --workspace --all-targets --all-features -- -D w
     Checking toml_datetime v1.1.1+spec-1.1.0
     Checking toml_writer v1.1.2+spec-1.1.0
     Checking toml v1.1.4+spec-1.1.0
-    Checking ppv-lite86 v0.2.21
    Compiling getrandom v0.4.3
+    Checking ppv-lite86 v0.2.21
     Checking fastrand v2.5.0
-    Checking rand_chacha v0.9.0
     Checking once_cell v1.21.4
+    Checking rand_chacha v0.9.0
    Compiling syn v2.0.119
-    Checking rand v0.9.5
     Checking tempfile v3.27.0
-   Compiling heck v0.5.0
-    Checking allocator-api2 v0.2.21
-    Checking atomic-write-file v0.3.0
-   Compiling rustversion v1.0.23
-    Checking equivalent v1.0.2
+    Checking rand v0.9.5
     Checking foldhash v0.2.0
-   Compiling thiserror v2.0.20
+   Compiling rustversion v1.0.23
+   Compiling heck v0.5.0
+    Checking atomic-write-file v0.3.0
    Compiling serde_derive v1.0.229
-   Compiling strsim v0.11.1
+    Checking allocator-api2 v0.2.21
+    Checking equivalent v1.0.2
+   Compiling thiserror v2.0.20
    Compiling ident_case v1.0.1
+   Compiling strsim v0.11.1
    Compiling darling_core v0.24.0
    Compiling thiserror-impl v2.0.20
-    Checking itoa v1.0.18
     Checking either v1.17.0
+    Checking itoa v1.0.18
     Checking itertools v0.14.0
    Compiling strum_macros v0.28.0
     Checking castaway v0.2.4
-    Checking hashbrown v0.16.1
-   Compiling darling_macro v0.24.0
-    Checking skit-core v0.5.0 (/home/runner/work/skit/skit/crates/skit-core)
     Checking hashbrown v0.17.1
+    Checking skit-core v0.5.0 (/home/runner/work/skit/skit/crates/skit-core)
+   Compiling darling_macro v0.24.0
+    Checking hashbrown v0.16.1
     Checking errno v0.3.14
     Checking static_assertions v1.1.0
-    Checking ryu v1.0.23
-    Checking unicode-width v0.2.2
-   Compiling unicode-segmentation v1.13.3
+    Checking unicode-segmentation v1.13.3
    Compiling parking_lot_core v0.9.12
    Compiling instability v0.3.13
+    Checking ryu v1.0.23
+    Checking unicode-width v0.2.2
    Compiling signal-hook v0.3.18
-   Compiling convert_case v0.10.0
-    Checking lru v0.18.2
-    Checking strum v0.28.0
     Checking unicode-truncate v2.0.1
     Checking compact_str v0.9.1
-    Checking signal-hook-registry v1.4.8
-   Compiling darling v0.24.0
     Checking kasuari v0.4.12
+   Compiling convert_case v0.10.0
+    Checking signal-hook-registry v1.4.8
+    Checking strum v0.28.0
+   Compiling darling v0.24.0
+    Checking lru v0.18.2
     Checking scopeguard v1.2.0
-   Compiling indoc v2.0.7
     Checking log v0.4.33
     Checking critical-section v1.2.0
+   Compiling indoc v2.0.7
     Checking smallvec v1.15.2
-    Checking mio v1.2.2
     Checking ratatui-core v0.1.2
-    Checking lock_api v0.4.14
+    Checking mio v1.2.2
    Compiling derive_more-impl v2.1.1
-    Checking deranged v0.5.8
-   Compiling litrs v1.0.0
-    Checking num_threads v0.1.7
-    Checking time-core v0.1.9
+    Checking lock_api v0.4.14
     Checking powerfmt v0.2.0
+   Compiling litrs v1.0.0
+    Checking time-core v0.1.9
     Checking num-conv v0.2.2
-   Compiling document-features v0.2.12
+    Checking num_threads v0.1.7
+    Checking deranged v0.5.8
     Checking derive_more v2.1.1
-    Checking parking_lot v0.12.5
     Checking signal-hook-mio v0.2.5
+    Checking parking_lot v0.12.5
     Checking line-clipping v0.3.8
     Checking utf8parse v0.2.2
    Compiling nix v0.31.3
     Checking anstyle-parse v1.0.0
+   Compiling document-features v0.2.12
+    Checking anstyle-query v1.1.5
     Checking anstyle v1.0.14
-    Checking crossterm v0.29.0
+    Checking is_terminal_polyfill v1.70.2
    Compiling zmij v1.0.23
     Checking colorchoice v1.0.5
-    Checking time v0.3.55
-    Checking is_terminal_polyfill v1.70.2
-    Checking anstyle-query v1.1.5
     Checking anstream v1.0.0
     Checking clap_lex v1.1.0
+    Checking crossterm v0.29.0
    Compiling serde_json v1.0.151
     Checking clap_builder v4.6.6
+    Checking time v0.3.55
     Checking ratatui-crossterm v0.1.2
-    Checking ratatui-widgets v0.3.2
    Compiling clap_derive v4.6.4
     Checking memchr v2.8.3
+    Checking ratatui-widgets v0.3.2
+    Checking ctrlc v3.5.2
     Checking ratatui-macros v0.7.2
     Checking ratatui v0.30.2
     Checking skit-tui v0.5.0 (/home/runner/work/skit/skit/crates/skit-tui)
-    Checking ctrlc v3.5.2
     Checking clap v4.6.6
     Checking skit v0.5.0 (/home/runner/work/skit/skit/crates/skit)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 13.66s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 16.96s
 
 $ cargo +1.97.1 test --locked --workspace --all-features
    Compiling cfg-if v1.0.4
@@ -317,52 +317,52 @@ $ cargo +1.97.1 test --locked --workspace --all-features
    Compiling getrandom v0.3.4
    Compiling rand_core v0.9.5
    Compiling winnow v1.0.4
+   Compiling toml_parser v1.1.3+spec-1.1.0
    Compiling serde_spanned v1.1.1
    Compiling toml_datetime v1.1.1+spec-1.1.0
-   Compiling toml_parser v1.1.3+spec-1.1.0
    Compiling nix v0.30.1
    Compiling toml_writer v1.1.2+spec-1.1.0
    Compiling serde v1.0.229
    Compiling toml v1.1.4+spec-1.1.0
    Compiling getrandom v0.4.3
-   Compiling ppv-lite86 v0.2.21
    Compiling fastrand v2.5.0
+   Compiling ppv-lite86 v0.2.21
    Compiling once_cell v1.21.4
-   Compiling unicode-segmentation v1.13.3
    Compiling tempfile v3.27.0
+   Compiling strsim v0.11.1
    Compiling rand_chacha v0.9.0
    Compiling rand v0.9.5
-   Compiling strsim v0.11.1
-   Compiling foldhash v0.2.0
+   Compiling unicode-segmentation v1.13.3
    Compiling allocator-api2 v0.2.21
+   Compiling foldhash v0.2.0
    Compiling equivalent v1.0.2
    Compiling darling_core v0.24.0
-   Compiling atomic-write-file v0.3.0
    Compiling itoa v1.0.18
    Compiling either v1.17.0
-   Compiling skit-core v0.5.0 (/home/runner/work/skit/skit/crates/skit-core)
-   Compiling thiserror v2.0.20
-   Compiling itertools v0.14.0
-   Compiling castaway v0.2.4
-   Compiling hashbrown v0.16.1
+   Compiling atomic-write-file v0.3.0
    Compiling hashbrown v0.17.1
+   Compiling itertools v0.14.0
+   Compiling skit-core v0.5.0 (/home/runner/work/skit/skit/crates/skit-core)
+   Compiling hashbrown v0.16.1
+   Compiling thiserror v2.0.20
+   Compiling castaway v0.2.4
    Compiling errno v0.3.14
-   Compiling unicode-width v0.2.2
    Compiling ryu v1.0.23
+   Compiling unicode-width v0.2.2
    Compiling static_assertions v1.1.0
    Compiling compact_str v0.9.1
    Compiling unicode-truncate v2.0.1
    Compiling signal-hook-registry v1.4.8
    Compiling strum v0.28.0
-   Compiling lru v0.18.2
    Compiling kasuari v0.4.12
+   Compiling lru v0.18.2
    Compiling convert_case v0.10.0
    Compiling scopeguard v1.2.0
    Compiling critical-section v1.2.0
-   Compiling smallvec v1.15.2
    Compiling log v0.4.33
-   Compiling parking_lot_core v0.9.12
+   Compiling smallvec v1.15.2
    Compiling mio v1.2.2
+   Compiling parking_lot_core v0.9.12
    Compiling darling_macro v0.24.0
    Compiling ratatui-core v0.1.2
    Compiling darling v0.24.0
@@ -370,39 +370,39 @@ $ cargo +1.97.1 test --locked --workspace --all-features
    Compiling lock_api v0.4.14
    Compiling derive_more-impl v2.1.1
    Compiling signal-hook v0.3.18
-   Compiling powerfmt v0.2.0
-   Compiling num_threads v0.1.7
-   Compiling deranged v0.5.8
-   Compiling time-core v0.1.9
    Compiling num-conv v0.2.2
+   Compiling deranged v0.5.8
+   Compiling powerfmt v0.2.0
+   Compiling time-core v0.1.9
+   Compiling num_threads v0.1.7
    Compiling derive_more v2.1.1
    Compiling signal-hook-mio v0.2.5
    Compiling parking_lot v0.12.5
    Compiling line-clipping v0.3.8
+   Compiling time v0.3.55
    Compiling crossterm v0.29.0
    Compiling utf8parse v0.2.2
    Compiling anstyle-parse v1.0.0
-   Compiling time v0.3.55
+   Compiling is_terminal_polyfill v1.70.2
    Compiling colorchoice v1.0.5
    Compiling anstyle v1.0.14
    Compiling anstyle-query v1.1.5
-   Compiling is_terminal_polyfill v1.70.2
    Compiling clap_lex v1.1.0
    Compiling anstream v1.0.0
-   Compiling nix v0.31.3
-   Compiling clap_builder v4.6.6
    Compiling ratatui-widgets v0.3.2
+   Compiling nix v0.31.3
    Compiling ratatui-crossterm v0.1.2
+   Compiling clap_builder v4.6.6
    Compiling zmij v1.0.23
    Compiling memchr v2.8.3
    Compiling ctrlc v3.5.2
    Compiling ratatui-macros v0.7.2
-   Compiling serde_json v1.0.151
    Compiling ratatui v0.30.2
+   Compiling serde_json v1.0.151
    Compiling skit-tui v0.5.0 (/home/runner/work/skit/skit/crates/skit-tui)
    Compiling clap v4.6.6
    Compiling skit v0.5.0 (/home/runner/work/skit/skit/crates/skit)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 16.60s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 20.90s
      Running unittests src/main.rs (target/debug/deps/skit-8676c0cb5ce43ee6)
 
 running 0 tests
@@ -414,13 +414,13 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 running 7 tests
 test conflicting_kind_selectors_are_usage_error_and_write_nothing ... ok
 test python_intake_refuses_before_writing_until_deep_lane_is_complete ... ok
-test reference_mode_keeps_original_and_materializes_no_payload ... ok
-test shell_copy_infers_identity_description_interpreter_and_store_shape ... ok
-test exe_is_always_reference_and_does_not_claim_copy_mode ... ok
 test explicit_kind_handles_extensionless_script ... ok
+test exe_is_always_reference_and_does_not_claim_copy_mode ... ok
+test shell_copy_infers_identity_description_interpreter_and_store_shape ... ok
+test reference_mode_keeps_original_and_materializes_no_payload ... ok
 test unknown_file_is_usage_error_and_writes_nothing ... ok
 
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.68s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
      Running tests/cli_contract.rs (target/debug/deps/cli_contract-787c238de4d7b032)
 
@@ -435,37 +435,37 @@ test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 running 5 tests
 test missing_management_target_exits_one ... ok
 test remove_yes_skips_confirmation_and_keeps_the_original_contract ... ok
-test describe_matches_the_existing_success_copy ... ok
 test describe_can_clear_the_description ... ok
+test describe_matches_the_existing_success_copy ... ok
 test rename_matches_the_existing_success_copy ... ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.55s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
      Running tests/params_contract.rs (target/debug/deps/params_contract-214f2ad775469ca9)
 
 running 5 tests
 test invalid_type_is_usage_and_does_not_materialize_parameter_rows ... ok
-test source_managed_kind_editing_is_explicitly_refused_without_writing ... ok
-test command_placeholder_can_be_declared_and_typed_in_one_call ... ok
 test exe_declared_flag_roundtrips_through_machine_schema ... ok
+test command_placeholder_can_be_declared_and_typed_in_one_call ... ok
+test source_managed_kind_editing_is_explicitly_refused_without_writing ... ok
 test secret_transition_scrubs_every_old_state_value_surface ... ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.39s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
      Running tests/preset_contract.rs (target/debug/deps/preset_contract-7cb89df2bec16e10)
 
 running 9 tests
 test preset_list_without_values_keeps_the_existing_guidance ... ok
-test preset_delete_unknown_exits_one_and_lists_available_names ... ok
 test preset_list_json_matches_the_existing_machine_contract ... ok
-test preset_save_from_last_refuses_before_first_run ... ok
+test preset_delete_unknown_exits_one_and_lists_available_names ... ok
 test preset_delete_matches_the_existing_success_copy ... ok
+test preset_save_from_last_refuses_before_first_run ... ok
+test preset_save_from_last_preserves_an_exact_empty_snapshot ... ok
+test preset_save_from_last_captures_exact_snapshot ... ok
 test preset_save_from_last_refuses_legacy_stamp_without_snapshot ... ok
 test preset_save_without_from_last_is_usage_error_and_writes_nothing ... ok
-test preset_save_from_last_captures_exact_snapshot ... ok
-test preset_save_from_last_preserves_an_exact_empty_snapshot ... ok
 
-test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
      Running tests/run_contract.rs (target/debug/deps/run_contract-83b233fe531722fb)
 
@@ -474,14 +474,25 @@ test malformed_set_is_usage_and_never_launches ... ok
 test command_and_prompt_launch_remain_explicit_125_refusals ... ok
 test missing_required_value_is_skit_125_and_never_launches ... ok
 test run_target_child ... ok
-test secret_set_value_reaches_child_but_never_state_bytes ... ok
 test child_nonzero_exit_is_silent_and_passes_through ... ok
-test unknown_set_name_is_usage_and_never_launches ... ok
+test secret_set_value_reaches_child_but_never_state_bytes ... ok
 test save_preset_is_deferred_until_after_a_real_child_run ... ok
+test unknown_set_name_is_usage_and_never_launches ... ok
 test set_value_reaches_child_and_is_remembered ... ok
 test remembered_extra_args_replay_on_the_next_run ... ok
 
-test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.84s
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+     Running tests/run_modes_contract.rs (target/debug/deps/run_modes_contract-92e5beb9b946fc9f)
+
+running 5 tests
+test dry_run_masks_secret_and_does_not_create_state ... ok
+test run_modes_target_child ... ok
+test dry_run_save_preset_writes_only_the_validated_preset ... ok
+test raw_is_incompatible_with_form_value_surfaces_and_writes_nothing ... ok
+test raw_bypasses_required_form_and_does_not_remember_raw_tail ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
      Running tests/show_contract.rs (target/debug/deps/show_contract-504267f65d15bf06)
 
@@ -513,23 +524,23 @@ test missing_source_fails_before_registry_or_script_directory_is_created ... ok
 test explicit_unknown_or_non_file_lane_kind_is_refused_before_writing ... ok
 test unknown_inference_is_a_named_error_and_leaves_no_entry ... ok
 test reference_mode_keeps_source_in_place_and_defaults_to_origin ... ok
-test shell_copy_infers_kind_interpreter_description_and_invoke_workdir ... ok
 test explicit_kind_handles_extensionless_script_and_explicit_fields_win ... ok
+test shell_copy_infers_kind_interpreter_description_and_invoke_workdir ... ok
 
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.37s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
      Running tests/add_transaction.rs (target/debug/deps/add_transaction-3f6abbf57a33610d)
 
 running 7 tests
 test duplicate_display_name_is_refused_even_when_registry_is_missing ... ok
 test empty_unregistered_slug_directory_is_reused ... ok
+test copied_entry_writes_payload_meta_and_registry_as_one_add_operation ... ok
 test registry_read_failure_does_not_leave_a_half_entry ... ok
 test concurrent_adds_with_same_name_create_exactly_one_entry ... ok
-test copied_entry_writes_payload_meta_and_registry_as_one_add_operation ... ok
 test reference_entry_writes_no_payload_and_keeps_target_in_registry ... ok
 test slug_allocation_uses_registry_and_nonempty_filesystem_truth ... ok
 
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
      Running tests/assembly_contract.rs (target/debug/deps/assembly_contract-2ba2e3bce32e1143)
 
@@ -538,8 +549,8 @@ test bool_flags_fire_only_for_the_action_state ... ok
 test invalid_typed_value_refuses_before_any_delivery_is_built ... ok
 test missing_secret_environment_source_is_a_named_error ... ok
 test mixed_flag_env_and_extra_args_route_to_their_own_channels ... ok
-test repeat_multi_flag_repeats_the_option_for_each_shell_quoted_piece ... ok
 test secret_values_stay_real_in_delivery_and_mask_every_transparency_projection ... ok
+test repeat_multi_flag_repeats_the_option_for_each_shell_quoted_piece ... ok
 
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
@@ -547,24 +558,24 @@ test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 running 11 tests
 test bool_flag_gets_store_true_but_on_by_default_is_refused ... ok
-test choice_type_and_choices_can_be_applied_in_the_same_operation ... ok
 test choice_without_choices_reverts_the_whole_tweak_for_that_name ... ok
+test choice_type_and_choices_can_be_applied_in_the_same_operation ... ok
 test delivery_changes_are_limited_to_the_allowed_set ... ok
 test flag_edits_trim_but_keep_empty_positional_form ... ok
 test placeholder_add_is_required_and_uses_placeholder_delivery ... ok
 test optional_and_required_flags_are_name_keyed ... ok
 test placeholder_delivery_requires_a_real_template_placeholder ... ok
 test remove_then_add_then_tweak_has_stable_order_and_warnings ... ok
-test secret_transitions_own_env_source_hygiene ... ok
 test typed_defaults_coerce_and_invalid_values_only_skip_that_default ... ok
+test secret_transitions_own_env_source_hygiene ... ok
 
 test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
      Running tests/effective_uv.rs (target/debug/deps/effective_uv-e1e6adb26aee083a)
 
 running 5 tests
-test non_python_kind_never_consults_pep723 ... ok
 test reference_mode_never_reads_original_pep723_for_effective_axes ... ok
+test non_python_kind_never_consults_pep723 ... ok
 test copy_mode_falls_back_per_axis_to_stored_pep723 ... ok
 test meta_wins_independently_per_axis ... ok
 test unreadable_or_malformed_copy_keeps_meta_without_crashing ... ok
@@ -586,9 +597,9 @@ running 7 tests
 test delivers_empty_is_typed_not_stringly ... ok
 test bool_spellings_match_the_existing_python_contract ... ok
 test explicit_unknown_key_is_refused_instead_of_dropped ... ok
+test multiple_typed_fields_validate_each_shell_quoted_piece ... ok
 test resolution_order_is_default_then_last_then_preset_then_explicit ... ok
 test secret_values_are_never_prefilled_but_explicit_secret_is_allowed_for_this_run ... ok
-test multiple_typed_fields_validate_each_shell_quoted_piece ... ok
 test validation_covers_required_typed_choice_and_finite_float ... ok
 
 test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
@@ -597,11 +608,11 @@ test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 running 4 tests
 test utc_timestamp_handles_leap_day_and_year_boundary ... ok
-test sha256_matches_standard_vectors ... ok
 test utc_timestamp_matches_python_metadata_spelling ... ok
+test sha256_matches_standard_vectors ... ok
 test sha256_handles_multiple_blocks ... ok
 
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
 
      Running tests/language_registry.rs (target/debug/deps/language_registry-dd488ec254e3a0eb)
 
@@ -610,13 +621,13 @@ test core_traits_match_the_existing_language_registry ... ok
 test every_copyable_interpreted_kind_keeps_its_historical_stored_name ... ok
 test extensions_include_compound_prompt_names_and_are_case_insensitive ... ok
 test force_exe_is_an_explicit_override_even_for_a_missing_path ... ok
+test file_inference_prefers_registered_extension_then_shebang ... ok
+test posix_executable_inference_uses_the_execute_bit ... ok
 test registry_contains_the_current_python_kind_set ... ok
 test shebang_kind_mapping_accepts_versioned_python_but_not_python2 ... ok
 test shebang_parser_handles_direct_and_env_indirection ... ok
 test unknown_kinds_remain_open ... ok
 test versioned_python_shebangs_keep_their_requires_python_pin ... ok
-test file_inference_prefers_registered_extension_then_shebang ... ok
-test posix_executable_inference_uses_the_execute_bit ... ok
 test windows_executable_inference_uses_pathext_instead_of_readability ... ok
 
 test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
@@ -628,19 +639,19 @@ test launch_config_reads_existing_js_and_shell_sections ... ok
 test empty_and_non_string_values_do_not_create_runtime_overrides ... ok
 test missing_corrupt_and_wrong_shaped_config_are_total_and_read_only ... ok
 
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
      Running tests/launch_plan.rs (target/debug/deps/launch_plan-47b8ba0948b9db3b)
 
 running 10 tests
 test deep_kinds_are_explicitly_refused_instead_of_partially_planned ... ok
-test interpreter_launch_honors_pin_and_routes_env_and_args ... ok
 test direct_executable_checks_the_posix_execute_bit ... ok
+test interpreter_launch_honors_pin_and_routes_env_and_args ... ok
 test custom_missing_workdir_is_a_named_refusal ... ok
 test javascript_override_is_strict_and_does_not_fall_back ... ok
+test powershell_keeps_file_prefix_between_runtime_and_script ... ok
 test missing_declared_needs_refuse_before_launch_snapshot_is_returned ... ok
 test javascript_runtime_order_and_invocation_match_python_contract ... ok
-test powershell_keeps_file_prefix_between_runtime_and_script ... ok
 test vanished_copy_origin_does_not_block_legacy_origin_workdir ... ok
 test windows_shell_can_use_configured_bash_when_path_lookup_misses ... ok
 
@@ -671,9 +682,9 @@ running 6 tests
 test linux_honors_xdg_roots_before_adding_the_app_name ... ok
 test linux_matches_the_existing_platformdirs_layout ... ok
 test macos_uses_one_application_support_root ... ok
-test skit_overrides_are_per_axis_and_do_not_get_an_extra_app_suffix ... ok
-test windows_uses_local_app_data_for_all_layers ... ok
 test three_overrides_need_no_home_or_platform_directory ... ok
+test windows_uses_local_app_data_for_all_layers ... ok
+test skit_overrides_are_per_axis_and_do_not_get_an_extra_app_suffix ... ok
 
 test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
@@ -687,8 +698,8 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
      Running tests/pep723_contract.rs (target/debug/deps/pep723_contract-789b45d6895e2b76)
 
 running 8 tests
-test existing_block_is_byte_identical_on_inject ... ok
 test crlf_injection_uses_the_source_newline_style ... ok
+test existing_block_is_byte_identical_on_inject ... ok
 test block_builder_escapes_toml_strings_and_round_trips ... ok
 test injection_follows_shebang_and_python_coding_declaration ... ok
 test javascript_comment_leader_uses_the_same_metadata_engine ... ok
@@ -717,26 +728,26 @@ running 5 tests
 test legacy_run_stamp_without_snapshot_refuses_even_if_last_used_values_exist ... ok
 test no_fields_and_never_run_are_named_refusals ... ok
 test from_last_uses_exact_run_snapshot_filters_removed_fields_and_scrubs_secrets ... ok
-test legacy_last_used_values_are_the_narrow_fallback_when_no_run_stamp_exists ... ok
 test exact_empty_run_snapshot_survives_roundtrip_and_can_save_an_empty_preset ... ok
+test legacy_last_used_values_are_the_narrow_fallback_when_no_run_stamp_exists ... ok
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
      Running tests/process_supervisor.rs (target/debug/deps/process_supervisor-5a11103f1c090376)
 
 running 7 tests
-test posix_signal_death_is_normalized_to_shell_status ... 
+
 running 1 test
 
 running 1 test
-ok
-running 1 test
 
-test preexisting_interrupt_does_not_spawn_the_program ... ok
-test spawn_failure_is_named ... ok
-test supervisor_child ... ok
+running 1 test
 test normal_child_exit_code_is_returned ... ok
 test cwd_and_environment_overlay_reach_the_child ... ok
+test preexisting_interrupt_does_not_spawn_the_program ... ok
+test supervisor_child ... ok
+test spawn_failure_is_named ... ok
+test posix_signal_death_is_normalized_to_shell_status ... ok
 test interruption_kills_and_reaps_before_returning_130 ... ok
 
 test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
@@ -745,9 +756,9 @@ test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 running 5 tests
 test explicit_path_is_checked_without_searching_other_directories ... ok
-test windows_search_does_not_claim_arbitrary_extensions ... ok
 test fallback_directory_is_lower_priority_than_existing_path_entries ... ok
 test posix_search_uses_path_order_and_execute_bit ... ok
+test windows_search_does_not_claim_arbitrary_extensions ... ok
 test windows_search_uses_pathext_case_insensitively_without_posix_execute_bits ... ok
 
 test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
@@ -755,33 +766,33 @@ test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
      Running tests/python_add.rs (target/debug/deps/python_add-28e09dc63079966c)
 
 running 6 tests
-test existing_block_is_byte_identical_and_explicit_meta_axes_win ... ok
-test non_utf8_copy_keeps_bytes_exact_and_records_metadata_axes ... ok
-test reference_never_modifies_original_and_records_axes_in_meta ... ok
 test explicit_copy_workdir_wins_and_empty_metadata_does_not_inject_block ... ok
-test python_copy_preserves_source_permission_bits ... ok
+test existing_block_is_byte_identical_and_explicit_meta_axes_win ... ok
 test copy_injects_new_pep723_block_and_clears_meta_axes ... ok
+test non_utf8_copy_keeps_bytes_exact_and_records_metadata_axes ... ok
+test python_copy_preserves_source_permission_bits ... ok
+test reference_never_modifies_original_and_records_axes_in_meta ... ok
 
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
 
      Running tests/python_launch.rs (target/debug/deps/python_launch-23995d5353db568d)
 
 running 4 tests
 test reference_python_uses_meta_axes_and_original_workdir ... ok
 test missing_uv_is_a_named_runtime_refusal ... ok
-test script_override_is_the_exact_snapshot_passed_to_uv ... ok
 test copy_python_uses_effective_block_metadata_in_uv_argv ... ok
+test script_override_is_the_exact_snapshot_passed_to_uv ... ok
 
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
      Running tests/registry_projection.rs (target/debug/deps/registry_projection-4221d4709d07e741)
 
 running 3 tests
-test remove_drops_only_the_matching_registry_row ... ok
 test a_missing_registry_is_not_recreated_by_an_unrelated_metadata_edit ... ok
+test remove_drops_only_the_matching_registry_row ... ok
 test metadata_writes_refresh_only_the_existing_registry_row ... ok
 
-test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
      Running tests/run_masking.rs (target/debug/deps/run_masking-6a6909171e83dfcd)
 
@@ -818,8 +829,8 @@ test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 running 4 tests
 test removing_a_reference_never_deletes_the_original_file ... ok
 test rename_refuses_a_duplicate_display_name ... ok
-test concurrent_metadata_updates_do_not_erase_each_other ... ok
 test description_and_rename_preserve_forward_fields_and_slug ... ok
+test concurrent_metadata_updates_do_not_erase_each_other ... ok
 
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 

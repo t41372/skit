@@ -101,8 +101,8 @@ secret = true
 }
 
 #[test]
-fn dry_run_save_preset_writes_only_the_validated_preset()
--> Result<(), Box<dyn std::error::Error>> {
+fn dry_run_save_preset_writes_only_the_validated_preset() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = tempdir()?;
     exe_fixture(
         root.path(),
