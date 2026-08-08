@@ -11,6 +11,9 @@ const basePath = process.env.NEXT_PUBLIC_BASE_PATH ?? '/skit';
 const config = {
   output: 'export',
   reactStrictMode: true,
+  // TypeScript 7 removed the compiler API Next previously consumed. Next 16.2's
+  // supported TS7 path shells out to the current CLI instead.
+  experimental: { useTypeScriptCli: true },
   // basePath handles both routing and asset prefixing under `/skit`.
   basePath: basePath || undefined,
   // Directory-style URLs (`/docs/`) serve cleanly from a static file host.
