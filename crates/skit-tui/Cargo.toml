@@ -9,7 +9,9 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
-ratatui.workspace = true
+ratatui-core.workspace = true
+ratatui-widgets.workspace = true
+ratatui-crossterm.workspace = true
 thiserror.workspace = true
 skit-application.workspace = true
 skit-ui.workspace = true
