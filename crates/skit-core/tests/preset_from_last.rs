@@ -72,12 +72,39 @@ API_KEY = "run-secret"
         loaded
             .last_run
             .as_ref()
-            .is_some_and(|run| !run.values.contains_key("API_KEY"))
+            .is_some_and(|run| run.values_recorded && !run.values.contains_key("API_KEY"))
     );
     let text = fs::read_to_string(path)?;
     assert!(!text.contains("old-plaintext"));
     assert!(!text.contains("run-secret"));
     assert!(!text.contains("REMOVED"));
+    Ok(())
+}
+
+#[test]
+fn exact_empty_run_snapshot_survives_roundtrip_and_can_save_an_empty_preset()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempdir()?;
+    let state = StateStore::new(roots(root.path()));
+    let empty = BTreeMap::new();
+    state.record_run(
+        "demo",
+        0,
+        "2026-08-08T05:00:00+00:00",
+        Some(&empty),
+        &Default::default(),
+    )?;
+
+    let loaded = state.load("demo");
+    assert!(
+        loaded
+            .last_run
+            .as_ref()
+            .is_some_and(|run| run.values_recorded && run.values.is_empty())
+    );
+    let saved = save_preset_from_last(&state, "demo", "empty", &plan())?;
+    assert!(saved.is_empty());
+    assert!(state.load("demo").presets.contains_key("empty"));
     Ok(())
 }
 
@@ -92,6 +119,42 @@ fn legacy_last_used_values_are_the_narrow_fallback_when_no_run_stamp_exists()
     let saved = save_preset_from_last(&state, "demo", "legacy", &plan())?;
     assert_eq!(saved, values);
     assert_eq!(state.load("demo").presets["legacy"], values);
+    Ok(())
+}
+
+#[test]
+fn legacy_run_stamp_without_snapshot_refuses_even_if_last_used_values_exist()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempdir()?;
+    let state = StateStore::new(roots(root.path()));
+    let path = state.values_path("demo");
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(
+        &path,
+        r#"[values]
+CITY = "last-used-is-not-the-exact-run"
+
+[last_run]
+at = "2026-07-01T00:00:00+00:00"
+exit = 0
+"#,
+    )?;
+
+    let loaded = state.load("demo");
+    assert!(
+        loaded
+            .last_run
+            .as_ref()
+            .is_some_and(|run| !run.values_recorded)
+    );
+    let result = save_preset_from_last(&state, "demo", "bad-history", &plan());
+    assert!(matches!(
+        result,
+        Err(PresetFromLastError::NoRememberedValues)
+    ));
+    assert!(state.load("demo").presets.is_empty());
     Ok(())
 }
 
