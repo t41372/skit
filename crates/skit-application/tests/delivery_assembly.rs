@@ -1,9 +1,7 @@
 use std::collections::BTreeMap;
 
 use skit_application::delivery::{AssemblyError, PreparedValue, assemble};
-use skit_domain::parameters::{
-    ParamDecl, ParameterDelivery, ParameterType, ParameterValue,
-};
+use skit_domain::parameters::{ParamDecl, ParameterDelivery, ParameterType, ParameterValue};
 
 fn scalar(value: &str) -> PreparedValue {
     PreparedValue::Scalar(value.to_owned())
@@ -53,8 +51,14 @@ fn mixed_delivery_routes_each_field_without_cross_contamination() {
         ["source.txt", "--output", "result.txt", "--literal-tail"]
     );
     assert_eq!(plan.masked_args, plan.args);
-    assert_eq!(plan.inject_values, BTreeMap::from([("CITY".to_owned(), "Paris".to_owned())]));
-    assert_eq!(plan.env_values, BTreeMap::from([("APP_PORT".to_owned(), "8080".to_owned())]));
+    assert_eq!(
+        plan.inject_values,
+        BTreeMap::from([("CITY".to_owned(), "Paris".to_owned())])
+    );
+    assert_eq!(
+        plan.env_values,
+        BTreeMap::from([("APP_PORT".to_owned(), "8080".to_owned())])
+    );
     assert_eq!(
         plan.command_values,
         BTreeMap::from([("subject".to_owned(), "release notes".to_owned())])
@@ -169,15 +173,7 @@ fn multiple_flags_preserve_argparse_and_repeat_per_piece_shapes() {
     assert_eq!(
         plan.args,
         [
-            "a.txt",
-            "b.txt",
-            "--point",
-            "1",
-            "2",
-            "--tag",
-            "red",
-            "--tag",
-            "blue",
+            "a.txt", "b.txt", "--point", "1", "2", "--tag", "red", "--tag", "blue",
         ]
     );
 }
