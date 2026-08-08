@@ -2,6 +2,7 @@
 
 mod add;
 mod assembly;
+mod callmatch;
 mod config;
 mod declared_edit;
 mod execution;
@@ -28,6 +29,7 @@ mod uv;
 
 pub use add::{AddFileRequest, AddMode, AddPreparation, AddUseCaseError, add_file};
 pub use assembly::{Assembly, AssemblyError, assemble_delivery};
+pub use callmatch::match_calls;
 pub use config::{LaunchConfig, load_launch_config};
 pub use declared_edit::{DeclaredEditResult, DeclaredEdits, edit_declared};
 pub use execution::{PrepareExecutionError, PreparedExecution, prepare_execution};
