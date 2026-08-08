@@ -1,0 +1,16 @@
+[package]
+name = "skit-tui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+crossterm.workspace = true
+ratatui.workspace = true
+skit-core = { path = "../skit-core" }
+
+[lints]
+workspace = true
