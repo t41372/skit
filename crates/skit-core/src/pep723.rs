@@ -194,11 +194,7 @@ fn coding_declaration(line: &str) -> bool {
 }
 
 fn source_newline(text: &str) -> &'static str {
-    if text.contains("\r\n") {
-        "\r\n"
-    } else {
-        "\n"
-    }
+    if text.contains("\r\n") { "\r\n" } else { "\n" }
 }
 
 fn toml_basic_string(value: &str) -> String {

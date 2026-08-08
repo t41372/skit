@@ -38,7 +38,11 @@ workdir = "invoke"
         .env("SKIT_STATE_DIR", root.path().join("state"))
         .env("SKIT_CONFIG_DIR", root.path().join("config"))
         .output()?;
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(output.stderr.is_empty());
     let payload: serde_json::Value = serde_json::from_slice(&output.stdout)?;
     assert_eq!(payload["dependencies"], json!(["rich>=13"]));
@@ -71,7 +75,11 @@ workdir = "invoke"
         .env("SKIT_STATE_DIR", root.path().join("state"))
         .env("SKIT_CONFIG_DIR", root.path().join("config"))
         .output()?;
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let text = String::from_utf8(output.stdout)?;
     assert!(text.contains("Dependencies: rich>=13"));
     assert!(text.contains("Python constraint: >=3.12"));
