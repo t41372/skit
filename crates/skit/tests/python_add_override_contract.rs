@@ -110,7 +110,10 @@ fn python_dash_clears_versioned_shebang_pin() -> Result<(), Box<dyn std::error::
     );
     let shown = roots.show("job")?;
     assert_eq!(shown["requires_python"], "");
-    assert_eq!(fs::read_to_string(roots.data.join("scripts/job/script.py"))?, text);
+    assert_eq!(
+        fs::read_to_string(roots.data.join("scripts/job/script.py"))?,
+        text
+    );
     Ok(())
 }
 
@@ -121,11 +124,7 @@ fn invalid_dep_is_usage_error_before_any_store_write() -> Result<(), Box<dyn std
     let source = root.path().join("job.py");
     fs::write(&source, "print('ok')\n")?;
 
-    let output = roots.add(&[
-        source.to_string_lossy().as_ref(),
-        "--dep",
-        "requests => 2",
-    ])?;
+    let output = roots.add(&[source.to_string_lossy().as_ref(), "--dep", "requests => 2"])?;
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8(output.stderr)?.contains("invalid Python dependency"));
     assert_eq!(roots.list()?, serde_json::json!([]));
@@ -140,11 +139,7 @@ fn invalid_python_constraint_is_usage_error_before_any_store_write()
     let source = root.path().join("job.py");
     fs::write(&source, "print('ok')\n")?;
 
-    let output = roots.add(&[
-        source.to_string_lossy().as_ref(),
-        "--python",
-        "3.12",
-    ])?;
+    let output = roots.add(&[source.to_string_lossy().as_ref(), "--python", "3.12"])?;
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8(output.stderr)?.contains("invalid Python constraint"));
     assert_eq!(roots.list()?, serde_json::json!([]));
@@ -162,11 +157,7 @@ fn explicit_metadata_conflicts_with_source_pep723_and_writes_nothing()
         "# /// script\n# dependencies = [\"source-dep\"]\n# ///\nprint('ok')\n",
     )?;
 
-    let output = roots.add(&[
-        source.to_string_lossy().as_ref(),
-        "--dep",
-        "rich",
-    ])?;
+    let output = roots.add(&[source.to_string_lossy().as_ref(), "--dep", "rich"])?;
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8(output.stderr)?.contains("already declares PEP 723 metadata"));
     assert_eq!(roots.list()?, serde_json::json!([]));
@@ -174,26 +165,19 @@ fn explicit_metadata_conflicts_with_source_pep723_and_writes_nothing()
 }
 
 #[test]
-fn python_metadata_flags_on_non_python_kind_are_refused() -> Result<(), Box<dyn std::error::Error>> {
+fn python_metadata_flags_on_non_python_kind_are_refused() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = tempdir()?;
     let roots = Roots::new(root.path());
     let source = root.path().join("job.sh");
     fs::write(&source, "echo ok\n")?;
 
-    let dep = roots.add(&[
-        source.to_string_lossy().as_ref(),
-        "--dep",
-        "rich",
-    ])?;
+    let dep = roots.add(&[source.to_string_lossy().as_ref(), "--dep", "rich"])?;
     assert_eq!(dep.status.code(), Some(2));
     assert!(String::from_utf8(dep.stderr)?.contains("drop --dep"));
     assert_eq!(roots.list()?, serde_json::json!([]));
 
-    let python = roots.add(&[
-        source.to_string_lossy().as_ref(),
-        "--python",
-        ">=3.12",
-    ])?;
+    let python = roots.add(&[source.to_string_lossy().as_ref(), "--python", ">=3.12"])?;
     assert_eq!(python.status.code(), Some(2));
     assert!(String::from_utf8(python.stderr)?.contains("doesn't apply to shell scripts"));
     assert_eq!(roots.list()?, serde_json::json!([]));
