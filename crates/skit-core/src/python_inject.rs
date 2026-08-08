@@ -4,13 +4,15 @@ use std::fmt;
 
 use tree_sitter::{Node, Parser};
 
-use crate::{Binding, ParamDecl, ParamType, analyze_python_managed};
+use crate::python_managed::{PythonInputSite, python_input_sites};
+use crate::{Binding, ParamDecl, ParamType, analyze_python_managed, match_calls};
 
 /// A managed Python value cannot be safely injected into the current source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PythonInjectError {
     Syntax,
     ManagedInputUnsupported(String),
+    AmbiguousInput(String),
     MissingTarget(String),
     InvalidValue { name: String, value: String },
 }
@@ -21,7 +23,11 @@ impl fmt::Display for PythonInjectError {
             Self::Syntax => formatter.write_str("the Python source does not parse"),
             Self::ManagedInputUnsupported(name) => write!(
                 formatter,
-                "managed input() injection is not enabled in the Rust rewrite yet: {name}"
+                "managed input() injection is not enabled by this const-only API: {name}"
+            ),
+            Self::AmbiguousInput(name) => write!(
+                formatter,
+                "managed input() target is ambiguous after source drift: {name}"
             ),
             Self::MissingTarget(name) => {
                 write!(formatter, "managed Python target no longer exists: {name}")
@@ -42,18 +48,51 @@ struct Replacement {
     text: String,
 }
 
-/// Rewrite managed Python constant values in memory without touching the stored source.
+/// Rewrite only managed Python constants. Supplying an input-bound value is refused.
 ///
-/// Only module-level literal assignments and literal assignments directly inside a
-/// top-level `if __name__ == "__main__"` guard are eligible, matching add-time managed
-/// detection. Every same-named eligible assignment is replaced. A supplied managed
-/// `input()` value is explicitly refused until the call-site one-shot wrapper lands.
+/// This narrow API remains useful to callers that deliberately promise const-only
+/// behavior. Full run preparation uses `inject_python_managed` instead.
 ///
 /// # Errors
 ///
-/// Returns a named error for syntax failure, a vanished target, an invalid typed value,
-/// or a managed `input()` value that this vertical slice cannot safely deliver yet.
+/// Returns the same source/value errors as full managed injection plus an explicit
+/// refusal when a supplied value belongs to `input()`.
 pub fn inject_python_consts(
+    text: &str,
+    specs: &[ParamDecl],
+    values: &BTreeMap<String, String>,
+) -> Result<String, PythonInjectError> {
+    let by_name = specs
+        .iter()
+        .map(|spec| (spec.name.as_str(), spec))
+        .collect::<BTreeMap<_, _>>();
+    if let Some(name) = values.keys().find(|name| {
+        by_name
+            .get(name.as_str())
+            .is_some_and(|spec| spec.binding == Binding::Input)
+    }) {
+        return Err(PythonInjectError::ManagedInputUnsupported(name.clone()));
+    }
+    inject_python_managed(text, specs, values)
+}
+
+/// Rewrite managed Python constants and builtin `input()` values in memory.
+///
+/// Constant RHS spans use the same source-anchor rules as add-time analysis. Input
+/// call sites come from the analyzer's exact scope-aware scanner and are matched with
+/// prompt-first, one-to-one call matching. A matched input callee is rewritten to a
+/// one-shot wrapper: the first call returns the supplied value and echoes the prompt
+/// plus the value (or `***` for secrets); repeated execution of that same source call
+/// site falls through to the real builtin `input()`.
+///
+/// Position-only fallback with a recorded prompt is treated as ambiguous and refused
+/// until the shared warning channel lands; silently rebinding a secret is not allowed.
+///
+/// # Errors
+///
+/// Returns a named error for syntax failure, vanished/ambiguous source anchors, or an
+/// invalid typed constant value.
+pub fn inject_python_managed(
     text: &str,
     specs: &[ParamDecl],
     values: &BTreeMap<String, String>,
@@ -71,6 +110,21 @@ pub fn inject_python_consts(
         .filter(|candidate| candidate.decl.binding == Binding::Const)
         .map(|candidate| candidate.decl.name.as_str())
         .collect::<BTreeSet<_>>();
+    let input_sites = python_input_sites(text).ok_or(PythonInjectError::Syntax)?;
+    let current_inputs = input_sites
+        .iter()
+        .map(|site| (site.order, site.prompt.clone()))
+        .collect::<Vec<_>>();
+    let stored_inputs = specs
+        .iter()
+        .filter(|spec| spec.binding == Binding::Input)
+        .map(|spec| (spec.order, spec.prompt.clone()))
+        .collect::<Vec<_>>();
+    let input_bindings = match_calls(&stored_inputs, &current_inputs);
+    let input_by_order = input_sites
+        .iter()
+        .map(|site| (site.order, site))
+        .collect::<BTreeMap<_, _>>();
 
     let mut parser = Parser::new();
     let language = tree_sitter_python::LANGUAGE.into();
@@ -88,33 +142,50 @@ pub fn inject_python_consts(
         .collect::<BTreeMap<_, _>>();
     let root = tree.root_node();
     let mut replacements = Vec::new();
+    let mut input_queue = BTreeMap::<i64, (String, bool)>::new();
     for (name, raw) in values {
         let Some(spec) = by_name.get(name.as_str()).copied() else {
             return Err(PythonInjectError::MissingTarget(name.clone()));
         };
         match spec.binding {
-            Binding::Input => {
-                return Err(PythonInjectError::ManagedInputUnsupported(name.clone()));
+            Binding::Const => {
+                if !current_consts.contains(name.as_str()) {
+                    return Err(PythonInjectError::MissingTarget(name.clone()));
+                }
+                let literal = render_value(spec, raw)?;
+                let mut targets = const_targets(root, text, name);
+                if let Some(main) = main_guard_block(root, text) {
+                    targets.extend(const_targets(main, text, name));
+                }
+                if targets.is_empty() {
+                    return Err(PythonInjectError::MissingTarget(name.clone()));
+                }
+                replacements.extend(targets.into_iter().map(|node| Replacement {
+                    start: node.start_byte(),
+                    end: node.end_byte(),
+                    text: literal.clone(),
+                }));
             }
-            Binding::Const => {}
-            Binding::EnvDefault | Binding::None => continue,
+            Binding::Input => {
+                let Some((current_order, ambiguous)) = input_bindings.get(&spec.order).copied()
+                else {
+                    return Err(PythonInjectError::MissingTarget(name.clone()));
+                };
+                if ambiguous || input_queue.contains_key(&current_order) {
+                    return Err(PythonInjectError::AmbiguousInput(name.clone()));
+                }
+                let Some(site) = input_by_order.get(&current_order).copied() else {
+                    return Err(PythonInjectError::MissingTarget(name.clone()));
+                };
+                replacements.push(Replacement {
+                    start: site.callee_start,
+                    end: site.callee_end,
+                    text: format!("_skit_i[{current_order}]"),
+                });
+                input_queue.insert(current_order, (raw.clone(), spec.secret));
+            }
+            Binding::EnvDefault | Binding::None => {}
         }
-        if !current_consts.contains(name.as_str()) {
-            return Err(PythonInjectError::MissingTarget(name.clone()));
-        }
-        let literal = render_value(spec, raw)?;
-        let mut targets = const_targets(root, text, name);
-        if let Some(main) = main_guard_block(root, text) {
-            targets.extend(const_targets(main, text, name));
-        }
-        if targets.is_empty() {
-            return Err(PythonInjectError::MissingTarget(name.clone()));
-        }
-        replacements.extend(targets.into_iter().map(|node| Replacement {
-            start: node.start_byte(),
-            end: node.end_byte(),
-            text: literal.clone(),
-        }));
     }
 
     replacements.sort_by_key(|replacement| replacement.start);
@@ -124,11 +195,61 @@ pub fn inject_python_consts(
     {
         return Err(PythonInjectError::Syntax);
     }
+    let insert_at = (!input_queue.is_empty()).then(|| input_preamble_offset(root, text));
     let mut output = text.to_owned();
     for replacement in replacements.into_iter().rev() {
         output.replace_range(replacement.start..replacement.end, &replacement.text);
     }
+    if let Some(insert_at) = insert_at {
+        output.insert_str(insert_at, &input_preamble(&input_queue));
+    }
     Ok(output)
+}
+
+fn input_preamble(queue: &BTreeMap<i64, (String, bool)>) -> String {
+    let values = queue
+        .iter()
+        .map(|(order, (value, secret))| {
+            format!(
+                "{order}: ({}, {})",
+                python_string(value),
+                if *secret { "True" } else { "False" }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let keys = queue
+        .keys()
+        .map(i64::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "import sys as _skit_s; _skit_o = input; _skit_q = {{{values}}}; _skit_i = {{k: (lambda p='', /, k=k: ((_skit_s.stdout.write(str(p) + ('***' if _skit_q[k][1] else _skit_q[k][0]) + chr(10)), _skit_q.pop(k)[0])[1] if k in _skit_q else _skit_o(p))) for k in [{keys}]}}  # skit:shim\n"
+    )
+}
+
+fn input_preamble_offset(root: Node<'_>, source: &str) -> usize {
+    let mut cursor = root.walk();
+    let statements = root.named_children(&mut cursor).collect::<Vec<_>>();
+    let mut index = 0;
+    if statements.first().is_some_and(|statement| {
+        statement.kind() == "expression_statement"
+            && statement
+                .named_child(0)
+                .is_some_and(|child| child.kind() == "string")
+    }) {
+        index = 1;
+    }
+    while statements.get(index).is_some_and(|statement| {
+        statement.kind() == "import_from_statement"
+            && statement
+                .child_by_field_name("module_name")
+                .and_then(|module| node_text(module, source))
+                == Some("__future__")
+    }) {
+        index += 1;
+    }
+    statements.get(index).map_or(source.len(), |node| node.start_byte())
 }
 
 fn render_value(spec: &ParamDecl, raw: &str) -> Result<String, PythonInjectError> {
@@ -261,3 +382,6 @@ fn is_main_guard(node: Node<'_>, source: &str) -> bool {
 fn node_text<'a>(node: Node<'_>, source: &'a str) -> Option<&'a str> {
     source.get(node.start_byte()..node.end_byte())
 }
+
+#[allow(dead_code)]
+fn _site_type_check(_site: &PythonInputSite) {}
