@@ -164,30 +164,31 @@ fn add_snapshot(
         .filter(|dependency| !dependency.is_empty())
         .collect::<Vec<_>>();
     let wants_uv_metadata = !dependencies.is_empty() || !request.requires_python.is_empty();
-    let strict_text = std::str::from_utf8(&snapshot.bytes).ok();
-    let inject_metadata = request.mode == AddMode::Copy
-        && wants_uv_metadata
-        && strict_text.is_some_and(|text| !has_pep723(text, "#"));
+    let has_existing_block = std::str::from_utf8(&snapshot.bytes)
+        .is_ok_and(|text| has_pep723(text, "#"));
+    let inject_metadata = request.mode == AddMode::Copy && wants_uv_metadata && !has_existing_block;
 
     let payload = match request.mode {
         AddMode::Reference => None,
-        AddMode::Copy if strict_text.is_some() && (inject_metadata || !managed_params.is_empty()) => {
-            let Some(text) = strict_text else {
-                unreachable!("strict-text branch requires strict UTF-8");
-            };
-            let with_uv = if inject_metadata {
-                inject_pep723(text, &dependencies, &request.requires_python, "#")
+        AddMode::Copy => {
+            if let Ok(text) = std::str::from_utf8(&snapshot.bytes)
+                && (inject_metadata || !managed_params.is_empty())
+            {
+                let with_uv = if inject_metadata {
+                    inject_pep723(text, &dependencies, &request.requires_python, "#")
+                } else {
+                    text.to_owned()
+                };
+                let final_text = if managed_params.is_empty() {
+                    with_uv
+                } else {
+                    write_python_params(&with_uv, managed_params)
+                };
+                Some(final_text.into_bytes())
             } else {
-                text.to_owned()
-            };
-            let final_text = if managed_params.is_empty() {
-                with_uv
-            } else {
-                write_python_params(&with_uv, managed_params)
-            };
-            Some(final_text.into_bytes())
+                Some(snapshot.bytes)
+            }
         }
-        AddMode::Copy => Some(snapshot.bytes),
     };
     let name = request
         .name
