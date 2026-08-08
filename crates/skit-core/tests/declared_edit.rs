@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use skit_core::{
-    DeclaredEdits, Delivery, ParamDecl, ParamDefault, ParamType, edit_declared,
-};
+use skit_core::{DeclaredEdits, Delivery, ParamDecl, ParamDefault, ParamType, edit_declared};
 
 #[test]
 fn remove_then_add_then_tweak_has_stable_order_and_warnings() {
@@ -118,7 +116,9 @@ fn typed_defaults_coerce_and_invalid_values_only_skip_that_default() {
     let mut edits = DeclaredEdits::default();
     edits.defaults.insert("count".to_owned(), "4".to_owned());
     edits.defaults.insert("ratio".to_owned(), "NaN".to_owned());
-    edits.defaults.insert("enabled".to_owned(), "yes".to_owned());
+    edits
+        .defaults
+        .insert("enabled".to_owned(), "yes".to_owned());
 
     let result = edit_declared(&initial, &edits);
     assert_eq!(result.decls[0].default, Some(ParamDefault::Integer(4)));
@@ -196,7 +196,9 @@ fn delivery_changes_are_limited_to_the_allowed_set() {
         allowed_deliveries: vec![Delivery::Flag, Delivery::Env],
         ..DeclaredEdits::default()
     };
-    edits.deliveries.insert("x".to_owned(), Delivery::Placeholder);
+    edits
+        .deliveries
+        .insert("x".to_owned(), Delivery::Placeholder);
 
     let result = edit_declared(&initial, &edits);
     assert_eq!(result.decls, initial);
