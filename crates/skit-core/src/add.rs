@@ -6,7 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::{
-    Entry, EntryDraft, Error as StoreError, ScriptMeta, Store, infer_kind,
+    Entry, EntryDraft, Error as StoreError, ScriptMeta, Store, infer_kind, sha256_source_hash,
     shebang_program_from_line, spec_for,
 };
 
@@ -28,12 +28,10 @@ impl AddMode {
 
 /// Deterministic metadata supplied by the caller around one add operation.
 ///
-/// Hashing and wall-clock access are frontend services. Keeping them outside this
-/// use case makes CLI, Tauri, and tests share the same add logic without hidden time
-/// or process-global state.
+/// Wall-clock access stays at the frontend boundary. The source hash is computed in
+/// this use case from the same byte snapshot that is analyzed and copied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddPreparation {
-    pub source_hash: String,
     pub added_at: String,
 }
 
@@ -56,10 +54,7 @@ pub enum AddUseCaseError {
     SourceNotFile(PathBuf),
     UnknownKind,
     UnsupportedKind(String),
-    Io {
-        path: PathBuf,
-        source: io::Error,
-    },
+    Io { path: PathBuf, source: io::Error },
     Store(StoreError),
 }
 
@@ -69,7 +64,10 @@ impl fmt::Display for AddUseCaseError {
             Self::SourceNotFile(path) => write!(formatter, "file not found: {}", path.display()),
             Self::UnknownKind => write!(formatter, "cannot determine the entry kind"),
             Self::UnsupportedKind(kind) => {
-                write!(formatter, "entry kind is not valid for the file lane: {kind}")
+                write!(
+                    formatter,
+                    "entry kind is not valid for the file lane: {kind}"
+                )
             }
             Self::Io { path, source } => {
                 write!(formatter, "cannot access {}: {source}", path.display())
@@ -119,6 +117,7 @@ pub fn add_file(store: &Store, request: AddFileRequest) -> Result<Entry, AddUseC
         path: source.clone(),
         source: source_error,
     })?;
+    let source_hash = sha256_source_hash(&bytes);
 
     let kind = resolve_kind(&source, request.kind.as_deref())?;
     let text = String::from_utf8_lossy(&bytes);
@@ -146,7 +145,7 @@ pub fn add_file(store: &Store, request: AddFileRequest) -> Result<Entry, AddUseC
         kind,
         mode: mode.as_str().to_owned(),
         source: source.to_string_lossy().into_owned(),
-        source_hash: request.preparation.source_hash,
+        source_hash,
         added_at: request.preparation.added_at,
         workdir,
         description,
