@@ -9,7 +9,8 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 use serde::Serialize;
 use skit_core::{
-    Entry, Family, FormField, StateStore, Store, discover_roots, plan_for_entry, spec_for,
+    Entry, Family, FormField, StateStore, Store, discover_roots, effective_uv_metadata,
+    plan_for_entry, spec_for,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -239,6 +240,7 @@ fn show(store: &Store, name: &str, as_json: bool) -> Result<(), String> {
     let last_exit = state.last_run.as_ref().map(|run| run.exit);
     let mut presets = state.presets.keys().cloned().collect::<Vec<_>>();
     presets.sort();
+    let (dependencies, requires_python) = effective_uv_metadata(&entry);
 
     if !as_json {
         println!(
@@ -250,6 +252,12 @@ fn show(store: &Store, name: &str, as_json: bool) -> Result<(), String> {
         }
         if !entry.meta.source.is_empty() {
             println!("  Source: {}", entry.meta.source);
+        }
+        if !dependencies.is_empty() {
+            println!("  Dependencies: {}", dependencies.join(", "));
+        }
+        if !requires_python.is_empty() {
+            println!("  Python constraint: {requires_python}");
         }
         if plan.fields.is_empty() {
             println!("  No form fields");
@@ -272,8 +280,8 @@ fn show(store: &Store, name: &str, as_json: bool) -> Result<(), String> {
         workdir: entry.meta.workdir.clone(),
         interpreter: nonempty(&entry.meta.interpreter),
         missing: target_missing(&entry),
-        dependencies: entry.meta.dependencies.clone().unwrap_or_default(),
-        requires_python: entry.meta.requires_python.clone(),
+        dependencies,
+        requires_python,
         needs: entry.meta.needs.clone().unwrap_or_default(),
         template: nonempty(&entry.meta.template),
         param_source: plan.source.as_str(),
