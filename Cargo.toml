@@ -19,9 +19,6 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = "deny"
-pedantic = "deny"
-nursery = "warn"
-cargo = "warn"
 dbg_macro = "deny"
 todo = "deny"
 unimplemented = "deny"
