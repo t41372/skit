@@ -37,7 +37,12 @@ pub fn form_params(kind: &str, text: &str, settings: &EntrySettings) -> Vec<Para
     settings
         .parameters
         .iter()
-        .filter(|item| matches!(item.delivery, ParameterDelivery::Flag | ParameterDelivery::Env))
+        .filter(|item| {
+            matches!(
+                item.delivery,
+                ParameterDelivery::Flag | ParameterDelivery::Env
+            )
+        })
         .cloned()
         .collect()
 }
@@ -48,8 +53,10 @@ fn with_riders(mut fields: Vec<ParamDecl>, declared: &[ParamDecl]) -> Vec<ParamD
         .map(|item| item.name.as_str())
         .collect::<BTreeSet<_>>();
     for item in declared {
-        if matches!(item.delivery, ParameterDelivery::Flag | ParameterDelivery::Env)
-            && taken.insert(item.name.as_str())
+        if matches!(
+            item.delivery,
+            ParameterDelivery::Flag | ParameterDelivery::Env
+        ) && taken.insert(item.name.as_str())
         {
             fields.push(item.clone());
         }
