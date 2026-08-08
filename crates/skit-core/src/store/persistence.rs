@@ -7,9 +7,7 @@ use std::time::UNIX_EPOCH;
 use atomic_write_file::AtomicWriteFile;
 
 use super::{Entry, Error, ScriptMeta, Store};
-use crate::{
-    DeclaredEditResult, DeclaredEdits, ParamDecl, declared_from_meta, edit_declared,
-};
+use crate::{DeclaredEditResult, DeclaredEdits, ParamDecl, declared_from_meta, edit_declared};
 
 impl Store {
     /// Read valid declared parameter rows for one entry.

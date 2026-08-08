@@ -228,11 +228,10 @@ fn apply_bool_flag_action(decl: &mut ParamDecl) -> Option<&'static str> {
 fn coerce_default(value: &str, param_type: ParamType) -> Option<ParamDefault> {
     match param_type {
         ParamType::Integer => value.parse::<i64>().ok().map(ParamDefault::Integer),
-        ParamType::Float => value.parse::<f64>().ok().and_then(|number| {
-            number
-                .is_finite()
-                .then_some(ParamDefault::Float(number))
-        }),
+        ParamType::Float => value
+            .parse::<f64>()
+            .ok()
+            .and_then(|number| number.is_finite().then_some(ParamDefault::Float(number))),
         ParamType::Boolean => parse_bool(value).map(ParamDefault::Boolean),
         ParamType::String | ParamType::Choice | ParamType::Path => {
             Some(ParamDefault::String(value.to_owned()))
