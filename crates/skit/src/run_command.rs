@@ -6,9 +6,9 @@ use std::time::SystemTime;
 
 use clap::Args;
 use skit_core::{
-    AssemblyError, LaunchOptions, LaunchPlan, LaunchPlanError, Platform, PrepareRunError,
-    ProgramSearch, RunError, RunRequest, StateStore, Store, format_utc_timestamp,
-    load_launch_config, plan_for_entry, prepare_raw_run, prepare_run, remembered_values,
+    AssemblyError, LaunchOptions, LaunchPlan, LaunchPlanError, Platform, PrepareExecutionError,
+    PrepareRunError, ProgramSearch, RunError, RunRequest, StateStore, Store, format_utc_timestamp,
+    load_launch_config, plan_for_entry, prepare_execution, prepare_raw_run, remembered_values,
     resolve_extra_args, run_launch,
 };
 
@@ -124,7 +124,7 @@ pub(crate) fn run(store: &Store, args: RunArgs) -> Result<(), CliFailure> {
         );
     }
     let environment = unicode_environment();
-    let prepared = prepare_run(
+    let execution = prepare_execution(
         &entry,
         RunRequest {
             state: &state,
@@ -136,7 +136,8 @@ pub(crate) fn run(store: &Store, args: RunArgs) -> Result<(), CliFailure> {
         },
         &programs,
     )
-    .map_err(classify_prepare_error)?;
+    .map_err(classify_execution_error)?;
+    let prepared = &execution.run;
 
     let secret_names = prepared.form.secret_names();
     if args.dry_run {
@@ -258,6 +259,19 @@ fn parse_set_values(values: &[String]) -> Result<BTreeMap<String, String>, CliFa
         }
     }
     Ok(output)
+}
+
+fn classify_execution_error(error: PrepareExecutionError) -> CliFailure {
+    match error {
+        PrepareExecutionError::Prepare(source) => classify_prepare_error(source),
+        PrepareExecutionError::Launch(source) => classify_launch_error(source),
+        PrepareExecutionError::SourceIo { .. }
+        | PrepareExecutionError::PythonInject(_)
+        | PrepareExecutionError::Temp(_)
+        | PrepareExecutionError::UnsupportedInjectionKind(_) => {
+            CliFailure::coded(error.to_string(), 125)
+        }
+    }
 }
 
 fn classify_prepare_error(error: PrepareRunError) -> CliFailure {
