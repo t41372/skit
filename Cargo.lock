@@ -1150,6 +1150,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "skit-language"
+version = "0.5.0-alpha.0"
+dependencies = [
+ "regex",
+ "serde_json",
+ "skit-domain",
+ "tempfile",
+ "thiserror",
+ "toml",
+]
+
+[[package]]
 name = "skit-runtime"
 version = "0.5.0-alpha.0"
 dependencies = [
