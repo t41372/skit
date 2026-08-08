@@ -38,24 +38,28 @@ jobs:
           EOF
           python3 - <<'PY'
           from pathlib import Path
+          import re
+
           path = Path('crates/skit-cli/src/run/command.rs')
           text = path.read_text()
-          old = '''    let script = staged.as_ref().map_or_else(
-              || data_store.payload_path(&entry),
-              |value| Ok(value.path.clone()),
-          )?;
-          '''
-          new = '''    let script = if let Some(staged) = staged.as_ref() {
+          pattern = re.compile(
+              r'''    let script = staged\.as_ref\(\)\.map_or_else\(\s*'''
+              r'''\|\| data_store\.payload_path\(&entry\),\s*'''
+              r'''\|value\| Ok\(value\.path\.clone\(\)\),\s*'''
+              r'''\)\?;''',
+              re.MULTILINE,
+          )
+          replacement = '''    let script = if let Some(staged) = staged.as_ref() {
               staged.path.clone()
           } else if entry.meta.kind.as_str() == "command" {
               PathBuf::new()
           } else {
               data_store.payload_path(&entry)?
-          };
-          '''
-          if old not in text:
-              raise SystemExit('expected formatted run-path block was not found')
-          path.write_text(text.replace(old, new, 1))
+          };'''
+          text, count = pattern.subn(replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(f'expected one run-path block, found {count}')
+          path.write_text(text)
           PY
           cargo fmt --all
       - name: Commit refactor
