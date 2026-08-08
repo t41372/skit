@@ -15,7 +15,10 @@ use skit_application::{
 };
 use skit_domain::{
     Entry, EntryKind, EntrySettings, EntrySummary, StorageMode,
-    parameters::{ParamDecl, ParameterDelivery, ParameterType, coerce_default},
+    parameters::{
+        ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
+        coerce_default,
+    },
 };
 use skit_form::form_params;
 use skit_i18n::{Locale, detect_locale, render as localize};
@@ -1596,15 +1599,97 @@ fn write_deps(settings: &EntrySettings, json: bool) -> Result<(), CliError> {
     Ok(())
 }
 
+fn apply_source_management(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    mut entry: Entry,
+    resync: bool,
+    manage: &[String],
+    unmanage: &[String],
+    normalize: &[String],
+) -> Result<(Entry, String), CliError> {
+    let mut source = source_path(store, &entry)
+        .and_then(|path| fs::read_to_string(path).ok())
+        .unwrap_or_default();
+    if !resync && manage.is_empty() && unmanage.is_empty() && normalize.is_empty() {
+        return Ok((entry, source));
+    }
+    if entry.meta.mode == StorageMode::Reference {
+        return Err(CliError::Usage(
+            "source management applies only to a stored copy".to_owned(),
+        ));
+    }
+    let kind = entry.meta.kind.as_str();
+    let mut managed = managed_params(kind, &source);
+    let candidates = detect_candidates(kind, &source);
+    if resync {
+        managed = managed
+            .into_iter()
+            .filter_map(|current| {
+                candidates
+                    .iter()
+                    .find(|candidate| candidate.name == current.name)
+                    .cloned()
+                    .map(|mut candidate| {
+                        candidate.secret = current.secret;
+                        candidate.env_source = current.env_source;
+                        if !current.prompt.is_empty() {
+                            candidate.prompt = current.prompt;
+                        }
+                        candidate
+                    })
+            })
+            .collect();
+    }
+    for name in manage {
+        if managed.iter().any(|item| item.name == *name) {
+            continue;
+        }
+        let candidate = candidates
+            .iter()
+            .find(|item| item.name == *name)
+            .cloned()
+            .ok_or_else(|| CliError::Usage(format!("unknown source parameter: {name}")))?;
+        managed.push(candidate);
+    }
+    if !unmanage.is_empty() {
+        managed.retain(|item| !unmanage.contains(&item.name));
+    }
+    for name in normalize {
+        if kind != "shell" {
+            return Err(CliError::Usage(
+                "--normalize applies only to shell entries".to_owned(),
+            ));
+        }
+        source = normalize_shell_default(&source, name)
+            .map_err(|error| CliError::Usage(error.to_string()))?;
+        let normalized = detect_candidates(kind, &source)
+            .into_iter()
+            .find(|item| item.name == *name)
+            .ok_or_else(|| CliError::Usage(format!("could not normalize {name}")))?;
+        if let Some(item) = managed.iter_mut().find(|item| item.name == *name) {
+            *item = normalized;
+        } else {
+            managed.push(normalized);
+        }
+    }
+    let rewritten = write_managed_params(kind, &source, &managed)
+        .map_err(|error| CliError::Usage(error.to_string()))?;
+    if rewritten != source {
+        let claimed = service.claim_identity(&entry)?;
+        entry =
+            service.commit_copy_edit(&claimed, rewritten.as_bytes(), &entry.meta.source_hash)?;
+        source = rewritten;
+    }
+    Ok((entry, source))
+}
+
 fn params(
     service: &LibraryService<FileStore>,
     store: &FileStore,
     args: ParamsArgs,
 ) -> Result<(), CliError> {
-    let mut held = service.show(&args.selector)?;
-    let mut source = source_path(store, &held)
-        .and_then(|path| fs::read_to_string(path).ok())
-        .unwrap_or_default();
+    let held = service.show(&args.selector)?;
     let has_source_operation = args.resync
         || !args.manage.is_empty()
         || !args.unmanage.is_empty()
@@ -1634,75 +1719,15 @@ fn params(
             "source management must be a separate params operation".to_owned(),
         ));
     }
-    if has_source_operation {
-        if held.meta.mode == StorageMode::Reference {
-            return Err(CliError::Usage(
-                "source management applies only to a stored copy".to_owned(),
-            ));
-        }
-        let kind = held.meta.kind.as_str();
-        let mut managed = managed_params(kind, &source);
-        let candidates = detect_candidates(kind, &source);
-        if args.resync {
-            managed = managed
-                .into_iter()
-                .filter_map(|current| {
-                    candidates
-                        .iter()
-                        .find(|candidate| candidate.name == current.name)
-                        .cloned()
-                        .map(|mut candidate| {
-                            candidate.secret = current.secret;
-                            candidate.env_source = current.env_source;
-                            if !current.prompt.is_empty() {
-                                candidate.prompt = current.prompt;
-                            }
-                            candidate
-                        })
-                })
-                .collect();
-        }
-        for name in &args.manage {
-            if managed.iter().any(|item| item.name == *name) {
-                continue;
-            }
-            let candidate = candidates
-                .iter()
-                .find(|item| item.name == *name)
-                .cloned()
-                .ok_or_else(|| CliError::Usage(format!("unknown source parameter: {name}")))?;
-            managed.push(candidate);
-        }
-        if !args.unmanage.is_empty() {
-            managed.retain(|item| !args.unmanage.contains(&item.name));
-        }
-        for name in &args.normalize {
-            if kind != "shell" {
-                return Err(CliError::Usage(
-                    "--normalize applies only to shell entries".to_owned(),
-                ));
-            }
-            source = normalize_shell_default(&source, name)
-                .map_err(|error| CliError::Usage(error.to_string()))?;
-            let normalized = detect_candidates(kind, &source)
-                .into_iter()
-                .find(|item| item.name == *name)
-                .ok_or_else(|| CliError::Usage(format!("could not normalize {name}")))?;
-            if let Some(item) = managed.iter_mut().find(|item| item.name == *name) {
-                *item = normalized;
-            } else {
-                managed.push(normalized);
-            }
-        }
-        let rewritten = write_managed_params(kind, &source, &managed)
-            .map_err(|error| CliError::Usage(error.to_string()))?;
-        if rewritten != source {
-            let claimed = service.claim_identity(&held)?;
-            held =
-                service.commit_copy_edit(&claimed, rewritten.as_bytes(), &held.meta.source_hash)?;
-            source = rewritten;
-        }
-    }
+    let (held, source) = apply_source_management(
+        service,
+        store,
+        held,
+        args.resync,
+        &args.manage,
+        &args.unmanage,
+        &args.normalize,
+    )?;
     let mut settings = EntrySettings::from_meta(&held.meta);
     let mut declarations = form_params(held.meta.kind.as_str(), &source, &settings);
     for item in &settings.parameters {
@@ -2363,6 +2388,20 @@ fn entry_parameters(store: &FileStore, entry: &Entry) -> Vec<ParamDecl> {
     form_params(entry.meta.kind.as_str(), &source, &settings)
 }
 
+fn settings_parameters(store: &FileStore, entry: &Entry) -> Vec<ParamDecl> {
+    let settings = EntrySettings::from_meta(&entry.meta);
+    let mut parameters = entry_parameters(store, entry);
+    for parameter in settings.parameters {
+        if !parameters
+            .iter()
+            .any(|current| current.name == parameter.name)
+        {
+            parameters.push(parameter);
+        }
+    }
+    parameters
+}
+
 fn source_path(store: &FileStore, entry: &Entry) -> Option<PathBuf> {
     if entry.meta.mode == StorageMode::Reference {
         return (!entry.meta.source.is_empty()).then(|| PathBuf::from(&entry.meta.source));
@@ -2473,7 +2512,7 @@ fn tui_open(
         HostRequest::Add => Ok(tui_add_form()),
         HostRequest::Settings => {
             let entry = service.show(tui_selector(&selector)?)?;
-            Ok(tui_settings_form(&entry))
+            Ok(tui_settings_form(store, &entry))
         }
         HostRequest::Preferences => tui_preferences_form(),
         HostRequest::Health => tui_health_report(service, store),
@@ -2576,32 +2615,132 @@ fn tui_add_form() -> Screen {
     })
 }
 
-fn tui_settings_form(entry: &Entry) -> Screen {
+fn tui_settings_form(store: &FileStore, entry: &Entry) -> Screen {
     let settings = EntrySettings::from_meta(&entry.meta);
+    let mut fields = vec![
+        FormField::text("name", "Name", &entry.meta.name),
+        FormField::multiline("description", "Description", &entry.meta.description),
+        FormField::text("workdir", "Working directory", &entry.meta.workdir),
+        FormField::text("interpreter", "Interpreter", settings.interpreter),
+        FormField::text("runner", "Prompt runner", settings.runner),
+        FormField::text(
+            "dependencies",
+            "Package dependencies",
+            settings.dependencies.join(", "),
+        ),
+        FormField::text("python", "Python constraint", settings.requires_python),
+        FormField::text("needs", "Required commands", settings.needs.join(", ")),
+        FormField::multiline("template", "Command template", settings.template),
+        FormField::text(
+            "interpolate",
+            "Prompt interpolation (true or false)",
+            settings.interpolate.to_string(),
+        ),
+        FormField::text(
+            "source:resync",
+            "Resync managed source parameters (true or false)",
+            "false",
+        ),
+        FormField::text("source:manage", "Manage source parameters", ""),
+        FormField::text("source:unmanage", "Stop managing source parameters", ""),
+        FormField::text("source:normalize", "Normalize shell parameters", ""),
+        FormField::text("parameter:add", "Add parameters", ""),
+        FormField::text("parameter:remove", "Remove parameters", ""),
+    ];
+    for (index, parameter) in settings_parameters(store, entry).iter().enumerate() {
+        let prefix = format!("parameter:{index}");
+        let subject = &parameter.name;
+        fields.extend([
+            FormField::text(
+                format!("{prefix}:name"),
+                format!("Parameter {index} name"),
+                subject,
+            ),
+            FormField::text(
+                format!("{prefix}:binding"),
+                format!("{subject} source binding"),
+                parameter.binding.as_str(),
+            ),
+            FormField::text(
+                format!("{prefix}:delivery"),
+                format!("{subject} delivery"),
+                parameter.delivery.as_str(),
+            ),
+            FormField::text(
+                format!("{prefix}:type"),
+                format!("{subject} type"),
+                parameter.parameter_type.as_str(),
+            ),
+            FormField::text(
+                format!("{prefix}:default"),
+                format!("{subject} default"),
+                parameter
+                    .default
+                    .as_ref()
+                    .map_or_else(String::new, tui_parameter_value),
+            ),
+            FormField::text(
+                format!("{prefix}:choices"),
+                format!("{subject} choices"),
+                parameter.choices.join(", "),
+            ),
+            FormField::text(
+                format!("{prefix}:required"),
+                format!("{subject} is required"),
+                parameter.required.to_string(),
+            ),
+            FormField::text(
+                format!("{prefix}:multiple"),
+                format!("{subject} takes multiple values"),
+                parameter.multiple.to_string(),
+            ),
+            FormField::text(
+                format!("{prefix}:repeat"),
+                format!("{subject} repeats its flag"),
+                parameter.repeat.to_string(),
+            ),
+            FormField::text(
+                format!("{prefix}:prompt"),
+                format!("{subject} prompt"),
+                &parameter.prompt,
+            ),
+            FormField::multiline(
+                format!("{prefix}:help"),
+                format!("{subject} help"),
+                &parameter.help,
+            ),
+            FormField::text(
+                format!("{prefix}:secret"),
+                format!("{subject} is secret"),
+                parameter.secret.to_string(),
+            ),
+            FormField::text(
+                format!("{prefix}:env_source"),
+                format!("{subject} secret environment source"),
+                &parameter.env_source,
+            ),
+            FormField::text(
+                format!("{prefix}:env_target"),
+                format!("{subject} environment target"),
+                &parameter.env_target,
+            ),
+            FormField::text(
+                format!("{prefix}:flag"),
+                format!("{subject} flag"),
+                &parameter.flag,
+            ),
+            FormField::text(
+                format!("{prefix}:action"),
+                format!("{subject} flag action"),
+                &parameter.action,
+            ),
+        ]);
+    }
     Screen::Form(FormView {
         purpose: FormPurpose::Settings,
         title: format!("Settings for {}", entry.meta.name),
         selector: Some(entry.slug.as_str().to_owned()),
-        fields: vec![
-            FormField::text("name", "Name", &entry.meta.name),
-            FormField::multiline("description", "Description", &entry.meta.description),
-            FormField::text("workdir", "Working directory", &entry.meta.workdir),
-            FormField::text("interpreter", "Interpreter", settings.interpreter),
-            FormField::text("runner", "Prompt runner", settings.runner),
-            FormField::text(
-                "dependencies",
-                "Package dependencies",
-                settings.dependencies.join(", "),
-            ),
-            FormField::text("python", "Python constraint", settings.requires_python),
-            FormField::text("needs", "Required commands", settings.needs.join(", ")),
-            FormField::multiline("template", "Command template", settings.template),
-            FormField::text(
-                "interpolate",
-                "Prompt interpolation (true or false)",
-                settings.interpolate.to_string(),
-            ),
-        ],
+        fields,
         focused: 0,
         submit_label: "Save".to_owned(),
     })
@@ -2711,6 +2850,95 @@ fn tui_split_list(value: &str) -> Vec<String> {
         .collect()
 }
 
+fn tui_parameter_value(value: &ParameterValue) -> String {
+    match value {
+        ParameterValue::String(value) => value.clone(),
+        ParameterValue::Integer(value) => value.to_string(),
+        ParameterValue::Float(value) => value.to_string(),
+        ParameterValue::Bool(value) => value.to_string(),
+    }
+}
+
+fn tui_declarations_from_values(
+    values: &BTreeMap<String, String>,
+) -> Result<Vec<ParamDecl>, CliError> {
+    let mut declarations = Vec::new();
+    for index in 0.. {
+        let prefix = format!("parameter:{index}");
+        let name_key = format!("{prefix}:name");
+        let Some(name) = values.get(&name_key) else {
+            break;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(CliError::Usage(format!("parameter {index} needs a name")));
+        }
+        if declarations
+            .iter()
+            .any(|item: &ParamDecl| item.name == name)
+        {
+            return Err(CliError::Usage(format!("duplicate parameter: {name}")));
+        }
+        let get = |field: &str| {
+            values
+                .get(&format!("{prefix}:{field}"))
+                .map_or("", String::as_str)
+                .trim()
+        };
+        let mut declaration = ParamDecl::new(name);
+        declaration.binding = match get("binding") {
+            "" | "none" => ParameterBinding::None,
+            "const" => ParameterBinding::Const,
+            "input" => ParameterBinding::Input,
+            "envdefault" => ParameterBinding::EnvDefault,
+            value => {
+                return Err(CliError::Usage(format!(
+                    "unknown parameter binding: {value}"
+                )));
+            }
+        };
+        declaration.delivery = parse_delivery(if get("delivery").is_empty() {
+            "flag"
+        } else {
+            get("delivery")
+        })?;
+        declaration.parameter_type = parse_parameter_type(if get("type").is_empty() {
+            "str"
+        } else {
+            get("type")
+        })?;
+        if !get("default").is_empty() {
+            declaration.default = Some(
+                coerce_default(get("default"), declaration.parameter_type)
+                    .map_err(|error| CliError::Usage(error.to_string()))?,
+            );
+        }
+        declaration.choices = get("choices")
+            .split(',')
+            .map(str::trim)
+            .filter(|choice| !choice.is_empty())
+            .map(str::to_owned)
+            .collect();
+        declaration.required = tui_bool(get("required"));
+        declaration.multiple = tui_bool(get("multiple"));
+        declaration.repeat = tui_bool(get("repeat"));
+        declaration.prompt = get("prompt").to_owned();
+        declaration.help = get("help").to_owned();
+        declaration.secret = tui_bool(get("secret"));
+        declaration.env_source = get("env_source").to_owned();
+        declaration.env_target = get("env_target").to_owned();
+        declaration.flag = get("flag").to_owned();
+        declaration.action = get("action").to_owned();
+        if declaration.validate().is_some() {
+            return Err(CliError::Usage(format!(
+                "parameter {name} has incompatible settings"
+            )));
+        }
+        declarations.push(declaration);
+    }
+    Ok(declarations)
+}
+
 fn tui_submit(
     service: &LibraryService<FileStore>,
     store: &FileStore,
@@ -2744,7 +2972,7 @@ fn tui_submit(
             Ok(tui_complete(service, "Entry added")?)
         }
         FormPurpose::Settings => {
-            tui_submit_settings(service, tui_selector(&selector)?, values)?;
+            tui_submit_settings(service, store, tui_selector(&selector)?, values)?;
             Ok(tui_complete(service, "Settings saved")?)
         }
         FormPurpose::Preferences => {
@@ -2844,6 +3072,7 @@ fn tui_submit_run(
 
 fn tui_submit_settings(
     service: &LibraryService<FileStore>,
+    store: &FileStore,
     selector: &str,
     values: &BTreeMap<String, String>,
 ) -> Result<(), CliError> {
@@ -2866,8 +3095,37 @@ fn tui_submit_settings(
     settings.needs = tui_split_list(tui_value(values, "needs"));
     settings.template = tui_value(values, "template").to_owned();
     settings.interpolate = tui_bool(tui_value(values, "interpolate"));
+    let mut declarations = tui_declarations_from_values(values)?;
+    let removed = tui_split_list(tui_value(values, "parameter:remove"));
+    declarations.retain(|parameter| !removed.contains(&parameter.name));
+    for name in tui_split_list(tui_value(values, "parameter:add")) {
+        if declarations.iter().any(|parameter| parameter.name == name) {
+            return Err(CliError::Usage(format!("parameter already exists: {name}")));
+        }
+        declarations.push(ParamDecl::new(name));
+    }
+    settings.parameters = declarations;
+    if matches!(entry.meta.kind.as_str(), "command" | "prompt") {
+        settings.params = settings
+            .parameters
+            .iter()
+            .filter(|parameter| parameter.delivery == ParameterDelivery::Placeholder)
+            .map(|parameter| parameter.name.clone())
+            .collect();
+    }
     let claimed = service.claim_identity(&entry)?;
-    service.update_settings(&claimed, &settings, tui_value(values, "workdir"))?;
+    entry = service.update_settings(&claimed, &settings, tui_value(values, "workdir"))?;
+    let state = FormStateService::new(FileFormStateStore::new(resolve_state_dir()?));
+    state.purge_secrets(&entry.slug, &settings.parameters)?;
+    apply_source_management(
+        service,
+        store,
+        entry,
+        tui_bool(tui_value(values, "source:resync")),
+        &tui_split_list(tui_value(values, "source:manage")),
+        &tui_split_list(tui_value(values, "source:unmanage")),
+        &tui_split_list(tui_value(values, "source:normalize")),
+    )?;
     Ok(())
 }
 
