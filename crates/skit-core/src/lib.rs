@@ -18,6 +18,7 @@ mod process;
 mod programs;
 mod python_add;
 mod python_analysis;
+mod python_constraints;
 mod python_inject;
 mod python_managed;
 mod python_metadata;
@@ -60,6 +61,9 @@ pub use python_add::{
     PythonAutoAddRequest, add_python_auto, add_python_file, add_python_file_with_params,
 };
 pub use python_analysis::suggest_python_dependencies;
+pub use python_constraints::{
+    PythonMetadataValidationError, normalize_python_dependency, normalize_requires_python,
+};
 pub use python_inject::{PythonInjectError, inject_python_consts, inject_python_managed};
 pub use python_managed::{PythonManagedAnalysis, PythonManagedCandidate, analyze_python_managed};
 pub use python_metadata::{read_python_params, render_python_params, write_python_params};
