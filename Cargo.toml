@@ -25,6 +25,7 @@ ratatui-widgets = { version = "0.3.2", default-features = false, features = ["st
 ratatui-crossterm = "0.1.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+shlex = "2.0.1"
 thiserror = "2.0.19"
 toml = "1.1.4"
 uuid = { version = "1.24.0", features = ["serde", "v4"] }
