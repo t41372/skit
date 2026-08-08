@@ -17,6 +17,7 @@ dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 skit-core = { path = "../skit-core" }
+skit-tui = { path = "../skit-tui" }
 
 [dev-dependencies]
 tempfile.workspace = true
