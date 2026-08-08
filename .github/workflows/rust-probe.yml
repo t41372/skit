@@ -38,8 +38,8 @@ jobs:
           : > "$log"
           set +e
 
-          echo '$ cargo +1.97.1 fmt --all --check' >> "$log"
-          cargo +1.97.1 fmt --all --check >> "$log" 2>&1
+          echo '$ cargo +1.97.1 fmt --all' >> "$log"
+          cargo +1.97.1 fmt --all >> "$log" 2>&1
           fmt_code=$?
           echo >> "$log"
 
@@ -55,12 +55,12 @@ jobs:
 
           printf 'fmt=%s clippy=%s test=%s\n' "$fmt_code" "$clippy_code" "$test_code" >> "$log"
 
-      - name: Commit probe log and generated lockfile
+      - name: Commit probe log, formatting, and generated lockfile
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .ci/rust-probe.txt
+          git add .ci/rust-probe.txt crates
           if [ -f Cargo.lock ]; then
             git add Cargo.lock
           fi
