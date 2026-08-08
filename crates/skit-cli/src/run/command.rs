@@ -153,7 +153,6 @@ pub(crate) fn run(
     let _plain = args.plain;
     let _no_input = args.no_input;
     let held = service.show(&args.selector)?;
-    let settings = EntrySettings::from_meta(&held.meta);
     if args.raw && (!args.values.is_empty() || args.preset.is_some() || args.save_preset.is_some())
     {
         return Err(RunError::RawConflict);
@@ -163,7 +162,9 @@ pub(crate) fn run(
             kind: held.meta.kind.as_str().to_owned(),
         });
     }
-    let entry = service.claim_identity(&held)?;
+    let config = FileConfigStore::new(resolve_config_dir()?);
+    let entry = apply_runtime_defaults(service.claim_identity(&held)?, &config.settings()?);
+    let settings = EntrySettings::from_meta(&entry.meta);
     let state_root = resolve_state_dir()?;
     let state = FormStateService::new(FileFormStateStore::new(&state_root));
     let saved = state.load(&entry.slug);
@@ -275,9 +276,7 @@ pub(crate) fn run(
         &SystemProbe,
     )?;
     let base_environment = env::vars().collect::<BTreeMap<_, _>>();
-    for (key, value) in
-        FileConfigStore::new(resolve_config_dir()?).mirror_environment(&base_environment)?
-    {
+    for (key, value) in config.mirror_environment(&base_environment)? {
         plan.env.entry(key).or_insert(value);
     }
 
@@ -339,6 +338,24 @@ fn apply_sets(
         values.insert(name.to_owned(), value.to_owned());
     }
     Ok(())
+}
+
+fn apply_runtime_defaults(mut entry: Entry, config: &BTreeMap<String, String>) -> Entry {
+    let mut settings = EntrySettings::from_meta(&entry.meta);
+    if settings.interpreter.is_empty() {
+        let key = match entry.meta.kind.as_str() {
+            "shell" => Some("shell.bash_path"),
+            "js" | "ts" => Some("js.runner"),
+            _ => None,
+        };
+        if let Some(value) = key.and_then(|key| config.get(key))
+            && !value.is_empty()
+        {
+            settings.interpreter.clone_from(value);
+            settings.write_to_meta(&mut entry.meta);
+        }
+    }
+    entry
 }
 
 fn source_text(
@@ -545,4 +562,45 @@ fn platform_state_dir() -> Option<PathBuf> {
 #[cfg(not(any(unix, target_os = "windows")))]
 fn platform_state_dir() -> Option<PathBuf> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_runtime_defaults;
+    use skit_domain::{Entry, EntryKind, EntryMeta, EntrySettings, Slug};
+    use std::collections::BTreeMap;
+
+    fn entry(kind: &str, interpreter: &str) -> Entry {
+        let mut meta = EntryMeta::minimal("Demo", EntryKind::parse(kind).unwrap());
+        let settings = EntrySettings {
+            interpreter: interpreter.to_owned(),
+            ..EntrySettings::default()
+        };
+        settings.write_to_meta(&mut meta);
+        Entry {
+            slug: Slug::parse("demo").unwrap(),
+            meta,
+        }
+    }
+
+    #[test]
+    fn runtime_defaults_apply_only_to_unpinned_shell_and_javascript_entries() {
+        let config = BTreeMap::from([
+            ("shell.bash_path".to_owned(), "/opt/bash".to_owned()),
+            ("js.runner".to_owned(), "bun".to_owned()),
+        ]);
+        let shell = apply_runtime_defaults(entry("shell", ""), &config);
+        let javascript = apply_runtime_defaults(entry("js", ""), &config);
+        let pinned = apply_runtime_defaults(entry("ts", "deno"), &config);
+
+        assert_eq!(
+            EntrySettings::from_meta(&shell.meta).interpreter,
+            "/opt/bash"
+        );
+        assert_eq!(
+            EntrySettings::from_meta(&javascript.meta).interpreter,
+            "bun"
+        );
+        assert_eq!(EntrySettings::from_meta(&pinned.meta).interpreter, "deno");
+    }
 }

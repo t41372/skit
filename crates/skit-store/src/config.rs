@@ -139,9 +139,7 @@ impl FileConfigStore {
             "mirror.npm".to_owned(),
             axis_display(&mirror.npm, NPM_PRESETS),
         );
-        settings
-            .entry("lang".to_owned())
-            .or_insert_with(|| "auto".to_owned());
+        settings.entry("lang".to_owned()).or_default();
         settings.entry("editor".to_owned()).or_default();
         settings
             .entry("form".to_owned())

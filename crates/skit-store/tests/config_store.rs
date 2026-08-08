@@ -4,6 +4,19 @@ use skit_store::{ConfigError, FileConfigStore};
 use tempfile::TempDir;
 
 #[test]
+fn empty_configuration_keeps_the_v040_public_values() {
+    let root = TempDir::new().unwrap();
+    let settings = FileConfigStore::new(root.path()).settings().unwrap();
+
+    assert_eq!(settings["lang"], "");
+    assert_eq!(settings["editor"], "");
+    assert_eq!(settings["form"], "tui");
+    assert_eq!(settings["after_run"], "exit");
+    assert_eq!(settings["shell.bash_path"], "");
+    assert_eq!(settings["js.runner"], "");
+}
+
+#[test]
 fn mirror_axes_round_trip_as_stable_tokens_and_preserve_paused_urls() {
     let root = TempDir::new().unwrap();
     let store = FileConfigStore::new(root.path());

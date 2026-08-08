@@ -70,6 +70,7 @@ fn active_locale() -> Locale {
     }
     if let Ok(directory) = resolve_config_dir()
         && let Ok(language) = FileConfigStore::new(directory).get("lang")
+        && !language.is_empty()
         && language != "auto"
     {
         return detect_locale(Some(&language));
