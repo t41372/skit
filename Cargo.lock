@@ -1150,6 +1150,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "skit-runtime"
+version = "0.5.0-alpha.0"
+dependencies = [
+ "shlex",
+ "skit-application",
+ "skit-domain",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "skit-store"
 version = "0.5.0-alpha.0"
 dependencies = [
