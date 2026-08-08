@@ -4,11 +4,16 @@
 //! excluded structurally here rather than relying on CLI, Ratatui, or a future Tauri adapter to
 //! remember a masking rule. Filesystem locking and atomic TOML replacement remain storage concerns.
 
-use std::collections::{BTreeMap, BTreeSet};
-
-use skit_domain::parameters::{
-    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt::Debug,
 };
+
+use skit_domain::{
+    Slug,
+    parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue},
+};
+use thiserror::Error;
 
 /// The value-bearing parts of per-entry form state that need secret scrubbing.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -19,6 +24,42 @@ pub struct PersistedFormState {
     pub presets: BTreeMap<String, BTreeMap<String, String>>,
     /// Exact values captured in the most recent accepted run.
     pub last_run_values: BTreeMap<String, String>,
+}
+
+/// A state read-modify-write transaction could not be committed.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+pub enum StateWriteError {
+    /// A filesystem operation failed.
+    #[error("could not {operation} state at {path}: {reason}")]
+    Io {
+        /// Operation such as create, lock, write, or replace.
+        operation: &'static str,
+        /// Affected path.
+        path: String,
+        /// Operating-system detail.
+        reason: String,
+    },
+    /// The in-memory state could not be encoded as the persistence format.
+    #[error("could not encode state: {reason}")]
+    Encode {
+        /// Serializer detail.
+        reason: String,
+    },
+}
+
+/// Persistence port whose update boundary holds one adapter-defined transaction lock.
+///
+/// `update` is intentionally a closure rather than separate load/save methods: callers cannot
+/// accidentally create a stale read-modify-write window between the two operations. The trait is
+/// used through generic application services, so object safety is not required.
+pub trait FormStateRepository: Debug {
+    /// Load the known value-bearing state. Missing/corrupt documents degrade to empty state.
+    fn load(&self, slug: &Slug) -> PersistedFormState;
+
+    /// Mutate the current state while the repository holds its per-entry transaction lock.
+    fn update<T, F>(&self, slug: &Slug, update: F) -> Result<T, StateWriteError>
+    where
+        F: FnOnce(&mut PersistedFormState) -> T;
 }
 
 /// Build the next form's values with the stable precedence:
