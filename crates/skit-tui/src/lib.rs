@@ -4,16 +4,20 @@
 
 mod terminal;
 
-use ratatui::{
-    Frame,
-    crossterm::event::{
-        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
-        MouseEventKind,
-    },
+use ratatui_core::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Modifier, Style},
+    terminal::Frame,
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+};
+use ratatui_crossterm::crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
+use ratatui_widgets::{
+    block::Block,
+    borders::Borders,
+    list::{List, ListItem, ListState},
+    paragraph::{Paragraph, Wrap},
 };
 use skit_ui::{Action, InputMode, LibraryState};
 
