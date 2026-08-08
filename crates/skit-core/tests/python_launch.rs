@@ -41,8 +41,8 @@ fn resolver(name: &str) -> Option<PathBuf> {
 }
 
 #[test]
-fn copy_python_uses_effective_block_metadata_in_uv_argv()
--> Result<(), Box<dyn std::error::Error>> {
+fn copy_python_uses_effective_block_metadata_in_uv_argv() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = tempdir()?;
     let entry = entry(root.path(), "copy");
     fs::create_dir_all(&entry.dir)?;
@@ -79,8 +79,8 @@ fn copy_python_uses_effective_block_metadata_in_uv_argv()
 }
 
 #[test]
-fn reference_python_uses_meta_axes_and_original_workdir()
--> Result<(), Box<dyn std::error::Error>> {
+fn reference_python_uses_meta_axes_and_original_workdir() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = tempdir()?;
     let mut entry = entry(root.path(), "reference");
     fs::write(&entry.meta.source, "print(1)\n")?;
