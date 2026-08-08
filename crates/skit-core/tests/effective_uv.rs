@@ -10,7 +10,7 @@ fn entry(
     meta_deps: Option<Vec<&str>>,
     meta_python: &str,
 ) -> Result<Entry, Box<dyn std::error::Error>> {
-    let mut meta = ScriptMeta {
+    let meta = ScriptMeta {
         schema: 1,
         name: "demo".to_owned(),
         kind: "python".to_owned(),
@@ -51,13 +51,13 @@ fn write_copy(entry: &Entry, body: &str) -> Result<PathBuf, Box<dyn std::error::
 #[test]
 fn copy_mode_falls_back_per_axis_to_stored_pep723() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempdir()?;
-    let entry = entry(root.path(), "copy", None, "")?;
+    let subject = entry(root.path(), "copy", None, "")?;
     write_copy(
-        &entry,
+        &subject,
         "# /// script\n# requires-python = \">=3.12\"\n# dependencies = [\"rich\"]\n# ///\nprint(1)\n",
     )?;
     assert_eq!(
-        effective_uv_metadata(&entry),
+        effective_uv_metadata(&subject),
         (vec!["rich".to_owned()], ">=3.12".to_owned())
     );
     Ok(())
@@ -66,23 +66,23 @@ fn copy_mode_falls_back_per_axis_to_stored_pep723() -> Result<(), Box<dyn std::e
 #[test]
 fn meta_wins_independently_per_axis() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempdir()?;
-    let entry = entry(root.path(), "copy", Some(vec!["requests>=2"]), "")?;
+    let deps_in_meta = entry(root.path(), "copy", Some(vec!["requests>=2"]), "")?;
     write_copy(
-        &entry,
+        &deps_in_meta,
         "# /// script\n# requires-python = \">=3.13\"\n# dependencies = [\"rich\"]\n# ///\nprint(1)\n",
     )?;
     assert_eq!(
-        effective_uv_metadata(&entry),
+        effective_uv_metadata(&deps_in_meta),
         (vec!["requests>=2".to_owned()], ">=3.13".to_owned())
     );
 
-    let entry = entry(root.path(), "copy", None, ">=3.11")?;
+    let python_in_meta = entry(root.path(), "copy", None, ">=3.11")?;
     write_copy(
-        &entry,
+        &python_in_meta,
         "# /// script\n# requires-python = \">=3.13\"\n# dependencies = [\"rich\"]\n# ///\nprint(1)\n",
     )?;
     assert_eq!(
-        effective_uv_metadata(&entry),
+        effective_uv_metadata(&python_in_meta),
         (vec!["rich".to_owned()], ">=3.11".to_owned())
     );
     Ok(())
@@ -92,12 +92,15 @@ fn meta_wins_independently_per_axis() -> Result<(), Box<dyn std::error::Error>> 
 fn reference_mode_never_reads_original_pep723_for_effective_axes()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempdir()?;
-    let entry = entry(root.path(), "reference", None, "")?;
+    let subject = entry(root.path(), "reference", None, "")?;
     fs::write(
-        &entry.meta.source,
+        &subject.meta.source,
         "# /// script\n# requires-python = \">=3.13\"\n# dependencies = [\"rich\"]\n# ///\nprint(1)\n",
     )?;
-    assert_eq!(effective_uv_metadata(&entry), (Vec::new(), String::new()));
+    assert_eq!(
+        effective_uv_metadata(&subject),
+        (Vec::new(), String::new())
+    );
     Ok(())
 }
 
@@ -105,15 +108,18 @@ fn reference_mode_never_reads_original_pep723_for_effective_axes()
 fn unreadable_or_malformed_copy_keeps_meta_without_crashing()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempdir()?;
-    let entry = entry(root.path(), "copy", Some(vec!["requests"]), "")?;
+    let subject = entry(root.path(), "copy", Some(vec!["requests"]), "")?;
     assert_eq!(
-        effective_uv_metadata(&entry),
+        effective_uv_metadata(&subject),
         (vec!["requests".to_owned()], String::new())
     );
 
-    write_copy(&entry, "# /// script\n# dependencies = [ broken\n# ///\n")?;
+    write_copy(
+        &subject,
+        "# /// script\n# dependencies = [ broken\n# ///\n",
+    )?;
     assert_eq!(
-        effective_uv_metadata(&entry),
+        effective_uv_metadata(&subject),
         (vec!["requests".to_owned()], String::new())
     );
     Ok(())
@@ -122,13 +128,16 @@ fn unreadable_or_malformed_copy_keeps_meta_without_crashing()
 #[test]
 fn non_python_kind_never_consults_pep723() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempdir()?;
-    let mut entry = entry(root.path(), "copy", None, "")?;
-    entry.meta.kind = "shell".to_owned();
-    fs::create_dir_all(&entry.dir)?;
+    let mut subject = entry(root.path(), "copy", None, "")?;
+    subject.meta.kind = "shell".to_owned();
+    fs::create_dir_all(&subject.dir)?;
     fs::write(
-        entry.dir.join("script.sh"),
+        subject.dir.join("script.sh"),
         "# /// script\n# dependencies = [\"rich\"]\n# ///\necho ok\n",
     )?;
-    assert_eq!(effective_uv_metadata(&entry), (Vec::new(), String::new()));
+    assert_eq!(
+        effective_uv_metadata(&subject),
+        (Vec::new(), String::new())
+    );
     Ok(())
 }
