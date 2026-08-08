@@ -2,9 +2,9 @@ use std::fs;
 
 use skit_application::{
     CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, RepositoryError,
-    SourcePermissions,
+    SourcePermissions, UpdateEntry,
 };
-use skit_domain::{EntryKind, StorageMode};
+use skit_domain::{EntryKind, EntrySettings, StorageMode};
 use skit_store::FileStore;
 use tempfile::TempDir;
 
@@ -27,6 +27,7 @@ fn request(
             stored_name: stored_name.map(str::to_owned),
             permissions: SourcePermissions::default(),
         }),
+        settings: EntrySettings::default(),
     }
 }
 
@@ -66,6 +67,10 @@ fn same_slug_renames_succeed_while_name_conflicts_and_blank_names_refuse() {
         b"alpha"
     );
 
+    let renamed_again = store.rename(&renamed, "New display name").unwrap();
+    assert_eq!(renamed_again.slug.as_str(), "alpha-tool");
+    assert_eq!(renamed_again.meta.name, "New display name");
+
     let second = store
         .create(request(
             "Beta",
@@ -77,7 +82,7 @@ fn same_slug_renames_succeed_while_name_conflicts_and_blank_names_refuse() {
         .unwrap();
     let second = store.claim_identity(&second).unwrap();
     assert!(matches!(
-        store.rename(&second, "Alpha-Tool").unwrap_err(),
+        store.rename(&second, "New display name").unwrap_err(),
         RepositoryError::Conflict { .. }
     ));
     assert!(matches!(
@@ -138,6 +143,7 @@ fn reference_and_payloadless_entries_refuse_copy_editing_cleanly() {
             workdir: "invoke".to_owned(),
             description: String::new(),
             payload: None,
+            settings: EntrySettings::default(),
         })
         .unwrap();
     assert!(payloadless.meta.source_hash.is_empty());
@@ -221,4 +227,112 @@ fn claims_refuse_missing_entries_and_content_changed_legacy_handles() {
         store.claim_identity(&held).unwrap_err(),
         RepositoryError::StaleEntry { .. }
     ));
+}
+
+#[test]
+fn stored_payload_names_must_be_one_safe_path_component() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+
+    for (index, name) in ["", ".", "..", "a/b", "a\\b", "a\0b", "/absolute"]
+        .into_iter()
+        .enumerate()
+    {
+        assert!(matches!(
+            store.create(request(
+                &format!("Unsafe {index}"),
+                "future-kind",
+                StorageMode::Copy,
+                Some(name),
+                b"payload",
+            )),
+            Err(RepositoryError::InvalidMutation { .. })
+        ));
+    }
+}
+
+#[test]
+fn an_unindexed_legacy_name_still_blocks_a_duplicate_create() {
+    let root = TempDir::new().unwrap();
+    write_legacy(&root, "legacy");
+    let store = FileStore::new(root.path());
+
+    assert!(matches!(
+        store.create(request(
+            "Legacy",
+            "python",
+            StorageMode::Copy,
+            Some("script.py"),
+            b"duplicate",
+        )),
+        Err(RepositoryError::Conflict { .. })
+    ));
+}
+
+#[test]
+fn a_reference_entry_refuses_a_staged_source_replacement() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let original = root.path().join("original.py");
+    fs::write(&original, b"print(1)\n").unwrap();
+    let entry = store
+        .create(CreateEntry {
+            name: "Referenced".to_owned(),
+            kind: EntryKind::parse("python").unwrap(),
+            mode: StorageMode::Reference,
+            source: original.display().to_string(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: None,
+            settings: EntrySettings::default(),
+        })
+        .unwrap();
+
+    let error = store
+        .update_entry(
+            &entry,
+            UpdateEntry {
+                name: entry.meta.name.clone(),
+                description: String::new(),
+                settings: EntrySettings::from_meta(&entry.meta),
+                workdir: entry.meta.workdir.clone(),
+                source: Some(b"print(2)\n".to_vec()),
+                expected_source_hash: entry.meta.source_hash.clone(),
+            },
+        )
+        .unwrap_err();
+
+    assert!(matches!(error, RepositoryError::InvalidMutation { .. }));
+    assert!(
+        error
+            .to_string()
+            .contains("reference entries are edited at their original path")
+    );
+    assert_eq!(fs::read(&original).unwrap(), b"print(1)\n");
+}
+
+#[test]
+fn a_copy_payload_without_a_stored_name_is_refused_before_any_write() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+
+    let error = store
+        .create(CreateEntry {
+            name: "Nameless".to_owned(),
+            kind: EntryKind::parse("python").unwrap(),
+            mode: StorageMode::Copy,
+            source: "/original/nameless.py".to_owned(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: Some(EntryPayload {
+                bytes: b"print(1)\n".to_vec(),
+                stored_name: None,
+                permissions: SourcePermissions::default(),
+            }),
+            settings: EntrySettings::default(),
+        })
+        .unwrap_err();
+
+    assert!(matches!(error, RepositoryError::InvalidMutation { .. }));
+    assert!(!root.path().join("scripts/nameless").exists());
 }

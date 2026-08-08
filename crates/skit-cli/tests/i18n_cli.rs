@@ -77,3 +77,47 @@ fn human_success_and_health_output_use_the_requested_catalog_but_json_does_not()
         .stdout(predicate::str::contains("\"name\":\"Library\""))
         .stdout(predicate::str::contains("\"kind\":\"command\""));
 }
+
+#[test]
+fn scalar_report_labels_translate_in_every_supported_locale() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let command = |locale: &str| {
+        let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
+        command
+            .env("SKIT_DATA_DIR", data.path())
+            .env("SKIT_STATE_DIR", state.path())
+            .env("SKIT_CONFIG_DIR", config.path())
+            .env("SKIT_LANG", locale);
+        command
+    };
+    command("en")
+        .args(["add", "--prompt", "--name", "Report", "--no-input"])
+        .write_stdin("Body {{subject}}\n")
+        .assert()
+        .success();
+
+    // These are whole catalog rows, so an exact lookup must translate each one.
+    command("zh-CN")
+        .args(["show", "report"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("缺失：否"))
+        .stdout(predicate::str::contains("漂移：否"))
+        .stdout(predicate::str::contains("提示词运行器：未设置"))
+        .stdout(predicate::str::contains("插值：开启"));
+
+    // Hong Kong, Macau, and Singapore resolve to a Chinese catalog, not to English.
+    for (locale, expected) in [
+        ("zh-HK", "程式、提示詞、執行檔與命令程式庫"),
+        ("zh-MO", "程式、提示詞、執行檔與命令程式庫"),
+        ("zh-SG", "脚本、提示词、程序与命令库"),
+    ] {
+        command(locale)
+            .arg("--help")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(expected));
+    }
+}

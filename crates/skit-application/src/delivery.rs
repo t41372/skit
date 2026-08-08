@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 
 use skit_domain::parameters::{ParamDecl, ParameterDelivery, ParameterType};
+use skit_i18n::{Localize, Message};
 use thiserror::Error;
 
 use crate::form_state::delivers_empty;
@@ -53,6 +54,17 @@ pub enum AssemblyError {
         /// Parameter name whose prepared shape was invalid.
         name: String,
     },
+}
+
+impl Localize for AssemblyError {
+    fn message(&self) -> Message {
+        match self {
+            Self::UnexpectedMultiple { name } => {
+                Message::new("parameter {} received multiple values but is not a multi-value flag")
+                    .quoted(name)
+            }
+        }
+    }
 }
 
 /// Route prepared field values into child-process delivery channels.

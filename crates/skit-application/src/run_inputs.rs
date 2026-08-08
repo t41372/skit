@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 
 use skit_domain::parameters::ParamDecl;
+use skit_i18n::{Localize, Message};
 use thiserror::Error;
 
 use crate::{
@@ -32,6 +33,17 @@ pub enum RunInputError {
     /// Prepared shapes could not be routed to their declared delivery surface.
     #[error(transparent)]
     Assembly(#[from] AssemblyError),
+}
+
+impl Localize for RunInputError {
+    fn message(&self) -> Message {
+        match self {
+            Self::Resolution(error) => error.message(),
+            Self::Preparation(error) => error.message(),
+            Self::ExtraToken(error) => error.message(),
+            Self::Assembly(error) => error.message(),
+        }
+    }
 }
 
 /// Convert raw frontend inputs into delivery-ready launch material.

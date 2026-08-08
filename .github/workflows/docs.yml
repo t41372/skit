@@ -40,11 +40,9 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '26.5.0'
+          node-version: '26.7.0'
           cache: npm
           cache-dependency-path: docs/package-lock.json
-      - name: Use current npm
-        run: npm install --global npm@12.0.2
       - name: Install dependencies
         run: npm ci
         working-directory: docs

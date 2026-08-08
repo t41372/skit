@@ -13,9 +13,12 @@ pub mod value_resolution;
 
 use std::fmt::Debug;
 
-pub use mutations::{CreateEntry, EntryMutationRepository, EntryPayload, SourcePermissions};
+pub use mutations::{
+    CreateEntry, EntryMutationRepository, EntryPayload, SourcePermissions, UpdateEntry,
+};
 use serde::{Deserialize, Serialize};
 use skit_domain::{Entry, EntrySummary};
+use skit_i18n::{Localize, Message};
 use thiserror::Error;
 
 /// Stable non-child exit classifications used by every frontend.
@@ -104,7 +107,7 @@ pub enum RepositoryError {
     #[error("invalid entry mutation: {reason}")]
     InvalidMutation {
         /// Stable, user-facing refusal detail.
-        reason: String,
+        reason: Message,
     },
     /// A held entry now resolves to a different incarnation.
     #[error("entry {slug:?} changed while this operation was underway")]
@@ -157,6 +160,49 @@ impl RepositoryError {
             | Self::SourceChanged { .. }
             | Self::Corrupt { .. }
             | Self::Io { .. } => ExitClass::Skit,
+        }
+    }
+}
+
+impl Localize for RepositoryError {
+    fn message(&self) -> Message {
+        match self {
+            Self::NotFound { query } => Message::new("entry not found: {}").with(query),
+            Self::Ambiguous { query, candidates } => {
+                Message::new("entry name {} is ambiguous; use one of these slugs: {}")
+                    .quoted(query)
+                    .with(format!("{candidates:?}"))
+            }
+            Self::Conflict { name, slug } => Message::new("entry {} already exists at slug {}")
+                .quoted(name)
+                .quoted(slug),
+            Self::InvalidMutation { reason } => {
+                Message::new("invalid entry mutation: {}").nested(reason.clone())
+            }
+            Self::StaleEntry { slug } => {
+                Message::new("entry {} changed while this operation was underway").quoted(slug)
+            }
+            Self::SourceChanged {
+                slug,
+                expected,
+                actual,
+            } => Message::new(
+                "entry {} source changed while this edit was underway (expected {}, found {})",
+            )
+            .quoted(slug)
+            .with(expected)
+            .with(actual),
+            Self::Corrupt { slug, reason } => Message::new("entry {} has corrupt metadata: {}")
+                .quoted(slug)
+                .with(reason),
+            Self::Io {
+                operation,
+                path,
+                reason,
+            } => Message::new("could not {} {}: {}")
+                .with(operation)
+                .with(path)
+                .with(reason),
         }
     }
 }

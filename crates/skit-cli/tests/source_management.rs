@@ -76,6 +76,52 @@ fn manage_and_unmanage_write_only_the_stored_copy() {
 }
 
 #[test]
+fn managed_parameter_tweaks_stay_in_source_and_declared_schema_flags_refuse() {
+    let sandbox = Sandbox::new();
+    let original = sandbox.data.path().join("managed.py");
+    fs::write(&original, "TOKEN = 'value'\nprint(TOKEN)\n").unwrap();
+    sandbox
+        .command()
+        .args(["add", original.to_str().unwrap(), "--name", "Managed"])
+        .assert()
+        .success();
+    sandbox
+        .command()
+        .args([
+            "params",
+            "managed",
+            "--manage",
+            "TOKEN",
+            "--secret",
+            "TOKEN",
+            "--prompt",
+            "TOKEN=Access token",
+        ])
+        .assert()
+        .success();
+
+    let stored = sandbox.data.path().join("scripts/managed/script.py");
+    let text = fs::read_to_string(&stored).unwrap();
+    assert!(text.contains("secret = true"));
+    assert!(text.contains("prompt = \"Access token\""));
+    let meta = fs::read_to_string(sandbox.data.path().join("scripts/managed/meta.toml")).unwrap();
+    assert!(!meta.contains("[[parameters]]"));
+
+    let before_source = fs::read(&stored).unwrap();
+    let before_meta = fs::read(sandbox.data.path().join("scripts/managed/meta.toml")).unwrap();
+    sandbox
+        .command()
+        .args(["params", "managed", "--add", "other"])
+        .assert()
+        .code(2);
+    assert_eq!(fs::read(stored).unwrap(), before_source);
+    assert_eq!(
+        fs::read(sandbox.data.path().join("scripts/managed/meta.toml")).unwrap(),
+        before_meta
+    );
+}
+
+#[test]
 fn shell_normalize_is_explicit_and_never_changes_the_original() {
     let sandbox = Sandbox::new();
     let original = sandbox.data.path().join("tool.sh");

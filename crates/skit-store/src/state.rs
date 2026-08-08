@@ -59,9 +59,7 @@ impl FormStateRepository for FileFormStateStore {
         let result = update(&mut state);
         merge_state(&mut document, &state);
         let encoded =
-            toml::to_string_pretty(&document).map_err(|error| StateWriteError::Encode {
-                reason: error.to_string(),
-            })?;
+            toml::to_string_pretty(&document).expect("a parsed TOML value tree must serialize");
         atomic_write_bytes(&path, encoded.as_bytes())
             .map_err(|error| io_error("write", &path, error.to_string()))?;
         Ok(result)

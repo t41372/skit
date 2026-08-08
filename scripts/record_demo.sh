@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Render the skit demo assets (English + 繁體中文) in a hermetic container: the README
-# videos and the four-screen TUI screenshot grid, all from one image and one set of tapes.
+# Render the English and Traditional Chinese Ratatui demo assets in a container.
 #
 # Requires Docker or OrbStack on the host. vhs / ttyd / ffmpeg live only inside the image,
 # so nothing is installed on your machine. Each tape drives every locale: SKIT_LANG sits at
@@ -16,12 +15,9 @@ cd "$(dirname "$0")/.."   # repo root (build context)
 MODE="${1:-all}"
 IMAGE=skit-demo
 
-echo "==> building demo image (vhs + uv + skit)…"
+echo "==> building demo image (VHS + Rust skit + uv)…"
 docker build -f docs/assets/demo/Dockerfile -t "$IMAGE" .
 
-# The tape is mounted at /tape, NOT /demo: since the path picker browses the working
-# directory on camera, /demo must hold only the demo's own scripts — a stray demo.tape in
-# that listing shows the recording rig to the viewer.
 run_tape() {   # $1 = SKIT_LANG   $2 = scripts subdir (en/zh)   $3 = tape file in docs/assets/demo/
   docker run --rm -e "SKIT_LANG=$1" \
     -v "$PWD/docs/assets:/out" \
@@ -58,9 +54,4 @@ if [[ "$MODE" == "all" || "$MODE" == "shots" ]]; then
   shoot zh-TW zh zh
 fi
 
-cat <<'EOF'
-==> done.
-
-    Mouse-operability cameo (docs/assets/demo-mouse.gif) — VHS can't show a cursor, so it's
-    hand-recorded separately (recipe in CONTRIBUTING.md, "The mouse-operability GIF").
-EOF
+echo "==> done."

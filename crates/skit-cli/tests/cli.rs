@@ -20,7 +20,15 @@ added_at = "2026-08-07T00:00:00+00:00"
 id = "0123456789abcdef0123456789abcdef"
 workdir = "origin"
 description = "A friendly script"
+dependencies = ["requests>=2"]
+needs = ["git"]
+interpreter = "python3.14"
 "#,
+    )
+    .unwrap();
+    fs::write(
+        dir.join("script.py"),
+        "import argparse\np = argparse.ArgumentParser()\np.add_argument('--output', default='result.txt', choices=['result.txt', 'other.txt'], help='Output file')\np.parse_args()\n",
     )
     .unwrap();
     root
@@ -78,4 +86,47 @@ fn human_list_is_readable_without_json_parsing() {
         .stdout(predicate::str::contains("Hello"))
         .stdout(predicate::str::contains("python"))
         .stdout(predicate::str::contains("A friendly script"));
+}
+
+#[test]
+fn human_show_and_params_expose_the_discovery_context() {
+    let root = library();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    fs::create_dir_all(state.path().join("values")).unwrap();
+    fs::write(
+        state.path().join("values/hello.toml"),
+        "[values]\noutput = \"other.txt\"\n[presets.fast]\noutput = \"result.txt\"\n",
+    )
+    .unwrap();
+
+    let mut show = assert_cmd::cargo::cargo_bin_cmd!("skit");
+    show.env("SKIT_DATA_DIR", root.path())
+        .env("SKIT_STATE_DIR", state.path())
+        .env("SKIT_CONFIG_DIR", config.path())
+        .args(["show", "hello"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Source: /tmp/hello.py"))
+        .stdout(predicate::str::contains("Work directory: origin"))
+        .stdout(predicate::str::contains("Interpreter: python3.14"))
+        .stdout(predicate::str::contains("Dependencies: requests>=2"))
+        .stdout(predicate::str::contains("Required commands: git"))
+        .stdout(predicate::str::contains("Parameters:"))
+        .stdout(predicate::str::contains("output"))
+        .stdout(predicate::str::contains("Presets: fast"))
+        .stdout(predicate::str::contains("skit run hello"));
+
+    let mut params = assert_cmd::cargo::cargo_bin_cmd!("skit");
+    params
+        .env("SKIT_DATA_DIR", root.path())
+        .env("SKIT_STATE_DIR", state.path())
+        .env("SKIT_CONFIG_DIR", config.path())
+        .args(["params", "hello"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Current default: result.txt"))
+        .stdout(predicate::str::contains("Last value: other.txt"))
+        .stdout(predicate::str::contains("Choices: result.txt, other.txt"))
+        .stdout(predicate::str::contains("Help: Output file"));
 }

@@ -3,7 +3,7 @@ use std::{fs, path::Path, time::UNIX_EPOCH};
 use skit_application::{
     CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, SourcePermissions,
 };
-use skit_domain::{EntryKind, StorageMode};
+use skit_domain::{EntryKind, EntrySettings, StorageMode};
 use skit_store::FileStore;
 use tempfile::TempDir;
 use toml::{Table, Value};
@@ -33,6 +33,7 @@ fn request(
             stored_name: Some(stored_name.to_owned()),
             permissions: SourcePermissions::default(),
         }),
+        settings: EntrySettings::default(),
     }
 }
 
@@ -205,7 +206,7 @@ fn mutations_refresh_rows_move_keys_and_preserve_unrelated_registry_content() {
     assert_python_row(&root, "alpha", "Alpha", "python", "copy", "after", None);
     let renamed = store.rename(&described, "Renamed Tool").unwrap();
     let document = registry(&root);
-    assert!(!entries(&document).contains_key("alpha"));
+    assert!(entries(&document).contains_key("alpha"));
     assert_eq!(row(&document, "external"), &external);
     assert_eq!(
         document.get("format_note").and_then(Value::as_str),
@@ -213,7 +214,7 @@ fn mutations_refresh_rows_move_keys_and_preserve_unrelated_registry_content() {
     );
     assert_python_row(
         &root,
-        "renamed-tool",
+        "alpha",
         "Renamed Tool",
         "python",
         "copy",
@@ -223,7 +224,7 @@ fn mutations_refresh_rows_move_keys_and_preserve_unrelated_registry_content() {
 
     assert_eq!(store.remove(&renamed).unwrap(), "Renamed Tool");
     let document = registry(&root);
-    assert!(!entries(&document).contains_key("renamed-tool"));
+    assert!(!entries(&document).contains_key("alpha"));
     assert_eq!(row(&document, "external"), &external);
 }
 

@@ -8,7 +8,7 @@ use std::{
 use skit_application::{
     CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, SourcePermissions,
 };
-use skit_domain::{EntryKind, StorageMode};
+use skit_domain::{EntryKind, EntrySettings, StorageMode};
 use skit_store::FileStore;
 use tempfile::TempDir;
 use toml::{Table, Value};
@@ -31,6 +31,7 @@ fn request(name: &str, mode: StorageMode, description: &str) -> CreateEntry {
             stored_name: Some(format!("{name}.tool")),
             permissions: SourcePermissions::default(),
         }),
+        settings: EntrySettings::default(),
     }
 }
 

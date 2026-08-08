@@ -9,6 +9,7 @@ use std::{
 
 use flate2::read::GzDecoder;
 use sha2::{Digest as _, Sha256};
+use skit_i18n::{Localize, Message};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -148,6 +149,31 @@ pub enum UvBootstrapError {
     },
 }
 
+impl Localize for UvBootstrapError {
+    fn message(&self) -> Message {
+        match self {
+            Self::UnsupportedPlatform { platform } => {
+                Message::new("unsupported platform: {}").with(platform)
+            }
+            Self::Download { url, reason } => Message::new("could not download uv from {}: {}")
+                .with(url)
+                .with(reason),
+            Self::Checksum => {
+                Message::new("the downloaded uv archive failed checksum verification")
+            }
+            Self::Archive { reason } => Message::new("the uv archive is invalid: {}").with(reason),
+            Self::Io {
+                operation,
+                path,
+                source,
+            } => Message::new("could not {} private uv at {}: {}")
+                .with(operation)
+                .with(path)
+                .with(source),
+        }
+    }
+}
+
 /// Build the current authenticated asset description for one target.
 #[must_use]
 pub fn uv_asset(target: &UvTarget, mirror_base: Option<&str>) -> UvAsset {
@@ -184,6 +210,19 @@ pub fn ensure_managed_uv(
     if destination.is_file() {
         return Ok(destination);
     }
+    let asset = uv_asset(&UvTarget::current()?, mirror_base);
+    ensure_managed_uv_from_asset(data_dir, &asset, download_archive)
+}
+
+fn ensure_managed_uv_from_asset<F>(
+    data_dir: &Path,
+    asset: &UvAsset,
+    fetch: F,
+) -> Result<PathBuf, UvBootstrapError>
+where
+    F: FnOnce(&UvAsset) -> Result<Vec<u8>, UvBootstrapError>,
+{
+    let destination = managed_uv_path(data_dir);
     let bin = destination
         .parent()
         .expect("a managed executable always has a parent");
@@ -201,8 +240,15 @@ pub fn ensure_managed_uv(
     if destination.is_file() {
         return Ok(destination);
     }
+    let archive = fetch(asset)?;
+    install_verified_uv_archive(&archive, asset, bin)
+}
 
-    let asset = uv_asset(&UvTarget::current()?, mirror_base);
+fn download_archive(asset: &UvAsset) -> Result<Vec<u8>, UvBootstrapError> {
+    download_archive_with_limit(asset, MAX_ARCHIVE_BYTES)
+}
+
+fn download_archive_with_limit(asset: &UvAsset, limit: u64) -> Result<Vec<u8>, UvBootstrapError> {
     let config = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(60)))
         .build();
@@ -218,13 +264,13 @@ pub fn ensure_managed_uv(
     let archive = response
         .body_mut()
         .with_config()
-        .limit(MAX_ARCHIVE_BYTES)
+        .limit(limit)
         .read_to_vec()
         .map_err(|error| UvBootstrapError::Download {
             url: asset.url.clone(),
             reason: error.to_string(),
         })?;
-    install_verified_uv_archive(&archive, &asset, bin)
+    Ok(archive)
 }
 
 /// Verify and atomically install the uv executable from one release archive.
@@ -359,10 +405,8 @@ fn sync_directory(_path: &Path) -> Result<(), UvBootstrapError> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn host_uses_musl() -> bool {
-    if std::env::consts::OS != "linux" {
-        return false;
-    }
     fs::read_dir("/lib").is_ok_and(|entries| {
         entries.filter_map(Result::ok).any(|entry| {
             entry
@@ -371,4 +415,109 @@ fn host_uses_musl() -> bool {
                 .is_some_and(|name| name.starts_with("ld-musl-") && name.ends_with(".so.1"))
         })
     })
+}
+
+#[cfg(not(target_os = "linux"))]
+const fn host_uses_musl() -> bool {
+    false
+}
+
+#[cfg(test)]
+mod private_tests {
+    use super::*;
+    use flate2::{Compression, write::GzEncoder};
+    use std::{net::TcpListener, thread};
+    use tempfile::TempDir;
+
+    fn tar_archive() -> Vec<u8> {
+        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut tar = tar::Builder::new(encoder);
+        let bytes = b"private uv";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        tar.append_data(&mut header, "release/uv", bytes.as_slice())
+            .unwrap();
+        tar.into_inner().unwrap().finish().unwrap()
+    }
+
+    fn test_asset(url: String, archive: &[u8]) -> UvAsset {
+        UvAsset {
+            version: "test".to_owned(),
+            filename: "uv-test.tar.gz".to_owned(),
+            url,
+            checksum: hex_digest(archive),
+            executable_name: "uv".to_owned(),
+        }
+    }
+
+    fn one_response(body: Vec<u8>) -> (String, thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            stream.write_all(&body).unwrap();
+        });
+        (format!("http://{address}/archive"), handle)
+    }
+
+    #[test]
+    fn downloader_handles_success_size_limits_and_connection_failures() {
+        let (url, server) = one_response(b"archive".to_vec());
+        let asset = test_asset(url, b"archive");
+        assert_eq!(download_archive(&asset).unwrap(), b"archive");
+        server.join().unwrap();
+
+        let (url, server) = one_response(vec![b'x'; 64]);
+        let asset = test_asset(url, &[b'x'; 64]);
+        assert!(matches!(
+            download_archive_with_limit(&asset, 8),
+            Err(UvBootstrapError::Download { .. })
+        ));
+        server.join().unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let asset = test_asset(format!("http://{address}/archive"), b"");
+        assert!(matches!(
+            download_archive_with_limit(&asset, 8),
+            Err(UvBootstrapError::Download { .. })
+        ));
+    }
+
+    #[test]
+    fn injectable_bootstrap_uses_the_same_lock_verify_and_install_path() {
+        let archive = tar_archive();
+        let asset = test_asset("https://example.invalid/archive".to_owned(), &archive);
+        let root = TempDir::new().unwrap();
+        let installed =
+            ensure_managed_uv_from_asset(root.path(), &asset, |_| Ok(archive.clone())).unwrap();
+        assert_eq!(fs::read(&installed).unwrap(), b"private uv");
+        assert_eq!(
+            ensure_managed_uv_from_asset(root.path(), &asset, |_| panic!("must not fetch"))
+                .unwrap(),
+            installed
+        );
+
+        let failed = TempDir::new().unwrap();
+        assert!(matches!(
+            ensure_managed_uv_from_asset(failed.path(), &asset, |_| {
+                Err(UvBootstrapError::Download {
+                    url: asset.url.clone(),
+                    reason: "offline".to_owned(),
+                })
+            }),
+            Err(UvBootstrapError::Download { .. })
+        ));
+    }
 }

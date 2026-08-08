@@ -5,7 +5,9 @@ use tempfile::TempDir;
 
 fn command(root: &TempDir) -> assert_cmd::Command {
     let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
-    command.env("SKIT_DATA_DIR", root.path());
+    command
+        .env("SKIT_DATA_DIR", root.path())
+        .env("SKIT_STATE_DIR", root.path().join("state"));
     command
 }
 
@@ -27,6 +29,12 @@ fn add_copy_then_describe_rename_and_remove_is_a_complete_cli_slice() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Added: Hello (hello)"));
+    fs::create_dir_all(root.path().join("state/values")).unwrap();
+    fs::write(
+        root.path().join("state/values/hello.toml"),
+        "extra_args = [\"kept\"]\n",
+    )
+    .unwrap();
     assert_eq!(
         fs::read(root.path().join("scripts/hello/script.py")).unwrap(),
         b"print('hello')\r\n"
@@ -40,9 +48,10 @@ fn add_copy_then_describe_rename_and_remove_is_a_complete_cli_slice() {
         .args(["rename", "hello", "Greeting Tool"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Greeting Tool (greeting-tool)"));
+        .stdout(predicate::str::contains("Greeting Tool (hello)"));
+    assert!(root.path().join("state/values/hello.toml").exists());
     command(&root)
-        .args(["show", "greeting-tool", "--json"])
+        .args(["show", "hello", "--json"])
         .assert()
         .success()
         .stdout(predicate::str::contains(
@@ -50,16 +59,17 @@ fn add_copy_then_describe_rename_and_remove_is_a_complete_cli_slice() {
         ));
 
     command(&root)
-        .args(["remove", "greeting-tool"])
+        .args(["remove", "hello"])
         .assert()
         .code(2)
         .stderr(predicate::str::contains("--yes"));
     command(&root)
-        .args(["remove", "greeting-tool", "--yes"])
+        .args(["remove", "hello", "--yes"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Removed: Greeting Tool"));
-    assert!(!root.path().join("scripts/greeting-tool").exists());
+    assert!(!root.path().join("scripts/hello").exists());
+    assert!(!root.path().join("state/values/hello.toml").exists());
 }
 
 #[test]

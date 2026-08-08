@@ -7,6 +7,7 @@ use std::{
 
 use skit_application::delivery::Assembly;
 use skit_domain::{Entry, EntrySettings, StorageMode};
+use skit_i18n::{Localize, Message};
 use thiserror::Error;
 
 /// Hold file paths that are resolved before launch planning.
@@ -27,6 +28,13 @@ pub struct PromptRunner {
     pub name: String,
     /// Runner argv. One non-program token must contain `{{prompt}}` once.
     pub argv: Vec<String>,
+}
+
+/// Describe one non-fatal change to a launch plan.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LaunchWarning {
+    /// skit added one newline to keep a Pi prompt in message mode.
+    PiPromptProtected,
 }
 
 /// Inspect programs and paths without starting a process.
@@ -76,6 +84,16 @@ pub struct LaunchPlan {
     pub cwd: PathBuf,
     /// Safe command text for a dry run.
     pub display: String,
+    /// Important non-fatal launch changes.
+    pub warnings: Vec<LaunchWarning>,
+}
+
+#[derive(Debug)]
+struct PromptProcessPlan {
+    program: PathBuf,
+    args: Vec<String>,
+    display_args: Vec<String>,
+    warning: Option<LaunchWarning>,
 }
 
 /// Report a launch refusal or process failure.
@@ -119,6 +137,21 @@ pub enum LaunchError {
         "prompt runner {name:?} must contain exactly one {{prompt}} marker outside the program token"
     )]
     InvalidPromptRunner { name: String },
+    /// A prompt argument contains a NUL character.
+    #[error("the rendered prompt contains a NUL character")]
+    PromptContainsNul,
+    /// A prompt command line exceeds the safe platform limit.
+    #[error(
+        "the rendered prompt makes the command line {size} {unit}; the limit is {limit} {unit}"
+    )]
+    PromptArgvTooLong {
+        /// Measured command-line size.
+        size: usize,
+        /// Safe platform limit.
+        limit: usize,
+        /// Unit used for the measurement.
+        unit: &'static str,
+    },
     /// The child process could not start or wait.
     #[error("could not {operation} child process: {source}")]
     Process {
@@ -128,6 +161,55 @@ pub enum LaunchError {
         #[source]
         source: io::Error,
     },
+}
+
+impl Localize for LaunchError {
+    fn message(&self) -> Message {
+        match self {
+            Self::UnknownKind { kind } => Message::new("unknown entry kind: {}").with(kind),
+            Self::TargetMissing { path } => {
+                Message::new("launch target does not exist: {}").with(path.display())
+            }
+            Self::TargetNotExecutable { path } => {
+                Message::new("launch target is not executable: {}").with(path.display())
+            }
+            Self::ProgramNotFound { name } => {
+                Message::new("required program was not found: {}").with(name)
+            }
+            Self::MissingNeed { name } => {
+                Message::new("required command was not found: {}").with(name)
+            }
+            Self::WorkdirMissing { path } => {
+                Message::new("working directory does not exist: {}").with(path.display())
+            }
+            Self::InvalidWorkdir { value } => {
+                Message::new("custom working directory must be absolute: {}").with(value)
+            }
+            Self::MissingTemplateValue { name } => {
+                Message::new("command template needs a value for {}").with(name)
+            }
+            Self::UnsafeTemplatePlaceholder { name } => {
+                Message::new("command template placeholder {} is inside shell quotes").with(name)
+            }
+            Self::PromptRunnerRequired => Message::new("prompt runner is required"),
+            Self::PromptBodyRequired => Message::new("prompt body is required"),
+            Self::InvalidPromptRunner { name } => Message::new(
+                "prompt runner {} must contain exactly one {prompt} marker outside the program token",
+            )
+            .quoted(name),
+            Self::PromptContainsNul => Message::new("the rendered prompt contains a NUL character"),
+            Self::PromptArgvTooLong { size, limit, unit } => Message::new(
+                "the rendered prompt makes the command line {} {}; the limit is {} {}",
+            )
+            .with(size)
+            .with(unit)
+            .with(limit)
+            .with(unit),
+            Self::Process { operation, source } => Message::new("could not {} child process: {}")
+                .with(operation)
+                .with(source),
+        }
+    }
 }
 
 impl LaunchError {
@@ -147,6 +229,8 @@ impl LaunchError {
             | Self::MissingTemplateValue { .. }
             | Self::UnsafeTemplatePlaceholder { .. }
             | Self::PromptBodyRequired
+            | Self::PromptContainsNul
+            | Self::PromptArgvTooLong { .. }
             | Self::Process { .. } => 125,
         }
     }
@@ -161,6 +245,70 @@ pub fn build_launch_plan<P: ProgramProbe>(
     prompt_runner: Option<&PromptRunner>,
     probe: &P,
 ) -> Result<LaunchPlan, LaunchError> {
+    build_launch_plan_inner(
+        entry,
+        paths,
+        assembly,
+        prompt_body,
+        None,
+        prompt_runner,
+        probe,
+    )
+}
+
+/// Build a complete launch preview without looking up programs on `PATH`.
+pub fn build_launch_preview<P: ProgramProbe>(
+    entry: &Entry,
+    paths: &LaunchPaths,
+    assembly: &Assembly,
+    prompt_body: Option<&str>,
+    prompt_display_body: Option<&str>,
+    prompt_runner: Option<&PromptRunner>,
+    probe: &P,
+) -> Result<LaunchPlan, LaunchError> {
+    build_launch_plan_inner(
+        entry,
+        paths,
+        assembly,
+        prompt_body,
+        prompt_display_body,
+        prompt_runner,
+        &PreviewProbe { local: probe },
+    )
+}
+
+#[derive(Debug)]
+struct PreviewProbe<'a, P> {
+    local: &'a P,
+}
+
+impl<P: ProgramProbe> ProgramProbe for PreviewProbe<'_, P> {
+    fn find_program(&self, name: &str) -> Option<PathBuf> {
+        Some(PathBuf::from(name))
+    }
+
+    fn is_file(&self, path: &Path) -> bool {
+        self.local.is_file(path)
+    }
+
+    fn is_dir(&self, path: &Path) -> bool {
+        self.local.is_dir(path)
+    }
+
+    fn is_executable(&self, path: &Path) -> bool {
+        self.local.is_executable(path)
+    }
+}
+
+fn build_launch_plan_inner<P: ProgramProbe>(
+    entry: &Entry,
+    paths: &LaunchPaths,
+    assembly: &Assembly,
+    prompt_body: Option<&str>,
+    prompt_display_body: Option<&str>,
+    prompt_runner: Option<&PromptRunner>,
+    probe: &P,
+) -> Result<LaunchPlan, LaunchError> {
     let settings = EntrySettings::from_meta(&entry.meta);
     for need in &settings.needs {
         if probe.find_program(need).is_none() {
@@ -170,31 +318,30 @@ pub fn build_launch_plan<P: ProgramProbe>(
     let cwd = resolve_workdir(entry, paths, probe)?;
     let kind = entry.meta.kind.as_str();
 
+    let mut warnings = Vec::new();
     let (program, args, display_args) = match kind {
         "python" => python_plan(paths, assembly, &settings, probe)?,
         "shell" => interpreted_plan(paths, assembly, interpreter(&settings, "bash"), &[], probe)?,
         "fish" => interpreted_plan(paths, assembly, interpreter(&settings, "fish"), &[], probe)?,
-        "powershell" => interpreted_plan(
-            paths,
-            assembly,
-            interpreter(&settings, "pwsh"),
-            &["-File"],
-            probe,
-        )?,
+        "powershell" => powershell_plan(paths, assembly, &settings, probe)?,
         "ruby" => interpreted_plan(paths, assembly, interpreter(&settings, "ruby"), &[], probe)?,
         "perl" => interpreted_plan(paths, assembly, interpreter(&settings, "perl"), &[], probe)?,
         "lua" => interpreted_plan(paths, assembly, interpreter(&settings, "lua"), &[], probe)?,
-        "r" => interpreted_plan(
-            paths,
-            assembly,
-            interpreter(&settings, "Rscript"),
-            &[],
-            probe,
-        )?,
+        "r" => r_plan(paths, assembly, &settings, probe)?,
         "js" | "ts" => javascript_plan(paths, assembly, &settings, probe)?,
-        "exe" => direct_plan(entry, assembly, probe)?,
+        "exe" => direct_plan(paths, assembly, probe)?,
         "command" => command_plan(assembly, &settings, probe)?,
-        "prompt" => prompt_plan(prompt_body, prompt_runner, assembly, probe)?,
+        "prompt" => {
+            let plan = prompt_plan(
+                prompt_body,
+                prompt_display_body,
+                prompt_runner,
+                assembly,
+                probe,
+            )?;
+            warnings.extend(plan.warning);
+            (plan.program, plan.args, plan.display_args)
+        }
         _ => {
             return Err(LaunchError::UnknownKind {
                 kind: kind.to_owned(),
@@ -209,6 +356,7 @@ pub fn build_launch_plan<P: ProgramProbe>(
         env: assembly.env_values.clone(),
         cwd,
         display,
+        warnings,
     })
 }
 
@@ -259,6 +407,36 @@ fn interpreted_plan<P: ProgramProbe>(
     Ok((program, args, display))
 }
 
+fn powershell_plan<P: ProgramProbe>(
+    paths: &LaunchPaths,
+    assembly: &Assembly,
+    settings: &EntrySettings,
+    probe: &P,
+) -> Result<(PathBuf, Vec<String>, Vec<String>), LaunchError> {
+    interpreted_plan(
+        paths,
+        assembly,
+        interpreter(settings, "pwsh"),
+        &["-File"],
+        probe,
+    )
+}
+
+fn r_plan<P: ProgramProbe>(
+    paths: &LaunchPaths,
+    assembly: &Assembly,
+    settings: &EntrySettings,
+    probe: &P,
+) -> Result<(PathBuf, Vec<String>, Vec<String>), LaunchError> {
+    interpreted_plan(
+        paths,
+        assembly,
+        interpreter(settings, "Rscript"),
+        &[],
+        probe,
+    )
+}
+
 fn javascript_plan<P: ProgramProbe>(
     paths: &LaunchPaths,
     assembly: &Assembly,
@@ -300,11 +478,11 @@ pub fn resolve_javascript_runtime<P: ProgramProbe>(
 }
 
 fn direct_plan<P: ProgramProbe>(
-    entry: &Entry,
+    paths: &LaunchPaths,
     assembly: &Assembly,
     probe: &P,
 ) -> Result<(PathBuf, Vec<String>, Vec<String>), LaunchError> {
-    let path = PathBuf::from(&entry.meta.source);
+    let path = paths.script.clone();
     if !probe.is_file(&path) {
         return Err(LaunchError::TargetMissing { path });
     }
@@ -321,14 +499,17 @@ fn command_plan<P: ProgramProbe>(
 ) -> Result<(PathBuf, Vec<String>, Vec<String>), LaunchError> {
     let command = render_command_template(&settings.template, &assembly.command_values)?;
     let masked = render_command_template(&settings.template, &assembly.masked_command_values)?;
-    if cfg!(windows) {
+    #[cfg(windows)]
+    {
         let shell = require_program("cmd.exe", probe)?;
-        Ok((
+        return Ok((
             shell,
             vec!["/C".to_owned(), command],
             vec!["/C".to_owned(), masked],
-        ))
-    } else {
+        ));
+    }
+    #[cfg(not(windows))]
+    {
         let shell = require_program("sh", probe)?;
         Ok((
             shell,
@@ -340,10 +521,11 @@ fn command_plan<P: ProgramProbe>(
 
 fn prompt_plan<P: ProgramProbe>(
     prompt_body: Option<&str>,
+    prompt_display_body: Option<&str>,
     runner: Option<&PromptRunner>,
     assembly: &Assembly,
     probe: &P,
-) -> Result<(PathBuf, Vec<String>, Vec<String>), LaunchError> {
+) -> Result<PromptProcessPlan, LaunchError> {
     let body = prompt_body.ok_or(LaunchError::PromptBodyRequired)?;
     let runner = runner.ok_or(LaunchError::PromptRunnerRequired)?;
     let marker = "{{prompt}}";
@@ -364,18 +546,116 @@ fn prompt_plan<P: ProgramProbe>(
             name: runner.name.clone(),
         });
     }
+    let (body, protected) = protect_pi_prompt(program_token, body);
+    let filled = fill_prompt_argv(&runner.argv, &body, &assembly.args);
+    validate_prompt_argv(&filled)?;
     let program = require_program(program_token, probe)?;
-    let args = runner.argv[1..]
-        .iter()
-        .map(|token| token.replace(marker, body))
-        .chain(assembly.args.iter().cloned())
+    let args = filled.into_iter().skip(1).collect::<Vec<_>>();
+    let display_body = prompt_display_body.map_or_else(
+        || "<prompt>".to_owned(),
+        |body| {
+            if protected {
+                format!("\n{body}")
+            } else {
+                body.to_owned()
+            }
+        },
+    );
+    let display = fill_prompt_argv(&runner.argv, &display_body, &assembly.masked_args)
+        .into_iter()
+        .skip(1)
         .collect::<Vec<_>>();
-    let display = runner.argv[1..]
+    let warning = protected.then_some(LaunchWarning::PiPromptProtected);
+    Ok(PromptProcessPlan {
+        program,
+        args,
+        display_args: display,
+        warning,
+    })
+}
+
+fn fill_prompt_argv(template: &[String], body: &str, extra: &[String]) -> Vec<String> {
+    let mut filled = template
         .iter()
-        .map(|token| token.replace(marker, "<prompt>"))
-        .chain(assembly.masked_args.iter().cloned())
+        .map(|token| token.replace("{{prompt}}", body))
         .collect::<Vec<_>>();
-    Ok((program, args, display))
+    let insertion = template
+        .iter()
+        .position(|token| token == "--")
+        .unwrap_or(filled.len());
+    filled.splice(insertion..insertion, extra.iter().cloned());
+    filled
+}
+
+const POSIX_PROMPT_ARGV_LIMIT: usize = 100_000;
+const WINDOWS_PROMPT_ARGV_LIMIT: usize = 60_000;
+const PI_PACKAGE_COMMANDS: [&str; 6] =
+    ["config", "install", "list", "remove", "uninstall", "update"];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PromptPlatform {
+    Posix,
+    Windows,
+}
+
+/// The build target's prompt platform. This is a compile-time choice.
+const CURRENT_PROMPT_PLATFORM: PromptPlatform = if cfg!(windows) {
+    PromptPlatform::Windows
+} else {
+    PromptPlatform::Posix
+};
+
+fn protect_pi_prompt(program: &str, body: &str) -> (String, bool) {
+    let program = program
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    let is_pi = matches!(program.as_str(), "pi" | "pi.cmd" | "pi.exe" | "pi.ps1");
+    let ambiguous = body.starts_with(['-', '@']) || PI_PACKAGE_COMMANDS.contains(&body);
+    if is_pi && ambiguous {
+        (format!("\n{body}"), true)
+    } else {
+        (body.to_owned(), false)
+    }
+}
+
+fn validate_prompt_argv(argv: &[String]) -> Result<(), LaunchError> {
+    if argv.iter().any(|token| token.contains('\0')) {
+        return Err(LaunchError::PromptContainsNul);
+    }
+    let (size, limit, unit) = prompt_argv_size(argv, CURRENT_PROMPT_PLATFORM);
+    if size > limit {
+        Err(LaunchError::PromptArgvTooLong { size, limit, unit })
+    } else {
+        Ok(())
+    }
+}
+
+fn prompt_argv_size(argv: &[String], platform: PromptPlatform) -> (usize, usize, &'static str) {
+    match platform {
+        PromptPlatform::Posix => (
+            argv.iter().map(|token| token.len().saturating_add(1)).sum(),
+            POSIX_PROMPT_ARGV_LIMIT,
+            "bytes",
+        ),
+        PromptPlatform::Windows => {
+            let command = argv
+                .iter()
+                .map(|token| quote_windows_arg(token))
+                .collect::<Vec<_>>()
+                .join(" ");
+            (
+                command
+                    .encode_utf16()
+                    .count()
+                    .saturating_mul(2)
+                    .saturating_add(2),
+                WINDOWS_PROMPT_ARGV_LIMIT,
+                "bytes",
+            )
+        }
+    }
 }
 
 /// Fill a command template with shell-quoted values.
@@ -548,11 +828,14 @@ fn status_code(status: ExitStatus) -> i32 {
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt as _;
-        if let Some(signal) = status.signal() {
-            return 128 + signal;
-        }
+        128 + status
+            .signal()
+            .expect("a Unix status without a code has a signal")
     }
-    125
+    #[cfg(not(unix))]
+    {
+        125
+    }
 }
 
 fn display_command(program: &Path, args: &[String], env: &BTreeMap<String, String>) -> String {
@@ -565,12 +848,14 @@ fn display_command(program: &Path, args: &[String], env: &BTreeMap<String, Strin
     parts.join(" ")
 }
 
+#[cfg(windows)]
 fn quote_shell_arg(value: &str) -> String {
-    if cfg!(windows) {
-        quote_windows_arg(value)
-    } else {
-        quote_posix_arg(value)
-    }
+    quote_windows_arg(value)
+}
+
+#[cfg(not(windows))]
+fn quote_shell_arg(value: &str) -> String {
+    quote_posix_arg(value)
 }
 
 fn quote_posix_arg(value: &str) -> String {
@@ -659,4 +944,247 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(not(unix))]
 fn is_executable(path: &Path) -> bool {
     path.is_file()
+}
+
+#[cfg(test)]
+mod private_tests {
+    use super::*;
+    use skit_domain::{EntryKind, EntryMeta, Slug};
+    use tempfile::TempDir;
+
+    #[derive(Debug, Default)]
+    struct Probe {
+        programs: BTreeMap<String, PathBuf>,
+        files: Vec<PathBuf>,
+        directories: Vec<PathBuf>,
+        executables: Vec<PathBuf>,
+    }
+
+    impl ProgramProbe for Probe {
+        fn find_program(&self, name: &str) -> Option<PathBuf> {
+            self.programs.get(name).cloned()
+        }
+
+        fn is_file(&self, path: &Path) -> bool {
+            self.files.iter().any(|candidate| candidate == path)
+        }
+
+        fn is_dir(&self, path: &Path) -> bool {
+            self.directories.iter().any(|candidate| candidate == path)
+        }
+
+        fn is_executable(&self, path: &Path) -> bool {
+            self.executables.iter().any(|candidate| candidate == path)
+        }
+    }
+
+    fn entry(kind: &str) -> Entry {
+        Entry {
+            slug: Slug::parse("test").unwrap(),
+            meta: EntryMeta::minimal("Test", EntryKind::parse(kind).unwrap()),
+        }
+    }
+
+    fn paths() -> LaunchPaths {
+        LaunchPaths {
+            script: PathBuf::from("/data/test/script"),
+            entry_dir: PathBuf::from("/data/test"),
+            invoke_cwd: PathBuf::from("/invoke"),
+        }
+    }
+
+    #[test]
+    fn command_and_workdir_plans_cover_literal_and_refusal_paths() {
+        let mut command = entry("command");
+        command.meta.workdir = "/custom".to_owned();
+        EntrySettings {
+            template: "tool {{literal}} {value}".to_owned(),
+            ..EntrySettings::default()
+        }
+        .write_to_meta(&mut command.meta);
+        let probe = Probe {
+            programs: BTreeMap::from([("sh".to_owned(), PathBuf::from("/bin/sh"))]),
+            directories: vec![PathBuf::from("/custom")],
+            ..Probe::default()
+        };
+        let assembly = Assembly {
+            command_values: BTreeMap::from([("value".to_owned(), "a b".to_owned())]),
+            masked_command_values: BTreeMap::from([("value".to_owned(), "***".to_owned())]),
+            masked_env: BTreeMap::from([("TOKEN".to_owned(), "***".to_owned())]),
+            ..Assembly::default()
+        };
+        let plan = build_launch_plan(&command, &paths(), &assembly, None, None, &probe).unwrap();
+        assert_eq!(plan.program, PathBuf::from("/bin/sh"));
+        assert!(plan.display.contains("TOKEN=\"***\"") || plan.display.contains("TOKEN='***'"));
+        assert!(plan.args[1].contains("{literal}"));
+
+        command.meta.workdir = "relative".to_owned();
+        assert!(matches!(
+            build_launch_plan(&command, &paths(), &assembly, None, None, &probe),
+            Err(LaunchError::InvalidWorkdir { .. })
+        ));
+        command.meta.workdir = "/missing".to_owned();
+        assert!(matches!(
+            build_launch_plan(&command, &paths(), &assembly, None, None, &probe),
+            Err(LaunchError::WorkdirMissing { .. })
+        ));
+    }
+
+    #[test]
+    fn target_prompt_and_template_refusals_have_stable_exit_codes() {
+        assert_eq!(
+            LaunchError::TargetMissing {
+                path: PathBuf::new()
+            }
+            .exit_code(),
+            127
+        );
+        assert_eq!(
+            LaunchError::TargetNotExecutable {
+                path: PathBuf::new()
+            }
+            .exit_code(),
+            126
+        );
+        assert_eq!(LaunchError::PromptRunnerRequired.exit_code(), 126);
+        assert_eq!(LaunchError::PromptBodyRequired.exit_code(), 125);
+        assert_eq!(
+            LaunchError::Process {
+                operation: "test",
+                source: io::Error::other("failed"),
+            }
+            .exit_code(),
+            125
+        );
+
+        let mut executable = entry("exe");
+        executable.meta.source = "/bin/tool".to_owned();
+        executable.meta.workdir = "store".to_owned();
+        let mut probe = Probe {
+            directories: vec![PathBuf::from("/data/test")],
+            ..Probe::default()
+        };
+        assert!(matches!(
+            build_launch_plan(
+                &executable,
+                &paths(),
+                &Assembly::default(),
+                None,
+                None,
+                &probe,
+            ),
+            Err(LaunchError::TargetMissing { .. })
+        ));
+        probe.files.push(paths().script);
+        assert!(matches!(
+            build_launch_plan(
+                &executable,
+                &paths(),
+                &Assembly::default(),
+                None,
+                None,
+                &probe,
+            ),
+            Err(LaunchError::TargetNotExecutable { .. })
+        ));
+
+        let mut prompt = entry("prompt");
+        prompt.meta.workdir = "store".to_owned();
+        assert!(matches!(
+            build_launch_plan(&prompt, &paths(), &Assembly::default(), None, None, &probe,),
+            Err(LaunchError::PromptBodyRequired)
+        ));
+        assert!(matches!(
+            build_launch_plan(
+                &prompt,
+                &paths(),
+                &Assembly::default(),
+                Some("body"),
+                None,
+                &probe,
+            ),
+            Err(LaunchError::PromptRunnerRequired)
+        ));
+        assert!(matches!(
+            render_command_template("tool {missing}", &BTreeMap::new()),
+            Err(LaunchError::MissingTemplateValue { .. })
+        ));
+        assert_eq!(
+            render_command_template(r#"tool \\"x" {{ok}} }}"#, &BTreeMap::new()).unwrap(),
+            r#"tool \\"x" {ok} }"#
+        );
+    }
+
+    #[test]
+    fn system_probe_and_process_execution_use_real_operating_system_status() {
+        let root = TempDir::new().unwrap();
+        let executable = root.path().join("tool");
+        fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mut permissions = fs::metadata(&executable).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(&executable, permissions).unwrap();
+        }
+        let probe = SystemProbe;
+        assert!(probe.is_file(&executable));
+        assert!(probe.is_dir(root.path()));
+        assert!(probe.is_executable(&executable));
+        assert_eq!(
+            probe.find_program(executable.to_str().unwrap()),
+            Some(executable)
+        );
+        assert!(probe.find_program("sh").is_some());
+        assert!(
+            probe
+                .find_program("skit-program-that-does-not-exist")
+                .is_none()
+        );
+        assert!(!probe.is_executable(root.path()));
+
+        let plan = LaunchPlan {
+            program: PathBuf::from("/bin/sh"),
+            args: vec!["-c".to_owned(), "exit 7".to_owned()],
+            env: BTreeMap::new(),
+            cwd: root.path().to_owned(),
+            display: String::new(),
+            warnings: Vec::new(),
+        };
+        assert_eq!(execute_launch(&plan).unwrap(), 7);
+        let missing = LaunchPlan {
+            program: root.path().join("missing"),
+            ..plan
+        };
+        assert!(matches!(
+            execute_launch(&missing),
+            Err(LaunchError::Process { .. })
+        ));
+
+        #[cfg(unix)]
+        {
+            let status = Command::new("/bin/sh")
+                .args(["-c", "kill -TERM $$"])
+                .status()
+                .unwrap();
+            assert_eq!(status_code(status), 143);
+        }
+    }
+
+    #[test]
+    fn windows_quoting_is_deterministic_on_every_build_host() {
+        assert_eq!(quote_windows_arg("plain"), "plain");
+        assert_eq!(quote_windows_arg(""), "\"\"");
+        assert_eq!(quote_windows_arg("a b"), "\"a b\"");
+        assert_eq!(quote_windows_arg("a\\\"b\\"), "\"a\\\\\\\"b\\\\\"");
+    }
+
+    #[test]
+    fn windows_prompt_size_uses_the_quoted_utf16_command_line() {
+        let argv = ["pi.exe".to_owned(), "x".repeat(60_000)];
+        let (size, limit, unit) = prompt_argv_size(&argv, PromptPlatform::Windows);
+        assert!(size > limit);
+        assert_eq!(limit, 60_000);
+        assert_eq!(unit, "bytes");
+    }
 }

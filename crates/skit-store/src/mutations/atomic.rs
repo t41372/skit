@@ -9,6 +9,7 @@ use std::fs::Permissions;
 
 use skit_application::{EntryPayload, RepositoryError, SourcePermissions};
 use skit_domain::{EntryId, EntryMeta};
+use skit_i18n::Message;
 
 #[derive(Debug)]
 pub(super) struct FileLock {
@@ -23,9 +24,17 @@ pub(super) fn acquire_lock(path: &Path) -> Result<FileLock, RepositoryError> {
 
 pub(super) fn try_acquire_lock(path: &Path) -> Result<Option<FileLock>, RepositoryError> {
     let file = open_lock_file(path)?;
-    match file.try_lock() {
-        Ok(()) => Ok(Some(FileLock { _file: file })),
-        Err(TryLockError::WouldBlock) => Ok(None),
+    if lock_available(file.try_lock(), path)? {
+        Ok(Some(FileLock { _file: file }))
+    } else {
+        Ok(None)
+    }
+}
+
+fn lock_available(attempt: Result<(), TryLockError>, path: &Path) -> Result<bool, RepositoryError> {
+    match attempt {
+        Ok(()) => Ok(true),
+        Err(TryLockError::WouldBlock) => Ok(false),
         Err(TryLockError::Error(error)) => Err(io_error("lock", path, error)),
     }
 }
@@ -33,7 +42,7 @@ pub(super) fn try_acquire_lock(path: &Path) -> Result<Option<FileLock>, Reposito
 fn open_lock_file(path: &Path) -> Result<File, RepositoryError> {
     let parent = path
         .parent()
-        .ok_or_else(|| invalid("lock path has no parent directory"))?;
+        .ok_or_else(|| invalid(Message::new("lock path has no parent directory")))?;
     create_dir_all(parent, "create")?;
     let file = OpenOptions::new()
         .read(true)
@@ -100,7 +109,7 @@ pub(super) fn write_new_file(path: &Path, payload: &EntryPayload) -> Result<(), 
 
 pub(super) fn write_new_metadata(path: &Path, meta: &EntryMeta) -> Result<(), RepositoryError> {
     let text = toml::to_string_pretty(meta)
-        .map_err(|error| invalid(format!("could not encode metadata: {error}")))?;
+        .map_err(|error| invalid(Message::new("could not encode metadata: {}").with(error)))?;
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -145,7 +154,7 @@ fn apply_permissions(
 pub(super) fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), RepositoryError> {
     let parent = path
         .parent()
-        .ok_or_else(|| invalid("write path has no parent directory"))?;
+        .ok_or_else(|| invalid(Message::new("write path has no parent directory")))?;
     create_dir_all(parent, "create")?;
     let temp = unique_sibling(path, "tmp")?;
     let mut file = OpenOptions::new()
@@ -166,14 +175,26 @@ pub(super) fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), Reposi
     let result = fs::rename(&temp, path).map_err(|error| io_error("replace", path, error));
     if result.is_err() {
         let _ = fs::remove_file(&temp);
+    } else {
+        let _ = sync_directory(parent);
     }
     result
+}
+
+#[cfg(unix)]
+pub(super) fn sync_directory(path: &Path) -> io::Result<()> {
+    File::open(path)?.sync_all()
+}
+
+#[cfg(not(unix))]
+pub(super) fn sync_directory(_path: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 fn unique_sibling(path: &Path, suffix: &str) -> Result<PathBuf, RepositoryError> {
     let parent = path
         .parent()
-        .ok_or_else(|| invalid("temporary path has no parent directory"))?;
+        .ok_or_else(|| invalid(Message::new("temporary path has no parent directory")))?;
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -189,10 +210,8 @@ pub(super) fn create_dir_all(path: &Path, operation: &'static str) -> Result<(),
     fs::create_dir_all(path).map_err(|error| io_error(operation, path, error))
 }
 
-pub(super) fn invalid(reason: impl Into<String>) -> RepositoryError {
-    RepositoryError::InvalidMutation {
-        reason: reason.into(),
-    }
+pub(super) fn invalid(reason: Message) -> RepositoryError {
+    RepositoryError::InvalidMutation { reason }
 }
 
 pub(super) fn io_error(operation: &'static str, path: &Path, error: io::Error) -> RepositoryError {
@@ -200,5 +219,44 @@ pub(super) fn io_error(operation: &'static str, path: &Path, error: io::Error) -
         operation,
         path: path.display().to_string(),
         reason: error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn lock_attempts_distinguish_busy_files_from_operating_system_errors() {
+        let path = Path::new("lock");
+        assert!(!lock_available(Err(TryLockError::WouldBlock), path).unwrap());
+        assert!(matches!(
+            lock_available(Err(TryLockError::Error(io::Error::other("failed"))), path,),
+            Err(RepositoryError::Io {
+                operation: "lock",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn a_failed_atomic_replace_removes_its_temporary_file() {
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("target");
+        fs::create_dir(&target).unwrap();
+
+        assert!(atomic_write_bytes(&target, b"value").is_err());
+        let names = fs::read_dir(root.path())
+            .unwrap()
+            .map(|item| item.unwrap().file_name())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["target"]);
+    }
+
+    #[test]
+    fn a_real_directory_can_be_synchronized_after_a_rename() {
+        let root = TempDir::new().unwrap();
+        sync_directory(root.path()).unwrap();
     }
 }

@@ -45,3 +45,14 @@ fn forget_write_failures_are_typed_and_do_not_touch_the_blocking_file() {
     assert!(error.to_string().contains("state"));
     assert_eq!(fs::read(&blocked).unwrap(), b"file");
 }
+
+#[test]
+fn forget_reports_a_values_path_that_is_not_a_regular_file() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("values/demo.toml");
+    fs::create_dir_all(&path).unwrap();
+    let service = FormStateService::new(FileFormStateStore::new(root.path()));
+
+    assert!(service.forget(&slug()).is_err());
+    assert!(path.is_dir());
+}

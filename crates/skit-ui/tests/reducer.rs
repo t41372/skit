@@ -356,6 +356,16 @@ fn host_completion_returns_to_the_library_and_can_replace_the_scan() {
 
 #[test]
 fn public_ui_contract_round_trips_through_json_for_a_future_tauri_adapter() {
+    let action = Action::Complete {
+        scan: Some(LibraryScan {
+            entries: vec![entry("delta", "Delta", "new")],
+            diagnostics: vec![],
+        }),
+        message: "Saved".to_owned(),
+    };
+    let encoded = serde_json::to_string(&action).unwrap();
+    assert_eq!(serde_json::from_str::<Action>(&encoded).unwrap(), action);
+
     let effect = Effect::Open {
         request: HostRequest::Settings,
         selector: Some("alpha".to_owned()),
@@ -375,4 +385,49 @@ fn public_ui_contract_round_trips_through_json_for_a_future_tauri_adapter() {
     });
     let encoded = serde_json::to_string(&screen).unwrap();
     assert_eq!(serde_json::from_str::<Screen>(&encoded).unwrap(), screen);
+
+    let state = state();
+    let encoded = serde_json::to_string(&state).unwrap();
+    assert_eq!(
+        serde_json::from_str::<LibraryState>(&encoded).unwrap(),
+        state
+    );
+
+    let secret = FormField::secret_raw("token", "Raw token", "value");
+    assert!(secret.secret);
+    assert!(!secret.translate_label);
+    let multiline =
+        FormField::multiline_with_arguments("body", "{} body", vec!["Prompt".to_owned()], "text");
+    assert!(multiline.multiline);
+    assert_eq!(multiline.label_arguments, ["Prompt"]);
+}
+
+#[test]
+fn inert_editing_and_submission_actions_are_total_on_every_non_form_screen() {
+    let mut state = state();
+    assert!(state.form().is_none());
+    for action in [Action::Backspace, Action::FocusNext, Action::Submit] {
+        assert_eq!(state.update(action), Effect::None);
+    }
+
+    state.update(Action::Present(Screen::Form(FormView {
+        purpose: FormPurpose::Add,
+        title: "Empty".to_owned(),
+        title_arguments: Vec::new(),
+        translate_title: false,
+        selector: None,
+        fields: Vec::new(),
+        focused: 0,
+        submit_label: "Save".to_owned(),
+    })));
+    state.update(Action::FocusNext);
+    assert_eq!(state.form().unwrap().focused, 0);
+
+    state.update(Action::Present(Screen::Report(ReportView {
+        title: "Report".to_owned(),
+        items: Vec::new(),
+    })));
+    assert!(state.form().is_none());
+    assert_eq!(state.update(Action::Backspace), Effect::None);
+    assert_eq!(state.update(Action::Submit), Effect::None);
 }

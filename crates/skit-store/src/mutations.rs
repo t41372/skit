@@ -10,14 +10,20 @@ use std::{
 
 use atomic::{
     FileLock, StagedDirectory, acquire_lock, atomic_write_bytes, create_dir_all, invalid, io_error,
-    write_new_file, write_new_metadata,
+    sync_directory, write_new_file, write_new_metadata,
 };
 pub use hash::content_hash;
 use registry::Registry;
-use skit_application::{CreateEntry, EntryMutationRepository, EntryPayload, RepositoryError};
+use skit_application::{
+    CreateEntry, EntryMutationRepository, EntryPayload, RepositoryError, UpdateEntry,
+};
 use skit_domain::{Entry, EntryId, EntryMeta, EntrySettings, Slug, StorageMode};
+use skit_i18n::{Localize as _, Message};
 
-use super::FileStore;
+use super::{
+    FileStore,
+    paths::{is_support_file, stored_filenames},
+};
 
 impl EntryMutationRepository for FileStore {
     fn create(&self, request: CreateEntry) -> Result<Entry, RepositoryError> {
@@ -67,6 +73,55 @@ impl EntryMutationRepository for FileStore {
         Ok(after)
     }
 
+    fn update_entry(&self, entry: &Entry, update: UpdateEntry) -> Result<Entry, RepositoryError> {
+        let name = validated_name(&update.name)?;
+        let _entry = self.entry_lock(&entry.slug)?;
+        let _namespace = self.namespace_lock()?;
+        let mut registry = Registry::load(self.data_dir())?;
+        let fresh = self.claim_for_mutation(entry, &mut registry)?;
+        self.ensure_name_available(&name, Some(&fresh.slug), &registry)?;
+        let before = fresh.clone();
+        let mut after = fresh;
+        after.meta.name = name;
+        after.meta.description = update.description;
+        after.meta.workdir = update.workdir;
+        update.settings.write_to_meta(&mut after.meta);
+
+        let Some(bytes) = update.source else {
+            self.commit_meta_projection(&before, &after, &mut registry)?;
+            return Ok(after);
+        };
+        if after.meta.mode != StorageMode::Copy {
+            return Err(invalid(Message::new(
+                "reference entries are edited at their original path",
+            )));
+        }
+        let target = self.stored_path(&after)?;
+        let original = fs::read(&target).map_err(|error| io_error("read", &target, error))?;
+        let actual = content_hash(&original);
+        if actual != update.expected_source_hash {
+            return Err(RepositoryError::SourceChanged {
+                slug: after.slug.as_str().to_owned(),
+                expected: update.expected_source_hash,
+                actual,
+            });
+        }
+        after.meta.source_hash = content_hash(&bytes);
+        replace_source(&target, &bytes, &original, || self.write_meta(&after))?;
+        let projection = registry
+            .project(&after, &self.entry_dir(&after.slug))
+            .and_then(|()| registry.save());
+        if let Err(error) = projection {
+            return Err(rollback_source_projection(
+                error,
+                &target,
+                &original,
+                || self.write_meta(&before),
+            ));
+        }
+        Ok(after)
+    }
+
     fn rename(&self, entry: &Entry, name: &str) -> Result<Entry, RepositoryError> {
         let name = validated_name(name)?;
         let _entry = self.entry_lock(&entry.slug)?;
@@ -74,43 +129,17 @@ impl EntryMutationRepository for FileStore {
         let mut registry = Registry::load(self.data_dir())?;
         let fresh = self.claim_for_mutation(entry, &mut registry)?;
         self.ensure_name_available(&name, Some(&fresh.slug), &registry)?;
-        let new_slug =
-            self.allocate_slug(Slug::from_display_name(&name), Some(&fresh.slug), &registry)?;
-
         let before = fresh.clone();
         let mut after = fresh;
         after.meta.name = name;
-        if before.slug == new_slug {
-            self.commit_meta_projection(&before, &after, &mut registry)?;
-            return Ok(after);
-        }
-
-        let old_dir = self.entry_dir(&before.slug);
-        let new_dir = self.entry_dir(&new_slug);
-        self.write_meta(&after)?;
-        if let Err(error) = fs::rename(&old_dir, &new_dir) {
-            let primary = io_error("rename", &old_dir, error);
-            return Err(rollback_error(primary, self.write_meta(&before), &old_dir));
-        }
-        after.slug = new_slug;
-        registry.remove(&before.slug);
-        let projection = registry
-            .project(&after, &new_dir)
-            .and_then(|()| registry.save());
-        if let Err(error) = projection {
-            let move_back = fs::rename(&new_dir, &old_dir)
-                .map_err(|rollback| io_error("rollback rename", &new_dir, rollback));
-            if let Err(rollback) = move_back {
-                return Err(rollback_error(error, Err(rollback), &old_dir));
-            }
-            return Err(rollback_error(error, self.write_meta(&before), &old_dir));
-        }
+        self.commit_meta_projection(&before, &after, &mut registry)?;
         Ok(after)
     }
 
     fn remove(&self, entry: &Entry) -> Result<String, RepositoryError> {
         let _entry = self.entry_lock(&entry.slug)?;
         let _namespace = self.namespace_lock()?;
+        let _dependencies = self.dependency_lock(&entry.slug)?;
         let mut registry = Registry::load(self.data_dir())?;
         let fresh = self.claim_for_mutation(entry, &mut registry)?;
         let name = fresh.meta.name.clone();
@@ -119,14 +148,19 @@ impl EntryMutationRepository for FileStore {
         create_dir_all(&trash_root, "create")?;
         let trash = trash_root.join(format!("{}-{}", fresh.slug, EntryId::generate().as_str()));
         fs::rename(&source, &trash).map_err(|error| io_error("remove", &source, error))?;
+        let _ = sync_directory(&self.scripts_dir());
+        let _ = sync_directory(&trash_root);
 
         registry.remove(&fresh.slug);
         if let Err(error) = registry.save() {
             let rollback = fs::rename(&trash, &source)
                 .map_err(|rollback| io_error("rollback remove", &trash, rollback));
+            let _ = sync_directory(&self.scripts_dir());
+            let _ = sync_directory(&trash_root);
             return Err(rollback_error(error, rollback, &source));
         }
-        fs::remove_dir_all(&trash).map_err(|error| io_error("clean", &trash, error))?;
+        let _ = fs::remove_dir_all(&trash);
+        let _ = sync_directory(&trash_root);
         Ok(name)
     }
 
@@ -141,9 +175,9 @@ impl EntryMutationRepository for FileStore {
         let mut registry = Registry::load(self.data_dir())?;
         let fresh = self.claim_for_mutation(entry, &mut registry)?;
         if fresh.meta.mode != StorageMode::Copy {
-            return Err(invalid(
+            return Err(invalid(Message::new(
                 "reference entries are edited at their original path",
-            ));
+            )));
         }
 
         let target = self.stored_path(&fresh)?;
@@ -159,27 +193,17 @@ impl EntryMutationRepository for FileStore {
 
         let before = fresh.clone();
         let mut after = fresh;
-        atomic_write_bytes(&target, bytes)?;
         after.meta.source_hash = content_hash(bytes);
-        if let Err(error) = self.write_meta(&after) {
-            return Err(rollback_error(
-                error,
-                atomic_write_bytes(&target, &original),
-                &target,
-            ));
-        }
+        replace_source(&target, bytes, &original, || self.write_meta(&after))?;
         let projection = registry
             .project(&after, &self.entry_dir(&after.slug))
             .and_then(|()| registry.save());
         if let Err(error) = projection {
-            let source_rollback = atomic_write_bytes(&target, &original);
-            if let Err(rollback) = source_rollback {
-                return Err(rollback_error(error, Err(rollback), &target));
-            }
-            return Err(rollback_error(
+            return Err(rollback_source_projection(
                 error,
-                self.write_meta(&before),
-                &self.entry_dir(&before.slug),
+                &target,
+                &original,
+                || self.write_meta(&before),
             ));
         }
         Ok(after)
@@ -220,7 +244,10 @@ impl FileStore {
             let Ok(entry) = self.read_entry(slug) else {
                 continue;
             };
-            registry.project(&entry, &item.path())?;
+            // One entry skit cannot stamp must not cost the whole projection.
+            if registry.project(&entry, &item.path()).is_err() {
+                continue;
+            }
             count += 1;
         }
         registry.save()?;
@@ -235,13 +262,13 @@ impl FileStore {
         request.name = validated_name(&request.name)?;
         self.ensure_name_available(&request.name, None, registry)?;
         validate_payload(request.mode, request.payload.as_ref())?;
-        let slug = self.allocate_slug(Slug::from_display_name(&request.name), None, registry)?;
+        let slug = self.allocate_slug(Slug::from_display_name(&request.name), registry)?;
         let id = EntryId::generate();
         let source_hash = request
             .payload
             .as_ref()
             .map_or_else(String::new, |payload| content_hash(&payload.bytes));
-        let meta = EntryMeta {
+        let mut meta = EntryMeta {
             schema: 1,
             name: request.name,
             kind: request.kind,
@@ -254,6 +281,7 @@ impl FileStore {
             description: request.description,
             extra: BTreeMap::new(),
         };
+        request.settings.write_to_meta(&mut meta);
 
         let staging_root = self.data_dir().join(".staging");
         create_dir_all(&staging_root, "create")?;
@@ -265,7 +293,7 @@ impl FileStore {
             let stored_name = payload
                 .stored_name
                 .as_deref()
-                .ok_or_else(|| invalid("copy-mode payloads require a stored filename"))?;
+                .expect("validate_payload requires a stored filename for copy mode");
             write_new_file(&stage.path().join(stored_name), payload)?;
         }
         write_new_metadata(&stage.path().join("meta.toml"), &meta)?;
@@ -274,8 +302,11 @@ impl FileStore {
         create_dir_all(&scripts, "create")?;
         let destination = scripts.join(slug.as_str());
         self.remove_empty_destination(&destination)?;
+        let _ = sync_directory(stage.path());
         fs::rename(stage.path(), &destination)
             .map_err(|error| io_error("commit", &destination, error))?;
+        let _ = sync_directory(&scripts);
+        let _ = sync_directory(&staging_root);
         let entry = Entry { slug, meta };
         let projection = registry
             .project(&entry, &destination)
@@ -283,6 +314,7 @@ impl FileStore {
         if let Err(error) = projection {
             let rollback = fs::remove_dir_all(&destination)
                 .map_err(|rollback| io_error("rollback create", &destination, rollback));
+            let _ = sync_directory(&scripts);
             return Err(rollback_error(error, rollback, &destination));
         }
         stage.commit();
@@ -368,39 +400,25 @@ impl FileStore {
         Ok(())
     }
 
-    fn allocate_slug(
-        &self,
-        base: Slug,
-        excluded: Option<&Slug>,
-        registry: &Registry,
-    ) -> Result<Slug, RepositoryError> {
-        if !registry.slug_is_taken(&base, excluded) && !self.slug_path_is_taken(&base, excluded)? {
+    fn allocate_slug(&self, base: Slug, registry: &Registry) -> Result<Slug, RepositoryError> {
+        if !registry.slug_is_taken(&base) && !self.slug_path_is_taken(&base)? {
             return Ok(base);
         }
 
         let mut suffix = 2_u64;
         loop {
             let candidate = Slug::parse(format!("{}-{suffix}", base.as_str()))
-                .map_err(|error| invalid(error.to_string()))?;
-            if !registry.slug_is_taken(&candidate, excluded)
-                && !self.slug_path_is_taken(&candidate, excluded)?
-            {
+                .map_err(|error| invalid(error.message()))?;
+            if !registry.slug_is_taken(&candidate) && !self.slug_path_is_taken(&candidate)? {
                 return Ok(candidate);
             }
             suffix = suffix
                 .checked_add(1)
-                .ok_or_else(|| invalid("entry slug suffix space is exhausted"))?;
+                .ok_or_else(|| invalid(Message::new("entry slug suffix space is exhausted")))?;
         }
     }
 
-    fn slug_path_is_taken(
-        &self,
-        slug: &Slug,
-        excluded: Option<&Slug>,
-    ) -> Result<bool, RepositoryError> {
-        if excluded == Some(slug) {
-            return Ok(false);
-        }
+    fn slug_path_is_taken(&self, slug: &Slug) -> Result<bool, RepositoryError> {
         let path = self.entry_dir(slug);
         if !path.exists() {
             return Ok(false);
@@ -434,7 +452,7 @@ impl FileStore {
 
     fn stored_path(&self, entry: &Entry) -> Result<PathBuf, RepositoryError> {
         let directory = self.entry_dir(&entry.slug);
-        if let Some(candidate) = conventional_stored_name(entry.meta.kind.as_str()) {
+        for candidate in stored_filenames(entry.meta.kind.as_str()) {
             let path = directory.join(candidate);
             if path.is_file() {
                 return Ok(path);
@@ -446,7 +464,7 @@ impl FileStore {
             fs::read_dir(&directory).map_err(|error| io_error("scan", &directory, error))?;
         for item in reader {
             let item = item.map_err(|error| io_error("scan", &directory, error))?;
-            if item.file_name().to_string_lossy() == "meta.toml" {
+            if is_support_file(&item.file_name().to_string_lossy()) {
                 continue;
             }
             let file_type = item
@@ -458,17 +476,16 @@ impl FileStore {
         }
         match files.as_slice() {
             [path] => Ok(path.clone()),
-            [] => Err(invalid("copy entry has no stored payload")),
-            _ => Err(invalid(
+            [] => Err(invalid(Message::new("copy entry has no stored payload"))),
+            _ => Err(invalid(Message::new(
                 "copy entry has more than one possible stored payload",
-            )),
+            ))),
         }
     }
 
     fn write_meta(&self, entry: &Entry) -> Result<(), RepositoryError> {
         let path = self.entry_dir(&entry.slug).join("meta.toml");
-        let text = toml::to_string_pretty(&entry.meta)
-            .map_err(|error| invalid(format!("could not encode metadata: {error}")))?;
+        let text = encode_metadata(&path, &entry.meta)?;
         atomic_write_bytes(&path, text.as_bytes())
     }
 
@@ -488,12 +505,77 @@ impl FileStore {
                 .join(format!("{}.meta.lock", slug.as_str())),
         )
     }
+
+    fn dependency_lock(&self, slug: &Slug) -> Result<FileLock, RepositoryError> {
+        acquire_lock(
+            &self
+                .data_dir()
+                .join(".locks")
+                .join(format!("{}.skit-deps.lock", slug.as_str())),
+        )
+    }
+}
+
+const CORE_METADATA_KEYS: &[&str] = &[
+    "schema",
+    "name",
+    "kind",
+    "mode",
+    "source",
+    "source_hash",
+    "added_at",
+    "id",
+    "workdir",
+    "description",
+];
+
+const MANAGED_METADATA_KEYS: &[&str] = &[
+    "template",
+    "dependencies",
+    "requires_python",
+    "params",
+    "interpreter",
+    "runner",
+    "interpolate",
+    "needs",
+    "parameters",
+];
+
+fn encode_metadata(path: &Path, meta: &EntryMeta) -> Result<String, RepositoryError> {
+    let mut managed = meta.clone();
+    managed
+        .extra
+        .retain(|key, _| MANAGED_METADATA_KEYS.contains(&key.as_str()));
+    let encoded = toml::to_string_pretty(&managed)
+        .map_err(|error| invalid(Message::new("could not encode metadata: {}").with(error)))?;
+    let updates = encoded
+        .parse::<toml::Table>()
+        .expect("the metadata encoder produces valid TOML");
+    let mut document = fs::read_to_string(path)
+        .ok()
+        .and_then(|text| text.parse::<toml::Table>().ok())
+        .unwrap_or_default();
+
+    for key in CORE_METADATA_KEYS {
+        document.remove(*key);
+        if let Some(value) = updates.get(*key) {
+            document.insert((*key).to_owned(), value.clone());
+        }
+    }
+    for key in MANAGED_METADATA_KEYS {
+        document.remove(*key);
+        if let Some(value) = updates.get(*key) {
+            document.insert((*key).to_owned(), value.clone());
+        }
+    }
+    toml::to_string_pretty(&document)
+        .map_err(|error| invalid(Message::new("could not encode metadata: {}").with(error)))
 }
 
 fn validated_name(name: &str) -> Result<String, RepositoryError> {
     let name = name.trim();
     if name.is_empty() {
-        Err(invalid("entry name cannot be blank"))
+        Err(invalid(Message::new("entry name cannot be blank")))
     } else {
         Ok(name.to_owned())
     }
@@ -507,7 +589,9 @@ fn validate_payload(
         return Ok(());
     };
     if mode == StorageMode::Copy && payload.stored_name.is_none() {
-        return Err(invalid("copy-mode payloads require a stored filename"));
+        return Err(invalid(Message::new(
+            "copy-mode payloads require a stored filename",
+        )));
     }
     if let Some(name) = payload.stored_name.as_deref() {
         validate_stored_name(name)?;
@@ -524,25 +608,11 @@ fn validate_stored_name(name: &str) -> Result<(), RepositoryError> {
         || name.contains('\0')
         || Path::new(name).is_absolute()
     {
-        return Err(invalid("stored filename must be one safe path component"));
+        return Err(invalid(Message::new(
+            "stored filename must be one safe path component",
+        )));
     }
     Ok(())
-}
-
-fn conventional_stored_name(kind: &str) -> Option<&'static str> {
-    match kind {
-        "python" => Some("script.py"),
-        "shell" => Some("script.sh"),
-        "js" => Some("script.js"),
-        "ts" => Some("script.ts"),
-        "fish" => Some("script.fish"),
-        "powershell" => Some("script.ps1"),
-        "ruby" => Some("script.rb"),
-        "perl" => Some("script.pl"),
-        "lua" => Some("script.lua"),
-        "r" => Some("script.R"),
-        _ => None,
-    }
 }
 
 fn conflict(name: &str, slug: &Slug) -> RepositoryError {
@@ -558,6 +628,29 @@ fn stale(slug: &Slug) -> RepositoryError {
     }
 }
 
+fn replace_source(
+    target: &Path,
+    bytes: &[u8],
+    original: &[u8],
+    write_meta: impl FnOnce() -> Result<(), RepositoryError>,
+) -> Result<(), RepositoryError> {
+    atomic_write_bytes(target, bytes)?;
+    write_meta()
+        .map_err(|error| rollback_error(error, atomic_write_bytes(target, original), target))
+}
+
+fn rollback_source_projection(
+    primary: RepositoryError,
+    target: &Path,
+    original: &[u8],
+    restore_meta: impl FnOnce() -> Result<(), RepositoryError>,
+) -> RepositoryError {
+    match atomic_write_bytes(target, original) {
+        Ok(()) => rollback_error(primary, restore_meta(), target),
+        Err(error) => rollback_error(primary, Err(error), target),
+    }
+}
+
 fn rollback_error(
     primary: RepositoryError,
     rollback: Result<(), RepositoryError>,
@@ -570,5 +663,104 @@ fn rollback_error(
             path: path.display().to_string(),
             reason: format!("{primary}; rollback also failed: {rollback}"),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn a_failed_rollback_reports_both_failures_and_the_affected_path() {
+        let primary = invalid(Message::new("primary failed"));
+        let rollback = Err(invalid(Message::new("restore failed")));
+
+        let error = rollback_error(primary, rollback, Path::new("affected"));
+
+        assert!(matches!(
+            error,
+            RepositoryError::Io {
+                operation: "rollback",
+                ref path,
+                ref reason,
+            } if path == "affected"
+                && reason.contains("primary failed")
+                && reason.contains("restore failed")
+        ));
+    }
+
+    #[test]
+    fn source_replacement_restores_bytes_when_metadata_fails() {
+        let root = TempDir::new().unwrap();
+        let source = root.path().join("source");
+        fs::write(&source, b"before").unwrap();
+
+        assert!(
+            replace_source(&source, b"after", b"before", || Err(invalid(Message::new(
+                "metadata failed"
+            ))))
+            .is_err()
+        );
+        assert_eq!(fs::read(source).unwrap(), b"before");
+    }
+
+    #[test]
+    fn source_rollback_failure_preserves_both_error_causes() {
+        let root = TempDir::new().unwrap();
+        let source = root.path().join("source");
+        fs::write(&source, b"before").unwrap();
+        let directory = root.path().to_owned();
+
+        let error = replace_source(&source, b"after", b"before", || {
+            fs::remove_dir_all(&directory).unwrap();
+            fs::write(&directory, "block parent recreation").unwrap();
+            Err(invalid(Message::new("metadata failed")))
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RepositoryError::Io {
+                operation: "rollback",
+                ..
+            }
+        ));
+
+        let error = rollback_source_projection(
+            invalid(Message::new("projection failed")),
+            &source,
+            b"before",
+            restore_succeeds,
+        );
+        assert!(matches!(
+            error,
+            RepositoryError::Io {
+                operation: "rollback",
+                ..
+            }
+        ));
+    }
+
+    fn restore_succeeds() -> Result<(), RepositoryError> {
+        Ok(())
+    }
+
+    #[test]
+    fn a_successful_rollback_keeps_the_first_cause() {
+        let root = TempDir::new().unwrap();
+        let source = root.path().join("source");
+        fs::write(&source, b"after").unwrap();
+
+        let error = rollback_source_projection(
+            invalid(Message::new("projection failed")),
+            &source,
+            b"before",
+            restore_succeeds,
+        );
+
+        assert!(matches!(error, RepositoryError::InvalidMutation { .. }));
+        assert_eq!(fs::read(&source).unwrap(), b"before");
     }
 }

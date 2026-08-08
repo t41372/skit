@@ -5,6 +5,7 @@ use skit_application::{
     RepositoryError,
 };
 use skit_domain::{Entry, EntryKind, EntryMeta, EntrySummary, Slug, StorageMode};
+use skit_i18n::Message;
 
 #[derive(Debug)]
 struct FakeRepository {
@@ -153,7 +154,7 @@ fn repository_failures_keep_the_cli_exit_and_display_contracts() {
         ),
         (
             RepositoryError::InvalidMutation {
-                reason: "reference entries cannot be edited as copies".to_owned(),
+                reason: Message::new("reference entries cannot be edited as copies"),
             },
             ExitClass::Usage,
             "invalid entry mutation: reference entries cannot be edited as copies",

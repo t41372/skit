@@ -1,7 +1,8 @@
-use std::fmt::Debug;
+use std::{fmt::Debug, path::Path};
 
 use serde::{Deserialize, Serialize};
-use skit_domain::{Entry, EntryKind, EntrySettings, StorageMode};
+use skit_domain::{Entry, EntryKind, EntrySettings, StorageMode, parameters::ParameterInvariant};
+use skit_i18n::Message;
 
 use crate::{LibraryService, RepositoryError};
 
@@ -26,7 +27,7 @@ pub struct EntryPayload {
 }
 
 /// Frontend-neutral request for creating one library entry.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct CreateEntry {
     /// User-facing display name.
     pub name: String,
@@ -42,6 +43,26 @@ pub struct CreateEntry {
     pub description: String,
     /// Optional byte snapshot; reference mode hashes it but never stores a copy.
     pub payload: Option<EntryPayload>,
+    /// Optional settings that must commit with the new entry.
+    #[serde(default)]
+    pub settings: EntrySettings,
+}
+
+/// One atomic update of entry metadata and an optional stored source.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UpdateEntry {
+    /// Replacement display name.
+    pub name: String,
+    /// Replacement description.
+    pub description: String,
+    /// Replacement optional settings.
+    pub settings: EntrySettings,
+    /// Replacement work-directory policy.
+    pub workdir: String,
+    /// Replacement source bytes for a copy entry.
+    pub source: Option<Vec<u8>>,
+    /// Source hash held when the update started.
+    pub expected_source_hash: String,
 }
 
 /// Identity-gated mutation port shared by CLI, Ratatui, and future GUI adapters.
@@ -63,7 +84,10 @@ pub trait EntryMutationRepository: Debug {
         workdir: &str,
     ) -> Result<Entry, RepositoryError>;
 
-    /// Rename an entry and move it to the derived slug.
+    /// Replace metadata and an optional stored source in one transaction.
+    fn update_entry(&self, entry: &Entry, update: UpdateEntry) -> Result<Entry, RepositoryError>;
+
+    /// Rename an entry without changing its stable slug.
     fn rename(&self, entry: &Entry, name: &str) -> Result<Entry, RepositoryError>;
 
     /// Remove exactly the held entry incarnation.
@@ -84,6 +108,7 @@ where
 {
     /// Create one entry through the mutation port.
     pub fn add(&self, request: CreateEntry) -> Result<Entry, RepositoryError> {
+        validate_settings(&request.settings, &request.workdir)?;
         self.repository.create(request)
     }
 
@@ -104,7 +129,18 @@ where
         settings: &EntrySettings,
         workdir: &str,
     ) -> Result<Entry, RepositoryError> {
+        validate_settings(settings, workdir)?;
         self.repository.update_settings(entry, settings, workdir)
+    }
+
+    /// Update metadata and an optional stored source through one transaction boundary.
+    pub fn update_entry(
+        &self,
+        entry: &Entry,
+        update: UpdateEntry,
+    ) -> Result<Entry, RepositoryError> {
+        validate_settings(&update.settings, &update.workdir)?;
+        self.repository.update_entry(entry, update)
     }
 
     /// Rename one held entry.
@@ -127,4 +163,30 @@ where
         self.repository
             .commit_copy_edit(entry, bytes, expected_source_hash)
     }
+}
+
+fn validate_settings(settings: &EntrySettings, workdir: &str) -> Result<(), RepositoryError> {
+    if !matches!(workdir, "origin" | "store" | "invoke") && !Path::new(workdir).is_absolute() {
+        return Err(RepositoryError::InvalidMutation {
+            reason: Message::new(
+                "the work directory must be origin, store, invoke, or an absolute path",
+            ),
+        });
+    }
+    for parameter in &settings.parameters {
+        let Some(invariant) = parameter.validate() else {
+            continue;
+        };
+        let reason = match invariant {
+            ParameterInvariant::BindingDeliveryMismatch => {
+                Message::new("parameter {} has a source binding that does not match its delivery")
+                    .quoted(&parameter.name)
+            }
+            ParameterInvariant::ChoiceWithoutChoices => {
+                Message::new("choice parameter {} has no choices").quoted(&parameter.name)
+            }
+        };
+        return Err(RepositoryError::InvalidMutation { reason });
+    }
+    Ok(())
 }

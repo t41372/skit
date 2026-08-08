@@ -126,3 +126,19 @@ fn scanner_advance_is_exact_deep_inside_values() {
         "just a value, nothing special"
     );
 }
+
+#[test]
+fn malformed_environment_tokens_and_escaped_prefixes_remain_literal() {
+    let context = context();
+    for (value, expected) in [
+        ("{env:", "{env:"),
+        ("{env:}", "{env:}"),
+        ("{env:9BAD}", "{env:9BAD}"),
+        ("{{{cwd}", "{/work/dir"),
+    ] {
+        assert_eq!(expand(value, &context, true).unwrap(), expected);
+    }
+    assert!(!has_tokens("{env:"));
+    assert!(!has_tokens("{env:}"));
+    assert!(!has_tokens("{env:9BAD}"));
+}

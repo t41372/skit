@@ -12,6 +12,7 @@ fn relative_patterns_match_against_the_configured_cwd_and_return_relative_paths(
     fs::write(root.path().join("c.md"), b"").unwrap();
     fs::write(root.path().join(".hidden.txt"), b"").unwrap();
     let glob = FileGlobExpander::new(root.path());
+    assert_eq!(glob.cwd(), root.path());
 
     assert_eq!(glob.expand_piece("*.txt"), ["a.txt", "b.txt"]);
     assert_eq!(glob.expand_piece("*.md"), ["c.md"]);

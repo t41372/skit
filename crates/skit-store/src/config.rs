@@ -2,6 +2,7 @@
 
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
+use skit_i18n::{Localize, Message};
 use thiserror::Error;
 use toml::{Table, Value};
 
@@ -53,6 +54,21 @@ pub struct PromptRunner {
     pub argv: Vec<String>,
 }
 
+/// One raw prompt-runner row for inspection and repair.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PromptRunnerRow {
+    /// One-based row index.
+    pub index: usize,
+    /// Parsed runner name when present.
+    pub name: Option<String>,
+    /// Parsed argument vector when it has only strings.
+    pub argv: Option<Vec<String>>,
+    /// Validation reason. A valid row has no reason.
+    pub reason: Option<String>,
+    /// Stable display text for malformed shapes.
+    pub descriptor: String,
+}
+
 /// Report a configuration read or transaction failure.
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -82,7 +98,31 @@ pub enum ConfigError {
     },
     /// A key, value, or runner definition is invalid.
     #[error("{0}")]
-    Invalid(String),
+    Invalid(Message),
+}
+
+impl Localize for ConfigError {
+    fn message(&self) -> Message {
+        match self {
+            Self::Io {
+                operation,
+                path,
+                reason,
+            } => Message::new("could not {} configuration at {}: {}")
+                .with(operation)
+                .with(path)
+                .with(reason),
+            Self::Parse { path, reason } => {
+                Message::new("configuration at {} is not valid TOML: {}")
+                    .with(path)
+                    .with(reason)
+            }
+            Self::Encode { reason } => {
+                Message::new("could not encode configuration: {}").with(reason)
+            }
+            Self::Invalid(message) => message.clone(),
+        }
+    }
 }
 
 /// Filesystem-backed `config.toml` adapter.
@@ -154,15 +194,31 @@ impl FileConfigStore {
 
     /// Read one supported scalar setting.
     pub fn get(&self, key: &str) -> Result<String, ConfigError> {
-        self.settings()?
-            .remove(key)
-            .ok_or_else(|| ConfigError::Invalid(format!("unknown configuration key: {key}")))
+        self.settings()?.remove(key).ok_or_else(|| {
+            ConfigError::Invalid(Message::new("unknown configuration key: {}").with(key))
+        })
     }
 
     /// Set one supported scalar setting without changing unknown TOML fields.
     pub fn set(&self, key: &str, value: &str) -> Result<(), ConfigError> {
         validate_setting(key, value)?;
         self.update(|document| write_key(document, key, value))
+    }
+
+    /// Validate and replace multiple settings in one configuration transaction.
+    pub fn set_many(&self, settings: &BTreeMap<String, String>) -> Result<(), ConfigError> {
+        for (key, value) in settings {
+            validate_setting(key, value)?;
+        }
+        self.update(|document| {
+            for (key, value) in settings.iter().filter(|(key, _)| key.as_str() != "mirror") {
+                write_key(document, key, value)?;
+            }
+            if let Some(value) = settings.get("mirror") {
+                write_key(document, "mirror", value)?;
+            }
+            Ok(())
+        })
     }
 
     /// Read stored mirror URLs without applying the master switch.
@@ -204,6 +260,22 @@ impl FileConfigStore {
         Ok(runners_from_document(&document).unwrap_or_else(seed_runners))
     }
 
+    /// Materialize the default runner rows on an explicit management read.
+    pub fn ensure_runners_seeded(&self) -> Result<(), ConfigError> {
+        self.update(materialize_seed_runners)
+    }
+
+    /// Return each raw runner row, including malformed future shapes.
+    pub fn runner_rows(&self) -> Result<Vec<PromptRunnerRow>, ConfigError> {
+        let document = self.load()?;
+        let rows = explicit_runner_rows(&document).unwrap_or(&[]);
+        Ok(rows
+            .iter()
+            .enumerate()
+            .map(|(index, value)| runner_row(index + 1, value))
+            .collect())
+    }
+
     /// Return labels for malformed prompt runner rows that normal reads ignore.
     pub fn invalid_runner_rows(&self) -> Result<Vec<String>, ConfigError> {
         let document = self.load()?;
@@ -240,19 +312,28 @@ impl FileConfigStore {
     pub fn set_runner(&self, runner: PromptRunner, replace: bool) -> Result<(), ConfigError> {
         validate_runner(&runner)?;
         self.update(|document| {
-            let mut runners = runners_from_document(document).unwrap_or_else(seed_runners);
-            if let Some(index) = runners.iter().position(|item| item.name == runner.name) {
+            materialize_seed_runners(document)?;
+            let rows = runner_array_mut(document)?;
+            let existing = rows.iter().position(|value| {
+                value
+                    .as_table()
+                    .and_then(runner_from_row)
+                    .filter(|item| validate_runner(item).is_ok())
+                    .is_some_and(|item| item.name == runner.name)
+            });
+            if let Some(index) = existing {
                 if !replace {
-                    return Err(ConfigError::Invalid(format!(
-                        "prompt runner already exists: {}",
-                        runner.name
-                    )));
+                    return Err(ConfigError::Invalid(
+                        Message::new("prompt runner already exists: {}").with(&runner.name),
+                    ));
                 }
-                runners[index] = runner;
+                let row = rows[index]
+                    .as_table_mut()
+                    .expect("a matched runner row is a table");
+                write_runner_fields(row, &runner);
             } else {
-                runners.push(runner);
+                rows.push(Value::Table(runner_table(&runner)));
             }
-            write_runners(document, &runners);
             Ok(())
         })
     }
@@ -260,14 +341,32 @@ impl FileConfigStore {
     /// Remove one named prompt runner and report whether it existed.
     pub fn remove_runner(&self, name: &str) -> Result<bool, ConfigError> {
         self.update(|document| {
-            let mut runners = runners_from_document(document).unwrap_or_else(seed_runners);
-            let old_len = runners.len();
-            runners.retain(|item| item.name != name);
-            let removed = runners.len() != old_len;
-            if removed {
-                write_runners(document, &runners);
-            }
-            Ok(removed)
+            materialize_seed_runners(document)?;
+            let rows = runner_array_mut(document)?;
+            let index = rows.iter().position(|value| {
+                value
+                    .as_table()
+                    .and_then(runner_from_row)
+                    .filter(|item| validate_runner(item).is_ok())
+                    .is_some_and(|item| item.name == name)
+            });
+            Ok(index.map(|index| rows.remove(index)).is_some())
+        })
+    }
+
+    /// Remove one raw one-based row without parsing or normalizing other rows.
+    pub fn remove_runner_row(&self, row: usize) -> Result<bool, ConfigError> {
+        self.update(|document| {
+            // `--row` addresses the raw rows that `runner_rows` reported, so seeding
+            // here would renumber them under the user.
+            let Some(rows) = explicit_runner_rows_mut(document) else {
+                return Ok(false);
+            };
+            let Some(index) = row.checked_sub(1).filter(|index| *index < rows.len()) else {
+                return Ok(false);
+            };
+            rows.remove(index);
+            Ok(true)
         })
     }
 
@@ -300,9 +399,8 @@ impl FileConfigStore {
             acquire_lock(&lock_path).map_err(|error| io_error("lock", &lock_path, error))?;
         let mut document = self.load()?;
         let result = operation(&mut document)?;
-        let encoded = toml::to_string_pretty(&document).map_err(|error| ConfigError::Encode {
-            reason: error.to_string(),
-        })?;
+        let encoded =
+            toml::to_string_pretty(&document).expect("a parsed TOML value tree must serialize");
         let path = self.path();
         atomic_write_bytes(&path, encoded.as_bytes())
             .map_err(|error| io_error("write", &path, error))?;
@@ -327,9 +425,11 @@ fn validate_setting(key: &str, value: &str) -> Result<(), ConfigError> {
     if allowed {
         Ok(())
     } else {
-        Err(ConfigError::Invalid(format!(
-            "invalid configuration value for {key}: {value}"
-        )))
+        Err(ConfigError::Invalid(
+            Message::new("invalid configuration value for {}: {}")
+                .with(key)
+                .with(value),
+        ))
     }
 }
 
@@ -356,9 +456,9 @@ fn write_key(document: &mut Table, key: &str, value: &str) -> Result<(), ConfigE
     if key == "mirror" {
         let table = table_mut(document, "mirror")?;
         if value == "on" && !table_has_urls(table) {
-            return Err(ConfigError::Invalid(
-                "no mirror URLs are stored; set one mirror axis first".to_owned(),
-            ));
+            return Err(ConfigError::Invalid(Message::new(
+                "no mirror URLs are stored; set one mirror axis first",
+            )));
         }
         table.insert("enabled".to_owned(), Value::Boolean(value == "on"));
         return Ok(());
@@ -370,23 +470,18 @@ fn write_key(document: &mut Table, key: &str, value: &str) -> Result<(), ConfigE
             .and_then(Value::as_bool)
             .unwrap_or(false)
             && table_has_urls(table);
-        match key {
-            "mirror.pypi" => {
-                let url = resolve_axis(value, PYPI_PRESETS);
-                table.insert("pypi".to_owned(), Value::String(url));
-            }
-            "mirror.npm" => {
-                let url = resolve_axis(value, NPM_PRESETS);
-                table.insert("npm".to_owned(), Value::String(url));
-            }
-            "mirror.github" => {
-                let base = resolve_axis(value, GITHUB_PRESETS);
-                let (python, uv) = github_urls(&base);
-                table.insert("python_install".to_owned(), Value::String(python));
-                table.insert("uv_binary".to_owned(), Value::String(uv));
-                table.remove("github");
-            }
-            _ => unreachable!("the mirror key was matched above"),
+        if key == "mirror.pypi" {
+            let url = resolve_axis(value, PYPI_PRESETS);
+            table.insert("pypi".to_owned(), Value::String(url));
+        } else if key == "mirror.npm" {
+            let url = resolve_axis(value, NPM_PRESETS);
+            table.insert("npm".to_owned(), Value::String(url));
+        } else {
+            let base = resolve_axis(value, GITHUB_PRESETS);
+            let (python, uv) = github_urls(&base);
+            table.insert("python_install".to_owned(), Value::String(python));
+            table.insert("uv_binary".to_owned(), Value::String(uv));
+            table.remove("github");
         }
         table.insert(
             "enabled".to_owned(),
@@ -523,7 +618,9 @@ fn table_mut<'a>(document: &'a mut Table, key: &str) -> Result<&'a mut Table, Co
     document
         .get_mut(key)
         .and_then(Value::as_table_mut)
-        .ok_or_else(|| ConfigError::Invalid(format!("configuration section is not a table: {key}")))
+        .ok_or_else(|| {
+            ConfigError::Invalid(Message::new("configuration section is not a table: {}").with(key))
+        })
 }
 
 fn seed_runners() -> Vec<PromptRunner> {
@@ -550,8 +647,97 @@ fn runners_from_document(document: &Table) -> Option<Vec<PromptRunner>> {
         rows.iter()
             .filter_map(Value::as_table)
             .filter_map(runner_from_row)
+            .filter(|runner| validate_runner(runner).is_ok())
             .collect(),
     )
+}
+
+fn runners_are_seeded(document: &Table) -> bool {
+    document
+        .get("prompt")
+        .and_then(Value::as_table)
+        .and_then(|prompt| prompt.get("runners_seeded"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn explicit_runner_rows(document: &Table) -> Option<&[Value]> {
+    document
+        .get("prompt")?
+        .as_table()?
+        .get("runners")?
+        .as_array()
+        .map(Vec::as_slice)
+}
+
+/// Return the stored runner rows, or `None` when the file declares no list.
+fn explicit_runner_rows_mut(document: &mut Table) -> Option<&mut Vec<Value>> {
+    document
+        .get_mut("prompt")?
+        .as_table_mut()?
+        .get_mut("runners")?
+        .as_array_mut()
+}
+
+fn runner_array_mut(document: &mut Table) -> Result<&mut Vec<Value>, ConfigError> {
+    let prompt = table_mut(document, "prompt")?;
+    if !prompt.contains_key("runners") {
+        prompt.insert("runners".to_owned(), Value::Array(Vec::new()));
+    }
+    prompt
+        .get_mut("runners")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| ConfigError::Invalid(Message::new("prompt runners is not an array")))
+}
+
+fn runner_row(index: usize, value: &Value) -> PromptRunnerRow {
+    let table = value.as_table();
+    let name = table
+        .and_then(|row| row.get("name"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let argv = table
+        .and_then(|row| row.get("argv"))
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items
+                .iter()
+                .map(Value::as_str)
+                .map(|value| value.map(str::to_owned))
+                .collect::<Option<Vec<_>>>()
+        });
+    let parsed = table.and_then(runner_from_row);
+    let reason = parsed.as_ref().map_or_else(
+        || Some("runner row needs a name and a string argv array".to_owned()),
+        |runner| validate_runner(runner).err().map(|error| error.to_string()),
+    );
+    let descriptor = name.clone().unwrap_or_else(|| {
+        value
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("row {index}"))
+    });
+    PromptRunnerRow {
+        index,
+        name,
+        argv,
+        reason,
+        descriptor,
+    }
+}
+
+fn runner_table(runner: &PromptRunner) -> Table {
+    let mut table = Table::new();
+    write_runner_fields(&mut table, runner);
+    table
+}
+
+fn write_runner_fields(row: &mut Table, runner: &PromptRunner) {
+    row.insert("name".to_owned(), Value::String(runner.name.clone()));
+    row.insert(
+        "argv".to_owned(),
+        Value::Array(runner.argv.iter().cloned().map(Value::String).collect()),
+    );
 }
 
 fn runner_from_row(row: &Table) -> Option<PromptRunner> {
@@ -568,37 +754,35 @@ fn runner_from_row(row: &Table) -> Option<PromptRunner> {
     })
 }
 
-fn write_runners(document: &mut Table, runners: &[PromptRunner]) {
-    let mut prompt = document
-        .remove("prompt")
-        .and_then(|value| value.as_table().cloned())
-        .unwrap_or_default();
+/// Record the default runner rows once, keeping any rows the user already wrote.
+///
+/// A hand-written `[[prompt.runners]]` list is authoritative. Seeding only adds the
+/// defaults when the file has no list at all.
+fn materialize_seed_runners(document: &mut Table) -> Result<(), ConfigError> {
+    if runners_are_seeded(document) {
+        return Ok(());
+    }
+    let prompt = table_mut(document, "prompt")?;
+    if !prompt.contains_key("runners") {
+        prompt.insert(
+            "runners".to_owned(),
+            Value::Array(
+                seed_runners()
+                    .iter()
+                    .map(|runner| Value::Table(runner_table(runner)))
+                    .collect(),
+            ),
+        );
+    }
     prompt.insert("runners_seeded".to_owned(), Value::Boolean(true));
-    prompt.insert(
-        "runners".to_owned(),
-        Value::Array(
-            runners
-                .iter()
-                .map(|runner| {
-                    Value::Table(Table::from_iter([
-                        ("name".to_owned(), Value::String(runner.name.clone())),
-                        (
-                            "argv".to_owned(),
-                            Value::Array(runner.argv.iter().cloned().map(Value::String).collect()),
-                        ),
-                    ]))
-                })
-                .collect(),
-        ),
-    );
-    document.insert("prompt".to_owned(), Value::Table(prompt));
+    Ok(())
 }
 
 fn validate_runner(runner: &PromptRunner) -> Result<(), ConfigError> {
     if runner.name.trim().is_empty() || runner.argv.is_empty() {
-        return Err(ConfigError::Invalid(
-            "a prompt runner needs a name and command".to_owned(),
-        ));
+        return Err(ConfigError::Invalid(Message::new(
+            "a prompt runner needs a name and command",
+        )));
     }
     let slots = runner
         .argv
@@ -607,9 +791,9 @@ fn validate_runner(runner: &PromptRunner) -> Result<(), ConfigError> {
         .flat_map(|(index, token)| token.match_indices("{{prompt}}").map(move |_| index))
         .collect::<Vec<_>>();
     if slots.len() != 1 || slots[0] == 0 {
-        return Err(ConfigError::Invalid(
-            "a prompt runner command needs {{prompt}} exactly once after the program".to_owned(),
-        ));
+        return Err(ConfigError::Invalid(Message::new(
+            "a prompt runner command needs {{prompt}} exactly once after the program",
+        )));
     }
     Ok(())
 }

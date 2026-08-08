@@ -9,6 +9,7 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+skit-i18n.workspace = true
 shlex.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -22,6 +23,7 @@ skit-application.workspace = true
 skit-domain.workspace = true
 
 [dev-dependencies]
+skit-i18n.workspace = true
 tempfile.workspace = true
 
 [lints]

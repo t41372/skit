@@ -3,64 +3,62 @@ name: CI
 on:
   push:
     branches: [main]
-    # Docs/assets never affect the gates below (tests, coverage, and mutation all scope to
-    # src/skit) — skip the whole workflow when a change touches nothing but them. The one
-    # exception: the Agent Skill's SKILL.md IS gated (test_agent_skill.py enforces the
-    # source↔packaged byte sync and resolves every command it teaches), so a skill-only
-    # markdown edit must still run CI — hence `paths` with negations, which paths-ignore
-    # can't express (later patterns win, so `skills/**` re-includes what `!**.md` dropped).
-    paths: ['**', '!**.md', '!docs/**', '!LICENSE', 'skills/**', 'src/skit/skills/**']
   pull_request:
-    paths: ['**', '!**.md', '!docs/**', '!LICENSE', 'skills/**', 'src/skit/skills/**']
 
-# Grant no permissions by default; each job requests the minimum it needs
-# (zizmor: excessive-permissions).
 permissions: {}
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# skit is a UTF-8 TUI. Force Python UTF-8 mode everywhere so that captured stdout under pytest —
-# cp1252 on the Windows runner, which can't encode the box-drawing/arrow frames the run view
-# prints — encodes as UTF-8. Harmless on Linux/macOS (already UTF-8); no effect on real consoles.
 env:
-  PYTHONUTF8: "1"
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
 
 jobs:
   quality:
-    name: lint + type check
+    name: format, lint, and documentation
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
-        with:
-          python-version: "3.13"
-          enable-cache: true
-      - name: Sync dependencies
-        run: uv sync --dev
-      - name: ruff check
-        run: uv run ruff check
-      - name: ruff format --check
-        run: uv run ruff format --check
-      - name: ty check
-        run: uv run ty check
-      - name: i18n catalogs compiled & in sync
+      - name: Check formatting
+        run: cargo fmt --all --check
+      - name: Run Clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - name: Build documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --workspace --all-features --no-deps
+      - name: Check the i18n and CLI contracts
+        run: cargo test --locked -p skit-i18n -p skit-cli-rs
+      - name: Check repository tooling contracts
+        shell: bash
         run: |
-          uv run python scripts/i18n.py compile
-          git diff --exit-code -- '*.mo' \
-            || { echo '::error::.mo out of sync with .po — run: uv run python scripts/i18n.py compile'; exit 1; }
-      - name: i18n coverage (fresh .pot · every locale 100% · nothing unwrapped)
-        run: uv run python scripts/i18n_coverage.py
+          bash scripts/test_tooling_contracts.sh
+          bash scripts/test_english.sh
+          bash scripts/check_english.sh
+          bash benchmarks/test.sh
+      - name: Refuse Python implementation files
+        shell: bash
+        run: |
+          tracked="$(
+            while IFS= read -r path; do
+              test -f "$path" || continue
+              case "$path" in
+                tests/corpus/* | docs/assets/demo/scripts/* | benchmarks/fixtures/noop.py) continue ;;
+              esac
+              printf '%s\n' "$path"
+            done < <(git ls-files '*.py')
+          )"
+          test -z "$tracked" || { echo "$tracked"; exit 1; }
 
   test:
-    name: pytest (${{ matrix.os }}, py${{ matrix.python }})
+    name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
@@ -68,78 +66,93 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python: ["3.12", "3.13"]
-        # ubuntu/3.13 is run by the `coverage` job (same suite, with --cov), so drop the
-        # redundant plain run here.
-        exclude:
-          - os: ubuntu-latest
-            python: "3.13"
     steps:
-      - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
-        with:
-          python-version: ${{ matrix.python }}
-          enable-cache: true
-      - name: Sync dependencies
-        run: uv sync --dev
-      - name: Run tests
-        # --reruns retries only INTERMITTENT failures: the Windows-py3.12 Textual pilot
-        # has inherent recompose/settle timing races (py3.13 and every POSIX job are
-        # stable). A real, deterministic failure still fails all three attempts.
-        run: uv run pytest -q --reruns 2 --reruns-delay 1
+      - name: Run all tests
+        run: cargo test --locked --workspace --all-targets --all-features
 
   coverage:
-    name: coverage (100% gate)
+    name: coverage (100% executable-source line gate)
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
         with:
-          python-version: "3.13"
-          enable-cache: true
-      - name: Sync dependencies
-        run: uv sync --dev
-      # fail_under = 100 is configured in pyproject; anything below exits non-zero.
-      - name: Run tests with coverage
-        run: uv run pytest --cov --cov-report=term-missing --cov-report=xml
-      # Upload to Codecov even when the 100% gate above fails (!cancelled()), so the dashboard/badge
-      # still track the trend; the pytest fail_under gate — not Codecov — is what blocks a merge, so
-      # a Codecov outage must never fail CI (fail_ci_if_error: false). Needs a CODECOV_TOKEN secret
-      # (repo → Settings → Secrets → Actions); a public repo also falls back to tokenless upload.
-      - name: Upload coverage to Codecov
+          tool: cargo-llvm-cov@0.8.7
+          fallback: none
+      - name: Enforce complete line coverage
+        shell: bash
+        run: |
+          bash scripts/test_coverage.sh
+          cargo llvm-cov --locked --workspace --all-targets --all-features --lcov --output-path lcov.info
+          bash scripts/check_coverage.sh lcov.info
+      - name: Upload coverage
         if: ${{ !cancelled() }}
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
-          files: ./coverage.xml
+          files: ./lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
 
-  actions-audit:
-    name: zizmor (workflow audit)
+  supply-chain:
+    name: dependency and workflow audit
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install audit tools
+        uses: taiki-e/install-action@6c6fd71fe4fb72c3697d269963d0e15df8adedad # v2.85.10
+        with:
+          tool: cargo-deny@0.20.2,cargo-audit@0.22.2,zizmor@1.29.0
+      - name: Check dependency policy
+        run: cargo deny --locked check
+      - name: Check RustSec advisories
+        run: cargo audit --deny warnings
+      - name: Check GitHub Actions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: zizmor .github/workflows
+
+  wheel-smoke:
+    name: PyPI and uv tool compatibility
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install uv
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
-          python-version: "3.13"
-          enable-cache: true
-      - name: Sync dependencies
-        run: uv sync --dev
-      - name: zizmor
-        run: uv run zizmor .github/workflows
+          version: "0.12.3"
+          enable-cache: false
+      - name: Build the binary wheel and source archive
+        run: uvx --from maturin==1.14.1 maturin build --locked --release --out dist && uvx --from maturin==1.14.1 maturin sdist --out dist
+      - name: Install with uv tool
+        shell: bash
+        run: |
+          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          uv tool install --force --from "$wheel" skit-cli
+          skit --version
+          sdist="$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)"
+          uv tool install --force --from "$sdist" skit-cli
+          skit --version
+          source_root="$(mktemp -d)"
+          tar -xzf "$sdist" -C "$source_root"
+          package_root="$(find "$source_root" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          (cd "$package_root" && cargo test --locked -p skit-language --test corpus)

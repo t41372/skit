@@ -496,6 +496,7 @@ fn form_keys_preserve_text_editing_and_advertised_screen_chords() {
         (KeyCode::Backspace, KeyModifiers::NONE, Action::Backspace),
         (KeyCode::Char('s'), KeyModifiers::CONTROL, Action::Submit),
         (KeyCode::Esc, KeyModifiers::NONE, Action::Back),
+        (KeyCode::Enter, KeyModifiers::NONE, Action::FocusNext),
         (KeyCode::Char('x'), KeyModifiers::NONE, Action::Input('x')),
     ];
     for (code, modifiers, action) in cases {
@@ -550,7 +551,15 @@ fn report_and_confirmation_keys_match_their_footer_actions() {
 
 #[test]
 fn every_rendered_chip_and_form_row_is_clickable() {
-    for view in [state(), form_state()] {
+    let mut report = state();
+    report.update(Action::Present(Screen::Report(ReportView {
+        title: "Health".to_owned(),
+        items: vec![],
+    })));
+    let mut confirmation = state();
+    confirmation.update(Action::AskRemove);
+
+    for view in [state(), form_state(), report, confirmation] {
         let backend = TestBackend::new(120, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut geometry = None;
@@ -575,4 +584,253 @@ fn every_rendered_chip_and_form_row_is_clickable() {
             );
         }
     }
+}
+
+#[test]
+fn narrow_library_footer_keeps_every_action_and_reserves_the_status_row() {
+    let mut view = state();
+    view.update(Action::SetStatus("Entry added".to_owned()));
+    let backend = TestBackend::new(38, 16);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut geometry = None;
+    terminal
+        .draw(|frame| geometry = Some(render(frame, &view)))
+        .unwrap();
+    let geometry = geometry.unwrap();
+
+    for action in [
+        HitAction::Run,
+        HitAction::Add,
+        HitAction::Edit,
+        HitAction::Settings,
+        HitAction::Presets,
+        HitAction::Rename,
+        HitAction::Remove,
+        HitAction::Preferences,
+        HitAction::Health,
+        HitAction::Runners,
+        HitAction::Search,
+        HitAction::Reload,
+        HitAction::Quit,
+    ] {
+        assert!(
+            geometry.hits.iter().any(|hit| hit.action == action),
+            "missing narrow footer action {action:?}"
+        );
+    }
+
+    let status_row = 14;
+    assert!(
+        geometry
+            .hits
+            .iter()
+            .all(|hit| hit.rect.bottom() <= status_row),
+        "a hidden hit target overlaps the status row: {:?}",
+        geometry.hits
+    );
+}
+
+#[test]
+fn narrow_footer_keeps_all_actions_in_each_supported_locale() {
+    let expected = [
+        HitAction::Run,
+        HitAction::Add,
+        HitAction::Edit,
+        HitAction::Settings,
+        HitAction::Presets,
+        HitAction::Rename,
+        HitAction::Remove,
+        HitAction::Preferences,
+        HitAction::Health,
+        HitAction::Runners,
+        HitAction::Search,
+        HitAction::Reload,
+        HitAction::Quit,
+    ];
+    for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
+        let backend = TestBackend::new(38, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut geometry = None;
+        terminal
+            .draw(|frame| geometry = Some(render_localized(frame, &state(), locale)))
+            .unwrap();
+        let geometry = geometry.unwrap();
+        for action in expected {
+            assert!(
+                geometry.hits.iter().any(|hit| hit.action == action),
+                "missing {action:?} for {locale:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn every_library_footer_action_has_the_expected_mouse_mapping() {
+    let view = state();
+    let backend = TestBackend::new(120, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut geometry = None;
+    terminal
+        .draw(|frame| geometry = Some(render(frame, &view)))
+        .unwrap();
+    let geometry = geometry.unwrap();
+    let expected = [
+        (HitAction::Run, Action::OpenRun),
+        (HitAction::Add, Action::OpenAdd),
+        (HitAction::Edit, Action::Edit),
+        (HitAction::Settings, Action::OpenSettings),
+        (HitAction::Presets, Action::OpenPresets),
+        (HitAction::Rename, Action::OpenRename),
+        (HitAction::Remove, Action::AskRemove),
+        (HitAction::Preferences, Action::OpenPreferences),
+        (HitAction::Health, Action::OpenHealth),
+        (HitAction::Runners, Action::OpenRunners),
+        (HitAction::Search, Action::BeginSearch),
+        (HitAction::Reload, Action::Reload),
+        (HitAction::Quit, Action::Quit),
+    ];
+    for (hit_action, expected_action) in expected {
+        let hit = geometry
+            .hits
+            .iter()
+            .find(|hit| hit.action == hit_action)
+            .unwrap();
+        assert_eq!(
+            map_event(
+                mouse(
+                    MouseEventKind::Down(MouseButton::Left),
+                    hit.rect.x,
+                    hit.rect.y,
+                ),
+                &view,
+                &geometry,
+            ),
+            Some(expected_action),
+            "incorrect mouse mapping for {hit_action:?}"
+        );
+    }
+}
+
+#[test]
+fn raw_titles_report_rows_and_remaining_screen_keys_are_explicit() {
+    let geometry = ViewGeometry::default();
+    let mut form = state();
+    form.update(Action::Present(Screen::Form(FormView {
+        purpose: FormPurpose::Add,
+        title: "Raw title".to_owned(),
+        title_arguments: Vec::new(),
+        translate_title: false,
+        selector: None,
+        fields: vec![FormField::multiline("body", "Body", "")],
+        focused: 0,
+        submit_label: "Save".to_owned(),
+    })));
+    for (code, action) in [
+        (KeyCode::Up, Action::FocusPrevious),
+        (KeyCode::Down, Action::FocusNext),
+        (KeyCode::Enter, Action::Input('\n')),
+    ] {
+        assert_eq!(
+            map_event(key(code, KeyModifiers::NONE), &form, &geometry),
+            Some(action)
+        );
+    }
+
+    let mut report = state();
+    report.update(Action::Present(Screen::Report(ReportView {
+        title: "Raw report".to_owned(),
+        items: vec![ReportItem {
+            status: "ok".to_owned(),
+            label: "Raw label".to_owned(),
+            translate_label: false,
+            detail: "Raw detail".to_owned(),
+            translate_detail: false,
+        }],
+    })));
+    assert_eq!(
+        map_event(key(KeyCode::Left, KeyModifiers::NONE), &report, &geometry),
+        None
+    );
+
+    let mut confirm = state();
+    confirm.update(Action::AskRemove);
+    assert_eq!(
+        map_event(key(KeyCode::Left, KeyModifiers::NONE), &confirm, &geometry),
+        None
+    );
+
+    for view in [form, report] {
+        let backend = TestBackend::new(60, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                let _ = render(frame, &view);
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+fn a_terminal_failure_localizes_its_message() {
+    use skit_i18n::Localize as _;
+
+    let error = skit_tui::TuiError::Io(std::io::Error::new(
+        std::io::ErrorKind::BrokenPipe,
+        "broken pipe",
+    ));
+    let message = error.message();
+    assert_eq!(error.to_string(), message.localize(Locale::En));
+    for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
+        let text = message.localize(locale);
+        assert!(text.contains("broken pipe"));
+        assert!(!text.contains("{}"));
+    }
+    assert_eq!(
+        message.localize(Locale::ZhCn),
+        "终端输入输出失败：broken pipe"
+    );
+}
+
+#[test]
+fn a_terminal_that_is_too_small_still_renders_without_a_panic() {
+    // A one-column terminal leaves no inner width, so the footer keeps its smallest height.
+    for (width, height) in [(1_u16, 6_u16), (2, 5), (12, 5), (20, 4)] {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut geometry = ViewGeometry::default();
+        terminal
+            .draw(|frame| {
+                geometry = render_localized(frame, &state(), Locale::En);
+            })
+            .unwrap();
+        assert!(geometry.rows.width <= width);
+        terminal
+            .draw(|frame| {
+                let _ = render(frame, &state());
+            })
+            .unwrap();
+    }
+}
+
+#[test]
+fn a_short_footer_area_stops_before_it_overflows_its_rows() {
+    // Every advertised action cannot fit, so the footer stops instead of drawing outside.
+    let mut wide = ViewGeometry::default();
+    let mut narrow = ViewGeometry::default();
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    terminal
+        .draw(|frame| {
+            wide = render_localized(frame, &state(), Locale::En);
+        })
+        .unwrap();
+    let mut small = Terminal::new(TestBackend::new(24, 6)).unwrap();
+    small
+        .draw(|frame| {
+            narrow = render_localized(frame, &state(), Locale::En);
+        })
+        .unwrap();
+    assert!(
+        narrow.hits.len() < wide.hits.len(),
+        "a short footer must drop chips it cannot draw"
+    );
 }

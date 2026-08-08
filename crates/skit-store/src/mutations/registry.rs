@@ -1,11 +1,12 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    time::UNIX_EPOCH,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use skit_application::RepositoryError;
 use skit_domain::{Entry, EntryKind, EntrySummary, Slug, StorageMode};
+use skit_i18n::Message;
 use toml::{Table, Value};
 
 use super::atomic::{atomic_write_bytes, io_error, try_acquire_lock};
@@ -137,9 +138,9 @@ impl Registry {
         })
     }
 
-    /// Whether an index row other than `excluded` already claims this slug.
-    pub(super) fn slug_is_taken(&self, slug: &Slug, excluded: Option<&Slug>) -> bool {
-        excluded != Some(slug) && self.entries().contains_key(slug.as_str())
+    /// Whether an index row already claims this slug.
+    pub(super) fn slug_is_taken(&self, slug: &Slug) -> bool {
+        self.entries().contains_key(slug.as_str())
     }
 
     /// Replace one row with a projection stamped from the current metadata file.
@@ -160,11 +161,8 @@ impl Registry {
 
     /// Persist the whole projection through the same atomic replacement discipline as metadata.
     pub(super) fn save(&self) -> Result<(), RepositoryError> {
-        let text = toml::to_string_pretty(&self.document).map_err(|error| {
-            RepositoryError::InvalidMutation {
-                reason: format!("could not encode registry.toml: {error}"),
-            }
-        })?;
+        let text = toml::to_string_pretty(&self.document)
+            .expect("a normalized TOML value tree must serialize");
         atomic_write_bytes(&self.path, text.as_bytes())
     }
 
@@ -231,14 +229,18 @@ pub(crate) fn metadata_mtime_ns(path: &Path) -> Result<i64, RepositoryError> {
     let modified = fs::metadata(path)
         .and_then(|metadata| metadata.modified())
         .map_err(|error| io_error("inspect", path, error))?;
+    timestamp_ns(modified)
+}
+
+fn timestamp_ns(modified: SystemTime) -> Result<i64, RepositoryError> {
     let nanos =
         modified
             .duration_since(UNIX_EPOCH)
             .map_err(|error| RepositoryError::InvalidMutation {
-                reason: format!("metadata timestamp predates the Unix epoch: {error}"),
+                reason: Message::new("metadata timestamp predates the Unix epoch: {}").with(error),
             })?;
     i64::try_from(nanos.as_nanos()).map_err(|error| RepositoryError::InvalidMutation {
-        reason: format!("metadata timestamp does not fit registry.toml: {error}"),
+        reason: Message::new("metadata timestamp does not fit registry.toml: {}").with(error),
     })
 }
 
@@ -259,4 +261,44 @@ fn backup_corrupt(path: &Path) -> Result<(), RepositoryError> {
         });
     }
     fs::rename(path, &backup).map_err(|error| io_error("backup", path, error))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, SystemTime};
+
+    use skit_domain::{EntryMeta, Slug};
+    use tempfile::TempDir;
+
+    use super::*;
+
+    fn entry() -> Entry {
+        Entry {
+            slug: Slug::parse("demo").unwrap(),
+            meta: EntryMeta::minimal("Demo", EntryKind::parse("command").unwrap()),
+        }
+    }
+
+    #[test]
+    fn repair_abandons_a_projection_that_cannot_be_backed_up() {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join("registry.toml"), "not = [toml").unwrap();
+        fs::create_dir(root.path().join("registry.toml.corrupt")).unwrap();
+
+        Registry::try_repair(root.path(), &[(entry(), 1)]);
+
+        assert!(root.path().join("registry.toml.corrupt").is_dir());
+    }
+
+    #[test]
+    fn registry_timestamps_refuse_pre_epoch_and_oversized_values() {
+        assert!(timestamp_ns(UNIX_EPOCH - Duration::from_nanos(1)).is_err());
+        let oversized = SystemTime::UNIX_EPOCH
+            + Duration::from_secs(u64::try_from(i64::MAX).unwrap() / 1_000_000_000 + 1);
+        assert!(timestamp_ns(oversized).is_err());
+        assert_eq!(
+            timestamp_ns(UNIX_EPOCH + Duration::from_nanos(7)).unwrap(),
+            7
+        );
+    }
 }

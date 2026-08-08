@@ -137,6 +137,37 @@ fn boolean_flags_fire_only_for_the_action_state_and_flagless_bools_emit_nothing(
 }
 
 #[test]
+fn boolean_flag_actions_do_not_fire_for_the_opposite_state_or_without_a_flag() {
+    let mut true_action_off = ParamDecl::new("true_action_off");
+    true_action_off.parameter_type = ParameterType::Bool;
+    true_action_off.flag = "--true-action-off".to_owned();
+    true_action_off.action = "store_true".to_owned();
+
+    let mut false_action_on = ParamDecl::new("false_action_on");
+    false_action_on.parameter_type = ParameterType::Bool;
+    false_action_on.flag = "--false-action-on".to_owned();
+    false_action_on.action = "store_false".to_owned();
+
+    let mut flagless = ParamDecl::new("flagless");
+    flagless.parameter_type = ParameterType::Bool;
+    flagless.action = "store_true".to_owned();
+
+    let plan = assemble(
+        &[true_action_off, false_action_on, flagless],
+        &values(&[
+            ("true_action_off", scalar("false")),
+            ("false_action_on", scalar("true")),
+            ("flagless", scalar("true")),
+        ]),
+        &[],
+    )
+    .unwrap();
+
+    assert!(plan.args.is_empty());
+    assert!(plan.masked_args.is_empty());
+}
+
+#[test]
 fn multiple_flags_preserve_argparse_and_repeat_per_piece_shapes() {
     let mut points = ParamDecl::new("point");
     points.flag = "--point".to_owned();
@@ -239,4 +270,42 @@ fn a_multiple_shape_on_a_non_multiple_field_is_refused_instead_of_guessed() {
             name: "name".to_owned(),
         }
     );
+}
+
+#[test]
+fn scalar_deliveries_refuse_multiple_values_and_missing_multiple_flags_emit_nothing() {
+    for delivery in [
+        ParameterDelivery::Inject,
+        ParameterDelivery::Env,
+        ParameterDelivery::Placeholder,
+    ] {
+        let mut declaration = ParamDecl::new("value");
+        declaration.delivery = delivery;
+        let error = assemble(
+            &[declaration],
+            &values(&[("value", PreparedValue::Multiple(vec!["one".to_owned()]))]),
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            AssemblyError::UnexpectedMultiple {
+                name: "value".to_owned(),
+            }
+        );
+    }
+
+    let mut values_field = ParamDecl::new("values");
+    values_field.multiple = true;
+    values_field.flag = "--value".to_owned();
+    let plan = assemble(&[values_field.clone()], &BTreeMap::new(), &[]).unwrap();
+    assert!(plan.args.is_empty());
+
+    let plan = assemble(&[values_field], &values(&[("values", scalar(""))]), &[]).unwrap();
+    assert!(plan.args.is_empty());
+
+    let mut missing = ParamDecl::new("missing");
+    missing.delivery = ParameterDelivery::Inject;
+    let plan = assemble(&[missing], &BTreeMap::new(), &[]).unwrap();
+    assert!(!plan.inject_values.contains_key("missing"));
 }

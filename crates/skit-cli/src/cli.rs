@@ -7,10 +7,11 @@ use std::{
     process::Command as ProcessCommand,
 };
 
-use clap::{Args, CommandFactory as _, Parser, Subcommand};
+use clap::{Args, CommandFactory as _, FromArgMatches as _, Parser, Subcommand};
 use clap_complete::{ArgValueCandidates, CompleteEnv, CompletionCandidate, Shell, generate};
 use skit_application::{
-    CreateEntry, EntryPayload, ExitClass, LibraryService, RepositoryError, SourcePermissions,
+    CreateEntry, EntryPayload, EntryRepository as _, ExitClass, LibraryService, RepositoryError,
+    SourcePermissions, UpdateEntry,
     form_state::{FormStateService, StateWriteError, prefill},
 };
 use skit_domain::{
@@ -21,17 +22,19 @@ use skit_domain::{
     },
 };
 use skit_form::form_params;
-use skit_i18n::{Locale, detect_locale, format_text, render as localize};
+use skit_i18n::{Locale, Localize, Message, detect_locale, format_text, render as localize, text};
 use skit_language::{
-    detect_candidates, external_dependencies, infer_kind, managed_params, normalize_shell_default,
-    placeholder_params, read_uv_metadata, write_managed_params, write_uv_metadata,
+    cli_params, detect_candidates, external_dependencies_at, infer_kind, managed_params,
+    normalize_shell_default, placeholder_params, python_version_pin, read_uv_metadata,
+    shebang_program, validate_pep440_specifiers, validate_pep508_requirement, write_managed_params,
+    write_uv_metadata,
 };
 use skit_runtime::{
     DependencyError, ProgramProbe, SystemProbe, clear_javascript_dependencies, managed_uv_path,
     resolve_javascript_runtime,
 };
 use skit_store::{ConfigError, FileConfigStore, FileFormStateStore, PromptRunner};
-use skit_store::{FileStore, stored_filename, stored_filenames};
+use skit_store::{FileStore, stored_filename};
 use skit_ui::{
     Action as UiAction, Effect as UiEffect, FormField, FormPurpose, FormView, HostRequest,
     LibraryState, ReportItem, ReportView, Screen,
@@ -58,7 +61,7 @@ mod tests;
 /// Run the command-line entry point and return its process status.
 #[must_use]
 pub fn entry() -> i32 {
-    match CompleteEnv::with_factory(Cli::command)
+    match CompleteEnv::with_factory(localized_command)
         .try_complete(env::args_os(), env::current_dir().ok().as_deref())
     {
         Ok(true) => return 0,
@@ -69,9 +72,13 @@ pub fn entry() -> i32 {
         }
     }
     let locale = active_locale();
-    let cli = match Cli::try_parse() {
+    let cli = match localized_command()
+        .try_get_matches()
+        .and_then(|matches| Cli::from_arg_matches(&matches))
+    {
         Ok(cli) => cli,
         Err(error) => {
+            // Clap composes this report. Only whole framework words change.
             let output = localize(locale, &error.to_string());
             if error.use_stderr() {
                 eprint!("{output}");
@@ -84,10 +91,41 @@ pub fn entry() -> i32 {
     match execute(cli) {
         Ok(code) => code,
         Err(error) => {
-            eprintln!("{}", localize(locale, &error.to_string()));
+            eprintln!("{}", error.message().localize(locale));
             error.exit_code()
         }
     }
+}
+
+/// Build the command tree with each skit-authored text already translated.
+///
+/// Exact catalog lookups replace the whole `about` or `help` text. skit never rewrites part of a
+/// Clap token such as `--help`.
+fn localized_command() -> clap::Command {
+    translate_command(Cli::command(), active_locale())
+}
+
+fn translate_command(command: clap::Command, locale: Locale) -> clap::Command {
+    let mut command = command;
+    if let Some(about) = command.get_about().map(ToString::to_string) {
+        command = command.about(text(locale, &about).to_owned());
+    }
+    if let Some(about) = command.get_long_about().map(ToString::to_string) {
+        command = command.long_about(text(locale, &about).to_owned());
+    }
+    command = command.mut_args(|argument| {
+        let Some(help) = argument.get_help().map(|help| help.to_string()) else {
+            return argument;
+        };
+        argument.help(text(locale, &help).to_owned())
+    });
+    let names = command
+        .get_subcommands()
+        .map(|sub| sub.get_name().to_owned())
+        .collect::<Vec<_>>();
+    names.into_iter().fold(command, |command, name| {
+        command.mut_subcommand(name, |sub| translate_command(sub, locale))
+    })
 }
 
 pub(crate) fn active_locale() -> Locale {
@@ -174,13 +212,16 @@ enum Command {
         #[arg(long = "ref", alias = "reference")]
         reference: bool,
         /// Register a command template instead of a file.
-        #[arg(long = "cmd", conflicts_with = "source")]
+        #[arg(
+            long = "cmd",
+            conflicts_with_all = ["source", "prompt", "exe", "kind", "runner", "no_interpolate"]
+        )]
         command_template: Option<String>,
         /// Treat the source as a prompt entry.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["exe", "kind"])]
         prompt: bool,
         /// Force executable kind inference.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["prompt", "kind", "runner", "no_interpolate"])]
         exe: bool,
         /// Pin a prompt runner.
         #[arg(long, add = ArgValueCandidates::new(runner_candidates))]
@@ -190,7 +231,7 @@ enum Command {
         no_interpolate: bool,
         /// Add one package dependency. Repeat for more than one value.
         #[arg(long = "dep")]
-        dependencies: Vec<String>,
+        dependencies: Option<Vec<String>>,
         /// Set the Python version constraint.
         #[arg(long)]
         python: Option<String>,
@@ -339,9 +380,30 @@ struct ParamsArgs {
     /// Set delivery as NAME=DELIVERY.
     #[arg(long = "deliver", alias = "delivery")]
     delivery: Vec<String>,
+    /// Set source binding as NAME=BINDING.
+    #[arg(long = "binding")]
+    bindings: Vec<String>,
     /// Set a flag as NAME=--FLAG. An empty flag makes the field positional.
     #[arg(long = "flag")]
     flags: Vec<String>,
+    /// Allow more than one value for a field.
+    #[arg(long)]
+    multiple: Vec<String>,
+    /// Allow only one value for a field.
+    #[arg(long = "no-multiple")]
+    no_multiple: Vec<String>,
+    /// Repeat the flag for each value.
+    #[arg(long)]
+    repeat: Vec<String>,
+    /// Put all values after one flag.
+    #[arg(long = "no-repeat")]
+    no_repeat: Vec<String>,
+    /// Set an environment target as NAME=ENVVAR.
+    #[arg(long = "env-target")]
+    env_targets: Vec<String>,
+    /// Set a boolean flag action as NAME=ACTION.
+    #[arg(long = "action")]
+    actions: Vec<String>,
     /// Set help text as NAME=TEXT.
     #[arg(long = "help-text")]
     help_text: Vec<String>,
@@ -412,7 +474,10 @@ enum RunnerCommand {
     Remove {
         /// Stable runner name.
         #[arg(add = ArgValueCandidates::new(runner_candidates))]
-        name: String,
+        name: Option<String>,
+        /// Remove one malformed raw row by its one-based index.
+        #[arg(long, conflicts_with = "name")]
+        row: Option<usize>,
         /// Confirm removal.
         #[arg(long, short = 'y')]
         yes: bool,
@@ -566,9 +631,10 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
     if cli.install_completion {
         let shell = detect_shell()?;
         let path = completion_path(shell)?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
+        let parent = path
+            .parent()
+            .expect("each supported completion path has a parent");
+        fs::create_dir_all(parent)?;
         let mut output = File::create(&path)?;
         write_completion(shell, &mut output);
         humanln!("Installed completion: {}", path.display());
@@ -602,6 +668,7 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             python,
             no_input,
         }) => {
+            let dependencies_explicit = dependencies.is_some();
             add_command(
                 &service,
                 AddOptions {
@@ -615,7 +682,8 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
                     executable: exe,
                     runner,
                     no_interpolate,
-                    dependencies,
+                    dependencies: dependencies.unwrap_or_default(),
+                    dependencies_explicit,
                     requires_python: python,
                 },
                 edit,
@@ -686,9 +754,9 @@ fn add_command(
     no_input: bool,
 ) -> Result<(), CliError> {
     if edit && no_input {
-        return Err(CliError::Usage(
-            "--edit needs an editor; use standard input as `skit add - --name NAME`".to_owned(),
-        ));
+        return Err(CliError::Usage(Message::new(
+            "--edit needs an editor; use standard input as `skit add - --name NAME`",
+        )));
     }
     if edit {
         return add_draft(service, options, false);
@@ -701,22 +769,18 @@ fn add_command(
                 return add(service, options);
             }
             if no_input {
-                return Err(CliError::Usage(
-                    "a prompt body is required; pipe it to `skit add - --prompt --name NAME`"
-                        .to_owned(),
-                ));
+                return Err(CliError::Usage(Message::new(
+                    "a prompt body is required; pipe it to `skit add - --prompt --name NAME`",
+                )));
             }
             return add_draft(service, options, true);
         }
         if no_input || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-            return Err(CliError::Usage(
-                "add needs a source path, standard input as `-`, --edit, --prompt, or --cmd"
-                    .to_owned(),
-            ));
+            return Err(CliError::Usage(Message::new(
+                "add needs a source path, standard input as `-`, --edit, --prompt, or --cmd",
+            )));
         }
-        let Screen::Form(form) = tui_add_form() else {
-            unreachable!("the add screen is a form")
-        };
+        let form = tui_add_form_view();
         let values = skit_tui::collect_form(form, active_locale())?.ok_or(CliError::Aborted)?;
         let source = tui_nonempty_owned(&values, "source").map(PathBuf::from);
         let template = tui_nonempty_owned(&values, "template");
@@ -733,7 +797,8 @@ fn add_command(
                 executable: tui_value(&values, "kind").eq_ignore_ascii_case("exe"),
                 runner: tui_nonempty_owned(&values, "runner"),
                 no_interpolate: false,
-                dependencies: tui_split_list(tui_value(&values, "dependencies")),
+                dependencies: tui_dependency_list(tui_value(&values, "dependencies")),
+                dependencies_explicit: !tui_value(&values, "dependencies").is_empty(),
                 requires_python: tui_nonempty_owned(&values, "python"),
             },
         );
@@ -758,10 +823,9 @@ fn add_draft(
     fs::write(&draft, [])?;
     open_editor(&draft)?;
     if fs::metadata(&draft)?.len() == 0 {
-        return Err(CliError::Usage(format!(
-            "the draft is empty and was kept at {}",
-            draft.display()
-        )));
+        return Err(CliError::Usage(
+            Message::new("the draft is empty and was kept at {}").with(draft.display()),
+        ));
     }
     if !prompt {
         let text =
@@ -785,19 +849,25 @@ fn add_draft(
 }
 
 fn validate_prompt_runner(name: Option<&str>) -> Result<(), CliError> {
+    let config_dir = resolve_config_dir()?;
+    validate_prompt_runner_in(&FileConfigStore::new(config_dir), name)
+}
+
+fn validate_prompt_runner_in(config: &FileConfigStore, name: Option<&str>) -> Result<(), CliError> {
     let Some(name) = name else {
         return Ok(());
     };
-    let exists = FileConfigStore::new(resolve_config_dir()?)
-        .runners()?
-        .iter()
-        .any(|runner| runner.name == name);
+    let name = name.trim();
+    if name.is_empty() {
+        return Ok(());
+    }
+    let exists = config.runners()?.iter().any(|runner| runner.name == name);
     if exists {
         Ok(())
     } else {
-        Err(CliError::Usage(format!(
-            "prompt runner {name:?} is not configured"
-        )))
+        Err(CliError::Usage(
+            Message::new("prompt runner {} is not configured").quoted(name),
+        ))
     }
 }
 
@@ -820,18 +890,20 @@ fn detect_shell() -> Result<Shell, CliError> {
         "fish" => Ok(Shell::Fish),
         "pwsh" | "powershell" | "powershell.exe" | "pwsh.exe" => Ok(Shell::PowerShell),
         "zsh" => Ok(Shell::Zsh),
-        _ => Err(CliError::Usage(
-            "could not detect the shell; set SHELL before completion setup".to_owned(),
-        )),
+        _ => Err(CliError::Usage(Message::new(
+            "could not detect the shell; set SHELL before completion setup",
+        ))),
     }
 }
 
 fn completion_path(shell: Shell) -> Result<PathBuf, CliError> {
     let home = user_home().ok_or_else(|| {
-        CliError::Usage("could not determine the home directory for completion setup".to_owned())
+        CliError::Usage(Message::new(
+            "could not determine the home directory for completion setup",
+        ))
     })?;
-    let path = match shell {
-        Shell::Bash => env::var_os("XDG_DATA_HOME").map_or_else(
+    let path = if shell == Shell::Bash {
+        env::var_os("XDG_DATA_HOME").map_or_else(
             || {
                 home.join(".local")
                     .join("share")
@@ -845,32 +917,31 @@ fn completion_path(shell: Shell) -> Result<PathBuf, CliError> {
                     .join("completions")
                     .join("skit")
             },
-        ),
-        Shell::Fish => env::var_os("XDG_CONFIG_HOME")
+        )
+    } else if shell == Shell::Fish {
+        env::var_os("XDG_CONFIG_HOME")
             .map_or_else(|| home.join(".config"), PathBuf::from)
             .join("fish")
             .join("completions")
-            .join("skit.fish"),
-        Shell::Zsh => env::var_os("XDG_DATA_HOME")
+            .join("skit.fish")
+    } else if shell == Shell::Zsh {
+        env::var_os("XDG_DATA_HOME")
             .map_or_else(|| home.join(".local").join("share"), PathBuf::from)
             .join("zsh")
             .join("site-functions")
-            .join("_skit"),
-        Shell::Elvish => env::var_os("XDG_CONFIG_HOME")
+            .join("_skit")
+    } else if shell == Shell::Elvish {
+        env::var_os("XDG_CONFIG_HOME")
             .map_or_else(|| home.join(".config"), PathBuf::from)
             .join("elvish")
             .join("lib")
-            .join("skit.elv"),
-        Shell::PowerShell => home
-            .join("Documents")
+            .join("skit.elv")
+    } else {
+        debug_assert_eq!(shell, Shell::PowerShell);
+        home.join("Documents")
             .join("PowerShell")
             .join("Completions")
-            .join("_skit.ps1"),
-        _ => {
-            return Err(CliError::Usage(
-                "the detected shell does not have an installation path".to_owned(),
-            ));
-        }
+            .join("_skit.ps1")
     };
     Ok(path)
 }
@@ -890,7 +961,7 @@ fn run_entry(
         return crate::run::run(service, store, args).map_err(Into::into);
     }
 
-    let form = interactive_run_form(service, store, &args)?;
+    let (form, baseline) = interactive_run_form(service, store, &args)?;
     let use_plain = args.plain
         || FileConfigStore::new(resolve_config_dir()?)
             .get("form")?
@@ -903,26 +974,28 @@ fn run_entry(
         collect_plain_form(&form, active_locale(), &mut input, &mut output, |_| {
             rpassword::read_password()
         })
-        .map_err(|error| {
-            if error.kind() == io::ErrorKind::UnexpectedEof {
-                CliError::Aborted
-            } else {
-                CliError::Io(error)
-            }
-        })?
+        .map_err(plain_form_error)?
     } else {
         skit_tui::collect_form(form, active_locale())?.ok_or(CliError::Aborted)?
     };
-    apply_interactive_run_values(&mut args, &values)?;
+    apply_interactive_run_values(&mut args, &values, &baseline)?;
     args.no_input = true;
     crate::run::run(service, store, args).map_err(Into::into)
+}
+
+fn plain_form_error(error: io::Error) -> CliError {
+    if error.kind() == io::ErrorKind::UnexpectedEof {
+        CliError::Aborted
+    } else {
+        CliError::Io(error)
+    }
 }
 
 fn interactive_run_form(
     service: &LibraryService<FileStore>,
     store: &FileStore,
     args: &RunArgs,
-) -> Result<FormView, CliError> {
+) -> Result<(FormView, BTreeMap<String, String>), CliError> {
     let entry = service.show(&args.selector)?;
     let declarations = entry_parameters(store, &entry);
     let saved =
@@ -942,15 +1015,13 @@ fn interactive_run_form(
         runners.retain(|name| name != &settings.runner);
         runners.insert(0, settings.runner);
     }
-    let Screen::Form(mut form) = tui_run_form(
+    let mut form = tui_run_form_view(
         &entry,
         &declarations,
         &initial,
         &runners,
         &saved.presets.keys().cloned().collect::<Vec<_>>(),
-    ) else {
-        unreachable!("the run form builder always returns a form")
-    };
+    );
     for value in &args.values {
         if let Some((name, value)) = value.split_once('=') {
             set_form_value(&mut form, &format!("value:{name}"), value);
@@ -980,10 +1051,10 @@ fn interactive_run_form(
     set_form_value(
         &mut form,
         "_skit_args",
-        &shlex::try_join(args.extra_args.iter().map(String::as_str)).unwrap_or_default(),
+        &join_editable_arguments(&args.extra_args),
     );
     set_form_value(&mut form, "_skit_dry_run", &args.dry_run.to_string());
-    Ok(form)
+    Ok((form, initial))
 }
 
 fn set_form_value(form: &mut FormView, key: &str, value: &str) {
@@ -995,22 +1066,143 @@ fn set_form_value(form: &mut FormView, key: &str, value: &str) {
 fn apply_interactive_run_values(
     args: &mut RunArgs,
     values: &BTreeMap<String, String>,
+    baseline: &BTreeMap<String, String>,
 ) -> Result<(), CliError> {
-    args.values = values
-        .iter()
-        .filter_map(|(key, value)| {
-            key.strip_prefix("value:")
-                .filter(|_| !value.is_empty())
-                .map(|name| format!("{name}={value}"))
-        })
-        .collect();
+    args.values = changed_form_values(values, baseline);
     args.preset = tui_nonempty_owned(values, "_skit_preset");
     args.save_preset = tui_nonempty_owned(values, "_skit_save_preset");
     args.runner = tui_nonempty_owned(values, "_skit_runner");
-    args.dry_run = tui_bool(tui_value(values, "_skit_dry_run"));
-    args.extra_args = shlex::split(tui_value(values, "_skit_args"))
-        .ok_or_else(|| CliError::Usage("extra arguments have invalid quoting".to_owned()))?;
+    args.dry_run = tui_bool(tui_value(values, "_skit_dry_run"))?;
+    args.extra_args = split_editable_arguments(tui_value(values, "_skit_args"))?;
     Ok(())
+}
+
+fn changed_form_values(
+    values: &BTreeMap<String, String>,
+    baseline: &BTreeMap<String, String>,
+) -> Vec<String> {
+    values
+        .iter()
+        .filter_map(|(key, value)| {
+            let name = key.strip_prefix("value:")?;
+            (!value.is_empty() && baseline.get(name) != Some(value))
+                .then(|| format!("{name}={value}"))
+        })
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn split_editable_arguments(value: &str) -> Result<Vec<String>, CliError> {
+    split_windows_arguments(value)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn split_editable_arguments(value: &str) -> Result<Vec<String>, CliError> {
+    shlex::split(value)
+        .ok_or_else(|| CliError::Usage(Message::new("extra arguments have invalid quoting")))
+}
+
+#[cfg(target_os = "windows")]
+fn join_editable_arguments(arguments: &[String]) -> String {
+    join_windows_arguments(arguments)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn join_editable_arguments(arguments: &[String]) -> String {
+    shlex::try_join(arguments.iter().map(String::as_str)).unwrap_or_default()
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn split_windows_arguments(value: &str) -> Result<Vec<String>, CliError> {
+    let characters = value.chars().collect::<Vec<_>>();
+    let mut arguments = Vec::new();
+    let mut index = 0;
+    loop {
+        while index < characters.len() && matches!(characters[index], ' ' | '\t') {
+            index += 1;
+        }
+        if index == characters.len() {
+            break;
+        }
+        let mut argument = String::new();
+        let mut quoted = false;
+        while index < characters.len() {
+            let character = characters[index];
+            if matches!(character, ' ' | '\t') && !quoted {
+                break;
+            }
+            if character == '\\' {
+                let start = index;
+                while index < characters.len() && characters[index] == '\\' {
+                    index += 1;
+                }
+                let backslashes = index - start;
+                if index < characters.len() && characters[index] == '"' {
+                    argument.extend(std::iter::repeat_n('\\', backslashes / 2));
+                    if backslashes % 2 == 1 {
+                        argument.push('"');
+                    } else {
+                        quoted = !quoted;
+                    }
+                    index += 1;
+                } else {
+                    argument.extend(std::iter::repeat_n('\\', backslashes));
+                }
+                continue;
+            }
+            if character == '"' {
+                quoted = !quoted;
+                index += 1;
+                continue;
+            }
+            argument.push(character);
+            index += 1;
+        }
+        if quoted {
+            return Err(CliError::Usage(Message::new(
+                "extra arguments have invalid quoting",
+            )));
+        }
+        arguments.push(argument);
+    }
+    Ok(arguments)
+}
+
+#[cfg(any(test, target_os = "windows"))]
+fn join_windows_arguments<S: AsRef<str>>(arguments: &[S]) -> String {
+    let mut command = String::new();
+    for argument in arguments {
+        if !command.is_empty() {
+            command.push(' ');
+        }
+        let argument = argument.as_ref();
+        let quote = argument.is_empty() || argument.contains([' ', '\t']);
+        if quote {
+            command.push('"');
+        }
+        let mut backslashes = 0;
+        for character in argument.chars() {
+            if character == '\\' {
+                backslashes += 1;
+                continue;
+            }
+            if character == '"' {
+                command.extend(std::iter::repeat_n('\\', backslashes * 2 + 1));
+            } else {
+                command.extend(std::iter::repeat_n('\\', backslashes));
+            }
+            backslashes = 0;
+            command.push(character);
+        }
+        command.extend(std::iter::repeat_n(
+            '\\',
+            if quote { backslashes * 2 } else { backslashes },
+        ));
+        if quote {
+            command.push('"');
+        }
+    }
+    command
 }
 
 fn collect_plain_form<R, W, F>(
@@ -1095,20 +1287,14 @@ fn list(
         let stdout = io::stdout();
         let mut output = stdout.lock();
         for entry in &scan.entries {
-            writeln!(
-                output,
-                "{}\t{}\t{}",
-                entry.name, entry.kind, entry.description
-            )?;
+            let row = format!("{}\t{}\t{}", entry.name, entry.kind, entry.description);
+            writeln!(output, "{row}")?;
         }
         let stderr = io::stderr();
         let mut errors = stderr.lock();
         for diagnostic in &scan.diagnostics {
-            writeln!(
-                errors,
-                "{}",
-                format_text(active_locale(), "warning: {}", &[&diagnostic.message])
-            )?;
+            let warning = format_text(active_locale(), "warning: {}", &[&diagnostic.message]);
+            writeln!(errors, "{warning}")?;
         }
     }
     Ok(())
@@ -1124,15 +1310,13 @@ fn show(
     let stdout = io::stdout();
     let mut output = stdout.lock();
     if json {
-        let settings = EntrySettings::from_meta(&entry.meta);
-        let declarations = entry_parameters(store, &entry);
+        let settings = effective_settings(store, &entry);
+        let source = show_source_text(store, &entry)?;
+        let declarations = form_params(entry.meta.kind.as_str(), &source, &settings);
         let state =
             FormStateService::new(FileFormStateStore::new(resolve_state_dir()?)).load(&entry.slug);
-        let parameter_source = parameter_source(entry.meta.kind.as_str(), &declarations);
-        let fields = declarations
-            .iter()
-            .map(|item| field_json(item, parameter_source))
-            .collect::<Vec<_>>();
+        let parameter_source = parameter_source(entry.meta.kind.as_str(), &source, &declarations);
+        let fields = declarations.iter().map(field_json).collect::<Vec<_>>();
         let mut record = serde_json::json!({
             "name": entry.meta.name,
             "slug": entry.slug,
@@ -1153,8 +1337,9 @@ fn show(
             "template": nonempty(&settings.template),
             "param_source": parameter_source,
             "param_origin": parameter_origin(parameter_source),
-            "degraded_reason": serde_json::Value::Null,
-            "drift": false,
+            "degraded_reason": declarations.iter().any(|item| item.degraded)
+                .then_some("dynamic"),
+            "drift": doctor_entry_drifted(store, &entry),
             "fields": fields,
             "presets": state.presets.keys().collect::<Vec<_>>(),
             "last_run_at": state.last_run.at,
@@ -1183,42 +1368,157 @@ fn show(
         serde_json::to_writer(&mut output, &record)?;
         writeln!(output)?;
     } else {
+        let settings = effective_settings(store, &entry);
+        let source = show_source_text(store, &entry)?;
+        let declarations = form_params(entry.meta.kind.as_str(), &source, &settings);
+        let state =
+            FormStateService::new(FileFormStateStore::new(resolve_state_dir()?)).load(&entry.slug);
         writeln!(output, "{} ({})", entry.meta.name, entry.slug)?;
-        writeln!(
-            output,
-            "{}",
-            format_text(active_locale(), "Kind: {}", &[&entry.meta.kind])
-        )?;
-        writeln!(
-            output,
-            "{}",
-            format_text(
-                active_locale(),
-                "Storage mode: {}",
-                &[&mode_name(entry.meta.mode)]
-            )
-        )?;
+        let kind = format_text(active_locale(), "Kind: {}", &[&entry.meta.kind]);
+        writeln!(output, "{kind}")?;
+        let mode = format_text(
+            active_locale(),
+            "Storage mode: {}",
+            &[&mode_name(entry.meta.mode)],
+        );
+        writeln!(output, "{mode}")?;
         if !entry.meta.description.is_empty() {
             writeln!(output, "{}", entry.meta.description)?;
         }
+        humanln!("Source: {}", entry.meta.source);
+        humanln!("Work directory: {}", entry.meta.workdir);
+        humanln!(
+            "Missing: {}",
+            text(
+                active_locale(),
+                if entry_missing(store, &entry) {
+                    "yes"
+                } else {
+                    "no"
+                }
+            )
+        );
+        humanln!(
+            "Drift: {}",
+            text(
+                active_locale(),
+                if doctor_entry_drifted(store, &entry) {
+                    "yes"
+                } else {
+                    "no"
+                }
+            )
+        );
+        if !settings.interpreter.is_empty() {
+            humanln!("Interpreter: {}", settings.interpreter);
+        }
+        if !settings.dependencies.is_empty() {
+            humanln!("Dependencies: {}", settings.dependencies.join(", "));
+        }
+        if !settings.requires_python.is_empty() {
+            humanln!("Python constraint: {}", settings.requires_python);
+        }
+        if !settings.needs.is_empty() {
+            humanln!("Required commands: {}", settings.needs.join(", "));
+        }
+        if !settings.template.is_empty() {
+            humanln!("Template: {}", settings.template);
+        }
+        if entry.meta.kind.as_str() == "prompt" {
+            humanln!(
+                "Prompt runner: {}",
+                if settings.runner.is_empty() {
+                    text(active_locale(), "not set").to_owned()
+                } else {
+                    settings.runner.clone()
+                }
+            );
+            humanln!(
+                "Interpolation: {}",
+                text(
+                    active_locale(),
+                    if settings.interpolate { "on" } else { "off" }
+                )
+            );
+        }
+        if !declarations.is_empty() {
+            humanln!("Parameters:");
+            for field in &declarations {
+                humanln!(
+                    "  {} ({}, {})",
+                    field.name,
+                    field.parameter_type.as_str(),
+                    field.delivery.as_str()
+                );
+            }
+        }
+        if !state.presets.is_empty() {
+            humanln!(
+                "Presets: {}",
+                state.presets.keys().cloned().collect::<Vec<_>>().join(", ")
+            );
+        }
+        humanln!("Run: skit run {}", entry.slug);
     }
     Ok(())
+}
+
+fn show_source_text(store: &FileStore, entry: &Entry) -> Result<String, CliError> {
+    if entry.meta.kind.as_str() == "command" || entry.meta.kind.as_str() == "exe" {
+        return Ok(String::new());
+    }
+    if entry.meta.kind.as_str() == "prompt" {
+        let path = if entry.meta.mode == StorageMode::Copy {
+            store
+                .entry_dir_path(&entry.slug)
+                .join(stored_filename("prompt").expect("prompt has a stored file name"))
+        } else {
+            PathBuf::from(&entry.meta.source)
+        };
+        let bytes = fs::read(&path).map_err(|error| source_error("read", &path, error))?;
+        return String::from_utf8(bytes).map_err(|_| CliError::SourceEncoding {
+            path: path.display().to_string(),
+        });
+    }
+    let Some(path) = source_path(store, entry) else {
+        return Ok(String::new());
+    };
+    Ok(fs::read(&path)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_default())
 }
 
 fn nonempty(value: &str) -> Option<&str> {
     (!value.is_empty()).then_some(value)
 }
 
-fn parameter_source(kind: &str, declarations: &[ParamDecl]) -> &'static str {
+fn effective_settings(store: &FileStore, entry: &Entry) -> EntrySettings {
+    let mut settings = EntrySettings::from_meta(&entry.meta);
+    if entry.meta.kind.as_str() == "python"
+        && entry.meta.mode == StorageMode::Copy
+        && let Some(metadata) = source_path(store, entry)
+            .and_then(|path| fs::read_to_string(path).ok())
+            .as_deref()
+            .and_then(read_uv_metadata)
+    {
+        settings.dependencies = metadata.dependencies;
+        settings.requires_python = metadata.requires_python;
+    }
+    settings
+}
+
+fn parameter_source(kind: &str, source: &str, declarations: &[ParamDecl]) -> &'static str {
     if matches!(kind, "command" | "prompt") {
         "command"
-    } else if declarations.is_empty() {
-        "none"
     } else if declarations
         .iter()
         .any(|item| item.binding != skit_domain::parameters::ParameterBinding::None)
     {
         "inject"
+    } else if !cli_params(kind, source).is_empty() {
+        "argparse"
+    } else if declarations.is_empty() {
+        "none"
     } else {
         "declared"
     }
@@ -1234,12 +1534,12 @@ fn parameter_origin(source: &str) -> &'static str {
     }
 }
 
-fn field_json(item: &ParamDecl, source: &str) -> serde_json::Value {
+fn field_json(item: &ParamDecl) -> serde_json::Value {
     serde_json::json!({
         "key": item.name,
         "label": if item.prompt.is_empty() { &item.name } else { &item.prompt },
         "type": item.parameter_type.as_str(),
-        "source": source,
+        "source": item.delivery.as_str(),
         "required": item.required,
         "secret": item.secret,
         "multiple": item.multiple,
@@ -1272,10 +1572,20 @@ struct AddOptions {
     runner: Option<String>,
     no_interpolate: bool,
     dependencies: Vec<String>,
+    dependencies_explicit: bool,
     requires_python: Option<String>,
 }
 
 fn add(service: &LibraryService<FileStore>, options: AddOptions) -> Result<(), CliError> {
+    let config_dir = resolve_config_dir()?;
+    add_with_config(service, &config_dir, options)
+}
+
+fn add_with_config(
+    service: &LibraryService<FileStore>,
+    config_dir: &Path,
+    options: AddOptions,
+) -> Result<(), CliError> {
     let AddOptions {
         source,
         kind,
@@ -1288,32 +1598,34 @@ fn add(service: &LibraryService<FileStore>, options: AddOptions) -> Result<(), C
         runner,
         no_interpolate,
         dependencies,
-        requires_python,
+        dependencies_explicit,
+        mut requires_python,
     } = options;
+    let dependencies_explicit = dependencies_explicit || !dependencies.is_empty();
     let mut dependencies = dependencies
         .into_iter()
         .map(|item| item.trim().to_owned())
         .filter(|item| !item.is_empty())
         .collect::<Vec<_>>();
+    let requires_python_explicit = requires_python.is_some();
     if prompt {
-        validate_prompt_runner(runner.as_deref())?;
+        validate_prompt_runner_in(&FileConfigStore::new(config_dir), runner.as_deref())?;
     }
 
     if let Some(template) = command_template {
-        if !dependencies.is_empty() || requires_python.is_some() {
-            return Err(CliError::Usage(
-                "command entries do not take package dependencies".to_owned(),
-            ));
+        if template.trim().is_empty() {
+            return Err(CliError::Usage(Message::new(
+                "a command template cannot be empty",
+            )));
+        }
+        if dependencies_explicit || requires_python.is_some() {
+            return Err(CliError::Usage(Message::new(
+                "command entries do not take package dependencies",
+            )));
         }
         let kind = EntryKind::parse("command".to_owned()).expect("command kind is valid");
-        let entry = service.add(CreateEntry {
-            name: name.unwrap_or_else(|| "Command".to_owned()),
-            kind,
-            mode: StorageMode::Copy,
-            source: String::new(),
-            workdir: "invoke".to_owned(),
-            description,
-            payload: None,
+        let name = name.ok_or_else(|| {
+            CliError::Usage(Message::new("a --cmd entry needs an explicit --name"))
         })?;
         let parameters = placeholder_params("command", &template);
         let settings = EntrySettings {
@@ -1322,21 +1634,37 @@ fn add(service: &LibraryService<FileStore>, options: AddOptions) -> Result<(), C
             template,
             ..EntrySettings::default()
         };
-        let claimed = service.claim_identity(&entry)?;
-        let entry = service.update_settings(&claimed, &settings, "invoke")?;
+        let entry = service.add(CreateEntry {
+            name,
+            kind,
+            mode: StorageMode::Reference,
+            source: String::new(),
+            workdir: "invoke".to_owned(),
+            description,
+            payload: None,
+            settings,
+        })?;
         humanln!("Added: {} ({})", entry.meta.name, entry.slug);
         return Ok(());
     }
 
-    let input = source
-        .as_deref()
-        .ok_or_else(|| CliError::Usage("add needs a source path or --cmd COMMAND".to_owned()))?;
+    let Some(input) = source.as_deref() else {
+        return Err(CliError::Usage(Message::new(
+            "add needs a source path or --cmd COMMAND",
+        )));
+    };
     if reference && input == Path::new("-") {
-        return Err(CliError::Usage(
-            "standard input cannot be a referenced entry".to_owned(),
-        ));
+        return Err(CliError::Usage(Message::new(
+            "standard input cannot be a referenced entry",
+        )));
     }
-    let (source, source_record, bytes, permissions) = if input == Path::new("-") {
+    if input == Path::new("-") && (executable || kind.as_deref().is_some_and(|kind| kind == "exe"))
+    {
+        return Err(CliError::Usage(Message::new(
+            "standard input cannot be an executable entry",
+        )));
+    }
+    let (source, source_record, mut bytes, permissions) = if input == Path::new("-") {
         let mut bytes = Vec::new();
         io::stdin().read_to_end(&mut bytes)?;
         (
@@ -1353,94 +1681,175 @@ fn add(service: &LibraryService<FileStore>, options: AddOptions) -> Result<(), C
         (source, source_record, bytes, permissions)
     };
     let name = name.unwrap_or_else(|| source_default_name(&source));
-    let source_text = String::from_utf8_lossy(&bytes).into_owned();
+    let mut source_text = String::from_utf8_lossy(&bytes).into_owned();
     let shebang = source_text
         .lines()
         .next()
         .filter(|line| line.starts_with("#!"));
+    let file_is_executable = permissions.unix_mode.is_some_and(|mode| mode & 0o111 != 0);
     let inferred = if prompt {
         Some("prompt")
+    } else if executable {
+        Some("exe")
     } else {
-        infer_kind(&source, shebang, executable)
+        infer_kind(&source, shebang, file_is_executable)
     };
     let kind = kind.as_deref().or(inferred).ok_or_else(|| {
-        CliError::Usage("could not infer the entry kind; pass --kind KIND".to_owned())
+        CliError::Usage(Message::new(
+            "could not infer the entry kind; pass --kind KIND",
+        ))
     })?;
     let kind =
         EntryKind::parse(kind.to_owned()).map_err(|error| RepositoryError::InvalidMutation {
-            reason: error.to_string(),
+            reason: error.message(),
         })?;
     let kind_name = kind.as_str().to_owned();
-    if dependencies.is_empty() {
-        dependencies = external_dependencies(&kind_name, &source_text);
+    if no_interpolate && kind_name != "prompt" {
+        return Err(CliError::Usage(Message::new(
+            "--no-interpolate only applies to prompt entries",
+        )));
+    }
+    let uv_metadata = (kind_name == "python")
+        .then(|| read_uv_metadata(&source_text))
+        .flatten();
+    if !dependencies_explicit {
+        if let Some(metadata) = &uv_metadata
+            && !metadata.dependencies.is_empty()
+        {
+            dependencies = metadata.dependencies.clone();
+        } else if dependencies.is_empty() {
+            let source_dir = (!source_record.is_empty())
+                .then(|| source.parent())
+                .flatten();
+            dependencies = external_dependencies_at(&kind_name, &source_text, source_dir);
+        }
+    }
+    if !requires_python_explicit {
+        requires_python = uv_metadata
+            .as_ref()
+            .map(|metadata| metadata.requires_python.clone())
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                shebang
+                    .and_then(shebang_program)
+                    .and_then(python_version_pin)
+            });
+    }
+    if let Some(value) = &requires_python
+        && matches!(value.trim(), "-" | "none")
+    {
+        requires_python = None;
     }
     let supports_dependencies = matches!(kind_name.as_str(), "python" | "js" | "ts");
-    if !dependencies.is_empty() && !supports_dependencies {
-        return Err(CliError::Usage(format!(
-            "{kind_name} entries do not take package dependencies"
-        )));
+    if dependencies_explicit && !supports_dependencies {
+        return Err(CliError::Usage(
+            Message::new("{} entries do not take package dependencies").with(kind_name),
+        ));
     }
     if requires_python.is_some() && kind_name != "python" {
-        return Err(CliError::Usage(format!(
-            "a Python constraint does not apply to {kind_name} entries"
+        return Err(CliError::Usage(
+            Message::new("a Python constraint does not apply to {} entries").with(kind_name),
+        ));
+    }
+    if kind_name == "python" {
+        for requirement in &dependencies {
+            validate_pep508_requirement(requirement)
+                .map_err(|error| CliError::Usage(error.message()))?;
+        }
+        if let Some(version) = requires_python.as_deref().filter(|value| !value.is_empty()) {
+            validate_pep440_specifiers(version)
+                .map_err(|error| CliError::Usage(error.message()))?;
+        }
+    }
+    if reference
+        && matches!(kind_name.as_str(), "js" | "ts")
+        && (dependencies_explicit || !dependencies.is_empty())
+    {
+        return Err(CliError::Usage(Message::new(
+            "reference entries do not take managed dependencies",
         )));
     }
-    if reference && matches!(kind_name.as_str(), "js" | "ts") && !dependencies.is_empty() {
-        return Err(CliError::Usage(
-            "reference entries do not take managed dependencies".to_owned(),
-        ));
-    }
     if runner.is_some() && kind_name != "prompt" {
-        return Err(CliError::Usage(
-            "--runner only applies to prompt entries".to_owned(),
-        ));
+        return Err(CliError::Usage(Message::new(
+            "--runner only applies to prompt entries",
+        )));
     }
     if kind_name == "prompt" {
-        validate_prompt_runner(runner.as_deref())?;
+        validate_prompt_runner_in(&FileConfigStore::new(config_dir), runner.as_deref())?;
     }
     let stored_name = stored_name(&kind_name, &source);
-    let mode = if reference {
+    let mode = if reference || kind_name == "exe" {
         StorageMode::Reference
     } else {
         StorageMode::Copy
     };
-    let entry = service.add(CreateEntry {
-        name,
-        kind,
-        mode,
-        source: source_record,
-        workdir: if reference { "origin" } else { "invoke" }.to_owned(),
-        description,
-        payload: Some(EntryPayload {
-            bytes,
-            stored_name: Some(stored_name),
-            permissions,
-        }),
-    })?;
+    let interpreter = shebang
+        .and_then(shebang_program)
+        .filter(|_| {
+            !matches!(kind_name.as_str(), "python" | "prompt" | "command" | "exe")
+                && infer_kind(Path::new("source"), shebang, false) == Some(kind_name.as_str())
+        })
+        .unwrap_or_default()
+        .to_owned();
+    let mut metadata_dependencies = dependencies;
+    let mut metadata_requires_python = requires_python.unwrap_or_default();
+    if kind_name == "python"
+        && mode == StorageMode::Copy
+        && (!metadata_dependencies.is_empty() || !metadata_requires_python.is_empty())
+        && let Ok(strict_source) = String::from_utf8(bytes.clone())
+    {
+        let rewritten = write_uv_metadata(
+            &strict_source,
+            &metadata_dependencies,
+            &metadata_requires_python,
+        )
+        .map_err(|error| CliError::Usage(error.message()))?;
+        bytes = rewritten.into_bytes();
+        source_text = String::from_utf8_lossy(&bytes).into_owned();
+        metadata_dependencies.clear();
+        metadata_requires_python.clear();
+    }
+    let payload = Some(EntryPayload {
+        bytes,
+        stored_name: Some(stored_name),
+        permissions,
+    });
     let mut settings = EntrySettings {
-        dependencies,
-        requires_python: requires_python.unwrap_or_default(),
-        runner: runner.unwrap_or_default(),
+        dependencies: metadata_dependencies,
+        requires_python: metadata_requires_python,
+        interpreter,
+        runner: runner.unwrap_or_default().trim().to_owned(),
         interpolate: !no_interpolate,
         ..EntrySettings::default()
     };
     if kind_name == "prompt" && settings.interpolate {
-        settings.parameters = placeholder_params("prompt", &source_text);
+        let detected = placeholder_params("prompt", &source_text);
+        settings.parameters = if detected.len() <= 30 {
+            detected
+        } else {
+            Vec::new()
+        };
         settings.params = settings
             .parameters
             .iter()
             .map(|item| item.name.clone())
             .collect();
     }
-    let has_settings = kind_name == "prompt"
-        || !settings.dependencies.is_empty()
-        || !settings.requires_python.is_empty();
-    let entry = if has_settings {
-        let claimed = service.claim_identity(&entry)?;
-        service.update_settings(&claimed, &settings, &entry.meta.workdir)?
-    } else {
-        entry
-    };
+    let entry = service.add(CreateEntry {
+        name,
+        kind,
+        mode,
+        source: source_record,
+        workdir: if mode == StorageMode::Reference {
+            "origin"
+        } else {
+            "invoke"
+        }
+        .to_owned(),
+        description,
+        payload,
+        settings,
+    })?;
     humanln!("Added: {} ({})", entry.meta.name, entry.slug);
     Ok(())
 }
@@ -1504,7 +1913,9 @@ fn remove(
         }
     }
     let claimed = service.claim_identity(&held)?;
+    let slug = claimed.slug.clone();
     let name = service.remove(&claimed)?;
+    FormStateService::new(FileFormStateStore::new(resolve_state_dir()?)).forget(&slug)?;
     humanln!("Removed: {}", name);
     Ok(())
 }
@@ -1515,13 +1926,24 @@ fn edit(
     selector: &str,
     no_input: bool,
 ) -> Result<(), CliError> {
+    let config_dir = resolve_config_dir()?;
+    edit_with_config(service, store, &config_dir, selector, no_input)
+}
+
+fn edit_with_config(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    config_dir: &Path,
+    selector: &str,
+    no_input: bool,
+) -> Result<(), CliError> {
     let held = match service.show(selector) {
         Ok(entry) => entry,
         Err(RepositoryError::NotFound { .. }) => {
             if no_input || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-                return Err(CliError::Usage(format!(
-                    "no editable entry is named {selector:?}"
-                )));
+                return Err(CliError::Usage(
+                    Message::new("no editable entry is named {}").quoted(selector),
+                ));
             }
             let question = format_text(
                 active_locale(),
@@ -1545,6 +1967,7 @@ fn edit(
                     runner: None,
                     no_interpolate: false,
                     dependencies: Vec::new(),
+                    dependencies_explicit: false,
                     requires_python: None,
                 },
                 true,
@@ -1554,25 +1977,22 @@ fn edit(
         Err(error) => return Err(error.into()),
     };
     let target = source_path(store, &held).ok_or_else(|| {
-        CliError::Usage(format!(
-            "entry {} does not have an editable source",
-            held.slug
-        ))
+        CliError::Usage(Message::new("entry {} does not have an editable source").with(&held.slug))
     })?;
-    let editor = FileConfigStore::new(resolve_config_dir()?)
+    let editor = FileConfigStore::new(config_dir)
         .get("editor")
         .unwrap_or_default();
     let editor = if editor.trim().is_empty() {
         env::var("VISUAL")
             .or_else(|_| env::var("EDITOR"))
-            .map_err(|_| CliError::Usage("configure an editor before you use edit".to_owned()))?
+            .map_err(|_| CliError::Usage(Message::new("configure an editor before you use edit")))?
     } else {
         editor
     };
     let mut argv = shlex::split(&editor)
-        .ok_or_else(|| CliError::Usage("the editor command has invalid quoting".to_owned()))?;
+        .ok_or_else(|| CliError::Usage(Message::new("the editor command has invalid quoting")))?;
     if argv.is_empty() {
-        return Err(CliError::Usage("the editor command is empty".to_owned()));
+        return Err(CliError::Usage(Message::new("the editor command is empty")));
     }
 
     if held.meta.mode == StorageMode::Reference {
@@ -1582,10 +2002,9 @@ fn edit(
             .status()
             .map_err(|error| source_error("start editor for", &target, error))?;
         if !status.success() {
-            return Err(CliError::Usage(format!(
-                "the editor exited with status {}",
-                status.code().unwrap_or(1)
-            )));
+            return Err(CliError::Usage(
+                Message::new("the editor exited with status {}").with(status.code().unwrap_or(1)),
+            ));
         }
         return Ok(());
     }
@@ -1604,10 +2023,9 @@ fn edit(
         .status()
         .map_err(|error| source_error("start editor for", &staged, error))?;
     if !status.success() {
-        return Err(CliError::Usage(format!(
-            "the editor exited with status {}",
-            status.code().unwrap_or(1)
-        )));
+        return Err(CliError::Usage(
+            Message::new("the editor exited with status {}").with(status.code().unwrap_or(1)),
+        ));
     }
     let edited = fs::read(&staged).map_err(|error| source_error("read", &staged, error))?;
     if edited != original {
@@ -1625,14 +2043,16 @@ fn open_editor(target: &Path) -> Result<(), CliError> {
     let editor = if configured.trim().is_empty() {
         env::var("VISUAL")
             .or_else(|_| env::var("EDITOR"))
-            .map_err(|_| CliError::Usage("configure an editor before you use --edit".to_owned()))?
+            .map_err(|_| {
+                CliError::Usage(Message::new("configure an editor before you use --edit"))
+            })?
     } else {
         configured
     };
     let mut argv = shlex::split(&editor)
-        .ok_or_else(|| CliError::Usage("the editor command has invalid quoting".to_owned()))?;
+        .ok_or_else(|| CliError::Usage(Message::new("the editor command has invalid quoting")))?;
     if argv.is_empty() {
-        return Err(CliError::Usage("the editor command is empty".to_owned()));
+        return Err(CliError::Usage(Message::new("the editor command is empty")));
     }
     let status = ProcessCommand::new(argv.remove(0))
         .args(argv)
@@ -1642,10 +2062,9 @@ fn open_editor(target: &Path) -> Result<(), CliError> {
     if status.success() {
         Ok(())
     } else {
-        Err(CliError::Usage(format!(
-            "the editor exited with status {}",
-            status.code().unwrap_or(1)
-        )))
+        Err(CliError::Usage(
+            Message::new("the editor exited with status {}").with(status.code().unwrap_or(1)),
+        ))
     }
 }
 
@@ -1662,32 +2081,34 @@ fn deps(
     let package_change =
         !args.dependencies.is_empty() || args.clear || args.requires_python.is_some();
     if package_change && !matches!(kind.as_str(), "python" | "js" | "ts") {
-        return Err(CliError::Usage(format!(
-            "{} does not take package dependencies; only --need applies",
-            held.meta.name
-        )));
+        return Err(CliError::Usage(
+            Message::new("{} does not take package dependencies; only --need applies")
+                .with(held.meta.name),
+        ));
     }
     if args.requires_python.is_some() && kind != "python" {
-        return Err(CliError::Usage(format!(
-            "a Python constraint does not apply to {kind} entries"
-        )));
+        return Err(CliError::Usage(
+            Message::new("a Python constraint does not apply to {} entries").with(kind),
+        ));
     }
     if package_change
         && matches!(kind.as_str(), "js" | "ts")
         && held.meta.mode == StorageMode::Reference
         && !args.clear
     {
-        return Err(CliError::Usage(
-            "managed dependencies require copy storage".to_owned(),
-        ));
+        return Err(CliError::Usage(Message::new(
+            "managed dependencies require copy storage",
+        )));
     }
     if args.clear && !args.dependencies.is_empty() {
-        return Err(CliError::Usage("use --dep or --clear, not both".to_owned()));
+        return Err(CliError::Usage(Message::new(
+            "use --dep or --clear, not both",
+        )));
     }
     if args.clear_needs && !args.needs.is_empty() {
-        return Err(CliError::Usage(
-            "use --need or --clear-needs, not both".to_owned(),
-        ));
+        return Err(CliError::Usage(Message::new(
+            "use --need or --clear-needs, not both",
+        )));
     }
     let mut effective_dependencies = settings.dependencies.clone();
     let mut effective_python = settings.requires_python.clone();
@@ -1717,12 +2138,22 @@ fn deps(
             version.trim().to_owned()
         };
     }
+    if package_change && kind == "python" {
+        for requirement in &effective_dependencies {
+            validate_pep508_requirement(requirement)
+                .map_err(|error| CliError::Usage(error.message()))?;
+        }
+        if !effective_python.is_empty() {
+            validate_pep440_specifiers(&effective_python)
+                .map_err(|error| CliError::Usage(error.message()))?;
+        }
+    }
     if package_change && python_copy {
         let source = source.ok_or_else(|| {
-            CliError::Usage("the Python stored copy is not readable UTF-8".to_owned())
+            CliError::Usage(Message::new("the Python stored copy is not readable UTF-8"))
         })?;
         let rewritten = write_uv_metadata(&source, &effective_dependencies, &effective_python)
-            .map_err(|error| CliError::Usage(error.to_string()))?;
+            .map_err(|error| CliError::Usage(error.message()))?;
         if rewritten != source {
             let claimed = service.claim_identity(&held)?;
             held =
@@ -1738,7 +2169,12 @@ fn deps(
     if args.clear_needs {
         settings.needs.clear();
     } else if !args.needs.is_empty() {
-        settings.needs = args.needs;
+        settings.needs = args
+            .needs
+            .into_iter()
+            .map(|item| item.trim().to_owned())
+            .filter(|item| !item.is_empty())
+            .collect();
     }
     let metadata_changed = needs_changed
         || (package_change && !python_copy)
@@ -1775,27 +2211,45 @@ fn write_deps(settings: &EntrySettings, json: bool) -> Result<(), CliError> {
     Ok(())
 }
 
-fn apply_source_management(
-    service: &LibraryService<FileStore>,
-    store: &FileStore,
-    mut entry: Entry,
+fn reconcile_template_parameters(template: &str, current: &[ParamDecl]) -> Vec<ParamDecl> {
+    let mut parameters = placeholder_params("command", template)
+        .into_iter()
+        .map(|detected| {
+            current
+                .iter()
+                .find(|item| {
+                    item.name == detected.name && item.delivery == ParameterDelivery::Placeholder
+                })
+                .cloned()
+                .unwrap_or(detected)
+        })
+        .collect::<Vec<_>>();
+    parameters.extend(
+        current
+            .iter()
+            .filter(|item| item.delivery != ParameterDelivery::Placeholder)
+            .cloned(),
+    );
+    parameters
+}
+
+fn prepare_source_management(
+    kind: &str,
+    mode: StorageMode,
+    mut source: String,
     resync: bool,
     manage: &[String],
     unmanage: &[String],
     normalize: &[String],
-) -> Result<(Entry, String), CliError> {
-    let mut source = source_path(store, &entry)
-        .and_then(|path| fs::read_to_string(path).ok())
-        .unwrap_or_default();
+) -> Result<String, CliError> {
     if !resync && manage.is_empty() && unmanage.is_empty() && normalize.is_empty() {
-        return Ok((entry, source));
+        return Ok(source);
     }
-    if entry.meta.mode == StorageMode::Reference {
-        return Err(CliError::Usage(
-            "source management applies only to a stored copy".to_owned(),
-        ));
+    if mode == StorageMode::Reference {
+        return Err(CliError::Usage(Message::new(
+            "source management applies only to a stored copy",
+        )));
     }
-    let kind = entry.meta.kind.as_str();
     let mut managed = managed_params(kind, &source);
     let candidates = detect_candidates(kind, &source);
     if resync {
@@ -1825,7 +2279,9 @@ fn apply_source_management(
             .iter()
             .find(|item| item.name == *name)
             .cloned()
-            .ok_or_else(|| CliError::Usage(format!("unknown source parameter: {name}")))?;
+            .ok_or_else(|| {
+                CliError::Usage(Message::new("unknown source parameter: {}").with(name))
+            })?;
         managed.push(candidate);
     }
     if !unmanage.is_empty() {
@@ -1833,16 +2289,16 @@ fn apply_source_management(
     }
     for name in normalize {
         if kind != "shell" {
-            return Err(CliError::Usage(
-                "--normalize applies only to shell entries".to_owned(),
-            ));
+            return Err(CliError::Usage(Message::new(
+                "--normalize applies only to shell entries",
+            )));
         }
         source = normalize_shell_default(&source, name)
-            .map_err(|error| CliError::Usage(error.to_string()))?;
+            .map_err(|error| CliError::Usage(error.message()))?;
         let normalized = detect_candidates(kind, &source)
             .into_iter()
             .find(|item| item.name == *name)
-            .ok_or_else(|| CliError::Usage(format!("could not normalize {name}")))?;
+            .ok_or_else(|| CliError::Usage(Message::new("could not normalize {}").with(name)))?;
         if let Some(item) = managed.iter_mut().find(|item| item.name == *name) {
             *item = normalized;
         } else {
@@ -1850,14 +2306,8 @@ fn apply_source_management(
         }
     }
     let rewritten = write_managed_params(kind, &source, &managed)
-        .map_err(|error| CliError::Usage(error.to_string()))?;
-    if rewritten != source {
-        let claimed = service.claim_identity(&entry)?;
-        entry =
-            service.commit_copy_edit(&claimed, rewritten.as_bytes(), &entry.meta.source_hash)?;
-        source = rewritten;
-    }
-    Ok((entry, source))
+        .map_err(|error| CliError::Usage(error.message()))?;
+    Ok(rewritten)
 }
 
 fn params(
@@ -1866,39 +2316,119 @@ fn params(
     args: ParamsArgs,
 ) -> Result<(), CliError> {
     let held = service.show(&args.selector)?;
+    let kind = held.meta.kind.as_str();
     let has_source_operation = args.resync
         || !args.manage.is_empty()
         || !args.unmanage.is_empty()
         || !args.normalize.is_empty();
-    let has_other_operation = !args.add.is_empty()
+    let has_declared_schema_operation = !args.add.is_empty()
         || !args.remove.is_empty()
         || !args.parameter_types.is_empty()
         || !args.defaults.is_empty()
         || !args.choices.is_empty()
         || !args.delivery.is_empty()
+        || !args.bindings.is_empty()
         || !args.flags.is_empty()
+        || !args.multiple.is_empty()
+        || !args.no_multiple.is_empty()
+        || !args.repeat.is_empty()
+        || !args.no_repeat.is_empty()
+        || !args.env_targets.is_empty()
+        || !args.actions.is_empty()
         || !args.help_text.is_empty()
-        || !args.prompts.is_empty()
-        || !args.env_sources.is_empty()
         || !args.required.is_empty()
-        || !args.optional.is_empty()
+        || !args.optional.is_empty();
+    let has_shared_parameter_tweaks = !args.prompts.is_empty()
+        || !args.env_sources.is_empty()
         || !args.secret.is_empty()
-        || !args.no_secret.is_empty()
-        || args.workdir.is_some()
-        || args.template.is_some()
-        || args.interpreter.is_some()
-        || args.runner.is_some()
-        || args.interpolate
-        || args.no_interpolate;
-    if has_source_operation && has_other_operation {
+        || !args.no_secret.is_empty();
+    let source_parameter_kind = matches!(
+        kind,
+        "python" | "shell" | "js" | "ts" | "fish" | "powershell"
+    );
+    if source_parameter_kind && has_declared_schema_operation {
         return Err(CliError::Usage(
-            "source management must be a separate params operation".to_owned(),
+            Message::new("{} manages its parameter schema in the stored source")
+                .with(held.meta.name),
         ));
     }
-    let (held, source) = apply_source_management(
-        service,
-        store,
-        held,
+    let has_source_schema_operation =
+        has_source_operation || (source_parameter_kind && has_shared_parameter_tweaks);
+    let has_metadata_schema_operation =
+        !source_parameter_kind && (has_declared_schema_operation || has_shared_parameter_tweaks);
+    let has_launch_policy =
+        args.workdir.is_some() || args.template.is_some() || args.interpreter.is_some();
+    let has_runner_policy = args.runner.is_some();
+    let has_interpolation_policy = args.interpolate || args.no_interpolate;
+    let exclusive_operations = [
+        has_source_schema_operation,
+        has_metadata_schema_operation,
+        has_launch_policy,
+        has_runner_policy,
+        has_interpolation_policy,
+    ]
+    .into_iter()
+    .filter(|present| *present)
+    .count();
+    if exclusive_operations > 1 {
+        return Err(CliError::Usage(Message::new(
+            "run source, schema, launch, runner, and interpolation changes as separate params operations",
+        )));
+    }
+    if !args.normalize.is_empty()
+        && (args.resync
+            || !args.manage.is_empty()
+            || !args.unmanage.is_empty()
+            || has_shared_parameter_tweaks)
+    {
+        return Err(CliError::Usage(Message::new(
+            "--normalize must be a separate params operation",
+        )));
+    }
+    if has_runner_policy {
+        if kind != "prompt" {
+            return Err(CliError::Usage(Message::new(
+                "--runner only applies to prompt entries",
+            )));
+        }
+        validate_prompt_runner_in(
+            &FileConfigStore::new(resolve_config_dir()?),
+            args.runner.as_deref(),
+        )?;
+    }
+    if has_interpolation_policy && kind != "prompt" {
+        return Err(CliError::Usage(Message::new(
+            "--interpolate only applies to prompt entries",
+        )));
+    }
+    if args.template.is_some() && kind != "command" {
+        return Err(CliError::Usage(Message::new(
+            "--template only applies to command entries",
+        )));
+    }
+    if args.template.as_deref().is_some_and(str::is_empty) {
+        return Err(CliError::Usage(Message::new(
+            "a command template cannot be empty",
+        )));
+    }
+    if args.interpreter.is_some()
+        && !matches!(
+            kind,
+            "shell" | "fish" | "powershell" | "ruby" | "perl" | "lua" | "r" | "js" | "ts"
+        )
+    {
+        return Err(CliError::Usage(Message::new(
+            "--interpreter only applies to interpreted entries",
+        )));
+    }
+    let mut held = held;
+    let original_source = source_path(store, &held)
+        .and_then(|path| fs::read_to_string(path).ok())
+        .unwrap_or_default();
+    let mut source = prepare_source_management(
+        held.meta.kind.as_str(),
+        held.meta.mode,
+        original_source.clone(),
         args.resync,
         &args.manage,
         &args.unmanage,
@@ -1915,7 +2445,9 @@ fn params(
 
     for name in args.add {
         if declarations.iter().any(|item| item.name == name) {
-            return Err(CliError::Usage(format!("parameter already exists: {name}")));
+            return Err(CliError::Usage(
+                Message::new("parameter already exists: {}").with(name),
+            ));
         }
         declarations.push(ParamDecl::new(name));
         changed = true;
@@ -1944,7 +2476,7 @@ fn params(
         let item = parameter_mut(&mut declarations, name)?;
         item.default = Some(
             coerce_default(value, item.parameter_type)
-                .map_err(|error| CliError::Usage(error.to_string()))?,
+                .map_err(|error| CliError::Usage(error.message()))?,
         );
         changed = true;
     }
@@ -1953,9 +2485,50 @@ fn params(
         parameter_mut(&mut declarations, name)?.delivery = parse_delivery(value)?;
         changed = true;
     }
+    for spec in args.bindings {
+        let (name, value) = assignment(&spec, "binding")?;
+        let item = parameter_mut(&mut declarations, name)?;
+        item.binding = parse_binding(value)?;
+        *item = item.clone().normalized();
+        changed = true;
+    }
     for spec in args.flags {
         let (name, value) = assignment(&spec, "flag")?;
         parameter_mut(&mut declarations, name)?.flag = value.to_owned();
+        changed = true;
+    }
+    changed |= set_bool(
+        &mut declarations,
+        &args.multiple,
+        |item| &mut item.multiple,
+        true,
+    )?;
+    changed |= set_bool(
+        &mut declarations,
+        &args.no_multiple,
+        |item| &mut item.multiple,
+        false,
+    )?;
+    changed |= set_bool(
+        &mut declarations,
+        &args.repeat,
+        |item| &mut item.repeat,
+        true,
+    )?;
+    changed |= set_bool(
+        &mut declarations,
+        &args.no_repeat,
+        |item| &mut item.repeat,
+        false,
+    )?;
+    for spec in args.env_targets {
+        let (name, value) = assignment(&spec, "environment target")?;
+        parameter_mut(&mut declarations, name)?.env_target = value.to_owned();
+        changed = true;
+    }
+    for spec in args.actions {
+        let (name, value) = assignment(&spec, "action")?;
+        parameter_mut(&mut declarations, name)?.action = value.to_owned();
         changed = true;
     }
     for spec in args.help_text {
@@ -1965,12 +2538,24 @@ fn params(
     }
     for spec in args.prompts {
         let (name, value) = assignment(&spec, "prompt")?;
-        parameter_mut(&mut declarations, name)?.prompt = value.to_owned();
+        let item = parameter_mut(&mut declarations, name)?;
+        if source_parameter_kind && item.binding == ParameterBinding::None {
+            return Err(CliError::Usage(
+                Message::new("parameter {} is not managed in the stored source").with(name),
+            ));
+        }
+        item.prompt = value.to_owned();
         changed = true;
     }
     for spec in args.env_sources {
         let (name, value) = assignment(&spec, "environment source")?;
-        parameter_mut(&mut declarations, name)?.env_source = value.to_owned();
+        let item = parameter_mut(&mut declarations, name)?;
+        if source_parameter_kind && item.binding == ParameterBinding::None {
+            return Err(CliError::Usage(
+                Message::new("parameter {} is not managed in the stored source").with(name),
+            ));
+        }
+        item.env_source = value.to_owned();
         changed = true;
     }
     changed |= set_bool(
@@ -1985,6 +2570,19 @@ fn params(
         |item| &mut item.required,
         false,
     )?;
+    if source_parameter_kind {
+        for name in args.secret.iter().chain(&args.no_secret) {
+            let item = declarations
+                .iter()
+                .find(|item| item.name == *name)
+                .ok_or_else(|| CliError::Usage(Message::new("unknown parameter: {}").with(name)))?;
+            if item.binding == ParameterBinding::None {
+                return Err(CliError::Usage(
+                    Message::new("parameter {} is not managed in the stored source").with(name),
+                ));
+            }
+        }
+    }
     changed |= set_bool(
         &mut declarations,
         &args.secret,
@@ -2005,6 +2603,7 @@ fn params(
     }
     if let Some(value) = args.template {
         settings.template = value;
+        declarations = reconcile_template_parameters(&settings.template, &declarations);
         changed = true;
     }
     if let Some(value) = args.interpreter {
@@ -2012,14 +2611,30 @@ fn params(
         changed = true;
     }
     if let Some(value) = args.runner {
-        settings.runner = value;
+        settings.runner = value.trim().to_owned();
         changed = true;
     }
     if args.interpolate || args.no_interpolate {
         settings.interpolate = args.interpolate;
         changed = true;
     }
-    if changed {
+    if source_parameter_kind && has_source_schema_operation {
+        let managed = declarations
+            .iter()
+            .filter(|item| item.binding != ParameterBinding::None)
+            .cloned()
+            .collect::<Vec<_>>();
+        source = write_managed_params(held.meta.kind.as_str(), &source, &managed)
+            .map_err(|error| CliError::Usage(error.message()))?;
+        if source != original_source {
+            let claimed = service.claim_identity(&held)?;
+            held = service.commit_copy_edit(&claimed, source.as_bytes(), &held.meta.source_hash)?;
+        }
+        if !args.secret.is_empty() {
+            let state = FormStateService::new(FileFormStateStore::new(resolve_state_dir()?));
+            state.purge_secrets(&held.slug, &declarations)?;
+        }
+    } else if changed {
         settings.parameters = declarations.clone();
         if matches!(held.meta.kind.as_str(), "command" | "prompt") {
             settings.params = declarations
@@ -2029,41 +2644,224 @@ fn params(
                 .collect();
         }
         let claimed = service.claim_identity(&held)?;
-        service.update_settings(&claimed, &settings, &workdir)?;
+        held = service.update_settings(&claimed, &settings, &workdir)?;
         if !args.secret.is_empty() {
             let state = FormStateService::new(FileFormStateStore::new(resolve_state_dir()?));
             state.purge_secrets(&held.slug, &declarations)?;
         }
     }
-    write_params(&declarations, args.json)
+    write_params(&held, &source, &settings, &declarations, args.json)
 }
 
-fn write_params(declarations: &[ParamDecl], json: bool) -> Result<(), CliError> {
+fn write_params(
+    entry: &Entry,
+    source: &str,
+    settings: &EntrySettings,
+    declarations: &[ParamDecl],
+    json: bool,
+) -> Result<(), CliError> {
     if json {
         let rows = declarations
             .iter()
+            .map(|item| {
+                let mut row = item.to_meta_map();
+                row.insert(
+                    "binding".to_owned(),
+                    serde_json::Value::String(item.binding.as_str().to_owned()),
+                );
+                row.insert(
+                    "multiple".to_owned(),
+                    serde_json::Value::Bool(item.multiple),
+                );
+                row.insert("repeat".to_owned(), serde_json::Value::Bool(item.repeat));
+                row.insert(
+                    "env_target".to_owned(),
+                    serde_json::Value::String(item.env_target.clone()),
+                );
+                row.insert(
+                    "action".to_owned(),
+                    serde_json::Value::String(item.action.clone()),
+                );
+                serde_json::Value::Object(row.into_iter().collect())
+            })
+            .collect::<Vec<_>>();
+        let managed = managed_params(entry.meta.kind.as_str(), source);
+        let managed_rows = managed
+            .iter()
+            .map(|item| serde_json::Value::Object(item.to_block_map().into_iter().collect()))
+            .collect::<Vec<_>>();
+        let candidates = detect_candidates(entry.meta.kind.as_str(), source);
+        let managed_names = managed
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let reader_driven = !cli_params(entry.meta.kind.as_str(), source).is_empty();
+        let unmanaged = if reader_driven {
+            Vec::new()
+        } else if entry.meta.kind.as_str() == "prompt" && settings.interpolate {
+            placeholder_params("prompt", source)
+                .into_iter()
+                .map(|item| item.name)
+                .filter(|name| !settings.params.contains(name))
+                .collect::<Vec<_>>()
+        } else {
+            candidates
+                .iter()
+                .map(|item| item.name.clone())
+                .filter(|name| !managed_names.contains(name.as_str()))
+                .collect::<Vec<_>>()
+        };
+        let current_defaults = managed
+            .iter()
+            .filter_map(|item| {
+                let current = candidates
+                    .iter()
+                    .find(|candidate| candidate.name == item.name)?;
+                let default = current.to_meta_map().remove("default")?;
+                Some((item.name.clone(), default))
+            })
+            .collect::<serde_json::Map<_, _>>();
+        let declared = settings
+            .parameters
+            .iter()
             .map(|item| serde_json::Value::Object(item.to_meta_map().into_iter().collect()))
             .collect::<Vec<_>>();
-        println!("{}", serde_json::json!({"parameters": rows}));
+        let state =
+            FormStateService::new(FileFormStateStore::new(resolve_state_dir()?)).load(&entry.slug);
+        let mut record = serde_json::json!({
+            "params": managed_rows,
+            "parameters": rows,
+            "current_defaults": current_defaults,
+            "last_values": state.values,
+            "unmanaged": unmanaged,
+            "placeholders": settings.params,
+            "declared": declared,
+        });
+        if entry.meta.kind.as_str() == "prompt" {
+            let object = record
+                .as_object_mut()
+                .expect("the params record is a JSON object");
+            object.insert(
+                "runner".to_owned(),
+                serde_json::json!(nonempty(&settings.runner)),
+            );
+            object.insert(
+                "interpolate".to_owned(),
+                serde_json::json!(settings.interpolate),
+            );
+        }
+        println!("{record}");
     } else {
+        let state =
+            FormStateService::new(FileFormStateStore::new(resolve_state_dir()?)).load(&entry.slug);
+        let candidates = detect_candidates(entry.meta.kind.as_str(), source);
+        let reader_driven = !cli_params(entry.meta.kind.as_str(), source).is_empty();
+        let declared_names = declarations
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<BTreeSet<_>>();
+        let unmanaged = if reader_driven {
+            Vec::new()
+        } else {
+            candidates
+                .iter()
+                .map(|item| item.name.clone())
+                .filter(|name| !declared_names.contains(name.as_str()))
+                .collect::<Vec<_>>()
+        };
         for item in declarations {
-            println!(
-                "{}\t{}\t{}{}",
-                item.name,
-                item.parameter_type.as_str(),
-                item.delivery.as_str(),
-                if item.secret { "\tsecret" } else { "" }
+            humanln!("Parameter: {}", item.name);
+            humanln!("Type: {}", item.parameter_type.as_str());
+            humanln!("Delivery: {}", item.delivery.as_str());
+            if let Some(default) = candidates
+                .iter()
+                .find(|candidate| candidate.name == item.name)
+                .and_then(|candidate| candidate.default.as_ref())
+                .or(item.default.as_ref())
+            {
+                humanln!("Current default: {}", tui_parameter_value(default));
+            }
+            if let Some(value) = state.values.get(&item.name) {
+                humanln!("Last value: {}", value);
+            }
+            if !item.choices.is_empty() {
+                humanln!("Choices: {}", item.choices.join(", "));
+            }
+            if !item.prompt.is_empty() {
+                humanln!("Prompt: {}", item.prompt);
+            }
+            if !item.help.is_empty() {
+                humanln!("Help: {}", item.help);
+            }
+            if !item.env_source.is_empty() {
+                humanln!("Environment source: {}", item.env_source);
+            }
+            if item.secret {
+                humanln!("Secret: yes");
+            }
+        }
+        if !unmanaged.is_empty() {
+            humanln!("Unmanaged candidates: {}", unmanaged.join(", "));
+        }
+        if entry.meta.mode == StorageMode::Reference {
+            humanln!("Source management is not available for a reference entry.");
+        }
+        if entry.meta.kind.as_str() == "prompt" {
+            humanln!(
+                "Prompt runner: {}",
+                if settings.runner.is_empty() {
+                    text(active_locale(), "not set").to_owned()
+                } else {
+                    settings.runner.clone()
+                }
+            );
+            humanln!(
+                "Interpolation: {}",
+                text(
+                    active_locale(),
+                    if settings.interpolate { "on" } else { "off" }
+                )
             );
         }
     }
     Ok(())
 }
 
+/// One validated `runner remove` target.
+#[derive(Debug)]
+enum RunnerSelection {
+    /// Remove by stable runner name.
+    Name(String),
+    /// Remove one raw row by its one-based index.
+    Row(usize),
+}
+
+impl RunnerSelection {
+    fn label(&self) -> String {
+        match self {
+            Self::Name(name) => name.clone(),
+            Self::Row(row) => format!("row {row}"),
+        }
+    }
+}
+
+fn parse_binding(value: &str) -> Result<ParameterBinding, CliError> {
+    match value {
+        "const" => Ok(ParameterBinding::Const),
+        "input" => Ok(ParameterBinding::Input),
+        "envdefault" => Ok(ParameterBinding::EnvDefault),
+        "none" => Ok(ParameterBinding::None),
+        _ => Err(CliError::Usage(
+            Message::new("unknown parameter binding: {}").with(value),
+        )),
+    }
+}
+
 fn assignment<'a>(value: &'a str, field: &str) -> Result<(&'a str, &'a str), CliError> {
     value
         .split_once('=')
         .filter(|(name, _)| !name.is_empty())
-        .ok_or_else(|| CliError::Usage(format!("{field} needs NAME=VALUE")))
+        .ok_or_else(|| CliError::Usage(Message::new("{} needs NAME=VALUE").with(field)))
 }
 
 fn parameter_mut<'a>(
@@ -2073,7 +2871,7 @@ fn parameter_mut<'a>(
     declarations
         .iter_mut()
         .find(|item| item.name == name)
-        .ok_or_else(|| CliError::Usage(format!("unknown parameter: {name}")))
+        .ok_or_else(|| CliError::Usage(Message::new("unknown parameter: {}").with(name)))
 }
 
 fn parse_parameter_type(value: &str) -> Result<ParameterType, CliError> {
@@ -2084,7 +2882,9 @@ fn parse_parameter_type(value: &str) -> Result<ParameterType, CliError> {
         "bool" => Ok(ParameterType::Bool),
         "choice" => Ok(ParameterType::Choice),
         "path" => Ok(ParameterType::Path),
-        _ => Err(CliError::Usage(format!("unknown parameter type: {value}"))),
+        _ => Err(CliError::Usage(
+            Message::new("unknown parameter type: {}").with(value),
+        )),
     }
 }
 
@@ -2094,9 +2894,9 @@ fn parse_delivery(value: &str) -> Result<ParameterDelivery, CliError> {
         "env" => Ok(ParameterDelivery::Env),
         "flag" => Ok(ParameterDelivery::Flag),
         "placeholder" => Ok(ParameterDelivery::Placeholder),
-        _ => Err(CliError::Usage(format!(
-            "unknown parameter delivery: {value}"
-        ))),
+        _ => Err(CliError::Usage(
+            Message::new("unknown parameter delivery: {}").with(value),
+        )),
     }
 }
 
@@ -2114,6 +2914,15 @@ fn set_bool(
 
 fn config(key: Option<&str>, value: Option<&str>, json: bool) -> Result<(), CliError> {
     let store = FileConfigStore::new(resolve_config_dir()?);
+    config_in(&store, key, value, json)
+}
+
+fn config_in(
+    store: &FileConfigStore,
+    key: Option<&str>,
+    value: Option<&str>,
+    json: bool,
+) -> Result<(), CliError> {
     match (key, value) {
         (Some(key), Some(value)) => {
             store.set(key, value)?;
@@ -2141,7 +2950,11 @@ fn config(key: Option<&str>, value: Option<&str>, json: bool) -> Result<(), CliE
                 }
             }
         }
-        (None, Some(_)) => unreachable!("clap cannot parse a value without a key"),
+        (None, Some(_)) => {
+            return Err(CliError::Usage(Message::new(
+                "a configuration value needs a key",
+            )));
+        }
     }
     Ok(())
 }
@@ -2149,14 +2962,40 @@ fn config(key: Option<&str>, value: Option<&str>, json: bool) -> Result<(), CliE
 fn runner(command: RunnerCommand) -> Result<(), CliError> {
     let store = FileConfigStore::new(resolve_config_dir()?);
     match command {
-        RunnerCommand::List { json, all: _ } => {
+        RunnerCommand::List { json, all } => {
+            store.ensure_runners_seeded()?;
+            if all {
+                let rows = store.runner_rows()?;
+                if json {
+                    let output = rows
+                        .into_iter()
+                        .map(|row| {
+                            serde_json::json!({
+                                "row": row.index,
+                                "name": row.name,
+                                "argv": row.argv,
+                                "reason": row.reason,
+                                "descriptor": row.descriptor,
+                                "valid": row.reason.is_none(),
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    println!("{}", serde_json::to_string(&output)?);
+                } else {
+                    for row in rows {
+                        let status = row.reason.as_deref().unwrap_or("valid");
+                        println!("{}\t{}\t{}", row.index, row.descriptor, status);
+                    }
+                }
+                return Ok(());
+            }
             let runners = store.runners()?;
             if json {
                 let rows = runners
                     .into_iter()
-                    .map(|runner| (runner.name, runner.argv))
-                    .collect::<BTreeMap<_, _>>();
-                println!("{}", serde_json::json!({"runners": rows}));
+                    .map(|runner| serde_json::json!({"name": runner.name, "argv": runner.argv}))
+                    .collect::<Vec<_>>();
+                println!("{}", serde_json::to_string(&rows)?);
             } else {
                 for runner in runners {
                     println!("{}\t{}", runner.name, runner.argv.join(" "));
@@ -2175,23 +3014,40 @@ fn runner(command: RunnerCommand) -> Result<(), CliError> {
         }
         RunnerCommand::Remove {
             name,
+            row,
             yes,
             no_input,
         } => {
+            let selection = match (name.as_deref(), row) {
+                (Some(name), None) => RunnerSelection::Name(name.to_owned()),
+                (None, Some(row)) => RunnerSelection::Row(row),
+                _ => {
+                    return Err(CliError::Usage(Message::new(
+                        "runner remove needs a name or --row INDEX",
+                    )));
+                }
+            };
+            let target = selection.label();
             if !yes {
                 if no_input || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
                     return Err(CliError::ConfirmationRequiredFor("runner removal"));
                 }
                 let question =
-                    format_text(active_locale(), "Remove runner \"{}\"? [y/N]: ", &[&name]);
+                    format_text(active_locale(), "Remove runner \"{}\"? [y/N]: ", &[&target]);
                 if !prompt_confirmation(&question, false)? {
                     return Err(CliError::Aborted);
                 }
             }
-            if !store.remove_runner(&name)? {
-                return Err(CliError::Usage(format!("unknown prompt runner: {name}")));
+            let removed = match selection {
+                RunnerSelection::Name(name) => store.remove_runner(&name)?,
+                RunnerSelection::Row(row) => store.remove_runner_row(row)?,
+            };
+            if !removed {
+                return Err(CliError::Usage(
+                    Message::new("unknown prompt runner: {}").with(target),
+                ));
             }
-            humanln!("Removed runner: {}", name);
+            humanln!("Removed runner: {}", target);
         }
     }
     Ok(())
@@ -2211,6 +3067,7 @@ fn preset(
         } => {
             let entry = service.show(&selector)?;
             let declarations = entry_parameters(store, &entry);
+            refuse_empty_preset_schema(&declarations)?;
             let current = state.load(&entry.slug);
             let values = if from_last {
                 &current.last_run.values
@@ -2249,7 +3106,9 @@ fn preset(
             }
             let entry = service.show(&selector)?;
             if !state.delete_preset(&entry.slug, &name)? {
-                return Err(CliError::Usage(format!("unknown preset: {name}")));
+                return Err(CliError::Usage(
+                    Message::new("unknown preset: {}").with(name),
+                ));
             }
             humanln!("Deleted preset: {}", name);
         }
@@ -2531,21 +3390,50 @@ fn agent(command: AgentCommand) -> Result<(), CliError> {
             let path = if let Some(directory) = directory {
                 directory.join("skit").join("SKILL.md")
             } else {
-                agent_root(target.as_deref().unwrap_or("agents"), project)?
+                let target = match target {
+                    Some(target) => target,
+                    None => detect_agent_target(project)?,
+                };
+                agent_root(&target, project)?
                     .join("skills")
                     .join("skit")
                     .join("SKILL.md")
             };
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)
-                    .map_err(|error| source_error("create", parent, error))?;
-            }
+            let parent = path.parent().expect("each Agent Skill path has a parent");
+            fs::create_dir_all(parent).map_err(|error| source_error("create", parent, error))?;
             fs::write(&path, include_bytes!("../../../skills/skit/SKILL.md"))
                 .map_err(|error| source_error("write", &path, error))?;
             humanln!("Installed Agent Skill: {}", path.display());
         }
     }
     Ok(())
+}
+
+fn detect_agent_target(project: bool) -> Result<String, CliError> {
+    let base = if project {
+        env::current_dir().map_err(CliError::Io)?
+    } else {
+        env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
+            CliError::Usage(Message::new("could not determine the user directory"))
+        })?
+    };
+    let detected = [
+        ("claude", ".claude"),
+        ("codex", ".codex"),
+        ("agents", ".agents"),
+    ]
+    .into_iter()
+    .filter_map(|(target, directory)| base.join(directory).is_dir().then_some(target))
+    .collect::<Vec<_>>();
+    match detected.as_slice() {
+        [target] => Ok((*target).to_owned()),
+        [] => Err(CliError::Usage(Message::new(
+            "select an agent convention or use --to; no agent directory exists",
+        ))),
+        _ => Err(CliError::Usage(Message::new(
+            "select an agent convention or use --to; more than one agent directory exists",
+        ))),
+    }
 }
 
 fn agent_root(target: &str, project: bool) -> Result<PathBuf, CliError> {
@@ -2555,21 +3443,21 @@ fn agent_root(target: &str, project: bool) -> Result<PathBuf, CliError> {
             "claude" => Ok(current.join(".claude")),
             "codex" => Ok(current.join(".codex")),
             "agents" => Ok(current.join(".agents")),
-            _ => Err(CliError::Usage(format!(
-                "unknown agent convention: {target}"
-            ))),
+            _ => Err(CliError::Usage(
+                Message::new("unknown agent convention: {}").with(target),
+            )),
         };
     }
     let home = env::var_os("HOME")
         .map(PathBuf::from)
-        .ok_or_else(|| CliError::Usage("could not determine the user directory".to_owned()))?;
+        .ok_or_else(|| CliError::Usage(Message::new("could not determine the user directory")))?;
     match target {
         "claude" => Ok(home.join(".claude")),
         "codex" => Ok(home.join(".codex")),
         "agents" => Ok(home.join(".agents")),
-        _ => Err(CliError::Usage(format!(
-            "unknown agent convention: {target}"
-        ))),
+        _ => Err(CliError::Usage(
+            Message::new("unknown agent convention: {}").with(target),
+        )),
     }
 }
 
@@ -2596,68 +3484,58 @@ fn settings_parameters(store: &FileStore, entry: &Entry) -> Vec<ParamDecl> {
 }
 
 fn source_path(store: &FileStore, entry: &Entry) -> Option<PathBuf> {
-    if entry.meta.mode == StorageMode::Reference {
-        return (!entry.meta.source.is_empty()).then(|| PathBuf::from(&entry.meta.source));
-    }
-    let directory = store.data_dir().join("scripts").join(entry.slug.as_str());
-    if let Some(name) = stored_filename(entry.meta.kind.as_str()) {
-        let path = directory.join(name);
-        if path.is_file() {
-            return Some(path);
-        }
-    }
-    let original_name = Path::new(&entry.meta.source).file_name()?;
-    let path = directory.join(original_name);
-    path.is_file().then_some(path)
+    store.payload_path(entry).ok()
 }
 
 fn entry_missing(store: &FileStore, entry: &Entry) -> bool {
     match entry.meta.kind.as_str() {
         "command" => false,
-        "exe" => !Path::new(&entry.meta.source).is_file(),
         _ => source_path(store, entry).is_none_or(|path| !path.is_file()),
     }
 }
 
 fn summary_missing(store: &FileStore, entry: &EntrySummary) -> bool {
+    if entry.kind.as_str() == "command" {
+        return false;
+    }
     if let Some(target) = &entry.target {
         return !Path::new(target).is_file();
     }
-    match entry.kind.as_str() {
-        "command" => false,
-        "exe" => true,
-        kind => {
-            let directory = store.data_dir().join("scripts").join(entry.slug.as_str());
-            let names = stored_filenames(kind);
-            !names.is_empty() && !names.iter().any(|name| directory.join(name).is_file())
-        }
-    }
+    store
+        .resolve(entry.slug.as_str())
+        .ok()
+        .and_then(|resolved| store.payload_path(&resolved).ok())
+        .is_none_or(|path| !path.is_file())
 }
 
 fn tui(service: &LibraryService<FileStore>) -> Result<(), CliError> {
     let state = LibraryState::from_scan(service.list()?);
     let store = service.repository();
+    let state_dir = resolve_state_dir()?;
+    let config_dir = resolve_config_dir()?;
     skit_tui::run(
         state,
-        |effect| tui_effect(service, store, effect),
+        |effect| tui_effect(service, store, &state_dir, &config_dir, effect),
         active_locale(),
-    )?;
-    Ok(())
+    )
+    .map_err(CliError::from)
 }
 
 fn tui_effect(
     service: &LibraryService<FileStore>,
     store: &FileStore,
+    state_dir: &Path,
+    config_dir: &Path,
     effect: UiEffect,
 ) -> Result<UiAction, CliError> {
     match effect {
         UiEffect::None | UiEffect::Quit => Ok(UiAction::ClearStatus),
         UiEffect::Reload => Ok(UiAction::Replace(service.list()?)),
         UiEffect::Open { request, selector } => Ok(UiAction::Present(tui_open(
-            service, store, request, selector,
+            service, store, state_dir, config_dir, request, selector,
         )?)),
         UiEffect::Edit { selector } => {
-            edit(service, store, &selector, true)?;
+            edit_with_config(service, store, config_dir, &selector, true)?;
             Ok(tui_complete(service, "Source saved")?)
         }
         UiEffect::Remove { selector } => {
@@ -2668,13 +3546,17 @@ fn tui_effect(
             purpose,
             selector,
             values,
-        } => tui_submit(service, store, purpose, selector, &values),
+        } => tui_submit(
+            service, store, state_dir, config_dir, purpose, selector, &values,
+        ),
     }
 }
 
 fn tui_open(
     service: &LibraryService<FileStore>,
     store: &FileStore,
+    state_dir: &Path,
+    config_dir: &Path,
     request: HostRequest,
     selector: Option<String>,
 ) -> Result<Screen, CliError> {
@@ -2682,10 +3564,9 @@ fn tui_open(
         HostRequest::Run => {
             let entry = service.show(tui_selector(&selector)?)?;
             let declarations = entry_parameters(store, &entry);
-            let saved = FormStateService::new(FileFormStateStore::new(resolve_state_dir()?))
-                .load(&entry.slug);
+            let saved = FormStateService::new(FileFormStateStore::new(state_dir)).load(&entry.slug);
             let settings = EntrySettings::from_meta(&entry.meta);
-            let mut runners = FileConfigStore::new(resolve_config_dir()?)
+            let mut runners = FileConfigStore::new(config_dir)
                 .runners()?
                 .into_iter()
                 .map(|runner| runner.name)
@@ -2707,13 +3588,12 @@ fn tui_open(
             let entry = service.show(tui_selector(&selector)?)?;
             Ok(tui_settings_form(store, &entry))
         }
-        HostRequest::Preferences => tui_preferences_form(),
+        HostRequest::Preferences => tui_preferences_form(config_dir),
         HostRequest::Health => tui_health_report(service, store),
-        HostRequest::Runners => tui_runners_form(),
+        HostRequest::Runners => tui_runners_form(config_dir),
         HostRequest::Presets => {
             let entry = service.show(tui_selector(&selector)?)?;
-            let saved = FormStateService::new(FileFormStateStore::new(resolve_state_dir()?))
-                .load(&entry.slug);
+            let saved = FormStateService::new(FileFormStateStore::new(state_dir)).load(&entry.slug);
             Ok(tui_presets_form(
                 &entry,
                 &saved.presets.keys().cloned().collect::<Vec<_>>(),
@@ -2738,7 +3618,7 @@ fn tui_open(
 fn tui_selector(selector: &Option<String>) -> Result<&str, CliError> {
     selector
         .as_deref()
-        .ok_or_else(|| CliError::Usage("select an entry first".to_owned()))
+        .ok_or_else(|| CliError::Usage(Message::new("select an entry first")))
 }
 
 fn tui_run_form(
@@ -2748,6 +3628,22 @@ fn tui_run_form(
     runners: &[String],
     presets: &[String],
 ) -> Screen {
+    Screen::Form(tui_run_form_view(
+        entry,
+        declarations,
+        saved,
+        runners,
+        presets,
+    ))
+}
+
+fn tui_run_form_view(
+    entry: &Entry,
+    declarations: &[ParamDecl],
+    saved: &BTreeMap<String, String>,
+    runners: &[String],
+    presets: &[String],
+) -> FormView {
     let mut fields = declarations
         .iter()
         .map(|parameter| {
@@ -2781,7 +3677,7 @@ fn tui_run_form(
         FormField::text("_skit_args", "Extra arguments", ""),
         FormField::text("_skit_dry_run", "Dry run (true or false)", "false"),
     ]);
-    Screen::Form(FormView {
+    FormView {
         purpose: FormPurpose::Run,
         title: "Run {}".to_owned(),
         title_arguments: vec![entry.meta.name.clone()],
@@ -2790,11 +3686,15 @@ fn tui_run_form(
         fields,
         focused: 0,
         submit_label: "Run".to_owned(),
-    })
+    }
 }
 
 fn tui_add_form() -> Screen {
-    Screen::Form(FormView {
+    Screen::Form(tui_add_form_view())
+}
+
+fn tui_add_form_view() -> FormView {
+    FormView {
         purpose: FormPurpose::Add,
         title: "Add an entry".to_owned(),
         title_arguments: Vec::new(),
@@ -2813,11 +3713,11 @@ fn tui_add_form() -> Screen {
         ],
         focused: 0,
         submit_label: "Add".to_owned(),
-    })
+    }
 }
 
 fn tui_settings_form(store: &FileStore, entry: &Entry) -> Screen {
-    let settings = EntrySettings::from_meta(&entry.meta);
+    let settings = effective_settings(store, entry);
     let mut fields = vec![
         FormField::text("name", "Name", &entry.meta.name),
         FormField::multiline("description", "Description", &entry.meta.description),
@@ -2827,7 +3727,7 @@ fn tui_settings_form(store: &FileStore, entry: &Entry) -> Screen {
         FormField::text(
             "dependencies",
             "Package dependencies",
-            settings.dependencies.join(", "),
+            settings.dependencies.join("\n"),
         ),
         FormField::text("python", "Python constraint", settings.requires_python),
         FormField::text("needs", "Required commands", settings.needs.join(", ")),
@@ -2965,8 +3865,8 @@ fn tui_settings_form(store: &FileStore, entry: &Entry) -> Screen {
     })
 }
 
-fn tui_preferences_form() -> Result<Screen, CliError> {
-    let settings = FileConfigStore::new(resolve_config_dir()?).settings()?;
+fn tui_preferences_form(config_dir: &Path) -> Result<Screen, CliError> {
+    let settings = FileConfigStore::new(config_dir).settings()?;
     Ok(Screen::Form(FormView {
         purpose: FormPurpose::Preferences,
         title: "Preferences".to_owned(),
@@ -2975,26 +3875,28 @@ fn tui_preferences_form() -> Result<Screen, CliError> {
         selector: None,
         fields: settings
             .into_iter()
-            .map(|(key, value)| {
-                let label = match key.as_str() {
-                    "lang" => "Language",
-                    "editor" => "Editor command",
-                    "form" => "Form style",
-                    "after_run" => "After run",
-                    "shell.bash_path" => "Bash path",
-                    "js.runner" => "JavaScript runtime",
-                    "mirror" => "Mirror",
-                    "mirror.pypi" => "PyPI mirror",
-                    "mirror.github" => "GitHub mirror",
-                    "mirror.npm" => "npm mirror",
-                    _ => return FormField::text_raw(key.clone(), key, value),
-                };
-                FormField::text(key, label, value)
-            })
+            .map(|(key, value)| tui_preference_field(key, value))
             .collect(),
         focused: 0,
         submit_label: "Save".to_owned(),
     }))
+}
+
+fn tui_preference_field(key: String, value: String) -> FormField {
+    let label = match key.as_str() {
+        "lang" => "Language",
+        "editor" => "Editor command",
+        "form" => "Form style",
+        "after_run" => "After run",
+        "shell.bash_path" => "Bash path",
+        "js.runner" => "JavaScript runtime",
+        "mirror" => "Mirror",
+        "mirror.pypi" => "PyPI mirror",
+        "mirror.github" => "GitHub mirror",
+        "mirror.npm" => "npm mirror",
+        _ => return FormField::text_raw(key.clone(), key, value),
+    };
+    FormField::text(key, label, value)
 }
 
 fn tui_health_report(
@@ -3043,8 +3945,8 @@ fn tui_health_report(
     }))
 }
 
-fn tui_runners_form() -> Result<Screen, CliError> {
-    let runners = FileConfigStore::new(resolve_config_dir()?)
+fn tui_runners_form(config_dir: &Path) -> Result<Screen, CliError> {
+    let runners = FileConfigStore::new(config_dir)
         .runners()?
         .into_iter()
         .map(|runner| format!("{}={}", runner.name, runner.argv.join(" ")))
@@ -3104,6 +4006,15 @@ fn tui_split_list(value: &str) -> Vec<String> {
         .collect()
 }
 
+fn tui_dependency_list(value: &str) -> Vec<String> {
+    value
+        .lines()
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
 fn tui_parameter_value(value: &ParameterValue) -> String {
     match value {
         ParameterValue::String(value) => value.clone(),
@@ -3125,13 +4036,17 @@ fn tui_declarations_from_values(
         };
         let name = name.trim();
         if name.is_empty() {
-            return Err(CliError::Usage(format!("parameter {index} needs a name")));
+            return Err(CliError::Usage(
+                Message::new("parameter {} needs a name").with(index),
+            ));
         }
         if declarations
             .iter()
             .any(|item: &ParamDecl| item.name == name)
         {
-            return Err(CliError::Usage(format!("duplicate parameter: {name}")));
+            return Err(CliError::Usage(
+                Message::new("duplicate parameter: {}").with(name),
+            ));
         }
         let get = |field: &str| {
             values
@@ -3146,9 +4061,9 @@ fn tui_declarations_from_values(
             "input" => ParameterBinding::Input,
             "envdefault" => ParameterBinding::EnvDefault,
             value => {
-                return Err(CliError::Usage(format!(
-                    "unknown parameter binding: {value}"
-                )));
+                return Err(CliError::Usage(
+                    Message::new("unknown parameter binding: {}").with(value),
+                ));
             }
         };
         declaration.delivery = parse_delivery(if get("delivery").is_empty() {
@@ -3164,7 +4079,7 @@ fn tui_declarations_from_values(
         if !get("default").is_empty() {
             declaration.default = Some(
                 coerce_default(get("default"), declaration.parameter_type)
-                    .map_err(|error| CliError::Usage(error.to_string()))?,
+                    .map_err(|error| CliError::Usage(error.message()))?,
             );
         }
         declaration.choices = get("choices")
@@ -3173,20 +4088,20 @@ fn tui_declarations_from_values(
             .filter(|choice| !choice.is_empty())
             .map(str::to_owned)
             .collect();
-        declaration.required = tui_bool(get("required"));
-        declaration.multiple = tui_bool(get("multiple"));
-        declaration.repeat = tui_bool(get("repeat"));
+        declaration.required = tui_bool(get("required"))?;
+        declaration.multiple = tui_bool(get("multiple"))?;
+        declaration.repeat = tui_bool(get("repeat"))?;
         declaration.prompt = get("prompt").to_owned();
         declaration.help = get("help").to_owned();
-        declaration.secret = tui_bool(get("secret"));
+        declaration.secret = tui_bool(get("secret"))?;
         declaration.env_source = get("env_source").to_owned();
         declaration.env_target = get("env_target").to_owned();
         declaration.flag = get("flag").to_owned();
         declaration.action = get("action").to_owned();
         if declaration.validate().is_some() {
-            return Err(CliError::Usage(format!(
-                "parameter {name} has incompatible settings"
-            )));
+            return Err(CliError::Usage(
+                Message::new("parameter {} has incompatible settings").with(name),
+            ));
         }
         declarations.push(declaration);
     }
@@ -3196,18 +4111,28 @@ fn tui_declarations_from_values(
 fn tui_submit(
     service: &LibraryService<FileStore>,
     store: &FileStore,
+    state_dir: &Path,
+    config_dir: &Path,
     purpose: FormPurpose,
     selector: Option<String>,
     values: &BTreeMap<String, String>,
 ) -> Result<UiAction, CliError> {
     match purpose {
-        FormPurpose::Run => tui_submit_run(service, store, tui_selector(&selector)?, values),
+        FormPurpose::Run => tui_submit_run(
+            service,
+            store,
+            state_dir,
+            config_dir,
+            tui_selector(&selector)?,
+            values,
+        ),
         FormPurpose::Add => {
             let source = tui_value(values, "source");
             let template = tui_value(values, "template");
             let kind = tui_value(values, "kind");
-            add(
+            add_with_config(
                 service,
+                config_dir,
                 AddOptions {
                     source: (!source.is_empty()).then(|| PathBuf::from(source)),
                     kind: (!kind.is_empty()).then_some(kind.to_owned()),
@@ -3219,33 +4144,34 @@ fn tui_submit(
                     executable: kind == "exe",
                     runner: tui_nonempty_owned(values, "runner"),
                     no_interpolate: false,
-                    dependencies: tui_split_list(tui_value(values, "dependencies")),
+                    dependencies: tui_dependency_list(tui_value(values, "dependencies")),
+                    dependencies_explicit: !tui_value(values, "dependencies").is_empty(),
                     requires_python: tui_nonempty_owned(values, "python"),
                 },
             )?;
-            Ok(tui_complete(service, "Entry added")?)
+            tui_complete(service, "Entry added")
         }
         FormPurpose::Settings => {
-            tui_submit_settings(service, store, tui_selector(&selector)?, values)?;
-            Ok(tui_complete(service, "Settings saved")?)
+            tui_submit_settings(service, store, state_dir, tui_selector(&selector)?, values)?;
+            tui_complete(service, "Settings saved")
         }
         FormPurpose::Preferences => {
-            let config = FileConfigStore::new(resolve_config_dir()?);
-            for (key, value) in values {
-                config.set(key, value)?;
-            }
-            Ok(tui_complete(service, "Preferences saved")?)
+            let config = FileConfigStore::new(config_dir);
+            config.set_many(values)?;
+            tui_complete(service, "Preferences saved")
         }
         FormPurpose::Runners => {
-            let config = FileConfigStore::new(resolve_config_dir()?);
+            let config = FileConfigStore::new(config_dir);
             let name = tui_required(values, "name")?;
-            if tui_bool(tui_value(values, "remove")) {
+            if tui_bool(tui_value(values, "remove"))? {
                 if !config.remove_runner(name)? {
-                    return Err(CliError::Usage(format!("unknown prompt runner: {name}")));
+                    return Err(CliError::Usage(
+                        Message::new("unknown prompt runner: {}").with(name),
+                    ));
                 }
             } else {
                 let argv = shlex::split(tui_required(values, "argv")?).ok_or_else(|| {
-                    CliError::Usage("the runner arguments have invalid quoting".to_owned())
+                    CliError::Usage(Message::new("the runner arguments have invalid quoting"))
                 })?;
                 config.set_runner(
                     PromptRunner {
@@ -3255,23 +4181,26 @@ fn tui_submit(
                     true,
                 )?;
             }
-            Ok(tui_complete(service, "Prompt runners saved")?)
+            tui_complete(service, "Prompt runners saved")
         }
         FormPurpose::Presets => {
             let selector = tui_selector(&selector)?;
             let entry = service.show(selector)?;
             let declarations = entry_parameters(store, &entry);
-            let state = FormStateService::new(FileFormStateStore::new(resolve_state_dir()?));
+            let state = FormStateService::new(FileFormStateStore::new(state_dir));
             let name = tui_required(values, "name")?;
             if tui_value(values, "action").eq_ignore_ascii_case("delete") {
                 if !state.delete_preset(&entry.slug, name)? {
-                    return Err(CliError::Usage(format!("unknown preset: {name}")));
+                    return Err(CliError::Usage(
+                        Message::new("unknown preset: {}").with(name),
+                    ));
                 }
             } else {
+                refuse_empty_preset_schema(&declarations)?;
                 let current = state.load(&entry.slug);
                 state.save_preset(&entry.slug, name, &declarations, &current.values)?;
             }
-            Ok(tui_complete(service, "Presets saved")?)
+            tui_complete(service, "Presets saved")
         }
         FormPurpose::Rename => {
             rename(
@@ -3279,37 +4208,45 @@ fn tui_submit(
                 tui_selector(&selector)?,
                 tui_required(values, "name")?,
             )?;
-            Ok(tui_complete(service, "Entry renamed")?)
+            tui_complete(service, "Entry renamed")
         }
+    }
+}
+
+fn refuse_empty_preset_schema(declarations: &[ParamDecl]) -> Result<(), CliError> {
+    if declarations.is_empty() {
+        Err(CliError::Usage(Message::new(
+            "cannot save a preset because the entry has no form fields",
+        )))
+    } else {
+        Ok(())
     }
 }
 
 fn tui_submit_run(
     service: &LibraryService<FileStore>,
     store: &FileStore,
+    state_dir: &Path,
+    config_dir: &Path,
     selector: &str,
     values: &BTreeMap<String, String>,
 ) -> Result<UiAction, CliError> {
-    let run_values = values
-        .iter()
-        .filter_map(|(key, value)| {
-            key.strip_prefix("value:")
-                .filter(|_| !value.is_empty())
-                .map(|name| format!("{name}={value}"))
-        })
-        .collect();
-    let extra_args = shlex::split(tui_value(values, "_skit_args"))
-        .ok_or_else(|| CliError::Usage("extra arguments have invalid quoting".to_owned()))?;
-    let exit = crate::run::run(
+    let entry = service.show(selector)?;
+    let saved = FormStateService::new(FileFormStateStore::new(state_dir)).load(&entry.slug);
+    let run_values = changed_form_values(values, &saved.values);
+    let extra_args = split_editable_arguments(tui_value(values, "_skit_args"))?;
+    let exit = crate::run::run_with_roots(
         service,
         store,
+        state_dir,
+        config_dir,
         RunArgs {
             selector: selector.to_owned(),
             values: run_values,
             preset: tui_nonempty_owned(values, "_skit_preset"),
             save_preset: tui_nonempty_owned(values, "_skit_save_preset"),
             runner: tui_nonempty_owned(values, "_skit_runner"),
-            dry_run: tui_bool(tui_value(values, "_skit_dry_run")),
+            dry_run: tui_bool(tui_value(values, "_skit_dry_run"))?,
             no_input: true,
             plain: true,
             raw: false,
@@ -3317,7 +4254,7 @@ fn tui_submit_run(
             extra_args,
         },
     )?;
-    if FileConfigStore::new(resolve_config_dir()?).get("after_run")? == "exit" {
+    if FileConfigStore::new(config_dir).get("after_run")? == "exit" {
         Ok(UiAction::Quit)
     } else {
         tui_complete(service, &format!("Run finished with exit status {exit}"))
@@ -3327,38 +4264,83 @@ fn tui_submit_run(
 fn tui_submit_settings(
     service: &LibraryService<FileStore>,
     store: &FileStore,
+    state_dir: &Path,
     selector: &str,
     values: &BTreeMap<String, String>,
 ) -> Result<(), CliError> {
-    let mut entry = service.show(selector)?;
+    let entry = service.show(selector)?;
     let name = tui_required(values, "name")?;
-    if name != entry.meta.name {
-        let claimed = service.claim_identity(&entry)?;
-        entry = service.rename(&claimed, name)?;
-    }
     let description = tui_value(values, "description");
-    if description != entry.meta.description {
-        let claimed = service.claim_identity(&entry)?;
-        entry = service.describe(&claimed, description)?;
-    }
-    let mut settings = EntrySettings::from_meta(&entry.meta);
+    let mut settings = effective_settings(store, &entry);
     settings.interpreter = tui_value(values, "interpreter").to_owned();
-    settings.runner = tui_value(values, "runner").to_owned();
-    settings.dependencies = tui_split_list(tui_value(values, "dependencies"));
+    if !settings.interpreter.is_empty()
+        && !matches!(
+            entry.meta.kind.as_str(),
+            "shell" | "fish" | "powershell" | "ruby" | "perl" | "lua" | "r" | "js" | "ts"
+        )
+    {
+        return Err(CliError::Usage(Message::new(
+            "the entry does not use a pinnable interpreter",
+        )));
+    }
+    settings.runner = tui_value(values, "runner").trim().to_owned();
+    settings.dependencies = tui_dependency_list(tui_value(values, "dependencies"));
     settings.requires_python = tui_value(values, "python").to_owned();
+    if !settings.dependencies.is_empty()
+        && !matches!(entry.meta.kind.as_str(), "python" | "js" | "ts")
+    {
+        return Err(CliError::Usage(Message::new(
+            "package dependencies apply only to Python and JavaScript entries",
+        )));
+    }
+    if !settings.requires_python.is_empty() && entry.meta.kind.as_str() != "python" {
+        return Err(CliError::Usage(Message::new(
+            "a Python constraint applies only to Python entries",
+        )));
+    }
+    if entry.meta.kind.as_str() == "python" {
+        for requirement in &settings.dependencies {
+            validate_pep508_requirement(requirement)
+                .map_err(|error| CliError::Usage(error.message()))?;
+        }
+        if !settings.requires_python.is_empty() {
+            validate_pep440_specifiers(&settings.requires_python)
+                .map_err(|error| CliError::Usage(error.message()))?;
+        }
+    }
     settings.needs = tui_split_list(tui_value(values, "needs"));
+    let previous_template = settings.template.clone();
     settings.template = tui_value(values, "template").to_owned();
-    settings.interpolate = tui_bool(tui_value(values, "interpolate"));
+    settings.interpolate = tui_bool(tui_value(values, "interpolate"))?;
     let mut declarations = tui_declarations_from_values(values)?;
     let removed = tui_split_list(tui_value(values, "parameter:remove"));
     declarations.retain(|parameter| !removed.contains(&parameter.name));
     for name in tui_split_list(tui_value(values, "parameter:add")) {
         if declarations.iter().any(|parameter| parameter.name == name) {
-            return Err(CliError::Usage(format!("parameter already exists: {name}")));
+            return Err(CliError::Usage(
+                Message::new("parameter already exists: {}").with(name),
+            ));
         }
         declarations.push(ParamDecl::new(name));
     }
-    settings.parameters = declarations;
+    if entry.meta.kind.as_str() == "command" && settings.template != previous_template {
+        declarations = reconcile_template_parameters(&settings.template, &declarations);
+    }
+    let original_source = source_path(store, &entry).and_then(|path| fs::read_to_string(path).ok());
+    let source_interface_names = original_source
+        .as_deref()
+        .map_or_else(BTreeSet::new, |source| {
+            managed_params(entry.meta.kind.as_str(), source)
+                .into_iter()
+                .chain(cli_params(entry.meta.kind.as_str(), source))
+                .map(|parameter| parameter.name)
+                .collect()
+        });
+    settings.parameters = declarations
+        .iter()
+        .filter(|parameter| !source_interface_names.contains(&parameter.name))
+        .cloned()
+        .collect();
     if matches!(entry.meta.kind.as_str(), "command" | "prompt") {
         settings.params = settings
             .parameters
@@ -3367,19 +4349,72 @@ fn tui_submit_settings(
             .map(|parameter| parameter.name.clone())
             .collect();
     }
+    let mut rewritten_source = original_source.clone();
+    if entry.meta.kind.as_str() == "python" && entry.meta.mode == StorageMode::Copy {
+        let source = original_source.clone().ok_or_else(|| {
+            CliError::Usage(Message::new("the Python stored copy is not valid UTF-8"))
+        })?;
+        rewritten_source = Some(
+            write_uv_metadata(&source, &settings.dependencies, &settings.requires_python)
+                .map_err(|error| CliError::Usage(error.message()))?,
+        );
+        settings.dependencies.clear();
+        settings.requires_python.clear();
+    }
+    let source_requested = tui_bool(tui_value(values, "source:resync"))?
+        || !tui_value(values, "source:manage").is_empty()
+        || !tui_value(values, "source:unmanage").is_empty()
+        || !tui_value(values, "source:normalize").is_empty();
+    if let Some(source) = rewritten_source.take() {
+        let mut rewritten = prepare_source_management(
+            entry.meta.kind.as_str(),
+            entry.meta.mode,
+            source,
+            tui_bool(tui_value(values, "source:resync"))?,
+            &tui_split_list(tui_value(values, "source:manage")),
+            &tui_split_list(tui_value(values, "source:unmanage")),
+            &tui_split_list(tui_value(values, "source:normalize")),
+        )?;
+        let mut managed = managed_params(entry.meta.kind.as_str(), &rewritten);
+        for parameter in &mut managed {
+            if let Some(submitted) = declarations
+                .iter()
+                .find(|submitted| submitted.name == parameter.name)
+            {
+                if submitted.binding == ParameterBinding::None {
+                    return Err(CliError::Usage(
+                        Message::new("use source:unmanage to remove the source binding for {}")
+                            .with(&submitted.name),
+                    ));
+                }
+                *parameter = submitted.clone();
+            }
+        }
+        rewritten = write_managed_params(entry.meta.kind.as_str(), &rewritten, &managed)
+            .map_err(|error| CliError::Usage(error.message()))?;
+        rewritten_source = Some(rewritten);
+    } else if source_requested {
+        return Err(CliError::Usage(Message::new(
+            "the stored source is not valid UTF-8",
+        )));
+    }
+    let source = rewritten_source
+        .filter(|rewritten| original_source.as_ref() != Some(rewritten))
+        .map(String::into_bytes);
     let claimed = service.claim_identity(&entry)?;
-    entry = service.update_settings(&claimed, &settings, tui_value(values, "workdir"))?;
-    let state = FormStateService::new(FileFormStateStore::new(resolve_state_dir()?));
-    state.purge_secrets(&entry.slug, &settings.parameters)?;
-    apply_source_management(
-        service,
-        store,
-        entry,
-        tui_bool(tui_value(values, "source:resync")),
-        &tui_split_list(tui_value(values, "source:manage")),
-        &tui_split_list(tui_value(values, "source:unmanage")),
-        &tui_split_list(tui_value(values, "source:normalize")),
+    let entry = service.update_entry(
+        &claimed,
+        UpdateEntry {
+            name: name.to_owned(),
+            description: description.to_owned(),
+            settings: settings.clone(),
+            workdir: tui_value(values, "workdir").to_owned(),
+            source,
+            expected_source_hash: entry.meta.source_hash.clone(),
+        },
     )?;
+    let state = FormStateService::new(FileFormStateStore::new(state_dir));
+    state.purge_secrets(&entry.slug, &declarations)?;
     Ok(())
 }
 
@@ -3402,17 +4437,20 @@ fn tui_nonempty_owned(values: &BTreeMap<String, String>, key: &str) -> Option<St
 fn tui_required<'a>(values: &'a BTreeMap<String, String>, key: &str) -> Result<&'a str, CliError> {
     let value = tui_value(values, key);
     if value.is_empty() {
-        Err(CliError::Usage(format!("{key} is required")))
+        Err(CliError::Usage(Message::new("{} is required").with(key)))
     } else {
         Ok(value)
     }
 }
 
-fn tui_bool(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "true" | "yes" | "1" | "on"
-    )
+fn tui_bool(value: &str) -> Result<bool, CliError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "yes" | "1" | "on" => Ok(true),
+        "" | "false" | "no" | "0" | "off" => Ok(false),
+        _ => Err(CliError::Usage(
+            Message::new("invalid Boolean value {}; use true or false").quoted(value),
+        )),
+    }
 }
 
 fn read_source(path: &Path) -> Result<(Vec<u8>, SourcePermissions), CliError> {
@@ -3617,7 +4655,7 @@ enum CliError {
     #[error(transparent)]
     State(#[from] StateWriteError),
     #[error("{0}")]
-    Usage(String),
+    Usage(Message),
     #[error("confirmation is required; pass --yes to remove the entry")]
     ConfirmationRequired,
     #[error("confirmation is required for {0}; pass --yes")]
@@ -3631,10 +4669,51 @@ enum CliError {
         #[source]
         source: io::Error,
     },
+    #[error("{path} is not valid UTF-8")]
+    SourceEncoding { path: String },
     #[error("could not determine the platform data directory; pass --data-dir or SKIT_DATA_DIR")]
     DataDirectoryUnavailable,
     #[error("could not determine the platform {0} directory; set the matching SKIT_*_DIR variable")]
     DirectoryUnavailable(&'static str),
+}
+
+impl Localize for CliError {
+    fn message(&self) -> Message {
+        match self {
+            Self::Repository(error) => error.message(),
+            Self::Run(error) => error.message(),
+            Self::Dependencies(error) => error.message(),
+            Self::Json(error) => Message::new("could not encode JSON output: {}").with(error),
+            Self::Io(error) => Message::new("could not write output: {}").with(error),
+            Self::Tui(error) => error.message(),
+            Self::Config(error) => error.message(),
+            Self::State(error) => error.message(),
+            Self::Usage(message) => message.clone(),
+            Self::ConfirmationRequired => {
+                Message::new("confirmation is required; pass --yes to remove the entry")
+            }
+            Self::ConfirmationRequiredFor(operation) => {
+                Message::new("confirmation is required for {}; pass --yes").with(operation)
+            }
+            Self::Aborted => Message::new("operation cancelled"),
+            Self::Source {
+                operation,
+                path,
+                source,
+            } => Message::new("could not {} {}: {}")
+                .with(operation)
+                .with(path)
+                .with(source),
+            Self::SourceEncoding { path } => Message::new("{} is not valid UTF-8").with(path),
+            Self::DataDirectoryUnavailable => Message::new(
+                "could not determine the platform data directory; pass --data-dir or SKIT_DATA_DIR",
+            ),
+            Self::DirectoryUnavailable(name) => Message::new(
+                "could not determine the platform {} directory; set the matching SKIT_*_DIR variable",
+            )
+            .with(name),
+        }
+    }
 }
 
 impl CliError {
@@ -3653,6 +4732,7 @@ impl CliError {
             | Self::Config(_)
             | Self::State(_)
             | Self::Source { .. }
+            | Self::SourceEncoding { .. }
             | Self::DataDirectoryUnavailable
             | Self::DirectoryUnavailable(_) => ExitClass::Skit.code() as i32,
         }

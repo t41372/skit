@@ -146,6 +146,26 @@ fn add_infers_source_kinds_and_supports_command_and_prompt_entries() {
 }
 
 #[test]
+fn prompt_add_flood_guard_does_not_manage_more_than_thirty_detected_holes() {
+    let sandbox = Sandbox::new();
+    let prompt = sandbox.data.path().join("large.prompt.md");
+    let body = (0..31)
+        .map(|index| format!("{{{{field_{index}}}}}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    fs::write(&prompt, body).unwrap();
+
+    sandbox
+        .command()
+        .args(["add", prompt.to_str().unwrap(), "--name", "Large prompt"])
+        .assert()
+        .success();
+
+    let shown = sandbox.command_json(&["show", "large-prompt", "--json"]);
+    assert!(shown["fields"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn config_round_trips_known_keys_and_preserves_unknown_toml() {
     let sandbox = Sandbox::new();
     fs::write(
@@ -217,6 +237,13 @@ fn deps_and_params_update_one_identity_without_losing_future_metadata() {
 fn preset_commands_use_the_existing_state_shape_and_delete_with_confirmation() {
     let sandbox = Sandbox::new();
     sandbox.write_command_entry();
+    let skill = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("skills/skit/SKILL.md"),
+    )
+    .unwrap();
+    assert!(skill.contains("skit preset delete <name> nightly -y"));
     fs::create_dir_all(sandbox.state.path().join("values")).unwrap();
     fs::write(
         sandbox.state.path().join("values/demo.toml"),
@@ -248,7 +275,7 @@ name = "Ada"
         .code(2);
     sandbox
         .command()
-        .args(["preset", "delete", "demo", "favorite", "--yes"])
+        .args(["preset", "delete", "demo", "favorite", "-y"])
         .assert()
         .success();
 }
@@ -269,8 +296,14 @@ fn runner_commands_preserve_argv_tokens_and_remove_by_name() {
         .assert()
         .success();
     let runners = sandbox.command_json(&["runner", "list", "--json"]);
+    let reviewer = runners
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|runner| runner["name"] == "reviewer")
+        .unwrap();
     assert_eq!(
-        runners["runners"]["reviewer"],
+        reviewer["argv"],
         serde_json::json!(["review-cli", "--prompt", "{{prompt}}"])
     );
     sandbox
@@ -278,6 +311,29 @@ fn runner_commands_preserve_argv_tokens_and_remove_by_name() {
         .args(["runner", "remove", "reviewer", "--yes"])
         .assert()
         .success();
+
+    fs::write(
+        sandbox.config.path().join("config.toml"),
+        r#"[prompt]
+runners_seeded = true
+runners = [
+  { name = "broken", argv = ["no marker"], keep = 1 },
+  { name = "valid", argv = ["agent", "{{prompt}}"] },
+]
+"#,
+    )
+    .unwrap();
+    let rows = sandbox.command_json(&["runner", "list", "--all", "--json"]);
+    assert_eq!(rows[0]["row"], 1);
+    assert_eq!(rows[0]["valid"], false);
+    sandbox
+        .command()
+        .args(["runner", "remove", "--row", "1", "--yes"])
+        .assert()
+        .success();
+    let rows = sandbox.command_json(&["runner", "list", "--all", "--json"]);
+    assert_eq!(rows.as_array().unwrap().len(), 1);
+    assert_eq!(rows[0]["name"], "valid");
 }
 
 #[test]

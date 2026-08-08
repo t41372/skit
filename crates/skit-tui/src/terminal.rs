@@ -11,7 +11,7 @@ use ratatui_crossterm::{
         terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
     },
 };
-use skit_i18n::Locale;
+use skit_i18n::{Locale, Localize, Message};
 use skit_ui::{Action, Effect, FormView, LibraryState, Screen};
 use thiserror::Error;
 
@@ -23,6 +23,14 @@ pub enum TuiError {
     /// Crossterm or terminal backend I/O failed.
     #[error("terminal I/O failed: {0}")]
     Io(#[from] io::Error),
+}
+
+impl Localize for TuiError {
+    fn message(&self) -> Message {
+        match self {
+            Self::Io(error) => Message::new("terminal I/O failed: {}").with(error),
+        }
+    }
 }
 
 /// Run the terminal frontend and send each requested effect to its host adapter.
@@ -59,9 +67,7 @@ where
                 terminal.clear()?;
                 match result {
                     Ok(action) => {
-                        if state.update(action) == Effect::Quit {
-                            break;
-                        }
+                        state.update(action);
                     }
                     Err(error) => {
                         state.update(Action::SetStatus(error.to_string()));

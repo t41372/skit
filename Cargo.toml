@@ -11,6 +11,7 @@ members = [
     "crates/skit-ui",
     "crates/skit-tui",
     "crates/skit-cli",
+    "crates/skit-benchmarks",
 ]
 default-members = ["crates/skit-cli"]
 
@@ -27,6 +28,8 @@ clap = { version = "4.6.6", features = ["derive"] }
 clap_complete = { version = "4.6.9", features = ["unstable-dynamic"] }
 glob = "0.3.4"
 flate2 = "1.1.9"
+pep440_rs = "0.7.3"
+pep508_rs = "0.9.2"
 ratatui-core = { version = "0.1.2", features = ["std", "layout-cache"] }
 ratatui-widgets = { version = "0.3.2", default-features = false, features = ["std"] }
 ratatui-crossterm = "0.1.2"
@@ -39,31 +42,34 @@ shlex = "2.0.1"
 thiserror = "2.0.20"
 time = { version = "0.3.55", features = ["formatting", "local-offset"] }
 toml = "1.1.4"
-tree-sitter = "0.26.11"
+tree-sitter = "0.26.12"
 tree-sitter-bash = "0.25.1"
 tree-sitter-javascript = "0.25.0"
 tree-sitter-python = "0.25.0"
 tree-sitter-typescript = "0.23.2"
 uuid = { version = "1.24.0", features = ["serde", "v4"] }
 unicode-width = "0.2.2"
+codspeed-criterion-compat = "5.0.1"
 
 assert_cmd = "2.2.2"
 predicates = "3.1.4"
+portable-pty = "0.9.0"
 proptest = "1.11.0"
 tempfile = "3.27.0"
 tar = "0.4.46"
 ureq = { version = "3.3.0", default-features = false, features = ["rustls"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
-skit-domain = { path = "crates/skit-domain" }
-skit-i18n = { path = "crates/skit-i18n" }
-skit-application = { path = "crates/skit-application" }
-skit-language = { path = "crates/skit-language" }
-skit-form = { path = "crates/skit-form" }
-skit-store = { path = "crates/skit-store" }
-skit-runtime = { path = "crates/skit-runtime" }
-skit-ui = { path = "crates/skit-ui" }
-skit-tui = { path = "crates/skit-tui" }
+skit-domain = { version = "0.5.0", path = "crates/skit-domain" }
+skit-i18n = { version = "0.5.0", path = "crates/skit-i18n" }
+skit-application = { version = "0.5.0", path = "crates/skit-application" }
+skit-language = { version = "0.5.0", path = "crates/skit-language" }
+skit-form = { version = "0.5.0", path = "crates/skit-form" }
+skit-store = { version = "0.5.0", path = "crates/skit-store" }
+skit-runtime = { version = "0.5.0", path = "crates/skit-runtime" }
+skit-ui = { version = "0.5.0", path = "crates/skit-ui" }
+skit-tui = { version = "0.5.0", path = "crates/skit-tui" }
+skit-benchmarks = { version = "0.5.0", path = "crates/skit-benchmarks" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

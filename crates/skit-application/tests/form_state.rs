@@ -111,6 +111,24 @@ fn remembered_values_store_only_nondefault_intent_and_structurally_strip_secrets
 }
 
 #[test]
+fn an_environment_string_default_can_be_explicitly_cleared() {
+    let mut field = declaration("name", Some(ParameterValue::String("Ada".to_owned())));
+    field.delivery = ParameterDelivery::Env;
+
+    assert_eq!(
+        remembered_values(&[field], &map(&[("name", "")])),
+        map(&[("name", "")])
+    );
+
+    let mut injected = declaration("city", Some(ParameterValue::String("Paris".to_owned())));
+    injected.delivery = ParameterDelivery::Inject;
+    assert_eq!(
+        remembered_values(&[injected], &map(&[("city", "")])),
+        map(&[("city", "")])
+    );
+}
+
+#[test]
 fn presets_pin_submitted_values_but_never_persist_secrets_or_removed_fields() {
     let city = declaration("city", Some(ParameterValue::String("Paris".to_owned())));
     let empty = declaration("empty", None);
@@ -189,4 +207,12 @@ fn defaulted_nontext_fields_do_not_treat_empty_as_an_explicit_delivered_value() 
     assert!(
         remembered_values(&[integer, boolean], &map(&[("count", ""), ("enabled", "")]),).is_empty()
     );
+}
+
+#[test]
+fn an_empty_placeholder_default_is_not_an_explicit_delivered_value() {
+    let mut positional = declaration("label", Some(ParameterValue::String("default".to_owned())));
+    positional.delivery = ParameterDelivery::Placeholder;
+
+    assert!(remembered_values(&[positional], &map(&[("label", "")])).is_empty());
 }

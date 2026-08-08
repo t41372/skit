@@ -1,14 +1,16 @@
 use std::{
-    fs,
+    fs::{self, OpenOptions},
+    sync::mpsc,
     sync::{Arc, Barrier},
     thread,
+    time::Duration,
 };
 
 use skit_application::{
     CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, RepositoryError,
-    SourcePermissions,
+    SourcePermissions, UpdateEntry,
 };
-use skit_domain::{EntryKind, StorageMode};
+use skit_domain::{EntryKind, EntrySettings, StorageMode};
 use skit_store::{FileStore, content_hash};
 use tempfile::TempDir;
 
@@ -28,6 +30,7 @@ fn request(name: &str, bytes: &[u8]) -> CreateEntry {
                 unix_mode: Some(0o755),
             },
         }),
+        settings: EntrySettings::default(),
     }
 }
 
@@ -62,11 +65,17 @@ fn create_is_atomic_mints_identity_and_preserves_payload_bytes() {
     let store = FileStore::new(root.path());
     let bytes = b"#!/usr/bin/env python3\r\nprint('hello')\r\n";
 
-    let entry = store.create(request("Hello", bytes)).unwrap();
+    let mut create = request("Hello", bytes);
+    create.settings.dependencies = vec!["requests>=2".to_owned()];
+    create.settings.interpreter = "python3.14".to_owned();
+    let entry = store.create(create).unwrap();
 
     assert_eq!(entry.slug.as_str(), "hello");
     assert!(entry.meta.id.is_some());
     assert_eq!(entry.meta.source_hash, content_hash(bytes));
+    let settings = EntrySettings::from_meta(&entry.meta);
+    assert_eq!(settings.dependencies, ["requests>=2"]);
+    assert_eq!(settings.interpreter, "python3.14");
     assert_eq!(
         fs::read(root.path().join("scripts/hello/script.py")).unwrap(),
         bytes
@@ -142,6 +151,56 @@ fn legacy_claim_stamps_once_and_old_handles_cannot_touch_a_reincarnation() {
 }
 
 #[test]
+fn a_legacy_mutation_claims_identity_before_it_writes() {
+    let root = TempDir::new().unwrap();
+    write_legacy_meta(&root, "legacy", "Legacy");
+    let store = FileStore::new(root.path());
+    let held = store.resolve("legacy").unwrap();
+    assert!(held.meta.id.is_none());
+
+    let described = store.describe(&held, "claimed during mutation").unwrap();
+
+    assert!(described.meta.id.is_some());
+    assert_eq!(described.meta.description, "claimed during mutation");
+    assert_eq!(store.resolve("legacy").unwrap().meta.id, described.meta.id);
+}
+
+#[test]
+fn metadata_mutations_preserve_every_unknown_toml_value() {
+    let root = TempDir::new().unwrap();
+    let directory = root.path().join("scripts/extensions");
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(
+        directory.join("meta.toml"),
+        r#"name = "Extensions"
+kind = "future-kind"
+mode = "reference"
+source = "/tmp/tool"
+release_at = 2026-08-08T12:34:56Z
+limit = inf
+future = { enabled = true, values = [1, 2, 3] }
+"#,
+    )
+    .unwrap();
+    let store = FileStore::new(root.path());
+
+    let held = store.resolve("extensions").unwrap();
+    store.describe(&held, "updated").unwrap();
+
+    let document = fs::read_to_string(directory.join("meta.toml"))
+        .unwrap()
+        .parse::<toml::Table>()
+        .unwrap();
+    assert_eq!(
+        document["release_at"].as_datetime().unwrap().to_string(),
+        "2026-08-08T12:34:56Z"
+    );
+    assert!(document["limit"].as_float().unwrap().is_infinite());
+    assert_eq!(document["future"]["enabled"].as_bool(), Some(true));
+    assert_eq!(document["future"]["values"].as_array().unwrap().len(), 3);
+}
+
+#[test]
 fn rename_describe_and_remove_preserve_identity_and_payload() {
     let root = TempDir::new().unwrap();
     let store = FileStore::new(root.path());
@@ -153,20 +212,18 @@ fn rename_describe_and_remove_preserve_identity_and_payload() {
     assert_eq!(described.meta.id, claimed.meta.id);
 
     let renamed = store.rename(&described, "After Name").unwrap();
-    assert_eq!(renamed.slug.as_str(), "after-name");
+    assert_eq!(renamed.slug.as_str(), "before");
     assert_eq!(renamed.meta.name, "After Name");
     assert_eq!(renamed.meta.id, claimed.meta.id);
     assert_eq!(
-        fs::read(root.path().join("scripts/after-name/script.py")).unwrap(),
+        fs::read(root.path().join("scripts/before/script.py")).unwrap(),
         b"payload"
     );
-    assert!(matches!(
-        store.resolve("before"),
-        Err(RepositoryError::NotFound { .. })
-    ));
+    assert_eq!(store.resolve("before").unwrap().meta.name, "After Name");
+    assert_eq!(store.resolve("After Name").unwrap().slug.as_str(), "before");
 
     assert_eq!(store.remove(&renamed).unwrap(), "After Name");
-    assert!(!root.path().join("scripts/after-name").exists());
+    assert!(!root.path().join("scripts/before").exists());
 }
 
 #[test]
@@ -192,6 +249,113 @@ fn copy_edit_is_identity_and_source_compare_and_swap() {
     assert_eq!(
         fs::read(root.path().join("scripts/edit/script.py")).unwrap(),
         b"next"
+    );
+}
+
+#[test]
+fn combined_update_commits_metadata_and_source_under_one_identity_check() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let claimed = store
+        .claim_identity(&store.create(request("Combined", b"before")).unwrap())
+        .unwrap();
+    let settings = EntrySettings {
+        dependencies: vec!["requests".to_owned()],
+        ..EntrySettings::default()
+    };
+
+    let updated = store
+        .update_entry(
+            &claimed,
+            UpdateEntry {
+                name: "After".to_owned(),
+                description: "complete".to_owned(),
+                settings,
+                workdir: "store".to_owned(),
+                source: Some(b"after".to_vec()),
+                expected_source_hash: claimed.meta.source_hash.clone(),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(updated.slug, claimed.slug);
+    assert_eq!(updated.meta.name, "After");
+    assert_eq!(updated.meta.description, "complete");
+    assert_eq!(updated.meta.workdir, "store");
+    assert_eq!(
+        fs::read(root.path().join("scripts/combined/script.py")).unwrap(),
+        b"after"
+    );
+    assert_eq!(store.resolve("After").unwrap(), updated);
+
+    let before_meta = fs::read(root.path().join("scripts/combined/meta.toml")).unwrap();
+    let error = store
+        .update_entry(
+            &updated,
+            UpdateEntry {
+                name: "Never".to_owned(),
+                description: "must not land".to_owned(),
+                settings: EntrySettings::default(),
+                workdir: "invoke".to_owned(),
+                source: Some(b"never".to_vec()),
+                expected_source_hash: "sha256:stale".to_owned(),
+            },
+        )
+        .unwrap_err();
+    assert!(matches!(error, RepositoryError::SourceChanged { .. }));
+    assert_eq!(
+        fs::read(root.path().join("scripts/combined/meta.toml")).unwrap(),
+        before_meta
+    );
+    assert_eq!(
+        fs::read(root.path().join("scripts/combined/script.py")).unwrap(),
+        b"after"
+    );
+}
+
+#[test]
+fn module_typed_copy_edits_ignore_dependency_support_files() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let mut create = request("Module", b"export const value = 1;\n");
+    create.kind = EntryKind::parse("js").unwrap();
+    create.source = "/original/module.mjs".to_owned();
+    create.payload.as_mut().unwrap().stored_name = Some("script.mjs".to_owned());
+    let entry = store.create(create).unwrap();
+    let directory = root.path().join("scripts/module");
+    fs::write(directory.join("package.json"), "{}\n").unwrap();
+    fs::write(directory.join("package-lock.json"), "{}\n").unwrap();
+    fs::write(directory.join(".skit-deps"), "stamp\n").unwrap();
+
+    let edited = store
+        .commit_copy_edit(
+            &entry,
+            b"export const value = 2;\n",
+            &entry.meta.source_hash,
+        )
+        .unwrap();
+    assert_eq!(
+        fs::read(directory.join("script.mjs")).unwrap(),
+        b"export const value = 2;\n"
+    );
+
+    let updated = store
+        .update_entry(
+            &edited,
+            UpdateEntry {
+                name: "Renamed module".to_owned(),
+                description: "updated".to_owned(),
+                settings: EntrySettings::default(),
+                workdir: "invoke".to_owned(),
+                source: Some(b"export const value = 3;\n".to_vec()),
+                expected_source_hash: edited.meta.source_hash.clone(),
+            },
+        )
+        .unwrap();
+    assert_eq!(updated.slug, entry.slug);
+    assert_eq!(
+        fs::read(directory.join("script.mjs")).unwrap(),
+        b"export const value = 3;\n"
     );
 }
 
@@ -229,4 +393,57 @@ fn concurrent_copy_edits_allow_exactly_one_source_cas_winner() {
     );
     let bytes = fs::read(root.path().join("scripts/race/script.py")).unwrap();
     assert!(bytes == b"left" || bytes == b"right");
+}
+
+#[test]
+fn removal_waits_for_the_dependency_transaction_lock() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let claimed = store
+        .claim_identity(&store.create(request("Locked", b"base")).unwrap())
+        .unwrap();
+    let lock_path = root.path().join(".locks/locked.skit-deps.lock");
+    fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)
+        .unwrap();
+    lock.lock().unwrap();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        done_tx.send(store.remove(&claimed)).unwrap();
+    });
+    started_rx.recv().unwrap();
+
+    assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
+    drop(lock);
+    assert_eq!(
+        done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap(),
+        "Locked"
+    );
+    worker.join().unwrap();
+}
+
+#[test]
+fn a_rename_that_keeps_the_same_slug_reuses_its_own_directory() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let entry = store.create(request("Report", b"print(1)\n")).unwrap();
+    assert_eq!(entry.slug.as_str(), "report");
+
+    // The new display name derives the same slug, so the entry keeps its address.
+    let renamed = store.rename(&entry, "  Report  ").unwrap();
+
+    assert_eq!(renamed.slug.as_str(), "report");
+    assert_eq!(renamed.meta.name, "Report");
+    assert!(root.path().join("scripts/report").is_dir());
+    assert_eq!(store.scan().unwrap().entries.len(), 1);
 }

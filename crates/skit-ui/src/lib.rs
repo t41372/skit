@@ -380,7 +380,7 @@ pub enum Effect {
 }
 
 /// Serializable state rendered by Ratatui today and available to a future Tauri shell.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LibraryState {
     entries: Vec<EntrySummary>,
     diagnostics: Vec<Diagnostic>,
@@ -428,7 +428,9 @@ impl LibraryState {
                     self.recompute_visible(selected.as_ref());
                 }
                 InputMode::Form => {
-                    if let Some(field) = self.focused_field_mut() {
+                    if let Screen::Form(form) = &mut self.screen
+                        && let Some(field) = form.fields.get_mut(form.focused)
+                    {
                         field.value.push(character);
                     }
                 }
@@ -441,7 +443,9 @@ impl LibraryState {
                     self.recompute_visible(selected.as_ref());
                 }
                 InputMode::Form => {
-                    if let Some(field) = self.focused_field_mut() {
+                    if let Screen::Form(form) = &mut self.screen
+                        && let Some(field) = form.fields.get_mut(form.focused)
+                    {
                         field.value.pop();
                     }
                 }
@@ -594,13 +598,6 @@ impl LibraryState {
 
     fn open(&self, request: HostRequest, selector: Option<String>) -> Effect {
         Effect::Open { request, selector }
-    }
-
-    fn focused_field_mut(&mut self) -> Option<&mut FormField> {
-        match &mut self.screen {
-            Screen::Form(form) => form.fields.get_mut(form.focused),
-            Screen::Library | Screen::Report(_) | Screen::ConfirmRemove { .. } => None,
-        }
     }
 
     fn move_form_focus(&mut self, delta: isize) {

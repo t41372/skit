@@ -91,7 +91,7 @@ pub fn render(frame: &mut Frame, state: &LibraryState) -> ViewGeometry {
 /// Draw the library browser with one explicit presentation locale.
 #[must_use]
 pub fn render_localized(frame: &mut Frame, state: &LibraryState, locale: Locale) -> ViewGeometry {
-    let footer_height = if frame.area().width < 60 { 7 } else { 5 };
+    let footer_height = required_footer_height(frame.area().width, state, locale);
     let areas = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -114,6 +114,33 @@ pub fn render_localized(frame: &mut Frame, state: &LibraryState, locale: Locale)
     geometry
 }
 
+fn required_footer_height(width: u16, state: &LibraryState, locale: Locale) -> u16 {
+    let inner_width = width.saturating_sub(2);
+    if inner_width == 0 {
+        return 2;
+    }
+    let labels = footer_labels(state, locale, inner_width < 58);
+    let mut rows = 1_u16;
+    let mut x = 0_u16;
+    for (label, _) in labels {
+        let width = u16::try_from(label.width()).unwrap_or(u16::MAX);
+        if x > 0 && x.saturating_add(width) > inner_width {
+            rows = rows.saturating_add(1);
+            x = 0;
+        }
+        x = x.saturating_add(width).saturating_add(2);
+    }
+    rows.saturating_add(u16::from(has_footer_note(state, inner_width)))
+        .saturating_add(2)
+}
+
+fn has_footer_note(state: &LibraryState, inner_width: u16) -> bool {
+    state.status().is_some()
+        || (matches!(state.screen(), Screen::Library)
+            && !state.diagnostics().is_empty()
+            && inner_width > 50)
+}
+
 fn render_header(frame: &mut Frame, area: Rect, state: &LibraryState, locale: Locale) {
     let title = match state.screen() {
         Screen::Library => {
@@ -134,7 +161,7 @@ fn render_header(frame: &mut Frame, area: Rect, state: &LibraryState, locale: Lo
             }
         }
         Screen::Form(form) => form_title(locale, form),
-        Screen::Report(report) => localize(locale, &report.title),
+        Screen::Report(report) => text(locale, &report.title).to_owned(),
         Screen::ConfirmRemove { .. } => text(locale, "Confirm removal").to_owned(),
     };
     frame.render_widget(
@@ -311,16 +338,16 @@ fn render_report(
         .map(|item| {
             Line::from(format!(
                 "[{}] {}: {}",
-                localize(locale, &item.status),
+                text(locale, &item.status),
                 if item.translate_label {
-                    localize(locale, &item.label)
+                    text(locale, &item.label)
                 } else {
-                    item.label.clone()
+                    &item.label
                 },
                 if item.translate_detail {
-                    localize(locale, &item.detail)
+                    text(locale, &item.detail)
                 } else {
-                    item.detail.clone()
+                    &item.detail
                 }
             ))
         })
@@ -356,6 +383,8 @@ fn render_footer(
 
     let compact = inner.width < 58;
     let labels = footer_labels(state, locale, compact);
+    let note_rows = u16::from(has_footer_note(state, inner.width));
+    let label_bottom = inner.bottom().saturating_sub(note_rows);
     let mut hits = Vec::new();
     let mut x = inner.x;
     let mut y = inner.y;
@@ -365,7 +394,7 @@ fn render_footer(
             x = inner.x;
             y = y.saturating_add(1);
         }
-        if y >= inner.bottom() {
+        if y >= label_bottom {
             break;
         }
         let chip_width = width.min(inner.right().saturating_sub(x));
@@ -396,7 +425,7 @@ fn render_footer(
         let width = u16::try_from(note.chars().count()).unwrap_or(u16::MAX);
         let note_area = Rect::new(
             rect_right(inner).saturating_sub(width.min(inner.width)),
-            inner.y,
+            inner.bottom().saturating_sub(1),
             width.min(inner.width),
             1,
         );
@@ -408,7 +437,7 @@ fn render_footer(
 fn footer_labels(state: &LibraryState, locale: Locale, compact: bool) -> Vec<(String, HitAction)> {
     let chip = |wide: &str, short: &str, label: &str, action| {
         let key = if compact { short } else { wide };
-        (format!("[{key}] {}", localize(locale, label)), action)
+        (format!("[{key}] {}", text(locale, label)), action)
     };
     match state.screen() {
         Screen::Library => vec![

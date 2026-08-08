@@ -1,15 +1,13 @@
 
 reference
 
-# Python
+# Python scripts are supported inputs. Ignore only their generated cache files.
 __pycache__/
 *.py[cod]
 .venv/
 dist/
 build/
 *.egg-info/
-.pytest_cache/
-.ruff_cache/
 
 # Rust
 /target/
@@ -22,13 +20,9 @@ lcov.info
 .claude/
 
 # Test / coverage artifacts
-.coverage
-.coverage.*
-coverage.xml
-htmlcov/
 mutants/
-.mutmut-cache
-.mutmut-results.txt
+mutants.out/
+mutants.out.old/
 
 # Benchmark pipeline artifacts (results are CI artifacts, never committed)
 .bench/

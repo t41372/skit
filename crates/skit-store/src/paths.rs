@@ -4,6 +4,7 @@ use std::{fs, path::PathBuf};
 
 use skit_application::RepositoryError;
 use skit_domain::{Entry, Slug, StorageMode};
+use skit_i18n::Message;
 
 use crate::FileStore;
 
@@ -87,26 +88,30 @@ impl FileStore {
         match files.as_slice() {
             [path] => Ok(path.clone()),
             [] => Err(RepositoryError::InvalidMutation {
-                reason: "copy entry has no stored payload".to_owned(),
+                reason: Message::new("copy entry has no stored payload"),
             }),
             _ => Err(RepositoryError::InvalidMutation {
-                reason: "copy entry has more than one possible stored payload".to_owned(),
+                reason: Message::new("copy entry has more than one possible stored payload"),
             }),
         }
     }
 }
 
-fn is_support_file(name: &str) -> bool {
+/// Whether skit itself owns this name inside an entry directory.
+///
+/// A stored payload is never one of these, so the payload scan must skip them. Missing one
+/// makes a private file look like a second payload and blocks every launch of that entry.
+pub(crate) fn is_support_file(name: &str) -> bool {
     matches!(
         name,
-        "meta.toml"
-            | "package.json"
-            | "package-lock.json"
-            | "bun.lock"
-            | "bun.lockb"
-            | "deno.lock"
-            | ".skit-deps"
-    ) || name.starts_with(".skit-deps.tmp-")
+        "meta.toml" | "package.json" | "package-lock.json" | "bun.lock" | "bun.lockb" | "deno.lock"
+    )
+        // the dependency stamp, its crash backup, and its staging directories
+        || name.starts_with(".skit-deps")
+        // one run's staged injected source
+        || name.starts_with(".run-")
+        // an atomic replacement sibling left by an interrupted write
+        || (name.starts_with('.') && name.ends_with(".tmp"))
 }
 
 fn io_error(

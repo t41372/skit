@@ -11,6 +11,7 @@ use std::{collections::BTreeMap, fmt};
 use parameters::ParamDecl;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
 use serde_json::{Map, Value};
+use skit_i18n::{Localize, Message};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -26,6 +27,16 @@ pub enum DomainError {
     /// The entry ID is not a UUID.
     #[error("invalid entry id: {0}")]
     InvalidEntryId(String),
+}
+
+impl Localize for DomainError {
+    fn message(&self) -> Message {
+        match self {
+            Self::InvalidSlug(value) => Message::new("invalid entry slug: {}").with(value),
+            Self::InvalidKind => Message::new("entry kind cannot be blank"),
+            Self::InvalidEntryId(value) => Message::new("invalid entry id: {}").with(value),
+        }
+    }
 }
 
 /// Identify one entry directory.
@@ -271,7 +282,7 @@ impl EntryMeta {
 /// Give typed access to v0.4 optional metadata fields.
 ///
 /// The on-disk field names do not change. Unknown fields stay in `EntryMeta::extra`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct EntrySettings {
     /// Command template text.
     pub template: String,

@@ -1,6 +1,6 @@
 //! Expand path patterns for launch inputs.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use glob::{MatchOptions, glob_with};
 use skit_application::glob_expansion::GlobExpander;
@@ -97,12 +97,28 @@ fn hidden_parts_match(pattern: &[String], candidate: &[String]) -> bool {
 
 fn text_components(path: &Path) -> Vec<String> {
     path.components()
-        .map(|component| match component {
-            Component::Normal(value) => value.to_string_lossy().into_owned(),
-            Component::Prefix(value) => value.as_os_str().to_string_lossy().into_owned(),
-            Component::RootDir => std::path::MAIN_SEPARATOR.to_string(),
-            Component::CurDir => ".".to_owned(),
-            Component::ParentDir => "..".to_owned(),
-        })
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hidden_parts_match;
+
+    #[test]
+    fn hidden_component_matching_is_total_for_mismatched_lengths() {
+        let values = |items: &[&str]| {
+            items
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert!(!hidden_parts_match(&values(&["a"]), &[]));
+        assert!(!hidden_parts_match(&[], &values(&["a"])));
+        assert!(hidden_parts_match(&values(&["**"]), &[]));
+        assert!(!hidden_parts_match(
+            &values(&["**", "target"]),
+            &values(&[".hidden", "target"]),
+        ));
+    }
 }

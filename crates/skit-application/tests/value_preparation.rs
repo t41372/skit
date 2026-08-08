@@ -215,3 +215,21 @@ fn degraded_fields_validate_as_free_text_and_missing_multi_values_become_empty_l
     );
     assert_eq!(prepared["files"], PreparedValue::Multiple(Vec::new()));
 }
+
+#[test]
+fn secret_token_spelling_is_literal_and_is_not_validated_after_resolution() {
+    let mut field = ParamDecl::new("port");
+    field.parameter_type = ParameterType::Int;
+    field.secret = true;
+
+    let prepared = prepare_values(
+        &[field],
+        &map(&[("port", "{env:PORT}")]),
+        &map(&[("port", "not-an-int")]),
+    )
+    .unwrap();
+    assert_eq!(
+        prepared["port"],
+        PreparedValue::Scalar("not-an-int".to_owned())
+    );
+}

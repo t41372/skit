@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
+use skit_i18n::{Localize, Message};
 use thiserror::Error;
 
 /// How a parameter is anchored in user-authored source.
@@ -198,7 +199,7 @@ pub enum ParameterInvariant {
 }
 
 /// One universal parameter declaration.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ParamDecl {
     /// Stable form/value key.
     pub name: String,
@@ -434,6 +435,14 @@ impl ParamDecl {
 pub struct DefaultCoercionError {
     value: String,
     parameter_type: &'static str,
+}
+
+impl Localize for DefaultCoercionError {
+    fn message(&self) -> Message {
+        Message::new("{} is not a valid {} default")
+            .quoted(&self.value)
+            .with(self.parameter_type)
+    }
 }
 
 /// Coerce one user-entered default according to the declaration's scalar type.

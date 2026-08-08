@@ -54,6 +54,15 @@ fn an_empty_secret_reads_its_named_environment_source() {
 }
 
 #[test]
+fn an_empty_secret_without_an_environment_source_stays_empty() {
+    let mut secret = ParamDecl::new("api_key");
+    secret.secret = true;
+
+    let values = resolve_values(&[secret], &BTreeMap::new(), &context()).unwrap();
+    assert_eq!(values["api_key"], "");
+}
+
+#[test]
 fn a_missing_secret_environment_source_is_a_named_structured_error() {
     let mut secret = ParamDecl::new("api_key");
     secret.secret = true;

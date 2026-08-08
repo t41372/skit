@@ -1,0 +1,29 @@
+[package]
+name = "skit-benchmarks"
+description = "Performance subjects for skit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+codspeed-criterion-compat.workspace = true
+ratatui-core.workspace = true
+skit-application.workspace = true
+skit-domain.workspace = true
+skit-language.workspace = true
+skit-tui.workspace = true
+skit-ui.workspace = true
+
+[[bench]]
+name = "core"
+harness = false
+
+[lints]
+workspace = true
+

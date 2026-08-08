@@ -220,4 +220,5 @@ fn forget_removes_all_per_entry_state() {
         .unwrap();
     service.forget(&slug()).unwrap();
     assert_eq!(service.load(&slug()), PersistedFormState::default());
+    assert!(service.repository().states.lock().unwrap().is_empty());
 }

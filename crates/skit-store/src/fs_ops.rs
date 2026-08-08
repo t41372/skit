@@ -54,5 +54,40 @@ pub(crate) fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
         let _ = fs::remove_file(&temp);
         return Err(error);
     }
+    let _ = sync_directory(parent);
     Ok(())
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> io::Result<()> {
+    File::open(path)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> io::Result<()> {
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{acquire_lock, atomic_write_bytes, sync_directory};
+    use tempfile::TempDir;
+
+    #[test]
+    fn path_validation_and_failed_replacement_leave_no_temporary_file() {
+        assert!(acquire_lock(std::path::Path::new("")).is_err());
+        assert!(atomic_write_bytes(std::path::Path::new(""), b"value").is_err());
+
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        assert!(atomic_write_bytes(&target, b"value").is_err());
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_real_directory_can_be_synchronized_after_a_state_replace() {
+        let root = TempDir::new().unwrap();
+        sync_directory(root.path()).unwrap();
+    }
 }

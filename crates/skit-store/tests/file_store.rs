@@ -1,7 +1,9 @@
 use std::fs;
 
-use skit_application::{DiagnosticCode, EntryRepository, RepositoryError};
-use skit_domain::StorageMode;
+use skit_application::{
+    CreateEntry, DiagnosticCode, EntryMutationRepository, EntryRepository, RepositoryError,
+};
+use skit_domain::{EntryKind, EntrySettings, StorageMode};
 use skit_store::FileStore;
 use tempfile::TempDir;
 
@@ -285,4 +287,62 @@ fn an_exact_slug_with_missing_metadata_reports_io_instead_of_falling_back() {
             ..
         }
     ));
+}
+
+#[test]
+fn a_missing_metadata_file_is_an_io_diagnostic_during_best_effort_scan() {
+    let root = TempDir::new().unwrap();
+    fs::create_dir_all(root.path().join("scripts/empty")).unwrap();
+
+    let scan = FileStore::new(root.path()).scan().unwrap();
+    assert!(scan.entries.is_empty());
+    assert_eq!(scan.diagnostics.len(), 1);
+    assert_eq!(scan.diagnostics[0].code, DiagnosticCode::Io);
+    assert_eq!(scan.diagnostics[0].slug.as_deref(), Some("empty"));
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unusable_metadata_timestamp_never_hides_a_readable_entry() {
+    use std::time::{Duration, SystemTime};
+
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    for name in ["Alpha", "Beta"] {
+        store
+            .create(CreateEntry {
+                name: name.to_owned(),
+                kind: EntryKind::parse("command").unwrap(),
+                mode: StorageMode::Reference,
+                source: String::new(),
+                workdir: "invoke".to_owned(),
+                description: String::new(),
+                payload: None,
+                settings: EntrySettings::default(),
+            })
+            .unwrap();
+    }
+
+    // A restored archive can carry a timestamp the registry stamp cannot hold.
+    let meta = root.path().join("scripts/alpha/meta.toml");
+    let ancient = SystemTime::UNIX_EPOCH - Duration::from_secs(400 * 365 * 24 * 60 * 60);
+    fs::File::open(&meta)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(ancient))
+        .unwrap();
+
+    let scan = store.scan().unwrap();
+
+    let mut names = scan
+        .entries
+        .iter()
+        .map(|entry| entry.name.clone())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(names, ["Alpha", "Beta"], "a stamp must not hide an entry");
+    assert!(store.resolve("alpha").is_ok());
+
+    // The rebuild keeps going past the entry it cannot stamp.
+    assert_eq!(store.rebuild_registry().unwrap(), 1);
+    assert_eq!(store.scan().unwrap().entries.len(), 2);
 }

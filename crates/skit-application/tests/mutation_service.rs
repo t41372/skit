@@ -2,9 +2,12 @@ use std::sync::Mutex;
 
 use skit_application::{
     CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, LibraryScan,
-    LibraryService, RepositoryError, SourcePermissions,
+    LibraryService, RepositoryError, SourcePermissions, UpdateEntry,
 };
-use skit_domain::{Entry, EntryKind, EntryMeta, EntrySettings, Slug, StorageMode};
+use skit_domain::{
+    Entry, EntryKind, EntryMeta, EntrySettings, Slug, StorageMode,
+    parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType},
+};
 
 #[derive(Debug)]
 struct RecordingRepository {
@@ -24,10 +27,10 @@ impl EntryRepository for RecordingRepository {
 
 impl EntryMutationRepository for RecordingRepository {
     fn create(&self, request: CreateEntry) -> Result<Entry, RepositoryError> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(format!("create:{}", request.name));
+        self.calls.lock().unwrap().push(format!(
+            "create:{}:{}:{}",
+            request.name, request.settings.template, request.settings.interpolate
+        ));
         Ok(self.entry.clone())
     }
 
@@ -57,6 +60,14 @@ impl EntryMutationRepository for RecordingRepository {
             .lock()
             .unwrap()
             .push(format!("settings:{}:{workdir}", entry.slug));
+        Ok(self.entry.clone())
+    }
+
+    fn update_entry(&self, entry: &Entry, update: UpdateEntry) -> Result<Entry, RepositoryError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("update:{}:{}", entry.slug, update.name));
         Ok(self.entry.clone())
     }
 
@@ -117,14 +128,39 @@ fn mutation_use_cases_delegate_every_value_to_the_port() {
             stored_name: Some("script.py".to_owned()),
             permissions: SourcePermissions::default(),
         }),
+        settings: EntrySettings {
+            template: "run {value}".to_owned(),
+            interpolate: false,
+            ..EntrySettings::default()
+        },
     };
 
     assert_eq!(service.add(request).unwrap(), expected);
     assert_eq!(service.claim_identity(&expected).unwrap(), expected);
     assert_eq!(service.describe(&expected, "described").unwrap(), expected);
+    let command_settings = EntrySettings {
+        template: "true".to_owned(),
+        ..EntrySettings::default()
+    };
     assert_eq!(
         service
-            .update_settings(&expected, &EntrySettings::default(), "store")
+            .update_settings(&expected, &command_settings, "store")
+            .unwrap(),
+        expected
+    );
+    assert_eq!(
+        service
+            .update_entry(
+                &expected,
+                UpdateEntry {
+                    name: "Updated".to_owned(),
+                    description: "complete".to_owned(),
+                    settings: command_settings,
+                    workdir: "invoke".to_owned(),
+                    source: None,
+                    expected_source_hash: String::new(),
+                },
+            )
             .unwrap(),
         expected
     );
@@ -139,13 +175,53 @@ fn mutation_use_cases_delegate_every_value_to_the_port() {
     assert_eq!(
         service.repository().calls.lock().unwrap().as_slice(),
         [
-            "create:Created",
+            "create:Created:run {value}:false",
             "claim:alpha",
             "describe:alpha:described",
             "settings:alpha:store",
+            "update:alpha:Updated",
             "rename:alpha:Renamed",
             "remove:alpha",
             "edit:alpha:edited:sha256:base",
         ]
     );
+}
+
+#[test]
+fn settings_policy_refuses_invalid_workdirs_and_parameter_invariants_before_the_port() {
+    let expected = entry();
+    let service = LibraryService::new(RecordingRepository {
+        entry: expected.clone(),
+        calls: Mutex::new(Vec::new()),
+    });
+    let base = EntrySettings {
+        template: "true".to_owned(),
+        ..EntrySettings::default()
+    };
+
+    for workdir in ["relative/path", ""] {
+        assert!(matches!(
+            service.update_settings(&expected, &base, workdir),
+            Err(RepositoryError::InvalidMutation { .. })
+        ));
+    }
+
+    let mut mismatch = ParamDecl::new("name");
+    mismatch.binding = ParameterBinding::Const;
+    mismatch.delivery = ParameterDelivery::Flag;
+    let mut settings = base.clone();
+    settings.parameters = vec![mismatch];
+    assert!(matches!(
+        service.update_settings(&expected, &settings, "invoke"),
+        Err(RepositoryError::InvalidMutation { .. })
+    ));
+
+    let mut empty_choice = ParamDecl::new("mode");
+    empty_choice.parameter_type = ParameterType::Choice;
+    settings.parameters = vec![empty_choice];
+    assert!(matches!(
+        service.update_settings(&expected, &settings, "invoke"),
+        Err(RepositoryError::InvalidMutation { .. })
+    ));
+    assert!(service.repository().calls.lock().unwrap().is_empty());
 }

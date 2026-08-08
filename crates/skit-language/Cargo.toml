@@ -9,6 +9,9 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+skit-i18n.workspace = true
+pep440_rs.workspace = true
+pep508_rs.workspace = true
 regex.workspace = true
 serde_json.workspace = true
 shlex.workspace = true
@@ -22,6 +25,7 @@ tree-sitter-typescript.workspace = true
 skit-domain.workspace = true
 
 [dev-dependencies]
+skit-i18n.workspace = true
 tempfile.workspace = true
 
 [lints]

@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 use skit_application::delivery::Assembly;
 use skit_domain::{Entry, EntryKind, EntryMeta, EntrySettings, Slug, StorageMode};
 use skit_runtime::{
-    LaunchError, LaunchPaths, ProgramProbe, PromptRunner, build_launch_plan,
+    LaunchError, LaunchPaths, ProgramProbe, PromptRunner, build_launch_plan, build_launch_preview,
     render_command_template,
 };
 
@@ -139,6 +139,27 @@ fn python_can_use_a_verified_private_uv_path() {
 }
 
 #[test]
+fn python_preview_uses_the_configured_program_name_without_path_lookup() {
+    let mut preview = entry("python");
+    preview.meta.workdir = "invoke".to_owned();
+    let probe = probe_for("/data/scripts/demo/script.py");
+
+    let plan = build_launch_preview(
+        &preview,
+        &paths("/data/scripts/demo/script.py"),
+        &Assembly::default(),
+        None,
+        None,
+        None,
+        &probe,
+    )
+    .unwrap();
+
+    assert_eq!(plan.program, PathBuf::from("uv"));
+    assert!(plan.display.starts_with("uv run --no-project"));
+}
+
+#[test]
 fn direct_and_interpreted_kinds_use_the_expected_program_shapes() {
     let cases = [
         ("shell", "bash", vec!["/copy/script.sh"]),
@@ -198,6 +219,22 @@ fn direct_and_interpreted_kinds_use_the_expected_program_shapes() {
     .unwrap();
     assert_eq!(plan.program, PathBuf::from("/bin/demo"));
     assert_eq!(plan.args, ["x"]);
+
+    let mut copied = entry("exe");
+    copied.meta.mode = StorageMode::Copy;
+    copied.meta.source = "/deleted/original".to_owned();
+    copied.meta.workdir = "invoke".to_owned();
+    let probe = probe_for("/data/scripts/demo/script");
+    let plan = build_launch_plan(
+        &copied,
+        &paths("/data/scripts/demo/script"),
+        &Assembly::default(),
+        None,
+        None,
+        &probe,
+    )
+    .unwrap();
+    assert_eq!(plan.program, PathBuf::from("/data/scripts/demo/script"));
 }
 
 #[test]
@@ -237,6 +274,21 @@ fn javascript_runtime_order_is_deno_then_bun_then_node_and_a_pin_wins() {
     )
     .unwrap();
     assert_eq!(plan.program, PathBuf::from("/bin/node"));
+
+    probe
+        .programs
+        .insert("deno".to_owned(), PathBuf::from("/bin/deno"));
+    let plan = build_launch_plan(
+        &entry("ts"),
+        &paths("/copy/script.js"),
+        &Assembly::default(),
+        None,
+        None,
+        &probe,
+    )
+    .unwrap();
+    assert_eq!(plan.program, PathBuf::from("/bin/deno"));
+    assert_eq!(plan.args, ["run", "--allow-all", "/copy/script.js"]);
 }
 
 #[test]
@@ -264,6 +316,21 @@ fn command_template_quotes_unquoted_values_and_refuses_quoted_placeholders() {
         ),
         Err(LaunchError::UnsafeTemplatePlaceholder { .. })
     ));
+    assert!(matches!(
+        render_command_template(
+            "tool --name '{name}'",
+            &BTreeMap::from([("name".to_owned(), "value".to_owned())]),
+        ),
+        Err(LaunchError::UnsafeTemplatePlaceholder { .. })
+    ));
+    assert_eq!(
+        render_command_template("tool {not-valid!}", &BTreeMap::new()).unwrap(),
+        "tool {not-valid!}"
+    );
+    assert_eq!(
+        render_command_template("tool 'literal'", &BTreeMap::new()).unwrap(),
+        "tool 'literal'"
+    );
 }
 
 #[test]
@@ -307,6 +374,21 @@ fn prompt_runner_is_argv_only_and_requires_one_prompt_token() {
             &Assembly::default(),
             Some("body"),
             Some(&invalid),
+            &probe,
+        ),
+        Err(LaunchError::InvalidPromptRunner { .. })
+    ));
+    let empty = PromptRunner {
+        name: "empty".to_owned(),
+        argv: Vec::new(),
+    };
+    assert!(matches!(
+        build_launch_plan(
+            &prompt,
+            &paths("/copy/prompt.md"),
+            &Assembly::default(),
+            Some("body"),
+            Some(&empty),
             &probe,
         ),
         Err(LaunchError::InvalidPromptRunner { .. })
@@ -382,4 +464,93 @@ fn unknown_kinds_and_missing_runtimes_are_typed_refusals() {
         ),
         Err(LaunchError::ProgramNotFound { .. })
     ));
+
+    let mut missing_file_probe = shell_probe;
+    missing_file_probe
+        .programs
+        .insert("bash".to_owned(), PathBuf::from("/bin/bash"));
+    missing_file_probe.files.clear();
+    assert!(matches!(
+        build_launch_plan(
+            &entry("shell"),
+            &paths("/copy/script.sh"),
+            &Assembly::default(),
+            None,
+            None,
+            &missing_file_probe,
+        ),
+        Err(LaunchError::TargetMissing { .. })
+    ));
+
+    assert!(matches!(
+        build_launch_plan(
+            &entry("js"),
+            &paths("/copy/tool.txt"),
+            &Assembly::default(),
+            None,
+            None,
+            &probe,
+        ),
+        Err(LaunchError::ProgramNotFound { name }) if name == "deno, bun, or node"
+    ));
+}
+
+#[test]
+fn an_executable_preview_still_checks_the_local_file_and_permission_bits() {
+    let mut exe = entry("exe");
+    exe.meta.mode = StorageMode::Reference;
+    exe.meta.source = "/bin/demo".to_owned();
+    exe.meta.workdir = "invoke".to_owned();
+
+    // The preview probe answers program lookups itself but delegates every file question.
+    let plan = build_launch_preview(
+        &exe,
+        &paths("/bin/demo"),
+        &Assembly::default(),
+        None,
+        None,
+        None,
+        &probe_for("/bin/demo"),
+    )
+    .unwrap();
+    assert_eq!(plan.program, PathBuf::from("/bin/demo"));
+
+    let mut present = probe_for("/bin/demo");
+    present.executable.clear();
+    let error = build_launch_preview(
+        &exe,
+        &paths("/bin/demo"),
+        &Assembly::default(),
+        None,
+        None,
+        None,
+        &present,
+    )
+    .unwrap_err();
+    assert!(matches!(error, LaunchError::TargetNotExecutable { .. }));
+}
+
+#[test]
+fn a_protected_pi_prompt_preview_shows_the_added_newline() {
+    let mut prompt = entry("prompt");
+    prompt.meta.workdir = "invoke".to_owned();
+    let runner = PromptRunner {
+        name: "pi".to_owned(),
+        argv: vec!["pi".to_owned(), "{{prompt}}".to_owned()],
+    };
+    let probe = probe_for("/data/scripts/demo/prompt.md");
+
+    let plan = build_launch_preview(
+        &prompt,
+        &paths("/data/scripts/demo/prompt.md"),
+        &Assembly::default(),
+        Some("--version"),
+        Some("--version"),
+        Some(&runner),
+        &probe,
+    )
+    .unwrap();
+
+    // The runner is Pi, so skit keeps the body in message mode and the preview shows it.
+    assert!(plan.display.contains("\n--version"));
 }

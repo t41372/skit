@@ -2,8 +2,9 @@ use std::fs;
 
 use skit_application::{
     CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, SourcePermissions,
+    UpdateEntry,
 };
-use skit_domain::{EntryKind, StorageMode};
+use skit_domain::{EntryKind, EntrySettings, StorageMode};
 use skit_store::FileStore;
 use tempfile::TempDir;
 use toml::{Table, Value};
@@ -32,6 +33,7 @@ fn request(
             stored_name: Some(stored_name.to_owned()),
             permissions: SourcePermissions::default(),
         }),
+        settings: EntrySettings::default(),
     }
 }
 
@@ -96,11 +98,21 @@ fn a_late_registry_save_failure_rolls_back_every_mutation_shape() {
             b"base",
         ))
         .unwrap();
+    let combined = store
+        .create(request(
+            "Combined",
+            "python",
+            StorageMode::Copy,
+            Some("script.py"),
+            b"combined",
+        ))
+        .unwrap();
 
     let describe = store.claim_identity(&describe).unwrap();
     let rename = store.claim_identity(&rename).unwrap();
     let remove = store.claim_identity(&remove).unwrap();
     let edit = store.claim_identity(&edit).unwrap();
+    let combined = store.claim_identity(&combined).unwrap();
     fs::create_dir_all(root.path().join(".trash")).unwrap();
 
     let original_mode = fs::metadata(root.path()).unwrap().permissions().mode() & 0o777;
@@ -151,7 +163,68 @@ fn a_late_registry_save_failure_rolls_back_every_mutation_shape() {
         edit.meta.source_hash
     );
 
+    assert!(
+        store
+            .update_entry(
+                &combined,
+                UpdateEntry {
+                    name: "Combined after".to_owned(),
+                    description: "after".to_owned(),
+                    settings: EntrySettings::default(),
+                    workdir: "store".to_owned(),
+                    source: Some(b"after".to_vec()),
+                    expected_source_hash: combined.meta.source_hash.clone(),
+                },
+            )
+            .is_err()
+    );
+    assert_eq!(
+        fs::read(root.path().join("scripts/combined/script.py")).unwrap(),
+        b"combined"
+    );
+    let restored = store.resolve("combined").unwrap();
+    assert_eq!(restored.meta.name, "Combined");
+    assert_eq!(restored.meta.description, "description for Combined");
+    assert_eq!(restored.meta.source_hash, combined.meta.source_hash);
+
     drop(restore);
+}
+
+#[cfg(unix)]
+#[test]
+fn remove_succeeds_when_trash_cleanup_must_be_deferred() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let entry = store
+        .create(request(
+            "Deferred cleanup",
+            "python",
+            StorageMode::Copy,
+            Some("script.py"),
+            b"payload",
+        ))
+        .unwrap();
+    let directory = root.path().join("scripts/deferred-cleanup");
+    let held = directory.join("held");
+    fs::create_dir(&held).unwrap();
+    fs::write(held.join("item"), b"held").unwrap();
+    fs::set_permissions(&held, fs::Permissions::from_mode(0o555)).unwrap();
+
+    assert_eq!(store.remove(&entry).unwrap(), "Deferred cleanup");
+    assert!(store.resolve("deferred-cleanup").is_err());
+    let deferred = fs::read_dir(root.path().join(".trash"))
+        .unwrap()
+        .next()
+        .expect("failed cleanup must stay in trash for a later retry")
+        .unwrap()
+        .path();
+    assert!(
+        deferred.is_dir(),
+        "failed cleanup must stay in trash for a later retry"
+    );
+    fs::set_permissions(deferred.join("held"), fs::Permissions::from_mode(0o755)).unwrap();
 }
 
 #[test]
@@ -345,4 +418,41 @@ fn reference_rows_keep_the_original_target_without_copying_payload() {
         .and_then(|row| row.get("target"))
         .and_then(Value::as_str);
     assert_eq!(target, Some("/original/artifact.bin"));
+}
+
+#[test]
+fn registry_rebuild_handles_missing_noise_invalid_slugs_and_corrupt_entries() {
+    let missing = TempDir::new().unwrap();
+    assert_eq!(
+        FileStore::new(missing.path()).rebuild_registry().unwrap(),
+        0
+    );
+
+    let root = TempDir::new().unwrap();
+    let scripts = root.path().join("scripts");
+    fs::create_dir_all(scripts.join("Upper")).unwrap();
+    fs::write(scripts.join("README"), "noise").unwrap();
+    fs::create_dir_all(scripts.join("broken")).unwrap();
+    fs::write(scripts.join("broken/meta.toml"), "not = [toml").unwrap();
+    let store = FileStore::new(root.path());
+    assert_eq!(store.rebuild_registry().unwrap(), 0);
+
+    fs::create_dir_all(scripts.join("valid")).unwrap();
+    fs::write(
+        scripts.join("valid/meta.toml"),
+        "name = \"Valid\"\nkind = \"command\"\n",
+    )
+    .unwrap();
+    assert_eq!(store.rebuild_registry().unwrap(), 1);
+    assert!(
+        read_registry(&root)
+            .get("entries")
+            .and_then(Value::as_table)
+            .unwrap()
+            .contains_key("valid")
+    );
+
+    let blocked = TempDir::new().unwrap();
+    fs::write(blocked.path().join("scripts"), "file").unwrap();
+    assert!(FileStore::new(blocked.path()).rebuild_registry().is_err());
 }

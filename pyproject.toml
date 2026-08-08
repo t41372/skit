@@ -49,4 +49,8 @@ bindings = "bin"
 manifest-path = "crates/skit-cli/Cargo.toml"
 locked = true
 strip = true
-include = [{ path = "skills/skit/SKILL.md", format = "sdist" }]
+include = [
+    { path = "skills/skit/SKILL.md", format = "sdist" },
+    { path = "crates/skit-benchmarks/**/*", format = "sdist" },
+    { path = "tests/corpus/**/*", format = "sdist" },
+]

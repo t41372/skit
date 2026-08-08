@@ -2,7 +2,7 @@
 
 use std::{
     collections::BTreeMap,
-    fs,
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -73,16 +73,8 @@ impl FileStore {
 
         let mut entries = Vec::new();
         for item in reader {
-            let item = item.map_err(|error| RepositoryError::Io {
-                operation: "scan",
-                path: scripts_dir.display().to_string(),
-                reason: error.to_string(),
-            })?;
-            let file_type = item.file_type().map_err(|error| RepositoryError::Io {
-                operation: "inspect",
-                path: item.path().display().to_string(),
-                reason: error.to_string(),
-            })?;
+            let item = strict_directory_item(item, &scripts_dir)?;
+            let file_type = strict_file_type(item.file_type(), &item.path())?;
             if !file_type.is_dir() {
                 continue;
             }
@@ -119,66 +111,7 @@ impl EntryRepository for FileStore {
         let mut repairs = Vec::new();
         let mut scan = LibraryScan::default();
         for item in reader {
-            let item = match item {
-                Ok(item) => item,
-                Err(error) => {
-                    scan.diagnostics.push(Diagnostic {
-                        code: DiagnosticCode::Io,
-                        slug: None,
-                        message: error.to_string(),
-                    });
-                    continue;
-                }
-            };
-            let candidate = item.file_name().to_string_lossy().into_owned();
-            let file_type = match item.file_type() {
-                Ok(file_type) => file_type,
-                Err(error) => {
-                    scan.diagnostics.push(Diagnostic {
-                        code: DiagnosticCode::Io,
-                        slug: Some(candidate),
-                        message: error.to_string(),
-                    });
-                    continue;
-                }
-            };
-            if !file_type.is_dir() {
-                continue;
-            }
-            let slug = match Slug::parse(candidate.clone()) {
-                Ok(slug) => slug,
-                Err(error) => {
-                    scan.diagnostics.push(Diagnostic {
-                        code: DiagnosticCode::InvalidSlug,
-                        slug: Some(candidate),
-                        message: error.to_string(),
-                    });
-                    continue;
-                }
-            };
-            let meta_path = item.path().join("meta.toml");
-            let mtime_ns = match metadata_mtime_ns(&meta_path) {
-                Ok(mtime_ns) => mtime_ns,
-                Err(error) => {
-                    scan.diagnostics.push(diagnostic_from(error, &slug));
-                    continue;
-                }
-            };
-            if let Some(summary) = registry
-                .as_ref()
-                .and_then(|registry| registry.summary(&slug, mtime_ns))
-            {
-                scan.entries.push(summary);
-                continue;
-            }
-
-            match self.read_entry(slug.clone()) {
-                Ok(entry) => {
-                    scan.entries.push(summary_from(&entry));
-                    repairs.push((entry, mtime_ns));
-                }
-                Err(error) => scan.diagnostics.push(diagnostic_from(error, &slug)),
-            }
+            scan_directory_item(self, registry.as_ref(), item, &mut scan, &mut repairs);
         }
         Registry::try_repair(self.data_dir(), &repairs);
         Ok(scan)
@@ -216,13 +149,7 @@ impl EntryRepository for FileStore {
             1 => {
                 let slug = candidates.pop().expect("length checked");
                 let entry = self.read_entry(slug)?;
-                if entry.meta.name == query {
-                    Ok(entry)
-                } else {
-                    Err(RepositoryError::NotFound {
-                        query: query.to_owned(),
-                    })
-                }
+                entry_with_name(entry, query)
             }
             _ => {
                 let mut candidates = candidates
@@ -236,6 +163,111 @@ impl EntryRepository for FileStore {
                 })
             }
         }
+    }
+}
+
+fn strict_directory_item(
+    item: io::Result<fs::DirEntry>,
+    directory: &Path,
+) -> Result<fs::DirEntry, RepositoryError> {
+    item.map_err(|error| RepositoryError::Io {
+        operation: "scan",
+        path: directory.display().to_string(),
+        reason: error.to_string(),
+    })
+}
+
+fn strict_file_type(
+    file_type: io::Result<fs::FileType>,
+    path: &Path,
+) -> Result<fs::FileType, RepositoryError> {
+    file_type.map_err(|error| RepositoryError::Io {
+        operation: "inspect",
+        path: path.display().to_string(),
+        reason: error.to_string(),
+    })
+}
+
+fn record_file_type(
+    candidate: String,
+    file_type: io::Result<fs::FileType>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<fs::FileType> {
+    match file_type {
+        Ok(file_type) => Some(file_type),
+        Err(error) => {
+            diagnostics.push(Diagnostic {
+                code: DiagnosticCode::Io,
+                slug: Some(candidate),
+                message: error.to_string(),
+            });
+            None
+        }
+    }
+}
+
+fn scan_directory_item(
+    store: &FileStore,
+    registry: Option<&Registry>,
+    item: io::Result<fs::DirEntry>,
+    scan: &mut LibraryScan,
+    repairs: &mut Vec<(Entry, i64)>,
+) {
+    let item = match item {
+        Ok(item) => item,
+        Err(error) => {
+            scan.diagnostics.push(Diagnostic {
+                code: DiagnosticCode::Io,
+                slug: None,
+                message: error.to_string(),
+            });
+            return;
+        }
+    };
+    let candidate = item.file_name().to_string_lossy().into_owned();
+    if !record_file_type(candidate.clone(), item.file_type(), &mut scan.diagnostics)
+        .is_some_and(|file_type| file_type.is_dir())
+    {
+        return;
+    }
+    let slug = match Slug::parse(candidate.clone()) {
+        Ok(slug) => slug,
+        Err(error) => {
+            scan.diagnostics.push(Diagnostic {
+                code: DiagnosticCode::InvalidSlug,
+                slug: Some(candidate),
+                message: error.to_string(),
+            });
+            return;
+        }
+    };
+    // The mtime only stamps the registry cache. An unusable one costs the cache,
+    // never the entry.
+    let mtime_ns = metadata_mtime_ns(&item.path().join("meta.toml")).ok();
+    if let Some(summary) = mtime_ns
+        .and_then(|mtime_ns| registry.and_then(|registry| registry.summary(&slug, mtime_ns)))
+    {
+        scan.entries.push(summary);
+        return;
+    }
+    match store.read_entry(slug.clone()) {
+        Ok(entry) => {
+            scan.entries.push(summary_from(&entry));
+            if let Some(mtime_ns) = mtime_ns {
+                repairs.push((entry, mtime_ns));
+            }
+        }
+        Err(error) => scan.diagnostics.push(diagnostic_from(error, &slug)),
+    }
+}
+
+fn entry_with_name(entry: Entry, query: &str) -> Result<Entry, RepositoryError> {
+    if entry.meta.name == query {
+        Ok(entry)
+    } else {
+        Err(RepositoryError::NotFound {
+            query: query.to_owned(),
+        })
     }
 }
 
@@ -336,4 +368,87 @@ const fn schema_one() -> u32 {
 
 fn origin() -> String {
     "origin".to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn directory_error_adapters_keep_strict_and_best_effort_policies_separate() {
+        let root = TempDir::new().unwrap();
+        fs::write(root.path().join("scripts"), "file").unwrap();
+        assert!(matches!(
+            FileStore::new(root.path()).scan_entries(),
+            Err(RepositoryError::Io {
+                operation: "scan",
+                ..
+            })
+        ));
+
+        assert!(matches!(
+            strict_directory_item(Err(io::Error::other("iteration failed")), root.path()),
+            Err(RepositoryError::Io {
+                operation: "scan",
+                ..
+            })
+        ));
+        assert!(matches!(
+            strict_file_type(Err(io::Error::other("inspect failed")), root.path()),
+            Err(RepositoryError::Io {
+                operation: "inspect",
+                ..
+            })
+        ));
+
+        let mut scan = LibraryScan::default();
+        let mut repairs = Vec::new();
+        scan_directory_item(
+            &FileStore::new(root.path()),
+            None,
+            Err(io::Error::other("iteration failed")),
+            &mut scan,
+            &mut repairs,
+        );
+        assert_eq!(scan.diagnostics[0].code, DiagnosticCode::Io);
+        assert_eq!(scan.diagnostics[0].slug, None);
+
+        let scan_root = TempDir::new().unwrap();
+        fs::create_dir_all(scan_root.path().join("scripts/Upper")).unwrap();
+        assert!(
+            FileStore::new(scan_root.path())
+                .scan_entries()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn inspection_errors_and_changed_names_become_typed_results() {
+        let mut diagnostics = Vec::new();
+        assert!(
+            record_file_type(
+                "demo".to_owned(),
+                Err(io::Error::other("inspect failed")),
+                &mut diagnostics,
+            )
+            .is_none()
+        );
+        assert_eq!(diagnostics[0].code, DiagnosticCode::Io);
+        assert_eq!(diagnostics[0].slug.as_deref(), Some("demo"));
+
+        let entry = Entry {
+            slug: Slug::parse("demo").unwrap(),
+            meta: EntryMeta::minimal("Current", EntryKind::parse("command").unwrap()),
+        };
+        assert!(entry_with_name(entry.clone(), "Old").is_err());
+        assert_eq!(
+            entry_with_name(entry, "Current").unwrap().meta.name,
+            "Current"
+        );
+    }
 }

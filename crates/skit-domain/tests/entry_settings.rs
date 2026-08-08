@@ -106,3 +106,15 @@ fn writing_settings_preserves_unknown_extension_fields_and_legacy_omission_rules
     assert_eq!(meta.extra["parameters"][0]["name"], json!("count"));
     assert_eq!(meta.extra["parameters"][0]["type"], json!("int"));
 }
+
+#[test]
+fn writing_disabled_interpolation_keeps_the_explicit_legacy_false_value() {
+    let mut meta = meta();
+    EntrySettings {
+        interpolate: false,
+        ..EntrySettings::default()
+    }
+    .write_to_meta(&mut meta);
+
+    assert_eq!(meta.extra["interpolate"], json!(false));
+}

@@ -8,15 +8,19 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
+    str::FromStr,
     sync::LazyLock,
 };
 
+use pep440_rs::VersionSpecifiers;
+use pep508_rs::{Requirement, VerbatimUrl};
 use regex::{Captures, Regex};
 use serde_json::Value as JsonValue;
 use skit_domain::parameters::{
     ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue, is_secret_name,
     synthesized_placeholder,
 };
+use skit_i18n::{Localize, Message};
 use thiserror::Error;
 use toml::Value as TomlValue;
 
@@ -48,15 +52,6 @@ static JS_CONST: LazyLock<Regex> = LazyLock::new(|| {
     )
         .expect("fixed JavaScript constant pattern")
 });
-static JS_IMPORT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?m)\bfrom\s+['"]([^'"]+)['"]|\bimport\s+['"]([^'"]+)['"]"#)
-        .expect("fixed JavaScript import pattern")
-});
-static JS_REQUIRE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)"#)
-        .expect("fixed JavaScript require pattern")
-});
-
 /// Report a source-analysis or rewrite refusal.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum LanguageError {
@@ -68,10 +63,57 @@ pub enum LanguageError {
     BindingNotFound { name: String },
     /// Inline metadata is malformed or cannot be encoded.
     #[error("inline metadata is not valid: {reason}")]
-    InvalidMetadata { reason: String },
+    InvalidMetadata { reason: Message },
     /// A parser-backed source has syntax errors.
     #[error("source is not valid {kind} syntax")]
     InvalidSource { kind: String },
+}
+
+/// Report an invalid Python package or version constraint.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+pub enum PythonMetadataError {
+    /// A package requirement does not use the PEP 508 grammar.
+    #[error("invalid PEP 508 requirement {value:?}: {reason}")]
+    InvalidRequirement { value: String, reason: String },
+    /// A Python version constraint does not use the PEP 440 grammar.
+    #[error("invalid PEP 440 version constraint {value:?}: {reason}")]
+    InvalidVersionConstraint { value: String, reason: String },
+}
+
+impl Localize for LanguageError {
+    fn message(&self) -> Message {
+        match self {
+            Self::UnsupportedKind { kind } => {
+                Message::new("source operation is not supported for entry kind {}").with(kind)
+            }
+            Self::BindingNotFound { name } => {
+                Message::new("parameter {} no longer has a matching source binding").quoted(name)
+            }
+            Self::InvalidMetadata { reason } => {
+                Message::new("inline metadata is not valid: {}").nested(reason.clone())
+            }
+            Self::InvalidSource { kind } => {
+                Message::new("source is not valid {} syntax").with(kind)
+            }
+        }
+    }
+}
+
+impl Localize for PythonMetadataError {
+    fn message(&self) -> Message {
+        match self {
+            Self::InvalidRequirement { value, reason } => {
+                Message::new("invalid PEP 508 requirement {}: {}")
+                    .quoted(value)
+                    .with(reason)
+            }
+            Self::InvalidVersionConstraint { value, reason } => {
+                Message::new("invalid PEP 440 version constraint {}: {}")
+                    .quoted(value)
+                    .with(reason)
+            }
+        }
+    }
 }
 
 /// Effective PEP 723 fields used by Python copy entries.
@@ -126,16 +168,51 @@ fn extension_kind(name: &str) -> Option<&'static str> {
     .find_map(|(extension, kind)| name.ends_with(extension).then_some(kind))
 }
 
-fn shebang_kind(line: &str) -> Option<&'static str> {
-    let line = line.trim().strip_prefix("#!")?.trim();
+/// Return the program name from one shebang line.
+#[must_use]
+pub fn shebang_program(line: &str) -> Option<&str> {
+    let line = line.strip_prefix("#!")?.trim();
     let mut words = line.split_whitespace();
     let first = words.next()?;
-    let program = if basename(first).eq_ignore_ascii_case("env") {
+    let program = if basename(first) == "env" {
         words.find(|value| !value.starts_with('-'))?
     } else {
         first
     };
-    match basename(program).to_ascii_lowercase().as_str() {
+    Some(basename(program))
+}
+
+/// Return the PEP 440 constraint from a versioned Python program name.
+#[must_use]
+pub fn python_version_pin(program: &str) -> Option<String> {
+    let program = basename(program);
+    let version = program.strip_prefix("python3.")?;
+    let mut parts = version.split('.');
+    let minor = parts.next()?;
+    if minor.is_empty() || !minor.chars().all(|character| character.is_ascii_digit()) {
+        return None;
+    }
+    let micro = parts.collect::<Vec<_>>();
+    if micro
+        .iter()
+        .any(|part| part.is_empty() || !part.chars().all(|character| character.is_ascii_digit()))
+    {
+        return None;
+    }
+    let minor = minor.parse::<u64>().ok()?;
+    let next_minor = minor.checked_add(1)?;
+    let suffix = if micro.is_empty() {
+        String::new()
+    } else {
+        format!(".{}", micro.join("."))
+    };
+    Some(format!(">=3.{minor}{suffix},<3.{next_minor}"))
+}
+
+fn shebang_kind(line: &str) -> Option<&'static str> {
+    let program = shebang_program(line)?;
+    let normalized = program.to_ascii_lowercase();
+    match normalized.as_str() {
         "python" | "python3" => Some("python"),
         "bash" | "sh" | "zsh" | "dash" | "ash" | "ksh" => Some("shell"),
         "fish" => Some("fish"),
@@ -145,12 +222,33 @@ fn shebang_kind(line: &str) -> Option<&'static str> {
         "perl" => Some("perl"),
         "lua" | "luajit" => Some("lua"),
         "rscript" => Some("r"),
+        _ if python_version_pin(&normalized).is_some() => Some("python"),
         _ => None,
     }
 }
 
 fn basename(value: &str) -> &str {
     value.rsplit(['/', '\\']).next().unwrap_or(value)
+}
+
+/// Validate one PEP 508 package requirement.
+pub fn validate_pep508_requirement(value: &str) -> Result<(), PythonMetadataError> {
+    Requirement::<VerbatimUrl>::from_str(value)
+        .map(|_| ())
+        .map_err(|error| PythonMetadataError::InvalidRequirement {
+            value: value.to_owned(),
+            reason: error.to_string(),
+        })
+}
+
+/// Validate one PEP 440 version-specifier list.
+pub fn validate_pep440_specifiers(value: &str) -> Result<(), PythonMetadataError> {
+    VersionSpecifiers::from_str(value)
+        .map(|_| ())
+        .map_err(|error| PythonMetadataError::InvalidVersionConstraint {
+            value: value.to_owned(),
+            reason: error.to_string(),
+        })
 }
 
 /// Read managed parameter declarations from the inline metadata block.
@@ -208,6 +306,11 @@ pub fn write_managed_params(
         let whole = captures.get(0).expect("block match has a full range");
         let body = captures.name("body").map_or("", |capture| capture.as_str());
         let kept = strip_skit_section(body, leader);
+        let table =
+            parse_inline_metadata(text, leader).ok_or_else(|| LanguageError::InvalidMetadata {
+                reason: Message::new("the inline metadata block is not valid TOML"),
+            })?;
+        let managed = render_merged_skit_toml(&table, params)?;
         let mut block = format!("{leader} /// script{newline}");
         if !kept.is_empty() {
             block.push_str(&kept);
@@ -215,12 +318,12 @@ pub fn write_managed_params(
                 block.push_str(newline);
             }
         }
-        if !params.is_empty() {
+        if let Some(managed) = managed {
             if !kept.is_empty() {
                 block.push_str(leader);
                 block.push_str(newline);
             }
-            block.push_str(&commentify(&render_managed_toml(params), leader, newline));
+            block.push_str(&commentify(&managed, leader, newline));
         }
         block.push_str(leader);
         block.push_str(" ///");
@@ -293,26 +396,23 @@ pub fn write_uv_metadata(
                 .join("\n");
             toml::from_str::<toml::Table>(&stripped).map_err(|error| {
                 LanguageError::InvalidMetadata {
-                    reason: error.to_string(),
+                    reason: Message::new("the comment metadata block is not valid TOML: {}")
+                        .with(error),
                 }
             })?
         }
         None => toml::Table::new(),
     };
-    if dependencies.is_empty() {
-        table.remove("dependencies");
-    } else {
-        table.insert(
-            "dependencies".to_owned(),
-            TomlValue::Array(
-                dependencies
-                    .iter()
-                    .cloned()
-                    .map(TomlValue::String)
-                    .collect(),
-            ),
-        );
-    }
+    table.insert(
+        "dependencies".to_owned(),
+        TomlValue::Array(
+            dependencies
+                .iter()
+                .cloned()
+                .map(TomlValue::String)
+                .collect(),
+        ),
+    );
     if requires_python.is_empty() {
         table.remove("requires-python");
     } else {
@@ -330,9 +430,7 @@ fn rewrite_inline_metadata(
     table: &toml::Table,
 ) -> Result<String, LanguageError> {
     let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
-    let encoded = toml::to_string(table).map_err(|error| LanguageError::InvalidMetadata {
-        reason: error.to_string(),
-    })?;
+    let encoded = toml::to_string(table).expect("a TOML table always serializes");
     let block = format!(
         "{leader} /// script{newline}{}{leader} ///{newline}",
         commentify(&encoded, leader, newline)
@@ -352,6 +450,9 @@ fn rewrite_inline_metadata(
     };
     let mut output = String::with_capacity(text.len() + block.len());
     output.push_str(&text[..insert_at]);
+    if insert_at == text.len() && text.starts_with("#!") && !text.ends_with(['\n', '\r']) {
+        output.push_str(newline);
+    }
     output.push_str(&block);
     output.push_str(&text[insert_at..]);
     Ok(output)
@@ -387,7 +488,8 @@ fn metadata_leader(kind: &str) -> Option<&'static str> {
 
 fn block_regex(leader: &str) -> Regex {
     Regex::new(&format!(
-        r"(?ms)^(?:{}) /// script\r?\n(?P<body>.*?)(?P<close>^(?:{}) ///(?:\r?\n|$))",
+        r"(?m)^(?:{}) /// script[^\S\n]*\n(?P<body>(?:^(?:{})(?:| [^\r\n]*)\r?\n)*?)(?P<close>^(?:{}) ///[^\S\n]*(?:\n|$))",
+        regex::escape(leader),
         regex::escape(leader),
         regex::escape(leader)
     ))
@@ -417,7 +519,11 @@ fn strip_skit_section(body: &str, leader: &str) -> String {
     for line in body.lines() {
         let stripped = strip_comment_prefix(line, leader).trim();
         if stripped.starts_with('[') {
-            skipping = stripped.starts_with("[tool.skit]") || stripped.starts_with("[[tool.skit.");
+            // `render_merged_skit_toml` re-emits everything under `tool.skit`, so every
+            // shape of that table must leave here. Keeping one would declare it twice.
+            skipping = stripped.starts_with("[tool.skit]")
+                || stripped.starts_with("[tool.skit.")
+                || stripped.starts_with("[[tool.skit.");
         }
         if !skipping {
             output.push(line.trim_end_matches('\r'));
@@ -442,6 +548,110 @@ fn render_managed_toml(params: &[ParamDecl]) -> String {
         }
     }
     lines.join("\n") + "\n"
+}
+
+fn render_merged_skit_toml(
+    metadata: &toml::Table,
+    params: &[ParamDecl],
+) -> Result<Option<String>, LanguageError> {
+    let existing_tool = metadata.get("tool");
+    let existing_skit = match existing_tool {
+        None => toml::Table::new(),
+        Some(TomlValue::Table(tool)) => match tool.get("skit") {
+            None => toml::Table::new(),
+            Some(TomlValue::Table(skit)) => skit.clone(),
+            Some(_) => {
+                return Err(LanguageError::InvalidMetadata {
+                    reason: Message::new("tool.skit is not a table"),
+                });
+            }
+        },
+        Some(_) => {
+            return Err(LanguageError::InvalidMetadata {
+                reason: Message::new("tool is not a table"),
+            });
+        }
+    };
+    let mut skit = existing_skit;
+    let existing_rows = skit
+        .remove("params")
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default();
+    let mut rows_by_name = BTreeMap::<String, toml::Table>::new();
+    let mut anonymous_rows = Vec::new();
+    for value in existing_rows {
+        let TomlValue::Table(row) = value else {
+            anonymous_rows.push(value);
+            continue;
+        };
+        if let Some(name) = row.get("name").and_then(TomlValue::as_str) {
+            rows_by_name.insert(name.to_owned(), row);
+        } else {
+            anonymous_rows.push(TomlValue::Table(row));
+        }
+    }
+
+    if params.is_empty() {
+        skit.remove("schema");
+    } else {
+        skit.insert("schema".to_owned(), TomlValue::Integer(1));
+        let mut rows = params
+            .iter()
+            .map(|parameter| {
+                let mut row = rows_by_name.remove(&parameter.name).unwrap_or_default();
+                for key in [
+                    "name",
+                    "kind",
+                    "type",
+                    "default",
+                    "prompt",
+                    "order",
+                    "secret",
+                    "env_source",
+                ] {
+                    row.remove(key);
+                }
+                for (key, value) in parameter.to_block_map() {
+                    row.insert(key, json_to_toml(value));
+                }
+                TomlValue::Table(row)
+            })
+            .collect::<Vec<_>>();
+        rows.extend(anonymous_rows);
+        skit.insert("params".to_owned(), TomlValue::Array(rows));
+    }
+    if skit.is_empty() {
+        return Ok(None);
+    }
+    let mut tool = toml::Table::new();
+    tool.insert("skit".to_owned(), TomlValue::Table(skit));
+    let mut root = toml::Table::new();
+    root.insert("tool".to_owned(), TomlValue::Table(tool));
+    // Every value came from a TOML document or from a validated declaration.
+    Ok(Some(
+        toml::to_string(&root).expect("skit metadata holds only TOML values"),
+    ))
+}
+
+fn json_to_toml(value: JsonValue) -> TomlValue {
+    match value {
+        JsonValue::String(value) => TomlValue::String(value),
+        JsonValue::Bool(value) => TomlValue::Boolean(value),
+        JsonValue::Number(value) => value.as_i64().map_or_else(
+            || TomlValue::Float(value.as_f64().unwrap_or_default()),
+            TomlValue::Integer,
+        ),
+        JsonValue::Array(values) => {
+            TomlValue::Array(values.into_iter().map(json_to_toml).collect())
+        }
+        JsonValue::Object(values) => TomlValue::Table(
+            values
+                .into_iter()
+                .map(|(key, value)| (key, json_to_toml(value)))
+                .collect(),
+        ),
+        JsonValue::Null => TomlValue::String(String::new()),
+    }
 }
 
 fn json_toml_literal(value: &JsonValue) -> String {
@@ -537,12 +747,13 @@ fn python_cli_params(text: &str) -> Vec<ParamDecl> {
         }
     }
     for captures in PYTHON_TYPER.captures_iter(text) {
-        let Some(full) = captures.get(0) else {
-            continue;
-        };
-        let Some(open_offset) = full.as_str().rfind('(') else {
-            continue;
-        };
+        let full = captures
+            .get(0)
+            .expect("a regular expression match is complete");
+        let open_offset = full
+            .as_str()
+            .rfind('(')
+            .expect("the Typer pattern ends with an opening parenthesis");
         let open = full.start() + open_offset;
         let Some(body) = parenthesized_body(text, open) else {
             continue;
@@ -713,9 +924,10 @@ fn fish_cli_params(text: &str) -> Vec<ParamDecl> {
     let mut output = Vec::new();
     for line in text.lines().filter(|line| line.contains("argparse")) {
         for captures in quoted.captures_iter(line) {
-            let Some(raw) = captures.get(1).map(|value| value.as_str()) else {
-                continue;
-            };
+            let raw = captures
+                .get(1)
+                .expect("the fish option pattern captures its value")
+                .as_str();
             let takes_value = raw.ends_with('=') || raw.ends_with("=+");
             let raw = raw.trim_end_matches(&['=', '+'][..]);
             let parts = raw.split('/').collect::<Vec<_>>();
@@ -780,9 +992,7 @@ pub fn detect_candidates(kind: &str, text: &str) -> Vec<ParamDecl> {
 }
 
 fn python_candidates(text: &str) -> Vec<ParamDecl> {
-    let Some(tree) = parsed_tree("python", text) else {
-        return Vec::new();
-    };
+    let tree = parsed_tree("python", text).expect("the source passed the Python parser gate");
     let root = tree.root_node();
     let mut positioned = Vec::<(usize, ParamDecl)>::new();
     let mut cursor = root.walk();
@@ -834,21 +1044,20 @@ fn collect_python_statement_constants(
     let Some(assignment) = assignment.filter(|node| node.kind() == "assignment") else {
         return;
     };
-    let Some(left) = assignment.child_by_field_name("left") else {
+    let left = assignment
+        .child_by_field_name("left")
+        .expect("a Python assignment has a left field");
+    let name = node_text(left, text).expect("tree-sitter byte ranges are inside the source");
+    if name.starts_with('_') {
         return;
-    };
-    let Some(name) = node_text(left, text).filter(|name| !name.starts_with('_')) else {
-        return;
-    };
+    }
     if left.kind() != "identifier" {
         return;
     }
-    let Some(right) = assignment.child_by_field_name("right") else {
-        return;
-    };
-    let Some(source) = node_text(right, text) else {
-        return;
-    };
+    let right = assignment
+        .child_by_field_name("right")
+        .expect("a Python assignment has a right field");
+    let source = node_text(right, text).expect("tree-sitter byte ranges are inside the source");
     let Some((parameter_type, default)) = infer_python_literal(source) else {
         return;
     };
@@ -1176,9 +1385,10 @@ fn javascript_candidates(text: &str) -> Vec<ParamDecl> {
         let Some(captures) = JS_CONST.captures(line) else {
             continue;
         };
-        let Some(name) = captures.get(1).map(|value| value.as_str()) else {
-            continue;
-        };
+        let name = captures
+            .get(1)
+            .expect("the JavaScript constant pattern captures its name")
+            .as_str();
         let source = captures.get(2).map_or("", |value| value.as_str().trim());
         let Some((parameter_type, default)) = infer_javascript_literal(source) else {
             continue;
@@ -1252,9 +1462,7 @@ fn fish_top_level_statements(text: &str) -> Vec<Vec<String>> {
             let Some(words) = shlex::split(&segment) else {
                 continue;
             };
-            if words.is_empty() {
-                continue;
-            }
+            debug_assert!(!words.is_empty(), "a nonempty shell segment has one word");
             if words.first().map(String::as_str) == Some("end") {
                 depth = depth.saturating_sub(1);
                 continue;
@@ -1367,6 +1575,46 @@ pub fn placeholder_params(kind: &str, text: &str) -> Vec<ParamDecl> {
         .collect()
 }
 
+/// Replace managed prompt placeholders in one pass over the original text.
+#[must_use]
+pub fn render_prompt_body(
+    text: &str,
+    values: &BTreeMap<String, String>,
+    interpolate: bool,
+) -> String {
+    if !interpolate {
+        return text.to_owned();
+    }
+
+    let bytes = text.as_bytes();
+    let mut output = String::with_capacity(text.len());
+    let mut copied_until = 0;
+    let mut index = 0;
+    while index < bytes.len() {
+        if !bytes[index..].starts_with(b"{{") {
+            index += 1;
+            continue;
+        }
+        let start = index + 2;
+        let Some(relative_end) = bytes[start..].windows(2).position(|window| window == b"}}")
+        else {
+            break;
+        };
+        let end = start + relative_end;
+        let name = &text[start..end];
+        if valid_identifier(name)
+            && let Some(value) = values.get(name)
+        {
+            output.push_str(&text[copied_until..index]);
+            output.push_str(value);
+            copied_until = end + 2;
+        }
+        index = end + 2;
+    }
+    output.push_str(&text[copied_until..]);
+    output
+}
+
 fn scan_placeholders(text: &str, doubled: bool) -> Vec<String> {
     let bytes = text.as_bytes();
     let mut output = Vec::new();
@@ -1452,9 +1700,7 @@ fn inject_python_values(
     declarations: &[ParamDecl],
     values: &BTreeMap<String, String>,
 ) -> Result<String, LanguageError> {
-    let tree = parsed_tree("python", text).ok_or_else(|| LanguageError::InvalidSource {
-        kind: "python".to_owned(),
-    })?;
+    let tree = parsed_tree("python", text).expect("the source passed the Python parser gate");
     let selected = declarations
         .iter()
         .filter(|declaration| {
@@ -1472,23 +1718,19 @@ fn inject_python_values(
         if node.kind() != "assignment" {
             return;
         }
-        let Some(left) = node.child_by_field_name("left") else {
-            return;
-        };
-        let Some(name) = node_text(left, text) else {
-            return;
-        };
+        let left = node
+            .child_by_field_name("left")
+            .expect("a Python assignment has a left field");
+        let name = node_text(left, text).expect("tree-sitter byte ranges are inside the source");
         let Some(declaration) = selected.iter().find(|declaration| {
             declaration.binding == ParameterBinding::Const && declaration.name == name
         }) else {
             return;
         };
-        let Some(right) = node.child_by_field_name("right") else {
-            return;
-        };
-        let Some(source) = node_text(right, text) else {
-            return;
-        };
+        let right = node
+            .child_by_field_name("right")
+            .expect("a Python assignment has a right field");
+        let source = node_text(right, text).expect("tree-sitter byte ranges are inside the source");
         if infer_python_literal(source).is_none() {
             return;
         }
@@ -1498,7 +1740,12 @@ fn inject_python_values(
         edits.push((
             right.start_byte(),
             right.end_byte(),
-            replacement_literal(source, value, quote_python_string),
+            replacement_literal(
+                declaration.parameter_type,
+                value,
+                quote_python_string,
+                python_bool_literal,
+            ),
         ));
         matched.insert(declaration.name.clone());
     });
@@ -1592,30 +1839,32 @@ fn inject_shell_values(
                         .map(|declaration| (*declaration, variable))
                 })
                 .collect::<Vec<_>>();
-            if rows.iter().all(Option::is_some) {
-                let indent = &line[..line.len() - line.trim_start().len()];
-                let replacement = rows
-                    .into_iter()
-                    .flatten()
-                    .map(|(declaration, variable)| {
-                        matched.insert(declaration.name.clone());
-                        format!(
-                            "{variable}={}",
-                            quote_posix(
-                                values
-                                    .get(&declaration.name)
-                                    .expect("selected declarations have values")
-                            )
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                edits.push((
-                    offset,
-                    offset + line.len(),
-                    format!("{indent}{replacement}"),
-                ));
+            if !rows.iter().all(Option::is_some) {
+                offset += line_with_end.len();
+                continue;
             }
+            let indent = &line[..line.len() - line.trim_start().len()];
+            let replacement = rows
+                .into_iter()
+                .flatten()
+                .map(|(declaration, variable)| {
+                    matched.insert(declaration.name.clone());
+                    format!(
+                        "{variable}={}",
+                        quote_posix(
+                            values
+                                .get(&declaration.name)
+                                .expect("selected declarations have values")
+                        )
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            edits.push((
+                offset,
+                offset + line.len(),
+                format!("{indent}{replacement}"),
+            ));
         }
 
         if let Some((name, _, self_default)) = shell_assignment(line)
@@ -1692,16 +1941,18 @@ fn inject_javascript(
         r"(?m)^([ \t]*(?:const|let|var)[ \t]+{name}(?:[ \t]*:[^=\r\n]+)?[ \t]*=[ \t]*)([^;\r\n]+)(;?[ \t]*)(\r?)$"
     ))
     .expect("escaped JavaScript constant pattern");
-    let Some(captures) = pattern.captures(text) else {
+    if pattern.captures(text).is_none() {
         return Err(LanguageError::BindingNotFound {
             name: declaration.name.clone(),
         });
-    };
-    let source = captures
-        .get(2)
-        .map_or("", |capture| capture.as_str().trim());
-    let literal = replacement_literal(source, value, quote_javascript_string);
-    replace_first(text, &pattern, |captures| {
+    }
+    let literal = replacement_literal(
+        declaration.parameter_type,
+        value,
+        quote_javascript_string,
+        javascript_bool_literal,
+    );
+    Ok(replace_first(text, &pattern, |captures| {
         format!(
             "{}{}{}{}",
             captures.get(1).map_or("", |item| item.as_str()),
@@ -1710,9 +1961,7 @@ fn inject_javascript(
             captures.get(4).map_or("", |item| item.as_str())
         )
     })
-    .ok_or_else(|| LanguageError::BindingNotFound {
-        name: declaration.name.clone(),
-    })
+    .expect("the same JavaScript constant pattern matched before replacement"))
 }
 
 fn replace_first<F>(text: &str, pattern: &Regex, replacement: F) -> Option<String>
@@ -1728,29 +1977,65 @@ where
     Some(output)
 }
 
-fn replacement_literal(source: &str, value: &str, string_quote: fn(&str) -> String) -> String {
-    if source.trim().parse::<i64>().is_ok() && value.trim().parse::<i64>().is_ok() {
-        return value.trim().to_owned();
+/// Render one accepted value as a literal of the target language.
+///
+/// `bool_literal` belongs to the language, not to the stored constant: Python accepts only
+/// `True`/`False`, so a Boolean parameter over `FLAG = 1` must still inject `True`.
+fn replacement_literal(
+    parameter_type: ParameterType,
+    value: &str,
+    string_quote: fn(&str) -> String,
+    bool_literal: fn(bool) -> &'static str,
+) -> String {
+    match parameter_type {
+        ParameterType::Int => value
+            .trim()
+            .parse::<i64>()
+            .map_or_else(|_| string_quote(value), |value| value.to_string()),
+        ParameterType::Float => value.trim().parse::<f64>().map_or_else(
+            |_| string_quote(value),
+            |value| {
+                let mut rendered = value.to_string();
+                if !rendered.contains(['.', 'e', 'E']) {
+                    rendered.push_str(".0");
+                }
+                rendered
+            },
+        ),
+        ParameterType::Bool => canonical_bool(value).map_or_else(
+            || string_quote(value),
+            |value| bool_literal(value).to_owned(),
+        ),
+        ParameterType::Str | ParameterType::Choice | ParameterType::Path => string_quote(value),
     }
-    if source.trim().parse::<f64>().is_ok() && value.trim().parse::<f64>().is_ok() {
-        return value.trim().to_owned();
+}
+
+const fn python_bool_literal(value: bool) -> &'static str {
+    if value { "True" } else { "False" }
+}
+
+const fn javascript_bool_literal(value: bool) -> &'static str {
+    if value { "true" } else { "false" }
+}
+
+fn canonical_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "y" | "on" => Some(true),
+        "false" | "0" | "no" | "n" | "off" => Some(false),
+        _ => None,
     }
-    if matches!(source.trim(), "true" | "false" | "True" | "False") {
-        let lower = value.trim().to_ascii_lowercase();
-        if matches!(lower.as_str(), "true" | "false") {
-            let title_case = source.starts_with('T') || source.starts_with('F');
-            return if title_case {
-                if lower == "true" { "True" } else { "False" }.to_owned()
-            } else {
-                lower
-            };
-        }
-    }
-    string_quote(value)
 }
 
 fn quote_python_string(value: &str) -> String {
-    format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
+    format!(
+        "'{}'",
+        value
+            .replace('\\', "\\\\")
+            .replace('\'', "\\'")
+            .replace('\n', "\\n")
+            .replace('\r', "\\r")
+            .replace('\t', "\\t")
+    )
 }
 
 fn quote_javascript_string(value: &str) -> String {
@@ -1779,11 +2064,18 @@ fn quote_posix(value: &str) -> String {
 /// Return declared package dependencies found in source text.
 #[must_use]
 pub fn external_dependencies(kind: &str, text: &str) -> Vec<String> {
-    if !parser_accepts(kind, text) {
-        return Vec::new();
-    }
-    match kind {
-        "python" => {
+    external_dependencies_at(kind, text, None)
+}
+
+/// Return declared package dependencies and exclude local Python modules.
+///
+/// `script_dir` is the directory that contains the original script. Python
+/// imports from this directory do not name package dependencies.
+#[must_use]
+pub fn external_dependencies_at(kind: &str, text: &str, script_dir: Option<&Path>) -> Vec<String> {
+    // One parse serves the gate and the scan, so a refused source never reaches an analyzer.
+    match (kind, parsed_tree(kind, text)) {
+        ("python", Some(tree)) => {
             let inline = parse_inline_metadata(text, "#")
                 .and_then(|table| table.get("dependencies").cloned())
                 .and_then(|value| value.as_array().cloned())
@@ -1792,12 +2084,12 @@ pub fn external_dependencies(kind: &str, text: &str) -> Vec<String> {
                 .filter_map(|value| value.as_str().map(str::to_owned))
                 .collect::<Vec<_>>();
             if inline.is_empty() {
-                python_dependencies(text)
+                python_dependencies(&tree, text, script_dir)
             } else {
                 inline
             }
         }
-        "js" | "ts" => javascript_dependencies(text),
+        ("js" | "ts", Some(tree)) => javascript_dependencies(&tree, text),
         _ => Vec::new(),
     }
 }
@@ -1860,29 +2152,94 @@ fn walk_tree<'tree>(
     }
 }
 
-fn python_dependencies(text: &str) -> Vec<String> {
+fn python_dependencies(
+    tree: &tree_sitter::Tree,
+    text: &str,
+    script_dir: Option<&Path>,
+) -> Vec<String> {
     let mut output = BTreeSet::new();
-    for line in text.lines().map(str::trim) {
-        if let Some(imports) = line.strip_prefix("import ") {
-            for item in imports.split(',') {
-                if let Some(name) = item.split_whitespace().next() {
-                    add_python_dependency(&mut output, name);
+    walk_tree(tree.root_node(), &mut |node| match node.kind() {
+        "import_statement" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                let name_node = if child.kind() == "aliased_import" {
+                    first_named_child(child)
+                } else {
+                    Some(child)
+                };
+                if let Some(name) = name_node.and_then(|item| node_text(item, text)) {
+                    add_python_dependency(&mut output, name, script_dir);
                 }
             }
-        } else if let Some(from) = line.strip_prefix("from ")
-            && let Some(name) = from.split_whitespace().next()
-            && !name.starts_with('.')
-        {
-            add_python_dependency(&mut output, name);
         }
-    }
+        "import_from_statement" => {
+            if let Some(module) = node
+                .child_by_field_name("module_name")
+                .and_then(|item| node_text(item, text))
+                && !module.starts_with('.')
+            {
+                add_python_dependency(&mut output, module, script_dir);
+            }
+        }
+        _ => {}
+    });
     output.into_iter().collect()
 }
 
-fn add_python_dependency(output: &mut BTreeSet<String>, import: &str) {
+fn add_python_dependency(output: &mut BTreeSet<String>, import: &str, script_dir: Option<&Path>) {
     let name = import.split('.').next().unwrap_or_default();
-    if !name.is_empty() && !PYTHON_STDLIB.contains(&name) {
-        output.insert(name.to_owned());
+    if name.is_empty()
+        || name.starts_with('_')
+        || PYTHON_STDLIB.contains(&name)
+        || is_local_python_module(script_dir, name)
+    {
+        return;
+    }
+    let package = python_package_name(name);
+    if validate_pep508_requirement(package).is_ok() {
+        output.insert(package.to_owned());
+    }
+}
+
+fn is_local_python_module(script_dir: Option<&Path>, module: &str) -> bool {
+    let Some(directory) = script_dir else {
+        return false;
+    };
+    if directory.join(format!("{module}.py")).is_file() {
+        return true;
+    }
+    directory.join(module).read_dir().is_ok_and(|entries| {
+        entries.filter_map(Result::ok).any(|entry| {
+            entry.path().is_file()
+                && entry.path().extension().and_then(|value| value.to_str()) == Some("py")
+        })
+    })
+}
+
+fn python_package_name(import: &str) -> &str {
+    match import {
+        "PIL" => "Pillow",
+        "cv2" => "opencv-python",
+        "yaml" => "PyYAML",
+        "bs4" => "beautifulsoup4",
+        "sklearn" => "scikit-learn",
+        "skimage" => "scikit-image",
+        "dotenv" => "python-dotenv",
+        "dateutil" => "python-dateutil",
+        "serial" => "pyserial",
+        "jwt" => "PyJWT",
+        "docx" => "python-docx",
+        "pptx" => "python-pptx",
+        "fitz" => "PyMuPDF",
+        "OpenSSL" => "pyOpenSSL",
+        "Crypto" => "pycryptodome",
+        "Cryptodome" => "pycryptodomex",
+        "git" => "GitPython",
+        "attr" => "attrs",
+        "slugify" => "python-slugify",
+        "usb" => "pyusb",
+        "win32com" | "win32api" => "pywin32",
+        _ => import,
     }
 }
 
@@ -2047,42 +2404,126 @@ const PYTHON_STDLIB: &[&str] = &[
     "zoneinfo",
 ];
 
-fn javascript_dependencies(text: &str) -> Vec<String> {
+fn javascript_dependencies(tree: &tree_sitter::Tree, text: &str) -> Vec<String> {
     let mut output = BTreeSet::new();
-    for captures in JS_IMPORT.captures_iter(text) {
-        if let Some(specifier) = captures.get(1).or_else(|| captures.get(2))
-            && let Some(package) = package_name(specifier.as_str())
+    walk_tree(tree.root_node(), &mut |node| {
+        if let Some(specifier) = javascript_import_source(node, text)
+            && let Some(package) = package_name(&specifier)
         {
             output.insert(package);
         }
-    }
-    for captures in JS_REQUIRE.captures_iter(text) {
-        if let Some(specifier) = captures.get(1)
-            && let Some(package) = package_name(specifier.as_str())
-        {
-            output.insert(package);
-        }
-    }
+    });
     output.into_iter().collect()
 }
 
+fn javascript_import_source(node: tree_sitter::Node<'_>, text: &str) -> Option<String> {
+    if matches!(node.kind(), "import_statement" | "export_statement") {
+        return node
+            .child_by_field_name("source")
+            .and_then(|source| javascript_string_value(source, text));
+    }
+    if node.kind() != "call_expression" {
+        return None;
+    }
+    let function = node.child_by_field_name("function")?;
+    if !matches!(node_text(function, text), Some("require" | "import")) {
+        return None;
+    }
+    let arguments = node.child_by_field_name("arguments")?;
+    if arguments.named_child_count() != 1 {
+        return None;
+    }
+    javascript_string_value(arguments.named_child(0)?, text)
+}
+
+fn javascript_string_value(node: tree_sitter::Node<'_>, text: &str) -> Option<String> {
+    if node.kind() != "string" {
+        return None;
+    }
+    let mut output = String::new();
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        output.push_str(node_text(child, text)?);
+    }
+    Some(output)
+}
+
 fn package_name(specifier: &str) -> Option<String> {
-    if specifier.starts_with('.')
+    if specifier.is_empty()
+        || specifier.starts_with('.')
         || specifier.starts_with('/')
-        || specifier.starts_with("node:")
-        || specifier.starts_with("http:")
-        || specifier.starts_with("https:")
+        || specifier.starts_with('#')
+        || NON_PACKAGE_PREFIXES
+            .iter()
+            .any(|prefix| specifier.starts_with(prefix))
     {
         return None;
     }
-    if specifier.starts_with('@') {
-        let mut parts = specifier.split('/');
-        let scope = parts.next()?;
-        let package = parts.next()?;
-        return Some(format!("{scope}/{package}"));
+    let mut parts = specifier.split('/');
+    let first = parts.next()?;
+    let package = if specifier.starts_with('@') {
+        let name = parts.next()?;
+        if first.len() < 2 || name.is_empty() {
+            return None;
+        }
+        format!("{first}/{name}")
+    } else {
+        first.to_owned()
+    };
+    if NODE_BUILTINS.contains(&package.as_str()) {
+        return None;
     }
-    specifier.split('/').next().map(str::to_owned)
+    Some(package)
 }
+
+const NON_PACKAGE_PREFIXES: &[&str] = &[
+    "node:", "npm:", "jsr:", "http:", "https:", "data:", "file:", "bun:",
+];
+
+const NODE_BUILTINS: &[&str] = &[
+    "assert",
+    "async_hooks",
+    "buffer",
+    "child_process",
+    "cluster",
+    "console",
+    "constants",
+    "crypto",
+    "dgram",
+    "diagnostics_channel",
+    "dns",
+    "domain",
+    "events",
+    "fs",
+    "http",
+    "http2",
+    "https",
+    "inspector",
+    "module",
+    "net",
+    "os",
+    "path",
+    "perf_hooks",
+    "process",
+    "punycode",
+    "querystring",
+    "readline",
+    "repl",
+    "stream",
+    "string_decoder",
+    "sys",
+    "timers",
+    "tls",
+    "trace_events",
+    "tty",
+    "url",
+    "util",
+    "v8",
+    "vm",
+    "wasi",
+    "worker_threads",
+    "zlib",
+];
 
 fn call_bodies(text: &str, needle: &str) -> Vec<String> {
     let mut output = Vec::new();
@@ -2269,12 +2710,11 @@ fn parse_powershell_value(value: &str, parameter_type: ParameterType) -> Option<
             _ => None,
         };
     }
-    parse_parameter_value(value, parameter_type).or_else(|| {
-        matches!(
-            parameter_type,
-            ParameterType::Str | ParameterType::Choice | ParameterType::Path
-        )
-        .then(|| ParameterValue::String(value.trim_matches(&['\'', '"'][..]).to_owned()))
+    parse_parameter_value(value, parameter_type).or_else(|| match parameter_type {
+        ParameterType::Str | ParameterType::Choice | ParameterType::Path => Some(
+            ParameterValue::String(value.trim_matches(&['\'', '"'][..]).to_owned()),
+        ),
+        ParameterType::Int | ParameterType::Float | ParameterType::Bool => None,
     })
 }
 
@@ -2341,5 +2781,169 @@ fn push_unique(output: &mut Vec<ParamDecl>, parameter: ParamDecl) {
         *existing = parameter;
     } else {
         output.push(parameter);
+    }
+}
+
+#[cfg(test)]
+mod private_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn declaration_values_map_every_json_shape_to_toml() {
+        // `ParamDecl::to_block_map` emits scalars. The mapping stays total for stored rows.
+        assert_eq!(
+            json_to_toml(json!("text")),
+            TomlValue::String("text".into())
+        );
+        assert_eq!(json_to_toml(json!(true)), TomlValue::Boolean(true));
+        assert_eq!(json_to_toml(json!(7)), TomlValue::Integer(7));
+        assert_eq!(json_to_toml(json!(0.5)), TomlValue::Float(0.5));
+        assert_eq!(
+            json_to_toml(json!([1, "two"])),
+            TomlValue::Array(vec![TomlValue::Integer(1), TomlValue::String("two".into())])
+        );
+        assert_eq!(
+            json_to_toml(json!({ "key": 1 })),
+            TomlValue::Table(toml::Table::from_iter([(
+                "key".to_owned(),
+                TomlValue::Integer(1)
+            )]))
+        );
+        assert_eq!(
+            json_to_toml(JsonValue::Null),
+            TomlValue::String(String::new())
+        );
+    }
+
+    #[test]
+    fn injected_literals_fall_back_to_a_quoted_string_when_a_value_does_not_parse() {
+        assert_eq!(
+            replacement_literal(
+                ParameterType::Int,
+                "many",
+                toml_string,
+                javascript_bool_literal
+            ),
+            "\"many\""
+        );
+        assert_eq!(
+            replacement_literal(
+                ParameterType::Float,
+                "many",
+                toml_string,
+                javascript_bool_literal
+            ),
+            "\"many\""
+        );
+        assert_eq!(
+            replacement_literal(
+                ParameterType::Bool,
+                "maybe",
+                toml_string,
+                javascript_bool_literal
+            ),
+            "\"maybe\""
+        );
+        // A Python source spelling keeps its capitals; every other language uses lowercase.
+        assert_eq!(
+            replacement_literal(ParameterType::Bool, "no", toml_string, python_bool_literal),
+            "False"
+        );
+        assert_eq!(
+            replacement_literal(
+                ParameterType::Bool,
+                "no",
+                toml_string,
+                javascript_bool_literal
+            ),
+            "false"
+        );
+        assert_eq!(
+            replacement_literal(
+                ParameterType::Float,
+                "3",
+                toml_string,
+                javascript_bool_literal
+            ),
+            "3.0"
+        );
+    }
+
+    #[test]
+    fn text_scanners_handle_quotes_escapes_nesting_and_invalid_input() {
+        assert_eq!(json_toml_literal(&json!([1, true])), "\"[1,true]\"");
+        assert_eq!(toml_string("a\rb"), "\"a\\rb\"");
+
+        assert_eq!(parenthesized_body("plain", 0), None);
+        assert_eq!(
+            parenthesized_body("call('a\\\'b', nested(1)) tail", 4),
+            Some("'a\\\'b', nested(1)")
+        );
+        assert_eq!(parenthesized_body("call('unterminated", 4), None);
+
+        assert_eq!(
+            split_top_level("a='x\\\'y', b=[1,2], c=(3,4), d={5,6}", ','),
+            ["a='x\\\'y'", " b=[1,2]", " c=(3,4)", " d={5,6}"]
+        );
+        assert_eq!(parse_list_strings("('one', 'two')"), ["one", "two"]);
+        assert!(parse_list_strings("not-a-list").is_empty());
+    }
+
+    #[test]
+    fn scalar_readers_distinguish_boolean_and_powershell_values() {
+        assert_eq!(
+            parse_parameter_value("true", ParameterType::Bool),
+            Some(ParameterValue::Bool(true))
+        );
+        assert_eq!(
+            parse_parameter_value("0", ParameterType::Bool),
+            Some(ParameterValue::Bool(false))
+        );
+        assert_eq!(parse_parameter_value("maybe", ParameterType::Bool), None);
+        assert_eq!(
+            parse_powershell_value("$false", ParameterType::Bool),
+            Some(ParameterValue::Bool(false))
+        );
+        assert_eq!(parse_powershell_value("maybe", ParameterType::Bool), None);
+        assert_eq!(
+            parse_powershell_value("bare", ParameterType::Str),
+            Some(ParameterValue::String("bare".to_owned()))
+        );
+        assert_eq!(parse_powershell_value("bare", ParameterType::Float), None);
+        assert_eq!(unquote_shell("'quoted value'"), "quoted value");
+    }
+
+    #[test]
+    fn internal_guards_reject_unsupported_parsers_and_invalid_edits() {
+        assert!(parsed_tree("ruby", "puts 1").is_none());
+        assert!(matches!(
+            apply_source_edits("abc", vec![(2, 1, "x".to_owned())]),
+            Err(LanguageError::InvalidSource { .. })
+        ));
+        assert!(matches!(
+            apply_source_edits("abc", vec![(0, 2, "x".to_owned()), (1, 3, "y".to_owned())]),
+            Err(LanguageError::InvalidSource { .. })
+        ));
+        assert!(fish_guarded_set(&["or".to_owned(), "echo".to_owned()]).is_none());
+    }
+
+    #[test]
+    fn source_helpers_preserve_comments_and_boolean_literal_style() {
+        assert_eq!(shell_comment_start("NAME=old\\ value # note"), Some(16));
+        assert_eq!(shell_comment_start("NAME='old # value'"), None);
+        assert_eq!(
+            replacement_literal(
+                ParameterType::Bool,
+                "maybe",
+                quote_python_string,
+                python_bool_literal,
+            ),
+            "'maybe'"
+        );
+        assert_eq!(
+            scan_placeholders("{{escaped}} {open", false),
+            Vec::<String>::new()
+        );
     }
 }

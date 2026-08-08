@@ -227,3 +227,26 @@ fn state_write_failures_are_typed_and_leave_no_partial_document() {
     assert!(error.to_string().contains("state"));
     assert_eq!(fs::read(&blocked).unwrap(), b"file");
 }
+
+#[test]
+fn clearing_last_run_fields_removes_known_rows_and_an_empty_table() {
+    let root = TempDir::new().unwrap();
+    fs::create_dir_all(root.path().join("values")).unwrap();
+    fs::write(
+        state_path(&root),
+        "[last_run]\nat = \"now\"\nexit = 7\n[last_run.values]\nname = \"Ada\"\n",
+    )
+    .unwrap();
+    let store = FileFormStateStore::new(root.path());
+    store
+        .update(&slug(), |state| {
+            state.last_run.at = None;
+            state.last_run.exit = None;
+            state.last_run.values.clear();
+        })
+        .unwrap();
+
+    let document: toml::Table =
+        toml::from_str(&fs::read_to_string(state_path(&root)).unwrap()).unwrap();
+    assert!(!document.contains_key("last_run"));
+}

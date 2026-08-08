@@ -6,7 +6,7 @@ use skit_domain::parameters::{
 use skit_language::{
     cli_params, detect_candidates, external_dependencies, infer_kind, inject_values,
     managed_params, normalize_shell_default, placeholder_params, read_uv_metadata,
-    write_managed_params, write_uv_metadata,
+    render_prompt_body, write_managed_params, write_uv_metadata,
 };
 
 #[test]
@@ -49,6 +49,24 @@ fn kind_inference_covers_extensions_compound_prompt_names_and_shebangs() {
             "name={name}"
         );
     }
+}
+
+#[test]
+fn prompt_render_is_one_pass_over_the_original_text() {
+    let values = BTreeMap::from([
+        ("a".to_owned(), "{{b}}".to_owned()),
+        ("b".to_owned(), "changed".to_owned()),
+    ]);
+
+    assert_eq!(
+        render_prompt_body("A={{a}} B={{b}}", &values, true),
+        "A={{b}} B=changed"
+    );
+    assert_eq!(
+        render_prompt_body("{{{a}}} {{missing}}", &values, true),
+        "{{{a}}} {{missing}}"
+    );
+    assert_eq!(render_prompt_body("A={{a}}", &values, false), "A={{a}}");
 }
 
 #[test]
@@ -307,6 +325,7 @@ fn injection_rewrites_only_selected_python_shell_and_javascript_bindings() {
     let mut python_const = ParamDecl::new("WIDTH");
     python_const.binding = ParameterBinding::Const;
     python_const.delivery = ParameterDelivery::Inject;
+    python_const.parameter_type = ParameterType::Int;
     let mut python_input = ParamDecl::new("input-1");
     python_input.binding = ParameterBinding::Input;
     python_input.delivery = ParameterDelivery::Inject;
@@ -341,6 +360,7 @@ fn injection_rewrites_only_selected_python_shell_and_javascript_bindings() {
     let mut js_const = ParamDecl::new("PORT");
     js_const.binding = ParameterBinding::Const;
     js_const.delivery = ParameterDelivery::Inject;
+    js_const.parameter_type = ParameterType::Int;
     let rewritten = inject_values(
         "js",
         "const PORT = 3000;\nconsole.log(PORT);\n",

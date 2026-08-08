@@ -13,6 +13,7 @@ use skit_domain::{
     Slug,
     parameters::{ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue},
 };
+use skit_i18n::{Localize, Message};
 use thiserror::Error;
 
 /// Exact metadata and accepted values for the most recent recorded run.
@@ -60,6 +61,22 @@ pub enum StateWriteError {
         /// Serializer detail.
         reason: String,
     },
+}
+
+impl Localize for StateWriteError {
+    fn message(&self) -> Message {
+        match self {
+            Self::Io {
+                operation,
+                path,
+                reason,
+            } => Message::new("could not {} state at {}: {}")
+                .with(operation)
+                .with(path)
+                .with(reason),
+            Self::Encode { reason } => Message::new("could not encode state: {}").with(reason),
+        }
+    }
 }
 
 /// Persistence port whose update boundary holds one adapter-defined transaction lock.

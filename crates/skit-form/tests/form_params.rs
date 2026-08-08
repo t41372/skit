@@ -80,7 +80,11 @@ fn managed_source_fields_win_and_declared_flag_env_riders_follow_without_duplica
 WIDTH = 800
 "#;
     let settings = EntrySettings {
-        parameters: vec![flag("extra"), env("WIDTH"), env("color")],
+        parameters: vec![flag("extra"), env("WIDTH"), env("color"), {
+            let mut ignored = ParamDecl::new("ignored");
+            ignored.delivery = ParameterDelivery::Placeholder;
+            ignored
+        }],
         ..EntrySettings::default()
     };
 
@@ -153,4 +157,22 @@ fn unsupported_declared_delivery_does_not_leak_into_program_source_forms() {
             .collect::<Vec<_>>(),
         ["ok"]
     );
+}
+
+#[test]
+fn duplicate_template_declarations_use_the_last_definition_in_the_first_slot() {
+    let mut first = ParamDecl::new("name");
+    first.delivery = ParameterDelivery::Placeholder;
+    first.help = "old".to_owned();
+    let mut replacement = first.clone();
+    replacement.help = "current".to_owned();
+    let settings = EntrySettings {
+        params: vec!["name".to_owned()],
+        parameters: vec![first, replacement],
+        ..EntrySettings::default()
+    };
+
+    let fields = form_params("command", "echo {name}", &settings);
+    assert_eq!(fields.len(), 1);
+    assert_eq!(fields[0].help, "current");
 }

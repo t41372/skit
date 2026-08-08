@@ -6,6 +6,7 @@
 
 use std::collections::BTreeMap;
 
+use skit_i18n::{Localize, Message};
 use thiserror::Error;
 
 /// All ambient values needed by the token scanner.
@@ -34,6 +35,18 @@ pub enum TokenError {
         /// Full token spelling from the input.
         token: String,
     },
+}
+
+impl Localize for TokenError {
+    fn message(&self) -> Message {
+        match self {
+            Self::MissingEnvironment { name, token } => {
+                Message::new("The environment variable {} isn't set (needed by {}).")
+                    .with(name)
+                    .with(token)
+            }
+        }
+    }
 }
 
 /// Expand known value tokens with one scanner pass.
@@ -101,9 +114,9 @@ pub fn preview(
 #[must_use]
 pub fn has_tokens(text: &str) -> bool {
     text.starts_with('~')
+        || known_token_start(text).is_some()
         || text.contains("{{")
         || text.contains("}}")
-        || known_token_start(text).is_some()
 }
 
 fn expand_current_user_home(text: &str, home: Option<&str>) -> Option<String> {

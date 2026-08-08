@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 
 use skit_domain::parameters::{ParamDecl, ParameterType, coerce_default};
+use skit_i18n::{Localize, Message};
 use thiserror::Error;
 
 use crate::{delivery::PreparedValue, tokens::has_tokens};
@@ -42,6 +43,30 @@ pub enum ValuePreparationError {
         /// Allowed values in declared order.
         choices: Vec<String>,
     },
+}
+
+impl Localize for ValuePreparationError {
+    fn message(&self) -> Message {
+        match self {
+            Self::Required { label, .. } => Message::new("{} is required.").with(label),
+            Self::InvalidType {
+                name,
+                value,
+                parameter_type,
+            } => Message::new("parameter {} has invalid {} value {}")
+                .quoted(name)
+                .with(format!("{parameter_type:?}"))
+                .quoted(value),
+            Self::InvalidChoice {
+                name,
+                value,
+                choices,
+            } => Message::new("parameter {} must be one of {}; got {}")
+                .quoted(name)
+                .with(format!("{choices:?}"))
+                .quoted(value),
+        }
+    }
 }
 
 /// Validate raw/resolved values and prepare their delivery shapes.

@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 
 use skit_domain::parameters::{ParamDecl, ParameterDelivery};
+use skit_i18n::{Localize, Message};
 use thiserror::Error;
 
 use crate::tokens::{TokenContext, TokenError, expand};
@@ -26,6 +27,19 @@ pub enum ValueResolutionError {
     /// A non-secret value contained a known token that could not be resolved.
     #[error(transparent)]
     Token(#[from] TokenError),
+}
+
+impl Localize for ValueResolutionError {
+    fn message(&self) -> Message {
+        match self {
+            Self::MissingSecretEnvironment { name, environment } => {
+                Message::new("{} reads from the environment variable {}, but it isn't set.")
+                    .with(name)
+                    .with(environment)
+            }
+            Self::Token(error) => error.message(),
+        }
+    }
 }
 
 /// Resolve every declared field using only explicitly supplied launch context.
