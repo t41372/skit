@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 mod add_command;
+mod preset_command;
 
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -89,29 +90,7 @@ enum Command {
         text: String,
     },
     /// Manage named parameter presets for an entry.
-    Preset {
-        #[command(subcommand)]
-        command: PresetCommand,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum PresetCommand {
-    /// List an entry's saved presets.
-    List {
-        /// Entry name or slug.
-        name: String,
-        /// Output as JSON.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Delete a named preset from an entry.
-    Delete {
-        /// Entry name or slug.
-        name: String,
-        /// Preset name.
-        preset_name: String,
-    },
+    Preset(preset_command::PresetArgs),
 }
 
 #[derive(Debug, Serialize)]
@@ -207,9 +186,7 @@ fn run() -> Result<(), CliFailure> {
         Some(Command::Describe { name, text }) => {
             describe(&store, &name, &text).map_err(CliFailure::operational)
         }
-        Some(Command::Preset { command }) => {
-            preset(&store, command).map_err(CliFailure::operational)
-        }
+        Some(Command::Preset(args)) => preset_command::run(&store, args),
         None => skit_tui::run(&store)
             .map_err(|error| CliFailure::operational(error.to_string())),
     }
@@ -403,73 +380,5 @@ fn confirm(question: &str) -> Result<bool, String> {
     Ok(matches!(
         answer.trim().to_ascii_lowercase().as_str(),
         "y" | "yes"
-    ))
-}
-
-fn preset(store: &Store, command: PresetCommand) -> Result<(), String> {
-    let state = StateStore::new(store.roots().clone());
-    match command {
-        PresetCommand::List { name, json } => preset_list(store, &state, &name, json),
-        PresetCommand::Delete { name, preset_name } => {
-            preset_delete(store, &state, &name, &preset_name)
-        }
-    }
-}
-
-fn preset_list(store: &Store, state: &StateStore, name: &str, as_json: bool) -> Result<(), String> {
-    let entry = store.resolve(name).map_err(|error| error.to_string())?;
-    let presets = state.load(&entry.slug).presets;
-    if as_json {
-        write_json(&presets)?;
-        return Ok(());
-    }
-
-    if presets.is_empty() {
-        println!(
-            "No presets for {} yet. Create one with: skit run {} --save-preset <preset>",
-            entry.meta.name, entry.meta.name
-        );
-        return Ok(());
-    }
-
-    for (preset_name, values) in presets {
-        let pairs = values
-            .into_iter()
-            .map(|(key, value)| format!("{key}={value}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        println!("  {preset_name}: {pairs}");
-    }
-    Ok(())
-}
-
-fn preset_delete(
-    store: &Store,
-    state: &StateStore,
-    name: &str,
-    preset_name: &str,
-) -> Result<(), String> {
-    let entry = store.resolve(name).map_err(|error| error.to_string())?;
-    if state
-        .delete_preset(&entry.slug, preset_name)
-        .map_err(|error| error.to_string())?
-    {
-        println!("Preset \"{preset_name}\" deleted from {}.", entry.meta.name);
-        return Ok(());
-    }
-
-    let available = state
-        .load(&entry.slug)
-        .presets
-        .into_keys()
-        .collect::<Vec<_>>()
-        .join(", ");
-    Err(format!(
-        "Unknown preset \"{preset_name}\". Available: {}",
-        if available.is_empty() {
-            "—"
-        } else {
-            &available
-        }
     ))
 }
