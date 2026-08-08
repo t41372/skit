@@ -3,5 +3,6 @@
 #![forbid(unsafe_code)]
 
 mod cli;
+mod run;
 
 pub use cli::entry;
