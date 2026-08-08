@@ -273,7 +273,10 @@ fn doctor_rebuilds_the_registry_and_reports_all_owned_paths() {
     let report = sandbox.command_json(&["doctor", "--rebuild", "--json"]);
     assert_eq!(report["entries"], 1);
     assert_eq!(report["rebuilt"], true);
-    assert_eq!(report["location"], sandbox.data.path().display().to_string());
+    assert_eq!(
+        report["location"],
+        sandbox.data.path().display().to_string()
+    );
     assert!(report.get("state_location").is_some());
     assert!(report.get("config_location").is_some());
     assert!(sandbox.data.path().join("registry.toml").is_file());

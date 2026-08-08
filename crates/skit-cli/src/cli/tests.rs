@@ -6,8 +6,8 @@ use skit_store::FileStore;
 use tempfile::TempDir;
 
 use super::{
-    Cli, CliError, Command, add, execute, list, mode_name, platform_data_dir, read_source,
-    resolve_data_dir, show, source_default_name, source_error, stored_name,
+    AddOptions, Cli, CliError, Command, add, execute, list, mode_name, platform_data_dir,
+    read_source, resolve_data_dir, show, source_default_name, source_error, stored_name,
 };
 
 fn write_meta(root: &TempDir, slug: &str, name: &str, description: &str) {
@@ -93,7 +93,22 @@ fn private_human_paths_render_entries_and_diagnostics() {
 
     let source = root.path().join("source.py");
     fs::write(&source, b"print('source')\n").unwrap();
-    let error = add(&service, &source, " ", Some("Bad".to_owned()), false).unwrap_err();
+    let error = add(
+        &service,
+        AddOptions {
+            source: Some(source),
+            kind: Some(" ".to_owned()),
+            name: Some("Bad".to_owned()),
+            description: String::new(),
+            reference: false,
+            command_template: None,
+            prompt: false,
+            executable: false,
+            runner: None,
+            no_interpolate: false,
+        },
+    )
+    .unwrap_err();
     assert!(matches!(
         error,
         CliError::Repository(RepositoryError::InvalidMutation { .. })

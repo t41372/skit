@@ -1,7 +1,7 @@
 use std::fmt::Debug;
 
 use serde::{Deserialize, Serialize};
-use skit_domain::{Entry, EntryKind, StorageMode};
+use skit_domain::{Entry, EntryKind, EntrySettings, StorageMode};
 
 use crate::{LibraryService, RepositoryError};
 
@@ -55,6 +55,14 @@ pub trait EntryMutationRepository: Debug {
     /// Replace an entry description while preserving its identity.
     fn describe(&self, entry: &Entry, description: &str) -> Result<Entry, RepositoryError>;
 
+    /// Replace typed optional settings and the work-directory policy.
+    fn update_settings(
+        &self,
+        entry: &Entry,
+        settings: &EntrySettings,
+        workdir: &str,
+    ) -> Result<Entry, RepositoryError>;
+
     /// Rename an entry and move it to the derived slug.
     fn rename(&self, entry: &Entry, name: &str) -> Result<Entry, RepositoryError>;
 
@@ -87,6 +95,16 @@ where
     /// Update a description through the identity-gated port.
     pub fn describe(&self, entry: &Entry, description: &str) -> Result<Entry, RepositoryError> {
         self.repository.describe(entry, description)
+    }
+
+    /// Update typed settings through the identity-gated port.
+    pub fn update_settings(
+        &self,
+        entry: &Entry,
+        settings: &EntrySettings,
+        workdir: &str,
+    ) -> Result<Entry, RepositoryError> {
+        self.repository.update_settings(entry, settings, workdir)
     }
 
     /// Rename one held entry.

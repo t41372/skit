@@ -4,7 +4,7 @@ use skit_application::{
     CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, LibraryScan,
     LibraryService, RepositoryError, SourcePermissions,
 };
-use skit_domain::{Entry, EntryKind, EntryMeta, Slug, StorageMode};
+use skit_domain::{Entry, EntryKind, EntryMeta, EntrySettings, Slug, StorageMode};
 
 #[derive(Debug)]
 struct RecordingRepository {
@@ -44,6 +44,19 @@ impl EntryMutationRepository for RecordingRepository {
             .lock()
             .unwrap()
             .push(format!("describe:{}:{description}", entry.slug));
+        Ok(self.entry.clone())
+    }
+
+    fn update_settings(
+        &self,
+        entry: &Entry,
+        _settings: &EntrySettings,
+        workdir: &str,
+    ) -> Result<Entry, RepositoryError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("settings:{}:{workdir}", entry.slug));
         Ok(self.entry.clone())
     }
 
@@ -109,6 +122,12 @@ fn mutation_use_cases_delegate_every_value_to_the_port() {
     assert_eq!(service.add(request).unwrap(), expected);
     assert_eq!(service.claim_identity(&expected).unwrap(), expected);
     assert_eq!(service.describe(&expected, "described").unwrap(), expected);
+    assert_eq!(
+        service
+            .update_settings(&expected, &EntrySettings::default(), "store")
+            .unwrap(),
+        expected
+    );
     assert_eq!(service.rename(&expected, "Renamed").unwrap(), expected);
     assert_eq!(service.remove(&expected).unwrap(), "Alpha");
     assert_eq!(
@@ -123,6 +142,7 @@ fn mutation_use_cases_delegate_every_value_to_the_port() {
             "create:Created",
             "claim:alpha",
             "describe:alpha:described",
+            "settings:alpha:store",
             "rename:alpha:Renamed",
             "remove:alpha",
             "edit:alpha:edited:sha256:base",

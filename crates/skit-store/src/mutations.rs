@@ -15,7 +15,7 @@ use atomic::{
 pub use hash::content_hash;
 use registry::Registry;
 use skit_application::{CreateEntry, EntryMutationRepository, EntryPayload, RepositoryError};
-use skit_domain::{Entry, EntryId, EntryMeta, Slug, StorageMode};
+use skit_domain::{Entry, EntryId, EntryMeta, EntrySettings, Slug, StorageMode};
 
 use super::FileStore;
 
@@ -45,6 +45,24 @@ impl EntryMutationRepository for FileStore {
         let before = fresh.clone();
         let mut after = fresh;
         after.meta.description = description.to_owned();
+        self.commit_meta_projection(&before, &after, &mut registry)?;
+        Ok(after)
+    }
+
+    fn update_settings(
+        &self,
+        entry: &Entry,
+        settings: &EntrySettings,
+        workdir: &str,
+    ) -> Result<Entry, RepositoryError> {
+        let _entry = self.entry_lock(&entry.slug)?;
+        let _namespace = self.namespace_lock()?;
+        let mut registry = Registry::load(self.data_dir())?;
+        let fresh = self.claim_for_mutation(entry, &mut registry)?;
+        let before = fresh.clone();
+        let mut after = fresh;
+        after.meta.workdir = workdir.to_owned();
+        settings.write_to_meta(&mut after.meta);
         self.commit_meta_projection(&before, &after, &mut registry)?;
         Ok(after)
     }
@@ -169,6 +187,46 @@ impl EntryMutationRepository for FileStore {
 }
 
 impl FileStore {
+    /// Rebuild `registry.toml` from every valid authoritative metadata file.
+    pub fn rebuild_registry(&self) -> Result<usize, RepositoryError> {
+        let _namespace = self.namespace_lock()?;
+        let scripts = self.scripts_dir();
+        let mut registry = Registry::fresh(self.data_dir());
+        let mut count = 0;
+        let reader = match fs::read_dir(&scripts) {
+            Ok(reader) => reader,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                registry.save()?;
+                return Ok(0);
+            }
+            Err(error) => return Err(io_error("scan", &scripts, error)),
+        };
+        for item in reader {
+            let item = item.map_err(|error| io_error("scan", &scripts, error))?;
+            if !item
+                .file_type()
+                .map_err(|error| io_error("inspect", &item.path(), error))?
+                .is_dir()
+            {
+                continue;
+            }
+            let Some(slug) = item
+                .file_name()
+                .to_str()
+                .and_then(|name| Slug::parse(name.to_owned()).ok())
+            else {
+                continue;
+            };
+            let Ok(entry) = self.read_entry(slug) else {
+                continue;
+            };
+            registry.project(&entry, &item.path())?;
+            count += 1;
+        }
+        registry.save()?;
+        Ok(count)
+    }
+
     fn create_locked(
         &self,
         mut request: CreateEntry,

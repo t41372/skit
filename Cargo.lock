@@ -1110,7 +1110,7 @@ dependencies = [
 
 [[package]]
 name = "skit-application"
-version = "0.5.0-alpha.0"
+version = "0.5.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1122,13 +1122,14 @@ dependencies = [
 
 [[package]]
 name = "skit-cli-rs"
-version = "0.5.0-alpha.0"
+version = "0.5.0"
 dependencies = [
  "assert_cmd",
  "clap",
  "predicates",
  "serde",
  "serde_json",
+ "shlex",
  "skit-application",
  "skit-domain",
  "skit-form",
@@ -1144,7 +1145,7 @@ dependencies = [
 
 [[package]]
 name = "skit-domain"
-version = "0.5.0-alpha.0"
+version = "0.5.0"
 dependencies = [
  "proptest",
  "serde",
@@ -1155,7 +1156,7 @@ dependencies = [
 
 [[package]]
 name = "skit-form"
-version = "0.5.0-alpha.0"
+version = "0.5.0"
 dependencies = [
  "skit-domain",
  "skit-language",
@@ -1163,7 +1164,7 @@ dependencies = [
 
 [[package]]
 name = "skit-language"
-version = "0.5.0-alpha.0"
+version = "0.5.0"
 dependencies = [
  "regex",
  "serde_json",
@@ -1175,7 +1176,7 @@ dependencies = [
 
 [[package]]
 name = "skit-runtime"
-version = "0.5.0-alpha.0"
+version = "0.5.0"
 dependencies = [
  "shlex",
  "skit-application",
@@ -1186,7 +1187,7 @@ dependencies = [
 
 [[package]]
 name = "skit-store"
-version = "0.5.0-alpha.0"
+version = "0.5.0"
 dependencies = [
  "glob",
  "serde",
@@ -1200,7 +1201,7 @@ dependencies = [
 
 [[package]]
 name = "skit-tui"
-version = "0.5.0-alpha.0"
+version = "0.5.0"
 dependencies = [
  "ratatui-core",
  "ratatui-crossterm",
@@ -1213,7 +1214,7 @@ dependencies = [
 
 [[package]]
 name = "skit-ui"
-version = "0.5.0-alpha.0"
+version = "0.5.0"
 dependencies = [
  "serde",
  "skit-application",

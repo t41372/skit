@@ -4,6 +4,7 @@
 
 #![forbid(unsafe_code)]
 
+mod config;
 mod fs_ops;
 mod mutations;
 mod path_glob;
@@ -11,6 +12,7 @@ mod paths;
 mod read;
 mod state;
 
+pub use config::{ConfigError, FileConfigStore, PromptRunner};
 pub use mutations::content_hash;
 pub use path_glob::FileGlobExpander;
 pub use paths::stored_filename;

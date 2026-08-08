@@ -18,6 +18,16 @@ pub(crate) struct Registry {
 }
 
 impl Registry {
+    /// Start an empty projection for an explicit doctor rebuild.
+    pub(super) fn fresh(data_dir: &Path) -> Self {
+        let mut document = Table::new();
+        normalize_entries(&mut document);
+        Self {
+            path: data_dir.join("registry.toml"),
+            document,
+        }
+    }
+
     /// Read the current projection without changing a corrupt or unreadable file.
     pub(crate) fn read(data_dir: &Path) -> Option<Self> {
         let path = data_dir.join("registry.toml");

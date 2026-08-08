@@ -101,8 +101,8 @@ fn writing_settings_preserves_unknown_extension_fields_and_legacy_omission_rules
     assert_eq!(meta.extra["params"], json!(["count"]));
     assert_eq!(meta.extra["interpreter"], json!("bash"));
     assert_eq!(meta.extra["needs"], json!(["jq"]));
-    assert!(meta.extra.get("runner").is_none());
-    assert!(meta.extra.get("interpolate").is_none());
+    assert!(!meta.extra.contains_key("runner"));
+    assert!(!meta.extra.contains_key("interpolate"));
     assert_eq!(meta.extra["parameters"][0]["name"], json!("count"));
     assert_eq!(meta.extra["parameters"][0]["type"], json!("int"));
 }
