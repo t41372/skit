@@ -12,4 +12,6 @@ pub use language::{
 };
 pub use paths::{PathContext, PathError, Platform, discover_roots, resolve_roots};
 pub use state::{EntryState, LastRun, StateError, StateStore};
-pub use store::{Entry, EntrySummary, Error, LibraryRoots, RunStamp, ScriptMeta, Store};
+pub use store::{
+    Entry, EntryDraft, EntrySummary, Error, LibraryRoots, RunStamp, ScriptMeta, Store,
+};
