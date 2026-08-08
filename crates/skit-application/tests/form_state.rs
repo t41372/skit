@@ -151,6 +151,7 @@ fn secret_transition_scrubs_last_used_and_every_preset_and_reports_what_was_remo
             ),
             ("secret-only".to_owned(), map(&[("token", "old-token")])),
         ]),
+        ..PersistedFormState::default()
     };
 
     let removed = scrub_secrets(&[public, token, password], &mut state);
@@ -164,6 +165,22 @@ fn secret_transition_scrubs_last_used_and_every_preset_and_reports_what_was_remo
         state.presets,
         BTreeMap::from([("mixed".to_owned(), map(&[("public", "keep")]))])
     );
+}
+
+#[test]
+fn secret_transition_scrubs_the_last_run_snapshot_too() {
+    let mut token = declaration("token", None);
+    token.secret = true;
+    let public = declaration("public", None);
+    let mut state = PersistedFormState {
+        last_run_values: map(&[("token", "old-token"), ("public", "keep")]),
+        ..PersistedFormState::default()
+    };
+
+    let removed = scrub_secrets(&[token, public], &mut state);
+
+    assert_eq!(removed, ["token".to_owned()].into());
+    assert_eq!(state.last_run_values, map(&[("public", "keep")]));
 }
 
 #[test]
