@@ -9,6 +9,7 @@ mod language;
 mod launch;
 mod params;
 mod paths;
+mod pep723;
 mod presets;
 mod programs;
 mod state;
@@ -33,6 +34,7 @@ pub use params::{
     synthesized_placeholder,
 };
 pub use paths::{PathContext, PathError, Platform, discover_roots, resolve_roots};
+pub use pep723::{Pep723Metadata, build_pep723, has_pep723, inject_pep723, parse_pep723};
 pub use presets::{PresetFromLastError, save_preset_from_last};
 pub use programs::ProgramSearch;
 pub use state::{EntryState, LastRun, StateError, StateStore};
