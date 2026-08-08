@@ -17,9 +17,11 @@ fn remove_then_add_then_tweak_has_stable_order_and_warnings() {
             ..ParamDecl::default()
         },
     ];
-    let mut edits = DeclaredEdits::default();
-    edits.remove = vec!["old".to_owned(), "missing".to_owned()];
-    edits.add = vec!["new".to_owned(), "keep".to_owned()];
+    let mut edits = DeclaredEdits {
+        add: vec!["new".to_owned(), "keep".to_owned()],
+        remove: vec!["old".to_owned(), "missing".to_owned()],
+        ..DeclaredEdits::default()
+    };
     edits.types.insert("new".to_owned(), ParamType::Integer);
     edits.flags.insert("new".to_owned(), "--new".to_owned());
     edits.required.insert("new".to_owned());
@@ -46,9 +48,11 @@ fn remove_then_add_then_tweak_has_stable_order_and_warnings() {
 
 #[test]
 fn placeholder_add_is_required_and_uses_placeholder_delivery() {
-    let mut edits = DeclaredEdits::default();
-    edits.add = vec!["target".to_owned()];
-    edits.placeholder_names.insert("target".to_owned());
+    let edits = DeclaredEdits {
+        add: vec!["target".to_owned()],
+        placeholder_names: BTreeSet::from(["target".to_owned()]),
+        ..DeclaredEdits::default()
+    };
 
     let result = edit_declared(&[], &edits);
     assert_eq!(result.decls.len(), 1);
@@ -212,10 +216,12 @@ fn optional_and_required_flags_are_name_keyed() {
         required: true,
         ..ParamDecl::default()
     }];
-    let mut edits = DeclaredEdits::default();
-    edits.optional = BTreeSet::from(["x".to_owned()]);
-    edits.required = BTreeSet::from(["missing".to_owned()]);
-    edits.prompts = BTreeMap::from([("x".to_owned(), "Value".to_owned())]);
+    let edits = DeclaredEdits {
+        optional: BTreeSet::from(["x".to_owned()]),
+        required: BTreeSet::from(["missing".to_owned()]),
+        prompts: BTreeMap::from([("x".to_owned(), "Value".to_owned())]),
+        ..DeclaredEdits::default()
+    };
 
     let result = edit_declared(&initial, &edits);
     assert!(!result.decls[0].required);
