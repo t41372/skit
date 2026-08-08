@@ -4,6 +4,7 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use atomic_write_file::AtomicWriteFile;
 use serde::{Deserialize, Serialize};
@@ -71,9 +72,9 @@ fn is_true(value: &bool) -> bool {
 
 /// The schema stored in one `scripts/<slug>/meta.toml` file.
 ///
-/// Only `name` and `kind` are required when reading. Other fields use the same defaults
-/// as the Python implementation. Unknown fields are retained so a newer schema does not
-/// become unreadable only because this build does not know one key yet.
+/// Only `name` and `kind` are required when reading. The other fields use the same
+/// defaults as the Python implementation. Unknown fields are retained so a newer
+/// schema does not become unreadable only because this build does not know one key.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct ScriptMeta {
     #[serde(default = "schema_v1")]
@@ -139,8 +140,7 @@ pub struct EntrySummary {
 impl EntrySummary {
     /// Report whether a referenced launch target is missing.
     ///
-    /// Copy-mode target checks need the language registry and are added with the launch
-    /// slice. A reference row can be checked from metadata alone.
+    /// Copy-mode checks need the language registry and are added with the launch slice.
     #[must_use]
     pub fn target_missing(&self) -> bool {
         self.mode == "reference" && !self.source.is_empty() && !Path::new(&self.source).exists()
@@ -160,7 +160,7 @@ struct StateFile {
     last_run: Option<RunStamp>,
 }
 
-/// Errors returned by the headless core.
+/// Errors returned by the headless store.
 #[derive(Debug)]
 pub enum Error {
     Io {
@@ -171,7 +171,7 @@ pub enum Error {
         path: PathBuf,
         source: toml::de::Error,
     },
-    SerializeMeta {
+    EncodeToml {
         path: PathBuf,
         source: toml::ser::Error,
     },
@@ -193,7 +193,7 @@ impl fmt::Display for Error {
             Self::InvalidMeta { path, source } => {
                 write!(formatter, "cannot parse {}: {source}", path.display())
             }
-            Self::SerializeMeta { path, source } => {
+            Self::EncodeToml { path, source } => {
                 write!(formatter, "cannot encode {}: {source}", path.display())
             }
             Self::InvalidName => write!(formatter, "a name is required"),
@@ -208,7 +208,7 @@ impl StdError for Error {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::InvalidMeta { source, .. } => Some(source),
-            Self::SerializeMeta { source, .. } => Some(source),
+            Self::EncodeToml { source, .. } => Some(source),
             Self::InvalidName | Self::NameConflict { .. } | Self::NotFound { .. } => None,
         }
     }
@@ -233,10 +233,9 @@ impl Store {
         &self.roots
     }
 
-    /// List valid entries without changing the registry or metadata files.
+    /// List valid entries without changing registry or metadata files.
     ///
-    /// Corrupt entry metadata is skipped. One damaged entry must not hide healthy
-    /// entries.
+    /// Corrupt metadata is skipped. One damaged entry must not hide healthy entries.
     ///
     /// # Errors
     ///
@@ -270,8 +269,7 @@ impl Store {
                 continue;
             }
 
-            let meta_path = entry_dir.join("meta.toml");
-            let Ok(meta) = read_meta(&meta_path) else {
+            let Ok(meta) = read_meta(&entry_dir.join("meta.toml")) else {
                 continue;
             };
             entries.push(EntrySummary {
@@ -297,8 +295,8 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// Returns an error when a matching `meta.toml` cannot be read or parsed, or when
-    /// no matching entry exists.
+    /// Returns an error when matching metadata cannot be read or parsed, or when no
+    /// matching entry exists.
     pub fn resolve(&self, query: &str) -> Result<Entry, Error> {
         let scripts_dir = self.roots.data_dir.join("scripts");
         let direct_dir = scripts_dir.join(query);
@@ -373,11 +371,11 @@ impl Store {
     /// Returns an error when the entry cannot be resolved, locked, encoded, or written.
     pub fn update_description(&self, query: &str, description: &str) -> Result<Entry, Error> {
         let initial = self.resolve(query)?;
-        let lock_path = self.entry_lock_path(&initial.slug);
-        let _lock = acquire_lock(&lock_path)?;
+        let _entry_lock = acquire_lock(&self.entry_lock_path(&initial.slug))?;
         let mut entry = self.resolve(&initial.slug)?;
         entry.meta.description = description.trim().to_owned();
         write_meta(&entry.dir.join("meta.toml"), &entry.meta)?;
+        self.sync_registry_row(&entry)?;
         Ok(entry)
     }
 
@@ -385,7 +383,7 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// Returns an error for an empty or duplicate name, or when the metadata cannot be
+    /// Returns an error for an empty or duplicate name, or when metadata cannot be
     /// locked, encoded, or written.
     pub fn rename(&self, query: &str, new_name: &str) -> Result<Entry, Error> {
         let new_name = new_name.trim();
@@ -394,12 +392,10 @@ impl Store {
         }
 
         let initial = self.resolve(query)?;
-        let entry_lock_path = self.entry_lock_path(&initial.slug);
-        let _entry_lock = acquire_lock(&entry_lock_path)?;
+        let _entry_lock = acquire_lock(&self.entry_lock_path(&initial.slug))?;
         let mut entry = self.resolve(&initial.slug)?;
+        let _registry_lock = acquire_lock(&self.registry_lock_path())?;
 
-        let registry_lock_path = self.roots.data_dir.join("registry.native.lock");
-        let _registry_lock = acquire_lock(&registry_lock_path)?;
         if self
             .list()?
             .iter()
@@ -412,6 +408,12 @@ impl Store {
 
         entry.meta.name = new_name.to_owned();
         write_meta(&entry.dir.join("meta.toml"), &entry.meta)?;
+        if let Some(mut document) = load_registry_document(&self.registry_path())?
+            && registry_contains_slug(&document, &entry.slug)
+        {
+            set_registry_row(&mut document, &entry)?;
+            write_registry_document(&self.registry_path(), &document)?;
+        }
         Ok(entry)
     }
 
@@ -425,10 +427,11 @@ impl Store {
     /// Returns an error when the entry cannot be resolved, locked, or removed.
     pub fn remove(&self, query: &str) -> Result<String, Error> {
         let initial = self.resolve(query)?;
-        let lock_path = self.entry_lock_path(&initial.slug);
-        let _lock = acquire_lock(&lock_path)?;
+        let _entry_lock = acquire_lock(&self.entry_lock_path(&initial.slug))?;
+        let _registry_lock = acquire_lock(&self.registry_lock_path())?;
         let entry = self.resolve(&initial.slug)?;
         let removed_name = entry.meta.name.clone();
+        let mut registry = load_registry_document(&self.registry_path())?;
 
         fs::remove_dir_all(&entry.dir).map_err(|source| Error::Io {
             path: entry.dir.clone(),
@@ -449,6 +452,12 @@ impl Store {
                 });
             }
         }
+
+        if let Some(document) = &mut registry
+            && remove_registry_row(document, &entry.slug)
+        {
+            write_registry_document(&self.registry_path(), document)?;
+        }
         Ok(removed_name)
     }
 
@@ -457,6 +466,29 @@ impl Store {
             .data_dir
             .join(".locks")
             .join(format!("{slug}.meta.lock"))
+    }
+
+    fn registry_path(&self) -> PathBuf {
+        self.roots.data_dir.join("registry.toml")
+    }
+
+    fn registry_lock_path(&self) -> PathBuf {
+        self.roots.data_dir.join("registry.native.lock")
+    }
+
+    fn sync_registry_row(&self, entry: &Entry) -> Result<(), Error> {
+        if !self.registry_path().is_file() {
+            return Ok(());
+        }
+        let _registry_lock = acquire_lock(&self.registry_lock_path())?;
+        let Some(mut document) = load_registry_document(&self.registry_path())? else {
+            return Ok(());
+        };
+        if !registry_contains_slug(&document, &entry.slug) {
+            return Ok(());
+        }
+        set_registry_row(&mut document, entry)?;
+        write_registry_document(&self.registry_path(), &document)
     }
 }
 
@@ -496,10 +528,101 @@ fn read_meta(path: &Path) -> Result<ScriptMeta, Error> {
 }
 
 fn write_meta(path: &Path, meta: &ScriptMeta) -> Result<(), Error> {
-    let text = toml::to_string(meta).map_err(|source| Error::SerializeMeta {
+    let text = toml::to_string(meta).map_err(|source| Error::EncodeToml {
         path: path.to_owned(),
         source,
     })?;
+    atomic_write(path, &text)
+}
+
+fn load_registry_document(path: &Path) -> Result<Option<toml::Table>, Error> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(Error::Io {
+                path: path.to_owned(),
+                source,
+            });
+        }
+    };
+    Ok(toml::from_str(&text).ok())
+}
+
+fn registry_contains_slug(document: &toml::Table, slug: &str) -> bool {
+    document
+        .get("entries")
+        .and_then(toml::Value::as_table)
+        .is_some_and(|entries| entries.contains_key(slug))
+}
+
+fn set_registry_row(document: &mut toml::Table, entry: &Entry) -> Result<(), Error> {
+    let Some(entries) = document
+        .get_mut("entries")
+        .and_then(toml::Value::as_table_mut)
+    else {
+        return Ok(());
+    };
+    entries.insert(entry.slug.clone(), registry_row(entry)?);
+    Ok(())
+}
+
+fn remove_registry_row(document: &mut toml::Table, slug: &str) -> bool {
+    document
+        .get_mut("entries")
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|entries| entries.remove(slug))
+        .is_some()
+}
+
+fn registry_row(entry: &Entry) -> Result<toml::Value, Error> {
+    let meta_path = entry.dir.join("meta.toml");
+    let metadata = fs::metadata(&meta_path).map_err(|source| Error::Io {
+        path: meta_path.clone(),
+        source,
+    })?;
+    let modified = metadata.modified().map_err(|source| Error::Io {
+        path: meta_path.clone(),
+        source,
+    })?;
+    let duration = modified
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| Error::Io {
+            path: meta_path.clone(),
+            source: io::Error::other(error),
+        })?;
+    let mtime_ns = i64::try_from(duration.as_nanos()).map_err(|error| Error::Io {
+        path: meta_path,
+        source: io::Error::other(error),
+    })?;
+
+    let mut row = toml::Table::new();
+    row.insert("name".to_owned(), toml::Value::String(entry.meta.name.clone()));
+    row.insert("kind".to_owned(), toml::Value::String(entry.meta.kind.clone()));
+    row.insert("mode".to_owned(), toml::Value::String(entry.meta.mode.clone()));
+    row.insert(
+        "description".to_owned(),
+        toml::Value::String(entry.meta.description.clone()),
+    );
+    row.insert("mtime_ns".to_owned(), toml::Value::Integer(mtime_ns));
+    if entry.meta.mode == "reference" {
+        row.insert(
+            "target".to_owned(),
+            toml::Value::String(entry.meta.source.clone()),
+        );
+    }
+    Ok(toml::Value::Table(row))
+}
+
+fn write_registry_document(path: &Path, document: &toml::Table) -> Result<(), Error> {
+    let text = toml::to_string(document).map_err(|source| Error::EncodeToml {
+        path: path.to_owned(),
+        source,
+    })?;
+    atomic_write(path, &text)
+}
+
+fn atomic_write(path: &Path, text: &str) -> Result<(), Error> {
     let mut file = AtomicWriteFile::open(path).map_err(|source| Error::Io {
         path: path.to_owned(),
         source,
