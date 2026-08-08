@@ -57,7 +57,7 @@ fn every_typed_scalar_uses_the_shared_strict_coercion_contract() {
 
     for (field, value) in [(integer, "7.1"), (float, "NaN"), (boolean, "maybe")] {
         let error = prepare_values(
-            &[field.clone()],
+            std::slice::from_ref(&field),
             &map(&[(&field.name, value)]),
             &map(&[(&field.name, value)]),
         )
