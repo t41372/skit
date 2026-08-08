@@ -11,6 +11,8 @@ publish = false
 atomic-write-file.workspace = true
 serde.workspace = true
 toml.workspace = true
+tree-sitter.workspace = true
+tree-sitter-python.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
