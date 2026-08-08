@@ -111,10 +111,12 @@ pub fn edit_declared(initial: &[ParamDecl], edits: &DeclaredEdits) -> DeclaredEd
         let mut decl = current.clone();
 
         if let Some(delivery) = edits.deliveries.get(&name).copied() {
-            if edits.allowed_deliveries.contains(&delivery) {
-                decl.delivery = delivery;
-            } else {
+            if !edits.allowed_deliveries.contains(&delivery) {
                 warnings.push(format!("invalid-delivery:{name}"));
+            } else if delivery == Delivery::Placeholder && !edits.placeholder_names.contains(&name) {
+                warnings.push(format!("not-a-placeholder:{name}"));
+            } else {
+                decl.delivery = delivery;
             }
         }
         if let Some(param_type) = edits.types.get(&name).copied() {
@@ -131,7 +133,7 @@ pub fn edit_declared(initial: &[ParamDecl], edits: &DeclaredEdits) -> DeclaredEd
             }
         }
         if let Some(flag) = edits.flags.get(&name) {
-            decl.flag = flag.clone();
+            decl.flag = flag.trim().to_owned();
         }
         if edits.required.contains(&name) {
             decl.required = true;
@@ -154,7 +156,7 @@ pub fn edit_declared(initial: &[ParamDecl], edits: &DeclaredEdits) -> DeclaredEd
         }
         if let Some(env_source) = edits.env_sources.get(&name) {
             if decl.secret {
-                decl.env_source = env_source.clone();
+                decl.env_source = env_source.trim().to_owned();
             } else {
                 warnings.push(format!("env-source-not-secret:{name}"));
             }
