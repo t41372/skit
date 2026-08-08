@@ -54,7 +54,7 @@ done
 found=
 while IFS= read -r line; do
     case "$line" in
-        'CITY = "Paris"') found=1 ;;
+        *"$SKIT_FAKE_UV_EXPECT"*) found=1 ;;
     esac
 done < "$script"
 [ -n "$found" ] || exit 91
@@ -65,13 +65,19 @@ printf '%s\n' "$script" > "$SKIT_FAKE_UV_LOG" || exit 92
     Ok(())
 }
 
-fn run(root: &Path, args: &[&str], log: &Path) -> Result<Output, Box<dyn std::error::Error>> {
+fn run(
+    root: &Path,
+    args: &[&str],
+    log: &Path,
+    expected_source: &str,
+) -> Result<Output, Box<dyn std::error::Error>> {
     Ok(Command::new(env!("CARGO_BIN_EXE_skit"))
         .args(args)
         .env("SKIT_DATA_DIR", root.join("data"))
         .env("SKIT_STATE_DIR", root.join("state"))
         .env("SKIT_CONFIG_DIR", root.join("config"))
         .env("SKIT_FAKE_UV_LOG", log)
+        .env("SKIT_FAKE_UV_EXPECT", expected_source)
         .env("PATH", "")
         .output()?)
 }
@@ -96,6 +102,7 @@ fn managed_const_reaches_real_child_via_ephemeral_snapshot_and_store_stays_untou
         root.path(),
         &["run", "Managed", "--set", "CITY=Paris", "--no-input"],
         &log,
+        "CITY = \"Paris\"",
     )?;
     assert!(
         output.status.success(),
@@ -118,7 +125,7 @@ fn managed_const_reaches_real_child_via_ephemeral_snapshot_and_store_stays_untou
 }
 
 #[test]
-fn managed_input_value_is_a_125_refusal_and_never_spawns_fake_uv()
+fn managed_input_reaches_real_child_via_one_shot_wrapper_and_is_remembered()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempdir()?;
     let params = vec![ParamDecl {
@@ -129,7 +136,48 @@ fn managed_input_value_is_a_125_refusal_and_never_spawns_fake_uv()
         order: 0,
         ..ParamDecl::default()
     }];
-    python_fixture(root.path(), "name = input('Name: ')\n", &params)?;
+    let stored = python_fixture(root.path(), "name = input('Name: ')\n", &params)?;
+    install_fake_uv(root.path())?;
+    let log = root.path().join("input-script-path.txt");
+
+    let output = run(
+        root.path(),
+        &["run", "Managed", "--set", "input-1=Ada", "--no-input"],
+        &log,
+        "_skit_i[0]('Name: ')",
+    )?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    let temp_path = fs::read_to_string(&log)?.trim().to_owned();
+    assert!(!Path::new(&temp_path).exists());
+    assert_eq!(
+        fs::read_to_string(root.path().join("data/scripts/managed/script.py"))?,
+        stored
+    );
+    let state = fs::read_to_string(root.path().join("state/values/managed.toml"))?;
+    assert!(state.contains("input-1"));
+    assert!(state.contains("Ada"));
+    assert!(state.contains("exit = 0"));
+    Ok(())
+}
+
+#[test]
+fn renamed_managed_input_prompt_is_125_and_never_spawns_fake_uv()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempdir()?;
+    let params = vec![ParamDecl {
+        name: "input-1".to_owned(),
+        binding: Binding::Input,
+        delivery: Delivery::Inject,
+        prompt: "Old name: ".to_owned(),
+        order: 0,
+        ..ParamDecl::default()
+    }];
+    python_fixture(root.path(), "name = input('New name: ')\n", &params)?;
     install_fake_uv(root.path())?;
     let log = root.path().join("should-not-exist.txt");
 
@@ -137,9 +185,10 @@ fn managed_input_value_is_a_125_refusal_and_never_spawns_fake_uv()
         root.path(),
         &["run", "Managed", "--set", "input-1=Ada", "--no-input"],
         &log,
+        "_skit_i",
     )?;
     assert_eq!(output.status.code(), Some(125));
-    assert!(String::from_utf8(output.stderr)?.contains("managed input() injection is not enabled"));
+    assert!(String::from_utf8(output.stderr)?.contains("ambiguous after source drift"));
     assert!(!log.exists());
     assert!(!root.path().join("state/values/managed.toml").exists());
     Ok(())
