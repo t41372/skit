@@ -15,7 +15,8 @@ fn const_spec(name: &str, param_type: ParamType) -> ParamDecl {
 }
 
 #[test]
-fn const_injection_replaces_module_and_main_guard_targets_only() {
+fn const_injection_replaces_module_and_main_guard_targets_only()
+-> Result<(), Box<dyn std::error::Error>> {
     let source = concat!(
         "# CITY = 'comment stays'\n",
         "CITY = 'Taipei'\n",
@@ -28,8 +29,7 @@ fn const_injection_replaces_module_and_main_guard_targets_only() {
         source,
         &[const_spec("CITY", ParamType::String)],
         &BTreeMap::from([("CITY".to_owned(), "Paris".to_owned())]),
-    )
-    .expect("const injection should succeed");
+    )?;
     assert_eq!(
         output,
         concat!(
@@ -41,10 +41,11 @@ fn const_injection_replaces_module_and_main_guard_targets_only() {
             "    print(CITY)\n",
         )
     );
+    Ok(())
 }
 
 #[test]
-fn typed_values_render_as_valid_python_literals() {
+fn typed_values_render_as_valid_python_literals() -> Result<(), Box<dyn std::error::Error>> {
     let source = "COUNT = 1\nRATIO = 0.5\nON = False\nTEXT = 'old'\n";
     let specs = vec![
         const_spec("COUNT", ParamType::Integer),
@@ -58,12 +59,12 @@ fn typed_values_render_as_valid_python_literals() {
         ("ON".to_owned(), "yes".to_owned()),
         ("TEXT".to_owned(), "a\"b\\c\n市".to_owned()),
     ]);
-    let output = inject_python_consts(source, &specs, &values)
-        .expect("typed injection should succeed");
+    let output = inject_python_consts(source, &specs, &values)?;
     assert_eq!(
         output,
         "COUNT = 7\nRATIO = 2.25\nON = True\nTEXT = \"a\\\"b\\\\c\\n市\"\n"
     );
+    Ok(())
 }
 
 #[test]
@@ -119,13 +120,10 @@ fn supplied_managed_input_is_explicitly_refused_in_const_only_slice() {
 }
 
 #[test]
-fn no_values_is_byte_identical_and_syntax_errors_are_named() {
+fn no_values_is_byte_identical_and_syntax_errors_are_named()
+-> Result<(), Box<dyn std::error::Error>> {
     let broken = "def broken(:\n";
-    assert_eq!(
-        inject_python_consts(broken, &[], &BTreeMap::new())
-            .expect("no values must not parse or rewrite source"),
-        broken
-    );
+    assert_eq!(inject_python_consts(broken, &[], &BTreeMap::new())?, broken);
     assert_eq!(
         inject_python_consts(
             broken,
@@ -134,4 +132,5 @@ fn no_values_is_byte_identical_and_syntax_errors_are_named() {
         ),
         Err(PythonInjectError::Syntax)
     );
+    Ok(())
 }
