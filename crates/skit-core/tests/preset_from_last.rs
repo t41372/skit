@@ -9,11 +9,7 @@ use skit_core::{
 use tempfile::tempdir;
 
 fn roots(root: &Path) -> LibraryRoots {
-    LibraryRoots::new(
-        root.join("data"),
-        root.join("state"),
-        root.join("config"),
-    )
+    LibraryRoots::new(root.join("data"), root.join("state"), root.join("config"))
 }
 
 fn plan() -> FormPlan {
@@ -63,7 +59,10 @@ API_KEY = "run-secret"
     )?;
 
     let saved = save_preset_from_last(&state, "demo", "prod", &plan())?;
-    assert_eq!(saved, BTreeMap::from([("CITY".to_owned(), "Taipei".to_owned())]));
+    assert_eq!(
+        saved,
+        BTreeMap::from([("CITY".to_owned(), "Taipei".to_owned())])
+    );
 
     let loaded = state.load("demo");
     assert_eq!(loaded.presets["prod"], saved);

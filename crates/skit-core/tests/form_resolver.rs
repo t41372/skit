@@ -33,7 +33,9 @@ fn resolution_order_is_default_then_last_then_preset_then_explicit() {
     );
 
     assert_eq!(
-        prefill(&plan, &EntryState::default(), None).get("CITY").map(String::as_str),
+        prefill(&plan, &EntryState::default(), None)
+            .get("CITY")
+            .map(String::as_str),
         Some("Osaka")
     );
     assert_eq!(prefill(&plan, &state, None)["CITY"], "Taipei");
@@ -42,7 +44,10 @@ fn resolution_order_is_default_then_last_then_preset_then_explicit() {
     let explicit = BTreeMap::from([("CITY".to_owned(), "Tainan".to_owned())]);
     let resolved = resolve_values(&plan, &state, Some("jp"), &explicit);
     assert!(resolved.is_ok());
-    assert_eq!(resolved.ok().and_then(|values| values.get("CITY").cloned()), Some("Tainan".to_owned()));
+    assert_eq!(
+        resolved.ok().and_then(|values| values.get("CITY").cloned()),
+        Some("Tainan".to_owned())
+    );
 }
 
 #[test]
@@ -59,7 +64,9 @@ fn secret_values_are_never_prefilled_but_explicit_secret_is_allowed_for_this_run
         ..FormPlan::default()
     };
     let mut state = EntryState::default();
-    state.values.insert("API_KEY".to_owned(), "stale".to_owned());
+    state
+        .values
+        .insert("API_KEY".to_owned(), "stale".to_owned());
     state.presets.insert(
         "prod".to_owned(),
         BTreeMap::from([("API_KEY".to_owned(), "also-stale".to_owned())]),
@@ -69,7 +76,9 @@ fn secret_values_are_never_prefilled_but_explicit_secret_is_allowed_for_this_run
     let explicit = BTreeMap::from([("API_KEY".to_owned(), "typed-now".to_owned())]);
     let resolved = resolve_values(&plan, &state, Some("prod"), &explicit);
     assert_eq!(
-        resolved.ok().and_then(|values| values.get("API_KEY").cloned()),
+        resolved
+            .ok()
+            .and_then(|values| values.get("API_KEY").cloned()),
         Some("typed-now".to_owned())
     );
 }
@@ -142,7 +151,9 @@ fn bool_spellings_match_the_existing_python_contract() {
         })],
         ..FormPlan::default()
     };
-    for value in ["true", "1", "yes", "y", "on", "false", "0", "no", "n", "off"] {
+    for value in [
+        "true", "1", "yes", "y", "on", "false", "0", "no", "n", "off",
+    ] {
         let values = BTreeMap::from([("B".to_owned(), value.to_owned())]);
         assert!(validate_values(&plan, &values).is_empty(), "{value}");
     }

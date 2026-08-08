@@ -5,11 +5,7 @@ use skit_core::{AddFileRequest, AddMode, AddPreparation, LibraryRoots, Store, ad
 use tempfile::tempdir;
 
 fn roots(root: &Path) -> LibraryRoots {
-    LibraryRoots::new(
-        root.join("data"),
-        root.join("state"),
-        root.join("config"),
-    )
+    LibraryRoots::new(root.join("data"), root.join("state"), root.join("config"))
 }
 
 fn request(source: &Path) -> AddFileRequest {

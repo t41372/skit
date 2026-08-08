@@ -168,9 +168,8 @@ fn run() -> Result<(), CliFailure> {
         return Ok(());
     }
 
-    let store = Store::new(
-        discover_roots().map_err(|error| CliFailure::operational(error.to_string()))?,
-    );
+    let store =
+        Store::new(discover_roots().map_err(|error| CliFailure::operational(error.to_string()))?);
     match cli.command {
         Some(Command::Add(args)) => add_command::run(&store, args),
         Some(Command::List { json }) => list(&store, json).map_err(CliFailure::operational),
@@ -187,8 +186,7 @@ fn run() -> Result<(), CliFailure> {
             describe(&store, &name, &text).map_err(CliFailure::operational)
         }
         Some(Command::Preset(args)) => preset_command::run(&store, args),
-        None => skit_tui::run(&store)
-            .map_err(|error| CliFailure::operational(error.to_string())),
+        None => skit_tui::run(&store).map_err(|error| CliFailure::operational(error.to_string())),
     }
 }
 
@@ -243,7 +241,10 @@ fn show(store: &Store, name: &str, as_json: bool) -> Result<(), String> {
     presets.sort();
 
     if !as_json {
-        println!("{}  ({} · {})", entry.meta.name, entry.meta.kind, entry.meta.mode);
+        println!(
+            "{}  ({} · {})",
+            entry.meta.name, entry.meta.kind, entry.meta.mode
+        );
         if !entry.meta.description.is_empty() {
             println!("  {}", entry.meta.description);
         }

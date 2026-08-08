@@ -100,6 +100,13 @@ fn resolve_accepts_slug_and_unknown_kind() -> Result<(), Box<dyn std::error::Err
 
     assert_eq!(entry.slug, "future");
     assert_eq!(entry.meta.kind, "future-kind");
-    assert_eq!(entry.meta.extra.get("future_key").and_then(toml::Value::as_str), Some("must not make the reader fail"));
+    assert_eq!(
+        entry
+            .meta
+            .extra
+            .get("future_key")
+            .and_then(toml::Value::as_str),
+        Some("must not make the reader fail")
+    );
     Ok(())
 }

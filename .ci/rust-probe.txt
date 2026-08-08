@@ -1,1080 +1,197 @@
-$ cargo +1.97.1 fmt --all --check
-Diff in /home/runner/work/skit/skit/crates/skit/src/main.rs:168:
-         return Ok(());
-     }
- 
--    let store = Store::new(
--        discover_roots().map_err(|error| CliFailure::operational(error.to_string()))?,
--    );
-+    let store =
-+        Store::new(discover_roots().map_err(|error| CliFailure::operational(error.to_string()))?);
-     match cli.command {
-         Some(Command::Add(args)) => add_command::run(&store, args),
-         Some(Command::List { json }) => list(&store, json).map_err(CliFailure::operational),
-Diff in /home/runner/work/skit/skit/crates/skit/src/main.rs:187:
-             describe(&store, &name, &text).map_err(CliFailure::operational)
-         }
-         Some(Command::Preset(args)) => preset_command::run(&store, args),
--        None => skit_tui::run(&store)
--            .map_err(|error| CliFailure::operational(error.to_string())),
-+        None => skit_tui::run(&store).map_err(|error| CliFailure::operational(error.to_string())),
-     }
- }
- 
-Diff in /home/runner/work/skit/skit/crates/skit/src/main.rs:243:
-     presets.sort();
- 
-     if !as_json {
--        println!("{}  ({} · {})", entry.meta.name, entry.meta.kind, entry.meta.mode);
-+        println!(
-+            "{}  ({} · {})",
-+            entry.meta.name, entry.meta.kind, entry.meta.mode
-+        );
-         if !entry.meta.description.is_empty() {
-             println!("  {}", entry.meta.description);
-         }
-Diff in /home/runner/work/skit/skit/crates/skit/src/preset_command.rs:2:
- 
- use clap::{Args, Subcommand};
- use serde::Serialize;
--use skit_core::{
--    PresetFromLastError, StateStore, Store, plan_for_entry, save_preset_from_last,
--};
-+use skit_core::{PresetFromLastError, StateStore, Store, plan_for_entry, save_preset_from_last};
- 
- use crate::CliFailure;
- 
-Diff in /home/runner/work/skit/skit/crates/skit/src/preset_command.rs:52:
-             from_last,
-         } => save(store, &state, &name, &preset_name, from_last),
-         PresetCommand::List { name, json } => list(store, &state, &name, json),
--        PresetCommand::Delete { name, preset_name } => {
--            delete(store, &state, &name, &preset_name)
--        }
-+        PresetCommand::Delete { name, preset_name } => delete(store, &state, &name, &preset_name),
-     }
- }
- 
-Diff in /home/runner/work/skit/skit/crates/skit/src/preset_command.rs:87:
-             "{} has no remembered values yet — run it once first.",
-             entry.meta.name
-         ))),
--        Err(PresetFromLastError::State(error)) => {
--            Err(CliFailure::operational(error.to_string()))
--        }
-+        Err(PresetFromLastError::State(error)) => Err(CliFailure::operational(error.to_string())),
-     }
- }
- 
-Diff in /home/runner/work/skit/skit/crates/skit/src/preset_command.rs:96:
--fn list(
--    store: &Store,
--    state: &StateStore,
--    name: &str,
--    as_json: bool,
--) -> Result<(), CliFailure> {
-+fn list(store: &Store, state: &StateStore, name: &str, as_json: bool) -> Result<(), CliFailure> {
-     let entry = store
-         .resolve(name)
-         .map_err(|error| CliFailure::operational(error.to_string()))?;
-Diff in /home/runner/work/skit/skit/crates/skit/tests/add_contract.rs:30:
- 
-     fn list_json(&self) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-         let output = self.command().args(["list", "--json"]).output()?;
--        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-+        assert!(
-+            output.status.success(),
-+            "{}",
-+            String::from_utf8_lossy(&output.stderr)
-+        );
-         Ok(serde_json::from_slice(&output.stdout)?)
-     }
- 
-Diff in /home/runner/work/skit/skit/crates/skit/tests/add_contract.rs:37:
-     fn show_json(&self, name: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
--        let output = self
--            .command()
--            .args(["show", name, "--json"])
--            .output()?;
--        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-+        let output = self.command().args(["show", name, "--json"]).output()?;
-+        assert!(
-+            output.status.success(),
-+            "{}",
-+            String::from_utf8_lossy(&output.stderr)
-+        );
-         Ok(serde_json::from_slice(&output.stdout)?)
-     }
- }
-Diff in /home/runner/work/skit/skit/crates/skit/tests/add_contract.rs:58:
-     fs::write(&source, bytes)?;
- 
-     let output = run_add(&roots, &[source.to_string_lossy().as_ref(), "-n", "deploy"])?;
--    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-+    assert!(
-+        output.status.success(),
-+        "{}",
-+        String::from_utf8_lossy(&output.stderr)
-+    );
-     assert!(output.stderr.is_empty());
-     assert_eq!(
-         String::from_utf8(output.stdout)?,
-Diff in /home/runner/work/skit/skit/crates/skit/tests/add_contract.rs:71:
-     assert_eq!(shown["description"], "Ship it");
-     assert_eq!(shown["interpreter"], "zsh");
-     assert_eq!(shown["workdir"], "invoke");
--    assert_eq!(fs::read(roots.data.join("scripts/deploy/script.sh"))?, bytes);
-+    assert_eq!(
-+        fs::read(roots.data.join("scripts/deploy/script.sh"))?,
-+        bytes
-+    );
-     Ok(())
- }
- 
-Diff in /home/runner/work/skit/skit/crates/skit/tests/add_contract.rs:88:
-         &roots,
-         &[source.to_string_lossy().as_ref(), "--ref", "-n", "task"],
-     )?;
--    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-+    assert!(
-+        output.status.success(),
-+        "{}",
-+        String::from_utf8_lossy(&output.stderr)
-+    );
-     assert_eq!(fs::read(&source)?, bytes);
-     assert!(!roots.data.join("scripts/task/script.rb").exists());
- 
-Diff in /home/runner/work/skit/skit/crates/skit/tests/add_contract.rs:119:
-             "Build project",
-         ],
-     )?;
--    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-+    assert!(
-+        output.status.success(),
-+        "{}",
-+        String::from_utf8_lossy(&output.stderr)
-+    );
-     let shown = roots.show_json("builder")?;
-     assert_eq!(shown["kind"], "shell");
-     assert_eq!(shown["description"], "Build project");
-Diff in /home/runner/work/skit/skit/crates/skit/tests/add_contract.rs:128:
- }
- 
- #[test]
--fn exe_is_always_reference_and_does_not_claim_copy_mode() -> Result<(), Box<dyn std::error::Error>> {
-+fn exe_is_always_reference_and_does_not_claim_copy_mode() -> Result<(), Box<dyn std::error::Error>>
-+{
-     let root = tempdir()?;
-     let roots = Roots::new(root.path());
-     let source = root.path().join("program.bin");
-Diff in /home/runner/work/skit/skit/crates/skit/tests/add_contract.rs:138:
-         &roots,
-         &[source.to_string_lossy().as_ref(), "--exe", "-n", "program"],
-     )?;
--    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-+    assert!(
-+        output.status.success(),
-+        "{}",
-+        String::from_utf8_lossy(&output.stderr)
-+    );
-     assert_eq!(
-         String::from_utf8(output.stdout)?,
-         "Added: program\n  Run it: skit run program\n"
-Diff in /home/runner/work/skit/skit/crates/skit/tests/add_contract.rs:177:
- 
-     let output = run_add(
-         &roots,
--        &[source.to_string_lossy().as_ref(), "--kind", "shell", "--exe"],
-+        &[
-+            source.to_string_lossy().as_ref(),
-+            "--kind",
-+            "shell",
-+            "--exe",
-+        ],
-     )?;
-     assert_eq!(output.status.code(), Some(2));
-     assert!(String::from_utf8(output.stderr)?.contains("Use --kind or --exe, not both"));
-Diff in /home/runner/work/skit/skit/crates/skit/tests/preset_contract.rs:86:
-         root.path(),
-         &["preset", "save", "Demo", "prod", "--from-last"],
-     )?;
--    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-+    assert!(
-+        output.status.success(),
-+        "{}",
-+        String::from_utf8_lossy(&output.stderr)
-+    );
-     assert_eq!(
-         String::from_utf8(output.stdout)?,
-         "Preset \"prod\" saved for Demo.\n"
-Diff in /home/runner/work/skit/skit/crates/skit/tests/preset_contract.rs:109:
-         root.path(),
-         &["preset", "save", "Demo", "empty", "--from-last"],
-     )?;
--    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-+    assert!(
-+        output.status.success(),
-+        "{}",
-+        String::from_utf8_lossy(&output.stderr)
-+    );
-     let listed = run(root.path(), &["preset", "list", "Demo", "--json"])?;
-     assert_eq!(
-         serde_json::from_slice::<serde_json::Value>(&listed.stdout)?,
-Diff in /home/runner/work/skit/skit/crates/skit/tests/preset_contract.rs:147:
-     assert_eq!(output.status.code(), Some(1));
-     assert!(String::from_utf8(output.stderr)?.contains("run it once first"));
-     let listed = run(root.path(), &["preset", "list", "Demo", "--json"])?;
--    assert_eq!(serde_json::from_slice::<serde_json::Value>(&listed.stdout)?, json!({}));
-+    assert_eq!(
-+        serde_json::from_slice::<serde_json::Value>(&listed.stdout)?,
-+        json!({})
-+    );
-     Ok(())
- }
- 
-Diff in /home/runner/work/skit/skit/crates/skit/tests/preset_contract.rs:160:
-     assert!(output.stdout.is_empty());
-     assert!(String::from_utf8(output.stderr)?.contains("pass --from-last"));
-     let listed = run(root.path(), &["preset", "list", "Demo", "--json"])?;
--    assert_eq!(serde_json::from_slice::<serde_json::Value>(&listed.stdout)?, json!({}));
-+    assert_eq!(
-+        serde_json::from_slice::<serde_json::Value>(&listed.stdout)?,
-+        json!({})
-+    );
-     Ok(())
- }
- 
-Diff in /home/runner/work/skit/skit/crates/skit/tests/show_contract.rs:176:
- }
- 
- #[test]
--fn show_missing_entry_is_failure_and_does_not_emit_json()
---> Result<(), Box<dyn std::error::Error>> {
-+fn show_missing_entry_is_failure_and_does_not_emit_json() -> Result<(), Box<dyn std::error::Error>>
-+{
-     let root = tempdir()?;
-     let output = run_show(
-         &root.path().join("data"),
-Diff in /home/runner/work/skit/skit/crates/skit-core/src/assembly.rs:180:
-             return;
-         }
-         let fired = bool_value(value);
--        if (field.action == "store_true" && fired)
--            || (field.action == "store_false" && !fired)
--        {
-+        if (field.action == "store_true" && fired) || (field.action == "store_false" && !fired) {
-             flags.push(field.flag.clone());
-             masked_flags.push(field.flag.clone());
-         }
-Diff in /home/runner/work/skit/skit/crates/skit-core/src/forms.rs:343:
-     };
-     match field.param_type {
-         ParamType::Integer => pieces.iter().find_map(|piece| {
--            piece
--                .parse::<i64>()
--                .err()
--                .map(|_| format!("{} needs a whole number — you typed {value:?}.", field.label))
-+            piece.parse::<i64>().err().map(|_| {
-+                format!(
-+                    "{} needs a whole number — you typed {value:?}.",
-+                    field.label
-+                )
-+            })
-         }),
-         ParamType::Float => pieces.iter().find_map(|piece| match piece.parse::<f64>() {
-             Ok(number) if number.is_finite() => None,
-Diff in /home/runner/work/skit/skit/crates/skit-core/src/forms.rs:356:
-             )),
-         }),
-         ParamType::Boolean => pieces.iter().find_map(|piece| {
--            (!is_bool_text(piece)).then(|| {
--                format!("{} needs on or off — you typed {value:?}.", field.label)
--            })
-+            (!is_bool_text(piece))
-+                .then(|| format!("{} needs on or off — you typed {value:?}.", field.label))
-         }),
--        ParamType::Choice if !field.choices.is_empty() && !field.choices.iter().any(|v| v == value) => {
-+        ParamType::Choice
-+            if !field.choices.is_empty() && !field.choices.iter().any(|v| v == value) =>
-+        {
-             Some(format!(
-                 "{} must be one of: {}",
-                 field.label,
-Diff in /home/runner/work/skit/skit/crates/skit-core/src/launch.rs:70:
- impl fmt::Display for LaunchPlanError {
-     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-         match self {
--            Self::UnsupportedKind(kind) => write!(formatter, "launch is not implemented for kind: {kind}"),
--            Self::TargetMissing(path) => write!(formatter, "the launch target does not exist: {}", path.display()),
--            Self::NotRunnable(path) => write!(formatter, "the executable is not runnable: {}", path.display()),
--            Self::MissingInterpreter(name) => write!(formatter, "the interpreter is not installed or on PATH: {name}"),
-+            Self::UnsupportedKind(kind) => {
-+                write!(formatter, "launch is not implemented for kind: {kind}")
-+            }
-+            Self::TargetMissing(path) => write!(
-+                formatter,
-+                "the launch target does not exist: {}",
-+                path.display()
-+            ),
-+            Self::NotRunnable(path) => write!(
-+                formatter,
-+                "the executable is not runnable: {}",
-+                path.display()
-+            ),
-+            Self::MissingInterpreter(name) => write!(
-+                formatter,
-+                "the interpreter is not installed or on PATH: {name}"
-+            ),
-             Self::MissingJavaScriptRuntime(candidates) => write!(
-                 formatter,
-                 "no JavaScript runtime found (looked for: {})",
-Diff in /home/runner/work/skit/skit/crates/skit-core/src/launch.rs:236:
-         options.js_runner.as_deref()
-     };
-     let candidates = override_name.map_or_else(
--        || ORDER.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>(),
-+        || {
-+            ORDER
-+                .iter()
-+                .map(|name| (*name).to_owned())
-+                .collect::<Vec<_>>()
-+        },
-         |name| vec![name.to_owned()],
-     );
-     let Some((runner_name, runner_path)) = candidates
-Diff in /home/runner/work/skit/skit/crates/skit-core/src/lib.rs:25:
-     kind_for_extension, kind_for_shebang_text, known_kinds, python_version_pin,
-     shebang_program_from_line, spec_for, stored_name,
- };
--pub use launch::{
--    LaunchOptions, LaunchPlan, LaunchPlanError, ProgramResolver, build_launch_plan,
--};
-+pub use launch::{LaunchOptions, LaunchPlan, LaunchPlanError, ProgramResolver, build_launch_plan};
- pub use params::{
-     Binding, Delivery, ParamDecl, ParamDefault, ParamType, declared_from_meta, is_secret_name,
-     synthesized_placeholder,
-Diff in /home/runner/work/skit/skit/crates/skit-core/src/params.rs:184:
-         let choices = row
-             .get("choices")
-             .and_then(toml::Value::as_array)
--            .map(|items| items.iter().filter_map(|item| scalar_text(Some(item))).collect())
-+            .map(|items| {
-+                items
-+                    .iter()
-+                    .filter_map(|item| scalar_text(Some(item)))
-+                    .collect()
-+            })
-             .unwrap_or_default();
-         Self {
-             name,
-Diff in /home/runner/work/skit/skit/crates/skit-core/src/programs.rs:58:
- 
-     fn candidates(&self, name: &str) -> Vec<PathBuf> {
-         let name_path = Path::new(name);
--        let has_parent = name_path.parent().is_some_and(|parent| !parent.as_os_str().is_empty());
-+        let has_parent = name_path
-+            .parent()
-+            .is_some_and(|parent| !parent.as_os_str().is_empty());
-         let bases = if name_path.is_absolute() || has_parent {
-             vec![name_path.to_owned()]
-         } else {
-Diff in /home/runner/work/skit/skit/crates/skit-core/src/store/mod.rs:445:
-         source,
-     })?;
-     if let Some(mode) = unix_mode {
--        fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|source| Error::Io {
--            path: path.to_owned(),
--            source,
-+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|source| {
-+            Error::Io {
-+                path: path.to_owned(),
-+                source,
-+            }
-         })?;
-     } else if readonly {
--        let mut permissions = file.metadata().map_err(|source| Error::Io {
--            path: path.to_owned(),
--            source,
--        })?.permissions();
-+        let mut permissions = file
-+            .metadata()
-+            .map_err(|source| Error::Io {
-+                path: path.to_owned(),
-+                source,
-+            })?
-+            .permissions();
-         permissions.set_readonly(true);
-         fs::set_permissions(path, permissions).map_err(|source| Error::Io {
-             path: path.to_owned(),
-Diff in /home/runner/work/skit/skit/crates/skit-core/src/store/mod.rs:483:
-         source,
-     })?;
-     if readonly {
--        let mut permissions = file.metadata().map_err(|source| Error::Io {
--            path: path.to_owned(),
--            source,
--        })?.permissions();
-+        let mut permissions = file
-+            .metadata()
-+            .map_err(|source| Error::Io {
-+                path: path.to_owned(),
-+                source,
-+            })?
-+            .permissions();
-         permissions.set_readonly(true);
-         fs::set_permissions(path, permissions).map_err(|source| Error::Io {
-             path: path.to_owned(),
-Diff in /home/runner/work/skit/skit/crates/skit-core/src/store/persistence.rs:80:
-     }
- }
- 
--pub(super) fn insert_registry_row(
--    document: &mut toml::Table,
--    entry: &Entry,
--) -> Result<(), Error> {
-+pub(super) fn insert_registry_row(document: &mut toml::Table, entry: &Entry) -> Result<(), Error> {
-     normalize_registry_entries(document);
-     if let Some(entries) = document
-         .get_mut("entries")
-Diff in /home/runner/work/skit/skit/crates/skit-core/src/store/persistence.rs:134:
-         .is_some()
- }
- 
--pub(super) fn write_registry_document(
--    path: &Path,
--    document: &toml::Table,
--) -> Result<(), Error> {
-+pub(super) fn write_registry_document(path: &Path, document: &toml::Table) -> Result<(), Error> {
-     let text = toml::to_string(document).map_err(|source| Error::EncodeToml {
-         path: path.to_owned(),
-         source,
-Diff in /home/runner/work/skit/skit/crates/skit-core/src/store/persistence.rs:229:
- 
- fn empty_registry() -> toml::Table {
-     let mut document = toml::Table::new();
--    document.insert(
--        "entries".to_owned(),
--        toml::Value::Table(toml::Table::new()),
--    );
-+    document.insert("entries".to_owned(), toml::Value::Table(toml::Table::new()));
-     document
- }
- 
-Diff in /home/runner/work/skit/skit/crates/skit-core/src/store/persistence.rs:239:
- fn normalize_registry_entries(document: &mut toml::Table) {
-     if !document.get("entries").is_some_and(toml::Value::is_table) {
--        document.insert(
--            "entries".to_owned(),
--            toml::Value::Table(toml::Table::new()),
--        );
-+        document.insert("entries".to_owned(), toml::Value::Table(toml::Table::new()));
-     }
- }
- 
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/assembly_contract.rs:42:
-         ("width".to_owned(), "800".to_owned()),
-         ("DEBUG".to_owned(), "1".to_owned()),
-     ]);
--    let assembly = assemble_delivery(
--        &plan,
--        &values,
--        &["--verbose".to_owned()],
--        &BTreeMap::new(),
--    )?;
-+    let assembly = assemble_delivery(&plan, &values, &["--verbose".to_owned()], &BTreeMap::new())?;
- 
-     assert_eq!(assembly.args, ["in.png", "--width", "800", "--verbose"]);
-     assert_eq!(assembly.masked_args, assembly.args);
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/form_resolver.rs:33:
-     );
- 
-     assert_eq!(
--        prefill(&plan, &EntryState::default(), None).get("CITY").map(String::as_str),
-+        prefill(&plan, &EntryState::default(), None)
-+            .get("CITY")
-+            .map(String::as_str),
-         Some("Osaka")
-     );
-     assert_eq!(prefill(&plan, &state, None)["CITY"], "Taipei");
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/form_resolver.rs:42:
-     let explicit = BTreeMap::from([("CITY".to_owned(), "Tainan".to_owned())]);
-     let resolved = resolve_values(&plan, &state, Some("jp"), &explicit);
-     assert!(resolved.is_ok());
--    assert_eq!(resolved.ok().and_then(|values| values.get("CITY").cloned()), Some("Tainan".to_owned()));
-+    assert_eq!(
-+        resolved.ok().and_then(|values| values.get("CITY").cloned()),
-+        Some("Tainan".to_owned())
-+    );
- }
- 
- #[test]
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/form_resolver.rs:59:
-         ..FormPlan::default()
-     };
-     let mut state = EntryState::default();
--    state.values.insert("API_KEY".to_owned(), "stale".to_owned());
-+    state
-+        .values
-+        .insert("API_KEY".to_owned(), "stale".to_owned());
-     state.presets.insert(
-         "prod".to_owned(),
-         BTreeMap::from([("API_KEY".to_owned(), "also-stale".to_owned())]),
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/form_resolver.rs:69:
-     let explicit = BTreeMap::from([("API_KEY".to_owned(), "typed-now".to_owned())]);
-     let resolved = resolve_values(&plan, &state, Some("prod"), &explicit);
-     assert_eq!(
--        resolved.ok().and_then(|values| values.get("API_KEY").cloned()),
-+        resolved
-+            .ok()
-+            .and_then(|values| values.get("API_KEY").cloned()),
-         Some("typed-now".to_owned())
-     );
- }
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/form_resolver.rs:142:
-         })],
-         ..FormPlan::default()
-     };
--    for value in ["true", "1", "yes", "y", "on", "false", "0", "no", "n", "off"] {
-+    for value in [
-+        "true", "1", "yes", "y", "on", "false", "0", "no", "n", "off",
-+    ] {
-         let values = BTreeMap::from([("B".to_owned(), value.to_owned())]);
-         assert!(validate_values(&plan, &values).is_empty(), "{value}");
-     }
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/language_registry.rs:211:
-     std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644))?;
- 
-     assert_eq!(
--        skit_core::infer_kind_with_policy(
--            &executable,
--            false,
--            skit_core::ExecutablePolicy::Posix
--        ),
-+        skit_core::infer_kind_with_policy(&executable, false, skit_core::ExecutablePolicy::Posix),
-         "exe"
-     );
-     assert_eq!(
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/launch_plan.rs:37:
- }
- 
- #[test]
--fn interpreter_launch_honors_pin_and_routes_env_and_args() -> Result<(), Box<dyn std::error::Error>> {
-+fn interpreter_launch_honors_pin_and_routes_env_and_args() -> Result<(), Box<dyn std::error::Error>>
-+{
-     let root = tempdir()?;
-     let source = root.path().join("origin.sh");
-     fs::write(&source, "#!/bin/zsh\necho ok\n")?;
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/launch_plan.rs:49:
-     };
-     let options = LaunchOptions::new(Platform::Linux, root.path());
- 
--    let plan = build_launch_plan(&entry, &assembly, &options, &resolver(&[("zsh", "/bin/zsh")]))?;
-+    let plan = build_launch_plan(
-+        &entry,
-+        &assembly,
-+        &options,
-+        &resolver(&[("zsh", "/bin/zsh")]),
-+    )?;
-     assert_eq!(
-         plan.argv,
--        [
--            "/bin/zsh",
--            source.to_string_lossy().as_ref(),
--            "--fast"
--        ]
-+        ["/bin/zsh", source.to_string_lossy().as_ref(), "--fast"]
-     );
-     assert_eq!(plan.cwd, root.path());
-     assert_eq!(plan.env_overlay["MODE"], "prod");
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/launch_plan.rs:125:
- }
- 
- #[test]
--fn javascript_override_is_strict_and_does_not_fall_back() -> Result<(), Box<dyn std::error::Error>> {
-+fn javascript_override_is_strict_and_does_not_fall_back() -> Result<(), Box<dyn std::error::Error>>
-+{
-     let root = tempdir()?;
-     let entry_dir = root.path().join("data/scripts/demo");
-     fs::create_dir_all(&entry_dir)?;
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/launch_plan.rs:200:
-     fs::create_dir_all(&entry_dir)?;
-     fs::write(entry_dir.join("script.sh"), "echo ok\n")?;
-     let vanished_source = root.path().join("gone/origin.sh");
--    let entry = entry(
--        root.path(),
--        "shell",
--        "copy",
--        &vanished_source,
--        "origin",
--        "",
--    )?;
-+    let entry = entry(root.path(), "shell", "copy", &vanished_source, "origin", "")?;
-     let options = LaunchOptions::new(Platform::Linux, root.path());
- 
-     let plan = build_launch_plan(
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/param_contract.rs:4:
- };
- 
- #[test]
--fn metadata_reader_is_total_and_coerces_hand_edited_scalars() -> Result<(), Box<dyn std::error::Error>> {
-+fn metadata_reader_is_total_and_coerces_hand_edited_scalars()
-+-> Result<(), Box<dyn std::error::Error>> {
-     let value: toml::Value = toml::from_str(
-         r#"name = 7
- binding = "future-binding"
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/param_contract.rs:65:
-         )]),
-         toml::Table::from_iter([
-             ("name".to_owned(), toml::Value::String("ok".to_owned())),
--            (
--                "delivery".to_owned(),
--                toml::Value::String("env".to_owned()),
--            ),
-+            ("delivery".to_owned(), toml::Value::String("env".to_owned())),
-         ]),
-     ];
-     let decls = declared_from_meta(&rows);
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/payload_permissions.rs:5:
- use tempfile::tempdir;
- 
- fn roots(root: &Path) -> LibraryRoots {
--    LibraryRoots::new(
--        root.join("data"),
--        root.join("state"),
--        root.join("config"),
--    )
-+    LibraryRoots::new(root.join("data"), root.join("state"), root.join("config"))
- }
- 
- fn request(source: &Path) -> AddFileRequest {
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/preset_from_last.rs:9:
- use tempfile::tempdir;
- 
- fn roots(root: &Path) -> LibraryRoots {
--    LibraryRoots::new(
--        root.join("data"),
--        root.join("state"),
--        root.join("config"),
--    )
-+    LibraryRoots::new(root.join("data"), root.join("state"), root.join("config"))
- }
- 
- fn plan() -> FormPlan {
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/preset_from_last.rs:63:
-     )?;
- 
-     let saved = save_preset_from_last(&state, "demo", "prod", &plan())?;
--    assert_eq!(saved, BTreeMap::from([("CITY".to_owned(), "Taipei".to_owned())]));
-+    assert_eq!(
-+        saved,
-+        BTreeMap::from([("CITY".to_owned(), "Taipei".to_owned())])
-+    );
- 
-     let loaded = state.load("demo");
-     assert_eq!(loaded.presets["prod"], saved);
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/program_search.rs:73:
-         vec![PathBuf::from("/should/not/be/used")],
-         vec![".CMD".to_owned()],
-     );
--    assert_eq!(
--        search.resolve(path.to_string_lossy().as_ref()),
--        Some(path)
--    );
-+    assert_eq!(search.resolve(path.to_string_lossy().as_ref()), Some(path));
-     Ok(())
- }
- 
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/state_contract.rs:8:
- use tempfile::tempdir;
- 
- fn roots(root: &Path) -> LibraryRoots {
--    LibraryRoots::new(
--        root.join("data"),
--        root.join("state"),
--        root.join("config"),
--    )
-+    LibraryRoots::new(root.join("data"), root.join("state"), root.join("config"))
- }
- 
- fn values(items: &[(&str, &str)]) -> BTreeMap<String, String> {
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/state_contract.rs:23:
- }
- 
- #[test]
--fn secrets_never_reach_last_values_presets_or_run_history() -> Result<(), Box<dyn std::error::Error>> {
-+fn secrets_never_reach_last_values_presets_or_run_history() -> Result<(), Box<dyn std::error::Error>>
-+{
-     let root = tempdir()?;
-     let state = StateStore::new(roots(root.path()));
-     let secret_names = BTreeSet::from(["TOKEN".to_owned()]);
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/state_contract.rs:30:
-     let accepted = values(&[("NAME", "Ada"), ("TOKEN", "sk-secret")]);
- 
--    state.save_last("demo", Some(&accepted), Some(&["--fast".to_owned()]), &secret_names)?;
-+    state.save_last(
-+        "demo",
-+        Some(&accepted),
-+        Some(&["--fast".to_owned()]),
-+        &secret_names,
-+    )?;
-     state.save_preset("demo", "daily", &accepted, &secret_names)?;
-     state.record_run(
-         "demo",
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/state_contract.rs:86:
- }
- 
- #[test]
--fn purge_secret_removes_old_plaintext_from_every_value_surface() -> Result<(), Box<dyn std::error::Error>> {
-+fn purge_secret_removes_old_plaintext_from_every_value_surface()
-+-> Result<(), Box<dyn std::error::Error>> {
-     let root = tempdir()?;
-     let state = StateStore::new(roots(root.path()));
-     let no_secrets = BTreeSet::new();
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/state_contract.rs:126:
- }
- 
- #[test]
--fn corrupt_state_degrades_to_empty_instead_of_breaking_the_library() -> Result<(), Box<dyn std::error::Error>> {
-+fn corrupt_state_degrades_to_empty_instead_of_breaking_the_library()
-+-> Result<(), Box<dyn std::error::Error>> {
-     let root = tempdir()?;
-     let state = StateStore::new(roots(root.path()));
-     let path = state.values_path("demo");
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/state_contract.rs:155:
-     let left_secrets = no_secrets.clone();
-     let left = thread::spawn(move || {
-         left_barrier.wait();
--        left_store.save_preset(
--            "demo",
--            "left",
--            &values(&[("VALUE", "left")]),
--            &left_secrets,
--        )
-+        left_store.save_preset("demo", "left", &values(&[("VALUE", "left")]), &left_secrets)
-     });
- 
-     let right_store = state.clone();
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/state_contract.rs:167:
-     let right_barrier = Arc::clone(&barrier);
-     let right = thread::spawn(move || {
-         right_barrier.wait();
--        right_store.save_preset(
--            "demo",
--            "right",
--            &values(&[("VALUE", "right")]),
--            &no_secrets,
--        )
-+        right_store.save_preset("demo", "right", &values(&[("VALUE", "right")]), &no_secrets)
-     });
- 
-     barrier.wait();
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/store_mutations.rs:47:
- }
- 
- #[test]
--fn description_and_rename_preserve_forward_fields_and_slug() -> Result<(), Box<dyn std::error::Error>> {
-+fn description_and_rename_preserve_forward_fields_and_slug()
-+-> Result<(), Box<dyn std::error::Error>> {
-     let (_root, store, _source) = fixture()?;
- 
-     let described = store.update_description("original", "After")?;
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/store_mutations.rs:59:
-     assert_eq!(renamed.meta.name, "Renamed");
-     assert_eq!(renamed.meta.description, "After");
-     assert_eq!(
--        renamed.meta.extra.get("future_key").and_then(toml::Value::as_str),
-+        renamed
-+            .meta
-+            .extra
-+            .get("future_key")
-+            .and_then(toml::Value::as_str),
-         Some("keep me")
-     );
- 
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/store_mutations.rs:66:
-     assert!(store.roots().data_dir().join("scripts/original").is_dir());
-     assert!(!store.roots().data_dir().join("scripts/renamed").exists());
--    assert!(store.roots().state_dir().join("values/original.toml").is_file());
-+    assert!(
-+        store
-+            .roots()
-+            .state_dir()
-+            .join("values/original.toml")
-+            .is_file()
-+    );
-     Ok(())
- }
- 
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/store_mutations.rs:89:
-     });
- 
-     barrier.wait();
--    rename_thread.join().map_err(|_| "rename thread panicked")??;
-+    rename_thread
-+        .join()
-+        .map_err(|_| "rename thread panicked")??;
-     describe_thread
-         .join()
-         .map_err(|_| "description thread panicked")??;
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/store_mutations.rs:118:
- }
- 
- #[test]
--fn removing_a_reference_never_deletes_the_original_file() -> Result<(), Box<dyn std::error::Error>> {
-+fn removing_a_reference_never_deletes_the_original_file() -> Result<(), Box<dyn std::error::Error>>
-+{
-     let (_root, store, source) = fixture()?;
- 
-     let removed_name = store.remove("original")?;
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/store_mutations.rs:126:
-     assert_eq!(removed_name, "Original");
-     assert!(source.is_file());
-     assert!(!store.roots().data_dir().join("scripts/original").exists());
--    assert!(!store.roots().state_dir().join("values/original.toml").exists());
-+    assert!(
-+        !store
-+            .roots()
-+            .state_dir()
-+            .join("values/original.toml")
-+            .exists()
-+    );
-     Ok(())
- }
- 
-Diff in /home/runner/work/skit/skit/crates/skit-core/tests/v040_compat.rs:100:
- 
-     assert_eq!(entry.slug, "future");
-     assert_eq!(entry.meta.kind, "future-kind");
--    assert_eq!(entry.meta.extra.get("future_key").and_then(toml::Value::as_str), Some("must not make the reader fail"));
-+    assert_eq!(
-+        entry
-+            .meta
-+            .extra
-+            .get("future_key")
-+            .and_then(toml::Value::as_str),
-+        Some("must not make the reader fail")
-+    );
-     Ok(())
- }
- 
-Diff in /home/runner/work/skit/skit/crates/skit-tui/src/lib.rs:107:
-             })
-             .collect()
-     };
--    let library = List::new(items).block(
--        Block::default()
--            .borders(Borders::ALL)
--            .title(" Library "),
--    );
-+    let library = List::new(items).block(Block::default().borders(Borders::ALL).title(" Library "));
-     frame.render_widget(library, areas[1]);
- 
-     frame.render_widget(
-Diff in /home/runner/work/skit/skit/crates/skit-tui/src/lib.rs:133:
-             terminal.draw(|frame| render(frame, &mut app))?;
-             match event::read()? {
-                 Event::Key(key)
--                    if key.kind == KeyEventKind::Press
--                        && app.handle_key(key) == Action::Quit =>
-+                    if key.kind == KeyEventKind::Press && app.handle_key(key) == Action::Quit =>
-                 {
-                     break Ok(());
-                 }
+$ cargo +1.97.1 fmt --all
 
 $ cargo +1.97.1 clippy --workspace --all-targets --all-features -- -D warnings
     Updating crates.io index
-     Locking 212 packages to latest Rust 1.97.1 compatible versions
-      Adding generic-array v0.14.7 (available: v0.14.9)
  Downloading crates ...
-  Downloaded bit-set v0.5.3
-  Downloaded colorchoice v1.0.5
-  Downloaded anstyle-query v1.1.5
-  Downloaded approx v0.5.1
-  Downloaded crypto-common v0.1.7
-  Downloaded anstream v1.0.0
+  Downloaded block-buffer v0.10.4
+  Downloaded cpufeatures v0.2.17
+  Downloaded fnv v1.0.7
+  Downloaded cfg-if v1.0.4
   Downloaded anstyle v1.0.14
   Downloaded anstyle-parse v1.0.0
-  Downloaded anyhow v1.0.104
-  Downloaded atomic-write-file v0.3.0
-  Downloaded allocator-api2 v0.2.21
-  Downloaded once_cell v1.21.4
-  Downloaded pest_generator v2.8.8
-  Downloaded aho-corasick v1.1.5
-  Downloaded cpufeatures v0.2.17
-  Downloaded csscolorparser v0.6.2
-  Downloaded is_terminal_polyfill v1.70.2
-  Downloaded serde_spanned v1.1.1
-  Downloaded siphasher v1.0.3
-  Downloaded hashbrown v0.17.1
-  Downloaded ppv-lite86 v0.2.21
-  Downloaded fnv v1.0.7
-  Downloaded foldhash v0.2.0
-  Downloaded log v0.4.33
-  Downloaded pest_derive v2.8.8
-  Downloaded indexmap v2.14.0
-  Downloaded instability v0.3.13
-  Downloaded kasuari v0.4.12
-  Downloaded memmem v0.1.1
-  Downloaded bitflags v1.3.2
-  Downloaded by_address v1.2.1
-  Downloaded clap_derive v4.6.4
-  Downloaded lru v0.18.2
-  Downloaded lab v0.11.0
   Downloaded critical-section v1.2.0
-  Downloaded derive_more-impl v2.1.1
-  Downloaded hex v0.4.3
-  Downloaded rand_core v0.6.4
-  Downloaded castaway v0.2.4
-  Downloaded cfg_aliases v0.2.2
-  Downloaded clap_lex v1.1.0
-  Downloaded equivalent v1.0.2
-  Downloaded errno v0.3.14
-  Downloaded lazy_static v1.5.0
-  Downloaded bit-vec v0.6.3
-  Downloaded crossterm v0.29.0
-  Downloaded darling_macro v0.24.0
-  Downloaded filedescriptor v0.8.3
-  Downloaded ident_case v1.0.1
-  Downloaded portable-atomic v1.14.0
-  Downloaded mac_address v1.1.8
-  Downloaded powerfmt v0.2.0
-  Downloaded rand_core v0.9.5
-  Downloaded base64 v0.22.1
-  Downloaded cfg-if v1.0.4
   Downloaded document-features v0.2.12
-  Downloaded fastrand v2.5.0
-  Downloaded fixedbitset v0.4.2
-  Downloaded ratatui-crossterm v0.1.2
-  Downloaded ratatui-macros v0.7.2
-  Downloaded rand_chacha v0.9.0
-  Downloaded ratatui v0.30.2
-  Downloaded proc-macro2 v1.0.107
-  Downloaded quote v1.0.47
+  Downloaded cfg_aliases v0.2.2
+  Downloaded anstream v1.0.0
+  Downloaded csscolorparser v0.6.2
+  Downloaded allocator-api2 v0.2.21
+  Downloaded phf_codegen v0.11.3
   Downloaded convert_case v0.10.0
-  Downloaded atomic v0.6.1
-  Downloaded rand v0.9.5
-  Downloaded ratatui-termina v0.1.0
-  Downloaded generic-array v0.14.7
+  Downloaded phf v0.11.3
+  Downloaded compact_str v0.9.1
+  Downloaded bitflags v1.3.2
+  Downloaded pest_derive v2.8.8
+  Downloaded pest_generator v2.8.8
+  Downloaded pest_meta v2.8.8
+  Downloaded memoffset v0.9.1
+  Downloaded num_threads v0.1.7
+  Downloaded aho-corasick v1.1.5
+  Downloaded clap_lex v1.1.0
+  Downloaded termina v0.3.3
+  Downloaded anstyle-query v1.1.5
+  Downloaded approx v0.5.1
+  Downloaded strsim v0.11.1
+  Downloaded unicode-ident v1.0.24
+  Downloaded serde_spanned v1.1.1
   Downloaded num-derive v0.4.2
   Downloaded palette_math v0.7.7
-  Downloaded rand v0.8.7
-  Downloaded thiserror v2.0.20
-  Downloaded winnow v1.0.4
-  Downloaded deranged v0.5.8
-  Downloaded getrandom v0.3.4
-  Downloaded heck v0.5.0
+  Downloaded fixedbitset v0.4.2
   Downloaded itoa v1.0.18
-  Downloaded num-conv v0.2.2
-  Downloaded num_threads v0.1.7
-  Downloaded ordered-float v4.6.0
-  Downloaded phf_codegen v0.11.3
-  Downloaded phf_generator v0.11.3
-  Downloaded rustc_version v0.4.1
-  Downloaded serde v1.0.229
-  Downloaded sha2 v0.10.9
-  Downloaded strsim v0.11.1
-  Downloaded strum v0.28.0
-  Downloaded toml_writer v1.1.2+spec-1.1.0
-  Downloaded unicode-ident v1.0.24
-  Downloaded autocfg v1.5.1
-  Downloaded block-buffer v0.10.4
+  Downloaded static_assertions v1.1.0
+  Downloaded strum_macros v0.28.0
   Downloaded clap v4.6.6
-  Downloaded indoc v2.0.7
-  Downloaded lock_api v0.4.14
-  Downloaded memoffset v0.9.1
-  Downloaded ratatui-core v0.1.2
-  Downloaded either v1.17.0
-  Downloaded serde_core v1.0.229
-  Downloaded signal-hook-mio v0.2.5
-  Downloaded termina v0.3.3
-  Downloaded time-core v0.1.9
-  Downloaded toml_parser v1.1.3+spec-1.1.0
+  Downloaded tempfile v3.27.0
+  Downloaded atomic v0.6.1
+  Downloaded by_address v1.2.1
+  Downloaded darling_macro v0.24.0
+  Downloaded is_terminal_polyfill v1.70.2
+  Downloaded lazy_static v1.5.0
+  Downloaded heck v0.5.0
+  Downloaded num-conv v0.2.2
+  Downloaded bit-set v0.5.3
+  Downloaded powerfmt v0.2.0
+  Downloaded rand v0.9.5
+  Downloaded ryu v1.0.23
+  Downloaded instability v0.3.13
+  Downloaded lab v0.11.0
+  Downloaded equivalent v1.0.2
+  Downloaded ident_case v1.0.1
+  Downloaded memmem v0.1.1
+  Downloaded colorchoice v1.0.5
+  Downloaded mac_address v1.1.8
+  Downloaded errno v0.3.14
+  Downloaded filedescriptor v0.8.3
+  Downloaded rustc_version v0.4.1
+  Downloaded sha2 v0.10.9
   Downloaded wezterm-blob-leases v0.1.1
-  Downloaded wezterm-dynamic v0.2.1
-  Downloaded digest v0.10.7
+  Downloaded castaway v0.2.4
+  Downloaded hex v0.4.3
+  Downloaded ratatui-termina v0.1.0
+  Downloaded strum v0.28.0
+  Downloaded wezterm-color-types v0.3.0
+  Downloaded generic-array v0.14.7
+  Downloaded bit-vec v0.6.3
+  Downloaded thiserror-impl v1.0.69
+  Downloaded thiserror-impl v2.0.20
+  Downloaded zmij v1.0.23
+  Downloaded phf_shared v0.11.3
+  Downloaded fastrand v2.5.0
+  Downloaded indoc v2.0.7
+  Downloaded kasuari v0.4.12
+  Downloaded num-traits v0.2.19
   Downloaded palette_derive v0.7.7
-  Downloaded parking_lot v0.12.5
-  Downloaded parking_lot_core v0.9.12
-  Downloaded phf v0.11.3
-  Downloaded bytemuck v1.25.2
-  Downloaded darling v0.24.0
-  Downloaded hashbrown v0.16.1
+  Downloaded autocfg v1.5.1
+  Downloaded lock_api v0.4.14
+  Downloaded vtparse v0.6.2
+  Downloaded crypto-common v0.1.7
+  Downloaded deranged v0.5.8
+  Downloaded clap_builder v4.6.6
+  Downloaded digest v0.10.7
+  Downloaded either v1.17.0
+  Downloaded foldhash v0.2.0
   Downloaded line-clipping v0.3.8
   Downloaded litrs v1.0.0
-  Downloaded num-traits v0.2.19
-  Downloaded pest_meta v2.8.8
+  Downloaded lru v0.18.2
+  Downloaded once_cell v1.21.4
+  Downloaded ordered-float v4.6.0
+  Downloaded parking_lot_core v0.9.12
+  Downloaded wezterm-input-types v0.1.0
+  Downloaded atomic-write-file v0.3.0
+  Downloaded clap_derive v4.6.4
+  Downloaded utf8parse v0.2.2
+  Downloaded parking_lot v0.12.5
+  Downloaded bytemuck v1.25.2
+  Downloaded log v0.4.33
+  Downloaded base64 v0.22.1
   Downloaded bitflags v2.13.1
-  Downloaded getrandom v0.4.3
-  Downloaded libm v0.2.16
-  Downloaded compact_str v0.9.1
-  Downloaded fancy-regex v0.11.0
-  Downloaded finl_unicode v1.4.0
-  Downloaded wezterm-dynamic-derive v0.1.1
+  Downloaded darling v0.24.0
   Downloaded darling_core v0.24.0
+  Downloaded finl_unicode v1.4.0
+  Downloaded getrandom v0.3.4
+  Downloaded minimal-lexical v0.2.1
+  Downloaded nom v7.1.3
+  Downloaded anyhow v1.0.104
+  Downloaded getrandom v0.4.3
+  Downloaded mio v1.2.2
+  Downloaded pest v2.8.8
+  Downloaded phf_generator v0.11.3
+  Downloaded wezterm-dynamic-derive v0.1.1
   Downloaded derive_more v2.1.1
   Downloaded euclid v0.22.14
-  Downloaded nom v7.1.3
+  Downloaded fancy-regex v0.11.0
+  Downloaded indexmap v2.14.0
   Downloaded memchr v2.8.3
-  Downloaded minimal-lexical v0.2.1
-  Downloaded mio v1.2.2
-  Downloaded wezterm-input-types v0.1.0
-  Downloaded pest v2.8.8
-  Downloaded itertools v0.14.0
-  Downloaded clap_builder v4.6.6
-  Downloaded vtparse v0.6.2
-  Downloaded palette v0.7.7
-  Downloaded nix v0.29.0
-  Downloaded scopeguard v1.2.0
-  Downloaded utf8parse v0.2.2
-  Downloaded version_check v0.9.5
-  Downloaded nix v0.30.1
+  Downloaded derive_more-impl v2.1.1
+  Downloaded proc-macro2 v1.0.107
+  Downloaded toml_writer v1.1.2+spec-1.1.0
+  Downloaded hashbrown v0.16.1
+  Downloaded libm v0.2.16
   Downloaded phf_macros v0.11.3
-  Downloaded phf_shared v0.11.3
+  Downloaded crossterm v0.29.0
+  Downloaded hashbrown v0.17.1
+  Downloaded itertools v0.14.0
+  Downloaded palette v0.7.7
+  Downloaded wezterm-dynamic v0.2.1
+  Downloaded nix v0.29.0
+  Downloaded nix v0.30.1
+  Downloaded ratatui-macros v0.7.2
+  Downloaded time-core v0.1.9
+  Downloaded version_check v0.9.5
+  Downloaded scopeguard v1.2.0
+  Downloaded siphasher v1.0.3
+  Downloaded libc v0.2.189
+  Downloaded thiserror v2.0.20
+  Downloaded quote v1.0.47
   Downloaded ratatui-termwiz v0.1.2
-  Downloaded signal-hook-registry v1.4.8
-  Downloaded termios v0.3.3
-  Downloaded thiserror-impl v2.0.20
-  Downloaded wezterm-color-types v0.3.0
-  Downloaded zmij v1.0.23
-  Downloaded strum_macros v0.28.0
-  Downloaded tempfile v3.27.0
-  Downloaded thiserror v1.0.69
-  Downloaded toml_datetime v1.1.1+spec-1.1.0
-  Downloaded unicode-truncate v2.0.1
-  Downloaded rustversion v1.0.23
-  Downloaded semver v1.0.28
-  Downloaded smallvec v1.15.2
-  Downloaded thiserror-impl v1.0.69
-  Downloaded static_assertions v1.1.0
+  Downloaded rand_core v0.6.4
+  Downloaded signal-hook-mio v0.2.5
   Downloaded terminfo v0.9.0
-  Downloaded uuid v1.24.0
+  Downloaded termios v0.3.3
+  Downloaded thiserror v1.0.69
+  Downloaded toml_parser v1.1.3+spec-1.1.0
+  Downloaded unicode-truncate v2.0.1
+  Downloaded smallvec v1.15.2
+  Downloaded toml_datetime v1.1.1+spec-1.1.0
+  Downloaded ppv-lite86 v0.2.21
+  Downloaded rand_chacha v0.9.0
+  Downloaded rand_core v0.9.5
+  Downloaded rustversion v1.0.23
+  Downloaded signal-hook-registry v1.4.8
+  Downloaded semver v1.0.28
   Downloaded toml v1.1.4+spec-1.1.0
   Downloaded ucd-trie v0.1.7
-  Downloaded ryu v1.0.23
+  Downloaded deltae v0.3.2
   Downloaded signal-hook v0.3.18
+  Downloaded uuid v1.24.0
+  Downloaded ratatui-crossterm v0.1.2
+  Downloaded linux-raw-sys v0.12.1
   Downloaded serde_derive v1.0.229
-  Downloaded typenum v1.20.1
-  Downloaded syn v1.0.109
-  Downloaded unicode-segmentation v1.13.3
+  Downloaded serde_core v1.0.229
   Downloaded wezterm-bidi v0.2.3
-  Downloaded serde_json v1.0.151
+  Downloaded serde v1.0.229
+  Downloaded rand v0.8.7
+  Downloaded ratatui v0.30.2
+  Downloaded typenum v1.20.1
+  Downloaded unicode-segmentation v1.13.3
   Downloaded regex v1.13.1
-  Downloaded syn v3.0.3
-  Downloaded libc v0.2.189
+  Downloaded serde_json v1.0.151
+  Downloaded winnow v1.0.4
+  Downloaded portable-atomic v1.14.0
+  Downloaded ratatui-core v0.1.2
+  Downloaded unicode-width v0.2.2
   Downloaded ratatui-widgets v0.3.2
+  Downloaded syn v1.0.109
   Downloaded time v0.3.55
   Downloaded zerocopy v0.8.56
-  Downloaded unicode-width v0.2.2
-  Downloaded regex-syntax v0.8.11
   Downloaded syn v2.0.119
-  Downloaded rustix v1.1.4
+  Downloaded syn v3.0.3
+  Downloaded regex-syntax v0.8.11
   Downloaded termwiz v0.23.3
+  Downloaded rustix v1.1.4
   Downloaded regex-automata v0.4.18
-  Downloaded deltae v0.3.2
-  Downloaded linux-raw-sys v0.12.1
    Compiling proc-macro2 v1.0.107
-   Compiling quote v1.0.47
    Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.47
    Compiling libc v0.2.189
     Checking cfg-if v1.0.4
     Checking bitflags v2.13.1
@@ -1083,120 +200,105 @@ $ cargo +1.97.1 clippy --workspace --all-targets --all-features -- -D warnings
    Compiling getrandom v0.3.4
    Compiling rustix v1.1.4
    Compiling syn v3.0.3
-    Checking linux-raw-sys v0.12.1
    Compiling cfg_aliases v0.2.2
+    Checking linux-raw-sys v0.12.1
    Compiling nix v0.30.1
     Checking rand_core v0.9.5
     Checking winnow v1.0.4
    Compiling serde v1.0.229
     Checking toml_parser v1.1.3+spec-1.1.0
-    Checking serde_spanned v1.1.1
     Checking toml_datetime v1.1.1+spec-1.1.0
+    Checking serde_spanned v1.1.1
     Checking toml_writer v1.1.2+spec-1.1.0
-   Compiling getrandom v0.4.3
     Checking toml v1.1.4+spec-1.1.0
+   Compiling getrandom v0.4.3
     Checking ppv-lite86 v0.2.21
     Checking fastrand v2.5.0
     Checking once_cell v1.21.4
-    Checking tempfile v3.27.0
     Checking rand_chacha v0.9.0
+    Checking tempfile v3.27.0
    Compiling syn v2.0.119
     Checking rand v0.9.5
     Checking equivalent v1.0.2
-    Checking allocator-api2 v0.2.21
-    Checking foldhash v0.2.0
    Compiling rustversion v1.0.23
-    Checking atomic-write-file v0.3.0
-   Compiling serde_derive v1.0.229
    Compiling heck v0.5.0
-   Compiling ident_case v1.0.1
-   Compiling strsim v0.11.1
+    Checking allocator-api2 v0.2.21
+    Checking atomic-write-file v0.3.0
+    Checking foldhash v0.2.0
+   Compiling serde_derive v1.0.229
    Compiling thiserror v2.0.20
+   Compiling strsim v0.11.1
+   Compiling ident_case v1.0.1
    Compiling darling_core v0.24.0
    Compiling thiserror-impl v2.0.20
-    Checking either v1.17.0
     Checking itoa v1.0.18
+    Checking either v1.17.0
     Checking itertools v0.14.0
    Compiling strum_macros v0.28.0
     Checking castaway v0.2.4
-    Checking hashbrown v0.16.1
+    Checking hashbrown v0.17.1
     Checking skit-core v0.5.0 (/home/runner/work/skit/skit/crates/skit-core)
    Compiling darling_macro v0.24.0
-    Checking hashbrown v0.17.1
+    Checking hashbrown v0.16.1
     Checking errno v0.3.14
     Checking unicode-width v0.2.2
-   Compiling parking_lot_core v0.9.12
    Compiling instability v0.3.13
-    Checking ryu v1.0.23
-   Compiling signal-hook v0.3.18
-    Checking static_assertions v1.1.0
    Compiling unicode-segmentation v1.13.3
-    Checking lru v0.18.2
+   Compiling parking_lot_core v0.9.12
+    Checking ryu v1.0.23
+    Checking static_assertions v1.1.0
+   Compiling signal-hook v0.3.18
+   Compiling convert_case v0.10.0
     Checking compact_str v0.9.1
+    Checking kasuari v0.4.12
+    Checking unicode-truncate v2.0.1
     Checking strum v0.28.0
     Checking signal-hook-registry v1.4.8
-    Checking unicode-truncate v2.0.1
-   Compiling convert_case v0.10.0
+    Checking lru v0.18.2
    Compiling darling v0.24.0
-    Checking kasuari v0.4.12
-    Checking log v0.4.33
-    Checking scopeguard v1.2.0
     Checking smallvec v1.15.2
-    Checking critical-section v1.2.0
    Compiling indoc v2.0.7
+    Checking scopeguard v1.2.0
+    Checking log v0.4.33
+    Checking critical-section v1.2.0
     Checking ratatui-core v0.1.2
-   Compiling derive_more-impl v2.1.1
-    Checking lock_api v0.4.14
     Checking mio v1.2.2
-    Checking powerfmt v0.2.0
-    Checking num-conv v0.2.2
-    Checking deranged v0.5.8
+    Checking lock_api v0.4.14
+   Compiling derive_more-impl v2.1.1
    Compiling litrs v1.0.0
-    Checking num_threads v0.1.7
     Checking time-core v0.1.9
-    Checking signal-hook-mio v0.2.5
+    Checking num-conv v0.2.2
+    Checking num_threads v0.1.7
+    Checking powerfmt v0.2.0
+    Checking deranged v0.5.8
     Checking derive_more v2.1.1
+   Compiling document-features v0.2.12
+    Checking signal-hook-mio v0.2.5
     Checking parking_lot v0.12.5
     Checking line-clipping v0.3.8
     Checking utf8parse v0.2.2
-    Checking is_terminal_polyfill v1.70.2
-    Checking anstyle-parse v1.0.0
-    Checking anstyle v1.0.14
-   Compiling zmij v1.0.23
-   Compiling document-features v0.2.12
-    Checking anstyle-query v1.1.5
     Checking colorchoice v1.0.5
+    Checking anstyle-parse v1.0.0
+    Checking anstyle-query v1.1.5
+   Compiling zmij v1.0.23
+    Checking anstyle v1.0.14
+    Checking is_terminal_polyfill v1.70.2
+    Checking crossterm v0.29.0
+    Checking clap_lex v1.1.0
     Checking anstream v1.0.0
    Compiling serde_json v1.0.151
-    Checking clap_lex v1.1.0
     Checking clap_builder v4.6.6
-    Checking crossterm v0.29.0
-    Checking time v0.3.55
    Compiling clap_derive v4.6.4
     Checking ratatui-crossterm v0.1.2
+    Checking time v0.3.55
     Checking memchr v2.8.3
     Checking ratatui-widgets v0.3.2
     Checking ratatui-macros v0.7.2
     Checking ratatui v0.30.2
-    Checking skit-tui v0.5.0 (/home/runner/work/skit/skit/crates/skit-tui)
     Checking clap v4.6.6
-error[E0106]: missing lifetime specifier
-  --> crates/skit-core/tests/launch_plan.rs:30:75
-   |
-30 | fn resolver(items: &[(&str, &str)]) -> impl Fn(&str) -> Option<PathBuf> + '_ {
-   |                    ---------------                                        ^^ expected named lifetime parameter
-   |
-   = help: this function's return type contains a borrowed value, but the signature does not say which one of `items`'s 3 lifetimes it is borrowed from
-help: consider introducing a named lifetime parameter
-   |
-30 - fn resolver(items: &[(&str, &str)]) -> impl Fn(&str) -> Option<PathBuf> + '_ {
-30 + fn resolver<'a>(items: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<PathBuf> + 'a {
-   |
-
+    Checking skit-tui v0.5.0 (/home/runner/work/skit/skit/crates/skit-tui)
     Checking skit v0.5.0 (/home/runner/work/skit/skit/crates/skit)
-For more information about this error, try `rustc --explain E0106`.
-error: could not compile `skit-core` (test "launch_plan") due to 1 previous error
-warning: build failed, waiting for other jobs to finish...
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.99s
 
 $ cargo +1.97.1 test --workspace --all-features
    Compiling cfg-if v1.0.4
@@ -1209,39 +311,39 @@ $ cargo +1.97.1 test --workspace --all-features
    Compiling getrandom v0.3.4
    Compiling rand_core v0.9.5
    Compiling winnow v1.0.4
+   Compiling toml_parser v1.1.3+spec-1.1.0
    Compiling toml_datetime v1.1.1+spec-1.1.0
    Compiling serde_spanned v1.1.1
-   Compiling toml_parser v1.1.3+spec-1.1.0
    Compiling nix v0.30.1
    Compiling toml_writer v1.1.2+spec-1.1.0
-   Compiling serde v1.0.229
    Compiling toml v1.1.4+spec-1.1.0
-   Compiling getrandom v0.4.3
+   Compiling serde v1.0.229
    Compiling ppv-lite86 v0.2.21
-   Compiling fastrand v2.5.0
+   Compiling getrandom v0.4.3
    Compiling once_cell v1.21.4
+   Compiling fastrand v2.5.0
    Compiling strsim v0.11.1
-   Compiling tempfile v3.27.0
    Compiling rand_chacha v0.9.0
+   Compiling tempfile v3.27.0
    Compiling rand v0.9.5
    Compiling unicode-segmentation v1.13.3
-   Compiling allocator-api2 v0.2.21
    Compiling equivalent v1.0.2
    Compiling foldhash v0.2.0
+   Compiling allocator-api2 v0.2.21
    Compiling darling_core v0.24.0
    Compiling atomic-write-file v0.3.0
-   Compiling either v1.17.0
    Compiling itoa v1.0.18
+   Compiling either v1.17.0
    Compiling skit-core v0.5.0 (/home/runner/work/skit/skit/crates/skit-core)
-   Compiling itertools v0.14.0
    Compiling thiserror v2.0.20
+   Compiling itertools v0.14.0
    Compiling castaway v0.2.4
    Compiling hashbrown v0.17.1
    Compiling hashbrown v0.16.1
    Compiling errno v0.3.14
-   Compiling static_assertions v1.1.0
    Compiling ryu v1.0.23
    Compiling unicode-width v0.2.2
+   Compiling static_assertions v1.1.0
    Compiling compact_str v0.9.1
    Compiling unicode-truncate v2.0.1
    Compiling signal-hook-registry v1.4.8
@@ -1249,23 +351,23 @@ $ cargo +1.97.1 test --workspace --all-features
    Compiling kasuari v0.4.12
    Compiling lru v0.18.2
    Compiling convert_case v0.10.0
-   Compiling critical-section v1.2.0
-   Compiling scopeguard v1.2.0
    Compiling log v0.4.33
    Compiling smallvec v1.15.2
-   Compiling mio v1.2.2
+   Compiling scopeguard v1.2.0
+   Compiling critical-section v1.2.0
+   Compiling ratatui-core v0.1.2
    Compiling parking_lot_core v0.9.12
    Compiling darling_macro v0.24.0
    Compiling lock_api v0.4.14
+   Compiling mio v1.2.2
    Compiling darling v0.24.0
    Compiling instability v0.3.13
-   Compiling ratatui-core v0.1.2
    Compiling derive_more-impl v2.1.1
    Compiling signal-hook v0.3.18
+   Compiling num_threads v0.1.7
+   Compiling deranged v0.5.8
    Compiling time-core v0.1.9
    Compiling num-conv v0.2.2
-   Compiling deranged v0.5.8
-   Compiling num_threads v0.1.7
    Compiling powerfmt v0.2.0
    Compiling derive_more v2.1.1
    Compiling signal-hook-mio v0.2.5
@@ -1273,39 +375,219 @@ $ cargo +1.97.1 test --workspace --all-features
    Compiling line-clipping v0.3.8
    Compiling crossterm v0.29.0
    Compiling utf8parse v0.2.2
+   Compiling anstyle v1.0.14
    Compiling anstyle-parse v1.0.0
    Compiling is_terminal_polyfill v1.70.2
-   Compiling anstyle v1.0.14
-   Compiling time v0.3.55
-   Compiling anstyle-query v1.1.5
    Compiling colorchoice v1.0.5
+   Compiling anstyle-query v1.1.5
    Compiling anstream v1.0.0
-   Compiling ratatui-crossterm v0.1.2
    Compiling clap_lex v1.1.0
+   Compiling time v0.3.55
    Compiling clap_builder v4.6.6
    Compiling zmij v1.0.23
-   Compiling ratatui-widgets v0.3.2
+   Compiling ratatui-crossterm v0.1.2
    Compiling memchr v2.8.3
+   Compiling ratatui-widgets v0.3.2
    Compiling serde_json v1.0.151
    Compiling ratatui-macros v0.7.2
    Compiling ratatui v0.30.2
    Compiling skit-tui v0.5.0 (/home/runner/work/skit/skit/crates/skit-tui)
    Compiling clap v4.6.6
-error[E0106]: missing lifetime specifier
-  --> crates/skit-core/tests/launch_plan.rs:30:75
-   |
-30 | fn resolver(items: &[(&str, &str)]) -> impl Fn(&str) -> Option<PathBuf> + '_ {
-   |                    ---------------                                        ^^ expected named lifetime parameter
-   |
-   = help: this function's return type contains a borrowed value, but the signature does not say which one of `items`'s 3 lifetimes it is borrowed from
-help: consider introducing a named lifetime parameter
-   |
-30 - fn resolver(items: &[(&str, &str)]) -> impl Fn(&str) -> Option<PathBuf> + '_ {
-30 + fn resolver<'a>(items: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<PathBuf> + 'a {
-   |
+   Compiling skit v0.5.0 (/home/runner/work/skit/skit/crates/skit)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.28s
+     Running unittests src/main.rs (target/debug/deps/skit-fd588d5676c47a3d)
 
-For more information about this error, try `rustc --explain E0106`.
-error: could not compile `skit-core` (test "launch_plan") due to 1 previous error
-warning: build failed, waiting for other jobs to finish...
+running 0 tests
 
-fmt=1 clippy=101 test=101
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/add_contract.rs (target/debug/deps/add_contract-30cb9070fea74ecd)
+
+running 7 tests
+test conflicting_kind_selectors_are_usage_error_and_write_nothing ... ok
+test python_intake_refuses_before_writing_until_deep_lane_is_complete ... ok
+test explicit_kind_handles_extensionless_script ... ok
+test exe_is_always_reference_and_does_not_claim_copy_mode ... ok
+test shell_copy_infers_identity_description_interpreter_and_store_shape ... ok
+test reference_mode_keeps_original_and_materializes_no_payload ... ok
+test unknown_file_is_usage_error_and_writes_nothing ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/cli_contract.rs (target/debug/deps/cli_contract-b6fccaaa88487a55)
+
+running 2 tests
+test version_uses_the_stable_machine_spelling ... ok
+test list_json_keeps_the_existing_machine_contract ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/manage_contract.rs (target/debug/deps/manage_contract-d5f23282b3ea5c2e)
+
+running 5 tests
+test missing_management_target_exits_one ... ok
+test remove_yes_skips_confirmation_and_keeps_the_original_contract ... ok
+test describe_matches_the_existing_success_copy ... ok
+test describe_can_clear_the_description ... ok
+test rename_matches_the_existing_success_copy ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/preset_contract.rs (target/debug/deps/preset_contract-be4ef9ba6b7ba9fe)
+
+running 9 tests
+test preset_list_without_values_keeps_the_existing_guidance ... ok
+test preset_list_json_matches_the_existing_machine_contract ... ok
+test preset_delete_unknown_exits_one_and_lists_available_names ... ok
+test preset_delete_matches_the_existing_success_copy ... ok
+test preset_save_from_last_refuses_before_first_run ... ok
+test preset_save_from_last_captures_exact_snapshot ... ok
+test preset_save_from_last_refuses_legacy_stamp_without_snapshot ... ok
+test preset_save_from_last_preserves_an_exact_empty_snapshot ... ok
+test preset_save_without_from_last_is_usage_error_and_writes_nothing ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/show_contract.rs (target/debug/deps/show_contract-dbf27794032cddc8)
+
+running 3 tests
+test show_missing_entry_is_failure_and_does_not_emit_json ... ok
+test show_json_command_synthesizes_undeclared_placeholders_and_secret_hint ... ok
+test show_json_declared_exe_keeps_the_stable_top_level_and_field_shape ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/skit_core-3b2fcf837bbacf31)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/add_file_usecase.rs (target/debug/deps/add_file_usecase-5603cfdd556d47d8)
+
+running 6 tests
+test missing_source_fails_before_registry_or_script_directory_is_created ... ok
+test explicit_unknown_or_non_file_lane_kind_is_refused_before_writing ... ok
+test unknown_inference_is_a_named_error_and_leaves_no_entry ... ok
+test reference_mode_keeps_source_in_place_and_defaults_to_origin ... ok
+test explicit_kind_handles_extensionless_script_and_explicit_fields_win ... ok
+test shell_copy_infers_kind_interpreter_description_and_invoke_workdir ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/add_transaction.rs (target/debug/deps/add_transaction-3f6abbf57a33610d)
+
+running 7 tests
+test duplicate_display_name_is_refused_even_when_registry_is_missing ... ok
+test empty_unregistered_slug_directory_is_reused ... ok
+test concurrent_adds_with_same_name_create_exactly_one_entry ... ok
+test copied_entry_writes_payload_meta_and_registry_as_one_add_operation ... ok
+test registry_read_failure_does_not_leave_a_half_entry ... ok
+test reference_entry_writes_no_payload_and_keeps_target_in_registry ... ok
+test slug_allocation_uses_registry_and_nonempty_filesystem_truth ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/assembly_contract.rs (target/debug/deps/assembly_contract-2ba2e3bce32e1143)
+
+running 6 tests
+test bool_flags_fire_only_for_the_action_state ... ok
+test invalid_typed_value_refuses_before_any_delivery_is_built ... ok
+test mixed_flag_env_and_extra_args_route_to_their_own_channels ... ok
+test missing_secret_environment_source_is_a_named_error ... ok
+test secret_values_stay_real_in_delivery_and_mask_every_transparency_projection ... ok
+test repeat_multi_flag_repeats_the_option_for_each_shell_quoted_piece ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/form_plan.rs (target/debug/deps/form_plan-587e13ed351e9d4d)
+
+running 3 tests
+test boolean_flag_without_action_gets_the_existing_store_true_hygiene ... ok
+test exe_declared_rows_become_one_typed_plan_and_irrelevant_delivery_is_dropped ... ok
+test command_placeholders_keep_template_order_and_declared_schema_overrides_synthesized_defaults ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/form_resolver.rs (target/debug/deps/form_resolver-ed5760696ef72f1c)
+
+running 7 tests
+test bool_spellings_match_the_existing_python_contract ... ok
+test delivers_empty_is_typed_not_stringly ... ok
+test explicit_unknown_key_is_refused_instead_of_dropped ... ok
+test multiple_typed_fields_validate_each_shell_quoted_piece ... ok
+test resolution_order_is_default_then_last_then_preset_then_explicit ... ok
+test secret_values_are_never_prefilled_but_explicit_secret_is_allowed_for_this_run ... ok
+test validation_covers_required_typed_choice_and_finite_float ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/hash_clock_contract.rs (target/debug/deps/hash_clock_contract-1af55d2ba748a6a4)
+
+running 4 tests
+test sha256_matches_standard_vectors ... ok
+test utc_timestamp_handles_leap_day_and_year_boundary ... ok
+test utc_timestamp_matches_python_metadata_spelling ... ok
+test sha256_handles_multiple_blocks ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+     Running tests/language_registry.rs (target/debug/deps/language_registry-dd488ec254e3a0eb)
+
+running 12 tests
+test core_traits_match_the_existing_language_registry ... ok
+test every_copyable_interpreted_kind_keeps_its_historical_stored_name ... ok
+test extensions_include_compound_prompt_names_and_are_case_insensitive ... ok
+test force_exe_is_an_explicit_override_even_for_a_missing_path ... ok
+test registry_contains_the_current_python_kind_set ... ok
+test shebang_kind_mapping_accepts_versioned_python_but_not_python2 ... ok
+test shebang_parser_handles_direct_and_env_indirection ... ok
+test file_inference_prefers_registered_extension_then_shebang ... ok
+test posix_executable_inference_uses_the_execute_bit ... ok
+test unknown_kinds_remain_open ... ok
+test versioned_python_shebangs_keep_their_requires_python_pin ... ok
+test windows_executable_inference_uses_pathext_instead_of_readability ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/launch_plan.rs (target/debug/deps/launch_plan-47b8ba0948b9db3b)
+
+running 10 tests
+test deep_kinds_are_explicitly_refused_instead_of_partially_planned ... ok
+test interpreter_launch_honors_pin_and_routes_env_and_args ... ok
+test direct_executable_checks_the_posix_execute_bit ... ok
+test custom_missing_workdir_is_a_named_refusal ... ok
+test javascript_override_is_strict_and_does_not_fall_back ... ok
+test javascript_runtime_order_and_invocation_match_python_contract ... ok
+test powershell_keeps_file_prefix_between_runtime_and_script ... ok
+test missing_declared_needs_refuse_before_launch_snapshot_is_returned ... ok
+test vanished_copy_origin_does_not_block_legacy_origin_workdir ... ok
+test windows_shell_can_use_configured_bash_when_path_lookup_misses ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/param_contract.rs (target/debug/deps/param_contract-b92975123b55ff7e)
+
+running 4 tests
+test declared_reader_drops_nameless_rows ... ok
+test metadata_writer_preserves_the_additive_full_model ... ok
+test synthesized_placeholder_keeps_required_and_secret_heuristic ... FAILED
+test metadata_reader_is_total_and_coerces_hand_edited_scalars ... ok
+
+failures:
+
+---- synthesized_placeholder_keeps_required_and_secret_heuristic stdout ----
+
+thread 'synthesized_placeholder_keeps_required_and_secret_heuristic' (6433) panicked at crates/skit-core/tests/param_contract.rs:87:5:
+assertion failed: !is_secret_name("monkey")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    synthesized_placeholder_keeps_required_and_secret_heuristic
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p skit-core --test param_contract`
+
+fmt=0 clippy=0 test=101

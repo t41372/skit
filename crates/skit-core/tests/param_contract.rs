@@ -4,7 +4,8 @@ use skit_core::{
 };
 
 #[test]
-fn metadata_reader_is_total_and_coerces_hand_edited_scalars() -> Result<(), Box<dyn std::error::Error>> {
+fn metadata_reader_is_total_and_coerces_hand_edited_scalars()
+-> Result<(), Box<dyn std::error::Error>> {
     let value: toml::Value = toml::from_str(
         r#"name = 7
 binding = "future-binding"
@@ -65,10 +66,7 @@ fn declared_reader_drops_nameless_rows() {
         )]),
         toml::Table::from_iter([
             ("name".to_owned(), toml::Value::String("ok".to_owned())),
-            (
-                "delivery".to_owned(),
-                toml::Value::String("env".to_owned()),
-            ),
+            ("delivery".to_owned(), toml::Value::String("env".to_owned())),
         ]),
     ];
     let decls = declared_from_meta(&rows);

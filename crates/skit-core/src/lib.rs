@@ -25,9 +25,7 @@ pub use language::{
     kind_for_extension, kind_for_shebang_text, known_kinds, python_version_pin,
     shebang_program_from_line, spec_for, stored_name,
 };
-pub use launch::{
-    LaunchOptions, LaunchPlan, LaunchPlanError, ProgramResolver, build_launch_plan,
-};
+pub use launch::{LaunchOptions, LaunchPlan, LaunchPlanError, ProgramResolver, build_launch_plan};
 pub use params::{
     Binding, Delivery, ParamDecl, ParamDefault, ParamType, declared_from_meta, is_secret_name,
     synthesized_placeholder,

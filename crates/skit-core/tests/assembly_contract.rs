@@ -42,12 +42,7 @@ fn mixed_flag_env_and_extra_args_route_to_their_own_channels()
         ("width".to_owned(), "800".to_owned()),
         ("DEBUG".to_owned(), "1".to_owned()),
     ]);
-    let assembly = assemble_delivery(
-        &plan,
-        &values,
-        &["--verbose".to_owned()],
-        &BTreeMap::new(),
-    )?;
+    let assembly = assemble_delivery(&plan, &values, &["--verbose".to_owned()], &BTreeMap::new())?;
 
     assert_eq!(assembly.args, ["in.png", "--width", "800", "--verbose"]);
     assert_eq!(assembly.masked_args, assembly.args);

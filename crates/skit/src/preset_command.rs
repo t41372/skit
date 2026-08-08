@@ -2,9 +2,7 @@ use std::io::{self, Write};
 
 use clap::{Args, Subcommand};
 use serde::Serialize;
-use skit_core::{
-    PresetFromLastError, StateStore, Store, plan_for_entry, save_preset_from_last,
-};
+use skit_core::{PresetFromLastError, StateStore, Store, plan_for_entry, save_preset_from_last};
 
 use crate::CliFailure;
 
@@ -52,9 +50,7 @@ pub(crate) fn run(store: &Store, args: PresetArgs) -> Result<(), CliFailure> {
             from_last,
         } => save(store, &state, &name, &preset_name, from_last),
         PresetCommand::List { name, json } => list(store, &state, &name, json),
-        PresetCommand::Delete { name, preset_name } => {
-            delete(store, &state, &name, &preset_name)
-        }
+        PresetCommand::Delete { name, preset_name } => delete(store, &state, &name, &preset_name),
     }
 }
 
@@ -87,18 +83,11 @@ fn save(
             "{} has no remembered values yet — run it once first.",
             entry.meta.name
         ))),
-        Err(PresetFromLastError::State(error)) => {
-            Err(CliFailure::operational(error.to_string()))
-        }
+        Err(PresetFromLastError::State(error)) => Err(CliFailure::operational(error.to_string())),
     }
 }
 
-fn list(
-    store: &Store,
-    state: &StateStore,
-    name: &str,
-    as_json: bool,
-) -> Result<(), CliFailure> {
+fn list(store: &Store, state: &StateStore, name: &str, as_json: bool) -> Result<(), CliFailure> {
     let entry = store
         .resolve(name)
         .map_err(|error| CliFailure::operational(error.to_string()))?;

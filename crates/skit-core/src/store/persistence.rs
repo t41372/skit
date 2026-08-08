@@ -80,10 +80,7 @@ pub(super) fn load_registry_for_insert(path: &Path) -> Result<toml::Table, Error
     }
 }
 
-pub(super) fn insert_registry_row(
-    document: &mut toml::Table,
-    entry: &Entry,
-) -> Result<(), Error> {
+pub(super) fn insert_registry_row(document: &mut toml::Table, entry: &Entry) -> Result<(), Error> {
     normalize_registry_entries(document);
     if let Some(entries) = document
         .get_mut("entries")
@@ -134,10 +131,7 @@ pub(super) fn remove_registry_row(document: &mut toml::Table, slug: &str) -> boo
         .is_some()
 }
 
-pub(super) fn write_registry_document(
-    path: &Path,
-    document: &toml::Table,
-) -> Result<(), Error> {
+pub(super) fn write_registry_document(path: &Path, document: &toml::Table) -> Result<(), Error> {
     let text = toml::to_string(document).map_err(|source| Error::EncodeToml {
         path: path.to_owned(),
         source,
@@ -229,19 +223,13 @@ fn registry_row(entry: &Entry) -> Result<toml::Value, Error> {
 
 fn empty_registry() -> toml::Table {
     let mut document = toml::Table::new();
-    document.insert(
-        "entries".to_owned(),
-        toml::Value::Table(toml::Table::new()),
-    );
+    document.insert("entries".to_owned(), toml::Value::Table(toml::Table::new()));
     document
 }
 
 fn normalize_registry_entries(document: &mut toml::Table) {
     if !document.get("entries").is_some_and(toml::Value::is_table) {
-        document.insert(
-            "entries".to_owned(),
-            toml::Value::Table(toml::Table::new()),
-        );
+        document.insert("entries".to_owned(), toml::Value::Table(toml::Table::new()));
     }
 }
 

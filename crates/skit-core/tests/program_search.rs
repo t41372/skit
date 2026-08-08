@@ -73,9 +73,6 @@ fn explicit_path_is_checked_without_searching_other_directories()
         vec![PathBuf::from("/should/not/be/used")],
         vec![".CMD".to_owned()],
     );
-    assert_eq!(
-        search.resolve(path.to_string_lossy().as_ref()),
-        Some(path)
-    );
+    assert_eq!(search.resolve(path.to_string_lossy().as_ref()), Some(path));
     Ok(())
 }

@@ -180,9 +180,7 @@ fn assemble_flag(
             return;
         }
         let fired = bool_value(value);
-        if (field.action == "store_true" && fired)
-            || (field.action == "store_false" && !fired)
-        {
+        if (field.action == "store_true" && fired) || (field.action == "store_false" && !fired) {
             flags.push(field.flag.clone());
             masked_flags.push(field.flag.clone());
         }

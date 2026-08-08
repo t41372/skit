@@ -37,7 +37,8 @@ fn resolver<'a>(items: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<Path
 }
 
 #[test]
-fn interpreter_launch_honors_pin_and_routes_env_and_args() -> Result<(), Box<dyn std::error::Error>> {
+fn interpreter_launch_honors_pin_and_routes_env_and_args() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = tempdir()?;
     let source = root.path().join("origin.sh");
     fs::write(&source, "#!/bin/zsh\necho ok\n")?;
@@ -49,14 +50,15 @@ fn interpreter_launch_honors_pin_and_routes_env_and_args() -> Result<(), Box<dyn
     };
     let options = LaunchOptions::new(Platform::Linux, root.path());
 
-    let plan = build_launch_plan(&entry, &assembly, &options, &resolver(&[("zsh", "/bin/zsh")]))?;
+    let plan = build_launch_plan(
+        &entry,
+        &assembly,
+        &options,
+        &resolver(&[("zsh", "/bin/zsh")]),
+    )?;
     assert_eq!(
         plan.argv,
-        [
-            "/bin/zsh",
-            source.to_string_lossy().as_ref(),
-            "--fast"
-        ]
+        ["/bin/zsh", source.to_string_lossy().as_ref(), "--fast"]
     );
     assert_eq!(plan.cwd, root.path());
     assert_eq!(plan.env_overlay["MODE"], "prod");
@@ -125,7 +127,8 @@ fn javascript_runtime_order_and_invocation_match_python_contract()
 }
 
 #[test]
-fn javascript_override_is_strict_and_does_not_fall_back() -> Result<(), Box<dyn std::error::Error>> {
+fn javascript_override_is_strict_and_does_not_fall_back() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = tempdir()?;
     let entry_dir = root.path().join("data/scripts/demo");
     fs::create_dir_all(&entry_dir)?;
@@ -200,14 +203,7 @@ fn vanished_copy_origin_does_not_block_legacy_origin_workdir()
     fs::create_dir_all(&entry_dir)?;
     fs::write(entry_dir.join("script.sh"), "echo ok\n")?;
     let vanished_source = root.path().join("gone/origin.sh");
-    let entry = entry(
-        root.path(),
-        "shell",
-        "copy",
-        &vanished_source,
-        "origin",
-        "",
-    )?;
+    let entry = entry(root.path(), "shell", "copy", &vanished_source, "origin", "")?;
     let options = LaunchOptions::new(Platform::Linux, root.path());
 
     let plan = build_launch_plan(

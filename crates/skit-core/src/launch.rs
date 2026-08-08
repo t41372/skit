@@ -70,10 +70,23 @@ pub enum LaunchPlanError {
 impl fmt::Display for LaunchPlanError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnsupportedKind(kind) => write!(formatter, "launch is not implemented for kind: {kind}"),
-            Self::TargetMissing(path) => write!(formatter, "the launch target does not exist: {}", path.display()),
-            Self::NotRunnable(path) => write!(formatter, "the executable is not runnable: {}", path.display()),
-            Self::MissingInterpreter(name) => write!(formatter, "the interpreter is not installed or on PATH: {name}"),
+            Self::UnsupportedKind(kind) => {
+                write!(formatter, "launch is not implemented for kind: {kind}")
+            }
+            Self::TargetMissing(path) => write!(
+                formatter,
+                "the launch target does not exist: {}",
+                path.display()
+            ),
+            Self::NotRunnable(path) => write!(
+                formatter,
+                "the executable is not runnable: {}",
+                path.display()
+            ),
+            Self::MissingInterpreter(name) => write!(
+                formatter,
+                "the interpreter is not installed or on PATH: {name}"
+            ),
             Self::MissingJavaScriptRuntime(candidates) => write!(
                 formatter,
                 "no JavaScript runtime found (looked for: {})",
@@ -236,7 +249,12 @@ fn javascript_argv(
         options.js_runner.as_deref()
     };
     let candidates = override_name.map_or_else(
-        || ORDER.iter().map(|name| (*name).to_owned()).collect::<Vec<_>>(),
+        || {
+            ORDER
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect::<Vec<_>>()
+        },
         |name| vec![name.to_owned()],
     );
     let Some((runner_name, runner_path)) = candidates

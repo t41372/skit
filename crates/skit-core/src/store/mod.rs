@@ -445,15 +445,20 @@ fn write_payload(
         source,
     })?;
     if let Some(mode) = unix_mode {
-        fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|source| Error::Io {
-            path: path.to_owned(),
-            source,
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(|source| {
+            Error::Io {
+                path: path.to_owned(),
+                source,
+            }
         })?;
     } else if readonly {
-        let mut permissions = file.metadata().map_err(|source| Error::Io {
-            path: path.to_owned(),
-            source,
-        })?.permissions();
+        let mut permissions = file
+            .metadata()
+            .map_err(|source| Error::Io {
+                path: path.to_owned(),
+                source,
+            })?
+            .permissions();
         permissions.set_readonly(true);
         fs::set_permissions(path, permissions).map_err(|source| Error::Io {
             path: path.to_owned(),
@@ -483,10 +488,13 @@ fn write_payload(
         source,
     })?;
     if readonly {
-        let mut permissions = file.metadata().map_err(|source| Error::Io {
-            path: path.to_owned(),
-            source,
-        })?.permissions();
+        let mut permissions = file
+            .metadata()
+            .map_err(|source| Error::Io {
+                path: path.to_owned(),
+                source,
+            })?
+            .permissions();
         permissions.set_readonly(true);
         fs::set_permissions(path, permissions).map_err(|source| Error::Io {
             path: path.to_owned(),

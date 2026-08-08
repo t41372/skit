@@ -211,11 +211,7 @@ fn posix_executable_inference_uses_the_execute_bit() -> Result<(), Box<dyn std::
     std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644))?;
 
     assert_eq!(
-        skit_core::infer_kind_with_policy(
-            &executable,
-            false,
-            skit_core::ExecutablePolicy::Posix
-        ),
+        skit_core::infer_kind_with_policy(&executable, false, skit_core::ExecutablePolicy::Posix),
         "exe"
     );
     assert_eq!(

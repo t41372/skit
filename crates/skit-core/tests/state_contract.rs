@@ -8,11 +8,7 @@ use skit_core::{LibraryRoots, StateStore};
 use tempfile::tempdir;
 
 fn roots(root: &Path) -> LibraryRoots {
-    LibraryRoots::new(
-        root.join("data"),
-        root.join("state"),
-        root.join("config"),
-    )
+    LibraryRoots::new(root.join("data"), root.join("state"), root.join("config"))
 }
 
 fn values(items: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -23,13 +19,19 @@ fn values(items: &[(&str, &str)]) -> BTreeMap<String, String> {
 }
 
 #[test]
-fn secrets_never_reach_last_values_presets_or_run_history() -> Result<(), Box<dyn std::error::Error>> {
+fn secrets_never_reach_last_values_presets_or_run_history() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = tempdir()?;
     let state = StateStore::new(roots(root.path()));
     let secret_names = BTreeSet::from(["TOKEN".to_owned()]);
     let accepted = values(&[("NAME", "Ada"), ("TOKEN", "sk-secret")]);
 
-    state.save_last("demo", Some(&accepted), Some(&["--fast".to_owned()]), &secret_names)?;
+    state.save_last(
+        "demo",
+        Some(&accepted),
+        Some(&["--fast".to_owned()]),
+        &secret_names,
+    )?;
     state.save_preset("demo", "daily", &accepted, &secret_names)?;
     state.record_run(
         "demo",
@@ -86,7 +88,8 @@ fn empty_updates_clear_values_but_none_keeps_them() -> Result<(), Box<dyn std::e
 }
 
 #[test]
-fn purge_secret_removes_old_plaintext_from_every_value_surface() -> Result<(), Box<dyn std::error::Error>> {
+fn purge_secret_removes_old_plaintext_from_every_value_surface()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = tempdir()?;
     let state = StateStore::new(roots(root.path()));
     let no_secrets = BTreeSet::new();
@@ -126,7 +129,8 @@ fn purge_secret_removes_old_plaintext_from_every_value_surface() -> Result<(), B
 }
 
 #[test]
-fn corrupt_state_degrades_to_empty_instead_of_breaking_the_library() -> Result<(), Box<dyn std::error::Error>> {
+fn corrupt_state_degrades_to_empty_instead_of_breaking_the_library()
+-> Result<(), Box<dyn std::error::Error>> {
     let root = tempdir()?;
     let state = StateStore::new(roots(root.path()));
     let path = state.values_path("demo");
@@ -155,24 +159,14 @@ fn concurrent_preset_saves_do_not_drop_either_preset() -> Result<(), Box<dyn std
     let left_secrets = no_secrets.clone();
     let left = thread::spawn(move || {
         left_barrier.wait();
-        left_store.save_preset(
-            "demo",
-            "left",
-            &values(&[("VALUE", "left")]),
-            &left_secrets,
-        )
+        left_store.save_preset("demo", "left", &values(&[("VALUE", "left")]), &left_secrets)
     });
 
     let right_store = state.clone();
     let right_barrier = Arc::clone(&barrier);
     let right = thread::spawn(move || {
         right_barrier.wait();
-        right_store.save_preset(
-            "demo",
-            "right",
-            &values(&[("VALUE", "right")]),
-            &no_secrets,
-        )
+        right_store.save_preset("demo", "right", &values(&[("VALUE", "right")]), &no_secrets)
     });
 
     barrier.wait();

@@ -184,7 +184,12 @@ impl ParamDecl {
         let choices = row
             .get("choices")
             .and_then(toml::Value::as_array)
-            .map(|items| items.iter().filter_map(|item| scalar_text(Some(item))).collect())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| scalar_text(Some(item)))
+                    .collect()
+            })
             .unwrap_or_default();
         Self {
             name,

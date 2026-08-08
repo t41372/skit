@@ -86,7 +86,11 @@ fn preset_save_from_last_captures_exact_snapshot() -> Result<(), Box<dyn std::er
         root.path(),
         &["preset", "save", "Demo", "prod", "--from-last"],
     )?;
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(
         String::from_utf8(output.stdout)?,
         "Preset \"prod\" saved for Demo.\n"
@@ -109,7 +113,11 @@ fn preset_save_from_last_preserves_an_exact_empty_snapshot()
         root.path(),
         &["preset", "save", "Demo", "empty", "--from-last"],
     )?;
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let listed = run(root.path(), &["preset", "list", "Demo", "--json"])?;
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&listed.stdout)?,
@@ -147,7 +155,10 @@ fn preset_save_from_last_refuses_legacy_stamp_without_snapshot()
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8(output.stderr)?.contains("run it once first"));
     let listed = run(root.path(), &["preset", "list", "Demo", "--json"])?;
-    assert_eq!(serde_json::from_slice::<serde_json::Value>(&listed.stdout)?, json!({}));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&listed.stdout)?,
+        json!({})
+    );
     Ok(())
 }
 
@@ -160,7 +171,10 @@ fn preset_save_without_from_last_is_usage_error_and_writes_nothing()
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8(output.stderr)?.contains("pass --from-last"));
     let listed = run(root.path(), &["preset", "list", "Demo", "--json"])?;
-    assert_eq!(serde_json::from_slice::<serde_json::Value>(&listed.stdout)?, json!({}));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&listed.stdout)?,
+        json!({})
+    );
     Ok(())
 }
 

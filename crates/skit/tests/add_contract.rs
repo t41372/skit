@@ -30,16 +30,21 @@ impl Roots {
 
     fn list_json(&self) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
         let output = self.command().args(["list", "--json"]).output()?;
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         Ok(serde_json::from_slice(&output.stdout)?)
     }
 
     fn show_json(&self, name: &str) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-        let output = self
-            .command()
-            .args(["show", name, "--json"])
-            .output()?;
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let output = self.command().args(["show", name, "--json"]).output()?;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         Ok(serde_json::from_slice(&output.stdout)?)
     }
 }
@@ -58,7 +63,11 @@ fn shell_copy_infers_identity_description_interpreter_and_store_shape()
     fs::write(&source, bytes)?;
 
     let output = run_add(&roots, &[source.to_string_lossy().as_ref(), "-n", "deploy"])?;
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(output.stderr.is_empty());
     assert_eq!(
         String::from_utf8(output.stdout)?,
@@ -71,7 +80,10 @@ fn shell_copy_infers_identity_description_interpreter_and_store_shape()
     assert_eq!(shown["description"], "Ship it");
     assert_eq!(shown["interpreter"], "zsh");
     assert_eq!(shown["workdir"], "invoke");
-    assert_eq!(fs::read(roots.data.join("scripts/deploy/script.sh"))?, bytes);
+    assert_eq!(
+        fs::read(roots.data.join("scripts/deploy/script.sh"))?,
+        bytes
+    );
     Ok(())
 }
 
@@ -88,7 +100,11 @@ fn reference_mode_keeps_original_and_materializes_no_payload()
         &roots,
         &[source.to_string_lossy().as_ref(), "--ref", "-n", "task"],
     )?;
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(fs::read(&source)?, bytes);
     assert!(!roots.data.join("scripts/task/script.rb").exists());
 
@@ -119,7 +135,11 @@ fn explicit_kind_handles_extensionless_script() -> Result<(), Box<dyn std::error
             "Build project",
         ],
     )?;
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let shown = roots.show_json("builder")?;
     assert_eq!(shown["kind"], "shell");
     assert_eq!(shown["description"], "Build project");
@@ -128,7 +148,8 @@ fn explicit_kind_handles_extensionless_script() -> Result<(), Box<dyn std::error
 }
 
 #[test]
-fn exe_is_always_reference_and_does_not_claim_copy_mode() -> Result<(), Box<dyn std::error::Error>> {
+fn exe_is_always_reference_and_does_not_claim_copy_mode() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = tempdir()?;
     let roots = Roots::new(root.path());
     let source = root.path().join("program.bin");
@@ -138,7 +159,11 @@ fn exe_is_always_reference_and_does_not_claim_copy_mode() -> Result<(), Box<dyn 
         &roots,
         &[source.to_string_lossy().as_ref(), "--exe", "-n", "program"],
     )?;
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(
         String::from_utf8(output.stdout)?,
         "Added: program\n  Run it: skit run program\n"
@@ -177,7 +202,12 @@ fn conflicting_kind_selectors_are_usage_error_and_write_nothing()
 
     let output = run_add(
         &roots,
-        &[source.to_string_lossy().as_ref(), "--kind", "shell", "--exe"],
+        &[
+            source.to_string_lossy().as_ref(),
+            "--kind",
+            "shell",
+            "--exe",
+        ],
     )?;
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8(output.stderr)?.contains("Use --kind or --exe, not both"));

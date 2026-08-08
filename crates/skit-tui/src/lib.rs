@@ -107,11 +107,7 @@ pub fn render(frame: &mut Frame<'_>, app: &mut App) {
             })
             .collect()
     };
-    let library = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Library "),
-    );
+    let library = List::new(items).block(Block::default().borders(Borders::ALL).title(" Library "));
     frame.render_widget(library, areas[1]);
 
     frame.render_widget(
@@ -133,8 +129,7 @@ pub fn run(store: &Store) -> io::Result<()> {
             terminal.draw(|frame| render(frame, &mut app))?;
             match event::read()? {
                 Event::Key(key)
-                    if key.kind == KeyEventKind::Press
-                        && app.handle_key(key) == Action::Quit =>
+                    if key.kind == KeyEventKind::Press && app.handle_key(key) == Action::Quit =>
                 {
                     break Ok(());
                 }

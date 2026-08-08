@@ -58,7 +58,9 @@ impl ProgramSearch {
 
     fn candidates(&self, name: &str) -> Vec<PathBuf> {
         let name_path = Path::new(name);
-        let has_parent = name_path.parent().is_some_and(|parent| !parent.as_os_str().is_empty());
+        let has_parent = name_path
+            .parent()
+            .is_some_and(|parent| !parent.as_os_str().is_empty());
         let bases = if name_path.is_absolute() || has_parent {
             vec![name_path.to_owned()]
         } else {

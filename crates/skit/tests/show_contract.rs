@@ -176,8 +176,8 @@ params = ["target", "api_key"]
 }
 
 #[test]
-fn show_missing_entry_is_failure_and_does_not_emit_json()
--> Result<(), Box<dyn std::error::Error>> {
+fn show_missing_entry_is_failure_and_does_not_emit_json() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = tempdir()?;
     let output = run_show(
         &root.path().join("data"),

@@ -343,10 +343,12 @@ fn validate_value(field: &FormField, value: &str) -> Option<String> {
     };
     match field.param_type {
         ParamType::Integer => pieces.iter().find_map(|piece| {
-            piece
-                .parse::<i64>()
-                .err()
-                .map(|_| format!("{} needs a whole number — you typed {value:?}.", field.label))
+            piece.parse::<i64>().err().map(|_| {
+                format!(
+                    "{} needs a whole number — you typed {value:?}.",
+                    field.label
+                )
+            })
         }),
         ParamType::Float => pieces.iter().find_map(|piece| match piece.parse::<f64>() {
             Ok(number) if number.is_finite() => None,
@@ -356,11 +358,12 @@ fn validate_value(field: &FormField, value: &str) -> Option<String> {
             )),
         }),
         ParamType::Boolean => pieces.iter().find_map(|piece| {
-            (!is_bool_text(piece)).then(|| {
-                format!("{} needs on or off — you typed {value:?}.", field.label)
-            })
+            (!is_bool_text(piece))
+                .then(|| format!("{} needs on or off — you typed {value:?}.", field.label))
         }),
-        ParamType::Choice if !field.choices.is_empty() && !field.choices.iter().any(|v| v == value) => {
+        ParamType::Choice
+            if !field.choices.is_empty() && !field.choices.iter().any(|v| v == value) =>
+        {
             Some(format!(
                 "{} must be one of: {}",
                 field.label,
