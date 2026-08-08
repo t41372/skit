@@ -1,0 +1,49 @@
+name: Restore Python baseline
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/restore-python-baseline.yml'
+
+permissions: {}
+
+jobs:
+  restore:
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.head_ref }}
+          persist-credentials: true
+      - name: Restore untouched Python release stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --depth=1 origin fix/design-audit
+          git checkout FETCH_HEAD -- \
+            pyproject.toml \
+            uv.lock \
+            .github/workflows/ci.yml \
+            .github/workflows/mutation.yml \
+            .github/workflows/codspeed.yml \
+            .github/workflows/benchmark.yml \
+            .github/workflows/benchmark-nightly.yml \
+            .github/workflows/benchmark-compare.yml \
+            .github/workflows/release.yml
+      - name: Commit restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add pyproject.toml uv.lock .github/workflows
+          if git diff --cached --quiet; then
+            echo 'Python baseline already restored.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'chore: leave Python stack frozen during Rust migration'
+          git push origin "HEAD:${{ github.head_ref }}"
