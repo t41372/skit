@@ -30,6 +30,28 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Remove a registered entry. The original source file stays unchanged.
+    Remove {
+        /// Entry name or slug.
+        name: String,
+        /// Skip confirmation.
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+    /// Rename an entry. Presets, remembered values, and history stay with it.
+    Rename {
+        /// Entry name or slug.
+        name: String,
+        /// New display name.
+        new_name: String,
+    },
+    /// Set the description shown in the library and `skit list`.
+    Describe {
+        /// Entry name or slug.
+        name: String,
+        /// New description. Use an empty string to clear it.
+        text: String,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -64,6 +86,9 @@ fn run() -> Result<(), String> {
     let store = Store::new(discover_roots().map_err(|error| error.to_string())?);
     match cli.command {
         Some(Command::List { json }) => list(&store, json),
+        Some(Command::Remove { name, yes }) => remove(&store, &name, yes),
+        Some(Command::Rename { name, new_name }) => rename(&store, &name, &new_name),
+        Some(Command::Describe { name, text }) => describe(&store, &name, &text),
         None => skit_tui::run(&store).map_err(|error| error.to_string()),
     }
 }
@@ -109,4 +134,61 @@ fn list(store: &Store, as_json: bool) -> Result<(), String> {
         println!("{}\t{}\t{description}", entry.name, entry.kind);
     }
     Ok(())
+}
+
+fn rename(store: &Store, name: &str, new_name: &str) -> Result<(), String> {
+    let entry = store
+        .rename(name, new_name)
+        .map_err(|error| error.to_string())?;
+    println!("Renamed to {}.", entry.meta.name);
+    Ok(())
+}
+
+fn describe(store: &Store, name: &str, text: &str) -> Result<(), String> {
+    let entry = store
+        .update_description(name, text)
+        .map_err(|error| error.to_string())?;
+    if entry.meta.description.is_empty() {
+        println!("Description cleared for {}.", entry.meta.name);
+    } else {
+        println!("Description updated for {}.", entry.meta.name);
+    }
+    Ok(())
+}
+
+fn remove(store: &Store, name: &str, yes: bool) -> Result<(), String> {
+    if !yes {
+        let entry = store.resolve(name).map_err(|error| error.to_string())?;
+        let question = if entry.meta.source.is_empty() {
+            format!("Remove \"{}\"?", entry.meta.name)
+        } else {
+            format!(
+                "Remove \"{}\"? Your original file will not be deleted.",
+                entry.meta.name
+            )
+        };
+        if !confirm(&question)? {
+            return Err("Aborted!".to_owned());
+        }
+    }
+
+    let removed = store.remove(name).map_err(|error| error.to_string())?;
+    println!("Removed: {removed}");
+    Ok(())
+}
+
+fn confirm(question: &str) -> Result<bool, String> {
+    let stdout = io::stdout();
+    let mut writer = stdout.lock();
+    write!(writer, "{question} [y/N]: ").map_err(|error| error.to_string())?;
+    writer.flush().map_err(|error| error.to_string())?;
+
+    let mut answer = String::new();
+    io::stdin()
+        .read_line(&mut answer)
+        .map_err(|error| error.to_string())?;
+    Ok(matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
