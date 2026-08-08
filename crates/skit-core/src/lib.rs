@@ -12,6 +12,7 @@ mod params;
 mod paths;
 mod pep723;
 mod presets;
+mod process;
 mod programs;
 mod python_add;
 mod state;
@@ -42,6 +43,7 @@ pub use pep723::{
     Pep723Metadata, build_pep723, has_pep723, inject_pep723, parse_pep723, set_pep723_axes,
 };
 pub use presets::{PresetFromLastError, save_preset_from_last};
+pub use process::{RunError, run_launch};
 pub use programs::ProgramSearch;
 pub use python_add::{PythonAddRequest, add_python_file};
 pub use state::{EntryState, LastRun, StateError, StateStore};
