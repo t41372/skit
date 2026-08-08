@@ -24,8 +24,12 @@ impl fmt::Display for RunError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyArgv => formatter.write_str("the launch plan has no program"),
-            Self::Spawn { program, source } => write!(formatter, "cannot start {program}: {source}"),
-            Self::Wait { program, source } => write!(formatter, "cannot wait for {program}: {source}"),
+            Self::Spawn { program, source } => {
+                write!(formatter, "cannot start {program}: {source}")
+            }
+            Self::Wait { program, source } => {
+                write!(formatter, "cannot wait for {program}: {source}")
+            }
             Self::Kill { program, source } => write!(formatter, "cannot stop {program}: {source}"),
         }
     }
@@ -34,9 +38,9 @@ impl fmt::Display for RunError {
 impl StdError for RunError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
-            Self::Spawn { source, .. }
-            | Self::Wait { source, .. }
-            | Self::Kill { source, .. } => Some(source),
+            Self::Spawn { source, .. } | Self::Wait { source, .. } | Self::Kill { source, .. } => {
+                Some(source)
+            }
             Self::EmptyArgv => None,
         }
     }
@@ -74,11 +78,7 @@ pub fn run_launch(plan: &LaunchPlan, interrupted: &AtomicBool) -> Result<i32, Ru
     supervise(&mut child, program, interrupted)
 }
 
-fn supervise(
-    child: &mut Child,
-    program: &str,
-    interrupted: &AtomicBool,
-) -> Result<i32, RunError> {
+fn supervise(child: &mut Child, program: &str, interrupted: &AtomicBool) -> Result<i32, RunError> {
     loop {
         if let Some(status) = child.try_wait().map_err(|source| RunError::Wait {
             program: program.to_owned(),

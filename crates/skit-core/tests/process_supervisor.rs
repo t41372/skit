@@ -103,7 +103,12 @@ fn interruption_kills_and_reaps_before_returning_130() -> Result<(), Box<dyn std
 fn preexisting_interrupt_does_not_spawn_the_program() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempdir()?;
     let launch = LaunchPlan {
-        argv: vec![root.path().join("does-not-exist").to_string_lossy().into_owned()],
+        argv: vec![
+            root.path()
+                .join("does-not-exist")
+                .to_string_lossy()
+                .into_owned(),
+        ],
         cwd: root.path().to_owned(),
         env_overlay: Default::default(),
     };
@@ -134,11 +139,7 @@ fn spawn_failure_is_named() -> Result<(), Box<dyn std::error::Error>> {
 fn posix_signal_death_is_normalized_to_shell_status() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempdir()?;
     let launch = LaunchPlan {
-        argv: vec![
-            "sh".to_owned(),
-            "-c".to_owned(),
-            "kill -TERM $$".to_owned(),
-        ],
+        argv: vec!["sh".to_owned(), "-c".to_owned(), "kill -TERM $$".to_owned()],
         cwd: root.path().to_owned(),
         env_overlay: Default::default(),
     };
