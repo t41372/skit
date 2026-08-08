@@ -1,0 +1,25 @@
+name: Audit Rust dependencies
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/audit-rust-dependencies.yml'
+
+permissions: {}
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install current stable Rust
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup default 1.97.1
+      - name: Explain any versions behind the registry latest
+        run: cargo update --dry-run --verbose
