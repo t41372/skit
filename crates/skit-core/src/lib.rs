@@ -22,6 +22,7 @@ mod python_metadata;
 mod run;
 mod state;
 mod store;
+mod temp_script;
 mod uv;
 
 pub use add::{AddFileRequest, AddMode, AddPreparation, AddUseCaseError, add_file};
@@ -63,4 +64,5 @@ pub use state::{EntryState, LastRun, StateError, StateStore};
 pub use store::{
     Entry, EntryDraft, EntrySummary, Error, LibraryRoots, RunStamp, ScriptMeta, Store,
 };
+pub use temp_script::{TempScript, TempScriptError, materialize_temp_script};
 pub use uv::effective_uv_metadata;
