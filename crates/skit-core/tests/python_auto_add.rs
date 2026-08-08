@@ -49,8 +49,8 @@ fn noninteractive_accepts_dependency_suggestions_and_shebang_pin_but_manages_not
 }
 
 #[test]
-fn interactive_candidates_require_review_before_any_write()
--> Result<(), Box<dyn std::error::Error>> {
+fn interactive_candidates_require_review_before_any_write() -> Result<(), Box<dyn std::error::Error>>
+{
     let root = tempdir()?;
     let source = root.path().join("job.py");
     fs::write(&source, "import requests\nCITY = 'Taipei'\n")?;
@@ -111,7 +111,10 @@ fn existing_pep723_is_authoritative_and_existing_frozen_params_need_no_new_revie
     assert!(outcome.requires_python.is_empty());
     assert!(outcome.parameter_candidates.is_empty());
     assert_eq!(plan_for_entry(&outcome.entry).source, PlanSource::Managed);
-    assert_eq!(fs::read_to_string(outcome.entry.dir.join("script.py"))?, text);
+    assert_eq!(
+        fs::read_to_string(outcome.entry.dir.join("script.py"))?,
+        text
+    );
     Ok(())
 }
 

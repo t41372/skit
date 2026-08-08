@@ -112,7 +112,11 @@ impl fmt::Display for PythonAutoAddError {
                     write!(formatter, " Dependencies: {}.", dependencies.join(", "))?;
                 }
                 if !parameters.is_empty() {
-                    write!(formatter, " Parameter candidates: {}.", parameters.join(", "))?;
+                    write!(
+                        formatter,
+                        " Parameter candidates: {}.",
+                        parameters.join(", ")
+                    )?;
                 }
                 Ok(())
             }
@@ -310,10 +314,8 @@ fn add_snapshot(
     let strict_utf8 = std::str::from_utf8(&snapshot.bytes).is_ok();
     let has_existing_block =
         std::str::from_utf8(&snapshot.bytes).is_ok_and(|text| has_pep723(text, "#"));
-    let inject_metadata = request.mode == AddMode::Copy
-        && wants_uv_metadata
-        && strict_utf8
-        && !has_existing_block;
+    let inject_metadata =
+        request.mode == AddMode::Copy && wants_uv_metadata && strict_utf8 && !has_existing_block;
 
     let payload = match request.mode {
         AddMode::Reference => None,
