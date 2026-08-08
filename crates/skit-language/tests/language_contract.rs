@@ -5,7 +5,8 @@ use skit_domain::parameters::{
 };
 use skit_language::{
     cli_params, detect_candidates, external_dependencies, infer_kind, inject_values,
-    managed_params, placeholder_params, write_managed_params,
+    managed_params, normalize_shell_default, placeholder_params, read_uv_metadata,
+    write_managed_params, write_uv_metadata,
 };
 
 #[test]
@@ -307,4 +308,46 @@ const chalk = require("chalk");
         external_dependencies("js", js),
         ["@scope/pkg", "chalk", "react"]
     );
+}
+
+#[test]
+fn shell_normalization_changes_one_bare_constant_and_preserves_crlf() {
+    let source = "#!/bin/sh\r\nNAME=world\r\nOTHER=value\r\necho \"$NAME\"\r\n";
+    let rewritten = normalize_shell_default(source, "NAME").unwrap();
+    assert_eq!(
+        rewritten,
+        "#!/bin/sh\r\nNAME=${NAME:-world}\r\nOTHER=value\r\necho \"$NAME\"\r\n"
+    );
+    assert!(normalize_shell_default(&rewritten, "NAME").is_err());
+}
+
+#[test]
+fn uv_metadata_updates_preserve_managed_rows_and_source_bytes() {
+    let source = r#"#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.11"
+# future = "keep"
+#
+# [tool.skit]
+# schema = 1
+#
+# [[tool.skit.params]]
+# name = "WIDTH"
+# kind = "const"
+# type = "int"
+# ///
+WIDTH = 1
+"#;
+    let rewritten = write_uv_metadata(
+        source,
+        &["requests>=2,<3".to_owned(), "rich".to_owned()],
+        ">=3.12",
+    )
+    .unwrap();
+    let metadata = read_uv_metadata(&rewritten).unwrap();
+    assert_eq!(metadata.dependencies, ["requests>=2,<3", "rich"]);
+    assert_eq!(metadata.requires_python, ">=3.12");
+    assert!(rewritten.contains("future = \"keep\""));
+    assert!(rewritten.contains("[[tool.skit.params]]"));
+    assert!(rewritten.ends_with("WIDTH = 1\n"));
 }
