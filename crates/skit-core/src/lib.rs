@@ -1,12 +1,14 @@
 #![forbid(unsafe_code)]
 
 mod add;
+mod integrity;
 mod language;
 mod paths;
 mod state;
 mod store;
 
 pub use add::{AddFileRequest, AddMode, AddPreparation, AddUseCaseError, add_file};
+pub use integrity::{TimestampError, format_utc_timestamp, sha256_source_hash};
 pub use language::{
     DepsFlavor, ExecutablePolicy, Family, LanguageSpec, infer_kind, infer_kind_with_policy,
     kind_for_extension, kind_for_shebang_text, known_kinds, python_version_pin,
