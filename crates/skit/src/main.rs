@@ -51,6 +51,9 @@ struct Cli {
     command: Option<Command>,
 }
 
+// Parsed once per process. Keeping this bounded enum on the stack avoids adding a heap
+// allocation to every CLI invocation solely to satisfy the generic size heuristic.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Add an existing script or executable to the library.
