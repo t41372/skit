@@ -1,0 +1,84 @@
+name: Rewrite dependency vendor
+
+on:
+  push:
+    branches:
+      - rewrite/rust-ratatui
+    paths:
+      - .github/workflows/bootstrap-vendor.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rewrite-dependency-vendor
+  cancel-in-progress: true
+
+jobs:
+  vendor:
+    name: Resolve and vendor bootstrap crates
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: true
+      - name: Install Rust
+        shell: bash
+        run: rustup toolchain install 1.97.1 --profile minimal
+      - name: Resolve bootstrap manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .vendor-bootstrap/src
+          cat > .vendor-bootstrap/Cargo.toml <<'EOF'
+          [package]
+          name = "skit-vendor-bootstrap"
+          version = "0.0.0"
+          edition = "2024"
+          publish = false
+
+          [dependencies]
+          directories = "*"
+          serde = { version = "*", features = ["derive"] }
+          serde_json = "*"
+          tempfile = "*"
+          thiserror = "*"
+          toml = { version = "*", features = ["parse", "display", "serde"] }
+          EOF
+          printf 'fn main() {}\n' > .vendor-bootstrap/src/main.rs
+          cargo +1.97.1 generate-lockfile --manifest-path .vendor-bootstrap/Cargo.toml
+          cargo +1.97.1 vendor --versioned-dirs --manifest-path .vendor-bootstrap/Cargo.toml .vendor-bootstrap/vendor > .vendor-bootstrap/vendor-config.toml
+          tar -C .vendor-bootstrap -czf skit-vendor-bootstrap.tar.gz Cargo.toml Cargo.lock vendor-config.toml vendor
+          sha256sum skit-vendor-bootstrap.tar.gz > skit-vendor-bootstrap.tar.gz.sha256
+      - name: Upload vendor
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: skit-vendor-bootstrap
+          path: |
+            skit-vendor-bootstrap.tar.gz
+            skit-vendor-bootstrap.tar.gz.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Publish run identity
+        shell: bash
+        env:
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+        run: |
+          set -euo pipefail
+          mkdir -p .rewrite-bootstrap
+          cat > .rewrite-bootstrap/vendor.json <<EOF
+          {
+            "head_sha": "${GITHUB_SHA}",
+            "run_id": ${GITHUB_RUN_ID},
+            "artifact_id": ${ARTIFACT_ID},
+            "rust": "1.97.1"
+          }
+          EOF
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .rewrite-bootstrap/vendor.json
+          git commit -m "chore(rewrite): record dependency vendor artifact"
+          git push
