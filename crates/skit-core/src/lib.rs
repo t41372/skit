@@ -48,8 +48,8 @@ pub use process::{RunError, run_launch};
 pub use programs::ProgramSearch;
 pub use python_add::{PythonAddRequest, add_python_file};
 pub use run::{
-    ExtraArgsResolution, PrepareRunError, PreparedRun, prepare_run, remembered_values,
-    resolve_extra_args,
+    ExtraArgsResolution, PrepareRunError, PreparedRun, RunRequest, prepare_run,
+    remembered_values, resolve_extra_args,
 };
 pub use state::{EntryState, LastRun, StateError, StateStore};
 pub use store::{
