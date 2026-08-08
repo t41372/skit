@@ -27,7 +27,7 @@ fn entry(
     })
 }
 
-fn resolver(items: &[(&str, &str)]) -> impl Fn(&str) -> Option<PathBuf> + '_ {
+fn resolver<'a>(items: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<PathBuf> + 'a {
     move |name| {
         items
             .iter()
