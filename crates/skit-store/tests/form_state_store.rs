@@ -41,6 +41,8 @@ fn load_isolates_malformed_sections_and_keeps_valid_siblings() {
         r#"
 future = "keep"
 values = "wrong-shape"
+extra_args = "wrong-shape"
+extra_args_raw = "yes"
 
 [presets]
 bad = "wrong-shape"
@@ -59,6 +61,8 @@ values = "wrong-shape"
     let state = FileFormStateStore::new(root.path()).load(&slug());
 
     assert!(state.values.is_empty());
+    assert!(state.extra_args.is_empty());
+    assert!(!state.extra_args_raw);
     assert_eq!(
         state.presets,
         BTreeMap::from([(
@@ -66,11 +70,13 @@ values = "wrong-shape"
             BTreeMap::from([("city".to_owned(), "Paris".to_owned())]),
         )])
     );
-    assert!(state.last_run_values.is_empty());
+    assert_eq!(state.last_run.at.as_deref(), Some("2026-08-07T17:22:00Z"));
+    assert_eq!(state.last_run.exit, Some(0));
+    assert!(state.last_run.values.is_empty());
 }
 
 #[test]
-fn update_preserves_unknown_fields_and_unported_last_run_metadata() {
+fn update_owns_the_complete_schema_and_preserves_only_unknown_extension_fields() {
     let root = TempDir::new().unwrap();
     fs::create_dir_all(root.path().join("values")).unwrap();
     fs::write(
@@ -98,24 +104,65 @@ city = "Paris"
     store
         .update(&slug(), |state| {
             state.values.insert("city".to_owned(), "Tokyo".to_owned());
+            state.extra_args = vec!["--fresh".to_owned(), "two words".to_owned()];
+            state.extra_args_raw = false;
             state
                 .presets
                 .insert("travel".to_owned(), state.values.clone());
-            state.last_run_values.clear();
+            state.last_run.at = Some("2026-08-08T01:30:00Z".to_owned());
+            state.last_run.exit = Some(0);
+            state.last_run.values = state.values.clone();
         })
         .unwrap();
 
     let text = fs::read_to_string(state_path(&root)).unwrap();
     let doc: toml::Table = toml::from_str(&text).unwrap();
     assert_eq!(doc["future"].as_str(), Some("keep-me"));
-    assert_eq!(doc["extra_args_raw"].as_bool(), Some(true));
-    assert_eq!(doc["extra_args"].as_array().unwrap()[0].as_str(), Some("--old"));
+    assert!(doc.get("extra_args_raw").is_none());
+    assert_eq!(doc["extra_args"].as_array().unwrap().len(), 2);
+    assert_eq!(doc["extra_args"].as_array().unwrap()[0].as_str(), Some("--fresh"));
+    assert_eq!(
+        doc["extra_args"].as_array().unwrap()[1].as_str(),
+        Some("two words")
+    );
     assert_eq!(doc["values"]["city"].as_str(), Some("Tokyo"));
     assert_eq!(doc["presets"]["travel"]["city"].as_str(), Some("Tokyo"));
-    assert_eq!(doc["last_run"]["at"].as_str(), Some("2026-08-07T17:22:00Z"));
-    assert_eq!(doc["last_run"]["exit"].as_integer(), Some(7));
+    assert_eq!(doc["last_run"]["at"].as_str(), Some("2026-08-08T01:30:00Z"));
+    assert_eq!(doc["last_run"]["exit"].as_integer(), Some(0));
+    assert_eq!(doc["last_run"]["values"]["city"].as_str(), Some("Tokyo"));
     assert_eq!(doc["last_run"]["future_nested"].as_str(), Some("keep-too"));
-    assert!(doc["last_run"].get("values").is_none());
+
+    let round_trip = store.load(&slug());
+    assert_eq!(round_trip.values["city"], "Tokyo");
+    assert_eq!(round_trip.extra_args, ["--fresh", "two words"]);
+    assert!(!round_trip.extra_args_raw);
+    assert_eq!(round_trip.presets["travel"]["city"], "Tokyo");
+    assert_eq!(round_trip.last_run.at.as_deref(), Some("2026-08-08T01:30:00Z"));
+    assert_eq!(round_trip.last_run.exit, Some(0));
+    assert_eq!(round_trip.last_run.values["city"], "Tokyo");
+}
+
+#[test]
+fn clearing_the_tail_also_clears_its_raw_provenance_marker() {
+    let root = TempDir::new().unwrap();
+    let store = FileFormStateStore::new(root.path());
+    store
+        .update(&slug(), |state| {
+            state.extra_args = vec!["{today}".to_owned()];
+            state.extra_args_raw = true;
+        })
+        .unwrap();
+    store
+        .update(&slug(), |state| {
+            state.extra_args.clear();
+        })
+        .unwrap();
+
+    let doc: toml::Table = toml::from_str(&fs::read_to_string(state_path(&root)).unwrap()).unwrap();
+    assert!(doc.get("extra_args").is_none());
+    assert!(doc.get("extra_args_raw").is_none());
+    assert!(store.load(&slug()).extra_args.is_empty());
+    assert!(!store.load(&slug()).extra_args_raw);
 }
 
 #[test]
