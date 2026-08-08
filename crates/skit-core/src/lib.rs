@@ -6,6 +6,7 @@ mod integrity;
 mod language;
 mod params;
 mod paths;
+mod presets;
 mod state;
 mod store;
 
@@ -25,6 +26,7 @@ pub use params::{
     synthesized_placeholder,
 };
 pub use paths::{PathContext, PathError, Platform, discover_roots, resolve_roots};
+pub use presets::{PresetFromLastError, save_preset_from_last};
 pub use state::{EntryState, LastRun, StateError, StateStore};
 pub use store::{
     Entry, EntryDraft, EntrySummary, Error, LibraryRoots, RunStamp, ScriptMeta, Store,
