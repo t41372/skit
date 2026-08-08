@@ -44,8 +44,7 @@ pub fn resolve_values(
                 .get(&declaration.name)
                 .map(String::as_str)
                 .unwrap_or_default();
-            resolve_one(declaration, raw, context)
-                .map(|value| (declaration.name.clone(), value))
+            resolve_one(declaration, raw, context).map(|value| (declaration.name.clone(), value))
         })
         .collect()
 }
