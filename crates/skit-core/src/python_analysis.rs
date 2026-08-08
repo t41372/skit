@@ -100,6 +100,7 @@ fn is_local_module(script_dir: Option<&Path>, module: &str) -> bool {
             && entry
                 .path()
                 .extension()
+                .and_then(|extension| extension.to_str())
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("py"))
     })
 }
@@ -116,7 +117,7 @@ fn valid_distribution_name(name: &str) -> bool {
         && last.is_ascii_alphanumeric()
         && bytes
             .iter()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'.' | b'_' | b'-'))
 }
 
 fn distribution_for_import(module: &str) -> &str {
@@ -150,6 +151,7 @@ fn is_stdlib(module: &str) -> bool {
     matches!(
         module,
         "abc"
+            | "annotationlib"
             | "antigravity"
             | "argparse"
             | "array"
@@ -172,6 +174,7 @@ fn is_stdlib(module: &str) -> bool {
             | "collections"
             | "colorsys"
             | "compileall"
+            | "compression"
             | "concurrent"
             | "configparser"
             | "contextlib"
