@@ -1,0 +1,35 @@
+name: Rewrite source snapshot
+
+on:
+  push:
+    branches:
+      - rewrite/rust-ratatui
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rewrite-source-snapshot
+  cancel-in-progress: true
+
+jobs:
+  snapshot:
+    name: Package repository snapshot
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Create source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          git archive --format=tar.gz --output=skit-source.tar.gz HEAD
+      - name: Upload source archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: skit-source
+          path: skit-source.tar.gz
+          if-no-files-found: error
+          retention-days: 1
