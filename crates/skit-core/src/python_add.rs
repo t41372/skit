@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::{
     AddMode, AddUseCaseError, Entry, EntryDraft, ParamDecl, ScriptMeta, Store,
-    analyze_python_managed, effective_uv_metadata, has_pep723, inject_pep723, python_version_pin,
+    analyze_python_managed, has_pep723, inject_pep723, parse_pep723, python_version_pin,
     read_python_params, sha256_source_hash, shebang_program_from_line, suggest_python_dependencies,
     write_python_params,
 };
@@ -112,11 +112,7 @@ impl fmt::Display for PythonAutoAddError {
                     write!(formatter, " Dependencies: {}.", dependencies.join(", "))?;
                 }
                 if !parameters.is_empty() {
-                    write!(
-                        formatter,
-                        " Parameter candidates: {}.",
-                        parameters.join(", ")
-                    )?;
+                    write!(formatter, " Parameter candidates: {}.", parameters.join(", "))?;
                 }
                 Ok(())
             }
@@ -214,13 +210,22 @@ pub fn add_python_auto(
     let snapshot = read_snapshot(&request.source)?;
     let mut dependencies = Vec::new();
     let mut requires_python = String::new();
+    let mut effective_dependencies = Vec::new();
+    let mut effective_requires_python = String::new();
     let mut parameter_candidates = Vec::new();
 
     if let Ok(text) = std::str::from_utf8(&snapshot.bytes) {
-        if !has_pep723(text, "#") {
+        if has_pep723(text, "#") {
+            if let Some(metadata) = parse_pep723(text, "#") {
+                effective_dependencies = metadata.dependencies;
+                effective_requires_python = metadata.requires_python;
+            }
+        } else {
             dependencies = suggest_python_dependencies(text, snapshot.source.parent());
             let first_line = text.split_once('\n').map_or(text, |(line, _)| line);
             requires_python = python_version_pin(shebang_program_from_line(first_line));
+            effective_dependencies.clone_from(&dependencies);
+            effective_requires_python.clone_from(&requires_python);
         }
         if read_python_params(text).is_empty() {
             parameter_candidates = analyze_python_managed(text)
@@ -247,16 +252,15 @@ pub fn add_python_auto(
         mode: request.mode,
         description: request.description.unwrap_or_default(),
         workdir: request.workdir,
-        dependencies: dependencies.clone(),
-        requires_python: requires_python.clone(),
+        dependencies,
+        requires_python,
         added_at: request.added_at,
     };
     let entry = add_snapshot(store, storage, snapshot, &[])?;
-    let (dependencies, requires_python) = effective_uv_metadata(&entry);
     Ok(PythonAutoAddOutcome {
         entry,
-        dependencies,
-        requires_python,
+        dependencies: effective_dependencies,
+        requires_python: effective_requires_python,
         parameter_candidates,
     })
 }
@@ -314,8 +318,10 @@ fn add_snapshot(
     let strict_utf8 = std::str::from_utf8(&snapshot.bytes).is_ok();
     let has_existing_block =
         std::str::from_utf8(&snapshot.bytes).is_ok_and(|text| has_pep723(text, "#"));
-    let inject_metadata =
-        request.mode == AddMode::Copy && wants_uv_metadata && strict_utf8 && !has_existing_block;
+    let inject_metadata = request.mode == AddMode::Copy
+        && wants_uv_metadata
+        && strict_utf8
+        && !has_existing_block;
 
     let payload = match request.mode {
         AddMode::Reference => None,
