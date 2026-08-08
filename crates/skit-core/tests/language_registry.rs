@@ -148,3 +148,91 @@ fn versioned_python_shebangs_keep_their_requires_python_pin() {
 fn unknown_kinds_remain_open() {
     assert!(spec_for("future-kind").is_none());
 }
+
+#[test]
+fn file_inference_prefers_registered_extension_then_shebang()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let disguised = root.path().join("script.py");
+    std::fs::write(&disguised, "#!/bin/zsh\necho wrong\n")?;
+    assert_eq!(
+        skit_core::infer_kind_with_policy(
+            &disguised,
+            false,
+            skit_core::ExecutablePolicy::Windows(".EXE;.CMD")
+        ),
+        "python"
+    );
+
+    let no_extension = root.path().join("tool");
+    std::fs::write(&no_extension, "#!/usr/bin/env -S deno run\n")?;
+    assert_eq!(
+        skit_core::infer_kind_with_policy(
+            &no_extension,
+            false,
+            skit_core::ExecutablePolicy::Windows(".EXE;.CMD")
+        ),
+        "js"
+    );
+    Ok(())
+}
+
+#[test]
+fn windows_executable_inference_uses_pathext_instead_of_readability()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let exe = root.path().join("tool.CMD");
+    let text = root.path().join("notes.txt");
+    std::fs::write(&exe, "not a shebang\n")?;
+    std::fs::write(&text, "plain text\n")?;
+    let policy = skit_core::ExecutablePolicy::Windows(".COM;.EXE;.BAT;.CMD");
+    assert_eq!(
+        skit_core::infer_kind_with_policy(&exe, false, policy),
+        "exe"
+    );
+    assert_eq!(
+        skit_core::infer_kind_with_policy(&text, false, policy),
+        "unknown"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn posix_executable_inference_uses_the_execute_bit() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempfile::tempdir()?;
+    let executable = root.path().join("tool");
+    let plain = root.path().join("plain");
+    std::fs::write(&executable, "no shebang\n")?;
+    std::fs::write(&plain, "no shebang\n")?;
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))?;
+    std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644))?;
+
+    assert_eq!(
+        skit_core::infer_kind_with_policy(
+            &executable,
+            false,
+            skit_core::ExecutablePolicy::Posix
+        ),
+        "exe"
+    );
+    assert_eq!(
+        skit_core::infer_kind_with_policy(&plain, false, skit_core::ExecutablePolicy::Posix),
+        "unknown"
+    );
+    Ok(())
+}
+
+#[test]
+fn force_exe_is_an_explicit_override_even_for_a_missing_path() {
+    assert_eq!(
+        skit_core::infer_kind_with_policy(
+            std::path::Path::new("missing.py"),
+            true,
+            skit_core::ExecutablePolicy::Windows(".EXE")
+        ),
+        "exe"
+    );
+}
