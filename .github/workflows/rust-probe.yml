@@ -41,11 +41,6 @@ jobs:
           printf 'source_head=%s\n\n' "$source_head" >> "$log"
           set +e
 
-          echo '$ cargo +1.97.1 check --workspace --all-targets --all-features  # lock bootstrap' >> "$log"
-          cargo +1.97.1 check --workspace --all-targets --all-features >> "$log" 2>&1
-          bootstrap_code=$?
-          echo >> "$log"
-
           echo '$ cargo +1.97.1 fmt --all' >> "$log"
           cargo +1.97.1 fmt --all >> "$log" 2>&1
           fmt_code=$?
@@ -61,17 +56,14 @@ jobs:
           test_code=$?
           echo >> "$log"
 
-          printf 'bootstrap=%s fmt=%s clippy=%s test=%s\n' "$bootstrap_code" "$fmt_code" "$clippy_code" "$test_code" >> "$log"
+          printf 'fmt=%s clippy=%s test=%s\n' "$fmt_code" "$clippy_code" "$test_code" >> "$log"
 
-      - name: Commit probe log, formatting, and generated lockfile
+      - name: Commit probe log and formatting
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .ci/rust-probe.txt crates
-          if [ -f Cargo.lock ]; then
-            git add Cargo.lock
-          fi
           if git diff --cached --quiet; then
             exit 0
           fi
