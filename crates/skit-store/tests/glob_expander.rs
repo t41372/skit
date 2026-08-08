@@ -27,8 +27,8 @@ fn recursive_patterns_are_sorted_and_keep_platform_native_relative_spelling() {
     let glob = FileGlobExpander::new(root.path());
 
     let expected = [
-        PathBuf::from("nested/deeper/a.rs").display().to_string(),
         PathBuf::from("nested/b.rs").display().to_string(),
+        PathBuf::from("nested/deeper/a.rs").display().to_string(),
     ];
     assert_eq!(glob.expand_piece("**/*.rs"), expected);
 }
