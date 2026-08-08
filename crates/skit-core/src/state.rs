@@ -15,8 +15,13 @@ use crate::LibraryRoots;
 pub struct LastRun {
     pub at: String,
     pub exit: i32,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    /// Exact accepted values after secret stripping. New Rust writes always persist
+    /// this table, including when it is empty, so an empty snapshot remains distinct
+    /// from a legacy run stamp that never recorded values at all.
     pub values: BTreeMap<String, String>,
+    /// Whether the loaded state actually contained a `last_run.values` table.
+    #[serde(skip)]
+    pub values_recorded: bool,
 }
 
 /// Remembered state for one library entry.
@@ -206,7 +211,11 @@ impl StateStore {
         Ok(removed)
     }
 
-    /// Record one completed run.
+    /// Record one completed run with an exact accepted-value snapshot.
+    ///
+    /// `None` means the invocation contained no form-value map; it is still recorded as
+    /// an exact empty snapshot. Legacy files that predate snapshots remain distinguishable
+    /// on read through `LastRun::values_recorded`.
     ///
     /// # Errors
     ///
@@ -228,6 +237,7 @@ impl StateStore {
             values: values
                 .map(|values| strip_secrets(values, secret_names))
                 .unwrap_or_default(),
+            values_recorded: true,
         });
         save_document(&path, &document)
     }
@@ -322,12 +332,15 @@ fn load_document(path: &Path) -> EntryState {
 fn parse_last_run(table: &toml::Table) -> Option<LastRun> {
     let at = table.get("at")?.as_str()?.to_owned();
     let exit = i32::try_from(table.get("exit")?.as_integer()?).ok()?;
-    let values = table
-        .get("values")
-        .and_then(toml::Value::as_table)
-        .map(string_table)
-        .unwrap_or_default();
-    Some(LastRun { at, exit, values })
+    let values_table = table.get("values").and_then(toml::Value::as_table);
+    let values_recorded = values_table.is_some();
+    let values = values_table.map(string_table).unwrap_or_default();
+    Some(LastRun {
+        at,
+        exit,
+        values,
+        values_recorded,
+    })
 }
 
 fn string_table(table: &toml::Table) -> BTreeMap<String, String> {
