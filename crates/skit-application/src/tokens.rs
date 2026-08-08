@@ -63,12 +63,12 @@ pub fn expand(
             index += 2;
             continue;
         }
-        if bytes[index] == b'{' {
-            if let Some((replacement, end)) = resolve_at(text, index, context)? {
-                output.push_str(replacement);
-                index = end;
-                continue;
-            }
+        if bytes[index] == b'{'
+            && let Some((replacement, end)) = resolve_at(text, index, context)?
+        {
+            output.push_str(replacement);
+            index = end;
+            continue;
         }
 
         let character = text[index..]
