@@ -249,7 +249,9 @@ fn input_preamble_offset(root: Node<'_>, source: &str) -> usize {
     }) {
         index += 1;
     }
-    statements.get(index).map_or(source.len(), |node| node.start_byte())
+    statements
+        .get(index)
+        .map_or(source.len(), |node| node.start_byte())
 }
 
 fn render_value(spec: &ParamDecl, raw: &str) -> Result<String, PythonInjectError> {
