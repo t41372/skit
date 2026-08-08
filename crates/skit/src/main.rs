@@ -5,7 +5,9 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use serde::Serialize;
-use skit_core::{StateStore, Store, discover_roots};
+use skit_core::{
+    Entry, Family, FormField, StateStore, Store, discover_roots, plan_for_entry, spec_for,
+};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -26,6 +28,14 @@ struct Cli {
 enum Command {
     /// List every registered entry.
     List {
+        /// Output as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show metadata and the complete machine-facing parameter schema.
+    Show {
+        /// Entry name or slug.
+        name: String,
         /// Output as JSON.
         #[arg(long)]
         json: bool,
@@ -90,6 +100,52 @@ struct ListRow {
     last_exit: Option<i32>,
 }
 
+#[derive(Debug, Serialize)]
+struct ShowField {
+    key: String,
+    label: String,
+    #[serde(rename = "type")]
+    type_name: &'static str,
+    source: &'static str,
+    required: bool,
+    secret: bool,
+    multiple: bool,
+    repeat: bool,
+    degraded: bool,
+    choices: Vec<String>,
+    default: Option<String>,
+    help: String,
+    flag: String,
+    action: String,
+    env_source: String,
+    delivers_empty: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ShowRow {
+    name: String,
+    slug: String,
+    kind: String,
+    mode: String,
+    description: String,
+    source: String,
+    workdir: String,
+    interpreter: Option<String>,
+    missing: bool,
+    dependencies: Vec<String>,
+    requires_python: String,
+    needs: Vec<String>,
+    template: Option<String>,
+    param_source: &'static str,
+    param_origin: &'static str,
+    degraded_reason: String,
+    drift: bool,
+    fields: Vec<ShowField>,
+    presets: Vec<String>,
+    last_run_at: Option<String>,
+    last_exit: Option<i32>,
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -110,6 +166,7 @@ fn run() -> Result<(), String> {
     let store = Store::new(discover_roots().map_err(|error| error.to_string())?);
     match cli.command {
         Some(Command::List { json }) => list(&store, json),
+        Some(Command::Show { name, json }) => show(&store, &name, json),
         Some(Command::Remove { name, yes }) => remove(&store, &name, yes),
         Some(Command::Rename { name, new_name }) => rename(&store, &name, &new_name),
         Some(Command::Describe { name, text }) => describe(&store, &name, &text),
@@ -138,10 +195,7 @@ fn list(store: &Store, as_json: bool) -> Result<(), String> {
                 }
             })
             .collect::<Vec<_>>();
-        let stdout = io::stdout();
-        let mut writer = stdout.lock();
-        serde_json::to_writer(&mut writer, &rows).map_err(|error| error.to_string())?;
-        writeln!(writer).map_err(|error| error.to_string())?;
+        write_json(&rows)?;
         return Ok(());
     }
 
@@ -159,6 +213,100 @@ fn list(store: &Store, as_json: bool) -> Result<(), String> {
         println!("{}\t{}\t{description}", entry.name, entry.kind);
     }
     Ok(())
+}
+
+fn show(store: &Store, name: &str, as_json: bool) -> Result<(), String> {
+    let entry = store.resolve(name).map_err(|error| error.to_string())?;
+    let plan = plan_for_entry(&entry);
+    let state_store = StateStore::new(store.roots().clone());
+    let state = state_store.load(&entry.slug);
+    let last_run_at = state.last_run.as_ref().map(|run| run.at.clone());
+    let last_exit = state.last_run.as_ref().map(|run| run.exit);
+    let mut presets = state.presets.keys().cloned().collect::<Vec<_>>();
+    presets.sort();
+
+    if !as_json {
+        println!("{}  ({} · {})", entry.meta.name, entry.meta.kind, entry.meta.mode);
+        if !entry.meta.description.is_empty() {
+            println!("  {}", entry.meta.description);
+        }
+        if !entry.meta.source.is_empty() {
+            println!("  Source: {}", entry.meta.source);
+        }
+        if plan.fields.is_empty() {
+            println!("  No form fields");
+        } else {
+            for field in &plan.fields {
+                println!("  {}\t{}\t{}", field.key, field.type_name(), field.source());
+            }
+        }
+        println!("  Run it: skit run {}", entry.meta.name);
+        return Ok(());
+    }
+
+    let row = ShowRow {
+        name: entry.meta.name.clone(),
+        slug: entry.slug.clone(),
+        kind: entry.meta.kind.clone(),
+        mode: entry.meta.mode.clone(),
+        description: entry.meta.description.clone(),
+        source: entry.meta.source.clone(),
+        workdir: entry.meta.workdir.clone(),
+        interpreter: nonempty(&entry.meta.interpreter),
+        missing: target_missing(&entry),
+        dependencies: entry.meta.dependencies.clone().unwrap_or_default(),
+        requires_python: entry.meta.requires_python.clone(),
+        needs: entry.meta.needs.clone().unwrap_or_default(),
+        template: nonempty(&entry.meta.template),
+        param_source: plan.source.as_str(),
+        param_origin: plan.source.origin(),
+        degraded_reason: plan.degraded_reason,
+        drift: plan.drift,
+        fields: plan.fields.iter().map(show_field).collect(),
+        presets,
+        last_run_at,
+        last_exit,
+    };
+    write_json(&row)
+}
+
+fn show_field(field: &FormField) -> ShowField {
+    ShowField {
+        key: field.key.clone(),
+        label: field.label.clone(),
+        type_name: field.type_name(),
+        source: field.source(),
+        required: field.required,
+        secret: field.secret,
+        multiple: field.multiple,
+        repeat: field.repeat,
+        degraded: field.degraded,
+        choices: field.choices.clone(),
+        default: field.default.clone(),
+        help: field.help.clone(),
+        flag: field.flag.clone(),
+        action: field.action.clone(),
+        env_source: field.env_source.clone(),
+        delivers_empty: field.delivers_empty(),
+    }
+}
+
+fn target_missing(entry: &Entry) -> bool {
+    let Some(spec) = spec_for(&entry.meta.kind) else {
+        return false;
+    };
+    spec.family != Family::Template && !entry.script_path().exists()
+}
+
+fn nonempty(value: &str) -> Option<String> {
+    (!value.is_empty()).then(|| value.to_owned())
+}
+
+fn write_json(value: &impl Serialize) -> Result<(), String> {
+    let stdout = io::stdout();
+    let mut writer = stdout.lock();
+    serde_json::to_writer(&mut writer, value).map_err(|error| error.to_string())?;
+    writeln!(writer).map_err(|error| error.to_string())
 }
 
 fn rename(store: &Store, name: &str, new_name: &str) -> Result<(), String> {
@@ -232,10 +380,7 @@ fn preset_list(store: &Store, state: &StateStore, name: &str, as_json: bool) -> 
     let entry = store.resolve(name).map_err(|error| error.to_string())?;
     let presets = state.load(&entry.slug).presets;
     if as_json {
-        let stdout = io::stdout();
-        let mut writer = stdout.lock();
-        serde_json::to_writer(&mut writer, &presets).map_err(|error| error.to_string())?;
-        writeln!(writer).map_err(|error| error.to_string())?;
+        write_json(&presets)?;
         return Ok(());
     }
 
