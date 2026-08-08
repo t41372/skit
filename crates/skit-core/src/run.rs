@@ -26,6 +26,8 @@ pub struct PreparedRun {
     pub values: BTreeMap<String, String>,
     pub assembly: Assembly,
     pub launch: LaunchPlan,
+    /// Same target/runtime/cwd as `launch`, but with secret-delivered argv/env values masked.
+    pub masked_launch: LaunchPlan,
 }
 
 /// How one invocation chose its argv tail.
@@ -88,7 +90,9 @@ impl From<LaunchPlanError> for PrepareRunError {
 ///
 /// Resolution is `definition default < last-used < preset < explicit`. The named
 /// preset must exist; an unknown explicit field is never silently ignored. The returned
-/// launch snapshot is immutable and can be handed directly to `run_launch`.
+/// launch snapshot is immutable and can be handed directly to `run_launch`. A parallel
+/// masked snapshot is built from the same resolved runtime/cwd policy for transparency
+/// and dry-run surfaces without exposing secret argv/env values.
 ///
 /// # Errors
 ///
@@ -108,12 +112,40 @@ pub fn prepare_run(
     let values = resolve_values(&form, request.state, request.preset, request.explicit)?;
     let assembly = assemble_delivery(&form, &values, request.extra_args, request.environment)?;
     let launch = build_launch_plan(entry, &assembly, request.launch_options, programs)?;
+    let mut masked_assembly = assembly.clone();
+    masked_assembly.args = assembly.masked_args.clone();
+    masked_assembly.env_values = assembly.masked_env.clone();
+    let masked_launch = build_launch_plan(entry, &masked_assembly, request.launch_options, programs)?;
     Ok(PreparedRun {
         form,
         values,
         assembly,
         launch,
+        masked_launch,
     })
+}
+
+/// Build a launch snapshot that bypasses form values and remembered arguments entirely.
+///
+/// This is the raw execution contract: only the explicitly supplied argv tail participates.
+/// The entry's target/runtime/dependency/workdir policy is still validated by the normal
+/// launch planner.
+///
+/// # Errors
+///
+/// Returns the same target/runtime/workdir refusals as `build_launch_plan`.
+pub fn prepare_raw_run(
+    entry: &Entry,
+    extra_args: &[String],
+    launch_options: &LaunchOptions,
+    programs: &impl ProgramResolver,
+) -> Result<LaunchPlan, LaunchPlanError> {
+    let assembly = Assembly {
+        args: extra_args.to_vec(),
+        masked_args: extra_args.to_vec(),
+        ..Assembly::default()
+    };
+    build_launch_plan(entry, &assembly, launch_options, programs)
 }
 
 /// Resolve this run's remembered/supplied `--` tail.
