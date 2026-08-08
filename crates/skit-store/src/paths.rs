@@ -9,7 +9,7 @@ use crate::FileStore;
 
 /// Return the stored copy name for a known entry kind.
 #[must_use]
-pub const fn stored_filename(kind: &str) -> Option<&'static str> {
+pub fn stored_filename(kind: &str) -> Option<&'static str> {
     match kind {
         "python" => Some("script.py"),
         "shell" => Some("script.sh"),
