@@ -215,6 +215,73 @@ fn candidate_detection_covers_rewrite_and_environment_idioms() {
 }
 
 #[test]
+fn python_builtin_input_detection_uses_stable_call_site_names_and_scope_rules() {
+    let source = r#"
+def ask(input):
+    return input("not builtin")
+
+def nested():
+    return input("Inner: ")
+
+value = int(input("Outer: "))
+"#;
+    let inputs = detect_candidates("python", source)
+        .into_iter()
+        .filter(|declaration| declaration.binding == ParameterBinding::Input)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        inputs
+            .iter()
+            .map(|declaration| declaration.name.as_str())
+            .collect::<Vec<_>>(),
+        ["input-1", "input-2"]
+    );
+    assert_eq!(inputs[0].prompt, "Inner: ");
+    assert_eq!(inputs[1].prompt, "Outer: ");
+    assert_eq!(inputs[0].order, 0);
+    assert_eq!(inputs[1].order, 1);
+
+    for shadowed in [
+        "input = str\nvalue = input('x')\n",
+        "def input(prompt=''):\n    return prompt\nvalue = input('x')\n",
+        "from provider import input\nvalue = input('x')\n",
+        "import input\nvalue = input('x')\n",
+    ] {
+        assert!(
+            detect_candidates("python", shadowed)
+                .iter()
+                .all(|declaration| declaration.binding != ParameterBinding::Input),
+            "{shadowed}"
+        );
+    }
+}
+
+#[test]
+fn python_duplicate_constants_keep_one_schema_row_but_rewrite_each_binding() {
+    let source = "CITY = 'first'\nOTHER = 1\nCITY = 'last'\n";
+    let declarations = detect_candidates("python", source);
+    assert_eq!(
+        declarations
+            .iter()
+            .map(|declaration| declaration.name.as_str())
+            .collect::<Vec<_>>(),
+        ["CITY", "OTHER"]
+    );
+    assert_eq!(
+        declarations[0].default,
+        Some(ParameterValue::String("last".to_owned()))
+    );
+    let rewritten = inject_values(
+        "python",
+        source,
+        &declarations,
+        &BTreeMap::from([("CITY".to_owned(), "Paris".to_owned())]),
+    )
+    .unwrap();
+    assert_eq!(rewritten, "CITY = 'Paris'\nOTHER = 1\nCITY = 'Paris'\n");
+}
+
+#[test]
 fn placeholder_detection_preserves_order_and_secret_heuristics() {
     let command = placeholder_params("command", "tool {name} {name} {API_TOKEN}");
     assert_eq!(
@@ -240,9 +307,10 @@ fn injection_rewrites_only_selected_python_shell_and_javascript_bindings() {
     let mut python_const = ParamDecl::new("WIDTH");
     python_const.binding = ParameterBinding::Const;
     python_const.delivery = ParameterDelivery::Inject;
-    let mut python_input = ParamDecl::new("name");
+    let mut python_input = ParamDecl::new("input-1");
     python_input.binding = ParameterBinding::Input;
     python_input.delivery = ParameterDelivery::Inject;
+    python_input.order = 0;
     let python = "WIDTH = 800\nname = input(\"Name: \")\nprint(WIDTH, name)\n";
     let rewritten = inject_values(
         "python",
@@ -250,7 +318,7 @@ fn injection_rewrites_only_selected_python_shell_and_javascript_bindings() {
         &[python_const, python_input],
         &BTreeMap::from([
             ("WIDTH".to_owned(), "1024".to_owned()),
-            ("name".to_owned(), "Ada".to_owned()),
+            ("input-1".to_owned(), "Ada".to_owned()),
         ]),
     )
     .unwrap();

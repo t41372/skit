@@ -14,7 +14,7 @@ use std::{
 use regex::{Captures, Regex};
 use serde_json::Value as JsonValue;
 use skit_domain::parameters::{
-    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
+    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue, is_secret_name,
     synthesized_placeholder,
 };
 use thiserror::Error;
@@ -38,39 +38,15 @@ static POWERSHELL_PARAM: LazyLock<Regex> = LazyLock::new(|| {
     )
     .expect("fixed PowerShell parameter pattern")
 });
-static PYTHON_INPUT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*input\s*\(\s*(?:"([^"]*)"|'([^']*)')\s*\)\s*(?:#.*)?$"#,
-    )
-    .expect("fixed Python input pattern")
-});
-static PYTHON_ASSIGN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^#\r\n]+?)\s*(?:#.*)?$")
-        .expect("fixed Python assignment pattern")
-});
-static SHELL_ENV_DEFAULT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*\$\{([A-Za-z_][A-Za-z0-9_]*):-([^}]*)\}\s*$")
+static SHELL_DEFAULT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(:-|:=|-|=)([^}]*)\}")
         .expect("fixed shell environment-default pattern")
 });
-static SHELL_READ: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"^\s*read(?:\s+-r)?\s+-p\s+(?:"([^"]*)"|'([^']*)')\s+([A-Za-z_][A-Za-z0-9_]*)\s*$"#,
-    )
-    .expect("fixed shell read pattern")
-});
-static SHELL_ASSIGN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*([A-Za-z_][A-Za-z0-9_]*)=([^\s#]+)\s*(?:#.*)?$")
-        .expect("fixed shell assignment pattern")
-});
 static JS_CONST: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*(?:const|let)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*([^;\r\n]+)\s*;?\s*$")
-        .expect("fixed JavaScript constant pattern")
-});
-static FISH_ENV_DEFAULT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"^\s*set\s+-q\s+([A-Za-z_][A-Za-z0-9_]*);\s*or\s+set\s+([A-Za-z_][A-Za-z0-9_]*)\s+(.+?)\s*$",
+        r"^\s*(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*:\s*[^=]+)?\s*=\s*([^;\r\n]+)\s*;?\s*$",
     )
-    .expect("fixed fish environment-default pattern")
+        .expect("fixed JavaScript constant pattern")
 });
 static JS_IMPORT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?m)\bfrom\s+['"]([^'"]+)['"]|\bimport\s+['"]([^'"]+)['"]"#)
@@ -804,97 +780,394 @@ pub fn detect_candidates(kind: &str, text: &str) -> Vec<ParamDecl> {
 }
 
 fn python_candidates(text: &str) -> Vec<ParamDecl> {
-    let mut output = Vec::new();
-    for line in text.lines() {
-        if let Some(captures) = PYTHON_INPUT.captures(line) {
-            let Some(name) = captures.get(1).map(|value| value.as_str()) else {
-                continue;
-            };
-            let mut declaration = ParamDecl::new(name);
-            declaration.binding = ParameterBinding::Input;
-            declaration.delivery = ParameterDelivery::Inject;
-            declaration.prompt = captures
-                .get(2)
-                .or_else(|| captures.get(3))
-                .map_or("", |value| value.as_str())
-                .to_owned();
-            declaration.order = output.len() as i64;
-            push_unique(&mut output, declaration);
+    let Some(tree) = parsed_tree("python", text) else {
+        return Vec::new();
+    };
+    let root = tree.root_node();
+    let mut positioned = Vec::<(usize, ParamDecl)>::new();
+    let mut cursor = root.walk();
+    for statement in root.named_children(&mut cursor) {
+        collect_python_statement_constants(statement, text, &mut positioned);
+        if statement.kind() == "if_statement"
+            && is_python_main_guard(statement, text)
+            && let Some(body) = statement.child_by_field_name("consequence")
+        {
+            let mut body_cursor = body.walk();
+            for child in body.named_children(&mut body_cursor) {
+                collect_python_statement_constants(child, text, &mut positioned);
+            }
+        }
+    }
+
+    for (input_order, node) in python_input_calls(root, text).into_iter().enumerate() {
+        let prompt = node
+            .child_by_field_name("arguments")
+            .and_then(first_named_child)
+            .and_then(|argument| node_text(argument, text))
+            .and_then(parse_python_string)
+            .unwrap_or_default();
+        let mut declaration = ParamDecl::new(format!("input-{}", input_order + 1));
+        declaration.binding = ParameterBinding::Input;
+        declaration.delivery = ParameterDelivery::Inject;
+        declaration.prompt = prompt;
+        declaration.order = input_order as i64;
+        declaration.secret = is_secret_name(&declaration.prompt);
+        positioned.push((node.start_byte(), declaration));
+    }
+    positioned.sort_by_key(|(position, _)| *position);
+    positioned
+        .into_iter()
+        .map(|(_, declaration)| declaration)
+        .collect()
+}
+
+fn collect_python_statement_constants(
+    statement: tree_sitter::Node<'_>,
+    text: &str,
+    output: &mut Vec<(usize, ParamDecl)>,
+) {
+    let assignment = if statement.kind() == "expression_statement" {
+        first_named_child(statement)
+    } else {
+        Some(statement)
+    };
+    let Some(assignment) = assignment.filter(|node| node.kind() == "assignment") else {
+        return;
+    };
+    let Some(left) = assignment.child_by_field_name("left") else {
+        return;
+    };
+    let Some(name) = node_text(left, text).filter(|name| !name.starts_with('_')) else {
+        return;
+    };
+    if left.kind() != "identifier" {
+        return;
+    }
+    let Some(right) = assignment.child_by_field_name("right") else {
+        return;
+    };
+    let Some(source) = node_text(right, text) else {
+        return;
+    };
+    let Some((parameter_type, default)) = infer_python_literal(source) else {
+        return;
+    };
+    let mut declaration = ParamDecl::new(name);
+    declaration.binding = ParameterBinding::Const;
+    declaration.delivery = ParameterDelivery::Inject;
+    declaration.parameter_type = parameter_type;
+    declaration.default = Some(default);
+    declaration.secret = is_secret_name(name);
+    if let Some((_, current)) = output
+        .iter_mut()
+        .find(|(_, current)| current.name == declaration.name)
+    {
+        *current = declaration;
+    } else {
+        output.push((assignment.start_byte(), declaration));
+    }
+}
+
+fn is_python_main_guard(statement: tree_sitter::Node<'_>, text: &str) -> bool {
+    statement
+        .child_by_field_name("condition")
+        .and_then(|condition| node_text(condition, text))
+        .is_some_and(|condition| condition.contains("__name__") && condition.contains("__main__"))
+}
+
+fn infer_python_literal(source: &str) -> Option<(ParameterType, ParameterValue)> {
+    let mut source = source.trim();
+    while let Some(inner) = source
+        .strip_prefix('(')
+        .and_then(|value| value.strip_suffix(')'))
+    {
+        source = inner.trim();
+    }
+    infer_literal(source).or_else(|| {
+        parse_python_string(source).map(|value| (ParameterType::Str, ParameterValue::String(value)))
+    })
+}
+
+fn parse_python_string(source: &str) -> Option<String> {
+    let source = source.trim();
+    let source = source
+        .strip_prefix(['r', 'R', 'u', 'U', 'b', 'B', 'f', 'F'])
+        .unwrap_or(source);
+    parse_quoted(source)
+}
+
+fn python_input_calls<'tree>(
+    root: tree_sitter::Node<'tree>,
+    text: &str,
+) -> Vec<tree_sitter::Node<'tree>> {
+    if python_scope_binds_input(root, text) {
+        return Vec::new();
+    }
+    let mut calls = Vec::new();
+    walk_tree(root, &mut |node| {
+        if node.kind() != "call"
+            || node
+                .child_by_field_name("function")
+                .and_then(|function| node_text(function, text))
+                != Some("input")
+        {
+            return;
+        }
+        let mut ancestor = node.parent();
+        while let Some(scope) = ancestor {
+            if matches!(scope.kind(), "function_definition" | "lambda")
+                && python_scope_binds_input(scope, text)
+            {
+                return;
+            }
+            ancestor = scope.parent();
+        }
+        calls.push(node);
+    });
+    calls.sort_by_key(tree_sitter::Node::start_byte);
+    calls
+}
+
+fn python_scope_binds_input(scope: tree_sitter::Node<'_>, text: &str) -> bool {
+    if let Some(parameters) = scope.child_by_field_name("parameters")
+        && subtree_has_identifier(parameters, text, "input")
+    {
+        return true;
+    }
+    let body = scope.child_by_field_name("body").unwrap_or(scope);
+    python_body_binds_input(body, text, scope.id() == body.id())
+}
+
+fn python_body_binds_input(node: tree_sitter::Node<'_>, text: &str, root_level: bool) -> bool {
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        if child.kind() == "assignment"
+            && child
+                .child_by_field_name("left")
+                .and_then(|left| node_text(left, text))
+                == Some("input")
+        {
+            return true;
+        }
+        if matches!(child.kind(), "function_definition" | "class_definition") {
+            if child
+                .child_by_field_name("name")
+                .and_then(|name| node_text(name, text))
+                == Some("input")
+            {
+                return true;
+            }
             continue;
         }
-        let Some(captures) = PYTHON_ASSIGN.captures(line) else {
-            continue;
-        };
-        let Some(name) = captures.get(1).map(|value| value.as_str()) else {
-            continue;
-        };
-        let Some(source) = captures.get(2).map(|value| value.as_str().trim()) else {
-            continue;
-        };
-        let Some((parameter_type, default)) = infer_literal(source) else {
-            continue;
-        };
-        let mut declaration = ParamDecl::new(name);
-        declaration.binding = ParameterBinding::Const;
-        declaration.delivery = ParameterDelivery::Inject;
-        declaration.parameter_type = parameter_type;
-        declaration.default = Some(default);
-        push_unique(&mut output, declaration);
+        if matches!(child.kind(), "import_statement" | "import_from_statement")
+            && node_text(child, text).is_some_and(python_import_binds_input)
+        {
+            return true;
+        }
+        if !(root_level && matches!(child.kind(), "function_definition" | "class_definition"))
+            && python_body_binds_input(child, text, false)
+        {
+            return true;
+        }
     }
-    output
+    false
+}
+
+fn subtree_has_identifier(node: tree_sitter::Node<'_>, text: &str, expected: &str) -> bool {
+    if node.kind() == "identifier" && node_text(node, text) == Some(expected) {
+        return true;
+    }
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .any(|child| subtree_has_identifier(child, text, expected))
+}
+
+fn python_import_binds_input(statement: &str) -> bool {
+    statement
+        .split(|character: char| !character.is_alphanumeric() && character != '_')
+        .any(|word| word == "input")
 }
 
 fn shell_candidates(text: &str) -> Vec<ParamDecl> {
-    let mut output = Vec::new();
-    for line in text.lines() {
-        if let Some(captures) = SHELL_ENV_DEFAULT.captures(line) {
-            let Some(name) = captures.get(1).map(|value| value.as_str()) else {
-                continue;
-            };
-            if captures.get(2).map(|value| value.as_str()) != Some(name) {
+    let mut positioned = Vec::<(usize, ParamDecl)>::new();
+    let mut inputs = Vec::<(usize, ParamDecl)>::new();
+    let mut assigned = BTreeSet::new();
+    let mut defaults = Vec::<(usize, ParamDecl)>::new();
+    let mut input_order = 0_i64;
+    let mut depth = 0_usize;
+    let mut offset = 0_usize;
+
+    for line_with_end in text.split_inclusive('\n') {
+        let line = line_with_end.trim_end_matches(['\r', '\n']);
+        let trimmed = line.trim();
+        if shell_closes_block(trimmed) {
+            depth = depth.saturating_sub(1);
+        }
+
+        for captures in SHELL_DEFAULT.captures_iter(line) {
+            let name = captures.get(1).expect("shell default name").as_str();
+            if name.starts_with('_') || defaults.iter().any(|(_, row)| row.name == name) {
                 continue;
             }
-            let default = captures.get(3).map_or("", |value| value.as_str());
+            let raw_default = captures.get(3).map_or("", |value| value.as_str());
+            let (parameter_type, default) = infer_shell_value(raw_default);
             let mut declaration = ParamDecl::new(name);
             declaration.binding = ParameterBinding::EnvDefault;
             declaration.delivery = ParameterDelivery::Env;
-            declaration.default = Some(ParameterValue::String(unquote_shell(default)));
-            push_unique(&mut output, declaration);
-            continue;
+            declaration.parameter_type = parameter_type;
+            declaration.default = Some(default);
+            declaration.secret = is_secret_name(name);
+            defaults.push((
+                offset + captures.get(0).expect("shell default").start(),
+                declaration,
+            ));
         }
-        if let Some(captures) = SHELL_READ.captures(line) {
-            let Some(name) = captures.get(3).map(|value| value.as_str()) else {
-                continue;
-            };
-            let mut declaration = ParamDecl::new(name);
-            declaration.binding = ParameterBinding::Input;
-            declaration.delivery = ParameterDelivery::Inject;
-            declaration.prompt = captures
-                .get(1)
-                .or_else(|| captures.get(2))
-                .map_or("", |value| value.as_str())
-                .to_owned();
-            declaration.order = output.len() as i64;
-            push_unique(&mut output, declaration);
-            continue;
+
+        if let Some((prompt, variables, secret)) = shell_read(line) {
+            for variable in variables {
+                let mut declaration = ParamDecl::new(format!("input-{}", input_order + 1));
+                declaration.binding = ParameterBinding::Input;
+                declaration.delivery = ParameterDelivery::Inject;
+                declaration.prompt = prompt.clone();
+                declaration.order = input_order;
+                declaration.secret =
+                    secret || is_secret_name(&declaration.prompt) || is_secret_name(&variable);
+                inputs.push((offset, declaration));
+                input_order += 1;
+            }
         }
-        let Some(captures) = SHELL_ASSIGN.captures(line) else {
-            continue;
-        };
-        let Some(name) = captures.get(1).map(|value| value.as_str()) else {
-            continue;
-        };
-        let source = captures.get(2).map_or("", |value| value.as_str());
-        if source.contains('$') {
-            continue;
+
+        if depth == 0
+            && let Some((name, value, self_default)) = shell_assignment(line)
+        {
+            if !self_default {
+                assigned.insert(name.clone());
+            }
+            if !name.starts_with('_')
+                && !self_default
+                && !value.is_empty()
+                && !value.contains('$')
+                && !value.starts_with('(')
+            {
+                let (parameter_type, default) = infer_shell_value(&value);
+                let mut declaration = ParamDecl::new(&name);
+                declaration.binding = ParameterBinding::Const;
+                declaration.delivery = ParameterDelivery::Inject;
+                declaration.parameter_type = parameter_type;
+                declaration.default = Some(default);
+                declaration.secret = is_secret_name(&name);
+                if let Some((_, current)) = positioned
+                    .iter_mut()
+                    .find(|(_, current)| current.name == name)
+                {
+                    *current = declaration;
+                } else {
+                    positioned.push((offset, declaration));
+                }
+            }
         }
-        let mut declaration = ParamDecl::new(name);
-        declaration.binding = ParameterBinding::Const;
-        declaration.delivery = ParameterDelivery::Inject;
-        declaration.default = Some(ParameterValue::String(unquote_shell(source)));
-        push_unique(&mut output, declaration);
+
+        if shell_opens_block(trimmed) {
+            depth += 1;
+        }
+        offset += line_with_end.len();
     }
-    output
+
+    positioned.extend(
+        defaults
+            .into_iter()
+            .filter(|(_, declaration)| !assigned.contains(&declaration.name)),
+    );
+    positioned.sort_by_key(|(position, _)| *position);
+    inputs.sort_by_key(|(position, _)| *position);
+    positioned.extend(inputs);
+    positioned
+        .into_iter()
+        .map(|(_, declaration)| declaration)
+        .collect()
+}
+
+fn shell_assignment(line: &str) -> Option<(String, String, bool)> {
+    let words = shlex::split(line)?;
+    let first = words.first()?.as_str();
+    let (prefix, assignment) = if first.contains('=') {
+        (None, first)
+    } else if matches!(first, "export" | "declare" | "typeset") {
+        let assignment = words.iter().skip(1).find(|word| word.contains('='))?;
+        (Some(first), assignment.as_str())
+    } else {
+        return None;
+    };
+    if matches!(prefix, Some("declare" | "typeset"))
+        && words
+            .iter()
+            .take_while(|word| !word.contains('='))
+            .any(|word| word.starts_with('-') && word.contains('r'))
+    {
+        return None;
+    }
+    let (name, value) = assignment.split_once('=')?;
+    if !valid_identifier(name) {
+        return None;
+    }
+    let self_default = SHELL_DEFAULT
+        .captures(value)
+        .and_then(|captures| captures.get(1))
+        .is_some_and(|target| target.as_str() == name);
+    Some((name.to_owned(), value.to_owned(), self_default))
+}
+
+fn shell_read(line: &str) -> Option<(String, Vec<String>, bool)> {
+    let words = shlex::split(line)?;
+    if words.first().map(String::as_str) != Some("read") {
+        return None;
+    }
+    let mut prompt = String::new();
+    let mut secret = false;
+    let mut index = 1;
+    let mut interactive = false;
+    while let Some(option) = words.get(index).filter(|word| word.starts_with('-')) {
+        let flags = option.trim_start_matches('-');
+        secret |= flags.contains('s');
+        interactive |= flags.contains('s') || flags.contains('p');
+        index += 1;
+        if flags.contains('p') {
+            prompt = words.get(index).cloned().unwrap_or_default();
+            if prompt.contains('$') {
+                prompt.clear();
+            }
+            index += 1;
+        }
+    }
+    if !interactive {
+        return None;
+    }
+    let variables = words[index..]
+        .iter()
+        .filter(|word| valid_identifier(word))
+        .cloned()
+        .collect::<Vec<_>>();
+    (!variables.is_empty()).then_some((prompt, variables, secret))
+}
+
+fn shell_closes_block(line: &str) -> bool {
+    matches!(line, "}" | "done" | "fi" | "esac")
+}
+
+fn shell_opens_block(line: &str) -> bool {
+    (line.ends_with('{') && (line.contains("()") || line.starts_with("function ")))
+        || ["if ", "while ", "until ", "for ", "select ", "case "]
+            .iter()
+            .any(|prefix| line.starts_with(prefix))
+}
+
+fn infer_shell_value(value: &str) -> (ParameterType, ParameterValue) {
+    infer_literal(value).unwrap_or_else(|| {
+        (
+            ParameterType::Str,
+            ParameterValue::String(unquote_shell(value)),
+        )
+    })
 }
 
 fn javascript_candidates(text: &str) -> Vec<ParamDecl> {
@@ -915,28 +1188,169 @@ fn javascript_candidates(text: &str) -> Vec<ParamDecl> {
         declaration.delivery = ParameterDelivery::Inject;
         declaration.parameter_type = parameter_type;
         declaration.default = Some(default);
+        declaration.secret = is_secret_name(name);
         push_unique(&mut output, declaration);
     }
     output
 }
 
 fn fish_candidates(text: &str) -> Vec<ParamDecl> {
-    FISH_ENV_DEFAULT
-        .captures_iter(text)
-        .filter_map(|captures| {
-            let name = captures.get(1)?.as_str();
-            if captures.get(2)?.as_str() != name {
-                return None;
+    let statements = fish_top_level_statements(text);
+    let mut candidates = Vec::<ParamDecl>::new();
+    let mut clobbered = BTreeSet::new();
+
+    for words in &statements {
+        if words.first().map(String::as_str) != Some("set") || fish_is_query(words) {
+            continue;
+        }
+        if let Some(name) = fish_set_name(words) {
+            clobbered.insert(name.to_owned());
+        }
+    }
+
+    for pair in statements.windows(2) {
+        let query = &pair[0];
+        let guarded = &pair[1];
+        if query.first().map(String::as_str) != Some("set") || !fish_is_query(query) {
+            continue;
+        }
+        let Some(query_name) = fish_set_name(query) else {
+            continue;
+        };
+        if query_name.starts_with('_')
+            || clobbered.contains(query_name)
+            || candidates
+                .iter()
+                .any(|candidate| candidate.name == query_name)
+        {
+            continue;
+        }
+        let Some((guarded_name, values)) = fish_guarded_set(guarded) else {
+            continue;
+        };
+        if guarded_name != query_name || values.is_empty() {
+            continue;
+        }
+        let value = values.join(" ");
+        let (parameter_type, default) = infer_shell_value(&value);
+        let mut declaration = ParamDecl::new(query_name);
+        declaration.binding = ParameterBinding::EnvDefault;
+        declaration.delivery = ParameterDelivery::Env;
+        declaration.parameter_type = parameter_type;
+        declaration.default = Some(default);
+        declaration.secret = is_secret_name(query_name);
+        candidates.push(declaration);
+    }
+    candidates
+}
+
+fn fish_top_level_statements(text: &str) -> Vec<Vec<String>> {
+    let mut output = Vec::new();
+    let mut depth = 0_usize;
+    for line in text.lines() {
+        for segment in fish_line_segments(line) {
+            let Some(words) = shlex::split(&segment) else {
+                continue;
+            };
+            if words.is_empty() {
+                continue;
             }
-            let mut declaration = ParamDecl::new(name);
-            declaration.binding = ParameterBinding::EnvDefault;
-            declaration.delivery = ParameterDelivery::Env;
-            declaration.default = Some(ParameterValue::String(unquote_shell(
-                captures.get(3)?.as_str().trim(),
-            )));
-            Some(declaration)
-        })
-        .collect()
+            if words.first().map(String::as_str) == Some("end") {
+                depth = depth.saturating_sub(1);
+                continue;
+            }
+            if depth == 0 {
+                output.push(words.clone());
+            }
+            if matches!(
+                words.first().map(String::as_str),
+                Some("function" | "if" | "while" | "for" | "begin" | "switch")
+            ) {
+                depth += 1;
+            }
+        }
+    }
+    output
+}
+
+fn fish_line_segments(line: &str) -> Vec<String> {
+    let mut output = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut previous_whitespace = true;
+    for character in line.chars() {
+        if escaped {
+            current.push(character);
+            escaped = false;
+            previous_whitespace = character.is_whitespace();
+            continue;
+        }
+        if character == '\\' {
+            current.push(character);
+            escaped = true;
+            previous_whitespace = false;
+            continue;
+        }
+        if matches!(character, '\'' | '"') {
+            if quote == Some(character) {
+                quote = None;
+            } else if quote.is_none() {
+                quote = Some(character);
+            }
+            current.push(character);
+            previous_whitespace = false;
+            continue;
+        }
+        if quote.is_none() && character == '#' && previous_whitespace {
+            break;
+        }
+        if quote.is_none() && character == ';' {
+            if !current.trim().is_empty() {
+                output.push(current.trim().to_owned());
+            }
+            current.clear();
+            previous_whitespace = true;
+            continue;
+        }
+        previous_whitespace = character.is_whitespace();
+        current.push(character);
+    }
+    if !current.trim().is_empty() {
+        output.push(current.trim().to_owned());
+    }
+    output
+}
+
+fn fish_is_query(words: &[String]) -> bool {
+    words
+        .iter()
+        .skip(1)
+        .take_while(|word| word.starts_with('-'))
+        .any(|word| word == "--query" || word.trim_start_matches('-').contains('q'))
+}
+
+fn fish_set_name(words: &[String]) -> Option<&str> {
+    words
+        .iter()
+        .skip(1)
+        .find(|word| !word.starts_with('-'))
+        .map(String::as_str)
+}
+
+fn fish_guarded_set(words: &[String]) -> Option<(&str, &[String])> {
+    if words.first().map(String::as_str) != Some("or")
+        || words.get(1).map(String::as_str) != Some("set")
+    {
+        return None;
+    }
+    let index = words
+        .iter()
+        .enumerate()
+        .skip(2)
+        .find(|(_, word)| !word.starts_with('-'))?
+        .0;
+    Some((words[index].as_str(), &words[index + 1..]))
 }
 
 /// Build placeholder fields for command and prompt entries.
@@ -1002,6 +1416,16 @@ pub fn inject_values(
     values: &BTreeMap<String, String>,
 ) -> Result<String, LanguageError> {
     require_valid_source(kind, text)?;
+    if kind == "python" {
+        let output = inject_python_values(text, declarations, values)?;
+        require_valid_source(kind, &output)?;
+        return Ok(output);
+    }
+    if kind == "shell" {
+        let output = inject_shell_values(text, declarations, values)?;
+        require_valid_source(kind, &output)?;
+        return Ok(output);
+    }
     let mut output = text.to_owned();
     for declaration in declarations {
         if declaration.delivery != ParameterDelivery::Inject {
@@ -1011,8 +1435,6 @@ pub fn inject_values(
             continue;
         };
         output = match kind {
-            "python" => inject_python(&output, declaration, value)?,
-            "shell" => inject_shell(&output, declaration, value)?,
             "js" | "ts" => inject_javascript(&output, declaration, value)?,
             _ => {
                 return Err(LanguageError::UnsupportedKind {
@@ -1025,95 +1447,239 @@ pub fn inject_values(
     Ok(output)
 }
 
-fn inject_python(
+fn inject_python_values(
     text: &str,
-    declaration: &ParamDecl,
-    value: &str,
+    declarations: &[ParamDecl],
+    values: &BTreeMap<String, String>,
 ) -> Result<String, LanguageError> {
-    let name = regex::escape(&declaration.name);
-    if declaration.binding == ParameterBinding::Input {
-        let pattern = Regex::new(&format!(
-            r"(?m)^([ \t]*{name}[ \t]*=[ \t]*)input[ \t]*\([^\r\n]*\)([ \t]*(?:#[^\r\n]*)?)(\r?)$"
-        ))
-        .expect("escaped Python input pattern");
-        return replace_first(text, &pattern, |captures| {
-            format!(
-                "{}{}{}{}",
-                captures.get(1).map_or("", |item| item.as_str()),
-                quote_python_string(value),
-                captures.get(2).map_or("", |item| item.as_str()),
-                captures.get(3).map_or("", |item| item.as_str())
-            )
+    let tree = parsed_tree("python", text).ok_or_else(|| LanguageError::InvalidSource {
+        kind: "python".to_owned(),
+    })?;
+    let selected = declarations
+        .iter()
+        .filter(|declaration| {
+            declaration.delivery == ParameterDelivery::Inject
+                && values.contains_key(&declaration.name)
         })
-        .ok_or_else(|| LanguageError::BindingNotFound {
-            name: declaration.name.clone(),
-        });
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        return Ok(text.to_owned());
     }
 
-    let pattern = Regex::new(&format!(
-        r"(?m)^([ \t]*{name}[ \t]*=[ \t]*)([^#\r\n]+?)([ \t]*(?:#[^\r\n]*)?)(\r?)$"
-    ))
-    .expect("escaped Python assignment pattern");
-    let Some(captures) = pattern.captures(text) else {
+    let mut edits = Vec::<(usize, usize, String)>::new();
+    let mut matched = BTreeSet::new();
+    walk_tree(tree.root_node(), &mut |node| {
+        if node.kind() != "assignment" {
+            return;
+        }
+        let Some(left) = node.child_by_field_name("left") else {
+            return;
+        };
+        let Some(name) = node_text(left, text) else {
+            return;
+        };
+        let Some(declaration) = selected.iter().find(|declaration| {
+            declaration.binding == ParameterBinding::Const && declaration.name == name
+        }) else {
+            return;
+        };
+        let Some(right) = node.child_by_field_name("right") else {
+            return;
+        };
+        let Some(source) = node_text(right, text) else {
+            return;
+        };
+        if infer_python_literal(source).is_none() {
+            return;
+        }
+        let value = values
+            .get(&declaration.name)
+            .expect("selected declarations have values");
+        edits.push((
+            right.start_byte(),
+            right.end_byte(),
+            replacement_literal(source, value, quote_python_string),
+        ));
+        matched.insert(declaration.name.clone());
+    });
+    for (input_order, node) in python_input_calls(tree.root_node(), text)
+        .into_iter()
+        .enumerate()
+    {
+        if let Some(declaration) = selected.iter().find(|declaration| {
+            declaration.binding == ParameterBinding::Input
+                && declaration.order == input_order as i64
+        }) {
+            let value = values
+                .get(&declaration.name)
+                .expect("selected declarations have values");
+            edits.push((
+                node.start_byte(),
+                node.end_byte(),
+                quote_python_string(value),
+            ));
+            matched.insert(declaration.name.clone());
+        }
+    }
+
+    if let Some(missing) = selected
+        .iter()
+        .find(|declaration| !matched.contains(&declaration.name))
+    {
         return Err(LanguageError::BindingNotFound {
-            name: declaration.name.clone(),
+            name: missing.name.clone(),
         });
-    };
-    let source = captures
-        .get(2)
-        .map_or("", |capture| capture.as_str().trim());
-    let literal = replacement_literal(source, value, quote_python_string);
-    replace_first(text, &pattern, |captures| {
-        format!(
-            "{}{}{}{}",
-            captures.get(1).map_or("", |item| item.as_str()),
-            literal,
-            captures.get(3).map_or("", |item| item.as_str()),
-            captures.get(4).map_or("", |item| item.as_str())
-        )
-    })
-    .ok_or_else(|| LanguageError::BindingNotFound {
-        name: declaration.name.clone(),
-    })
+    }
+    apply_source_edits(text, edits)
 }
 
-fn inject_shell(text: &str, declaration: &ParamDecl, value: &str) -> Result<String, LanguageError> {
-    let name = regex::escape(&declaration.name);
-    let pattern = if declaration.binding == ParameterBinding::Input {
-        Regex::new(&format!(
-            r"(?m)^([ \t]*)read(?:[ \t]+-r)?[ \t]+-p[ \t]+[^\r\n]+[ \t]+{name}[ \t]*(\r?)$"
-        ))
-        .expect("escaped shell read pattern")
-    } else {
-        Regex::new(&format!(r"(?m)^([ \t]*{name}=)[^\r\n]*(\r?)$"))
-            .expect("escaped shell assignment pattern")
-    };
-    let Some(captures) = pattern.captures(text) else {
-        return Err(LanguageError::BindingNotFound {
-            name: declaration.name.clone(),
+fn apply_source_edits(
+    text: &str,
+    mut edits: Vec<(usize, usize, String)>,
+) -> Result<String, LanguageError> {
+    edits.sort_by_key(|(start, _, _)| *start);
+    if edits
+        .iter()
+        .any(|(start, end, _)| start > end || *end > text.len())
+        || edits.windows(2).any(|pair| pair[0].1 > pair[1].0)
+    {
+        return Err(LanguageError::InvalidSource {
+            kind: "overlapping source edits".to_owned(),
         });
-    };
-    let replacement = if declaration.binding == ParameterBinding::Input {
-        format!(
-            "{}{}={}{}",
-            captures.get(1).map_or("", |item| item.as_str()),
-            declaration.name,
-            quote_posix(value),
-            captures.get(2).map_or("", |item| item.as_str())
-        )
-    } else {
-        format!(
-            "{}{}{}",
-            captures.get(1).map_or("", |item| item.as_str()),
-            quote_posix(value),
-            captures.get(2).map_or("", |item| item.as_str())
-        )
-    };
-    replace_first(text, &pattern, |_| replacement.clone()).ok_or_else(|| {
-        LanguageError::BindingNotFound {
-            name: declaration.name.clone(),
+    }
+    let mut output = text.to_owned();
+    for (start, end, replacement) in edits.into_iter().rev() {
+        output.replace_range(start..end, &replacement);
+    }
+    Ok(output)
+}
+
+fn inject_shell_values(
+    text: &str,
+    declarations: &[ParamDecl],
+    values: &BTreeMap<String, String>,
+) -> Result<String, LanguageError> {
+    let selected = declarations
+        .iter()
+        .filter(|declaration| {
+            declaration.delivery == ParameterDelivery::Inject
+                && values.contains_key(&declaration.name)
+        })
+        .collect::<Vec<_>>();
+    if selected.is_empty() {
+        return Ok(text.to_owned());
+    }
+
+    let mut edits = Vec::<(usize, usize, String)>::new();
+    let mut matched = BTreeSet::new();
+    let mut input_order = 0_i64;
+    let mut offset = 0_usize;
+    for line_with_end in text.split_inclusive('\n') {
+        let line = line_with_end.trim_end_matches(['\r', '\n']);
+        if let Some((_, variables, _)) = shell_read(line) {
+            let first_order = input_order;
+            input_order += variables.len() as i64;
+            let rows = variables
+                .iter()
+                .enumerate()
+                .map(|(index, variable)| {
+                    selected
+                        .iter()
+                        .find(|declaration| {
+                            declaration.binding == ParameterBinding::Input
+                                && declaration.order == first_order + index as i64
+                        })
+                        .map(|declaration| (*declaration, variable))
+                })
+                .collect::<Vec<_>>();
+            if rows.iter().all(Option::is_some) {
+                let indent = &line[..line.len() - line.trim_start().len()];
+                let replacement = rows
+                    .into_iter()
+                    .flatten()
+                    .map(|(declaration, variable)| {
+                        matched.insert(declaration.name.clone());
+                        format!(
+                            "{variable}={}",
+                            quote_posix(
+                                values
+                                    .get(&declaration.name)
+                                    .expect("selected declarations have values")
+                            )
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                edits.push((
+                    offset,
+                    offset + line.len(),
+                    format!("{indent}{replacement}"),
+                ));
+            }
         }
-    })
+
+        if let Some((name, _, self_default)) = shell_assignment(line)
+            && !self_default
+            && let Some(declaration) = selected.iter().find(|declaration| {
+                declaration.binding == ParameterBinding::Const && declaration.name == name
+            })
+            && let Some(value_start) = shell_assignment_value_start(line, &name)
+        {
+            let before_comment = shell_comment_start(line).unwrap_or(line.len());
+            let value_end = line[..before_comment].trim_end().len();
+            if value_start <= value_end {
+                edits.push((
+                    offset + value_start,
+                    offset + value_end,
+                    quote_posix(
+                        values
+                            .get(&declaration.name)
+                            .expect("selected declarations have values"),
+                    ),
+                ));
+                matched.insert(declaration.name.clone());
+            }
+        }
+        offset += line_with_end.len();
+    }
+
+    if let Some(missing) = selected
+        .iter()
+        .find(|declaration| !matched.contains(&declaration.name))
+    {
+        return Err(LanguageError::BindingNotFound {
+            name: missing.name.clone(),
+        });
+    }
+    apply_source_edits(text, edits)
+}
+
+fn shell_assignment_value_start(line: &str, name: &str) -> Option<usize> {
+    let pattern = format!("{name}=");
+    line.find(&pattern).map(|index| index + pattern.len())
+}
+
+fn shell_comment_start(line: &str) -> Option<usize> {
+    let mut quote = None;
+    let mut escaped = false;
+    let mut previous_whitespace = true;
+    for (index, character) in line.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if matches!(character, '\'' | '"') {
+            if quote == Some(character) {
+                quote = None;
+            } else if quote.is_none() {
+                quote = Some(character);
+            }
+        } else if quote.is_none() && character == '#' && previous_whitespace {
+            return Some(index);
+        }
+        previous_whitespace = character.is_whitespace();
+    }
+    None
 }
 
 fn inject_javascript(
@@ -1123,7 +1689,7 @@ fn inject_javascript(
 ) -> Result<String, LanguageError> {
     let name = regex::escape(&declaration.name);
     let pattern = Regex::new(&format!(
-        r"(?m)^([ \t]*(?:const|let)[ \t]+{name}[ \t]*=[ \t]*)([^;\r\n]+)(;?[ \t]*)(\r?)$"
+        r"(?m)^([ \t]*(?:const|let|var)[ \t]+{name}(?:[ \t]*:[^=\r\n]+)?[ \t]*=[ \t]*)([^;\r\n]+)(;?[ \t]*)(\r?)$"
     ))
     .expect("escaped JavaScript constant pattern");
     let Some(captures) = pattern.captures(text) else {
@@ -1256,21 +1822,42 @@ pub fn source_is_valid(kind: &str, text: &str) -> bool {
 }
 
 fn parser_accepts(kind: &str, text: &str) -> bool {
+    !matches!(kind, "python" | "shell" | "js" | "ts") || parsed_tree(kind, text).is_some()
+}
+
+fn parsed_tree(kind: &str, text: &str) -> Option<tree_sitter::Tree> {
     let language = match kind {
-        "python" => Some(tree_sitter_python::LANGUAGE),
-        "shell" => Some(tree_sitter_bash::LANGUAGE),
-        "js" => Some(tree_sitter_javascript::LANGUAGE),
-        "ts" => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT),
-        _ => None,
-    };
-    let Some(language) = language else {
-        return true;
+        "python" => tree_sitter_python::LANGUAGE,
+        "shell" => tree_sitter_bash::LANGUAGE,
+        "js" => tree_sitter_javascript::LANGUAGE,
+        "ts" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+        _ => return None,
     };
     let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&language.into()).is_ok()
-        && parser
-            .parse(text, None)
-            .is_some_and(|tree| !tree.root_node().has_error())
+    parser.set_language(&language.into()).ok()?;
+    parser
+        .parse(text, None)
+        .filter(|tree| !tree.root_node().has_error())
+}
+
+fn node_text<'text>(node: tree_sitter::Node<'_>, text: &'text str) -> Option<&'text str> {
+    text.get(node.byte_range())
+}
+
+fn first_named_child(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor).next()
+}
+
+fn walk_tree<'tree>(
+    node: tree_sitter::Node<'tree>,
+    visit: &mut impl FnMut(tree_sitter::Node<'tree>),
+) {
+    visit(node);
+    let mut cursor = node.walk();
+    for child in node.named_children(&mut cursor) {
+        walk_tree(child, visit);
+    }
 }
 
 fn python_dependencies(text: &str) -> Vec<String> {
