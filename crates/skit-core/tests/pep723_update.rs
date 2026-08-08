@@ -11,12 +11,7 @@ fn existing_block_updates_uv_axes_and_keeps_tool_skit_section() {
 # ///
 print(1)
 "#;
-    let output = set_pep723_axes(
-        source,
-        &["requests>=2,<3".to_owned()],
-        ">=3.12,<3.13",
-        "#",
-    );
+    let output = set_pep723_axes(source, &["requests>=2,<3".to_owned()], ">=3.12,<3.13", "#");
     let metadata = parse_pep723(&output, "#").expect("updated block must parse");
     assert_eq!(metadata.dependencies, ["requests>=2,<3"]);
     assert_eq!(metadata.requires_python, ">=3.12,<3.13");
