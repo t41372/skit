@@ -144,7 +144,7 @@ impl ParamDefault {
 }
 
 /// Universal parameter declaration used by every language and frontend.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ParamDecl {
     pub name: String,
     pub binding: Binding,
@@ -164,6 +164,31 @@ pub struct ParamDecl {
     pub order: i64,
     pub env_target: String,
     pub degraded: bool,
+}
+
+impl Default for ParamDecl {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            binding: Binding::None,
+            delivery: Delivery::Flag,
+            param_type: ParamType::String,
+            default: None,
+            required: false,
+            multiple: false,
+            repeat: false,
+            choices: Vec::new(),
+            prompt: String::new(),
+            help: String::new(),
+            secret: false,
+            env_source: String::new(),
+            flag: String::new(),
+            action: String::new(),
+            order: -1,
+            env_target: String::new(),
+            degraded: false,
+        }
+    }
 }
 
 impl ParamDecl {
