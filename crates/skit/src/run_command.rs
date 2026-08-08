@@ -69,7 +69,10 @@ pub(crate) fn run(store: &Store, args: RunArgs) -> Result<(), CliFailure> {
     }
     let extra = resolve_extra_args(&state, &args.extra_args, args.forget_args);
     if extra.replayed {
-        eprintln!("Reusing remembered extra arguments: {}", extra.args.join(" "));
+        eprintln!(
+            "Reusing remembered extra arguments: {}",
+            extra.args.join(" ")
+        );
     }
 
     if let Some(preset_name) = args.save_preset.as_deref() {
@@ -111,8 +114,9 @@ pub(crate) fn run(store: &Store, args: RunArgs) -> Result<(), CliFailure> {
 
     let interrupted = Arc::new(AtomicBool::new(false));
     let signal = Arc::clone(&interrupted);
-    ctrlc::set_handler(move || signal.store(true, Ordering::SeqCst))
-        .map_err(|error| CliFailure::coded(format!("cannot install Ctrl-C handler: {error}"), 125))?;
+    ctrlc::set_handler(move || signal.store(true, Ordering::SeqCst)).map_err(|error| {
+        CliFailure::coded(format!("cannot install Ctrl-C handler: {error}"), 125)
+    })?;
     let code = run_launch(&prepared.launch, &interrupted).map_err(classify_run_error)?;
 
     let secret_names = prepared.form.secret_names();
