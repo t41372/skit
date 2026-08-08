@@ -6,8 +6,10 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::{
-    AddMode, AddUseCaseError, Entry, EntryDraft, ParamDecl, ScriptMeta, Store, has_pep723,
-    inject_pep723, sha256_source_hash, write_python_params,
+    AddMode, AddUseCaseError, Entry, EntryDraft, ParamDecl, ScriptMeta, Store,
+    analyze_python_managed, effective_uv_metadata, has_pep723, inject_pep723, python_version_pin,
+    read_python_params, sha256_source_hash, shebang_program_from_line, suggest_python_dependencies,
+    write_python_params,
 };
 
 /// Fully resolved inputs for the Python storage lane. Static analysis/onboarding is a
@@ -22,6 +24,30 @@ pub struct PythonAddRequest {
     pub dependencies: Vec<String>,
     pub requires_python: String,
     pub added_at: String,
+}
+
+/// Frontend policy for Python intake before an interactive review surface exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PythonAutoAddRequest {
+    pub source: PathBuf,
+    pub name: Option<String>,
+    pub mode: AddMode,
+    pub description: Option<String>,
+    pub workdir: Option<String>,
+    pub added_at: String,
+    pub interactive: bool,
+    pub no_input: bool,
+}
+
+/// What automatic Python intake accepted or discovered.
+#[derive(Debug)]
+pub struct PythonAutoAddOutcome {
+    pub entry: Entry,
+    pub dependencies: Vec<String>,
+    pub requires_python: String,
+    /// New source candidates only. Automatic/no-input intake deliberately does not
+    /// manage them; a review frontend may later offer this list for selection.
+    pub parameter_candidates: Vec<String>,
 }
 
 /// Python-specific add failures above the ordinary file/store boundary.
@@ -56,6 +82,54 @@ impl StdError for PythonAddError {
 }
 
 impl From<AddUseCaseError> for PythonAddError {
+    fn from(value: AddUseCaseError) -> Self {
+        Self::Add(value)
+    }
+}
+
+/// Automatic Python intake cannot continue without a review decision.
+#[derive(Debug)]
+pub enum PythonAutoAddError {
+    Add(AddUseCaseError),
+    ReviewRequired {
+        dependencies: Vec<String>,
+        parameters: Vec<String>,
+    },
+}
+
+impl fmt::Display for PythonAutoAddError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Add(source) => source.fmt(formatter),
+            Self::ReviewRequired {
+                dependencies,
+                parameters,
+            } => {
+                formatter.write_str(
+                    "Python intake needs review before writing; the Rust interactive review surface is not enabled yet. Rerun with --no-input to accept dependency suggestions and skip new managed parameters.",
+                )?;
+                if !dependencies.is_empty() {
+                    write!(formatter, " Dependencies: {}.", dependencies.join(", "))?;
+                }
+                if !parameters.is_empty() {
+                    write!(formatter, " Parameter candidates: {}.", parameters.join(", "))?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl StdError for PythonAutoAddError {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        match self {
+            Self::Add(source) => Some(source),
+            Self::ReviewRequired { .. } => None,
+        }
+    }
+}
+
+impl From<AddUseCaseError> for PythonAutoAddError {
     fn from(value: AddUseCaseError) -> Self {
         Self::Add(value)
     }
@@ -114,6 +188,75 @@ pub fn add_python_file_with_params(
     add_snapshot(store, request, snapshot, managed_params).map_err(PythonAddError::from)
 }
 
+/// Analyze and add Python from one immutable source snapshot.
+///
+/// Existing PEP 723 metadata is authoritative. Without a block, third-party import
+/// suggestions and a versioned `python3.X` shebang become automatic UV axes in
+/// noninteractive/`--no-input` mode. New managed-parameter candidates are never selected
+/// automatically, matching the Python-era noninteractive contract.
+///
+/// When an interactive frontend has not opted out and either dependencies or new
+/// parameter candidates need review, this returns `ReviewRequired` before any store
+/// write. Source already carrying frozen `[tool.skit]` definitions needs no new
+/// parameter review; those definitions travel with the copied/reference source.
+///
+/// # Errors
+///
+/// Returns a source/store failure or an explicit pre-write review refusal.
+pub fn add_python_auto(
+    store: &Store,
+    request: PythonAutoAddRequest,
+) -> Result<PythonAutoAddOutcome, PythonAutoAddError> {
+    let snapshot = read_snapshot(&request.source)?;
+    let mut dependencies = Vec::new();
+    let mut requires_python = String::new();
+    let mut parameter_candidates = Vec::new();
+
+    if let Ok(text) = std::str::from_utf8(&snapshot.bytes) {
+        if !has_pep723(text, "#") {
+            dependencies = suggest_python_dependencies(text, snapshot.source.parent());
+            let first_line = text.split_once('\n').map_or(text, |(line, _)| line);
+            requires_python = python_version_pin(shebang_program_from_line(first_line));
+        }
+        if read_python_params(text).is_empty() {
+            parameter_candidates = analyze_python_managed(text)
+                .candidates
+                .into_iter()
+                .map(|candidate| candidate.decl.name)
+                .collect();
+        }
+    }
+
+    if request.interactive
+        && !request.no_input
+        && (!dependencies.is_empty() || !parameter_candidates.is_empty())
+    {
+        return Err(PythonAutoAddError::ReviewRequired {
+            dependencies,
+            parameters: parameter_candidates,
+        });
+    }
+
+    let storage = PythonAddRequest {
+        source: request.source,
+        name: request.name,
+        mode: request.mode,
+        description: request.description.unwrap_or_default(),
+        workdir: request.workdir,
+        dependencies: dependencies.clone(),
+        requires_python: requires_python.clone(),
+        added_at: request.added_at,
+    };
+    let entry = add_snapshot(store, storage, snapshot, &[])?;
+    let (dependencies, requires_python) = effective_uv_metadata(&entry);
+    Ok(PythonAutoAddOutcome {
+        entry,
+        dependencies,
+        requires_python,
+        parameter_candidates,
+    })
+}
+
 fn read_snapshot(source: &Path) -> Result<SourceSnapshot, AddUseCaseError> {
     if !source.is_file() {
         return Err(AddUseCaseError::SourceNotFile(source.to_owned()));
@@ -167,8 +310,10 @@ fn add_snapshot(
     let strict_utf8 = std::str::from_utf8(&snapshot.bytes).is_ok();
     let has_existing_block =
         std::str::from_utf8(&snapshot.bytes).is_ok_and(|text| has_pep723(text, "#"));
-    let inject_metadata =
-        request.mode == AddMode::Copy && wants_uv_metadata && strict_utf8 && !has_existing_block;
+    let inject_metadata = request.mode == AddMode::Copy
+        && wants_uv_metadata
+        && strict_utf8
+        && !has_existing_block;
 
     let payload = match request.mode {
         AddMode::Reference => None,
