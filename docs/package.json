@@ -11,8 +11,9 @@
     "dev": "next dev",
     "prebuild": "node scripts/sync-readme.mjs",
     "build": "next build",
-    "postbuild": "node scripts/check-links.mjs",
+    "postbuild": "node scripts/check-links.mjs && node scripts/check-contracts.mjs",
     "check-links": "node scripts/check-links.mjs",
+    "contracts:check": "node scripts/check-contracts.mjs",
     "start": "serve out",
     "types:check": "fumadocs-mdx && next typegen && tsc --noEmit",
     "postinstall": "fumadocs-mdx"

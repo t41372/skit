@@ -13,6 +13,7 @@ use skit_application::{
 use skit_domain::{EntryKind, EntrySettings, StorageMode};
 use skit_store::{FileStore, content_hash};
 use tempfile::TempDir;
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 fn request(name: &str, bytes: &[u8]) -> CreateEntry {
     CreateEntry {
@@ -72,6 +73,8 @@ fn create_is_atomic_mints_identity_and_preserves_payload_bytes() {
 
     assert_eq!(entry.slug.as_str(), "hello");
     assert!(entry.meta.id.is_some());
+    let added_at = OffsetDateTime::parse(&entry.meta.added_at, &Rfc3339).unwrap();
+    assert!(added_at <= OffsetDateTime::now_utc());
     assert_eq!(entry.meta.source_hash, content_hash(bytes));
     let settings = EntrySettings::from_meta(&entry.meta);
     assert_eq!(settings.dependencies, ["requests>=2"]);
@@ -103,6 +106,24 @@ fn create_is_atomic_mints_identity_and_preserves_payload_bytes() {
             0o755
         );
     }
+}
+
+#[test]
+fn create_sweeps_files_and_directories_left_in_the_private_staging_root() {
+    let root = TempDir::new().unwrap();
+    let staging = root.path().join(".staging");
+    fs::create_dir_all(staging.join("abandoned/nested")).unwrap();
+    fs::write(staging.join("abandoned/nested/payload"), b"partial").unwrap();
+    fs::write(staging.join("abandoned-file"), b"partial").unwrap();
+    let store = FileStore::new(root.path());
+
+    store.create(request("Fresh", b"complete")).unwrap();
+
+    assert!(fs::read_dir(staging).unwrap().next().is_none());
+    assert_eq!(
+        fs::read(root.path().join("scripts/fresh/script.py")).unwrap(),
+        b"complete"
+    );
 }
 
 #[test]
@@ -172,13 +193,15 @@ fn metadata_mutations_preserve_every_unknown_toml_value() {
     fs::create_dir_all(&directory).unwrap();
     fs::write(
         directory.join("meta.toml"),
-        r#"name = "Extensions"
+        r#"# Keep this file header.
+name = "Extensions" # Keep the display-name note.
 kind = "future-kind"
 mode = "reference"
 source = "/tmp/tool"
 release_at = 2026-08-08T12:34:56Z
 limit = inf
-future = { enabled = true, values = [1, 2, 3] }
+# Keep the future section note.
+future = { enabled = true, values = [1, 2, 3] } # Keep the inline future note.
 "#,
     )
     .unwrap();
@@ -187,10 +210,16 @@ future = { enabled = true, values = [1, 2, 3] }
     let held = store.resolve("extensions").unwrap();
     store.describe(&held, "updated").unwrap();
 
-    let document = fs::read_to_string(directory.join("meta.toml"))
-        .unwrap()
-        .parse::<toml::Table>()
-        .unwrap();
+    let text = fs::read_to_string(directory.join("meta.toml")).unwrap();
+    for comment in [
+        "# Keep this file header.",
+        "# Keep the display-name note.",
+        "# Keep the future section note.",
+        "# Keep the inline future note.",
+    ] {
+        assert!(text.contains(comment), "lost {comment}:\n{text}");
+    }
+    let document = text.parse::<toml::Table>().unwrap();
     assert_eq!(
         document["release_at"].as_datetime().unwrap().to_string(),
         "2026-08-08T12:34:56Z"

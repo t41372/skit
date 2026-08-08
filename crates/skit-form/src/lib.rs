@@ -47,6 +47,18 @@ pub fn form_params(kind: &str, text: &str, settings: &EntrySettings) -> Vec<Para
         .collect()
 }
 
+/// Compose fields from a managed source schema that the caller already prepared.
+///
+/// This keeps source mutation paths on one parse and one write while applying the same declared
+/// flag and environment riders as [`form_params`].
+#[must_use]
+pub fn form_params_from_managed(
+    managed: Vec<ParamDecl>,
+    settings: &EntrySettings,
+) -> Vec<ParamDecl> {
+    with_riders(managed, &settings.parameters)
+}
+
 fn with_riders(mut fields: Vec<ParamDecl>, declared: &[ParamDecl]) -> Vec<ParamDecl> {
     let mut taken = fields
         .iter()

@@ -307,6 +307,47 @@ fn python_metadata_is_validated_before_add_and_written_to_the_stored_copy() {
 }
 
 #[test]
+fn add_keeps_settings_that_do_not_belong_in_the_source() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.data.path().join("reference.py");
+    fs::write(&source, "print('ok')\n").unwrap();
+
+    sandbox
+        .command()
+        .args(["add"])
+        .arg(&source)
+        .args(["--name", "Reference", "--ref", "--python", ">=3.12"])
+        .assert()
+        .success();
+    sandbox
+        .command()
+        .args(["show", "reference", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"requires_python\":\">=3.12\""));
+
+    sandbox
+        .command()
+        .args([
+            "add",
+            "--prompt",
+            "--name",
+            "Literal prompt",
+            "--no-interpolate",
+            "--no-input",
+        ])
+        .write_stdin("Keep {{subject}} literal.\n")
+        .assert()
+        .success();
+    sandbox
+        .command()
+        .args(["show", "literal-prompt", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"interpolate\":false"));
+}
+
+#[test]
 fn a_registered_shebang_pins_the_non_python_interpreter() {
     let sandbox = Sandbox::new();
     let source = sandbox.data.path().join("tool");

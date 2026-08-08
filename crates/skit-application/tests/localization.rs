@@ -78,7 +78,23 @@ fn every_repository_error_localizes_and_keeps_its_values() {
             path: "/library/broken".to_owned(),
             reason: "permission denied".to_owned(),
         },
-        &["read", "/library/broken", "permission denied"],
+        &["/library/broken", "permission denied"],
+    );
+    assert_localized(
+        &RepositoryError::Rollback {
+            path: "/library/demo".to_owned(),
+            primary: Box::new(RepositoryError::Io {
+                operation: "rename",
+                path: "/library/demo".to_owned(),
+                reason: "device is busy".to_owned(),
+            }),
+            rollback: Box::new(RepositoryError::Io {
+                operation: "remove",
+                path: "/library/demo".to_owned(),
+                reason: "permission denied".to_owned(),
+            }),
+        },
+        &["/library/demo", "device is busy", "permission denied"],
     );
 }
 
@@ -97,11 +113,11 @@ fn a_multi_value_message_places_every_value_in_its_own_hole() {
     );
     assert_eq!(
         error.message().localize(Locale::ZhCn),
-        "无法lock /state/entry.toml 处的状态数据：device is busy"
+        "无法锁定 /state/entry.toml 处的状态数据：device is busy"
     );
     assert_eq!(
         error.message().localize(Locale::ZhTw),
-        "無法lock /state/entry.toml 處的狀態資料：device is busy"
+        "無法鎖定 /state/entry.toml 處的狀態資料：device is busy"
     );
 }
 
@@ -128,7 +144,7 @@ fn every_state_write_error_localizes_and_keeps_its_values() {
             path: "/state/entry".to_owned(),
             reason: "device is busy".to_owned(),
         },
-        &["lock", "/state/entry", "device is busy"],
+        &["/state/entry", "device is busy"],
     );
     assert_localized(
         &StateWriteError::Encode {

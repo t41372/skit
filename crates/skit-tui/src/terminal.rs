@@ -1,6 +1,6 @@
 //! Crossterm lifecycle and blocking event loop.
 
-use std::{collections::BTreeMap, fmt::Display, io};
+use std::{collections::BTreeMap, io};
 
 use ratatui_core::terminal::Terminal;
 use ratatui_crossterm::{
@@ -37,7 +37,7 @@ impl Localize for TuiError {
 pub fn run<F, E>(mut state: LibraryState, mut host: F, locale: Locale) -> Result<(), TuiError>
 where
     F: FnMut(Effect) -> Result<Action, E>,
-    E: Display,
+    E: Localize,
 {
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
@@ -70,7 +70,7 @@ where
                         state.update(action);
                     }
                     Err(error) => {
-                        state.update(Action::SetStatus(error.to_string()));
+                        state.update(Action::SetStatus(localized_status(&error, locale)));
                     }
                 }
             }
@@ -78,6 +78,10 @@ where
     }
     terminal.show_cursor()?;
     Ok(())
+}
+
+fn localized_status(error: &impl Localize, locale: Locale) -> String {
+    error.message().localize(locale)
 }
 
 /// Collect one generic form and restore the terminal before returning its values.
@@ -126,5 +130,30 @@ impl Drop for RestoreTerminal {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct HostError;
+
+    impl Localize for HostError {
+        fn message(&self) -> Message {
+            Message::new("entry not found: {}").with("demo")
+        }
+    }
+
+    #[test]
+    fn host_errors_use_the_terminal_locale() {
+        assert_eq!(
+            localized_status(&HostError, Locale::ZhCn),
+            "找不到条目：demo"
+        );
+        assert_eq!(
+            localized_status(&HostError, Locale::ZhTw),
+            "找不到項目：demo"
+        );
     }
 }

@@ -1,6 +1,7 @@
 use std::fs;
 
 use assert_cmd::Command;
+use serde_json::Value;
 use tempfile::TempDir;
 
 struct Sandbox {
@@ -52,6 +53,10 @@ impl Sandbox {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr),
         );
+    }
+
+    fn json(&self, args: &[&str]) -> Value {
+        serde_json::from_slice(&self.ok(args)).unwrap()
     }
 
     fn source(&self, name: &str, text: &[u8]) -> String {
@@ -366,7 +371,7 @@ fn doctor_human_report_exposes_each_repair_axis() {
 }
 
 #[test]
-fn doctor_reports_missing_uv_when_an_empty_library_has_no_runtime_path() {
+fn doctor_reports_that_uv_is_not_required_for_an_empty_library() {
     let sandbox = Sandbox::new();
     let empty_path = TempDir::new().unwrap();
     sandbox
@@ -374,8 +379,8 @@ fn doctor_reports_missing_uv_when_an_empty_library_has_no_runtime_path() {
         .env("PATH", empty_path.path())
         .arg("doctor")
         .assert()
-        .code(1)
-        .stdout(predicates::str::contains("ERROR uv: not found"));
+        .success()
+        .stdout(predicates::str::contains("OK uv: not required"));
 }
 
 #[test]
@@ -487,6 +492,22 @@ fn params_deps_presets_and_agent_commands_cover_mutation_and_refusal_axes() {
         "--secret",
         "count",
     ]);
+    let params = sandbox.json(&["params", "demo", "--json"]);
+    let count = params["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "count")
+        .unwrap();
+    assert_eq!(count["type"], "int");
+    assert_eq!(count["default"], 2);
+    assert_eq!(count["delivery"], "flag");
+    assert_eq!(count["flag"], "--count");
+    assert_eq!(count["help"], "Count help");
+    assert_eq!(count["prompt"], "Count");
+    assert_eq!(count["env_source"], "COUNT_SOURCE");
+    assert_eq!(count["required"], true);
+    assert_eq!(count["secret"], true);
     sandbox.ok(&[
         "params",
         "demo",
@@ -506,14 +527,42 @@ fn params_deps_presets_and_agent_commands_cover_mutation_and_refusal_axes() {
         "--no-secret",
         "count",
     ]);
+    let params = sandbox.json(&["params", "demo", "--json"]);
+    let count = params["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["name"] == "count")
+        .unwrap();
+    assert!(!count["required"].as_bool().unwrap_or(false));
+    assert!(!count["secret"].as_bool().unwrap_or(false));
     sandbox.ok(&["params", "demo", "--rm", "count"]);
+    assert!(
+        sandbox.json(&["params", "demo", "--json"])["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["name"] != "count")
+    );
 
     sandbox.code(&["deps", "demo", "--dep", "x"], 2);
-    sandbox.code(&["deps", "demo", "--clear", "--dep", "x"], 2);
+    sandbox
+        .command()
+        .args(["deps", "demo", "--clear", "--dep", "x"])
+        .assert()
+        .code(2)
+        .stderr(predicates::str::contains("use --dep or --clear, not both"));
     sandbox.code(&["deps", "demo", "--clear-needs", "--need", "sh"], 2);
     sandbox.ok(&["deps", "demo", "--need", "sh"]);
-    sandbox.ok(&["deps", "demo", "--json"]);
+    assert_eq!(
+        sandbox.json(&["deps", "demo", "--json"])["needs"],
+        serde_json::json!(["sh"])
+    );
     sandbox.ok(&["deps", "demo", "--clear-needs"]);
+    assert_eq!(
+        sandbox.json(&["deps", "demo", "--json"])["needs"],
+        serde_json::json!([])
+    );
 
     let python = sandbox.source("deps.py", b"print('ok')\n");
     sandbox.ok(&[
@@ -531,6 +580,9 @@ fn params_deps_presets_and_agent_commands_cover_mutation_and_refusal_axes() {
     sandbox.ok(&["deps", "python-deps", "--python", "none"]);
     sandbox.ok(&["deps", "python-deps", "--clear"]);
     sandbox.ok(&["deps", "python-deps", "--clear"]);
+    let python_deps = sandbox.json(&["deps", "python-deps", "--json"]);
+    assert_eq!(python_deps["dependencies"], serde_json::json!([]));
+    assert_eq!(python_deps["requires_python"], "");
     sandbox.ok(&["params", "python-deps", "--workdir", "invoke"]);
     sandbox.code(&["params", "python-deps", "--normalize", "NAME"], 2);
 
@@ -538,6 +590,10 @@ fn params_deps_presets_and_agent_commands_cover_mutation_and_refusal_axes() {
     sandbox.ok(&["add", &javascript, "--name", "JavaScript deps"]);
     sandbox.ok(&["deps", "javascript-deps", "--dep", "chalk"]);
     sandbox.ok(&["deps", "javascript-deps", "--clear"]);
+    assert_eq!(
+        sandbox.json(&["deps", "javascript-deps", "--json"])["dependencies"],
+        serde_json::json!([])
+    );
 
     sandbox.ok(&["run", "demo", "--set", "name=value", "--no-input"]);
     sandbox.ok(&["preset", "save", "demo", "current"]);

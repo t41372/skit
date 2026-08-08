@@ -6,7 +6,8 @@ use tempfile::TempDir;
 #[test]
 fn empty_configuration_keeps_the_v040_public_values() {
     let root = TempDir::new().unwrap();
-    let settings = FileConfigStore::new(root.path()).settings().unwrap();
+    let store = FileConfigStore::new(root.path());
+    let settings = store.settings().unwrap();
 
     assert_eq!(settings["lang"], "");
     assert_eq!(settings["editor"], "");
@@ -14,6 +15,55 @@ fn empty_configuration_keeps_the_v040_public_values() {
     assert_eq!(settings["after_run"], "exit");
     assert_eq!(settings["shell.bash_path"], "");
     assert_eq!(settings["js.runner"], "");
+    assert!(store.invalid_runner_rows().unwrap().is_empty());
+}
+
+#[test]
+fn configuration_updates_preserve_comments_and_key_order() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("config.toml");
+    fs::write(
+        &path,
+        r#"# Keep this file header.
+future = 7 # Keep the future note.
+language = "en" # Keep the language note.
+
+[prompt]
+# Keep the runner-list note.
+runners_seeded = true
+runners = [
+  { name = "mine", argv = ["agent", "{{prompt}}"] }, # Keep the runner note.
+]
+"#,
+    )
+    .unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    store.set("lang", "zh-CN").unwrap();
+    store
+        .set_runner(
+            PromptRunner {
+                name: "other".to_owned(),
+                argv: vec!["other-agent".to_owned(), "{{prompt}}".to_owned()],
+            },
+            false,
+        )
+        .unwrap();
+
+    let text = fs::read_to_string(path).unwrap();
+    for comment in [
+        "# Keep this file header.",
+        "# Keep the future note.",
+        "# Keep the language note.",
+        "# Keep the runner-list note.",
+        "# Keep the runner note.",
+    ] {
+        assert!(text.contains(comment), "lost {comment}:\n{text}");
+    }
+    assert!(
+        text.find("future = 7").unwrap() < text.find("language = \"zh-CN\"").unwrap(),
+        "{text}"
+    );
 }
 
 #[test]

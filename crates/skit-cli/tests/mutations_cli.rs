@@ -7,7 +7,9 @@ fn command(root: &TempDir) -> assert_cmd::Command {
     let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
     command
         .env("SKIT_DATA_DIR", root.path())
-        .env("SKIT_STATE_DIR", root.path().join("state"));
+        .env("SKIT_STATE_DIR", root.path().join("state"))
+        .env("SKIT_CONFIG_DIR", root.path().join("config"))
+        .env("HOME", root.path().join("home"));
     command
 }
 

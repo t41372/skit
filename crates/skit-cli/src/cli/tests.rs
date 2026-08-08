@@ -692,8 +692,9 @@ fn tui_source_controls_change_only_the_stored_copy() {
         .commit_copy_edit(&claimed, rewritten.as_bytes(), &entry.meta.source_hash)
         .unwrap();
     let source = fs::read_to_string(&stored).unwrap();
-    let rewritten =
+    let (source, managed) =
         prepare_source_management("shell", StorageMode::Copy, source, true, &[], &[], &[]).unwrap();
+    let rewritten = write_managed_params("shell", &source, &managed).unwrap();
     let claimed = service.claim_identity(&entry).unwrap();
     entry = service
         .commit_copy_edit(&claimed, rewritten.as_bytes(), &entry.meta.source_hash)
@@ -704,7 +705,7 @@ fn tui_source_controls_change_only_the_stored_copy() {
     );
 
     let source = fs::read_to_string(&stored).unwrap();
-    let rewritten = prepare_source_management(
+    let (source, managed) = prepare_source_management(
         "shell",
         StorageMode::Copy,
         source,
@@ -714,6 +715,7 @@ fn tui_source_controls_change_only_the_stored_copy() {
         &["NAME".to_owned()],
     )
     .unwrap();
+    let rewritten = write_managed_params("shell", &source, &managed).unwrap();
     let claimed = service.claim_identity(&entry).unwrap();
     service
         .commit_copy_edit(&claimed, rewritten.as_bytes(), &entry.meta.source_hash)
@@ -1018,7 +1020,8 @@ fn doctor_launch_checks_cover_every_runtime_and_workdir_policy() {
         )
         .unwrap()
         .unwrap()
-        .contains("not absolute")
+        .localize(Locale::En)
+        .contains("must be absolute")
     );
     entry.meta.workdir = root.path().join("missing").display().to_string();
     assert!(
@@ -1030,6 +1033,7 @@ fn doctor_launch_checks_cover_every_runtime_and_workdir_policy() {
         )
         .unwrap()
         .unwrap()
+        .localize(Locale::En)
         .contains("does not exist")
     );
     entry.meta.workdir = root.path().display().to_string();
@@ -1041,6 +1045,7 @@ fn doctor_launch_checks_cover_every_runtime_and_workdir_policy() {
         doctor_launch_block(&entry, &EntrySettings::default(), &config, &probe)
             .unwrap()
             .unwrap()
+            .localize(Locale::En)
             .contains("bash")
     );
     config.set("shell.bash_path", "/custom/bash").unwrap();
@@ -1048,6 +1053,7 @@ fn doctor_launch_checks_cover_every_runtime_and_workdir_policy() {
         doctor_launch_block(&entry, &EntrySettings::default(), &config, &probe)
             .unwrap()
             .unwrap()
+            .localize(Locale::En)
             .contains("/custom/bash")
     );
 
@@ -1067,6 +1073,7 @@ fn doctor_launch_checks_cover_every_runtime_and_workdir_policy() {
             doctor_launch_block(&entry, &EntrySettings::default(), &config, &probe)
                 .unwrap()
                 .unwrap()
+                .localize(Locale::En)
                 .contains(program),
             "kind={kind}",
         );
@@ -1090,6 +1097,7 @@ fn doctor_launch_checks_cover_every_runtime_and_workdir_policy() {
         )
         .unwrap()
         .unwrap()
+        .localize(Locale::En)
         .contains("deno, bun, or node")
     );
     probe
@@ -1109,6 +1117,7 @@ fn doctor_launch_checks_cover_every_runtime_and_workdir_policy() {
         doctor_launch_block(&prompt, &pinned, &config, &probe)
             .unwrap()
             .unwrap()
+            .localize(Locale::En)
             .contains("not configured")
     );
     config
@@ -1124,6 +1133,7 @@ fn doctor_launch_checks_cover_every_runtime_and_workdir_policy() {
         doctor_launch_block(&prompt, &pinned, &config, &probe)
             .unwrap()
             .unwrap()
+            .localize(Locale::En)
             .contains("agent-bin")
     );
     probe.programs.insert(
@@ -1157,6 +1167,7 @@ fn doctor_launch_checks_cover_every_runtime_and_workdir_policy() {
         )
         .unwrap()
         .unwrap()
+        .localize(Locale::En)
         .contains("unknown entry kind")
     );
     assert_eq!(
@@ -2029,10 +2040,7 @@ fn every_cli_error_localizes_and_keeps_its_values() {
         &["nightly"],
     );
     assert_localized(&CliError::ConfirmationRequired, &[]);
-    assert_localized(
-        &CliError::ConfirmationRequiredFor("runner remove"),
-        &["runner remove"],
-    );
+    assert_localized(&CliError::ConfirmationRequiredFor("runner remove"), &[]);
     assert_localized(&CliError::Aborted, &[]);
     assert_localized(
         &CliError::Source {
@@ -2040,13 +2048,7 @@ fn every_cli_error_localizes_and_keeps_its_values() {
             path: "/data/demo.py".to_owned(),
             source: io_failure(),
         },
-        &["read", "/data/demo.py", "permission denied"],
-    );
-    assert_localized(
-        &CliError::SourceEncoding {
-            path: "/data/demo.py".to_owned(),
-        },
-        &["/data/demo.py"],
+        &["/data/demo.py", "permission denied"],
     );
     assert_localized(&CliError::DataDirectoryUnavailable, &[]);
     assert_localized(&CliError::DirectoryUnavailable("state"), &["state"]);
@@ -2141,6 +2143,11 @@ fn windows_argument_splitting_covers_padding_escapes_and_unclosed_quotes() {
     assert_eq!(
         split_windows_arguments(r"agent.exe a\\b").unwrap(),
         ["agent.exe", r"a\\b"]
+    );
+    // Two quotes inside a quoted run encode one literal quote.
+    assert_eq!(
+        split_windows_arguments(r#"agent.exe "a""b""#).unwrap(),
+        ["agent.exe", r#"a"b"#]
     );
 
     let error = split_windows_arguments(r#"agent.exe "unclosed"#).unwrap_err();
@@ -2418,5 +2425,62 @@ fn tui_settings_refuse_a_python_copy_that_is_not_utf8() {
             .to_string()
             .contains("the Python stored copy is not valid UTF-8"),
         "{error}"
+    );
+}
+
+#[test]
+fn every_agent_skill_command_example_matches_the_real_cli_tree() {
+    let skill = include_str!("../../../../skills/skit/SKILL.md");
+    let mut checked = 0;
+    let mut in_bash = false;
+
+    for line in skill.lines().map(str::trim) {
+        if line == "```bash" {
+            in_bash = true;
+            continue;
+        }
+        if line == "```" {
+            in_bash = false;
+            continue;
+        }
+        if !in_bash || !line.starts_with("skit ") {
+            continue;
+        }
+        let command = line.split_once(" #").map_or(line, |(command, _)| command);
+        let arguments =
+            shlex::split(command).unwrap_or_else(|| panic!("invalid shell line: {line}"));
+        Cli::try_parse_from(&arguments)
+            .unwrap_or_else(|error| panic!("invalid Agent Skill command `{command}`: {error}"));
+        checked += 1;
+    }
+
+    assert!(checked >= 35, "only checked {checked} Agent Skill commands");
+}
+
+#[test]
+fn clap_error_localization_keeps_every_context_value_shape_verbatim() {
+    use clap::{builder::StyledStr, error::ErrorKind};
+
+    let mut error = clap::Error::raw(
+        ErrorKind::InvalidValue,
+        "Print help | Entry added | Entry removed | Entry renamed",
+    );
+    error.insert(
+        ContextKind::ValidValue,
+        ContextValue::Strings(vec!["Print help".to_owned(), "Entry added".to_owned()]),
+    );
+    error.insert(
+        ContextKind::PriorArg,
+        ContextValue::StyledStr(StyledStr::from("Entry removed")),
+    );
+    error.insert(
+        ContextKind::ValidSubcommand,
+        ContextValue::StyledStrs(vec![StyledStr::from("Entry renamed")]),
+    );
+    error.insert(ContextKind::Custom, ContextValue::None);
+
+    assert_eq!(
+        localized_clap_error(&error, Locale::ZhCn),
+        "错误：Print help | Entry added | Entry removed | Entry renamed"
     );
 }

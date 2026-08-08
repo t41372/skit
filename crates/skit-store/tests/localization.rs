@@ -26,7 +26,7 @@ fn every_config_error_localizes_and_keeps_its_values() {
             path: "/config/config.toml".to_owned(),
             reason: "device is busy".to_owned(),
         },
-        &["lock", "/config/config.toml", "device is busy"],
+        &["/config/config.toml", "device is busy"],
     );
     assert_localized(
         &ConfigError::Parse {
@@ -62,11 +62,11 @@ fn a_multi_value_message_places_every_value_in_its_own_hole() {
     );
     assert_eq!(
         error.message().localize(Locale::ZhCn),
-        "无法lock /config/config.toml 处的配置：device is busy"
+        "无法锁定 /config/config.toml 处的配置：device is busy"
     );
     assert_eq!(
         error.message().localize(Locale::ZhTw),
-        "無法lock /config/config.toml 處的組態：device is busy"
+        "無法鎖定 /config/config.toml 處的組態：device is busy"
     );
 }
 

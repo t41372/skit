@@ -19,6 +19,14 @@ description: 每个命令、选项与退出码。
   “交互式”要求标准输入与标准输出都是 TTY。
 - **Shell 补全**是动态的：条目名称、预设名称与运行器名称都可以补全。
 
+## 全局选项 [#global-flags]
+
+| 选项 | 作用 |
+| --- | --- |
+| `--data-dir PATH` | 本次命令使用指定的 skit 数据目录 |
+| `--install-completion` | 为当前 shell 安装补全 |
+| `--show-completion` | 打印当前 shell 的补全脚本 |
+
 ## 退出码 [#exit-codes]
 
 | 退出码 | 含义 |
@@ -79,7 +87,7 @@ description: 每个命令、选项与退出码。
 额外的 `-- ARGS` 会按条目记住，并在下一次不带参数的运行中重放
 （并在标准错误上给出说明）；`--forget-args` 清除它们，`--raw` 从不重放它们。
 
-## skit list / show [#skit-list-show]
+## skit list / show [#skit-list--show]
 
 - `skit list [--json]` —— 每个条目的名称、类型与说明。
 - `skit show NAME [--json]` —— 完整元数据、依赖项、参数与预设。
@@ -89,7 +97,7 @@ description: 每个命令、选项与退出码。
   以及顶层的 `param_origin`、`degraded_reason` 与 `needs`。提示词条目还有
   `runner`、`runners_available` 与 `interpolate`。
 
-## skit remove / rename / describe / edit [#skit-remove-rename-describe-edit]
+## skit remove / rename / describe / edit [#skit-remove--rename--describe--edit]
 
 - `skit remove NAME [--yes]` —— 删除条目（原文件不受影响；
   副本模式会删除 skit 的副本）。除非使用 `--yes`，否则会请求确认。
@@ -113,7 +121,12 @@ description: 每个命令、选项与退出码。
 | `--default NAME=VALUE` | 声明的默认值 |
 | `--choices NAME=a,b,c` | 可选值 |
 | `--deliver NAME=env\|flag\|placeholder` | 值如何到达脚本 |
+| `--binding NAME=const\|input\|envdefault\|none` | 声明字段的源绑定 |
 | `--flag NAME=--out` | 要组装的 CLI 选项（为空则表示位置参数） |
+| `--multiple NAME` / `--no-multiple NAME` | 允许多个值或仅允许一个值 |
+| `--repeat NAME` / `--no-repeat NAME` | 每个值重复选项，或把所有值放在一个选项后 |
+| `--env-target NAME=ENVVAR` | `env` 递送要设置的环境变量 |
+| `--action NAME=ACTION` | 布尔选项动作，例如 `store_true` 或 `store_false` |
 | `--required NAME` / `--optional NAME` | 是否必填 |
 | `--help-text NAME=TEXT` / `--prompt NAME=TEXT` | 描述文本 |
 | `--secret NAME` / `--no-secret NAME` | 敏感值标记（参见[敏感值](/zh-CN/docs/parameters#secrets)） |

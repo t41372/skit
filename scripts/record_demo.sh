@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Render the English and Traditional Chinese Ratatui demo assets in a container.
+# Render the English, Simplified Chinese, and Traditional Chinese Ratatui demo assets.
 #
 # Requires Docker or OrbStack on the host. vhs / ttyd / ffmpeg live only inside the image,
 # so nothing is installed on your machine. Each tape drives every locale: SKIT_LANG sits at
 # the top of skit's locale chain, and each language's demo scripts are mounted at record
 # time, so nothing is baked and no rebuild is needed to iterate on tapes or scripts.
 #
-#   bash scripts/record_demo.sh          # everything: 2 videos + 8 screenshots
-#   bash scripts/record_demo.sh videos   # docs/assets/demo-en.mp4, docs/assets/demo-zh.mp4
-#   bash scripts/record_demo.sh shots    # docs/assets/tui-{library,form,add,settings}-{en,zh}.png
+#   bash scripts/record_demo.sh          # everything: 3 videos + 12 screenshots
+#   bash scripts/record_demo.sh videos   # docs/assets/demo-{en,zh-CN,zh-TW}.mp4
+#   bash scripts/record_demo.sh shots    # docs/assets/tui-{library,form,add,settings}-{locale}.png
 set -euo pipefail
 cd "$(dirname "$0")/.."   # repo root (build context)
 
@@ -46,12 +46,14 @@ shoot() {   # $1 = SKIT_LANG   $2 = scripts subdir   $3 = filename suffix (en/zh
 }
 
 if [[ "$MODE" == "all" || "$MODE" == "videos" ]]; then
-  record en    en demo-en.mp4
-  record zh-TW zh demo-zh.mp4
+  record en    en    demo-en.mp4
+  record zh-CN zh-CN demo-zh-CN.mp4
+  record zh-TW zh    demo-zh-TW.mp4
 fi
 if [[ "$MODE" == "all" || "$MODE" == "shots" ]]; then
-  shoot en    en en
-  shoot zh-TW zh zh
+  shoot en    en    en
+  shoot zh-CN zh-CN zh-CN
+  shoot zh-TW zh    zh-TW
 fi
 
 echo "==> done."

@@ -19,6 +19,7 @@ use skit_application::{
 };
 use skit_domain::{Entry, EntryId, EntryMeta, EntrySettings, Slug, StorageMode};
 use skit_i18n::{Localize as _, Message};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use super::{
     FileStore,
@@ -275,7 +276,7 @@ impl FileStore {
             mode: request.mode,
             source: request.source,
             source_hash,
-            added_at: String::new(),
+            added_at: format_added_at(OffsetDateTime::now_utc())?,
             id: Some(id.clone()),
             workdir: request.workdir,
             description: request.description,
@@ -285,6 +286,7 @@ impl FileStore {
 
         let staging_root = self.data_dir().join(".staging");
         create_dir_all(&staging_root, "create")?;
+        sweep_staging(&staging_root)?;
         let stage_path = staging_root.join(format!("{}-{}", slug, id.as_str()));
         fs::create_dir(&stage_path).map_err(|error| io_error("create", &stage_path, error))?;
         let mut stage = StagedDirectory::new(stage_path);
@@ -550,11 +552,16 @@ fn encode_metadata(path: &Path, meta: &EntryMeta) -> Result<String, RepositoryEr
         .map_err(|error| invalid(Message::new("could not encode metadata: {}").with(error)))?;
     let updates = encoded
         .parse::<toml::Table>()
-        .expect("the metadata encoder produces valid TOML");
-    let mut document = fs::read_to_string(path)
-        .ok()
-        .and_then(|text| text.parse::<toml::Table>().ok())
-        .unwrap_or_default();
+        .map_err(|error| invalid(Message::new("could not encode metadata: {}").with(error)))?;
+    let original = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(io_error("read", path, error)),
+    };
+    let mut document = original
+        .parse::<toml::Table>()
+        .map_err(|error| invalid(Message::new("could not encode metadata: {}").with(error)))?;
+    let before = document.clone();
 
     for key in CORE_METADATA_KEYS {
         document.remove(*key);
@@ -568,8 +575,16 @@ fn encode_metadata(path: &Path, meta: &EntryMeta) -> Result<String, RepositoryEr
             document.insert((*key).to_owned(), value.clone());
         }
     }
-    toml::to_string_pretty(&document)
+    let desired = toml::to_string_pretty(&document)
+        .map_err(|error| invalid(Message::new("could not encode metadata: {}").with(error)))?;
+    crate::toml_document::merge_update(&original, &desired, &before, &document)
         .map_err(|error| invalid(Message::new("could not encode metadata: {}").with(error)))
+}
+
+fn format_added_at(timestamp: OffsetDateTime) -> Result<String, RepositoryError> {
+    timestamp
+        .format(&Rfc3339)
+        .map_err(|error| invalid(Message::new("could not format add timestamp: {}").with(error)))
 }
 
 fn validated_name(name: &str) -> Result<String, RepositoryError> {
@@ -612,6 +627,25 @@ fn validate_stored_name(name: &str) -> Result<(), RepositoryError> {
             "stored filename must be one safe path component",
         )));
     }
+    Ok(())
+}
+
+fn sweep_staging(staging_root: &Path) -> Result<(), RepositoryError> {
+    let items =
+        fs::read_dir(staging_root).map_err(|error| io_error("scan", staging_root, error))?;
+    for item in items {
+        let item = item.map_err(|error| io_error("scan", staging_root, error))?;
+        let path = item.path();
+        let file_type = fs::symlink_metadata(&path)
+            .map_err(|error| io_error("inspect", &path, error))?
+            .file_type();
+        if file_type.is_dir() {
+            fs::remove_dir_all(&path).map_err(|error| io_error("remove", &path, error))?;
+        } else {
+            fs::remove_file(&path).map_err(|error| io_error("remove", &path, error))?;
+        }
+    }
+    let _ = sync_directory(staging_root);
     Ok(())
 }
 
@@ -658,10 +692,10 @@ fn rollback_error(
 ) -> RepositoryError {
     match rollback {
         Ok(()) => primary,
-        Err(rollback) => RepositoryError::Io {
-            operation: "rollback",
+        Err(rollback) => RepositoryError::Rollback {
             path: path.display().to_string(),
-            reason: format!("{primary}; rollback also failed: {rollback}"),
+            primary: Box::new(primary),
+            rollback: Box::new(rollback),
         },
     }
 }
@@ -669,8 +703,40 @@ fn rollback_error(
 #[cfg(test)]
 mod tests {
     use tempfile::TempDir;
+    use time::{Date, Month};
 
     use super::*;
+
+    #[test]
+    fn timestamp_and_metadata_encoding_report_their_boundary_failures() {
+        let ancient = Date::from_calendar_date(-1, Month::January, 1)
+            .unwrap()
+            .midnight()
+            .assume_utc();
+        assert!(matches!(
+            format_added_at(ancient),
+            Err(RepositoryError::InvalidMutation { .. })
+        ));
+
+        let root = TempDir::new().unwrap();
+        let meta = EntryMeta::minimal("Demo", skit_domain::EntryKind::parse("shell").unwrap());
+        let missing = root.path().join("missing.toml");
+        assert!(
+            encode_metadata(&missing, &meta)
+                .unwrap()
+                .contains("name = \"Demo\"")
+        );
+
+        let unreadable = root.path().join("directory.toml");
+        fs::create_dir(&unreadable).unwrap();
+        assert!(matches!(
+            encode_metadata(&unreadable, &meta),
+            Err(RepositoryError::Io {
+                operation: "read",
+                ..
+            })
+        ));
+    }
 
     #[test]
     fn a_failed_rollback_reports_both_failures_and_the_affected_path() {
@@ -681,13 +747,13 @@ mod tests {
 
         assert!(matches!(
             error,
-            RepositoryError::Io {
-                operation: "rollback",
+            RepositoryError::Rollback {
                 ref path,
-                ref reason,
+                ref primary,
+                ref rollback,
             } if path == "affected"
-                && reason.contains("primary failed")
-                && reason.contains("restore failed")
+                && primary.to_string().contains("primary failed")
+                && rollback.to_string().contains("restore failed")
         ));
     }
 
@@ -720,13 +786,7 @@ mod tests {
         })
         .unwrap_err();
 
-        assert!(matches!(
-            error,
-            RepositoryError::Io {
-                operation: "rollback",
-                ..
-            }
-        ));
+        assert!(matches!(error, RepositoryError::Rollback { .. }));
 
         let error = rollback_source_projection(
             invalid(Message::new("projection failed")),
@@ -734,13 +794,7 @@ mod tests {
             b"before",
             restore_succeeds,
         );
-        assert!(matches!(
-            error,
-            RepositoryError::Io {
-                operation: "rollback",
-                ..
-            }
-        ));
+        assert!(matches!(error, RepositoryError::Rollback { .. }));
     }
 
     fn restore_succeeds() -> Result<(), RepositoryError> {

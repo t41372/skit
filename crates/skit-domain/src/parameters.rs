@@ -278,28 +278,37 @@ impl ParamDecl {
     /// Encode the frozen in-file `[tool.skit]` declaration shape.
     #[must_use]
     pub fn to_block_map(&self) -> BTreeMap<String, Value> {
+        self.to_block_values()
+            .into_iter()
+            .map(|(key, value)| (key, value.to_json()))
+            .collect()
+    }
+
+    /// Encode the frozen in-file declaration with its closed scalar value model.
+    #[must_use]
+    pub fn to_block_values(&self) -> BTreeMap<String, ParameterValue> {
         let mut output = BTreeMap::from([
-            ("name".to_owned(), Value::String(self.name.clone())),
+            ("name".to_owned(), ParameterValue::String(self.name.clone())),
             (
                 "kind".to_owned(),
-                Value::String(self.binding.as_str().to_owned()),
+                ParameterValue::String(self.binding.as_str().to_owned()),
             ),
             (
                 "type".to_owned(),
-                Value::String(self.parameter_type.as_str().to_owned()),
+                ParameterValue::String(self.parameter_type.as_str().to_owned()),
             ),
         ]);
         if let Some(default) = &self.default {
-            output.insert("default".to_owned(), default.to_json());
+            output.insert("default".to_owned(), default.clone());
         }
-        insert_nonempty(&mut output, "prompt", &self.prompt);
+        insert_nonempty_parameter_value(&mut output, "prompt", &self.prompt);
         if self.order >= 0 {
-            output.insert("order".to_owned(), Value::Number(Number::from(self.order)));
+            output.insert("order".to_owned(), ParameterValue::Integer(self.order));
         }
         if self.secret {
-            output.insert("secret".to_owned(), Value::Bool(true));
+            output.insert("secret".to_owned(), ParameterValue::Bool(true));
         }
-        insert_nonempty(&mut output, "env_source", &self.env_source);
+        insert_nonempty_parameter_value(&mut output, "env_source", &self.env_source);
         output
     }
 
@@ -479,6 +488,16 @@ pub fn coerce_default(
 fn insert_nonempty(output: &mut BTreeMap<String, Value>, key: &str, value: &str) {
     if !value.is_empty() {
         output.insert(key.to_owned(), Value::String(value.to_owned()));
+    }
+}
+
+fn insert_nonempty_parameter_value(
+    output: &mut BTreeMap<String, ParameterValue>,
+    key: &str,
+    value: &str,
+) {
+    if !value.is_empty() {
+        output.insert(key.to_owned(), ParameterValue::String(value.to_owned()));
     }
 }
 

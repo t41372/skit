@@ -11,6 +11,7 @@ mod path_glob;
 mod paths;
 mod read;
 mod state;
+mod toml_document;
 
 pub use config::{ConfigError, FileConfigStore, MirrorSettings, PromptRunner, PromptRunnerRow};
 pub use mutations::content_hash;

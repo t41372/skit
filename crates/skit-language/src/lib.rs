@@ -543,8 +543,8 @@ fn render_managed_toml(params: &[ParamDecl]) -> String {
     for parameter in params {
         lines.push(String::new());
         lines.push("[[tool.skit.params]]".to_owned());
-        for (key, value) in parameter.to_block_map() {
-            lines.push(format!("{key} = {}", json_toml_literal(&value)));
+        for (key, value) in parameter.to_block_values() {
+            lines.push(format!("{key} = {}", parameter_toml_literal(&value)));
         }
     }
     lines.join("\n") + "\n"
@@ -611,8 +611,8 @@ fn render_merged_skit_toml(
                 ] {
                     row.remove(key);
                 }
-                for (key, value) in parameter.to_block_map() {
-                    row.insert(key, json_to_toml(value));
+                for (key, value) in parameter.to_block_values() {
+                    row.insert(key, parameter_value_to_toml(value));
                 }
                 TomlValue::Table(row)
             })
@@ -633,33 +633,28 @@ fn render_merged_skit_toml(
     ))
 }
 
-fn json_to_toml(value: JsonValue) -> TomlValue {
+fn parameter_value_to_toml(value: ParameterValue) -> TomlValue {
     match value {
-        JsonValue::String(value) => TomlValue::String(value),
-        JsonValue::Bool(value) => TomlValue::Boolean(value),
-        JsonValue::Number(value) => value.as_i64().map_or_else(
-            || TomlValue::Float(value.as_f64().unwrap_or_default()),
-            TomlValue::Integer,
-        ),
-        JsonValue::Array(values) => {
-            TomlValue::Array(values.into_iter().map(json_to_toml).collect())
-        }
-        JsonValue::Object(values) => TomlValue::Table(
-            values
-                .into_iter()
-                .map(|(key, value)| (key, json_to_toml(value)))
-                .collect(),
-        ),
-        JsonValue::Null => TomlValue::String(String::new()),
+        ParameterValue::String(value) => TomlValue::String(value),
+        ParameterValue::Integer(value) => TomlValue::Integer(value),
+        ParameterValue::Float(value) => TomlValue::Float(value),
+        ParameterValue::Bool(value) => TomlValue::Boolean(value),
     }
 }
 
-fn json_toml_literal(value: &JsonValue) -> String {
+fn parameter_toml_literal(value: &ParameterValue) -> String {
     match value {
-        JsonValue::String(value) => toml_string(value),
-        JsonValue::Bool(value) => value.to_string(),
-        JsonValue::Number(value) => value.to_string(),
-        _ => toml_string(&value.to_string()),
+        ParameterValue::String(value) => toml_string(value),
+        ParameterValue::Integer(value) => value.to_string(),
+        ParameterValue::Float(value) => {
+            let literal = value.to_string();
+            if literal.contains(['.', 'e', 'E']) {
+                literal
+            } else {
+                format!("{literal}.0")
+            }
+        }
+        ParameterValue::Bool(value) => value.to_string(),
     }
 }
 
@@ -2787,33 +2782,27 @@ fn push_unique(output: &mut Vec<ParamDecl>, parameter: ParamDecl) {
 #[cfg(test)]
 mod private_tests {
     use super::*;
-    use serde_json::json;
 
     #[test]
-    fn declaration_values_map_every_json_shape_to_toml() {
-        // `ParamDecl::to_block_map` emits scalars. The mapping stays total for stored rows.
+    fn declaration_values_map_every_scalar_shape_to_toml() {
         assert_eq!(
-            json_to_toml(json!("text")),
+            parameter_value_to_toml(ParameterValue::String("text".to_owned())),
             TomlValue::String("text".into())
         );
-        assert_eq!(json_to_toml(json!(true)), TomlValue::Boolean(true));
-        assert_eq!(json_to_toml(json!(7)), TomlValue::Integer(7));
-        assert_eq!(json_to_toml(json!(0.5)), TomlValue::Float(0.5));
         assert_eq!(
-            json_to_toml(json!([1, "two"])),
-            TomlValue::Array(vec![TomlValue::Integer(1), TomlValue::String("two".into())])
+            parameter_value_to_toml(ParameterValue::Integer(7)),
+            TomlValue::Integer(7)
         );
         assert_eq!(
-            json_to_toml(json!({ "key": 1 })),
-            TomlValue::Table(toml::Table::from_iter([(
-                "key".to_owned(),
-                TomlValue::Integer(1)
-            )]))
+            parameter_value_to_toml(ParameterValue::Float(0.5)),
+            TomlValue::Float(0.5)
         );
         assert_eq!(
-            json_to_toml(JsonValue::Null),
-            TomlValue::String(String::new())
+            parameter_value_to_toml(ParameterValue::Bool(true)),
+            TomlValue::Boolean(true)
         );
+        assert_eq!(parameter_toml_literal(&ParameterValue::Float(0.0)), "0.0");
+        assert_eq!(parameter_toml_literal(&ParameterValue::Float(1.5)), "1.5");
     }
 
     #[test]
@@ -2872,7 +2861,6 @@ mod private_tests {
 
     #[test]
     fn text_scanners_handle_quotes_escapes_nesting_and_invalid_input() {
-        assert_eq!(json_toml_literal(&json!([1, true])), "\"[1,true]\"");
         assert_eq!(toml_string("a\rb"), "\"a\\rb\"");
 
         assert_eq!(parenthesized_body("plain", 0), None);

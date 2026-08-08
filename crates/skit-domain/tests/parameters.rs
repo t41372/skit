@@ -65,6 +65,33 @@ fn block_shapes_are_frozen_and_round_trip_with_implied_delivery() {
 }
 
 #[test]
+fn block_values_use_the_closed_scalar_model() {
+    let declaration = ParamDecl {
+        binding: ParameterBinding::Const,
+        delivery: ParameterDelivery::Inject,
+        default: Some(ParameterValue::Float(1.5)),
+        order: 2,
+        secret: true,
+        ..ParamDecl::new("RATE")
+    };
+
+    assert_eq!(
+        declaration.to_block_values(),
+        BTreeMap::from([
+            ("default".to_owned(), ParameterValue::Float(1.5),),
+            (
+                "kind".to_owned(),
+                ParameterValue::String("const".to_owned()),
+            ),
+            ("name".to_owned(), ParameterValue::String("RATE".to_owned()),),
+            ("order".to_owned(), ParameterValue::Integer(2)),
+            ("secret".to_owned(), ParameterValue::Bool(true)),
+            ("type".to_owned(), ParameterValue::String("str".to_owned()),),
+        ])
+    );
+}
+
+#[test]
 fn block_decoding_is_total_on_hand_edited_garbage() {
     let declaration = ParamDecl::from_block_map(&map(json!({
         "name": 5,

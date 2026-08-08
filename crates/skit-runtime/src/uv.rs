@@ -167,7 +167,7 @@ impl Localize for UvBootstrapError {
                 path,
                 source,
             } => Message::new("could not {} private uv at {}: {}")
-                .with(operation)
+                .nested(Message::term(operation))
                 .with(path)
                 .with(source),
         }

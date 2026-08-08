@@ -1,3 +1,5 @@
+use std::fs;
+
 use predicates::prelude::*;
 use tempfile::TempDir;
 
@@ -35,6 +37,40 @@ fn human_errors_use_the_requested_simplified_chinese_catalog() {
         .assert()
         .code(127)
         .stderr(predicate::str::contains("找不到条目"));
+}
+
+#[test]
+fn clap_errors_translate_framework_text_without_rewriting_user_arguments() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let command = |argument: &str| {
+        let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
+        command
+            .env("SKIT_DATA_DIR", data.path())
+            .env("SKIT_STATE_DIR", state.path())
+            .env("SKIT_CONFIG_DIR", config.path())
+            .env("SKIT_LANG", "zh-CN")
+            .arg(argument);
+        command
+    };
+
+    for argument in ["Print help", "Entry added"] {
+        command(argument)
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("错误：无法识别子命令"))
+            .stderr(predicate::str::contains(argument))
+            .stderr(predicate::str::contains("用法：skit"))
+            .stderr(predicate::str::contains("如需更多信息"));
+    }
+
+    command("--halp")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("错误：发现意外参数"))
+        .stderr(predicate::str::contains("提示："))
+        .stderr(predicate::str::contains("--help"));
 }
 
 #[test]
@@ -120,4 +156,95 @@ fn scalar_report_labels_translate_in_every_supported_locale() {
             .success()
             .stdout(predicate::str::contains(expected));
     }
+}
+
+#[test]
+fn runner_rows_and_doctor_reasons_translate_nested_skit_text() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    fs::write(
+        config.path().join("config.toml"),
+        r#"[prompt]
+runners = [
+  { name = "broken", argv = ["agent"] },
+  { future = 1 },
+]
+"#,
+    )
+    .unwrap();
+    let command = || {
+        let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
+        command
+            .env("SKIT_DATA_DIR", data.path())
+            .env("SKIT_STATE_DIR", state.path())
+            .env("SKIT_CONFIG_DIR", config.path())
+            .env("SKIT_LANG", "zh-CN");
+        command
+    };
+
+    command()
+        .args(["runner", "list", "--all"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "提示词运行器命令必须在程序之后正好包含一次 {{prompt}}",
+        ))
+        .stdout(predicate::str::contains("第 2 行"))
+        .stdout(predicate::str::contains(
+            "运行器行需要名称和字符串 argv 数组",
+        ))
+        .stdout(predicate::str::contains("runner row needs").not());
+
+    let source = data.path().join("future.sh");
+    fs::write(&source, "printf ok\n").unwrap();
+    command()
+        .arg("add")
+        .arg(&source)
+        .args(["--name", "Future", "--kind", "shell"])
+        .assert()
+        .success();
+    command()
+        .args(["add", "--cmd", "echo {name}", "--name", "Fields"])
+        .assert()
+        .success();
+    command()
+        .args(["params", "fields", "--env-target", "broken"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("环境目标需要 NAME=VALUE"))
+        .stderr(predicate::str::contains("environment target").not());
+    command()
+        .args(["runner", "remove", "--row", "99", "--no-input"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "移除提示词运行器需要确认；请传入 --yes",
+        ));
+    command()
+        .args(["runner", "remove", "--row", "99", "--yes"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("未知的提示词运行器：第 99 行"))
+        .stderr(predicate::str::contains("row 99").not());
+    command()
+        .arg("add")
+        .arg(data.path().join("does-not-exist.sh"))
+        .args(["--name", "Missing"])
+        .assert()
+        .code(125)
+        .stderr(predicate::str::contains("无法解析"))
+        .stderr(predicate::str::contains("无法resolve").not());
+    let meta_path = data.path().join("scripts/future/meta.toml");
+    let meta = fs::read_to_string(&meta_path).unwrap();
+    let meta = meta.replace("kind = \"shell\"", "kind = \"future-kind\"");
+    assert!(meta.contains("kind = \"future-kind\""), "{meta}");
+    fs::write(&meta_path, meta).unwrap();
+
+    command()
+        .arg("doctor")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("未知的条目类型：future-kind"))
+        .stdout(predicate::str::contains("unknown entry kind").not());
 }

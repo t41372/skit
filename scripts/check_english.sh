@@ -24,6 +24,10 @@ if [[ $# -eq 0 ]]; then
       \( -name '*.html' -o -name '*.md' -o -name '*.mdx' -o -name '*.mjs' \
         -o -name '*.ts' -o -name '*.tsx' \) \
       -print | sort
+    find docs/scripts -type f \
+      \( -name '*.mjs' -o -name '*.ts' -o -name '*.tsx' \) \
+      -print | sort
+    find crates -type f -name '*.rs' -print | sort
   )
 else
   english_files=("$@")
@@ -31,13 +35,23 @@ fi
 
 english_contraction="(^|[^[:alpha:]])((aren|can|couldn|didn|doesn|don|hadn|hasn|haven|isn|mustn|needn|shan|shouldn|wasn|weren|won|wouldn)['’]t|(I|you|we|they)['’](d|ll|re|ve)|(he|she|it)['’](d|ll)|(it|that|there|here|what|who)['’]s)([^[:alpha:]]|$)"
 english_failed=0
+is_legacy_message() {
+  case $1 in
+    *"isn't set (needed by"*|*"but it isn't set."*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 for english_file in "${english_files[@]}"; do
   [[ -f $english_file ]] || { echo "English source does not exist: $english_file" >&2; english_failed=1; continue; }
   if english_matches=$(grep -Ein "$english_contraction" "$english_file"); then
-    printf '%s\n' "$english_matches" | while IFS= read -r english_match; do
+    while IFS= read -r english_match; do
+      if is_legacy_message "$english_match"; then
+        continue
+      fi
       echo "$english_file:$english_match: use the full English form" >&2
-    done
-    english_failed=1
+      english_failed=1
+    done <<< "$english_matches"
   fi
 done
 

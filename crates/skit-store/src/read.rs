@@ -9,6 +9,7 @@ use std::{
 use serde::Deserialize;
 use skit_application::{Diagnostic, DiagnosticCode, EntryRepository, LibraryScan, RepositoryError};
 use skit_domain::{Entry, EntryId, EntryKind, EntryMeta, EntrySummary, Slug, StorageMode};
+use skit_i18n::Localize;
 
 use crate::mutations::registry::{Registry, metadata_mtime_ns};
 
@@ -196,11 +197,16 @@ fn record_file_type(
     match file_type {
         Ok(file_type) => Some(file_type),
         Err(error) => {
-            diagnostics.push(Diagnostic {
-                code: DiagnosticCode::Io,
-                slug: Some(candidate),
-                message: error.to_string(),
-            });
+            let error = RepositoryError::Io {
+                operation: "inspect",
+                path: candidate.clone(),
+                reason: error.to_string(),
+            };
+            diagnostics.push(Diagnostic::from_message(
+                DiagnosticCode::Io,
+                Some(candidate),
+                error.message(),
+            ));
             None
         }
     }
@@ -216,11 +222,16 @@ fn scan_directory_item(
     let item = match item {
         Ok(item) => item,
         Err(error) => {
-            scan.diagnostics.push(Diagnostic {
-                code: DiagnosticCode::Io,
-                slug: None,
-                message: error.to_string(),
-            });
+            let error = RepositoryError::Io {
+                operation: "scan",
+                path: store.scripts_dir().display().to_string(),
+                reason: error.to_string(),
+            };
+            scan.diagnostics.push(Diagnostic::from_message(
+                DiagnosticCode::Io,
+                None,
+                error.message(),
+            ));
             return;
         }
     };
@@ -233,11 +244,11 @@ fn scan_directory_item(
     let slug = match Slug::parse(candidate.clone()) {
         Ok(slug) => slug,
         Err(error) => {
-            scan.diagnostics.push(Diagnostic {
-                code: DiagnosticCode::InvalidSlug,
-                slug: Some(candidate),
-                message: error.to_string(),
-            });
+            scan.diagnostics.push(Diagnostic::from_message(
+                DiagnosticCode::InvalidSlug,
+                Some(candidate),
+                error.message(),
+            ));
             return;
         }
     };
@@ -287,8 +298,8 @@ fn summary_from(entry: &Entry) -> EntrySummary {
 }
 
 fn diagnostic_from(error: RepositoryError, slug: &Slug) -> Diagnostic {
-    let code = match error {
-        RepositoryError::Io { .. } => DiagnosticCode::Io,
+    let code = match &error {
+        RepositoryError::Io { .. } | RepositoryError::Rollback { .. } => DiagnosticCode::Io,
         RepositoryError::NotFound { .. }
         | RepositoryError::Ambiguous { .. }
         | RepositoryError::Conflict { .. }
@@ -297,11 +308,7 @@ fn diagnostic_from(error: RepositoryError, slug: &Slug) -> Diagnostic {
         | RepositoryError::SourceChanged { .. }
         | RepositoryError::Corrupt { .. } => DiagnosticCode::CorruptMetadata,
     };
-    Diagnostic {
-        code,
-        slug: Some(slug.as_str().to_owned()),
-        message: error.to_string(),
-    }
+    Diagnostic::from_message(code, Some(slug.as_str().to_owned()), error.message())
 }
 
 #[derive(Debug, Deserialize)]

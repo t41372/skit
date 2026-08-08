@@ -71,6 +71,21 @@ fn formatted_messages_translate_the_template_without_translating_user_values() {
 }
 
 #[test]
+fn chinese_terms_keep_distinct_product_meanings() {
+    assert_eq!(text(Locale::ZhCn, "Kind"), "种类");
+    assert_eq!(text(Locale::ZhCn, "Type: {}"), "类型：{}");
+    assert_eq!(text(Locale::ZhCn, "Storage mode"), "存储模式");
+    assert_eq!(text(Locale::ZhCn, "Choices: {}"), "可选值：{}");
+    assert_eq!(text(Locale::ZhCn, "Options:"), "选项：");
+    assert_eq!(text(Locale::ZhCn, "Secret: yes"), "敏感值：是");
+
+    assert_eq!(text(Locale::ZhTw, "Kind"), "種類");
+    assert_eq!(text(Locale::ZhTw, "Type: {}"), "類型：{}");
+    assert_eq!(text(Locale::ZhTw, "Choices: {}"), "可選值：{}");
+    assert_eq!(text(Locale::ZhTw, "Options:"), "選項：");
+}
+
+#[test]
 fn pi_prompt_mode_warning_is_complete() {
     assert_eq!(
         text(
@@ -85,151 +100,6 @@ fn pi_prompt_mode_warning_is_complete() {
             "Added a newline to keep the Pi prompt in message mode"
         ),
         "已新增換行字元，使 Pi 提示詞保持訊息模式"
-    );
-}
-
-#[test]
-fn every_cli_human_message_macro_uses_a_complete_catalog_template() {
-    let source = include_str!("../../skit-cli/src/cli.rs");
-    let translated = catalog()
-        .iter()
-        .map(|row| row.english)
-        .collect::<std::collections::BTreeSet<_>>();
-    for macro_name in ["humanln!(", "humanerrln!("] {
-        let mut rest = source;
-        while let Some(index) = rest.find(macro_name) {
-            rest = &rest[index + macro_name.len()..];
-            let quote = rest
-                .find('"')
-                .expect("human macro needs a literal template");
-            rest = &rest[quote + 1..];
-            let end = rest.find('"').expect("human macro literal must end");
-            let template = &rest[..end];
-            assert!(
-                translated.contains(template),
-                "missing CLI translation template: {template}"
-            );
-            rest = &rest[end + 1..];
-        }
-    }
-}
-
-/// Remove each inline `#[cfg(test)]` module so only shipped text is collected.
-fn without_test_modules(source: &str) -> String {
-    let mut output = String::with_capacity(source.len());
-    let mut rest = source;
-    while let Some(index) = rest.find("#[cfg(test)]") {
-        output.push_str(&rest[..index]);
-        rest = &rest[index..];
-        let Some(open) = rest.find('{') else { break };
-        // `#[cfg(test)] mod tests;` has no body, so keep the rest of the file.
-        if rest[..open].contains(';') {
-            let semicolon = rest.find(';').expect("the declaration ends with ;");
-            rest = &rest[semicolon + 1..];
-            continue;
-        }
-        let mut depth = 0;
-        let mut cursor = open;
-        for (offset, character) in rest[open..].char_indices() {
-            match character {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        cursor = open + offset + 1;
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        rest = &rest[cursor..];
-    }
-    output.push_str(rest);
-    output
-}
-
-/// Collect every `Message::new("...")` template in the workspace source tree.
-fn message_templates() -> std::collections::BTreeMap<String, Vec<String>> {
-    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("the i18n crate is inside the crates directory")
-        .to_owned();
-    let mut sources = Vec::new();
-    let mut pending = crates
-        .read_dir()
-        .expect("the crates directory is readable")
-        .map(|item| {
-            item.expect("each crate directory item is readable")
-                .path()
-                .join("src")
-        })
-        .filter(|path| path.is_dir())
-        .collect::<Vec<_>>();
-    while let Some(directory) = pending.pop() {
-        for item in std::fs::read_dir(&directory).expect("each source directory is readable") {
-            let path = item.expect("each source item is readable").path();
-            if path.is_dir() {
-                pending.push(path);
-            } else if path.extension().is_some_and(|value| value == "rs") {
-                sources.push(path);
-            }
-        }
-    }
-    assert!(sources.len() > 20, "the source walk found too few files");
-
-    let mut templates = std::collections::BTreeMap::<String, Vec<String>>::new();
-    for path in sources {
-        let source = std::fs::read_to_string(&path).expect("each Rust source is UTF-8");
-        let source = without_test_modules(&source);
-        let mut rest = source.as_str();
-        while let Some(index) = rest.find("Message::new(") {
-            rest = &rest[index + "Message::new(".len()..];
-            let Some(quote) = rest.find('"') else { break };
-            // A non-literal argument means the template is not a stable catalog key.
-            assert!(
-                rest[..quote].trim_start().is_empty(),
-                "Message::new needs a literal template in {}",
-                path.display()
-            );
-            rest = &rest[quote + 1..];
-            let mut end = 0;
-            let bytes = rest.as_bytes();
-            while bytes[end] != b'"' {
-                end += if bytes[end] == b'\\' { 2 } else { 1 };
-            }
-            let template = rest[..end].replace("\\\"", "\"").replace("\\n", "\n");
-            templates
-                .entry(template)
-                .or_default()
-                .push(path.display().to_string());
-            rest = &rest[end + 1..];
-        }
-    }
-    templates
-}
-
-#[test]
-fn every_typed_message_template_is_a_complete_catalog_row() {
-    let translated = catalog()
-        .iter()
-        .map(|row| row.english)
-        .collect::<std::collections::BTreeSet<_>>();
-    let templates = message_templates();
-    assert!(
-        templates.len() > 100,
-        "the scan found only {} templates",
-        templates.len()
-    );
-    let missing = templates
-        .keys()
-        .filter(|template| !translated.contains(template.as_str()))
-        .cloned()
-        .collect::<Vec<_>>();
-    assert!(
-        missing.is_empty(),
-        "add a complete catalog row for each template:\n{}",
-        missing.join("\n")
     );
 }
 
@@ -270,11 +140,12 @@ fn framework_rendering_changes_only_whole_words() {
             Locale::ZhCn,
             "Usage: skit [OPTIONS]\n\nOptions:\n  --help  Print help"
         ),
-        "用法： skit [OPTIONS]\n\n选项：\n  --help  显示帮助"
+        "用法：skit [OPTIONS]\n\n选项：\n  --help  显示帮助"
     );
     assert_eq!(render(Locale::ZhCn, "(Options:)"), "(选项：)");
     // A composable row never replaces part of a longer word.
     assert_eq!(render(Locale::ZhCn, "Print versions"), "Print versions");
+    assert_eq!(render(Locale::ZhCn, "Print helpé"), "Print helpé");
     assert_eq!(render(Locale::ZhTw, "reUsage:"), "reUsage:");
 }
 

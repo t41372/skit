@@ -108,6 +108,7 @@ fn renderer_uses_the_explicit_frontend_locale() {
     assert!(text.contains("項 目"));
     assert!(text.contains("詳 細 資 料"));
     assert!(text.contains("結 束"));
+    assert!(text.contains("儲 存 模 式 ： copy"), "{text:?}");
     assert!(!text.contains("Library"));
 
     let mut form_state = state();
@@ -141,18 +142,18 @@ fn renderer_uses_the_explicit_frontend_locale() {
     assert!(text.contains("新 增 項 目"));
     assert!(text.contains("來 源 路 徑"), "{text:?}");
     assert!(text.contains("Library"), "{text:?}");
-    assert!(!text.contains("程 式 庫 類 型"), "{text:?}");
+    assert!(!text.contains("程 式 庫 種 類"), "{text:?}");
     assert!(text.contains("Library 類 型"), "{text:?}");
     assert!(text.contains("儲 存"), "{text:?}");
 }
 
 #[test]
 fn renderer_handles_narrow_empty_search_status_and_diagnostics_views() {
-    let diagnostic = Diagnostic {
-        code: DiagnosticCode::CorruptMetadata,
-        slug: Some("bad".to_owned()),
-        message: "bad TOML".to_owned(),
-    };
+    let diagnostic = Diagnostic::plain(
+        DiagnosticCode::CorruptMetadata,
+        Some("bad".to_owned()),
+        "bad TOML".to_owned(),
+    );
     let mut states = vec![
         LibraryState::default(),
         LibraryState::from_scan(LibraryScan {

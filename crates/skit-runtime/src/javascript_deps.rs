@@ -117,6 +117,16 @@ pub enum DependencyError {
         /// Operating-system detail.
         reason: String,
     },
+    /// A dependency update and its recovery both failed.
+    #[error("rollback at {path} failed after {primary}: {rollback}")]
+    Rollback {
+        /// Affected entry directory.
+        path: String,
+        /// Failure that started recovery.
+        primary: Box<Self>,
+        /// Failure from the recovery attempt.
+        rollback: Box<Self>,
+    },
     /// The package manager returned a failure status.
     #[error("JavaScript package installation failed with {program}")]
     InstallFailed { program: String },
@@ -142,9 +152,17 @@ impl Localize for DependencyError {
                 path,
                 reason,
             } => Message::new("could not {} JavaScript dependencies at {}: {}")
-                .with(operation)
+                .nested(Message::term(operation))
                 .with(path)
                 .with(reason),
+            Self::Rollback {
+                path,
+                primary,
+                rollback,
+            } => Message::new("rollback at {} failed after {}: {}")
+                .with(path)
+                .nested(primary.message())
+                .nested(rollback.message()),
             Self::InstallFailed { program } => {
                 Message::new("JavaScript package installation failed with {}").with(program)
             }
@@ -456,8 +474,7 @@ where
         if path_exists(&source) {
             if let Err(error) = fs::rename(&source, entry_dir.join(name)) {
                 let primary = io_error("commit", &source, error);
-                let rollback = remove_dependency_items(entry_dir, &new_names)
-                    .and_then(|()| recover_dependency_backup(entry_dir));
+                let rollback = rollback_dependency_stage(entry_dir, &new_names);
                 return Err(combine_rollback_error(primary, rollback, entry_dir));
             }
             new_names.push(name);
@@ -467,15 +484,13 @@ where
     let cleanup = match cleanup_path(entry_dir) {
         Ok(cleanup) => cleanup,
         Err(primary) => {
-            let rollback = remove_dependency_items(entry_dir, &new_names)
-                .and_then(|()| recover_dependency_backup(entry_dir));
+            let rollback = rollback_dependency_stage(entry_dir, &new_names);
             return Err(combine_rollback_error(primary, rollback, entry_dir));
         }
     };
     if let Err(error) = fs::rename(&backup, &cleanup) {
         let primary = io_error("commit dependency backup", &backup, error);
-        let rollback = remove_dependency_items(entry_dir, &new_names)
-            .and_then(|()| recover_dependency_backup(entry_dir));
+        let rollback = rollback_dependency_stage(entry_dir, &new_names);
         return Err(combine_rollback_error(primary, rollback, entry_dir));
     }
     let _ = sync_directory(entry_dir);
@@ -647,11 +662,33 @@ fn combine_rollback_error(
 ) -> DependencyError {
     match rollback {
         Ok(()) => primary,
-        Err(rollback) => DependencyError::Io {
-            operation: "rollback",
+        Err(rollback) => DependencyError::Rollback {
             path: path.display().to_string(),
-            reason: format!("{primary}; rollback also failed: {rollback}"),
+            primary: Box::new(primary),
+            rollback: Box::new(rollback),
         },
+    }
+}
+
+fn rollback_dependency_stage(entry_dir: &Path, new_names: &[&str]) -> Result<(), DependencyError> {
+    run_dependency_rollback(
+        entry_dir,
+        || remove_dependency_items(entry_dir, new_names),
+        || recover_dependency_backup(entry_dir),
+    )
+}
+
+fn run_dependency_rollback(
+    path: &Path,
+    remove_new: impl FnOnce() -> Result<(), DependencyError>,
+    recover_old: impl FnOnce() -> Result<(), DependencyError>,
+) -> Result<(), DependencyError> {
+    let removal = remove_new();
+    let recovery = recover_old();
+    match (removal, recovery) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(primary), Err(rollback)) => Err(combine_rollback_error(primary, Err(rollback), path)),
     }
 }
 
@@ -757,9 +794,48 @@ fn io_error(operation: &'static str, path: &Path, error: io::Error) -> Dependenc
 
 #[cfg(test)]
 mod transaction_tests {
+    use std::cell::Cell;
+
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn recovery_runs_even_when_removing_the_new_items_fails() {
+        let recovered = Cell::new(false);
+        let error = run_dependency_rollback(
+            Path::new("entry"),
+            || {
+                Err(DependencyError::InvalidPackage {
+                    value: "new items remain".to_owned(),
+                })
+            },
+            || {
+                recovered.set(true);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert!(recovered.get());
+        assert!(matches!(error, DependencyError::InvalidPackage { .. }));
+
+        let error = run_dependency_rollback(
+            Path::new("entry"),
+            || {
+                Err(DependencyError::InvalidPackage {
+                    value: "new items remain".to_owned(),
+                })
+            },
+            || {
+                Err(DependencyError::InvalidPackage {
+                    value: "old items stay backed up".to_owned(),
+                })
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(error, DependencyError::Rollback { .. }));
+    }
 
     #[test]
     fn cleanup_path_failure_restores_the_previous_environment() {
@@ -914,9 +990,11 @@ mod transaction_tests {
         })
         .unwrap_err();
 
+        assert!(matches!(error, DependencyError::Rollback { .. }));
         let text = error.to_string();
-        assert!(text.contains("rollback also failed"), "{text}");
+        assert!(text.contains("rollback at"), "{text}");
         assert!(text.contains("injected late failure"), "{text}");
+        assert!(text.contains("backup contains an unknown item"), "{text}");
     }
 
     #[cfg(unix)]

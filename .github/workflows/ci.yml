@@ -124,7 +124,7 @@ jobs:
       - name: Check GitHub Actions
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: zizmor .github/workflows
+        run: zizmor .github/workflows .github/actions/install-hyperfine/action.yml
 
   wheel-smoke:
     name: PyPI and uv tool compatibility

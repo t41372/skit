@@ -18,7 +18,7 @@ pub use mutations::{
 };
 use serde::{Deserialize, Serialize};
 use skit_domain::{Entry, EntrySummary};
-use skit_i18n::{Localize, Message};
+use skit_i18n::{Locale, Localize, Message};
 use thiserror::Error;
 
 /// Stable non-child exit classifications used by every frontend.
@@ -67,6 +67,41 @@ pub struct Diagnostic {
     pub slug: Option<String>,
     /// Human-readable detail for logs and terminal output.
     pub message: String,
+    /// Typed presentation detail. Machine serialization keeps `message` in English.
+    #[serde(skip)]
+    presentation: Option<Message>,
+}
+
+impl Diagnostic {
+    /// Create a diagnostic from a typed user-visible message.
+    #[must_use]
+    pub fn from_message(code: DiagnosticCode, slug: Option<String>, presentation: Message) -> Self {
+        Self {
+            code,
+            slug,
+            message: presentation.localize(Locale::En),
+            presentation: Some(presentation),
+        }
+    }
+
+    /// Create a diagnostic whose detail is adapter-owned plain text.
+    #[must_use]
+    pub const fn plain(code: DiagnosticCode, slug: Option<String>, message: String) -> Self {
+        Self {
+            code,
+            slug,
+            message,
+            presentation: None,
+        }
+    }
+
+    /// Return the human-readable detail in the selected locale.
+    #[must_use]
+    pub fn localize(&self, locale: Locale) -> String {
+        self.presentation
+            .as_ref()
+            .map_or_else(|| self.message.clone(), |message| message.localize(locale))
+    }
 }
 
 /// A library listing plus per-entry diagnostics.
@@ -145,6 +180,16 @@ pub enum RepositoryError {
         /// Operating-system detail.
         reason: String,
     },
+    /// A primary write and its recovery both failed.
+    #[error("rollback at {path} failed after {primary}: {rollback}")]
+    Rollback {
+        /// Affected path.
+        path: String,
+        /// Failure that started recovery.
+        primary: Box<Self>,
+        /// Failure from the recovery attempt.
+        rollback: Box<Self>,
+    },
 }
 
 impl RepositoryError {
@@ -159,7 +204,8 @@ impl RepositoryError {
             Self::StaleEntry { .. }
             | Self::SourceChanged { .. }
             | Self::Corrupt { .. }
-            | Self::Io { .. } => ExitClass::Skit,
+            | Self::Io { .. }
+            | Self::Rollback { .. } => ExitClass::Skit,
         }
     }
 }
@@ -200,9 +246,17 @@ impl Localize for RepositoryError {
                 path,
                 reason,
             } => Message::new("could not {} {}: {}")
-                .with(operation)
+                .nested(Message::term(operation))
                 .with(path)
                 .with(reason),
+            Self::Rollback {
+                path,
+                primary,
+                rollback,
+            } => Message::new("rollback at {} failed after {}: {}")
+                .with(path)
+                .nested(primary.message())
+                .nested(rollback.message()),
         }
     }
 }

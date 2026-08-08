@@ -18,3 +18,15 @@ expect_text .github/workflows/release.yml 'pypa/gh-action-pypi-publish@dc37677b2
 expect_text pyproject.toml '{ path = "tests/corpus/**/*", format = "sdist" }'
 expect_text .github/workflows/ci.yml 'cargo test --locked -p skit-language --test corpus'
 expect_text CONTRIBUTING.md 'Node.js 26.7.0 and npm 12.0.2 or later'
+expect_text AGENTS.md 'cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20 --timeout-multiplier 3.0'
+expect_text .github/workflows/mutation.yml 'cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20 --timeout-multiplier 3.0'
+expect_text .github/workflows/ci.yml 'zizmor .github/workflows .github/actions/install-hyperfine/action.yml'
+
+while IFS= read -r use; do
+  echo "GitHub action is not pinned to a full commit: $use" >&2
+  exit 1
+done < <(
+  sed -nE 's/^[[:space:]]*uses:[[:space:]]*([^[:space:]#]+).*/\1/p' .github/workflows/*.yml |
+    grep -v '^\./' |
+    grep -Ev '@[0-9a-f]{40}$' || true
+)

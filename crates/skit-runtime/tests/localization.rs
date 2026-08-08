@@ -51,13 +51,29 @@ fn every_dependency_error_localizes_and_keeps_its_values() {
             path: "/entries/demo".to_owned(),
             reason: "permission denied".to_owned(),
         },
-        &["create", "/entries/demo", "permission denied"],
+        &["/entries/demo", "permission denied"],
     );
     assert_localized(
         &DependencyError::InstallFailed {
             program: "npm".to_owned(),
         },
         &["npm"],
+    );
+    assert_localized(
+        &DependencyError::Rollback {
+            path: "/entries/demo".to_owned(),
+            primary: Box::new(DependencyError::Io {
+                operation: "rename",
+                path: "/entries/demo".to_owned(),
+                reason: "device is busy".to_owned(),
+            }),
+            rollback: Box::new(DependencyError::Io {
+                operation: "remove",
+                path: "/entries/demo".to_owned(),
+                reason: "permission denied".to_owned(),
+            }),
+        },
+        &["/entries/demo", "device is busy", "permission denied"],
     );
 }
 
@@ -139,7 +155,7 @@ fn every_launch_error_localizes_and_keeps_its_values() {
             operation: "start",
             source: io_failure(),
         },
-        &["start", "permission denied"],
+        &["permission denied"],
     );
 }
 
@@ -171,7 +187,7 @@ fn every_uv_bootstrap_error_localizes_and_keeps_its_values() {
             path: "/data/uv".to_owned(),
             source: io_failure(),
         },
-        &["rename", "/data/uv", "permission denied"],
+        &["/data/uv", "permission denied"],
     );
 }
 
@@ -190,7 +206,7 @@ fn a_multi_value_message_places_every_value_in_its_own_hole() {
     );
     assert_eq!(
         error.message().localize(Locale::ZhCn),
-        "无法create /entries/demo 处的 JavaScript 依赖项：permission denied"
+        "无法创建 /entries/demo 处的 JavaScript 依赖项：permission denied"
     );
 
     let uv = UvBootstrapError::Io {
@@ -200,7 +216,7 @@ fn a_multi_value_message_places_every_value_in_its_own_hole() {
     };
     assert_eq!(
         uv.message().localize(Locale::ZhTw),
-        "無法rename /data/bin/uv 處的專用 uv：permission denied"
+        "無法重新命名 /data/bin/uv 處的專用 uv：permission denied"
     );
 }
 
@@ -210,6 +226,6 @@ fn a_prompt_runner_refusal_keeps_its_literal_marker() {
         name: "claude".to_owned(),
     };
     for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
-        assert!(error.message().localize(locale).contains("{prompt}"));
+        assert!(error.message().localize(locale).contains("{{prompt}}"));
     }
 }

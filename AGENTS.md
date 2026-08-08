@@ -94,10 +94,10 @@ RUSTDOCFLAGS='-D warnings' cargo doc --locked --workspace --all-features --no-de
 cargo test --locked --workspace --all-targets --all-features
 cargo llvm-cov --locked --workspace --all-targets --all-features --lcov --output-path lcov.info
 bash scripts/check_coverage.sh lcov.info
-cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20
+cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20 --timeout-multiplier 3.0
 cargo deny --locked check
 cargo audit --deny warnings
-zizmor .github/workflows
+zizmor .github/workflows .github/actions/install-hyperfine/action.yml
 ```
 
 Documentation:

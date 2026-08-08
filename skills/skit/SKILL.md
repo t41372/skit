@@ -23,8 +23,8 @@ is *the user's curated space*: treat it like their dotfiles.
 
 1. **Check the library before writing a new script.** If the user asks for something
    a saved script already does, run that instead of regenerating it.
-2. **Trust exit codes, never output text.** skit's human output is localized (English,
-   繁體中文, 简体中文, …) — string-matching it will break on other machines. The exit
+2. **Trust exit codes, never output text.** skit's human output is localized in multiple
+   languages. String matching will break on other machines. The exit
    code and `--json` payloads are the stable contract.
 3. **Before an entry's first run, `--dry-run` it** and show the user the exact command.
 4. **Never add, remove, or overwrite library entries without asking the user first.**
@@ -98,7 +98,7 @@ When the entry's target process actually ran, its exit code passes through **unt
 | --- | --- |
 | 2 | usage error (bad flags, unknown `--set` name, unknown preset) |
 | 125 | skit-side failure: missing/invalid parameter value, drift, launch failure |
-| 126 | target exists but is not executable |
+| 126 | target cannot launch: not executable, interpreter/runtime/need missing, or prompt runner unresolved |
 | 127 | no such entry in the library (or launch target missing) |
 | 130 | user cancelled the interactive form |
 

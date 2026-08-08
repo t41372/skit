@@ -158,11 +158,11 @@ fn effects_and_status_are_frontend_neutral() {
 
 #[test]
 fn diagnostics_remain_available_to_every_frontend() {
-    let diagnostic = Diagnostic {
-        code: DiagnosticCode::CorruptMetadata,
-        slug: Some("bad".to_owned()),
-        message: "bad TOML".to_owned(),
-    };
+    let diagnostic = Diagnostic::plain(
+        DiagnosticCode::CorruptMetadata,
+        Some("bad".to_owned()),
+        "bad TOML".to_owned(),
+    );
     let state = LibraryState::from_scan(LibraryScan {
         entries: Vec::new(),
         diagnostics: vec![diagnostic.clone()],

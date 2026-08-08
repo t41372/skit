@@ -133,6 +133,62 @@ fn show_source_is_empty_for_an_entry_whose_target_is_gone() {
 }
 
 #[test]
+fn show_degrades_for_prompt_payload_damage_and_uses_the_single_file_fallback() {
+    let missing = Sandbox::new();
+    missing
+        .command()
+        .args(["add", "--prompt", "--name", "Missing", "--no-input"])
+        .write_stdin("Review {{subject}}.\n")
+        .assert()
+        .success();
+    fs::remove_file(missing.data.path().join("scripts/missing/prompt.md")).unwrap();
+    missing
+        .command()
+        .args(["show", "missing", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"missing\":true"));
+
+    let damaged = Sandbox::new();
+    damaged
+        .command()
+        .args(["add", "--prompt", "--name", "Damaged", "--no-input"])
+        .write_stdin("Review.\n")
+        .assert()
+        .success();
+    fs::write(
+        damaged.data.path().join("scripts/damaged/prompt.md"),
+        [0xff, 0xfe],
+    )
+    .unwrap();
+    damaged
+        .command()
+        .args(["show", "damaged", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"missing\":false"));
+
+    let fallback = Sandbox::new();
+    fallback
+        .command()
+        .args(["add", "--prompt", "--name", "Fallback", "--no-input"])
+        .write_stdin("Review {{topic}}.\n")
+        .assert()
+        .success();
+    fs::rename(
+        fallback.data.path().join("scripts/fallback/prompt.md"),
+        fallback.data.path().join("scripts/fallback/prompt.txt"),
+    )
+    .unwrap();
+    fallback
+        .command()
+        .args(["show", "fallback", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"key\":\"topic\""));
+}
+
+#[test]
 fn an_explicit_executable_add_overrides_kind_inference() {
     let sandbox = Sandbox::new();
     let source = sandbox.data.path().join("tool.py");

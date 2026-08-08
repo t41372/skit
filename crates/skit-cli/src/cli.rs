@@ -7,7 +7,10 @@ use std::{
     process::Command as ProcessCommand,
 };
 
-use clap::{Args, CommandFactory as _, FromArgMatches as _, Parser, Subcommand};
+use clap::{
+    Args, CommandFactory as _, FromArgMatches as _, Parser, Subcommand,
+    error::{ContextKind, ContextValue},
+};
 use clap_complete::{ArgValueCandidates, CompleteEnv, CompletionCandidate, Shell, generate};
 use skit_application::{
     CreateEntry, EntryPayload, EntryRepository as _, ExitClass, LibraryService, RepositoryError,
@@ -21,7 +24,7 @@ use skit_domain::{
         coerce_default,
     },
 };
-use skit_form::form_params;
+use skit_form::{form_params, form_params_from_managed};
 use skit_i18n::{Locale, Localize, Message, detect_locale, format_text, render as localize, text};
 use skit_language::{
     cli_params, detect_candidates, external_dependencies_at, infer_kind, managed_params,
@@ -67,7 +70,7 @@ pub fn entry() -> i32 {
         Ok(true) => return 0,
         Ok(false) => {}
         Err(error) => {
-            let _ = error.print();
+            print_clap_error(&error, active_locale());
             return error.exit_code();
         }
     }
@@ -78,13 +81,7 @@ pub fn entry() -> i32 {
     {
         Ok(cli) => cli,
         Err(error) => {
-            // Clap composes this report. Only whole framework words change.
-            let output = localize(locale, &error.to_string());
-            if error.use_stderr() {
-                eprint!("{output}");
-            } else {
-                print!("{output}");
-            }
+            print_clap_error(&error, locale);
             return error.exit_code();
         }
     };
@@ -95,6 +92,56 @@ pub fn entry() -> i32 {
             error.exit_code()
         }
     }
+}
+
+fn print_clap_error(error: &clap::Error, locale: Locale) {
+    let output = localized_clap_error(error, locale);
+    if error.use_stderr() {
+        eprint!("{output}");
+    } else {
+        print!("{output}");
+    }
+}
+
+fn localized_clap_error(error: &clap::Error, locale: Locale) -> String {
+    let mut output = error.to_string();
+    let mut literals = BTreeSet::new();
+    for (kind, value) in error.context() {
+        if matches!(kind, ContextKind::Usage | ContextKind::Suggested) {
+            continue;
+        }
+        match value {
+            ContextValue::String(value) => {
+                literals.insert(value.clone());
+            }
+            ContextValue::Strings(values) => literals.extend(values.iter().cloned()),
+            ContextValue::StyledStr(value) => {
+                literals.insert(value.to_string());
+            }
+            ContextValue::StyledStrs(values) => {
+                literals.extend(values.iter().map(ToString::to_string));
+            }
+            _ => {}
+        }
+    }
+    let mut literals = literals
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    literals.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    let mut replacements = Vec::new();
+    for (index, literal) in literals.into_iter().enumerate() {
+        let token = format!("\u{e000}SKIT{index}\u{e001}");
+        if output.contains(&literal) {
+            output = output.replace(&literal, &token);
+            replacements.push((token, literal));
+        }
+    }
+    output = localize(locale, &output);
+    for (token, literal) in replacements {
+        output = output.replace(&token, &literal);
+    }
+    output
 }
 
 /// Build the command tree with each skit-authored text already translated.
@@ -249,7 +296,7 @@ enum Command {
         /// Replacement description.
         description: String,
     },
-    /// Rename one entry and derive its new slug.
+    /// Rename one entry without changing its slug.
     Rename {
         /// Entry slug or display name.
         #[arg(add = ArgValueCandidates::new(entry_candidates))]
@@ -1051,7 +1098,13 @@ fn interactive_run_form(
     set_form_value(
         &mut form,
         "_skit_args",
-        &join_editable_arguments(&args.extra_args),
+        &join_editable_arguments(if !args.extra_args.is_empty() {
+            &args.extra_args
+        } else if args.forget_args {
+            &[]
+        } else {
+            &saved.extra_args
+        }),
     );
     set_form_value(&mut form, "_skit_dry_run", &args.dry_run.to_string());
     Ok((form, initial))
@@ -1091,25 +1144,27 @@ fn changed_form_values(
         .collect()
 }
 
-#[cfg(target_os = "windows")]
 fn split_editable_arguments(value: &str) -> Result<Vec<String>, CliError> {
-    split_windows_arguments(value)
+    #[cfg(target_os = "windows")]
+    {
+        split_windows_arguments(value)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        shlex::split(value)
+            .ok_or_else(|| CliError::Usage(Message::new("extra arguments have invalid quoting")))
+    }
 }
 
-#[cfg(not(target_os = "windows"))]
-fn split_editable_arguments(value: &str) -> Result<Vec<String>, CliError> {
-    shlex::split(value)
-        .ok_or_else(|| CliError::Usage(Message::new("extra arguments have invalid quoting")))
-}
-
-#[cfg(target_os = "windows")]
 fn join_editable_arguments(arguments: &[String]) -> String {
-    join_windows_arguments(arguments)
-}
-
-#[cfg(not(target_os = "windows"))]
-fn join_editable_arguments(arguments: &[String]) -> String {
-    shlex::try_join(arguments.iter().map(String::as_str)).unwrap_or_default()
+    #[cfg(target_os = "windows")]
+    {
+        join_windows_arguments(arguments)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        shlex::try_join(arguments.iter().map(String::as_str)).unwrap_or_default()
+    }
 }
 
 #[cfg(any(test, target_os = "windows"))]
@@ -1151,6 +1206,11 @@ fn split_windows_arguments(value: &str) -> Result<Vec<String>, CliError> {
                 continue;
             }
             if character == '"' {
+                if quoted && index + 1 < characters.len() && characters[index + 1] == '"' {
+                    argument.push('"');
+                    index += 2;
+                    continue;
+                }
                 quoted = !quoted;
                 index += 1;
                 continue;
@@ -1293,7 +1353,8 @@ fn list(
         let stderr = io::stderr();
         let mut errors = stderr.lock();
         for diagnostic in &scan.diagnostics {
-            let warning = format_text(active_locale(), "warning: {}", &[&diagnostic.message]);
+            let detail = diagnostic.localize(active_locale());
+            let warning = format_text(active_locale(), "warning: {}", &[&detail]);
             writeln!(errors, "{warning}")?;
         }
     }
@@ -1466,19 +1527,6 @@ fn show(
 fn show_source_text(store: &FileStore, entry: &Entry) -> Result<String, CliError> {
     if entry.meta.kind.as_str() == "command" || entry.meta.kind.as_str() == "exe" {
         return Ok(String::new());
-    }
-    if entry.meta.kind.as_str() == "prompt" {
-        let path = if entry.meta.mode == StorageMode::Copy {
-            store
-                .entry_dir_path(&entry.slug)
-                .join(stored_filename("prompt").expect("prompt has a stored file name"))
-        } else {
-            PathBuf::from(&entry.meta.source)
-        };
-        let bytes = fs::read(&path).map_err(|error| source_error("read", &path, error))?;
-        return String::from_utf8(bytes).map_err(|_| CliError::SourceEncoding {
-            path: path.display().to_string(),
-        });
     }
     let Some(path) = source_path(store, entry) else {
         return Ok(String::new());
@@ -1976,6 +2024,11 @@ fn edit_with_config(
         }
         Err(error) => return Err(error.into()),
     };
+    if matches!(held.meta.kind.as_str(), "command" | "exe") {
+        return Err(CliError::Usage(
+            Message::new("entry {} does not have an editable source").with(&held.slug),
+        ));
+    }
     let target = source_path(store, &held).ok_or_else(|| {
         CliError::Usage(Message::new("entry {} does not have an editable source").with(&held.slug))
     })?;
@@ -2076,6 +2129,16 @@ fn deps(
     let mut held = service.show(&args.selector)?;
     let mut settings = EntrySettings::from_meta(&held.meta);
     let kind = held.meta.kind.as_str().to_owned();
+    if args.clear && !args.dependencies.is_empty() {
+        return Err(CliError::Usage(Message::new(
+            "use --dep or --clear, not both",
+        )));
+    }
+    if args.clear_needs && !args.needs.is_empty() {
+        return Err(CliError::Usage(Message::new(
+            "use --need or --clear-needs, not both",
+        )));
+    }
     let had_legacy_package_metadata =
         !settings.dependencies.is_empty() || !settings.requires_python.is_empty();
     let package_change =
@@ -2098,16 +2161,6 @@ fn deps(
     {
         return Err(CliError::Usage(Message::new(
             "managed dependencies require copy storage",
-        )));
-    }
-    if args.clear && !args.dependencies.is_empty() {
-        return Err(CliError::Usage(Message::new(
-            "use --dep or --clear, not both",
-        )));
-    }
-    if args.clear_needs && !args.needs.is_empty() {
-        return Err(CliError::Usage(Message::new(
-            "use --need or --clear-needs, not both",
         )));
     }
     let mut effective_dependencies = settings.dependencies.clone();
@@ -2241,9 +2294,10 @@ fn prepare_source_management(
     manage: &[String],
     unmanage: &[String],
     normalize: &[String],
-) -> Result<String, CliError> {
+) -> Result<(String, Vec<ParamDecl>), CliError> {
     if !resync && manage.is_empty() && unmanage.is_empty() && normalize.is_empty() {
-        return Ok(source);
+        let managed = managed_params(kind, &source);
+        return Ok((source, managed));
     }
     if mode == StorageMode::Reference {
         return Err(CliError::Usage(Message::new(
@@ -2305,9 +2359,7 @@ fn prepare_source_management(
             managed.push(normalized);
         }
     }
-    let rewritten = write_managed_params(kind, &source, &managed)
-        .map_err(|error| CliError::Usage(error.message()))?;
-    Ok(rewritten)
+    Ok((source, managed))
 }
 
 fn params(
@@ -2425,7 +2477,8 @@ fn params(
     let original_source = source_path(store, &held)
         .and_then(|path| fs::read_to_string(path).ok())
         .unwrap_or_default();
-    let mut source = prepare_source_management(
+    let mut settings = EntrySettings::from_meta(&held.meta);
+    let (mut source, prepared_managed) = prepare_source_management(
         held.meta.kind.as_str(),
         held.meta.mode,
         original_source.clone(),
@@ -2434,8 +2487,11 @@ fn params(
         &args.unmanage,
         &args.normalize,
     )?;
-    let mut settings = EntrySettings::from_meta(&held.meta);
-    let mut declarations = form_params(held.meta.kind.as_str(), &source, &settings);
+    let mut declarations = if source_parameter_kind && has_source_schema_operation {
+        form_params_from_managed(prepared_managed, &settings)
+    } else {
+        form_params(held.meta.kind.as_str(), &source, &settings)
+    };
     for item in &settings.parameters {
         if !declarations.iter().any(|current| current.name == item.name) {
             declarations.push(item.clone());
@@ -2837,10 +2893,10 @@ enum RunnerSelection {
 }
 
 impl RunnerSelection {
-    fn label(&self) -> String {
+    fn label(&self, locale: Locale) -> String {
         match self {
             Self::Name(name) => name.clone(),
-            Self::Row(row) => format!("row {row}"),
+            Self::Row(row) => Message::new("row {}").with(row).localize(locale),
         }
     }
 }
@@ -2857,11 +2913,13 @@ fn parse_binding(value: &str) -> Result<ParameterBinding, CliError> {
     }
 }
 
-fn assignment<'a>(value: &'a str, field: &str) -> Result<(&'a str, &'a str), CliError> {
+fn assignment<'a>(value: &'a str, field: &'static str) -> Result<(&'a str, &'a str), CliError> {
     value
         .split_once('=')
         .filter(|(name, _)| !name.is_empty())
-        .ok_or_else(|| CliError::Usage(Message::new("{} needs NAME=VALUE").with(field)))
+        .ok_or_else(|| {
+            CliError::Usage(Message::new("{} needs NAME=VALUE").nested(Message::term(field)))
+        })
 }
 
 fn parameter_mut<'a>(
@@ -2983,8 +3041,16 @@ fn runner(command: RunnerCommand) -> Result<(), CliError> {
                     println!("{}", serde_json::to_string(&output)?);
                 } else {
                     for row in rows {
-                        let status = row.reason.as_deref().unwrap_or("valid");
-                        println!("{}\t{}\t{}", row.index, row.descriptor, status);
+                        let locale = active_locale();
+                        let status = row
+                            .localized_reason(locale)
+                            .unwrap_or_else(|| text(locale, "valid").to_owned());
+                        println!(
+                            "{}\t{}\t{}",
+                            row.index,
+                            row.localized_descriptor(locale),
+                            status
+                        );
                     }
                 }
                 return Ok(());
@@ -3027,7 +3093,7 @@ fn runner(command: RunnerCommand) -> Result<(), CliError> {
                     )));
                 }
             };
-            let target = selection.label();
+            let target = selection.label(active_locale());
             if !yes {
                 if no_input || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
                     return Err(CliError::ConfirmationRequiredFor("runner removal"));
@@ -3123,12 +3189,8 @@ fn doctor(
     rebuild: bool,
 ) -> Result<i32, CliError> {
     let before = service.list()?;
-    let rebuild_problems = if rebuild {
-        before
-            .diagnostics
-            .iter()
-            .map(|diagnostic| diagnostic.message.clone())
-            .collect::<Vec<_>>()
+    let rebuild_diagnostics = if rebuild {
+        before.diagnostics.clone()
     } else {
         Vec::new()
     };
@@ -3159,7 +3221,7 @@ fn doctor(
         .map(|entry| entry.meta.name.clone())
         .collect::<Vec<_>>();
     let mut needs_missing = BTreeMap::<String, Vec<String>>::new();
-    let mut launch_blocked = BTreeMap::<String, String>::new();
+    let mut launch_blocked = BTreeMap::<String, Message>::new();
     for entry in &entries {
         let mut settings = EntrySettings::from_meta(&entry.meta);
         if entry.meta.kind.as_str() == "python"
@@ -3182,16 +3244,27 @@ fn doctor(
             launch_blocked.insert(entry.meta.name.clone(), reason);
         }
     }
-    let bad_runners = config.invalid_runner_rows()?;
+    let bad_runner_rows = config
+        .runner_rows()?
+        .into_iter()
+        .filter(|row| row.reason.is_some())
+        .collect::<Vec<_>>();
+    let bad_runners = bad_runner_rows
+        .iter()
+        .map(|row| row.descriptor.clone())
+        .collect::<Vec<_>>();
     let mirror = config.mirror()?;
     let scripts = store.data_dir().join("scripts");
     let size = directory_size(&scripts);
-    let uv_required = entries.is_empty()
-        || entries
-            .iter()
-            .any(|entry| entry.meta.kind.as_str() == "python");
+    let uv_required = entries
+        .iter()
+        .any(|entry| entry.meta.kind.as_str() == "python");
     let code = if uv.is_some() || !uv_required { 0 } else { 1 };
     if json {
+        let launch_blocked = launch_blocked
+            .iter()
+            .map(|(name, reason)| (name, reason.localize(Locale::En)))
+            .collect::<BTreeMap<_, _>>();
         println!(
             "{}",
             serde_json::json!({
@@ -3203,7 +3276,10 @@ fn doctor(
                 "launch_blocked": launch_blocked,
                 "runner_rows_invalid": bad_runners,
                 "rebuilt": rebuilt_entries,
-                "rebuild_problems": rebuild_problems,
+                "rebuild_problems": rebuild_diagnostics
+                    .iter()
+                    .map(|diagnostic| &diagnostic.message)
+                    .collect::<Vec<_>>(),
                 "mirror": {
                     "enabled": mirror.enabled,
                     "pypi": mirror.pypi,
@@ -3221,7 +3297,8 @@ fn doctor(
     } else {
         match uv {
             Some(path) => humanln!("OK uv: {}", path.display()),
-            None => humanln!("ERROR uv: not found"),
+            None if uv_required => humanln!("ERROR uv: not found"),
+            None => humanln!("OK uv: not required"),
         }
         humanln!("Entries: {}", scan.entries.len());
         humanln!("Library: {} ({} bytes)", scripts.display(), size);
@@ -3248,13 +3325,23 @@ fn doctor(
             );
         }
         for (name, reason) in launch_blocked {
-            humanln!("WARN {}: a run would refuse to start: {}", name, reason);
+            println!(
+                "{}",
+                Message::new("WARN {}: a run would refuse to start: {}")
+                    .with(name)
+                    .nested(reason)
+                    .localize(active_locale())
+            );
         }
-        if !bad_runners.is_empty() {
-            humanln!("WARN malformed prompt runners: {}", bad_runners.join(", "));
+        if !bad_runner_rows.is_empty() {
+            let labels = bad_runner_rows
+                .iter()
+                .map(|row| row.localized_descriptor(active_locale()))
+                .collect::<Vec<_>>();
+            humanln!("WARN malformed prompt runners: {}", labels.join(", "));
         }
-        for problem in rebuild_problems {
-            humanln!("WARN {}", problem);
+        for diagnostic in rebuild_diagnostics {
+            humanln!("WARN {}", diagnostic.localize(active_locale()));
         }
     }
     Ok(code)
@@ -3295,19 +3382,19 @@ fn doctor_launch_block<P: ProgramProbe>(
     settings: &EntrySettings,
     config: &FileConfigStore,
     probe: &P,
-) -> Result<Option<String>, CliError> {
+) -> Result<Option<Message>, CliError> {
     if !matches!(entry.meta.workdir.as_str(), "invoke" | "store" | "origin") {
         let path = Path::new(&entry.meta.workdir);
         if !path.is_absolute() {
             return Ok(Some(
-                "the custom working directory is not absolute".to_owned(),
+                Message::new("custom working directory must be absolute: {}")
+                    .with(&entry.meta.workdir),
             ));
         }
         if !probe.is_dir(path) {
-            return Ok(Some(format!(
-                "working directory does not exist: {}",
-                path.display()
-            )));
+            return Ok(Some(
+                Message::new("working directory does not exist: {}").with(path.display()),
+            ));
         }
     }
     let required = match entry.meta.kind.as_str() {
@@ -3331,7 +3418,7 @@ fn doctor_launch_block<P: ProgramProbe>(
         "command" => Some(if cfg!(windows) { "cmd.exe" } else { "sh" }.to_owned()),
         "js" | "ts" => match resolve_javascript_runtime(settings, probe) {
             Ok(_) => None,
-            Err(error) => return Ok(Some(error.to_string())),
+            Err(error) => return Ok(Some(error.message())),
         },
         "prompt" if !settings.runner.is_empty() => {
             let runner = config
@@ -3339,21 +3426,20 @@ fn doctor_launch_block<P: ProgramProbe>(
                 .into_iter()
                 .find(|runner| runner.name == settings.runner);
             let Some(runner) = runner else {
-                return Ok(Some(format!(
-                    "prompt runner is not configured: {}",
-                    settings.runner
-                )));
+                return Ok(Some(
+                    Message::new("prompt runner {} is not configured").with(&settings.runner),
+                ));
             };
             runner.argv.first().cloned()
         }
         "prompt" | "exe" => None,
-        kind => return Ok(Some(format!("unknown entry kind: {kind}"))),
+        kind => return Ok(Some(Message::new("unknown entry kind: {}").with(kind))),
     };
     Ok(required.and_then(|name| {
         probe
             .find_program(&name)
             .is_none()
-            .then(|| format!("required program was not found: {name}"))
+            .then(|| Message::new("required program was not found: {}").with(name))
     }))
 }
 
@@ -3932,12 +4018,15 @@ fn tui_health_report(
             translate_detail: false,
         },
     ];
-    items.extend(scan.diagnostics.into_iter().map(|diagnostic| ReportItem {
-        status: "error".to_owned(),
-        label: diagnostic.slug.unwrap_or_else(|| "Library".to_owned()),
-        translate_label: false,
-        detail: diagnostic.message,
-        translate_detail: false,
+    items.extend(scan.diagnostics.into_iter().map(|diagnostic| {
+        let detail = diagnostic.localize(active_locale());
+        ReportItem {
+            status: "error".to_owned(),
+            label: diagnostic.slug.unwrap_or_else(|| "Library".to_owned()),
+            translate_label: false,
+            detail,
+            translate_detail: false,
+        }
     }));
     Ok(Screen::Report(ReportView {
         title: "Health".to_owned(),
@@ -4366,7 +4455,7 @@ fn tui_submit_settings(
         || !tui_value(values, "source:unmanage").is_empty()
         || !tui_value(values, "source:normalize").is_empty();
     if let Some(source) = rewritten_source.take() {
-        let mut rewritten = prepare_source_management(
+        let (mut rewritten, mut managed) = prepare_source_management(
             entry.meta.kind.as_str(),
             entry.meta.mode,
             source,
@@ -4375,7 +4464,6 @@ fn tui_submit_settings(
             &tui_split_list(tui_value(values, "source:unmanage")),
             &tui_split_list(tui_value(values, "source:normalize")),
         )?;
-        let mut managed = managed_params(entry.meta.kind.as_str(), &rewritten);
         for parameter in &mut managed {
             if let Some(submitted) = declarations
                 .iter()
@@ -4669,8 +4757,6 @@ enum CliError {
         #[source]
         source: io::Error,
     },
-    #[error("{path} is not valid UTF-8")]
-    SourceEncoding { path: String },
     #[error("could not determine the platform data directory; pass --data-dir or SKIT_DATA_DIR")]
     DataDirectoryUnavailable,
     #[error("could not determine the platform {0} directory; set the matching SKIT_*_DIR variable")]
@@ -4693,7 +4779,8 @@ impl Localize for CliError {
                 Message::new("confirmation is required; pass --yes to remove the entry")
             }
             Self::ConfirmationRequiredFor(operation) => {
-                Message::new("confirmation is required for {}; pass --yes").with(operation)
+                Message::new("confirmation is required for {}; pass --yes")
+                    .nested(Message::term(operation))
             }
             Self::Aborted => Message::new("operation cancelled"),
             Self::Source {
@@ -4701,10 +4788,9 @@ impl Localize for CliError {
                 path,
                 source,
             } => Message::new("could not {} {}: {}")
-                .with(operation)
+                .nested(Message::term(operation))
                 .with(path)
                 .with(source),
-            Self::SourceEncoding { path } => Message::new("{} is not valid UTF-8").with(path),
             Self::DataDirectoryUnavailable => Message::new(
                 "could not determine the platform data directory; pass --data-dir or SKIT_DATA_DIR",
             ),
@@ -4732,7 +4818,6 @@ impl CliError {
             | Self::Config(_)
             | Self::State(_)
             | Self::Source { .. }
-            | Self::SourceEncoding { .. }
             | Self::DataDirectoryUnavailable
             | Self::DirectoryUnavailable(_) => ExitClass::Skit.code() as i32,
         }

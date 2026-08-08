@@ -71,7 +71,7 @@ impl Localize for StateWriteError {
                 path,
                 reason,
             } => Message::new("could not {} state at {}: {}")
-                .with(operation)
+                .nested(Message::term(operation))
                 .with(path)
                 .with(reason),
             Self::Encode { reason } => Message::new("could not encode state: {}").with(reason),

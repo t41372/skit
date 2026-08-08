@@ -245,7 +245,7 @@ fn an_empty_prompt_runner_clears_the_pin() {
 }
 
 #[test]
-fn prompt_show_reports_source_read_and_utf8_errors() {
+fn prompt_show_degrades_when_the_stored_source_is_damaged() {
     let sandbox = Sandbox::new();
     let prompt = sandbox.data.path().join("strict.prompt.md");
     fs::write(&prompt, "Review this.\n").unwrap();
@@ -267,25 +267,22 @@ fn prompt_show_reports_source_read_and_utf8_errors() {
         .command()
         .args(["show", "strict-prompt", "--json"])
         .assert()
-        .failure()
-        .stdout("")
-        .stderr(predicate::str::contains("UTF-8"));
+        .success()
+        .stdout(predicate::str::contains("\"missing\":false"));
     sandbox
         .command()
         .args(["show", "strict-prompt"])
         .assert()
-        .failure()
-        .stdout("")
-        .stderr(predicate::str::contains("UTF-8"));
+        .success()
+        .stdout(predicate::str::contains("Strict prompt"));
 
     fs::remove_file(stored).unwrap();
     sandbox
         .command()
         .args(["show", "strict-prompt", "--json"])
         .assert()
-        .failure()
-        .stdout("")
-        .stderr(predicate::str::contains("read"));
+        .success()
+        .stdout(predicate::str::contains("\"missing\":true"));
 }
 
 fn write_legacy_command(sandbox: &Sandbox, slug: &str, template: &str, required: bool) {

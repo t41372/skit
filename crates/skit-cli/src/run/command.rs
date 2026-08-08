@@ -197,6 +197,7 @@ impl RunError {
             Self::Dependencies(DependencyError::InstallerNotFound { .. })
             | Self::Dependencies(DependencyError::InstallFailed { .. })
             | Self::Dependencies(DependencyError::Io { .. })
+            | Self::Dependencies(DependencyError::Rollback { .. })
             | Self::Uv(_) => 126,
             Self::RunnerNotFound { .. } => 126,
             Self::State(_)
@@ -608,13 +609,13 @@ fn stage_injected_source(
     }
     let kind = entry.meta.kind.as_str();
     let rewritten = inject_values(kind, source, declarations, &assembly.inject_values)?;
+    let entry_dir = store.entry_dir_path(&entry.slug);
+    sweep_staged_sources(&entry_dir);
     let original = store.payload_path(entry)?;
     let suffix = original
         .extension()
         .and_then(|value| value.to_str())
         .map_or(String::new(), |value| format!(".{value}"));
-    let entry_dir = store.entry_dir_path(&entry.slug);
-    sweep_staged_sources(&entry_dir);
     let path = entry_dir.join(format!(".run-{}{}", EntryId::generate().as_str(), suffix));
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);

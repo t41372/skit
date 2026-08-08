@@ -22,6 +22,14 @@ the same actions, deterministic behavior.
 - **Shell completion** is dynamic: entry names, preset names, and runner names
   all complete.
 
+## Global flags
+
+| Flag | Effect |
+| --- | --- |
+| `--data-dir PATH` | use a specific skit data directory for this command |
+| `--install-completion` | install completion for the current shell |
+| `--show-completion` | print completion for the current shell |
+
 ## Exit codes
 
 | Code | Meaning |
@@ -120,7 +128,12 @@ invocation:
 | `--default NAME=VALUE` | declared default |
 | `--choices NAME=a,b,c` | choice values |
 | `--deliver NAME=env\|flag\|placeholder` | how the value reaches the script |
+| `--binding NAME=const\|input\|envdefault\|none` | source binding for a declared field |
 | `--flag NAME=--out` | the CLI flag to assemble (empty = positional) |
+| `--multiple NAME` / `--no-multiple NAME` | allow many values or only one value |
+| `--repeat NAME` / `--no-repeat NAME` | repeat the flag for each value or put all values after one flag |
+| `--env-target NAME=ENVVAR` | environment variable set by `env` delivery |
+| `--action NAME=ACTION` | Boolean flag action, such as `store_true` or `store_false` |
 | `--required NAME` / `--optional NAME` | requiredness |
 | `--help-text NAME=TEXT` / `--prompt NAME=TEXT` | descriptions |
 | `--secret NAME` / `--no-secret NAME` | secret marking (see [Secrets](/en/docs/parameters#secrets)) |

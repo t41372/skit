@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
-use skit_i18n::{Localize, Message};
+use skit_i18n::{Locale, Localize, Message};
 use thiserror::Error;
 use toml::{Table, Value};
 
@@ -67,6 +67,27 @@ pub struct PromptRunnerRow {
     pub reason: Option<String>,
     /// Stable display text for malformed shapes.
     pub descriptor: String,
+    reason_message: Option<Message>,
+    descriptor_message: Option<Message>,
+}
+
+impl PromptRunnerRow {
+    /// Return the validation reason in the selected locale.
+    #[must_use]
+    pub fn localized_reason(&self, locale: Locale) -> Option<String> {
+        self.reason_message
+            .as_ref()
+            .map(|message| message.localize(locale))
+    }
+
+    /// Return the display label in the selected locale.
+    #[must_use]
+    pub fn localized_descriptor(&self, locale: Locale) -> String {
+        self.descriptor_message.as_ref().map_or_else(
+            || self.descriptor.clone(),
+            |message| message.localize(locale),
+        )
+    }
 }
 
 /// Report a configuration read or transaction failure.
@@ -109,7 +130,7 @@ impl Localize for ConfigError {
                 path,
                 reason,
             } => Message::new("could not {} configuration at {}: {}")
-                .with(operation)
+                .nested(Message::term(operation))
                 .with(path)
                 .with(reason),
             Self::Parse { path, reason } => {
@@ -379,13 +400,22 @@ impl FileConfigStore {
     }
 
     fn load(&self) -> Result<Table, ConfigError> {
+        self.load_document().map(|(_, document)| document)
+    }
+
+    fn load_document(&self) -> Result<(String, Table), ConfigError> {
         let path = self.path();
         match fs::read_to_string(&path) {
-            Ok(text) => toml::from_str(&text).map_err(|error| ConfigError::Parse {
-                path: path.display().to_string(),
-                reason: error.to_string(),
-            }),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Table::new()),
+            Ok(text) => {
+                let document = toml::from_str(&text).map_err(|error| ConfigError::Parse {
+                    path: path.display().to_string(),
+                    reason: error.to_string(),
+                })?;
+                Ok((text, document))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok((String::new(), Table::new()))
+            }
             Err(error) => Err(io_error("read", &path, error)),
         }
     }
@@ -397,10 +427,13 @@ impl FileConfigStore {
         let lock_path = self.lock_path();
         let _lock =
             acquire_lock(&lock_path).map_err(|error| io_error("lock", &lock_path, error))?;
-        let mut document = self.load()?;
+        let (original, mut document) = self.load_document()?;
+        let before = document.clone();
         let result = operation(&mut document)?;
-        let encoded =
-            toml::to_string_pretty(&document).expect("a parsed TOML value tree must serialize");
+        let desired = toml::to_string_pretty(&document)
+            .expect("a configuration table contains only TOML values");
+        let encoded = crate::toml_document::merge_update(&original, &desired, &before, &document)
+            .map_err(|reason| ConfigError::Encode { reason })?;
         let path = self.path();
         atomic_write_bytes(&path, encoded.as_bytes())
             .map_err(|error| io_error("write", &path, error))?;
@@ -707,22 +740,36 @@ fn runner_row(index: usize, value: &Value) -> PromptRunnerRow {
                 .collect::<Option<Vec<_>>>()
         });
     let parsed = table.and_then(runner_from_row);
-    let reason = parsed.as_ref().map_or_else(
-        || Some("runner row needs a name and a string argv array".to_owned()),
-        |runner| validate_runner(runner).err().map(|error| error.to_string()),
+    let reason_message = parsed.as_ref().map_or_else(
+        || {
+            Some(Message::new(
+                "runner row needs a name and a string argv array",
+            ))
+        },
+        |runner| validate_runner(runner).err().map(|error| error.message()),
     );
-    let descriptor = name.clone().unwrap_or_else(|| {
-        value
-            .as_str()
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("row {index}"))
-    });
+    let (descriptor, descriptor_message) = name.clone().map_or_else(
+        || {
+            value.as_str().map_or_else(
+                || {
+                    let message = Message::new("row {}").with(index);
+                    (message.localize(Locale::En), Some(message))
+                },
+                |value| (value.to_owned(), None),
+            )
+        },
+        |name| (name, None),
+    );
     PromptRunnerRow {
         index,
         name,
         argv,
-        reason,
+        reason: reason_message
+            .as_ref()
+            .map(|message| message.localize(Locale::En)),
         descriptor,
+        reason_message,
+        descriptor_message,
     }
 }
 

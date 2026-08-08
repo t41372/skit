@@ -221,9 +221,11 @@ fn render_library(
             )]),
             Line::from(format!("{}: {}", text(locale, "Slug"), entry.slug)),
             Line::from(format!("{}: {}", text(locale, "Kind"), entry.kind)),
-            Line::from(
-                format!("{}: {:?}", text(locale, "Storage mode"), entry.mode).to_lowercase(),
-            ),
+            Line::from(format_text(
+                locale,
+                "Storage mode: {}",
+                &[&format!("{:?}", entry.mode).to_lowercase()],
+            )),
             Line::from(""),
             Line::from(entry.description.as_str()),
         ],

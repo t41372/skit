@@ -139,6 +139,15 @@ fn add_infers_source_kinds_and_supports_command_and_prompt_entries() {
     assert!(entries.iter().any(|item| item["kind"] == "python"));
     assert!(entries.iter().any(|item| item["kind"] == "prompt"));
     assert!(entries.iter().any(|item| item["kind"] == "command"));
+    let command = sandbox.command_json(&["show", "print", "--json"]);
+    let fields = command["fields"].as_array().unwrap();
+    assert_eq!(fields.len(), 1);
+    assert_eq!(fields[0]["key"], "value");
+    let command_meta =
+        fs::read_to_string(sandbox.data.path().join("scripts/print/meta.toml")).unwrap();
+    assert!(command_meta.contains("params = [\"value\"]"));
+    assert!(command_meta.contains("[[parameters]]"));
+    assert!(command_meta.contains("delivery = \"placeholder\""));
     assert_eq!(
         fs::read(sandbox.data.path().join("scripts/python-tool/script.py")).unwrap(),
         b"print('hello')\n"
@@ -367,14 +376,14 @@ fn doctor_rebuilds_the_registry_and_reports_all_owned_paths() {
 }
 
 #[test]
-fn doctor_requires_uv_only_for_empty_or_python_libraries() {
+fn doctor_requires_uv_only_for_python_libraries() {
     let empty = Sandbox::new();
     empty
         .command()
         .env("PATH", empty.data.path())
         .args(["doctor", "--json"])
         .assert()
-        .code(1)
+        .success()
         .stdout(predicate::str::contains("\"uv\":null"));
 
     let commands = Sandbox::new();
@@ -385,6 +394,29 @@ fn doctor_requires_uv_only_for_empty_or_python_libraries() {
         .args(["doctor", "--json"])
         .assert()
         .success();
+
+    let python = Sandbox::new();
+    let source = python.data.path().join("tool.py");
+    fs::write(&source, "print(1)\n").unwrap();
+    python
+        .command()
+        .args(["add", source.to_str().unwrap(), "--name", "Tool"])
+        .assert()
+        .success();
+    python
+        .command()
+        .env("PATH", python.data.path())
+        .args(["doctor", "--json"])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("\"uv\":null"));
+    python
+        .command()
+        .env("PATH", python.data.path())
+        .args(["doctor"])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("ERROR uv: not found"));
 }
 
 #[test]
@@ -432,15 +464,49 @@ fn agent_install_writes_the_exact_bundled_skill_to_an_explicit_target() {
 #[test]
 fn edit_uses_the_configured_editor_and_refuses_payloadless_entries() {
     let sandbox = Sandbox::new();
-    sandbox.write_command_entry();
+    sandbox
+        .command()
+        .args(["add", "--cmd", "echo ok", "--name", "Command"])
+        .assert()
+        .success();
+    let executable = sandbox.data.path().join("program.bin");
+    fs::write(&executable, "program\n").unwrap();
+    sandbox
+        .command()
+        .args([
+            "add",
+            executable.to_str().unwrap(),
+            "--exe",
+            "--name",
+            "Program",
+        ])
+        .assert()
+        .success();
     sandbox
         .command()
         .args(["config", "editor", "true"])
         .assert()
         .success();
+    for selector in ["command", "program"] {
+        sandbox
+            .command()
+            .args(["edit", selector, "--no-input"])
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("editable source"));
+    }
+
+    let missing = sandbox.data.path().join("missing.py");
+    fs::write(&missing, "print('gone')\n").unwrap();
     sandbox
         .command()
-        .args(["edit", "demo"])
+        .args(["add", missing.to_str().unwrap(), "--name", "Missing"])
+        .assert()
+        .success();
+    fs::remove_file(sandbox.data.path().join("scripts/missing/script.py")).unwrap();
+    sandbox
+        .command()
+        .args(["edit", "missing", "--no-input"])
         .assert()
         .code(2)
         .stderr(predicate::str::contains("editable source"));

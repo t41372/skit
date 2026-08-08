@@ -79,7 +79,7 @@ bash scripts/check_coverage.sh lcov.info
 cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20
 cargo deny --locked check
 cargo audit --deny warnings
-zizmor .github/workflows
+zizmor .github/workflows .github/actions/install-hyperfine/action.yml
 ```
 
 The coverage script merges records from all test binaries. It rejects every uncovered executable
@@ -115,6 +115,11 @@ it with `skit agent install`. Tests verify its command examples against the real
 ## Documentation
 
 Edit public pages in `docs/content/docs/`. The landing page includes `README.md`. Verify the site:
+
+English is the source locale. Every public page change must update its `.zh-CN.mdx` and
+`.zh-TW.mdx` siblings. Keep explicit translated heading anchors equal to the English slug. A
+README change must also update `README.zh-CN.md` and `README.zh-TW.md`; the documentation build
+copies all three files with `docs/scripts/sync-readme.mjs`.
 
 ```bash
 cd docs

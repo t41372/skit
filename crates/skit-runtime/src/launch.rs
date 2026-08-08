@@ -134,7 +134,7 @@ pub enum LaunchError {
     PromptBodyRequired,
     /// A prompt runner does not have one valid prompt token.
     #[error(
-        "prompt runner {name:?} must contain exactly one {{prompt}} marker outside the program token"
+        "prompt runner {name:?} must contain exactly one {{{{prompt}}}} marker outside the program token"
     )]
     InvalidPromptRunner { name: String },
     /// A prompt argument contains a NUL character.
@@ -194,7 +194,7 @@ impl Localize for LaunchError {
             Self::PromptRunnerRequired => Message::new("prompt runner is required"),
             Self::PromptBodyRequired => Message::new("prompt body is required"),
             Self::InvalidPromptRunner { name } => Message::new(
-                "prompt runner {} must contain exactly one {prompt} marker outside the program token",
+                "prompt runner {} must contain exactly one {{prompt}} marker outside the program token",
             )
             .quoted(name),
             Self::PromptContainsNul => Message::new("the rendered prompt contains a NUL character"),
@@ -206,7 +206,7 @@ impl Localize for LaunchError {
             .with(limit)
             .with(unit),
             Self::Process { operation, source } => Message::new("could not {} child process: {}")
-                .with(operation)
+                .nested(Message::term(operation))
                 .with(source),
         }
     }

@@ -2,7 +2,7 @@ use skit_domain::{
     EntrySettings,
     parameters::{ParamDecl, ParameterBinding, ParameterDelivery},
 };
-use skit_form::form_params;
+use skit_form::{form_params, form_params_from_managed};
 
 fn env(name: &str) -> ParamDecl {
     let mut value = ParamDecl::new(name);
@@ -100,6 +100,27 @@ WIDTH = 800
     assert_eq!(fields[0].delivery, ParameterDelivery::Inject);
     assert_eq!(fields[1].delivery, ParameterDelivery::Flag);
     assert_eq!(fields[2].delivery, ParameterDelivery::Env);
+}
+
+#[test]
+fn prepared_managed_fields_can_skip_a_second_source_parse() {
+    let mut width = ParamDecl::new("WIDTH");
+    width.binding = ParameterBinding::Const;
+    let settings = EntrySettings {
+        parameters: vec![env("token"), flag("WIDTH")],
+        ..EntrySettings::default()
+    };
+
+    let fields = form_params_from_managed(vec![width], &settings);
+
+    assert_eq!(
+        fields
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<Vec<_>>(),
+        ["WIDTH", "token"]
+    );
+    assert_eq!(fields[0].binding, ParameterBinding::Const);
 }
 
 #[test]

@@ -5,7 +5,7 @@ use skit_application::{
     RepositoryError,
 };
 use skit_domain::{Entry, EntryKind, EntryMeta, EntrySummary, Slug, StorageMode};
-use skit_i18n::Message;
+use skit_i18n::{Locale, Message};
 
 #[derive(Debug)]
 struct FakeRepository {
@@ -59,6 +59,26 @@ fn entry() -> Entry {
 }
 
 #[test]
+fn diagnostic_keeps_stable_english_json_and_localizes_human_output() {
+    let diagnostic = Diagnostic::from_message(
+        DiagnosticCode::InvalidSlug,
+        Some("坏-slug".to_owned()),
+        Message::new("invalid entry slug: {}").with("坏-slug"),
+    );
+
+    assert_eq!(
+        serde_json::to_value(&diagnostic).unwrap(),
+        serde_json::json!({
+            "code": "invalid_slug",
+            "slug": "坏-slug",
+            "message": "invalid entry slug: 坏-slug",
+        })
+    );
+    assert_eq!(diagnostic.localize(Locale::ZhCn), "无效的条目短名：坏-slug");
+    assert_eq!(diagnostic.localize(Locale::ZhTw), "無效的項目短名：坏-slug");
+}
+
+#[test]
 fn list_is_deterministic_and_keeps_diagnostics() {
     let repository = FakeRepository {
         scan: LibraryScan {
@@ -68,21 +88,17 @@ fn list_is_deterministic_and_keeps_diagnostics() {
                 summary("alpha", "Alpha"),
             ],
             diagnostics: vec![
-                Diagnostic {
-                    code: DiagnosticCode::CorruptMetadata,
-                    slug: Some("zulu".to_owned()),
-                    message: "later".to_owned(),
-                },
-                Diagnostic {
-                    code: DiagnosticCode::Io,
-                    slug: None,
-                    message: "global".to_owned(),
-                },
-                Diagnostic {
-                    code: DiagnosticCode::InvalidSlug,
-                    slug: Some("alpha".to_owned()),
-                    message: "first".to_owned(),
-                },
+                Diagnostic::plain(
+                    DiagnosticCode::CorruptMetadata,
+                    Some("zulu".to_owned()),
+                    "later".to_owned(),
+                ),
+                Diagnostic::plain(DiagnosticCode::Io, None, "global".to_owned()),
+                Diagnostic::plain(
+                    DiagnosticCode::InvalidSlug,
+                    Some("alpha".to_owned()),
+                    "first".to_owned(),
+                ),
             ],
         },
         resolved: entry(),

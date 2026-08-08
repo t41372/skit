@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/t41372/skit/actions/workflows/ci.yml/badge.svg)](https://github.com/t41372/skit/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/t41372/skit/branch/main/graph/badge.svg)](https://codecov.io/gh/t41372/skit)
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://app.codspeed.io/t41372/skit?utm_source=badge)
 [![Mutation tested: cargo-mutants](https://img.shields.io/badge/mutation%20tested-cargo--mutants-blue)](https://github.com/sourcefrog/cargo-mutants)
 [![PyPI](https://img.shields.io/pypi/v/skit-cli)](https://pypi.org/project/skit-cli/)
 [![Rust 1.97.1](https://img.shields.io/badge/rust-1.97.1-orange)](https://www.rust-lang.org/)
@@ -35,9 +36,9 @@ skit                 # 打開選單——選、填、跑
 
 - **收納腳本與提示詞**。`skit add` 把散落各處的腳本與提示詞收進同一個可搜尋的工具庫。
 - **不用背旗標，也不用為了改個值開編輯器**。旗標、`input()`、你選擇管理的常數，全部變成啟動選單裡有型別、有說明的欄位。Ratatui 表單會在送出時驗證布林值、選項、數字與路徑。
-- **記住你上次填的值**。啟動選單裡的參數下次會自動帶回；清除覆寫值即可使用腳本目前的預設值。常用的存成具名組合——`{cwd}`、`{today}` 這類 token 讓組合跨機器、跨目錄通用。標記為機密的參數永不保存：上次的值、組合、執行歷史裡都不會有它。
+- **記住你上次填的值**。啟動選單裡的參數下次會自動帶回；清除覆寫值即可使用腳本目前的預設值。常用的存成具名預設——`{cwd}`、`{today}` 這類 token 讓預設跨機器、跨目錄通用。標記為機密的參數永不保存：上次的值、預設、執行歷史裡都不會有它。
 - **環境零污染**。Python 腳本的依賴以 PEP 723 語法聲明在腳本開頭，由 uv 在隔離環境裡解析；JS/TS 腳本則有按腳本隔離的 `node_modules`，首次執行時依宣告的套件自動安裝。兩者都不往全域裝任何東西。其他語言沿用你機器上已有的工具——skit 會在執行前檢查腳本聲明的外部命令是否在 `PATH` 上。
-- **提示詞當腳本用**。存一份帶參數的提示詞（管理中的 `{{佔位符}}` 變成輸入欄位），交給你的 coding agent 啟動——claude、codex、opencode，或設定任何你喜歡的執行器。
+- **提示詞當腳本用**。存一份帶參數的提示詞（管理中的 `{{placeholders}}` 變成輸入欄位），交給你的 coding agent 啟動——claude、codex、opencode，或設定任何你喜歡的執行器。
 - **滑鼠鍵盤皆可，多語言支援**。直接執行 `skit` 就是完整 TUI；畫面上每個按鍵提示同時也是可點的按鈕。介面有 English、繁體中文、简体中文（[語言](#語言)）。
 - **也為 AI agent 而生**。每個 TUI 動作都有對應的 CLI 命令，帶 `--json` 輸出與明確退出碼；官方 [Agent Skill](https://agentskills.io) 教 Claude Code、Codex、Cursor、Gemini CLI 等 agent 先查庫、用現成的、把好用的收進庫——見[給你的 AI agent 用](#給你的-ai-agent-用)。
 
@@ -45,7 +46,7 @@ skit                 # 打開選單——選、填、跑
 | --- | --- |
 | 腳本東一支西一支，散落在各個資料夾 | 全部收進同一個選單，附搜尋 |
 | 腳本需要特定套件或工具 | Python（PEP 723 + uv）和 JS/TS（npm）都有按腳本隔離的依賴；任何語言都可宣告外部命令，skit 在執行前檢查是否在 `PATH` 上 |
-| 命令列旗標轉頭就忘、`input()` 一項項問、常數寫死在原始碼裡等著你手改 | 靜態分析把參數通通讀出來，變成互動選單——原始碼一行不動、零設定。上次的值自動帶回；常用的存成組合 |
+| 命令列旗標轉頭就忘、`input()` 一項項問、常數寫死在原始碼裡等著你手改 | 靜態分析把參數通通讀出來，變成互動選單——原始碼一行不動、零設定。上次的值自動帶回；常用的存成預設 |
 | AI 幫你寫的腳本隨對話結束石沉大海，下次又重寫一遍 | agent 先查庫再動手，現成的直接重用；值得留的收進庫裡——一次性腳本變成永久的、參數化的工具 |
 
 不需要為了 skit 特地改你的腳本——這些交給我們處理就好，需要時也會問過你。
@@ -64,19 +65,19 @@ Python、shell、JS/TS 支援最完整：skit 直接讀程式碼找出參數。�
 | **Ruby · Perl · Lua · R** | 各自的直譯器 | — |
 | **可執行檔** | 直接執行 | — |
 | **命令範本** | skit 填好空格後執行 | — |
-| **提示詞** | 你的 coding agent（claude · codex · …） | `{{佔位符}}` |
+| **提示詞** | 你的 coding agent（claude · codex · …） | `{{placeholders}}` |
 
-你的類型沒有自動偵測？手動宣告參數就好——每種類型都享有同樣的啟動選單 / 組合 / `--set` 體驗，連純可執行檔也一樣（宣告的值會以一般命令列參數傳入）。任何條目還能列出它依賴的外部命令（`ffmpeg`、`jq`⋯⋯）；skit 每次執行前都會檢查它們是否在 `PATH` 上。
+你的類型沒有自動偵測？手動宣告參數就好——每種類型都享有同樣的啟動選單 / 預設 / `--set` 體驗，連純可執行檔也一樣（宣告的值會以一般命令列參數傳入）。任何條目還能列出它依賴的外部命令（`ffmpeg`、`jq`⋯⋯）；skit 每次執行前都會檢查它們是否在 `PATH` 上。
 
-Python 和 JS/TS 都有按腳本隔離的依賴套件：uv 解析 PEP 723 區塊，npm 式依賴則安裝到存副本旁的 `node_modules`——安裝一律不執行套件的 lifecycle scripts。更細的部分（複製 vs 引用條目、deno 的 `--allow-all`）見[文檔（英文）](https://t41372.github.io/skit/en/docs/script-types/)。
+Python 和 JS/TS 都有按腳本隔離的依賴套件：uv 解析 PEP 723 區塊，npm 式依賴則安裝到存副本旁的 `node_modules`——安裝一律不執行套件的 lifecycle scripts。更細的部分（複製 vs 引用條目、deno 的 `--allow-all`）見[指令稿類型文件](https://t41372.github.io/skit/zh-TW/docs/script-types/)。
 
 skit 會替 Python 引導 uv，但不會替你裝 JS runtime——node、bun 或 deno 得你自己備好。
 
 ### 提示詞
 
-提示詞條目是給 AI coding agent 的、可重複使用且帶參數的一段文字。加入一個 `.prompt.md` 檔（或用 `skit add --prompt` 直接起草）後，互動加入時可在複核頁中選擇哪些偵測到的 `{{佔位符}}` 要變成輸入欄位。候選不超過 30 個時預設全選；超過 30 個時預設一個都不選，以免把程式碼範例誤認為變數。管理中的欄位完整享有組合 / 上次值 / `--set` 體驗。
+提示詞條目是給 AI coding agent 的、可重複使用且帶參數的一段文字。加入一個 `.prompt.md` 檔，或用 `skit add --prompt` 直接起草。skit 會把最多 30 個偵測到的 `{{placeholders}}` 設為管理中的輸入欄位。偵測數量超過 30 個時，skit 預設不管理任何欄位，以免把程式碼範例誤認為變數。可在項目設定或用 `skit params` 選擇要管理的欄位。管理中的欄位完整享有預設、上次值與 `--set` 體驗。
 
-沒有任何轉義規則要學：凡是你沒交給 skit 管理的內容——包括沒管理的 `{{佔位符}}`——都會逐位元組原樣送達 agent，唯一例外是下文說明的 Pi 警告式單換行降級；每個提示詞還有插值總開關（`--no-interpolate`）。**執行器**在啟動選單上選（或按提示詞釘選）；claude / codex / opencode / amp / antigravity / copilot / cursor / pi 已預先設定，其他 CLI 用 `skit runner add` 註冊。一個誠實的提醒：提示詞不是保密通道——渲染後的內容會落在對方 agent 自己的 session 紀錄裡。各執行器的行為、非互動時的解析規則、Pi 對歧義開頭的警告式降級，以及無 shell 的遞送保證：見[文檔（英文）](https://t41372.github.io/skit/en/docs/prompts/)。
+沒有任何轉義規則要學：凡是你沒交給 skit 管理的內容——包括沒管理的 `{{holes}}`——都會逐位元組原樣送達 agent，唯一例外是下文說明的 Pi 警告式單換行降級；每個提示詞還有插值總開關（`--no-interpolate`）。**執行器**在啟動選單上選（或按提示詞釘選）；claude / codex / opencode / amp / antigravity / copilot / cursor / pi 已預先設定，其他 CLI 用 `skit runner add` 註冊。一個誠實的提醒：提示詞不是保密通道——渲染後的內容會落在對方 agent 自己的 session 紀錄裡。各執行器的行為、非互動時的解析規則、Pi 對歧義開頭的警告式降級，以及無 shell 的遞送保證：見[提示詞文件](https://t41372.github.io/skit/zh-TW/docs/prompts/)。
 
 ```bash
 skit add review.prompt.md            # 管理中的佔位符變成輸入欄位
@@ -119,7 +120,7 @@ skit --version             # 看目前的版本
 ## 從 0.4 升級
 
 0.5 版用 Rust、Ratatui 與 Crossterm 完整取代 Python 與 Textual。執行 `uv tool upgrade skit-cli`
-即可，不必匯出或匯入資料。skit 會原地讀取相同的工具庫、組態、組合、上次
+即可，不必匯出或匯入資料。skit 會原地讀取相同的工具庫、組態、預設、上次
 使用值與 metadata；未知 TOML 欄位也會保留，啟動時不會重寫舊資料。
 
 終端互動變得更直接：搜尋改為不分大小寫的子字串比對；所有純量型別共用文字編輯器，
@@ -142,7 +143,7 @@ skit                    # 打開選單，選腳本，填好輸入，跑
 剩下的 CLI 是給自動化和 AI agent 準備的——每個 TUI 動作都能腳本化：
 
 ```bash
-skit run my_script -p fast    # 用已存的組合執行
+skit run my_script -p fast    # 用已存的預設執行
 skit run my_script --dry-run  # 印出實際會跑的命令，不真的執行
 skit run my_script --set width=800 --no-input   # 直接指定參數值，永不詢問
 skit show my_script --json    # 一支腳本的完整參數結構，機器可讀
@@ -210,7 +211,7 @@ uv tool uninstall skit-cli
 | **Linux** | `~/.local/share/skit` · `~/.local/state/skit` · `~/.config/skit` |
 | **Windows** | `%LOCALAPPDATA%\skit` |
 
-這些目錄裝著你的工具庫、設定、參數組合與上次的值——以及，若 skit 曾自行下載過 uv，那份私有的 `uv` 執行檔（在 `…/skit/bin`，會跟著一起刪掉）。
+這些目錄裝著你的工具庫、設定、參數預設與上次的值——以及，若 skit 曾自行下載過 uv，那份私有的 `uv` 執行檔（在 `…/skit/bin`，會跟著一起刪掉）。
 
 ```bash
 # macOS

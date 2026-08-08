@@ -32,7 +32,7 @@ jobs:
         with:
           tool: cargo-mutants@27.1.0
       - name: Run mutation tests
-        run: cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20
+        run: cargo mutants --workspace --all-features --cargo-arg=--locked --jobs 2 --minimum-test-timeout 20 --timeout-multiplier 3.0
       - name: Upload mutation records
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

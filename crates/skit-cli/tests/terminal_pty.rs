@@ -179,6 +179,102 @@ fn run_pty(
     (status.exit_code(), output)
 }
 
+#[cfg(unix)]
+fn run_with_null_stdin_in_pty(
+    args: &[&str],
+    data: &Path,
+    state: &Path,
+    config: &Path,
+) -> (u32, String) {
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 24,
+            cols: 100,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut command = CommandBuilder::new("sh");
+    command.args(["-c", "exec \"$@\" < /dev/null", "sh"]);
+    command.arg(PathBuf::from(env!("CARGO_BIN_EXE_skit")));
+    command.args(args);
+    command.env("TERM", "xterm-256color");
+    command.env("SKIT_LANG", "en");
+    command.env("SKIT_DATA_DIR", data);
+    command.env("SKIT_STATE_DIR", state);
+    command.env("SKIT_CONFIG_DIR", config);
+    let mut child = pair.slave.spawn_command(command).unwrap();
+    drop(pair.slave);
+
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let drain = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).unwrap();
+        bytes
+    });
+    let writer = pair.master.take_writer().unwrap();
+    let status = child.wait().unwrap();
+    drop(writer);
+    let output = String::from_utf8_lossy(&drain.join().unwrap()).into_owned();
+    (status.exit_code(), output)
+}
+
+#[test]
+fn terminal_detection_keeps_automation_flags_noninteractive() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    write_command_entry(data.path(), false);
+
+    let (code, output) = run_in_pty(
+        &["add", "--no-input"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[b"\x1b"],
+    );
+    assert_eq!(code, 2, "{output}");
+
+    let (code, output) = run_in_pty(
+        &["run", "demo", "--dry-run", "--no-input"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[b"\x1b"],
+    );
+    assert_eq!(code, 0, "{output}");
+
+    let (code, output) = run_in_pty(
+        &["run", "demo", "--dry-run", "--raw"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[b"\x1b"],
+    );
+    assert_eq!(code, 2, "{output}");
+}
+
+#[cfg(unix)]
+#[test]
+fn one_nonterminal_standard_stream_disables_interactive_forms() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    write_command_entry(data.path(), false);
+
+    let (code, output) =
+        run_with_null_stdin_in_pty(&["add"], data.path(), state.path(), config.path());
+    assert_eq!(code, 2, "{output}");
+
+    let (code, output) = run_with_null_stdin_in_pty(
+        &["run", "demo", "--dry-run"],
+        data.path(),
+        state.path(),
+        config.path(),
+    );
+    assert_eq!(code, 0, "{output}");
+}
+
 #[test]
 fn terminal_browser_runs_host_success_error_and_host_quit_paths() {
     let data = TempDir::new().unwrap();
@@ -393,11 +489,11 @@ fn terminal_plain_launch_menu_uses_the_same_prefill_and_argument_contract() {
         &[
             "run",
             "demo",
-            "--dry-run",
             "--set",
             "name=Grace",
             "--",
-            "tail value",
+            "two words",
+            "single",
         ],
         data.path(),
         state.path(),
@@ -406,6 +502,28 @@ fn terminal_plain_launch_menu_uses_the_same_prefill_and_argument_contract() {
     );
     assert_eq!(code, 0, "{output}");
     assert!(output.contains("Grace"), "{output}");
+
+    let (code, output) = run_plain_in_pty(
+        &["run", "demo", "--dry-run"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[b"\n\n\n\n\n\n"],
+    );
+    assert_eq!(code, 0, "{output}");
+    assert!(output.contains("two words"), "{output}");
+    assert!(output.contains("single"), "{output}");
+
+    let (code, output) = run_plain_in_pty(
+        &["run", "demo", "--dry-run", "--forget-args"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[b"\n\n\n\n\n\n"],
+    );
+    assert_eq!(code, 0, "{output}");
+    assert!(!output.contains("two words"), "{output}");
+    assert!(!output.contains("single"), "{output}");
 
     let (code, output) = run_plain_in_pty(
         &["run", "demo", "--dry-run"],
@@ -435,6 +553,9 @@ fn terminal_plain_launch_menu_uses_the_same_prefill_and_argument_contract() {
             "[prompt]\n",
             "runners_seeded = true\n",
             "[[prompt.runners]]\n",
+            "name = \"backup\"\n",
+            "argv = [\"printf\", \"{{prompt}}\"]\n",
+            "[[prompt.runners]]\n",
             "name = \"local\"\n",
             "argv = [\"sh\", \"-c\", \"printf %s\", \"{{prompt}}\"]\n",
         ),
@@ -448,5 +569,8 @@ fn terminal_plain_launch_menu_uses_the_same_prefill_and_argument_contract() {
         &[b"\n\n\n\n\n"],
     );
     assert_eq!(code, 0, "{output}");
-    assert!(output.contains("local"), "{output}");
+    assert!(
+        output.contains("Prompt runner choices: local, backup [local]:"),
+        "{output}"
+    );
 }

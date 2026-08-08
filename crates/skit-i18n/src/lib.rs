@@ -87,9 +87,9 @@ const CATALOG: &[Translation] = &[
         "取代一個項目的說明",
     ),
     row!(
-        "Rename one entry and derive its new slug",
-        "重命名一个条目并生成新短名",
-        "重新命名一個項目並產生新短名",
+        "Rename one entry without changing its slug",
+        "重命名一个条目，但不更改其短名",
+        "重新命名一個項目，但不變更其短名",
     ),
     row!("Remove one entry", "删除一个条目", "移除一個項目"),
     row!(
@@ -188,6 +188,88 @@ const CATALOG: &[Translation] = &[
         "沒有相符的項目。按 [q] 結束。",
     ),
     row!("No matching entries", "没有匹配的条目", "沒有相符的項目"),
+    row!("valid", "有效", "有效"),
+    row!("row {}", "第 {} 行", "第 {} 列"),
+    row!(
+        "runner row needs a name and a string argv array",
+        "运行器行需要名称和字符串 argv 数组",
+        "執行器資料列需要名稱與字串 argv 陣列",
+    ),
+    row!("type", "类型", "類型"),
+    row!("choices", "可选值", "可選值"),
+    row!("default", "默认值", "預設值"),
+    row!("delivery", "传递方式", "傳遞方式"),
+    row!("binding", "源绑定", "來源繫結"),
+    row!("flag", "命令行选项", "命令列選項"),
+    row!("field", "字段", "欄位"),
+    row!("environment target", "环境目标", "環境目標"),
+    row!("action", "操作", "動作"),
+    row!("help text", "帮助文本", "說明文字"),
+    row!("prompt", "提示语", "提示語"),
+    row!("environment source", "环境来源", "環境來源"),
+    row!("runner removal", "移除提示词运行器", "移除提示詞執行器"),
+    row!("preset deletion", "删除预设", "刪除預設"),
+    row!("runner remove", "移除提示词运行器", "移除提示詞執行器"),
+    row!("read", "读取", "讀取"),
+    row!("resolve", "解析", "解析"),
+    row!("stage", "暂存", "暫存"),
+    row!("start editor for", "启动编辑器以打开", "啟動編輯器以開啟"),
+    row!("create", "创建", "建立"),
+    row!(
+        "could not format add timestamp: {}",
+        "无法设置添加时间：{}",
+        "無法設定新增時間：{}",
+    ),
+    row!("write", "写入", "寫入"),
+    row!("open", "打开", "開啟"),
+    row!("inspect", "检查", "檢查"),
+    row!("scan", "扫描", "掃描"),
+    row!("lock", "锁定", "鎖定"),
+    row!("remove", "删除", "移除"),
+    row!("rollback", "回滚", "復原"),
+    row!(
+        "rollback at {} failed after {}: {}",
+        "在 {} 处回滚失败；原操作错误：{}；回滚错误：{}",
+        "在 {} 處復原失敗；原始操作錯誤：{}；復原錯誤：{}",
+    ),
+    row!("backup", "备份", "備份"),
+    row!("commit", "提交", "提交"),
+    row!("reuse", "重新使用", "重新使用"),
+    row!("initialize", "初始化", "初始化"),
+    row!("sync", "同步", "同步"),
+    row!("chmod", "更改权限", "變更權限"),
+    row!("replace", "替换", "取代"),
+    row!("rollback remove", "回滚删除操作", "復原移除操作"),
+    row!("rollback create", "回滚创建操作", "復原建立操作"),
+    row!("replace backup", "替换备份", "取代備份"),
+    row!(
+        "start package manager in",
+        "在此处启动软件包管理器",
+        "在此處啟動套件管理程式"
+    ),
+    row!("open lock for", "打开锁文件", "開啟鎖定檔"),
+    row!("create backup", "创建备份", "建立備份"),
+    row!(
+        "commit dependency backup",
+        "提交依赖项备份",
+        "提交相依套件備份"
+    ),
+    row!("scan backup", "扫描备份", "掃描備份"),
+    row!("recover backup", "恢复备份", "復原備份"),
+    row!("remove backup", "删除备份", "移除備份"),
+    row!("allocate cleanup", "分配清理目录", "配置清理目錄"),
+    row!("create directory for", "创建目录以存放", "建立目錄以存放"),
+    row!("create staged", "创建暂存文件", "建立暫存檔"),
+    row!("write staged", "写入暂存文件", "寫入暫存檔"),
+    row!("sync staged", "同步暂存文件", "同步暫存檔"),
+    row!("install", "安装", "安裝"),
+    row!("read permissions for", "读取权限", "讀取權限"),
+    row!("set permissions for", "设置权限", "設定權限"),
+    row!("sync directory", "同步目录", "同步目錄"),
+    row!("run", "运行", "執行"),
+    row!("rename", "重命名", "重新命名"),
+    row!("start", "启动", "啟動"),
+    row!("test", "测试", "測試"),
     row!("all entries", "所有条目", "所有項目"),
     row!("Library", "程序库", "程式庫"),
     row!("Search", "搜索", "搜尋"),
@@ -200,12 +282,135 @@ const CATALOG: &[Translation] = &[
         "个损坏条目已隐藏",
         "個損毀項目已隱藏",
     ),
+    composable!("Usage: ", "用法：", "用法："),
     composable!("Usage:", "用法：", "用法："),
     composable!("Commands:", "命令：", "命令："),
     composable!("Options:", "选项：", "選項："),
     composable!("Arguments:", "参数：", "引數："),
     composable!("Print help", "显示帮助", "顯示說明"),
     composable!("Print version", "显示版本", "顯示版本"),
+    composable!("error: ", "错误：", "錯誤："),
+    composable!("error:", "错误：", "錯誤："),
+    composable!("tip: ", "提示：", "提示："),
+    composable!("tip:", "提示：", "提示："),
+    composable!(
+        "For more information, try '--help'.",
+        "如需更多信息，请尝试 '--help'。",
+        "如需詳細資訊，請嘗試 '--help'。",
+    ),
+    composable!(
+        "For more information, try '",
+        "如需更多信息，请尝试 '",
+        "如需詳細資訊，請嘗試 '",
+    ),
+    composable!(
+        "unrecognized subcommand '",
+        "无法识别子命令 '",
+        "無法識別子命令 '",
+    ),
+    composable!(
+        "unexpected argument '",
+        "发现意外参数 '",
+        "發現非預期引數 '",
+    ),
+    composable!("' found", "'。", "'。"),
+    composable!("the argument '", "参数 '", "引數 '"),
+    composable!("the subcommand '", "子命令 '", "子命令 '"),
+    composable!(
+        "' cannot be used multiple times",
+        "' 不能多次使用",
+        "' 不能多次使用",
+    ),
+    composable!(
+        "' cannot be used with",
+        "' 不能与以下项同时使用",
+        "' 不能與下列項目同時使用",
+    ),
+    composable!(
+        "one or more of the other specified arguments",
+        "一个或多个其他指定参数",
+        "一個或多個其他指定引數",
+    ),
+    composable!(
+        "equal sign is needed when assigning values to '",
+        "为参数赋值时需要等号：'",
+        "為引數指派值時需要等號：'",
+    ),
+    composable!(
+        "a value is required for '",
+        "参数需要值：'",
+        "引數需要值：'",
+    ),
+    composable!("' but none was supplied", "'，但未提供值", "'，但未提供值",),
+    composable!("invalid value '", "无效值 '", "無效值 '"),
+    composable!("' for '", "'，对应参数 '", "'，對應引數 '"),
+    composable!("[possible values: ", "[可用值：", "[可用值："),
+    composable!(
+        "the following required arguments were not provided:",
+        "未提供以下必需参数：",
+        "未提供下列必要引數：",
+    ),
+    composable!(
+        "' requires a subcommand but one was not provided",
+        "' 需要子命令，但未提供",
+        "' 需要子命令，但未提供",
+    ),
+    composable!("[subcommands: ", "[子命令：", "[子命令："),
+    composable!(
+        "invalid UTF-8 was detected in one or more arguments",
+        "一个或多个参数包含无效的 UTF-8",
+        "一個或多個引數包含無效的 UTF-8",
+    ),
+    composable!("unexpected value '", "出现意外值 '", "出現非預期值 '"),
+    composable!(
+        "' found; no more were expected",
+        "'；不应再提供更多值",
+        "'；不應再提供更多值",
+    ),
+    composable!(" values required by '", " 个值；参数 '", " 個值；引數 '"),
+    composable!(" values required for '", " 个值；参数 '", " 個值；引數 '"),
+    composable!("'; only ", "' 要求；只提供了 ", "' 要求；只提供了 "),
+    composable!(" was provided", " 个值", " 個值"),
+    composable!(" were provided", " 个值", " 個值"),
+    composable!(
+        "a similar subcommand exists: ",
+        "有相似的子命令：",
+        "有相似的子命令：",
+    ),
+    composable!(
+        "some similar subcommands exist: ",
+        "有一些相似的子命令：",
+        "有一些相似的子命令：",
+    ),
+    composable!(
+        "a similar argument exists: ",
+        "有相似的参数：",
+        "有相似的引数：",
+    ),
+    composable!(
+        "some similar arguments exist: ",
+        "有一些相似的参数：",
+        "有一些相似的引數：",
+    ),
+    composable!("a similar value exists: ", "有相似的值：", "有相似的值：",),
+    composable!(
+        "some similar values exist: ",
+        "有一些相似的值：",
+        "有一些相似的值：",
+    ),
+    composable!("to pass '", "要传递 '", "要傳遞 '"),
+    composable!(
+        "' as a value, use '",
+        "' 作为值，请使用 '",
+        "' 作為值，請使用 '",
+    ),
+    composable!("subcommand '", "子命令 '", "子命令 '"),
+    composable!(
+        "' exists; to use it, remove the '",
+        "' 存在；要使用它，请删除前面的 '",
+        "' 存在；要使用它，請移除前面的 '",
+    ),
+    composable!("' before it", "'。", "'。"),
     row!(
         "standard input cannot be an executable entry",
         "标准输入不能用作可执行文件条目",
@@ -267,6 +472,7 @@ const CATALOG: &[Translation] = &[
         "已新增換行字元，使 Pi 提示詞保持訊息模式",
     ),
     row!("OK uv: {}", "正常 uv：{}", "正常 uv：{}"),
+    row!("OK uv: not required", "正常 uv：不需要", "正常 uv：不需要",),
     row!("ERROR uv: not found", "错误 uv：未找到", "錯誤 uv：找不到"),
     row!("Entries: {}", "条目：{}", "項目：{}"),
     row!(
@@ -347,8 +553,8 @@ const CATALOG: &[Translation] = &[
     ),
     row!("warning: {}", "警告：{}", "警告：{}"),
     row!("Slug", "短名", "短名"),
-    row!("Kind", "类型", "類型"),
-    row!("Kind: {}", "类型：{}", "類型：{}"),
+    row!("Kind", "种类", "種類"),
+    row!("Kind: {}", "种类：{}", "種類：{}"),
     row!("Storage mode", "存储模式", "儲存模式"),
     row!("Storage mode: {}", "存储模式：{}", "儲存模式：{}"),
     row!("Source: {}", "来源：{}", "來源：{}"),
@@ -368,7 +574,7 @@ const CATALOG: &[Translation] = &[
     row!("Delivery: {}", "传递方式：{}", "傳遞方式：{}"),
     row!("Current default: {}", "当前默认值：{}", "目前預設值：{}"),
     row!("Last value: {}", "上次值：{}", "上次值：{}"),
-    row!("Choices: {}", "选项：{}", "選項：{}"),
+    row!("Choices: {}", "可选值：{}", "可選值：{}"),
     row!("Prompt: {}", "提示：{}", "提示：{}"),
     row!("Help: {}", "帮助：{}", "說明：{}"),
     row!(
@@ -376,7 +582,7 @@ const CATALOG: &[Translation] = &[
         "环境变量来源：{}",
         "環境變數來源：{}",
     ),
-    row!("Secret: yes", "机密：是", "機密：是"),
+    row!("Secret: yes", "敏感值：是", "敏感值：是"),
     row!(
         "Unmanaged candidates: {}",
         "未管理候选项：{}",
@@ -478,7 +684,7 @@ const CATALOG: &[Translation] = &[
     row!("{} delivery", "{} 传递方式", "{} 傳遞方式"),
     row!("{} type", "{} 类型", "{} 類型"),
     row!("{} default", "{} 默认值", "{} 預設值"),
-    row!("{} choices", "{} 选项", "{} 選項"),
+    row!("{} choices", "{} 可选值", "{} 可選值"),
     row!("{} is required", "{} 为必填项", "{} 為必填欄位"),
     row!("{} takes multiple values", "{} 接受多个值", "{} 接受多個值"),
     row!("{} repeats its flag", "{} 重复其标志", "{} 重複其旗標"),
@@ -1040,8 +1246,8 @@ const CATALOG: &[Translation] = &[
     ),
     row!(
         "confirmation is required for {}; pass --yes",
-        "{} 需要确认；请传入 --yes",
-        "{} 需要確認；請傳入 --yes",
+        "{}需要确认；请传入 --yes",
+        "{}需要確認；請傳入 --yes",
     ),
     row!(
         "confirmation is required; pass --yes to remove the entry",
@@ -1398,9 +1604,9 @@ const CATALOG: &[Translation] = &[
         "提示詞執行器 {} 未設定",
     ),
     row!(
-        "prompt runner {} must contain exactly one {prompt} marker outside the program token",
-        "提示词运行器 {} 必须在程序参数之外正好包含一个 {prompt} 标记",
-        "提示詞執行器 {} 必須在程式引數之外正好包含一個 {prompt} 標記",
+        "prompt runner {} must contain exactly one {{prompt}} marker outside the program token",
+        "提示词运行器 {} 必须在程序参数之外正好包含一个 {{prompt}} 标记",
+        "提示詞執行器 {} 必須在程式引數之外正好包含一個 {{prompt}} 標記",
     ),
     row!(
         "prompt runners is not an array",
@@ -1434,7 +1640,7 @@ const CATALOG: &[Translation] = &[
     ),
     row!(
         "run source, schema, launch, runner, and interpolation changes as separate params operations",
-        "请将源、模式、启动、运行器和插值更改作为单独的 params 操作运行",
+        "请将源、结构、启动、运行器和插值更改作为单独的 params 操作运行",
         "請將來源、結構、啟動、執行器與插值變更作為單獨的 params 操作執行",
     ),
     row!(
@@ -1683,13 +1889,13 @@ const CATALOG: &[Translation] = &[
     row!("{} is required.", "{} 为必填项。", "{} 為必填欄位。",),
     row!(
         "{} manages its parameter schema in the stored source",
-        "{} 在存储的源文件中管理其参数模式",
+        "{} 在存储的源文件中管理其参数结构",
         "{} 在儲存的來源中管理其參數結構",
     ),
     row!(
         "{} needs NAME=VALUE",
-        "{} 需要 NAME=VALUE",
-        "{} 需要 NAME=VALUE",
+        "{}需要 NAME=VALUE",
+        "{}需要 NAME=VALUE",
     ),
     row!(
         "{} reads from the environment variable {}, but it isn't set.",
@@ -1728,6 +1934,21 @@ impl Message {
     /// Start one message from its stable English template.
     #[must_use]
     pub const fn new(template: &'static str) -> Self {
+        Self {
+            template,
+            values: Vec::new(),
+        }
+    }
+
+    /// Start one nested message from a catalog term selected by typed code.
+    ///
+    /// Use this only for skit-owned closed values such as file-operation names.
+    #[must_use]
+    pub fn term(template: &'static str) -> Self {
+        assert!(
+            CATALOG.iter().any(|row| row.english == template),
+            "message term is missing from the catalog: {template}"
+        );
         Self {
             template,
             values: Vec::new(),
@@ -1884,10 +2105,11 @@ fn replace_words(haystack: &str, needle: &str, replacement: &str) -> String {
         if joins(before.chars().next_back(), needle.chars().next())
             || joins(needle.chars().next_back(), tail.chars().next())
         {
-            let step = rest[index..]
+            let character = rest[index..]
                 .chars()
                 .next()
-                .map_or(1, |character| index + character.len_utf8());
+                .expect("matched catalog text is not empty");
+            let step = index + character.len_utf8();
             output.push_str(&rest[..step]);
             rest = &rest[step..];
             continue;
@@ -1900,15 +2122,15 @@ fn replace_words(haystack: &str, needle: &str, replacement: &str) -> String {
     output
 }
 
-const fn joins(previous: Option<char>, next: Option<char>) -> bool {
+fn joins(previous: Option<char>, next: Option<char>) -> bool {
     match (previous, next) {
         (Some(previous), Some(next)) => word_character(previous) && word_character(next),
         _ => false,
     }
 }
 
-const fn word_character(value: char) -> bool {
-    value.is_ascii_alphanumeric() || value == '_'
+fn word_character(value: char) -> bool {
+    value.is_alphanumeric() || value == '_'
 }
 
 const fn localized(locale: Locale, row: &Translation) -> &'static str {
