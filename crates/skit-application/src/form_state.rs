@@ -180,12 +180,10 @@ fn apply_known_values(
 
 fn render_value(value: &ParameterValue) -> String {
     match value {
-        ParameterValue::String(value)
-        | ParameterValue::Choice(value)
-        | ParameterValue::Path(value) => value.clone(),
+        ParameterValue::String(value) => value.clone(),
         ParameterValue::Integer(value) => value.to_string(),
         ParameterValue::Float(value) => render_float(*value),
-        ParameterValue::Boolean(value) => value.to_string(),
+        ParameterValue::Bool(value) => value.to_string(),
     }
 }
 
