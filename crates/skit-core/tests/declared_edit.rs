@@ -178,7 +178,7 @@ fn secret_transitions_own_env_source_hygiene() {
     make_secret.secret.insert("token".to_owned());
     make_secret
         .env_sources
-        .insert("token".to_owned(), "API_TOKEN".to_owned());
+        .insert("token".to_owned(), " API_TOKEN ".to_owned());
     let result = edit_declared(&initial, &make_secret);
     assert!(result.decls[0].secret);
     assert_eq!(result.decls[0].env_source, "API_TOKEN");
@@ -207,6 +207,47 @@ fn delivery_changes_are_limited_to_the_allowed_set() {
     let result = edit_declared(&initial, &edits);
     assert_eq!(result.decls, initial);
     assert_eq!(result.warnings, ["invalid-delivery:x"]);
+}
+
+#[test]
+fn placeholder_delivery_requires_a_real_template_placeholder() {
+    let initial = vec![ParamDecl {
+        name: "other".to_owned(),
+        delivery: Delivery::Env,
+        ..ParamDecl::default()
+    }];
+    let mut edits = DeclaredEdits {
+        allowed_deliveries: vec![Delivery::Placeholder, Delivery::Env],
+        placeholder_names: BTreeSet::from(["size".to_owned()]),
+        ..DeclaredEdits::default()
+    };
+    edits
+        .deliveries
+        .insert("other".to_owned(), Delivery::Placeholder);
+
+    let result = edit_declared(&initial, &edits);
+    assert_eq!(result.decls, initial);
+    assert_eq!(result.warnings, ["not-a-placeholder:other"]);
+}
+
+#[test]
+fn flag_edits_trim_but_keep_empty_positional_form() {
+    let initial = vec![ParamDecl {
+        name: "out".to_owned(),
+        delivery: Delivery::Flag,
+        ..ParamDecl::default()
+    }];
+    let mut edits = DeclaredEdits::default();
+    edits
+        .flags
+        .insert("out".to_owned(), "  --output  ".to_owned());
+    let result = edit_declared(&initial, &edits);
+    assert_eq!(result.decls[0].flag, "--output");
+
+    let mut clear = DeclaredEdits::default();
+    clear.flags.insert("out".to_owned(), "   ".to_owned());
+    let result = edit_declared(&result.decls, &clear);
+    assert!(result.decls[0].flag.is_empty());
 }
 
 #[test]
