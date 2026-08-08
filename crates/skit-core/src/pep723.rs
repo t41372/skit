@@ -116,6 +116,104 @@ pub fn inject_pep723(
     format!("{prefix}{block}{separator}{suffix}")
 }
 
+/// Replace the dependency and Python-version axes inside an existing metadata block while
+/// retaining every other comment/TOML line. With no block this falls back to injection.
+///
+/// The dependency array remover tracks structural brackets only: brackets inside quoted
+/// requirement strings or trailing TOML comments cannot extend or truncate the removal span.
+/// The rewritten axes follow the source's newline style; retained lines stay byte-identical.
+#[must_use]
+pub fn set_pep723_axes(
+    text: &str,
+    dependencies: &[String],
+    requires_python: &str,
+    leader: &str,
+) -> String {
+    let Some((start, end)) = block_bounds(text, leader) else {
+        return inject_pep723(text, dependencies, requires_python, leader);
+    };
+    let newline = source_newline(&text[start..end]);
+    let block = &text[start..end];
+    let lines = block.split_inclusive('\n').collect::<Vec<_>>();
+    if lines.len() < 2 {
+        return inject_pep723(text, dependencies, requires_python, leader);
+    }
+
+    let mut kept = Vec::new();
+    let mut in_dependencies = false;
+    let mut depth = 0_i32;
+    for raw_line in lines.iter().skip(1).take(lines.len().saturating_sub(2)) {
+        let Some(content) = strip_comment_prefix(raw_line, leader) else {
+            kept.push(*raw_line);
+            continue;
+        };
+        if in_dependencies {
+            depth += structural_bracket_delta(content);
+            if depth <= 0 {
+                in_dependencies = false;
+            }
+            continue;
+        }
+        let stripped = content.trim();
+        if stripped.starts_with("requires-python") {
+            continue;
+        }
+        if stripped.starts_with("dependencies") {
+            let net = structural_bracket_delta(stripped);
+            if net > 0 {
+                in_dependencies = true;
+                depth = net;
+            }
+            continue;
+        }
+        kept.push(*raw_line);
+    }
+
+    let mut rewritten = String::new();
+    rewritten.push_str(leader);
+    rewritten.push_str(" /// script");
+    rewritten.push_str(newline);
+    if !requires_python.is_empty() {
+        rewritten.push_str(leader);
+        rewritten.push_str(" requires-python = ");
+        rewritten.push_str(&toml_basic_string(requires_python));
+        rewritten.push_str(newline);
+    }
+    if dependencies.is_empty() {
+        rewritten.push_str(leader);
+        rewritten.push_str(" dependencies = []");
+        rewritten.push_str(newline);
+    } else {
+        rewritten.push_str(leader);
+        rewritten.push_str(" dependencies = [");
+        rewritten.push_str(newline);
+        for dependency in dependencies {
+            rewritten.push_str(leader);
+            rewritten.push_str("     ");
+            rewritten.push_str(&toml_basic_string(dependency));
+            rewritten.push(',');
+            rewritten.push_str(newline);
+        }
+        rewritten.push_str(leader);
+        rewritten.push_str(" ]");
+        rewritten.push_str(newline);
+    }
+    for line in kept {
+        rewritten.push_str(line);
+    }
+    rewritten.push_str(leader);
+    rewritten.push_str(" ///");
+    if block.ends_with('\n') {
+        rewritten.push_str(newline);
+    }
+
+    let mut output = String::with_capacity(text.len() + rewritten.len());
+    output.push_str(&text[..start]);
+    output.push_str(&rewritten);
+    output.push_str(&text[end..]);
+    output
+}
+
 fn block_body(text: &str, leader: &str) -> Option<String> {
     let (start, end) = block_bounds(text, leader)?;
     let block = &text[start..end];
@@ -162,6 +260,44 @@ fn block_bounds(text: &str, leader: &str) -> Option<(usize, usize)> {
         }
     }
     None
+}
+
+fn strip_comment_prefix<'a>(line: &'a str, leader: &str) -> Option<&'a str> {
+    let clean = line.trim_end_matches(['\r', '\n']);
+    if clean == leader {
+        return Some("");
+    }
+    clean.strip_prefix(leader)?.strip_prefix(' ')
+}
+
+fn structural_bracket_delta(text: &str) -> i32 {
+    let mut delta = 0_i32;
+    let mut quote = None;
+    let mut escaped = false;
+    for character in text.chars() {
+        if let Some(active_quote) = quote {
+            if active_quote == '"' && escaped {
+                escaped = false;
+                continue;
+            }
+            if active_quote == '"' && character == '\\' {
+                escaped = true;
+                continue;
+            }
+            if character == active_quote {
+                quote = None;
+            }
+            continue;
+        }
+        match character {
+            '\'' | '"' => quote = Some(character),
+            '#' => break,
+            '[' => delta += 1,
+            ']' => delta -= 1,
+            _ => {}
+        }
+    }
+    delta
 }
 
 #[derive(Debug, Clone, Copy)]
