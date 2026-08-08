@@ -17,7 +17,6 @@ pub enum RunError {
     EmptyArgv,
     Spawn { program: String, source: io::Error },
     Wait { program: String, source: io::Error },
-    Kill { program: String, source: io::Error },
 }
 
 impl fmt::Display for RunError {
@@ -30,7 +29,6 @@ impl fmt::Display for RunError {
             Self::Wait { program, source } => {
                 write!(formatter, "cannot wait for {program}: {source}")
             }
-            Self::Kill { program, source } => write!(formatter, "cannot stop {program}: {source}"),
         }
     }
 }
@@ -38,9 +36,7 @@ impl fmt::Display for RunError {
 impl StdError for RunError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
-            Self::Spawn { source, .. } | Self::Wait { source, .. } | Self::Kill { source, .. } => {
-                Some(source)
-            }
+            Self::Spawn { source, .. } | Self::Wait { source, .. } => Some(source),
             Self::EmptyArgv => None,
         }
     }
@@ -50,14 +46,15 @@ impl StdError for RunError {
 ///
 /// The caller owns signal policy and flips `interrupted` when cancellation is requested.
 /// This layer owns the child lifecycle: once interruption is observed, the child is
-/// killed and reaped before the conventional interrupt status (130) is returned.
-/// Environment values in the launch plan overlay, rather than replace, the ambient
-/// process environment.
+/// killed when still alive and reaped before the conventional interrupt status (130) is
+/// returned. A kill racing with a natural child exit is benign: the subsequent wait is
+/// the authoritative reap operation. Environment values in the launch plan overlay,
+/// rather than replace, the ambient process environment.
 ///
 /// # Errors
 ///
-/// Returns an error for an empty plan or OS failures while spawning, waiting, or
-/// terminating the child.
+/// Returns an error for an empty plan or OS failures while spawning or waiting for the
+/// child.
 pub fn run_launch(plan: &LaunchPlan, interrupted: &AtomicBool) -> Result<i32, RunError> {
     if interrupted.load(Ordering::SeqCst) {
         return Ok(INTERRUPTED_EXIT);
@@ -80,25 +77,19 @@ pub fn run_launch(plan: &LaunchPlan, interrupted: &AtomicBool) -> Result<i32, Ru
 
 fn supervise(child: &mut Child, program: &str, interrupted: &AtomicBool) -> Result<i32, RunError> {
     loop {
+        if interrupted.load(Ordering::SeqCst) {
+            let _ = child.kill();
+            child.wait().map_err(|source| RunError::Wait {
+                program: program.to_owned(),
+                source,
+            })?;
+            return Ok(INTERRUPTED_EXIT);
+        }
         if let Some(status) = child.try_wait().map_err(|source| RunError::Wait {
             program: program.to_owned(),
             source,
         })? {
             return Ok(normalize_exit_status(status));
-        }
-        if interrupted.load(Ordering::SeqCst) {
-            let kill_error = child.kill().err();
-            child.wait().map_err(|source| RunError::Wait {
-                program: program.to_owned(),
-                source,
-            })?;
-            if let Some(source) = kill_error {
-                return Err(RunError::Kill {
-                    program: program.to_owned(),
-                    source,
-                });
-            }
-            return Ok(INTERRUPTED_EXIT);
         }
         thread::sleep(POLL_INTERVAL);
     }
