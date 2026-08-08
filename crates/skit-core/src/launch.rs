@@ -4,7 +4,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::{Assembly, Entry, Platform, spec_for};
+use crate::{Assembly, Entry, Platform, effective_uv_metadata, spec_for};
 
 /// A side-effect-free executable lookup seam. Frontends can resolve PATH/config once
 /// and tests can supply an in-memory map.
@@ -108,10 +108,11 @@ impl fmt::Display for LaunchPlanError {
 
 impl StdError for LaunchPlanError {}
 
-/// Build one immutable launch plan for the currently parser-free runnable kinds.
+/// Build one immutable launch plan for the runnable headless kinds.
 ///
-/// Python, prompt, and command-template execution are intentionally refused here until
-/// their injection/rendering and quoting contracts land in Rust as complete slices.
+/// Python uses the same effective dependency/version metadata exposed by `show`: meta
+/// wins per axis, with copy-mode PEP 723 fallback. Prompt and command-template launch
+/// remain refused until their render/quoting contracts land as complete slices.
 ///
 /// # Errors
 ///
@@ -126,7 +127,8 @@ pub fn build_launch_plan(
     let argv = match entry.meta.kind.as_str() {
         "exe" => direct_argv(entry, &assembly.args, options.platform)?,
         "js" | "ts" => javascript_argv(entry, &assembly.args, options, programs)?,
-        "python" | "prompt" | "command" => {
+        "python" => python_argv(entry, &assembly.args, options, programs)?,
+        "prompt" | "command" => {
             return Err(LaunchPlanError::UnsupportedKind(entry.meta.kind.clone()));
         }
         kind => interpreted_argv(entry, kind, &assembly.args, options, programs)?,
@@ -170,6 +172,42 @@ fn direct_argv(
         return Err(LaunchPlanError::NotRunnable(source));
     }
     let mut argv = vec![entry.meta.source.clone()];
+    argv.extend(extra.iter().cloned());
+    Ok(argv)
+}
+
+fn python_argv(
+    entry: &Entry,
+    extra: &[String],
+    options: &LaunchOptions,
+    programs: &impl ProgramResolver,
+) -> Result<Vec<String>, LaunchPlanError> {
+    let script = options
+        .script_override
+        .clone()
+        .unwrap_or_else(|| entry.script_path());
+    if !script.exists() {
+        return Err(LaunchPlanError::TargetMissing(script));
+    }
+    let uv = programs
+        .resolve("uv")
+        .ok_or_else(|| LaunchPlanError::MissingInterpreter("uv".to_owned()))?;
+    let (dependencies, requires_python) = effective_uv_metadata(entry);
+    let mut argv = vec![
+        uv.to_string_lossy().into_owned(),
+        "run".to_owned(),
+        "--no-project".to_owned(),
+    ];
+    if !requires_python.is_empty() {
+        argv.extend(["--python".to_owned(), requires_python]);
+    }
+    for dependency in dependencies {
+        argv.extend(["--with".to_owned(), dependency]);
+    }
+    argv.extend([
+        "--script".to_owned(),
+        script.to_string_lossy().into_owned(),
+    ]);
     argv.extend(extra.iter().cloned());
     Ok(argv)
 }
