@@ -33,16 +33,10 @@ pub struct PythonManagedAnalysis {
 #[must_use]
 pub fn analyze_python_managed(text: &str) -> PythonManagedAnalysis {
     let Some(tree) = parse_python(text) else {
-        return PythonManagedAnalysis {
-            syntax_error: true,
-            ..PythonManagedAnalysis::default()
-        };
+        return syntax_error();
     };
     if tree.root_node().has_error() {
-        return PythonManagedAnalysis {
-            syntax_error: true,
-            ..PythonManagedAnalysis::default()
-        };
+        return syntax_error();
     }
 
     let root = tree.root_node();
@@ -62,11 +56,9 @@ pub fn analyze_python_managed(text: &str) -> PythonManagedAnalysis {
 
     let mut inputs = Vec::new();
     collect_input_scopes(root, text, false, &mut inputs);
-    inputs.sort_by_key(|candidate| candidate.0);
-    let input_candidates = inputs
-        .into_iter()
-        .enumerate()
-        .map(|(order, (start, prompt, line))| PythonManagedCandidate {
+    inputs.sort_by_key(|hit| hit.0);
+    constants.extend(inputs.into_iter().enumerate().map(
+        |(order, (_start, prompt, line))| PythonManagedCandidate {
             decl: ParamDecl {
                 name: format!("input-{}", order + 1),
                 binding: Binding::Input,
@@ -80,15 +72,21 @@ pub fn analyze_python_managed(text: &str) -> PythonManagedAnalysis {
             line,
             demoted: false,
             demotion: String::new(),
-        })
-        .collect::<Vec<_>>();
+        },
+    ));
+    constants.sort_by_key(source_sort_key);
 
-    constants.extend(input_candidates);
-    constants.sort_by_key(|candidate| source_sort_key(candidate));
     PythonManagedAnalysis {
         candidates: constants,
         frameworks: framework_names(root, text),
         syntax_error: false,
+    }
+}
+
+fn syntax_error() -> PythonManagedAnalysis {
+    PythonManagedAnalysis {
+        syntax_error: true,
+        ..PythonManagedAnalysis::default()
     }
 }
 
@@ -104,7 +102,7 @@ fn scan_constant_block(
     source: &str,
     mutated: &BTreeSet<String>,
 ) -> Vec<PythonManagedCandidate> {
-    let mut by_name = BTreeMap::<String, (usize, PythonManagedCandidate)>::new();
+    let mut by_name = BTreeMap::<String, PythonManagedCandidate>::new();
     let mut order = Vec::new();
     let mut cursor = block.walk();
     for statement in block.named_children(&mut cursor) {
@@ -147,18 +145,18 @@ fn scan_constant_block(
                 String::new()
             },
         };
-        if let Some((_, existing)) = by_name.get_mut(name) {
+        if let Some(existing) = by_name.get_mut(name) {
             let first_line = existing.line;
             *existing = candidate;
             existing.line = first_line;
         } else {
             order.push(name.to_owned());
-            by_name.insert(name.to_owned(), (statement.start_byte(), candidate));
+            by_name.insert(name.to_owned(), candidate);
         }
     }
     order
         .into_iter()
-        .filter_map(|name| by_name.remove(&name).map(|(_, candidate)| candidate))
+        .filter_map(|name| by_name.remove(&name))
         .collect()
 }
 
@@ -209,19 +207,16 @@ fn literal_value(node: Node<'_>, source: &str) -> Option<(ParamType, ParamDefaul
         "false" => Some((ParamType::Boolean, ParamDefault::Boolean(false))),
         "integer" => parse_python_integer(text)
             .map(|value| (ParamType::Integer, ParamDefault::Integer(value))),
-        "float" => {
-            parse_python_float(text).map(|value| (ParamType::Float, ParamDefault::Float(value)))
-        }
-        "unary_operator" => {
-            if let Some(value) = parse_python_integer(text) {
-                Some((ParamType::Integer, ParamDefault::Integer(value)))
-            } else {
-                parse_python_float(text).map(|value| (ParamType::Float, ParamDefault::Float(value)))
-            }
-        }
-        "string" => {
-            parse_python_string(text).map(|value| (ParamType::String, ParamDefault::String(value)))
-        }
+        "float" => parse_python_float(text)
+            .map(|value| (ParamType::Float, ParamDefault::Float(value))),
+        "unary_operator" => parse_python_integer(text)
+            .map(|value| (ParamType::Integer, ParamDefault::Integer(value)))
+            .or_else(|| {
+                parse_python_float(text)
+                    .map(|value| (ParamType::Float, ParamDefault::Float(value)))
+            }),
+        "string" => parse_python_string(text)
+            .map(|value| (ParamType::String, ParamDefault::String(value))),
         _ => None,
     }
 }
@@ -232,18 +227,26 @@ fn parse_python_integer(text: &str) -> Option<i64> {
         .strip_prefix('-')
         .map_or((false, cleaned.as_str()), |body| (true, body));
     let body = body.strip_prefix('+').unwrap_or(body);
-    let (radix, digits) =
-        if let Some(digits) = body.strip_prefix("0x").or_else(|| body.strip_prefix("0X")) {
-            (16, digits)
-        } else if let Some(digits) = body.strip_prefix("0o").or_else(|| body.strip_prefix("0O")) {
-            (8, digits)
-        } else if let Some(digits) = body.strip_prefix("0b").or_else(|| body.strip_prefix("0B")) {
-            (2, digits)
-        } else {
-            (10, body)
-        };
+    let (radix, digits) = if let Some(digits) = body
+        .strip_prefix("0x")
+        .or_else(|| body.strip_prefix("0X"))
+    {
+        (16, digits)
+    } else if let Some(digits) = body
+        .strip_prefix("0o")
+        .or_else(|| body.strip_prefix("0O"))
+    {
+        (8, digits)
+    } else if let Some(digits) = body
+        .strip_prefix("0b")
+        .or_else(|| body.strip_prefix("0B"))
+    {
+        (2, digits)
+    } else {
+        (10, body)
+    };
     let magnitude = i64::from_str_radix(digits, radix).ok()?;
-    negative.then_some(-magnitude).or(Some(magnitude))
+    Some(if negative { -magnitude } else { magnitude })
 }
 
 fn parse_python_float(text: &str) -> Option<f64> {
@@ -260,9 +263,13 @@ fn parse_python_string(text: &str) -> Option<String> {
     {
         return None;
     }
-    let raw = prefix.chars().any(|ch| ch.eq_ignore_ascii_case(&'r'));
+    let raw = prefix
+        .chars()
+        .any(|ch| ch.eq_ignore_ascii_case(&'r'));
     let rest = &text[quote_at..];
-    let (delimiter, inner) = if rest.starts_with("'''") && rest.ends_with("'''") && rest.len() >= 6
+    let (delimiter, inner) = if rest.starts_with("'''")
+        && rest.ends_with("'''")
+        && rest.len() >= 6
     {
         ("'''", &rest[3..rest.len() - 3])
     } else if rest.starts_with("\"\"\"") && rest.ends_with("\"\"\"") && rest.len() >= 6 {
@@ -288,9 +295,7 @@ fn decode_python_escapes(text: &str, quote: char) -> Option<String> {
             output.push(ch);
             continue;
         }
-        let Some(escaped) = chars.next() else {
-            return None;
-        };
+        let escaped = chars.next()?;
         match escaped {
             '\n' => {}
             '\\' => output.push('\\'),
@@ -346,12 +351,17 @@ fn mutated_names(root: Node<'_>, source: &str) -> BTreeSet<String> {
     output
 }
 
-fn collect_mutations(node: Node<'_>, source: &str, in_loop: bool, output: &mut BTreeSet<String>) {
+fn collect_mutations(
+    node: Node<'_>,
+    source: &str,
+    in_loop: bool,
+    output: &mut BTreeSet<String>,
+) {
     let now_in_loop = in_loop || matches!(node.kind(), "for_statement" | "while_statement");
-    if node.kind() == "augmented_assignment" || (now_in_loop && node.kind() == "assignment") {
-        if let Some(left) = node.child_by_field_name("left") {
-            collect_identifiers(left, source, output);
-        }
+    if (node.kind() == "augmented_assignment" || (now_in_loop && node.kind() == "assignment"))
+        && let Some(left) = node.child_by_field_name("left")
+    {
+        collect_identifiers(left, source, output);
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -378,8 +388,7 @@ fn collect_input_scopes(
     inherited_shadow: bool,
     output: &mut Vec<(usize, String, usize)>,
 ) {
-    let local_shadow = scope_binds_input(scope, source);
-    let shadowed = inherited_shadow || local_shadow;
+    let shadowed = inherited_shadow || scope_binds_input(scope, source);
     collect_scope_calls(scope, source, shadowed, output);
 
     let mut cursor = scope.walk();
@@ -410,18 +419,18 @@ fn collect_scope_calls(
     shadowed: bool,
     output: &mut Vec<(usize, String, usize)>,
 ) {
-    if node.kind() == "call" && !shadowed {
-        if let Some(function) = node.child_by_field_name("function")
-            && function.kind() == "identifier"
-            && node_text(function, source) == Some("input")
-        {
-            let prompt = input_prompt(node, source).unwrap_or_default();
-            output.push((node.start_byte(), prompt, node.start_position().row + 1));
-        }
+    if node.kind() == "call"
+        && !shadowed
+        && let Some(function) = node.child_by_field_name("function")
+        && function.kind() == "identifier"
+        && node_text(function, source) == Some("input")
+    {
+        let prompt = input_prompt(node, source).unwrap_or_default();
+        output.push((node.start_byte(), prompt, node.start_position().row + 1));
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
-        if is_scope_node(child) && child.id() != node.id() {
+        if is_scope_node(child) {
             continue;
         }
         collect_scope_calls(child, source, shadowed, output);
@@ -432,12 +441,17 @@ fn input_prompt(call: Node<'_>, source: &str) -> Option<String> {
     let arguments = call.child_by_field_name("arguments")?;
     let mut cursor = arguments.walk();
     let first = arguments.named_children(&mut cursor).next()?;
-    if first.kind() == "string" {
-        parse_python_string(node_text(first, source)?)
-    } else {
-        None
+    (first.kind() == "string")
+        .then(|| node_text(first, source))??
+        .pipe(parse_python_string)
+}
+
+trait Pipe: Sized {
+    fn pipe<T>(self, f: impl FnOnce(Self) -> T) -> T {
+        f(self)
     }
 }
+impl<T> Pipe for T {}
 
 fn scope_binds_input(scope: Node<'_>, source: &str) -> bool {
     if matches!(scope.kind(), "function_definition" | "lambda")
@@ -513,7 +527,7 @@ fn import_binds_name(node: Node<'_>, source: &str, wanted: &str) -> bool {
     };
     imported.trim() == "*"
         || imported.split(',').any(|part| {
-            let mut words = part.trim().split_whitespace();
+            let mut words = part.split_whitespace();
             let name = words.next().unwrap_or_default();
             let alias = if words.next() == Some("as") {
                 words.next()
@@ -561,41 +575,34 @@ fn framework_names(root: Node<'_>, source: &str) -> Vec<String> {
 }
 
 fn collect_frameworks(node: Node<'_>, source: &str, output: &mut Vec<(usize, String)>) {
-    if matches!(node.kind(), "import_statement" | "import_from_statement") {
-        let mut names = BTreeSet::new();
-        if node.kind() == "import_statement" {
-            collect_plain_import_modules(node, source, &mut names);
-        } else if let Some(module) = node.child_by_field_name("module_name")
-            && module.kind() == "dotted_name"
-            && let Some(text) = node_text(module, source)
-            && let Some(top) = text.split('.').next()
-        {
-            names.insert(top.to_owned());
+    if node.kind() == "import_statement" {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            let name = if child.kind() == "aliased_import" {
+                child.child_by_field_name("name")
+            } else if child.kind() == "dotted_name" {
+                Some(child)
+            } else {
+                None
+            };
+            if let Some(name) = name
+                && let Some(text) = node_text(name, source)
+                && let Some(top) = text.split('.').next()
+            {
+                output.push((name.start_byte(), top.to_owned()));
+            }
         }
-        output.extend(names.into_iter().map(|name| (node.start_byte(), name)));
+    } else if node.kind() == "import_from_statement"
+        && let Some(module) = node.child_by_field_name("module_name")
+        && module.kind() == "dotted_name"
+        && let Some(text) = node_text(module, source)
+        && let Some(top) = text.split('.').next()
+    {
+        output.push((module.start_byte(), top.to_owned()));
     }
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         collect_frameworks(child, source, output);
-    }
-}
-
-fn collect_plain_import_modules(node: Node<'_>, source: &str, output: &mut BTreeSet<String>) {
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        let name = if child.kind() == "aliased_import" {
-            child.child_by_field_name("name")
-        } else if child.kind() == "dotted_name" {
-            Some(child)
-        } else {
-            None
-        };
-        if let Some(name) = name
-            && let Some(text) = node_text(name, source)
-            && let Some(top) = text.split('.').next()
-        {
-            output.insert(top.to_owned());
-        }
     }
 }
 
