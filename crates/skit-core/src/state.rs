@@ -20,7 +20,7 @@ pub struct LastRun {
 }
 
 /// Remembered state for one library entry.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct EntryState {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub values: BTreeMap<String, String>,
@@ -301,7 +301,12 @@ fn load_document(path: &Path) -> EntryState {
         .and_then(parse_last_run);
     let extra = table
         .iter()
-        .filter(|(key, _)| !matches!(key.as_str(), "values" | "extra_args" | "presets" | "last_run"))
+        .filter(|(key, _)| {
+            !matches!(
+                key.as_str(),
+                "values" | "extra_args" | "presets" | "last_run"
+            )
+        })
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
 
