@@ -7,10 +7,7 @@ use skit_core::{
 };
 use tempfile::tempdir;
 
-fn entry(
-    root: &std::path::Path,
-    decls: &[ParamDecl],
-) -> Result<Entry, Box<dyn std::error::Error>> {
+fn entry(root: &std::path::Path, decls: &[ParamDecl]) -> Result<Entry, Box<dyn std::error::Error>> {
     Ok(Entry {
         slug: "demo".to_owned(),
         meta: ScriptMeta {
@@ -39,8 +36,7 @@ fn entry(
 }
 
 #[test]
-fn masked_launch_redacts_secret_argv_and_environment()
--> Result<(), Box<dyn std::error::Error>> {
+fn masked_launch_redacts_secret_argv_and_environment() -> Result<(), Box<dyn std::error::Error>> {
     let root = tempdir()?;
     let entry = entry(
         root.path(),
@@ -83,7 +79,13 @@ fn masked_launch_redacts_secret_argv_and_environment()
         &programs,
     )?;
     assert!(prepared.launch.argv.iter().any(|arg| arg == "arg-secret"));
-    assert!(!prepared.masked_launch.argv.iter().any(|arg| arg == "arg-secret"));
+    assert!(
+        !prepared
+            .masked_launch
+            .argv
+            .iter()
+            .any(|arg| arg == "arg-secret")
+    );
     assert!(prepared.masked_launch.argv.iter().any(|arg| arg == "•••"));
     assert_eq!(prepared.launch.env_overlay["SECRET_ENV"], "env-secret");
     assert_eq!(prepared.masked_launch.env_overlay["SECRET_ENV"], "•••");
@@ -111,10 +113,7 @@ fn raw_launch_bypasses_required_form_values_and_only_forwards_supplied_tail()
         &options,
         &programs,
     )?;
-    assert_eq!(
-        launch.argv[launch.argv.len() - 2..],
-        ["--literal", "value"]
-    );
+    assert_eq!(launch.argv[launch.argv.len() - 2..], ["--literal", "value"]);
     assert!(launch.env_overlay.is_empty());
     Ok(())
 }

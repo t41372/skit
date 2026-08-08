@@ -115,7 +115,8 @@ pub fn prepare_run(
     let mut masked_assembly = assembly.clone();
     masked_assembly.args = assembly.masked_args.clone();
     masked_assembly.env_values = assembly.masked_env.clone();
-    let masked_launch = build_launch_plan(entry, &masked_assembly, request.launch_options, programs)?;
+    let masked_launch =
+        build_launch_plan(entry, &masked_assembly, request.launch_options, programs)?;
     Ok(PreparedRun {
         form,
         values,
