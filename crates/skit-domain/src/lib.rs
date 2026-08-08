@@ -1,6 +1,6 @@
-//! Pure domain values and invariants for skit.
+//! Define skit domain values and invariants.
 //!
-//! This crate deliberately contains no filesystem, process, CLI, terminal, or GUI concepts.
+//! This crate does not access files, processes, terminals, or GUI APIs.
 
 #![forbid(unsafe_code)]
 
@@ -8,28 +8,29 @@ pub mod parameters;
 
 use std::{collections::BTreeMap, fmt};
 
+use parameters::ParamDecl;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use thiserror::Error;
 use uuid::Uuid;
 
-/// A domain-value construction failure.
+/// Report an invalid domain value.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum DomainError {
-    /// A slug was not a canonical skit address.
+    /// The slug is not a canonical skit address.
     #[error("invalid entry slug: {0}")]
     InvalidSlug(String),
-    /// An entry kind was blank.
+    /// The entry kind is blank.
     #[error("entry kind cannot be blank")]
     InvalidKind,
-    /// An entry identity was not a UUID.
+    /// The entry ID is not a UUID.
     #[error("invalid entry id: {0}")]
     InvalidEntryId(String),
 }
 
-/// The stable address of an entry directory.
+/// Identify one entry directory.
 ///
-/// A slug is not an identity: after removal, the address may legally be reused by another entry.
+/// A slug is an address. A later entry can reuse it after removal.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Slug(String);
 
@@ -52,7 +53,7 @@ impl Slug {
         }
     }
 
-    /// Derive the address used by the existing Python implementation.
+    /// Make the address used by skit v0.4.
     #[must_use]
     pub fn from_display_name(name: &str) -> Self {
         let mut output = String::new();
@@ -77,7 +78,7 @@ impl Slug {
         Self(output)
     }
 
-    /// Return the canonical string representation.
+    /// Return the canonical text.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -108,15 +109,14 @@ impl<'de> Deserialize<'de> for Slug {
     }
 }
 
-/// An open entry-kind registry key.
+/// Identify an open entry kind.
 ///
-/// Unknown kinds remain representable so a newer skit's metadata can still be listed, shown, and
-/// removed by an older build.
+/// Unknown kinds remain readable. This keeps newer metadata recoverable.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct EntryKind(String);
 
 impl EntryKind {
-    /// Parse a non-blank registry key.
+    /// Parse a non-blank kind.
     pub fn parse(value: impl Into<String>) -> Result<Self, DomainError> {
         let value = value.into();
         let trimmed = value.trim();
@@ -127,7 +127,7 @@ impl EntryKind {
         }
     }
 
-    /// Return the registry key.
+    /// Return the kind text.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -158,12 +158,12 @@ impl<'de> Deserialize<'de> for EntryKind {
     }
 }
 
-/// The immutable identity of one incarnation of an entry.
+/// Identify one entry incarnation.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct EntryId(String);
 
 impl EntryId {
-    /// Parse either a simple or hyphenated UUID and normalize it to lowercase simple form.
+    /// Parse a UUID and store lowercase simple text.
     pub fn parse(value: impl Into<String>) -> Result<Self, DomainError> {
         let value = value.into();
         Uuid::parse_str(&value)
@@ -171,13 +171,13 @@ impl EntryId {
             .map_err(|_| DomainError::InvalidEntryId(value))
     }
 
-    /// Mint a new entry identity.
+    /// Create a new entry ID.
     #[must_use]
     pub fn generate() -> Self {
         Self(Uuid::new_v4().simple().to_string())
     }
 
-    /// Return the normalized UUID hex.
+    /// Return the normalized UUID text.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -208,48 +208,48 @@ impl<'de> Deserialize<'de> for EntryId {
     }
 }
 
-/// Whether skit owns a stored copy or launches the original path.
+/// Select copied or referenced storage.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StorageMode {
     /// skit owns a copy under `scripts/<slug>`.
     #[default]
     Copy,
-    /// skit launches the user's original path.
+    /// skit uses the original path.
     Reference,
 }
 
-/// Authoritative metadata read from one entry's `meta.toml`.
+/// Store authoritative metadata from `meta.toml`.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct EntryMeta {
     /// Metadata schema number.
     pub schema: u32,
-    /// User-facing display name.
+    /// Display name.
     pub name: String,
-    /// Open language/entry kind.
+    /// Entry kind.
     pub kind: EntryKind,
-    /// Copy or reference storage policy.
+    /// Storage policy.
     pub mode: StorageMode,
-    /// Original source path or command provenance.
+    /// Original source path or command origin.
     pub source: String,
-    /// Source digest recorded by the current implementation.
+    /// Recorded source digest.
     pub source_hash: String,
-    /// UTC timestamp as written by the existing implementation.
+    /// UTC add timestamp.
     pub added_at: String,
-    /// Immutable identity; absent for metadata written before identities existed.
+    /// Immutable entry ID. Old metadata can omit it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<EntryId>,
-    /// Work-directory policy spelling (`origin`, `store`, `invoke`, or an absolute path).
+    /// Work-directory policy.
     pub workdir: String,
-    /// User-facing description.
+    /// Display description.
     pub description: String,
-    /// Forward-compatible metadata fields not yet modeled by the migration kernel.
+    /// Optional and future metadata fields.
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
 
 impl EntryMeta {
-    /// Construct the smallest valid metadata object for tests and application adapters.
+    /// Create the smallest valid metadata object.
     #[must_use]
     pub fn minimal(name: impl Into<String>, kind: EntryKind) -> Self {
         Self {
@@ -268,7 +268,154 @@ impl EntryMeta {
     }
 }
 
-/// A fully resolved entry used by application use cases.
+/// Give typed access to v0.4 optional metadata fields.
+///
+/// The on-disk field names do not change. Unknown fields stay in `EntryMeta::extra`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EntrySettings {
+    /// Command template text.
+    pub template: String,
+    /// Managed package dependencies.
+    pub dependencies: Vec<String>,
+    /// Python version constraint.
+    pub requires_python: String,
+    /// Legacy command placeholder cache.
+    pub params: Vec<String>,
+    /// Pinned interpreter or JavaScript runtime.
+    pub interpreter: String,
+    /// Pinned prompt runner name.
+    pub runner: String,
+    /// Enable prompt placeholder insertion.
+    pub interpolate: bool,
+    /// External commands that must exist on PATH.
+    pub needs: Vec<String>,
+    /// Universal parameter declarations.
+    pub parameters: Vec<ParamDecl>,
+}
+
+impl Default for EntrySettings {
+    fn default() -> Self {
+        Self {
+            template: String::new(),
+            dependencies: Vec::new(),
+            requires_python: String::new(),
+            params: Vec::new(),
+            interpreter: String::new(),
+            runner: String::new(),
+            interpolate: true,
+            needs: Vec::new(),
+            parameters: Vec::new(),
+        }
+    }
+}
+
+impl EntrySettings {
+    /// Read v0.4 optional fields from metadata.
+    #[must_use]
+    pub fn from_meta(meta: &EntryMeta) -> Self {
+        Self {
+            template: extra_string(meta, "template"),
+            dependencies: extra_string_list(meta, "dependencies"),
+            requires_python: extra_string(meta, "requires_python"),
+            params: extra_string_list(meta, "params"),
+            interpreter: extra_string(meta, "interpreter"),
+            runner: extra_string(meta, "runner"),
+            interpolate: !matches!(meta.extra.get("interpolate"), Some(Value::Bool(false))),
+            needs: extra_string_list(meta, "needs"),
+            parameters: meta
+                .extra
+                .get("parameters")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_object)
+                .map(|row| ParamDecl::from_meta_map(&row.clone().into_iter().collect()))
+                .collect(),
+        }
+    }
+
+    /// Write the typed fields without changing unknown extension fields.
+    pub fn write_to_meta(&self, meta: &mut EntryMeta) {
+        for key in [
+            "template",
+            "dependencies",
+            "requires_python",
+            "params",
+            "interpreter",
+            "runner",
+            "interpolate",
+            "needs",
+            "parameters",
+        ] {
+            meta.extra.remove(key);
+        }
+
+        insert_string(&mut meta.extra, "template", &self.template);
+        insert_string_list(&mut meta.extra, "dependencies", &self.dependencies);
+        insert_string(&mut meta.extra, "requires_python", &self.requires_python);
+        insert_string_list(&mut meta.extra, "params", &self.params);
+        insert_string(&mut meta.extra, "interpreter", &self.interpreter);
+        insert_string(&mut meta.extra, "runner", &self.runner);
+        if !self.interpolate {
+            meta.extra.insert("interpolate".to_owned(), Value::Bool(false));
+        }
+        insert_string_list(&mut meta.extra, "needs", &self.needs);
+        if !self.parameters.is_empty() {
+            meta.extra.insert(
+                "parameters".to_owned(),
+                Value::Array(
+                    self.parameters
+                        .iter()
+                        .map(|parameter| {
+                            Value::Object(
+                                parameter
+                                    .to_meta_map()
+                                    .into_iter()
+                                    .collect::<Map<String, Value>>(),
+                            )
+                        })
+                        .collect(),
+                ),
+            );
+        }
+    }
+}
+
+fn extra_string(meta: &EntryMeta, key: &str) -> String {
+    meta.extra
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+fn extra_string_list(meta: &EntryMeta, key: &str) -> Vec<String> {
+    meta.extra
+        .get(key)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
+}
+
+fn insert_string(extra: &mut BTreeMap<String, Value>, key: &str, value: &str) {
+    if !value.is_empty() {
+        extra.insert(key.to_owned(), Value::String(value.to_owned()));
+    }
+}
+
+fn insert_string_list(extra: &mut BTreeMap<String, Value>, key: &str, values: &[String]) {
+    if !values.is_empty() {
+        extra.insert(
+            key.to_owned(),
+            Value::Array(values.iter().cloned().map(Value::String).collect()),
+        );
+    }
+}
+
+/// Hold a resolved entry.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Entry {
     /// Stable directory address.
@@ -277,20 +424,20 @@ pub struct Entry {
     pub meta: EntryMeta,
 }
 
-/// The intentionally small projection needed by library listings.
+/// Hold the fields needed by library lists.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct EntrySummary {
     /// Stable directory address.
     pub slug: Slug,
     /// Display name.
     pub name: String,
-    /// Open language/entry kind.
+    /// Entry kind.
     pub kind: EntryKind,
     /// Copy or reference mode.
     pub mode: StorageMode,
     /// Display description.
     pub description: String,
-    /// Reference target; absent for copied entries.
+    /// Reference target. Copied entries omit it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
 }
