@@ -12,7 +12,10 @@ use skit_core::{LibraryRoots, Store};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Parser)]
-#[command(name = "skit", about = "A launcher and parameter manager for scripts and prompts.")]
+#[command(
+    name = "skit",
+    about = "A launcher and parameter manager for scripts and prompts."
+)]
 struct Cli {
     #[arg(long, short = 'V', global = true, help = "Show version")]
     version: bool,
@@ -63,7 +66,7 @@ fn run() -> Result<(), String> {
     let store = Store::new(resolve_roots()?);
     match cli.command {
         Some(Command::List { json }) => list(&store, json),
-        None => Err("The Ratatui workbench is not available in this development slice.".to_owned()),
+        None => skit_tui::run(&store).map_err(|error| error.to_string()),
     }
 }
 
