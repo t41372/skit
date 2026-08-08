@@ -74,12 +74,11 @@ API_KEY = "run-secret"
             .as_ref()
             .is_some_and(|run| run.values_recorded && !run.values.contains_key("API_KEY"))
     );
-    assert!(
-        loaded
-            .last_run
-            .as_ref()
-            .is_some_and(|run| run.values.get("REMOVED").is_some_and(|value| value == "gone"))
-    );
+    assert!(loaded.last_run.as_ref().is_some_and(|run| {
+        run.values
+            .get("REMOVED")
+            .is_some_and(|value| value == "gone")
+    }));
     let text = fs::read_to_string(path)?;
     assert!(!text.contains("old-plaintext"));
     assert!(!text.contains("run-secret"));
