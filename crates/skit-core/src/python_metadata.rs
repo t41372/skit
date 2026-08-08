@@ -59,8 +59,7 @@ pub fn write_python_params(text: &str, params: &[ParamDecl]) -> String {
     for raw in physical {
         let stripped = strip_comment(raw).trim();
         if stripped.starts_with('[') {
-            skipping = stripped.starts_with("[tool.skit]")
-                || stripped.starts_with("[[tool.skit.");
+            skipping = stripped.starts_with("[tool.skit]") || stripped.starts_with("[[tool.skit.");
         }
         if !skipping {
             kept.push(raw.to_owned());
@@ -158,7 +157,10 @@ fn param_from_frozen(row: &toml::Table) -> ParamDecl {
         param_type,
         default: row.get("default").and_then(frozen_default),
         prompt: scalar_text(row.get("prompt")),
-        order: row.get("order").and_then(toml::Value::as_integer).unwrap_or(-1),
+        order: row
+            .get("order")
+            .and_then(toml::Value::as_integer)
+            .unwrap_or(-1),
         secret: scalar_bool(row.get("secret")),
         env_source: scalar_text(row.get("env_source")),
         ..ParamDecl::default()
@@ -223,13 +225,15 @@ fn insert_new_python_block(text: &str, params: &[ParamDecl]) -> String {
 fn insertion_offset(text: &str) -> usize {
     let lines = physical_lines(text);
     let mut index = 0;
-    if lines.first().is_some_and(|(_, line)| line.starts_with("#!")) {
+    if lines
+        .first()
+        .is_some_and(|(_, line)| line.starts_with("#!"))
+    {
         index = 1;
     }
-    if lines
-        .get(index)
-        .is_some_and(|(_, line)| line.starts_with('#') && (line.contains("coding:") || line.contains("coding=")))
-    {
+    if lines.get(index).is_some_and(|(_, line)| {
+        line.starts_with('#') && (line.contains("coding:") || line.contains("coding="))
+    }) {
         index += 1;
     }
     lines.get(index).map_or(text.len(), |(offset, _)| *offset)
