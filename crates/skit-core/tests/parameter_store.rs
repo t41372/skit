@@ -57,9 +57,16 @@ enabled = true
 
     let updated = store.write_parameters("Demo", &decls)?;
     assert_eq!(store.read_parameters("Demo")?, decls);
-    assert_eq!(updated.meta.params, Some(vec!["size".to_owned(), "target".to_owned()]));
     assert_eq!(
-        updated.meta.extra.get("future_key").and_then(toml::Value::as_str),
+        updated.meta.params,
+        Some(vec!["size".to_owned(), "target".to_owned()])
+    );
+    assert_eq!(
+        updated
+            .meta
+            .extra
+            .get("future_key")
+            .and_then(toml::Value::as_str),
         Some("keep-me")
     );
     assert!(updated.meta.extra.contains_key("future_table"));
