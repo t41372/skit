@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::fs;
 
 use crate::params::{
     Binding, Delivery, ParamDecl, ParamDefault, ParamType, declared_from_meta,
     synthesized_placeholder,
 };
-use crate::{Entry, EntryState, spec_for};
+use crate::{Entry, EntryState, read_python_params, spec_for};
 
 /// Where a form plan came from. Parser-backed sources can extend this enum without
 /// changing the renderer-facing field model.
@@ -14,6 +15,7 @@ pub enum PlanSource {
     #[default]
     None,
     Declared,
+    Managed,
     Command,
 }
 
@@ -24,6 +26,7 @@ impl PlanSource {
         match self {
             Self::None => "none",
             Self::Declared => "declared",
+            Self::Managed => "inject",
             Self::Command => "command",
         }
     }
@@ -33,6 +36,7 @@ impl PlanSource {
     pub const fn origin(self) -> &'static str {
         match self {
             Self::Declared => "declared",
+            Self::Managed => "managed",
             Self::Command => "command",
             Self::None => "none",
         }
@@ -157,10 +161,12 @@ impl FormPlan {
     }
 }
 
-/// Build the parser-free portion of an entry's form plan.
+/// Build an entry's current renderer-independent form plan.
 ///
 /// Command placeholders and hand-declared `[[parameters]]` rows need no language
-/// parser, so they are available even when parser-backed capabilities are absent.
+/// parser. Managed Python declarations are read from the frozen `[tool.skit]` section
+/// carried by the entry's current source snapshot. Unreadable/non-UTF-8/malformed
+/// source degrades to no managed fields instead of inventing schema.
 #[must_use]
 pub fn plan_for_entry(entry: &Entry) -> FormPlan {
     let Some(spec) = spec_for(&entry.meta.kind) else {
@@ -175,6 +181,36 @@ pub fn plan_for_entry(entry: &Entry) -> FormPlan {
 
     if spec.placeholder_params && spec.stored_name.is_empty() {
         return command_plan(&entry.meta.params, &declared);
+    }
+
+    if entry.meta.kind == "python"
+        && let Ok(text) = fs::read_to_string(entry.script_path())
+    {
+        let managed = read_python_params(&text)
+            .into_iter()
+            .filter(|decl| decl.delivery == Delivery::Inject)
+            .collect::<Vec<_>>();
+        if !managed.is_empty() {
+            let taken = managed
+                .iter()
+                .map(|decl| decl.name.as_str())
+                .collect::<BTreeSet<_>>();
+            let mut fields = managed.iter().map(FormField::from_decl).collect::<Vec<_>>();
+            fields.extend(
+                declared
+                    .iter()
+                    .filter(|decl| {
+                        matches!(decl.delivery, Delivery::Flag | Delivery::Env)
+                            && !taken.contains(decl.name.as_str())
+                    })
+                    .map(FormField::from_decl),
+            );
+            return FormPlan {
+                source: PlanSource::Managed,
+                fields,
+                ..FormPlan::default()
+            };
+        }
     }
 
     let fields = declared
