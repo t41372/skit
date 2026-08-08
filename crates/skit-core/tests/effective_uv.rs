@@ -97,10 +97,7 @@ fn reference_mode_never_reads_original_pep723_for_effective_axes()
         &subject.meta.source,
         "# /// script\n# requires-python = \">=3.13\"\n# dependencies = [\"rich\"]\n# ///\nprint(1)\n",
     )?;
-    assert_eq!(
-        effective_uv_metadata(&subject),
-        (Vec::new(), String::new())
-    );
+    assert_eq!(effective_uv_metadata(&subject), (Vec::new(), String::new()));
     Ok(())
 }
 
@@ -114,10 +111,7 @@ fn unreadable_or_malformed_copy_keeps_meta_without_crashing()
         (vec!["requests".to_owned()], String::new())
     );
 
-    write_copy(
-        &subject,
-        "# /// script\n# dependencies = [ broken\n# ///\n",
-    )?;
+    write_copy(&subject, "# /// script\n# dependencies = [ broken\n# ///\n")?;
     assert_eq!(
         effective_uv_metadata(&subject),
         (vec!["requests".to_owned()], String::new())
@@ -135,9 +129,6 @@ fn non_python_kind_never_consults_pep723() -> Result<(), Box<dyn std::error::Err
         subject.dir.join("script.sh"),
         "# /// script\n# dependencies = [\"rich\"]\n# ///\necho ok\n",
     )?;
-    assert_eq!(
-        effective_uv_metadata(&subject),
-        (Vec::new(), String::new())
-    );
+    assert_eq!(effective_uv_metadata(&subject), (Vec::new(), String::new()));
     Ok(())
 }
