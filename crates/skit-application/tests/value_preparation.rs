@@ -20,7 +20,11 @@ fn required_fields_reject_missing_empty_and_whitespace_only_raw_input() {
     field.parameter_type = ParameterType::Int;
     field.prompt = "How many?".to_owned();
 
-    for raw in [BTreeMap::new(), map(&[("count", "")]), map(&[("count", "   ")])] {
+    for raw in [
+        BTreeMap::new(),
+        map(&[("count", "")]),
+        map(&[("count", "   ")]),
+    ] {
         let error = prepare_values(&[field.clone()], &raw, &map(&[("count", "")])).unwrap_err();
         assert_eq!(
             error,
