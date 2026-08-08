@@ -6,8 +6,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::{
-    AddMode, AddUseCaseError, Entry, EntryDraft, ParamDecl, ScriptMeta, Store,
-    analyze_python_managed, has_pep723, inject_pep723, parse_pep723, python_version_pin,
+    AddMode, AddUseCaseError, Entry, EntryDraft, ParamDecl, PythonMetadataValidationError,
+    ScriptMeta, Store, analyze_python_managed, has_pep723, inject_pep723,
+    normalize_python_dependency, normalize_requires_python, parse_pep723, python_version_pin,
     read_python_params, sha256_source_hash, shebang_program_from_line, suggest_python_dependencies,
     write_python_params,
 };
@@ -37,6 +38,12 @@ pub struct PythonAutoAddRequest {
     pub added_at: String,
     pub interactive: bool,
     pub no_input: bool,
+    /// `None` means infer dependencies. `Some` means the caller explicitly chose the
+    /// list, even if validation/empty-dropping leaves it empty.
+    pub dependencies: Option<Vec<String>>,
+    /// `None` means use a versioned shebang pin when present. `Some` is explicit;
+    /// empty/`-`/`none` normalize to automatic/no constraint.
+    pub requires_python: Option<String>,
 }
 
 /// What automatic Python intake accepted or discovered.
@@ -87,10 +94,13 @@ impl From<AddUseCaseError> for PythonAddError {
     }
 }
 
-/// Automatic Python intake cannot continue without a review decision.
+/// Automatic Python intake cannot continue without a review or because explicit
+/// metadata cannot be honored safely.
 #[derive(Debug)]
 pub enum PythonAutoAddError {
     Add(AddUseCaseError),
+    Validation(PythonMetadataValidationError),
+    SourceMetadataConflict,
     ReviewRequired {
         dependencies: Vec<String>,
         parameters: Vec<String>,
@@ -101,6 +111,10 @@ impl fmt::Display for PythonAutoAddError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Add(source) => source.fmt(formatter),
+            Self::Validation(source) => source.fmt(formatter),
+            Self::SourceMetadataConflict => formatter.write_str(
+                "the Python source already declares PEP 723 metadata; drop --dep/--python or edit the source block instead",
+            ),
             Self::ReviewRequired {
                 dependencies,
                 parameters,
@@ -112,11 +126,7 @@ impl fmt::Display for PythonAutoAddError {
                     write!(formatter, " Dependencies: {}.", dependencies.join(", "))?;
                 }
                 if !parameters.is_empty() {
-                    write!(
-                        formatter,
-                        " Parameter candidates: {}.",
-                        parameters.join(", ")
-                    )?;
+                    write!(formatter, " Parameter candidates: {}.", parameters.join(", "))?;
                 }
                 Ok(())
             }
@@ -128,7 +138,8 @@ impl StdError for PythonAutoAddError {
     fn source(&self) -> Option<&(dyn StdError + 'static)> {
         match self {
             Self::Add(source) => Some(source),
-            Self::ReviewRequired { .. } => None,
+            Self::Validation(source) => Some(source),
+            Self::SourceMetadataConflict | Self::ReviewRequired { .. } => None,
         }
     }
 }
@@ -136,6 +147,12 @@ impl StdError for PythonAutoAddError {
 impl From<AddUseCaseError> for PythonAutoAddError {
     fn from(value: AddUseCaseError) -> Self {
         Self::Add(value)
+    }
+}
+
+impl From<PythonMetadataValidationError> for PythonAutoAddError {
+    fn from(value: PythonMetadataValidationError) -> Self {
+        Self::Validation(value)
     }
 }
 
@@ -194,40 +211,57 @@ pub fn add_python_file_with_params(
 
 /// Analyze and add Python from one immutable source snapshot.
 ///
-/// Existing PEP 723 metadata is authoritative. Without a block, third-party import
-/// suggestions and a versioned `python3.X` shebang become automatic UV axes in
-/// noninteractive/`--no-input` mode. New managed-parameter candidates are never selected
-/// automatically, matching the Python-era noninteractive contract.
+/// Existing PEP 723 metadata is authoritative. Explicit dependency/Python overrides
+/// are validated before storage and are refused when a source block already exists so
+/// no caller-supplied flag can be silently ignored. Without a block, explicit values
+/// override automatic import suggestions and the versioned-shebang pin respectively.
 ///
-/// When an interactive frontend has not opted out and either dependencies or new
-/// parameter candidates need review, this returns `ReviewRequired` before any store
-/// write. Source already carrying frozen `[tool.skit]` definitions needs no new
-/// parameter review; those definitions travel with the copied/reference source.
+/// New managed-parameter candidates are never selected automatically, matching the
+/// Python-era noninteractive contract. Interactive review is required only for
+/// auto-suggested dependencies and new parameter candidates; explicit dependencies are
+/// already a caller decision and are not asked about again.
 ///
 /// # Errors
 ///
-/// Returns a source/store failure or an explicit pre-write review refusal.
+/// Returns validation/source/store failures, a source-metadata conflict, or an explicit
+/// pre-write review refusal.
 pub fn add_python_auto(
     store: &Store,
     request: PythonAutoAddRequest,
 ) -> Result<PythonAutoAddOutcome, PythonAutoAddError> {
+    let explicit_dependencies = normalize_dependencies(request.dependencies.as_deref())?;
+    let explicit_requires_python = request
+        .requires_python
+        .as_deref()
+        .map(normalize_requires_python)
+        .transpose()?;
     let snapshot = read_snapshot(&request.source)?;
-    let mut dependencies = Vec::new();
-    let mut requires_python = String::new();
+    let mut dependencies = explicit_dependencies.clone().unwrap_or_default();
+    let mut requires_python = explicit_requires_python.clone().unwrap_or_default();
     let mut effective_dependencies = Vec::new();
     let mut effective_requires_python = String::new();
     let mut parameter_candidates = Vec::new();
+    let mut automatic_dependencies = Vec::new();
 
     if let Ok(text) = std::str::from_utf8(&snapshot.bytes) {
         if has_pep723(text, "#") {
+            if explicit_dependencies.is_some() || explicit_requires_python.is_some() {
+                return Err(PythonAutoAddError::SourceMetadataConflict);
+            }
             if let Some(metadata) = parse_pep723(text, "#") {
                 effective_dependencies = metadata.dependencies;
                 effective_requires_python = metadata.requires_python;
             }
         } else {
-            dependencies = suggest_python_dependencies(text, snapshot.source.parent());
-            let first_line = text.split_once('\n').map_or(text, |(line, _)| line);
-            requires_python = python_version_pin(shebang_program_from_line(first_line));
+            if explicit_dependencies.is_none() {
+                automatic_dependencies =
+                    suggest_python_dependencies(text, snapshot.source.parent());
+                dependencies.clone_from(&automatic_dependencies);
+            }
+            if explicit_requires_python.is_none() {
+                let first_line = text.split_once('\n').map_or(text, |(line, _)| line);
+                requires_python = python_version_pin(shebang_program_from_line(first_line));
+            }
             effective_dependencies.clone_from(&dependencies);
             effective_requires_python.clone_from(&requires_python);
         }
@@ -238,14 +272,17 @@ pub fn add_python_auto(
                 .map(|candidate| candidate.decl.name)
                 .collect();
         }
+    } else {
+        effective_dependencies.clone_from(&dependencies);
+        effective_requires_python.clone_from(&requires_python);
     }
 
     if request.interactive
         && !request.no_input
-        && (!dependencies.is_empty() || !parameter_candidates.is_empty())
+        && (!automatic_dependencies.is_empty() || !parameter_candidates.is_empty())
     {
         return Err(PythonAutoAddError::ReviewRequired {
-            dependencies,
+            dependencies: automatic_dependencies,
             parameters: parameter_candidates,
         });
     }
@@ -267,6 +304,19 @@ pub fn add_python_auto(
         requires_python: effective_requires_python,
         parameter_candidates,
     })
+}
+
+fn normalize_dependencies(
+    values: Option<&[String]>,
+) -> Result<Option<Vec<String>>, PythonMetadataValidationError> {
+    values
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| normalize_python_dependency(value).transpose())
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()
 }
 
 fn read_snapshot(source: &Path) -> Result<SourceSnapshot, AddUseCaseError> {
@@ -322,8 +372,10 @@ fn add_snapshot(
     let strict_utf8 = std::str::from_utf8(&snapshot.bytes).is_ok();
     let has_existing_block =
         std::str::from_utf8(&snapshot.bytes).is_ok_and(|text| has_pep723(text, "#"));
-    let inject_metadata =
-        request.mode == AddMode::Copy && wants_uv_metadata && strict_utf8 && !has_existing_block;
+    let inject_metadata = request.mode == AddMode::Copy
+        && wants_uv_metadata
+        && strict_utf8
+        && !has_existing_block;
 
     let payload = match request.mode {
         AddMode::Reference => None,
