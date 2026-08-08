@@ -16,6 +16,7 @@ mod process;
 mod programs;
 mod python_add;
 mod python_analysis;
+mod python_managed;
 mod run;
 mod state;
 mod store;
@@ -49,6 +50,9 @@ pub use process::{RunError, run_launch};
 pub use programs::ProgramSearch;
 pub use python_add::{PythonAddRequest, add_python_file};
 pub use python_analysis::suggest_python_dependencies;
+pub use python_managed::{
+    PythonManagedAnalysis, PythonManagedCandidate, analyze_python_managed,
+};
 pub use run::{
     ExtraArgsResolution, PrepareRunError, PreparedRun, RunRequest, prepare_raw_run, prepare_run,
     remembered_values, resolve_extra_args,
