@@ -5,11 +5,7 @@ use skit_core::{LibraryRoots, load_launch_config};
 use tempfile::tempdir;
 
 fn roots(root: &Path) -> LibraryRoots {
-    LibraryRoots::new(
-        root.join("data"),
-        root.join("state"),
-        root.join("config"),
-    )
+    LibraryRoots::new(root.join("data"), root.join("state"), root.join("config"))
 }
 
 #[test]
@@ -35,7 +31,10 @@ kept = true
     let config = load_launch_config(&roots);
     assert_eq!(config.js_runner.as_deref(), Some("node"));
     assert_eq!(
-        config.windows_bash.as_ref().map(|path| path.to_string_lossy()),
+        config
+            .windows_bash
+            .as_ref()
+            .map(|path| path.to_string_lossy()),
         Some("C:/Git/bin/bash.exe".into())
     );
     Ok(())
