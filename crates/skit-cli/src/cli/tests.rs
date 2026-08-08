@@ -6,13 +6,13 @@ use skit_domain::{
     parameters::{ParamDecl, ParameterType},
 };
 use skit_store::FileStore;
-use skit_ui::{FormPurpose, Screen};
+use skit_ui::{FormField, FormPurpose, FormView, Screen};
 use tempfile::TempDir;
 
 use super::{
-    AddOptions, Cli, CliError, Command, add, execute, list, mode_name, platform_data_dir,
-    read_source, resolve_data_dir, show, source_default_name, source_error, stored_name,
-    tui_add_form, tui_run_form, tui_split_list,
+    AddOptions, Cli, CliError, Command, add, collect_plain_form, execute, list, mode_name,
+    platform_data_dir, read_source, resolve_data_dir, show, source_default_name, source_error,
+    stored_name, tui_add_form, tui_run_form, tui_split_list,
 };
 
 fn write_meta(root: &TempDir, slug: &str, name: &str, description: &str) {
@@ -190,7 +190,7 @@ fn data_directory_mode_and_error_taxonomy_helpers_are_stable() {
 fn tui_run_forms_preserve_saved_values_but_never_prefill_secrets() {
     let entry = Entry {
         slug: Slug::parse("alpha").unwrap(),
-        meta: EntryMeta::minimal("Alpha", EntryKind::parse("command").unwrap()),
+        meta: EntryMeta::minimal("Alpha", EntryKind::parse("prompt").unwrap()),
     };
     let mut token = ParamDecl::new("token");
     token.secret = true;
@@ -256,4 +256,40 @@ fn tui_add_form_and_list_parser_cover_all_authoring_axes() {
     assert_eq!(stored_name("js", Path::new("module.cjs")), "script.cjs");
     assert_eq!(stored_name("ts", Path::new("module.mts")), "script.mts");
     assert_eq!(stored_name("ts", Path::new("module.cts")), "script.cts");
+}
+
+#[test]
+fn plain_form_collection_uses_defaults_masks_secrets_and_refuses_end_of_input() {
+    let form = FormView {
+        purpose: FormPurpose::Run,
+        title: "Run".to_owned(),
+        selector: Some("alpha".to_owned()),
+        fields: vec![
+            FormField::text("name", "Name", "default"),
+            FormField::secret("token", "Token", ""),
+        ],
+        focused: 0,
+        submit_label: "Run".to_owned(),
+    };
+    let mut output = Vec::new();
+    let values = collect_plain_form(&form, &mut "\n".as_bytes(), &mut output, |_| {
+        Ok("hidden".to_owned())
+    })
+    .unwrap();
+    assert_eq!(values["name"], "default");
+    assert_eq!(values["token"], "hidden");
+    let output = String::from_utf8(output).unwrap();
+    assert!(output.contains("Name [default]: "));
+    assert!(output.contains("Token: "));
+    assert!(!output.contains("hidden"));
+
+    let error = collect_plain_form(&form, &mut "".as_bytes(), &mut Vec::new(), |_| {
+        Ok(String::new())
+    })
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("ended before the form was complete")
+    );
 }

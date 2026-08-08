@@ -23,7 +23,7 @@ use skit_i18n::{Locale, text};
 use skit_ui::{Action, FormView, InputMode, LibraryState, ReportView, Screen};
 use unicode_width::UnicodeWidthStr as _;
 
-pub use terminal::{TuiError, run};
+pub use terminal::{TuiError, collect_form, run};
 
 /// A clickable footer command.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

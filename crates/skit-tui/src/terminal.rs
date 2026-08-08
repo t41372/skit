@@ -1,6 +1,6 @@
 //! Crossterm lifecycle and blocking event loop.
 
-use std::{fmt::Display, io};
+use std::{collections::BTreeMap, fmt::Display, io};
 
 use ratatui_core::terminal::Terminal;
 use ratatui_crossterm::{
@@ -12,7 +12,7 @@ use ratatui_crossterm::{
     },
 };
 use skit_i18n::Locale;
-use skit_ui::{Action, Effect, LibraryState};
+use skit_ui::{Action, Effect, FormView, LibraryState, Screen};
 use thiserror::Error;
 
 use crate::{ViewGeometry, map_event, render_localized};
@@ -67,6 +67,35 @@ where
     }
     terminal.show_cursor()?;
     Ok(())
+}
+
+/// Collect one generic form and restore the terminal before returning its values.
+pub fn collect_form(
+    form: FormView,
+    locale: Locale,
+) -> Result<Option<BTreeMap<String, String>>, TuiError> {
+    let mut state = LibraryState::default();
+    state.update(Action::Present(Screen::Form(form)));
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+    let _restore = RestoreTerminal;
+    let backend = CrosstermBackend::new(io::stdout());
+    let mut terminal = Terminal::new(backend)?;
+    terminal.clear()?;
+
+    loop {
+        let mut geometry = ViewGeometry::default();
+        terminal.draw(|frame| geometry = render_localized(frame, &state, locale))?;
+        let Some(action) = map_event(event::read()?, &state, &geometry) else {
+            continue;
+        };
+        if action == Action::Back || action == Action::Quit {
+            return Ok(None);
+        }
+        if let Effect::Submit { values, .. } = state.update(action) {
+            return Ok(Some(values));
+        }
+    }
 }
 
 #[derive(Debug)]

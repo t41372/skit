@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     env,
     fs::{self, File, Metadata},
-    io::{self, Read as _, Write as _},
+    io::{self, IsTerminal as _, Read as _, Write as _},
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
 };
@@ -10,7 +10,7 @@ use std::{
 use clap::{Args, Parser, Subcommand};
 use skit_application::{
     CreateEntry, EntryPayload, ExitClass, LibraryService, RepositoryError, SourcePermissions,
-    form_state::{FormStateService, StateWriteError},
+    form_state::{FormStateService, StateWriteError, prefill},
 };
 use skit_domain::{
     Entry, EntryKind, EntrySettings, EntrySummary, StorageMode,
@@ -460,7 +460,7 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             )?;
             Ok(0)
         }
-        Some(Command::Run(args)) => crate::run::run(&service, &store, args).map_err(Into::into),
+        Some(Command::Run(args)) => run_entry(&service, &store, args),
         Some(Command::Describe {
             selector,
             description,
@@ -513,6 +513,179 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             Ok(0)
         }
     }
+}
+
+fn run_entry(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    mut args: RunArgs,
+) -> Result<i32, CliError> {
+    if args.no_input || args.raw || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        return crate::run::run(service, store, args).map_err(Into::into);
+    }
+
+    let form = interactive_run_form(service, store, &args)?;
+    let use_plain = args.plain
+        || FileConfigStore::new(resolve_config_dir()?)
+            .get("form")?
+            .eq_ignore_ascii_case("plain");
+    let values = if use_plain {
+        let stdin = io::stdin();
+        let mut input = stdin.lock();
+        let stdout = io::stdout();
+        let mut output = stdout.lock();
+        collect_plain_form(&form, &mut input, &mut output, |_| {
+            rpassword::read_password()
+        })
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::UnexpectedEof {
+                CliError::Aborted
+            } else {
+                CliError::Io(error)
+            }
+        })?
+    } else {
+        skit_tui::collect_form(form, active_locale())?.ok_or(CliError::Aborted)?
+    };
+    apply_interactive_run_values(&mut args, &values)?;
+    args.no_input = true;
+    crate::run::run(service, store, args).map_err(Into::into)
+}
+
+fn interactive_run_form(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    args: &RunArgs,
+) -> Result<FormView, CliError> {
+    let entry = service.show(&args.selector)?;
+    let declarations = entry_parameters(store, &entry);
+    let saved =
+        FormStateService::new(FileFormStateStore::new(resolve_state_dir()?)).load(&entry.slug);
+    let preset = args
+        .preset
+        .as_deref()
+        .and_then(|name| saved.presets.get(name));
+    let initial = prefill(&declarations, &saved.values, preset);
+    let settings = EntrySettings::from_meta(&entry.meta);
+    let mut runners = FileConfigStore::new(resolve_config_dir()?)
+        .runners()?
+        .into_iter()
+        .map(|runner| runner.name)
+        .collect::<Vec<_>>();
+    if !settings.runner.is_empty() {
+        runners.retain(|name| name != &settings.runner);
+        runners.insert(0, settings.runner);
+    }
+    let Screen::Form(mut form) = tui_run_form(
+        &entry,
+        &declarations,
+        &initial,
+        &runners,
+        &saved.presets.keys().cloned().collect::<Vec<_>>(),
+    ) else {
+        unreachable!("the run form builder always returns a form")
+    };
+    for value in &args.values {
+        if let Some((name, value)) = value.split_once('=') {
+            set_form_value(&mut form, &format!("value:{name}"), value);
+        }
+    }
+    set_form_value(
+        &mut form,
+        "_skit_preset",
+        args.preset.as_deref().unwrap_or_default(),
+    );
+    set_form_value(
+        &mut form,
+        "_skit_save_preset",
+        args.save_preset.as_deref().unwrap_or_default(),
+    );
+    set_form_value(
+        &mut form,
+        "_skit_runner",
+        args.runner.as_deref().unwrap_or_else(|| {
+            if entry.meta.kind.as_str() == "prompt" {
+                runners.first().map_or("", String::as_str)
+            } else {
+                ""
+            }
+        }),
+    );
+    set_form_value(
+        &mut form,
+        "_skit_args",
+        &shlex::try_join(args.extra_args.iter().map(String::as_str)).unwrap_or_default(),
+    );
+    set_form_value(&mut form, "_skit_dry_run", &args.dry_run.to_string());
+    Ok(form)
+}
+
+fn set_form_value(form: &mut FormView, key: &str, value: &str) {
+    if let Some(field) = form.fields.iter_mut().find(|field| field.key == key) {
+        field.value = value.to_owned();
+    }
+}
+
+fn apply_interactive_run_values(
+    args: &mut RunArgs,
+    values: &BTreeMap<String, String>,
+) -> Result<(), CliError> {
+    args.values = values
+        .iter()
+        .filter_map(|(key, value)| {
+            key.strip_prefix("value:")
+                .filter(|_| !value.is_empty())
+                .map(|name| format!("{name}={value}"))
+        })
+        .collect();
+    args.preset = tui_nonempty_owned(values, "_skit_preset");
+    args.save_preset = tui_nonempty_owned(values, "_skit_save_preset");
+    args.runner = tui_nonempty_owned(values, "_skit_runner");
+    args.dry_run = tui_bool(tui_value(values, "_skit_dry_run"));
+    args.extra_args = shlex::split(tui_value(values, "_skit_args"))
+        .ok_or_else(|| CliError::Usage("extra arguments have invalid quoting".to_owned()))?;
+    Ok(())
+}
+
+fn collect_plain_form<R, W, F>(
+    form: &FormView,
+    input: &mut R,
+    output: &mut W,
+    mut read_secret: F,
+) -> io::Result<BTreeMap<String, String>>
+where
+    R: io::BufRead,
+    W: io::Write,
+    F: FnMut(&str) -> io::Result<String>,
+{
+    let mut values = BTreeMap::new();
+    for field in &form.fields {
+        if field.value.is_empty() || field.secret {
+            write!(output, "{}: ", field.label)?;
+        } else {
+            write!(output, "{} [{}]: ", field.label, field.value)?;
+        }
+        output.flush()?;
+        let value = if field.secret {
+            read_secret(&field.label)?
+        } else {
+            let mut line = String::new();
+            if input.read_line(&mut line)? == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "input ended before the form was complete",
+                ));
+            }
+            let value = line.trim_end_matches(['\r', '\n']);
+            if value.is_empty() {
+                field.value.clone()
+            } else {
+                value.to_owned()
+            }
+        };
+        values.insert(field.key.clone(), value);
+    }
+    Ok(values)
 }
 
 fn list(
@@ -2385,6 +2558,8 @@ enum CliError {
     ConfirmationRequired,
     #[error("confirmation is required for {0}; pass --yes")]
     ConfirmationRequiredFor(&'static str),
+    #[error("operation cancelled")]
+    Aborted,
     #[error("could not {operation} {path}: {source}")]
     Source {
         operation: &'static str,
@@ -2407,6 +2582,7 @@ impl CliError {
             Self::ConfirmationRequired | Self::ConfirmationRequiredFor(_) | Self::Usage(_) => {
                 ExitClass::Usage.code() as i32
             }
+            Self::Aborted => ExitClass::Aborted.code() as i32,
             Self::Json(_)
             | Self::Io(_)
             | Self::Tui(_)

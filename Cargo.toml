@@ -29,6 +29,7 @@ ratatui-core = { version = "0.1.2", features = ["std", "layout-cache"] }
 ratatui-widgets = { version = "0.3.2", default-features = false, features = ["std"] }
 ratatui-crossterm = "0.1.2"
 regex = "1.13.1"
+rpassword = "7.5.4"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 shlex = "2.0.1"
