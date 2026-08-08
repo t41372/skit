@@ -7,9 +7,11 @@
 
 mod fs_ops;
 mod mutations;
+mod path_glob;
 mod read;
 mod state;
 
 pub use mutations::content_hash;
+pub use path_glob::FileGlobExpander;
 pub use read::FileStore;
 pub use state::FileFormStateStore;
