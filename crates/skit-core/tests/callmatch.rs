@@ -52,10 +52,7 @@ fn duplicate_prompt_multiset_pairs_stably_by_order() {
 
 #[test]
 fn deleting_one_duplicate_prompt_never_double_binds_the_survivor() {
-    let bindings = match_calls(
-        &pairs(&[(0, "Go? "), (1, "Go? ")]),
-        &pairs(&[(0, "Go? ")]),
-    );
+    let bindings = match_calls(&pairs(&[(0, "Go? "), (1, "Go? ")]), &pairs(&[(0, "Go? ")]));
     assert_eq!(bindings, BTreeMap::from([(0, (0, false))]));
 }
 
@@ -74,8 +71,5 @@ fn duplicate_stored_prompt_with_edited_second_call_flags_loser() {
         &pairs(&[(0, "Go? "), (1, "Go? ")]),
         &pairs(&[(0, "Go? "), (1, "Different: ")]),
     );
-    assert_eq!(
-        bindings,
-        BTreeMap::from([(0, (0, false)), (1, (1, true))])
-    );
+    assert_eq!(bindings, BTreeMap::from([(0, (0, false)), (1, (1, true))]));
 }
