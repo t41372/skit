@@ -15,15 +15,30 @@ use skit_domain::{
 };
 use thiserror::Error;
 
-/// The value-bearing parts of per-entry form state that need secret scrubbing.
+/// Exact metadata and accepted values for the most recent recorded run.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct LastRunState {
+    /// ISO-8601 timestamp when available.
+    pub at: Option<String>,
+    /// Child exit status when available.
+    pub exit: Option<i64>,
+    /// Exact accepted invocation values, including values equal to defaults.
+    pub values: BTreeMap<String, String>,
+}
+
+/// Complete per-entry state owned by the Rust implementation at cutover.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PersistedFormState {
-    /// Last-used values.
+    /// Last-used non-secret values.
     pub values: BTreeMap<String, String>,
+    /// Remembered argument tail.
+    pub extra_args: Vec<String>,
+    /// Whether the remembered tail is raw launch-menu text that should expand on replay.
+    pub extra_args_raw: bool,
     /// Named presets.
     pub presets: BTreeMap<String, BTreeMap<String, String>>,
-    /// Exact values captured in the most recent accepted run.
-    pub last_run_values: BTreeMap<String, String>,
+    /// Most recent run stamp and exact accepted-value snapshot.
+    pub last_run: LastRunState,
 }
 
 /// A state read-modify-write transaction could not be committed.
@@ -53,7 +68,7 @@ pub enum StateWriteError {
 /// accidentally create a stale read-modify-write window between the two operations. The trait is
 /// used through generic application services, so object safety is not required.
 pub trait FormStateRepository: Debug {
-    /// Load the known value-bearing state. Missing/corrupt documents degrade to empty state.
+    /// Load the complete known state. Missing/corrupt documents degrade to empty state.
     fn load(&self, slug: &Slug) -> PersistedFormState;
 
     /// Mutate the current state while the repository holds its per-entry transaction lock.
@@ -162,7 +177,7 @@ pub fn scrub_secrets(
         scrub_map(values, &secret_names, &mut removed);
         !values.is_empty()
     });
-    scrub_map(&mut state.last_run_values, &secret_names, &mut removed);
+    scrub_map(&mut state.last_run.values, &secret_names, &mut removed);
 
     removed
 }
