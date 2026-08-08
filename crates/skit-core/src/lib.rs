@@ -125,7 +125,33 @@ pub struct EntrySummary {
     pub slug: String,
     pub name: String,
     pub kind: String,
+    pub mode: String,
     pub description: String,
+    pub source: String,
+}
+
+impl EntrySummary {
+    /// Report whether a referenced launch target is missing.
+    ///
+    /// Copy-mode target checks need the language registry and are added with the launch
+    /// slice. A reference row can be checked from metadata alone.
+    #[must_use]
+    pub fn target_missing(&self) -> bool {
+        self.mode == "reference" && !self.source.is_empty() && !Path::new(&self.source).exists()
+    }
+}
+
+/// The run stamp stored in `state/values/<slug>.toml`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct RunStamp {
+    pub at: String,
+    pub exit: i32,
+}
+
+#[derive(Debug, Deserialize)]
+struct StateFile {
+    #[serde(default)]
+    last_run: Option<RunStamp>,
 }
 
 /// Errors returned by the headless core.
@@ -234,7 +260,9 @@ impl Store {
                 slug,
                 name: meta.name,
                 kind: meta.kind,
+                mode: meta.mode,
                 description: meta.description,
+                source: meta.source,
             });
         }
 
@@ -304,6 +332,16 @@ impl Store {
         Err(Error::NotFound {
             query: query.to_owned(),
         })
+    }
+
+    /// Read the last-run stamp for one entry.
+    ///
+    /// Missing or corrupt state is treated as no history, as in the Python version.
+    #[must_use]
+    pub fn last_run(&self, slug: &str) -> Option<RunStamp> {
+        let path = self.roots.state_dir.join("values").join(format!("{slug}.toml"));
+        let text = fs::read_to_string(path).ok()?;
+        toml::from_str::<StateFile>(&text).ok()?.last_run
     }
 }
 
