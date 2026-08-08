@@ -3,7 +3,7 @@ use std::env;
 
 use skit_core::{
     AssemblyError, Delivery, Entry, EntryState, FormField, FormPlan, LaunchOptions, ParamDecl,
-    ParamDefault, PlanSource, Platform, PrepareRunError, ScriptMeta, prepare_run,
+    ParamDefault, PlanSource, Platform, PrepareRunError, RunRequest, ScriptMeta, prepare_run,
     remembered_values, resolve_extra_args,
 };
 use tempfile::tempdir;
@@ -65,15 +65,19 @@ fn value_resolution_precedence_flows_into_the_launch_environment()
     );
     let options = LaunchOptions::new(Platform::Linux, root.path());
     let programs = |_name: &str| None;
+    let empty = BTreeMap::new();
+    let extra = Vec::new();
 
     let from_preset = prepare_run(
         &entry,
-        &state,
-        Some("prod"),
-        &BTreeMap::new(),
-        &[],
-        &BTreeMap::new(),
-        &options,
+        RunRequest {
+            state: &state,
+            preset: Some("prod"),
+            explicit: &empty,
+            extra_args: &extra,
+            environment: &empty,
+            launch_options: &options,
+        },
         &programs,
     )?;
     assert_eq!(from_preset.values["VALUE"], "preset");
@@ -82,12 +86,14 @@ fn value_resolution_precedence_flows_into_the_launch_environment()
     let explicit = BTreeMap::from([("VALUE".to_owned(), "explicit".to_owned())]);
     let prepared = prepare_run(
         &entry,
-        &state,
-        Some("prod"),
-        &explicit,
-        &[],
-        &BTreeMap::new(),
-        &options,
+        RunRequest {
+            state: &state,
+            preset: Some("prod"),
+            explicit: &explicit,
+            extra_args: &extra,
+            environment: &empty,
+            launch_options: &options,
+        },
         &programs,
     )?;
     assert_eq!(prepared.values["VALUE"], "explicit");
@@ -103,29 +109,36 @@ fn unknown_preset_and_unknown_explicit_key_are_named_refusals()
     let state = EntryState::default();
     let options = LaunchOptions::new(Platform::Linux, root.path());
     let programs = |_name: &str| None;
+    let empty = BTreeMap::new();
+    let extra = Vec::new();
 
     assert!(matches!(
         prepare_run(
             &entry,
-            &state,
-            Some("missing"),
-            &BTreeMap::new(),
-            &[],
-            &BTreeMap::new(),
-            &options,
+            RunRequest {
+                state: &state,
+                preset: Some("missing"),
+                explicit: &empty,
+                extra_args: &extra,
+                environment: &empty,
+                launch_options: &options,
+            },
             &programs,
         ),
         Err(PrepareRunError::UnknownPreset(name)) if name == "missing"
     ));
+    let unknown = BTreeMap::from([("OTHER".to_owned(), "x".to_owned())]);
     assert!(matches!(
         prepare_run(
             &entry,
-            &state,
-            None,
-            &BTreeMap::from([("OTHER".to_owned(), "x".to_owned())]),
-            &[],
-            &BTreeMap::new(),
-            &options,
+            RunRequest {
+                state: &state,
+                preset: None,
+                explicit: &unknown,
+                extra_args: &extra,
+                environment: &empty,
+                launch_options: &options,
+            },
             &programs,
         ),
         Err(PrepareRunError::Resolve(error)) if error.key == "OTHER"
@@ -138,16 +151,21 @@ fn missing_required_value_stops_before_a_launch_snapshot_exists()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempdir()?;
     let entry = exe_entry(root.path(), &[env_field(None, true)])?;
+    let state = EntryState::default();
     let options = LaunchOptions::new(Platform::Linux, root.path());
     let programs = |_name: &str| None;
+    let empty = BTreeMap::new();
+    let extra = Vec::new();
     let result = prepare_run(
         &entry,
-        &EntryState::default(),
-        None,
-        &BTreeMap::new(),
-        &[],
-        &BTreeMap::new(),
-        &options,
+        RunRequest {
+            state: &state,
+            preset: None,
+            explicit: &empty,
+            extra_args: &extra,
+            environment: &empty,
+            launch_options: &options,
+        },
         &programs,
     );
     assert!(matches!(
