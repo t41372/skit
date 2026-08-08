@@ -97,12 +97,12 @@ fn hidden_parts_match(pattern: &[String], candidate: &[String]) -> bool {
 
 fn text_components(path: &Path) -> Vec<String> {
     path.components()
-        .filter_map(|component| match component {
-            Component::Normal(value) => Some(value.to_string_lossy().into_owned()),
-            Component::Prefix(value) => Some(value.as_os_str().to_string_lossy().into_owned()),
-            Component::RootDir => Some(std::path::MAIN_SEPARATOR.to_string()),
-            Component::CurDir => Some(".".to_owned()),
-            Component::ParentDir => Some("..".to_owned()),
+        .map(|component| match component {
+            Component::Normal(value) => value.to_string_lossy().into_owned(),
+            Component::Prefix(value) => value.as_os_str().to_string_lossy().into_owned(),
+            Component::RootDir => std::path::MAIN_SEPARATOR.to_string(),
+            Component::CurDir => ".".to_owned(),
+            Component::ParentDir => "..".to_owned(),
         })
         .collect()
 }
