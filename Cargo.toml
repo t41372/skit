@@ -4,6 +4,7 @@ members = [
     "crates/skit-domain",
     "crates/skit-application",
     "crates/skit-language",
+    "crates/skit-form",
     "crates/skit-store",
     "crates/skit-runtime",
     "crates/skit-ui",
@@ -42,6 +43,7 @@ tempfile = "3.27.0"
 skit-domain = { path = "crates/skit-domain" }
 skit-application = { path = "crates/skit-application" }
 skit-language = { path = "crates/skit-language" }
+skit-form = { path = "crates/skit-form" }
 skit-store = { path = "crates/skit-store" }
 skit-runtime = { path = "crates/skit-runtime" }
 skit-ui = { path = "crates/skit-ui" }
