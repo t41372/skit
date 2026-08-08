@@ -2,9 +2,9 @@
 
 use std::{fmt::Display, io};
 
-use ratatui::{
-    Terminal,
-    backend::CrosstermBackend,
+use ratatui_core::terminal::Terminal;
+use ratatui_crossterm::{
+    CrosstermBackend,
     crossterm::{
         event::{self, DisableMouseCapture, EnableMouseCapture},
         execute,
