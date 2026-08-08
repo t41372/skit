@@ -9,6 +9,7 @@ mod launch;
 mod params;
 mod paths;
 mod presets;
+mod programs;
 mod state;
 mod store;
 
@@ -33,6 +34,7 @@ pub use params::{
 };
 pub use paths::{PathContext, PathError, Platform, discover_roots, resolve_roots};
 pub use presets::{PresetFromLastError, save_preset_from_last};
+pub use programs::ProgramSearch;
 pub use state::{EntryState, LastRun, StateError, StateStore};
 pub use store::{
     Entry, EntryDraft, EntrySummary, Error, LibraryRoots, RunStamp, ScriptMeta, Store,
