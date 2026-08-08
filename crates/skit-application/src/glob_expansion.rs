@@ -1,8 +1,8 @@
-//! Filesystem-independent orchestration for glob-aware value and extra-tail expansion.
+//! Define where glob expansion can occur.
 //!
-//! The application layer decides *where* glob expansion is allowed, while a filesystem adapter
-//! decides which paths match in the launch cwd. This keeps CLI, Ratatui, and future Tauri behavior
-//! identical without leaking concrete filesystem APIs into the application crate.
+//! The application layer selects the values that can use glob syntax.
+//! A file-system adapter returns the matches for the launch directory.
+//! CLI, Ratatui, and Tauri can use the same rules.
 
 use std::{collections::BTreeMap, fmt::Debug};
 
@@ -13,19 +13,17 @@ use crate::{
     tokens::{TokenContext, TokenError, expand},
 };
 
-/// Adapter that expands one already-tokenized path pattern relative to its configured cwd.
+/// Expand one path pattern in the configured launch directory.
 pub trait GlobExpander: Debug {
-    /// Return deterministic matches, or the original piece when there are no matches or the
-    /// pattern cannot be interpreted safely.
+    /// Return matches in a stable order.
+    /// Return the input value when there is no match or the pattern is invalid.
     fn expand_piece(&self, piece: &str) -> Vec<String>;
 }
 
-/// Expand glob syntax only inside fields explicitly declared as multi-value.
+/// Expand glob syntax only in fields that accept multiple values.
 ///
-/// `value_preparation` has already applied POSIX shlex splitting, so this function never performs
-/// another shell parse. Scalar fields, unknown stale keys, and unexpected scalar shapes on a
-/// multi-value declaration pass through unchanged; shape validation remains the delivery layer's
-/// responsibility.
+/// The value preparation step already used POSIX shell splitting.
+/// This function does not split a value again.
 #[must_use]
 pub fn expand_multi_values<G: GlobExpander>(
     declarations: &[ParamDecl],
@@ -48,6 +46,7 @@ pub fn expand_multi_values<G: GlobExpander>(
                             .iter()
                             .flat_map(|piece| glob.expand_piece(piece))
                             .collect(),
+                    ),
                     PreparedValue::Scalar(value) => PreparedValue::Scalar(value.clone()),
                 }
             } else {
@@ -58,11 +57,11 @@ pub fn expand_multi_values<G: GlobExpander>(
         .collect()
 }
 
-/// Prepare a remembered or freshly entered extra-argument tail for this launch.
+/// Prepare the extra arguments for one launch.
 ///
-/// A raw launch-menu tail expands each stored item as one unit: token expansion first, then glob
-/// expansion. It is intentionally **not** shlex-split because each vector element already denotes
-/// one argument. A literal-replay tail bypasses both passes completely.
+/// A raw tail expands tokens first and glob syntax second.
+/// Each vector item is already one argument, so this function does not split it.
+/// A literal tail bypasses both expansion steps.
 pub fn prepare_extra_args<G: GlobExpander>(
     extra_args: &[String],
     context: &TokenContext,
