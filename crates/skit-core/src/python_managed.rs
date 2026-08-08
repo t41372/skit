@@ -436,12 +436,7 @@ fn recurse_nested_scopes(
     }
 }
 
-fn collect_scope_calls(
-    node: Node<'_>,
-    source: &str,
-    shadowed: bool,
-    output: &mut Vec<InputHit>,
-) {
+fn collect_scope_calls(node: Node<'_>, source: &str, shadowed: bool, output: &mut Vec<InputHit>) {
     if node.kind() == "call"
         && !shadowed
         && let Some(function) = node.child_by_field_name("function")
