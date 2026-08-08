@@ -13,7 +13,7 @@ use skit_application::{
     form_state::{FormStateService, StateWriteError},
 };
 use skit_domain::{
-    Entry, EntryKind, EntrySettings, StorageMode,
+    Entry, EntryKind, EntrySettings, EntrySummary, StorageMode,
     parameters::{ParamDecl, ParameterDelivery, ParameterType, coerce_default},
 };
 use skit_form::form_params;
@@ -104,6 +104,15 @@ enum Command {
         /// Disable prompt placeholder insertion.
         #[arg(long)]
         no_interpolate: bool,
+        /// Add one package dependency. Repeat for more than one value.
+        #[arg(long = "dep")]
+        dependencies: Vec<String>,
+        /// Set the Python version constraint.
+        #[arg(long)]
+        python: Option<String>,
+        /// Refuse interactive questions.
+        #[arg(long)]
+        no_input: bool,
     },
     /// Run one library entry.
     Run(RunArgs),
@@ -225,6 +234,15 @@ struct ParamsArgs {
     /// Set a flag as NAME=--FLAG. An empty flag makes the field positional.
     #[arg(long = "flag")]
     flags: Vec<String>,
+    /// Set help text as NAME=TEXT.
+    #[arg(long = "help-text")]
+    help_text: Vec<String>,
+    /// Set a form prompt as NAME=TEXT.
+    #[arg(long = "prompt")]
+    prompts: Vec<String>,
+    /// Set a secret environment source as NAME=ENVVAR.
+    #[arg(long = "env-source")]
+    env_sources: Vec<String>,
     /// Mark fields as required.
     #[arg(long)]
     required: Vec<String>,
@@ -351,11 +369,11 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
     let service = LibraryService::new(store.clone());
     match cli.command {
         Some(Command::List { json }) => {
-            list(&service, json)?;
+            list(&service, &store, json)?;
             Ok(0)
         }
         Some(Command::Show { selector, json }) => {
-            show(&service, &selector, json)?;
+            show(&service, &store, &selector, json)?;
             Ok(0)
         }
         Some(Command::Add {
@@ -369,6 +387,9 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             exe,
             runner,
             no_interpolate,
+            dependencies,
+            python,
+            no_input: _,
         }) => {
             add(
                 &service,
@@ -383,6 +404,8 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
                     executable: exe,
                     runner,
                     no_interpolate,
+                    dependencies,
+                    requires_python: python,
                 },
             )?;
             Ok(0)
@@ -442,13 +465,32 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
     }
 }
 
-fn list(service: &LibraryService<FileStore>, json: bool) -> Result<(), CliError> {
+fn list(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    json: bool,
+) -> Result<(), CliError> {
     let scan = service.list()?;
     if json {
-        let stdout = io::stdout();
-        let mut output = stdout.lock();
-        serde_json::to_writer(&mut output, &scan)?;
-        writeln!(output)?;
+        let state = FormStateService::new(FileFormStateStore::new(resolve_state_dir()?));
+        let rows = scan
+            .entries
+            .iter()
+            .map(|entry| {
+                let run = state.load(&entry.slug).last_run;
+                serde_json::json!({
+                    "name": entry.name,
+                    "slug": entry.slug,
+                    "kind": entry.kind,
+                    "mode": entry.mode,
+                    "description": entry.description,
+                    "missing": summary_missing(store, entry),
+                    "last_run_at": run.at,
+                    "last_exit": run.exit,
+                })
+            })
+            .collect::<Vec<_>>();
+        println!("{}", serde_json::to_string(&rows)?);
     } else {
         let stdout = io::stdout();
         let mut output = stdout.lock();
@@ -468,12 +510,73 @@ fn list(service: &LibraryService<FileStore>, json: bool) -> Result<(), CliError>
     Ok(())
 }
 
-fn show(service: &LibraryService<FileStore>, selector: &str, json: bool) -> Result<(), CliError> {
+fn show(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    selector: &str,
+    json: bool,
+) -> Result<(), CliError> {
     let entry = service.show(selector)?;
     let stdout = io::stdout();
     let mut output = stdout.lock();
     if json {
-        serde_json::to_writer(&mut output, &entry)?;
+        let settings = EntrySettings::from_meta(&entry.meta);
+        let declarations = entry_parameters(store, &entry);
+        let state =
+            FormStateService::new(FileFormStateStore::new(resolve_state_dir()?)).load(&entry.slug);
+        let parameter_source = parameter_source(entry.meta.kind.as_str(), &declarations);
+        let fields = declarations
+            .iter()
+            .map(|item| field_json(item, parameter_source))
+            .collect::<Vec<_>>();
+        let mut record = serde_json::json!({
+            "name": entry.meta.name,
+            "slug": entry.slug,
+            "schema": entry.meta.schema,
+            "id": entry.meta.id,
+            "kind": entry.meta.kind,
+            "mode": entry.meta.mode,
+            "description": entry.meta.description,
+            "source": entry.meta.source,
+            "source_hash": entry.meta.source_hash,
+            "added_at": entry.meta.added_at,
+            "workdir": entry.meta.workdir,
+            "interpreter": nonempty(&settings.interpreter),
+            "missing": entry_missing(store, &entry),
+            "dependencies": settings.dependencies,
+            "requires_python": settings.requires_python,
+            "needs": settings.needs,
+            "template": nonempty(&settings.template),
+            "param_source": parameter_source,
+            "param_origin": parameter_origin(parameter_source),
+            "degraded_reason": serde_json::Value::Null,
+            "drift": false,
+            "fields": fields,
+            "presets": state.presets.keys().collect::<Vec<_>>(),
+            "last_run_at": state.last_run.at,
+            "last_exit": state.last_run.exit,
+        });
+        if entry.meta.kind.as_str() == "prompt" {
+            let config = FileConfigStore::new(resolve_config_dir()?);
+            let runners = config
+                .runners()?
+                .into_iter()
+                .map(|runner| runner.name)
+                .collect::<Vec<_>>();
+            let object = record
+                .as_object_mut()
+                .expect("the show record is a JSON object");
+            object.insert(
+                "runner".to_owned(),
+                serde_json::json!(nonempty(&settings.runner)),
+            );
+            object.insert("runners_available".to_owned(), serde_json::json!(runners));
+            object.insert(
+                "interpolate".to_owned(),
+                serde_json::json!(settings.interpolate),
+            );
+        }
+        serde_json::to_writer(&mut output, &record)?;
         writeln!(output)?;
     } else {
         writeln!(output, "{} ({})", entry.meta.name, entry.slug)?;
@@ -484,6 +587,60 @@ fn show(service: &LibraryService<FileStore>, selector: &str, json: bool) -> Resu
         }
     }
     Ok(())
+}
+
+fn nonempty(value: &str) -> Option<&str> {
+    (!value.is_empty()).then_some(value)
+}
+
+fn parameter_source(kind: &str, declarations: &[ParamDecl]) -> &'static str {
+    if matches!(kind, "command" | "prompt") {
+        "command"
+    } else if declarations.is_empty() {
+        "none"
+    } else if declarations
+        .iter()
+        .any(|item| item.binding != skit_domain::parameters::ParameterBinding::None)
+    {
+        "inject"
+    } else {
+        "declared"
+    }
+}
+
+fn parameter_origin(source: &str) -> &'static str {
+    match source {
+        "command" => "command",
+        "inject" => "managed",
+        "argparse" => "reader",
+        "declared" => "declared",
+        _ => "none",
+    }
+}
+
+fn field_json(item: &ParamDecl, source: &str) -> serde_json::Value {
+    serde_json::json!({
+        "key": item.name,
+        "label": if item.prompt.is_empty() { &item.name } else { &item.prompt },
+        "type": item.parameter_type.as_str(),
+        "source": source,
+        "required": item.required,
+        "secret": item.secret,
+        "multiple": item.multiple,
+        "repeat": item.repeat,
+        "degraded": item.degraded,
+        "choices": item.choices,
+        "default": item.default,
+        "help": item.help,
+        "flag": item.flag,
+        "action": item.action,
+        "env_source": item.env_source,
+        "delivers_empty": item.default.is_some()
+            && !item.secret
+            && !item.multiple
+            && matches!(item.parameter_type, ParameterType::Str | ParameterType::Path)
+            && matches!(item.delivery, ParameterDelivery::Inject | ParameterDelivery::Flag | ParameterDelivery::Env),
+    })
 }
 
 #[derive(Debug)]
@@ -498,18 +655,45 @@ struct AddOptions {
     executable: bool,
     runner: Option<String>,
     no_interpolate: bool,
+    dependencies: Vec<String>,
+    requires_python: Option<String>,
 }
 
 fn add(service: &LibraryService<FileStore>, options: AddOptions) -> Result<(), CliError> {
-    if let Some(template) = options.command_template {
+    let AddOptions {
+        source,
+        kind,
+        name,
+        description,
+        reference,
+        command_template,
+        prompt,
+        executable,
+        runner,
+        no_interpolate,
+        dependencies,
+        requires_python,
+    } = options;
+    let dependencies = dependencies
+        .into_iter()
+        .map(|item| item.trim().to_owned())
+        .filter(|item| !item.is_empty())
+        .collect::<Vec<_>>();
+
+    if let Some(template) = command_template {
+        if !dependencies.is_empty() || requires_python.is_some() {
+            return Err(CliError::Usage(
+                "command entries do not take package dependencies".to_owned(),
+            ));
+        }
         let kind = EntryKind::parse("command".to_owned()).expect("command kind is valid");
         let entry = service.add(CreateEntry {
-            name: options.name.unwrap_or_else(|| "Command".to_owned()),
+            name: name.unwrap_or_else(|| "Command".to_owned()),
             kind,
             mode: StorageMode::Copy,
             source: String::new(),
             workdir: "invoke".to_owned(),
-            description: options.description,
+            description,
             payload: None,
         })?;
         let parameters = placeholder_params("command", &template);
@@ -525,25 +709,42 @@ fn add(service: &LibraryService<FileStore>, options: AddOptions) -> Result<(), C
         return Ok(());
     }
 
-    let source = options
-        .source
+    let input = source
         .as_deref()
         .ok_or_else(|| CliError::Usage("add needs a source path or --cmd COMMAND".to_owned()))?;
-    let source =
-        fs::canonicalize(source).map_err(|error| source_error("resolve", source, error))?;
-    let (bytes, permissions) = read_source(&source)?;
-    let name = options.name.unwrap_or_else(|| source_default_name(&source));
+    if reference && input == Path::new("-") {
+        return Err(CliError::Usage(
+            "standard input cannot be a referenced entry".to_owned(),
+        ));
+    }
+    let (source, source_record, bytes, permissions) = if input == Path::new("-") {
+        let mut bytes = Vec::new();
+        io::stdin().read_to_end(&mut bytes)?;
+        (
+            PathBuf::from("stdin"),
+            String::new(),
+            bytes,
+            SourcePermissions::default(),
+        )
+    } else {
+        let source =
+            fs::canonicalize(input).map_err(|error| source_error("resolve", input, error))?;
+        let (bytes, permissions) = read_source(&source)?;
+        let source_record = source.display().to_string();
+        (source, source_record, bytes, permissions)
+    };
+    let name = name.unwrap_or_else(|| source_default_name(&source));
     let source_text = String::from_utf8_lossy(&bytes).into_owned();
     let shebang = source_text
         .lines()
         .next()
         .filter(|line| line.starts_with("#!"));
-    let inferred = if options.prompt {
+    let inferred = if prompt {
         Some("prompt")
     } else {
-        infer_kind(&source, shebang, options.executable)
+        infer_kind(&source, shebang, executable)
     };
-    let kind = options.kind.as_deref().or(inferred).ok_or_else(|| {
+    let kind = kind.as_deref().or(inferred).ok_or_else(|| {
         CliError::Usage("could not infer the entry kind; pass --kind KIND".to_owned())
     })?;
     let kind =
@@ -551,8 +752,29 @@ fn add(service: &LibraryService<FileStore>, options: AddOptions) -> Result<(), C
             reason: error.to_string(),
         })?;
     let kind_name = kind.as_str().to_owned();
+    let supports_dependencies = matches!(kind_name.as_str(), "python" | "js" | "ts");
+    if !dependencies.is_empty() && !supports_dependencies {
+        return Err(CliError::Usage(format!(
+            "{kind_name} entries do not take package dependencies"
+        )));
+    }
+    if requires_python.is_some() && kind_name != "python" {
+        return Err(CliError::Usage(format!(
+            "a Python constraint does not apply to {kind_name} entries"
+        )));
+    }
+    if reference && matches!(kind_name.as_str(), "js" | "ts") && !dependencies.is_empty() {
+        return Err(CliError::Usage(
+            "reference entries do not take managed dependencies".to_owned(),
+        ));
+    }
+    if runner.is_some() && kind_name != "prompt" {
+        return Err(CliError::Usage(
+            "--runner only applies to prompt entries".to_owned(),
+        ));
+    }
     let stored_name = stored_name(&kind_name, &source);
-    let mode = if options.reference {
+    let mode = if reference {
         StorageMode::Reference
     } else {
         StorageMode::Copy
@@ -561,39 +783,39 @@ fn add(service: &LibraryService<FileStore>, options: AddOptions) -> Result<(), C
         name,
         kind,
         mode,
-        source: source.display().to_string(),
-        workdir: if options.reference {
-            "origin"
-        } else {
-            "invoke"
-        }
-        .to_owned(),
-        description: options.description,
+        source: source_record,
+        workdir: if reference { "origin" } else { "invoke" }.to_owned(),
+        description,
         payload: Some(EntryPayload {
             bytes,
             stored_name: Some(stored_name),
             permissions,
         }),
     })?;
-    if kind_name == "prompt" {
-        let mut settings = EntrySettings {
-            runner: options.runner.unwrap_or_default(),
-            interpolate: !options.no_interpolate,
-            ..EntrySettings::default()
-        };
-        if settings.interpolate {
-            settings.parameters = placeholder_params("prompt", &source_text);
-            settings.params = settings
-                .parameters
-                .iter()
-                .map(|item| item.name.clone())
-                .collect();
-        }
-        let claimed = service.claim_identity(&entry)?;
-        let entry = service.update_settings(&claimed, &settings, &entry.meta.workdir)?;
-        println!("Added: {} ({})", entry.meta.name, entry.slug);
-        return Ok(());
+    let mut settings = EntrySettings {
+        dependencies,
+        requires_python: requires_python.unwrap_or_default(),
+        runner: runner.unwrap_or_default(),
+        interpolate: !no_interpolate,
+        ..EntrySettings::default()
+    };
+    if kind_name == "prompt" && settings.interpolate {
+        settings.parameters = placeholder_params("prompt", &source_text);
+        settings.params = settings
+            .parameters
+            .iter()
+            .map(|item| item.name.clone())
+            .collect();
     }
+    let has_settings = kind_name == "prompt"
+        || !settings.dependencies.is_empty()
+        || !settings.requires_python.is_empty();
+    let entry = if has_settings {
+        let claimed = service.claim_identity(&entry)?;
+        service.update_settings(&claimed, &settings, &entry.meta.workdir)?
+    } else {
+        entry
+    };
     println!("Added: {} ({})", entry.meta.name, entry.slug);
     Ok(())
 }
@@ -703,6 +925,28 @@ fn edit(
 fn deps(service: &LibraryService<FileStore>, args: DepsArgs) -> Result<(), CliError> {
     let held = service.show(&args.selector)?;
     let mut settings = EntrySettings::from_meta(&held.meta);
+    let kind = held.meta.kind.as_str();
+    let package_change =
+        !args.dependencies.is_empty() || args.clear || args.requires_python.is_some();
+    if package_change && !matches!(kind, "python" | "js" | "ts") {
+        return Err(CliError::Usage(format!(
+            "{} does not take package dependencies; only --need applies",
+            held.meta.name
+        )));
+    }
+    if args.requires_python.is_some() && kind != "python" {
+        return Err(CliError::Usage(format!(
+            "a Python constraint does not apply to {kind} entries"
+        )));
+    }
+    if args.clear && !args.dependencies.is_empty() {
+        return Err(CliError::Usage("use --dep or --clear, not both".to_owned()));
+    }
+    if args.clear_needs && !args.needs.is_empty() {
+        return Err(CliError::Usage(
+            "use --need or --clear-needs, not both".to_owned(),
+        ));
+    }
     let changed = !args.dependencies.is_empty()
         || args.clear
         || args.requires_python.is_some()
@@ -807,6 +1051,21 @@ fn params(
     for spec in args.flags {
         let (name, value) = assignment(&spec, "flag")?;
         parameter_mut(&mut declarations, name)?.flag = value.to_owned();
+        changed = true;
+    }
+    for spec in args.help_text {
+        let (name, value) = assignment(&spec, "help text")?;
+        parameter_mut(&mut declarations, name)?.help = value.to_owned();
+        changed = true;
+    }
+    for spec in args.prompts {
+        let (name, value) = assignment(&spec, "prompt")?;
+        parameter_mut(&mut declarations, name)?.prompt = value.to_owned();
+        changed = true;
+    }
+    for spec in args.env_sources {
+        let (name, value) = assignment(&spec, "environment source")?;
+        parameter_mut(&mut declarations, name)?.env_source = value.to_owned();
         changed = true;
     }
     changed |= set_bool(
@@ -1124,12 +1383,14 @@ fn agent(command: AgentCommand) -> Result<(), CliError> {
             directory,
             project,
         } => {
-            let root = if let Some(directory) = directory {
-                directory
+            let path = if let Some(directory) = directory {
+                directory.join("skit").join("SKILL.md")
             } else {
                 agent_root(target.as_deref().unwrap_or("agents"), project)?
+                    .join("skills")
+                    .join("skit")
+                    .join("SKILL.md")
             };
-            let path = root.join("skills").join("skit").join("SKILL.md");
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)
                     .map_err(|error| source_error("create", parent, error))?;
@@ -1189,6 +1450,32 @@ fn source_path(store: &FileStore, entry: &Entry) -> Option<PathBuf> {
     let original_name = Path::new(&entry.meta.source).file_name()?;
     let path = directory.join(original_name);
     path.is_file().then_some(path)
+}
+
+fn entry_missing(store: &FileStore, entry: &Entry) -> bool {
+    match entry.meta.kind.as_str() {
+        "command" => false,
+        "exe" => !Path::new(&entry.meta.source).is_file(),
+        _ => source_path(store, entry).is_none_or(|path| !path.is_file()),
+    }
+}
+
+fn summary_missing(store: &FileStore, entry: &EntrySummary) -> bool {
+    if let Some(target) = &entry.target {
+        return !Path::new(target).is_file();
+    }
+    match entry.kind.as_str() {
+        "command" => false,
+        "exe" => true,
+        kind => stored_filename(kind).is_some_and(|name| {
+            !store
+                .data_dir()
+                .join("scripts")
+                .join(entry.slug.as_str())
+                .join(name)
+                .is_file()
+        }),
+    }
 }
 
 fn tui(service: &LibraryService<FileStore>) -> Result<(), CliError> {

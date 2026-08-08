@@ -17,7 +17,7 @@ use skit_language::{LanguageError, inject_values};
 use skit_runtime::{
     LaunchError, LaunchPaths, PromptRunner, SystemProbe, build_launch_plan, execute_launch,
 };
-use skit_store::{FileFormStateStore, FileGlobExpander, FileStore};
+use skit_store::{ConfigError, FileConfigStore, FileFormStateStore, FileGlobExpander, FileStore};
 use thiserror::Error;
 use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 
@@ -105,6 +105,14 @@ pub(crate) enum RunError {
     StateDirectoryUnavailable,
     #[error("prompt runner {name:?} is not configured")]
     RunnerNotFound { name: String },
+    #[error("--raw does not apply to {kind} entries because placeholders are part of the artifact")]
+    RawUnsupported { kind: String },
+    #[error("--raw cannot be combined with --set, --preset, or --save-preset")]
+    RawConflict,
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+    #[error("could not determine the platform configuration directory; set SKIT_CONFIG_DIR")]
+    ConfigDirectoryUnavailable,
 }
 
 impl RunError {
@@ -114,7 +122,9 @@ impl RunError {
             Self::Inputs(_)
             | Self::InvalidSet { .. }
             | Self::UnknownSet { .. }
-            | Self::PresetNotFound { .. } => 2,
+            | Self::PresetNotFound { .. }
+            | Self::RawUnsupported { .. }
+            | Self::RawConflict => 2,
             Self::Launch(error) => error.exit_code(),
             Self::RunnerNotFound { .. } => 126,
             Self::State(_)
@@ -122,7 +132,9 @@ impl RunError {
             | Self::Read { .. }
             | Self::Encoding { .. }
             | Self::Stage { .. }
-            | Self::StateDirectoryUnavailable => 125,
+            | Self::StateDirectoryUnavailable
+            | Self::Config(_)
+            | Self::ConfigDirectoryUnavailable => 125,
         }
     }
 }
@@ -135,8 +147,17 @@ pub(crate) fn run(
     let _plain = args.plain;
     let _no_input = args.no_input;
     let held = service.show(&args.selector)?;
+    let settings = EntrySettings::from_meta(&held.meta);
+    if args.raw && (!args.values.is_empty() || args.preset.is_some() || args.save_preset.is_some())
+    {
+        return Err(RunError::RawConflict);
+    }
+    if args.raw && matches!(held.meta.kind.as_str(), "command" | "prompt") {
+        return Err(RunError::RawUnsupported {
+            kind: held.meta.kind.as_str().to_owned(),
+        });
+    }
     let entry = service.claim_identity(&held)?;
-    let settings = EntrySettings::from_meta(&entry.meta);
     let state_root = resolve_state_dir()?;
     let state = FormStateService::new(FileFormStateStore::new(&state_root));
     let saved = state.load(&entry.slug);
@@ -217,7 +238,7 @@ pub(crate) fn run(
         .runner
         .as_deref()
         .or_else(|| (!settings.runner.is_empty()).then_some(settings.runner.as_str()));
-    let runner = runner_name.map(prompt_runner).transpose()?;
+    let runner = runner_name.map(configured_runner).transpose()?;
     let plan = build_launch_plan(
         &entry,
         &LaunchPaths {
@@ -378,25 +399,18 @@ fn render_prompt(text: &str, values: &BTreeMap<String, String>, interpolate: boo
     output
 }
 
-fn prompt_runner(name: &str) -> Result<PromptRunner, RunError> {
-    let argv = match name {
-        "claude" => vec!["claude", "--", "{{prompt}}"],
-        "codex" => vec!["codex", "--", "{{prompt}}"],
-        "opencode" => vec!["opencode", "--prompt={{prompt}}"],
-        "amp" => vec!["amp", "-x", "{{prompt}}"],
-        "antigravity" => vec!["agy", "--prompt-interactive", "{{prompt}}"],
-        "copilot" => vec!["copilot", "--interactive={{prompt}}"],
-        "cursor" => vec!["cursor-agent", "--", "agent", "{{prompt}}"],
-        "pi" => vec!["pi", "{{prompt}}"],
-        _ => {
-            return Err(RunError::RunnerNotFound {
-                name: name.to_owned(),
-            });
-        }
-    };
+fn configured_runner(name: &str) -> Result<PromptRunner, RunError> {
+    let config = FileConfigStore::new(resolve_config_dir()?);
+    let runner = config
+        .runners()?
+        .into_iter()
+        .find(|runner| runner.name == name)
+        .ok_or_else(|| RunError::RunnerNotFound {
+            name: name.to_owned(),
+        })?;
     Ok(PromptRunner {
-        name: name.to_owned(),
-        argv: argv.into_iter().map(str::to_owned).collect(),
+        name: runner.name,
+        argv: runner.argv,
     })
 }
 
@@ -434,12 +448,48 @@ fn resolve_state_dir() -> Result<PathBuf, RunError> {
     platform_state_dir().ok_or(RunError::StateDirectoryUnavailable)
 }
 
+fn resolve_config_dir() -> Result<PathBuf, RunError> {
+    if let Some(path) = env::var_os("SKIT_CONFIG_DIR") {
+        return Ok(PathBuf::from(path));
+    }
+    platform_config_dir().ok_or(RunError::ConfigDirectoryUnavailable)
+}
+
 #[cfg(target_os = "windows")]
 fn platform_state_dir() -> Option<PathBuf> {
     env::var_os("LOCALAPPDATA")
         .or_else(|| env::var_os("APPDATA"))
         .map(PathBuf::from)
         .map(|path| path.join("skit"))
+}
+
+#[cfg(target_os = "windows")]
+fn platform_config_dir() -> Option<PathBuf> {
+    env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .map(|path| path.join("skit"))
+}
+
+#[cfg(target_os = "macos")]
+fn platform_config_dir() -> Option<PathBuf> {
+    platform_state_dir()
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn platform_config_dir() -> Option<PathBuf> {
+    env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .map(|path| path.join("skit"))
+        .or_else(|| {
+            env::var_os("HOME")
+                .map(PathBuf::from)
+                .map(|path| path.join(".config").join("skit"))
+        })
+}
+
+#[cfg(not(any(unix, target_os = "windows")))]
+fn platform_config_dir() -> Option<PathBuf> {
+    None
 }
 
 #[cfg(target_os = "macos")]

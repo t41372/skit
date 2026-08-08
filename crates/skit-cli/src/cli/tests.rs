@@ -88,8 +88,9 @@ fn private_human_paths_render_entries_and_diagnostics() {
     fs::write(broken.join("meta.toml"), "name = [broken").unwrap();
     let service = LibraryService::new(FileStore::new(root.path()));
 
-    list(&service, false).unwrap();
-    show(&service, "alpha", false).unwrap();
+    let store = FileStore::new(root.path());
+    list(&service, &store, false).unwrap();
+    show(&service, &store, "alpha", false).unwrap();
 
     let source = root.path().join("source.py");
     fs::write(&source, b"print('source')\n").unwrap();
@@ -106,6 +107,8 @@ fn private_human_paths_render_entries_and_diagnostics() {
             executable: false,
             runner: None,
             no_interpolate: false,
+            dependencies: Vec::new(),
+            requires_python: None,
         },
     )
     .unwrap_err();

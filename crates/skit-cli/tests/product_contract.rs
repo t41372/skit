@@ -120,7 +120,7 @@ fn add_infers_source_kinds_and_supports_command_and_prompt_entries() {
         .success();
 
     let entries = sandbox.command_json(&["list", "--json"]);
-    let entries = entries.get("entries").and_then(Value::as_array).unwrap();
+    let entries = entries.as_array().unwrap();
     assert_eq!(entries.len(), 3);
     assert!(entries.iter().any(|item| item["kind"] == "python"));
     assert!(entries.iter().any(|item| item["kind"] == "prompt"));
@@ -292,7 +292,7 @@ fn agent_install_writes_the_exact_bundled_skill_to_an_explicit_target() {
         .assert()
         .success();
 
-    let installed = target.join("skills/skit/SKILL.md");
+    let installed = target.join("skit/SKILL.md");
     assert!(installed.is_file());
     let source = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
