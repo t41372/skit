@@ -10,19 +10,21 @@ use skit_application::{
     CreateEntry, EntryPayload, ExitClass, LibraryService, RepositoryError, SourcePermissions,
 };
 use skit_domain::{EntryKind, StorageMode};
-use skit_store::FileStore;
+use skit_store::{FileStore, stored_filename};
 use skit_ui::LibraryState;
 use thiserror::Error;
+
+use crate::run::{RunArgs, RunError};
 
 #[cfg(test)]
 mod tests;
 
-/// Run the real command-line entry point and return its stable process status.
+/// Run the command-line entry point and return its process status.
 #[must_use]
-pub fn entry() -> u8 {
+pub fn entry() -> i32 {
     let cli = Cli::parse();
     match execute(cli) {
-        Ok(()) => 0,
+        Ok(code) => code,
         Err(error) => {
             eprintln!("{error}");
             error.exit_code()
@@ -38,7 +40,7 @@ pub fn entry() -> u8 {
     disable_help_subcommand = true
 )]
 struct Cli {
-    /// Override the skit data directory (the parent of scripts/ and registry.toml).
+    /// Override the skit data directory.
     #[arg(long, global = true, value_name = "PATH")]
     data_dir: Option<PathBuf>,
 
@@ -50,7 +52,7 @@ struct Cli {
 enum Command {
     /// List entries in the library.
     List {
-        /// Emit the stable machine-readable contract.
+        /// Emit stable machine-readable output.
         #[arg(long)]
         json: bool,
     },
@@ -58,7 +60,7 @@ enum Command {
     Show {
         /// Entry slug or display name.
         selector: String,
-        /// Emit the stable machine-readable contract.
+        /// Emit stable machine-readable output.
         #[arg(long)]
         json: bool,
     },
@@ -69,14 +71,16 @@ enum Command {
         /// Open entry-kind registry key.
         #[arg(long)]
         kind: String,
-        /// Display name; defaults to the source stem.
+        /// Display name. The source stem is the default.
         #[arg(long)]
         name: Option<String>,
         /// Reference the original instead of storing a copy.
         #[arg(long)]
         reference: bool,
     },
-    /// Replace one entry's description.
+    /// Run one library entry.
+    Run(RunArgs),
+    /// Replace one entry description.
     Describe {
         /// Entry slug or display name.
         selector: String,
@@ -98,29 +102,52 @@ enum Command {
         #[arg(long)]
         yes: bool,
     },
-    /// Open the Ratatui library browser explicitly.
+    /// Open the Ratatui library browser.
     Tui,
 }
 
-fn execute(cli: Cli) -> Result<(), CliError> {
+fn execute(cli: Cli) -> Result<i32, CliError> {
     let data_dir = resolve_data_dir(cli.data_dir)?;
-    let service = LibraryService::new(FileStore::new(data_dir));
+    let store = FileStore::new(data_dir);
+    let service = LibraryService::new(store.clone());
     match cli.command {
-        Some(Command::List { json }) => list(&service, json),
-        Some(Command::Show { selector, json }) => show(&service, &selector, json),
+        Some(Command::List { json }) => {
+            list(&service, json)?;
+            Ok(0)
+        }
+        Some(Command::Show { selector, json }) => {
+            show(&service, &selector, json)?;
+            Ok(0)
+        }
         Some(Command::Add {
             source,
             kind,
             name,
             reference,
-        }) => add(&service, &source, &kind, name, reference),
+        }) => {
+            add(&service, &source, &kind, name, reference)?;
+            Ok(0)
+        }
+        Some(Command::Run(args)) => crate::run::run(&service, &store, args).map_err(Into::into),
         Some(Command::Describe {
             selector,
             description,
-        }) => describe(&service, &selector, &description),
-        Some(Command::Rename { selector, name }) => rename(&service, &selector, &name),
-        Some(Command::Remove { selector, yes }) => remove(&service, &selector, yes),
-        Some(Command::Tui) | None => tui(&service),
+        }) => {
+            describe(&service, &selector, &description)?;
+            Ok(0)
+        }
+        Some(Command::Rename { selector, name }) => {
+            rename(&service, &selector, &name)?;
+            Ok(0)
+        }
+        Some(Command::Remove { selector, yes }) => {
+            remove(&service, &selector, yes)?;
+            Ok(0)
+        }
+        Some(Command::Tui) | None => {
+            tui(&service)?;
+            Ok(0)
+        }
     }
 }
 
@@ -183,7 +210,9 @@ fn add(
         EntryKind::parse(kind.to_owned()).map_err(|error| RepositoryError::InvalidMutation {
             reason: error.to_string(),
         })?;
-    let stored_name = stored_name(kind.as_str(), &source);
+    let stored_name = stored_filename(kind.as_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| fallback_stored_name(&source));
     let mode = if reference {
         StorageMode::Reference
     } else {
@@ -262,24 +291,12 @@ fn source_default_name(path: &Path) -> String {
         .to_owned()
 }
 
-fn stored_name(kind: &str, source: &Path) -> String {
-    match kind {
-        "python" => "script.py".to_owned(),
-        "shell" => "script.sh".to_owned(),
-        "js" => "script.js".to_owned(),
-        "ts" => "script.ts".to_owned(),
-        "fish" => "script.fish".to_owned(),
-        "powershell" => "script.ps1".to_owned(),
-        "ruby" => "script.rb".to_owned(),
-        "perl" => "script.pl".to_owned(),
-        "lua" => "script.lua".to_owned(),
-        "r" => "script.R".to_owned(),
-        _ => source
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("script")
-            .to_owned(),
-    }
+fn fallback_stored_name(source: &Path) -> String {
+    source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("script")
+        .to_owned()
 }
 
 fn source_error(operation: &'static str, path: &Path, source: io::Error) -> CliError {
@@ -356,6 +373,8 @@ fn platform_data_dir() -> Option<PathBuf> {
 enum CliError {
     #[error(transparent)]
     Repository(#[from] RepositoryError),
+    #[error(transparent)]
+    Run(#[from] RunError),
     #[error("could not encode JSON output: {0}")]
     Json(#[from] serde_json::Error),
     #[error("could not write output: {0}")]
@@ -376,15 +395,16 @@ enum CliError {
 }
 
 impl CliError {
-    const fn exit_code(&self) -> u8 {
+    const fn exit_code(&self) -> i32 {
         match self {
-            Self::Repository(error) => error.exit_class().code(),
-            Self::ConfirmationRequired => ExitClass::Usage.code(),
+            Self::Repository(error) => error.exit_class().code() as i32,
+            Self::Run(error) => error.exit_code(),
+            Self::ConfirmationRequired => ExitClass::Usage.code() as i32,
             Self::Json(_)
             | Self::Io(_)
             | Self::Tui(_)
             | Self::Source { .. }
-            | Self::DataDirectoryUnavailable => ExitClass::Skit.code(),
+            | Self::DataDirectoryUnavailable => ExitClass::Skit.code() as i32,
         }
     }
 }
