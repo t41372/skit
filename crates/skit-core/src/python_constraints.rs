@@ -3,7 +3,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use pep440_rs::VersionSpecifiers;
-use pep508_rs::Requirement;
+use pep508_rs::{Requirement, VerbatimUrl};
 
 /// One invalid user-supplied Python metadata value.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,10 +41,12 @@ pub fn normalize_python_dependency(
     if cleaned.is_empty() {
         return Ok(None);
     }
-    Requirement::from_str(cleaned).map_err(|source| PythonMetadataValidationError {
-        field: "Python dependency",
-        value: cleaned.to_owned(),
-        reason: source.to_string(),
+    Requirement::<VerbatimUrl>::from_str(cleaned).map_err(|source| {
+        PythonMetadataValidationError {
+            field: "Python dependency",
+            value: cleaned.to_owned(),
+            reason: source.to_string(),
+        }
     })?;
     Ok(Some(cleaned.to_owned()))
 }
