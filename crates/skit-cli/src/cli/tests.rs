@@ -409,6 +409,14 @@ fn adapter_only_error_paths_do_not_require_process_global_configuration() {
         )
         .is_err()
     );
+    let runner_error =
+        validate_prompt_runner_in(&FileConfigStore::new(&config_dir), Some("missing")).unwrap_err();
+    assert!(
+        runner_error
+            .to_string()
+            .contains("prompt runner \"missing\" is not configured"),
+        "{runner_error}"
+    );
     let valid_store = FileStore::new(root.path().join("valid-data"));
     let valid_service = LibraryService::new(valid_store);
     assert!(

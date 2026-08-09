@@ -810,7 +810,11 @@ fn add_command(
     }
     if options.source.is_none() && options.command_template.is_none() {
         if options.prompt {
-            validate_prompt_runner(options.runner.as_deref())?;
+            let config_dir = resolve_config_dir()?;
+            validate_prompt_runner_in(
+                &FileConfigStore::new(config_dir),
+                options.runner.as_deref(),
+            )?;
             if !io::stdin().is_terminal() {
                 options.source = Some(PathBuf::from("-"));
                 return add(service, options);
@@ -858,7 +862,8 @@ fn add_draft(
     mut options: AddOptions,
     prompt: bool,
 ) -> Result<(), CliError> {
-    validate_prompt_runner(options.runner.as_deref())?;
+    let config_dir = resolve_config_dir()?;
+    validate_prompt_runner_in(&FileConfigStore::new(config_dir), options.runner.as_deref())?;
     let drafts = service.repository().data_dir().join("drafts");
     fs::create_dir_all(&drafts)?;
     let suffix = if prompt { ".prompt.md" } else { "" };
@@ -893,11 +898,6 @@ fn add_draft(
         humanerrln!("Your draft was kept at {}", draft.display());
     }
     result
-}
-
-fn validate_prompt_runner(name: Option<&str>) -> Result<(), CliError> {
-    let config_dir = resolve_config_dir()?;
-    validate_prompt_runner_in(&FileConfigStore::new(config_dir), name)
 }
 
 fn validate_prompt_runner_in(config: &FileConfigStore, name: Option<&str>) -> Result<(), CliError> {
