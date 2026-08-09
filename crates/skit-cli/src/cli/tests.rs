@@ -8,7 +8,7 @@ use skit_domain::{
 };
 use skit_store::FileStore;
 use skit_ui::{
-    FormControl, FormField, FormPurpose, FormView, Screen, SettingsInputs, SettingsView,
+    FormControl, FormField, FormPurpose, FormView, Screen, SettingsSectionId, SettingsView,
 };
 use tempfile::TempDir;
 
@@ -51,19 +51,47 @@ fn add_command(service: &LibraryService<FileStore>, name: &str, template: &str) 
     service.show(name).unwrap()
 }
 
-fn form_values(screen: Screen) -> SubmittedValues {
-    let Screen::Form(form) = screen else {
-        panic!("expected a form");
-    };
-    form.fields
-        .into_iter()
-        .map(|field| (field.key, FieldValue::text(field.value)))
-        .collect()
-}
-
 /// Put one text value on a submission, the way a text control would.
 fn set(values: &mut SubmittedValues, key: &str, value: &str) {
     values.insert(key.to_owned(), FieldValue::text(value));
+}
+
+/// Open the entry-settings screen the way the composition root does.
+fn settings_view(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    state_dir: &Path,
+    selector: &str,
+) -> SettingsView {
+    let entry = service.show(selector).unwrap();
+    // Every test lays its directories out as `<root>/state` beside `<root>/config`.
+    let config_dir = state_dir.parent().unwrap_or(state_dir).join("config");
+    let Screen::Settings(view) =
+        tui_settings_screen(service, store, &config_dir, state_dir, &entry, None).unwrap()
+    else {
+        panic!("settings must open the typed screen");
+    };
+    *view
+}
+
+/// Drive the settings screen the way a person does: open it, move some controls, then save.
+///
+/// The submission carries only what moved, which is the contract every axis of the save depends on.
+fn settings_edits(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    state_dir: &Path,
+    selector: &str,
+    edits: &[(&str, &str)],
+) -> SubmittedValues {
+    let mut view = settings_view(service, store, state_dir, selector);
+    for (key, value) in edits {
+        assert!(
+            view.set_value(key, FieldValue::text(*value)),
+            "the settings screen offers no {key} control"
+        );
+    }
+    view.submitted_values()
 }
 
 /// Read one submitted value as the text an axis stores.
@@ -1011,25 +1039,18 @@ fn tui_settings_offers_a_declared_row_exactly_the_axes_version_04_makes_editable
     let store = FileStore::new(root.path());
     store.rebuild_registry().unwrap();
     let service = LibraryService::new(store.clone());
-    let entry = service.show("alpha").unwrap();
 
-    let Screen::Form(form) = tui_settings_form(&store, &entry) else {
-        panic!("settings must use a form");
-    };
-    let values = form
-        .fields
-        .iter()
-        .map(|field| (field.key.as_str(), field.value.as_str()))
-        .collect::<BTreeMap<_, _>>();
-    for key in [
-        "source:resync",
-        "source:manage",
-        "source:unmanage",
-        "source:normalize",
-        "parameter:add",
-        "parameter:remove",
-    ] {
-        assert!(values.contains_key(key), "missing settings field {key}");
+    let view = settings_view(&service, &store, &root.path().join("state"), "alpha");
+    let controls = view
+        .fields()
+        .map(|field| field.key.as_str())
+        .collect::<Vec<_>>();
+
+    // The nine axes the flat form used to carry are all reachable through the typed screen. Two of
+    // them have no key of their own: unticking a row is the remove, and unticking a source-managed
+    // row is the unmanage, which is version 0.4's own affordance (`:115-117`, `:180`).
+    for key in ["parameter:add", "template"] {
+        assert!(controls.contains(&key), "missing settings control {key}");
     }
 
     // Version 0.4's DeclParamRow makes exactly these editable
@@ -1046,7 +1067,7 @@ fn tui_settings_offers_a_declared_row_exactly_the_axes_version_04_makes_editable
         "env_source",
     ] {
         assert!(
-            values.contains_key(format!("parameter:count:{axis}").as_str()),
+            controls.contains(&format!("parameter:count:{axis}").as_str()),
             "a declared row lost its editable {axis}"
         );
     }
@@ -1064,25 +1085,34 @@ fn tui_settings_offers_a_declared_row_exactly_the_axes_version_04_makes_editable
         "baseline",
     ] {
         assert!(
-            !values.contains_key(format!("parameter:count:{axis}").as_str()),
+            !controls.contains(&format!("parameter:count:{axis}").as_str()),
             "a declared row offered {axis}, which version 0.4 never edits here"
         );
     }
     // A command template takes no argument vector, so it never offers a flag.
-    assert!(!values.contains_key("parameter:count:flag"));
-    assert_eq!(values["parameter:count:default"], "4");
-    assert_eq!(values["parameter:count:choices"], "4, 8");
+    assert!(!controls.contains(&"parameter:count:flag"));
+    assert_eq!(
+        view.field("parameter:count:default")
+            .unwrap()
+            .value()
+            .as_text(),
+        "4"
+    );
+    assert_eq!(
+        view.field("parameter:count:choices")
+            .unwrap()
+            .value()
+            .as_text(),
+        "4, 8"
+    );
     // Every field of one row is addressed by the parameter's own name, so a save merges each edit
     // onto the declaration it was made on. No serialized snapshot rides along to say which one.
     assert!(
-        values
-            .keys()
+        controls
+            .iter()
             .filter(|key| key.starts_with("parameter:"))
-            .all(|key| key.starts_with("parameter:count:")
-                || *key == "parameter:add"
-                || *key == "parameter:remove"),
-        "{:?}",
-        values.keys().collect::<Vec<_>>()
+            .all(|key| key.starts_with("parameter:count:") || *key == "parameter:add"),
+        "{controls:?}"
     );
 }
 
@@ -2075,24 +2105,37 @@ fn tui_host_opens_every_frontend_neutral_screen_and_handles_simple_effects() {
             .label,
         "Extra command arguments"
     );
-    for request in [
-        HostRequest::Settings,
-        HostRequest::Presets,
-        HostRequest::Rename,
+    // Both entry-settings doors open the one typed screen. `s` names the section it lands on, and
+    // version 0.4 has no second screen to open (`src/skit/tui.py:991-992`).
+    for (request, revealed) in [
+        (HostRequest::Settings, None),
+        (HostRequest::Presets, Some(SettingsSectionId::Presets)),
     ] {
-        assert!(matches!(
-            tui_open(
-                &service,
-                &store,
-                &state_dir,
-                &config_dir,
-                request,
-                Some(entry.slug.as_str().to_owned()),
-            )
-            .unwrap(),
-            Screen::Form(_)
-        ));
+        let Screen::Settings(view) = tui_open(
+            &service,
+            &store,
+            &state_dir,
+            &config_dir,
+            request,
+            Some(entry.slug.as_str().to_owned()),
+        )
+        .unwrap() else {
+            panic!("{request:?} must open the typed settings screen");
+        };
+        assert_eq!(view.revealed(), revealed);
     }
+    assert!(matches!(
+        tui_open(
+            &service,
+            &store,
+            &state_dir,
+            &config_dir,
+            HostRequest::Rename,
+            Some(entry.slug.as_str().to_owned()),
+        )
+        .unwrap(),
+        Screen::Form(_)
+    ));
     assert!(matches!(
         tui_open(
             &service,
@@ -2210,7 +2253,7 @@ fn tui_host_opens_every_frontend_neutral_screen_and_handles_simple_effects() {
         UiAction::Complete { .. }
     ));
     let editable = service.show("editable").unwrap();
-    let editable_values = form_values(tui_settings_form(&store, &editable));
+    let editable_values = settings_edits(&service, &store, &state_dir, "editable", &[]);
     assert!(matches!(
         tui_submit(
             &service,
@@ -2926,49 +2969,52 @@ fn tui_host_submits_every_form_without_global_process_state() {
     )
     .unwrap();
 
-    let preset_save = BTreeMap::from([
-        ("name".to_owned(), FieldValue::text("empty")),
-        ("action".to_owned(), FieldValue::text("save")),
-    ]);
-    tui_submit(
+    // A preset is created from the run form (`Ctrl+S`) and deleted by unticking it in entry
+    // settings. Version 0.4 has no separate presets screen at all, so there is one place each.
+    let state = FormStateService::new(FileFormStateStore::new(&state_dir));
+    state
+        .save_preset(
+            &renamed.slug,
+            "empty",
+            &entry_parameters(&store, &renamed),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    assert!(
+        state.load(&renamed.slug).presets.contains_key("empty"),
+        "the run form's save did not reach the state file"
+    );
+    let Screen::Settings(view) = tui_open(
         &service,
         &store,
         &state_dir,
         &config_dir,
-        FormPurpose::Presets,
+        HostRequest::Presets,
         Some(renamed.slug.as_str().to_owned()),
-        &preset_save,
     )
-    .unwrap();
-    let preset_delete = BTreeMap::from([
-        ("name".to_owned(), FieldValue::text("empty")),
-        ("action".to_owned(), FieldValue::text("delete")),
-    ]);
+    .unwrap() else {
+        panic!("`s` must open the settings screen deep-linked to the presets");
+    };
+    let mut view = *view;
+    assert_eq!(view.revealed(), Some(SettingsSectionId::Presets));
+    assert!(view.set_value("preset:empty", FieldValue::boolean(false)));
     tui_submit(
         &service,
         &store,
         &state_dir,
         &config_dir,
-        FormPurpose::Presets,
+        FormPurpose::Settings,
         Some(renamed.slug.as_str().to_owned()),
-        &preset_delete,
+        &view.submitted_values(),
     )
     .unwrap();
     assert!(
-        tui_submit(
-            &service,
-            &store,
-            &state_dir,
-            &config_dir,
-            FormPurpose::Presets,
-            Some(renamed.slug.as_str().to_owned()),
-            &preset_delete,
-        )
-        .is_err()
+        !state.load(&renamed.slug).presets.contains_key("empty"),
+        "unticking a preset did not delete it"
     );
 
-    let mut settings = form_values(
-        tui_open(
+    let settings_screen = |edits: &[(&str, &str)]| -> SubmittedValues {
+        let Screen::Settings(view) = tui_open(
             &service,
             &store,
             &state_dir,
@@ -2976,10 +3022,16 @@ fn tui_host_submits_every_form_without_global_process_state() {
             HostRequest::Settings,
             Some(renamed.slug.as_str().to_owned()),
         )
-        .unwrap(),
-    );
-    let mut duplicate = settings.clone();
-    set(&mut duplicate, "parameter:add", "same same");
+        .unwrap() else {
+            panic!("settings must open the typed screen");
+        };
+        let mut view = *view;
+        for (key, value) in edits {
+            assert!(view.set_value(key, FieldValue::text(*value)), "no {key}");
+        }
+        view.submitted_values()
+    };
+    let duplicate = settings_screen(&[("parameter:add", "same same")]);
     assert!(
         tui_submit(
             &service,
@@ -2992,11 +3044,12 @@ fn tui_host_submits_every_form_without_global_process_state() {
         )
         .is_err()
     );
-    set(&mut settings, "name", "Configured");
-    set(&mut settings, "description", "Configured in TUI");
-    set(&mut settings, "workdir", "invoke");
-    set(&mut settings, "template", "printf %s {name}");
-    set(&mut settings, "parameter:add", "fresh");
+    let settings = settings_screen(&[
+        ("name", "Configured"),
+        ("description", "Configured in TUI"),
+        ("template", "printf %s {name}"),
+        ("parameter:add", "fresh"),
+    ]);
     tui_submit(
         &service,
         &store,
@@ -3132,11 +3185,28 @@ fn tui_python_dependencies_use_the_same_pep_723_source_as_the_cli() {
         },
     )
     .unwrap();
-    let entry = service.show("python-tool").unwrap();
-    let mut values = form_values(tui_settings_form(&store, &entry));
-    assert_eq!(got(&values, "dependencies"), "requests>=2,<3");
-    set(&mut values, "dependencies", "requests>=2,<3\nrich");
-    set(&mut values, "python", ">=3.13");
+    // The list is one comma-separated control, and the screen splits it per flavour before it
+    // travels — a PEP 508 requirement carries commas inside its own specifier.
+    let view = settings_view(&service, &store, &state_dir, "python-tool");
+    assert_eq!(
+        view.field("dependencies").unwrap().value().as_text(),
+        "requests>=2,<3"
+    );
+    let values = settings_edits(
+        &service,
+        &store,
+        &state_dir,
+        "python-tool",
+        &[
+            ("dependencies", "requests>=2,<3, rich"),
+            ("python", ">=3.13"),
+        ],
+    );
+    assert_eq!(
+        tui_list(&values, "dependencies"),
+        ["requests>=2,<3".to_owned(), "rich".to_owned()],
+        "a specifier's own comma must not split the list"
+    );
 
     tui_submit_settings(&service, &store, &state_dir, "python-tool", &values).unwrap();
 
@@ -3187,15 +3257,21 @@ fn tui_settings_source_refusal_does_not_commit_other_fields() {
         },
     )
     .unwrap();
-    let entry = service.show("shell-tool").unwrap();
     let source_path = data_dir.join("scripts/shell-tool/script.sh");
     let meta_path = data_dir.join("scripts/shell-tool/meta.toml");
     let source_before = fs::read(&source_path).unwrap();
     let meta_before = fs::read(&meta_path).unwrap();
-    let mut values = form_values(tui_settings_form(&store, &entry));
-    set(&mut values, "name", "Must not land");
-    set(&mut values, "description", "must not land");
-    set(&mut values, "source:normalize", "MISSING");
+    let values = settings_edits(
+        &service,
+        &store,
+        &state_dir,
+        "shell-tool",
+        &[
+            ("name", "Must not land"),
+            ("description", "must not land"),
+            ("source:normalize", "MISSING"),
+        ],
+    );
 
     assert!(tui_submit_settings(&service, &store, &state_dir, "shell-tool", &values).is_err());
     assert_eq!(fs::read(source_path).unwrap(), source_before);
@@ -3210,9 +3286,14 @@ fn tui_template_updates_reconcile_the_placeholder_schema() {
     let state_dir = root.path().join("state");
     let store = FileStore::new(&data_dir);
     let service = LibraryService::new(store.clone());
-    let entry = add_command(&service, "Template form", "echo {old}");
-    let mut values = form_values(tui_settings_form(&store, &entry));
-    set(&mut values, "template", "echo {new}");
+    add_command(&service, "Template form", "echo {old}");
+    let values = settings_edits(
+        &service,
+        &store,
+        &state_dir,
+        "template-form",
+        &[("template", "echo {new}")],
+    );
 
     tui_submit_settings(&service, &store, &state_dir, "template-form", &values).unwrap();
 
@@ -3512,8 +3593,7 @@ fn tui_settings_refuse_axes_that_do_not_apply_to_the_entry_kind() {
     let state_dir = root.path().join("state");
     let store = FileStore::new(&data_dir);
     let service = LibraryService::new(store.clone());
-    let entry = add_command(&service, "Command form", "echo ok");
-    let base = form_values(tui_settings_form(&store, &entry));
+    add_command(&service, "Command form", "echo ok");
 
     for (field, value, detail) in [
         (
@@ -3532,8 +3612,9 @@ fn tui_settings_refuse_axes_that_do_not_apply_to_the_entry_kind() {
             "a Python constraint applies only to Python entries",
         ),
     ] {
-        let mut values = base.clone();
-        values.insert(field.to_owned(), FieldValue::text(value));
+        // A command template offers none of these controls, so the refusal is what a machine path
+        // meets rather than something the screen can produce.
+        let values = BTreeMap::from([(field.to_owned(), FieldValue::text(value))]);
         let error =
             tui_submit_settings(&service, &store, &state_dir, "command-form", &values).unwrap_err();
         assert!(error.to_string().contains(detail), "{error}");
@@ -3571,10 +3652,13 @@ fn tui_settings_accept_a_pinnable_interpreter_and_a_managed_binding() {
         },
     )
     .unwrap();
-    let entry = service.show("pin-tool").unwrap();
-    let mut values = form_values(tui_settings_form(&store, &entry));
-    set(&mut values, "interpreter", "/opt/bash");
-    set(&mut values, "source:manage", "NAME");
+    let values = settings_edits(
+        &service,
+        &store,
+        &state_dir,
+        "pin-tool",
+        &[("interpreter", "/opt/bash"), ("source:manage", "NAME")],
+    );
 
     tui_submit_settings(&service, &store, &state_dir, "pin-tool", &values).unwrap();
 
@@ -3584,8 +3668,8 @@ fn tui_settings_accept_a_pinnable_interpreter_and_a_managed_binding() {
         "/opt/bash"
     );
 
-    // A second submission keeps the managed binding the form reports back.
-    let values = form_values(tui_settings_form(&store, &updated));
+    // A second submission that changes nothing keeps the managed binding the screen reports back.
+    let values = settings_edits(&service, &store, &state_dir, "pin-tool", &[]);
     tui_submit_settings(&service, &store, &state_dir, "pin-tool", &values).unwrap();
     let stored = fs::read_to_string(data_dir.join("scripts/pin-tool/script.sh")).unwrap();
     assert!(stored.contains("name = \"NAME\""), "{stored}");
@@ -3622,25 +3706,33 @@ fn tui_settings_offers_no_binding_control_so_unmanaging_goes_through_its_own_key
         },
     )
     .unwrap();
-    let entry = service.show("shell-tool").unwrap();
-    let mut values = form_values(tui_settings_form(&store, &entry));
-    set(&mut values, "source:manage", "NAME");
+    let values = settings_edits(
+        &service,
+        &store,
+        &state_dir,
+        "shell-tool",
+        &[("source:manage", "NAME")],
+    );
     tui_submit_settings(&service, &store, &state_dir, "shell-tool", &values).unwrap();
 
     // The stored source now manages NAME. Version 0.4 offers no binding control at all — a
     // source-managed row exposes the form label, the secret flag and the environment source and
     // nothing else (`src/skit/tui_settings.py:98-118`) — so the form cannot express "unbind this"
     // and the refusal it used to need is unreachable through the screen.
-    let managed = service.show("shell-tool").unwrap();
-    let values = form_values(tui_settings_form(&store, &managed));
+    let view = settings_view(&service, &store, &state_dir, "shell-tool");
+    let controls = view
+        .fields()
+        .map(|field| field.key.clone())
+        .collect::<Vec<_>>();
     assert!(
-        !values.keys().any(|key| key.ends_with(":binding")),
-        "a source-managed row offered a binding control: {:?}",
-        values.keys().collect::<Vec<_>>()
+        !controls.iter().any(|key| key.ends_with(":binding")),
+        "a source-managed row offered a binding control: {controls:?}"
     );
     for axis in ["prompt", "secret", "env_source", "keep"] {
         assert!(
-            values.keys().any(|key| key.ends_with(&format!(":{axis}"))),
+            controls
+                .iter()
+                .any(|key| key.ends_with(&format!(":{axis}"))),
             "a source-managed row lost its editable {axis}"
         );
     }
@@ -3649,8 +3741,13 @@ fn tui_settings_offers_no_binding_control_so_unmanaging_goes_through_its_own_key
     // rows that survived, and an unticked `ParamRow` collects as None
     // (`src/skit/tui_settings.py:115-117`, `:1061`, `:1074`). The toggle is the only unmanage
     // control the screen has, so a save that ignored it would take the edit back in silence.
-    let mut unticked = values.clone();
-    set(&mut unticked, "parameter:NAME:keep", "false");
+    let unticked = settings_edits(
+        &service,
+        &store,
+        &state_dir,
+        "shell-tool",
+        &[("parameter:NAME:keep", "false")],
+    );
     tui_submit_settings(&service, &store, &state_dir, "shell-tool", &unticked).unwrap();
     let stored = fs::read_to_string(data_dir.join("scripts/shell-tool/script.sh")).unwrap();
     assert!(
@@ -3658,15 +3755,12 @@ fn tui_settings_offers_no_binding_control_so_unmanaging_goes_through_its_own_key
         "unticking the keep toggle left the parameter managed: {stored}"
     );
 
-    // The named list does the same thing, so automation keeps its own path.
-    let managed = service.show("shell-tool").unwrap();
-    let mut values = form_values(tui_settings_form(&store, &managed));
-    set(&mut values, "source:manage", "NAME");
-    tui_submit_settings(&service, &store, &state_dir, "shell-tool", &values).unwrap();
-    let managed = service.show("shell-tool").unwrap();
-    let mut values = form_values(tui_settings_form(&store, &managed));
-    set(&mut values, "source:unmanage", "NAME");
-    tui_submit_settings(&service, &store, &state_dir, "shell-tool", &values).unwrap();
+    // The named lists still reach the host, so `skit params` and an agent keep their own path even
+    // though the screen expresses both through the keep toggle.
+    let manage = BTreeMap::from([("source:manage".to_owned(), FieldValue::text("NAME"))]);
+    tui_submit_settings(&service, &store, &state_dir, "shell-tool", &manage).unwrap();
+    let unmanage = BTreeMap::from([("source:unmanage".to_owned(), FieldValue::text("NAME"))]);
+    tui_submit_settings(&service, &store, &state_dir, "shell-tool", &unmanage).unwrap();
     let stored = fs::read_to_string(data_dir.join("scripts/shell-tool/script.sh")).unwrap();
     assert!(!stored.contains("[[tool.skit.params]]"), "{stored}");
 }
@@ -3703,9 +3797,13 @@ fn tui_settings_manage_source_parameters_without_losing_non_utf8_bytes() {
         },
     )
     .unwrap();
-    let entry = service.show("bytes-tool").unwrap();
-    let mut requested = form_values(tui_settings_form(&store, &entry));
-    set(&mut requested, "source:manage", "NAME");
+    let requested = settings_edits(
+        &service,
+        &store,
+        &state_dir,
+        "bytes-tool",
+        &[("source:manage", "NAME")],
+    );
 
     tui_submit_settings(&service, &store, &state_dir, "bytes-tool", &requested).unwrap();
 
@@ -3751,8 +3849,7 @@ fn tui_settings_keep_an_unchanged_non_utf8_python_copy_byte_exact() {
         },
     )
     .unwrap();
-    let entry = service.show("python-bytes").unwrap();
-    let values = form_values(tui_settings_form(&store, &entry));
+    let values = settings_edits(&service, &store, &state_dir, "python-bytes", &[]);
     tui_submit_settings(&service, &store, &state_dir, "python-bytes", &values).unwrap();
 
     assert_eq!(
@@ -3793,9 +3890,13 @@ fn tui_settings_store_a_dependency_edit_for_non_utf8_python_without_a_block() {
         },
     )
     .unwrap();
-    let entry = service.show("python-bytes").unwrap();
-    let mut values = form_values(tui_settings_form(&store, &entry));
-    set(&mut values, "dependencies", "httpx>=0.28");
+    let values = settings_edits(
+        &service,
+        &store,
+        &state_dir,
+        "python-bytes",
+        &[("dependencies", "httpx>=0.28")],
+    );
 
     tui_submit_settings(&service, &store, &state_dir, "python-bytes", &values).unwrap();
 
@@ -3844,8 +3945,13 @@ fn tui_settings_refuse_an_edit_to_a_non_utf8_authoritative_python_block() {
     .unwrap();
     let entry = service.show("python-bytes").unwrap();
     let before_settings = EntrySettings::from_meta(&entry.meta);
-    let mut values = form_values(tui_settings_form(&store, &entry));
-    set(&mut values, "dependencies", "");
+    let values = settings_edits(
+        &service,
+        &store,
+        &state_dir,
+        "python-bytes",
+        &[("dependencies", "")],
+    );
 
     let error =
         tui_submit_settings(&service, &store, &state_dir, "python-bytes", &values).unwrap_err();
@@ -4517,14 +4623,13 @@ fn a_source_that_moves_between_open_and_save_cannot_change_which_rows_persist() 
             )
             .unwrap();
 
-        let entry = service.show("ps").unwrap();
-        let mut values = form_values(tui_settings_form(&store, &entry));
-        let prompt_key = values
-            .keys()
-            .find(|key| key.ends_with(":prompt"))
-            .expect("the rider row has a form label")
-            .clone();
-        values.insert(prompt_key, FieldValue::text("Access token"));
+        let values = settings_edits(
+            &service,
+            &store,
+            &state_dir,
+            "ps",
+            &[("parameter:API_TOKEN:prompt", "Access token")],
+        );
 
         // The interference happens after the form is built and before it is submitted.
         let stored = data_dir.join("scripts/ps/script.ps1");
@@ -4558,29 +4663,174 @@ fn a_source_that_moves_between_open_and_save_cannot_change_which_rows_persist() 
     );
 }
 
-/// A save that carries only the axes its screen showed must not clear the ones it did not.
+/// Everything one settings save could damage, read as text so a failure names the axis.
+fn settings_axes(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    state_dir: &Path,
+    slug: &str,
+) -> BTreeMap<String, String> {
+    let entry = service.show(slug).unwrap();
+    let settings = EntrySettings::from_meta(&entry.meta);
+    let presets = FormStateService::new(FileFormStateStore::new(state_dir))
+        .load(&entry.slug)
+        .presets;
+    let source = source_path(store, &entry)
+        .and_then(|path| fs::read(path).ok())
+        .unwrap_or_default();
+    BTreeMap::from([
+        ("name".to_owned(), entry.meta.name.clone()),
+        ("description".to_owned(), entry.meta.description.clone()),
+        ("workdir".to_owned(), entry.meta.workdir.clone()),
+        ("interpreter".to_owned(), settings.interpreter.clone()),
+        ("runner".to_owned(), settings.runner.clone()),
+        ("template".to_owned(), settings.template.clone()),
+        ("interpolate".to_owned(), settings.interpolate.to_string()),
+        ("needs".to_owned(), settings.needs.join(",")),
+        ("dependencies".to_owned(), settings.dependencies.join(",")),
+        ("python".to_owned(), settings.requires_python.clone()),
+        (
+            "parameters".to_owned(),
+            format!("{:?}", settings.parameters),
+        ),
+        ("presets".to_owned(), format!("{presets:?}")),
+        (
+            "source".to_owned(),
+            String::from_utf8_lossy(&source).into_owned(),
+        ),
+    ])
+}
+
+/// Moving one control must leave every other axis exactly as it was.
 ///
-/// Version 0.4's settings save reads one widget per axis, and a widget that is not on the screen is
-/// not read at all — an absent control is never an instruction to clear
-/// (`src/skit/tui_settings.py:928-1001`). The typed entry-settings screen carries six sections and
-/// no parameters section yet, so its submitted values name no template, no interpolation switch and
-/// no parameter rows. Reading a missing key as an empty value would delete a command's program and
-/// every declared parameter on the first save of an unrelated field.
+/// This is the whole risk of a screen that submits only what moved. Version 0.4's save reads one
+/// widget per axis and never reads a widget that is not on the screen, so an absent control is
+/// never an instruction to clear (`src/skit/tui_settings.py:928-1001`). The typed screen makes that
+/// stronger — an untouched control is absent too — which turns every unconditional read in the save
+/// into a data-loss defect. The name axis was exactly that: a required read refused any save that
+/// did not carry it.
+///
+/// The check is a table rather than one assertion per axis, so an axis added later is covered by
+/// the same loop instead of being forgotten.
+fn assert_one_axis_moves(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    state_dir: &Path,
+    slug: &str,
+    control: &str,
+    value: &str,
+    expected: &[&str],
+) {
+    let before = settings_axes(service, store, state_dir, slug);
+    let values = settings_edits(service, store, state_dir, slug, &[(control, value)]);
+    tui_submit_settings(service, store, state_dir, slug, &values).unwrap();
+    let after = settings_axes(service, store, state_dir, slug);
+    for (axis, was) in &before {
+        if expected.contains(&axis.as_str()) {
+            continue;
+        }
+        assert_eq!(
+            &after[axis], was,
+            "moving {control} also changed {axis}: {was:?} became {:?}",
+            after[axis]
+        );
+    }
+    assert!(
+        expected.iter().any(|axis| after[*axis] != before[*axis]),
+        "moving {control} changed none of {expected:?}"
+    );
+}
+
 #[test]
-fn tui_settings_leave_every_axis_the_screen_did_not_carry_alone() {
+fn a_python_settings_save_that_moves_one_control_leaves_every_other_axis_alone() {
+    let root = TempDir::new().unwrap();
+    let data_dir = root.path().join("data");
+    let state_dir = root.path().join("state");
+    let config_dir = root.path().join("config");
+    let source = root.path().join("tool.py");
+    fs::write(&source, "GREETING = \"hello\"\nprint(GREETING)\n").unwrap();
+    let store = FileStore::new(&data_dir);
+    let service = LibraryService::new(store.clone());
+    add_with_config(
+        &service,
+        &config_dir,
+        AddOptions {
+            source: Some(source),
+            kind: None,
+            name: Some("Py tool".to_owned()),
+            description: Some("First".to_owned()),
+            reference: false,
+            command_template: None,
+            prompt: false,
+            executable: false,
+            runner: None,
+            no_interpolate: false,
+            dependencies: vec!["requests>=2,<3".to_owned()],
+            dependencies_explicit: true,
+            requires_python: Some(">=3.11".to_owned()),
+            no_input: false,
+        },
+    )
+    .unwrap();
+    // Give it something on every axis a save could take away.
+    let manage = settings_edits(
+        &service,
+        &store,
+        &state_dir,
+        "py-tool",
+        &[("source:manage", "GREETING"), ("needs", "jq")],
+    );
+    tui_submit_settings(&service, &store, &state_dir, "py-tool", &manage).unwrap();
+    let entry = service.show("py-tool").unwrap();
+    FormStateService::new(FileFormStateStore::new(&state_dir))
+        .save_preset(
+            &entry.slug,
+            "nightly",
+            &entry_parameters(&store, &entry),
+            &BTreeMap::from([("GREETING".to_owned(), "hi".to_owned())]),
+        )
+        .unwrap();
+
+    for (control, value, axes) in [
+        ("name", "Renamed tool", &["name"][..]),
+        ("description", "Second", &["description"]),
+        ("workdir", "store", &["workdir"]),
+        ("needs", "jq, ffmpeg", &["needs"]),
+        // A uv edit lands in the stored copy's own PEP 723 block, and the meta mirror follows it.
+        (
+            "dependencies",
+            "requests>=2,<3, rich",
+            &["source", "dependencies"],
+        ),
+        ("python", ">=3.12", &["source", "python"]),
+        // A block-managed row lives in the script, so its edit is a source edit and nothing else.
+        ("parameter:GREETING:prompt", "Who to greet", &["source"]),
+        ("preset:nightly", "false", &["presets"]),
+    ] {
+        assert_one_axis_moves(
+            &service, &store, &state_dir, "py-tool", control, value, axes,
+        );
+    }
+}
+
+#[test]
+fn a_command_settings_save_that_moves_one_control_leaves_every_other_axis_alone() {
     let root = TempDir::new().unwrap();
     let state_dir = root.path().join("state");
     let store = FileStore::new(root.path());
     let service = LibraryService::new(store.clone());
-    let entry = add_command(&service, "Deploy", "deploy {{target}} --force");
+    add_command(&service, "Deploy", "deploy {{target}} --force");
 
     // Give it a declared parameter and a needs list, so there is something to lose.
-    let mut complete = form_values(tui_settings_form(&store, &entry));
-    set(&mut complete, "needs", "ssh");
-    set(&mut complete, "parameter:add", "region");
+    let complete = settings_edits(
+        &service,
+        &store,
+        &state_dir,
+        "deploy",
+        &[("needs", "ssh"), ("parameter:add", "region")],
+    );
     tui_submit_settings(&service, &store, &state_dir, "deploy", &complete).unwrap();
-    let before = service.show("deploy").unwrap();
-    let stored = EntrySettings::from_meta(&before.meta);
+    let stored = EntrySettings::from_meta(&service.show("deploy").unwrap().meta);
     assert_eq!(stored.template, "deploy {{target}} --force");
     assert!(
         stored.parameters.iter().any(|item| item.name == "region"),
@@ -4588,38 +4838,32 @@ fn tui_settings_leave_every_axis_the_screen_did_not_carry_alone() {
         stored.parameters
     );
 
-    // Exactly what the typed entry-settings screen submits: its six sections and nothing else.
-    // Derived from the screen itself, so this stays true as the model grows.
-    let view = SettingsView::from_inputs(&SettingsInputs {
-        selector: "deploy".to_owned(),
-        kind: "command".to_owned(),
-        name: before.meta.name.clone(),
-        workdir: before.meta.workdir.clone(),
-        needs: stored.needs.clone(),
-        ..SettingsInputs::default()
-    });
-    let mut narrow = view.submitted_values();
-    set(&mut narrow, "name", "Deploy again");
-    assert!(!narrow.contains_key("template"));
-    assert!(!narrow.contains_key("interpolate"));
-    assert!(!narrow.keys().any(|key| key.starts_with("parameter:")));
+    for (control, value, axes) in [
+        ("name", "Deploy again", &["name"][..]),
+        ("description", "Ship it", &["description"]),
+        ("needs", "ssh, rsync", &["needs"]),
+        ("parameter:region:help", "Which region", &["parameters"]),
+        ("parameter:region:keep", "false", &["parameters"]),
+    ] {
+        assert_one_axis_moves(&service, &store, &state_dir, "deploy", control, value, axes);
+    }
 
-    tui_submit_settings(&service, &store, &state_dir, "deploy", &narrow).unwrap();
-
-    let after = service.show("deploy").unwrap();
-    let kept = EntrySettings::from_meta(&after.meta);
-    assert_eq!(after.meta.name, "Deploy again", "the edit landed");
-    assert_eq!(
-        kept.template, stored.template,
-        "a save that showed no template must not delete the program"
+    // The template is its own axis, and changing it reconciles the placeholder schema — so it is
+    // the one control that is allowed to move the parameters with it.
+    let before = settings_axes(&service, &store, &state_dir, "deploy");
+    let values = settings_edits(
+        &service,
+        &store,
+        &state_dir,
+        "deploy",
+        &[("template", "deploy {{target}} --dry-run")],
     );
-    assert_eq!(
-        kept.parameters, stored.parameters,
-        "a save that showed no parameter row must not delete the parameters"
-    );
-    assert_eq!(kept.interpolate, stored.interpolate);
-    assert_eq!(kept.needs, stored.needs, "needs travelled and is unchanged");
-    assert_eq!(after.meta.workdir, before.meta.workdir);
+    tui_submit_settings(&service, &store, &state_dir, "deploy", &values).unwrap();
+    let after = settings_axes(&service, &store, &state_dir, "deploy");
+    assert_ne!(after["template"], before["template"]);
+    for axis in ["name", "description", "needs", "workdir", "presets"] {
+        assert_eq!(after[axis], before[axis], "the template edit moved {axis}");
+    }
 }
 
 /// A typed payload is read as its type, never re-parsed from text.

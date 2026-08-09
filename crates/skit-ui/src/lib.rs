@@ -1007,8 +1007,6 @@ pub enum FormPurpose {
     Preferences,
     /// Add or change a prompt runner.
     Runners,
-    /// Add or change a parameter preset.
-    Presets,
     /// Rename one entry.
     Rename,
 }

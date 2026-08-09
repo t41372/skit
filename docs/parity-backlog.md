@@ -43,23 +43,6 @@ terminal. Version 0.4 docks a bare `KeysBar` with no border (`src/skit/tui_foote
 visible in every shipped frame under `docs/assets/`). Recovering those two rows would let the run
 form show its argument tail without scrolling, exactly as the oracle's own demo frame does.
 
-## The settings screen the user reaches is still the flat form
-
-`skit-form::parameter_section` and `skit-ui::SettingsView` now model every shape version 0.4 draws:
-a block-managed `ParamRow` with three editable axes (`src/skit/tui_settings.py:73-138`), a
-hand-declared `DeclParamRow` (`:151-230`), the one-sentence explanation a reader-driven entry gets
-instead of checkboxes (`:612-623`), and the read-only `· name (type)` lines of a reference entry
-(`:597-606`).
-
-`crates/skit-cli/src/cli.rs` still composes `tui_settings_form`, so none of it is on screen. The
-composition root has to open `Screen::Settings` instead, which waits on the presets section.
-
-Two earlier defects in this entry are fixed and have contract tests. `settings_parameter_fields`
-emits only the controls a row offers, rather than fifteen `FormField::text` axes for every
-parameter. The submit-time filter that dropped any declaration whose name the source also produced
-is gone, and with it both of its races: a concurrent source edit changing which rows survive, and an
-unreadable source silently widening the set that does.
-
 ## The parameter row prints its default differently
 
 Version 0.4 renders the default inside a `ParamRow` label with Python `repr`

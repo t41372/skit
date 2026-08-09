@@ -766,6 +766,18 @@ impl SettingsView {
             .filter(|field| field.is_dirty() && reachable.contains(&field.key.as_str()))
             .map(|field| (field.key.clone(), field.value().clone()))
             .collect::<SubmittedValues>();
+        // Dependencies travel already split, for the same reason the working directory travels
+        // already resolved. Two grammars share this one control — a PEP 508 requirement carries
+        // commas inside its own specifier, and the PEP 508 splitter would merge a scoped npm
+        // package into its neighbour (`src/skit/tui_settings.py:988-993`) — so a host that split
+        // the text itself would have to know which one applies, and a host that guessed would write
+        // one bogus requirement where the screen showed a list.
+        if let Some(list) = self.dependencies_edit() {
+            values.insert(
+                DEPENDENCIES_KEY.to_owned(),
+                FieldValue::Explicit(TypedValue::Arguments(list)),
+            );
+        }
         // The two halves are one axis: either one moving means the policy moved.
         if values.remove(WORKDIR_PATH_KEY).is_some() || values.contains_key(WORKDIR_KEY) {
             // A refused path cannot reach here: `Save` validates first. Keeping the stored value is

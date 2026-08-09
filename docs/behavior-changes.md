@@ -61,6 +61,41 @@ A section with nothing to edit keeps the anchor instead, so an entry with no pre
 the sentence that says where presets come from. The anchor is released by the first keyboard move,
 after which the viewport follows the focus as it does on every other screen.
 
+## Entry settings is one typed screen, and two form surfaces were deleted
+
+The composition root now opens `Screen::Settings` for both `HostRequest::Settings` and
+`HostRequest::Presets`. Two interim surfaces were deleted with it: the flat `tui_settings_form`,
+which listed every axis as a text box, and `tui_presets_form` with its `FormPurpose::Presets`.
+Neither existed in version 0.4, so this removes nothing the oracle has. It does remove two keys a
+machine path could previously send from the terminal frontend, and each deletion is argued here
+rather than assumed — "the capability is covered elsewhere" is the claim that has to be checked.
+
+`FormPurpose::Presets` carried a `name` and an `action` of `save` or `delete`.
+
+- **Save** duplicated the run form. Version 0.4 creates a preset with `Ctrl+S` inside the run form
+  and nowhere else, which is what its own empty-state sentence tells the user
+  (`src/skit/tui_settings.py:804-808`). That path is wired end to end in version 0.5:
+  `UiCommand::SavePreset` opens `ModalState::RunPresetName`, which produces
+  `UiEffect::SaveRunPreset`, which the host answers with `FormStateService::save_preset` and a
+  refreshed picker.
+- **Delete** is now unticking the preset in entry settings, which is version 0.4's own affordance
+  (`:809-818`, `:1114-1120`).
+
+`source:unmanage` and `parameter:remove` are no longer produced by any screen.
+
+- Both are the keep toggle on a parameter row. Version 0.4 has no separate control for either: an
+  unticked `ParamRow` leaves the block and an unticked `DeclParamRow` leaves the schema
+  (`src/skit/tui_settings.py:115-117`, `:1061`). A row carries its own name, so the toggle names
+  what it removes.
+- Both keys are still read by `tui_submit_settings`, so `skit params` and an agent that posts a
+  submission keep their path. A contract test submits each key on its own to prove it.
+
+The completeness check for this deletion was an inventory, not the compiler. Every key the flat form
+produced was listed and matched against what produces it now. Fourteen moved to a typed control, two
+are the toggles above, and two more — `preset:{name}` and `parameter:{name}:{axis}` — are new. A
+map-lookup key hides a dead producer behind a live function call, so `cargo clippy` reports nothing
+for a key nobody sends any more; it caught only `settings_parameter_fields`.
+
 ## The add-a-parameter box takes more than one name
 
 Version 0.4 reads one name from its add box and makes one declaration

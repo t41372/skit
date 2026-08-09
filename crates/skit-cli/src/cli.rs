@@ -45,12 +45,8 @@ use skit_domain::{
 };
 use skit_form::{
     FormDrift, FormPlan as PreparedFormPlan, OnboardingCandidate, OnboardingParseState,
-    OnboardingPlan, PreparedField,
-    field::FieldKind,
-    form_params, form_params_from_managed, form_plan, onboarding_plan,
-    parameter_section::{
-        ParameterSection, ParameterSectionContext, apply_secrecy_rule, parameter_section,
-    },
+    OnboardingPlan, PreparedField, form_params, form_params_from_managed, form_plan,
+    onboarding_plan, parameter_section::apply_secrecy_rule,
 };
 use skit_i18n::{
     Locale, Localize, Message, available_locale_tags, detect_locale, format_text, kind_label,
@@ -76,13 +72,14 @@ use skit_store::{
 };
 use skit_store::{FileStore, stored_filenames};
 use skit_ui::{
-    Action as UiAction, AddAction, AddEffect, AddWorkflowState, DraftKind, DraftSummary,
-    Effect as UiEffect, FieldValue, FormField, FormPurpose, FormView, HealthAction, HealthView,
-    HostRequest, LibraryState, PreferencesAction, PreferencesEffect, PreferencesView,
-    ReviewDefaults, RunFormContext, RunFormOptions, RunFormView, RunPathContext,
+    Action as UiAction, AddAction, AddEffect, AddWorkflowState, DependencyFlavor, DraftKind,
+    DraftSummary, Effect as UiEffect, FieldValue, FormField, FormPurpose, FormView, HealthAction,
+    HealthView, HostRequest, LibraryState, PRESET_PREFIX, PreferencesAction, PreferencesEffect,
+    PreferencesView, ReviewDefaults, RunFormContext, RunFormOptions, RunFormView, RunPathContext,
     RunnerManagerAction, RunnerManagerView, RunnerRemoveRequest, RunnerRow, RunnerRowIdentity,
-    RunnerSaveOwner, RunnerSaveRequest, RunnerSaveTarget, Screen,
-    SourceSnapshot as AddSourceSnapshot, SubmittedValues, TypedValue,
+    RunnerSaveOwner, RunnerSaveRequest, RunnerSaveTarget, Screen, SettingsInputs,
+    SettingsSectionId, SettingsView, SourceSnapshot as AddSourceSnapshot, SubmittedValues,
+    TypedValue,
 };
 use thiserror::Error;
 use unicode_width::UnicodeWidthStr as _;
@@ -5228,46 +5225,114 @@ struct SettingsParameterInputs {
     candidates: Vec<String>,
 }
 
-/// Render the parameter section as host form fields.
+/// Report whether a kind has a file of its own, so "the source file's folder" resolves.
 ///
-/// Every field is keyed by the parameter's own name, so a save merges each edit onto the
-/// declaration of that name and nothing else. A read-only axis is never emitted as a field: a
-/// control that cannot be kept must not exist.
-fn settings_parameter_fields(store: &FileStore, entry: &Entry) -> Vec<FormField> {
-    let inputs = settings_parameter_context(store, entry);
-    let section = parameter_section(
-        ParameterSectionContext {
-            kind: entry.meta.kind.as_str(),
-            reference_mode: inputs.reference_mode,
-            declared_schema: inputs.declared_schema,
-            has_analyzer: inputs.has_analyzer,
-            reader_fields: inputs.reader_fields,
-        },
-        &inputs.managed,
-        &inputs.candidates,
-    );
-    let rows = match &section {
-        // Neither shape offers an editable control, so neither contributes a field.
-        ParameterSection::Unsupported | ParameterSection::Reference { .. } => return Vec::new(),
-        ParameterSection::Declared { rows } | ParameterSection::SourceManaged { rows, .. } => rows,
-    };
-    let mut fields = Vec::new();
-    for row in rows {
-        // Every field of a row is a control: the plan keeps read-only metadata in the keep toggle's
-        // own label rather than as a field, so there is nothing here to filter out.
-        for field in &row.fields {
-            let multiline = field.kind == FieldKind::Multiline;
-            let value = field.value().as_text();
-            let mut form_field = if multiline {
-                FormField::multiline(field.key.clone(), field.label.clone(), value)
-            } else {
-                FormField::text(field.key.clone(), field.label.clone(), value)
-            };
-            form_field.label_arguments = vec![row.name.clone()];
-            fields.push(form_field);
-        }
+/// Version 0.4 reads `has_original_file`, which is `family != "template"`
+/// (`src/skit/langs/registry.py:276-279`).
+fn has_original_file(kind: &str) -> bool {
+    known_entry_kind(kind) && kind != "command"
+}
+
+/// Report whether a kind keeps a stored copy under its own name, so "skit's stored-copy folder"
+/// resolves. A linked entry and a command template have none.
+fn has_stored_name(kind: &str, mode: StorageMode) -> bool {
+    has_original_file(kind) && mode == StorageMode::Copy
+}
+
+/// Report whether an interpreter override applies to a kind.
+///
+/// This is the same closed set the save refuses outside of, so the screen cannot offer a pin the
+/// save would then reject.
+fn pinnable_interpreter(kind: &str) -> bool {
+    matches!(
+        kind,
+        "shell" | "fish" | "powershell" | "ruby" | "perl" | "lua" | "r" | "js" | "ts"
+    )
+}
+
+/// Return which installer serves a kind, when one does.
+const fn dependency_flavor(kind: &str) -> Option<DependencyFlavor> {
+    match kind.as_bytes() {
+        b"python" => Some(DependencyFlavor::Uv),
+        b"js" | b"ts" => Some(DependencyFlavor::Npm),
+        _ => None,
     }
-    fields
+}
+
+/// Read everything the settings screen needs, once, when it opens.
+///
+/// Every value here is what the screen displays, and `Field` keeps whatever it opened with as its
+/// baseline. Nothing is re-read when the save runs, so a concurrent write cannot turn an untouched
+/// axis into an edit (`src/skit/tui_settings.py:822-834`).
+fn settings_inputs(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    config_dir: &Path,
+    state_dir: &Path,
+    entry: &Entry,
+    revealed: Option<SettingsSectionId>,
+) -> Result<SettingsInputs, CliError> {
+    let kind = entry.meta.kind.as_str();
+    let parameters = settings_parameter_context(store, entry);
+    let effective = effective_settings(store, entry);
+    let config = FileConfigStore::new(config_dir);
+    let configured_runners = if kind == "prompt" {
+        config.ensure_runners_seeded()?;
+        config
+            .runners()?
+            .into_iter()
+            .map(|runner| runner.name)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let _ = service;
+    Ok(SettingsInputs {
+        selector: entry.slug.as_str().to_owned(),
+        kind: kind.to_owned(),
+        name: entry.meta.name.clone(),
+        description: entry.meta.description.clone(),
+        source: entry.meta.source.clone(),
+        reference_mode: parameters.reference_mode,
+        workdir: entry.meta.workdir.clone(),
+        interpreter: effective.interpreter.clone(),
+        runner: effective.runner.clone(),
+        supports_modes: supports_storage_modes(&entry.meta.kind),
+        has_original_file: has_original_file(kind),
+        has_stored_name: has_stored_name(kind, entry.meta.mode),
+        pinnable_interpreter: pinnable_interpreter(kind),
+        has_analyzer: parameters.has_analyzer,
+        declared_schema: parameters.declared_schema,
+        reader_fields: parameters.reader_fields,
+        managed: parameters.managed,
+        candidates: parameters.candidates,
+        template: effective.template.clone(),
+        interpolate: effective.interpolate,
+        dependency_flavor: dependency_flavor(kind),
+        effective_dependencies: effective.dependencies,
+        effective_requires_python: effective.requires_python,
+        needs: effective.needs,
+        configured_runners,
+        presets: FormStateService::new(FileFormStateStore::new(state_dir))
+            .load(&entry.slug)
+            .presets,
+        revealed,
+    })
+}
+
+/// Build the entry-settings screen.
+fn tui_settings_screen(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    config_dir: &Path,
+    state_dir: &Path,
+    entry: &Entry,
+    revealed: Option<SettingsSectionId>,
+) -> Result<Screen, CliError> {
+    let inputs = settings_inputs(service, store, config_dir, state_dir, entry, revealed)?;
+    Ok(Screen::Settings(Box::new(SettingsView::from_inputs(
+        &inputs,
+    ))))
 }
 
 fn source_path(store: &FileStore, entry: &Entry) -> Option<PathBuf> {
@@ -5910,18 +5975,23 @@ fn tui_open(
         HostRequest::Add => tui_add_screen(store, state_dir, config_dir),
         HostRequest::Settings => {
             let entry = service.show(tui_selector(&selector)?)?;
-            Ok(tui_settings_form(store, &entry))
+            tui_settings_screen(service, store, config_dir, state_dir, &entry, None)
         }
         HostRequest::Preferences => tui_preferences_screen(config_dir),
         HostRequest::Health => tui_health_screen(service, store, config_dir),
         HostRequest::Runners => tui_runners_screen(service, config_dir),
+        // Version 0.4 has no presets screen: `s` opens entry settings deep-linked to that section
+        // (`src/skit/tui.py:991-992`). One screen means one place a preset is managed.
         HostRequest::Presets => {
             let entry = service.show(tui_selector(&selector)?)?;
-            let saved = FormStateService::new(FileFormStateStore::new(state_dir)).load(&entry.slug);
-            Ok(tui_presets_form(
+            tui_settings_screen(
+                service,
+                store,
+                config_dir,
+                state_dir,
                 &entry,
-                &saved.presets.keys().cloned().collect::<Vec<_>>(),
-            ))
+                Some(SettingsSectionId::Presets),
+            )
         }
         HostRequest::Rename => {
             let entry = service.show(tui_selector(&selector)?)?;
@@ -6109,53 +6179,6 @@ fn tui_drafts(data_dir: &Path) -> Vec<DraftSummary> {
             })
         })
         .collect()
-}
-
-fn tui_settings_form(store: &FileStore, entry: &Entry) -> Screen {
-    let settings = effective_settings(store, entry);
-    let mut fields = vec![
-        FormField::text("name", "Name", &entry.meta.name),
-        FormField::multiline("description", "Description", &entry.meta.description),
-        FormField::text("workdir", "Working directory", &entry.meta.workdir),
-        FormField::text("interpreter", "Interpreter", settings.interpreter),
-        FormField::text("runner", "Prompt runner", settings.runner),
-        FormField::text(
-            "dependencies",
-            "Package dependencies",
-            settings.dependencies.join("\n"),
-        ),
-        FormField::text("python", "Python constraint", settings.requires_python),
-        FormField::text("needs", "Required commands", settings.needs.join(", ")),
-        FormField::multiline("template", "Command template", settings.template),
-        FormField::text(
-            "interpolate",
-            "Prompt interpolation (true or false)",
-            settings.interpolate.to_string(),
-        ),
-        FormField::text(
-            "source:resync",
-            "Resync managed source parameters (true or false)",
-            "false",
-        ),
-        FormField::text("source:manage", "Manage source parameters", ""),
-        FormField::text("source:unmanage", "Stop managing source parameters", ""),
-        FormField::text("source:normalize", "Normalize shell parameters", ""),
-        FormField::text("parameter:add", "Add parameters", ""),
-        FormField::text("parameter:remove", "Remove parameters", ""),
-    ];
-    // Rows come from the plan, so a control only exists where saving can keep the edit.
-    // Version 0.4 decides the section before it draws any row (`src/skit/tui_settings.py:588-631`).
-    fields.extend(settings_parameter_fields(store, entry));
-    Screen::Form(FormView {
-        purpose: FormPurpose::Settings,
-        title: "Settings for {}".to_owned(),
-        title_arguments: vec![entry.meta.name.clone()],
-        translate_title: true,
-        selector: Some(entry.slug.as_str().to_owned()),
-        fields,
-        focused: 0,
-        submit_label: "Save".to_owned(),
-    })
 }
 
 fn tui_preferences_screen(config_dir: &Path) -> Result<Screen, CliError> {
@@ -6700,22 +6723,6 @@ fn resolve_runner_row<'a>(
         .find(|row| row.index == identity.index && row.snapshot_token() == identity.snapshot_token)
 }
 
-fn tui_presets_form(entry: &Entry, presets: &[String]) -> Screen {
-    Screen::Form(FormView {
-        purpose: FormPurpose::Presets,
-        title: "Presets for {}: {}".to_owned(),
-        title_arguments: vec![entry.meta.name.clone(), presets.join(", ")],
-        translate_title: true,
-        selector: Some(entry.slug.as_str().to_owned()),
-        fields: vec![
-            FormField::text("name", "Preset name", ""),
-            FormField::text("action", "Action (save or delete)", "save"),
-        ],
-        focused: 0,
-        submit_label: "Apply".to_owned(),
-    })
-}
-
 fn tui_options_field(
     key: &str,
     label: &str,
@@ -6944,25 +6951,6 @@ fn tui_submit(
             }
             tui_complete(service, state_dir, "Prompt runners saved")
         }
-        FormPurpose::Presets => {
-            let selector = tui_selector(&selector)?;
-            let entry = service.show(selector)?;
-            let declarations = entry_parameters(store, &entry);
-            let state = FormStateService::new(FileFormStateStore::new(state_dir));
-            let name = tui_required(values, "name")?;
-            if tui_value(values, "action").eq_ignore_ascii_case("delete") {
-                if !state.delete_preset(&entry.slug, &name)? {
-                    return Err(CliError::Usage(
-                        Message::new("unknown preset: {}").with(name),
-                    ));
-                }
-            } else {
-                refuse_empty_preset_schema(&declarations)?;
-                let current = state.load(&entry.slug);
-                state.save_preset(&entry.slug, &name, &declarations, &current.values)?;
-            }
-            tui_complete(service, state_dir, "Presets saved")
-        }
         FormPurpose::Rename => {
             rename(
                 service,
@@ -7034,7 +7022,15 @@ fn tui_submit_settings(
     values: &SubmittedValues,
 ) -> Result<(), CliError> {
     let entry = service.show(selector)?;
-    let name = tui_required(values, "name")?;
+    // Only an axis a person moved travels. Every read below therefore asks whether the key is
+    // present before it changes anything: an absent key means "nobody touched this", and reading it
+    // as a value would write the empty string the screen never showed. The name is the one that
+    // used to get this wrong — a required read refused a save that changed only the needs list.
+    let name = if values.contains_key("name") {
+        tui_required(values, "name")?.into_owned()
+    } else {
+        entry.meta.name.clone()
+    };
     let description = if values.contains_key("description") {
         tui_value(values, "description").into_owned()
     } else {
@@ -7059,8 +7055,11 @@ fn tui_submit_settings(
     if values.contains_key("runner") {
         settings.runner = tui_value(values, "runner").trim().to_owned();
     }
+    // The list arrives already split. Two grammars share this one control and only the screen knows
+    // which applies, so splitting here would merge a scoped npm package into its neighbour or break
+    // a PEP 508 specifier at its own comma (`src/skit/tui_settings.py:988-993`).
     let submitted_dependencies = if values.contains_key("dependencies") {
-        tui_dependency_list(&tui_value(values, "dependencies"))
+        tui_list(values, "dependencies")
     } else {
         baseline_settings.dependencies.clone()
     };
@@ -7240,7 +7239,7 @@ fn tui_submit_settings(
     let entry = service.update_entry(
         &claimed,
         UpdateEntry {
-            name: name.clone().into_owned(),
+            name: name.clone(),
             description: description.to_owned(),
             settings: settings.clone(),
             workdir: if values.contains_key("workdir") {
@@ -7254,6 +7253,18 @@ fn tui_submit_settings(
     )?;
     let state = FormStateService::new(FileFormStateStore::new(state_dir));
     state.purge_secrets(&entry.slug, &declarations)?;
+    // An unticked preset is deleted, and only an unticked one travels. Version 0.4 deletes at the
+    // end of the save, from the names the user actually saw (`src/skit/tui_settings.py:1114-1120`).
+    // The name is in the key, so a preset added or removed while the screen was open cannot shift
+    // which one an untick deletes.
+    for (key, value) in values {
+        let Some(preset) = key.strip_prefix(PRESET_PREFIX) else {
+            continue;
+        };
+        if !tui_bool(&value.as_text())? {
+            state.delete_preset(&entry.slug, preset)?;
+        }
+    }
     Ok(())
 }
 
