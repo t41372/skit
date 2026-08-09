@@ -14,7 +14,7 @@ mod state;
 mod toml_document;
 
 pub use config::{ConfigError, FileConfigStore, MirrorSettings, PromptRunner, PromptRunnerRow};
-pub use mutations::content_hash;
+pub use mutations::{PreparedLaunch, content_hash};
 pub use path_glob::FileGlobExpander;
 pub use paths::{stored_filename, stored_filenames};
 pub use read::FileStore;
