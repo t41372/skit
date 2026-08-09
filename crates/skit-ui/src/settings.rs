@@ -178,6 +178,12 @@ pub struct SettingsView {
     /// "advertising a key that silently no-ops … teaches a dead chord"
     /// (`src/skit/tui_settings.py:408-415`).
     pub resync_available: bool,
+    /// Key of the control that owns the keyboard.
+    ///
+    /// Keyed by field rather than by index, for the reason the runner dropdown is: the focusable
+    /// set changes while the screen is open — the custom path box appears and disappears with the
+    /// working-directory choice — and an index would silently point at a different control.
+    focused: String,
 }
 
 /// One refused settings value.
@@ -206,6 +212,7 @@ impl SettingsView {
         Self {
             selector: inputs.selector.clone(),
             title: inputs.name.clone(),
+            focused: first_focusable(&sections).unwrap_or_default(),
             sections,
             dependency_flavor: inputs.dependency_flavor,
             // The same guard version 0.4's `action_resync` applies.
@@ -337,6 +344,71 @@ impl SettingsView {
             .unwrap_or_default()
     }
 
+    /// Return the keys a person can move the keyboard to, in display order.
+    ///
+    /// A read-only row is not a stop: it has nothing to edit, and stopping there would make the
+    /// user tab past text. The custom path box is a stop only while the custom option is chosen,
+    /// which is exactly when version 0.4 shows it (`src/skit/tui_settings.py:483-491`).
+    #[must_use]
+    pub fn focusable_keys(&self) -> Vec<&str> {
+        let custom = self.custom_workdir_selected();
+        self.sections
+            .iter()
+            .flat_map(|section| section.fields.iter())
+            .filter(|field| field.kind.editable())
+            .filter(|field| custom || field.key != WORKDIR_PATH_KEY)
+            .map(|field| field.key.as_str())
+            .collect()
+    }
+
+    /// Return the key of the control that owns the keyboard.
+    ///
+    /// Falls back to the first stop when the focused control stopped being one, which is what
+    /// happens the moment the working directory moves off custom.
+    #[must_use]
+    pub fn focused(&self) -> &str {
+        let keys = self.focusable_keys();
+        if keys.iter().any(|key| *key == self.focused) {
+            return &self.focused;
+        }
+        keys.first().copied().unwrap_or_default()
+    }
+
+    /// Move the keyboard to one control, if it is a stop.
+    pub fn focus(&mut self, key: &str) -> bool {
+        if self.focusable_keys().contains(&key) {
+            self.focused = key.to_owned();
+            return true;
+        }
+        false
+    }
+
+    /// Move the keyboard one stop forward or back, clamping at each end.
+    pub fn move_focus(&mut self, forward: bool) {
+        let keys = self.focusable_keys();
+        let Some(last) = keys.len().checked_sub(1) else {
+            return;
+        };
+        let current = keys
+            .iter()
+            .position(|key| *key == self.focused())
+            .unwrap_or(0);
+        let next = if forward {
+            current.saturating_add(1).min(last)
+        } else {
+            current.saturating_sub(1)
+        };
+        self.focused = keys[next].to_owned();
+    }
+
+    /// Set one field's value and report whether anything changed.
+    ///
+    /// A read-only field refuses, so a host cannot write through a control the screen never drew.
+    pub fn set_value(&mut self, key: &str, value: FieldValue) -> bool {
+        self.field_mut(key)
+            .is_some_and(|field| field.set_value(value))
+    }
+
     /// Validate every axis before a save writes anything.
     ///
     /// Version 0.4 completes its validation pass first and returns having written nothing on the
@@ -356,6 +428,15 @@ impl SettingsView {
         self.resolved_workdir(stored_workdir)?;
         Ok(())
     }
+}
+
+/// Return the first control a person can move the keyboard to.
+fn first_focusable(sections: &[SettingsSection]) -> Option<String> {
+    sections
+        .iter()
+        .flat_map(|section| section.fields.iter())
+        .find(|field| field.kind.editable())
+        .map(|field| field.key.clone())
 }
 
 fn basics_section(inputs: &SettingsInputs) -> SettingsSection {
@@ -888,6 +969,88 @@ mod tests {
                 .field(INTERPRETER_KEY)
                 .is_some()
         );
+    }
+
+    /// The keyboard stops only where there is something to edit.
+    #[test]
+    fn focus_skips_a_row_with_nothing_to_edit() {
+        let view = SettingsView::from_inputs(&python_inputs());
+        let stops = view.focusable_keys();
+        assert_eq!(stops.first(), Some(&NAME_KEY));
+        // Storage is explanatory text; it contributes no stop.
+        assert!(!stops.iter().any(|key| key.contains("storage")));
+        // Every stop is an editable control.
+        for key in &stops {
+            assert!(
+                view.field(key).unwrap().kind.editable(),
+                "{key} is not editable"
+            );
+        }
+    }
+
+    /// The custom path box is a stop only while the custom option is chosen.
+    ///
+    /// The focusable set therefore changes while the screen is open, which is why the cursor is
+    /// keyed by field rather than by index.
+    #[test]
+    fn the_custom_path_joins_and_leaves_the_focus_order_with_its_choice() {
+        let mut view = SettingsView::from_inputs(&python_inputs());
+        assert!(!view.focusable_keys().contains(&WORKDIR_PATH_KEY));
+
+        view.set_value(
+            WORKDIR_KEY,
+            FieldValue::Explicit(TypedValue::Choice(WORKDIR_CUSTOM.to_owned())),
+        );
+        assert!(view.focusable_keys().contains(&WORKDIR_PATH_KEY));
+
+        // Focus the box, then move the choice away: the cursor must not point at a control that
+        // is no longer there.
+        assert!(view.focus(WORKDIR_PATH_KEY));
+        assert_eq!(view.focused(), WORKDIR_PATH_KEY);
+        view.set_value(
+            WORKDIR_KEY,
+            FieldValue::Explicit(TypedValue::Choice("invoke".to_owned())),
+        );
+        assert!(!view.focusable_keys().contains(&WORKDIR_PATH_KEY));
+        assert_eq!(
+            view.focused(),
+            NAME_KEY,
+            "the cursor pointed at a control that is no longer a stop"
+        );
+    }
+
+    /// Moving the keyboard walks the stops in display order and clamps at each end.
+    #[test]
+    fn the_keyboard_walks_every_stop_and_clamps_at_both_ends() {
+        let mut view = SettingsView::from_inputs(&python_inputs());
+        let stops = view
+            .focusable_keys()
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert!(stops.len() > 2, "{stops:?}");
+
+        for expected in &stops {
+            assert_eq!(view.focused(), expected);
+            view.move_focus(true);
+        }
+        // Past the end it stays on the last stop rather than wrapping to the top.
+        assert_eq!(view.focused(), stops.last().unwrap());
+
+        for expected in stops.iter().rev() {
+            assert_eq!(view.focused(), expected);
+            view.move_focus(false);
+        }
+        assert_eq!(view.focused(), stops.first().unwrap());
+    }
+
+    /// A read-only control refuses a write, so nothing can reach a value the screen never offered.
+    #[test]
+    fn a_read_only_control_cannot_be_written_through_the_view() {
+        let mut view = SettingsView::from_inputs(&python_inputs());
+        assert!(!view.set_value("missing", FieldValue::text("x")));
+        assert!(view.set_value(NAME_KEY, FieldValue::text("Renamed")));
+        assert_eq!(view.field(NAME_KEY).unwrap().value().as_text(), "Renamed");
     }
 
     /// The whole screen round-trips as data for a future non-terminal frontend.
