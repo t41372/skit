@@ -18,6 +18,7 @@ tui-input.workspace = true
 thiserror.workspace = true
 unicode-width.workspace = true
 skit-application.workspace = true
+skit-form.workspace = true
 skit-i18n.workspace = true
 skit-ui.workspace = true
 skit-domain.workspace = true

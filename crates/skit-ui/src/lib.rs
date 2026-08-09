@@ -25,8 +25,9 @@ pub use run::{
 };
 pub use settings::{
     DEPENDENCIES_KEY, DESCRIPTION_KEY, DependencyFlavor, INTERPRETER_KEY, NAME_KEY, NEEDS_KEY,
-    PYTHON_KEY, RUNNER_KEY, SettingsError, SettingsInputs, SettingsNote, SettingsSection,
-    SettingsSectionId, SettingsView, WORKDIR_CUSTOM, WORKDIR_KEY, WORKDIR_PATH_KEY,
+    PYTHON_KEY, RUNNER_KEY, SettingsAction, SettingsEffect, SettingsError, SettingsInputs,
+    SettingsNote, SettingsSection, SettingsSectionId, SettingsView, WORKDIR_CUSTOM, WORKDIR_KEY,
+    WORKDIR_PATH_KEY,
 };
 pub use skit_application::path_insertion::RunPathInsertMode;
 
@@ -191,6 +192,8 @@ pub enum CommandContext {
     Health,
     /// The typed prompt-runner manager owns the keyboard.
     Runners,
+    /// The typed entry-settings workflow owns the keyboard.
+    Settings,
     /// The reusable prompt-runner editor modal owns the keyboard.
     RunnerEditor,
     /// A read-only report owns the keyboard.
@@ -281,6 +284,10 @@ pub enum UiCommand {
     ManageAgents,
     /// Discover Agent Skill install targets without writing.
     InstallAgentSkill,
+    /// Persist the complete validated entry-settings transaction.
+    SaveSettings,
+    /// Close entry settings, through the discard guard when anything moved.
+    CloseSettings,
     /// Return to the library workflow.
     Back,
     /// Close the active modal.
@@ -333,6 +340,8 @@ impl UiCommand {
             Self::ClosePreferences => Action::Preferences(PreferencesAction::Close),
             Self::ManageAgents => Action::Preferences(PreferencesAction::ManageAgents),
             Self::InstallAgentSkill => Action::Preferences(PreferencesAction::InstallAgentSkill),
+            Self::SaveSettings => Action::Settings(SettingsAction::Save),
+            Self::CloseSettings => Action::Settings(SettingsAction::Close),
             Self::Back | Self::CloseModal => Action::Back,
             Self::DiscardChanges => Action::DiscardChanges,
             Self::KeepEditing => Action::KeepEditing,
@@ -768,6 +777,52 @@ static COMMAND_SPECS: &[UiCommandSpec] = &[
         false,
     ),
     spec(
+        UiCommand::SaveSettings,
+        CommandContext::Settings,
+        &[UiBinding::control(UiKey::Character('s'), "Ctrl+S", "^S")],
+        "Save",
+        true,
+        false,
+    ),
+    spec(
+        UiCommand::NewRunner,
+        CommandContext::Settings,
+        &[UiBinding::control(UiKey::Character('n'), "Ctrl+N", "^N")],
+        "New agent",
+        true,
+        false,
+    ),
+    spec(
+        UiCommand::CloseSettings,
+        CommandContext::Settings,
+        &[PLAIN_ESCAPE],
+        "Back",
+        true,
+        false,
+    ),
+    spec(
+        UiCommand::FocusNext,
+        CommandContext::Settings,
+        &[
+            UiBinding::plain(UiKey::Tab, "Tab", "Tab"),
+            UiBinding::plain(UiKey::Down, "Down", "↓"),
+        ],
+        "Next field",
+        true,
+        false,
+    ),
+    spec(
+        UiCommand::FocusPrevious,
+        CommandContext::Settings,
+        &[
+            UiBinding::shift(UiKey::BackTab, "Shift+Tab", "⇧Tab"),
+            UiBinding::plain(UiKey::Up, "Up", "↑"),
+        ],
+        "Previous field",
+        true,
+        false,
+    ),
+    spec(
         UiCommand::SavePreferences,
         CommandContext::Preferences,
         &[UiBinding::control(UiKey::Character('s'), "Ctrl+S", "^S")],
@@ -1121,6 +1176,8 @@ pub enum Screen {
     Health(Box<HealthView>),
     /// Typed prompt-runner management workflow.
     Runners(Box<RunnerManagerView>),
+    /// Typed entry-settings workflow.
+    Settings(Box<SettingsView>),
     /// Generic editable form.
     Form(FormView),
     /// Generic read-only report.
@@ -1176,6 +1233,11 @@ pub enum RunnerEditorOwner {
     },
     /// An add-time prompt review receives the new runner.
     Add,
+    /// The entry-settings screen receives the new runner.
+    Settings {
+        /// Stable entry selector used to reject a stale host response.
+        selector: String,
+    },
 }
 
 /// Host routing for one validated prompt-runner save.
@@ -1424,6 +1486,8 @@ pub enum Action {
     },
     /// Delegate one semantic action to the typed Preferences reducer.
     Preferences(PreferencesAction),
+    /// Typed entry-settings edit.
+    Settings(SettingsAction),
     /// Finish an atomic Preferences save and publish the newly effective locale.
     PreferencesSaved {
         /// Canonical negotiated language tag for immediate frontend switching.
@@ -1773,6 +1837,7 @@ impl LibraryState {
                 | Screen::Add(_)
                 | Screen::Health(_)
                 | Screen::Runners(_)
+                | Screen::Settings(_)
                 | Screen::Report(_) => {}
             },
             Action::SetRunGlobCount {
@@ -1945,6 +2010,7 @@ impl LibraryState {
                     | Screen::Preferences(_)
                     | Screen::Add(_)
                     | Screen::Runners(_)
+                    | Screen::Settings(_)
                     | Screen::Form(_)
                     | Screen::Report(_) => HealthEffect::None,
                 };
@@ -1975,6 +2041,7 @@ impl LibraryState {
                     | Screen::Add(_)
                     | Screen::Health(_)
                     | Screen::Form(_)
+                    | Screen::Settings(_)
                     | Screen::Report(_) => RunnerManagerEffect::None,
                 };
                 match effect {
@@ -2036,6 +2103,11 @@ impl LibraryState {
                             let _ = view.reduce(AddAction::PromptRunnerAdded(name));
                         }
                     }
+                    RunnerEditorOwner::Settings { selector } => {
+                        if let Screen::Settings(view) = &mut self.workflow.active {
+                            view.add_and_select_runner(selector, name);
+                        }
+                    }
                 }
                 self.modal = None;
                 self.status = Some(message);
@@ -2058,6 +2130,40 @@ impl LibraryState {
                         .replace_from_back(Screen::Preferences(preferences));
                     self.modal = None;
                     self.input_mode = InputMode::Browse;
+                }
+            }
+            Action::Settings(action) => {
+                let Screen::Settings(view) = &mut self.workflow.active else {
+                    return Effect::None;
+                };
+                match view.update(action) {
+                    SettingsEffect::None => {}
+                    SettingsEffect::Close => {
+                        self.workflow.back();
+                        self.modal = None;
+                        self.input_mode = InputMode::Browse;
+                    }
+                    // Leaving with unsaved work asks first (`src/skit/tui_settings.py:43-46`).
+                    SettingsEffect::ConfirmDiscard => {
+                        self.modal = Some(ModalState::ConfirmDiscardChanges);
+                    }
+                    SettingsEffect::Save => {
+                        return Effect::Submit {
+                            purpose: FormPurpose::Settings,
+                            selector: Some(view.selector.clone()),
+                            values: view.submitted_values(),
+                        };
+                    }
+                    // The runner editor is a modal this reducer owns, exactly as the launch form
+                    // and the add review own theirs. A host round trip would put a screen where a
+                    // modal belongs and lose the settings work underneath it.
+                    SettingsEffect::NewRunner => {
+                        let selector = view.selector.clone();
+                        self.modal = Some(ModalState::RunnerEditor {
+                            owner: RunnerEditorOwner::Settings { selector },
+                            view: Box::default(),
+                        });
+                    }
                 }
             }
             Action::Preferences(action) => {
@@ -2263,12 +2369,22 @@ impl LibraryState {
                 Screen::Library => CommandContext::LibraryBrowse,
                 Screen::Run(_) => CommandContext::RunForm,
                 Screen::Preferences(_) => CommandContext::Preferences,
+                Screen::Settings(_) => CommandContext::Settings,
                 Screen::Add(_) => CommandContext::Add,
                 Screen::Health(_) => CommandContext::Health,
                 Screen::Runners(_) => CommandContext::Runners,
                 Screen::Form(_) => CommandContext::Form,
                 Screen::Report(_) => CommandContext::Report,
             },
+        }
+    }
+
+    /// Return the settings screen when one is active.
+    #[must_use]
+    pub const fn settings_view(&self) -> Option<&SettingsView> {
+        match &self.workflow.active {
+            Screen::Settings(view) => Some(view),
+            _ => None,
         }
     }
 
@@ -2298,7 +2414,15 @@ impl LibraryState {
                 .run_form()
                 .is_some_and(RunFormView::has_resettable_fields),
             UiCommand::SavePreset => self.run_form().is_some_and(RunFormView::has_parameters),
-            UiCommand::NewRunner => self.run_form().is_some_and(RunFormView::has_runner_picker),
+            // The settings screen carries its own runner picker, so the chip belongs to whichever
+            // screen is actually showing one.
+            UiCommand::NewRunner => {
+                self.run_form().is_some_and(RunFormView::has_runner_picker)
+                    || self
+                        .settings_view()
+                        .is_some_and(|view| view.has_section(SettingsSectionId::Runner))
+            }
+            UiCommand::SaveSettings | UiCommand::CloseSettings => self.settings_view().is_some(),
             UiCommand::SavePreferences
             | UiCommand::ClosePreferences
             | UiCommand::ManageAgents
@@ -2346,6 +2470,7 @@ impl LibraryState {
             | Screen::Add(_)
             | Screen::Health(_)
             | Screen::Runners(_)
+            | Screen::Settings(_)
             | Screen::Report(_) => None,
         }
     }
@@ -2360,6 +2485,7 @@ impl LibraryState {
             | Screen::Add(_)
             | Screen::Health(_)
             | Screen::Runners(_)
+            | Screen::Settings(_)
             | Screen::Form(_)
             | Screen::Report(_) => None,
         }
@@ -2375,6 +2501,7 @@ impl LibraryState {
             | Screen::Add(_)
             | Screen::Health(_)
             | Screen::Runners(_)
+            | Screen::Settings(_)
             | Screen::Form(_)
             | Screen::Report(_) => None,
         }
@@ -2390,6 +2517,7 @@ impl LibraryState {
             | Screen::Preferences(_)
             | Screen::Health(_)
             | Screen::Runners(_)
+            | Screen::Settings(_)
             | Screen::Form(_)
             | Screen::Report(_) => None,
         }
@@ -2406,6 +2534,7 @@ impl LibraryState {
             | Screen::Add(_)
             | Screen::Health(_)
             | Screen::Runners(_)
+            | Screen::Settings(_)
             | Screen::Report(_) => None,
         }
     }
@@ -2497,6 +2626,10 @@ impl LibraryState {
             Screen::Form(form) => {
                 form.focused = moved_focus(form.focused, form.fields.len(), delta);
             }
+            // The settings cursor is keyed by field, not by index, so it moves through its own
+            // stops. The shared nav commands still drive it: a footer chip that no-ops is the dead
+            // chord version 0.4 refuses to advertise (`src/skit/tui_settings.py:408-415`).
+            Screen::Settings(view) => view.move_focus(delta > 0),
             Screen::Library
             | Screen::Preferences(_)
             | Screen::Add(_)
@@ -2516,6 +2649,7 @@ impl LibraryState {
             | Screen::Add(_)
             | Screen::Health(_)
             | Screen::Runners(_)
+            | Screen::Settings(_)
             | Screen::Form(_)
             | Screen::Report(_) => {}
         }
@@ -2538,6 +2672,7 @@ impl LibraryState {
             | Screen::Add(_)
             | Screen::Health(_)
             | Screen::Runners(_)
+            | Screen::Settings(_)
             | Screen::Report(_) => {}
         }
     }
@@ -2559,6 +2694,7 @@ impl LibraryState {
             | Screen::Add(_)
             | Screen::Health(_)
             | Screen::Runners(_)
+            | Screen::Settings(_)
             | Screen::Report(_) => {}
         }
     }
@@ -2610,6 +2746,7 @@ impl LibraryState {
             | Screen::Add(_)
             | Screen::Health(_)
             | Screen::Runners(_)
+            | Screen::Settings(_)
             | Screen::Report(_) => Effect::None,
         }
     }

@@ -6,14 +6,16 @@ use skit_application::preferences::{
 };
 use skit_application::{Diagnostic, DiagnosticCode, LibraryScan, SourcePermissions};
 use skit_domain::{EntryKind, EntrySummary, Slug, StorageMode};
+use skit_form::field::{FieldKind, FieldValue};
 use skit_ui::{
-    Action, AddAction, AddEffect, AddWorkflowState, CommandContext, DetailPaneMode, DraftSummary,
-    Effect, FormControl, FormField, FormPurpose, FormView, HealthAction, HealthIssue,
-    HealthIssueKind, HealthSnapshot, HealthView, HostRequest, InputMode, KnownEntryKind,
-    LibraryState, MirrorHealth, ModalState, PreferencesAction, PreferencesView, ReportItem,
-    ReportView, ReviewDefaults, ReviewState, RunFormView, RunnerEditorAction, RunnerEditorOwner,
-    RunnerManagerAction, RunnerManagerView, RunnerSaveOwner, Screen, SourceSnapshot, UiCommand,
-    UvHealth, command_specs,
+    Action, AddAction, AddEffect, AddWorkflowState, CommandContext, DESCRIPTION_KEY,
+    DetailPaneMode, DraftSummary, Effect, FormControl, FormField, FormPurpose, FormView,
+    HealthAction, HealthIssue, HealthIssueKind, HealthSnapshot, HealthView, HostRequest, InputMode,
+    KnownEntryKind, LibraryState, MirrorHealth, ModalState, PreferencesAction, PreferencesView,
+    RUNNER_KEY, ReportItem, ReportView, ReviewDefaults, ReviewState, RunFormView,
+    RunnerEditorAction, RunnerEditorOwner, RunnerManagerAction, RunnerManagerView, RunnerSaveOwner,
+    Screen, SettingsAction, SettingsInputs, SettingsView, SourceSnapshot, UiCommand, UvHealth,
+    command_specs,
 };
 
 fn entry_with_kind(slug: &str, name: &str, kind: &str, description: &str) -> EntrySummary {
@@ -921,4 +923,163 @@ fn shared_runner_editor_returns_to_run_and_add_owners_without_losing_typed_state
     let review = state.add_workflow().unwrap().review().unwrap();
     assert_eq!(review.runner(), "local");
     assert_eq!(review.runner_names(), ["codex", "local"]);
+}
+
+/// The settings screen owns its runner editor, and the new agent lands in its picker.
+///
+/// Version 0.4 defines a custom runner right from settings: it lands in configuration, joins the
+/// picker, and is selected, ready to pin on the next save (`src/skit/tui_settings.py:564-586`).
+/// The editor is a modal over the settings work, so opening it must not travel through the host as
+/// a screen — that would put the unsaved edits underneath a replacement.
+#[test]
+fn the_settings_screen_owns_its_runner_editor_and_keeps_the_new_agent() {
+    let mut state = state();
+    let view = SettingsView::from_inputs(&SettingsInputs {
+        selector: "brief".to_owned(),
+        kind: "prompt".to_owned(),
+        name: "Brief".to_owned(),
+        configured_runners: vec!["codex".to_owned()],
+        ..SettingsInputs::default()
+    });
+    state.update(Action::Present(Screen::Settings(Box::new(view))));
+
+    assert_eq!(
+        state.update(Action::Settings(SettingsAction::NewRunner)),
+        Effect::None,
+        "the editor is a modal this reducer owns, not a host request"
+    );
+    assert!(matches!(
+        state.modal(),
+        Some(ModalState::RunnerEditor {
+            owner: RunnerEditorOwner::Settings { selector },
+            ..
+        }) if selector == "brief"
+    ));
+
+    state.update(Action::RunnerEditorSaved {
+        owner: RunnerEditorOwner::Settings {
+            selector: "brief".to_owned(),
+        },
+        name: "local".to_owned(),
+        message: "Agent saved".to_owned(),
+    });
+    assert_eq!(state.modal(), None);
+    let field = state.settings_view().unwrap().field(RUNNER_KEY).unwrap();
+    assert_eq!(field.value().as_text(), "local");
+    let FieldKind::SingleChoice { options } = &field.kind else {
+        panic!("the runner needs a closed option set");
+    };
+    let values = options
+        .iter()
+        .map(|option| option.value.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(values, ["", "codex", "local"]);
+
+    // A save that arrived for a different entry changes nothing, because the picker it names is
+    // not the picker on screen.
+    state.update(Action::Settings(SettingsAction::NewRunner));
+    state.update(Action::RunnerEditorSaved {
+        owner: RunnerEditorOwner::Settings {
+            selector: "other-entry".to_owned(),
+        },
+        name: "stray".to_owned(),
+        message: "Agent saved".to_owned(),
+    });
+    let field = state.settings_view().unwrap().field(RUNNER_KEY).unwrap();
+    assert_eq!(
+        field.value().as_text(),
+        "local",
+        "a stale host response must not repin the agent"
+    );
+}
+
+/// Every key the settings footer advertises reaches the reducer, and the mouse has the same path.
+///
+/// Product rule 2: an advertised key needs a positive test, and a visible chip is a click target.
+/// The footer draws these specs, so this is the list a person sees.
+#[test]
+fn every_advertised_settings_key_reaches_the_reducer() {
+    let specs = command_specs(CommandContext::Settings).collect::<Vec<_>>();
+    assert_eq!(
+        specs
+            .iter()
+            .filter(|spec| spec.footer)
+            .map(|spec| spec.command)
+            .collect::<Vec<_>>(),
+        [
+            UiCommand::SaveSettings,
+            UiCommand::NewRunner,
+            UiCommand::CloseSettings,
+            UiCommand::FocusNext,
+            UiCommand::FocusPrevious,
+        ]
+    );
+
+    let mut state = state();
+    let view = SettingsView::from_inputs(&SettingsInputs {
+        selector: "brief".to_owned(),
+        kind: "prompt".to_owned(),
+        name: "Brief".to_owned(),
+        description: "Summarize".to_owned(),
+        configured_runners: vec!["codex".to_owned()],
+        ..SettingsInputs::default()
+    });
+    state.update(Action::Present(Screen::Settings(Box::new(view))));
+    assert_eq!(state.command_context(), CommandContext::Settings);
+    for command in [
+        UiCommand::SaveSettings,
+        UiCommand::CloseSettings,
+        UiCommand::NewRunner,
+    ] {
+        assert!(state.command_enabled(command), "{command:?} is advertised");
+    }
+
+    // The nav pair walks the same stops the model defines.
+    let first = state.settings_view().unwrap().focused().to_owned();
+    state.update(UiCommand::FocusNext.action());
+    let second = state.settings_view().unwrap().focused().to_owned();
+    assert_ne!(first, second);
+    state.update(UiCommand::FocusPrevious.action());
+    assert_eq!(state.settings_view().unwrap().focused(), first);
+
+    // Close with an edit asks before dropping the work.
+    state.update(Action::Settings(SettingsAction::SetField {
+        key: DESCRIPTION_KEY.to_owned(),
+        value: FieldValue::text("Summarize a document"),
+    }));
+    assert_eq!(
+        state.update(UiCommand::CloseSettings.action()),
+        Effect::None
+    );
+    assert_eq!(state.modal(), Some(&ModalState::ConfirmDiscardChanges));
+
+    // Save travels as one complete transaction for the whole screen.
+    assert!(matches!(
+        state.update(UiCommand::SaveSettings.action()),
+        Effect::Submit {
+            purpose: FormPurpose::Settings,
+            selector: Some(ref selector),
+            ref values,
+        } if selector == "brief" && values.get(DESCRIPTION_KEY).map(String::as_str)
+            == Some("Summarize a document")
+    ));
+}
+
+/// A prompt entry with no runner section never opens the editor at all.
+#[test]
+fn a_screen_with_no_runner_section_never_opens_the_agent_editor() {
+    let mut state = state();
+    let view = SettingsView::from_inputs(&SettingsInputs {
+        selector: "tool".to_owned(),
+        kind: "python".to_owned(),
+        name: "Tool".to_owned(),
+        ..SettingsInputs::default()
+    });
+    state.update(Action::Present(Screen::Settings(Box::new(view))));
+    assert_eq!(
+        state.update(Action::Settings(SettingsAction::NewRunner)),
+        Effect::None
+    );
+    assert_eq!(state.modal(), None, "a python entry pins no agent");
+    assert!(!state.command_enabled(UiCommand::NewRunner));
 }

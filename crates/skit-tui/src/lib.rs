@@ -29,6 +29,10 @@ pub use screens::picker::{
     PromptCandidatePickerEvent, PromptCandidatePickerSession, render_file_picker,
     render_prompt_candidate_picker,
 };
+pub use screens::settings::{
+    SettingsControlId, SettingsHitRegion, SettingsScreenGeometry, SettingsScreenSession,
+    render_settings,
+};
 pub use session::{EventHandling, TuiSession};
 pub use terminal::{TuiError, collect_form, collect_run_form, run, run_add_workflow};
 
@@ -153,6 +157,7 @@ fn render_screen(
         Screen::Library => session.render_library(frame, area, state, locale),
         Screen::Run(form) => session.render_run(frame, area, form, locale),
         Screen::Preferences(view) => session.render_preferences(frame, area, view, locale),
+        Screen::Settings(view) => session.render_settings(frame, area, view, locale),
         Screen::Add(view) => session.render_add(frame, area, view, locale),
         Screen::Health(view) => session.render_health(frame, area, view, locale),
         Screen::Runners(view) => session.render_runners(frame, area, view, locale),

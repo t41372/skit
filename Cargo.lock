@@ -2804,6 +2804,7 @@ dependencies = [
  "ratatui-widgets",
  "skit-application",
  "skit-domain",
+ "skit-form",
  "skit-i18n",
  "skit-ui",
  "tempfile",

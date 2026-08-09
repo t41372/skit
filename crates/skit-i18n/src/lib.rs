@@ -1491,6 +1491,117 @@ const CATALOG: &[Translation] = &[
     row!("Health", "健康状态", "健康狀態"),
     row!("Runners", "运行器", "執行器"),
     row!("Prompt runners: {}", "提示词运行器：{}", "提示詞執行器：{}"),
+    // The entry-settings screen. Every row here is version 0.4 text, so each translation is the
+    // one the shipped catalog gives (`src/skit/locales/*/LC_MESSAGES/skit.po`).
+    row!("Entry settings · {}", "条目设置 · {}", "條目設定 · {}",),
+    row!("Basics", "基本资料", "基本資料"),
+    row!("Storage", "存法", "存法"),
+    row!(
+        "Run in (working directory)",
+        "运行位置(工作目录)",
+        "執行位置(工作目錄)",
+    ),
+    row!(
+        "Runner (the agent this prompt runs with)",
+        "执行器(此提示词使用的 AI agent)",
+        "執行器(此提示詞使用的 AI agent)",
+    ),
+    row!("Dependencies", "依赖", "依賴"),
+    row!(
+        "Needs (external commands)",
+        "所需命令（外部命令）",
+        "所需命令（外部命令）",
+    ),
+    row!("New agent", "新增 agent", "新增 agent"),
+    row!("Resync", "重新同步", "重新同步"),
+    row!(
+        "Description (shown in the Library)",
+        "说明（显示在工具库）",
+        "說明（顯示在工具庫）",
+    ),
+    row!(
+        "Renaming keeps everything — remembered values, presets, the stored copy.",
+        "改名不影响任何东西——记住的值、参数组合、保管的副本都会保留。",
+        "改名不影響任何東西——記住的值、參數組合、保管的副本都會保留。",
+    ),
+    row!(
+        "Keep a copy — your original file is never modified. Source: {}",
+        "复制一份——你的原始文件永远不会被改动。来源：{}",
+        "複製一份——你的原始檔永遠不會被改動。來源：{}",
+    ),
+    row!(
+        "The source file's folder",
+        "来源文件所在的文件夹",
+        "來源檔案所在的資料夾"
+    ),
+    row!(
+        "skit's stored-copy folder",
+        "skit 保管副本的文件夹",
+        "skit 保管副本的資料夾"
+    ),
+    row!(
+        "Wherever skit is run from",
+        "运行 skit 的所在位置",
+        "執行 skit 的所在位置"
+    ),
+    row!(
+        "A fixed folder (type it below)",
+        "固定文件夹(在下方输入)",
+        "固定資料夾(在下方輸入)",
+    ),
+    row!("/absolute/path", "/绝对/路径", "/絕對/路徑"),
+    row!(
+        "Interpreter / runtime",
+        "解释器 / 运行时",
+        "直譯器 / 執行環境"
+    ),
+    row!(
+        "empty = automatic (shebang, then detection order)",
+        "留空 = 自动(先看 shebang,再按检测顺序)",
+        "留空 = 自動(先看 shebang,再依偵測順序)",
+    ),
+    row!(
+        "comma separated, e.g. requests>=2,<3, rich",
+        "逗号分隔，例如 requests>=2,<3, rich",
+        "逗號分隔，例如 requests>=2,<3, rich",
+    ),
+    row!(
+        "comma separated, e.g. chalk@^5, zod",
+        "逗号分隔，例如 chalk@^5, zod",
+        "逗號分隔，例如 chalk@^5, zod",
+    ),
+    row!(
+        "Python constraint, e.g. \">=3.11\" (empty = automatic)",
+        "Python 约束，例如 \">=3.11\"（留空＝自动）",
+        "Python 約束，例如 \">=3.11\"（留空＝自動）",
+    ),
+    row!(
+        "comma separated, e.g. ffmpeg, jq",
+        "逗号分隔，例如 ffmpeg, jq",
+        "逗號分隔，例如 ffmpeg, jq",
+    ),
+    // Why one row refuses an edit. Version 0.4 shows the linked-file sentence verbatim
+    // (`src/skit/tui_settings.py:598-604`); the other three name refusals this version added.
+    row!(
+        "skit doesn't write to this file — maintain the [tool.skit] definitions in the source directly.",
+        "skit 不写入这个文件——请直接在源码里维护 [tool.skit] 定义。",
+        "skit 不寫入這個檔案——請直接在原始碼裡維護 [tool.skit] 定義。",
+    ),
+    row!(
+        "The script declares this. Change it in the source.",
+        "脚本自己声明了这一项。请在源码中修改。",
+        "指令稿自己宣告了這一項。請在原始碼中修改。",
+    ),
+    row!(
+        "Set when the entry was added. A different command changes it.",
+        "在添加条目时设定。请用另一个命令修改。",
+        "在新增項目時設定。請用另一個命令修改。",
+    ),
+    row!(
+        "This value follows another field.",
+        "此值跟随另一个字段。",
+        "此值跟隨另一個欄位。",
+    ),
     row!("Back", "返回", "返回"),
     row!("Next field", "下一字段", "下一欄位"),
     row!("Cancel", "取消", "取消"),

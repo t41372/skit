@@ -8,6 +8,8 @@
 //! rather than rendering an empty box (`src/skit/tui_settings.py:423-426`, `:440-446`, `:541-542`,
 //! `:820-821`).
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use skit_form::field::{
     ChoiceOption, Field, FieldCapabilities, FieldKind, FieldOwner, FieldValue, TypedValue,
@@ -177,6 +179,11 @@ pub struct SettingsView {
     /// Version 0.4 advertises `Ctrl+R` only for a kind with an analyzer stored as a copy, because
     /// "advertising a key that silently no-ops … teaches a dead chord"
     /// (`src/skit/tui_settings.py:408-415`).
+    ///
+    /// No chord reads this yet. Resync refreshes the stored source's own parameter declarations
+    /// (`src/skit/tui_settings.py:908-926`), and this screen has no parameters section to refresh,
+    /// so advertising the key now would teach exactly the dead chord the guard exists to prevent.
+    /// The flag is the guard that section will need.
     pub resync_available: bool,
     /// Key of the control that owns the keyboard.
     ///
@@ -184,6 +191,49 @@ pub struct SettingsView {
     /// set changes while the screen is open — the custom path box appears and disappears with the
     /// working-directory choice — and an index would silently point at a different control.
     focused: String,
+}
+
+/// One typed edit to the settings screen.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "action")]
+pub enum SettingsAction {
+    /// Replace one field's value.
+    SetField {
+        /// Stable field key.
+        key: String,
+        /// New value.
+        value: FieldValue,
+    },
+    /// Move the keyboard to one control.
+    Focus {
+        /// Stable field key.
+        key: String,
+    },
+    /// Move the keyboard one stop forward.
+    FocusNext,
+    /// Move the keyboard one stop back.
+    FocusPrevious,
+    /// Save every axis, after validation.
+    Save,
+    /// Leave the screen, through the discard guard when anything moved.
+    Close,
+    /// Define a new prompt runner without leaving the screen.
+    NewRunner,
+}
+
+/// What the host must do after one settings edit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SettingsEffect {
+    /// Nothing outside the screen.
+    None,
+    /// Persist every axis.
+    Save,
+    /// Leave the screen; nothing moved.
+    Close,
+    /// Ask before dropping unsaved work.
+    ConfirmDiscard,
+    /// Open the runner editor.
+    NewRunner,
 }
 
 /// One refused settings value.
@@ -407,6 +457,75 @@ impl SettingsView {
     pub fn set_value(&mut self, key: &str, value: FieldValue) -> bool {
         self.field_mut(key)
             .is_some_and(|field| field.set_value(value))
+    }
+
+    /// Put a newly defined agent in the picker and select it.
+    ///
+    /// Version 0.4 rebuilds the option list exactly as the screen composed it and then selects the
+    /// new name, so the agent is pinned by the next save without a second visit
+    /// (`src/skit/tui_settings.py:564-586`).
+    ///
+    /// The selector guard rejects a save that arrived for a different entry, which is the same
+    /// check the launch form's picker makes.
+    pub fn add_and_select_runner(&mut self, selector: &str, runner: String) {
+        if self.selector != selector {
+            return;
+        }
+        let Some(field) = self.field_mut(RUNNER_KEY) else {
+            return;
+        };
+        if let FieldKind::SingleChoice { options } = &mut field.kind
+            && !options.iter().any(|option| option.value == runner)
+        {
+            options.push(ChoiceOption::plain(&runner));
+        }
+        field.set_value(FieldValue::Explicit(TypedValue::Choice(runner)));
+    }
+
+    /// Apply one typed edit and report what the host must do.
+    ///
+    /// `Close` routes through the discard guard whenever anything moved, so leaving never drops
+    /// work silently (`src/skit/tui_settings.py:43-46` is the guard it opens).
+    pub fn update(&mut self, action: SettingsAction) -> SettingsEffect {
+        match action {
+            SettingsAction::SetField { key, value } => {
+                self.set_value(&key, value);
+                SettingsEffect::None
+            }
+            SettingsAction::Focus { key } => {
+                self.focus(&key);
+                SettingsEffect::None
+            }
+            SettingsAction::FocusNext => {
+                self.move_focus(true);
+                SettingsEffect::None
+            }
+            SettingsAction::FocusPrevious => {
+                self.move_focus(false);
+                SettingsEffect::None
+            }
+            SettingsAction::Save => SettingsEffect::Save,
+            SettingsAction::Close if self.is_dirty() => SettingsEffect::ConfirmDiscard,
+            SettingsAction::Close => SettingsEffect::Close,
+            SettingsAction::NewRunner if self.has_section(SettingsSectionId::Runner) => {
+                SettingsEffect::NewRunner
+            }
+            SettingsAction::NewRunner => SettingsEffect::None,
+        }
+    }
+
+    /// Return every field the host reads back, keyed as the host expects.
+    ///
+    /// A read-only control contributes nothing: it never held an edit, so submitting it would ask
+    /// the host to write a value the screen only displayed.
+    #[must_use]
+    pub fn submitted_values(&self) -> BTreeMap<String, String> {
+        self.sections
+            .iter()
+            .flat_map(|section| section.fields.iter())
+            .filter(|field| field.kind.editable())
+            .map(|field| (field.key.clone(), field.value().as_text()))
+            .collect()
     }
 
     /// Validate every axis before a save writes anything.
@@ -861,6 +980,50 @@ mod tests {
             ..python_inputs()
         });
         assert!(empty.field(RUNNER_KEY).unwrap().capabilities.new_runner);
+    }
+
+    /// A newly defined agent joins the picker, is selected, and never lands on the wrong entry.
+    ///
+    /// Version 0.4 rebuilds the options and selects the new name so the next save pins it
+    /// (`src/skit/tui_settings.py:564-586`).
+    #[test]
+    fn a_new_agent_joins_the_picker_and_is_selected() {
+        let inputs = SettingsInputs {
+            kind: "prompt".to_owned(),
+            configured_runners: vec!["claude".to_owned()],
+            ..python_inputs()
+        };
+        let mut view = SettingsView::from_inputs(&inputs);
+        view.add_and_select_runner(&inputs.selector, "local".to_owned());
+        let field = view.field(RUNNER_KEY).unwrap();
+        assert_eq!(field.value().as_text(), "local");
+        let FieldKind::SingleChoice { options } = &field.kind else {
+            panic!("the runner needs a closed option set");
+        };
+        assert_eq!(
+            options
+                .iter()
+                .map(|option| option.value.as_str())
+                .collect::<Vec<_>>(),
+            ["", "claude", "local"]
+        );
+
+        // Selecting one the picker already lists adds no duplicate row.
+        view.add_and_select_runner(&inputs.selector, "claude".to_owned());
+        let FieldKind::SingleChoice { options } = &view.field(RUNNER_KEY).unwrap().kind else {
+            panic!("the runner needs a closed option set");
+        };
+        assert_eq!(options.len(), 3);
+        assert_eq!(view.field(RUNNER_KEY).unwrap().value().as_text(), "claude");
+
+        // A response that names another entry is refused, so a screen that moved on keeps its pin.
+        view.add_and_select_runner("another-entry", "stray".to_owned());
+        assert_eq!(view.field(RUNNER_KEY).unwrap().value().as_text(), "claude");
+
+        // A kind that pins no agent has no picker to write through.
+        let mut python = SettingsView::from_inputs(&python_inputs());
+        python.add_and_select_runner(&inputs.selector, "local".to_owned());
+        assert!(python.field(RUNNER_KEY).is_none());
     }
 
     /// Dependencies prefill from the effective values and use that same read as the baseline.

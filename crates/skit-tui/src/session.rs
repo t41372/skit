@@ -56,6 +56,7 @@ use crate::{
     },
     screens::preferences::{PreferencesEventHandling, PreferencesWidgetSession},
     screens::run_modal::{RunModalEvent, RunModalSession},
+    screens::settings::{SettingsScreenSession, render_settings},
     theme::{ACCENT, BOX_DIM, BOX_MAROON, SELECT_BG, SELECT_FG, panel_block},
 };
 
@@ -82,6 +83,7 @@ pub struct TuiSession {
     run: RunWidgetSession,
     run_modal: RunModalSession,
     preferences: PreferencesWidgetSession,
+    settings: SettingsScreenSession,
     add: AddScreenSession,
     add_geometry: AddScreenGeometry,
     add_overlay: Option<AddOverlay>,
@@ -580,6 +582,12 @@ impl TuiSession {
                 ),
                 Screen::Run(form) => format_text(locale, "Run {}", &[&form.name()]),
                 Screen::Preferences(_) => text(locale, "Preferences").into_owned(),
+                // Version 0.4 names the entry on this screen, because settings for the wrong
+                // entry look exactly like settings for the right one
+                // (`src/skit/tui_settings.py:869-871`).
+                Screen::Settings(view) => {
+                    format_text(locale, "Entry settings · {}", &[&view.title])
+                }
                 Screen::Add(_) => text(locale, "Add").into_owned(),
                 Screen::Health(_) => text(locale, "Health").into_owned(),
                 Screen::Runners(_) => text(locale, "Agents (prompt runners)").into_owned(),
@@ -767,6 +775,21 @@ impl TuiSession {
         ViewGeometry {
             rows: area,
             first_visible: 0,
+            hits: Vec::new(),
+        }
+    }
+
+    pub(crate) fn render_settings(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        view: &skit_ui::SettingsView,
+        locale: Locale,
+    ) -> ViewGeometry {
+        let geometry = render_settings(frame, area, view, &mut self.settings, locale);
+        ViewGeometry {
+            rows: geometry.body,
+            first_visible: geometry.first_visible,
             hits: Vec::new(),
         }
     }
@@ -2395,14 +2418,14 @@ fn run_chip_style() -> ButtonStyle {
         .unfocused(ACCENT, SELECT_BG)
 }
 
-fn new_textarea(value: &str) -> RichTextArea<'static> {
+pub(crate) fn new_textarea(value: &str) -> RichTextArea<'static> {
     let mut state = RichTextArea::new(value.split('\n').map(str::to_owned).collect());
     state.move_cursor(CursorMove::Bottom);
     state.move_cursor(CursorMove::End);
     state
 }
 
-fn textarea_text(state: &RichTextArea<'_>) -> String {
+pub(crate) fn textarea_text(state: &RichTextArea<'_>) -> String {
     state.lines().join("\n")
 }
 
@@ -2450,7 +2473,7 @@ pub(crate) fn render_line_input(
     }
 }
 
-fn render_textarea(
+pub(crate) fn render_textarea(
     frame: &mut Frame,
     area: Rect,
     state: &mut RichTextArea<'static>,
@@ -2474,7 +2497,7 @@ fn render_textarea(
     frame.render_widget(&*state, area);
 }
 
-fn checkbox_style() -> CheckBoxStyle {
+pub(crate) fn checkbox_style() -> CheckBoxStyle {
     CheckBoxStyle::unicode()
         .focused_fg(ACCENT)
         .unfocused_fg(Color::White)
