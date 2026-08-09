@@ -30,10 +30,10 @@ pub use skit_form::field::{
 
 pub use settings::{
     ADD_PARAMETER_KEY, DEPENDENCIES_KEY, DESCRIPTION_KEY, DependencyFlavor, INTERPOLATE_KEY,
-    INTERPRETER_KEY, MANAGE_KEY, NAME_KEY, NEEDS_KEY, NORMALIZE_KEY, PYTHON_KEY, RESYNC_KEY,
-    RUNNER_KEY, SettingsAction, SettingsEffect, SettingsError, SettingsInputs, SettingsItem,
-    SettingsNote, SettingsSection, SettingsSectionId, SettingsView, TEMPLATE_KEY, WORKDIR_CUSTOM,
-    WORKDIR_KEY, WORKDIR_PATH_KEY,
+    INTERPRETER_KEY, MANAGE_KEY, NAME_KEY, NEEDS_KEY, NORMALIZE_KEY, PRESET_PREFIX, PYTHON_KEY,
+    RESYNC_KEY, RUNNER_KEY, SettingsAction, SettingsEffect, SettingsError, SettingsInputs,
+    SettingsItem, SettingsNote, SettingsSection, SettingsSectionId, SettingsView, TEMPLATE_KEY,
+    WORKDIR_CUSTOM, WORKDIR_KEY, WORKDIR_PATH_KEY, preset_key,
 };
 pub use skit_application::path_insertion::RunPathInsertMode;
 

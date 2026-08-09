@@ -8,6 +8,8 @@
 //! rather than rendering an empty box (`src/skit/tui_settings.py:423-426`, `:440-446`, `:541-542`,
 //! `:820-821`).
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use skit_domain::parameters::{ParamDecl, ParameterBinding};
 use skit_form::{
@@ -51,6 +53,19 @@ pub const MANAGE_KEY: &str = "source:manage";
 pub const NORMALIZE_KEY: &str = "source:normalize";
 /// Stable key of the add-a-parameter box.
 pub const ADD_PARAMETER_KEY: &str = "parameter:add";
+/// Stable key prefix of one preset's keep toggle. The preset's own name completes it.
+pub const PRESET_PREFIX: &str = "preset:";
+
+/// Return the key of one preset's keep toggle.
+///
+/// The preset is addressed by name, never by position. Version 0.4 captures the name list when the
+/// screen composes for exactly this reason: "a preset added or deleted mid-session (a concurrent
+/// skit preset save — the product's own agent-coexistence story) must never shift which name an
+/// untick deletes" (`src/skit/tui_settings.py:812-815`).
+#[must_use]
+pub fn preset_key(name: &str) -> String {
+    format!("{PRESET_PREFIX}{name}")
+}
 
 /// The working-directory value that means "a folder the user typed".
 pub const WORKDIR_CUSTOM: &str = "custom";
@@ -79,6 +94,8 @@ pub enum SettingsSectionId {
     Runner,
     /// The fields the run form asks for.
     Parameters,
+    /// Remembered sets of run values.
+    Presets,
     /// Package dependencies and any language version constraint.
     Dependencies,
     /// External commands the launch requires.
@@ -95,6 +112,7 @@ impl SettingsSectionId {
             Self::Launch => "Run in (working directory)",
             Self::Runner => "Runner (the agent this prompt runs with)",
             Self::Parameters => "Parameters (the run form's fields)",
+            Self::Presets => "Presets",
             Self::Dependencies => "Dependencies",
             Self::Needs => "Needs (external commands)",
         }
@@ -248,6 +266,14 @@ pub struct SettingsInputs {
     pub needs: Vec<String>,
     /// Prompt runners the configuration currently defines.
     pub configured_runners: Vec<String>,
+    /// Remembered value sets, by preset name and then by parameter name.
+    pub presets: BTreeMap<String, BTreeMap<String, String>>,
+    /// Section the screen was opened to show, when a deep link named one.
+    ///
+    /// Version 0.4's Library gives `s` to `action_settings(section="presets")`
+    /// (`src/skit/tui.py:991-992`), and the screen puts that section under the eye on mount
+    /// (`src/skit/tui_settings.py:876-882`).
+    pub revealed: Option<SettingsSectionId>,
 }
 
 /// The complete settings screen as frontend-neutral state.
@@ -275,6 +301,14 @@ pub struct SettingsView {
     /// set changes while the screen is open — the custom path box appears and disappears with the
     /// working-directory choice — and an index would silently point at a different control.
     focused: String,
+    /// Section a deep link asked the screen to show, until the keyboard moves.
+    ///
+    /// Version 0.4 scrolls the body to the named section on mount and then leaves the viewport to
+    /// the reader (`src/skit/tui_settings.py:876-882`). Keeping it until the first keyboard move
+    /// says the same thing without a render-time flag: the anchor is state a person releases, not a
+    /// note one pass leaves for another.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    revealed: Option<SettingsSectionId>,
     /// The working directory the entry had when the screen opened.
     ///
     /// Version 0.4 keeps this value when the custom box is chosen and left blank, because "an
@@ -370,8 +404,14 @@ impl SettingsView {
         sections.extend(launch_section(inputs));
         sections.extend(runner_section(inputs));
         sections.extend(parameters_section(inputs, resync_available));
+        sections.push(presets_section(inputs));
         sections.extend(dependencies_section(inputs));
         sections.push(needs_section(inputs));
+        // A deep link that names a section this entry does not have is not an anchor. Resolving it
+        // against the sections that exist keeps the screen from anchoring to nothing.
+        let revealed = inputs
+            .revealed
+            .filter(|id| sections.iter().any(|section| section.id == *id));
         let mut view = Self {
             selector: inputs.selector.clone(),
             title: inputs.name.clone(),
@@ -380,13 +420,33 @@ impl SettingsView {
             sections,
             dependency_flavor: inputs.dependency_flavor,
             resync_available,
+            revealed,
         };
+        // The keyboard lands in the section the deep link named, so the first key press acts on
+        // what the user came for. A section with nothing to edit keeps the anchor instead.
         view.focused = view
-            .focusable_keys()
-            .first()
-            .map(|key| (*key).to_owned())
+            .revealed
+            .and_then(|id| view.first_stop_in(id))
+            .or_else(|| view.focusable_keys().first().map(|key| (*key).to_owned()))
             .unwrap_or_default();
         view
+    }
+
+    /// Return the first control a person can reach inside one section.
+    fn first_stop_in(&self, id: SettingsSectionId) -> Option<String> {
+        let stops = self.focusable_keys();
+        self.sections
+            .iter()
+            .find(|section| section.id == id)?
+            .fields()
+            .find(|field| stops.contains(&field.key.as_str()))
+            .map(|field| field.key.clone())
+    }
+
+    /// Return the section the screen was opened to show, until the keyboard moves.
+    #[must_use]
+    pub const fn revealed(&self) -> Option<SettingsSectionId> {
+        self.revealed
     }
 
     /// Return every control on the screen in display order.
@@ -566,6 +626,8 @@ impl SettingsView {
     pub fn focus(&mut self, key: &str) -> bool {
         if self.focusable_keys().contains(&key) {
             self.focused = key.to_owned();
+            // The reader took over, so the deep link stops holding the viewport.
+            self.revealed = None;
             return true;
         }
         false
@@ -573,6 +635,7 @@ impl SettingsView {
 
     /// Move the keyboard one stop forward or back, clamping at each end.
     pub fn move_focus(&mut self, forward: bool) {
+        self.revealed = None;
         let keys = self.focusable_keys();
         let Some(last) = keys.len().checked_sub(1) else {
             return;
@@ -934,6 +997,48 @@ fn dependencies_section(inputs: &SettingsInputs) -> Option<SettingsSection> {
         ));
     }
     Some(SettingsSection::new(SettingsSectionId::Dependencies, items))
+}
+
+/// Presets: one toggle for each remembered value set, and untick to delete on save.
+///
+/// Version 0.4 lists them under one sentence and deletes whatever the user unticked
+/// (`src/skit/tui_settings.py:800-818`, `:1114-1120`). Creating one belongs to the run form, so an
+/// entry with none is told where to go rather than shown an empty box (`:804-808`).
+///
+/// Every toggle is keyed by the preset's own name. Version 0.4 captures the name list at compose
+/// time for the same reason: a concurrent `skit preset save` must never shift which name an untick
+/// deletes (`:812-815`).
+fn presets_section(inputs: &SettingsInputs) -> SettingsSection {
+    if inputs.presets.is_empty() {
+        return SettingsSection::new(
+            SettingsSectionId::Presets,
+            vec![SettingsItem::note(
+                "None yet — press Ctrl+S inside the run form to save one.",
+            )],
+        );
+    }
+    let mut items = vec![SettingsItem::note("Untick a preset to delete it on save:")];
+    items.extend(inputs.presets.iter().map(|(name, values)| {
+        let summary = values
+            .iter()
+            .map(|(field, value)| format!("{field}={value}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        SettingsItem::field(
+            Field::new(
+                preset_key(name),
+                format!("{name}  {summary}"),
+                FieldKind::Boolean,
+                FieldOwner::EntryPolicy,
+                FieldValue::boolean(true),
+            )
+            // The label is the user's own preset name and their own values, so a preset named after
+            // a catalog phrase must not come back translated.
+            .with_verbatim_label()
+            .with_help("delete this preset"),
+        )
+    }));
+    SettingsSection::new(SettingsSectionId::Presets, items)
 }
 
 /// Every kind can require external commands, so this section always applies.
@@ -2131,6 +2236,111 @@ mod tests {
             SettingsEffect::None
         );
         assert!(declared.submitted_values().is_empty());
+    }
+
+    fn presets(pairs: &[(&str, &[(&str, &str)])]) -> BTreeMap<String, BTreeMap<String, String>> {
+        pairs
+            .iter()
+            .map(|(name, values)| {
+                (
+                    (*name).to_owned(),
+                    values
+                        .iter()
+                        .map(|(field, value)| ((*field).to_owned(), (*value).to_owned()))
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    /// A preset is a toggle carrying its own name and values, and unticking it deletes it.
+    ///
+    /// Version 0.4 lists them under one sentence and deletes what the user unticked
+    /// (`src/skit/tui_settings.py:809-818`, `:1114-1120`).
+    #[test]
+    fn a_preset_is_a_named_toggle_and_unticking_it_is_the_delete() {
+        let mut view = SettingsView::from_inputs(&SettingsInputs {
+            presets: presets(&[
+                ("nightly", &[("mode", "fast"), ("count", "3")]),
+                ("release", &[("mode", "slow")]),
+            ]),
+            ..python_inputs()
+        });
+        assert_eq!(
+            notes(&view, SettingsSectionId::Presets),
+            ["Untick a preset to delete it on save:"]
+        );
+        let field = view.field("preset:nightly").expect("no preset toggle");
+        // The label is the user's own name and their own values, shown exactly as stored.
+        assert_eq!(field.label, "nightly  count=3, mode=fast");
+        assert!(!field.translate_label);
+        assert_eq!(field.value(), &FieldValue::boolean(true));
+
+        // Untick one: only that one travels, and it travels under its own name.
+        view.set_value("preset:nightly", FieldValue::boolean(false));
+        let values = view.submitted_values();
+        assert_eq!(values.len(), 1, "{values:?}");
+        assert_eq!(
+            values.get("preset:nightly"),
+            Some(&FieldValue::boolean(false))
+        );
+        assert!(
+            !values.contains_key("preset:release"),
+            "a preset nobody touched must not be deleted"
+        );
+    }
+
+    /// An entry with no presets is told where presets come from.
+    ///
+    /// Version 0.4 says it in one sentence rather than drawing an empty box, because creating one
+    /// belongs to the run form (`src/skit/tui_settings.py:803-808`).
+    #[test]
+    fn an_entry_with_no_presets_is_told_where_they_come_from() {
+        let view = SettingsView::from_inputs(&python_inputs());
+        assert!(view.has_section(SettingsSectionId::Presets));
+        assert_eq!(
+            notes(&view, SettingsSectionId::Presets),
+            ["None yet — press Ctrl+S inside the run form to save one."]
+        );
+        assert!(
+            view.sections
+                .iter()
+                .find(|section| section.id == SettingsSectionId::Presets)
+                .is_some_and(|section| section.fields().next().is_none()),
+            "an empty preset list must offer no control"
+        );
+    }
+
+    /// The Library's `s` key opens this screen on the presets, and the reader takes the eye back.
+    ///
+    /// Version 0.4 gives `s` to `action_settings(section="presets")` (`src/skit/tui.py:991-992`)
+    /// and scrolls the body to that section on mount (`src/skit/tui_settings.py:876-882`).
+    #[test]
+    fn the_preset_deep_link_lands_on_the_section_and_releases_it_on_the_first_key() {
+        let deep_linked = SettingsInputs {
+            revealed: Some(SettingsSectionId::Presets),
+            presets: presets(&[("nightly", &[("mode", "fast")])]),
+            ..python_inputs()
+        };
+        let mut view = SettingsView::from_inputs(&deep_linked);
+        assert_eq!(view.revealed(), Some(SettingsSectionId::Presets));
+        // The keyboard lands on the first preset, so Space deletes what the user came for.
+        assert_eq!(view.focused(), "preset:nightly");
+
+        // The first keyboard move hands the viewport back to the reader.
+        view.move_focus(true);
+        assert_eq!(view.revealed(), None);
+
+        // With no presets the section has nothing to focus, so the anchor is what shows it.
+        let empty = SettingsView::from_inputs(&SettingsInputs {
+            revealed: Some(SettingsSectionId::Presets),
+            ..python_inputs()
+        });
+        assert_eq!(empty.revealed(), Some(SettingsSectionId::Presets));
+        assert_eq!(empty.focused(), NAME_KEY);
+
+        // Opening the screen normally anchors nothing.
+        assert_eq!(SettingsView::from_inputs(&python_inputs()).revealed(), None);
     }
 
     /// An entry of a kind this skit does not know gets no policy controls and no editor.

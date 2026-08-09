@@ -129,8 +129,13 @@ struct Positioned {
 enum Item {
     /// One blank row between sections.
     Spacer,
-    /// One section heading.
-    Heading(String),
+    /// One section heading and the key a deep link scrolls to it by.
+    Heading {
+        /// Shown text.
+        text: String,
+        /// Stable scroll key of the section.
+        anchor: String,
+    },
     /// One explanatory line.
     Copy(String),
     /// One field, named by its key. The renderer resolves it against the view again.
@@ -284,8 +289,11 @@ impl SettingsScreenSession {
         if start < offset {
             self.scroll.set_scroll_offset(start);
         } else if end > offset.saturating_add(self.visible_height) {
+            // Show as much of the target as fits, and never past its first row. A target taller
+            // than the viewport would otherwise arrive showing only its tail, which for a section
+            // means the heading and the opening sentence are the parts that scroll away.
             self.scroll
-                .set_scroll_offset(end.saturating_sub(self.visible_height));
+                .set_scroll_offset(end.saturating_sub(self.visible_height).min(start));
         }
     }
 
@@ -655,13 +663,34 @@ pub fn render_settings(
     session.scroll.set_lines(vec![String::new(); total.max(1)]);
     session.spans.clear();
     session.rendered.clear();
-    for item in &items {
-        if let Item::Control { key, .. } = &item.item {
-            session.spans.insert(key.clone(), (item.start, item.height));
+    for (index, item) in items.iter().enumerate() {
+        match &item.item {
+            Item::Control { key, .. } => {
+                session.spans.insert(key.clone(), (item.start, item.height));
+            }
+            // A section is a scroll target too, so a deep link can put one under the eye even when
+            // it has nothing to edit (`src/skit/tui_settings.py:876-882`). The span covers the
+            // whole section, not its heading alone: landing on a bare heading would leave the
+            // sentence it introduces below the fold, and that sentence is the entire answer for an
+            // entry with no presets.
+            Item::Heading { anchor, .. } => {
+                let end = items
+                    .iter()
+                    .skip(index.saturating_add(1))
+                    .find(|later| matches!(later.item, Item::Heading { .. }))
+                    .map_or(total, |later| later.start);
+                session
+                    .spans
+                    .insert(anchor.clone(), (item.start, end.saturating_sub(item.start)));
+            }
+            Item::Spacer | Item::Copy(_) | Item::NewRunner(_) => {}
         }
     }
     let focused = view.focused().to_owned();
-    session.follow_focus(&focused, total);
+    // The model names what the viewport must show: the section a deep link asked for while that
+    // anchor is still held, and the focused control once the reader takes over.
+    let anchor = view.revealed().map_or(focused.clone(), section_anchor);
+    session.follow_focus(&anchor, total);
 
     let mut hits = Vec::new();
     for item in &items {
@@ -670,8 +699,8 @@ pub fn render_settings(
         };
         match &item.item {
             Item::Spacer => {}
-            Item::Heading(value) => frame.render_widget(
-                Paragraph::new(value.as_str())
+            Item::Heading { text, .. } => frame.render_widget(
+                Paragraph::new(text.as_str())
                     .style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
                 rect,
             ),
@@ -737,7 +766,10 @@ fn layout_items(view: &SettingsView, locale: Locale, width: u16) -> Vec<Position
         push(
             &mut items,
             &mut start,
-            Item::Heading(text(locale, section.id.title()).into_owned()),
+            Item::Heading {
+                text: text(locale, section.id.title()).into_owned(),
+                anchor: section_anchor(section.id),
+            },
             1,
         );
         for element in &section.items {
@@ -777,6 +809,14 @@ fn layout_items(view: &SettingsView, locale: Locale, width: u16) -> Vec<Position
         }
     }
     items
+}
+
+/// Return the stable scroll key of one section.
+///
+/// It is derived from the typed section, never from its shown heading: user-visible English must
+/// never select behavior, and a translated heading would break the anchor in every other locale.
+fn section_anchor(id: SettingsSectionId) -> String {
+    format!("section:{id:?}")
 }
 
 fn push(items: &mut Vec<Positioned>, start: &mut usize, item: Item, height: usize) {
@@ -1023,6 +1063,8 @@ fn fields(view: &SettingsView) -> impl Iterator<Item = &Field> {
 mod tests {
     use ratatui_core::{backend::TestBackend, buffer::Buffer, terminal::Terminal};
     use ratatui_crossterm::crossterm::event::MouseButton;
+    use std::collections::BTreeMap;
+
     use skit_domain::parameters::{ParamDecl, ParameterValue};
     use skit_form::field::{
         ArgumentDialect, FieldCapabilities, FieldOwner, FieldValue, ReadOnlyReason,
@@ -1042,6 +1084,29 @@ mod tests {
     /// padding. Every geometry assertion here uses it, so a regression is one a viewer would see.
     const DEMO_WIDTH: u16 = 101;
     const DEMO_HEIGHT: u16 = 28;
+
+    fn settings_inputs() -> SettingsInputs {
+        SettingsInputs {
+            selector: "brief".to_owned(),
+            kind: "prompt".to_owned(),
+            name: "Brief".to_owned(),
+            description: "Summarize a document".to_owned(),
+            source: "/home/ada/brief.md".to_owned(),
+            workdir: "invoke".to_owned(),
+            runner: "claude".to_owned(),
+            supports_modes: true,
+            has_original_file: true,
+            has_stored_name: true,
+            has_analyzer: true,
+            pinnable_interpreter: true,
+            dependency_flavor: Some(DependencyFlavor::Uv),
+            effective_dependencies: vec!["requests>=2,<3".to_owned()],
+            effective_requires_python: ">=3.11".to_owned(),
+            needs: vec!["ffmpeg".to_owned()],
+            configured_runners: vec!["claude".to_owned(), "codex".to_owned()],
+            ..SettingsInputs::default()
+        }
+    }
 
     fn prompt_view() -> SettingsView {
         SettingsView::from_inputs(&SettingsInputs {
@@ -1105,7 +1170,7 @@ mod tests {
             .iter()
             .map(|section| section.id.title())
             .collect::<Vec<_>>();
-        assert_eq!(headings.len(), 7, "{headings:?}");
+        assert_eq!(headings.len(), 8, "{headings:?}");
 
         let mut seen = Vec::new();
         let stops = view.focusable_keys().len();
@@ -1307,6 +1372,92 @@ mod tests {
         assert_eq!(
             view.submitted_values().get("parameter:GREETING:keep"),
             Some(&FieldValue::boolean(false))
+        );
+    }
+
+    /// Pressing `s` in the Library must land the eye on the presets, with or without any.
+    ///
+    /// Version 0.4 scrolls the body to the section the deep link names (`src/skit/tui.py:991-992`,
+    /// `src/skit/tui_settings.py:876-882`). The empty case is the one that matters most: the whole
+    /// answer to "where are my presets" is one sentence, and a viewport left at the top would hide
+    /// it behind five other sections.
+    #[test]
+    fn the_preset_deep_link_puts_the_section_on_screen_even_with_nothing_to_focus() {
+        let empty = SettingsView::from_inputs(&SettingsInputs {
+            revealed: Some(SettingsSectionId::Presets),
+            ..settings_inputs()
+        });
+        let mut session = SettingsScreenSession::default();
+        let (terminal, _) = draw(&mut session, &empty, DEMO_WIDTH, DEMO_HEIGHT);
+        let frame = rendered(terminal.backend().buffer());
+        assert!(
+            frame.contains("None yet — press Ctrl+S inside the run form to save one."),
+            "the deep link did not reach the presets:\n{frame}"
+        );
+
+        // Without the deep link the same screen opens at the top, where that sentence is not.
+        let plain = SettingsView::from_inputs(&settings_inputs());
+        let mut session = SettingsScreenSession::default();
+        let (terminal, _) = draw(&mut session, &plain, DEMO_WIDTH, DEMO_HEIGHT);
+        let top = rendered(terminal.backend().buffer());
+        assert!(top.contains("Basics"), "{top}");
+        assert!(
+            !top.contains("None yet — press Ctrl+S"),
+            "the screen is short enough that this test proves nothing:\n{top}"
+        );
+
+        // With presets, the deep link lands the keyboard on the first one, and Space deletes it.
+        let mut listed = SettingsView::from_inputs(&SettingsInputs {
+            revealed: Some(SettingsSectionId::Presets),
+            presets: BTreeMap::from([(
+                "nightly".to_owned(),
+                BTreeMap::from([("mode".to_owned(), "fast".to_owned())]),
+            )]),
+            ..settings_inputs()
+        });
+        let mut session = SettingsScreenSession::default();
+        let (terminal, geometry) = draw(&mut session, &listed, DEMO_WIDTH, DEMO_HEIGHT);
+        let frame = rendered(terminal.backend().buffer());
+        assert!(frame.contains("nightly  mode=fast"), "{frame}");
+        dispatch(
+            &mut session,
+            &mut listed,
+            &geometry,
+            key(KeyCode::Char(' '), KeyModifiers::NONE),
+        );
+        assert_eq!(
+            listed.submitted_values().get("preset:nightly"),
+            Some(&FieldValue::boolean(false)),
+            "Space on the deep-linked preset must be the delete"
+        );
+
+        // A section taller than the viewport must arrive showing its start, not its tail. The
+        // keyboard lands on the first preset, so bottom-aligning would put the focused control off
+        // screen — the exact failure a viewport rule has to rule out.
+        let many = (0..40)
+            .map(|index| {
+                (
+                    format!("preset-{index:02}"),
+                    BTreeMap::from([("mode".to_owned(), "fast".to_owned())]),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let crowded = SettingsView::from_inputs(&SettingsInputs {
+            revealed: Some(SettingsSectionId::Presets),
+            presets: many,
+            ..settings_inputs()
+        });
+        assert_eq!(crowded.focused(), "preset:preset-00");
+        let mut session = SettingsScreenSession::default();
+        let (terminal, _) = draw(&mut session, &crowded, DEMO_WIDTH, DEMO_HEIGHT);
+        let frame = rendered(terminal.backend().buffer());
+        assert!(
+            frame.contains("Presets"),
+            "the heading scrolled away:\n{frame}"
+        );
+        assert!(
+            frame.contains("preset-00  mode=fast"),
+            "the focused preset was not drawn:\n{frame}"
         );
     }
 

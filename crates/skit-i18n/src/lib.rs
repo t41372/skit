@@ -1468,7 +1468,20 @@ const CATALOG: &[Translation] = &[
     row!("Settings", "设置", "設定"),
     row!("Settings for {}", "{} 的设置", "{} 的設定"),
     row!("Preset", "预设", "預設"),
-    row!("Presets", "预设", "預設"),
+    // Version 0.4 ships `参数组合` for this msgid. Product rule 1 makes the shipped `.po` text
+    // authoritative, and this is the heading of the settings section that manages them.
+    row!("Presets", "参数组合", "參數組合"),
+    row!(
+        "None yet — press Ctrl+S inside the run form to save one.",
+        "还没有——在运行表单里按 Ctrl+S 就能存一组。",
+        "還沒有——在執行表單裡按 Ctrl+S 就能存一組。",
+    ),
+    row!(
+        "Untick a preset to delete it on save:",
+        "取消勾选的参数组合会在保存时删除：",
+        "取消勾選的參數組合會在儲存時刪除：",
+    ),
+    row!("delete this preset", "删除这个参数组合", "刪除這個參數組合"),
     row!("Presets for {}: {}", "{} 的预设：{}", "{} 的預設：{}"),
     row!("Rename", "重命名", "重新命名"),
     row!("Rename {}", "重命名 {}", "重新命名 {}"),

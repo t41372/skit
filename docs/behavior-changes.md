@@ -46,6 +46,21 @@ also reversible, so a person who presses the chord by mistake can untick it.
 The request now applies when the save runs, rather than immediately. The pre-save report version 0.4
 prints is not built yet; it is recorded in `docs/parity-backlog.md`.
 
+## The preset deep link moves the keyboard, not only the viewport
+
+Version 0.4's Library gives `s` to `action_settings(section="presets")` (`src/skit/tui.py:991-992`),
+and the settings screen scrolls its body to that section on mount
+(`src/skit/tui_settings.py:876-882`). The keyboard stays where the screen put it, which is the name
+box, so the first key press after `s` types into the name.
+
+Version 0.5 also puts the keyboard on the first preset. Product rule 2 asks every action to have a
+keyboard path, and a person who pressed `s` came to act on a preset: `Space` deletes the first one
+immediately, rather than typing a space into an unrelated field.
+
+A section with nothing to edit keeps the anchor instead, so an entry with no presets still lands on
+the sentence that says where presets come from. The anchor is released by the first keyboard move,
+after which the viewport follows the focus as it does on every other screen.
+
 ## The add-a-parameter box takes more than one name
 
 Version 0.4 reads one name from its add box and makes one declaration

@@ -7,10 +7,11 @@ behavior.
 ## Localization catalog fidelity
 
 `crates/skit-i18n/src/lib.rs` carries retranslated Chinese copy where version 0.4 ships a
-translation. Of 914 catalog rows, 334 have an English msgid that matches
+translation. Measured once over 914 catalog rows: 334 had an English msgid that matches
 `src/skit/locales/*/LC_MESSAGES/skit.po` exactly; of those, 154 zh-CN and 163 zh-TW translations
-differ from the shipped text. A further 466 `.po` msgids have no exactly matching English row, so
-some English copy is reworded as well.
+differed from the shipped text. A further 466 `.po` msgids had no exactly matching English row, so
+some English copy is reworded as well. Treat those numbers as a snapshot, not a running total: each
+slice that adds a section repairs the rows it touches, so the count moves without the gap closing.
 
 The clearest symptom is term drift: version 0.4 renders "runner" as `执行器`, and 57 catalog rows
 use `运行器`. `crates/skit-i18n/tests/catalog.rs` pins `Library` to `程序库`, where the `.po` says
