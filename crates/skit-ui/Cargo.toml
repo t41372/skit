@@ -9,9 +9,12 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+nucleo-matcher.workspace = true
 serde.workspace = true
 skit-domain.workspace = true
 skit-application.workspace = true
+skit-form.workspace = true
+skit-language.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

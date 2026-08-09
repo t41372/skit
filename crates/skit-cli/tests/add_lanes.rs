@@ -30,6 +30,26 @@ impl Sandbox {
 }
 
 #[test]
+fn add_expands_the_user_home_before_it_resolves_a_source() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.data.path().join("home-source.py");
+    fs::write(&source, "print('home')\n").unwrap();
+
+    sandbox
+        .command()
+        .env("HOME", sandbox.data.path())
+        .env("USERPROFILE", sandbox.data.path())
+        .args(["add", "~/home-source.py", "--name", "Home", "--no-input"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        fs::read(sandbox.data.path().join("scripts/home/script.py")).unwrap(),
+        b"print('home')\n"
+    );
+}
+
+#[test]
 fn prompt_without_a_path_reads_a_pipe_in_no_input_mode() {
     let sandbox = Sandbox::new();
     sandbox
@@ -43,6 +63,147 @@ fn prompt_without_a_path_reads_a_pipe_in_no_input_mode() {
         fs::read(sandbox.data.path().join("scripts/review/prompt.md")).unwrap(),
         b"Review {{subject}}.\n"
     );
+}
+
+#[test]
+fn piped_text_defaults_to_python_but_honors_a_known_shebang() {
+    let sandbox = Sandbox::new();
+    sandbox
+        .command()
+        .args(["add", "-", "--name", "Default pipe", "--no-input"])
+        .write_stdin("print('python')\n")
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read(sandbox.data.path().join("scripts/default-pipe/script.py")).unwrap(),
+        b"print('python')\n"
+    );
+
+    sandbox
+        .command()
+        .args(["add", "-", "--name", "Shell pipe", "--no-input"])
+        .write_stdin("#!/bin/sh\nprintf ok\n")
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read(sandbox.data.path().join("scripts/shell-pipe/script.sh")).unwrap(),
+        b"#!/bin/sh\nprintf ok\n"
+    );
+}
+
+#[test]
+fn an_unknown_piped_shebang_requires_an_explicit_kind() {
+    let sandbox = Sandbox::new();
+    sandbox
+        .command()
+        .args(["add", "-", "--name", "Unknown pipe", "--no-input"])
+        .write_stdin("#!/usr/bin/awk -f\n{ print $0 }\n")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "piped text's #! names no interpreter skit knows",
+        ));
+    assert!(!sandbox.data.path().join("scripts/unknown-pipe").exists());
+}
+
+#[test]
+fn no_input_onboarding_reports_source_facts_without_guessing_a_selection() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.data.path().join("arguments.py");
+    fs::write(
+        &source,
+        "OUTPUT = 'report.txt'\nimport sys\nprint(sys.argv, 'input.csv')\n",
+    )
+    .unwrap();
+
+    sandbox
+        .command()
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            "--name",
+            "Arguments",
+            "--no-input",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reads command-line arguments"))
+        .stdout(predicate::str::contains("input.csv"));
+
+    let stored =
+        fs::read_to_string(sandbox.data.path().join("scripts/arguments/script.py")).unwrap();
+    assert!(!stored.contains("[tool.skit]"), "{stored}");
+}
+
+#[test]
+fn an_existing_python_metadata_fence_is_the_add_time_authority() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.data.path().join("owned.py");
+    let original = concat!(
+        "# /// script\n",
+        "# dependencies = [\"block-dep\"]\n",
+        "# requires-python = \">=3.11\"\n",
+        "# [tool.future]\n",
+        "# value = \"keep\"\n",
+        "# ///\n",
+        "print('ok')\n",
+    );
+    fs::write(&source, original).unwrap();
+
+    sandbox
+        .command()
+        .args(["add", source.to_str().unwrap(), "--name", "Owned"])
+        .args(["--dep", "ignored-dep", "--python", ">=3.13", "--no-input"])
+        .assert()
+        .success();
+
+    let stored = fs::read(sandbox.data.path().join("scripts/owned/script.py")).unwrap();
+    assert_eq!(stored, original.as_bytes());
+    let meta = fs::read_to_string(sandbox.data.path().join("scripts/owned/meta.toml")).unwrap();
+    assert!(!meta.contains("ignored-dep"), "{meta}");
+    assert!(!meta.contains(">=3.13"), "{meta}");
+}
+
+#[test]
+fn a_complete_but_invalid_python_metadata_fence_is_not_replaced_on_add() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.data.path().join("malformed.py");
+    let original = b"# /// script\n# dependencies =\n# ///\nprint('ok')\n";
+    fs::write(&source, original).unwrap();
+
+    sandbox
+        .command()
+        .args(["add", source.to_str().unwrap(), "--name", "Malformed"])
+        .args(["--dep", "ignored-dep", "--python", ">=3.13", "--no-input"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        fs::read(sandbox.data.path().join("scripts/malformed/script.py")).unwrap(),
+        original
+    );
+    let meta = fs::read_to_string(sandbox.data.path().join("scripts/malformed/meta.toml")).unwrap();
+    assert!(!meta.contains("ignored-dep"), "{meta}");
+    assert!(!meta.contains(">=3.13"), "{meta}");
+}
+
+#[test]
+fn an_authoritative_python_fence_does_not_hide_invalid_explicit_flags() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.data.path().join("owned.py");
+    fs::write(
+        &source,
+        "# /// script\n# dependencies = []\n# ///\nprint('ok')\n",
+    )
+    .unwrap();
+
+    sandbox
+        .command()
+        .args(["add", source.to_str().unwrap(), "--name", "Owned"])
+        .args(["--dep", "requests=>2", "--no-input"])
+        .assert()
+        .code(2);
+    assert!(!sandbox.data.path().join("scripts/owned").exists());
 }
 
 #[test]
@@ -205,7 +366,48 @@ fn executable_sources_are_references_and_permission_inference_is_supported() {
         .args(["run", "executable", "--no-input"])
         .assert()
         .success()
-        .stdout("");
+        .stdout(predicate::str::contains("→ ").and(predicate::str::contains("dash")));
+}
+
+#[test]
+fn an_explicit_executable_directory_is_recorded_then_refused_as_not_executable() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.state.path().join("program-directory");
+    fs::create_dir(&source).unwrap();
+
+    sandbox
+        .command()
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            "--exe",
+            "--name",
+            "Directory program",
+        ])
+        .assert()
+        .success();
+
+    let metadata = fs::read_to_string(
+        sandbox
+            .data
+            .path()
+            .join("scripts/directory-program/meta.toml"),
+    )
+    .unwrap();
+    assert!(metadata.contains("kind = \"exe\""));
+    assert!(metadata.contains("mode = \"reference\""));
+    assert!(metadata.contains("source_hash = \"\""));
+
+    for extra in [Vec::<&str>::new(), vec!["--dry-run"]] {
+        let mut arguments = vec!["run", "directory-program", "--no-input"];
+        arguments.extend(extra);
+        sandbox
+            .command()
+            .args(arguments)
+            .assert()
+            .code(126)
+            .stderr(predicate::str::contains("not executable"));
+    }
 }
 
 #[test]
@@ -360,4 +562,72 @@ fn a_registered_shebang_pins_the_non_python_interpreter() {
     let meta = fs::read_to_string(sandbox.data.path().join("scripts/deno-tool/meta.toml")).unwrap();
     assert!(meta.contains("kind = \"js\""));
     assert!(meta.contains("interpreter = \"deno\""));
+}
+
+#[test]
+fn successful_adds_restore_the_complete_latest_main_summary() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.data.path().join("summary.py");
+    fs::write(
+        &source,
+        concat!(
+            "# /// script\n",
+            "# dependencies = [\"requests\"]\n",
+            "# [tool.skit]\n",
+            "# schema = 1\n",
+            "#\n",
+            "# [[tool.skit.params]]\n",
+            "# name = \"VALUE\"\n",
+            "# kind = \"const\"\n",
+            "# type = \"int\"\n",
+            "# default = 1\n",
+            "# ///\n",
+            "VALUE = 1\n",
+            "print(VALUE)\n",
+        ),
+    )
+    .unwrap();
+
+    sandbox
+        .command()
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            "--name",
+            "Summary",
+            "--description",
+            "Visible detail",
+            "--no-input",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Added: Summary (copy mode)")
+                .and(predicate::str::contains("Description: Visible detail"))
+                .and(predicate::str::contains("Dependencies: requests"))
+                .and(predicate::str::contains("Managed parameters: VALUE"))
+                .and(predicate::str::contains("Run it: skit run Summary")),
+        );
+
+    sandbox
+        .command()
+        .args([
+            "add",
+            "--cmd",
+            "printf '%s' {API_KEY}",
+            "--name",
+            "Secret command",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains(
+                "Detected parameters: API_KEY (the run form asks for them; your last values are remembered)",
+            )
+            .and(predicate::str::contains("Added: Secret command"))
+            .and(predicate::str::contains(
+                "Secret parameter values are never saved by skit: API_KEY",
+            ))
+            .and(predicate::str::contains("Run it: skit run Secret command")),
+        );
 }

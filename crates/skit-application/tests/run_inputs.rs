@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, fmt};
 
 use skit_application::{
-    delivery::AssemblyError,
+    delivery::{Assembly, AssemblyError, transparency_messages},
     glob_expansion::GlobExpander,
     run_inputs::{RunInputError, assemble_run_inputs},
     tokens::{TokenContext, TokenError},
@@ -9,6 +9,7 @@ use skit_application::{
     value_resolution::ValueResolutionError,
 };
 use skit_domain::parameters::{ParamDecl, ParameterDelivery, ParameterType};
+use skit_i18n::Locale;
 
 #[derive(Default)]
 struct FakeGlob {
@@ -223,5 +224,29 @@ fn impossible_prepared_shape_errors_keep_the_delivery_error_type() {
         })
         .to_string(),
         "parameter \"name\" received multiple values but is not a multi-value flag"
+    );
+}
+
+#[test]
+fn launch_transparency_is_masked_and_frontend_neutral() {
+    let assembly = Assembly {
+        display: vec![
+            ("name".to_owned(), "Ada".to_owned()),
+            ("token".to_owned(), "•••".to_owned()),
+        ],
+        ..Assembly::default()
+    };
+    let lines = transparency_messages(&assembly, "python /tmp/.run-script.py")
+        .into_iter()
+        .map(|message| message.localize(Locale::En))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        lines,
+        [
+            "→ inject: name = Ada, token = •••",
+            "  (written to a temporary copy, deleted after the run; your original file is untouched)",
+            "→ python /tmp/.run-script.py",
+        ]
     );
 }

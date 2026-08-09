@@ -44,9 +44,10 @@ pub(crate) fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .create_new(true)
         .open(&temp)?;
     file.write_all(bytes)?;
-    if let Ok(metadata) = fs::metadata(path) {
-        file.set_permissions(metadata.permissions())?;
-    }
+    preserve_permissions_best_effort(
+        fs::metadata(path).map(|metadata| metadata.permissions()),
+        |permissions| file.set_permissions(permissions),
+    );
     file.sync_all()?;
     drop(file);
 
@@ -56,6 +57,17 @@ pub(crate) fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
     let _ = sync_directory(parent);
     Ok(())
+}
+
+pub(crate) fn preserve_permissions_best_effort<F>(
+    permissions: io::Result<fs::Permissions>,
+    apply: F,
+) where
+    F: FnOnce(fs::Permissions) -> io::Result<()>,
+{
+    if let Ok(permissions) = permissions {
+        let _ = apply(permissions);
+    }
 }
 
 #[cfg(unix)]
@@ -70,7 +82,10 @@ fn sync_directory(_path: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{acquire_lock, atomic_write_bytes, sync_directory};
+    use super::{
+        acquire_lock, atomic_write_bytes, preserve_permissions_best_effort, sync_directory,
+    };
+    use std::{cell::Cell, io};
     use tempfile::TempDir;
 
     #[test]
@@ -89,5 +104,26 @@ mod tests {
     fn a_real_directory_can_be_synchronized_after_a_state_replace() {
         let root = TempDir::new().unwrap();
         sync_directory(root.path()).unwrap();
+    }
+
+    #[test]
+    fn a_permission_restore_failure_does_not_turn_a_committed_write_into_an_error() {
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("target");
+        std::fs::write(&target, b"old").unwrap();
+        let attempted = Cell::new(false);
+
+        preserve_permissions_best_effort(
+            std::fs::metadata(&target).map(|metadata| metadata.permissions()),
+            |_: std::fs::Permissions| {
+                attempted.set(true);
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "simulated chmod refusal",
+                ))
+            },
+        );
+
+        assert!(attempted.get());
     }
 }

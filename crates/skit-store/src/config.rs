@@ -1,7 +1,13 @@
 //! Preserve and update the user configuration file.
 
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    fs, io,
+    path::{Path, PathBuf},
+};
 
+use skit_application::runner_management::{RunnerArgvError, validate_runner_argv};
+use skit_domain::EntryId;
 use skit_i18n::{Locale, Localize, Message};
 use thiserror::Error;
 use toml::{Table, Value};
@@ -45,6 +51,15 @@ pub struct MirrorSettings {
     pub npm: String,
 }
 
+/// Details for a malformed configuration that a write repaired.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConfigRecovery {
+    /// Malformed file that the write replaced.
+    pub path: PathBuf,
+    /// Byte-exact backup that preserves the malformed file.
+    pub backup_path: PathBuf,
+}
+
 /// One configured prompt runner.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PromptRunner {
@@ -54,11 +69,11 @@ pub struct PromptRunner {
     pub argv: Vec<String>,
 }
 
-/// One raw prompt-runner row for inspection and repair.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// One raw prompt-runner row for inspection and exact repair.
+#[derive(Clone, Debug, PartialEq)]
 pub struct PromptRunnerRow {
-    /// One-based row index.
-    pub index: usize,
+    /// Zero-based raw list index. A malformed enclosing value has no index.
+    pub index: Option<usize>,
     /// Parsed runner name when present.
     pub name: Option<String>,
     /// Parsed argument vector when it has only strings.
@@ -69,6 +84,7 @@ pub struct PromptRunnerRow {
     pub descriptor: String,
     reason_message: Option<Message>,
     descriptor_message: Option<Message>,
+    raw: Value,
 }
 
 impl PromptRunnerRow {
@@ -87,6 +103,75 @@ impl PromptRunnerRow {
             || self.descriptor.clone(),
             |message| message.localize(locale),
         )
+    }
+
+    /// Return an opaque token for the complete raw management identity.
+    ///
+    /// The token includes the raw value, row/container address, and classification.
+    /// Frontends can carry it without depending on TOML or inspecting future fields.
+    #[must_use]
+    pub fn snapshot_token(&self) -> String {
+        serde_json::to_string(&serde_json::json!({
+            "index": self.index,
+            "reason": self.reason,
+            "descriptor": self.descriptor,
+            "raw": self.raw,
+        }))
+        .expect("a TOML management row is JSON serializable")
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PromptRunnerIssue {
+    PromptSectionNotTable,
+    RunnersNotList,
+    Empty,
+    PromptSlotCount,
+    PromptInBinary,
+    StrayHole,
+    Name,
+    ArgvType,
+    RowNotTable,
+    Duplicate,
+}
+
+impl PromptRunnerIssue {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::PromptSectionNotTable => "prompt-section-not-table",
+            Self::RunnersNotList => "runners-not-list",
+            Self::Empty => "empty",
+            Self::PromptSlotCount => "prompt-slot-count",
+            Self::PromptInBinary => "prompt-in-binary",
+            Self::StrayHole => "stray-hole",
+            Self::Name => "name",
+            Self::ArgvType => "argv-type",
+            Self::RowNotTable => "row-not-table",
+            Self::Duplicate => "duplicate",
+        }
+    }
+
+    fn message(self) -> Message {
+        match self {
+            Self::PromptSectionNotTable => {
+                Message::new("the prompt value is not a table; repair it before runner management")
+            }
+            Self::RunnersNotList => Message::new(
+                "the prompt.runners value is not a list; repair it before runner management",
+            ),
+            Self::Empty => Message::new("a prompt runner command needs nonempty arguments"),
+            Self::PromptSlotCount => Message::new(
+                "a prompt runner command needs {{prompt}} exactly once after the program",
+            ),
+            Self::PromptInBinary => Message::new("{{prompt}} cannot be the prompt runner program"),
+            Self::StrayHole => {
+                Message::new("a prompt runner command supports only the {{prompt}} slot")
+            }
+            Self::Name => Message::new("a prompt runner needs a name"),
+            Self::ArgvType => Message::new("a prompt runner argv must be a list of strings"),
+            Self::RowNotTable => Message::new("the prompt runner row is not a table"),
+            Self::Duplicate => Message::new("another row already uses this prompt runner name"),
+        }
     }
 }
 
@@ -120,6 +205,9 @@ pub enum ConfigError {
     /// A key, value, or runner definition is invalid.
     #[error("{0}")]
     Invalid(Message),
+    /// The caller supplied an unsupported key or value.
+    #[error("{0}")]
+    Usage(Message),
 }
 
 impl Localize for ConfigError {
@@ -142,7 +230,16 @@ impl Localize for ConfigError {
                 Message::new("could not encode configuration: {}").with(reason)
             }
             Self::Invalid(message) => message.clone(),
+            Self::Usage(message) => message.clone(),
         }
+    }
+}
+
+impl ConfigError {
+    /// Report whether changing command input can correct this error.
+    #[must_use]
+    pub const fn is_usage(&self) -> bool {
+        matches!(self, Self::Usage(_))
     }
 }
 
@@ -150,6 +247,14 @@ impl Localize for ConfigError {
 #[derive(Clone, Debug)]
 pub struct FileConfigStore {
     config_dir: PathBuf,
+}
+
+#[derive(Debug)]
+struct LoadedConfig {
+    original: Vec<u8>,
+    original_text: Option<String>,
+    document: Table,
+    malformed: bool,
 }
 
 impl FileConfigStore {
@@ -169,18 +274,43 @@ impl FileConfigStore {
 
     /// Read every supported scalar setting with stable CLI key names.
     pub fn settings(&self) -> Result<BTreeMap<String, String>, ConfigError> {
-        let document = self.load()?;
-        let mut settings = BTreeMap::new();
-        for key in ["lang", "editor", "form", "after_run"] {
-            if let Some(value) = read_key(&document, key) {
-                settings.insert(key.to_owned(), value);
-            }
-        }
-        for key in ["shell.bash_path", "js.runner"] {
-            if let Some(value) = read_key(&document, key) {
-                settings.insert(key.to_owned(), value);
-            }
-        }
+        let document = self.load();
+        let mut settings = BTreeMap::from([
+            (
+                "lang".to_owned(),
+                read_key(&document, "lang")
+                    .as_deref()
+                    .filter(|value| !value.eq_ignore_ascii_case("auto"))
+                    .and_then(normalize_supported_language)
+                    .unwrap_or_default(),
+            ),
+            (
+                "editor".to_owned(),
+                read_key(&document, "editor").unwrap_or_default(),
+            ),
+            (
+                "form".to_owned(),
+                read_key(&document, "form")
+                    .filter(|value| matches!(value.as_str(), "tui" | "plain"))
+                    .unwrap_or_else(|| "tui".to_owned()),
+            ),
+            (
+                "after_run".to_owned(),
+                read_key(&document, "after_run")
+                    .filter(|value| matches!(value.as_str(), "exit" | "stay"))
+                    .unwrap_or_else(|| "exit".to_owned()),
+            ),
+            (
+                "shell.bash_path".to_owned(),
+                read_key(&document, "shell.bash_path").unwrap_or_default(),
+            ),
+            (
+                "js.runner".to_owned(),
+                read_key(&document, "js.runner")
+                    .filter(|value| matches!(value.as_str(), "deno" | "bun" | "node"))
+                    .unwrap_or_default(),
+            ),
+        ]);
         let mirror = mirror_from_document(&document);
         settings.insert(
             "mirror".to_owned(),
@@ -200,38 +330,47 @@ impl FileConfigStore {
             "mirror.npm".to_owned(),
             axis_display(&mirror.npm, NPM_PRESETS),
         );
-        settings.entry("lang".to_owned()).or_default();
-        settings.entry("editor".to_owned()).or_default();
-        settings
-            .entry("form".to_owned())
-            .or_insert_with(|| "tui".to_owned());
-        settings
-            .entry("after_run".to_owned())
-            .or_insert_with(|| "exit".to_owned());
-        settings.entry("shell.bash_path".to_owned()).or_default();
-        settings.entry("js.runner".to_owned()).or_default();
         Ok(settings)
     }
 
     /// Read one supported scalar setting.
     pub fn get(&self, key: &str) -> Result<String, ConfigError> {
         self.settings()?.remove(key).ok_or_else(|| {
-            ConfigError::Invalid(Message::new("unknown configuration key: {}").with(key))
+            ConfigError::Usage(Message::new("unknown configuration key: {}").with(key))
         })
     }
 
     /// Set one supported scalar setting without changing unknown TOML fields.
     pub fn set(&self, key: &str, value: &str) -> Result<(), ConfigError> {
-        validate_setting(key, value)?;
-        self.update(|document| write_key(document, key, value))
+        self.set_with_recovery(key, value).map(drop)
+    }
+
+    /// Set one scalar setting and report a malformed-file recovery to the frontend.
+    pub fn set_with_recovery(
+        &self,
+        key: &str,
+        value: &str,
+    ) -> Result<Option<ConfigRecovery>, ConfigError> {
+        let value = normalize_setting(key, value)?;
+        self.update_with_recovery(|document| write_key(document, key, &value))
+            .map(|(_, recovery)| recovery)
     }
 
     /// Validate and replace multiple settings in one configuration transaction.
     pub fn set_many(&self, settings: &BTreeMap<String, String>) -> Result<(), ConfigError> {
-        for (key, value) in settings {
-            validate_setting(key, value)?;
-        }
-        self.update(|document| {
+        self.set_many_with_recovery(settings).map(drop)
+    }
+
+    /// Replace multiple settings and report a malformed-file recovery to the frontend.
+    pub fn set_many_with_recovery(
+        &self,
+        settings: &BTreeMap<String, String>,
+    ) -> Result<Option<ConfigRecovery>, ConfigError> {
+        let settings = settings
+            .iter()
+            .map(|(key, value)| Ok((key.clone(), normalize_setting(key, value)?)))
+            .collect::<Result<BTreeMap<_, _>, ConfigError>>()?;
+        self.update_with_recovery(|document| {
             for (key, value) in settings.iter().filter(|(key, _)| key.as_str() != "mirror") {
                 write_key(document, key, value)?;
             }
@@ -240,11 +379,12 @@ impl FileConfigStore {
             }
             Ok(())
         })
+        .map(|(_, recovery)| recovery)
     }
 
     /// Read stored mirror URLs without applying the master switch.
     pub fn mirror(&self) -> Result<MirrorSettings, ConfigError> {
-        Ok(mirror_from_document(&self.load()?))
+        Ok(mirror_from_document(&self.load()))
     }
 
     /// Build environment values for a child without changing the parent environment.
@@ -277,8 +417,17 @@ impl FileConfigStore {
 
     /// Read valid prompt runners. The built-in rows are defaults until customized.
     pub fn runners(&self) -> Result<Vec<PromptRunner>, ConfigError> {
-        let document = self.load()?;
-        Ok(runners_from_document(&document).unwrap_or_else(seed_runners))
+        let document = self.load();
+        Ok(runner_rows_from_document(&document)
+            .into_iter()
+            .filter(|row| row.reason.is_none())
+            .filter_map(|row| {
+                Some(PromptRunner {
+                    name: row.name?,
+                    argv: row.argv?,
+                })
+            })
+            .collect())
     }
 
     /// Materialize the default runner rows on an explicit management read.
@@ -288,94 +437,198 @@ impl FileConfigStore {
 
     /// Return each raw runner row, including malformed future shapes.
     pub fn runner_rows(&self) -> Result<Vec<PromptRunnerRow>, ConfigError> {
-        let document = self.load()?;
-        let rows = explicit_runner_rows(&document).unwrap_or(&[]);
-        Ok(rows
-            .iter()
-            .enumerate()
-            .map(|(index, value)| runner_row(index + 1, value))
-            .collect())
+        let document = self.load();
+        Ok(runner_rows_from_document(&document))
     }
 
     /// Return labels for malformed prompt runner rows that normal reads ignore.
     pub fn invalid_runner_rows(&self) -> Result<Vec<String>, ConfigError> {
-        let document = self.load()?;
-        let Some(rows) = document
-            .get("prompt")
-            .and_then(Value::as_table)
-            .and_then(|prompt| prompt.get("runners"))
-            .and_then(Value::as_array)
-        else {
-            return Ok(Vec::new());
-        };
-        Ok(rows
-            .iter()
-            .enumerate()
-            .filter_map(|(index, value)| {
-                let runner = value.as_table().and_then(runner_from_row);
-                runner
-                    .as_ref()
-                    .is_none_or(|runner| validate_runner(runner).is_err())
-                    .then(|| {
-                        value
-                            .as_table()
-                            .and_then(|row| row.get("name"))
-                            .and_then(Value::as_str)
-                            .filter(|name| !name.trim().is_empty())
-                            .map(str::to_owned)
-                            .unwrap_or_else(|| format!("row {}", index + 1))
-                    })
-            })
+        Ok(self
+            .runner_rows()?
+            .into_iter()
+            .filter(|row| row.reason.is_some())
+            .map(|row| row.descriptor)
             .collect())
     }
 
     /// Add or replace one named prompt runner.
-    pub fn set_runner(&self, runner: PromptRunner, replace: bool) -> Result<(), ConfigError> {
-        validate_runner(&runner)?;
+    pub fn set_runner(&self, runner: PromptRunner, replace: bool) -> Result<bool, ConfigError> {
+        validate_runner(&runner).map_err(|issue| ConfigError::Usage(issue.message()))?;
+        let runner = PromptRunner {
+            name: runner.name.trim().to_owned(),
+            argv: runner.argv,
+        };
         self.update(|document| {
             materialize_seed_runners(document)?;
             let rows = runner_array_mut(document)?;
-            let existing = rows.iter().position(|value| {
-                value
-                    .as_table()
-                    .and_then(runner_from_row)
-                    .filter(|item| validate_runner(item).is_ok())
-                    .is_some_and(|item| item.name == runner.name)
-            });
-            if let Some(index) = existing {
+            let existing = rows
+                .iter()
+                .enumerate()
+                .filter_map(|(index, value)| {
+                    (raw_runner_name(value) == runner.name).then_some(index)
+                })
+                .collect::<Vec<_>>();
+            if let Some(&first) = existing.first() {
                 if !replace {
                     return Err(ConfigError::Invalid(
-                        Message::new("prompt runner already exists: {}").with(&runner.name),
+                        Message::new(
+                            "The runner {} already exists — pass --force to replace its command.",
+                        )
+                        .with(&runner.name),
                     ));
                 }
-                let row = rows[index]
+                let row = rows[first]
                     .as_table_mut()
                     .expect("a matched runner row is a table");
                 write_runner_fields(row, &runner);
+                for index in existing.into_iter().skip(1).rev() {
+                    rows.remove(index);
+                }
+                Ok(true)
             } else {
                 rows.push(Value::Table(runner_table(&runner)));
+                Ok(false)
             }
-            Ok(())
+        })
+    }
+
+    /// Replace one stable runner key only while all of its raw rows match a prior read.
+    ///
+    /// Unrelated configuration edits do not block the transaction. Duplicate rows for
+    /// the selected key are coalesced into the first row after a successful comparison.
+    pub fn set_runner_if_unchanged(
+        &self,
+        runner: PromptRunner,
+        expected: &[PromptRunnerRow],
+    ) -> Result<bool, ConfigError> {
+        validate_runner(&runner).map_err(|issue| ConfigError::Usage(issue.message()))?;
+        let runner = PromptRunner {
+            name: runner.name.trim().to_owned(),
+            argv: runner.argv,
+        };
+        self.update(|document| {
+            materialize_seed_runners(document)?;
+            let rows = runner_array_mut(document)?;
+            let matches = rows
+                .iter()
+                .enumerate()
+                .filter_map(|(index, value)| {
+                    (raw_runner_name(value) == runner.name).then_some(index)
+                })
+                .collect::<Vec<_>>();
+            let current = matches
+                .iter()
+                .map(|index| rows[*index].clone())
+                .collect::<Vec<_>>();
+            let expected = expected
+                .iter()
+                .filter(|row| row.name.as_deref() == Some(runner.name.as_str()))
+                .map(|row| row.raw.clone())
+                .collect::<Vec<_>>();
+            if matches.is_empty() || current != expected {
+                return Ok(false);
+            }
+            let first = matches[0];
+            let replacement = rows[first].as_table().cloned().map_or_else(
+                || runner_table(&runner),
+                |mut table| {
+                    write_runner_fields(&mut table, &runner);
+                    table
+                },
+            );
+            rows[first] = Value::Table(replacement);
+            for index in matches.into_iter().skip(1).rev() {
+                rows.remove(index);
+            }
+            Ok(true)
+        })
+    }
+
+    /// Repair one recognizable raw row only while its complete snapshot is unchanged.
+    pub fn replace_runner_row_if_unchanged(
+        &self,
+        runner: PromptRunner,
+        expected: &PromptRunnerRow,
+    ) -> Result<bool, ConfigError> {
+        validate_runner(&runner).map_err(|issue| ConfigError::Usage(issue.message()))?;
+        let runner = PromptRunner {
+            name: runner.name.trim().to_owned(),
+            argv: runner.argv,
+        };
+        self.update(|document| {
+            let Some(index) = expected.index else {
+                return Ok(false);
+            };
+            let Some(rows) = explicit_runner_rows_mut(document) else {
+                return Ok(false);
+            };
+            if rows.get(index) != Some(&expected.raw) {
+                return Ok(false);
+            }
+            if rows
+                .iter()
+                .enumerate()
+                .any(|(current, value)| current != index && raw_runner_name(value) == runner.name)
+            {
+                return Err(ConfigError::Invalid(
+                    Message::new("The runner {} already exists — pick another name.")
+                        .with(&runner.name),
+                ));
+            }
+            rows[index] = Value::Table(runner_table(&runner));
+            mark_runners_seeded(document)?;
+            Ok(true)
         })
     }
 
     /// Remove one named prompt runner and report whether it existed.
     pub fn remove_runner(&self, name: &str) -> Result<bool, ConfigError> {
+        self.remove_runner_with_snapshot(name, None)
+    }
+
+    /// Remove one named runner only when its complete raw rows match a management read.
+    pub fn remove_runner_if_unchanged(
+        &self,
+        name: &str,
+        expected: &[PromptRunnerRow],
+    ) -> Result<bool, ConfigError> {
+        self.remove_runner_with_snapshot(name, Some(expected))
+    }
+
+    fn remove_runner_with_snapshot(
+        &self,
+        name: &str,
+        expected: Option<&[PromptRunnerRow]>,
+    ) -> Result<bool, ConfigError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Ok(false);
+        }
         self.update(|document| {
             materialize_seed_runners(document)?;
             let rows = runner_array_mut(document)?;
-            let index = rows.iter().position(|value| {
-                value
-                    .as_table()
-                    .and_then(runner_from_row)
-                    .filter(|item| validate_runner(item).is_ok())
-                    .is_some_and(|item| item.name == name)
-            });
-            Ok(index.map(|index| rows.remove(index)).is_some())
+            let current = rows
+                .iter()
+                .filter(|value| raw_runner_name(value) == name)
+                .cloned()
+                .collect::<Vec<_>>();
+            if let Some(expected) = expected {
+                let expected = expected
+                    .iter()
+                    .filter(|row| row.name.as_deref() == Some(name))
+                    .map(|row| row.raw.clone())
+                    .collect::<Vec<_>>();
+                if current != expected {
+                    return Ok(false);
+                }
+            }
+            let before = rows.len();
+            rows.retain(|value| raw_runner_name(value) != name);
+            Ok(rows.len() != before)
         })
     }
 
-    /// Remove one raw one-based row without parsing or normalizing other rows.
+    /// Remove one raw zero-based row without parsing or normalizing other rows.
     pub fn remove_runner_row(&self, row: usize) -> Result<bool, ConfigError> {
         self.update(|document| {
             // `--row` addresses the raw rows that `runner_rows` reported, so seeding
@@ -383,11 +636,32 @@ impl FileConfigStore {
             let Some(rows) = explicit_runner_rows_mut(document) else {
                 return Ok(false);
             };
-            let Some(index) = row.checked_sub(1).filter(|index| *index < rows.len()) else {
+            if row >= rows.len() {
                 return Ok(false);
-            };
-            rows.remove(index);
+            }
+            rows.remove(row);
             Ok(true)
+        })
+    }
+
+    /// Remove one raw row or malformed container only if its raw snapshot is unchanged.
+    pub fn remove_runner_row_if_unchanged(
+        &self,
+        expected: &PromptRunnerRow,
+    ) -> Result<bool, ConfigError> {
+        self.update(|document| match expected.index {
+            Some(index) => {
+                let Some(rows) = explicit_runner_rows_mut(document) else {
+                    return Ok(false);
+                };
+                if rows.get(index) != Some(&expected.raw) {
+                    return Ok(false);
+                }
+                rows.remove(index);
+                mark_runners_seeded(document)?;
+                Ok(true)
+            }
+            None => remove_malformed_runner_container(document, expected),
         })
     }
 
@@ -396,27 +670,37 @@ impl FileConfigStore {
     }
 
     fn lock_path(&self) -> PathBuf {
-        self.config_dir.join(".config.lock")
+        self.config_dir.join("config.lock")
     }
 
-    fn load(&self) -> Result<Table, ConfigError> {
-        self.load_document().map(|(_, document)| document)
+    fn load(&self) -> Table {
+        self.load_document()
+            .map_or_else(|_| Table::new(), |loaded| loaded.document)
     }
 
-    fn load_document(&self) -> Result<(String, Table), ConfigError> {
+    fn load_document(&self) -> io::Result<LoadedConfig> {
         let path = self.path();
-        match fs::read_to_string(&path) {
-            Ok(text) => {
-                let document = toml::from_str(&text).map_err(|error| ConfigError::Parse {
-                    path: path.display().to_string(),
-                    reason: error.to_string(),
-                })?;
-                Ok((text, document))
+        match fs::read(&path) {
+            Ok(original) => {
+                let original_text = String::from_utf8(original.clone()).ok();
+                let parsed = original_text
+                    .as_deref()
+                    .and_then(|text| toml::from_str(text).ok());
+                let malformed = parsed.is_none();
+                Ok(LoadedConfig {
+                    original,
+                    original_text,
+                    document: parsed.unwrap_or_default(),
+                    malformed,
+                })
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Ok((String::new(), Table::new()))
-            }
-            Err(error) => Err(io_error("read", &path, error)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(LoadedConfig {
+                original: Vec::new(),
+                original_text: Some(String::new()),
+                document: Table::new(),
+                malformed: false,
+            }),
+            Err(error) => Err(error),
         }
     }
 
@@ -424,46 +708,118 @@ impl FileConfigStore {
         &self,
         operation: impl FnOnce(&mut Table) -> Result<T, ConfigError>,
     ) -> Result<T, ConfigError> {
+        self.update_with_recovery(operation)
+            .map(|(result, _)| result)
+    }
+
+    fn update_with_recovery<T>(
+        &self,
+        operation: impl FnOnce(&mut Table) -> Result<T, ConfigError>,
+    ) -> Result<(T, Option<ConfigRecovery>), ConfigError> {
         let lock_path = self.lock_path();
         let _lock =
             acquire_lock(&lock_path).map_err(|error| io_error("lock", &lock_path, error))?;
-        let (original, mut document) = self.load_document()?;
-        let before = document.clone();
-        let result = operation(&mut document)?;
-        let desired = toml::to_string_pretty(&document)
-            .expect("a configuration table contains only TOML values");
-        let encoded = crate::toml_document::merge_update(&original, &desired, &before, &document)
-            .map_err(|reason| ConfigError::Encode { reason })?;
         let path = self.path();
-        atomic_write_bytes(&path, encoded.as_bytes())
-            .map_err(|error| io_error("write", &path, error))?;
-        Ok(result)
+        let mut loaded = self
+            .load_document()
+            .map_err(|error| io_error("read", &path, error))?;
+        let before = loaded.document.clone();
+        let result = operation(&mut loaded.document)?;
+        if loaded.document == before && !loaded.malformed {
+            return Ok((result, None));
+        }
+        let desired = toml::to_string_pretty(&loaded.document)
+            .expect("a configuration table contains only TOML values");
+        let encoded = if loaded.malformed {
+            desired.into_bytes()
+        } else {
+            crate::toml_document::merge_update(
+                loaded
+                    .original_text
+                    .as_deref()
+                    .expect("a valid TOML document is UTF-8"),
+                &desired,
+                &before,
+                &loaded.document,
+            )
+            .map_err(|reason| ConfigError::Encode { reason })?
+            .into_bytes()
+        };
+        let recovery = loaded
+            .malformed
+            .then(|| preserve_corrupt_backup(&path, &loaded.original))
+            .transpose()?
+            .map(|backup_path| ConfigRecovery {
+                path: path.clone(),
+                backup_path,
+            });
+        atomic_write_bytes(&path, &encoded).map_err(|error| io_error("write", &path, error))?;
+        Ok((result, recovery))
     }
 }
 
-fn validate_setting(key: &str, value: &str) -> Result<(), ConfigError> {
-    let allowed = match key {
-        "lang" => !value.trim().is_empty(),
-        "editor" => true,
-        "form" => matches!(value, "tui" | "plain"),
-        "after_run" => matches!(value, "exit" | "stay"),
-        "shell.bash_path" => true,
-        "js.runner" => value.is_empty() || matches!(value, "deno" | "bun" | "node"),
-        "mirror" => matches!(value, "on" | "off"),
-        "mirror.pypi" => valid_axis_value(value, PYPI_PRESETS, false),
-        "mirror.github" => valid_axis_value(value, GITHUB_PRESETS, true),
-        "mirror.npm" => valid_axis_value(value, NPM_PRESETS, false),
-        _ => false,
+fn normalize_setting(key: &str, value: &str) -> Result<String, ConfigError> {
+    let normalized = match key {
+        "lang" if value.trim().eq_ignore_ascii_case("auto") => Some(String::new()),
+        "lang" => normalize_supported_language(value),
+        "editor" => Some(value.trim().to_owned()),
+        "form" if matches!(value, "tui" | "plain") => Some(value.to_owned()),
+        "after_run" if matches!(value, "exit" | "stay") => Some(value.to_owned()),
+        "shell.bash_path" => {
+            let path = value.trim();
+            if path.is_empty() {
+                Some(String::new())
+            } else if crate::expand_user_path(Path::new(path)).is_file() {
+                Some(path.to_owned())
+            } else {
+                return Err(ConfigError::Usage(
+                    Message::new("bash path is not a file: {}").with(path),
+                ));
+            }
+        }
+        "js.runner" if value.trim().is_empty() => Some(String::new()),
+        "js.runner" if matches!(value, "deno" | "bun" | "node") => Some(value.to_owned()),
+        "mirror" if matches!(value, "on" | "off") => Some(value.to_owned()),
+        "mirror.pypi" if valid_axis_value(value, PYPI_PRESETS, false) => Some(value.to_owned()),
+        "mirror.github" if valid_axis_value(value, GITHUB_PRESETS, true) => Some(value.to_owned()),
+        "mirror.npm" if valid_axis_value(value, NPM_PRESETS, false) => Some(value.to_owned()),
+        _ => None,
     };
-    if allowed {
-        Ok(())
-    } else {
-        Err(ConfigError::Invalid(
+    normalized.ok_or_else(|| {
+        ConfigError::Usage(
             Message::new("invalid configuration value for {}: {}")
                 .with(key)
                 .with(value),
-        ))
+        )
+    })
+}
+
+fn normalize_supported_language(value: &str) -> Option<String> {
+    let without_codeset = value.split('.').next().unwrap_or_default();
+    let without_modifier = without_codeset.split('@').next().unwrap_or_default();
+    let normalized_input = without_modifier.trim().replace('_', "-");
+    if normalized_input.is_empty() {
+        return None;
     }
+    let mut parts = normalized_input.split('-');
+    let language = parts.next()?.to_lowercase();
+    let mut output = vec![language.clone()];
+    for part in parts {
+        let characters = part.chars().count();
+        let canonical = if characters == 2 {
+            part.to_uppercase()
+        } else if characters == 4 {
+            let mut chars = part.chars();
+            let first = chars.next()?.to_uppercase().collect::<String>();
+            format!("{first}{}", chars.as_str().to_lowercase())
+        } else {
+            part.to_lowercase()
+        };
+        output.push(canonical);
+    }
+    let normalized = output.join("-");
+    (matches!(language.as_str(), "en" | "zh") || normalized.eq_ignore_ascii_case("x-pseudo"))
+        .then_some(normalized)
 }
 
 fn read_key(document: &Table, key: &str) -> Option<String> {
@@ -487,9 +843,9 @@ fn read_key(document: &Table, key: &str) -> Option<String> {
 
 fn write_key(document: &mut Table, key: &str, value: &str) -> Result<(), ConfigError> {
     if key == "mirror" {
-        let table = table_mut(document, "mirror")?;
+        let table = repairable_table_mut(document, "mirror");
         if value == "on" && !table_has_urls(table) {
-            return Err(ConfigError::Invalid(Message::new(
+            return Err(ConfigError::Usage(Message::new(
                 "no mirror URLs are stored; set one mirror axis first",
             )));
         }
@@ -497,7 +853,7 @@ fn write_key(document: &mut Table, key: &str, value: &str) -> Result<(), ConfigE
         return Ok(());
     }
     if matches!(key, "mirror.pypi" | "mirror.github" | "mirror.npm") {
-        let table = table_mut(document, "mirror")?;
+        let table = repairable_table_mut(document, "mirror");
         let was_paused = !table
             .get("enabled")
             .and_then(Value::as_bool)
@@ -522,16 +878,49 @@ fn write_key(document: &mut Table, key: &str, value: &str) -> Result<(), ConfigE
         );
         return Ok(());
     }
+    if matches!(key, "lang" | "editor") {
+        let storage_key = if key == "lang" { "language" } else { key };
+        if value.is_empty() {
+            document.remove(storage_key);
+        } else {
+            document.insert(storage_key.to_owned(), Value::String(value.to_owned()));
+        }
+        return Ok(());
+    }
     let storage_key = if key == "lang" { "language" } else { key };
     let mut parts = storage_key.split('.');
     let first = parts.next().expect("validated keys are not empty");
     if let Some(second) = parts.next() {
-        let table = table_mut(document, first)?;
-        table.insert(second.to_owned(), Value::String(value.to_owned()));
+        write_nested_string(document, first, second, value);
     } else {
         document.insert(first.to_owned(), Value::String(value.to_owned()));
     }
     Ok(())
+}
+
+fn write_nested_string(document: &mut Table, section: &str, key: &str, value: &str) {
+    if value.is_empty() {
+        if let Some(table) = document.get_mut(section).and_then(Value::as_table_mut) {
+            table.remove(key);
+            if table.is_empty() {
+                document.remove(section);
+            }
+        } else {
+            document.remove(section);
+        }
+        return;
+    }
+    repairable_table_mut(document, section).insert(key.to_owned(), Value::String(value.to_owned()));
+}
+
+fn repairable_table_mut<'a>(document: &'a mut Table, key: &str) -> &'a mut Table {
+    if document.get(key).is_none_or(|value| !value.is_table()) {
+        document.insert(key.to_owned(), Value::Table(Table::new()));
+    }
+    document
+        .get_mut(key)
+        .and_then(Value::as_table_mut)
+        .expect("the setting section was repaired as a table")
 }
 
 fn valid_axis_value(value: &str, presets: &[(&str, &str)], https_only: bool) -> bool {
@@ -666,41 +1055,18 @@ fn seed_runners() -> Vec<PromptRunner> {
         .collect()
 }
 
-fn runners_from_document(document: &Table) -> Option<Vec<PromptRunner>> {
-    let prompt = document.get("prompt")?.as_table()?;
-    if !prompt
-        .get("runners_seeded")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        return None;
-    }
-    let rows = prompt.get("runners")?.as_array()?;
-    Some(
-        rows.iter()
-            .filter_map(Value::as_table)
-            .filter_map(runner_from_row)
-            .filter(|runner| validate_runner(runner).is_ok())
-            .collect(),
-    )
-}
-
-fn runners_are_seeded(document: &Table) -> bool {
-    document
-        .get("prompt")
-        .and_then(Value::as_table)
-        .and_then(|prompt| prompt.get("runners_seeded"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-}
-
-fn explicit_runner_rows(document: &Table) -> Option<&[Value]> {
-    document
-        .get("prompt")?
-        .as_table()?
-        .get("runners")?
-        .as_array()
-        .map(Vec::as_slice)
+fn runners_are_configured(document: &Table) -> bool {
+    let Some(prompt) = document.get("prompt") else {
+        return false;
+    };
+    let Some(prompt) = prompt.as_table() else {
+        return true;
+    };
+    prompt.contains_key("runners")
+        || prompt
+            .get("runners_seeded")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
 }
 
 /// Return the stored runner rows, or `None` when the file declares no list.
@@ -723,11 +1089,84 @@ fn runner_array_mut(document: &mut Table) -> Result<&mut Vec<Value>, ConfigError
         .ok_or_else(|| ConfigError::Invalid(Message::new("prompt runners is not an array")))
 }
 
-fn runner_row(index: usize, value: &Value) -> PromptRunnerRow {
+fn runner_rows_from_document(document: &Table) -> Vec<PromptRunnerRow> {
+    if !runners_are_configured(document) {
+        return seed_runners()
+            .into_iter()
+            .enumerate()
+            .map(|(index, runner)| {
+                let raw = Value::Table(runner_table(&runner));
+                PromptRunnerRow {
+                    index: Some(index),
+                    name: Some(runner.name.clone()),
+                    argv: Some(runner.argv),
+                    reason: None,
+                    descriptor: runner.name,
+                    reason_message: None,
+                    descriptor_message: None,
+                    raw,
+                }
+            })
+            .collect();
+    }
+
+    let Some(prompt_value) = document.get("prompt") else {
+        return Vec::new();
+    };
+    let Some(prompt) = prompt_value.as_table() else {
+        return vec![container_runner_row(
+            PromptRunnerIssue::PromptSectionNotTable,
+            "prompt",
+            prompt_value,
+        )];
+    };
+    let Some(rows_value) = prompt.get("runners") else {
+        return Vec::new();
+    };
+    let Some(rows) = rows_value.as_array() else {
+        return vec![container_runner_row(
+            PromptRunnerIssue::RunnersNotList,
+            "prompt.runners",
+            rows_value,
+        )];
+    };
+
+    let mut seen = std::collections::BTreeSet::new();
+    rows.iter()
+        .enumerate()
+        .map(|(index, value)| runner_row(index, value, &mut seen))
+        .collect()
+}
+
+fn container_runner_row(
+    issue: PromptRunnerIssue,
+    descriptor: &str,
+    value: &Value,
+) -> PromptRunnerRow {
+    PromptRunnerRow {
+        index: None,
+        name: None,
+        argv: None,
+        reason: Some(issue.code().to_owned()),
+        descriptor: descriptor.to_owned(),
+        reason_message: Some(issue.message()),
+        descriptor_message: None,
+        raw: value.clone(),
+    }
+}
+
+fn runner_row(
+    index: usize,
+    value: &Value,
+    seen: &mut std::collections::BTreeSet<String>,
+) -> PromptRunnerRow {
     let table = value.as_table();
-    let name = table
+    let raw_name = table
         .and_then(|row| row.get("name"))
-        .and_then(Value::as_str)
+        .and_then(Value::as_str);
+    let name = raw_name
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
         .map(str::to_owned);
     let argv = table
         .and_then(|row| row.get("argv"))
@@ -739,38 +1178,101 @@ fn runner_row(index: usize, value: &Value) -> PromptRunnerRow {
                 .map(|value| value.map(str::to_owned))
                 .collect::<Option<Vec<_>>>()
         });
-    let parsed = table.and_then(runner_from_row);
-    let reason_message = parsed.as_ref().map_or_else(
-        || {
-            Some(Message::new(
-                "runner row needs a name and a string argv array",
-            ))
-        },
-        |runner| validate_runner(runner).err().map(|error| error.message()),
-    );
-    let (descriptor, descriptor_message) = name.clone().map_or_else(
-        || {
-            value.as_str().map_or_else(
-                || {
-                    let message = Message::new("row {}").with(index);
-                    (message.localize(Locale::En), Some(message))
-                },
-                |value| (value.to_owned(), None),
-            )
-        },
-        |name| (name, None),
-    );
+    let mut issue = if table.is_none() {
+        Some(PromptRunnerIssue::RowNotTable)
+    } else if name.is_none() {
+        Some(PromptRunnerIssue::Name)
+    } else if argv.is_none() {
+        Some(PromptRunnerIssue::ArgvType)
+    } else {
+        validate_runner(&PromptRunner {
+            name: name.clone().expect("the name was checked"),
+            argv: argv.clone().expect("argv was checked"),
+        })
+        .err()
+    };
+    if issue.is_none() {
+        let normalized = name.as_ref().expect("a valid row has a name");
+        if !seen.insert(normalized.clone()) {
+            issue = Some(PromptRunnerIssue::Duplicate);
+        }
+    }
+    let descriptor = if issue == Some(PromptRunnerIssue::Duplicate) {
+        name.clone().expect("a duplicate row has a name")
+    } else {
+        raw_name
+            .filter(|name| !name.trim().is_empty())
+            .map_or_else(|| legacy_value_descriptor(value), str::to_owned)
+    };
+    let reason_message = issue.map(PromptRunnerIssue::message);
     PromptRunnerRow {
-        index,
+        index: Some(index),
         name,
         argv,
-        reason: reason_message
-            .as_ref()
-            .map(|message| message.localize(Locale::En)),
+        reason: issue.map(|issue| issue.code().to_owned()),
         descriptor,
         reason_message,
-        descriptor_message,
+        descriptor_message: None,
+        raw: value.clone(),
     }
+}
+
+fn legacy_value_descriptor(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        Value::Integer(value) => value.to_string(),
+        Value::Float(value) => value.to_string(),
+        Value::Boolean(value) => if *value { "True" } else { "False" }.to_owned(),
+        Value::Datetime(value) => value.to_string(),
+        Value::Array(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(legacy_nested_value)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Value::Table(values) => format!(
+            "{{{}}}",
+            values
+                .iter()
+                .map(|(key, value)| format!(
+                    "{}: {}",
+                    python_string(key),
+                    legacy_nested_value(value)
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn legacy_nested_value(value: &Value) -> String {
+    match value {
+        Value::String(value) => python_string(value),
+        _ => legacy_value_descriptor(value),
+    }
+}
+
+fn python_string(value: &str) -> String {
+    let mut output = String::with_capacity(value.len() + 2);
+    output.push('\'');
+    for character in value.chars() {
+        match character {
+            '\\' => output.push_str("\\\\"),
+            '\'' => output.push_str("\\'"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            character if character.is_control() => {
+                use std::fmt::Write as _;
+                let _ = write!(output, "\\u{:04x}", character as u32);
+            }
+            character => output.push(character),
+        }
+    }
+    output.push('\'');
+    output
 }
 
 fn runner_table(runner: &PromptRunner) -> Table {
@@ -787,18 +1289,13 @@ fn write_runner_fields(row: &mut Table, runner: &PromptRunner) {
     );
 }
 
-fn runner_from_row(row: &Table) -> Option<PromptRunner> {
-    let name = row.get("name")?.as_str()?.trim();
-    let argv = row
-        .get("argv")?
-        .as_array()?
-        .iter()
-        .map(Value::as_str)
-        .collect::<Option<Vec<_>>>()?;
-    (!name.is_empty()).then(|| PromptRunner {
-        name: name.to_owned(),
-        argv: argv.into_iter().map(str::to_owned).collect(),
-    })
+fn raw_runner_name(value: &Value) -> &str {
+    value
+        .as_table()
+        .and_then(|row| row.get("name"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
 }
 
 /// Record the default runner rows once, keeping any rows the user already wrote.
@@ -806,7 +1303,7 @@ fn runner_from_row(row: &Table) -> Option<PromptRunner> {
 /// A hand-written `[[prompt.runners]]` list is authoritative. Seeding only adds the
 /// defaults when the file has no list at all.
 fn materialize_seed_runners(document: &mut Table) -> Result<(), ConfigError> {
-    if runners_are_seeded(document) {
+    if runners_are_configured(document) {
         return Ok(());
     }
     let prompt = table_mut(document, "prompt")?;
@@ -825,24 +1322,123 @@ fn materialize_seed_runners(document: &mut Table) -> Result<(), ConfigError> {
     Ok(())
 }
 
-fn validate_runner(runner: &PromptRunner) -> Result<(), ConfigError> {
-    if runner.name.trim().is_empty() || runner.argv.is_empty() {
-        return Err(ConfigError::Invalid(Message::new(
-            "a prompt runner needs a name and command",
-        )));
-    }
-    let slots = runner
-        .argv
-        .iter()
-        .enumerate()
-        .flat_map(|(index, token)| token.match_indices("{{prompt}}").map(move |_| index))
-        .collect::<Vec<_>>();
-    if slots.len() != 1 || slots[0] == 0 {
-        return Err(ConfigError::Invalid(Message::new(
-            "a prompt runner command needs {{prompt}} exactly once after the program",
-        )));
-    }
+fn mark_runners_seeded(document: &mut Table) -> Result<(), ConfigError> {
+    let prompt = table_mut(document, "prompt")?;
+    prompt.insert("runners_seeded".to_owned(), Value::Boolean(true));
     Ok(())
+}
+
+fn remove_malformed_runner_container(
+    document: &mut Table,
+    expected: &PromptRunnerRow,
+) -> Result<bool, ConfigError> {
+    match document.get_mut("prompt") {
+        Some(prompt) if !prompt.is_table() => {
+            if expected.reason.as_deref() != Some(PromptRunnerIssue::PromptSectionNotTable.code())
+                || prompt != &expected.raw
+            {
+                return Ok(false);
+            }
+            let mut repaired = Table::new();
+            repaired.insert("runners_seeded".to_owned(), Value::Boolean(true));
+            repaired.insert("runners".to_owned(), Value::Array(Vec::new()));
+            *prompt = Value::Table(repaired);
+            Ok(true)
+        }
+        Some(Value::Table(prompt)) => {
+            let Some(runners) = prompt.get("runners") else {
+                return Ok(false);
+            };
+            if runners.is_array()
+                || expected.reason.as_deref() != Some(PromptRunnerIssue::RunnersNotList.code())
+                || runners != &expected.raw
+            {
+                return Ok(false);
+            }
+            prompt.insert("runners_seeded".to_owned(), Value::Boolean(true));
+            prompt.insert("runners".to_owned(), Value::Array(Vec::new()));
+            Ok(true)
+        }
+        None => Ok(false),
+        Some(_) => unreachable!("all non-table prompt values use the first match arm"),
+    }
+}
+
+fn validate_runner(runner: &PromptRunner) -> Result<(), PromptRunnerIssue> {
+    if runner.name.trim().is_empty() {
+        return Err(PromptRunnerIssue::Name);
+    }
+    validate_runner_argv(&runner.argv).map_err(|error| match error {
+        RunnerArgvError::EmptyCommand => PromptRunnerIssue::Empty,
+        RunnerArgvError::PromptSlotCount => PromptRunnerIssue::PromptSlotCount,
+        RunnerArgvError::PromptInProgram => PromptRunnerIssue::PromptInBinary,
+        RunnerArgvError::UnsupportedHole => PromptRunnerIssue::StrayHole,
+    })
+}
+
+fn preserve_corrupt_backup(path: &Path, original: &[u8]) -> Result<PathBuf, ConfigError> {
+    let backup = path.with_file_name(format!(
+        "{}.bak",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("config.toml")
+    ));
+    if backup.exists() && !backup.is_file() {
+        return Err(io_error(
+            "backup",
+            &backup,
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "the backup path is not a regular file",
+            ),
+        ));
+    }
+    let saved = if !backup.exists() {
+        atomic_write_bytes(&backup, original)
+            .map_err(|error| io_error("backup", &backup, error))?;
+        backup
+    } else {
+        replace_existing_backup(&backup, original, atomic_write_bytes, |previous, target| {
+            fs::rename(previous, target)
+        })?
+    };
+    let permissions = fs::metadata(path)
+        .map_err(|error| io_error("backup", path, error))?
+        .permissions();
+    fs::set_permissions(&saved, permissions).map_err(|error| io_error("backup", &saved, error))?;
+    Ok(saved)
+}
+
+fn replace_existing_backup(
+    backup: &Path,
+    original: &[u8],
+    write_backup: impl FnOnce(&Path, &[u8]) -> io::Result<()>,
+    restore_previous: impl FnOnce(&Path, &Path) -> io::Result<()>,
+) -> Result<PathBuf, ConfigError> {
+    let previous = backup.with_file_name(format!(
+        ".{}.{}.previous",
+        backup
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("config.toml.bak"),
+        EntryId::generate().as_str(),
+    ));
+    fs::rename(backup, &previous).map_err(|error| io_error("backup", backup, error))?;
+    if let Err(error) = write_backup(backup, original) {
+        if let Err(rollback) = restore_previous(&previous, backup) {
+            return Err(io_error(
+                "backup",
+                backup,
+                io::Error::new(
+                    rollback.kind(),
+                    format!("{error}; could not restore the previous backup: {rollback}"),
+                ),
+            ));
+        }
+        return Err(io_error("backup", backup, error));
+    }
+    fs::remove_file(&previous).map_err(|error| io_error("backup", &previous, error))?;
+    Ok(backup.to_path_buf())
 }
 
 fn io_error(operation: &'static str, path: &std::path::Path, error: std::io::Error) -> ConfigError {
@@ -850,5 +1446,57 @@ fn io_error(operation: &'static str, path: &std::path::Path, error: std::io::Err
         operation,
         path: path.display().to_string(),
         reason: error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::replace_existing_backup;
+    use std::{fs, io};
+    use tempfile::TempDir;
+
+    #[test]
+    fn backup_replacement_restores_the_previous_backup_when_the_new_write_fails() {
+        let root = TempDir::new().unwrap();
+        let backup = root.path().join("config.toml.bak");
+        fs::write(&backup, b"previous").unwrap();
+
+        let error = replace_existing_backup(
+            &backup,
+            b"current corrupt bytes",
+            |_, _| Err(io::Error::other("new backup failed")),
+            |previous, target| fs::rename(previous, target),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("new backup failed"));
+        assert_eq!(fs::read(&backup).unwrap(), b"previous");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn backup_replacement_reports_both_failures_when_rollback_also_fails() {
+        let root = TempDir::new().unwrap();
+        let backup = root.path().join("config.toml.bak");
+        fs::write(&backup, b"previous").unwrap();
+
+        let error = replace_existing_backup(
+            &backup,
+            b"current corrupt bytes",
+            |_, _| Err(io::Error::other("new backup failed")),
+            |_, _| Err(io::Error::other("restore failed")),
+        )
+        .unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("new backup failed"), "{message}");
+        assert!(message.contains("restore failed"), "{message}");
+        assert!(!backup.exists());
+        let names = fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(names.len(), 1);
+        assert!(names[0].ends_with(".previous"), "{names:?}");
     }
 }

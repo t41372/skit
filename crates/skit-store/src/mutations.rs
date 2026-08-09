@@ -1,6 +1,8 @@
+mod agent_skill;
 mod atomic;
 mod hash;
 pub(crate) mod registry;
+mod runner_management;
 
 use std::{
     collections::BTreeMap,
@@ -10,11 +12,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub use agent_skill::FileAgentSkillStore;
 use atomic::{
     FileLock, StagedDirectory, acquire_lock, acquire_shared_lock, atomic_write_bytes,
     create_dir_all, invalid, io_error, sync_directory, write_new_file, write_new_metadata,
 };
 pub use hash::content_hash;
+pub use runner_management::{
+    FileRunnerManagementStore, RunnerManagementStoreError, RunnerRemovalCas,
+};
 use registry::Registry;
 use skit_application::{
     CreateEntry, EntryMutationRepository, EntryPayload, RepositoryError, UpdateEntry,
@@ -27,6 +33,61 @@ use super::{
     FileStore,
     paths::{is_support_file, stored_filenames},
 };
+
+/// One directory-specific problem found during an explicit registry rebuild.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RegistryRebuildProblem {
+    /// The entry directory has no metadata file.
+    MissingMetadata {
+        /// Directory name.
+        slug: String,
+    },
+    /// The metadata file cannot produce a valid entry.
+    CorruptMetadata {
+        /// Directory name.
+        slug: String,
+        /// Parser, validation, or filesystem detail.
+        reason: String,
+    },
+    /// A reference entry was indexed, but its source path is gone.
+    MissingReferenceSource {
+        /// Entry slug.
+        slug: String,
+        /// Missing owned source path.
+        path: String,
+    },
+}
+
+impl RegistryRebuildProblem {
+    /// Convert the typed problem into localizable presentation text.
+    #[must_use]
+    pub fn message(&self) -> Message {
+        match self {
+            Self::MissingMetadata { slug } => {
+                Message::new("{}: meta.toml is missing; skipped").with(slug)
+            }
+            Self::CorruptMetadata { slug, reason } => {
+                Message::new("{}: meta.toml is corrupt ({}); skipped")
+                    .with(slug)
+                    .with(reason)
+            }
+            Self::MissingReferenceSource { slug, path } => {
+                Message::new("{}: the referenced source file is gone: {}")
+                    .with(slug)
+                    .with(path)
+            }
+        }
+    }
+}
+
+/// Complete result of an explicit registry rebuild.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct RegistryRebuildReport {
+    /// Valid entries written to the new registry.
+    pub entry_count: usize,
+    /// Deterministic per-directory problems isolated during the scan.
+    pub problems: Vec<RegistryRebuildProblem>,
+}
 
 /// One identity-checked launch whose copy-mode payload cannot change underneath the child.
 ///
@@ -146,9 +207,7 @@ impl EntryMutationRepository for FileStore {
         }
         after.meta.source_hash = content_hash(&bytes);
         replace_source(&target, &bytes, &original, || self.write_meta(&after))?;
-        let projection = registry
-            .project(&after, &self.entry_dir(&after.slug))
-            .and_then(|()| registry.save());
+        let projection = self.refresh_existing_projection(&mut registry, &after);
         if let Err(error) = projection {
             return Err(rollback_source_projection(
                 error,
@@ -198,9 +257,30 @@ impl EntryMutationRepository for FileStore {
             let _ = sync_directory(&trash_root);
             return Err(rollback_error(error, rollback, &source));
         }
-        let _ = fs::remove_dir_all(&trash);
-        let _ = sync_directory(&trash_root);
-        Ok(name)
+        match fs::remove_dir_all(&trash) {
+            Ok(()) => {
+                let _ = sync_directory(&trash_root);
+                Ok(name)
+            }
+            Err(_) => {
+                let incomplete = RepositoryError::RemovalIncomplete {
+                    name,
+                    path: source.display().to_string(),
+                };
+                let restored = fs::rename(&trash, &source)
+                    .map_err(|error| io_error("restore incomplete removal", &trash, error));
+                let _ = sync_directory(&self.scripts_dir());
+                let _ = sync_directory(&trash_root);
+                match restored {
+                    Ok(()) => Err(incomplete),
+                    Err(rollback) => Err(RepositoryError::Rollback {
+                        path: source.display().to_string(),
+                        primary: Box::new(incomplete),
+                        rollback: Box::new(rollback),
+                    }),
+                }
+            }
+        }
     }
 
     fn commit_copy_edit(
@@ -234,9 +314,7 @@ impl EntryMutationRepository for FileStore {
         let mut after = fresh;
         after.meta.source_hash = content_hash(bytes);
         replace_source(&target, bytes, &original, || self.write_meta(&after))?;
-        let projection = registry
-            .project(&after, &self.entry_dir(&after.slug))
-            .and_then(|()| registry.save());
+        let projection = self.refresh_existing_projection(&mut registry, &after);
         if let Err(error) = projection {
             return Err(rollback_source_projection(
                 error,
@@ -285,7 +363,7 @@ impl FileStore {
         }
 
         let source = self.payload_path(&fresh)?;
-        if fresh.meta.kind.as_str() == "exe" && fresh.meta.mode == StorageMode::Reference {
+        if fresh.meta.kind.as_str() == "exe" {
             return Ok(PreparedLaunch {
                 entry: fresh,
                 payload: Some(source),
@@ -326,20 +404,29 @@ impl FileStore {
 
     /// Rebuild `registry.toml` from every valid authoritative metadata file.
     pub fn rebuild_registry(&self) -> Result<usize, RepositoryError> {
+        self.rebuild_registry_report()
+            .map(|report| report.entry_count)
+    }
+
+    /// Rebuild the registry and retain every isolated directory problem.
+    pub fn rebuild_registry_report(&self) -> Result<RegistryRebuildReport, RepositoryError> {
         let _namespace = self.namespace_lock()?;
         let scripts = self.scripts_dir();
         let mut registry = Registry::fresh(self.data_dir());
-        let mut count = 0;
+        let mut report = RegistryRebuildReport::default();
         let reader = match fs::read_dir(&scripts) {
             Ok(reader) => reader,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 registry.save()?;
-                return Ok(0);
+                return Ok(report);
             }
             Err(error) => return Err(io_error("scan", &scripts, error)),
         };
-        for item in reader {
-            let item = item.map_err(|error| io_error("scan", &scripts, error))?;
+        let mut items = reader
+            .map(|item| item.map_err(|error| io_error("scan", &scripts, error)))
+            .collect::<Result<Vec<_>, _>>()?;
+        items.sort_by_key(std::fs::DirEntry::file_name);
+        for item in items {
             if !item
                 .file_type()
                 .map_err(|error| io_error("inspect", &item.path(), error))?
@@ -347,24 +434,59 @@ impl FileStore {
             {
                 continue;
             }
-            let Some(slug) = item
-                .file_name()
-                .to_str()
-                .and_then(|name| Slug::parse(name.to_owned()).ok())
-            else {
+            let directory_name = item.file_name().to_string_lossy().into_owned();
+            let Ok(slug) = Slug::parse(directory_name.clone()) else {
+                report
+                    .problems
+                    .push(RegistryRebuildProblem::CorruptMetadata {
+                        slug: directory_name,
+                        reason: "the entry directory name is not a valid slug".to_owned(),
+                    });
                 continue;
             };
-            let Ok(entry) = self.read_entry(slug) else {
-                continue;
+            let metadata = item.path().join("meta.toml");
+            let entry = match self.read_entry(slug.clone()) {
+                Ok(entry) => entry,
+                Err(error) => {
+                    let problem = if !metadata.exists() {
+                        RegistryRebuildProblem::MissingMetadata {
+                            slug: slug.as_str().to_owned(),
+                        }
+                    } else {
+                        RegistryRebuildProblem::CorruptMetadata {
+                            slug: slug.as_str().to_owned(),
+                            reason: rebuild_error_reason(error),
+                        }
+                    };
+                    report.problems.push(problem);
+                    continue;
+                }
             };
+            if entry.meta.mode == StorageMode::Reference
+                && !entry.meta.source.is_empty()
+                && !Path::new(&entry.meta.source).exists()
+            {
+                report
+                    .problems
+                    .push(RegistryRebuildProblem::MissingReferenceSource {
+                        slug: entry.slug.as_str().to_owned(),
+                        path: entry.meta.source.clone(),
+                    });
+            }
             // One entry skit cannot stamp must not cost the whole projection.
-            if registry.project(&entry, &item.path()).is_err() {
+            if let Err(error) = registry.project(&entry, &item.path()) {
+                report
+                    .problems
+                    .push(RegistryRebuildProblem::CorruptMetadata {
+                        slug: entry.slug.as_str().to_owned(),
+                        reason: rebuild_error_reason(error),
+                    });
                 continue;
             }
-            count += 1;
+            report.entry_count += 1;
         }
         registry.save()?;
-        Ok(count)
+        Ok(report)
     }
 
     fn create_locked(
@@ -480,16 +602,27 @@ impl FileStore {
         registry: &mut Registry,
     ) -> Result<(), RepositoryError> {
         self.write_meta(after)?;
-        let entry_dir = self.entry_dir(&after.slug);
-        let projection = registry
-            .project(after, &entry_dir)
-            .and_then(|()| registry.save());
+        let projection = self.refresh_existing_projection(registry, after);
         if let Err(error) = projection {
             return Err(rollback_error(
                 error,
                 self.write_meta(before),
                 &self.entry_dir(&before.slug),
             ));
+        }
+        Ok(())
+    }
+
+    fn refresh_existing_projection(
+        &self,
+        registry: &mut Registry,
+        entry: &Entry,
+    ) -> Result<(), RepositoryError> {
+        // Reload after the metadata commit. A person or an older skit can remove an index row
+        // without taking this process's lock. That removal defines membership and must win.
+        *registry = Registry::load(self.data_dir())?;
+        if registry.project_existing(entry, &self.entry_dir(&entry.slug))? {
+            registry.save()?;
         }
         Ok(())
     }
@@ -658,6 +791,13 @@ fn launch_snapshot_path(source: &Path, entry_dir: &Path) -> PathBuf {
         EntryId::generate().as_str(),
         extension
     ))
+}
+
+fn rebuild_error_reason(error: RepositoryError) -> String {
+    match error {
+        RepositoryError::Corrupt { reason, .. } | RepositoryError::Io { reason, .. } => reason,
+        other => other.to_string(),
+    }
 }
 
 fn write_launch_snapshot(

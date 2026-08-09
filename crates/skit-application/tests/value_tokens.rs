@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use skit_application::tokens::{TokenContext, TokenError, expand, has_tokens, preview};
+use skit_application::tokens::{
+    TokenContext, TokenError, environment_token, expand, has_tokens, preview,
+};
 
 fn context() -> TokenContext {
     TokenContext {
@@ -141,4 +143,16 @@ fn malformed_environment_tokens_and_escaped_prefixes_remain_literal() {
     assert!(!has_tokens("{env:"));
     assert!(!has_tokens("{env:}"));
     assert!(!has_tokens("{env:9BAD}"));
+}
+
+#[test]
+fn environment_picker_tokens_use_the_same_name_grammar_as_expansion() {
+    assert_eq!(
+        environment_token("API_KEY").as_deref(),
+        Some("{env:API_KEY}")
+    );
+    assert_eq!(environment_token("_NEXT9").as_deref(), Some("{env:_NEXT9}"));
+    assert_eq!(environment_token(""), None);
+    assert_eq!(environment_token("9BAD"), None);
+    assert_eq!(environment_token("A-B"), None);
 }

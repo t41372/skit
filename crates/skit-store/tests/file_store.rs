@@ -6,6 +6,7 @@ use skit_application::{
 use skit_domain::{EntryKind, EntrySettings, StorageMode};
 use skit_store::FileStore;
 use tempfile::TempDir;
+use toml::{Table, Value};
 
 fn write_meta(root: &TempDir, slug: &str, body: &str) {
     let dir = root.path().join("scripts").join(slug);
@@ -13,8 +14,24 @@ fn write_meta(root: &TempDir, slug: &str, body: &str) {
     fs::write(dir.join("meta.toml"), body).unwrap();
 }
 
+fn rebuild(root: &TempDir) {
+    FileStore::new(root.path()).rebuild_registry().unwrap();
+}
+
+fn registry(root: &TempDir) -> Table {
+    toml::from_str(&fs::read_to_string(root.path().join("registry.toml")).unwrap()).unwrap()
+}
+
+fn write_registry(root: &TempDir, document: &Table) {
+    fs::write(
+        root.path().join("registry.toml"),
+        toml::to_string_pretty(document).unwrap(),
+    )
+    .unwrap();
+}
+
 #[test]
-fn scans_current_and_legacy_metadata_without_requiring_a_registry() {
+fn an_explicit_rebuild_indexes_current_and_legacy_metadata() {
     let root = TempDir::new().unwrap();
     write_meta(
         &root,
@@ -50,6 +67,7 @@ description = "no id yet"
     );
 
     let store = FileStore::new(root.path());
+    assert_eq!(store.rebuild_registry().unwrap(), 2);
     let scan = store.scan().unwrap();
 
     assert_eq!(scan.entries.len(), 2);
@@ -87,6 +105,12 @@ kind = "command"
 mode = "copy"
 "#,
     );
+    write_meta(
+        &root,
+        "broken",
+        "name = \"Broken\"\nkind = \"command\"\nmode = \"copy\"\n",
+    );
+    rebuild(&root);
     write_meta(&root, "broken", "name = [not valid TOML");
 
     let scan = FileStore::new(root.path()).scan().unwrap();
@@ -126,10 +150,17 @@ mode = "copy"
 "#,
     );
     let store = FileStore::new(root.path());
+    rebuild(&root);
 
     assert_eq!(store.resolve("same").unwrap().slug.as_str(), "same");
 
-    fs::remove_dir_all(root.path().join("scripts").join("same")).unwrap();
+    let mut document = registry(&root);
+    document
+        .get_mut("entries")
+        .and_then(Value::as_table_mut)
+        .unwrap()
+        .remove("same");
+    write_registry(&root, &document);
     let error = store.resolve("same").unwrap_err();
     assert_eq!(
         error,
@@ -151,6 +182,7 @@ kind = "command"
 mode = "copy"
 "#,
     );
+    rebuild(&root);
     write_meta(&root, "broken", "not = [toml");
     let store = FileStore::new(root.path());
 
@@ -192,6 +224,14 @@ fn invalid_slug_directories_are_diagnostics_and_regular_files_are_ignored() {
 kind = "command"
 "#,
     );
+    rebuild(&root);
+    let mut document = registry(&root);
+    document
+        .get_mut("entries")
+        .and_then(Value::as_table_mut)
+        .unwrap()
+        .insert("Upper".to_owned(), Value::Table(Table::new()));
+    write_registry(&root, &document);
 
     let scan = FileStore::new(root.path()).scan().unwrap();
 
@@ -204,6 +244,21 @@ kind = "command"
 #[test]
 fn malformed_kind_and_id_are_isolated_as_corrupt_metadata() {
     let root = TempDir::new().unwrap();
+    write_meta(
+        &root,
+        "blank-kind",
+        r#"name = "Blank"
+kind = "command"
+"#,
+    );
+    write_meta(
+        &root,
+        "bad-id",
+        r#"name = "Bad id"
+kind = "command"
+"#,
+    );
+    rebuild(&root);
     write_meta(
         &root,
         "blank-kind",
@@ -245,6 +300,7 @@ fn metadata_defaults_match_legacy_files() {
 kind = "command"
 "#,
     );
+    rebuild(&root);
 
     let entry = FileStore::new(root.path()).resolve("minimal").unwrap();
 
@@ -258,25 +314,22 @@ kind = "command"
 }
 
 #[test]
-fn a_non_directory_scripts_path_is_a_repository_io_error() {
+fn a_missing_registry_keeps_a_read_pure_even_when_storage_is_malformed() {
     let root = TempDir::new().unwrap();
     fs::write(root.path().join("scripts"), "not a directory").unwrap();
 
-    let error = FileStore::new(root.path()).scan().unwrap_err();
-
-    assert!(matches!(
-        error,
-        RepositoryError::Io {
-            operation: "scan",
-            ..
-        }
-    ));
+    assert_eq!(
+        FileStore::new(root.path()).scan().unwrap(),
+        Default::default()
+    );
 }
 
 #[test]
 fn an_exact_slug_with_missing_metadata_reports_io_instead_of_falling_back() {
     let root = TempDir::new().unwrap();
-    fs::create_dir_all(root.path().join("scripts").join("empty")).unwrap();
+    write_meta(&root, "empty", "name = \"Empty\"\nkind = \"command\"\n");
+    rebuild(&root);
+    fs::remove_file(root.path().join("scripts/empty/meta.toml")).unwrap();
 
     let error = FileStore::new(root.path()).resolve("empty").unwrap_err();
 
@@ -292,7 +345,9 @@ fn an_exact_slug_with_missing_metadata_reports_io_instead_of_falling_back() {
 #[test]
 fn a_missing_metadata_file_is_an_io_diagnostic_during_best_effort_scan() {
     let root = TempDir::new().unwrap();
-    fs::create_dir_all(root.path().join("scripts/empty")).unwrap();
+    write_meta(&root, "empty", "name = \"Empty\"\nkind = \"command\"\n");
+    rebuild(&root);
+    fs::remove_file(root.path().join("scripts/empty/meta.toml")).unwrap();
 
     let scan = FileStore::new(root.path()).scan().unwrap();
     assert!(scan.entries.is_empty());
@@ -342,7 +397,7 @@ fn an_unusable_metadata_timestamp_never_hides_a_readable_entry() {
     assert_eq!(names, ["Alpha", "Beta"], "a stamp must not hide an entry");
     assert!(store.resolve("alpha").is_ok());
 
-    // The rebuild keeps going past the entry it cannot stamp.
-    assert_eq!(store.rebuild_registry().unwrap(), 1);
+    // The rebuild keeps the entry as a read-through row even when it cannot cache its stamp.
+    assert_eq!(store.rebuild_registry().unwrap(), 2);
     assert_eq!(store.scan().unwrap().entries.len(), 2);
 }

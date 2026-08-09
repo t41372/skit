@@ -3,7 +3,10 @@
 use std::path::{Path, PathBuf};
 
 use glob::{MatchOptions, glob_with};
-use skit_application::glob_expansion::GlobExpander;
+use skit_application::{
+    form_feedback::{GlobCountPort, GlobCountRequest},
+    glob_expansion::GlobExpander,
+};
 
 /// Match glob patterns in one launch directory.
 /// This type does not change the process working directory.
@@ -69,6 +72,17 @@ impl GlobExpander for FileGlobExpander {
         } else {
             matches
         }
+    }
+}
+
+impl GlobCountPort for FileGlobExpander {
+    fn count_matches(&self, request: &GlobCountRequest) -> usize {
+        let expander = Self::new(&request.cwd);
+        request
+            .pieces
+            .iter()
+            .map(|piece| expander.expand_piece(piece).len())
+            .sum()
     }
 }
 

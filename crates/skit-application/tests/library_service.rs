@@ -2,7 +2,7 @@ use std::sync::Mutex;
 
 use skit_application::{
     Diagnostic, DiagnosticCode, EntryRepository, ExitClass, LibraryScan, LibraryService,
-    RepositoryError,
+    RepositoryError, RepositoryOperation,
 };
 use skit_domain::{Entry, EntryKind, EntryMeta, EntrySummary, Slug, StorageMode};
 use skit_i18n::{Locale, Message};
@@ -86,6 +86,7 @@ fn list_is_deterministic_and_keeps_diagnostics() {
                 summary("zulu", "zulu"),
                 summary("beta", "Alpha"),
                 summary("alpha", "Alpha"),
+                summary("gamma", "Aardvark"),
             ],
             diagnostics: vec![
                 Diagnostic::plain(
@@ -113,7 +114,7 @@ fn list_is_deterministic_and_keeps_diagnostics() {
             .iter()
             .map(|entry| entry.slug.as_str())
             .collect::<Vec<_>>(),
-        ["alpha", "beta", "zulu"]
+        ["alpha", "beta", "gamma", "zulu"]
     );
     assert_eq!(
         scan.diagnostics
@@ -211,13 +212,22 @@ fn repository_failures_keep_the_cli_exit_and_display_contracts() {
     ];
 
     for (error, class, message) in errors {
-        assert_eq!(error.exit_class(), class);
+        assert_eq!(error.exit_class(RepositoryOperation::Launch), class);
+        assert_eq!(
+            error.exit_class(RepositoryOperation::Manage),
+            if matches!(error, RepositoryError::InvalidMutation { .. }) {
+                ExitClass::Usage
+            } else {
+                ExitClass::Failure
+            }
+        );
         assert!(error.to_string().contains(message));
     }
 }
 
 #[test]
 fn all_non_child_exit_codes_are_stable() {
+    assert_eq!(ExitClass::Failure.code(), 1);
     assert_eq!(ExitClass::Usage.code(), 2);
     assert_eq!(ExitClass::Skit.code(), 125);
     assert_eq!(ExitClass::NotExecutable.code(), 126);

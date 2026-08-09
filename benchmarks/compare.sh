@@ -6,15 +6,13 @@ if [[ $# -ne 2 ]]; then
   exit 2
 fi
 
-jq -r -s '
-  .[0].metrics as $base |
-  .[1].metrics as $head |
-  "## skit benchmark comparison\n\n| Metric | Base | Head | Delta |\n| --- | ---: | ---: | ---: |\n" +
-  ([$head | keys[]] | map(
-    . as $key |
-    ($base[$key] // 0) as $before |
-    ($head[$key] // 0) as $after |
-    "| \($key) | \($before) | \($after) | \($after - $before) |"
-  ) | join("\n"))
-' "$1" "$2"
+bench_script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+bench_repo_root=$(cd -- "$bench_script_dir/.." && pwd)
 
+exec cargo run \
+  --locked \
+  --release \
+  --manifest-path "$bench_repo_root/Cargo.toml" \
+  -p skit-benchmarks \
+  --bin skit-bench \
+  -- compare "$1" "$2"

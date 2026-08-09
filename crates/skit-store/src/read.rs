@@ -11,7 +11,7 @@ use skit_application::{Diagnostic, DiagnosticCode, EntryRepository, LibraryScan,
 use skit_domain::{Entry, EntryId, EntryKind, EntryMeta, EntrySummary, Slug, StorageMode};
 use skit_i18n::Localize;
 
-use crate::mutations::registry::{Registry, metadata_mtime_ns};
+use crate::mutations::registry::Registry;
 
 /// Filesystem adapter for an existing skit data directory.
 #[derive(Clone, Debug)]
@@ -93,46 +93,32 @@ impl FileStore {
 
 impl EntryRepository for FileStore {
     fn scan(&self) -> Result<LibraryScan, RepositoryError> {
-        let scripts_dir = self.scripts_dir();
-        let reader = match fs::read_dir(&scripts_dir) {
-            Ok(reader) => reader,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(LibraryScan::default());
-            }
-            Err(error) => {
-                return Err(RepositoryError::Io {
-                    operation: "scan",
-                    path: scripts_dir.display().to_string(),
-                    reason: error.to_string(),
-                });
-            }
+        let Some(registry) = Registry::read(self.data_dir()) else {
+            return Ok(LibraryScan::default());
         };
-
-        let registry = Registry::read(self.data_dir());
-        let mut repairs = Vec::new();
         let mut scan = LibraryScan::default();
-        for item in reader {
-            scan_directory_item(self, registry.as_ref(), item, &mut scan, &mut repairs);
+        for candidate in registry.row_keys() {
+            scan_registry_row(self, &registry, candidate, &mut scan);
         }
-        Registry::try_repair(self.data_dir(), &repairs);
         Ok(scan)
     }
 
     fn resolve(&self, query: &str) -> Result<Entry, RepositoryError> {
-        if let Ok(slug) = Slug::parse(query.to_owned()) {
-            let exact_dir = self.scripts_dir().join(slug.as_str());
-            if exact_dir.is_dir() {
-                return self.read_entry(slug);
-            }
+        let registry =
+            Registry::read(self.data_dir()).ok_or_else(|| RepositoryError::NotFound {
+                query: query.to_owned(),
+            })?;
+        if let Ok(slug) = Slug::parse(query.to_owned())
+            && registry.contains(&slug)
+        {
+            return self.read_entry(slug);
         }
 
-        if let Some(registry) = Registry::read(self.data_dir()) {
-            let claimants = registry.name_claimants(query);
-            if let [slug] = claimants.as_slice() {
-                let entry = self.read_entry((*slug).clone())?;
-                if entry.meta.name == query {
-                    return Ok(entry);
-                }
+        let claimants = registry.name_claimants(query);
+        if let [slug] = claimants.as_slice() {
+            let entry = self.read_entry((*slug).clone())?;
+            if entry.meta.name == query {
+                return Ok(entry);
             }
         }
 
@@ -189,58 +175,12 @@ fn strict_file_type(
     })
 }
 
-fn record_file_type(
-    candidate: String,
-    file_type: io::Result<fs::FileType>,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<fs::FileType> {
-    match file_type {
-        Ok(file_type) => Some(file_type),
-        Err(error) => {
-            let error = RepositoryError::Io {
-                operation: "inspect",
-                path: candidate.clone(),
-                reason: error.to_string(),
-            };
-            diagnostics.push(Diagnostic::from_message(
-                DiagnosticCode::Io,
-                Some(candidate),
-                error.message(),
-            ));
-            None
-        }
-    }
-}
-
-fn scan_directory_item(
+fn scan_registry_row(
     store: &FileStore,
-    registry: Option<&Registry>,
-    item: io::Result<fs::DirEntry>,
+    registry: &Registry,
+    candidate: String,
     scan: &mut LibraryScan,
-    repairs: &mut Vec<(Entry, i64)>,
 ) {
-    let item = match item {
-        Ok(item) => item,
-        Err(error) => {
-            let error = RepositoryError::Io {
-                operation: "scan",
-                path: store.scripts_dir().display().to_string(),
-                reason: error.to_string(),
-            };
-            scan.diagnostics.push(Diagnostic::from_message(
-                DiagnosticCode::Io,
-                None,
-                error.message(),
-            ));
-            return;
-        }
-    };
-    let candidate = item.file_name().to_string_lossy().into_owned();
-    if !record_file_type(candidate.clone(), item.file_type(), &mut scan.diagnostics)
-        .is_some_and(|file_type| file_type.is_dir())
-    {
-        return;
-    }
     let slug = match Slug::parse(candidate.clone()) {
         Ok(slug) => slug,
         Err(error) => {
@@ -252,24 +192,25 @@ fn scan_directory_item(
             return;
         }
     };
-    // The mtime only stamps the registry cache. An unusable one costs the cache,
-    // never the entry.
-    let mtime_ns = metadata_mtime_ns(&item.path().join("meta.toml")).ok();
-    if let Some(summary) = mtime_ns
-        .and_then(|mtime_ns| registry.and_then(|registry| registry.summary(&slug, mtime_ns)))
-    {
-        scan.entries.push(summary);
-        return;
-    }
-    match store.read_entry(slug.clone()) {
-        Ok(entry) => {
-            scan.entries.push(summary_from(&entry));
-            if let Some(mtime_ns) = mtime_ns {
-                repairs.push((entry, mtime_ns));
-            }
-        }
+    let meta_path = store.scripts_dir().join(slug.as_str()).join("meta.toml");
+    match cached_or_authoritative_summary(Some(registry), &slug, &meta_path, || {
+        store.read_entry(slug.clone())
+    }) {
+        Ok(summary) => scan.entries.push(summary),
         Err(error) => scan.diagnostics.push(diagnostic_from(error, &slug)),
     }
+}
+
+fn cached_or_authoritative_summary(
+    registry: Option<&Registry>,
+    slug: &Slug,
+    meta_path: &Path,
+    authoritative: impl FnOnce() -> Result<Entry, RepositoryError>,
+) -> Result<EntrySummary, RepositoryError> {
+    if let Some(summary) = registry.and_then(|registry| registry.summary(slug, meta_path)) {
+        return Ok(summary);
+    }
+    authoritative().map(|entry| summary_from(&entry))
 }
 
 fn entry_with_name(entry: Entry, query: &str) -> Result<Entry, RepositoryError> {
@@ -299,7 +240,9 @@ fn summary_from(entry: &Entry) -> EntrySummary {
 
 fn diagnostic_from(error: RepositoryError, slug: &Slug) -> Diagnostic {
     let code = match &error {
-        RepositoryError::Io { .. } | RepositoryError::Rollback { .. } => DiagnosticCode::Io,
+        RepositoryError::Io { .. }
+        | RepositoryError::Rollback { .. }
+        | RepositoryError::RemovalIncomplete { .. } => DiagnosticCode::Io,
         RepositoryError::NotFound { .. }
         | RepositoryError::Ambiguous { .. }
         | RepositoryError::Conflict { .. }
@@ -379,14 +322,52 @@ fn origin() -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::io;
+    use std::{cell::Cell, io};
 
+    use skit_application::{CreateEntry, EntryMutationRepository};
+    use skit_domain::EntrySettings;
     use tempfile::TempDir;
 
     use super::*;
 
     #[test]
-    fn directory_error_adapters_keep_strict_and_best_effort_policies_separate() {
+    #[cfg(any(unix, windows))]
+    fn a_verified_cache_hit_does_not_call_the_authoritative_reader() {
+        let root = TempDir::new().unwrap();
+        let store = FileStore::new(root.path());
+        store
+            .create(CreateEntry {
+                name: "Fast".to_owned(),
+                kind: EntryKind::parse("command").unwrap(),
+                mode: StorageMode::Reference,
+                source: String::new(),
+                workdir: "invoke".to_owned(),
+                description: "from the cache".to_owned(),
+                payload: None,
+                settings: EntrySettings::default(),
+            })
+            .unwrap();
+        let registry = Registry::read(root.path()).unwrap();
+        let slug = Slug::parse("fast").unwrap();
+        let reads = Cell::new(0_u32);
+
+        let summary = cached_or_authoritative_summary(
+            Some(&registry),
+            &slug,
+            &root.path().join("scripts/fast/meta.toml"),
+            || {
+                reads.set(reads.get() + 1);
+                store.read_entry(slug.clone())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(summary.description, "from the cache");
+        assert_eq!(reads.get(), 0, "the fast path parsed meta.toml");
+    }
+
+    #[test]
+    fn directory_error_adapters_keep_writer_scans_strict() {
         let root = TempDir::new().unwrap();
         fs::write(root.path().join("scripts"), "file").unwrap();
         assert!(matches!(
@@ -412,18 +393,6 @@ mod tests {
             })
         ));
 
-        let mut scan = LibraryScan::default();
-        let mut repairs = Vec::new();
-        scan_directory_item(
-            &FileStore::new(root.path()),
-            None,
-            Err(io::Error::other("iteration failed")),
-            &mut scan,
-            &mut repairs,
-        );
-        assert_eq!(scan.diagnostics[0].code, DiagnosticCode::Io);
-        assert_eq!(scan.diagnostics[0].slug, None);
-
         let scan_root = TempDir::new().unwrap();
         fs::create_dir_all(scan_root.path().join("scripts/Upper")).unwrap();
         assert!(
@@ -435,19 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn inspection_errors_and_changed_names_become_typed_results() {
-        let mut diagnostics = Vec::new();
-        assert!(
-            record_file_type(
-                "demo".to_owned(),
-                Err(io::Error::other("inspect failed")),
-                &mut diagnostics,
-            )
-            .is_none()
-        );
-        assert_eq!(diagnostics[0].code, DiagnosticCode::Io);
-        assert_eq!(diagnostics[0].slug.as_deref(), Some("demo"));
-
+    fn changed_names_become_typed_results() {
         let entry = Entry {
             slug: Slug::parse("demo").unwrap(),
             meta: EntryMeta::minimal("Current", EntryKind::parse("command").unwrap()),

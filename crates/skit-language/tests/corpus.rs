@@ -8,7 +8,8 @@ use skit_domain::parameters::{
     ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
 };
 use skit_language::{
-    detect_candidates, inject_values, managed_params, source_is_valid, write_managed_params,
+    CliSurface, ParseOutcome, detect_candidates, inject_values, managed_params, parse_document,
+    source_is_valid, write_managed_params,
 };
 
 fn corpus_root() -> PathBuf {
@@ -239,6 +240,95 @@ fn corpus_candidate_names_match_the_v040_analyzers() {
                 .collect::<Vec<_>>();
             assert_eq!(actual, expected_names(kind, file), "{kind}:{file}");
         }
+    }
+}
+
+#[test]
+fn every_analyzer_corpus_is_projected_from_one_parser_owned_document() {
+    let root = corpus_root();
+    for (kind, directory, extension) in [
+        ("python", root.clone(), "py"),
+        ("shell", root.join("shell"), "sh"),
+        ("js", root.join("js"), "mjs"),
+        ("ts", root.join("ts"), "ts"),
+        ("fish", root.join("fish"), "fish"),
+    ] {
+        for path in files(&directory, extension) {
+            let file = path.file_name().and_then(|value| value.to_str()).unwrap();
+            let actual = match parse_document(kind, &source(&path)) {
+                ParseOutcome::Parsed(document) => document
+                    .analysis()
+                    .candidates
+                    .into_iter()
+                    .map(|candidate| candidate.declaration.name)
+                    .collect::<Vec<_>>(),
+                ParseOutcome::SyntaxError(_) if expected_names(kind, file).is_empty() => Vec::new(),
+                ParseOutcome::SyntaxError(_) => {
+                    panic!("{kind}:{file} must parse because it has semantic candidates")
+                }
+                ParseOutcome::ParserUnavailable(_) => {
+                    panic!("{kind}:{file} must have a parser adapter")
+                }
+            };
+            assert_eq!(actual, expected_names(kind, file), "{kind}:{file}");
+        }
+    }
+}
+
+#[test]
+fn every_static_cli_corpus_is_projected_from_the_same_document() {
+    let root = corpus_root();
+    for (kind, relative, expected_framework, expected_names) in [
+        ("shell", "shell/11_hints_argv.sh", "getopts", vec!["n", "v"]),
+        (
+            "js",
+            "js/09_parseargs_inline.mjs",
+            "parseArgs",
+            vec!["name", "verbose", "tag", "dry-run"],
+        ),
+        (
+            "ts",
+            "ts/02_parseargs.ts",
+            "parseArgs",
+            vec!["output", "force"],
+        ),
+        (
+            "fish",
+            "fish/02_argparse.fish",
+            "argparse",
+            vec!["help", "city", "retries", "file", "dry-run", "verbose"],
+        ),
+    ] {
+        let path = root.join(relative);
+        let ParseOutcome::Parsed(document) = parse_document(kind, &source(&path)) else {
+            panic!("{kind}:{relative} must have a parser-owned document");
+        };
+        let CliSurface::Static(surface) = document.cli_surface() else {
+            panic!("{kind}:{relative} must have a static CLI surface");
+        };
+        assert_eq!(surface.framework, expected_framework);
+        assert_eq!(
+            surface
+                .fields
+                .into_iter()
+                .map(|field| field.declaration.name)
+                .collect::<Vec<_>>(),
+            expected_names
+        );
+    }
+
+    for (kind, relative, expected_framework) in [
+        ("js", "js/10_parseargs_identifier.mjs", "parseArgs"),
+        ("js", "js/11_parseargs_spread.mjs", "parseArgs"),
+    ] {
+        let path = root.join(relative);
+        let ParseOutcome::Parsed(document) = parse_document(kind, &source(&path)) else {
+            panic!("{kind}:{relative} must have a parser-owned document");
+        };
+        let CliSurface::Dynamic(surface) = document.cli_surface() else {
+            panic!("{kind}:{relative} must have a dynamic CLI surface");
+        };
+        assert_eq!(surface.framework, expected_framework);
     }
 }
 

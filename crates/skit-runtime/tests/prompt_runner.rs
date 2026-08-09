@@ -21,7 +21,7 @@ impl ProgramProbe for Probe {
                 .and_then(|value| value.to_str())
                 .map(str::to_ascii_lowercase)
                 .as_deref(),
-            Some("agent" | "pi" | "pi.cmd" | "pi.exe" | "pi.ps1")
+            Some("agent" | "amp" | "pi" | "pi.cmd" | "pi.exe" | "pi.ps1")
         )
         .then(|| PathBuf::from(name))
     }
@@ -77,6 +77,8 @@ fn a_prompt_token_can_fill_one_argv_token_without_a_shell() {
     .unwrap();
 
     assert_eq!(plan.args, ["--prompt=hello world", "--mode=interactive"]);
+    assert!(plan.display.contains("rendered prompt omitted"));
+    assert!(!plan.display.contains("hello world"));
 }
 
 #[test]
@@ -294,5 +296,39 @@ fn pi_runner_protects_ambiguous_opening_text_and_reports_the_change() {
     )
     .unwrap();
     assert_eq!(plan.args, ["normal text"]);
+    assert!(plan.warnings.is_empty());
+}
+
+#[test]
+fn the_exact_builtin_amp_runner_reports_its_one_shot_behavior() {
+    let runner = PromptRunner {
+        name: "amp".to_owned(),
+        argv: vec!["amp".to_owned(), "-x".to_owned(), "{{prompt}}".to_owned()],
+    };
+    let plan = build_launch_plan(
+        &prompt(),
+        &paths(),
+        &Assembly::default(),
+        Some("do this"),
+        Some(&runner),
+        &Probe,
+    )
+    .unwrap();
+
+    assert_eq!(plan.warnings, [LaunchWarning::AmpOneShot]);
+
+    let renamed = PromptRunner {
+        name: "custom".to_owned(),
+        argv: runner.argv,
+    };
+    let plan = build_launch_plan(
+        &prompt(),
+        &paths(),
+        &Assembly::default(),
+        Some("do this"),
+        Some(&renamed),
+        &Probe,
+    )
+    .unwrap();
     assert!(plan.warnings.is_empty());
 }

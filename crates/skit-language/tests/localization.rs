@@ -2,7 +2,8 @@
 
 use skit_i18n::{Locale, Localize, Message};
 use skit_language::{
-    LanguageError, PythonMetadataError, validate_pep440_specifiers, validate_pep508_requirement,
+    LanguageError, PythonMetadataError, ShellInputError, validate_pep440_specifiers,
+    validate_pep508_requirement,
 };
 
 /// Check that English text does not drift and that each locale keeps the values.
@@ -52,6 +53,33 @@ fn every_language_error_localizes_and_keeps_its_values() {
         },
         &["python"],
     );
+    assert_localized(&LanguageError::SourceChanged, &[]);
+    assert_localized(
+        &LanguageError::InvalidValue {
+            name: "count".to_owned(),
+            value: "many".to_owned(),
+            parameter_type: skit_domain::parameters::ParameterType::Int,
+        },
+        &["count", "many", "int"],
+    );
+    for source in [
+        ShellInputError::Gap {
+            empty: "input-1".to_owned(),
+            filled: "input-2".to_owned(),
+        },
+        ShellInputError::LineBreak {
+            name: "input-1".to_owned(),
+        },
+        ShellInputError::FieldSplit {
+            name: "input-1".to_owned(),
+        },
+        ShellInputError::EdgeSpace {
+            name: "input-1".to_owned(),
+        },
+    ] {
+        let error = LanguageError::ShellInput(source);
+        assert_localized(&error, &["input-1"]);
+    }
 }
 
 #[test]

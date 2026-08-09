@@ -30,44 +30,55 @@ one adapter. A future Tauri crate can be a peer adapter and can use the same app
 
 ## Compatibility boundary
 
-The cutover reads the version 0.4 data, state, and configuration layout in place. It does not run a
-bulk migration and does not rewrite data during startup.
+The source of truth is the latest Python version 0.4 development revision on `main`, not the
+version 0.4.0 release tag. This review is pinned to
+`origin/main@206f9ef946fc45835cb2479593794431f2620c32`. The cutover reads that revision's data,
+state, and configuration layout in place. It does not run a bulk migration and does not rewrite
+data during startup.
 
 - `SKIT_DATA_DIR/scripts/<slug>/meta.toml` remains authoritative.
-- `registry.toml` remains a rebuildable projection. Stale rows fall back to metadata and repair in
-  one nonblocking batch.
+- `registry.toml` remains a rebuildable projection. Stale rows fall back to metadata. Reads never
+  repair it. Mutations maintain it, and `doctor --rebuild` repairs it explicitly.
 - Missing entry IDs remain valid legacy data. The first mutation stamps an ID under a lock.
 - Unknown entry kinds and unknown TOML fields remain intact.
 - Stored script bytes, line endings, and Unix permissions remain intact.
 - Presets, last values, secret scrubbing, and state files keep the version 0.4 schema.
 - Mutations use atomic replacement, identity checks, and source-hash compare-and-swap.
 - One corrupt entry produces one diagnostic. It cannot hide other entries.
-- A launched child keeps its exit code. Pre-launch errors keep codes 2, 125, 126, 127, and 130.
+- A launched child keeps its exit code. Management failures keep 1/2. Run preflight keeps 2, 125,
+  126, and 127. An interactive cancellation keeps the established command-specific status.
 
-Compatibility tests use version 0.4 fixtures and run read, run, mutation, state, configuration, and
-Agent Skill paths against them.
+Compatibility tests use fixtures and executable behavior from the pinned Python revision. They run
+read, run, mutation, state, configuration, and Agent Skill paths against them.
 
-## Behavior changes from version 0.4
+## Superset contract
 
-The product capabilities remain available, but some presentation behavior is different:
+Version 0.5 must be a strict product superset of the pinned latest Python revision. A presentation
+rewrite cannot remove a control, workflow, shortcut, discovery path, parser result, launch
+behavior, machine record, or data-recovery path. Additive keys and capabilities are permitted only
+when all existing paths continue to work.
 
-- The TUI now uses Ratatui and Crossterm. It does not use Textual or CSS.
-- Library search uses deterministic case-insensitive substring matching. It does not use fuzzy
-  ranking.
-- Forms use one consistent text editor. Boolean, choice, numeric, and path fields show their type
-  and validate at submission. The first Rust release does not show separate checkbox, choice-list,
-  or file-browser widgets.
-- The add screen is one direct form. Source analysis still runs, and the settings screen can manage
-  detected fields after the add. The old multi-step review choreography is removed.
-- Responsive layout is computed by Ratatui constraints. Narrow terminals stack the library panes.
-- TUI actions keep keyboard and mouse paths. Footer chips and form rows are click targets.
-- Human output remains localized. Machine JSON remains an English contract.
-- A typed error carries a stable message template and its values. skit translates the template and
-  then inserts the values. Version 0.4 translated rendered text by substring replacement, which
-  could rewrite a user value or part of an English word.
+The permitted presentation changes are narrow:
 
-These changes do not alter stored data. A user can install version 0.5 over version 0.4 and use the
-same library without an export or import.
+- Ratatui and Crossterm replace Textual and CSS.
+- Ratatui constraints replace CSS layout rules while preserving responsive reachability.
+- Visual styling can change without changing available information or actions.
+- Typed localization inserts user values after translating the exact message template.
+
+The following items were previously described here as presentation changes. That classification
+was incorrect. They are required product capabilities and are release blockers until restored:
+
+- deterministic case-insensitive subsequence search, activity sorting, rerun, help, and complete
+  entry details;
+- checkbox, choice, numeric, secret, path, argument-list, and read-only form semantics;
+- file, environment, token, candidate, preset, and runner pickers;
+- the staged add/review/draft, settings, preferences, health, runner, and preset workflows;
+- parser-backed source analysis, CLI reflection, reconciliation, precise injection, and
+  normalization;
+- all stable JSON shapes, exit statuses, configuration behavior, and state semantics.
+
+The executable status and evidence for these areas is in `rust-contract-matrix.md`. This document
+does not claim that the cutover is complete while any matrix row is incomplete.
 
 ## Localized messages
 

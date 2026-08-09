@@ -9,9 +9,12 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+glob.workspace = true
+regex.workspace = true
 skit-i18n.workspace = true
 serde.workspace = true
 shlex.workspace = true
+windows-args.workspace = true
 thiserror.workspace = true
 skit-domain.workspace = true
 

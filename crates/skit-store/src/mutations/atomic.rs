@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, File, OpenOptions, TryLockError},
+    fs::{self, File, OpenOptions},
     io::{self, Write as _},
     path::{Path, PathBuf},
 };
@@ -10,6 +10,8 @@ use std::fs::Permissions;
 use skit_application::{EntryPayload, RepositoryError, SourcePermissions};
 use skit_domain::{EntryId, EntryMeta};
 use skit_i18n::Message;
+
+use crate::fs_ops::preserve_permissions_best_effort;
 
 #[derive(Debug)]
 pub(super) struct FileLock {
@@ -27,23 +29,6 @@ pub(super) fn acquire_shared_lock(path: &Path) -> Result<FileLock, RepositoryErr
     file.lock_shared()
         .map_err(|error| io_error("lock", path, error))?;
     Ok(FileLock { _file: file })
-}
-
-pub(super) fn try_acquire_lock(path: &Path) -> Result<Option<FileLock>, RepositoryError> {
-    let file = open_lock_file(path)?;
-    if lock_available(file.try_lock(), path)? {
-        Ok(Some(FileLock { _file: file }))
-    } else {
-        Ok(None)
-    }
-}
-
-fn lock_available(attempt: Result<(), TryLockError>, path: &Path) -> Result<bool, RepositoryError> {
-    match attempt {
-        Ok(()) => Ok(true),
-        Err(TryLockError::WouldBlock) => Ok(false),
-        Err(TryLockError::Error(error)) => Err(io_error("lock", path, error)),
-    }
 }
 
 fn open_lock_file(path: &Path) -> Result<File, RepositoryError> {
@@ -171,10 +156,10 @@ pub(super) fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), Reposi
         .map_err(|error| io_error("create", &temp, error))?;
     file.write_all(bytes)
         .map_err(|error| io_error("write", &temp, error))?;
-    if let Ok(metadata) = fs::metadata(path) {
-        file.set_permissions(metadata.permissions())
-            .map_err(|error| io_error("chmod", &temp, error))?;
-    }
+    preserve_permissions_best_effort(
+        fs::metadata(path).map(|metadata| metadata.permissions()),
+        |permissions| file.set_permissions(permissions),
+    );
     file.sync_all()
         .map_err(|error| io_error("sync", &temp, error))?;
     drop(file);
@@ -233,19 +218,6 @@ pub(super) fn io_error(operation: &'static str, path: &Path, error: io::Error) -
 mod tests {
     use super::*;
     use tempfile::TempDir;
-
-    #[test]
-    fn lock_attempts_distinguish_busy_files_from_operating_system_errors() {
-        let path = Path::new("lock");
-        assert!(!lock_available(Err(TryLockError::WouldBlock), path).unwrap());
-        assert!(matches!(
-            lock_available(Err(TryLockError::Error(io::Error::other("failed"))), path,),
-            Err(RepositoryError::Io {
-                operation: "lock",
-                ..
-            })
-        ));
-    }
 
     #[test]
     fn a_failed_atomic_replace_removes_its_temporary_file() {

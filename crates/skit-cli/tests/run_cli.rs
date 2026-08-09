@@ -174,7 +174,8 @@ params = []
     skit(&data, &state)
         .args(["run", "demo", "--no-input"])
         .assert()
-        .code(7);
+        .code(7)
+        .stdout(predicate::str::contains("→ "));
 
     let saved = fs::read_to_string(state.path().join("values/demo.toml")).unwrap();
     assert!(saved.contains("exit = 7"));

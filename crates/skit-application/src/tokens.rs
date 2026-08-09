@@ -6,11 +6,12 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
 use skit_i18n::{Localize, Message};
 use thiserror::Error;
 
 /// All ambient values needed by the token scanner.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TokenContext {
     /// Invoke-time working directory rendered with the caller's native path spelling.
     pub cwd: String,
@@ -111,6 +112,19 @@ pub fn preview(
     }
 }
 
+/// Return the typed failure form for a frontend that localizes after serialization.
+#[must_use]
+pub fn preview_typed(
+    text: &str,
+    context: &TokenContext,
+    brace_escapes: bool,
+) -> (String, Option<TokenError>) {
+    match expand(text, context, brace_escapes) {
+        Ok(expanded) => (expanded, None),
+        Err(error) => (text.to_owned(), Some(error)),
+    }
+}
+
 /// Whether expansion can act on this value.
 #[must_use]
 pub fn has_tokens(text: &str) -> bool {
@@ -118,6 +132,12 @@ pub fn has_tokens(text: &str) -> bool {
         || contains_known_token(text)
         || text.contains("{{")
         || text.contains("}}")
+}
+
+/// Build one environment token with the same name grammar used by expansion.
+#[must_use]
+pub fn environment_token(name: &str) -> Option<String> {
+    valid_environment_name(name).then(|| format!("{{env:{name}}}"))
 }
 
 fn expand_current_user_home(text: &str, home: Option<&str>) -> Option<String> {

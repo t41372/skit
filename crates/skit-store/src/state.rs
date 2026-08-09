@@ -45,6 +45,10 @@ impl FormStateRepository for FileFormStateStore {
         state_from_document(&document)
     }
 
+    fn last_run(&self, slug: &Slug) -> LastRunState {
+        last_run_from_document(&load_document(&self.values_path(slug)), false)
+    }
+
     fn update<T, F>(&self, slug: &Slug, update: F) -> Result<T, StateWriteError>
     where
         F: FnOnce(&mut PersistedFormState) -> T,
@@ -56,8 +60,9 @@ impl FormStateRepository for FileFormStateStore {
         let mut document = load_document(&path);
         sanitize_document(&mut document);
         let mut state = state_from_document(&document);
+        let before = state.clone();
         let result = update(&mut state);
-        merge_state(&mut document, &state);
+        merge_state(&mut document, &before, &state);
         let encoded =
             toml::to_string_pretty(&document).expect("a parsed TOML value tree must serialize");
         atomic_write_bytes(&path, encoded.as_bytes())
@@ -122,7 +127,6 @@ fn remove_unless_table(document: &mut Table, key: &str) {
 }
 
 fn state_from_document(document: &Table) -> PersistedFormState {
-    let last_run = document.get("last_run").and_then(Value::as_table);
     PersistedFormState {
         values: document
             .get("values")
@@ -158,20 +162,28 @@ fn state_from_document(document: &Table) -> PersistedFormState {
                     .collect()
             })
             .unwrap_or_default(),
-        last_run: LastRunState {
-            at: last_run
-                .and_then(|last_run| last_run.get("at"))
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            exit: last_run
-                .and_then(|last_run| last_run.get("exit"))
-                .and_then(Value::as_integer),
-            values: last_run
-                .and_then(|last_run| last_run.get("values"))
-                .and_then(Value::as_table)
-                .map(string_map)
-                .unwrap_or_default(),
-        },
+        last_run: last_run_from_document(document, true),
+    }
+}
+
+fn last_run_from_document(document: &Table, include_values: bool) -> LastRunState {
+    let last_run = document.get("last_run").and_then(Value::as_table);
+    LastRunState {
+        at: last_run
+            .and_then(|last_run| last_run.get("at"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        exit: last_run
+            .and_then(|last_run| last_run.get("exit"))
+            .and_then(Value::as_integer),
+        values: include_values
+            .then(|| {
+                last_run
+                    .and_then(|last_run| last_run.get("values"))
+                    .and_then(Value::as_table)
+                    .map(string_map)
+            })
+            .flatten(),
     }
 }
 
@@ -182,56 +194,87 @@ fn string_map(table: &Table) -> BTreeMap<String, String> {
         .collect()
 }
 
-fn merge_state(document: &mut Table, state: &PersistedFormState) {
-    set_string_map(document, "values", &state.values);
-    set_extra_args(document, state);
-    set_presets(document, &state.presets);
-    set_last_run(document, &state.last_run);
+fn merge_state(document: &mut Table, before: &PersistedFormState, state: &PersistedFormState) {
+    patch_string_map(document, "values", &before.values, &state.values);
+    set_extra_args(document, before, state);
+    set_presets(document, &before.presets, &state.presets);
+    set_last_run(document, &before.last_run, &state.last_run);
 }
 
-fn set_extra_args(document: &mut Table, state: &PersistedFormState) {
-    if state.extra_args.is_empty() {
-        document.remove("extra_args");
-        document.remove("extra_args_raw");
+fn set_extra_args(document: &mut Table, before: &PersistedFormState, state: &PersistedFormState) {
+    if before.extra_args != state.extra_args {
+        if state.extra_args.is_empty() {
+            document.remove("extra_args");
+        } else {
+            document.insert(
+                "extra_args".to_owned(),
+                Value::Array(
+                    state
+                        .extra_args
+                        .iter()
+                        .cloned()
+                        .map(Value::String)
+                        .collect(),
+                ),
+            );
+        }
+    }
+
+    if before.extra_args_raw != state.extra_args_raw || state.extra_args.is_empty() {
+        if state.extra_args_raw && !state.extra_args.is_empty() {
+            document.insert("extra_args_raw".to_owned(), Value::Boolean(true));
+        } else {
+            document.remove("extra_args_raw");
+        }
+    }
+}
+
+fn set_presets(
+    document: &mut Table,
+    before: &BTreeMap<String, BTreeMap<String, String>>,
+    presets: &BTreeMap<String, BTreeMap<String, String>>,
+) {
+    if before == presets {
         return;
     }
 
-    document.insert(
-        "extra_args".to_owned(),
-        Value::Array(
-            state
-                .extra_args
-                .iter()
-                .cloned()
-                .map(Value::String)
-                .collect(),
-        ),
-    );
-    if state.extra_args_raw {
-        document.insert("extra_args_raw".to_owned(), Value::Boolean(true));
-    } else {
-        document.remove("extra_args_raw");
-    }
-}
+    let section = document
+        .entry("presets".to_owned())
+        .or_insert_with(|| Value::Table(Table::new()))
+        .as_table_mut()
+        .expect("presets was shape-checked before merge");
 
-fn set_presets(document: &mut Table, presets: &BTreeMap<String, BTreeMap<String, String>>) {
-    if presets.is_empty() {
+    for name in before.keys() {
+        if !presets.contains_key(name) {
+            section.remove(name);
+        }
+    }
+    for (name, values) in presets {
+        match before.get(name) {
+            None => {
+                section.insert(name.clone(), Value::Table(table_from_map(values)));
+            }
+            Some(previous) if previous != values => {
+                let table = section
+                    .entry(name.clone())
+                    .or_insert_with(|| Value::Table(Table::new()))
+                    .as_table_mut()
+                    .expect("preset rows were shape-checked before merge");
+                patch_table(table, previous, values);
+            }
+            Some(_) => {}
+        }
+    }
+    if section.is_empty() {
         document.remove("presets");
-        return;
     }
-    document.insert(
-        "presets".to_owned(),
-        Value::Table(
-            presets
-                .iter()
-                .map(|(name, values)| (name.clone(), Value::Table(table_from_map(values))))
-                .collect(),
-        ),
-    );
 }
 
-fn set_last_run(document: &mut Table, state: &LastRunState) {
-    let has_known_state = state.at.is_some() || state.exit.is_some() || !state.values.is_empty();
+fn set_last_run(document: &mut Table, before: &LastRunState, state: &LastRunState) {
+    if before == state {
+        return;
+    }
+    let has_known_state = state.at.is_some() || state.exit.is_some() || state.values.is_some();
     if !has_known_state && !matches!(document.get("last_run"), Some(Value::Table(_))) {
         return;
     }
@@ -243,15 +286,29 @@ fn set_last_run(document: &mut Table, state: &LastRunState) {
         .as_table_mut()
         .expect("last_run was shape-checked before merge");
 
-    set_optional_string(table, "at", state.at.as_deref());
-    set_optional_integer(table, "exit", state.exit);
-    if state.values.is_empty() {
-        table.remove("values");
-    } else {
-        table.insert(
-            "values".to_owned(),
-            Value::Table(table_from_map(&state.values)),
-        );
+    if before.at != state.at {
+        set_optional_string(table, "at", state.at.as_deref());
+    }
+    if before.exit != state.exit {
+        set_optional_integer(table, "exit", state.exit);
+    }
+    if before.values != state.values {
+        match (&before.values, &state.values) {
+            (Some(previous), Some(values)) => {
+                let values_table = table
+                    .entry("values".to_owned())
+                    .or_insert_with(|| Value::Table(Table::new()))
+                    .as_table_mut()
+                    .expect("last_run.values was shape-checked before merge");
+                patch_table(values_table, previous, values);
+            }
+            (_, Some(values)) => {
+                table.insert("values".to_owned(), Value::Table(table_from_map(values)));
+            }
+            (_, None) => {
+                table.remove("values");
+            }
+        }
     }
     if table.is_empty() {
         document.remove("last_run");
@@ -274,11 +331,40 @@ fn set_optional_integer(table: &mut Table, key: &str, value: Option<i64>) {
     }
 }
 
-fn set_string_map(document: &mut Table, key: &str, values: &BTreeMap<String, String>) {
-    if values.is_empty() {
+fn patch_string_map(
+    document: &mut Table,
+    key: &str,
+    before: &BTreeMap<String, String>,
+    values: &BTreeMap<String, String>,
+) {
+    if before == values {
+        return;
+    }
+    let table = document
+        .entry(key.to_owned())
+        .or_insert_with(|| Value::Table(Table::new()))
+        .as_table_mut()
+        .expect("value sections were shape-checked before merge");
+    patch_table(table, before, values);
+    if table.is_empty() {
         document.remove(key);
-    } else {
-        document.insert(key.to_owned(), Value::Table(table_from_map(values)));
+    }
+}
+
+fn patch_table(
+    table: &mut Table,
+    before: &BTreeMap<String, String>,
+    values: &BTreeMap<String, String>,
+) {
+    for name in before.keys() {
+        if !values.contains_key(name) {
+            table.remove(name);
+        }
+    }
+    for (name, value) in values {
+        if before.get(name) != Some(value) {
+            table.insert(name.clone(), Value::String(value.clone()));
+        }
     }
 }
 

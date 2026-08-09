@@ -1,31 +1,32 @@
 //! Resolve entry payload paths from the v0.4 data layout.
 
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
-use skit_application::RepositoryError;
+use skit_application::{RepositoryError, canonical_stored_filename};
 use skit_domain::{Entry, Slug, StorageMode};
 use skit_i18n::Message;
 
 use crate::FileStore;
 
+/// Expand the current user's leading `~` with the platform home-directory adapter.
+///
+/// Other text stays byte-for-byte unchanged. Environment-variable expansion is not part of this
+/// path contract.
+#[must_use]
+pub fn expand_user_path(path: &Path) -> PathBuf {
+    path.to_str().map_or_else(
+        || path.to_path_buf(),
+        |value| PathBuf::from(shellexpand::tilde(value).as_ref()),
+    )
+}
+
 /// Return the stored copy name for a known entry kind.
 #[must_use]
 pub fn stored_filename(kind: &str) -> Option<&'static str> {
-    match kind {
-        "python" => Some("script.py"),
-        "shell" => Some("script.sh"),
-        "js" => Some("script.js"),
-        "ts" => Some("script.ts"),
-        "fish" => Some("script.fish"),
-        "powershell" => Some("script.ps1"),
-        "ruby" => Some("script.rb"),
-        "perl" => Some("script.pl"),
-        "lua" => Some("script.lua"),
-        "r" => Some("script.r"),
-        "prompt" => Some("prompt.md"),
-        "exe" | "command" => None,
-        _ => Some("payload"),
-    }
+    canonical_stored_filename(kind)
 }
 
 /// Return all payload filenames accepted for one known entry kind.
@@ -57,7 +58,7 @@ impl FileStore {
 
     /// Return the current launch or edit payload path.
     pub fn payload_path(&self, entry: &Entry) -> Result<PathBuf, RepositoryError> {
-        if entry.meta.mode == StorageMode::Reference {
+        if entry.meta.kind.as_str() == "exe" || entry.meta.mode == StorageMode::Reference {
             return Ok(PathBuf::from(&entry.meta.source));
         }
 

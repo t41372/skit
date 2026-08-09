@@ -29,6 +29,17 @@ fn every_config_error_localizes_and_keeps_its_values() {
         &["/config/config.toml", "device is busy"],
     );
     assert_localized(
+        &ConfigError::Io {
+            operation: "backup",
+            path: "/config/config.toml.bak".to_owned(),
+            reason: "the backup path is not a regular file".to_owned(),
+        },
+        &[
+            "/config/config.toml.bak",
+            "the backup path is not a regular file",
+        ],
+    );
+    assert_localized(
         &ConfigError::Parse {
             path: "/config/config.toml".to_owned(),
             reason: "expected `=`".to_owned(),
@@ -44,6 +55,10 @@ fn every_config_error_localizes_and_keeps_its_values() {
     assert_localized(
         &ConfigError::Invalid(Message::new("unknown configuration key: {}").with("colour")),
         &["colour"],
+    );
+    assert_localized(
+        &ConfigError::Usage(Message::new("bash path is not a file: {}").with("/missing/bash")),
+        &["/missing/bash"],
     );
 }
 

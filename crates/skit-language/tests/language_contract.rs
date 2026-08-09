@@ -132,6 +132,7 @@ p.add_argument("--verbose", action="store_true")
     assert_eq!(params[3].action, "store_true");
 
     let click = r#"
+import click
 @click.command()
 @click.option("--name", required=True, default="world", help="Who")
 def main(name): pass
@@ -146,8 +147,10 @@ def main(name): pass
     assert!(params[0].required);
 
     let typer = r#"
+import typer
 def main(count: int = typer.Option(2, "--count", help="Count")):
     pass
+typer.run(main)
 "#;
     let params = cli_params("python", typer);
     assert_eq!(params.len(), 1);
@@ -342,7 +345,9 @@ fn injection_rewrites_only_selected_python_shell_and_javascript_bindings() {
     )
     .unwrap();
     assert!(rewritten.contains("WIDTH = 1024"));
-    assert!(rewritten.contains("name = 'Ada'"));
+    assert!(rewritten.contains("name = _skit_i[0](\"Name: \")"));
+    assert!(rewritten.contains("'Ada'"));
+    assert!(rewritten.contains("# skit:shim"));
     assert!(rewritten.contains("print(WIDTH, name)"));
 
     let mut shell_const = ParamDecl::new("COLOR");
@@ -427,7 +432,7 @@ fn shell_normalization_changes_one_bare_constant_and_preserves_crlf() {
     let rewritten = normalize_shell_default(source, "NAME").unwrap();
     assert_eq!(
         rewritten,
-        "#!/bin/sh\r\nNAME=${NAME:-world}\r\nOTHER=value\r\necho \"$NAME\"\r\n"
+        "#!/bin/sh\r\nNAME=\"${NAME:-world}\"\r\nOTHER=value\r\necho \"$NAME\"\r\n"
     );
     assert!(normalize_shell_default(&rewritten, "NAME").is_err());
 }

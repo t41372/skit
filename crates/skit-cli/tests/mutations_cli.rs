@@ -30,7 +30,7 @@ fn add_copy_then_describe_rename_and_remove_is_a_complete_cli_slice() {
         ])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Added: Hello (hello)"));
+        .stdout(predicate::str::contains("Added: Hello (copy mode)"));
     fs::create_dir_all(root.path().join("state/values")).unwrap();
     fs::write(
         root.path().join("state/values/hello.toml"),
@@ -103,7 +103,7 @@ fn add_reference_hashes_but_never_copies_the_original() {
 }
 
 #[test]
-fn duplicate_add_is_usage_error_and_preserves_the_first_entry() {
+fn duplicate_add_is_a_failure_and_preserves_the_first_entry() {
     let root = TempDir::new().unwrap();
     let first = root.path().join("first.py");
     let second = root.path().join("second.py");
@@ -131,7 +131,7 @@ fn duplicate_add_is_usage_error_and_preserves_the_first_entry() {
             "Same",
         ])
         .assert()
-        .code(2)
+        .code(1)
         .stderr(predicate::str::contains("already"));
 
     assert_eq!(

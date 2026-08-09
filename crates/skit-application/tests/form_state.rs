@@ -174,7 +174,7 @@ fn secret_transition_scrubs_all_value_surfaces_without_touching_tail_or_run_meta
         last_run: LastRunState {
             at: Some("2026-08-07T17:22:00Z".to_owned()),
             exit: Some(7),
-            values: map(&[("token", "old-token"), ("public", "keep")]),
+            values: Some(map(&[("token", "old-token"), ("public", "keep")])),
         },
     };
 
@@ -189,7 +189,7 @@ fn secret_transition_scrubs_all_value_surfaces_without_touching_tail_or_run_meta
         state.presets,
         BTreeMap::from([("mixed".to_owned(), map(&[("public", "keep")]))])
     );
-    assert_eq!(state.last_run.values, map(&[("public", "keep")]));
+    assert_eq!(state.last_run.values, Some(map(&[("public", "keep")])));
     assert_eq!(state.last_run.at.as_deref(), Some("2026-08-07T17:22:00Z"));
     assert_eq!(state.last_run.exit, Some(7));
     assert_eq!(state.extra_args, ["--literal"]);

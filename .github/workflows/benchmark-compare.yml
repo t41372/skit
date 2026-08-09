@@ -16,15 +16,19 @@ concurrency:
   group: benchmark-compare-${{ github.event.inputs.base }}-${{ github.event.inputs.head }}
   cancel-in-progress: false
 
+env:
+  BENCH_CI_RUNNER: ubuntu-24.04
+  PYTHONUTF8: "1"
+
 jobs:
   compare:
     name: A/B (${{ inputs.base }} vs ${{ inputs.head }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       contents: read
     steps:
-      - name: Check out the harness
+      - name: Check out the report harness
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -40,21 +44,85 @@ jobs:
           ref: ${{ inputs.head }}
           path: side-head
           persist-credentials: false
+      - name: Install Python and uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.3"
+          python-version: "3.13"
+          enable-cache: true
       - name: Install hyperfine
         uses: ./.github/actions/install-hyperfine
-      - name: Build both refs
-        run: cargo build --locked --release --manifest-path side-base/Cargo.toml -p skit-cli-rs && cargo build --locked --release --manifest-path side-head/Cargo.toml -p skit-cli-rs
-      - name: Measure the base
-        env:
-          SKIT_BENCH_REPO: side-base
-        run: bash benchmarks/run.sh compare .bench-base side-base/target/release/skit
-      - name: Measure the head
-        env:
-          SKIT_BENCH_REPO: side-head
-        run: bash benchmarks/run.sh compare .bench-head side-head/target/release/skit
+      - name: Validate comparison sides
+        shell: bash
+        run: |
+          for side in side-base side-head; do
+            if [[ -f "$side/Cargo.toml" && -f "$side/crates/skit-benchmarks/Cargo.toml" ]]; then
+              continue
+            fi
+            if [[ -f "$side/pyproject.toml" && -f "$side/benchmarks/__main__.py" ]]; then
+              continue
+            fi
+            echo "$side has no supported benchmark harness" >&2
+            exit 1
+          done
+      - name: Build the report harness
+        run: cargo build --locked --release -p skit-benchmarks
+      - name: Build the Rust base
+        if: ${{ hashFiles('side-base/crates/skit-benchmarks/Cargo.toml') != '' }}
+        run: cargo build --locked --release --manifest-path side-base/Cargo.toml -p skit-cli-rs -p skit-benchmarks
+      - name: Measure the Rust base
+        if: ${{ hashFiles('side-base/crates/skit-benchmarks/Cargo.toml') != '' }}
+        run: |
+          side-base/target/release/skit-bench run \
+            --profile compare \
+            --out .bench-base \
+            --budgets benchmarks/budgets.toml \
+            --repo side-base \
+            --measured-repo side-base \
+            --skit-binary side-base/target/release/skit
+      # The latest v0.4 development ref has no Rust benchmark crate.
+      # Its schema-v1 Python benchmark harness remains supported. v0.5 adds no Python harness.
+      - name: Measure the Python base
+        if: ${{ hashFiles('side-base/crates/skit-benchmarks/Cargo.toml') == '' }}
+        working-directory: side-base
+        run: |
+          uv sync --no-default-groups
+          uv pip install --python .venv/bin/python "pyperf==2.10.0"
+          .venv/bin/python -m benchmarks run \
+            --profile compare \
+            --out "$GITHUB_WORKSPACE/.bench-base" \
+            --measured-repo .
+      - name: Build the Rust head
+        if: ${{ hashFiles('side-head/crates/skit-benchmarks/Cargo.toml') != '' }}
+        run: cargo build --locked --release --manifest-path side-head/Cargo.toml -p skit-cli-rs -p skit-benchmarks
+      - name: Measure the Rust head
+        if: ${{ hashFiles('side-head/crates/skit-benchmarks/Cargo.toml') != '' }}
+        run: |
+          side-head/target/release/skit-bench run \
+            --profile compare \
+            --out .bench-head \
+            --budgets benchmarks/budgets.toml \
+            --repo side-head \
+            --measured-repo side-head \
+            --skit-binary side-head/target/release/skit
+      - name: Measure the Python head
+        if: ${{ hashFiles('side-head/crates/skit-benchmarks/Cargo.toml') == '' }}
+        working-directory: side-head
+        run: |
+          uv sync --no-default-groups
+          uv pip install --python .venv/bin/python "pyperf==2.10.0"
+          .venv/bin/python -m benchmarks run \
+            --profile compare \
+            --out "$GITHUB_WORKSPACE/.bench-head" \
+            --measured-repo .
       - name: Render the comparison
-        run: bash benchmarks/compare.sh .bench-base/results.json .bench-head/results.json | tee comparison.md >> "$GITHUB_STEP_SUMMARY"
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          target/release/skit-bench compare .bench-base/results.json .bench-head/results.json \
+            | tee comparison.md >> "$GITHUB_STEP_SUMMARY"
       - name: Upload A/B evidence
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: benchmark-compare

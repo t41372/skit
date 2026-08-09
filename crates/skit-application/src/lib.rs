@@ -2,19 +2,35 @@
 
 #![forbid(unsafe_code)]
 
+mod agent_skill;
 pub mod delivery;
+pub mod form_feedback;
 pub mod form_state;
 pub mod glob_expansion;
+pub mod health;
 mod mutations;
+pub mod parameter_edit;
+pub mod path_insertion;
+mod payload_policy;
+pub mod preferences;
+pub mod prompt_selection;
 pub mod run_inputs;
+pub mod runner_management;
 pub mod tokens;
 pub mod value_preparation;
 pub mod value_resolution;
 
 use std::fmt::Debug;
 
+pub use agent_skill::{
+    AgentInstallError, AgentInstallPlan, AgentInstallRequest, AgentRoots, AgentScope, AgentTarget,
+    detect_agent_targets, plan_agent_install,
+};
 pub use mutations::{
     CreateEntry, EntryMutationRepository, EntryPayload, SourcePermissions, UpdateEntry,
+};
+pub use payload_policy::{
+    add_workdir, canonical_stored_filename, payload_stored_name, supports_storage_modes,
 };
 use serde::{Deserialize, Serialize};
 use skit_domain::{Entry, EntrySummary};
@@ -25,6 +41,8 @@ use thiserror::Error;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[repr(u8)]
 pub enum ExitClass {
+    /// A requested operation failed without a child-process status.
+    Failure = 1,
     /// Command-line shape or deterministic selection failure.
     Usage = 2,
     /// skit-side operational or data failure.
@@ -35,6 +53,15 @@ pub enum ExitClass {
     NotFound = 127,
     /// An interactive operation was cancelled.
     Aborted = 130,
+}
+
+/// The use-case boundary that interprets a repository failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RepositoryOperation {
+    /// Inspect or mutate the library without launching an entry.
+    Manage,
+    /// Resolve an entry as the target of `run`.
+    Launch,
 }
 
 impl ExitClass {
@@ -190,22 +217,39 @@ pub enum RepositoryError {
         /// Failure from the recovery attempt.
         rollback: Box<Self>,
     },
+    /// Membership was removed, but some entry files remain for an explicit recovery.
+    #[error(
+        "{name} was removed from the library, but its files could not be fully deleted: {path}"
+    )]
+    RemovalIncomplete {
+        /// Display name of the removed entry.
+        name: String,
+        /// Entry directory that remains available to delete or rebuild.
+        path: String,
+    },
 }
 
 impl RepositoryError {
-    /// Map a repository failure to the process contract without consulting localized text.
+    /// Map a repository failure to the v0.4 process contract for one use case.
     #[must_use]
-    pub const fn exit_class(&self) -> ExitClass {
-        match self {
-            Self::NotFound { .. } => ExitClass::NotFound,
-            Self::Ambiguous { .. } | Self::Conflict { .. } | Self::InvalidMutation { .. } => {
-                ExitClass::Usage
-            }
-            Self::StaleEntry { .. }
-            | Self::SourceChanged { .. }
-            | Self::Corrupt { .. }
-            | Self::Io { .. }
-            | Self::Rollback { .. } => ExitClass::Skit,
+    pub const fn exit_class(&self, operation: RepositoryOperation) -> ExitClass {
+        match (operation, self) {
+            (RepositoryOperation::Launch, Self::NotFound { .. }) => ExitClass::NotFound,
+            (
+                RepositoryOperation::Launch,
+                Self::Ambiguous { .. } | Self::Conflict { .. } | Self::InvalidMutation { .. },
+            ) => ExitClass::Usage,
+            (
+                RepositoryOperation::Launch,
+                Self::StaleEntry { .. }
+                | Self::SourceChanged { .. }
+                | Self::Corrupt { .. }
+                | Self::Io { .. }
+                | Self::Rollback { .. }
+                | Self::RemovalIncomplete { .. },
+            ) => ExitClass::Skit,
+            (RepositoryOperation::Manage, Self::InvalidMutation { .. }) => ExitClass::Usage,
+            (RepositoryOperation::Manage, _) => ExitClass::Failure,
         }
     }
 }
@@ -257,6 +301,11 @@ impl Localize for RepositoryError {
                 .with(path)
                 .nested(primary.message())
                 .nested(rollback.message()),
+            Self::RemovalIncomplete { name, path } => Message::new(
+                "{} was removed from the library, but its files couldn't be fully deleted: {} — close any program using them, then delete the folder (or run `skit doctor --rebuild` to restore the entry and retry).",
+            )
+            .with(name)
+            .with(path),
         }
     }
 }
@@ -289,9 +338,8 @@ where
     /// List entries in a deterministic, locale-independent order.
     pub fn list(&self) -> Result<LibraryScan, RepositoryError> {
         let mut scan = self.repository.scan()?;
-        scan.entries.sort_by_cached_key(|entry| {
-            (entry.name.to_lowercase(), entry.slug.as_str().to_owned())
-        });
+        scan.entries
+            .sort_by(|left, right| left.slug.cmp(&right.slug));
         scan.diagnostics.sort_by(|left, right| {
             left.slug
                 .as_deref()

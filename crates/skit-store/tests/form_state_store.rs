@@ -5,7 +5,7 @@ use std::{
     thread,
 };
 
-use skit_application::form_state::{FormStateRepository, PersistedFormState};
+use skit_application::form_state::{FormStateRepository, LastRunState, PersistedFormState};
 use skit_domain::Slug;
 use skit_store::FileFormStateStore;
 use tempfile::TempDir;
@@ -30,6 +30,40 @@ fn missing_and_corrupt_state_degrade_to_empty_without_rewriting_the_file() {
 
     assert_eq!(store.load(&slug()), PersistedFormState::default());
     assert_eq!(fs::read(state_path(&root)).unwrap(), before);
+}
+
+#[test]
+fn narrow_last_run_read_returns_only_the_listing_stamp() {
+    let root = TempDir::new().unwrap();
+    fs::create_dir_all(root.path().join("values")).unwrap();
+    fs::write(
+        state_path(&root),
+        r#"
+[values]
+city = "Taipei"
+
+[presets.large]
+first = "one"
+second = "two"
+
+[last_run]
+at = "2026-08-08T00:00:00Z"
+exit = 9
+
+[last_run.values]
+city = "Tainan"
+"#,
+    )
+    .unwrap();
+
+    assert_eq!(
+        FileFormStateStore::new(root.path()).last_run(&slug()),
+        LastRunState {
+            at: Some("2026-08-08T00:00:00Z".to_owned()),
+            exit: Some(9),
+            values: None,
+        }
+    );
 }
 
 #[test]
@@ -72,7 +106,7 @@ values = "wrong-shape"
     );
     assert_eq!(state.last_run.at.as_deref(), Some("2026-08-07T17:22:00Z"));
     assert_eq!(state.last_run.exit, Some(0));
-    assert!(state.last_run.values.is_empty());
+    assert!(state.last_run.values.is_none());
 }
 
 #[test]
@@ -111,7 +145,7 @@ city = "Paris"
                 .insert("travel".to_owned(), state.values.clone());
             state.last_run.at = Some("2026-08-08T01:30:00Z".to_owned());
             state.last_run.exit = Some(0);
-            state.last_run.values = state.values.clone();
+            state.last_run.values = Some(state.values.clone());
         })
         .unwrap();
 
@@ -145,7 +179,126 @@ city = "Paris"
         Some("2026-08-08T01:30:00Z")
     );
     assert_eq!(round_trip.last_run.exit, Some(0));
-    assert_eq!(round_trip.last_run.values["city"], "Tokyo");
+    assert_eq!(
+        round_trip.last_run.values.as_ref().unwrap()["city"],
+        "Tokyo"
+    );
+}
+
+#[test]
+fn read_modify_write_preserves_unrelated_future_leaf_values() {
+    let root = TempDir::new().unwrap();
+    fs::create_dir_all(root.path().join("values")).unwrap();
+    fs::write(
+        state_path(&root),
+        r#"
+extra_args = ["--known", 17, true]
+
+[values]
+city = "Paris"
+future_number = 42
+future_array = [1, 2]
+
+[presets.existing]
+city = "Paris"
+future_flag = true
+
+[last_run]
+at = "2026-08-07T17:22:00Z"
+exit = 7
+future_stamp = 99
+
+[last_run.values]
+city = "Paris"
+future_table = { enabled = true }
+"#,
+    )
+    .unwrap();
+
+    let store = FileFormStateStore::new(root.path());
+    store
+        .update(&slug(), |state| {
+            state.presets.insert(
+                "new".to_owned(),
+                BTreeMap::from([("city".to_owned(), "Tokyo".to_owned())]),
+            );
+        })
+        .unwrap();
+
+    let document: toml::Table =
+        toml::from_str(&fs::read_to_string(state_path(&root)).unwrap()).unwrap();
+    assert_eq!(document["extra_args"].as_array().unwrap().len(), 3);
+    assert_eq!(document["values"]["future_number"].as_integer(), Some(42));
+    assert!(document["values"]["future_array"].is_array());
+    assert_eq!(
+        document["presets"]["existing"]["future_flag"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(document["last_run"]["future_stamp"].as_integer(), Some(99));
+    assert_eq!(
+        document["last_run"]["values"]["future_table"]["enabled"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(document["presets"]["new"]["city"].as_str(), Some("Tokyo"));
+}
+
+#[test]
+fn changing_known_keys_keeps_unknown_sibling_leaves() {
+    let root = TempDir::new().unwrap();
+    fs::create_dir_all(root.path().join("values")).unwrap();
+    fs::write(
+        state_path(&root),
+        r#"
+[values]
+city = "Paris"
+future_number = 42
+
+[presets.travel]
+city = "Paris"
+future_flag = true
+
+[last_run]
+at = "old"
+exit = 7
+
+[last_run.values]
+city = "Paris"
+future_array = [1, 2]
+"#,
+    )
+    .unwrap();
+
+    FileFormStateStore::new(root.path())
+        .update(&slug(), |state| {
+            state.values.insert("city".to_owned(), "Tokyo".to_owned());
+            state.presets.get_mut("travel").unwrap().remove("city");
+            state.last_run.at = Some("new".to_owned());
+            state
+                .last_run
+                .values
+                .as_mut()
+                .unwrap()
+                .insert("city".to_owned(), "Tokyo".to_owned());
+        })
+        .unwrap();
+
+    let document: toml::Table =
+        toml::from_str(&fs::read_to_string(state_path(&root)).unwrap()).unwrap();
+    assert_eq!(document["values"]["city"].as_str(), Some("Tokyo"));
+    assert_eq!(document["values"]["future_number"].as_integer(), Some(42));
+    assert!(document["presets"]["travel"].get("city").is_none());
+    assert_eq!(
+        document["presets"]["travel"]["future_flag"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(document["last_run"]["at"].as_str(), Some("new"));
+    assert_eq!(
+        document["last_run"]["values"]["future_array"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
 }
 
 #[test]
@@ -242,7 +395,7 @@ fn clearing_last_run_fields_removes_known_rows_and_an_empty_table() {
         .update(&slug(), |state| {
             state.last_run.at = None;
             state.last_run.exit = None;
-            state.last_run.values.clear();
+            state.last_run.values = None;
         })
         .unwrap();
 

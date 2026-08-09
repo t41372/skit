@@ -9,18 +9,22 @@ authors.workspace = true
 repository.workspace = true
 
 [dependencies]
+ratatui-interact.workspace = true
 ratatui-core.workspace = true
 ratatui-widgets.workspace = true
 ratatui-crossterm.workspace = true
+ratatui-textarea.workspace = true
+tui-input.workspace = true
 thiserror.workspace = true
 unicode-width.workspace = true
 skit-application.workspace = true
 skit-i18n.workspace = true
 skit-ui.workspace = true
+skit-domain.workspace = true
 
 [dev-dependencies]
-skit-domain.workspace = true
 skit-i18n.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

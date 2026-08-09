@@ -3,15 +3,19 @@ name: benchmark
 on:
   push:
     branches: [main]
-    paths: ["crates/**", "benchmarks/**", "Cargo.toml", "Cargo.lock", ".github/workflows/benchmark*.yml"]
+    paths: ["crates/**", "benchmarks/**", "Cargo.toml", "Cargo.lock", ".github/workflows/benchmark*.yml", ".github/actions/**"]
   pull_request:
-    paths: ["crates/**", "benchmarks/**", "Cargo.toml", "Cargo.lock", ".github/workflows/benchmark*.yml"]
+    paths: ["crates/**", "benchmarks/**", "Cargo.toml", "Cargo.lock", ".github/workflows/benchmark*.yml", ".github/actions/**"]
 
 permissions: {}
 
 concurrency:
   group: benchmark-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  BENCH_CI_RUNNER: ubuntu-24.04
+  PYTHONUTF8: "1"
 
 jobs:
   bench-pr:
@@ -25,13 +29,19 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install Python and uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.3"
+          python-version: "3.13"
+          enable-cache: true
       - name: Install hyperfine
         uses: ./.github/actions/install-hyperfine
-      - name: Build the release binary
-        run: cargo build --locked --release -p skit-cli-rs
+      - name: Build the measured binary and harness
+        run: cargo build --locked --release -p skit-cli-rs -p skit-benchmarks
       - name: Run Criterion subjects
         run: cargo bench --locked -p skit-benchmarks
-      - name: Run macro measurements
+      - name: Run the PR profile
         run: bash benchmarks/run.sh pr .bench target/release/skit
       - name: Check budgets
         run: bash benchmarks/check.sh .bench/results.json benchmarks/budgets.toml --require-enforced
@@ -45,8 +55,6 @@ jobs:
           name: benchmark-results-pr
           include-hidden-files: true
           path: |
-            .bench/results.json
-            .bench/results.md
-            .bench/hyperfine.json
+            .bench/
             target/criterion/
           retention-days: 30

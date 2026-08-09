@@ -225,7 +225,7 @@ fn direct_and_interpreted_kinds_use_the_expected_program_shapes() {
     copied.meta.source = "/deleted/original".to_owned();
     copied.meta.workdir = "invoke".to_owned();
     let probe = probe_for("/data/scripts/demo/script");
-    let plan = build_launch_plan(
+    let error = build_launch_plan(
         &copied,
         &paths("/data/scripts/demo/script"),
         &Assembly::default(),
@@ -233,8 +233,12 @@ fn direct_and_interpreted_kinds_use_the_expected_program_shapes() {
         None,
         &probe,
     )
-    .unwrap();
-    assert_eq!(plan.program, PathBuf::from("/data/scripts/demo/script"));
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        LaunchError::TargetMissing { path }
+            if path.as_path() == std::path::Path::new("/deleted/original")
+    ));
 }
 
 #[test]
@@ -292,7 +296,7 @@ fn javascript_runtime_order_is_deno_then_bun_then_node_and_a_pin_wins() {
 }
 
 #[test]
-fn command_template_quotes_unquoted_values_and_refuses_quoted_placeholders() {
+fn command_template_preserves_v040_substitution_semantics() {
     assert_eq!(
         render_command_template(
             "tool --name {name} --count {count}",
@@ -309,20 +313,46 @@ fn command_template_quotes_unquoted_values_and_refuses_quoted_placeholders() {
         }
     );
 
-    assert!(matches!(
+    assert_eq!(
         render_command_template(
             "tool --name \"{name}\"",
-            &BTreeMap::from([("name".to_owned(), "value".to_owned())]),
-        ),
-        Err(LaunchError::UnsafeTemplatePlaceholder { .. })
-    ));
-    assert!(matches!(
+            &BTreeMap::from([("name".to_owned(), "a b; $HOME".to_owned())]),
+        )
+        .unwrap(),
+        if cfg!(windows) {
+            "tool --name \"\"a b; $HOME\"\""
+        } else {
+            "tool --name \"a b; \\$HOME\""
+        }
+    );
+    assert_eq!(
         render_command_template(
             "tool --name '{name}'",
-            &BTreeMap::from([("name".to_owned(), "value".to_owned())]),
-        ),
-        Err(LaunchError::UnsafeTemplatePlaceholder { .. })
-    ));
+            &BTreeMap::from([("name".to_owned(), "it's $HOME".to_owned())]),
+        )
+        .unwrap(),
+        if cfg!(windows) {
+            "tool --name '\"it's $HOME\"'"
+        } else {
+            "tool --name 'it'\\''s $HOME'"
+        }
+    );
+    assert_eq!(
+        render_command_template("tool {drift}", &BTreeMap::new()).unwrap(),
+        "tool {drift}"
+    );
+    assert_eq!(
+        render_command_template(
+            "tool {value}",
+            &BTreeMap::from([("value".to_owned(), "{{kept}}".to_owned())]),
+        )
+        .unwrap(),
+        if cfg!(windows) {
+            "tool {{kept}}"
+        } else {
+            "tool '{{kept}}'"
+        }
+    );
     assert_eq!(
         render_command_template("tool {not-valid!}", &BTreeMap::new()).unwrap(),
         "tool {not-valid!}"
@@ -331,6 +361,105 @@ fn command_template_quotes_unquoted_values_and_refuses_quoted_placeholders() {
         render_command_template("tool 'literal'", &BTreeMap::new()).unwrap(),
         "tool 'literal'"
     );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn command_template_tracks_nested_posix_quote_contexts() {
+    assert_eq!(
+        render_command_template(
+            r#"printf "%s\n" "$(printf %s {value})""#,
+            &BTreeMap::from([("value".to_owned(), "safe; printf INJECTED".to_owned(),)]),
+        )
+        .unwrap(),
+        r#"printf "%s\n" "$(printf %s 'safe; printf INJECTED')""#
+    );
+    assert_eq!(
+        render_command_template(
+            r#"printf "%s\n" "$(printf %s "{value}")""#,
+            &BTreeMap::from([("value".to_owned(), "$(printf PWNED)".to_owned())]),
+        )
+        .unwrap(),
+        r#"printf "%s\n" "$(printf %s "\$(printf PWNED)")""#
+    );
+    assert_eq!(
+        render_command_template(
+            r#"printf "%s\n" "`printf %s '{value}'`""#,
+            &BTreeMap::from([("value".to_owned(), "it's $HOME".to_owned())]),
+        )
+        .unwrap(),
+        r#"printf "%s\n" "`printf %s 'it'\''s $HOME'`""#
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn command_template_neutralizes_a_dangling_escape_before_a_value() {
+    assert_eq!(
+        render_command_template(
+            r#"printf "%s\n" "foo\{name}""#,
+            &BTreeMap::from([("name".to_owned(), "$(printf pwned)".to_owned())]),
+        )
+        .unwrap(),
+        r#"printf "%s\n" "foo\\\$(printf pwned)""#
+    );
+    assert_eq!(
+        render_command_template(
+            r#"printf "%s\n" "\{{x}} {later}""#,
+            &BTreeMap::from([("later".to_owned(), "$(x)".to_owned())]),
+        )
+        .unwrap(),
+        r#"printf "%s\n" "\{x} \$(x)""#
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn command_template_refuses_only_unrepresentable_nested_backtick_quotes() {
+    assert!(matches!(
+        render_command_template(
+            r#"printf "%s\n" "`printf %s "{value}"`""#,
+            &BTreeMap::from([("value".to_owned(), "$(printf PWNED)".to_owned())]),
+        ),
+        Err(LaunchError::UnsafeTemplatePlaceholder { .. })
+    ));
+
+    assert_eq!(
+        render_command_template(
+            r#"printf "%s\n" "$(printf %s "{value}")""#,
+            &BTreeMap::from([("value".to_owned(), "$(printf safe)".to_owned())]),
+        )
+        .unwrap(),
+        r#"printf "%s\n" "$(printf %s "\$(printf safe)")""#
+    );
+}
+
+#[test]
+fn command_template_appends_extra_arguments_after_rendering() {
+    let mut command = entry("command");
+    command.meta.workdir = "invoke".to_owned();
+    EntrySettings {
+        template: "echo {name}".to_owned(),
+        ..EntrySettings::default()
+    }
+    .write_to_meta(&mut command.meta);
+    let mut probe = probe_for("/unused");
+    probe
+        .programs
+        .insert("sh".to_owned(), PathBuf::from("/bin/sh"));
+    let assembly = Assembly {
+        args: vec!["tail".to_owned(), "two words".to_owned()],
+        masked_args: vec!["tail".to_owned(), "two words".to_owned()],
+        command_values: BTreeMap::from([("name".to_owned(), "hello".to_owned())]),
+        masked_command_values: BTreeMap::from([("name".to_owned(), "hello".to_owned())]),
+        ..Assembly::default()
+    };
+
+    let plan =
+        build_launch_plan(&command, &paths("/unused"), &assembly, None, None, &probe).unwrap();
+
+    assert_eq!(plan.program, PathBuf::from("/bin/sh"));
+    assert_eq!(plan.args, ["-c", "echo hello tail 'two words'"]);
 }
 
 #[test]
@@ -527,7 +656,29 @@ fn an_executable_preview_still_checks_the_local_file_and_permission_bits() {
         &present,
     )
     .unwrap_err();
-    assert!(matches!(error, LaunchError::TargetNotExecutable { .. }));
+    assert!(
+        matches!(error, LaunchError::TargetNotExecutable { .. }),
+        "{error:?}"
+    );
+
+    let mut directory = probe_for("/bin/demo");
+    directory.files.clear();
+    directory.executable.clear();
+    directory.dirs.push(PathBuf::from("/bin/demo"));
+    let error = build_launch_preview(
+        &exe,
+        &paths("/bin/demo"),
+        &Assembly::default(),
+        None,
+        None,
+        None,
+        &directory,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(error, LaunchError::TargetNotExecutable { .. }),
+        "{error:?}"
+    );
 }
 
 #[test]

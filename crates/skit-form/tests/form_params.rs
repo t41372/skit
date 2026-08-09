@@ -2,7 +2,7 @@ use skit_domain::{
     EntrySettings,
     parameters::{ParamDecl, ParameterBinding, ParameterDelivery},
 };
-use skit_form::{form_params, form_params_from_managed};
+use skit_form::{FormDrift, FormSource, form_params, form_params_from_managed, form_plan};
 
 fn env(name: &str) -> ParamDecl {
     let mut value = ParamDecl::new(name);
@@ -124,7 +124,7 @@ fn prepared_managed_fields_can_skip_a_second_source_parse() {
 }
 
 #[test]
-fn static_cli_fields_are_used_when_there_is_no_managed_block() {
+fn declared_riders_own_the_form_before_a_static_cli_reader() {
     let source = r#"
 import argparse
 p = argparse.ArgumentParser()
@@ -142,10 +142,10 @@ p.add_argument("--count", type=int)
             .iter()
             .map(|item| item.name.as_str())
             .collect::<Vec<_>>(),
-        ["input", "count", "token"]
+        ["token", "count"]
     );
+    assert_eq!(fields[0].delivery, ParameterDelivery::Env);
     assert_eq!(fields[1].flag, "--count");
-    assert_eq!(fields[2].delivery, ParameterDelivery::Env);
 }
 
 #[test]
@@ -196,4 +196,144 @@ fn duplicate_template_declarations_use_the_last_definition_in_the_first_slot() {
     let fields = form_params("command", "echo {name}", &settings);
     assert_eq!(fields.len(), 1);
     assert_eq!(fields[0].help, "current");
+}
+
+#[test]
+fn managed_plan_reconciles_fields_and_refreshes_only_sound_source_defaults() {
+    let source = r#"# /// script
+# [tool.skit]
+# schema = 1
+#
+# [[tool.skit.params]]
+# name = "KEEP"
+# kind = "const"
+# type = "str"
+# default = "old"
+#
+# [[tool.skit.params]]
+# name = "GONE"
+# kind = "const"
+# type = "str"
+# default = "gone"
+#
+# [[tool.skit.params]]
+# name = "CHANGED"
+# kind = "const"
+# type = "str"
+# default = "stored"
+# ///
+KEEP = "current"
+CHANGED = 42
+"#;
+
+    let plan = form_plan("python", source, &EntrySettings::default());
+
+    assert_eq!(plan.source, FormSource::Inject);
+    assert_eq!(
+        plan.fields
+            .iter()
+            .map(|field| field.declaration.name.as_str())
+            .collect::<Vec<_>>(),
+        ["KEEP", "CHANGED"]
+    );
+    assert_eq!(
+        plan.fields[0].declaration.default,
+        Some(skit_domain::parameters::ParameterValue::String(
+            "current".to_owned()
+        ))
+    );
+    assert_eq!(
+        plan.fields[1].declaration.default,
+        Some(skit_domain::parameters::ParameterValue::String(
+            "stored".to_owned()
+        ))
+    );
+    assert!(matches!(
+        &plan.drift[0],
+        FormDrift::Missing { declaration } if declaration.name == "GONE"
+    ));
+    assert!(matches!(
+        &plan.drift[1],
+        FormDrift::TypeChanged { stored, current }
+            if stored.name == "CHANGED"
+                && current.parameter_type == skit_domain::parameters::ParameterType::Int
+    ));
+}
+
+#[test]
+fn prepared_fields_publish_input_and_empty_delivery_semantics_directly() {
+    let source = r#"# /// script
+# [tool.skit]
+# schema = 1
+#
+# [[tool.skit.params]]
+# name = "answer"
+# kind = "input"
+# type = "str"
+# default = "fallback"
+# prompt = "Answer?"
+# order = 0
+# ///
+answer = input("Answer?")
+"#;
+
+    let plan = form_plan("python", source, &EntrySettings::default());
+
+    assert!(plan.fields[0].input_binding);
+    assert!(!plan.fields[0].empty_uses_default);
+    assert!(!plan.fields[0].delivers_empty());
+}
+
+#[test]
+fn shell_colon_defaults_keep_empty_delivery_semantics_out_of_frontends() {
+    let source = r#"# /// script
+# [tool.skit]
+# schema = 1
+#
+# [[tool.skit.params]]
+# name = "FALLBACK_ON_EMPTY"
+# kind = "envdefault"
+# type = "str"
+# default = "first"
+#
+# [[tool.skit.params]]
+# name = "EMPTY_IS_VALUE"
+# kind = "envdefault"
+# type = "str"
+# default = "second"
+# ///
+printf '%s %s\n' "${FALLBACK_ON_EMPTY:-first}" "${EMPTY_IS_VALUE-second}"
+"#;
+
+    let plan = form_plan("shell", source, &EntrySettings::default());
+
+    assert!(plan.fields[0].empty_uses_default);
+    assert!(!plan.fields[0].delivers_empty());
+    assert!(!plan.fields[1].empty_uses_default);
+    assert!(plan.fields[1].delivers_empty());
+}
+
+#[test]
+fn syntax_errors_keep_managed_metadata_visible_as_drift_without_inventing_fields() {
+    let source = r#"# /// script
+# [tool.skit]
+# schema = 1
+#
+# [[tool.skit.params]]
+# name = "VALUE"
+# kind = "const"
+# type = "str"
+# default = "stored"
+# ///
+if (
+"#;
+
+    let plan = form_plan("python", source, &EntrySettings::default());
+
+    assert_eq!(plan.source, FormSource::Inject);
+    assert!(plan.fields.is_empty());
+    assert!(matches!(
+        plan.drift.as_slice(),
+        [FormDrift::Missing { declaration }] if declaration.name == "VALUE"
+    ));
 }

@@ -62,9 +62,9 @@ fn show_reports_every_optional_axis_for_a_python_entry() {
 
     assert!(report.contains("Dependencies: rich"), "{report}");
     assert!(report.contains("Python constraint: >=3.11"), "{report}");
-    assert!(report.contains("Required commands: git"), "{report}");
-    assert!(report.contains("Missing: no"), "{report}");
-    assert!(report.contains("Drift: no"), "{report}");
+    assert!(report.contains("Needs: git"), "{report}");
+    assert!(!report.contains("⚠ missing:"), "{report}");
+    assert!(!report.contains("drifted from the script"), "{report}");
 }
 
 #[test]
@@ -72,7 +72,10 @@ fn show_reports_the_template_and_prompt_axes_for_their_own_kinds() {
     let sandbox = Sandbox::new();
     sandbox.ok(&["add", "--cmd", "printf {value}", "--name", "Command"]);
     let report = sandbox.ok(&["show", "command"]);
-    assert!(report.contains("Template: printf {value}"), "{report}");
+    assert!(
+        report.contains("Command template: printf {value}"),
+        "{report}"
+    );
 
     sandbox
         .command()
@@ -82,16 +85,19 @@ fn show_reports_the_template_and_prompt_axes_for_their_own_kinds() {
         .success();
 
     let unset = sandbox.ok(&["show", "review"]);
-    assert!(unset.contains("Prompt runner: not set"), "{unset}");
-    assert!(unset.contains("Interpolation: on"), "{unset}");
+    assert!(unset.contains("Runner: (asks at run time)"), "{unset}");
+    assert!(!unset.contains("Variable insertion: off"), "{unset}");
 
     sandbox.ok(&["params", "review", "--no-interpolate"]);
     let disabled = sandbox.ok(&["show", "review"]);
-    assert!(disabled.contains("Interpolation: off"), "{disabled}");
+    assert!(
+        disabled.contains("Variable insertion: off (the body travels as written)"),
+        "{disabled}"
+    );
 
     sandbox.ok(&["params", "review", "--runner", "claude"]);
     let pinned = sandbox.ok(&["show", "review"]);
-    assert!(pinned.contains("Prompt runner: claude"), "{pinned}");
+    assert!(pinned.contains("Runner: claude"), "{pinned}");
 }
 
 #[test]
@@ -165,8 +171,9 @@ fn show_degrades_for_prompt_payload_damage_and_uses_the_single_file_fallback() {
         .command()
         .args(["show", "damaged", "--json"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("\"missing\":false"));
+        .code(1)
+        .stderr(predicate::str::contains("isn't valid UTF-8"))
+        .stderr(predicate::str::contains("offset 0"));
 
     let fallback = Sandbox::new();
     fallback
@@ -402,9 +409,14 @@ fn runner_rows_list_their_status_and_removal_needs_a_target() {
             "runner remove needs a name or --row INDEX",
         ));
 
+    fs::write(
+        sandbox.config.path().join("config.toml"),
+        "[prompt]\nrunners = [{ name = \"broken\", argv = [\"agent\"] }]\n",
+    )
+    .unwrap();
     sandbox
         .command()
-        .args(["runner", "remove", "--row", "1", "--yes"])
+        .args(["runner", "remove", "--row", "0", "--yes"])
         .assert()
         .success();
 }
@@ -565,7 +577,7 @@ fn show_reports_a_missing_target_and_a_drifted_copy() {
     fs::remove_file(&gone).unwrap();
 
     let missing = sandbox.ok(&["show", "gone"]);
-    assert!(missing.contains("Missing: yes"), "{missing}");
+    assert!(missing.contains("⚠ missing:"), "{missing}");
 
     // A managed declaration whose source constant is gone reports drift.
     let drifted = sandbox.data.path().join("drift.sh");
@@ -587,7 +599,7 @@ fn show_reports_a_missing_target_and_a_drifted_copy() {
     fs::write(&stored, text.replace("NAME=\"world\"", "OTHER=\"world\"")).unwrap();
 
     let report = sandbox.ok(&["show", "drift"]);
-    assert!(report.contains("Drift: yes"), "{report}");
+    assert!(report.contains("drifted from the script"), "{report}");
 }
 
 #[test]
@@ -598,8 +610,8 @@ fn show_reports_an_entry_whose_stored_payload_was_deleted() {
 
     let report = sandbox.ok(&["show", "sample"]);
 
-    assert!(report.contains("Missing: yes"), "{report}");
-    assert!(!report.contains("Parameters:"), "{report}");
+    assert!(report.contains("⚠ missing:"), "{report}");
+    assert!(report.contains("No form fields"), "{report}");
 }
 
 #[test]

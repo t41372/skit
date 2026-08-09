@@ -63,14 +63,14 @@ fn show_json_reads_the_existing_metadata_layout() {
 }
 
 #[test]
-fn missing_entries_keep_exit_127() {
+fn missing_show_entries_keep_the_management_exit_one() {
     let root = TempDir::new().unwrap();
     let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
     command
         .env("SKIT_DATA_DIR", root.path())
         .args(["show", "missing", "--json"])
         .assert()
-        .code(127)
+        .code(1)
         .stderr(predicate::str::contains("missing"));
 }
 
@@ -84,7 +84,7 @@ fn human_list_is_readable_without_json_parsing() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Hello"))
-        .stdout(predicate::str::contains("python"))
+        .stdout(predicate::str::contains("Python"))
         .stdout(predicate::str::contains("A friendly script"));
 }
 
@@ -108,14 +108,13 @@ fn human_show_and_params_expose_the_discovery_context() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Source: /tmp/hello.py"))
-        .stdout(predicate::str::contains("Work directory: origin"))
         .stdout(predicate::str::contains("Interpreter: python3.14"))
         .stdout(predicate::str::contains("Dependencies: requests>=2"))
-        .stdout(predicate::str::contains("Required commands: git"))
-        .stdout(predicate::str::contains("Parameters:"))
+        .stdout(predicate::str::contains("Needs: git"))
+        .stdout(predicate::str::contains("Parameter"))
         .stdout(predicate::str::contains("output"))
         .stdout(predicate::str::contains("Presets: fast"))
-        .stdout(predicate::str::contains("skit run hello"));
+        .stdout(predicate::str::contains("skit run Hello"));
 
     let mut params = assert_cmd::cargo::cargo_bin_cmd!("skit");
     params

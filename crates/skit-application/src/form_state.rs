@@ -23,8 +23,10 @@ pub struct LastRunState {
     pub at: Option<String>,
     /// Child exit status when available.
     pub exit: Option<i64>,
-    /// Exact accepted invocation values, including values equal to defaults.
-    pub values: BTreeMap<String, String>,
+    /// Exact accepted invocation values, including an explicitly empty snapshot.
+    ///
+    /// `None` means a raw or legacy run did not record form values.
+    pub values: Option<BTreeMap<String, String>>,
 }
 
 /// Complete per-entry state owned by the Rust implementation at cutover.
@@ -40,6 +42,15 @@ pub struct PersistedFormState {
     pub presets: BTreeMap<String, BTreeMap<String, String>>,
     /// Most recent run stamp and exact accepted-value snapshot.
     pub last_run: LastRunState,
+}
+
+/// A state-backed source for a preset save request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PresetSnapshotSource {
+    /// Definition defaults overlaid with the latest remembered explicit values.
+    Prefill,
+    /// The exact values accepted by the most recent non-raw run.
+    LastRun,
 }
 
 /// A state read-modify-write transaction could not be committed.
@@ -88,6 +99,12 @@ pub trait FormStateRepository: Debug {
     /// Load the complete known state. Missing/corrupt documents degrade to empty state.
     fn load(&self, slug: &Slug) -> PersistedFormState;
 
+    /// Load only the run stamp needed by listing surfaces.
+    ///
+    /// Adapters must not construct saved values, argument tails, presets, or the last-run value
+    /// snapshot on this path. A library list calls this once per row.
+    fn last_run(&self, slug: &Slug) -> LastRunState;
+
     /// Mutate the current state while the repository holds its per-entry transaction lock.
     fn update<T, F>(&self, slug: &Slug, update: F) -> Result<T, StateWriteError>
     where
@@ -117,6 +134,12 @@ where
     #[must_use]
     pub fn load(&self, slug: &Slug) -> PersistedFormState {
         self.repository.load(slug)
+    }
+
+    /// Load only the most recent run stamp for a listing or status surface.
+    #[must_use]
+    pub fn last_run(&self, slug: &Slug) -> LastRunState {
+        self.repository.last_run(slug)
     }
 
     /// Save last-used values and/or the remembered argument tail.
@@ -162,6 +185,38 @@ where
         })
     }
 
+    /// Save a preset from one state-backed snapshot in a single transaction.
+    ///
+    /// Returns `false` when `LastRun` has no honest value snapshot. State from releases before
+    /// exact run snapshots remains usable only when it has remembered values and no run stamp.
+    pub fn save_preset_from_state(
+        &self,
+        slug: &Slug,
+        name: &str,
+        declarations: &[ParamDecl],
+        source: PresetSnapshotSource,
+    ) -> Result<bool, StateWriteError> {
+        let name = name.to_owned();
+        self.repository.update(slug, move |state| {
+            let values = match source {
+                PresetSnapshotSource::Prefill => Some(prefill(declarations, &state.values, None)),
+                PresetSnapshotSource::LastRun => state.last_run.values.clone().or_else(|| {
+                    (state.last_run.at.is_none()
+                        && state.last_run.exit.is_none()
+                        && !state.values.is_empty())
+                    .then(|| state.values.clone())
+                }),
+            };
+            let Some(values) = values else {
+                return false;
+            };
+            state
+                .presets
+                .insert(name, preset_values(declarations, &values));
+            true
+        })
+    }
+
     /// Delete one named preset and report whether it existed.
     pub fn delete_preset(&self, slug: &Slug, name: &str) -> Result<bool, StateWriteError> {
         let name = name.to_owned();
@@ -179,9 +234,10 @@ where
             .update(slug, |state| scrub_secrets(declarations, state))
     }
 
-    /// Record the latest run stamp and optionally replace its exact accepted-value snapshot.
+    /// Record the latest run stamp and its exact accepted-value snapshot.
     ///
-    /// `values=None` preserves the previous snapshot but still removes any value that is secret now.
+    /// `values=None` records that the run had no form snapshot, as raw runs do. It clears an older
+    /// snapshot so a later `--from-last` request cannot attach values from a different invocation.
     pub fn record_run(
         &self,
         slug: &Slug,
@@ -191,16 +247,11 @@ where
         values: Option<&BTreeMap<String, String>>,
     ) -> Result<(), StateWriteError> {
         let values = values.map(|values| preset_values(declarations, values));
-        let secret_names = secret_names(declarations);
         let at = at.to_owned();
         self.repository.update(slug, move |state| {
             state.last_run.at = Some(at);
             state.last_run.exit = Some(exit);
-            if let Some(values) = values {
-                state.last_run.values = values;
-            } else {
-                strip_secret_names(&mut state.last_run.values, &secret_names);
-            }
+            state.last_run.values = values;
         })
     }
 
@@ -312,7 +363,9 @@ pub fn scrub_secrets(
         scrub_map(values, &secret_names, &mut removed);
         !values.is_empty()
     });
-    scrub_map(&mut state.last_run.values, &secret_names, &mut removed);
+    if let Some(values) = state.last_run.values.as_mut() {
+        scrub_map(values, &secret_names, &mut removed);
+    }
 
     removed
 }

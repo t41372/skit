@@ -80,7 +80,7 @@ fn configuration_runner_and_completion_edges_are_explicit() {
     sandbox.ok(&["runner", "list"]);
     sandbox.ok(&["runner", "list", "--json", "--all"]);
     sandbox.ok(&["runner", "add", "agent", "agent", "{{prompt}}"]);
-    sandbox.code(&["runner", "add", "agent", "other", "{{prompt}}"], 125);
+    sandbox.code(&["runner", "add", "agent", "other", "{{prompt}}"], 1);
     sandbox.ok(&[
         "runner",
         "add",
@@ -91,7 +91,7 @@ fn configuration_runner_and_completion_edges_are_explicit() {
         "{{prompt}}",
     ]);
     sandbox.code(&["runner", "remove", "agent", "--no-input"], 2);
-    sandbox.code(&["runner", "remove", "missing", "--yes"], 2);
+    sandbox.code(&["runner", "remove", "missing", "--yes"], 1);
     sandbox.ok(&["runner", "remove", "agent", "--yes"]);
 
     for shell in ["bash", "fish", "zsh", "elvish", "pwsh"] {
@@ -289,15 +289,15 @@ fn locale_fallbacks_use_config_then_environment_without_changing_json() {
     sandbox
         .command()
         .env_remove("SKIT_LANG")
-        .env_remove("LC_ALL")
-        .env_remove("LC_MESSAGES")
-        .env_remove("LANG")
+        .env("LC_ALL", "C")
+        .env("LC_MESSAGES", "zh_TW.UTF-8")
+        .env("LANG", "en_US.UTF-8")
         .env("SKIT_CONFIG_DIR", empty_config.path())
         .arg("--help")
         .assert()
         .success()
         .stdout(predicates::str::contains(
-            "A script, prompt, program, and command library",
+            "程式、提示詞、執行檔與命令程式庫",
         ));
 }
 
@@ -371,7 +371,7 @@ fn doctor_human_report_exposes_each_repair_axis() {
 }
 
 #[test]
-fn doctor_reports_that_uv_is_not_required_for_an_empty_library() {
+fn doctor_reports_missing_uv_for_an_empty_library() {
     let sandbox = Sandbox::new();
     let empty_path = TempDir::new().unwrap();
     sandbox
@@ -379,8 +379,8 @@ fn doctor_reports_that_uv_is_not_required_for_an_empty_library() {
         .env("PATH", empty_path.path())
         .arg("doctor")
         .assert()
-        .success()
-        .stdout(predicates::str::contains("OK uv: not required"));
+        .code(1)
+        .stdout(predicates::str::contains("ERROR uv: not found"));
 }
 
 #[test]
@@ -600,9 +600,9 @@ fn params_deps_presets_and_agent_commands_cover_mutation_and_refusal_axes() {
     sandbox.ok(&["preset", "save", "demo", "last", "--from-last"]);
     sandbox.ok(&["preset", "list", "demo"]);
     sandbox.ok(&["preset", "list", "demo", "--json"]);
-    sandbox.code(&["preset", "delete", "demo", "current", "--no-input"], 2);
-    sandbox.code(&["preset", "delete", "demo", "missing", "--yes"], 2);
-    sandbox.ok(&["preset", "delete", "demo", "current", "--yes"]);
+    sandbox.ok(&["preset", "delete", "demo", "current", "--no-input"]);
+    sandbox.code(&["preset", "delete", "demo", "missing", "--yes"], 1);
+    sandbox.code(&["preset", "delete", "demo", "current", "--yes"], 1);
 
     sandbox.ok(&["agent", "install", "claude", "--project"]);
     sandbox.ok(&["agent", "install", "codex", "--project"]);
@@ -666,7 +666,7 @@ fn editor_dependency_source_management_and_raw_run_edges_are_transactional() {
     sandbox.code(&["edit", "reference", "--no-input"], 2);
     sandbox.ok(&["add", "--cmd", "echo ok", "--name", "No source"]);
     sandbox.code(&["edit", "no-source", "--no-input"], 2);
-    sandbox.code(&["edit", "missing", "--no-input"], 2);
+    sandbox.code(&["edit", "missing", "--no-input"], 1);
 
     let managed = sandbox.source("managed.sh", b"NAME=old\necho \"$NAME\"\n");
     sandbox.ok(&["add", &managed, "--name", "Managed"]);
@@ -700,7 +700,15 @@ fn editor_dependency_source_management_and_raw_run_edges_are_transactional() {
         "--name",
         "Invalid Python",
     ]);
-    sandbox.code(&["deps", "invalid-python", "--dep", "rich"], 2);
+    sandbox.ok(&["deps", "invalid-python", "--dep", "rich"]);
+    assert_eq!(
+        fs::read(sandbox.data.path().join("scripts/invalid-python/script.py")).unwrap(),
+        [0xff]
+    );
+    assert_eq!(
+        sandbox.json(&["deps", "invalid-python", "--json"])["dependencies"],
+        serde_json::json!(["rich"])
+    );
     let javascript = sandbox.source("plain.js", b"console.log('ok');\n");
     sandbox.ok(&["add", &javascript, "--ref", "--name", "JS reference"]);
     sandbox.code(&["deps", "js-reference", "--dep", "chalk"], 2);
@@ -750,7 +758,7 @@ fn draft_editor_failures_keep_recoverable_work_and_report_exact_causes() {
         .success();
     sandbox.ok(&["config", "editor", &editor]);
     sandbox.ok(&["add", "--cmd", "true", "--name", "Duplicate"]);
-    sandbox.code(&["add", "--edit", "--name", "Duplicate"], 2);
+    sandbox.code(&["add", "--edit", "--name", "Duplicate"], 1);
     assert!(
         fs::read_dir(sandbox.data.path().join("drafts"))
             .unwrap()
@@ -761,7 +769,7 @@ fn draft_editor_failures_keep_recoverable_work_and_report_exact_causes() {
 }
 
 #[test]
-fn run_pipeline_materializes_javascript_and_reports_reference_and_runner_failures() {
+fn run_pipeline_materializes_javascript_and_preserves_trusted_command_semantics() {
     let sandbox = Sandbox::new();
     let tools = TempDir::new().unwrap();
     let node = tools.path().join("node");
@@ -888,10 +896,7 @@ fn run_pipeline_materializes_javascript_and_reports_reference_and_runner_failure
     ]);
 
     sandbox.ok(&["add", "--cmd", "echo '{value}'", "--name", "Unsafe command"]);
-    sandbox.code(
-        &["run", "unsafe-command", "--set", "value=x", "--no-input"],
-        125,
-    );
+    sandbox.ok(&["run", "unsafe-command", "--set", "value=x", "--no-input"]);
 }
 
 #[test]

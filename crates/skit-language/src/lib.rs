@@ -5,53 +5,81 @@
 
 #![forbid(unsafe_code)]
 
+mod description;
+mod semantic;
+mod source_text;
+mod uv_edit;
+
+pub use description::suggest_description;
+pub use semantic::{
+    BindingIdentity, CliSurface, DegradationReason, DynamicCliSurface, ParseFailure, ParseOutcome,
+    ParsedDocument, ReconcilePair, ReconcileReport, SemanticAnalysis, SemanticCandidate,
+    SemanticField, SourceEdit, SourceEditPlan, SourceParameterSemantics, SourceSpan,
+    StaticCliSurface, parse_document, source_parameter_semantics,
+};
+pub use source_text::{
+    LosslessSource, NewlineStyle, has_uv_metadata_block_bytes, write_managed_params_bytes,
+    write_uv_metadata_bytes,
+};
+pub use uv_edit::{
+    UvMetadataEditError, UvMetadataEditPlan, effective_uv_metadata_bytes, plan_uv_metadata_edit,
+};
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
     str::FromStr,
-    sync::LazyLock,
 };
 
 use pep440_rs::VersionSpecifiers;
 use pep508_rs::{Requirement, VerbatimUrl};
-use regex::{Captures, Regex};
+use regex::Regex;
+use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use skit_domain::parameters::{
-    ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue, is_secret_name,
-    synthesized_placeholder,
-};
+use skit_domain::parameters::{ParamDecl, ParameterType, ParameterValue, synthesized_placeholder};
 use skit_i18n::{Localize, Message};
 use thiserror::Error;
 use toml::Value as TomlValue;
 
-static PYTHON_TYPER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?m)([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(str|int|float|bool)\s*=\s*typer\.(Option|Argument)\s*\(",
-    )
-    .expect("fixed Typer pattern")
-});
-static JS_OPTION: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"(?ms)([A-Za-z_$][A-Za-z0-9_$]*)\s*:\s*\{([^{}]*?type\s*:\s*['"](string|boolean)['"][^{}]*?)\}"#,
-    )
-    .expect("fixed parseArgs pattern")
-});
-static POWERSHELL_PARAM: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?is)(?:\[Parameter\(([^\]]*)\)\]\s*)?\[(string|int|double|float|bool|switch)\]\s*\$([A-Za-z_][A-Za-z0-9_]*)(?:\s*=\s*([^,\r\n\)]+))?",
-    )
-    .expect("fixed PowerShell parameter pattern")
-});
-static SHELL_DEFAULT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(:-|:=|-|=)([^}]*)\}")
-        .expect("fixed shell environment-default pattern")
-});
-static JS_CONST: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"^\s*(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)(?:\s*:\s*[^=]+)?\s*=\s*([^;\r\n]+)\s*;?\s*$",
-    )
-        .expect("fixed JavaScript constant pattern")
-});
+/// Report a shell `read` value that cannot be delivered byte-for-byte.
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
+pub enum ShellInputError {
+    /// A later variable is filled after an empty variable in the same call.
+    #[error(
+        "{empty} is empty, but {filled} is filled and they are read on the same line — a shell `read` would hand your value to {empty}. Fill {empty} in, or clear {filled}."
+    )]
+    Gap {
+        /// Empty form field.
+        empty: String,
+        /// Later filled form field.
+        filled: String,
+    },
+    /// A newline terminates the one line consumed by `read`.
+    #[error(
+        "{name} can't contain a line break: a shell `read` takes ONE line, so everything after the break would be thrown away."
+    )]
+    LineBreak {
+        /// Form field.
+        name: String,
+    },
+    /// Default IFS parsing would split a non-final value.
+    #[error(
+        "{name} is read on the same line as other values, so its value can't contain spaces or tabs — the shell would split it across the other fields. Only the LAST value on a `read` line may contain spaces."
+    )]
+    FieldSplit {
+        /// Form field.
+        name: String,
+    },
+    /// Default IFS parsing would trim the final value.
+    #[error(
+        "{name} starts or ends with a space or tab, which a shell `read` strips off the line — the script would receive it trimmed. Remove the surrounding whitespace."
+    )]
+    EdgeSpace {
+        /// Form field.
+        name: String,
+    },
+}
+
 /// Report a source-analysis or rewrite refusal.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum LanguageError {
@@ -67,6 +95,25 @@ pub enum LanguageError {
     /// A parser-backed source has syntax errors.
     #[error("source is not valid {kind} syntax")]
     InvalidSource { kind: String },
+    /// The source no longer matches the version used for semantic planning.
+    #[error("source changed after semantic edit planning")]
+    SourceChanged,
+    /// An accepted form value does not fit the reflected scalar type.
+    #[error(
+        "value {value:?} for parameter {name:?} is not a valid {}",
+        .parameter_type.as_str()
+    )]
+    InvalidValue {
+        /// Parameter key.
+        name: String,
+        /// Rejected form value.
+        value: String,
+        /// Expected scalar type.
+        parameter_type: ParameterType,
+    },
+    /// A shell `read` cannot deliver one accepted value byte-for-byte.
+    #[error(transparent)]
+    ShellInput(#[from] ShellInputError),
 }
 
 /// Report an invalid Python package or version constraint.
@@ -95,6 +142,43 @@ impl Localize for LanguageError {
             Self::InvalidSource { kind } => {
                 Message::new("source is not valid {} syntax").with(kind)
             }
+            Self::SourceChanged => Message::new("source changed after semantic edit planning"),
+            Self::InvalidValue {
+                name,
+                value,
+                parameter_type,
+            } => Message::new("value {} for parameter {} is not a valid {}")
+                .quoted(value)
+                .quoted(name)
+                .with(parameter_type.as_str()),
+            Self::ShellInput(source) => source.message(),
+        }
+    }
+}
+
+impl Localize for ShellInputError {
+    fn message(&self) -> Message {
+        match self {
+            Self::Gap { empty, filled } => Message::new(
+                "{} is empty, but {} is filled and they are read on the same line — a shell `read` would hand your value to {}. Fill {} in, or clear {}.",
+            )
+            .with(empty)
+            .with(filled)
+            .with(empty)
+            .with(empty)
+            .with(filled),
+            Self::LineBreak { name } => Message::new(
+                "{} can't contain a line break: a shell `read` takes ONE line, so everything after the break would be thrown away.",
+            )
+            .with(name),
+            Self::FieldSplit { name } => Message::new(
+                "{} is read on the same line as other values, so its value can't contain spaces or tabs — the shell would split it across the other fields. Only the LAST value on a `read` line may contain spaces.",
+            )
+            .with(name),
+            Self::EdgeSpace { name } => Message::new(
+                "{} starts or ends with a space or tab, which a shell `read` strips off the line — the script would receive it trimmed. Remove the surrounding whitespace.",
+            )
+            .with(name),
         }
     }
 }
@@ -117,7 +201,7 @@ impl Localize for PythonMetadataError {
 }
 
 /// Effective PEP 723 fields used by Python copy entries.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct UvMetadata {
     /// PEP 508 dependency strings.
     pub dependencies: Vec<String>,
@@ -254,9 +338,6 @@ pub fn validate_pep440_specifiers(value: &str) -> Result<(), PythonMetadataError
 /// Read managed parameter declarations from the inline metadata block.
 #[must_use]
 pub fn managed_params(kind: &str, text: &str) -> Vec<ParamDecl> {
-    if !parser_accepts(kind, text) {
-        return Vec::new();
-    }
     let Some(leader) = metadata_leader(kind) else {
         return Vec::new();
     };
@@ -347,13 +428,12 @@ pub fn write_managed_params(
         "{leader} /// script{newline}{}{leader} ///{newline}",
         commentify(&render_managed_toml(params), leader, newline)
     );
-    let insert_at = if text.starts_with("#!") {
-        text.find('\n').map_or(text.len(), |index| index + 1)
-    } else {
-        0
-    };
+    let insert_at = metadata_insert_at(kind, text);
     let mut output = String::with_capacity(text.len() + block.len());
     output.push_str(&text[..insert_at]);
+    if insert_at == text.len() && insert_at > 0 && !text.ends_with(['\n', '\r']) {
+        output.push_str(newline);
+    }
     output.push_str(&block);
     output.push_str(&text[insert_at..]);
     Ok(output)
@@ -378,6 +458,16 @@ pub fn read_uv_metadata(text: &str) -> Option<UvMetadata> {
             .unwrap_or_default()
             .to_owned(),
     })
+}
+
+/// Return whether Python source contains its own PEP 723 metadata fence.
+///
+/// This predicate deliberately does not parse the body. A caller that cannot decode the complete
+/// file still needs to know that an existing block is authoritative and cannot be replaced by
+/// metadata outside the source.
+#[must_use]
+pub fn has_uv_metadata_block(text: &str) -> bool {
+    block_regex("#").is_match(text)
 }
 
 /// Replace PEP 723 dependency fields and preserve other inline metadata tables.
@@ -443,14 +533,10 @@ fn rewrite_inline_metadata(
         output.push_str(&text[found.end()..]);
         return Ok(output);
     }
-    let insert_at = if text.starts_with("#!") {
-        text.find('\n').map_or(text.len(), |index| index + 1)
-    } else {
-        0
-    };
+    let insert_at = metadata_insert_at("python", text);
     let mut output = String::with_capacity(text.len() + block.len());
     output.push_str(&text[..insert_at]);
-    if insert_at == text.len() && text.starts_with("#!") && !text.ends_with(['\n', '\r']) {
+    if insert_at == text.len() && insert_at > 0 && !text.ends_with(['\n', '\r']) {
         output.push_str(newline);
     }
     output.push_str(&block);
@@ -458,24 +544,64 @@ fn rewrite_inline_metadata(
     Ok(output)
 }
 
+fn metadata_insert_at(kind: &str, text: &str) -> usize {
+    let bom_end = usize::from(text.starts_with('\u{feff}')) * '\u{feff}'.len_utf8();
+    let first_end = physical_line_end(text, bom_end);
+    let first = &text[bom_end..first_end];
+    if kind == "python" {
+        if python_coding_line(first) {
+            return first_end;
+        }
+        if python_cookie_can_follow(first) && first_end < text.len() {
+            let second_end = physical_line_end(text, first_end);
+            if python_coding_line(&text[first_end..second_end]) {
+                return second_end;
+            }
+        }
+    }
+    if first.starts_with("#!") {
+        first_end
+    } else {
+        bom_end
+    }
+}
+
+fn physical_line_end(text: &str, start: usize) -> usize {
+    text[start..]
+        .find('\n')
+        .map_or(text.len(), |index| start + index + 1)
+}
+
+fn python_coding_line(line: &str) -> bool {
+    let trimmed = line.trim_start_matches([' ', '\t', '\u{c}']);
+    if !trimmed.starts_with('#') {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    lower.contains("coding:") || lower.contains("coding=")
+}
+
+fn python_cookie_can_follow(first_line: &str) -> bool {
+    let trimmed = first_line.trim_matches([' ', '\t', '\u{c}', '\r', '\n']);
+    trimmed.is_empty() || trimmed.starts_with('#')
+}
+
 /// Convert one shell constant to an environment-default expression.
 pub fn normalize_shell_default(text: &str, name: &str) -> Result<String, LanguageError> {
-    require_valid_source("shell", text)?;
-    let name_pattern = regex::escape(name);
-    let pattern = Regex::new(&format!(
-        r"(?m)^([ \t]*{name_pattern}[ \t]*=[ \t]*)([^#$\r\n][^#\r\n]*?)([ \t]*(?:#.*)?)(\r?)$"
-    ))
-    .expect("an escaped parameter name is a valid regular expression");
-    replace_first(text, &pattern, |captures| {
-        let prefix = captures.get(1).map_or("", |item| item.as_str());
-        let value = captures.get(2).map_or("", |item| item.as_str()).trim_end();
-        let suffix = captures.get(3).map_or("", |item| item.as_str());
-        let carriage_return = captures.get(4).map_or("", |item| item.as_str());
-        format!("{prefix}${{{name}:-{value}}}{suffix}{carriage_return}")
-    })
-    .ok_or_else(|| LanguageError::BindingNotFound {
-        name: name.to_owned(),
-    })
+    let ParseOutcome::Parsed(document) = parse_document("shell", text) else {
+        return Err(LanguageError::InvalidSource {
+            kind: "shell".to_owned(),
+        });
+    };
+    let output = document.plan_shell_normalization(name)?.apply(text)?;
+    match parse_document("shell", &output) {
+        ParseOutcome::Parsed(_) => Ok(output),
+        ParseOutcome::SyntaxError(_) | ParseOutcome::ParserUnavailable(_) => {
+            Err(LanguageError::InvalidSource {
+                kind: "shell".to_owned(),
+            })
+        }
+    }
 }
 
 fn metadata_leader(kind: &str) -> Option<&'static str> {
@@ -716,846 +842,31 @@ fn toml_to_json(value: &TomlValue) -> JsonValue {
 /// Read a static CLI declaration for a supported language.
 #[must_use]
 pub fn cli_params(kind: &str, text: &str) -> Vec<ParamDecl> {
-    if !parser_accepts(kind, text) {
-        return Vec::new();
-    }
-    match kind {
-        "python" => python_cli_params(text),
-        "shell" => shell_cli_params(text),
-        "js" | "ts" => javascript_cli_params(text),
-        "fish" => fish_cli_params(text),
-        "powershell" => powershell_cli_params(text),
-        _ => Vec::new(),
-    }
-}
-
-fn python_cli_params(text: &str) -> Vec<ParamDecl> {
-    let mut output = Vec::new();
-    for body in call_bodies(text, "add_argument") {
-        if let Some(parameter) = python_option_from_call(&body, PythonCallKind::Argparse, None) {
-            push_unique(&mut output, parameter);
-        }
-    }
-    for body in call_bodies(text, "@click.option") {
-        if let Some(parameter) = python_option_from_call(&body, PythonCallKind::Click, None) {
-            push_unique(&mut output, parameter);
-        }
-    }
-    for captures in PYTHON_TYPER.captures_iter(text) {
-        let full = captures
-            .get(0)
-            .expect("a regular expression match is complete");
-        let open_offset = full
-            .as_str()
-            .rfind('(')
-            .expect("the Typer pattern ends with an opening parenthesis");
-        let open = full.start() + open_offset;
-        let Some(body) = parenthesized_body(text, open) else {
-            continue;
-        };
-        let name = captures.get(1).map_or("", |value| value.as_str());
-        let type_name = captures.get(2).map_or("str", |value| value.as_str());
-        let call = captures.get(3).map_or("Option", |value| value.as_str());
-        if let Some(parameter) = python_option_from_call(
-            body,
-            if call == "Argument" {
-                PythonCallKind::TyperArgument
-            } else {
-                PythonCallKind::TyperOption
-            },
-            Some((name, type_name)),
-        ) {
-            push_unique(&mut output, parameter);
-        }
-    }
-    output
-}
-
-#[derive(Clone, Copy)]
-enum PythonCallKind {
-    Argparse,
-    Click,
-    TyperOption,
-    TyperArgument,
-}
-
-fn python_option_from_call(
-    body: &str,
-    kind: PythonCallKind,
-    typer: Option<(&str, &str)>,
-) -> Option<ParamDecl> {
-    let parts = split_top_level(body, ',');
-    let mut positional = Vec::new();
-    let mut keywords = BTreeMap::new();
-    for part in parts {
-        let part = part.trim();
-        if let Some((key, value)) = split_keyword(part) {
-            keywords.insert(key.to_owned(), value.trim().to_owned());
-        } else if !part.is_empty() {
-            positional.push(part.to_owned());
-        }
-    }
-
-    let (name, flag) = match kind {
-        PythonCallKind::TyperArgument => (typer?.0.to_owned(), String::new()),
-        PythonCallKind::TyperOption => {
-            let name = typer?.0.to_owned();
-            let flag = positional
-                .iter()
-                .skip(1)
-                .filter_map(|value| parse_quoted(value))
-                .find(|value| value.starts_with('-'))
-                .unwrap_or_else(|| format!("--{}", name.replace('_', "-")));
-            (name, flag)
-        }
-        PythonCallKind::Argparse | PythonCallKind::Click => {
-            let flags = positional
-                .iter()
-                .filter_map(|value| parse_quoted(value))
-                .collect::<Vec<_>>();
-            let preferred = flags
-                .iter()
-                .find(|value| value.starts_with("--"))
-                .or_else(|| flags.first())?;
-            if preferred.starts_with('-') {
-                (flag_name(preferred), preferred.clone())
-            } else {
-                (preferred.clone(), String::new())
-            }
-        }
-    };
-
-    let mut declaration = ParamDecl::new(name);
-    declaration.delivery = ParameterDelivery::Flag;
-    declaration.flag = flag;
-    if let Some((_, type_name)) = typer {
-        declaration.parameter_type = parameter_type(type_name);
-    }
-    if let Some(value) = keywords.get("type") {
-        declaration.parameter_type = parameter_type(value.trim());
-    }
-    if let Some(value) = keywords.get("required") {
-        declaration.required = truthy_source(value);
-    }
-    if let Some(value) = keywords.get("help") {
-        declaration.help = parse_quoted(value).unwrap_or_default();
-    }
-    if let Some(value) = keywords.get("choices") {
-        declaration.choices = parse_list_strings(value);
-        if !declaration.choices.is_empty() {
-            declaration.parameter_type = ParameterType::Choice;
-        }
-    }
-    if let Some(value) = keywords.get("action").and_then(|value| parse_quoted(value))
-        && matches!(value.as_str(), "store_true" | "store_false")
-    {
-        declaration.parameter_type = ParameterType::Bool;
-        declaration.action = value;
-    }
-    let default_source = match kind {
-        PythonCallKind::TyperOption | PythonCallKind::TyperArgument => positional.first(),
-        PythonCallKind::Argparse | PythonCallKind::Click => keywords.get("default"),
-    };
-    if let Some(value) = default_source
-        && let Some(default) = parse_parameter_value(value, declaration.parameter_type)
-    {
-        declaration.default = Some(default);
-    }
-    Some(declaration)
-}
-
-fn shell_cli_params(text: &str) -> Vec<ParamDecl> {
-    let pattern = Regex::new(r#"getopts\s+['"]([^'"]+)['"]"#).expect("fixed getopts pattern");
-    let Some(spec) = pattern
-        .captures(text)
-        .and_then(|captures| captures.get(1))
-        .map(|value| value.as_str())
-    else {
+    let ParseOutcome::Parsed(document) = parse_document(kind, text) else {
         return Vec::new();
     };
-    let chars = spec.chars().collect::<Vec<_>>();
-    let mut output = Vec::new();
-    let mut index = 0;
-    while index < chars.len() {
-        let character = chars[index];
-        if character == ':' {
-            index = index.saturating_add(1);
-            continue;
-        }
-        let takes_value = chars.get(index + 1) == Some(&':');
-        let mut declaration = ParamDecl::new(character.to_string());
-        declaration.delivery = ParameterDelivery::Flag;
-        declaration.flag = format!("-{character}");
-        if !takes_value {
-            declaration.parameter_type = ParameterType::Bool;
-            declaration.action = "store_true".to_owned();
-        }
-        output.push(declaration);
-        index = index
-            .saturating_add(usize::from(takes_value))
-            .saturating_add(1);
+    match document.cli_surface() {
+        CliSurface::Static(surface) => surface
+            .fields
+            .into_iter()
+            .map(|field| field.declaration)
+            .collect(),
+        CliSurface::Absent | CliSurface::Dynamic(_) => Vec::new(),
     }
-    output
-}
-
-fn javascript_cli_params(text: &str) -> Vec<ParamDecl> {
-    JS_OPTION
-        .captures_iter(text)
-        .filter_map(|captures| {
-            let name = captures.get(1)?.as_str();
-            let type_name = captures.get(3)?.as_str();
-            let mut declaration = ParamDecl::new(name);
-            declaration.delivery = ParameterDelivery::Flag;
-            declaration.flag = format!("--{}", name.replace('_', "-"));
-            if type_name == "boolean" {
-                declaration.parameter_type = ParameterType::Bool;
-                declaration.action = "store_true".to_owned();
-            }
-            Some(declaration)
-        })
-        .collect()
-}
-
-fn fish_cli_params(text: &str) -> Vec<ParamDecl> {
-    let quoted = Regex::new(r#"['"]([^'"]+)['"]"#).expect("fixed fish argparse pattern");
-    let mut output = Vec::new();
-    for line in text.lines().filter(|line| line.contains("argparse")) {
-        for captures in quoted.captures_iter(line) {
-            let raw = captures
-                .get(1)
-                .expect("the fish option pattern captures its value")
-                .as_str();
-            let takes_value = raw.ends_with('=') || raw.ends_with("=+");
-            let raw = raw.trim_end_matches(&['=', '+'][..]);
-            let parts = raw.split('/').collect::<Vec<_>>();
-            let long = parts.last().copied().unwrap_or(raw);
-            let mut declaration = ParamDecl::new(long.replace('-', "_"));
-            declaration.delivery = ParameterDelivery::Flag;
-            declaration.flag = format!("--{long}");
-            if !takes_value {
-                declaration.parameter_type = ParameterType::Bool;
-                declaration.action = "store_true".to_owned();
-            }
-            output.push(declaration);
-        }
-    }
-    output
-}
-
-fn powershell_cli_params(text: &str) -> Vec<ParamDecl> {
-    POWERSHELL_PARAM
-        .captures_iter(text)
-        .filter_map(|captures| {
-            let attributes = captures.get(1).map_or("", |value| value.as_str());
-            let type_name = captures.get(2)?.as_str();
-            let name = captures.get(3)?.as_str();
-            let mut declaration = ParamDecl::new(name);
-            declaration.delivery = ParameterDelivery::Flag;
-            declaration.flag = format!("-{name}");
-            declaration.parameter_type = match type_name.to_ascii_lowercase().as_str() {
-                "int" => ParameterType::Int,
-                "double" | "float" => ParameterType::Float,
-                "bool" | "switch" => ParameterType::Bool,
-                _ => ParameterType::Str,
-            };
-            declaration.required = attributes.to_ascii_lowercase().contains("mandatory=$true");
-            if type_name.eq_ignore_ascii_case("switch") {
-                declaration.action = "store_true".to_owned();
-            }
-            if let Some(default) = captures.get(4)
-                && let Some(value) =
-                    parse_powershell_value(default.as_str().trim(), declaration.parameter_type)
-            {
-                declaration.default = Some(value);
-            }
-            Some(declaration)
-        })
-        .collect()
 }
 
 /// Detect source-bound values that skit can manage.
 #[must_use]
 pub fn detect_candidates(kind: &str, text: &str) -> Vec<ParamDecl> {
-    if !parser_accepts(kind, text) {
+    let ParseOutcome::Parsed(document) = parse_document(kind, text) else {
         return Vec::new();
-    }
-    match kind {
-        "python" => python_candidates(text),
-        "shell" => shell_candidates(text),
-        "js" | "ts" => javascript_candidates(text),
-        "fish" => fish_candidates(text),
-        _ => Vec::new(),
-    }
-}
-
-fn python_candidates(text: &str) -> Vec<ParamDecl> {
-    let tree = parsed_tree("python", text).expect("the source passed the Python parser gate");
-    let root = tree.root_node();
-    let mut positioned = Vec::<(usize, ParamDecl)>::new();
-    let mut cursor = root.walk();
-    for statement in root.named_children(&mut cursor) {
-        collect_python_statement_constants(statement, text, &mut positioned);
-        if statement.kind() == "if_statement"
-            && is_python_main_guard(statement, text)
-            && let Some(body) = statement.child_by_field_name("consequence")
-        {
-            let mut body_cursor = body.walk();
-            for child in body.named_children(&mut body_cursor) {
-                collect_python_statement_constants(child, text, &mut positioned);
-            }
-        }
-    }
-
-    for (input_order, node) in python_input_calls(root, text).into_iter().enumerate() {
-        let prompt = node
-            .child_by_field_name("arguments")
-            .and_then(first_named_child)
-            .and_then(|argument| node_text(argument, text))
-            .and_then(parse_python_string)
-            .unwrap_or_default();
-        let mut declaration = ParamDecl::new(format!("input-{}", input_order + 1));
-        declaration.binding = ParameterBinding::Input;
-        declaration.delivery = ParameterDelivery::Inject;
-        declaration.prompt = prompt;
-        declaration.order = input_order as i64;
-        declaration.secret = is_secret_name(&declaration.prompt);
-        positioned.push((node.start_byte(), declaration));
-    }
-    positioned.sort_by_key(|(position, _)| *position);
-    positioned
+    };
+    document
+        .analysis()
+        .candidates
         .into_iter()
-        .map(|(_, declaration)| declaration)
+        .map(|candidate| candidate.declaration)
         .collect()
-}
-
-fn collect_python_statement_constants(
-    statement: tree_sitter::Node<'_>,
-    text: &str,
-    output: &mut Vec<(usize, ParamDecl)>,
-) {
-    let assignment = if statement.kind() == "expression_statement" {
-        first_named_child(statement)
-    } else {
-        Some(statement)
-    };
-    let Some(assignment) = assignment.filter(|node| node.kind() == "assignment") else {
-        return;
-    };
-    let left = assignment
-        .child_by_field_name("left")
-        .expect("a Python assignment has a left field");
-    let name = node_text(left, text).expect("tree-sitter byte ranges are inside the source");
-    if name.starts_with('_') {
-        return;
-    }
-    if left.kind() != "identifier" {
-        return;
-    }
-    let right = assignment
-        .child_by_field_name("right")
-        .expect("a Python assignment has a right field");
-    let source = node_text(right, text).expect("tree-sitter byte ranges are inside the source");
-    let Some((parameter_type, default)) = infer_python_literal(source) else {
-        return;
-    };
-    let mut declaration = ParamDecl::new(name);
-    declaration.binding = ParameterBinding::Const;
-    declaration.delivery = ParameterDelivery::Inject;
-    declaration.parameter_type = parameter_type;
-    declaration.default = Some(default);
-    declaration.secret = is_secret_name(name);
-    if let Some((_, current)) = output
-        .iter_mut()
-        .find(|(_, current)| current.name == declaration.name)
-    {
-        *current = declaration;
-    } else {
-        output.push((assignment.start_byte(), declaration));
-    }
-}
-
-fn is_python_main_guard(statement: tree_sitter::Node<'_>, text: &str) -> bool {
-    statement
-        .child_by_field_name("condition")
-        .and_then(|condition| node_text(condition, text))
-        .is_some_and(|condition| condition.contains("__name__") && condition.contains("__main__"))
-}
-
-fn infer_python_literal(source: &str) -> Option<(ParameterType, ParameterValue)> {
-    let mut source = source.trim();
-    while let Some(inner) = source
-        .strip_prefix('(')
-        .and_then(|value| value.strip_suffix(')'))
-    {
-        source = inner.trim();
-    }
-    infer_literal(source).or_else(|| {
-        parse_python_string(source).map(|value| (ParameterType::Str, ParameterValue::String(value)))
-    })
-}
-
-fn parse_python_string(source: &str) -> Option<String> {
-    let source = source.trim();
-    let source = source
-        .strip_prefix(['r', 'R', 'u', 'U', 'b', 'B', 'f', 'F'])
-        .unwrap_or(source);
-    parse_quoted(source)
-}
-
-fn python_input_calls<'tree>(
-    root: tree_sitter::Node<'tree>,
-    text: &str,
-) -> Vec<tree_sitter::Node<'tree>> {
-    if python_scope_binds_input(root, text) {
-        return Vec::new();
-    }
-    let mut calls = Vec::new();
-    walk_tree(root, &mut |node| {
-        if node.kind() != "call"
-            || node
-                .child_by_field_name("function")
-                .and_then(|function| node_text(function, text))
-                != Some("input")
-        {
-            return;
-        }
-        let mut ancestor = node.parent();
-        while let Some(scope) = ancestor {
-            if matches!(scope.kind(), "function_definition" | "lambda")
-                && python_scope_binds_input(scope, text)
-            {
-                return;
-            }
-            ancestor = scope.parent();
-        }
-        calls.push(node);
-    });
-    calls.sort_by_key(tree_sitter::Node::start_byte);
-    calls
-}
-
-fn python_scope_binds_input(scope: tree_sitter::Node<'_>, text: &str) -> bool {
-    if let Some(parameters) = scope.child_by_field_name("parameters")
-        && subtree_has_identifier(parameters, text, "input")
-    {
-        return true;
-    }
-    let body = scope.child_by_field_name("body").unwrap_or(scope);
-    python_body_binds_input(body, text, scope.id() == body.id())
-}
-
-fn python_body_binds_input(node: tree_sitter::Node<'_>, text: &str, root_level: bool) -> bool {
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        if child.kind() == "assignment"
-            && child
-                .child_by_field_name("left")
-                .and_then(|left| node_text(left, text))
-                == Some("input")
-        {
-            return true;
-        }
-        if matches!(child.kind(), "function_definition" | "class_definition") {
-            if child
-                .child_by_field_name("name")
-                .and_then(|name| node_text(name, text))
-                == Some("input")
-            {
-                return true;
-            }
-            continue;
-        }
-        if matches!(child.kind(), "import_statement" | "import_from_statement")
-            && node_text(child, text).is_some_and(python_import_binds_input)
-        {
-            return true;
-        }
-        if !(root_level && matches!(child.kind(), "function_definition" | "class_definition"))
-            && python_body_binds_input(child, text, false)
-        {
-            return true;
-        }
-    }
-    false
-}
-
-fn subtree_has_identifier(node: tree_sitter::Node<'_>, text: &str, expected: &str) -> bool {
-    if node.kind() == "identifier" && node_text(node, text) == Some(expected) {
-        return true;
-    }
-    let mut cursor = node.walk();
-    node.named_children(&mut cursor)
-        .any(|child| subtree_has_identifier(child, text, expected))
-}
-
-fn python_import_binds_input(statement: &str) -> bool {
-    statement
-        .split(|character: char| !character.is_alphanumeric() && character != '_')
-        .any(|word| word == "input")
-}
-
-fn shell_candidates(text: &str) -> Vec<ParamDecl> {
-    let mut positioned = Vec::<(usize, ParamDecl)>::new();
-    let mut inputs = Vec::<(usize, ParamDecl)>::new();
-    let mut assigned = BTreeSet::new();
-    let mut defaults = Vec::<(usize, ParamDecl)>::new();
-    let mut input_order = 0_i64;
-    let mut depth = 0_usize;
-    let mut offset = 0_usize;
-
-    for line_with_end in text.split_inclusive('\n') {
-        let line = line_with_end.trim_end_matches(['\r', '\n']);
-        let trimmed = line.trim();
-        if shell_closes_block(trimmed) {
-            depth = depth.saturating_sub(1);
-        }
-
-        for captures in SHELL_DEFAULT.captures_iter(line) {
-            let name = captures.get(1).expect("shell default name").as_str();
-            if name.starts_with('_') || defaults.iter().any(|(_, row)| row.name == name) {
-                continue;
-            }
-            let raw_default = captures.get(3).map_or("", |value| value.as_str());
-            let (parameter_type, default) = infer_shell_value(raw_default);
-            let mut declaration = ParamDecl::new(name);
-            declaration.binding = ParameterBinding::EnvDefault;
-            declaration.delivery = ParameterDelivery::Env;
-            declaration.parameter_type = parameter_type;
-            declaration.default = Some(default);
-            declaration.secret = is_secret_name(name);
-            defaults.push((
-                offset + captures.get(0).expect("shell default").start(),
-                declaration,
-            ));
-        }
-
-        if let Some((prompt, variables, secret)) = shell_read(line) {
-            for variable in variables {
-                let mut declaration = ParamDecl::new(format!("input-{}", input_order + 1));
-                declaration.binding = ParameterBinding::Input;
-                declaration.delivery = ParameterDelivery::Inject;
-                declaration.prompt = prompt.clone();
-                declaration.order = input_order;
-                declaration.secret =
-                    secret || is_secret_name(&declaration.prompt) || is_secret_name(&variable);
-                inputs.push((offset, declaration));
-                input_order += 1;
-            }
-        }
-
-        if depth == 0
-            && let Some((name, value, self_default)) = shell_assignment(line)
-        {
-            if !self_default {
-                assigned.insert(name.clone());
-            }
-            if !name.starts_with('_')
-                && !self_default
-                && !value.is_empty()
-                && !value.contains('$')
-                && !value.starts_with('(')
-            {
-                let (parameter_type, default) = infer_shell_value(&value);
-                let mut declaration = ParamDecl::new(&name);
-                declaration.binding = ParameterBinding::Const;
-                declaration.delivery = ParameterDelivery::Inject;
-                declaration.parameter_type = parameter_type;
-                declaration.default = Some(default);
-                declaration.secret = is_secret_name(&name);
-                if let Some((_, current)) = positioned
-                    .iter_mut()
-                    .find(|(_, current)| current.name == name)
-                {
-                    *current = declaration;
-                } else {
-                    positioned.push((offset, declaration));
-                }
-            }
-        }
-
-        if shell_opens_block(trimmed) {
-            depth += 1;
-        }
-        offset += line_with_end.len();
-    }
-
-    positioned.extend(
-        defaults
-            .into_iter()
-            .filter(|(_, declaration)| !assigned.contains(&declaration.name)),
-    );
-    positioned.sort_by_key(|(position, _)| *position);
-    inputs.sort_by_key(|(position, _)| *position);
-    positioned.extend(inputs);
-    positioned
-        .into_iter()
-        .map(|(_, declaration)| declaration)
-        .collect()
-}
-
-fn shell_assignment(line: &str) -> Option<(String, String, bool)> {
-    let words = shlex::split(line)?;
-    let first = words.first()?.as_str();
-    let (prefix, assignment) = if first.contains('=') {
-        (None, first)
-    } else if matches!(first, "export" | "declare" | "typeset") {
-        let assignment = words.iter().skip(1).find(|word| word.contains('='))?;
-        (Some(first), assignment.as_str())
-    } else {
-        return None;
-    };
-    if matches!(prefix, Some("declare" | "typeset"))
-        && words
-            .iter()
-            .take_while(|word| !word.contains('='))
-            .any(|word| word.starts_with('-') && word.contains('r'))
-    {
-        return None;
-    }
-    let (name, value) = assignment.split_once('=')?;
-    if !valid_identifier(name) {
-        return None;
-    }
-    let self_default = SHELL_DEFAULT
-        .captures(value)
-        .and_then(|captures| captures.get(1))
-        .is_some_and(|target| target.as_str() == name);
-    Some((name.to_owned(), value.to_owned(), self_default))
-}
-
-fn shell_read(line: &str) -> Option<(String, Vec<String>, bool)> {
-    let words = shlex::split(line)?;
-    if words.first().map(String::as_str) != Some("read") {
-        return None;
-    }
-    let mut prompt = String::new();
-    let mut secret = false;
-    let mut index = 1;
-    let mut interactive = false;
-    while let Some(option) = words.get(index).filter(|word| word.starts_with('-')) {
-        let flags = option.trim_start_matches('-');
-        secret |= flags.contains('s');
-        interactive |= flags.contains('s') || flags.contains('p');
-        index = index.saturating_add(1);
-        if flags.contains('p') {
-            prompt = words.get(index).cloned().unwrap_or_default();
-            if prompt.contains('$') {
-                prompt.clear();
-            }
-            index = index.saturating_add(1);
-        }
-    }
-    if !interactive {
-        return None;
-    }
-    let variables = words[index..]
-        .iter()
-        .filter(|word| valid_identifier(word))
-        .cloned()
-        .collect::<Vec<_>>();
-    (!variables.is_empty()).then_some((prompt, variables, secret))
-}
-
-fn shell_closes_block(line: &str) -> bool {
-    matches!(line, "}" | "done" | "fi" | "esac")
-}
-
-fn shell_opens_block(line: &str) -> bool {
-    (line.ends_with('{') && (line.contains("()") || line.starts_with("function ")))
-        || ["if ", "while ", "until ", "for ", "select ", "case "]
-            .iter()
-            .any(|prefix| line.starts_with(prefix))
-}
-
-fn infer_shell_value(value: &str) -> (ParameterType, ParameterValue) {
-    infer_literal(value).unwrap_or_else(|| {
-        (
-            ParameterType::Str,
-            ParameterValue::String(unquote_shell(value)),
-        )
-    })
-}
-
-fn javascript_candidates(text: &str) -> Vec<ParamDecl> {
-    let mut output = Vec::new();
-    for line in text.lines() {
-        let Some(captures) = JS_CONST.captures(line) else {
-            continue;
-        };
-        let name = captures
-            .get(1)
-            .expect("the JavaScript constant pattern captures its name")
-            .as_str();
-        let source = captures.get(2).map_or("", |value| value.as_str().trim());
-        let Some((parameter_type, default)) = infer_javascript_literal(source) else {
-            continue;
-        };
-        let mut declaration = ParamDecl::new(name);
-        declaration.binding = ParameterBinding::Const;
-        declaration.delivery = ParameterDelivery::Inject;
-        declaration.parameter_type = parameter_type;
-        declaration.default = Some(default);
-        declaration.secret = is_secret_name(name);
-        push_unique(&mut output, declaration);
-    }
-    output
-}
-
-fn fish_candidates(text: &str) -> Vec<ParamDecl> {
-    let statements = fish_top_level_statements(text);
-    let mut candidates = Vec::<ParamDecl>::new();
-    let mut clobbered = BTreeSet::new();
-
-    for words in &statements {
-        if words.first().map(String::as_str) != Some("set") || fish_is_query(words) {
-            continue;
-        }
-        if let Some(name) = fish_set_name(words) {
-            clobbered.insert(name.to_owned());
-        }
-    }
-
-    for pair in statements.windows(2) {
-        let query = &pair[0];
-        let guarded = &pair[1];
-        if query.first().map(String::as_str) != Some("set") || !fish_is_query(query) {
-            continue;
-        }
-        let Some(query_name) = fish_set_name(query) else {
-            continue;
-        };
-        if query_name.starts_with('_')
-            || clobbered.contains(query_name)
-            || candidates
-                .iter()
-                .any(|candidate| candidate.name == query_name)
-        {
-            continue;
-        }
-        let Some((guarded_name, values)) = fish_guarded_set(guarded) else {
-            continue;
-        };
-        if guarded_name != query_name || values.is_empty() {
-            continue;
-        }
-        let value = values.join(" ");
-        let (parameter_type, default) = infer_shell_value(&value);
-        let mut declaration = ParamDecl::new(query_name);
-        declaration.binding = ParameterBinding::EnvDefault;
-        declaration.delivery = ParameterDelivery::Env;
-        declaration.parameter_type = parameter_type;
-        declaration.default = Some(default);
-        declaration.secret = is_secret_name(query_name);
-        candidates.push(declaration);
-    }
-    candidates
-}
-
-fn fish_top_level_statements(text: &str) -> Vec<Vec<String>> {
-    let mut output = Vec::new();
-    let mut depth = 0_usize;
-    for line in text.lines() {
-        for segment in fish_line_segments(line) {
-            let Some(words) = shlex::split(&segment) else {
-                continue;
-            };
-            debug_assert!(!words.is_empty(), "a nonempty shell segment has one word");
-            if words.first().map(String::as_str) == Some("end") {
-                depth = depth.saturating_sub(1);
-                continue;
-            }
-            if depth == 0 {
-                output.push(words.clone());
-            }
-            if matches!(
-                words.first().map(String::as_str),
-                Some("function" | "if" | "while" | "for" | "begin" | "switch")
-            ) {
-                depth += 1;
-            }
-        }
-    }
-    output
-}
-
-fn fish_line_segments(line: &str) -> Vec<String> {
-    let mut output = Vec::new();
-    let mut current = String::new();
-    let mut quote = None;
-    let mut escaped = false;
-    let mut previous_whitespace = true;
-    for character in line.chars() {
-        if escaped {
-            current.push(character);
-            escaped = false;
-            previous_whitespace = character.is_whitespace();
-            continue;
-        }
-        if character == '\\' {
-            current.push(character);
-            escaped = true;
-            previous_whitespace = false;
-            continue;
-        }
-        if matches!(character, '\'' | '"') {
-            if quote == Some(character) {
-                quote = None;
-            } else if quote.is_none() {
-                quote = Some(character);
-            }
-            current.push(character);
-            previous_whitespace = false;
-            continue;
-        }
-        if quote.is_none() && character == '#' && previous_whitespace {
-            break;
-        }
-        if quote.is_none() && character == ';' {
-            if !current.trim().is_empty() {
-                output.push(current.trim().to_owned());
-            }
-            current.clear();
-            previous_whitespace = true;
-            continue;
-        }
-        previous_whitespace = character.is_whitespace();
-        current.push(character);
-    }
-    if !current.trim().is_empty() {
-        output.push(current.trim().to_owned());
-    }
-    output
-}
-
-fn fish_is_query(words: &[String]) -> bool {
-    words
-        .iter()
-        .skip(1)
-        .take_while(|word| word.starts_with('-'))
-        .any(|word| word == "--query" || word.trim_start_matches('-').contains('q'))
-}
-
-fn fish_set_name(words: &[String]) -> Option<&str> {
-    words
-        .iter()
-        .skip(1)
-        .find(|word| !word.starts_with('-'))
-        .map(String::as_str)
-}
-
-fn fish_guarded_set(words: &[String]) -> Option<(&str, &[String])> {
-    if words.first().map(String::as_str) != Some("or")
-        || words.get(1).map(String::as_str) != Some("set")
-    {
-        return None;
-    }
-    let index = words
-        .iter()
-        .enumerate()
-        .skip(2)
-        .find(|(_, word)| !word.starts_with('-'))?
-        .0;
-    Some((words[index].as_str(), &words[index + 1..]))
 }
 
 /// Build placeholder fields for command and prompt entries.
@@ -1660,128 +971,48 @@ pub fn inject_values(
     declarations: &[ParamDecl],
     values: &BTreeMap<String, String>,
 ) -> Result<String, LanguageError> {
-    require_valid_source(kind, text)?;
-    if kind == "python" {
-        let output = inject_python_values(text, declarations, values)?;
-        require_valid_source(kind, &output)?;
-        return Ok(output);
-    }
-    if kind == "shell" {
-        let output = inject_shell_values(text, declarations, values)?;
-        require_valid_source(kind, &output)?;
-        return Ok(output);
-    }
-    let mut output = text.to_owned();
-    for declaration in declarations {
-        if declaration.delivery != ParameterDelivery::Inject {
-            continue;
-        }
-        let Some(value) = values.get(&declaration.name) else {
-            continue;
-        };
-        output = match kind {
-            "js" | "ts" => inject_javascript(&output, declaration, value)?,
-            _ => {
-                return Err(LanguageError::UnsupportedKind {
-                    kind: kind.to_owned(),
-                });
-            }
-        };
-    }
-    require_valid_source(kind, &output)?;
-    Ok(output)
+    inject_values_for_interpreter(kind, text, declarations, values, None)
 }
 
-fn inject_python_values(
+/// Rewrite source bindings with accepted values and a resolved shell interpreter.
+pub fn inject_values_for_interpreter(
+    kind: &str,
     text: &str,
     declarations: &[ParamDecl],
     values: &BTreeMap<String, String>,
+    interpreter: Option<&str>,
 ) -> Result<String, LanguageError> {
-    let tree = parsed_tree("python", text).expect("the source passed the Python parser gate");
-    let selected = declarations
-        .iter()
-        .filter(|declaration| {
-            declaration.delivery == ParameterDelivery::Inject
-                && values.contains_key(&declaration.name)
-        })
-        .collect::<Vec<_>>();
-    if selected.is_empty() {
-        return Ok(text.to_owned());
-    }
-
-    let mut edits = Vec::<(usize, usize, String)>::new();
-    let mut matched = BTreeSet::new();
-    walk_tree(tree.root_node(), &mut |node| {
-        if node.kind() != "assignment" {
-            return;
+    let document = match parse_document(kind, text) {
+        ParseOutcome::Parsed(document) => document,
+        ParseOutcome::SyntaxError(_) => {
+            return Err(LanguageError::InvalidSource {
+                kind: kind.to_owned(),
+            });
         }
-        let left = node
-            .child_by_field_name("left")
-            .expect("a Python assignment has a left field");
-        let name = node_text(left, text).expect("tree-sitter byte ranges are inside the source");
-        let Some(declaration) = selected.iter().find(|declaration| {
-            declaration.binding == ParameterBinding::Const && declaration.name == name
-        }) else {
-            return;
-        };
-        let right = node
-            .child_by_field_name("right")
-            .expect("a Python assignment has a right field");
-        let source = node_text(right, text).expect("tree-sitter byte ranges are inside the source");
-        if infer_python_literal(source).is_none() {
-            return;
+        ParseOutcome::ParserUnavailable(_) => {
+            return Err(LanguageError::UnsupportedKind {
+                kind: kind.to_owned(),
+            });
         }
-        let value = values
-            .get(&declaration.name)
-            .expect("selected declarations have values");
-        edits.push((
-            right.start_byte(),
-            right.end_byte(),
-            replacement_literal(
-                declaration.parameter_type,
-                value,
-                quote_python_string,
-                python_bool_literal,
-            ),
-        ));
-        matched.insert(declaration.name.clone());
-    });
-    for (input_order, node) in python_input_calls(tree.root_node(), text)
-        .into_iter()
-        .enumerate()
-    {
-        if let Some(declaration) = selected.iter().find(|declaration| {
-            declaration.binding == ParameterBinding::Input
-                && declaration.order == input_order as i64
-        }) {
-            let value = values
-                .get(&declaration.name)
-                .expect("selected declarations have values");
-            edits.push((
-                node.start_byte(),
-                node.end_byte(),
-                quote_python_string(value),
-            ));
-            matched.insert(declaration.name.clone());
+    };
+    let output = document
+        .plan_injection_for_interpreter(declarations, values, interpreter)?
+        .apply(text)?;
+    match parse_document(kind, &output) {
+        ParseOutcome::Parsed(_) => Ok(output),
+        ParseOutcome::SyntaxError(_) | ParseOutcome::ParserUnavailable(_) => {
+            Err(LanguageError::InvalidSource {
+                kind: kind.to_owned(),
+            })
         }
     }
-
-    if let Some(missing) = selected
-        .iter()
-        .find(|declaration| !matched.contains(&declaration.name))
-    {
-        return Err(LanguageError::BindingNotFound {
-            name: missing.name.clone(),
-        });
-    }
-    apply_source_edits(text, edits)
 }
 
 fn apply_source_edits(
     text: &str,
     mut edits: Vec<(usize, usize, String)>,
 ) -> Result<String, LanguageError> {
-    edits.sort_by_key(|(start, _, _)| *start);
+    edits.sort_by_key(|(start, end, _)| (*start, *end));
     if edits
         .iter()
         .any(|(start, end, _)| start > end || *end > text.len())
@@ -1798,266 +1029,6 @@ fn apply_source_edits(
     Ok(output)
 }
 
-fn inject_shell_values(
-    text: &str,
-    declarations: &[ParamDecl],
-    values: &BTreeMap<String, String>,
-) -> Result<String, LanguageError> {
-    let selected = declarations
-        .iter()
-        .filter(|declaration| {
-            declaration.delivery == ParameterDelivery::Inject
-                && values.contains_key(&declaration.name)
-        })
-        .collect::<Vec<_>>();
-    if selected.is_empty() {
-        return Ok(text.to_owned());
-    }
-
-    let mut edits = Vec::<(usize, usize, String)>::new();
-    let mut matched = BTreeSet::new();
-    let mut input_order = 0_i64;
-    let mut offset = 0_usize;
-    for line_with_end in text.split_inclusive('\n') {
-        let line = line_with_end.trim_end_matches(['\r', '\n']);
-        if let Some((_, variables, _)) = shell_read(line) {
-            let first_order = input_order;
-            input_order += variables.len() as i64;
-            let rows = variables
-                .iter()
-                .enumerate()
-                .map(|(index, variable)| {
-                    selected
-                        .iter()
-                        .find(|declaration| {
-                            declaration.binding == ParameterBinding::Input
-                                && declaration.order == first_order + index as i64
-                        })
-                        .map(|declaration| (*declaration, variable))
-                })
-                .collect::<Vec<_>>();
-            if !rows.iter().all(Option::is_some) {
-                offset += line_with_end.len();
-                continue;
-            }
-            let indent = &line[..line.len() - line.trim_start().len()];
-            let replacement = rows
-                .into_iter()
-                .flatten()
-                .map(|(declaration, variable)| {
-                    matched.insert(declaration.name.clone());
-                    format!(
-                        "{variable}={}",
-                        quote_posix(
-                            values
-                                .get(&declaration.name)
-                                .expect("selected declarations have values")
-                        )
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("; ");
-            edits.push((
-                offset,
-                offset + line.len(),
-                format!("{indent}{replacement}"),
-            ));
-        }
-
-        if let Some((name, _, self_default)) = shell_assignment(line)
-            && !self_default
-            && let Some(declaration) = selected.iter().find(|declaration| {
-                declaration.binding == ParameterBinding::Const && declaration.name == name
-            })
-            && let Some(value_start) = shell_assignment_value_start(line, &name)
-        {
-            let before_comment = shell_comment_start(line).unwrap_or(line.len());
-            let value_end = line[..before_comment].trim_end().len();
-            if value_start <= value_end {
-                edits.push((
-                    offset + value_start,
-                    offset + value_end,
-                    quote_posix(
-                        values
-                            .get(&declaration.name)
-                            .expect("selected declarations have values"),
-                    ),
-                ));
-                matched.insert(declaration.name.clone());
-            }
-        }
-        offset += line_with_end.len();
-    }
-
-    if let Some(missing) = selected
-        .iter()
-        .find(|declaration| !matched.contains(&declaration.name))
-    {
-        return Err(LanguageError::BindingNotFound {
-            name: missing.name.clone(),
-        });
-    }
-    apply_source_edits(text, edits)
-}
-
-fn shell_assignment_value_start(line: &str, name: &str) -> Option<usize> {
-    let pattern = format!("{name}=");
-    line.find(&pattern).map(|index| index + pattern.len())
-}
-
-fn shell_comment_start(line: &str) -> Option<usize> {
-    let mut quote = None;
-    let mut escaped = false;
-    let mut previous_whitespace = true;
-    for (index, character) in line.char_indices() {
-        if escaped {
-            escaped = false;
-        } else if character == '\\' {
-            escaped = true;
-        } else if matches!(character, '\'' | '"') {
-            if quote == Some(character) {
-                quote = None;
-            } else if quote.is_none() {
-                quote = Some(character);
-            }
-        } else if quote.is_none() && character == '#' && previous_whitespace {
-            return Some(index);
-        }
-        previous_whitespace = character.is_whitespace();
-    }
-    None
-}
-
-fn inject_javascript(
-    text: &str,
-    declaration: &ParamDecl,
-    value: &str,
-) -> Result<String, LanguageError> {
-    let name = regex::escape(&declaration.name);
-    let pattern = Regex::new(&format!(
-        r"(?m)^([ \t]*(?:const|let|var)[ \t]+{name}(?:[ \t]*:[^=\r\n]+)?[ \t]*=[ \t]*)([^;\r\n]+)(;?[ \t]*)(\r?)$"
-    ))
-    .expect("escaped JavaScript constant pattern");
-    if pattern.captures(text).is_none() {
-        return Err(LanguageError::BindingNotFound {
-            name: declaration.name.clone(),
-        });
-    }
-    let literal = replacement_literal(
-        declaration.parameter_type,
-        value,
-        quote_javascript_string,
-        javascript_bool_literal,
-    );
-    Ok(replace_first(text, &pattern, |captures| {
-        format!(
-            "{}{}{}{}",
-            captures.get(1).map_or("", |item| item.as_str()),
-            literal,
-            captures.get(3).map_or("", |item| item.as_str()),
-            captures.get(4).map_or("", |item| item.as_str())
-        )
-    })
-    .expect("the same JavaScript constant pattern matched before replacement"))
-}
-
-fn replace_first<F>(text: &str, pattern: &Regex, replacement: F) -> Option<String>
-where
-    F: FnOnce(&Captures<'_>) -> String,
-{
-    let captures = pattern.captures(text)?;
-    let whole = captures.get(0)?;
-    let mut output = String::with_capacity(text.len());
-    output.push_str(&text[..whole.start()]);
-    output.push_str(&replacement(&captures));
-    output.push_str(&text[whole.end()..]);
-    Some(output)
-}
-
-/// Render one accepted value as a literal of the target language.
-///
-/// `bool_literal` belongs to the language, not to the stored constant: Python accepts only
-/// `True`/`False`, so a Boolean parameter over `FLAG = 1` must still inject `True`.
-fn replacement_literal(
-    parameter_type: ParameterType,
-    value: &str,
-    string_quote: fn(&str) -> String,
-    bool_literal: fn(bool) -> &'static str,
-) -> String {
-    match parameter_type {
-        ParameterType::Int => value
-            .trim()
-            .parse::<i64>()
-            .map_or_else(|_| string_quote(value), |value| value.to_string()),
-        ParameterType::Float => value.trim().parse::<f64>().map_or_else(
-            |_| string_quote(value),
-            |value| {
-                let mut rendered = value.to_string();
-                if !rendered.contains(['.', 'e', 'E']) {
-                    rendered.push_str(".0");
-                }
-                rendered
-            },
-        ),
-        ParameterType::Bool => canonical_bool(value).map_or_else(
-            || string_quote(value),
-            |value| bool_literal(value).to_owned(),
-        ),
-        ParameterType::Str | ParameterType::Choice | ParameterType::Path => string_quote(value),
-    }
-}
-
-const fn python_bool_literal(value: bool) -> &'static str {
-    if value { "True" } else { "False" }
-}
-
-const fn javascript_bool_literal(value: bool) -> &'static str {
-    if value { "true" } else { "false" }
-}
-
-fn canonical_bool(value: &str) -> Option<bool> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "true" | "1" | "yes" | "y" | "on" => Some(true),
-        "false" | "0" | "no" | "n" | "off" => Some(false),
-        _ => None,
-    }
-}
-
-fn quote_python_string(value: &str) -> String {
-    format!(
-        "'{}'",
-        value
-            .replace('\\', "\\\\")
-            .replace('\'', "\\'")
-            .replace('\n', "\\n")
-            .replace('\r', "\\r")
-            .replace('\t', "\\t")
-    )
-}
-
-fn quote_javascript_string(value: &str) -> String {
-    format!(
-        "'{}'",
-        value
-            .replace('\\', "\\\\")
-            .replace('\'', "\\'")
-            .replace('\n', "\\n")
-            .replace('\r', "\\r")
-    )
-}
-
-fn quote_posix(value: &str) -> String {
-    if !value.is_empty()
-        && value
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || "_@%+=:,./-".contains(character))
-    {
-        value.to_owned()
-    } else {
-        format!("'{}'", value.replace('\'', "'\"'\"'"))
-    }
-}
-
 /// Return declared package dependencies found in source text.
 #[must_use]
 pub fn external_dependencies(kind: &str, text: &str) -> Vec<String> {
@@ -2070,9 +1041,12 @@ pub fn external_dependencies(kind: &str, text: &str) -> Vec<String> {
 /// imports from this directory do not name package dependencies.
 #[must_use]
 pub fn external_dependencies_at(kind: &str, text: &str, script_dir: Option<&Path>) -> Vec<String> {
-    // One parse serves the gate and the scan, so a refused source never reaches an analyzer.
-    match (kind, parsed_tree(kind, text)) {
-        ("python", Some(tree)) => {
+    // One document serves the gate and the scan, so a refused source never reaches an analyzer.
+    let ParseOutcome::Parsed(document) = parse_document(kind, text) else {
+        return Vec::new();
+    };
+    match kind {
+        "python" => {
             let inline = parse_inline_metadata(text, "#")
                 .and_then(|table| table.get("dependencies").cloned())
                 .and_then(|value| value.as_array().cloned())
@@ -2081,23 +1055,13 @@ pub fn external_dependencies_at(kind: &str, text: &str, script_dir: Option<&Path
                 .filter_map(|value| value.as_str().map(str::to_owned))
                 .collect::<Vec<_>>();
             if inline.is_empty() {
-                python_dependencies(&tree, text, script_dir)
+                python_dependencies(document.syntax_tree(), text, script_dir)
             } else {
                 inline
             }
         }
-        ("js" | "ts", Some(tree)) => javascript_dependencies(&tree, text),
+        "js" | "ts" => javascript_dependencies(document.syntax_tree(), text),
         _ => Vec::new(),
-    }
-}
-
-fn require_valid_source(kind: &str, text: &str) -> Result<(), LanguageError> {
-    if parser_accepts(kind, text) {
-        Ok(())
-    } else {
-        Err(LanguageError::InvalidSource {
-            kind: kind.to_owned(),
-        })
     }
 }
 
@@ -2107,26 +1071,7 @@ fn require_valid_source(kind: &str, text: &str) -> Result<(), LanguageError> {
 /// analyzer, injector, and dependency features use this same gate.
 #[must_use]
 pub fn source_is_valid(kind: &str, text: &str) -> bool {
-    parser_accepts(kind, text)
-}
-
-fn parser_accepts(kind: &str, text: &str) -> bool {
-    !matches!(kind, "python" | "shell" | "js" | "ts") || parsed_tree(kind, text).is_some()
-}
-
-fn parsed_tree(kind: &str, text: &str) -> Option<tree_sitter::Tree> {
-    let language = match kind {
-        "python" => tree_sitter_python::LANGUAGE,
-        "shell" => tree_sitter_bash::LANGUAGE,
-        "js" => tree_sitter_javascript::LANGUAGE,
-        "ts" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
-        _ => return None,
-    };
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&language.into()).ok()?;
-    parser
-        .parse(text, None)
-        .filter(|tree| !tree.root_node().has_error())
+    !matches!(parse_document(kind, text), ParseOutcome::SyntaxError(_))
 }
 
 fn node_text<'text>(node: tree_sitter::Node<'_>, text: &'text str) -> Option<&'text str> {
@@ -2522,265 +1467,6 @@ const NODE_BUILTINS: &[&str] = &[
     "zlib",
 ];
 
-fn call_bodies(text: &str, needle: &str) -> Vec<String> {
-    let mut output = Vec::new();
-    let mut offset = 0;
-    while let Some(relative) = text[offset..].find(needle) {
-        let start = offset + relative + needle.len();
-        let Some(open) = text[start..]
-            .find('(')
-            .map(|relative_open| start + relative_open)
-        else {
-            break;
-        };
-        if let Some(body) = parenthesized_body(text, open) {
-            output.push(body.to_owned());
-        }
-        offset = open.saturating_add(1);
-    }
-    output
-}
-
-fn parenthesized_body(text: &str, open: usize) -> Option<&str> {
-    if text.as_bytes().get(open) != Some(&b'(') {
-        return None;
-    }
-    let bytes = text.as_bytes();
-    let mut depth = 0_i32;
-    let mut quote = None;
-    let mut escaped = false;
-    let mut index = open;
-    while index < bytes.len() {
-        let character = bytes[index] as char;
-        if escaped {
-            escaped = false;
-            index = index.saturating_add(1);
-            continue;
-        }
-        if character == '\\' && quote.is_some() {
-            escaped = true;
-            index = index.saturating_add(1);
-            continue;
-        }
-        if matches!(character, '\'' | '"') {
-            if quote == Some(character) {
-                quote = None;
-            } else if quote.is_none() {
-                quote = Some(character);
-            }
-            index = index.saturating_add(1);
-            continue;
-        }
-        if quote.is_none() {
-            if character == '(' {
-                depth += 1;
-            } else if character == ')' {
-                depth -= 1;
-                if depth == 0 {
-                    return text.get(open + 1..index);
-                }
-            }
-        }
-        index = index.saturating_add(1);
-    }
-    None
-}
-
-fn split_top_level(text: &str, delimiter: char) -> Vec<&str> {
-    let mut output = Vec::new();
-    let mut quote = None;
-    let mut escaped = false;
-    let mut square = 0_i32;
-    let mut round = 0_i32;
-    let mut curly = 0_i32;
-    let mut start = 0;
-    for (index, character) in text.char_indices() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if character == '\\' && quote.is_some() {
-            escaped = true;
-            continue;
-        }
-        if matches!(character, '\'' | '"') {
-            if quote == Some(character) {
-                quote = None;
-            } else if quote.is_none() {
-                quote = Some(character);
-            }
-            continue;
-        }
-        if quote.is_some() {
-            continue;
-        }
-        match character {
-            '[' => square += 1,
-            ']' => square -= 1,
-            '(' => round += 1,
-            ')' => round -= 1,
-            '{' => curly += 1,
-            '}' => curly -= 1,
-            value if value == delimiter && square == 0 && round == 0 && curly == 0 => {
-                output.push(&text[start..index]);
-                start = index + character.len_utf8();
-            }
-            _ => {}
-        }
-    }
-    output.push(&text[start..]);
-    output
-}
-
-fn split_keyword(value: &str) -> Option<(&str, &str)> {
-    let parts = split_top_level(value, '=');
-    (parts.len() == 2).then(|| (parts[0].trim(), parts[1].trim()))
-}
-
-fn parse_quoted(value: &str) -> Option<String> {
-    let value = value.trim();
-    if value.len() < 2 {
-        return None;
-    }
-    let quote = value.as_bytes()[0] as char;
-    if !matches!(quote, '\'' | '"') || value.as_bytes()[value.len() - 1] as char != quote {
-        return None;
-    }
-    let inner = &value[1..value.len() - 1];
-    Some(
-        inner
-            .replace("\\n", "\n")
-            .replace("\\r", "\r")
-            .replace("\\t", "\t")
-            .replace(&format!("\\{quote}"), &quote.to_string())
-            .replace("\\\\", "\\"),
-    )
-}
-
-fn parse_list_strings(value: &str) -> Vec<String> {
-    let value = value.trim();
-    let Some(inner) = value
-        .strip_prefix('[')
-        .and_then(|item| item.strip_suffix(']'))
-        .or_else(|| {
-            value
-                .strip_prefix('(')
-                .and_then(|item| item.strip_suffix(')'))
-        })
-    else {
-        return Vec::new();
-    };
-    split_top_level(inner, ',')
-        .into_iter()
-        .filter_map(parse_quoted)
-        .collect()
-}
-
-fn parse_parameter_value(value: &str, parameter_type: ParameterType) -> Option<ParameterValue> {
-    let value = value.trim();
-    if matches!(value, "None" | "...") {
-        return None;
-    }
-    match parameter_type {
-        ParameterType::Int => value.parse().ok().map(ParameterValue::Integer),
-        ParameterType::Float => value
-            .parse::<f64>()
-            .ok()
-            .filter(|number| number.is_finite())
-            .map(ParameterValue::Float),
-        ParameterType::Bool => match value.to_ascii_lowercase().as_str() {
-            "true" | "1" => Some(ParameterValue::Bool(true)),
-            "false" | "0" => Some(ParameterValue::Bool(false)),
-            _ => None,
-        },
-        ParameterType::Str | ParameterType::Choice | ParameterType::Path => {
-            parse_quoted(value).map(ParameterValue::String)
-        }
-    }
-}
-
-fn parse_powershell_value(value: &str, parameter_type: ParameterType) -> Option<ParameterValue> {
-    if parameter_type == ParameterType::Bool {
-        return match value.to_ascii_lowercase().as_str() {
-            "$true" => Some(ParameterValue::Bool(true)),
-            "$false" => Some(ParameterValue::Bool(false)),
-            _ => None,
-        };
-    }
-    parse_parameter_value(value, parameter_type).or_else(|| match parameter_type {
-        ParameterType::Str | ParameterType::Choice | ParameterType::Path => Some(
-            ParameterValue::String(value.trim_matches(&['\'', '"'][..]).to_owned()),
-        ),
-        ParameterType::Int | ParameterType::Float | ParameterType::Bool => None,
-    })
-}
-
-fn parameter_type(value: &str) -> ParameterType {
-    match value.trim().trim_matches(&['\'', '"'][..]) {
-        "int" => ParameterType::Int,
-        "float" => ParameterType::Float,
-        "bool" => ParameterType::Bool,
-        _ => ParameterType::Str,
-    }
-}
-
-fn truthy_source(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "true" | "1" | "$true"
-    )
-}
-
-fn flag_name(flag: &str) -> String {
-    flag.trim_start_matches('-').replace('-', "_")
-}
-
-fn infer_literal(source: &str) -> Option<(ParameterType, ParameterValue)> {
-    if let Some(value) = parse_quoted(source) {
-        return Some((ParameterType::Str, ParameterValue::String(value)));
-    }
-    if let Ok(value) = source.parse::<i64>() {
-        return Some((ParameterType::Int, ParameterValue::Integer(value)));
-    }
-    if let Ok(value) = source.parse::<f64>()
-        && value.is_finite()
-    {
-        return Some((ParameterType::Float, ParameterValue::Float(value)));
-    }
-    match source {
-        "True" | "true" => Some((ParameterType::Bool, ParameterValue::Bool(true))),
-        "False" | "false" => Some((ParameterType::Bool, ParameterValue::Bool(false))),
-        _ => None,
-    }
-}
-
-fn infer_javascript_literal(source: &str) -> Option<(ParameterType, ParameterValue)> {
-    infer_literal(source)
-}
-
-fn unquote_shell(value: &str) -> String {
-    let value = value.trim();
-    if value.len() >= 2
-        && ((value.starts_with('\'') && value.ends_with('\''))
-            || (value.starts_with('"') && value.ends_with('"')))
-    {
-        value[1..value.len() - 1].to_owned()
-    } else {
-        value.to_owned()
-    }
-}
-
-fn push_unique(output: &mut Vec<ParamDecl>, parameter: ParamDecl) {
-    if let Some(existing) = output
-        .iter_mut()
-        .find(|existing| existing.name == parameter.name)
-    {
-        *existing = parameter;
-    } else {
-        output.push(parameter);
-    }
-}
-
 #[cfg(test)]
 mod private_tests {
     use super::*;
@@ -2808,105 +1494,16 @@ mod private_tests {
     }
 
     #[test]
-    fn injected_literals_fall_back_to_a_quoted_string_when_a_value_does_not_parse() {
-        assert_eq!(
-            replacement_literal(
-                ParameterType::Int,
-                "many",
-                toml_string,
-                javascript_bool_literal
-            ),
-            "\"many\""
-        );
-        assert_eq!(
-            replacement_literal(
-                ParameterType::Float,
-                "many",
-                toml_string,
-                javascript_bool_literal
-            ),
-            "\"many\""
-        );
-        assert_eq!(
-            replacement_literal(
-                ParameterType::Bool,
-                "maybe",
-                toml_string,
-                javascript_bool_literal
-            ),
-            "\"maybe\""
-        );
-        // A Python source spelling keeps its capitals; every other language uses lowercase.
-        assert_eq!(
-            replacement_literal(ParameterType::Bool, "no", toml_string, python_bool_literal),
-            "False"
-        );
-        assert_eq!(
-            replacement_literal(
-                ParameterType::Bool,
-                "no",
-                toml_string,
-                javascript_bool_literal
-            ),
-            "false"
-        );
-        assert_eq!(
-            replacement_literal(
-                ParameterType::Float,
-                "3",
-                toml_string,
-                javascript_bool_literal
-            ),
-            "3.0"
-        );
-    }
-
-    #[test]
-    fn text_scanners_handle_quotes_escapes_nesting_and_invalid_input() {
+    fn toml_strings_escape_carriage_returns() {
         assert_eq!(toml_string("a\rb"), "\"a\\rb\"");
-
-        assert_eq!(parenthesized_body("plain", 0), None);
-        assert_eq!(
-            parenthesized_body("call('a\\\'b', nested(1)) tail", 4),
-            Some("'a\\\'b', nested(1)")
-        );
-        assert_eq!(parenthesized_body("call('unterminated", 4), None);
-
-        assert_eq!(
-            split_top_level("a='x\\\'y', b=[1,2], c=(3,4), d={5,6}", ','),
-            ["a='x\\\'y'", " b=[1,2]", " c=(3,4)", " d={5,6}"]
-        );
-        assert_eq!(parse_list_strings("('one', 'two')"), ["one", "two"]);
-        assert!(parse_list_strings("not-a-list").is_empty());
-    }
-
-    #[test]
-    fn scalar_readers_distinguish_boolean_and_powershell_values() {
-        assert_eq!(
-            parse_parameter_value("true", ParameterType::Bool),
-            Some(ParameterValue::Bool(true))
-        );
-        assert_eq!(
-            parse_parameter_value("0", ParameterType::Bool),
-            Some(ParameterValue::Bool(false))
-        );
-        assert_eq!(parse_parameter_value("maybe", ParameterType::Bool), None);
-        assert_eq!(
-            parse_powershell_value("$false", ParameterType::Bool),
-            Some(ParameterValue::Bool(false))
-        );
-        assert_eq!(parse_powershell_value("maybe", ParameterType::Bool), None);
-        assert_eq!(
-            parse_powershell_value("bare", ParameterType::Str),
-            Some(ParameterValue::String("bare".to_owned()))
-        );
-        assert_eq!(parse_powershell_value("bare", ParameterType::Float), None);
-        assert_eq!(unquote_shell("'quoted value'"), "quoted value");
     }
 
     #[test]
     fn internal_guards_reject_unsupported_parsers_and_invalid_edits() {
-        assert!(parsed_tree("ruby", "puts 1").is_none());
+        assert!(matches!(
+            parse_document("ruby", "puts 1"),
+            ParseOutcome::ParserUnavailable(_)
+        ));
         assert!(matches!(
             apply_source_edits("abc", vec![(2, 1, "x".to_owned())]),
             Err(LanguageError::InvalidSource { .. })
@@ -2915,22 +1512,10 @@ mod private_tests {
             apply_source_edits("abc", vec![(0, 2, "x".to_owned()), (1, 3, "y".to_owned())]),
             Err(LanguageError::InvalidSource { .. })
         ));
-        assert!(fish_guarded_set(&["or".to_owned(), "echo".to_owned()]).is_none());
     }
 
     #[test]
-    fn source_helpers_preserve_comments_and_boolean_literal_style() {
-        assert_eq!(shell_comment_start("NAME=old\\ value # note"), Some(16));
-        assert_eq!(shell_comment_start("NAME='old # value'"), None);
-        assert_eq!(
-            replacement_literal(
-                ParameterType::Bool,
-                "maybe",
-                quote_python_string,
-                python_bool_literal,
-            ),
-            "'maybe'"
-        );
+    fn source_helpers_preserve_placeholder_literal_style() {
         assert_eq!(
             scan_placeholders("{{escaped}} {open", false),
             Vec::<String>::new()

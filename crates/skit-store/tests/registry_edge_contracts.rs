@@ -1,8 +1,8 @@
 use std::fs;
 
 use skit_application::{
-    CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, SourcePermissions,
-    UpdateEntry,
+    CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, RepositoryError,
+    SourcePermissions, UpdateEntry,
 };
 use skit_domain::{EntryKind, EntrySettings, StorageMode};
 use skit_store::FileStore;
@@ -192,7 +192,7 @@ fn a_late_registry_save_failure_rolls_back_every_mutation_shape() {
 
 #[cfg(unix)]
 #[test]
-fn remove_succeeds_when_trash_cleanup_must_be_deferred() {
+fn incomplete_remove_is_reported_and_keeps_rebuildable_files() {
     use std::os::unix::fs::PermissionsExt as _;
 
     let root = TempDir::new().unwrap();
@@ -212,17 +212,17 @@ fn remove_succeeds_when_trash_cleanup_must_be_deferred() {
     fs::write(held.join("item"), b"held").unwrap();
     fs::set_permissions(&held, fs::Permissions::from_mode(0o555)).unwrap();
 
-    assert_eq!(store.remove(&entry).unwrap(), "Deferred cleanup");
+    let error = store.remove(&entry).unwrap_err();
+    assert!(matches!(
+        error,
+        RepositoryError::RemovalIncomplete { ref name, ref path }
+            if name == "Deferred cleanup" && path.ends_with("scripts/deferred-cleanup")
+    ));
     assert!(store.resolve("deferred-cleanup").is_err());
-    let deferred = fs::read_dir(root.path().join(".trash"))
-        .unwrap()
-        .next()
-        .expect("failed cleanup must stay in trash for a later retry")
-        .unwrap()
-        .path();
+    let deferred = root.path().join("scripts/deferred-cleanup");
     assert!(
         deferred.is_dir(),
-        "failed cleanup must stay in trash for a later retry"
+        "failed cleanup must remain available to doctor --rebuild"
     );
     fs::set_permissions(deferred.join("held"), fs::Permissions::from_mode(0o755)).unwrap();
 }

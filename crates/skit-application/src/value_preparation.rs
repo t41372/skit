@@ -96,26 +96,40 @@ pub fn prepare_values(
         .collect()
 }
 
+/// Validate one raw form value before token expansion.
+///
+/// Interactive frontends use this function while they collect values. Token-bearing values stay
+/// valid at this stage because the launch pipeline validates the expanded value before delivery.
+pub fn validate_form_value(
+    declaration: &ParamDecl,
+    value: &str,
+) -> Result<(), ValuePreparationError> {
+    if value.trim().is_empty() {
+        return if declaration.required {
+            Err(ValuePreparationError::Required {
+                name: declaration.name.clone(),
+                label: label(declaration).to_owned(),
+            })
+        } else {
+            Ok(())
+        };
+    }
+    if declaration.degraded || has_tokens(value) {
+        return Ok(());
+    }
+    validate_type(declaration, value)
+}
+
 fn prepare_one(
     declaration: &ParamDecl,
     raw: &str,
     resolved: &str,
 ) -> Result<PreparedValue, ValuePreparationError> {
-    if raw.trim().is_empty() {
-        if declaration.required {
-            return Err(ValuePreparationError::Required {
-                name: declaration.name.clone(),
-                label: label(declaration).to_owned(),
-            });
-        }
-    } else if !declaration.degraded {
+    validate_form_value(declaration, raw)?;
+    if !raw.trim().is_empty() && !declaration.degraded && has_tokens(raw) && !declaration.secret {
         // A token-like spelling is validated after expansion. Secrets are the exception: the
         // credential is literal data and value_resolution intentionally never expands it.
-        if !has_tokens(raw) {
-            validate_type(declaration, raw)?;
-        } else if !declaration.secret {
-            validate_type(declaration, resolved)?;
-        }
+        validate_type(declaration, resolved)?;
     }
 
     if declaration.multiple {

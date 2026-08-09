@@ -2,6 +2,7 @@ use std::{fs, path::Path};
 
 use predicates::prelude::*;
 use serde_json::Value;
+use skit_store::FileStore;
 use tempfile::TempDir;
 
 struct Sandbox {
@@ -67,6 +68,7 @@ required = true
 "#,
         )
         .unwrap();
+        FileStore::new(self.data.path()).rebuild_registry().unwrap();
     }
 }
 
@@ -94,7 +96,30 @@ fn help_and_version_expose_the_complete_automation_surface() {
         .arg("--version")
         .assert()
         .success()
-        .stdout(predicate::str::contains("skit 0.5.0"));
+        .stdout("skit 0.5.0\n");
+
+    sandbox
+        .command()
+        .arg("-V")
+        .assert()
+        .success()
+        .stdout("skit 0.5.0\n");
+
+    sandbox
+        .command()
+        .args(["--version", "list"])
+        .assert()
+        .success()
+        .stdout("skit 0.5.0\n");
+
+    for arguments in [["--version", "unknown"], ["-V", "unknown"]] {
+        sandbox
+            .command()
+            .args(arguments)
+            .assert()
+            .failure()
+            .stdout(predicate::str::is_empty());
+    }
 }
 
 #[test]
@@ -243,7 +268,7 @@ fn deps_and_params_update_one_identity_without_losing_future_metadata() {
 }
 
 #[test]
-fn preset_commands_use_the_existing_state_shape_and_delete_with_confirmation() {
+fn preset_commands_use_the_existing_state_shape_and_keep_direct_delete_automation() {
     let sandbox = Sandbox::new();
     sandbox.write_command_entry();
     let skill = fs::read_to_string(
@@ -276,15 +301,10 @@ name = "Ada"
         .assert()
         .success();
     let presets = sandbox.command_json(&["preset", "list", "demo", "--json"]);
-    assert_eq!(presets["presets"]["favorite"]["name"], "Ada");
+    assert_eq!(presets["favorite"]["name"], "Ada");
     sandbox
         .command()
         .args(["preset", "delete", "demo", "favorite", "--no-input"])
-        .assert()
-        .code(2);
-    sandbox
-        .command()
-        .args(["preset", "delete", "demo", "favorite", "-y"])
         .assert()
         .success();
 }
@@ -333,11 +353,11 @@ runners = [
     )
     .unwrap();
     let rows = sandbox.command_json(&["runner", "list", "--all", "--json"]);
-    assert_eq!(rows[0]["row"], 1);
+    assert_eq!(rows[0]["row"], 0);
     assert_eq!(rows[0]["valid"], false);
     sandbox
         .command()
-        .args(["runner", "remove", "--row", "1", "--yes"])
+        .args(["runner", "remove", "--row", "0", "--yes"])
         .assert()
         .success();
     let rows = sandbox.command_json(&["runner", "list", "--all", "--json"]);
@@ -376,14 +396,14 @@ fn doctor_rebuilds_the_registry_and_reports_all_owned_paths() {
 }
 
 #[test]
-fn doctor_requires_uv_only_for_python_libraries() {
+fn doctor_keeps_the_v040_fresh_install_uv_check() {
     let empty = Sandbox::new();
     empty
         .command()
         .env("PATH", empty.data.path())
         .args(["doctor", "--json"])
         .assert()
-        .success()
+        .code(1)
         .stdout(predicate::str::contains("\"uv\":null"));
 
     let commands = Sandbox::new();
@@ -393,7 +413,8 @@ fn doctor_requires_uv_only_for_python_libraries() {
         .env("PATH", commands.data.path())
         .args(["doctor", "--json"])
         .assert()
-        .success();
+        .code(1)
+        .stdout(predicate::str::contains("\"uv\":null"));
 
     let python = Sandbox::new();
     let source = python.data.path().join("tool.py");

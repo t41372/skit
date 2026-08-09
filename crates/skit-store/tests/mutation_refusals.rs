@@ -92,6 +92,38 @@ fn same_slug_renames_succeed_while_name_conflicts_and_blank_names_refuse() {
 }
 
 #[test]
+fn another_entry_slug_is_also_a_reserved_display_name() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let alpha = store
+        .create(request(
+            "Alpha Name",
+            "command",
+            StorageMode::Reference,
+            None,
+            b"",
+        ))
+        .unwrap();
+    let beta = store
+        .create(request(
+            "Beta",
+            "command",
+            StorageMode::Reference,
+            None,
+            b"",
+        ))
+        .unwrap();
+
+    assert!(matches!(
+        store.rename(&beta, alpha.slug.as_str()).unwrap_err(),
+        RepositoryError::Conflict { slug, .. } if slug == alpha.slug.as_str()
+    ));
+    let renamed = store.rename(&alpha, "alpha-name").unwrap();
+    assert_eq!(renamed.meta.name, "alpha-name");
+    assert_eq!(renamed.slug, alpha.slug);
+}
+
+#[test]
 fn colliding_slug_bases_receive_deterministic_numeric_suffixes() {
     let root = TempDir::new().unwrap();
     let store = FileStore::new(root.path());
@@ -221,6 +253,7 @@ fn claims_refuse_missing_entries_and_content_changed_legacy_handles() {
     ));
 
     write_legacy(&root, "before");
+    store.rebuild_registry().unwrap();
     let held = store.resolve("legacy").unwrap();
     write_legacy(&root, "after");
     assert!(matches!(

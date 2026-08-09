@@ -1,6 +1,9 @@
 use std::{fs, path::PathBuf};
 
-use skit_application::glob_expansion::GlobExpander;
+use skit_application::{
+    form_feedback::{GlobCountPort, GlobCountRequest},
+    glob_expansion::GlobExpander,
+};
 use skit_store::FileGlobExpander;
 use tempfile::TempDir;
 
@@ -58,5 +61,21 @@ fn absolute_patterns_return_absolute_matches() {
             root.path().join("one.log").display().to_string(),
             root.path().join("two.log").display().to_string(),
         ]
+    );
+}
+
+#[test]
+fn live_form_feedback_counts_matches_through_the_same_glob_adapter() {
+    let root = TempDir::new().unwrap();
+    fs::write(root.path().join("one.txt"), b"").unwrap();
+    fs::write(root.path().join("two.txt"), b"").unwrap();
+    let glob = FileGlobExpander::new(root.path().join("not-the-request-cwd"));
+
+    assert_eq!(
+        glob.count_matches(&GlobCountRequest {
+            cwd: root.path().display().to_string(),
+            pieces: vec!["*.txt".to_owned(), "literal.md".to_owned()],
+        }),
+        3
     );
 }

@@ -5,6 +5,7 @@ use std::{
     io::{self, IsTerminal as _, Read as _, Write as _},
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
+    time::UNIX_EPOCH,
 };
 
 use clap::{
@@ -12,37 +13,71 @@ use clap::{
     error::{ContextKind, ContextValue},
 };
 use clap_complete::{ArgValueCandidates, CompleteEnv, CompletionCandidate, Shell, generate};
+use dialoguer::{Confirm, Input, MultiSelect, Password};
 use skit_application::{
-    CreateEntry, EntryPayload, EntryRepository as _, ExitClass, LibraryService, RepositoryError,
-    SourcePermissions, UpdateEntry,
-    form_state::{FormStateService, StateWriteError, prefill},
+    AgentInstallPlan, AgentInstallRequest, AgentRoots, AgentScope, AgentTarget, CreateEntry,
+    EntryPayload, ExitClass, LibraryScan, LibraryService, RepositoryError, RepositoryOperation,
+    SourcePermissions, UpdateEntry, add_workdir, detect_agent_targets,
+    form_feedback::GlobCountPort,
+    form_state::{FormStateService, PresetSnapshotSource, StateWriteError, prefill},
+    health::{
+        HealthInspection, HealthIssue, HealthIssueKind, HealthRebuild, HealthRebuildOutcome,
+        HealthService, HealthSnapshot, MirrorHealth, UvHealth,
+    },
+    parameter_edit::finish_parameter_edit,
+    payload_stored_name, plan_agent_install,
+    preferences::{
+        AfterRunChoice, InteractiveFormChoice, JavascriptChoice, MirrorConfiguration,
+        PreferencesDraft, PreferencesSnapshot,
+    },
+    prompt_selection::PromptSelectionService,
+    supports_storage_modes,
+    value_preparation::validate_form_value,
 };
 use skit_domain::{
-    Entry, EntryKind, EntrySettings, EntrySummary, StorageMode,
+    Entry, EntryKind, EntrySettings, EntrySummary, Slug, StorageMode,
     parameters::{
         ParamDecl, ParameterBinding, ParameterDelivery, ParameterType, ParameterValue,
         coerce_default,
     },
 };
-use skit_form::{form_params, form_params_from_managed};
-use skit_i18n::{Locale, Localize, Message, detect_locale, format_text, render as localize, text};
+use skit_form::{
+    FormDrift, FormPlan as PreparedFormPlan, OnboardingCandidate, OnboardingParseState,
+    OnboardingPlan, PreparedField, form_params, form_params_from_managed, form_plan,
+    onboarding_plan,
+};
+use skit_i18n::{
+    Locale, Localize, Message, available_locale_tags, detect_locale, format_text, kind_label,
+    render as localize, requested_locale, system_locale, text,
+};
 use skit_language::{
-    cli_params, detect_candidates, external_dependencies_at, infer_kind, managed_params,
-    normalize_shell_default, placeholder_params, python_version_pin, read_uv_metadata,
-    shebang_program, validate_pep440_specifiers, validate_pep508_requirement, write_managed_params,
-    write_uv_metadata,
+    LosslessSource, UvMetadata, UvMetadataEditError, cli_params, detect_candidates,
+    effective_uv_metadata_bytes, external_dependencies_at, has_uv_metadata_block_bytes, infer_kind,
+    managed_params, normalize_shell_default, placeholder_params, plan_uv_metadata_edit,
+    python_version_pin, read_uv_metadata, shebang_program, suggest_description,
+    validate_pep440_specifiers, validate_pep508_requirement, write_managed_params,
+    write_managed_params_bytes, write_uv_metadata,
 };
 use skit_runtime::{
-    DependencyError, ProgramProbe, SystemProbe, clear_javascript_dependencies, managed_uv_path,
-    resolve_javascript_runtime,
+    DependencyError, LaunchPaths, ProgramProbe, SystemProbe, clear_javascript_dependencies,
+    managed_uv_path, resolve_javascript_runtime, resolve_launch_workdir,
 };
-use skit_store::{ConfigError, FileConfigStore, FileFormStateStore, PromptRunner};
-use skit_store::{FileStore, stored_filename};
+use skit_store::{
+    ConfigError, FileAgentSkillStore, FileConfigStore, FileFormStateStore, FileGlobExpander,
+    FilePromptSelectionStore, FileRunnerManagementStore, PromptRunner, RunnerManagementStoreError,
+    RunnerRemovalCas, expand_user_path,
+};
+use skit_store::{FileStore, stored_filenames};
 use skit_ui::{
-    Action as UiAction, Effect as UiEffect, FormField, FormPurpose, FormView, HostRequest,
-    LibraryState, ReportItem, ReportView, Screen,
+    Action as UiAction, AddAction, AddEffect, AddWorkflowState, DraftKind, DraftSummary,
+    Effect as UiEffect, FormField, FormPurpose, FormView, HealthAction, HealthView, HostRequest,
+    LibraryState, PreferencesAction, PreferencesEffect, PreferencesView, ReviewDefaults,
+    RunFormContext, RunFormOptions, RunFormView, RunPathContext, RunnerManagerAction,
+    RunnerManagerView, RunnerRemoveRequest, RunnerRow, RunnerRowIdentity, RunnerSaveOwner,
+    RunnerSaveRequest, RunnerSaveTarget, Screen, SourceSnapshot as AddSourceSnapshot,
 };
 use thiserror::Error;
+use unicode_width::UnicodeWidthStr as _;
 
 use crate::run::{RunArgs, RunError};
 
@@ -155,16 +190,16 @@ fn localized_command() -> clap::Command {
 fn translate_command(command: clap::Command, locale: Locale) -> clap::Command {
     let mut command = command;
     if let Some(about) = command.get_about().map(ToString::to_string) {
-        command = command.about(text(locale, &about).to_owned());
+        command = command.about(text(locale, &about).into_owned());
     }
     if let Some(about) = command.get_long_about().map(ToString::to_string) {
-        command = command.long_about(text(locale, &about).to_owned());
+        command = command.long_about(text(locale, &about).into_owned());
     }
     command = command.mut_args(|argument| {
         let Some(help) = argument.get_help().map(|help| help.to_string()) else {
             return argument;
         };
-        argument.help(text(locale, &help).to_owned())
+        argument.help(text(locale, &help).into_owned())
     });
     let names = command
         .get_subcommands()
@@ -176,32 +211,39 @@ fn translate_command(command: clap::Command, locale: Locale) -> clap::Command {
 }
 
 pub(crate) fn active_locale() -> Locale {
-    if let Some(language) = env::var_os("SKIT_LANG") {
-        return detect_locale(language.to_str());
+    if let Some(language) = env::var_os("SKIT_LANG")
+        && let Some(locale) = requested_locale(language.to_str())
+    {
+        return locale;
     }
     if let Ok(directory) = resolve_config_dir()
         && let Ok(language) = FileConfigStore::new(directory).get("lang")
-        && !language.is_empty()
         && language != "auto"
+        && let Some(locale) = requested_locale(Some(&language))
     {
-        return detect_locale(Some(&language));
+        return locale;
     }
     for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
-        if let Some(language) = env::var_os(key) {
-            return detect_locale(language.to_str());
+        if let Some(language) = env::var_os(key)
+            && let Some(locale) = requested_locale(language.to_str())
+        {
+            return locale;
         }
     }
-    Locale::En
+    system_locale()
 }
 
 #[derive(Debug, Parser)]
 #[command(
     name = "skit",
-    version,
     about = "A script, prompt, program, and command library",
     disable_help_subcommand = true
 )]
 struct Cli {
+    /// Show version.
+    #[arg(long, short = 'V')]
+    version: bool,
+
     /// Override the skit data directory.
     #[arg(long, global = true, value_name = "PATH")]
     data_dir: Option<PathBuf>,
@@ -522,9 +564,9 @@ enum RunnerCommand {
         /// Stable runner name.
         #[arg(add = ArgValueCandidates::new(runner_candidates))]
         name: Option<String>,
-        /// Remove one malformed raw row by its one-based index.
+        /// Remove one malformed raw row by its zero-based index or `container`.
         #[arg(long, conflicts_with = "name")]
-        row: Option<usize>,
+        row: Option<String>,
         /// Confirm removal.
         #[arg(long, short = 'y')]
         yes: bool,
@@ -671,6 +713,10 @@ fn preset_candidates_from(state_dir: &Path) -> Vec<CompletionCandidate> {
 }
 
 fn execute(cli: Cli) -> Result<i32, CliError> {
+    if cli.version {
+        println!("skit {}", env!("CARGO_PKG_VERSION"));
+        return Ok(0);
+    }
     if cli.show_completion {
         write_completion(detect_shell()?, &mut io::stdout());
         return Ok(0);
@@ -722,7 +768,7 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
                     source,
                     kind,
                     name,
-                    description: description.unwrap_or_default(),
+                    description,
                     reference,
                     command_template,
                     prompt,
@@ -732,9 +778,9 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
                     dependencies: dependencies.unwrap_or_default(),
                     dependencies_explicit,
                     requires_python: python,
+                    no_input,
                 },
                 edit,
-                no_input,
             )?;
             Ok(0)
         }
@@ -776,7 +822,7 @@ fn execute(cli: Cli) -> Result<i32, CliError> {
             Ok(0)
         }
         Some(Command::Runner { command }) => {
-            runner(command)?;
+            runner(&service, command)?;
             Ok(0)
         }
         Some(Command::Preset { command }) => {
@@ -798,8 +844,8 @@ fn add_command(
     service: &LibraryService<FileStore>,
     mut options: AddOptions,
     edit: bool,
-    no_input: bool,
 ) -> Result<(), CliError> {
+    let no_input = options.no_input;
     if edit && no_input {
         return Err(CliError::Usage(Message::new(
             "--edit needs an editor; use standard input as `skit add - --name NAME`",
@@ -831,30 +877,255 @@ fn add_command(
                 "add needs a source path, standard input as `-`, --edit, --prompt, or --cmd",
             )));
         }
-        let form = tui_add_form_view();
-        let values = skit_tui::collect_form(form, active_locale())?.ok_or(CliError::Aborted)?;
-        let source = tui_nonempty_owned(&values, "source").map(PathBuf::from);
-        let template = tui_nonempty_owned(&values, "template");
-        return add(
-            service,
-            AddOptions {
-                source,
-                kind: tui_nonempty_owned(&values, "kind"),
-                name: tui_nonempty_owned(&values, "name"),
-                description: tui_value(&values, "description").to_owned(),
-                reference: tui_value(&values, "mode").eq_ignore_ascii_case("reference"),
-                command_template: template,
-                prompt: tui_value(&values, "kind").eq_ignore_ascii_case("prompt"),
-                executable: tui_value(&values, "kind").eq_ignore_ascii_case("exe"),
-                runner: tui_nonempty_owned(&values, "runner"),
-                no_interpolate: false,
-                dependencies: tui_dependency_list(tui_value(&values, "dependencies")),
-                dependencies_explicit: !tui_value(&values, "dependencies").is_empty(),
-                requires_python: tui_nonempty_owned(&values, "python"),
-            },
-        );
+        refuse_bare_add_flags(&options)?;
+        let state_dir = resolve_state_dir()?;
+        let config_dir = resolve_config_dir()?;
+        if wants_tui_form(&config_dir)? {
+            let workflow = tui_add_workflow(service.repository(), &state_dir, &config_dir)?;
+            let slug = skit_tui::run_add_workflow(
+                workflow,
+                |effect| {
+                    tui_effect(
+                        service,
+                        service.repository(),
+                        &state_dir,
+                        &config_dir,
+                        effect,
+                    )
+                },
+                active_locale(),
+            )?
+            .ok_or(CliError::AddCancelled)?;
+            let entry = service.show(slug.as_str())?;
+            print_add_summary(service.repository(), &entry)?;
+            return Ok(());
+        }
+        return bare_add_plain(service, &config_dir);
     }
     add(service, options)
+}
+
+fn refuse_bare_add_flags(options: &AddOptions) -> Result<(), CliError> {
+    let mut withheld = Vec::new();
+    if options.name.as_deref().is_some_and(|name| !name.is_empty()) {
+        withheld.push("--name");
+    }
+    if options.description.is_some() {
+        withheld.push("--description");
+    }
+    if options.reference {
+        withheld.push("--ref");
+    }
+    if options.executable {
+        withheld.push("--exe");
+    }
+    if options.kind.is_some() {
+        withheld.push("--kind");
+    }
+    if options.runner.is_some() {
+        withheld.push("--runner");
+    }
+    if options.no_interpolate {
+        withheld.push("--no-interpolate");
+    }
+    if options.dependencies_explicit || !options.dependencies.is_empty() {
+        withheld.push("--dep");
+    }
+    if options.requires_python.is_some() {
+        withheld.push("--python");
+    }
+    if withheld.is_empty() {
+        return Ok(());
+    }
+
+    let needs = withheld
+        .iter()
+        .copied()
+        .filter(|flag| !matches!(*flag, "--name" | "--description"))
+        .collect::<BTreeSet<_>>();
+    let lanes = [
+        ("--edit", BTreeSet::from(["--dep", "--python"])),
+        ("--prompt", BTreeSet::from(["--runner", "--no-interpolate"])),
+        ("--cmd", BTreeSet::new()),
+    ]
+    .into_iter()
+    .filter_map(|(lane, honored)| needs.is_subset(&honored).then_some(lane))
+    .collect::<Vec<_>>();
+    let flags = withheld.join(", ");
+    if lanes.is_empty() {
+        Err(CliError::Usage(
+            Message::new(
+                "{} need a source — pass the path in the same command (skit add PATH …) (nothing was added).",
+            )
+            .with(flags),
+        ))
+    } else {
+        Err(CliError::Usage(
+            Message::new(
+                "{} need a source — pass the path in the same command (skit add PATH …), or pick a lane outright with {} (nothing was added).",
+            )
+            .with(flags)
+            .with(lanes.join(", ")),
+        ))
+    }
+}
+
+fn wants_tui_form(config_dir: &Path) -> Result<bool, CliError> {
+    if env::var_os("TERM").as_deref() == Some(std::ffi::OsStr::new("dumb")) {
+        return Ok(false);
+    }
+    Ok(FileConfigStore::new(config_dir).get("form")? == "tui")
+}
+
+fn bare_add_plain(service: &LibraryService<FileStore>, config_dir: &Path) -> Result<(), CliError> {
+    let locale = active_locale();
+    humanln!("What would you like to add?");
+    println!(
+        "  1. {}",
+        text(
+            locale,
+            "A file you already have — a script, program, or prompt"
+        )
+    );
+    println!(
+        "  2. {}",
+        text(locale, "A new script, written in your editor")
+    );
+    println!(
+        "  3. {}",
+        text(locale, "A new AI-agent prompt, written in your editor")
+    );
+    println!(
+        "  4. {}",
+        text(locale, "A command template (e.g. ffmpeg -i {input})")
+    );
+    let choice = Input::<String>::new()
+        .with_prompt(text(locale, "Which one?").into_owned())
+        .default("1".to_owned())
+        .validate_with(|value: &String| {
+            matches!(value.trim(), "1" | "2" | "3" | "4")
+                .then_some(())
+                .ok_or_else(|| text(locale, "Choose a number from 1 to 4.").into_owned())
+        })
+        .interact_text()
+        .map_err(add_dialoguer_error)?;
+    match choice.trim() {
+        "1" => {
+            let path = add_plain_text("Path to the file")?;
+            if path.trim().is_empty() {
+                return Err(CliError::AddCancelled);
+            }
+            add(
+                service,
+                AddOptions {
+                    source: Some(PathBuf::from(path.trim())),
+                    ..empty_add_options()
+                },
+            )
+        }
+        "2" => add_plain_draft(service, config_dir, DraftKind::Script),
+        "3" => add_plain_draft(service, config_dir, DraftKind::Prompt),
+        "4" => {
+            let template = add_plain_text("Command template")?;
+            if template.trim().is_empty() {
+                return Err(CliError::AddCancelled);
+            }
+            let name = add_plain_text("Name for the command")?;
+            if name.trim().is_empty() {
+                return Err(CliError::AddCancelled);
+            }
+            let description = add_plain_text("Description (optional)")?;
+            add(
+                service,
+                AddOptions {
+                    name: Some(name.trim().to_owned()),
+                    description: Some(description.trim().to_owned()),
+                    command_template: Some(template.trim().to_owned()),
+                    ..empty_add_options()
+                },
+            )
+        }
+        _ => unreachable!("the dialoguer validator accepts only four choices"),
+    }
+}
+
+fn add_plain_draft(
+    service: &LibraryService<FileStore>,
+    config_dir: &Path,
+    kind: DraftKind,
+) -> Result<(), CliError> {
+    let name = add_plain_text("Name in skit")?;
+    if name.trim().is_empty() {
+        return Err(CliError::Usage(Message::new("A name is required.")));
+    }
+    match service.show(name.trim()) {
+        Ok(_) | Err(RepositoryError::Ambiguous { .. }) => {
+            return Err(CliError::Failure(
+                Message::new("The name {} is already taken — pick another name.").with(name.trim()),
+            ));
+        }
+        Err(RepositoryError::NotFound { .. }) => {}
+        Err(error) => return Err(error.into()),
+    }
+    let Some(source) = tui_author_draft(service.repository().data_dir(), config_dir, kind)? else {
+        humanln!("Nothing was written, so nothing was added.");
+        return Ok(());
+    };
+    let path = source.path;
+    let result = add(
+        service,
+        AddOptions {
+            source: Some(path.clone()),
+            name: Some(name.trim().to_owned()),
+            prompt: kind == DraftKind::Prompt,
+            ..empty_add_options()
+        },
+    );
+    if result.is_ok() {
+        remove_owned_draft(service.repository().data_dir(), &path)?;
+    } else {
+        humanerrln!("Your draft was kept at {}", path.display());
+    }
+    result
+}
+
+fn add_plain_text(prompt: &'static str) -> Result<String, CliError> {
+    Input::<String>::new()
+        .with_prompt(text(active_locale(), prompt).into_owned())
+        .allow_empty(true)
+        .interact_text()
+        .map_err(add_dialoguer_error)
+}
+
+fn add_dialoguer_error(error: dialoguer::Error) -> CliError {
+    let error = io::Error::from(error);
+    if matches!(
+        error.kind(),
+        io::ErrorKind::Interrupted | io::ErrorKind::UnexpectedEof
+    ) {
+        CliError::AddCancelled
+    } else {
+        CliError::Io(error)
+    }
+}
+
+fn empty_add_options() -> AddOptions {
+    AddOptions {
+        source: None,
+        kind: None,
+        name: None,
+        description: None,
+        reference: false,
+        command_template: None,
+        prompt: false,
+        executable: false,
+        runner: None,
+        no_interpolate: false,
+        dependencies: Vec::new(),
+        dependencies_explicit: false,
+        requires_python: None,
+        no_input: false,
+    }
 }
 
 fn add_draft(
@@ -1008,7 +1279,7 @@ fn run_entry(
         return crate::run::run(service, store, args).map_err(Into::into);
     }
 
-    let (form, baseline) = interactive_run_form(service, store, &args)?;
+    let forms = interactive_run_form(service, store, &args)?;
     let use_plain = args.plain
         || FileConfigStore::new(resolve_config_dir()?)
             .get("form")?
@@ -1018,14 +1289,18 @@ fn run_entry(
         let mut input = stdin.lock();
         let stdout = io::stdout();
         let mut output = stdout.lock();
-        collect_plain_form(&form, active_locale(), &mut input, &mut output, |_| {
-            rpassword::read_password()
-        })
+        collect_plain_form(
+            &forms.plain,
+            active_locale(),
+            &mut input,
+            &mut output,
+            |_| rpassword::read_password(),
+        )
         .map_err(plain_form_error)?
     } else {
-        skit_tui::collect_form(form, active_locale())?.ok_or(CliError::Aborted)?
+        skit_tui::collect_run_form(forms.enhanced, active_locale())?.ok_or(CliError::Aborted)?
     };
-    apply_interactive_run_values(&mut args, &values, &baseline)?;
+    apply_interactive_run_values(&mut args, &values, &forms.baseline)?;
     args.no_input = true;
     crate::run::run(service, store, args).map_err(Into::into)
 }
@@ -1038,82 +1313,125 @@ fn plain_form_error(error: io::Error) -> CliError {
     }
 }
 
+struct InteractiveRunForms {
+    plain: FormView,
+    enhanced: RunFormView,
+    baseline: BTreeMap<String, String>,
+}
+
 fn interactive_run_form(
     service: &LibraryService<FileStore>,
     store: &FileStore,
     args: &RunArgs,
-) -> Result<(FormView, BTreeMap<String, String>), CliError> {
+) -> Result<InteractiveRunForms, CliError> {
     let entry = service.show(&args.selector)?;
     let declarations = entry_parameters(store, &entry);
     let saved =
         FormStateService::new(FileFormStateStore::new(resolve_state_dir()?)).load(&entry.slug);
-    let preset = args
-        .preset
-        .as_deref()
-        .and_then(|name| saved.presets.get(name));
-    let initial = prefill(&declarations, &saved.values, preset);
+    if args.save_preset.is_some() && declarations.is_empty() {
+        return Err(RunError::PresetWithoutFields.into());
+    }
+    let preset = match args.preset.as_deref() {
+        Some(name) => Some(
+            saved
+                .presets
+                .get(name)
+                .ok_or_else(|| RunError::PresetNotFound {
+                    name: name.to_owned(),
+                })?,
+        ),
+        None => None,
+    };
+    let initial = prefill(&declarations, &saved.values, None);
+    let baseline = prefill(&declarations, &saved.values, preset);
+    let fixed_values = run_fixed_values(&declarations, &args.values)?;
     let settings = EntrySettings::from_meta(&entry.meta);
-    let mut runners = FileConfigStore::new(resolve_config_dir()?)
+    let configured_runners = FileConfigStore::new(resolve_config_dir()?)
         .runners()?
         .into_iter()
         .map(|runner| runner.name)
         .collect::<Vec<_>>();
-    if !settings.runner.is_empty() {
-        runners.retain(|name| name != &settings.runner);
-        runners.insert(0, settings.runner);
-    }
-    let mut form = tui_run_form_view(
+    let runners = if entry.meta.kind.as_str() == "prompt" && args.runner.is_none() {
+        configured_runners
+    } else {
+        Vec::new()
+    };
+    let mut plain_values = baseline.clone();
+    plain_values.extend(fixed_values.clone());
+    let remaining = declarations
+        .iter()
+        .filter(|declaration| !fixed_values.contains_key(&declaration.name))
+        .cloned()
+        .collect::<Vec<_>>();
+    let plain = plain_run_form_view(
         &entry,
+        &remaining,
+        &plain_values,
+        &runners,
+        &settings.runner,
+    );
+    let extra_arguments = join_editable_arguments(if !args.extra_args.is_empty() {
+        &args.extra_args
+    } else if args.forget_args {
+        &[]
+    } else {
+        &saved.extra_args
+    });
+    let enhanced = RunFormView::from_declarations(
+        entry.slug.as_str(),
+        &entry.meta.name,
         &declarations,
         &initial,
         &runners,
-        &saved.presets.keys().cloned().collect::<Vec<_>>(),
-    );
-    for value in &args.values {
-        if let Some((name, value)) = value.split_once('=') {
-            set_form_value(&mut form, &format!("value:{name}"), value);
-        }
-    }
-    set_form_value(
-        &mut form,
-        "_skit_preset",
-        args.preset.as_deref().unwrap_or_default(),
-    );
-    set_form_value(
-        &mut form,
-        "_skit_save_preset",
-        args.save_preset.as_deref().unwrap_or_default(),
-    );
-    set_form_value(
-        &mut form,
-        "_skit_runner",
-        args.runner.as_deref().unwrap_or_else(|| {
-            if entry.meta.kind.as_str() == "prompt" {
-                runners.first().map_or("", String::as_str)
-            } else {
-                ""
-            }
-        }),
-    );
-    set_form_value(
-        &mut form,
-        "_skit_args",
-        &join_editable_arguments(if !args.extra_args.is_empty() {
-            &args.extra_args
-        } else if args.forget_args {
-            &[]
-        } else {
-            &saved.extra_args
-        }),
-    );
-    set_form_value(&mut form, "_skit_dry_run", &args.dry_run.to_string());
-    Ok((form, initial))
+        &settings.runner,
+        &saved.presets,
+        &extra_arguments,
+    )
+    .with_options(RunFormOptions {
+        selected_preset: args.preset.clone().unwrap_or_default(),
+        save_preset: args.save_preset.clone().unwrap_or_default(),
+        dry_run: args.dry_run,
+        include_extra: false,
+        fixed_values,
+    });
+    Ok(InteractiveRunForms {
+        plain,
+        enhanced,
+        baseline,
+    })
 }
 
-fn set_form_value(form: &mut FormView, key: &str, value: &str) {
-    if let Some(field) = form.fields.iter_mut().find(|field| field.key == key) {
-        field.value = value.to_owned();
+fn run_fixed_values(
+    declarations: &[ParamDecl],
+    assignments: &[String],
+) -> Result<BTreeMap<String, String>, CliError> {
+    let names = declarations
+        .iter()
+        .map(|declaration| declaration.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut values = BTreeMap::new();
+    for assignment in assignments {
+        let Some((name, value)) = assignment.split_once('=') else {
+            return Err(RunError::InvalidSet {
+                value: assignment.clone(),
+            }
+            .into());
+        };
+        if name.is_empty() {
+            return Err(RunError::InvalidSet {
+                value: assignment.clone(),
+            }
+            .into());
+        }
+        if !names.contains(name) {
+            return Err(RunError::UnknownSet {
+                name: name.to_owned(),
+            }
+            .into());
+        }
+        values.insert(name.to_owned(), value.to_owned());
     }
+    Ok(values)
 }
 
 fn apply_interactive_run_values(
@@ -1121,12 +1439,19 @@ fn apply_interactive_run_values(
     values: &BTreeMap<String, String>,
     baseline: &BTreeMap<String, String>,
 ) -> Result<(), CliError> {
-    args.values = changed_form_values(values, baseline);
-    args.preset = tui_nonempty_owned(values, "_skit_preset");
-    args.save_preset = tui_nonempty_owned(values, "_skit_save_preset");
-    args.runner = tui_nonempty_owned(values, "_skit_runner");
-    args.dry_run = tui_bool(tui_value(values, "_skit_dry_run"))?;
-    args.extra_args = split_editable_arguments(tui_value(values, "_skit_args"))?;
+    args.values.extend(changed_form_values(values, baseline));
+    if values.contains_key("_skit_preset") {
+        args.preset = tui_nonempty_owned(values, "_skit_preset");
+    }
+    if values.contains_key("_skit_save_preset") {
+        args.save_preset = tui_nonempty_owned(values, "_skit_save_preset");
+    }
+    if values.contains_key("_skit_runner") {
+        args.runner = tui_nonempty_owned(values, "_skit_runner");
+    }
+    if let Some(value) = values.get("_skit_dry_run") {
+        args.dry_run = tui_bool(value)?;
+    }
     Ok(())
 }
 
@@ -1138,8 +1463,7 @@ fn changed_form_values(
         .iter()
         .filter_map(|(key, value)| {
             let name = key.strip_prefix("value:")?;
-            (!value.is_empty() && baseline.get(name) != Some(value))
-                .then(|| format!("{name}={value}"))
+            (baseline.get(name) != Some(value)).then(|| format!("{name}={value}"))
         })
         .collect()
 }
@@ -1329,7 +1653,7 @@ fn list(
             .entries
             .iter()
             .map(|entry| {
-                let run = state.load(&entry.slug).last_run;
+                let run = state.last_run(&entry.slug);
                 serde_json::json!({
                     "name": entry.name,
                     "slug": entry.slug,
@@ -1346,10 +1670,7 @@ fn list(
     } else {
         let stdout = io::stdout();
         let mut output = stdout.lock();
-        for entry in &scan.entries {
-            let row = format!("{}\t{}\t{}", entry.name, entry.kind, entry.description);
-            writeln!(output, "{row}")?;
-        }
+        write_human_list(&mut output, store, &scan.entries, active_locale())?;
         let stderr = io::stderr();
         let mut errors = stderr.lock();
         for diagnostic in &scan.diagnostics {
@@ -1361,6 +1682,132 @@ fn list(
     Ok(())
 }
 
+fn write_human_list<W: io::Write>(
+    output: &mut W,
+    store: &FileStore,
+    entries: &[EntrySummary],
+    locale: Locale,
+) -> io::Result<()> {
+    if entries.is_empty() {
+        return writeln!(
+            output,
+            "{}",
+            text(locale, "No entries yet. Add one with: skit add <path>")
+        );
+    }
+
+    let rows = entries
+        .iter()
+        .map(|entry| {
+            [
+                entry.name.clone(),
+                kind_label(locale, entry.kind.as_str()).into_owned(),
+                list_description(store, entry, locale),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let headers = [
+        text(locale, "Name").into_owned(),
+        text(locale, "Kind").into_owned(),
+        text(locale, "Description").into_owned(),
+    ];
+    write_table(output, &headers, &rows)
+}
+
+fn write_table<W: io::Write, const COLUMNS: usize>(
+    output: &mut W,
+    headers: &[String; COLUMNS],
+    rows: &[[String; COLUMNS]],
+) -> io::Result<()> {
+    let mut widths = std::array::from_fn(|column| {
+        display_lines(&headers[column])
+            .map(str::width)
+            .max()
+            .unwrap_or(0)
+    });
+    for row in rows {
+        for (column, cell) in row.iter().enumerate() {
+            widths[column] =
+                widths[column].max(display_lines(cell).map(str::width).max().unwrap_or(0));
+        }
+    }
+
+    write_border(output, '┏', '┳', '┓', '━', &widths)?;
+    write_table_row(output, headers, &widths)?;
+    write_border(output, '┡', '╇', '┩', '━', &widths)?;
+    for row in rows {
+        write_table_row(output, row, &widths)?;
+    }
+    write_border(output, '└', '┴', '┘', '─', &widths)
+}
+
+fn display_lines(value: &str) -> impl Iterator<Item = &str> {
+    value.split('\n')
+}
+
+fn write_border<W: io::Write, const COLUMNS: usize>(
+    output: &mut W,
+    left: char,
+    junction: char,
+    right: char,
+    fill: char,
+    widths: &[usize; COLUMNS],
+) -> io::Result<()> {
+    write!(output, "{left}")?;
+    for (index, width) in widths.iter().enumerate() {
+        write!(output, "{}", fill.to_string().repeat(width + 2))?;
+        write!(
+            output,
+            "{}",
+            if index + 1 == widths.len() {
+                right
+            } else {
+                junction
+            }
+        )?;
+    }
+    writeln!(output)
+}
+
+fn write_table_row<W: io::Write, const COLUMNS: usize>(
+    output: &mut W,
+    cells: &[String; COLUMNS],
+    widths: &[usize; COLUMNS],
+) -> io::Result<()> {
+    let lines = cells
+        .iter()
+        .map(|cell| display_lines(cell).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    let height = lines.iter().map(Vec::len).max().unwrap_or(1);
+    for line in 0..height {
+        write!(output, "│")?;
+        for (column, width) in widths.iter().enumerate() {
+            let value = lines[column].get(line).copied().unwrap_or("");
+            let padding = width.saturating_sub(value.width());
+            write!(output, " {value}{} │", " ".repeat(padding))?;
+        }
+        writeln!(output)?;
+    }
+    Ok(())
+}
+
+fn list_description(store: &FileStore, entry: &EntrySummary, locale: Locale) -> String {
+    let description = if entry.description.is_empty() {
+        "—".to_owned()
+    } else {
+        entry.description.clone()
+    };
+    let Some(target) = summary_target(store, entry).filter(|target| !target.exists()) else {
+        return description;
+    };
+    let marker = format_text(locale, "⚠ missing: {}", &[&target.display()]);
+    if entry.description.is_empty() {
+        marker
+    } else {
+        format!("{description}  {marker}")
+    }
+}
+
 fn show(
     service: &LibraryService<FileStore>,
     store: &FileStore,
@@ -1368,16 +1815,16 @@ fn show(
     json: bool,
 ) -> Result<(), CliError> {
     let entry = service.show(selector)?;
+    let settings = effective_settings(store, &entry);
+    let source = show_source_text(store, &entry)?;
+    let plan = form_plan(entry.meta.kind.as_str(), &source, &settings);
+    let state =
+        FormStateService::new(FileFormStateStore::new(resolve_state_dir()?)).load(&entry.slug);
     let stdout = io::stdout();
     let mut output = stdout.lock();
     if json {
-        let settings = effective_settings(store, &entry);
-        let source = show_source_text(store, &entry)?;
-        let declarations = form_params(entry.meta.kind.as_str(), &source, &settings);
-        let state =
-            FormStateService::new(FileFormStateStore::new(resolve_state_dir()?)).load(&entry.slug);
-        let parameter_source = parameter_source(entry.meta.kind.as_str(), &source, &declarations);
-        let fields = declarations.iter().map(field_json).collect::<Vec<_>>();
+        let parameter_source = plan.source.as_str();
+        let fields = plan.fields.iter().map(field_json).collect::<Vec<_>>();
         let mut record = serde_json::json!({
             "name": entry.meta.name,
             "slug": entry.slug,
@@ -1398,9 +1845,8 @@ fn show(
             "template": nonempty(&settings.template),
             "param_source": parameter_source,
             "param_origin": parameter_origin(parameter_source),
-            "degraded_reason": declarations.iter().any(|item| item.degraded)
-                .then_some("dynamic"),
-            "drift": doctor_entry_drifted(store, &entry),
+            "degraded_reason": degradation_token(plan.degradation),
+            "drift": !plan.drift.is_empty(),
             "fields": fields,
             "presets": state.presets.keys().collect::<Vec<_>>(),
             "last_run_at": state.last_run.at,
@@ -1429,99 +1875,300 @@ fn show(
         serde_json::to_writer(&mut output, &record)?;
         writeln!(output)?;
     } else {
-        let settings = effective_settings(store, &entry);
-        let source = show_source_text(store, &entry)?;
-        let declarations = form_params(entry.meta.kind.as_str(), &source, &settings);
-        let state =
-            FormStateService::new(FileFormStateStore::new(resolve_state_dir()?)).load(&entry.slug);
-        writeln!(output, "{} ({})", entry.meta.name, entry.slug)?;
-        let kind = format_text(active_locale(), "Kind: {}", &[&entry.meta.kind]);
-        writeln!(output, "{kind}")?;
-        let mode = format_text(
+        write_human_show(
+            &mut output,
+            store,
+            &entry,
+            &settings,
+            &plan,
+            &state,
             active_locale(),
-            "Storage mode: {}",
-            &[&mode_name(entry.meta.mode)],
-        );
-        writeln!(output, "{mode}")?;
-        if !entry.meta.description.is_empty() {
-            writeln!(output, "{}", entry.meta.description)?;
-        }
-        humanln!("Source: {}", entry.meta.source);
-        humanln!("Work directory: {}", entry.meta.workdir);
-        humanln!(
-            "Missing: {}",
-            text(
-                active_locale(),
-                if entry_missing(store, &entry) {
-                    "yes"
-                } else {
-                    "no"
-                }
-            )
-        );
-        humanln!(
-            "Drift: {}",
-            text(
-                active_locale(),
-                if doctor_entry_drifted(store, &entry) {
-                    "yes"
-                } else {
-                    "no"
-                }
-            )
-        );
-        if !settings.interpreter.is_empty() {
-            humanln!("Interpreter: {}", settings.interpreter);
-        }
-        if !settings.dependencies.is_empty() {
-            humanln!("Dependencies: {}", settings.dependencies.join(", "));
-        }
-        if !settings.requires_python.is_empty() {
-            humanln!("Python constraint: {}", settings.requires_python);
-        }
-        if !settings.needs.is_empty() {
-            humanln!("Required commands: {}", settings.needs.join(", "));
-        }
-        if !settings.template.is_empty() {
-            humanln!("Template: {}", settings.template);
-        }
-        if entry.meta.kind.as_str() == "prompt" {
-            humanln!(
-                "Prompt runner: {}",
-                if settings.runner.is_empty() {
-                    text(active_locale(), "not set").to_owned()
-                } else {
-                    settings.runner.clone()
-                }
-            );
-            humanln!(
-                "Interpolation: {}",
-                text(
-                    active_locale(),
-                    if settings.interpolate { "on" } else { "off" }
-                )
-            );
-        }
-        if !declarations.is_empty() {
-            humanln!("Parameters:");
-            for field in &declarations {
-                humanln!(
-                    "  {} ({}, {})",
-                    field.name,
-                    field.parameter_type.as_str(),
-                    field.delivery.as_str()
-                );
-            }
-        }
-        if !state.presets.is_empty() {
-            humanln!(
-                "Presets: {}",
-                state.presets.keys().cloned().collect::<Vec<_>>().join(", ")
-            );
-        }
-        humanln!("Run: skit run {}", entry.slug);
+        )?;
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_human_show<W: io::Write>(
+    output: &mut W,
+    store: &FileStore,
+    entry: &Entry,
+    settings: &EntrySettings,
+    plan: &PreparedFormPlan,
+    state: &skit_application::form_state::PersistedFormState,
+    locale: Locale,
+) -> io::Result<()> {
+    writeln!(
+        output,
+        "{}  ({} · {})",
+        entry.meta.name,
+        kind_label(locale, entry.meta.kind.as_str()),
+        mode_name(entry.meta.mode)
+    )?;
+    if !entry.meta.description.is_empty() {
+        writeln!(output, "  {}", entry.meta.description)?;
+    }
+    if entry.meta.kind.as_str() != "command" {
+        writeln!(
+            output,
+            "  {}",
+            format_text(locale, "Source: {}", &[&entry.meta.source])
+        )?;
+    }
+    if entry.meta.workdir != "origin" {
+        writeln!(
+            output,
+            "  {}",
+            format_text(locale, "Working directory: {}", &[&entry.meta.workdir])
+        )?;
+    }
+    if !settings.interpreter.is_empty() {
+        writeln!(
+            output,
+            "  {}",
+            format_text(locale, "Interpreter: {}", &[&settings.interpreter])
+        )?;
+    }
+    if let Some(target) = entry_target(store, entry).filter(|target| !target.exists()) {
+        writeln!(
+            output,
+            "  {}",
+            format_text(locale, "⚠ missing: {}", &[&target.display()])
+        )?;
+    }
+    if !settings.dependencies.is_empty() {
+        writeln!(
+            output,
+            "  {}",
+            format_text(
+                locale,
+                "Dependencies: {}",
+                &[&settings.dependencies.join(", ")],
+            )
+        )?;
+    }
+    if !settings.requires_python.is_empty() {
+        writeln!(
+            output,
+            "  {}",
+            format_text(
+                locale,
+                "Python constraint: {}",
+                &[&settings.requires_python],
+            )
+        )?;
+    }
+    if !settings.needs.is_empty() {
+        writeln!(
+            output,
+            "  {}",
+            format_text(locale, "Needs: {}", &[&settings.needs.join(", ")])
+        )?;
+    }
+    if !settings.template.is_empty() {
+        writeln!(
+            output,
+            "  {}",
+            format_text(locale, "Command template: {}", &[&settings.template])
+        )?;
+    }
+    if entry.meta.kind.as_str() == "prompt" {
+        let runner = if settings.runner.is_empty() {
+            text(locale, "(asks at run time)").into_owned()
+        } else {
+            settings.runner.clone()
+        };
+        writeln!(
+            output,
+            "  {}",
+            format_text(locale, "Runner: {}", &[&runner])
+        )?;
+        if !settings.interpolate {
+            writeln!(
+                output,
+                "  {}",
+                text(
+                    locale,
+                    "Variable insertion: off (the body travels as written)"
+                )
+            )?;
+        }
+    }
+    for line in show_drift_lines(plan, &entry.meta.name, locale) {
+        writeln!(output, "{line}")?;
+    }
+    if plan.degradation.is_some() {
+        writeln!(
+            output,
+            "{}",
+            text(
+                locale,
+                "skit could not model this script's own arguments; pass them after -- instead."
+            )
+        )?;
+    }
+    if plan.fields.is_empty() {
+        let message = match entry.meta.kind.as_str() {
+            "prompt" => "No form fields — arguments after -- go to the selected agent.",
+            "command" => "No form fields — arguments after -- are appended to the command.",
+            _ => "No form fields — arguments after -- pass straight through to the script.",
+        };
+        writeln!(output, "  {}", text(locale, message))?;
+    } else {
+        write_show_fields(output, &plan.fields, locale)?;
+    }
+    if !state.presets.is_empty() {
+        writeln!(
+            output,
+            "  {}",
+            format_text(
+                locale,
+                "Presets: {}",
+                &[&state.presets.keys().cloned().collect::<Vec<_>>().join(", ")],
+            )
+        )?;
+    }
+    writeln!(
+        output,
+        "  {}",
+        format_text(locale, "Run it: skit run {}", &[&entry.meta.name])
+    )
+}
+
+fn write_show_fields<W: io::Write>(
+    output: &mut W,
+    fields: &[PreparedField],
+    locale: Locale,
+) -> io::Result<()> {
+    let headers = [
+        text(locale, "Parameter").into_owned(),
+        text(locale, "Type").into_owned(),
+        text(locale, "Required").into_owned(),
+        text(locale, "Default").into_owned(),
+        text(locale, "Choices").into_owned(),
+        text(locale, "Secret").into_owned(),
+        text(locale, "Help").into_owned(),
+    ];
+    let rows = fields
+        .iter()
+        .map(|prepared| {
+            let field = &prepared.declaration;
+            let shown_default = match &field.default {
+                None => "—".to_owned(),
+                Some(_) if field.secret => text(locale, "•••").into_owned(),
+                Some(default) => {
+                    let value = tui_parameter_value(default);
+                    if value.is_empty() {
+                        "—".to_owned()
+                    } else {
+                        value
+                    }
+                }
+            };
+            let secret = if !field.secret {
+                "—".to_owned()
+            } else if field.env_source.is_empty() {
+                text(locale, "yes").into_owned()
+            } else {
+                format!("{} ← ${}", text(locale, "yes"), field.env_source)
+            };
+            let help = if !field.help.is_empty() {
+                field.help.clone()
+            } else if !field.prompt.is_empty() && field.prompt != field.name {
+                field.prompt.clone()
+            } else {
+                "—".to_owned()
+            };
+            [
+                field.name.clone(),
+                field_type(field).to_owned(),
+                if field.required {
+                    text(locale, "yes").into_owned()
+                } else {
+                    "—".to_owned()
+                },
+                shown_default,
+                if field.choices.is_empty() {
+                    "—".to_owned()
+                } else {
+                    field.choices.join(", ")
+                },
+                secret,
+                help,
+            ]
+        })
+        .collect::<Vec<_>>();
+    write_table(output, &headers, &rows)
+}
+
+const fn degradation_token(reason: Option<skit_language::DegradationReason>) -> &'static str {
+    match reason {
+        Some(skit_language::DegradationReason::Subcommands) => "subparsers",
+        Some(_) => "dynamic",
+        None => "",
+    }
+}
+
+fn show_drift_lines(plan: &PreparedFormPlan, entry_name: &str, locale: Locale) -> Vec<String> {
+    if let [FormDrift::PromptMissing { names }] = plan.drift.as_slice() {
+        return vec![format_text(
+            locale,
+            "No longer in the prompt (the value would be ignored): {} — edit the body or update parameters with: skit params {}",
+            &[&names.join(", "), &entry_name],
+        )];
+    }
+    if plan.drift.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![format_text(
+        locale,
+        "The parameter definitions for {} have drifted from the script:",
+        &[&entry_name],
+    )];
+    for drift in &plan.drift {
+        let line = match drift {
+            FormDrift::Missing { declaration }
+                if declaration.binding == ParameterBinding::EnvDefault =>
+            {
+                format_text(
+                    locale,
+                    "{} is no longer read from the environment (its ${...:-default} was removed or overridden by a plain assignment) — your value would be silently ignored. Re-add or resync.",
+                    &[&declaration.name],
+                )
+            }
+            FormDrift::Missing { declaration } => format_text(
+                locale,
+                "{}: injection target no longer exists (dropped from this run's form)",
+                &[&declaration.name],
+            ),
+            FormDrift::TypeChanged { stored, current } => format_text(
+                locale,
+                "{}: type changed from {} to {} in the source (still injected — double-check the value)",
+                &[
+                    &stored.name,
+                    &stored.parameter_type.as_str(),
+                    &current.parameter_type.as_str(),
+                ],
+            ),
+            FormDrift::Rebound { stored, .. } => format_text(
+                locale,
+                "{}: its prompt no longer matches a unique input/read call; falling back to position (still injected — double-check this lands on the right question, especially if it's a secret)",
+                &[&stored.name],
+            ),
+            FormDrift::PromptMissing { names } => format_text(
+                locale,
+                "No longer in the prompt (the value would be ignored): {} — edit the body or update parameters with: skit params {}",
+                &[&names.join(", "), &entry_name],
+            ),
+        };
+        lines.push(format!("  {line}"));
+    }
+    lines.push(format_text(
+        locale,
+        "To refresh the definitions, run: skit params {} --resync",
+        &[&entry_name],
+    ));
+    lines
 }
 
 fn show_source_text(store: &FileStore, entry: &Entry) -> Result<String, CliError> {
@@ -1531,9 +2178,21 @@ fn show_source_text(store: &FileStore, entry: &Entry) -> Result<String, CliError
     let Some(path) = source_path(store, entry) else {
         return Ok(String::new());
     };
-    Ok(fs::read(&path)
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-        .unwrap_or_default())
+    let Ok(bytes) = fs::read(&path) else {
+        return Ok(String::new());
+    };
+    match String::from_utf8(bytes) {
+        Ok(source) => Ok(source),
+        Err(error) if entry.meta.kind.as_str() == "prompt" => {
+            let offset = error.utf8_error().valid_up_to();
+            Err(CliError::Failure(
+                Message::new("Prompt {} isn't valid UTF-8 (invalid byte at offset {}).")
+                    .with(path.display())
+                    .with(offset),
+            ))
+        }
+        Err(error) => Ok(String::from_utf8_lossy(error.as_bytes()).into_owned()),
+    }
 }
 
 fn nonempty(value: &str) -> Option<&str> {
@@ -1542,33 +2201,31 @@ fn nonempty(value: &str) -> Option<&str> {
 
 fn effective_settings(store: &FileStore, entry: &Entry) -> EntrySettings {
     let mut settings = EntrySettings::from_meta(&entry.meta);
-    if entry.meta.kind.as_str() == "python"
-        && entry.meta.mode == StorageMode::Copy
-        && let Some(metadata) = source_path(store, entry)
-            .and_then(|path| fs::read_to_string(path).ok())
-            .as_deref()
-            .and_then(read_uv_metadata)
-    {
-        settings.dependencies = metadata.dependencies;
-        settings.requires_python = metadata.requires_python;
+    if entry.meta.kind.as_str() == "python" && entry.meta.mode == StorageMode::Copy {
+        let source = source_path(store, entry).and_then(|path| fs::read(path).ok());
+        let effective = effective_uv_metadata_bytes(
+            source.as_deref(),
+            &UvMetadata {
+                dependencies: settings.dependencies.clone(),
+                requires_python: settings.requires_python.clone(),
+            },
+        );
+        settings.dependencies = effective.dependencies;
+        settings.requires_python = effective.requires_python;
     }
     settings
 }
 
-fn parameter_source(kind: &str, source: &str, declarations: &[ParamDecl]) -> &'static str {
-    if matches!(kind, "command" | "prompt") {
-        "command"
-    } else if declarations
-        .iter()
-        .any(|item| item.binding != skit_domain::parameters::ParameterBinding::None)
-    {
-        "inject"
-    } else if !cli_params(kind, source).is_empty() {
-        "argparse"
-    } else if declarations.is_empty() {
-        "none"
-    } else {
-        "declared"
+fn uv_edit_error(name: &str, error: UvMetadataEditError) -> CliError {
+    match error {
+        UvMetadataEditError::NonUtf8OwnBlock => CliError::Usage(
+            Message::new(
+                "{}'s stored copy isn't valid UTF-8, so skit can't rewrite the script's own dependency block — and that block is what uv reads. Edit it in the script itself: skit edit {}",
+            )
+            .with(name)
+            .with(name),
+        ),
+        UvMetadataEditError::Language(error) => CliError::Usage(error.message()),
     }
 }
 
@@ -1582,11 +2239,13 @@ fn parameter_origin(source: &str) -> &'static str {
     }
 }
 
-fn field_json(item: &ParamDecl) -> serde_json::Value {
+fn field_json(prepared: &PreparedField) -> serde_json::Value {
+    let item = &prepared.declaration;
+    let default = item.default.as_ref().map(tui_parameter_value);
     serde_json::json!({
         "key": item.name,
-        "label": if item.prompt.is_empty() { &item.name } else { &item.prompt },
-        "type": item.parameter_type.as_str(),
+        "label": field_label(item),
+        "type": field_type(item),
         "source": item.delivery.as_str(),
         "required": item.required,
         "secret": item.secret,
@@ -1594,17 +2253,43 @@ fn field_json(item: &ParamDecl) -> serde_json::Value {
         "repeat": item.repeat,
         "degraded": item.degraded,
         "choices": item.choices,
-        "default": item.default,
+        "default": default,
         "help": item.help,
         "flag": item.flag,
-        "action": item.action,
+        "action": field_action(item),
         "env_source": item.env_source,
-        "delivers_empty": item.default.is_some()
-            && !item.secret
-            && !item.multiple
-            && matches!(item.parameter_type, ParameterType::Str | ParameterType::Path)
-            && matches!(item.delivery, ParameterDelivery::Inject | ParameterDelivery::Flag | ParameterDelivery::Env),
+        "delivers_empty": prepared.delivers_empty(),
     })
+}
+
+fn field_label(item: &ParamDecl) -> &str {
+    if item.delivery == ParameterDelivery::Flag || item.prompt.is_empty() {
+        &item.name
+    } else {
+        &item.prompt
+    }
+}
+
+fn field_type(item: &ParamDecl) -> &'static str {
+    if item.degraded {
+        "str"
+    } else {
+        item.parameter_type.as_str()
+    }
+}
+
+fn field_action(item: &ParamDecl) -> &str {
+    if item.action.is_empty()
+        && !item.degraded
+        && item.delivery == ParameterDelivery::Flag
+        && item.parameter_type == ParameterType::Bool
+        && !item.flag.is_empty()
+        && matches!(item.default, None | Some(ParameterValue::Bool(false)))
+    {
+        "store_true"
+    } else {
+        &item.action
+    }
 }
 
 #[derive(Debug)]
@@ -1612,7 +2297,7 @@ struct AddOptions {
     source: Option<PathBuf>,
     kind: Option<String>,
     name: Option<String>,
-    description: String,
+    description: Option<String>,
     reference: bool,
     command_template: Option<String>,
     prompt: bool,
@@ -1622,6 +2307,170 @@ struct AddOptions {
     dependencies: Vec<String>,
     dependencies_explicit: bool,
     requires_python: Option<String>,
+    no_input: bool,
+}
+
+fn onboard_add_source(
+    kind: &str,
+    mode: StorageMode,
+    source_bytes: &[u8],
+    entry_name: &str,
+    no_input: bool,
+) -> Result<Vec<u8>, CliError> {
+    let source = LosslessSource::from_bytes(source_bytes);
+    let plan = onboarding_plan(kind, source.normalized_text());
+    if plan.parse_state == OnboardingParseState::ParserUnavailable {
+        return Ok(source_bytes.to_vec());
+    }
+
+    if mode == StorageMode::Reference {
+        if !print_modeled_reader_notice(&plan) {
+            humanln!(
+                "Reference mode never touches the original file, so parameter setup was skipped."
+            );
+        }
+        return Ok(source_bytes.to_vec());
+    }
+
+    print_copy_onboarding_facts(&plan, entry_name);
+    let candidates = plan.offered_candidates();
+    if candidates.is_empty()
+        || no_input
+        || !io::stdin().is_terminal()
+        || !io::stdout().is_terminal()
+    {
+        return Ok(source_bytes.to_vec());
+    }
+
+    if candidates.len() == 1 {
+        humanln!(
+            "Found {} parameter candidate (constants / input() calls):",
+            1
+        );
+    } else {
+        humanln!(
+            "Found {} parameter candidates (constants / input() calls):",
+            candidates.len()
+        );
+    }
+    let locale = active_locale();
+    let choices = candidates
+        .iter()
+        .map(|candidate| {
+            (
+                onboarding_candidate_label(locale, candidate),
+                candidate.selected_by_default(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let selected = MultiSelect::new()
+        .with_prompt(
+            text(
+                locale,
+                "Select the values that skit should manage (Space toggles; Enter accepts)",
+            )
+            .into_owned(),
+        )
+        .items_checked(choices)
+        .interact_opt()
+        .map_err(io::Error::from)?
+        .ok_or(CliError::Aborted)?;
+    let declarations = selected
+        .into_iter()
+        .map(|index| candidates[index].declaration.clone())
+        .collect::<Vec<_>>();
+    if declarations.is_empty() {
+        return Ok(source_bytes.to_vec());
+    }
+    write_managed_params_bytes(kind, source_bytes, &declarations)
+        .map_err(|error| CliError::Usage(error.message()))
+}
+
+fn print_copy_onboarding_facts(plan: &OnboardingPlan, entry_name: &str) {
+    let modeled = print_modeled_reader_notice(plan);
+    if !modeled && plan.uses_cli_framework() {
+        humanln!(
+            "This script parses its own arguments ({}); skit couldn't model them statically, so the run form offers an extra-arguments field.",
+            plan.frameworks.join(", ")
+        );
+    }
+    if plan.uses_argv && !plan.uses_cli_framework() {
+        humanln!(
+            "This script reads command-line arguments; the run form has an extra-arguments field for them."
+        );
+    }
+    if !plan.filename_literals.is_empty() {
+        let names = plan
+            .filename_literals
+            .iter()
+            .map(|name| serde_json::to_string(name).expect("a string always serializes as JSON"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        humanln!(
+            "💡 {} are written directly inside the code, so skit can't turn them into form fields. To manage one, first give it a name at the top of the script, e.g. OUTPUT = '…' (skit edit {}).",
+            names,
+            entry_name
+        );
+    }
+}
+
+fn print_modeled_reader_notice(plan: &OnboardingPlan) -> bool {
+    let Some(fields) = plan
+        .modeled_cli_fields()
+        .filter(|fields| !fields.is_empty())
+    else {
+        return false;
+    };
+    if fields.len() == 1 {
+        humanln!(
+            "✓ skit read this script's own arguments ({} field). Running it opens a form — nothing to memorize.",
+            fields.len()
+        );
+    } else {
+        humanln!(
+            "✓ skit read this script's own arguments ({} fields). Running it opens a form — nothing to memorize.",
+            fields.len()
+        );
+    }
+    true
+}
+
+fn onboarding_candidate_label(locale: Locale, candidate: &OnboardingCandidate) -> String {
+    let declaration = &candidate.declaration;
+    let secret = if declaration.secret {
+        text(locale, " (secret)")
+    } else {
+        std::borrow::Cow::Borrowed("")
+    };
+    let mut label = if declaration.binding == ParameterBinding::Input {
+        let ordinal = declaration.order.saturating_add(1);
+        let prompt =
+            serde_json::to_string(&declaration.prompt).expect("a string always serializes as JSON");
+        format_text(locale, "input() #{}: {}{}", &[&ordinal, &prompt, &secret])
+    } else {
+        let value = declaration.default.as_ref().map_or_else(
+            || text(locale, "not set").into_owned(),
+            |value| serde_json::to_string(value).expect("a parameter value always serializes"),
+        );
+        format_text(
+            locale,
+            "{} ({}) = {}{}",
+            &[
+                &declaration.name,
+                &declaration.parameter_type.as_str(),
+                &value,
+                &secret,
+            ],
+        )
+    };
+    if candidate.demotion.is_some() {
+        label.push_str(" — ");
+        label.push_str(&text(
+            locale,
+            "⚠ looks like a loop accumulator — probably not a parameter",
+        ));
+    }
+    label
 }
 
 fn add(service: &LibraryService<FileStore>, options: AddOptions) -> Result<(), CliError> {
@@ -1648,6 +2497,7 @@ fn add_with_config(
         dependencies,
         dependencies_explicit,
         mut requires_python,
+        no_input,
     } = options;
     let dependencies_explicit = dependencies_explicit || !dependencies.is_empty();
     let mut dependencies = dependencies
@@ -1659,6 +2509,7 @@ fn add_with_config(
     if prompt {
         validate_prompt_runner_in(&FileConfigStore::new(config_dir), runner.as_deref())?;
     }
+    let explicit_executable = executable || kind.as_deref() == Some("exe");
 
     if let Some(template) = command_template {
         if template.trim().is_empty() {
@@ -1688,11 +2539,11 @@ fn add_with_config(
             mode: StorageMode::Reference,
             source: String::new(),
             workdir: "invoke".to_owned(),
-            description,
+            description: description.unwrap_or_default(),
             payload: None,
             settings,
         })?;
-        humanln!("Added: {} ({})", entry.meta.name, entry.slug);
+        print_add_summary(service.repository(), &entry)?;
         return Ok(());
     }
 
@@ -1712,7 +2563,8 @@ fn add_with_config(
             "standard input cannot be an executable entry",
         )));
     }
-    let (source, source_record, mut bytes, permissions) = if input == Path::new("-") {
+    let from_stdin = input == Path::new("-");
+    let (source, source_record, mut bytes, permissions, source_is_regular) = if from_stdin {
         let mut bytes = Vec::new();
         io::stdin().read_to_end(&mut bytes)?;
         (
@@ -1720,16 +2572,26 @@ fn add_with_config(
             String::new(),
             bytes,
             SourcePermissions::default(),
+            true,
         )
     } else {
-        let source =
-            fs::canonicalize(input).map_err(|error| source_error("resolve", input, error))?;
-        let (bytes, permissions) = read_source(&source)?;
+        let expanded = expand_user_path(input);
+        let source = fs::canonicalize(&expanded)
+            .map_err(|error| source_error("resolve", &expanded, error))?;
+        let snapshot = read_source(&source, explicit_executable)?;
         let source_record = source.display().to_string();
-        (source, source_record, bytes, permissions)
+        (
+            source,
+            source_record,
+            snapshot.bytes,
+            snapshot.permissions,
+            snapshot.is_regular,
+        )
     };
     let name = name.unwrap_or_else(|| source_default_name(&source));
-    let mut source_text = String::from_utf8_lossy(&bytes).into_owned();
+    let mut source_text = LosslessSource::from_bytes(&bytes)
+        .normalized_text()
+        .to_owned();
     let shebang = source_text
         .lines()
         .next()
@@ -1742,46 +2604,45 @@ fn add_with_config(
     } else {
         infer_kind(&source, shebang, file_is_executable)
     };
-    let kind = kind.as_deref().or(inferred).ok_or_else(|| {
-        CliError::Usage(Message::new(
-            "could not infer the entry kind; pass --kind KIND",
-        ))
-    })?;
+    if kind.is_none() && inferred.is_none() && from_stdin && shebang.is_some() {
+        return Err(CliError::Usage(Message::new(
+            "The piped text's #! names no interpreter skit knows — pass --kind <language> to choose one.",
+        )));
+    }
+    let kind = kind
+        .as_deref()
+        .or(inferred)
+        .or(from_stdin.then_some("python"))
+        .ok_or_else(|| {
+            CliError::Usage(Message::new(
+                "could not infer the entry kind; pass --kind KIND",
+            ))
+        })?;
     let kind =
         EntryKind::parse(kind.to_owned()).map_err(|error| RepositoryError::InvalidMutation {
             reason: error.message(),
         })?;
     let kind_name = kind.as_str().to_owned();
+    let description = description.unwrap_or_else(|| suggest_description(&kind_name, &bytes));
     if no_interpolate && kind_name != "prompt" {
         return Err(CliError::Usage(Message::new(
             "--no-interpolate only applies to prompt entries",
         )));
     }
+    let has_own_uv_metadata = kind_name == "python" && has_uv_metadata_block_bytes(&bytes);
     let uv_metadata = (kind_name == "python")
         .then(|| read_uv_metadata(&source_text))
         .flatten();
-    if !dependencies_explicit {
-        if let Some(metadata) = &uv_metadata
-            && !metadata.dependencies.is_empty()
-        {
-            dependencies = metadata.dependencies.clone();
-        } else if dependencies.is_empty() {
-            let source_dir = (!source_record.is_empty())
-                .then(|| source.parent())
-                .flatten();
-            dependencies = external_dependencies_at(&kind_name, &source_text, source_dir);
-        }
+    if !dependencies_explicit && !has_own_uv_metadata && dependencies.is_empty() {
+        let source_dir = (!source_record.is_empty())
+            .then(|| source.parent())
+            .flatten();
+        dependencies = external_dependencies_at(&kind_name, &source_text, source_dir);
     }
-    if !requires_python_explicit {
-        requires_python = uv_metadata
-            .as_ref()
-            .map(|metadata| metadata.requires_python.clone())
-            .filter(|value| !value.is_empty())
-            .or_else(|| {
-                shebang
-                    .and_then(shebang_program)
-                    .and_then(python_version_pin)
-            });
+    if !requires_python_explicit && !has_own_uv_metadata {
+        requires_python = shebang
+            .and_then(shebang_program)
+            .and_then(python_version_pin);
     }
     if let Some(value) = &requires_python
         && matches!(value.trim(), "-" | "none")
@@ -1825,7 +2686,7 @@ fn add_with_config(
     if kind_name == "prompt" {
         validate_prompt_runner_in(&FileConfigStore::new(config_dir), runner.as_deref())?;
     }
-    let stored_name = stored_name(&kind_name, &source);
+    let stored_name = payload_stored_name(&kind, &source);
     let mode = if reference || kind_name == "exe" {
         StorageMode::Reference
     } else {
@@ -1839,8 +2700,25 @@ fn add_with_config(
         })
         .unwrap_or_default()
         .to_owned();
-    let mut metadata_dependencies = dependencies;
-    let mut metadata_requires_python = requires_python.unwrap_or_default();
+    if has_own_uv_metadata
+        && let Some(metadata) = &uv_metadata
+        && !metadata.dependencies.is_empty()
+    {
+        humanln!(
+            "The script declares its own dependencies (PEP 723): {}",
+            metadata.dependencies.join(", ")
+        );
+    }
+    let mut metadata_dependencies = if has_own_uv_metadata {
+        Vec::new()
+    } else {
+        dependencies
+    };
+    let mut metadata_requires_python = if has_own_uv_metadata {
+        String::new()
+    } else {
+        requires_python.unwrap_or_default()
+    };
     if kind_name == "python"
         && mode == StorageMode::Copy
         && (!metadata_dependencies.is_empty() || !metadata_requires_python.is_empty())
@@ -1853,15 +2731,22 @@ fn add_with_config(
         )
         .map_err(|error| CliError::Usage(error.message()))?;
         bytes = rewritten.into_bytes();
-        source_text = String::from_utf8_lossy(&bytes).into_owned();
+        source_text = LosslessSource::from_bytes(&bytes)
+            .normalized_text()
+            .to_owned();
         metadata_dependencies.clear();
         metadata_requires_python.clear();
     }
-    let payload = Some(EntryPayload {
-        bytes,
-        stored_name: Some(stored_name),
-        permissions,
-    });
+    bytes = onboard_add_source(&kind_name, mode, &bytes, &name, no_input)?;
+    let payload = if kind_name == "exe" && !source_is_regular {
+        None
+    } else {
+        Some(EntryPayload {
+            bytes,
+            stored_name: Some(stored_name),
+            permissions,
+        })
+    };
     let mut settings = EntrySettings {
         dependencies: metadata_dependencies,
         requires_python: metadata_requires_python,
@@ -1883,22 +2768,105 @@ fn add_with_config(
             .map(|item| item.name.clone())
             .collect();
     }
+    let workdir = add_workdir(&kind, mode).to_owned();
     let entry = service.add(CreateEntry {
         name,
         kind,
         mode,
         source: source_record,
-        workdir: if mode == StorageMode::Reference {
-            "origin"
-        } else {
-            "invoke"
-        }
-        .to_owned(),
+        workdir,
         description,
         payload,
         settings,
     })?;
-    humanln!("Added: {} ({})", entry.meta.name, entry.slug);
+    print_add_summary(service.repository(), &entry)?;
+    Ok(())
+}
+
+fn print_add_summary(store: &FileStore, entry: &Entry) -> Result<(), CliError> {
+    let settings = effective_settings(store, entry);
+    let source = show_source_text(store, entry)?;
+    let declarations = match entry.meta.kind.as_str() {
+        "command" | "prompt" => {
+            form_plan(entry.meta.kind.as_str(), &source, &settings).declarations()
+        }
+        "exe" => Vec::new(),
+        kind => managed_params(kind, &source),
+    };
+    let managed = if entry.meta.kind.as_str() == "command" {
+        Vec::new()
+    } else {
+        declarations
+            .iter()
+            .map(|declaration| declaration.name.clone())
+            .collect::<Vec<_>>()
+    };
+    let secrets = declarations
+        .iter()
+        .filter(|declaration| declaration.secret)
+        .map(|declaration| declaration.name.clone())
+        .collect::<Vec<_>>();
+
+    if entry.meta.kind.as_str() == "command" && !settings.params.is_empty() {
+        humanln!(
+            "Detected parameters: {} (the run form asks for them; your last values are remembered)",
+            settings.params.join(", ")
+        );
+    }
+    if supports_storage_modes(&entry.meta.kind) {
+        let mode = match entry.meta.mode {
+            StorageMode::Copy => "copy",
+            StorageMode::Reference => "reference",
+        };
+        humanln!("Added: {} ({} mode)", entry.meta.name, mode);
+    } else {
+        humanln!("Added: {}", entry.meta.name);
+    }
+    if !entry.meta.description.is_empty() {
+        println!(
+            "  {}",
+            format_text(
+                active_locale(),
+                "Description: {}",
+                &[&entry.meta.description],
+            )
+        );
+    }
+    if !settings.dependencies.is_empty() {
+        println!(
+            "  {}",
+            format_text(
+                active_locale(),
+                "Dependencies: {}",
+                &[&settings.dependencies.join(", ")],
+            )
+        );
+    }
+    if !managed.is_empty() {
+        println!(
+            "  {}",
+            format_text(
+                active_locale(),
+                "Managed parameters: {}",
+                &[&managed.join(", ")],
+            )
+        );
+    }
+    println!(
+        "  {}",
+        format_text(active_locale(), "Run it: skit run {}", &[&entry.meta.name],)
+    );
+    if !secrets.is_empty() {
+        humanln!(
+            "Secret parameter values are never saved by skit: {}",
+            secrets.join(", ")
+        );
+        if entry.meta.kind.as_str() == "prompt" {
+            humanln!(
+                "When this prompt runs, the selected agent receives those values as plaintext and may log or sync them."
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1989,7 +2957,7 @@ fn edit_with_config(
         Ok(entry) => entry,
         Err(RepositoryError::NotFound { .. }) => {
             if no_input || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-                return Err(CliError::Usage(
+                return Err(CliError::Failure(
                     Message::new("no editable entry is named {}").quoted(selector),
                 ));
             }
@@ -2007,7 +2975,7 @@ fn edit_with_config(
                     source: None,
                     kind: None,
                     name: Some(selector.to_owned()),
-                    description: String::new(),
+                    description: None,
                     reference: false,
                     command_template: None,
                     prompt: false,
@@ -2017,9 +2985,9 @@ fn edit_with_config(
                     dependencies: Vec::new(),
                     dependencies_explicit: false,
                     requires_python: None,
+                    no_input: false,
                 },
                 true,
-                false,
             );
         }
         Err(error) => return Err(error.into()),
@@ -2090,7 +3058,11 @@ fn edit_with_config(
 }
 
 fn open_editor(target: &Path) -> Result<(), CliError> {
-    let configured = FileConfigStore::new(resolve_config_dir()?)
+    open_editor_in(&resolve_config_dir()?, target)
+}
+
+fn open_editor_in(config_dir: &Path, target: &Path) -> Result<(), CliError> {
+    let configured = FileConfigStore::new(config_dir)
         .get("editor")
         .unwrap_or_default();
     let editor = if configured.trim().is_empty() {
@@ -2126,8 +3098,9 @@ fn deps(
     store: &FileStore,
     args: DepsArgs,
 ) -> Result<(), CliError> {
-    let mut held = service.show(&args.selector)?;
-    let mut settings = EntrySettings::from_meta(&held.meta);
+    let held = service.show(&args.selector)?;
+    let original_settings = EntrySettings::from_meta(&held.meta);
+    let mut settings = original_settings.clone();
     let kind = held.meta.kind.as_str().to_owned();
     if args.clear && !args.dependencies.is_empty() {
         return Err(CliError::Usage(Message::new(
@@ -2139,10 +3112,21 @@ fn deps(
             "use --need or --clear-needs, not both",
         )));
     }
-    let had_legacy_package_metadata =
-        !settings.dependencies.is_empty() || !settings.requires_python.is_empty();
-    let package_change =
-        !args.dependencies.is_empty() || args.clear || args.requires_python.is_some();
+    let dependencies_edit = if args.clear {
+        Some(Vec::new())
+    } else if args.dependencies.is_empty() {
+        None
+    } else {
+        Some(
+            args.dependencies
+                .iter()
+                .map(|item| item.trim().to_owned())
+                .filter(|item| !item.is_empty())
+                .collect::<Vec<_>>(),
+        )
+    };
+    let python_edit = args.requires_python.clone();
+    let package_change = dependencies_edit.is_some() || python_edit.is_some();
     if package_change && !matches!(kind.as_str(), "python" | "js" | "ts") {
         return Err(CliError::Usage(
             Message::new("{} does not take package dependencies; only --need applies")
@@ -2157,68 +3141,58 @@ fn deps(
     if package_change
         && matches!(kind.as_str(), "js" | "ts")
         && held.meta.mode == StorageMode::Reference
-        && !args.clear
+        && dependencies_edit
+            .as_ref()
+            .is_some_and(|items| !items.is_empty())
     {
         return Err(CliError::Usage(Message::new(
             "managed dependencies require copy storage",
         )));
     }
-    let mut effective_dependencies = settings.dependencies.clone();
-    let mut effective_python = settings.requires_python.clone();
     let python_copy = kind == "python" && held.meta.mode == StorageMode::Copy;
     let source = python_copy
         .then(|| source_path(store, &held))
         .flatten()
-        .and_then(|path| fs::read_to_string(path).ok());
-    if let Some(metadata) = source.as_deref().and_then(read_uv_metadata) {
-        effective_dependencies = metadata.dependencies;
-        effective_python = metadata.requires_python;
-    }
-    if args.clear {
-        effective_dependencies.clear();
-    } else if !args.dependencies.is_empty() {
-        effective_dependencies = args
-            .dependencies
-            .iter()
-            .map(|item| item.trim().to_owned())
-            .filter(|item| !item.is_empty())
-            .collect();
-    }
-    if let Some(version) = &args.requires_python {
-        effective_python = if matches!(version.trim(), "-" | "none") {
-            String::new()
-        } else {
-            version.trim().to_owned()
-        };
-    }
-    if package_change && kind == "python" {
-        for requirement in &effective_dependencies {
+        .and_then(|path| fs::read(path).ok());
+    let stored_uv = UvMetadata {
+        dependencies: settings.dependencies.clone(),
+        requires_python: settings.requires_python.clone(),
+    };
+    let mut plan = plan_uv_metadata_edit(
+        source.as_deref(),
+        &stored_uv,
+        dependencies_edit.clone(),
+        python_edit.clone(),
+    )
+    .map_err(|error| uv_edit_error(&held.meta.name, error))?;
+    if kind == "python" {
+        for requirement in dependencies_edit.as_deref().unwrap_or_default() {
             validate_pep508_requirement(requirement)
                 .map_err(|error| CliError::Usage(error.message()))?;
         }
-        if !effective_python.is_empty() {
-            validate_pep440_specifiers(&effective_python)
-                .map_err(|error| CliError::Usage(error.message()))?;
+        if let Some(version) = python_edit.as_deref() {
+            let normalized = if matches!(version.trim().to_ascii_lowercase().as_str(), "-" | "none")
+            {
+                ""
+            } else {
+                version.trim()
+            };
+            if !normalized.is_empty() {
+                validate_pep440_specifiers(normalized)
+                    .map_err(|error| CliError::Usage(error.message()))?;
+            }
         }
     }
-    if package_change && python_copy {
-        let source = source.ok_or_else(|| {
-            CliError::Usage(Message::new("the Python stored copy is not readable UTF-8"))
-        })?;
-        let rewritten = write_uv_metadata(&source, &effective_dependencies, &effective_python)
-            .map_err(|error| CliError::Usage(error.message()))?;
-        if rewritten != source {
-            let claimed = service.claim_identity(&held)?;
-            held =
-                service.commit_copy_edit(&claimed, rewritten.as_bytes(), &held.meta.source_hash)?;
-        }
-        settings.dependencies.clear();
-        settings.requires_python.clear();
-    } else if package_change {
-        settings.dependencies = effective_dependencies.clone();
-        settings.requires_python = effective_python.clone();
+    if package_change {
+        settings.dependencies.clone_from(&plan.stored.dependencies);
+        settings
+            .requires_python
+            .clone_from(&plan.stored.requires_python);
+    } else {
+        // The read view uses effective values without turning source-only values into metadata.
+        plan.effective = effective_uv_metadata_bytes(source.as_deref(), &stored_uv);
+        plan.rewritten_source = None;
     }
-    let needs_changed = !args.needs.is_empty() || args.clear_needs;
     if args.clear_needs {
         settings.needs.clear();
     } else if !args.needs.is_empty() {
@@ -2229,19 +3203,35 @@ fn deps(
             .filter(|item| !item.is_empty())
             .collect();
     }
-    let metadata_changed = needs_changed
-        || (package_change && !python_copy)
-        || (package_change && python_copy && had_legacy_package_metadata);
-    if metadata_changed {
-        let claimed = service.claim_identity(&held)?;
-        held = service.update_settings(&claimed, &settings, &held.meta.workdir)?;
-    }
-    if package_change && matches!(kind.as_str(), "js" | "ts") && effective_dependencies.is_empty() {
+
+    if package_change
+        && matches!(kind.as_str(), "js" | "ts")
+        && dependencies_edit.as_ref().is_some_and(Vec::is_empty)
+    {
+        // Cleanup can fail on a locked tree. Do it before metadata so the request is retryable.
         clear_javascript_dependencies(&store.entry_dir_path(&held.slug))?;
     }
+
+    let changed = settings != original_settings || plan.rewritten_source.is_some();
+    let held = if changed {
+        let claimed = service.claim_identity(&held)?;
+        service.update_entry(
+            &claimed,
+            UpdateEntry {
+                name: held.meta.name.clone(),
+                description: held.meta.description.clone(),
+                settings: settings.clone(),
+                workdir: held.meta.workdir.clone(),
+                source: plan.rewritten_source,
+                expected_source_hash: held.meta.source_hash.clone(),
+            },
+        )?
+    } else {
+        held
+    };
     let mut output = EntrySettings::from_meta(&held.meta);
-    output.dependencies = effective_dependencies;
-    output.requires_python = effective_python;
+    output.dependencies = plan.effective.dependencies;
+    output.requires_python = plan.effective.requires_python;
     output.needs = settings.needs;
     write_deps(&output, args.json)
 }
@@ -2497,6 +3487,39 @@ fn params(
             declarations.push(item.clone());
         }
     }
+    let original_declarations = declarations.clone();
+    let mut tweaked_names = BTreeSet::new();
+    for specification in args
+        .parameter_types
+        .iter()
+        .chain(&args.defaults)
+        .chain(&args.choices)
+        .chain(&args.delivery)
+        .chain(&args.bindings)
+        .chain(&args.flags)
+        .chain(&args.env_targets)
+        .chain(&args.actions)
+        .chain(&args.help_text)
+        .chain(&args.prompts)
+        .chain(&args.env_sources)
+    {
+        if let Some((name, _)) = specification.split_once('=') {
+            tweaked_names.insert(name.to_owned());
+        }
+    }
+    for name in args
+        .multiple
+        .iter()
+        .chain(&args.no_multiple)
+        .chain(&args.repeat)
+        .chain(&args.no_repeat)
+        .chain(&args.required)
+        .chain(&args.optional)
+        .chain(&args.secret)
+        .chain(&args.no_secret)
+    {
+        tweaked_names.insert(name.clone());
+    }
     let mut changed = false;
 
     for name in args.add {
@@ -2513,6 +3536,7 @@ fn params(
         declarations.retain(|item| !args.remove.contains(&item.name));
         changed |= declarations.len() != before;
     }
+    let tweak_baseline = declarations.clone();
     for spec in args.parameter_types {
         let (name, value) = assignment(&spec, "type")?;
         parameter_mut(&mut declarations, name)?.parameter_type = parse_parameter_type(value)?;
@@ -2651,6 +3675,20 @@ fn params(
         |item| &mut item.secret,
         false,
     )?;
+
+    for name in tweaked_names {
+        let Some(previous) = tweak_baseline.iter().find(|item| item.name == name) else {
+            continue;
+        };
+        let item = parameter_mut(&mut declarations, &name)?;
+        if let Err(error) = finish_parameter_edit(item) {
+            *item = previous.clone();
+            eprintln!("{}", error.message().localize(active_locale()));
+        }
+    }
+    if has_metadata_schema_operation {
+        changed = declarations != original_declarations;
+    }
 
     let mut workdir = held.meta.workdir.clone();
     if let Some(value) = args.workdir {
@@ -2866,7 +3904,7 @@ fn write_params(
             humanln!(
                 "Prompt runner: {}",
                 if settings.runner.is_empty() {
-                    text(active_locale(), "not set").to_owned()
+                    text(active_locale(), "not set").into_owned()
                 } else {
                     settings.runner.clone()
                 }
@@ -2888,8 +3926,10 @@ fn write_params(
 enum RunnerSelection {
     /// Remove by stable runner name.
     Name(String),
-    /// Remove one raw row by its one-based index.
+    /// Remove one raw row by its zero-based index.
     Row(usize),
+    /// Repair a malformed prompt or runner-list container.
+    Container,
 }
 
 impl RunnerSelection {
@@ -2897,6 +3937,7 @@ impl RunnerSelection {
         match self {
             Self::Name(name) => name.clone(),
             Self::Row(row) => Message::new("row {}").with(row).localize(locale),
+            Self::Container => text(locale, "container").into_owned(),
         }
     }
 }
@@ -2983,9 +4024,19 @@ fn config_in(
 ) -> Result<(), CliError> {
     match (key, value) {
         (Some(key), Some(value)) => {
-            store.set(key, value)?;
+            if let Some(recovery) = store.set_with_recovery(key, value)? {
+                humanerrln!(
+                    "skit could not parse {}. skit backed up the file to {} before this change. Recover missing settings from the backup.",
+                    recovery.path.display(),
+                    recovery.backup_path.display(),
+                );
+            }
+            let value = store.get(key)?;
             if json {
-                println!("{}", serde_json::json!({"key": key, "value": value}));
+                println!(
+                    "{}",
+                    serde_json::to_string(&BTreeMap::from([(key, value.as_str())]))?
+                );
             } else {
                 humanln!("Set: {}={}", key, value);
             }
@@ -2993,7 +4044,10 @@ fn config_in(
         (Some(key), None) => {
             let value = store.get(key)?;
             if json {
-                println!("{}", serde_json::json!({"key": key, "value": value}));
+                println!(
+                    "{}",
+                    serde_json::to_string(&BTreeMap::from([(key, value.as_str())]))?
+                );
             } else {
                 println!("{value}");
             }
@@ -3017,7 +4071,7 @@ fn config_in(
     Ok(())
 }
 
-fn runner(command: RunnerCommand) -> Result<(), CliError> {
+fn runner(service: &LibraryService<FileStore>, command: RunnerCommand) -> Result<(), CliError> {
     let store = FileConfigStore::new(resolve_config_dir()?);
     match command {
         RunnerCommand::List { json, all } => {
@@ -3042,15 +4096,20 @@ fn runner(command: RunnerCommand) -> Result<(), CliError> {
                 } else {
                     for row in rows {
                         let locale = active_locale();
+                        let index = row.index.map_or_else(
+                            || text(locale, "container").into_owned(),
+                            |index| index.to_string(),
+                        );
                         let status = row
                             .localized_reason(locale)
-                            .unwrap_or_else(|| text(locale, "valid").to_owned());
-                        println!(
-                            "{}\t{}\t{}",
-                            row.index,
-                            row.localized_descriptor(locale),
-                            status
-                        );
+                            .unwrap_or_else(|| text(locale, "valid").into_owned());
+                        let name = row.name.as_deref().unwrap_or(row.descriptor.as_str());
+                        let command = row
+                            .argv
+                            .as_deref()
+                            .map(runner_command_text)
+                            .unwrap_or_default();
+                        println!("{}\t{}\t{}\t{}", index, name, command, status);
                     }
                 }
                 return Ok(());
@@ -3063,20 +4122,38 @@ fn runner(command: RunnerCommand) -> Result<(), CliError> {
                     .collect::<Vec<_>>();
                 println!("{}", serde_json::to_string(&rows)?);
             } else {
-                for runner in runners {
-                    println!("{}\t{}", runner.name, runner.argv.join(" "));
+                if runners.is_empty() {
+                    humanln!(
+                        "No agents are configured. Add one with: skit runner add mycli -- mycli run {{prompt}}"
+                    );
+                }
+                let amp_seeded = runners.iter().any(|runner| {
+                    runner.name == "amp" && runner.argv == ["amp", "-x", "{{prompt}}"]
+                });
+                for runner in &runners {
+                    println!("{}\t{}", runner.name, runner_command_text(&runner.argv));
+                }
+                if amp_seeded {
+                    humanln!(
+                        "The built-in amp preset uses amp -x and runs the prompt once; it does not open an interactive session."
+                    );
                 }
             }
         }
         RunnerCommand::Add { name, argv, force } => {
-            store.set_runner(
+            let command = runner_command_text(&argv);
+            let existed = store.set_runner(
                 PromptRunner {
                     name: name.clone(),
                     argv,
                 },
                 force,
             )?;
-            humanln!("Added runner: {}", name);
+            if existed {
+                humanln!("Runner {} updated: {}", name, command);
+            } else {
+                humanln!("Runner {} added: {}", name, command);
+            }
         }
         RunnerCommand::Remove {
             name,
@@ -3084,39 +4161,175 @@ fn runner(command: RunnerCommand) -> Result<(), CliError> {
             yes,
             no_input,
         } => {
-            let selection = match (name.as_deref(), row) {
-                (Some(name), None) => RunnerSelection::Name(name.to_owned()),
-                (None, Some(row)) => RunnerSelection::Row(row),
+            let selection = match (name.as_deref(), row.as_deref()) {
+                (Some(name), None) if !name.trim().is_empty() => {
+                    RunnerSelection::Name(name.trim().to_owned())
+                }
+                (Some(_), None) => {
+                    return Err(CliError::Usage(Message::new(
+                        "a prompt runner needs a name",
+                    )));
+                }
+                (None, Some("container")) => RunnerSelection::Container,
+                (None, Some(row)) => {
+                    let index = row.parse::<usize>().map_err(|_| {
+                        CliError::Usage(Message::new(
+                            "--row must be a non-negative index or container",
+                        ))
+                    })?;
+                    RunnerSelection::Row(index)
+                }
                 _ => {
                     return Err(CliError::Usage(Message::new(
                         "runner remove needs a name or --row INDEX",
                     )));
                 }
             };
+            store.ensure_runners_seeded()?;
+            let rows = store.runner_rows()?;
+            let mut targets = match &selection {
+                RunnerSelection::Name(name) => rows
+                    .iter()
+                    .filter(|row| row.name.as_deref() == Some(name.as_str()))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                RunnerSelection::Row(index) => rows
+                    .iter()
+                    .filter(|row| row.index == Some(*index))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                RunnerSelection::Container => rows
+                    .iter()
+                    .filter(|row| row.index.is_none())
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            };
+            if targets.is_empty() {
+                return match &selection {
+                    RunnerSelection::Name(name) => {
+                        let configured = rows
+                            .iter()
+                            .filter(|row| row.reason.is_none())
+                            .filter_map(|row| row.name.as_deref())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        Err(CliError::Failure(
+                            Message::new("Unknown runner: {}. Configured runners: {}")
+                                .with(name)
+                                .with(if configured.is_empty() {
+                                    "—".to_owned()
+                                } else {
+                                    configured
+                                }),
+                        ))
+                    }
+                    RunnerSelection::Row(row) => Err(CliError::Failure(
+                        Message::new(
+                            "Unknown runner row: {}. Inspect with: skit runner list --all",
+                        )
+                        .with(row),
+                    )),
+                    RunnerSelection::Container => Err(CliError::Failure(Message::new(
+                        "Unknown runner row: container. Inspect with: skit runner list --all",
+                    ))),
+                };
+            }
+            if !matches!(&selection, RunnerSelection::Name(_)) && targets[0].reason.is_none() {
+                let name = targets[0].name.as_deref().unwrap_or_default();
+                return Err(CliError::Usage(
+                    Message::new(
+                        "Runner row {} is valid. Remove the agent by name instead: skit runner remove {}",
+                    )
+                    .with(selection.label(active_locale()))
+                    .with(name),
+                ));
+            }
             let target = selection.label(active_locale());
+            if let RunnerSelection::Name(name) = &selection {
+                let pinned = prompt_runner_pin_count(service, name)?;
+                if pinned == 1 {
+                    humanln!(
+                        "1 prompt pins this runner and will need another runner before it can run again."
+                    );
+                } else if pinned > 1 {
+                    humanln!(
+                        "{} prompts pin this runner and will need another runner before they can run again.",
+                        pinned
+                    );
+                }
+            }
             if !yes {
                 if no_input || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-                    return Err(CliError::ConfirmationRequiredFor("runner removal"));
+                    return Err(CliError::Usage(Message::new(
+                        "Confirmation is required; pass --yes to remove the runner.",
+                    )));
                 }
-                let question =
-                    format_text(active_locale(), "Remove runner \"{}\"? [y/N]: ", &[&target]);
+                let question = match &selection {
+                    RunnerSelection::Name(name) => {
+                        format_text(active_locale(), "Remove the agent \"{}\"? [y/N]: ", &[name])
+                    }
+                    RunnerSelection::Row(_) => format_text(
+                        active_locale(),
+                        "Remove runner row {} (\"{}\")? [y/N]: ",
+                        &[&target, &targets[0].localized_descriptor(active_locale())],
+                    ),
+                    RunnerSelection::Container => text(
+                        active_locale(),
+                        "Remove the malformed prompt runner container? [y/N]: ",
+                    )
+                    .into_owned(),
+                };
                 if !prompt_confirmation(&question, false)? {
                     return Err(CliError::Aborted);
                 }
             }
-            let removed = match selection {
-                RunnerSelection::Name(name) => store.remove_runner(&name)?,
-                RunnerSelection::Row(row) => store.remove_runner_row(row)?,
+            let removed = match &selection {
+                RunnerSelection::Name(name) => store.remove_runner_if_unchanged(name, &targets)?,
+                RunnerSelection::Row(_) | RunnerSelection::Container => {
+                    store.remove_runner_row_if_unchanged(&targets.remove(0))?
+                }
             };
             if !removed {
-                return Err(CliError::Usage(
-                    Message::new("unknown prompt runner: {}").with(target),
-                ));
+                return Err(CliError::Failure(Message::new(
+                    "The runner row changed before it could be removed; inspect again.",
+                )));
             }
-            humanln!("Removed runner: {}", target);
+            match selection {
+                RunnerSelection::Name(name) => humanln!("Runner {} removed.", name),
+                RunnerSelection::Row(row) => humanln!("Malformed runner row {} removed.", row),
+                RunnerSelection::Container => {
+                    humanln!("Malformed prompt runner container removed.")
+                }
+            }
         }
     }
     Ok(())
+}
+
+fn runner_command_text(arguments: &[String]) -> String {
+    join_editable_arguments(arguments)
+}
+
+fn prompt_runner_pin_count(
+    service: &LibraryService<FileStore>,
+    runner: &str,
+) -> Result<usize, CliError> {
+    let scan = service.list()?;
+    let mut count = 0;
+    for summary in scan
+        .entries
+        .iter()
+        .filter(|summary| summary.kind.as_str() == "prompt")
+    {
+        match service.show(summary.slug.as_str()) {
+            Ok(entry) if EntrySettings::from_meta(&entry.meta).runner == runner => {
+                count += 1;
+            }
+            Ok(_) | Err(RepositoryError::NotFound { .. }) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(count)
 }
 
 fn preset(
@@ -3133,53 +4346,220 @@ fn preset(
         } => {
             let entry = service.show(&selector)?;
             let declarations = entry_parameters(store, &entry);
-            refuse_empty_preset_schema(&declarations)?;
-            let current = state.load(&entry.slug);
-            let values = if from_last {
-                &current.last_run.values
+            if declarations.is_empty() {
+                return Err(CliError::Usage(
+                    Message::new("{} has no form fields, so there's nothing to save.")
+                        .with(&entry.meta.name),
+                ));
+            }
+            let interactive = !from_last && io::stdin().is_terminal() && io::stdout().is_terminal();
+            let saved = if interactive {
+                let current = state.load(&entry.slug);
+                let initial = prefill(&declarations, &current.values, None);
+                let values = collect_preset_values(&declarations, &initial)?;
+                let mut secret_names = declarations
+                    .iter()
+                    .filter(|declaration| declaration.secret)
+                    .map(|declaration| declaration.name.clone())
+                    .collect::<Vec<_>>();
+                secret_names.sort();
+                if !secret_names.is_empty() {
+                    humanln!(
+                        "Secret values are never stored in presets; skipped: {}",
+                        secret_names.join(", "),
+                    );
+                }
+                state.save_preset(&entry.slug, &name, &declarations, &values)?;
+                true
             } else {
-                &current.values
+                let source = if from_last {
+                    PresetSnapshotSource::LastRun
+                } else {
+                    PresetSnapshotSource::Prefill
+                };
+                state.save_preset_from_state(&entry.slug, &name, &declarations, source)?
             };
-            state.save_preset(&entry.slug, &name, &declarations, values)?;
-            humanln!("Saved preset: {}", name);
+            if !saved {
+                return Err(CliError::Failure(
+                    Message::new("{} has no remembered values yet — run it once first.")
+                        .with(entry.meta.name),
+                ));
+            }
+            humanln!("Preset \"{}\" saved for {}.", name, entry.meta.name);
         }
         PresetCommand::List { selector, json } => {
             let entry = service.show(&selector)?;
             let presets = state.load(&entry.slug).presets;
             if json {
-                println!("{}", serde_json::json!({"presets": presets}));
+                println!("{}", serde_json::json!(presets));
+            } else if presets.is_empty() {
+                humanln!(
+                    "No presets for {} yet. Create one with: skit run {} --save-preset <preset>",
+                    entry.meta.name,
+                    entry.meta.name,
+                );
             } else {
-                for name in presets.keys() {
-                    println!("{name}");
+                for (name, values) in presets {
+                    let values = values
+                        .iter()
+                        .map(|(key, value)| format!("{key}={value}"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    println!("  {name}: {values}");
                 }
             }
         }
         PresetCommand::Delete {
             selector,
             name,
-            yes,
-            no_input,
+            yes: _,
+            no_input: _,
         } => {
-            if !yes {
-                if no_input || !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-                    return Err(CliError::ConfirmationRequiredFor("preset deletion"));
-                }
-                let question =
-                    format_text(active_locale(), "Delete preset \"{}\"? [y/N]: ", &[&name]);
-                if !prompt_confirmation(&question, false)? {
-                    return Err(CliError::Aborted);
-                }
-            }
             let entry = service.show(&selector)?;
             if !state.delete_preset(&entry.slug, &name)? {
-                return Err(CliError::Usage(
-                    Message::new("unknown preset: {}").with(name),
+                let available = state
+                    .load(&entry.slug)
+                    .presets
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(CliError::Failure(
+                    Message::new("Unknown preset \"{}\". Available: {}")
+                        .with(name)
+                        .with(if available.is_empty() {
+                            "—".to_owned()
+                        } else {
+                            available
+                        }),
                 ));
             }
-            humanln!("Deleted preset: {}", name);
+            humanln!("Preset \"{}\" deleted from {}.", name, entry.meta.name);
         }
     }
     Ok(())
+}
+
+fn collect_preset_values(
+    declarations: &[ParamDecl],
+    initial: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, CliError> {
+    let locale = active_locale();
+    declarations
+        .iter()
+        .map(|declaration| {
+            if !declaration.help.is_empty() {
+                eprintln!("  {}", declaration.help);
+            }
+            if declaration.degraded {
+                eprintln!(
+                    "  {}",
+                    text(locale, "Leave empty to use the script's own default.")
+                );
+            }
+            if declaration.binding == ParameterBinding::Input {
+                eprintln!(
+                    "  {}",
+                    text(
+                        locale,
+                        "Leave empty and the script will ask you in the terminal.",
+                    )
+                );
+            }
+            let label = if declaration.prompt.is_empty() {
+                declaration.name.clone()
+            } else {
+                declaration.prompt.clone()
+            };
+            let default = initial.get(&declaration.name).cloned().unwrap_or_default();
+            let value = collect_preset_value(declaration, &label, &default, locale)?;
+            Ok((declaration.name.clone(), value))
+        })
+        .collect()
+}
+
+fn collect_preset_value(
+    declaration: &ParamDecl,
+    label: &str,
+    default: &str,
+    locale: Locale,
+) -> Result<String, CliError> {
+    if declaration.parameter_type == ParameterType::Bool {
+        let checked = coerce_default(default, ParameterType::Bool)
+            .ok()
+            .and_then(|value| match value {
+                ParameterValue::Bool(value) => Some(value),
+                _ => None,
+            })
+            .unwrap_or(false);
+        return Confirm::new()
+            .with_prompt(label)
+            .default(checked)
+            .interact_opt()
+            .map_err(dialoguer_error)?
+            .map(|value| value.to_string())
+            .ok_or(CliError::Aborted);
+    }
+
+    if declaration.secret {
+        if !declaration.env_source.is_empty() {
+            eprintln!(
+                "  {}",
+                format_text(
+                    locale,
+                    "Enter to read it from the environment variable {}.",
+                    &[&declaration.env_source],
+                )
+            );
+        }
+        return Password::new()
+            .with_prompt(label)
+            .allow_empty_password(!declaration.required)
+            .validate_with(|value: &String| {
+                validate_form_value(declaration, value)
+                    .map_err(|error| error.message().localize(locale))
+            })
+            .interact()
+            .map_err(dialoguer_error);
+    }
+
+    let prompt =
+        if declaration.parameter_type == ParameterType::Choice && !declaration.choices.is_empty() {
+            format!("{} ({})", label, declaration.choices.join("/"))
+        } else {
+            label.to_owned()
+        };
+    let mut input = Input::<String>::new()
+        .with_prompt(prompt)
+        .allow_empty(!declaration.required)
+        .validate_with(|value: &String| {
+            validate_form_value(declaration, value)
+                .map_err(|error| error.message().localize(locale))
+        });
+    if !default.is_empty() {
+        input = input.default(default.to_owned());
+    } else if declaration.required
+        && declaration.parameter_type == ParameterType::Choice
+        && let Some(first) = declaration.choices.first()
+    {
+        input = input.default(first.clone());
+    }
+    input
+        .interact_text()
+        .map(|value| value.trim().to_owned())
+        .map_err(dialoguer_error)
+}
+
+fn dialoguer_error(error: dialoguer::Error) -> CliError {
+    let error = io::Error::from(error);
+    if matches!(
+        error.kind(),
+        io::ErrorKind::Interrupted | io::ErrorKind::UnexpectedEof
+    ) {
+        CliError::Aborted
+    } else {
+        CliError::Io(error)
+    }
 }
 
 fn doctor(
@@ -3188,98 +4568,58 @@ fn doctor(
     json: bool,
     rebuild: bool,
 ) -> Result<i32, CliError> {
-    let before = service.list()?;
-    let rebuild_diagnostics = if rebuild {
-        before.diagnostics.clone()
-    } else {
-        Vec::new()
-    };
-    let rebuilt_entries = rebuild.then(|| store.rebuild_registry()).transpose()?;
-    let scan = service.list()?;
     let state_location = resolve_state_dir()?;
     let config_location = resolve_config_dir()?;
     let config = FileConfigStore::new(&config_location);
-    let probe = SystemProbe;
-    let private_uv = managed_uv_path(store.data_dir());
-    let uv = probe
-        .find_program("uv")
-        .or_else(|| probe.is_executable(&private_uv).then_some(private_uv));
-    let entries = scan
-        .entries
-        .iter()
-        .filter_map(|summary| service.show(summary.slug.as_str()).ok())
-        .collect::<Vec<_>>();
-    let missing = scan
-        .entries
-        .iter()
-        .filter(|entry| summary_missing(store, entry))
-        .map(|entry| entry.name.clone())
-        .collect::<Vec<_>>();
-    let drift = entries
-        .iter()
-        .filter(|entry| doctor_entry_drifted(store, entry))
-        .map(|entry| entry.meta.name.clone())
-        .collect::<Vec<_>>();
+    let health = HealthService::new(CliHealthInspector::new(service, store, &config_location));
+    let (snapshot, rebuilt_entries, rebuild_diagnostics) = if rebuild {
+        let rebuilt = health.rebuild()?;
+        (
+            rebuilt.snapshot,
+            Some(rebuilt.outcome.entry_count),
+            rebuilt.outcome.problems,
+        )
+    } else {
+        (health.inspect()?, None, Vec::new())
+    };
+    let uv = match &snapshot.uv {
+        UvHealth::Found(path) => Some(path.clone()),
+        UvHealth::Missing | UvHealth::NotRequired => None,
+    };
+    let mut missing = Vec::new();
+    let mut drift = Vec::new();
     let mut needs_missing = BTreeMap::<String, Vec<String>>::new();
-    let mut launch_blocked = BTreeMap::<String, Message>::new();
-    for entry in &entries {
-        let mut settings = EntrySettings::from_meta(&entry.meta);
-        if entry.meta.kind.as_str() == "python"
-            && settings.interpreter.is_empty()
-            && let Some(path) = &uv
-        {
-            settings.interpreter = path.display().to_string();
-        }
-        let absent = settings
-            .needs
-            .iter()
-            .filter(|name| probe.find_program(name).is_none())
-            .cloned()
-            .collect::<Vec<_>>();
-        if !absent.is_empty() {
-            needs_missing.insert(entry.meta.name.clone(), absent);
-        } else if !missing.contains(&entry.meta.name)
-            && let Some(reason) = doctor_launch_block(entry, &settings, &config, &probe)?
-        {
-            launch_blocked.insert(entry.meta.name.clone(), reason);
+    let mut launch_blocked = BTreeMap::<String, String>::new();
+    for issue in &snapshot.issues {
+        match &issue.kind {
+            HealthIssueKind::MissingTarget => missing.push(issue.name.clone()),
+            HealthIssueKind::DriftedForm => drift.push(issue.name.clone()),
+            HealthIssueKind::MissingNeeds { tools } => {
+                needs_missing.insert(issue.name.clone(), tools.clone());
+            }
+            HealthIssueKind::LaunchBlocked { reason } => {
+                launch_blocked.insert(issue.name.clone(), reason.clone());
+            }
         }
     }
-    let bad_runner_rows = config
-        .runner_rows()?
-        .into_iter()
-        .filter(|row| row.reason.is_some())
-        .collect::<Vec<_>>();
-    let bad_runners = bad_runner_rows
-        .iter()
-        .map(|row| row.descriptor.clone())
-        .collect::<Vec<_>>();
+    let bad_runners = snapshot.invalid_runner_rows.clone();
     let mirror = config.mirror()?;
-    let scripts = store.data_dir().join("scripts");
+    let scripts = PathBuf::from(&snapshot.library_path);
     let size = directory_size(&scripts);
-    let uv_required = entries
-        .iter()
-        .any(|entry| entry.meta.kind.as_str() == "python");
-    let code = if uv.is_some() || !uv_required { 0 } else { 1 };
+    let code = usize::from(matches!(snapshot.uv, UvHealth::Missing)) as i32;
     if json {
-        let launch_blocked = launch_blocked
-            .iter()
-            .map(|(name, reason)| (name, reason.localize(Locale::En)))
-            .collect::<BTreeMap<_, _>>();
         println!(
             "{}",
             serde_json::json!({
                 "uv": uv,
-                "entries": scan.entries.len(),
+                "entries": snapshot.entry_count,
                 "missing": missing,
                 "drift": drift,
                 "needs_missing": needs_missing,
                 "launch_blocked": launch_blocked,
                 "runner_rows_invalid": bad_runners,
                 "rebuilt": rebuilt_entries,
-                "rebuild_problems": rebuild_diagnostics
-                    .iter()
-                    .map(|diagnostic| &diagnostic.message)
-                    .collect::<Vec<_>>(),
+                "rebuild_problems": rebuild_diagnostics,
                 "mirror": {
                     "enabled": mirror.enabled,
                     "pypi": mirror.pypi,
@@ -3291,16 +4631,16 @@ fn doctor(
                 "size_bytes": size,
                 "state_location": state_location,
                 "config_location": config_location,
-                "diagnostics": scan.diagnostics,
+                "diagnostics": snapshot.diagnostics,
             })
         );
     } else {
-        match uv {
-            Some(path) => humanln!("OK uv: {}", path.display()),
-            None if uv_required => humanln!("ERROR uv: not found"),
-            None => humanln!("OK uv: not required"),
+        match &snapshot.uv {
+            UvHealth::Found(path) => humanln!("OK uv: {}", path),
+            UvHealth::Missing => humanln!("ERROR uv: not found"),
+            UvHealth::NotRequired => humanln!("OK uv: not required"),
         }
-        humanln!("Entries: {}", scan.entries.len());
+        humanln!("Entries: {}", snapshot.entry_count);
         humanln!("Library: {} ({} bytes)", scripts.display(), size);
         humanln!("State: {}", state_location.display());
         humanln!("Config: {}", config_location.display());
@@ -3325,23 +4665,13 @@ fn doctor(
             );
         }
         for (name, reason) in launch_blocked {
-            println!(
-                "{}",
-                Message::new("WARN {}: a run would refuse to start: {}")
-                    .with(name)
-                    .nested(reason)
-                    .localize(active_locale())
-            );
+            humanln!("WARN {}: a run would refuse to start: {}", name, reason);
         }
-        if !bad_runner_rows.is_empty() {
-            let labels = bad_runner_rows
-                .iter()
-                .map(|row| row.localized_descriptor(active_locale()))
-                .collect::<Vec<_>>();
-            humanln!("WARN malformed prompt runners: {}", labels.join(", "));
+        if !bad_runners.is_empty() {
+            humanln!("WARN malformed prompt runners: {}", bad_runners.join(", "));
         }
         for diagnostic in rebuild_diagnostics {
-            humanln!("WARN {}", diagnostic.localize(active_locale()));
+            humanln!("WARN {}", diagnostic);
         }
     }
     Ok(code)
@@ -3351,30 +4681,23 @@ fn doctor_entry_drifted(store: &FileStore, entry: &Entry) -> bool {
     let Some(path) = source_path(store, entry) else {
         return false;
     };
-    let Ok(source) = fs::read_to_string(path) else {
+    let Ok(bytes) = fs::read(path) else {
         return false;
     };
-    let settings = EntrySettings::from_meta(&entry.meta);
-    if entry.meta.kind.as_str() == "prompt" {
-        if !settings.interpolate {
+    let source = if entry.meta.kind.as_str() == "prompt" {
+        let Ok(source) = String::from_utf8(bytes) else {
             return false;
-        }
-        let fresh = placeholder_params("prompt", &source)
-            .into_iter()
-            .map(|parameter| parameter.name)
-            .collect::<Vec<_>>();
-        return settings.params.iter().any(|name| !fresh.contains(name));
-    }
-    let managed = managed_params(entry.meta.kind.as_str(), &source);
-    if managed.is_empty() {
-        return false;
-    }
-    let detected = detect_candidates(entry.meta.kind.as_str(), &source);
-    managed.iter().any(|parameter| {
-        !detected.iter().any(|candidate| {
-            candidate.name == parameter.name && candidate.binding == parameter.binding
-        })
-    })
+        };
+        source
+    } else {
+        LosslessSource::from_bytes(&bytes)
+            .normalized_text()
+            .to_owned()
+    };
+    let settings = EntrySettings::from_meta(&entry.meta);
+    !form_plan(entry.meta.kind.as_str(), &source, &settings)
+        .drift
+        .is_empty()
 }
 
 fn doctor_launch_block<P: ProgramProbe>(
@@ -3455,14 +4778,32 @@ fn directory_size(path: &Path) -> u64 {
     let Ok(metadata) = fs::symlink_metadata(path) else {
         return 0;
     };
-    if metadata.is_file() || metadata.file_type().is_symlink() {
-        return metadata.len();
+    if !metadata.is_dir() {
+        return 0;
     }
+    directory_contents_size(path)
+}
+
+fn directory_contents_size(path: &Path) -> u64 {
     fs::read_dir(path).map_or(0, |items| {
-        items
-            .filter_map(Result::ok)
-            .map(|item| directory_size(&item.path()))
-            .fold(0_u64, u64::saturating_add)
+        items.filter_map(Result::ok).fold(0_u64, |total, item| {
+            let item_path = item.path();
+            let size = fs::symlink_metadata(&item_path).map_or(0, |metadata| {
+                if metadata.is_file() {
+                    metadata.len()
+                } else if metadata.is_dir() {
+                    directory_contents_size(&item_path)
+                } else if metadata.file_type().is_symlink() {
+                    fs::metadata(&item_path)
+                        .ok()
+                        .filter(|target| target.is_file())
+                        .map_or(0, |target| target.len())
+                } else {
+                    0
+                }
+            });
+            total.saturating_add(size)
+        })
     })
 }
 
@@ -3473,77 +4814,96 @@ fn agent(command: AgentCommand) -> Result<(), CliError> {
             directory,
             project,
         } => {
-            let path = if let Some(directory) = directory {
-                directory.join("skit").join("SKILL.md")
-            } else {
-                let target = match target {
-                    Some(target) => target,
-                    None => detect_agent_target(project)?,
-                };
-                agent_root(&target, project)?
-                    .join("skills")
-                    .join("skit")
-                    .join("SKILL.md")
+            let roots = AgentRoots {
+                home: user_home(),
+                cwd: env::current_dir().map_err(CliError::Io)?,
             };
-            let parent = path.parent().expect("each Agent Skill path has a parent");
-            fs::create_dir_all(parent).map_err(|error| source_error("create", parent, error))?;
-            fs::write(&path, include_bytes!("../../../skills/skit/SKILL.md"))
-                .map_err(|error| source_error("write", &path, error))?;
+            let interactive = io::stdin().is_terminal() && io::stdout().is_terminal();
+            let plan = plan_agent_install(
+                &AgentInstallRequest {
+                    target,
+                    directory,
+                    project,
+                    interactive,
+                },
+                &roots,
+                Path::is_dir,
+            )
+            .map_err(|error| {
+                if error.exit_class() == ExitClass::Failure {
+                    CliError::Failure(error.message())
+                } else {
+                    CliError::Usage(error.message())
+                }
+            })?;
+            let skills_dir = match plan {
+                AgentInstallPlan::Ready { skills_dir } => skills_dir,
+                AgentInstallPlan::Choose { candidates } => {
+                    let Some(target) = pick_agent_target(&candidates)? else {
+                        humanln!("Cancelled — nothing was written.");
+                        return Ok(());
+                    };
+                    target.skills_dir()
+                }
+            };
+            let path = FileAgentSkillStore
+                .install(&skills_dir, include_bytes!("../../../skills/skit/SKILL.md"))?;
             humanln!("Installed Agent Skill: {}", path.display());
         }
     }
     Ok(())
 }
 
-fn detect_agent_target(project: bool) -> Result<String, CliError> {
-    let base = if project {
-        env::current_dir().map_err(CliError::Io)?
-    } else {
-        env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
-            CliError::Usage(Message::new("could not determine the user directory"))
-        })?
-    };
-    let detected = [
-        ("claude", ".claude"),
-        ("codex", ".codex"),
-        ("agents", ".agents"),
-    ]
-    .into_iter()
-    .filter_map(|(target, directory)| base.join(directory).is_dir().then_some(target))
-    .collect::<Vec<_>>();
-    match detected.as_slice() {
-        [target] => Ok((*target).to_owned()),
-        [] => Err(CliError::Usage(Message::new(
-            "select an agent convention or use --to; no agent directory exists",
-        ))),
-        _ => Err(CliError::Usage(Message::new(
-            "select an agent convention or use --to; more than one agent directory exists",
-        ))),
+fn pick_agent_target(candidates: &[AgentTarget]) -> Result<Option<AgentTarget>, CliError> {
+    humanln!("Agent directories on this machine:");
+    for (index, target) in candidates.iter().enumerate() {
+        let scope = text(
+            active_locale(),
+            match target.scope {
+                AgentScope::User => "user",
+                AgentScope::Project => "project",
+            },
+        );
+        println!(
+            "  {}. {} ({})  →  {}",
+            index.saturating_add(1),
+            target.name,
+            scope,
+            target.skills_dir().display()
+        );
     }
-}
-
-fn agent_root(target: &str, project: bool) -> Result<PathBuf, CliError> {
-    if project {
-        let current = env::current_dir().map_err(CliError::Io)?;
-        return match target {
-            "claude" => Ok(current.join(".claude")),
-            "codex" => Ok(current.join(".codex")),
-            "agents" => Ok(current.join(".agents")),
-            _ => Err(CliError::Usage(
-                Message::new("unknown agent convention: {}").with(target),
-            )),
+    let target = loop {
+        let question = format_text(
+            active_locale(),
+            "Install where? [1-{}] (1): ",
+            &[&candidates.len()],
+        );
+        print!("{question}");
+        io::stdout().flush()?;
+        let mut answer = String::new();
+        if io::stdin().read_line(&mut answer)? == 0 {
+            return Err(CliError::Aborted);
+        }
+        let answer = answer.trim();
+        let choice = if answer.is_empty() {
+            Some(1)
+        } else {
+            answer.parse::<usize>().ok()
         };
-    }
-    let home = env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| CliError::Usage(Message::new("could not determine the user directory")))?;
-    match target {
-        "claude" => Ok(home.join(".claude")),
-        "codex" => Ok(home.join(".codex")),
-        "agents" => Ok(home.join(".agents")),
-        _ => Err(CliError::Usage(
-            Message::new("unknown agent convention: {}").with(target),
-        )),
+        if let Some(choice) = choice.filter(|choice| (1..=candidates.len()).contains(choice)) {
+            break candidates[choice.saturating_sub(1)].clone();
+        }
+        humanerrln!("Choose a number from 1 to {}.", candidates.len());
+    };
+    let question = format_text(
+        active_locale(),
+        "Write the skill into {}? [Y/n] ",
+        &[&target.skills_dir().display()],
+    );
+    if prompt_confirmation(&question, true)? {
+        Ok(Some(target))
+    } else {
+        Ok(None)
     }
 }
 
@@ -3574,31 +4934,86 @@ fn source_path(store: &FileStore, entry: &Entry) -> Option<PathBuf> {
 }
 
 fn entry_missing(store: &FileStore, entry: &Entry) -> bool {
-    match entry.meta.kind.as_str() {
-        "command" => false,
-        _ => source_path(store, entry).is_none_or(|path| !path.is_file()),
+    entry_target(store, entry).is_some_and(|path| !path.exists())
+}
+
+fn entry_target(store: &FileStore, entry: &Entry) -> Option<PathBuf> {
+    let kind = entry.meta.kind.as_str();
+    if !known_entry_kind(kind) || kind == "command" {
+        return None;
     }
+    if entry.meta.mode == StorageMode::Reference || kind == "exe" {
+        return Some(if entry.meta.source.is_empty() {
+            PathBuf::from(".")
+        } else {
+            PathBuf::from(&entry.meta.source)
+        });
+    }
+    let canonical = copy_summary_target(store, &entry.slug, kind)?;
+    if canonical.exists() {
+        return Some(canonical);
+    }
+    store.payload_path(entry).ok().or(Some(canonical))
 }
 
 fn summary_missing(store: &FileStore, entry: &EntrySummary) -> bool {
-    if entry.kind.as_str() == "command" {
-        return false;
+    summary_target(store, entry).is_some_and(|path| !path.exists())
+}
+
+fn summary_target(store: &FileStore, entry: &EntrySummary) -> Option<PathBuf> {
+    let kind = entry.kind.as_str();
+    if !known_entry_kind(kind) || kind == "command" {
+        return None;
     }
-    if let Some(target) = &entry.target {
-        return !Path::new(target).is_file();
+    match entry.mode {
+        StorageMode::Reference => entry.target.as_ref().map(|target| {
+            if target.is_empty() {
+                PathBuf::from(".")
+            } else {
+                PathBuf::from(target)
+            }
+        }),
+        StorageMode::Copy => copy_summary_target(store, &entry.slug, kind),
     }
-    store
-        .resolve(entry.slug.as_str())
-        .ok()
-        .and_then(|resolved| store.payload_path(&resolved).ok())
-        .is_none_or(|path| !path.is_file())
+}
+
+fn copy_summary_target(store: &FileStore, slug: &Slug, kind: &str) -> Option<PathBuf> {
+    let directory = store.entry_dir_path(slug);
+    let names = stored_filenames(kind);
+    names
+        .iter()
+        .map(|name| directory.join(name))
+        .find(|path| path.exists())
+        .or_else(|| names.first().map(|name| directory.join(name)))
+}
+
+fn known_entry_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "python"
+            | "shell"
+            | "fish"
+            | "js"
+            | "ts"
+            | "powershell"
+            | "ruby"
+            | "perl"
+            | "lua"
+            | "r"
+            | "exe"
+            | "command"
+            | "prompt"
+    )
 }
 
 fn tui(service: &LibraryService<FileStore>) -> Result<(), CliError> {
-    let state = LibraryState::from_scan(service.list()?);
     let store = service.repository();
     let state_dir = resolve_state_dir()?;
     let config_dir = resolve_config_dir()?;
+    let scan = service.list()?;
+    let rerunnable = tui_rerunnable(&scan, &state_dir);
+    let mut state = LibraryState::from_scan(scan);
+    let _ = state.update(UiAction::ReplaceRerunnable(rerunnable));
     skit_tui::run(
         state,
         |effect| tui_effect(service, store, &state_dir, &config_dir, effect),
@@ -3616,17 +5031,74 @@ fn tui_effect(
 ) -> Result<UiAction, CliError> {
     match effect {
         UiEffect::None | UiEffect::Quit => Ok(UiAction::ClearStatus),
-        UiEffect::Reload => Ok(UiAction::Replace(service.list()?)),
+        UiEffect::Reload => {
+            let scan = service.list()?;
+            let rerunnable = tui_rerunnable(&scan, state_dir);
+            Ok(UiAction::Replace { scan, rerunnable })
+        }
+        UiEffect::Rerun { selector } => tui_rerun(service, store, state_dir, config_dir, &selector),
         UiEffect::Open { request, selector } => Ok(UiAction::Present(tui_open(
             service, store, state_dir, config_dir, request, selector,
         )?)),
+        UiEffect::Preferences(effect) => tui_preferences_effect(service, config_dir, effect),
+        UiEffect::CountRunGlob {
+            field,
+            value,
+            request,
+            ..
+        } => {
+            let count = FileGlobExpander::new(&request.cwd).count_matches(&request);
+            Ok(UiAction::SetRunGlobCount {
+                field,
+                value,
+                count,
+            })
+        }
+        UiEffect::SaveRunPreset {
+            selector,
+            name,
+            mut values,
+            secret_names,
+        } => {
+            let entry = service.show(&selector)?;
+            let declarations = entry_parameters(store, &entry);
+            refuse_empty_preset_schema(&declarations)?;
+            values.retain(|key, _| !secret_names.contains(key));
+            let state = FormStateService::new(FileFormStateStore::new(state_dir));
+            state.save_preset(&entry.slug, &name, &declarations, &values)?;
+            let presets = state.load(&entry.slug).presets;
+            Ok(UiAction::RunPresetSaved {
+                message: format_text(active_locale(), "Preset \"{}\" saved.", &[&name]),
+                name,
+                presets,
+            })
+        }
+        UiEffect::HealthRebuild => {
+            let rebuilt = HealthService::new(CliHealthInspector::new(service, store, config_dir))
+                .rebuild()?;
+            Ok(UiAction::Health(HealthAction::Rebuilt {
+                snapshot: Box::new(rebuilt.snapshot),
+                outcome: rebuilt.outcome,
+            }))
+        }
+        UiEffect::SaveRunner { request, owner } => {
+            tui_save_runner(service, config_dir, request, owner)
+        }
+        UiEffect::RemoveRunner(request) => tui_remove_runner(service, config_dir, request),
+        UiEffect::RefreshPreferencesAfterRunners => {
+            let Screen::Preferences(preferences) = tui_preferences_screen(config_dir)? else {
+                unreachable!("the preferences builder always returns Preferences")
+            };
+            Ok(UiAction::RunnerManagerClosed { preferences })
+        }
+        UiEffect::Add(effects) => tui_add_effect(service, store, state_dir, config_dir, effects),
         UiEffect::Edit { selector } => {
             edit_with_config(service, store, config_dir, &selector, true)?;
-            Ok(tui_complete(service, "Source saved")?)
+            Ok(tui_complete(service, state_dir, "Source saved")?)
         }
         UiEffect::Remove { selector } => {
             remove(service, &selector, true, true)?;
-            Ok(tui_complete(service, "Entry removed")?)
+            Ok(tui_complete(service, state_dir, "Entry removed")?)
         }
         UiEffect::Submit {
             purpose,
@@ -3635,6 +5107,420 @@ fn tui_effect(
         } => tui_submit(
             service, store, state_dir, config_dir, purpose, selector, &values,
         ),
+    }
+}
+
+fn tui_add_effect(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    state_dir: &Path,
+    config_dir: &Path,
+    effects: Vec<AddEffect>,
+) -> Result<UiAction, CliError> {
+    let locale = active_locale();
+    let mut warnings = Vec::new();
+    for effect in effects {
+        match effect {
+            AddEffect::InspectSource { request, path } => {
+                let result = tui_add_source(store.data_dir(), &path)
+                    .map_err(|error| error.message().localize(locale));
+                return Ok(UiAction::Add(AddAction::SourceInspected {
+                    request,
+                    result,
+                }));
+            }
+            AddEffect::AuthorDraft { request, kind } => {
+                let result = tui_author_draft(store.data_dir(), config_dir, kind)
+                    .map_err(|error| error.message().localize(locale));
+                return Ok(UiAction::Add(AddAction::DraftEdited { request, result }));
+            }
+            AddEffect::DeleteDraft { request, path } => {
+                let result = remove_owned_draft(store.data_dir(), &path)
+                    .map_err(|error| error.message().localize(locale));
+                return Ok(UiAction::Add(AddAction::DraftDeleted { request, result }));
+            }
+            AddEffect::EditSource { request, path } => {
+                let result = open_editor_in(config_dir, &path)
+                    .and_then(|()| tui_add_source(store.data_dir(), &path))
+                    .map_err(|error| error.message().localize(locale));
+                return Ok(UiAction::Add(AddAction::SourceEdited { request, result }));
+            }
+            AddEffect::Commit {
+                request,
+                entry,
+                source,
+            } => {
+                let result = source
+                    .as_ref()
+                    .map_or(Ok(()), |expected| {
+                        verify_tui_add_source(store.data_dir(), expected)
+                    })
+                    .and_then(|()| service.add(*entry).map_err(CliError::from))
+                    .map(|created| created.slug.as_str().to_owned())
+                    .map_err(|error| error.message().localize(locale));
+                return Ok(UiAction::Add(AddAction::CommitFinished { request, result }));
+            }
+            AddEffect::ConsumeDraft(path) => {
+                if let Err(error) = remove_owned_draft(store.data_dir(), &path) {
+                    warnings.push(error.message().localize(locale));
+                }
+            }
+            AddEffect::DraftKept(_) => {}
+            AddEffect::RememberRunner(name) => {
+                if let Err(error) =
+                    PromptSelectionService::new(FilePromptSelectionStore::new(state_dir))
+                        .remember_runner(&name)
+                {
+                    warnings.push(error.message().localize(locale));
+                }
+            }
+            AddEffect::Complete(raw_slug) => {
+                let mut message = text(locale, "Entry added").into_owned();
+                for warning in &warnings {
+                    message.push('\n');
+                    message.push_str(&format_text(locale, "warning: {}", &[warning]));
+                }
+                let Ok(slug) = Slug::parse(raw_slug) else {
+                    return Ok(UiAction::Complete {
+                        scan: None,
+                        rerunnable: None,
+                        message,
+                    });
+                };
+                let scan = match service.list() {
+                    Ok(scan) => scan,
+                    Err(error) => {
+                        message.push('\n');
+                        message.push_str(&format_text(
+                            locale,
+                            "warning: {}",
+                            &[&error.message().localize(locale)],
+                        ));
+                        return Ok(UiAction::Complete {
+                            scan: None,
+                            rerunnable: None,
+                            message,
+                        });
+                    }
+                };
+                let rerunnable = tui_rerunnable(&scan, state_dir);
+                return Ok(UiAction::AddCompleted {
+                    scan,
+                    rerunnable,
+                    slug,
+                    message,
+                });
+            }
+            AddEffect::Cancel => return Ok(UiAction::AddCancelled),
+        }
+    }
+    Ok(UiAction::ClearStatus)
+}
+
+fn tui_add_source(data_dir: &Path, input: &Path) -> Result<AddSourceSnapshot, CliError> {
+    let expanded = expand_user_path(input);
+    let path =
+        fs::canonicalize(&expanded).map_err(|error| source_error("resolve", &expanded, error))?;
+    let metadata = fs::metadata(&path).map_err(|error| source_error("inspect", &path, error))?;
+    let is_directory = metadata.is_dir();
+    let (bytes, permissions, is_regular) = if metadata.is_file() {
+        let mut file = File::open(&path).map_err(|error| source_error("open", &path, error))?;
+        let metadata = file
+            .metadata()
+            .map_err(|error| source_error("inspect", &path, error))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|error| source_error("read", &path, error))?;
+        (bytes, source_permissions(&metadata), true)
+    } else {
+        (Vec::new(), source_permissions(&metadata), false)
+    };
+    let is_draft = is_owned_draft(data_dir, &path);
+    Ok(AddSourceSnapshot {
+        source_record: path.display().to_string(),
+        path,
+        bytes,
+        permissions,
+        is_regular,
+        is_directory,
+        is_draft,
+    })
+}
+
+fn verify_tui_add_source(data_dir: &Path, expected: &AddSourceSnapshot) -> Result<(), CliError> {
+    let current = tui_add_source(data_dir, &expected.path)?;
+    if &current == expected {
+        Ok(())
+    } else {
+        Err(CliError::Failure(Message::new(
+            "source changed while the add review was open; review it again",
+        )))
+    }
+}
+
+fn tui_author_draft(
+    data_dir: &Path,
+    config_dir: &Path,
+    kind: DraftKind,
+) -> Result<Option<AddSourceSnapshot>, CliError> {
+    let drafts_dir = create_owned_drafts_dir(data_dir)?;
+    let (suffix, starter) = match kind {
+        DraftKind::Script => (".py", b"#!/usr/bin/env python3\n".to_vec()),
+        DraftKind::Prompt => (
+            ".prompt.md",
+            format!("{}\n\n", text(active_locale(), "# New prompt")).into_bytes(),
+        ),
+    };
+    let mut staged = tempfile::Builder::new()
+        .prefix("skit-new-")
+        .suffix(suffix)
+        .tempfile_in(&drafts_dir)
+        .map_err(|error| source_error("create", &drafts_dir, error))?;
+    staged
+        .write_all(&starter)
+        .map_err(|error| source_error("write", staged.path(), error))?;
+    staged
+        .flush()
+        .map_err(|error| source_error("write", staged.path(), error))?;
+    let path = staged
+        .keep()
+        .map_err(|error| source_error("keep", &drafts_dir, error.error))?
+        .1;
+
+    if let Err(error) = open_editor_in(config_dir, &path) {
+        if fs::read(&path).ok().as_deref() == Some(starter.as_slice()) {
+            let _ = fs::remove_file(&path);
+        }
+        return Err(error);
+    }
+    let edited = fs::read(&path).map_err(|error| source_error("read", &path, error))?;
+    let unchanged = std::str::from_utf8(&edited).is_ok_and(|text| {
+        let text = text.trim();
+        text.is_empty() || std::str::from_utf8(&starter).is_ok_and(|starter| text == starter.trim())
+    });
+    if unchanged {
+        fs::remove_file(&path).map_err(|error| source_error("remove", &path, error))?;
+        return Ok(None);
+    }
+    tui_add_source(data_dir, &path).map(Some)
+}
+
+fn is_owned_draft(data_dir: &Path, path: &Path) -> bool {
+    let Some(drafts_dir) = existing_owned_drafts_dir(data_dir) else {
+        return false;
+    };
+    path.file_name()
+        .is_some_and(|name| name.to_string_lossy().starts_with("skit-"))
+        && path
+            .parent()
+            .and_then(|parent| fs::canonicalize(parent).ok())
+            .is_some_and(|parent| parent == drafts_dir)
+}
+
+fn existing_owned_drafts_dir(data_dir: &Path) -> Option<PathBuf> {
+    let raw = data_dir.join("drafts");
+    let metadata = fs::symlink_metadata(&raw).ok()?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return None;
+    }
+    let data_dir = fs::canonicalize(data_dir).ok()?;
+    let drafts_dir = fs::canonicalize(raw).ok()?;
+    (drafts_dir.parent() == Some(data_dir.as_path())).then_some(drafts_dir)
+}
+
+fn create_owned_drafts_dir(data_dir: &Path) -> Result<PathBuf, CliError> {
+    fs::create_dir_all(data_dir).map_err(|error| source_error("create", data_dir, error))?;
+    let raw = data_dir.join("drafts");
+    match fs::symlink_metadata(&raw) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            fs::create_dir(&raw).map_err(|error| source_error("create", &raw, error))?;
+        }
+        Err(error) => return Err(source_error("inspect", &raw, error)),
+    }
+    existing_owned_drafts_dir(data_dir).ok_or_else(|| {
+        CliError::Failure(
+            Message::new("skit's drafts path is not an owned directory: {}").with(raw.display()),
+        )
+    })
+}
+
+fn remove_owned_draft(data_dir: &Path, path: &Path) -> Result<(), CliError> {
+    if !is_owned_draft(data_dir, path) {
+        return Err(CliError::Failure(Message::new(
+            "refusing to remove a file outside skit's drafts directory",
+        )));
+    }
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(source_error("remove", path, error)),
+    }
+}
+
+fn tui_preferences_effect(
+    service: &LibraryService<FileStore>,
+    config_dir: &Path,
+    effect: PreferencesEffect,
+) -> Result<UiAction, CliError> {
+    match effect {
+        PreferencesEffect::None | PreferencesEffect::Close | PreferencesEffect::ConfirmDiscard => {
+            Ok(UiAction::ClearStatus)
+        }
+        PreferencesEffect::Save(change) => {
+            let requested_language = change.settings.get("lang").cloned();
+            if let Err(error) = change.validate_files(expanded_preference_path_is_file) {
+                return Ok(UiAction::Preferences(PreferencesAction::ValidationFailed(
+                    error,
+                )));
+            }
+            if let Err(error) = FileConfigStore::new(config_dir).set_many(&change.settings) {
+                return Ok(UiAction::SetStatus(format_text(
+                    active_locale(),
+                    "Error: {}",
+                    &[&error.message().localize(active_locale())],
+                )));
+            }
+            let locale = requested_language
+                .as_deref()
+                .filter(|language| !language.is_empty() && *language != "auto")
+                .map_or_else(active_locale, |language| detect_locale(Some(language)));
+            Ok(UiAction::PreferencesSaved {
+                locale: locale.tag().to_owned(),
+                message: "Preferences saved".to_owned(),
+            })
+        }
+        PreferencesEffect::ManageAgents => {
+            Ok(UiAction::Present(tui_runners_screen(service, config_dir)?))
+        }
+        PreferencesEffect::DiscoverAgentSkillTargets => {
+            let roots = AgentRoots {
+                home: user_home(),
+                cwd: env::current_dir().map_err(CliError::Io)?,
+            };
+            Ok(UiAction::Preferences(
+                PreferencesAction::PresentAgentSkillTargets(detect_agent_targets(
+                    &roots,
+                    Path::is_dir,
+                )),
+            ))
+        }
+        PreferencesEffect::InstallAgentSkill { skills_dir } => {
+            match FileAgentSkillStore
+                .install(&skills_dir, include_bytes!("../../../skills/skit/SKILL.md"))
+            {
+                Ok(path) => Ok(UiAction::Preferences(
+                    PreferencesAction::AgentSkillInstalled {
+                        message: format_text(
+                            active_locale(),
+                            "Installed the skit Agent Skill: {}",
+                            &[&path.display()],
+                        ),
+                    },
+                )),
+                Err(error) => Ok(UiAction::SetStatus(format_text(
+                    active_locale(),
+                    "Error: {}",
+                    &[&error.message().localize(active_locale())],
+                ))),
+            }
+        }
+    }
+}
+
+fn expanded_preference_path_is_file(path: &Path) -> bool {
+    expand_user_path(path).is_file()
+}
+
+fn tui_rerunnable(scan: &LibraryScan, state_dir: &Path) -> Vec<Slug> {
+    let state = FormStateService::new(FileFormStateStore::new(state_dir));
+    scan.entries
+        .iter()
+        .filter_map(|entry| {
+            let last_run = state.last_run(&entry.slug);
+            (last_run.at.is_some() || last_run.exit.is_some() || last_run.values.is_some())
+                .then(|| entry.slug.clone())
+        })
+        .collect()
+}
+
+fn tui_rerun(
+    service: &LibraryService<FileStore>,
+    store: &FileStore,
+    state_dir: &Path,
+    config_dir: &Path,
+    selector: &str,
+) -> Result<UiAction, CliError> {
+    let entry = service.show(selector)?;
+    let saved = FormStateService::new(FileFormStateStore::new(state_dir)).load(&entry.slug);
+    if saved.last_run.at.is_none()
+        && saved.last_run.exit.is_none()
+        && saved.last_run.values.is_none()
+    {
+        return Ok(UiAction::SetStatus(format_text(
+            active_locale(),
+            "{} hasn't run yet — press Enter to fill the form first.",
+            &[&entry.meta.name],
+        )));
+    }
+    if entry.meta.kind.as_str() == "prompt"
+        && EntrySettings::from_meta(&entry.meta).runner.is_empty()
+    {
+        return Ok(UiAction::Present(tui_open(
+            service,
+            store,
+            state_dir,
+            config_dir,
+            HostRequest::Run,
+            Some(selector.to_owned()),
+        )?));
+    }
+
+    let result = crate::run::run_with_roots(
+        service,
+        store,
+        state_dir,
+        config_dir,
+        RunArgs {
+            selector: selector.to_owned(),
+            values: Vec::new(),
+            preset: None,
+            save_preset: None,
+            runner: None,
+            dry_run: false,
+            no_input: true,
+            plain: true,
+            raw: false,
+            forget_args: false,
+            extra_args: Vec::new(),
+        },
+    );
+    match result {
+        Ok(_) if FileConfigStore::new(config_dir).get("after_run")? == "exit" => Ok(UiAction::Quit),
+        Ok(exit) => tui_complete(
+            service,
+            state_dir,
+            &format_text(
+                active_locale(),
+                "Run finished with exit status {}",
+                &[&exit],
+            ),
+        ),
+        Err(RunError::Inputs(skit_application::run_inputs::RunInputError::Preparation(_))) => {
+            Ok(UiAction::Present(tui_open(
+                service,
+                store,
+                state_dir,
+                config_dir,
+                HostRequest::Run,
+                Some(selector.to_owned()),
+            )?))
+        }
+        Err(error) => Ok(UiAction::SetStatus(format_text(
+            active_locale(),
+            "Error: {}",
+            &[&error.message().localize(active_locale())],
+        ))),
     }
 }
 
@@ -3649,34 +5535,40 @@ fn tui_open(
     match request {
         HostRequest::Run => {
             let entry = service.show(tui_selector(&selector)?)?;
-            let declarations = entry_parameters(store, &entry);
-            let saved = FormStateService::new(FileFormStateStore::new(state_dir)).load(&entry.slug);
             let settings = EntrySettings::from_meta(&entry.meta);
-            let mut runners = FileConfigStore::new(config_dir)
-                .runners()?
-                .into_iter()
-                .map(|runner| runner.name)
-                .collect::<Vec<_>>();
-            if !settings.runner.is_empty() {
-                runners.retain(|name| name != &settings.runner);
-                runners.insert(0, settings.runner);
-            }
+            let source = crate::run::source_text(store, &entry, &settings)?;
+            let plan = form_plan(entry.meta.kind.as_str(), &source, &settings);
+            let context = tui_run_context(store, &entry)?;
+            let saved = FormStateService::new(FileFormStateStore::new(state_dir)).load(&entry.slug);
+            let runners = if entry.meta.kind.as_str() == "prompt" {
+                FileConfigStore::new(config_dir)
+                    .runners()?
+                    .into_iter()
+                    .map(|runner| runner.name)
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
             Ok(tui_run_form(
                 &entry,
-                &declarations,
+                &plan,
                 &saved.values,
                 &runners,
-                &saved.presets.keys().cloned().collect::<Vec<_>>(),
+                &settings.runner,
+                &saved.presets,
+                &join_editable_arguments(&saved.extra_args),
+                context,
+                active_locale(),
             ))
         }
-        HostRequest::Add => Ok(tui_add_form()),
+        HostRequest::Add => tui_add_screen(store, state_dir, config_dir),
         HostRequest::Settings => {
             let entry = service.show(tui_selector(&selector)?)?;
             Ok(tui_settings_form(store, &entry))
         }
-        HostRequest::Preferences => tui_preferences_form(config_dir),
-        HostRequest::Health => tui_health_report(service, store),
-        HostRequest::Runners => tui_runners_form(config_dir),
+        HostRequest::Preferences => tui_preferences_screen(config_dir),
+        HostRequest::Health => tui_health_screen(service, store, config_dir),
+        HostRequest::Runners => tui_runners_screen(service, config_dir),
         HostRequest::Presets => {
             let entry = service.show(tui_selector(&selector)?)?;
             let saved = FormStateService::new(FileFormStateStore::new(state_dir)).load(&entry.slug);
@@ -3709,26 +5601,65 @@ fn tui_selector(selector: &Option<String>) -> Result<&str, CliError> {
 
 fn tui_run_form(
     entry: &Entry,
-    declarations: &[ParamDecl],
+    plan: &PreparedFormPlan,
     saved: &BTreeMap<String, String>,
     runners: &[String],
-    presets: &[String],
+    runner_default: &str,
+    presets: &BTreeMap<String, BTreeMap<String, String>>,
+    extra_arguments: &str,
+    context: RunFormContext,
+    locale: Locale,
 ) -> Screen {
-    Screen::Form(tui_run_form_view(
-        entry,
-        declarations,
+    let mut form = RunFormView::from_declarations(
+        entry.slug.as_str(),
+        &entry.meta.name,
+        &plan.declarations(),
         saved,
         runners,
+        runner_default,
         presets,
-    ))
+        extra_arguments,
+    )
+    .with_context(context);
+    form.drift_lines = show_drift_lines(plan, &entry.meta.name, locale);
+    let degradation = degradation_token(plan.degradation);
+    form.degraded_reason = (!degradation.is_empty()).then(|| degradation.to_owned());
+    Screen::Run(Box::new(form))
 }
 
-fn tui_run_form_view(
+fn tui_run_context(store: &FileStore, entry: &Entry) -> Result<RunFormContext, CliError> {
+    let tokens = crate::run::token_context();
+    let invoke_cwd = PathBuf::from(&tokens.cwd);
+    let script = if entry.meta.kind.as_str() == "command" {
+        PathBuf::new()
+    } else {
+        store.payload_path(entry)?
+    };
+    let paths = LaunchPaths {
+        script,
+        entry_dir: store.entry_dir_path(&entry.slug),
+        invoke_cwd: invoke_cwd.clone(),
+    };
+    let workdir = resolve_launch_workdir(entry, &paths, &SystemProbe)
+        .map_err(RunError::from)?
+        .display()
+        .to_string();
+    Ok(RunFormContext {
+        entry_kind: entry.meta.kind.as_str().to_owned(),
+        path: Some(RunPathContext {
+            workdir,
+            invoke_cwd: invoke_cwd.display().to_string(),
+        }),
+        tokens,
+    })
+}
+
+fn plain_run_form_view(
     entry: &Entry,
     declarations: &[ParamDecl],
     saved: &BTreeMap<String, String>,
     runners: &[String],
-    presets: &[String],
+    runner_default: &str,
 ) -> FormView {
     let mut fields = declarations
         .iter()
@@ -3750,19 +5681,19 @@ fn tui_run_form_view(
             }
         })
         .collect::<Vec<_>>();
-    fields.extend([
-        tui_options_field("_skit_preset", "Preset", "Preset choices: {}", presets, ""),
-        FormField::text("_skit_save_preset", "Save as preset", ""),
-        tui_options_field(
+    if !runners.is_empty() {
+        fields.push(tui_options_field(
             "_skit_runner",
             "Prompt runner",
             "Prompt runner choices: {}",
             runners,
-            runners.first().cloned().unwrap_or_default(),
-        ),
-        FormField::text("_skit_args", "Extra arguments", ""),
-        FormField::text("_skit_dry_run", "Dry run (true or false)", "false"),
-    ]);
+            if runners.iter().any(|name| name == runner_default) {
+                runner_default.to_owned()
+            } else {
+                runners.first().cloned().unwrap_or_default()
+            },
+        ));
+    }
     FormView {
         purpose: FormPurpose::Run,
         title: "Run {}".to_owned(),
@@ -3775,31 +5706,62 @@ fn tui_run_form_view(
     }
 }
 
-fn tui_add_form() -> Screen {
-    Screen::Form(tui_add_form_view())
+fn tui_add_screen(
+    store: &FileStore,
+    state_dir: &Path,
+    config_dir: &Path,
+) -> Result<Screen, CliError> {
+    Ok(Screen::Add(Box::new(tui_add_workflow(
+        store, state_dir, config_dir,
+    )?)))
 }
 
-fn tui_add_form_view() -> FormView {
-    FormView {
-        purpose: FormPurpose::Add,
-        title: "Add an entry".to_owned(),
-        title_arguments: Vec::new(),
-        translate_title: true,
-        selector: None,
-        fields: vec![
-            FormField::text("source", "Source path", ""),
-            FormField::text("name", "Name", ""),
-            FormField::text("kind", "Kind", ""),
-            FormField::multiline("description", "Description", ""),
-            FormField::text("mode", "Storage mode (copy or reference)", "copy"),
-            FormField::multiline("template", "Command template", ""),
-            FormField::text("runner", "Prompt runner", ""),
-            FormField::text("dependencies", "Package dependencies", ""),
-            FormField::text("python", "Python constraint", ""),
-        ],
-        focused: 0,
-        submit_label: "Add".to_owned(),
-    }
+fn tui_add_workflow(
+    store: &FileStore,
+    state_dir: &Path,
+    config_dir: &Path,
+) -> Result<AddWorkflowState, CliError> {
+    let runner_names = FileConfigStore::new(config_dir)
+        .runners()?
+        .into_iter()
+        .map(|runner| runner.name)
+        .collect();
+    let last_runner =
+        PromptSelectionService::new(FilePromptSelectionStore::new(state_dir)).last_runner();
+    let defaults = ReviewDefaults {
+        runner_names,
+        last_runner: (!last_runner.is_empty()).then_some(last_runner),
+        ..ReviewDefaults::default()
+    };
+    Ok(AddWorkflowState::new(tui_drafts(store.data_dir())).with_review_defaults(defaults))
+}
+
+fn tui_drafts(data_dir: &Path) -> Vec<DraftSummary> {
+    let Some(drafts_dir) = existing_owned_drafts_dir(data_dir) else {
+        return Vec::new();
+    };
+    let Ok(items) = fs::read_dir(&drafts_dir) else {
+        return Vec::new();
+    };
+    items
+        .filter_map(Result::ok)
+        .filter(|item| item.file_name().to_string_lossy().starts_with("skit-"))
+        .filter_map(|item| {
+            let metadata = item.metadata().ok()?;
+            if !metadata.is_file() {
+                return None;
+            }
+            let modified = metadata
+                .modified()
+                .ok()
+                .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+                .map_or(0, |value| value.as_nanos().min(u128::from(u64::MAX)) as u64);
+            Some(DraftSummary {
+                path: item.path(),
+                modified,
+            })
+        })
+        .collect()
 }
 
 fn tui_settings_form(store: &FileStore, entry: &Entry) -> Screen {
@@ -3951,109 +5913,546 @@ fn tui_settings_form(store: &FileStore, entry: &Entry) -> Screen {
     })
 }
 
-fn tui_preferences_form(config_dir: &Path) -> Result<Screen, CliError> {
-    let settings = FileConfigStore::new(config_dir).settings()?;
-    Ok(Screen::Form(FormView {
-        purpose: FormPurpose::Preferences,
-        title: "Preferences".to_owned(),
-        title_arguments: Vec::new(),
-        translate_title: true,
-        selector: None,
-        fields: settings
-            .into_iter()
-            .map(|(key, value)| tui_preference_field(key, value))
+fn tui_preferences_screen(config_dir: &Path) -> Result<Screen, CliError> {
+    let config = FileConfigStore::new(config_dir);
+    let settings = config.settings()?;
+    let setting = |key: &str| settings.get(key).cloned().unwrap_or_default();
+    let mirror = config.mirror()?;
+    let snapshot = PreferencesSnapshot {
+        language: setting("lang"),
+        available_languages: available_locale_tags()
+            .iter()
+            .map(|tag| (*tag).to_owned())
             .collect(),
-        focused: 0,
-        submit_label: "Save".to_owned(),
-    }))
-}
-
-fn tui_preference_field(key: String, value: String) -> FormField {
-    let label = match key.as_str() {
-        "lang" => "Language",
-        "editor" => "Editor command",
-        "form" => "Form style",
-        "after_run" => "After run",
-        "shell.bash_path" => "Bash path",
-        "js.runner" => "JavaScript runtime",
-        "mirror" => "Mirror",
-        "mirror.pypi" => "PyPI mirror",
-        "mirror.github" => "GitHub mirror",
-        "mirror.npm" => "npm mirror",
-        _ => return FormField::text_raw(key.clone(), key, value),
+        effective_language: active_locale().tag().to_owned(),
+        editor: setting("editor"),
+        editor_fallback: env::var("VISUAL")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .or_else(|| env::var("EDITOR").ok().filter(|value| !value.is_empty())),
+        form: match setting("form").as_str() {
+            "plain" => InteractiveFormChoice::Plain,
+            _ => InteractiveFormChoice::Tui,
+        },
+        after_run: match setting("after_run").as_str() {
+            "stay" => AfterRunChoice::Stay,
+            _ => AfterRunChoice::Exit,
+        },
+        javascript: match setting("js.runner").as_str() {
+            "deno" => JavascriptChoice::Deno,
+            "bun" => JavascriptChoice::Bun,
+            "node" => JavascriptChoice::Node,
+            _ => JavascriptChoice::Automatic,
+        },
+        bash_path: cfg!(target_os = "windows").then(|| setting("shell.bash_path")),
+        runner_names: config
+            .runners()?
+            .into_iter()
+            .map(|runner| runner.name)
+            .collect(),
+        mirror: MirrorConfiguration {
+            enabled: mirror.enabled,
+            pypi: mirror.pypi,
+            python_install: mirror.python_install,
+            uv_binary: mirror.uv_binary,
+            npm: mirror.npm,
+        },
     };
-    FormField::text(key, label, value)
+    Ok(Screen::Preferences(Box::new(PreferencesView::new(
+        PreferencesDraft::from_snapshot(snapshot),
+    ))))
 }
 
-fn tui_health_report(
+fn tui_health_screen(
     service: &LibraryService<FileStore>,
     store: &FileStore,
+    config_dir: &Path,
 ) -> Result<Screen, CliError> {
-    let scan = service.list()?;
-    let missing = scan
-        .entries
-        .iter()
-        .filter(|entry| summary_missing(store, entry))
-        .count();
-    let mut items = vec![
-        ReportItem {
-            status: "ok".to_owned(),
-            label: "Entries".to_owned(),
-            translate_label: true,
-            detail: scan.entries.len().to_string(),
-            translate_detail: false,
-        },
-        ReportItem {
-            status: if missing == 0 { "ok" } else { "error" }.to_owned(),
-            label: "Missing targets".to_owned(),
-            translate_label: true,
-            detail: missing.to_string(),
-            translate_detail: false,
-        },
-        ReportItem {
-            status: "ok".to_owned(),
-            label: "Data directory".to_owned(),
-            translate_label: true,
-            detail: store.data_dir().display().to_string(),
-            translate_detail: false,
-        },
-    ];
-    items.extend(scan.diagnostics.into_iter().map(|diagnostic| {
-        let detail = diagnostic.localize(active_locale());
-        ReportItem {
-            status: "error".to_owned(),
-            label: diagnostic.slug.unwrap_or_else(|| "Library".to_owned()),
-            translate_label: false,
-            detail,
-            translate_detail: false,
-        }
-    }));
-    Ok(Screen::Report(ReportView {
-        title: "Health".to_owned(),
-        items,
-    }))
+    let snapshot =
+        HealthService::new(CliHealthInspector::new(service, store, config_dir)).inspect()?;
+    Ok(Screen::Health(Box::new(HealthView::new(snapshot))))
 }
 
-fn tui_runners_form(config_dir: &Path) -> Result<Screen, CliError> {
-    let runners = FileConfigStore::new(config_dir)
-        .runners()?
+struct CliHealthInspector<'a> {
+    service: &'a LibraryService<FileStore>,
+    store: &'a FileStore,
+    config_dir: &'a Path,
+}
+
+impl std::fmt::Debug for CliHealthInspector<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CliHealthInspector")
+            .field("data_dir", &self.store.data_dir())
+            .field("config_dir", &self.config_dir)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> CliHealthInspector<'a> {
+    const fn new(
+        service: &'a LibraryService<FileStore>,
+        store: &'a FileStore,
+        config_dir: &'a Path,
+    ) -> Self {
+        Self {
+            service,
+            store,
+            config_dir,
+        }
+    }
+
+    fn collect(&self) -> Result<HealthSnapshot, CliError> {
+        let scan = self.service.list()?;
+        let mut entries = Vec::with_capacity(scan.entries.len());
+        for summary in &scan.entries {
+            match self.service.show(summary.slug.as_str()) {
+                Ok(entry) => entries.push(entry),
+                Err(RepositoryError::NotFound { .. }) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let probe = SystemProbe;
+        let private_uv = managed_uv_path(self.store.data_dir());
+        let uv_path = probe
+            .find_program("uv")
+            .or_else(|| probe.is_executable(&private_uv).then_some(private_uv));
+        let uv = match uv_path {
+            Some(path) => UvHealth::Found(path.display().to_string()),
+            None => UvHealth::Missing,
+        };
+        let config = FileConfigStore::new(self.config_dir);
+        let mut missing = Vec::new();
+        let mut drifted = Vec::new();
+        let mut needs_missing = Vec::new();
+        let mut launch_blocked = Vec::new();
+        for entry in &entries {
+            if entry_missing(self.store, entry) {
+                missing.push(HealthIssue {
+                    slug: entry.slug.as_str().to_owned(),
+                    name: entry.meta.name.clone(),
+                    kind: HealthIssueKind::MissingTarget,
+                });
+            }
+            if doctor_entry_drifted(self.store, entry) {
+                drifted.push(HealthIssue {
+                    slug: entry.slug.as_str().to_owned(),
+                    name: entry.meta.name.clone(),
+                    kind: HealthIssueKind::DriftedForm,
+                });
+            }
+            let mut settings = EntrySettings::from_meta(&entry.meta);
+            if entry.meta.kind.as_str() == "python"
+                && settings.interpreter.is_empty()
+                && let UvHealth::Found(path) = &uv
+            {
+                settings.interpreter.clone_from(path);
+            }
+            let absent = settings
+                .needs
+                .iter()
+                .filter(|name| probe.find_program(name).is_none())
+                .cloned()
+                .collect::<Vec<_>>();
+            if !absent.is_empty() {
+                needs_missing.push(HealthIssue {
+                    slug: entry.slug.as_str().to_owned(),
+                    name: entry.meta.name.clone(),
+                    kind: HealthIssueKind::MissingNeeds { tools: absent },
+                });
+            } else if known_entry_kind(entry.meta.kind.as_str())
+                && !entry_missing(self.store, entry)
+                && let Some(reason) = doctor_launch_block(entry, &settings, &config, &probe)?
+            {
+                launch_blocked.push(HealthIssue {
+                    slug: entry.slug.as_str().to_owned(),
+                    name: entry.meta.name.clone(),
+                    kind: HealthIssueKind::LaunchBlocked {
+                        reason: reason.localize(active_locale()),
+                    },
+                });
+            }
+        }
+        let issues = missing
+            .into_iter()
+            .chain(drifted)
+            .chain(needs_missing)
+            .chain(launch_blocked)
+            .collect();
+        let invalid_runner_rows = config
+            .runner_rows()?
+            .into_iter()
+            .filter(|row| row.reason.is_some())
+            .map(|row| row.localized_descriptor(active_locale()))
+            .collect();
+        let mirrors = config.mirror()?;
+        let mirror_settings = config.settings()?;
+        let pypi = &mirror_settings["mirror.pypi"];
+        let github = &mirror_settings["mirror.github"];
+        let npm = &mirror_settings["mirror.npm"];
+        let mirror_axes = format!("pypi={pypi} · github={github} · npm={npm}");
+        let mirror = if [pypi, github, npm].into_iter().all(|axis| axis == "off") {
+            MirrorHealth::Off
+        } else if mirrors.enabled {
+            MirrorHealth::On { axes: mirror_axes }
+        } else {
+            MirrorHealth::Paused { axes: mirror_axes }
+        };
+        let scripts = self.store.data_dir().join("scripts");
+        let size = directory_size(&scripts);
+        Ok(HealthSnapshot {
+            uv,
+            entry_count: scan.entries.len(),
+            issues,
+            invalid_runner_rows,
+            mirror,
+            library_path: scripts.display().to_string(),
+            library_size: health_size_text(size),
+            diagnostics: scan
+                .diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.localize(active_locale()))
+                .collect(),
+        })
+    }
+}
+
+impl HealthInspection for CliHealthInspector<'_> {
+    type Error = CliError;
+
+    fn inspect(&self) -> Result<HealthSnapshot, Self::Error> {
+        self.collect()
+    }
+
+    fn rebuild(&self) -> Result<HealthRebuild, Self::Error> {
+        let problems = self
+            .service
+            .list()?
+            .diagnostics
+            .into_iter()
+            .map(|diagnostic| diagnostic.localize(active_locale()))
+            .collect::<Vec<_>>();
+        let entry_count = self.store.rebuild_registry()?;
+        Ok(HealthRebuild {
+            snapshot: self.collect()?,
+            outcome: HealthRebuildOutcome {
+                entry_count,
+                problems,
+            },
+        })
+    }
+}
+
+fn health_size_text(size: u64) -> String {
+    if size < 1024 {
+        return format!("{size} B");
+    }
+    let mut value = size as f64 / 1024.0;
+    for unit in ["KB", "MB", "GB"] {
+        if value < 1024.0 || unit == "GB" {
+            return format!("{value:.1} {unit}");
+        }
+        value /= 1024.0;
+    }
+    unreachable!("the final size unit always returns")
+}
+
+fn tui_runners_screen(
+    service: &LibraryService<FileStore>,
+    config_dir: &Path,
+) -> Result<Screen, CliError> {
+    Ok(Screen::Runners(Box::new(RunnerManagerView::new(
+        tui_runner_rows(service, config_dir)?,
+    ))))
+}
+
+fn tui_runner_rows(
+    service: &LibraryService<FileStore>,
+    config_dir: &Path,
+) -> Result<Vec<RunnerRow>, CliError> {
+    let config = FileConfigStore::new(config_dir);
+    config.ensure_runners_seeded()?;
+    let rows = config.runner_rows()?;
+    let mut pinned = BTreeMap::<String, usize>::new();
+    for summary in service
+        .list()?
+        .entries
         .into_iter()
-        .map(|runner| format!("{}={}", runner.name, runner.argv.join(" ")))
+        .filter(|summary| summary.kind.as_str() == "prompt")
+    {
+        let entry = match service.show(summary.slug.as_str()) {
+            Ok(entry) => entry,
+            Err(RepositoryError::NotFound { .. }) => continue,
+            Err(error) => return Err(error.into()),
+        };
+        let runner = EntrySettings::from_meta(&entry.meta).runner;
+        if !runner.is_empty() {
+            *pinned.entry(runner).or_default() += 1;
+        }
+    }
+    let identities = rows
+        .iter()
+        .map(|row| RunnerRowIdentity {
+            index: row.index,
+            snapshot_token: row.snapshot_token(),
+        })
         .collect::<Vec<_>>();
-    Ok(Screen::Form(FormView {
-        purpose: FormPurpose::Runners,
-        title: "Prompt runners: {}".to_owned(),
-        title_arguments: vec![runners.join("; ")],
-        translate_title: true,
-        selector: None,
-        fields: vec![
-            FormField::text("name", "Runner name", ""),
-            FormField::text("argv", "Arguments", ""),
-            FormField::text("remove", "Remove (true or false)", "false"),
-        ],
-        focused: 0,
-        submit_label: "Save".to_owned(),
-    }))
+    Ok(rows
+        .iter()
+        .zip(&identities)
+        .map(|(row, identity)| {
+            let key_identities = row.name.as_ref().map_or_else(Vec::new, |name| {
+                rows.iter()
+                    .zip(&identities)
+                    .filter(|(candidate, _)| candidate.name.as_ref() == Some(name))
+                    .map(|(_, identity)| identity.clone())
+                    .collect()
+            });
+            RunnerRow {
+                identity: identity.clone(),
+                name: row.name.clone(),
+                argv: row.argv.clone(),
+                reason: row.reason.clone(),
+                descriptor: row.localized_descriptor(active_locale()),
+                key_identities,
+                pinned_count: row
+                    .name
+                    .as_ref()
+                    .and_then(|name| pinned.get(name))
+                    .copied()
+                    .unwrap_or(0),
+            }
+        })
+        .collect())
+}
+
+fn tui_save_runner(
+    service: &LibraryService<FileStore>,
+    config_dir: &Path,
+    request: RunnerSaveRequest,
+    owner: RunnerSaveOwner,
+) -> Result<UiAction, CliError> {
+    let config = FileConfigStore::new(config_dir);
+    let runner = PromptRunner {
+        name: request.name.clone(),
+        argv: request.argv.clone(),
+    };
+    let updated = !matches!(request.target, RunnerSaveTarget::New);
+    let result = match &request.target {
+        RunnerSaveTarget::New => config.set_runner(runner, false).map(|_| true),
+        RunnerSaveTarget::Named { expected, .. } => {
+            let current = config.runner_rows()?;
+            let Some(expected) = resolve_runner_rows(&current, expected) else {
+                return Ok(tui_runner_save_failure(
+                    owner,
+                    text(
+                        active_locale(),
+                        "The runner row changed before it could be saved; inspect again.",
+                    )
+                    .into_owned(),
+                ));
+            };
+            config.set_runner_if_unchanged(runner, &expected)
+        }
+        RunnerSaveTarget::RawRow { expected } => {
+            let current = config.runner_rows()?;
+            let Some(expected) = resolve_runner_row(&current, expected) else {
+                return Ok(tui_runner_save_failure(
+                    owner,
+                    text(
+                        active_locale(),
+                        "The runner row changed before it could be saved; inspect again.",
+                    )
+                    .into_owned(),
+                ));
+            };
+            config.replace_runner_row_if_unchanged(runner, expected)
+        }
+    };
+    let saved = match result {
+        Ok(saved) => saved,
+        Err(error) => {
+            return Ok(tui_runner_save_failure(
+                owner,
+                error.message().localize(active_locale()),
+            ));
+        }
+    };
+    if !saved {
+        return Ok(tui_runner_save_failure(
+            owner,
+            text(
+                active_locale(),
+                "The runner row changed before it could be saved; inspect again.",
+            )
+            .into_owned(),
+        ));
+    }
+    let template = if updated {
+        "Runner {} updated: {}"
+    } else {
+        "Runner {} added: {}"
+    };
+    let message = format_text(
+        active_locale(),
+        template,
+        &[&request.name, &runner_command_text(&request.argv)],
+    );
+    Ok(match owner {
+        RunnerSaveOwner::Manager => UiAction::Runners(RunnerManagerAction::MutationSucceeded {
+            rows: tui_runner_rows(service, config_dir)?,
+            selected_name: Some(request.name),
+            message,
+        }),
+        RunnerSaveOwner::Editor(owner) => UiAction::RunnerEditorSaved {
+            owner,
+            name: request.name,
+            message,
+        },
+    })
+}
+
+fn tui_runner_save_failure(owner: RunnerSaveOwner, message: String) -> UiAction {
+    match owner {
+        RunnerSaveOwner::Manager => UiAction::Runners(RunnerManagerAction::MutationFailed(message)),
+        RunnerSaveOwner::Editor(owner) => UiAction::RunnerEditorSaveFailed { owner, message },
+    }
+}
+
+fn tui_remove_runner(
+    service: &LibraryService<FileStore>,
+    config_dir: &Path,
+    request: RunnerRemoveRequest,
+) -> Result<UiAction, CliError> {
+    let config = FileConfigStore::new(config_dir);
+    let current = config.runner_rows()?;
+    match &request {
+        RunnerRemoveRequest::Named {
+            name,
+            expected,
+            expected_pinned_count,
+        } => {
+            let Some(expected) = resolve_runner_rows(&current, expected) else {
+                return Ok(UiAction::Runners(RunnerManagerAction::MutationFailed(
+                    text(
+                        active_locale(),
+                        "The runner row changed before it could be removed; inspect again.",
+                    )
+                    .into_owned(),
+                )));
+            };
+            let management =
+                FileRunnerManagementStore::new(service.repository().data_dir(), config_dir);
+            match management.remove_named_if_unchanged(
+                name,
+                &expected,
+                *expected_pinned_count,
+            ) {
+                Ok(RunnerRemovalCas::Removed) => {
+                    Ok(UiAction::Runners(RunnerManagerAction::MutationSucceeded {
+                        rows: tui_runner_rows(service, config_dir)?,
+                        selected_name: None,
+                        message: format_text(active_locale(), "Runner {} removed.", &[name]),
+                    }))
+                }
+                Ok(RunnerRemovalCas::RowsChanged) => Ok(UiAction::Runners(
+                    RunnerManagerAction::MutationFailed(
+                        text(
+                            active_locale(),
+                            "The runner row changed before it could be removed; inspect again.",
+                        )
+                        .into_owned(),
+                    ),
+                )),
+                Ok(RunnerRemovalCas::PinsChanged { .. }) => Ok(UiAction::Runners(
+                    RunnerManagerAction::MutationFailed(
+                        text(
+                            active_locale(),
+                            "The prompt pins changed before the runner could be removed; inspect again.",
+                        )
+                        .into_owned(),
+                    ),
+                )),
+                Err(error) => Ok(UiAction::Runners(RunnerManagerAction::MutationFailed(
+                    match error {
+                        RunnerManagementStoreError::Library(error) => {
+                            error.message().localize(active_locale())
+                        }
+                        RunnerManagementStoreError::Config(error) => {
+                            error.message().localize(active_locale())
+                        }
+                    },
+                ))),
+            }
+        }
+        RunnerRemoveRequest::RawRow { expected } => {
+            let Some(row) = resolve_runner_row(&current, expected) else {
+                return Ok(UiAction::Runners(RunnerManagerAction::MutationFailed(
+                    text(
+                        active_locale(),
+                        "The runner row changed before it could be removed; inspect again.",
+                    )
+                    .into_owned(),
+                )));
+            };
+            let message = row.index.map_or_else(
+                || {
+                    text(
+                        active_locale(),
+                        "Malformed prompt runner container removed.",
+                    )
+                    .into_owned()
+                },
+                |index| {
+                    format_text(
+                        active_locale(),
+                        "Malformed runner row {} removed.",
+                        &[&index],
+                    )
+                },
+            );
+            match config.remove_runner_row_if_unchanged(row) {
+                Ok(true) => Ok(UiAction::Runners(RunnerManagerAction::MutationSucceeded {
+                    rows: tui_runner_rows(service, config_dir)?,
+                    selected_name: None,
+                    message,
+                })),
+                Ok(false) => Ok(UiAction::Runners(RunnerManagerAction::MutationFailed(
+                    text(
+                        active_locale(),
+                        "The runner row changed before it could be removed; inspect again.",
+                    )
+                    .into_owned(),
+                ))),
+                Err(error) => Ok(UiAction::Runners(RunnerManagerAction::MutationFailed(
+                    error.message().localize(active_locale()),
+                ))),
+            }
+        }
+    }
+}
+
+fn resolve_runner_rows(
+    rows: &[skit_store::PromptRunnerRow],
+    identities: &[RunnerRowIdentity],
+) -> Option<Vec<skit_store::PromptRunnerRow>> {
+    let resolved = identities
+        .iter()
+        .map(|identity| resolve_runner_row(rows, identity).cloned())
+        .collect::<Option<Vec<_>>>()?;
+    let unique = resolved
+        .iter()
+        .map(|row| row.index)
+        .collect::<BTreeSet<_>>();
+    (unique.len() == resolved.len()).then_some(resolved)
+}
+
+fn resolve_runner_row<'a>(
+    rows: &'a [skit_store::PromptRunnerRow],
+    identity: &RunnerRowIdentity,
+) -> Option<&'a skit_store::PromptRunnerRow> {
+    rows.iter()
+        .find(|row| row.index == identity.index && row.snapshot_token() == identity.snapshot_token)
 }
 
 fn tui_presets_form(entry: &Entry, presets: &[String]) -> Screen {
@@ -4108,7 +6507,9 @@ fn tui_parameter_value(value: &ParameterValue) -> String {
     match value {
         ParameterValue::String(value) => value.clone(),
         ParameterValue::Integer(value) => value.to_string(),
-        ParameterValue::Float(value) => value.to_string(),
+        ParameterValue::Float(value) => serde_json::Number::from_f64(*value)
+            .expect("parameter defaults are finite")
+            .to_string(),
         ParameterValue::Bool(value) => value.to_string(),
     }
 }
@@ -4226,7 +6627,7 @@ fn tui_submit(
                     source: (!source.is_empty()).then(|| PathBuf::from(source)),
                     kind: (!kind.is_empty()).then_some(kind.to_owned()),
                     name: tui_nonempty_owned(values, "name"),
-                    description: tui_value(values, "description").to_owned(),
+                    description: tui_nonempty_owned(values, "description"),
                     reference: tui_value(values, "mode").eq_ignore_ascii_case("reference"),
                     command_template: (!template.is_empty()).then_some(template.to_owned()),
                     prompt: kind == "prompt",
@@ -4236,18 +6637,19 @@ fn tui_submit(
                     dependencies: tui_dependency_list(tui_value(values, "dependencies")),
                     dependencies_explicit: !tui_value(values, "dependencies").is_empty(),
                     requires_python: tui_nonempty_owned(values, "python"),
+                    no_input: false,
                 },
             )?;
-            tui_complete(service, "Entry added")
+            tui_complete(service, state_dir, "Entry added")
         }
         FormPurpose::Settings => {
             tui_submit_settings(service, store, state_dir, tui_selector(&selector)?, values)?;
-            tui_complete(service, "Settings saved")
+            tui_complete(service, state_dir, "Settings saved")
         }
         FormPurpose::Preferences => {
             let config = FileConfigStore::new(config_dir);
             config.set_many(values)?;
-            tui_complete(service, "Preferences saved")
+            tui_complete(service, state_dir, "Preferences saved")
         }
         FormPurpose::Runners => {
             let config = FileConfigStore::new(config_dir);
@@ -4270,7 +6672,7 @@ fn tui_submit(
                     true,
                 )?;
             }
-            tui_complete(service, "Prompt runners saved")
+            tui_complete(service, state_dir, "Prompt runners saved")
         }
         FormPurpose::Presets => {
             let selector = tui_selector(&selector)?;
@@ -4289,7 +6691,7 @@ fn tui_submit(
                 let current = state.load(&entry.slug);
                 state.save_preset(&entry.slug, name, &declarations, &current.values)?;
             }
-            tui_complete(service, "Presets saved")
+            tui_complete(service, state_dir, "Presets saved")
         }
         FormPurpose::Rename => {
             rename(
@@ -4297,7 +6699,7 @@ fn tui_submit(
                 tui_selector(&selector)?,
                 tui_required(values, "name")?,
             )?;
-            tui_complete(service, "Entry renamed")
+            tui_complete(service, state_dir, "Entry renamed")
         }
     }
 }
@@ -4346,7 +6748,11 @@ fn tui_submit_run(
     if FileConfigStore::new(config_dir).get("after_run")? == "exit" {
         Ok(UiAction::Quit)
     } else {
-        tui_complete(service, &format!("Run finished with exit status {exit}"))
+        tui_complete(
+            service,
+            state_dir,
+            &format!("Run finished with exit status {exit}"),
+        )
     }
 }
 
@@ -4360,7 +6766,9 @@ fn tui_submit_settings(
     let entry = service.show(selector)?;
     let name = tui_required(values, "name")?;
     let description = tui_value(values, "description");
-    let mut settings = effective_settings(store, &entry);
+    let stored_settings = EntrySettings::from_meta(&entry.meta);
+    let baseline_settings = effective_settings(store, &entry);
+    let mut settings = stored_settings.clone();
     settings.interpreter = tui_value(values, "interpreter").to_owned();
     if !settings.interpreter.is_empty()
         && !matches!(
@@ -4373,29 +6781,41 @@ fn tui_submit_settings(
         )));
     }
     settings.runner = tui_value(values, "runner").trim().to_owned();
-    settings.dependencies = tui_dependency_list(tui_value(values, "dependencies"));
-    settings.requires_python = tui_value(values, "python").to_owned();
-    if !settings.dependencies.is_empty()
+    let submitted_dependencies = tui_dependency_list(tui_value(values, "dependencies"));
+    let submitted_python = tui_value(values, "python").to_owned();
+    if !submitted_dependencies.is_empty()
         && !matches!(entry.meta.kind.as_str(), "python" | "js" | "ts")
     {
         return Err(CliError::Usage(Message::new(
             "package dependencies apply only to Python and JavaScript entries",
         )));
     }
-    if !settings.requires_python.is_empty() && entry.meta.kind.as_str() != "python" {
+    if !submitted_python.is_empty() && entry.meta.kind.as_str() != "python" {
         return Err(CliError::Usage(Message::new(
             "a Python constraint applies only to Python entries",
         )));
     }
+    let dependencies_edit = (submitted_dependencies != baseline_settings.dependencies)
+        .then_some(submitted_dependencies.clone());
+    let python_edit =
+        (submitted_python != baseline_settings.requires_python).then_some(submitted_python.clone());
     if entry.meta.kind.as_str() == "python" {
-        for requirement in &settings.dependencies {
+        for requirement in dependencies_edit.as_deref().unwrap_or_default() {
             validate_pep508_requirement(requirement)
                 .map_err(|error| CliError::Usage(error.message()))?;
         }
-        if !settings.requires_python.is_empty() {
-            validate_pep440_specifiers(&settings.requires_python)
-                .map_err(|error| CliError::Usage(error.message()))?;
+        if let Some(version) = python_edit.as_deref() {
+            let normalized = version.trim();
+            if !normalized.is_empty()
+                && !matches!(normalized.to_ascii_lowercase().as_str(), "-" | "none")
+            {
+                validate_pep440_specifiers(normalized)
+                    .map_err(|error| CliError::Usage(error.message()))?;
+            }
         }
+    } else {
+        settings.dependencies = submitted_dependencies;
+        settings.requires_python = submitted_python;
     }
     settings.needs = tui_split_list(tui_value(values, "needs"));
     let previous_template = settings.template.clone();
@@ -4415,13 +6835,18 @@ fn tui_submit_settings(
     if entry.meta.kind.as_str() == "command" && settings.template != previous_template {
         declarations = reconcile_template_parameters(&settings.template, &declarations);
     }
-    let original_source = source_path(store, &entry).and_then(|path| fs::read_to_string(path).ok());
+    let original_source = source_path(store, &entry).and_then(|path| fs::read(path).ok());
+    let source_view = original_source.as_deref().map(LosslessSource::from_bytes);
     let source_interface_names = original_source
-        .as_deref()
+        .as_ref()
+        .zip(source_view.as_ref())
         .map_or_else(BTreeSet::new, |source| {
-            managed_params(entry.meta.kind.as_str(), source)
+            managed_params(entry.meta.kind.as_str(), source.1.normalized_text())
                 .into_iter()
-                .chain(cli_params(entry.meta.kind.as_str(), source))
+                .chain(cli_params(
+                    entry.meta.kind.as_str(),
+                    source.1.normalized_text(),
+                ))
                 .map(|parameter| parameter.name)
                 .collect()
         });
@@ -4438,27 +6863,49 @@ fn tui_submit_settings(
             .map(|parameter| parameter.name.clone())
             .collect();
     }
-    let mut rewritten_source = original_source.clone();
+    let mut rewritten_source = None;
     if entry.meta.kind.as_str() == "python" && entry.meta.mode == StorageMode::Copy {
-        let source = original_source.clone().ok_or_else(|| {
-            CliError::Usage(Message::new("the Python stored copy is not valid UTF-8"))
-        })?;
-        rewritten_source = Some(
-            write_uv_metadata(&source, &settings.dependencies, &settings.requires_python)
-                .map_err(|error| CliError::Usage(error.message()))?,
-        );
-        settings.dependencies.clear();
-        settings.requires_python.clear();
+        let plan = plan_uv_metadata_edit(
+            original_source.as_deref(),
+            &UvMetadata {
+                dependencies: stored_settings.dependencies.clone(),
+                requires_python: stored_settings.requires_python.clone(),
+            },
+            dependencies_edit,
+            python_edit,
+        )
+        .map_err(|error| uv_edit_error(&entry.meta.name, error))?;
+        settings.dependencies = plan.stored.dependencies;
+        settings.requires_python = plan.stored.requires_python;
+        rewritten_source = plan.rewritten_source;
+    } else if entry.meta.kind.as_str() == "python" {
+        let plan = plan_uv_metadata_edit(
+            None,
+            &UvMetadata {
+                dependencies: stored_settings.dependencies.clone(),
+                requires_python: stored_settings.requires_python.clone(),
+            },
+            dependencies_edit,
+            python_edit,
+        )
+        .map_err(|error| uv_edit_error(&entry.meta.name, error))?;
+        settings.dependencies = plan.stored.dependencies;
+        settings.requires_python = plan.stored.requires_python;
     }
     let source_requested = tui_bool(tui_value(values, "source:resync"))?
         || !tui_value(values, "source:manage").is_empty()
         || !tui_value(values, "source:unmanage").is_empty()
         || !tui_value(values, "source:normalize").is_empty();
-    if let Some(source) = rewritten_source.take() {
-        let (mut rewritten, mut managed) = prepare_source_management(
+    if let Some(original_bytes) = original_source.as_deref() {
+        let mut working = rewritten_source
+            .take()
+            .unwrap_or_else(|| original_bytes.to_vec());
+        let view = LosslessSource::from_bytes(&working);
+        let original_text = view.normalized_text().to_owned();
+        let (rewritten, mut managed) = prepare_source_management(
             entry.meta.kind.as_str(),
             entry.meta.mode,
-            source,
+            original_text.clone(),
             tui_bool(tui_value(values, "source:resync"))?,
             &tui_split_list(tui_value(values, "source:manage")),
             &tui_split_list(tui_value(values, "source:unmanage")),
@@ -4478,17 +6925,23 @@ fn tui_submit_settings(
                 *parameter = submitted.clone();
             }
         }
-        rewritten = write_managed_params(entry.meta.kind.as_str(), &rewritten, &managed)
-            .map_err(|error| CliError::Usage(error.message()))?;
-        rewritten_source = Some(rewritten);
+        let source_text_changed = rewritten != original_text;
+        if source_text_changed {
+            working = view.restore_bytes(&rewritten);
+        }
+        let before_managed = managed_params(entry.meta.kind.as_str(), &rewritten);
+        if source_requested || source_text_changed || managed != before_managed {
+            working = write_managed_params_bytes(entry.meta.kind.as_str(), &working, &managed)
+                .map_err(|error| CliError::Usage(error.message()))?;
+        }
+        if working != original_bytes {
+            rewritten_source = Some(working);
+        }
     } else if source_requested {
         return Err(CliError::Usage(Message::new(
             "the stored source is not valid UTF-8",
         )));
     }
-    let source = rewritten_source
-        .filter(|rewritten| original_source.as_ref() != Some(rewritten))
-        .map(String::into_bytes);
     let claimed = service.claim_identity(&entry)?;
     let entry = service.update_entry(
         &claimed,
@@ -4497,7 +6950,7 @@ fn tui_submit_settings(
             description: description.to_owned(),
             settings: settings.clone(),
             workdir: tui_value(values, "workdir").to_owned(),
-            source,
+            source: rewritten_source,
             expected_source_hash: entry.meta.source_hash.clone(),
         },
     )?;
@@ -4506,9 +6959,16 @@ fn tui_submit_settings(
     Ok(())
 }
 
-fn tui_complete(service: &LibraryService<FileStore>, message: &str) -> Result<UiAction, CliError> {
+fn tui_complete(
+    service: &LibraryService<FileStore>,
+    state_dir: &Path,
+    message: &str,
+) -> Result<UiAction, CliError> {
+    let scan = service.list()?;
+    let rerunnable = tui_rerunnable(&scan, state_dir);
     Ok(UiAction::Complete {
-        scan: Some(service.list()?),
+        scan: Some(scan),
+        rerunnable: Some(rerunnable),
         message: message.to_owned(),
     })
 }
@@ -4541,7 +7001,22 @@ fn tui_bool(value: &str) -> Result<bool, CliError> {
     }
 }
 
-fn read_source(path: &Path) -> Result<(Vec<u8>, SourcePermissions), CliError> {
+#[derive(Debug)]
+struct SourceSnapshot {
+    bytes: Vec<u8>,
+    permissions: SourcePermissions,
+    is_regular: bool,
+}
+
+fn read_source(path: &Path, allow_non_regular: bool) -> Result<SourceSnapshot, CliError> {
+    let metadata = fs::metadata(path).map_err(|error| source_error("inspect", path, error))?;
+    if allow_non_regular && !metadata.is_file() {
+        return Ok(SourceSnapshot {
+            bytes: Vec::new(),
+            permissions: source_permissions(&metadata),
+            is_regular: false,
+        });
+    }
     let mut file = File::open(path).map_err(|error| source_error("open", path, error))?;
     let metadata = file
         .metadata()
@@ -4549,7 +7024,11 @@ fn read_source(path: &Path) -> Result<(Vec<u8>, SourcePermissions), CliError> {
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
         .map_err(|error| source_error("read", path, error))?;
-    Ok((bytes, source_permissions(&metadata)))
+    Ok(SourceSnapshot {
+        bytes,
+        permissions: source_permissions(&metadata),
+        is_regular: metadata.is_file(),
+    })
 }
 
 fn source_default_name(path: &Path) -> String {
@@ -4558,26 +7037,6 @@ fn source_default_name(path: &Path) -> String {
         .and_then(|name| name.to_str())
         .unwrap_or("script")
         .to_owned()
-}
-
-fn fallback_stored_name(source: &Path) -> String {
-    source
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("script")
-        .to_owned()
-}
-
-fn stored_name(kind: &str, source: &Path) -> String {
-    if matches!(kind, "js" | "ts")
-        && let Some(extension) = source.extension().and_then(|value| value.to_str())
-        && matches!(extension, "js" | "mjs" | "cjs" | "ts" | "mts" | "cts")
-    {
-        return format!("script.{extension}");
-    }
-    stored_filename(kind)
-        .map(str::to_owned)
-        .unwrap_or_else(|| fallback_stored_name(source))
 }
 
 fn source_error(operation: &'static str, path: &Path, source: io::Error) -> CliError {
@@ -4744,12 +7203,14 @@ enum CliError {
     State(#[from] StateWriteError),
     #[error("{0}")]
     Usage(Message),
+    #[error("{0}")]
+    Failure(Message),
     #[error("confirmation is required; pass --yes to remove the entry")]
     ConfirmationRequired,
-    #[error("confirmation is required for {0}; pass --yes")]
-    ConfirmationRequiredFor(&'static str),
     #[error("operation cancelled")]
     Aborted,
+    #[error("Cancelled — nothing was added.")]
+    AddCancelled,
     #[error("could not {operation} {path}: {source}")]
     Source {
         operation: &'static str,
@@ -4775,14 +7236,12 @@ impl Localize for CliError {
             Self::Config(error) => error.message(),
             Self::State(error) => error.message(),
             Self::Usage(message) => message.clone(),
+            Self::Failure(message) => message.clone(),
             Self::ConfirmationRequired => {
                 Message::new("confirmation is required; pass --yes to remove the entry")
             }
-            Self::ConfirmationRequiredFor(operation) => {
-                Message::new("confirmation is required for {}; pass --yes")
-                    .nested(Message::term(operation))
-            }
             Self::Aborted => Message::new("operation cancelled"),
+            Self::AddCancelled => Message::new("Cancelled — nothing was added."),
             Self::Source {
                 operation,
                 path,
@@ -4805,21 +7264,21 @@ impl Localize for CliError {
 impl CliError {
     const fn exit_code(&self) -> i32 {
         match self {
-            Self::Repository(error) => error.exit_class().code() as i32,
+            Self::Repository(error) => error.exit_class(RepositoryOperation::Manage).code() as i32,
             Self::Run(error) => error.exit_code(),
             Self::Dependencies(_) => ExitClass::Skit.code() as i32,
-            Self::ConfirmationRequired | Self::ConfirmationRequiredFor(_) | Self::Usage(_) => {
-                ExitClass::Usage.code() as i32
-            }
-            Self::Aborted => ExitClass::Aborted.code() as i32,
+            Self::ConfirmationRequired | Self::Usage(_) => ExitClass::Usage.code() as i32,
+            Self::Failure(_) => ExitClass::Failure.code() as i32,
+            Self::Aborted | Self::AddCancelled => ExitClass::Aborted.code() as i32,
+            Self::Config(error) if error.is_usage() => ExitClass::Usage.code() as i32,
+            Self::Config(_) => ExitClass::Failure.code() as i32,
             Self::Json(_)
             | Self::Io(_)
             | Self::Tui(_)
-            | Self::Config(_)
             | Self::State(_)
-            | Self::Source { .. }
             | Self::DataDirectoryUnavailable
             | Self::DirectoryUnavailable(_) => ExitClass::Skit.code() as i32,
+            Self::Source { .. } => ExitClass::Failure.code() as i32,
         }
     }
 }

@@ -131,7 +131,7 @@ fn every_launch_error_localizes_and_keeps_its_values() {
         &LaunchError::UnsafeTemplatePlaceholder {
             name: "target".to_owned(),
         },
-        &["target"],
+        &[],
     );
     assert_localized(&LaunchError::PromptRunnerRequired, &[]);
     assert_localized(&LaunchError::PromptBodyRequired, &[]);

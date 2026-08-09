@@ -1,17 +1,26 @@
-use ratatui_core::{backend::TestBackend, layout::Rect, terminal::Terminal};
+use ratatui_core::{
+    backend::TestBackend,
+    layout::Rect,
+    style::{Color, Modifier},
+    terminal::Terminal,
+};
 use ratatui_crossterm::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use skit_application::{Diagnostic, DiagnosticCode, LibraryScan};
 use skit_domain::{EntryKind, EntrySummary, Slug, StorageMode};
 use skit_i18n::Locale;
-use skit_tui::{HitAction, HitRegion, ViewGeometry, map_event, render, render_localized};
+use skit_tui::{
+    EventHandling, HitRegion, HitTarget, TuiSession, ViewGeometry, map_event, render,
+    render_localized, render_with_session,
+};
 use skit_ui::{
     Action, FormField, FormPurpose, FormView, LibraryState, ReportItem, ReportView, Screen,
+    UiCommand,
 };
 
 fn state() -> LibraryState {
-    LibraryState::from_scan(LibraryScan {
+    let mut state = LibraryState::from_scan(LibraryScan {
         entries: vec![EntrySummary {
             slug: Slug::parse("hello").unwrap(),
             name: "Hello".to_owned(),
@@ -21,7 +30,11 @@ fn state() -> LibraryState {
             target: None,
         }],
         diagnostics: Vec::new(),
-    })
+    });
+    state.update(Action::ReplaceRerunnable(vec![
+        Slug::parse("hello").unwrap(),
+    ]));
+    state
 }
 
 fn key(code: KeyCode, modifiers: KeyModifiers) -> Event {
@@ -35,6 +48,50 @@ fn mouse(kind: MouseEventKind, column: u16, row: u16) -> Event {
         row,
         modifiers: KeyModifiers::NONE,
     })
+}
+
+fn scroll_footer_commands(
+    view: &LibraryState,
+    locale: Locale,
+    width: u16,
+    height: u16,
+) -> (Vec<UiCommand>, Vec<ViewGeometry>) {
+    let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+    let mut session = TuiSession::default();
+    let mut commands = Vec::new();
+    let mut frames = Vec::new();
+    for _ in 0..32 {
+        let mut geometry = ViewGeometry::default();
+        terminal
+            .draw(|frame| {
+                geometry = render_with_session(frame, view, locale, &mut session);
+            })
+            .unwrap();
+        for command in geometry.hits.iter().filter_map(|hit| match hit.action {
+            HitTarget::Command(command) => Some(command),
+            HitTarget::RunFieldCommand { .. } | HitTarget::FocusField(_) => None,
+        }) {
+            if !commands.contains(&command) {
+                commands.push(command);
+            }
+        }
+        let Some(hit) = geometry
+            .hits
+            .iter()
+            .find(|hit| matches!(hit.action, HitTarget::Command(_)))
+        else {
+            frames.push(geometry);
+            break;
+        };
+        let scroll = mouse(MouseEventKind::ScrollDown, hit.rect.x, hit.rect.y);
+        assert_eq!(
+            session.handle_event(scroll, view, &geometry),
+            EventHandling::Consumed,
+            "the mature footer viewport must accept wheel scrolling"
+        );
+        frames.push(geometry);
+    }
+    (commands, frames)
 }
 
 #[test]
@@ -54,36 +111,42 @@ fn renderer_exposes_rows_and_clickable_footer_chips() {
         geometry
             .hits
             .iter()
-            .any(|hit| hit.action == HitAction::Quit)
+            .any(|hit| hit.action == HitTarget::Command(UiCommand::Quit))
     );
     assert!(
         geometry
             .hits
             .iter()
-            .any(|hit| hit.action == HitAction::Reload)
+            .any(|hit| hit.action == HitTarget::Command(UiCommand::Reload))
     );
     assert!(
         geometry
             .hits
             .iter()
-            .any(|hit| hit.action == HitAction::Search)
+            .any(|hit| hit.action == HitTarget::Command(UiCommand::Search))
     );
 
-    for action in [
-        HitAction::Run,
-        HitAction::Add,
-        HitAction::Edit,
-        HitAction::Settings,
-        HitAction::Presets,
-        HitAction::Rename,
-        HitAction::Remove,
-        HitAction::Preferences,
-        HitAction::Health,
-        HitAction::Runners,
+    for command in [
+        UiCommand::Run,
+        UiCommand::Rerun,
+        UiCommand::Add,
+        UiCommand::Edit,
+        UiCommand::Settings,
+        UiCommand::Presets,
+        UiCommand::Rename,
+        UiCommand::Remove,
+        UiCommand::Preferences,
+        UiCommand::Health,
+        UiCommand::Runners,
+        UiCommand::ToggleDetail,
+        UiCommand::Help,
     ] {
         assert!(
-            geometry.hits.iter().any(|hit| hit.action == action),
-            "missing footer action {action:?}"
+            geometry
+                .hits
+                .iter()
+                .any(|hit| hit.action == HitTarget::Command(command)),
+            "missing footer command {command:?}"
         );
     }
 }
@@ -108,7 +171,7 @@ fn renderer_uses_the_explicit_frontend_locale() {
     assert!(text.contains("項 目"));
     assert!(text.contains("詳 細 資 料"));
     assert!(text.contains("結 束"));
-    assert!(text.contains("儲 存 模 式 ： copy"), "{text:?}");
+    assert!(text.contains("副 本 由  skit"), "{text:?}");
     assert!(!text.contains("Library"));
 
     let mut form_state = state();
@@ -188,7 +251,7 @@ fn browse_keyboard_events_cover_navigation_commands_and_ignored_input() {
     let cases = [
         (KeyCode::Char('q'), KeyModifiers::NONE, Action::Quit),
         (KeyCode::Esc, KeyModifiers::NONE, Action::Quit),
-        (KeyCode::Char('r'), KeyModifiers::NONE, Action::Reload),
+        (KeyCode::Char('r'), KeyModifiers::NONE, Action::Rerun),
         (KeyCode::Char('/'), KeyModifiers::NONE, Action::BeginSearch),
         (KeyCode::Up, KeyModifiers::NONE, Action::Previous),
         (KeyCode::Char('k'), KeyModifiers::NONE, Action::Previous),
@@ -198,7 +261,6 @@ fn browse_keyboard_events_cover_navigation_commands_and_ignored_input() {
         (KeyCode::PageDown, KeyModifiers::NONE, Action::PageNext),
         (KeyCode::Home, KeyModifiers::NONE, Action::Home),
         (KeyCode::End, KeyModifiers::NONE, Action::End),
-        (KeyCode::Char('c'), KeyModifiers::CONTROL, Action::Quit),
     ];
 
     for (code, modifiers, action) in cases {
@@ -207,6 +269,15 @@ fn browse_keyboard_events_cover_navigation_commands_and_ignored_input() {
             Some(action)
         );
     }
+    assert_eq!(
+        map_event(
+            key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            &browse,
+            &geometry
+        ),
+        None,
+        "the persistent session owns the two-step Ctrl+C chord"
+    );
     assert_eq!(
         map_event(
             key(KeyCode::Char('x'), KeyModifiers::NONE),
@@ -223,19 +294,26 @@ fn every_library_footer_command_has_a_positive_keyboard_mapping() {
     let geometry = ViewGeometry::default();
     let cases = [
         (KeyCode::Enter, KeyModifiers::NONE, Action::OpenRun),
+        (KeyCode::Char('r'), KeyModifiers::NONE, Action::Rerun),
+        (KeyCode::Char('a'), KeyModifiers::NONE, Action::OpenAdd),
         (KeyCode::Char('n'), KeyModifiers::CONTROL, Action::OpenAdd),
+        (KeyCode::Char('e'), KeyModifiers::NONE, Action::Edit),
         (KeyCode::Char('e'), KeyModifiers::CONTROL, Action::Edit),
-        (KeyCode::Char('s'), KeyModifiers::NONE, Action::OpenSettings),
-        (KeyCode::Char('p'), KeyModifiers::NONE, Action::OpenPresets),
+        (KeyCode::Char('p'), KeyModifiers::NONE, Action::OpenSettings),
+        (KeyCode::Char('s'), KeyModifiers::NONE, Action::OpenPresets),
         (KeyCode::F(2), KeyModifiers::NONE, Action::OpenRename),
         (KeyCode::Delete, KeyModifiers::NONE, Action::AskRemove),
+        (KeyCode::Backspace, KeyModifiers::NONE, Action::AskRemove),
         (
             KeyCode::Char(','),
             KeyModifiers::NONE,
             Action::OpenPreferences,
         ),
+        (KeyCode::Char('D'), KeyModifiers::SHIFT, Action::OpenHealth),
         (KeyCode::Char('h'), KeyModifiers::NONE, Action::OpenHealth),
-        (KeyCode::Char('a'), KeyModifiers::NONE, Action::OpenRunners),
+        (KeyCode::Char('?'), KeyModifiers::SHIFT, Action::OpenHelp),
+        (KeyCode::Tab, KeyModifiers::NONE, Action::ToggleDetail),
+        (KeyCode::Char('R'), KeyModifiers::SHIFT, Action::OpenRunners),
         (KeyCode::Char('r'), KeyModifiers::CONTROL, Action::Reload),
     ];
 
@@ -248,7 +326,7 @@ fn every_library_footer_command_has_a_positive_keyboard_mapping() {
 }
 
 #[test]
-fn search_keyboard_events_edit_or_finish_without_triggering_browse_shortcuts() {
+fn stateless_mapping_defers_search_edits_to_the_mature_session() {
     let mut searching = state();
     searching.update(Action::BeginSearch);
     let geometry = ViewGeometry::default();
@@ -259,7 +337,7 @@ fn search_keyboard_events_edit_or_finish_without_triggering_browse_shortcuts() {
             &searching,
             &geometry
         ),
-        Some(Action::Input('q'))
+        None
     );
     assert_eq!(
         map_event(
@@ -267,7 +345,7 @@ fn search_keyboard_events_edit_or_finish_without_triggering_browse_shortcuts() {
             &searching,
             &geometry
         ),
-        Some(Action::Input('Q'))
+        None
     );
     assert_eq!(
         map_event(
@@ -275,7 +353,7 @@ fn search_keyboard_events_edit_or_finish_without_triggering_browse_shortcuts() {
             &searching,
             &geometry
         ),
-        Some(Action::Backspace)
+        None
     );
     assert_eq!(
         map_event(
@@ -283,11 +361,23 @@ fn search_keyboard_events_edit_or_finish_without_triggering_browse_shortcuts() {
             &searching,
             &geometry
         ),
-        Some(Action::FinishSearch)
+        Some(Action::OpenRun)
     );
     assert_eq!(
         map_event(key(KeyCode::Esc, KeyModifiers::NONE), &searching, &geometry),
         Some(Action::FinishSearch)
+    );
+    assert_eq!(
+        map_event(key(KeyCode::Up, KeyModifiers::NONE), &searching, &geometry),
+        Some(Action::Previous)
+    );
+    assert_eq!(
+        map_event(
+            key(KeyCode::Down, KeyModifiers::NONE),
+            &searching,
+            &geometry
+        ),
+        Some(Action::Next)
     );
     assert_eq!(
         map_event(
@@ -295,7 +385,7 @@ fn search_keyboard_events_edit_or_finish_without_triggering_browse_shortcuts() {
             &searching,
             &geometry
         ),
-        Some(Action::ClearSearch)
+        None
     );
     assert_eq!(
         map_event(
@@ -319,12 +409,13 @@ fn search_keyboard_events_edit_or_finish_without_triggering_browse_shortcuts() {
             &searching,
             &geometry
         ),
-        Some(Action::Quit)
+        None,
+        "the persistent session owns the two-step Ctrl+C chord"
     );
 }
 
 #[test]
-fn release_focus_paste_and_resize_events_are_ignored() {
+fn release_focus_and_resize_events_are_ignored() {
     let state = state();
     let geometry = ViewGeometry::default();
     let events = [
@@ -335,13 +426,34 @@ fn release_focus_paste_and_resize_events_are_ignored() {
         )),
         Event::FocusGained,
         Event::FocusLost,
-        Event::Paste("text".to_owned()),
         Event::Resize(80, 24),
     ];
 
     for event in events {
         assert_eq!(map_event(event, &state, &geometry), None);
     }
+}
+
+#[test]
+fn stateless_mapping_defers_paste_to_the_mature_session() {
+    let mut searching = state();
+    searching.update(Action::BeginSearch);
+    assert_eq!(
+        map_event(
+            Event::Paste("alpha".to_owned()),
+            &searching,
+            &ViewGeometry::default()
+        ),
+        None
+    );
+    assert_eq!(
+        map_event(
+            Event::Paste("alpha".to_owned()),
+            &state(),
+            &ViewGeometry::default()
+        ),
+        None
+    );
 }
 
 #[test]
@@ -352,15 +464,15 @@ fn mouse_wheel_rows_and_footer_hits_map_to_frontend_neutral_actions() {
         hits: vec![
             HitRegion {
                 rect: Rect::new(0, 10, 5, 1),
-                action: HitAction::Quit,
+                action: HitTarget::Command(UiCommand::Quit),
             },
             HitRegion {
                 rect: Rect::new(6, 10, 7, 1),
-                action: HitAction::Reload,
+                action: HitTarget::Command(UiCommand::Reload),
             },
             HitRegion {
                 rect: Rect::new(14, 10, 8, 1),
-                action: HitAction::Search,
+                action: HitTarget::Command(UiCommand::Search),
             },
         ],
     };
@@ -435,6 +547,37 @@ fn unsupported_mouse_gestures_are_ignored() {
     }
 }
 
+#[test]
+fn modal_input_does_not_leak_into_the_library_workflow() {
+    let mut help = state();
+    help.update(Action::OpenHelp);
+    let geometry = ViewGeometry {
+        rows: Rect::new(0, 0, 20, 10),
+        ..ViewGeometry::default()
+    };
+
+    assert_eq!(
+        map_event(
+            key(KeyCode::Char('a'), KeyModifiers::NONE),
+            &help,
+            &geometry
+        ),
+        None
+    );
+    assert_eq!(
+        map_event(mouse(MouseEventKind::ScrollDown, 2, 2), &help, &geometry),
+        None
+    );
+    assert_eq!(
+        map_event(
+            mouse(MouseEventKind::Down(MouseButton::Left), 2, 2),
+            &help,
+            &geometry
+        ),
+        None
+    );
+}
+
 fn form_state() -> LibraryState {
     let mut state = state();
     state.update(Action::Present(Screen::Form(FormView {
@@ -494,16 +637,21 @@ fn form_keys_preserve_text_editing_and_advertised_screen_chords() {
     let cases = [
         (KeyCode::Tab, KeyModifiers::NONE, Action::FocusNext),
         (KeyCode::BackTab, KeyModifiers::SHIFT, Action::FocusPrevious),
-        (KeyCode::Backspace, KeyModifiers::NONE, Action::Backspace),
         (KeyCode::Char('s'), KeyModifiers::CONTROL, Action::Submit),
         (KeyCode::Esc, KeyModifiers::NONE, Action::Back),
         (KeyCode::Enter, KeyModifiers::NONE, Action::FocusNext),
-        (KeyCode::Char('x'), KeyModifiers::NONE, Action::Input('x')),
     ];
     for (code, modifiers, action) in cases {
         assert_eq!(
             map_event(key(code, modifiers), &form, &geometry),
             Some(action)
+        );
+    }
+    for code in [KeyCode::Backspace, KeyCode::Char('x')] {
+        assert_eq!(
+            map_event(key(code, KeyModifiers::NONE), &form, &geometry),
+            None,
+            "the persistent widget session owns text editing"
         );
     }
     assert_eq!(
@@ -542,11 +690,38 @@ fn report_and_confirmation_keys_match_their_footer_actions() {
     confirm.update(Action::AskRemove);
     assert_eq!(
         map_event(key(KeyCode::Enter, KeyModifiers::NONE), &confirm, &geometry),
+        None,
+        "latest main requires the explicit y verb; Enter cannot remove an entry"
+    );
+    assert_eq!(
+        map_event(
+            key(KeyCode::Char('y'), KeyModifiers::NONE),
+            &confirm,
+            &geometry
+        ),
         Some(Action::Submit)
     );
     assert_eq!(
         map_event(key(KeyCode::Esc, KeyModifiers::NONE), &confirm, &geometry),
         Some(Action::Back)
+    );
+
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    let mut session = TuiSession::default();
+    let mut geometry = ViewGeometry::default();
+    terminal
+        .draw(|frame| {
+            geometry = render_with_session(frame, &confirm, Locale::En, &mut session);
+        })
+        .unwrap();
+    assert_eq!(
+        session.handle_event(
+            mouse(MouseEventKind::Down(MouseButton::Left), 51, 17),
+            &confirm,
+            &geometry,
+        ),
+        EventHandling::Action(Action::Submit),
+        "the mature dialog's visible Remove button must be a positive mouse path"
     );
 }
 
@@ -559,8 +734,12 @@ fn every_rendered_chip_and_form_row_is_clickable() {
     })));
     let mut confirmation = state();
     confirmation.update(Action::AskRemove);
+    let mut searching = state();
+    searching.update(Action::BeginSearch);
+    let mut help = state();
+    help.update(Action::OpenHelp);
 
-    for view in [state(), form_state(), report, confirmation] {
+    for view in [state(), searching, form_state(), report, confirmation, help] {
         let backend = TestBackend::new(120, 30);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut geometry = None;
@@ -588,78 +767,258 @@ fn every_rendered_chip_and_form_row_is_clickable() {
 }
 
 #[test]
-fn narrow_library_footer_keeps_every_action_and_reserves_the_status_row() {
+fn contextual_footer_only_advertises_commands_that_can_run_here() {
+    let mut searching = state();
+    searching.update(Action::BeginSearch);
+    let mut empty_search = searching.clone();
+    empty_search.update(Action::Paste("no result".to_owned()));
+    let empty = LibraryState::default();
+
+    let cases = [
+        (searching, vec![UiCommand::Run, UiCommand::LeaveSearch]),
+        (empty_search, vec![UiCommand::LeaveSearch]),
+        (
+            empty,
+            vec![
+                UiCommand::Add,
+                UiCommand::Presets,
+                UiCommand::Search,
+                UiCommand::ToggleDetail,
+                UiCommand::Preferences,
+                UiCommand::Health,
+                UiCommand::Help,
+                UiCommand::Runners,
+                UiCommand::Reload,
+                UiCommand::Quit,
+            ],
+        ),
+    ];
+
+    for (view, expected) in cases {
+        let mut terminal = Terminal::new(TestBackend::new(160, 30)).unwrap();
+        let mut geometry = None;
+        terminal
+            .draw(|frame| geometry = Some(render(frame, &view)))
+            .unwrap();
+        let actual = geometry
+            .unwrap()
+            .hits
+            .iter()
+            .filter_map(|hit| match hit.action {
+                HitTarget::Command(command) => Some(command),
+                HitTarget::RunFieldCommand { .. } | HitTarget::FocusField(_) => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+    }
+}
+
+#[test]
+fn help_and_detail_are_real_serializable_ui_surfaces() {
     let mut view = state();
-    view.update(Action::SetStatus("Entry added".to_owned()));
-    let backend = TestBackend::new(38, 16);
-    let mut terminal = Terminal::new(backend).unwrap();
+    view.update(Action::OpenHelp);
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
     let mut geometry = None;
     terminal
         .draw(|frame| geometry = Some(render(frame, &view)))
         .unwrap();
-    let geometry = geometry.unwrap();
+    let text = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(text.contains("Rerun"));
+    assert!(text.contains("Detail pane"));
+    assert_eq!(
+        map_event(
+            key(KeyCode::Esc, KeyModifiers::NONE),
+            &view,
+            &ViewGeometry::default()
+        ),
+        Some(Action::Back)
+    );
+    assert_eq!(
+        map_event(
+            key(KeyCode::Char('?'), KeyModifiers::SHIFT),
+            &view,
+            &ViewGeometry::default()
+        ),
+        Some(Action::Back)
+    );
+    let close = geometry
+        .unwrap()
+        .hits
+        .into_iter()
+        .find(|hit| hit.action == HitTarget::Command(UiCommand::CloseModal))
+        .unwrap();
+    assert_eq!(
+        map_event(
+            mouse(
+                MouseEventKind::Down(MouseButton::Left),
+                close.rect.x,
+                close.rect.y,
+            ),
+            &view,
+            &ViewGeometry {
+                hits: vec![close],
+                ..ViewGeometry::default()
+            },
+        ),
+        Some(Action::Back)
+    );
 
-    for action in [
-        HitAction::Run,
-        HitAction::Add,
-        HitAction::Edit,
-        HitAction::Settings,
-        HitAction::Presets,
-        HitAction::Rename,
-        HitAction::Remove,
-        HitAction::Preferences,
-        HitAction::Health,
-        HitAction::Runners,
-        HitAction::Search,
-        HitAction::Reload,
-        HitAction::Quit,
-    ] {
-        assert!(
-            geometry.hits.iter().any(|hit| hit.action == action),
-            "missing narrow footer action {action:?}"
-        );
-    }
+    view.update(Action::Back);
+    view.update(Action::ToggleDetail);
+    let mut hidden = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    hidden
+        .draw(|frame| {
+            let _ = render(frame, &view);
+        })
+        .unwrap();
+    let hidden_text = hidden
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(!hidden_text.contains("╭ Detail pane"));
+    view.update(Action::ToggleDetail);
+    let mut shown = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    shown
+        .draw(|frame| {
+            let _ = render(frame, &view);
+        })
+        .unwrap();
+    let shown_text = shown
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(shown_text.contains("╭ Detail pane"));
+}
 
-    let status_row = 14;
-    assert!(
-        geometry
-            .hits
-            .iter()
-            .all(|hit| hit.rect.bottom() <= status_row),
-        "a hidden hit target overlaps the status row: {:?}",
-        geometry.hits
+#[test]
+fn help_uses_mature_keyboard_and_mouse_scrolling_for_short_terminals() {
+    let mut view = state();
+    view.update(Action::OpenHelp);
+    let mut session = TuiSession::default();
+    let mut terminal = Terminal::new(TestBackend::new(52, 12)).unwrap();
+    let mut geometry = ViewGeometry::default();
+    terminal
+        .draw(|frame| {
+            geometry = render_with_session(frame, &view, Locale::En, &mut session);
+        })
+        .unwrap();
+    let before = terminal.backend().buffer().clone();
+
+    assert_eq!(
+        session.handle_event(
+            key(KeyCode::End, KeyModifiers::NONE),
+            &view,
+            &geometry
+        ),
+        EventHandling::Consumed
+    );
+    terminal
+        .draw(|frame| {
+            geometry = render_with_session(frame, &view, Locale::En, &mut session);
+        })
+        .unwrap();
+    let at_bottom = terminal.backend().buffer().clone();
+    let text = at_bottom
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(text.contains("Ctrl+C Ctrl+C / Esc"), "{text}");
+    assert!(text.contains("Quit"), "{text}");
+    assert_ne!(before, at_bottom);
+
+    assert_eq!(
+        session.handle_event(
+            mouse(MouseEventKind::ScrollUp, 20, 5),
+            &view,
+            &geometry
+        ),
+        EventHandling::Consumed,
+        "the help wheel must route through ScrollableContentState"
     );
 }
 
 #[test]
-fn narrow_footer_keeps_all_actions_in_each_supported_locale() {
+fn narrow_library_footer_scroll_reaches_every_action_and_reserves_the_status_row() {
+    let mut view = state();
+    view.update(Action::SetStatus("Entry added".to_owned()));
+    let (commands, frames) = scroll_footer_commands(&view, Locale::En, 38, 16);
+
+    for command in [
+        UiCommand::Run,
+        UiCommand::Rerun,
+        UiCommand::Add,
+        UiCommand::Edit,
+        UiCommand::Settings,
+        UiCommand::Presets,
+        UiCommand::Rename,
+        UiCommand::Remove,
+        UiCommand::Preferences,
+        UiCommand::Health,
+        UiCommand::Runners,
+        UiCommand::Search,
+        UiCommand::ToggleDetail,
+        UiCommand::Help,
+        UiCommand::Reload,
+        UiCommand::Quit,
+    ] {
+        assert!(
+            commands.contains(&command),
+            "missing narrow footer command {command:?}"
+        );
+    }
+
+    let status_row = 14;
+    for geometry in frames {
+        assert!(
+            geometry
+                .hits
+                .iter()
+                .all(|hit| hit.rect.bottom() <= status_row),
+            "a visible hit target overlaps the status row: {:?}",
+            geometry.hits
+        );
+    }
+}
+
+#[test]
+fn narrow_footer_scroll_reaches_all_actions_in_each_supported_locale() {
     let expected = [
-        HitAction::Run,
-        HitAction::Add,
-        HitAction::Edit,
-        HitAction::Settings,
-        HitAction::Presets,
-        HitAction::Rename,
-        HitAction::Remove,
-        HitAction::Preferences,
-        HitAction::Health,
-        HitAction::Runners,
-        HitAction::Search,
-        HitAction::Reload,
-        HitAction::Quit,
+        UiCommand::Run,
+        UiCommand::Rerun,
+        UiCommand::Add,
+        UiCommand::Edit,
+        UiCommand::Settings,
+        UiCommand::Presets,
+        UiCommand::Rename,
+        UiCommand::Remove,
+        UiCommand::Preferences,
+        UiCommand::Health,
+        UiCommand::Runners,
+        UiCommand::Search,
+        UiCommand::ToggleDetail,
+        UiCommand::Help,
+        UiCommand::Reload,
+        UiCommand::Quit,
     ];
     for locale in [Locale::En, Locale::ZhCn, Locale::ZhTw] {
-        let backend = TestBackend::new(38, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut geometry = None;
-        terminal
-            .draw(|frame| geometry = Some(render_localized(frame, &state(), locale)))
-            .unwrap();
-        let geometry = geometry.unwrap();
-        for action in expected {
+        let (commands, _) = scroll_footer_commands(&state(), locale, 38, 24);
+        for command in expected {
             assert!(
-                geometry.hits.iter().any(|hit| hit.action == action),
-                "missing {action:?} for {locale:?}"
+                commands.contains(&command),
+                "missing {command:?} for {locale:?}"
             );
         }
     }
@@ -676,25 +1035,28 @@ fn every_library_footer_action_has_the_expected_mouse_mapping() {
         .unwrap();
     let geometry = geometry.unwrap();
     let expected = [
-        (HitAction::Run, Action::OpenRun),
-        (HitAction::Add, Action::OpenAdd),
-        (HitAction::Edit, Action::Edit),
-        (HitAction::Settings, Action::OpenSettings),
-        (HitAction::Presets, Action::OpenPresets),
-        (HitAction::Rename, Action::OpenRename),
-        (HitAction::Remove, Action::AskRemove),
-        (HitAction::Preferences, Action::OpenPreferences),
-        (HitAction::Health, Action::OpenHealth),
-        (HitAction::Runners, Action::OpenRunners),
-        (HitAction::Search, Action::BeginSearch),
-        (HitAction::Reload, Action::Reload),
-        (HitAction::Quit, Action::Quit),
+        (UiCommand::Run, Action::OpenRun),
+        (UiCommand::Rerun, Action::Rerun),
+        (UiCommand::Add, Action::OpenAdd),
+        (UiCommand::Edit, Action::Edit),
+        (UiCommand::Settings, Action::OpenSettings),
+        (UiCommand::Presets, Action::OpenPresets),
+        (UiCommand::Rename, Action::OpenRename),
+        (UiCommand::Remove, Action::AskRemove),
+        (UiCommand::Preferences, Action::OpenPreferences),
+        (UiCommand::Health, Action::OpenHealth),
+        (UiCommand::Runners, Action::OpenRunners),
+        (UiCommand::Search, Action::BeginSearch),
+        (UiCommand::ToggleDetail, Action::ToggleDetail),
+        (UiCommand::Help, Action::OpenHelp),
+        (UiCommand::Reload, Action::Reload),
+        (UiCommand::Quit, Action::Quit),
     ];
-    for (hit_action, expected_action) in expected {
+    for (command, expected_action) in expected {
         let hit = geometry
             .hits
             .iter()
-            .find(|hit| hit.action == hit_action)
+            .find(|hit| hit.action == HitTarget::Command(command))
             .unwrap();
         assert_eq!(
             map_event(
@@ -707,9 +1069,49 @@ fn every_library_footer_action_has_the_expected_mouse_mapping() {
                 &geometry,
             ),
             Some(expected_action),
-            "incorrect mouse mapping for {hit_action:?}"
+            "incorrect mouse mapping for {command:?}"
         );
     }
+}
+
+#[test]
+fn library_footer_keeps_local_and_global_pill_rows_visually_distinct() {
+    let mut terminal = Terminal::new(TestBackend::new(180, 30)).unwrap();
+    let mut geometry = ViewGeometry::default();
+    terminal
+        .draw(|frame| {
+            geometry = render_localized(frame, &state(), Locale::En);
+        })
+        .unwrap();
+
+    let row = |command| {
+        geometry
+            .hits
+            .iter()
+            .find(|hit| hit.action == HitTarget::Command(command))
+            .unwrap_or_else(|| panic!("missing {command:?}"))
+            .rect
+            .y
+    };
+    assert_eq!(row(UiCommand::Run), row(UiCommand::Remove));
+    assert_eq!(row(UiCommand::Add), row(UiCommand::Help));
+    assert!(
+        row(UiCommand::Add) > row(UiCommand::Remove),
+        "Library-local and global commands need separate logical rows"
+    );
+
+    let run = geometry
+        .hits
+        .iter()
+        .find(|hit| hit.action == HitTarget::Command(UiCommand::Run))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let key = &buffer[(run.rect.x.saturating_add(1), run.rect.y)];
+    let label = &buffer[(run.rect.x.saturating_add(7), run.rect.y)];
+    assert_eq!(key.bg, Color::Rgb(0x2a, 0x21, 0x1c));
+    assert_eq!(label.bg, Color::Rgb(0x2a, 0x21, 0x1c));
+    assert_eq!(key.fg, Color::Rgb(0xd9, 0x77, 0x57));
+    assert!(key.modifier.contains(Modifier::BOLD));
 }
 
 #[test]
@@ -729,13 +1131,17 @@ fn raw_titles_report_rows_and_remaining_screen_keys_are_explicit() {
     for (code, action) in [
         (KeyCode::Up, Action::FocusPrevious),
         (KeyCode::Down, Action::FocusNext),
-        (KeyCode::Enter, Action::Input('\n')),
     ] {
         assert_eq!(
             map_event(key(code, KeyModifiers::NONE), &form, &geometry),
             Some(action)
         );
     }
+    assert_eq!(
+        map_event(key(KeyCode::Enter, KeyModifiers::NONE), &form, &geometry),
+        None,
+        "the mature textarea owns newline insertion"
+    );
 
     let mut report = state();
     report.update(Action::Present(Screen::Report(ReportView {

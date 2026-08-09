@@ -11,11 +11,15 @@ concurrency:
   group: benchmark-nightly-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  BENCH_CI_RUNNER: ubuntu-24.04
+  PYTHONUTF8: "1"
+
 jobs:
   bench-full:
     name: Full profile
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       contents: read
     steps:
@@ -23,13 +27,25 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install Python and uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.3"
+          python-version: "3.13"
+          enable-cache: true
+      - name: Install Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+      - name: Install strace
+        run: sudo apt-get update -q && sudo apt-get install -y -q strace
       - name: Install hyperfine
         uses: ./.github/actions/install-hyperfine
-      - name: Build the release binary
-        run: cargo build --locked --release -p skit-cli-rs
+      - name: Build the measured binary and harness
+        run: cargo build --locked --release -p skit-cli-rs -p skit-benchmarks
       - name: Run Criterion subjects
         run: cargo bench --locked -p skit-benchmarks
-      - name: Run the full macro profile
+      - name: Run the full profile
         run: bash benchmarks/run.sh full .bench target/release/skit
       - name: Check budgets
         run: bash benchmarks/check.sh .bench/results.json benchmarks/budgets.toml --require-enforced

@@ -152,6 +152,7 @@ fn legacy_claim_stamps_once_and_old_handles_cannot_touch_a_reincarnation() {
     let root = TempDir::new().unwrap();
     write_legacy_meta(&root, "legacy", "Legacy");
     let store = FileStore::new(root.path());
+    store.rebuild_registry().unwrap();
     let held = store.resolve("legacy").unwrap();
     assert!(held.meta.id.is_none());
 
@@ -176,6 +177,7 @@ fn a_legacy_mutation_claims_identity_before_it_writes() {
     let root = TempDir::new().unwrap();
     write_legacy_meta(&root, "legacy", "Legacy");
     let store = FileStore::new(root.path());
+    store.rebuild_registry().unwrap();
     let held = store.resolve("legacy").unwrap();
     assert!(held.meta.id.is_none());
 
@@ -206,6 +208,7 @@ future = { enabled = true, values = [1, 2, 3] } # Keep the inline future note.
     )
     .unwrap();
     let store = FileStore::new(root.path());
+    store.rebuild_registry().unwrap();
 
     let held = store.resolve("extensions").unwrap();
     store.describe(&held, "updated").unwrap();

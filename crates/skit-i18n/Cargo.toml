@@ -10,3 +10,6 @@ repository.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+sys-locale.workspace = true

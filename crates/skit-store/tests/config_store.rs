@@ -1,6 +1,6 @@
-use std::{collections::BTreeMap, fs};
+use std::{collections::BTreeMap, fs, path::Path};
 
-use skit_store::{ConfigError, FileConfigStore, PromptRunner};
+use skit_store::{ConfigError, FileConfigStore, PromptRunner, expand_user_path};
 use tempfile::TempDir;
 
 #[test]
@@ -16,6 +16,389 @@ fn empty_configuration_keeps_the_v040_public_values() {
     assert_eq!(settings["shell.bash_path"], "");
     assert_eq!(settings["js.runner"], "");
     assert!(store.invalid_runner_rows().unwrap().is_empty());
+}
+
+#[test]
+fn user_path_expansion_is_shared_by_every_bash_path_door() {
+    let home = expand_user_path(Path::new("~"));
+    let child = expand_user_path(Path::new("~/bin/bash"));
+    if home == Path::new("~") {
+        assert_eq!(child, Path::new("~/bin/bash"));
+    } else {
+        assert_eq!(child, home.join("bin/bash"));
+    }
+    assert_eq!(
+        expand_user_path(Path::new("relative/~/bash")),
+        Path::new("relative/~/bash")
+    );
+}
+
+#[test]
+fn configuration_writes_share_the_v040_cross_process_lock_path() {
+    let root = TempDir::new().unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    store.set("form", "plain").unwrap();
+
+    assert!(root.path().join("config.lock").is_file());
+    assert!(!root.path().join(".config.lock").exists());
+}
+
+#[test]
+fn hand_edited_scalar_settings_project_v040_effective_values_without_rewriting() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("config.toml");
+    let source = concat!(
+        "# This file belongs to the user.\n",
+        "language = \"fr-FR\"\n",
+        "editor = 9\n",
+        "form = \"dialog\"\n",
+        "after_run = \"loop\"\n",
+        "future = \"keep\"\n",
+        "shell = \"hand-written future shape\"\n",
+        "js = [\"hand-written\", \"future shape\"]\n",
+    );
+    fs::write(&path, source).unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    let settings = store.settings().unwrap();
+    assert_eq!(settings["lang"], "");
+    assert_eq!(settings["editor"], "");
+    assert_eq!(settings["form"], "tui");
+    assert_eq!(settings["after_run"], "exit");
+    assert_eq!(settings["shell.bash_path"], "");
+    assert_eq!(settings["js.runner"], "");
+    assert_eq!(fs::read_to_string(&path).unwrap(), source);
+    assert!(!root.path().join("config.toml.bak").exists());
+}
+
+#[test]
+fn language_values_keep_the_v040_supported_families_and_canonical_spelling() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("config.toml");
+    let store = FileConfigStore::new(root.path());
+
+    for (input, stored) in [
+        ("zh_tw.UTF-8", "zh-TW"),
+        ("EN", "en"),
+        ("en-xa", "en-XA"),
+        ("zh_hant_hk", "zh-Hant-HK"),
+        ("x-PSEUDO", "x-pseudo"),
+    ] {
+        store.set("lang", input).unwrap();
+        assert_eq!(store.get("lang").unwrap(), stored);
+        let document = fs::read_to_string(&path)
+            .unwrap()
+            .parse::<toml::Table>()
+            .unwrap();
+        assert_eq!(document["language"].as_str(), Some(stored));
+    }
+
+    let before = fs::read(&path).unwrap();
+    assert!(matches!(
+        store.set("lang", "fr-FR"),
+        Err(ConfigError::Usage(_))
+    ));
+    assert_eq!(fs::read(&path).unwrap(), before);
+
+    store.set("lang", "AuTo").unwrap();
+    let document = fs::read_to_string(&path)
+        .unwrap()
+        .parse::<toml::Table>()
+        .unwrap();
+    assert!(!document.contains_key("language"));
+    assert_eq!(store.get("lang").unwrap(), "");
+}
+
+#[test]
+fn hand_edited_supported_language_spelling_is_canonical_only_in_the_projection() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("config.toml");
+    let source = "language = \"zh_tw.UTF-8\" # keep bytes\nfuture = 7\n";
+    fs::write(&path, source).unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    assert_eq!(store.get("lang").unwrap(), "zh-TW");
+    assert_eq!(fs::read_to_string(path).unwrap(), source);
+}
+
+#[test]
+fn editor_and_bash_path_trim_on_write_and_whitespace_clears_only_the_target() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("config.toml");
+    let bash = root.path().join("bash");
+    fs::write(&bash, "").unwrap();
+    fs::write(
+        &path,
+        "future = 7\n[shell]\nother = \"keep\"\n[js]\nother = \"keep too\"\n",
+    )
+    .unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    store.set("editor", "  code --wait  ").unwrap();
+    store
+        .set("shell.bash_path", &format!("  {}  ", bash.display()))
+        .unwrap();
+    assert_eq!(store.get("editor").unwrap(), "code --wait");
+    assert_eq!(
+        store.get("shell.bash_path").unwrap(),
+        bash.display().to_string()
+    );
+
+    store.set("editor", "   ").unwrap();
+    store.set("shell.bash_path", " \t ").unwrap();
+    let document = fs::read_to_string(&path)
+        .unwrap()
+        .parse::<toml::Table>()
+        .unwrap();
+    assert!(!document.contains_key("editor"));
+    assert!(
+        !document["shell"]
+            .as_table()
+            .unwrap()
+            .contains_key("bash_path")
+    );
+    assert_eq!(document["shell"]["other"].as_str(), Some("keep"));
+    assert_eq!(document["js"]["other"].as_str(), Some("keep too"));
+    assert_eq!(document["future"].as_integer(), Some(7));
+}
+
+#[test]
+fn clearing_the_last_nested_scalar_removes_only_its_now_empty_section() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("config.toml");
+    let bash = root.path().join("bash");
+    fs::write(&bash, "").unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    store
+        .set("shell.bash_path", bash.to_str().unwrap())
+        .unwrap();
+    store.set("js.runner", "deno").unwrap();
+    store.set("shell.bash_path", "").unwrap();
+    store.set("js.runner", " \t ").unwrap();
+
+    let document = fs::read_to_string(path)
+        .unwrap()
+        .parse::<toml::Table>()
+        .unwrap();
+    assert!(!document.contains_key("shell"));
+    assert!(!document.contains_key("js"));
+}
+
+#[test]
+fn a_nonempty_bash_path_must_name_a_regular_file_before_any_write() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("config.toml");
+    let source = "future = \"keep\"\n";
+    fs::write(&path, source).unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    for invalid in [root.path().join("missing"), root.path().join("directory")] {
+        if invalid.ends_with("directory") {
+            fs::create_dir(&invalid).unwrap();
+        }
+        let error = store
+            .set("shell.bash_path", invalid.to_str().unwrap())
+            .unwrap_err();
+        assert!(matches!(error, ConfigError::Usage(_)));
+        for locale in [
+            skit_i18n::Locale::En,
+            skit_i18n::Locale::ZhCn,
+            skit_i18n::Locale::ZhTw,
+        ] {
+            let localized = skit_i18n::Localize::message(&error).localize(locale);
+            assert!(localized.contains(invalid.to_str().unwrap()));
+            assert!(!localized.contains("{}"));
+        }
+        assert_eq!(fs::read_to_string(&path).unwrap(), source);
+    }
+}
+
+#[test]
+fn scalar_nested_sections_can_be_repaired_without_losing_unrelated_data() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("config.toml");
+    let bash = root.path().join("bash");
+    fs::write(&bash, "").unwrap();
+    fs::write(
+        &path,
+        concat!(
+            "future = 7 # keep root data\n",
+            "shell = \"future shell shape\"\n",
+            "js = 42\n",
+        ),
+    )
+    .unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    store
+        .set("shell.bash_path", bash.to_str().unwrap())
+        .unwrap();
+    store.set("js.runner", "bun").unwrap();
+
+    let text = fs::read_to_string(&path).unwrap();
+    let document = text.parse::<toml::Table>().unwrap();
+    assert_eq!(document["future"].as_integer(), Some(7));
+    assert_eq!(document["shell"]["bash_path"].as_str(), bash.to_str());
+    assert_eq!(document["js"]["runner"].as_str(), Some("bun"));
+    assert!(text.contains("# keep root data"));
+}
+
+#[test]
+fn a_scalar_mirror_section_is_repaired_without_losing_root_extensions() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("config.toml");
+    fs::write(
+        &path,
+        "future = \"keep\" # keep extension\nmirror = \"old future shape\"\n",
+    )
+    .unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    store.set("mirror.pypi", "tsinghua").unwrap();
+
+    let text = fs::read_to_string(path).unwrap();
+    let document = text.parse::<toml::Table>().unwrap();
+    assert_eq!(document["future"].as_str(), Some("keep"));
+    assert_eq!(document["mirror"]["enabled"].as_bool(), Some(true));
+    assert_eq!(
+        document["mirror"]["pypi"].as_str(),
+        Some("https://pypi.tuna.tsinghua.edu.cn/simple")
+    );
+    assert!(text.contains("# keep extension"));
+}
+
+#[test]
+fn malformed_toml_reads_defaults_without_rewriting_or_creating_a_backup() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("config.toml");
+    let corrupt = b"language = \"zh-TW\"\nthis = [is not valid";
+    fs::write(&path, corrupt).unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    assert_eq!(store.get("lang").unwrap(), "");
+    assert_eq!(store.get("form").unwrap(), "tui");
+    assert_eq!(store.get("after_run").unwrap(), "exit");
+    assert_eq!(fs::read(&path).unwrap(), corrupt);
+    assert!(!root.path().join("config.toml.bak").exists());
+}
+
+#[test]
+fn an_unreadable_config_path_is_a_v040_default_on_read_but_never_overwritten() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("config.toml");
+    fs::create_dir(&path).unwrap();
+    fs::write(path.join("owned"), "keep").unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    assert_eq!(store.get("form").unwrap(), "tui");
+    assert_eq!(store.get("lang").unwrap(), "");
+    assert!(path.is_dir());
+
+    assert!(matches!(
+        store.set("editor", "vim"),
+        Err(ConfigError::Io { .. })
+    ));
+    assert_eq!(fs::read_to_string(path.join("owned")).unwrap(), "keep");
+}
+
+#[test]
+fn the_first_write_after_malformed_toml_preserves_an_exact_backup_then_repairs() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("config.toml");
+    let backup = root.path().join("config.toml.bak");
+    let corrupt = "language = \"zh-TW\"\nthis = [is not valid\n使用者資料".as_bytes();
+    fs::write(&path, corrupt).unwrap();
+    fs::write(&backup, b"older backup").unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    let recovery = store
+        .set_with_recovery("editor", "vim")
+        .unwrap()
+        .expect("a malformed write must report its byte-exact backup");
+
+    assert_eq!(fs::read(&backup).unwrap(), corrupt);
+    assert_eq!(recovery.path, path);
+    assert_eq!(recovery.backup_path, backup);
+    assert_eq!(store.get("editor").unwrap(), "vim");
+    assert_eq!(store.get("lang").unwrap(), "");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_corrupt_backup_keeps_the_v040_source_permissions() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("config.toml");
+    let backup = root.path().join("config.toml.bak");
+    fs::write(&path, "invalid = [toml").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    store.set("editor", "vim").unwrap();
+
+    assert_eq!(
+        fs::metadata(&backup).unwrap().permissions().mode() & 0o777,
+        0o640
+    );
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o640
+    );
+}
+
+#[test]
+fn non_utf8_toml_is_also_a_read_only_default_and_a_byte_exact_recoverable_write() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("config.toml");
+    let backup = root.path().join("config.toml.bak");
+    let corrupt = b"language = \"zh-TW\"\ninvalid = \"\xff\"\n";
+    fs::write(&path, corrupt).unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    assert_eq!(store.get("lang").unwrap(), "");
+    assert_eq!(fs::read(&path).unwrap(), corrupt);
+    assert!(!backup.exists());
+
+    store.set("form", "plain").unwrap();
+    assert_eq!(fs::read(&backup).unwrap(), corrupt);
+    assert_eq!(store.get("form").unwrap(), "plain");
+}
+
+#[test]
+fn a_failed_corrupt_backup_rolls_back_without_replacing_the_original() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("config.toml");
+    let backup = root.path().join("config.toml.bak");
+    let corrupt = b"this = [is not valid";
+    fs::write(&path, corrupt).unwrap();
+    fs::create_dir(&backup).unwrap();
+    fs::write(backup.join("owned"), "keep").unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    let error = store.set("editor", "vim").unwrap_err();
+
+    assert!(matches!(error, ConfigError::Io { .. }));
+    assert_eq!(fs::read(&path).unwrap(), corrupt);
+    assert_eq!(fs::read_to_string(backup.join("owned")).unwrap(), "keep");
+}
+
+#[test]
+fn an_invalid_requested_value_does_not_repair_or_back_up_malformed_toml() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("config.toml");
+    let corrupt = b"this = [is not valid";
+    fs::write(&path, corrupt).unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    assert!(matches!(
+        store.set("form", "dialog"),
+        Err(ConfigError::Usage(_))
+    ));
+    assert_eq!(fs::read(&path).unwrap(), corrupt);
+    assert!(!root.path().join("config.toml.bak").exists());
 }
 
 #[test]
@@ -123,10 +506,7 @@ fn custom_mirror_urls_are_validated_and_github_expands_to_both_release_axes() {
         ("mirror.github", "http://unsafe.example"),
         ("mirror.npm", "https://space.example/a b"),
     ] {
-        assert!(matches!(
-            store.set(key, value),
-            Err(ConfigError::Invalid(_))
-        ));
+        assert!(matches!(store.set(key, value), Err(ConfigError::Usage(_))));
     }
 }
 
@@ -198,7 +578,117 @@ runners = [
     .unwrap();
     let store = FileConfigStore::new(root.path());
     assert_eq!(store.runners().unwrap()[0].name, "valid");
-    assert_eq!(store.invalid_runner_rows().unwrap(), ["broken", "row 3"]);
+    assert_eq!(
+        store.invalid_runner_rows().unwrap(),
+        ["broken", "not-a-table"]
+    );
+    let rows = store.runner_rows().unwrap();
+    assert_eq!(rows[0].index, Some(0));
+    assert_eq!(rows[1].reason.as_deref(), Some("prompt-slot-count"));
+    assert_eq!(rows[2].reason.as_deref(), Some("row-not-table"));
+}
+
+#[test]
+fn hand_written_runner_rows_are_authoritative_without_a_seed_marker() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("config.toml");
+    let source = concat!(
+        "# user-owned runner list\n",
+        "[prompt]\n",
+        "future = 7\n",
+        "[[prompt.runners]]\n",
+        "name = \"mine\"\n",
+        "argv = [\"mytool\", \"{{prompt}}\"]\n",
+    );
+    fs::write(&path, source).unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    assert_eq!(store.runners().unwrap()[0].name, "mine");
+    store.ensure_runners_seeded().unwrap();
+
+    assert_eq!(fs::read_to_string(path).unwrap(), source);
+    assert_eq!(store.runner_rows().unwrap()[0].index, Some(0));
+}
+
+#[test]
+fn malformed_runner_containers_are_visible_and_management_reads_do_not_rewrite_them() {
+    for (source, reason, descriptor) in [
+        (
+            "language = \"zh-TW\"\nprompt = \"garbage\"\n",
+            "prompt-section-not-table",
+            "prompt",
+        ),
+        (
+            "[prompt]\nrunners = \"garbage\"\n",
+            "runners-not-list",
+            "prompt.runners",
+        ),
+    ] {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("config.toml");
+        fs::write(&path, source).unwrap();
+        let store = FileConfigStore::new(root.path());
+
+        assert!(store.runners().unwrap().is_empty());
+        let row = store.runner_rows().unwrap().pop().unwrap();
+        assert_eq!(row.index, None);
+        assert_eq!(row.reason.as_deref(), Some(reason));
+        assert_eq!(row.descriptor, descriptor);
+        store.ensure_runners_seeded().unwrap();
+        assert_eq!(fs::read_to_string(path).unwrap(), source);
+    }
+}
+
+#[test]
+fn runner_validation_keeps_v040_reason_codes_and_duplicate_semantics() {
+    let root = TempDir::new().unwrap();
+    fs::write(
+        root.path().join("config.toml"),
+        r#"[prompt]
+runners = [
+  { name = "good", argv = ["agent", "{{prompt}}"] },
+  { name = " same ", argv = ["first", "{{prompt}}"] },
+  { name = "same", argv = ["second", "{{prompt}}"] },
+  { name = "", argv = ["agent", "{{prompt}}"] },
+  { name = "argv", argv = "not-a-list" },
+  { name = "empty", argv = ["agent", ""] },
+  { name = "binary", argv = ["{{prompt}}"] },
+  { name = "slots", argv = ["agent"] },
+  { name = "hole", argv = ["agent", "{{other}}", "{{prompt}}"] },
+]
+"#,
+    )
+    .unwrap();
+    let store = FileConfigStore::new(root.path());
+
+    assert_eq!(
+        store
+            .runners()
+            .unwrap()
+            .into_iter()
+            .map(|runner| runner.name)
+            .collect::<Vec<_>>(),
+        ["good", "same"]
+    );
+    assert_eq!(
+        store
+            .runner_rows()
+            .unwrap()
+            .into_iter()
+            .map(|row| row.reason)
+            .collect::<Vec<_>>(),
+        [
+            None,
+            None,
+            Some("duplicate".to_owned()),
+            Some("name".to_owned()),
+            Some("argv-type".to_owned()),
+            Some("empty".to_owned()),
+            Some("prompt-in-binary".to_owned()),
+            Some("prompt-slot-count".to_owned()),
+            Some("stray-hole".to_owned()),
+        ]
+    );
 }
 
 #[test]
@@ -219,15 +709,15 @@ fn every_scalar_setting_and_mirror_environment_precedence_is_explicit() {
     }
     assert!(matches!(
         store.set("unknown", "value"),
-        Err(ConfigError::Invalid(_))
+        Err(ConfigError::Usage(_))
     ));
     assert!(matches!(
         store.set("form", "dialog"),
-        Err(ConfigError::Invalid(_))
+        Err(ConfigError::Usage(_))
     ));
     assert!(matches!(
         store.set("mirror", "on"),
-        Err(ConfigError::Invalid(_))
+        Err(ConfigError::Usage(_))
     ));
 
     store
@@ -276,7 +766,7 @@ fn batch_settings_validate_every_value_before_one_write() {
     ]);
     assert!(matches!(
         store.set_many(&invalid),
-        Err(ConfigError::Invalid(_))
+        Err(ConfigError::Usage(_))
     ));
     assert_eq!(fs::read(root.path().join("config.toml")).unwrap(), before);
 
@@ -316,7 +806,7 @@ fn runner_validation_duplicate_policy_and_configuration_failures_are_typed() {
     ] {
         assert!(matches!(
             store.set_runner(runner, false),
-            Err(ConfigError::Invalid(_))
+            Err(ConfigError::Usage(_))
         ));
     }
 
@@ -331,13 +821,20 @@ fn runner_validation_duplicate_policy_and_configuration_failures_are_typed() {
     ));
     store.set_runner(runner, true).unwrap();
 
-    fs::write(root.path().join("config.toml"), "not = [valid").unwrap();
-    assert!(matches!(store.settings(), Err(ConfigError::Parse { .. })));
+    let malformed = "not = [valid";
+    fs::write(root.path().join("config.toml"), malformed).unwrap();
+    assert_eq!(store.settings().unwrap()["form"], "tui");
+    assert_eq!(
+        fs::read_to_string(root.path().join("config.toml")).unwrap(),
+        malformed
+    );
 
     let file_root = root.path().join("file-root");
     fs::write(&file_root, "file").unwrap();
+    let blocked = FileConfigStore::new(&file_root);
+    assert_eq!(blocked.settings().unwrap()["form"], "tui");
     assert!(matches!(
-        FileConfigStore::new(&file_root).settings(),
+        blocked.set("editor", "vim"),
         Err(ConfigError::Io { .. })
     ));
 }
@@ -381,26 +878,25 @@ runners = [
 
     assert!(store.remove_runner("valid").unwrap());
     assert_eq!(store.runner_rows().unwrap().len(), 2);
-    assert!(store.remove_runner_row(1).unwrap());
+    assert!(store.remove_runner_row(0).unwrap());
     let rows = store.runner_rows().unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].descriptor, "future-shape");
 }
 
 #[test]
-fn wrong_table_shapes_are_refused_without_losing_the_existing_file() {
+fn clearing_a_wrong_scalar_section_repairs_only_that_section() {
     let root = TempDir::new().unwrap();
     let path = root.path().join("config.toml");
     fs::write(&path, "shell = \"not a table\"\nfuture = 3\n").unwrap();
     let store = FileConfigStore::new(root.path());
-    assert!(matches!(
-        store.set("shell.bash_path", "/bin/bash"),
-        Err(ConfigError::Invalid(_))
-    ));
-    assert_eq!(
-        fs::read_to_string(path).unwrap(),
-        "shell = \"not a table\"\nfuture = 3\n"
-    );
+    store.set("shell.bash_path", "").unwrap();
+    let document = fs::read_to_string(path)
+        .unwrap()
+        .parse::<toml::Table>()
+        .unwrap();
+    assert!(!document.contains_key("shell"));
+    assert_eq!(document["future"].as_integer(), Some(3));
 }
 
 #[test]
@@ -453,7 +949,7 @@ fn reading_an_unknown_key_is_a_typed_refusal() {
 
     let error = store.get("colour").unwrap_err();
 
-    assert!(matches!(error, ConfigError::Invalid(_)));
+    assert!(matches!(error, ConfigError::Usage(_)));
     assert!(error.to_string().contains("colour"));
     assert_eq!(store.get("after_run").unwrap(), "exit");
 }
@@ -476,14 +972,13 @@ fn a_raw_row_index_addresses_the_rows_the_reader_reported() {
     .unwrap();
     let store = FileConfigStore::new(root.path());
     assert_eq!(store.runner_rows().unwrap().len(), 2);
-    assert_eq!(store.invalid_runner_rows().unwrap(), ["row 2"]);
+    assert_eq!(store.invalid_runner_rows().unwrap(), ["{'bogus': 1}"]);
 
-    // An index past the end, and index zero, address no stored row.
-    assert!(!store.remove_runner_row(3).unwrap());
-    assert!(!store.remove_runner_row(0).unwrap());
+    // An index past the end addresses no stored row.
+    assert!(!store.remove_runner_row(2).unwrap());
     assert_eq!(store.runner_rows().unwrap().len(), 2);
 
-    assert!(store.remove_runner_row(2).unwrap());
+    assert!(store.remove_runner_row(1).unwrap());
 
     let rows = store.runner_rows().unwrap();
     assert_eq!(rows.len(), 1);
@@ -495,19 +990,124 @@ fn a_raw_row_index_addresses_the_rows_the_reader_reported() {
 fn a_raw_row_index_outside_the_stored_list_changes_nothing() {
     let root = TempDir::new().unwrap();
     let store = FileConfigStore::new(root.path());
-    // A fresh file declares no rows, so no index addresses anything.
-    assert!(store.runner_rows().unwrap().is_empty());
+    // A fresh file projects the visible defaults, but no raw rows exist yet.
+    assert!(!store.runner_rows().unwrap().is_empty());
 
-    assert!(!store.remove_runner_row(1).unwrap());
     assert!(!store.remove_runner_row(0).unwrap());
 
-    assert!(store.runner_rows().unwrap().is_empty());
+    assert!(!store.runner_rows().unwrap().is_empty());
     assert!(
         !root.path().join("config.toml").exists() || {
             let text = fs::read_to_string(root.path().join("config.toml")).unwrap();
             !text.contains("runners_seeded")
         }
     );
+}
+
+#[test]
+fn raw_runner_removal_compares_the_complete_management_snapshot() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("config.toml");
+    fs::write(
+        &path,
+        r#"[prompt]
+runners = [
+  { name = "good", argv = ["good", "{{prompt}}"] },
+  { name = "target", argv = ["target"], future = 7 },
+]
+"#,
+    )
+    .unwrap();
+    let store = FileConfigStore::new(root.path());
+    let expected = store.runner_rows().unwrap().remove(1);
+
+    fs::write(
+        &path,
+        r#"[prompt]
+runners = [
+  { name = "inserted", argv = ["inserted", "{{prompt}}"] },
+  { name = "good", argv = ["good", "{{prompt}}"] },
+  { name = "target", argv = ["target"], future = 7 },
+]
+"#,
+    )
+    .unwrap();
+
+    assert!(!store.remove_runner_row_if_unchanged(&expected).unwrap());
+    assert_eq!(store.runner_rows().unwrap().len(), 3);
+    assert_eq!(
+        store.runner_rows().unwrap()[1].name.as_deref(),
+        Some("good")
+    );
+}
+
+#[test]
+fn stable_runner_removal_refuses_a_replacement_after_confirmation() {
+    let root = TempDir::new().unwrap();
+    let store = FileConfigStore::new(root.path());
+    store
+        .set_runner(
+            PromptRunner {
+                name: "victim".to_owned(),
+                argv: vec!["old".to_owned(), "{{prompt}}".to_owned()],
+            },
+            false,
+        )
+        .unwrap();
+    let expected = store
+        .runner_rows()
+        .unwrap()
+        .into_iter()
+        .filter(|row| row.name.as_deref() == Some("victim"))
+        .collect::<Vec<_>>();
+    store
+        .set_runner(
+            PromptRunner {
+                name: "victim".to_owned(),
+                argv: vec!["new".to_owned(), "{{prompt}}".to_owned()],
+            },
+            true,
+        )
+        .unwrap();
+
+    assert!(
+        !store
+            .remove_runner_if_unchanged("victim", &expected)
+            .unwrap()
+    );
+    assert_eq!(
+        store
+            .runners()
+            .unwrap()
+            .into_iter()
+            .find(|runner| runner.name == "victim")
+            .unwrap()
+            .argv[0],
+        "new"
+    );
+}
+
+#[test]
+fn malformed_runner_container_repair_is_targeted_and_snapshot_checked() {
+    let root = TempDir::new().unwrap();
+    let path = root.path().join("config.toml");
+    fs::write(&path, "language = \"zh-TW\"\nprompt = \"garbage\"\n").unwrap();
+    let store = FileConfigStore::new(root.path());
+    let stale = store.runner_rows().unwrap().pop().unwrap();
+
+    fs::write(&path, "language = \"zh-TW\"\nprompt = \"newer\"\n").unwrap();
+    assert!(!store.remove_runner_row_if_unchanged(&stale).unwrap());
+    assert_eq!(
+        store.runner_rows().unwrap()[0].reason.as_deref(),
+        Some("prompt-section-not-table")
+    );
+
+    let current = store.runner_rows().unwrap().pop().unwrap();
+    assert!(store.remove_runner_row_if_unchanged(&current).unwrap());
+    let document = fs::read_to_string(path).unwrap();
+    assert!(document.contains("language = \"zh-TW\""), "{document}");
+    assert!(document.contains("runners_seeded = true"), "{document}");
+    assert!(document.contains("runners = []"), "{document}");
 }
 
 #[test]

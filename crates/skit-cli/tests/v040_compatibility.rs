@@ -57,6 +57,107 @@ fn list_json_keeps_the_v040_array_and_complete_row_shape() {
 }
 
 #[test]
+fn list_keeps_latest_main_slug_order_when_display_names_cross() {
+    let sandbox = Sandbox::new();
+    sandbox.add_command("Alpha", "printf alpha");
+    sandbox.add_command("Zulu", "printf zulu");
+    sandbox
+        .command()
+        .args(["rename", "alpha", "Zulu display"])
+        .assert()
+        .success();
+    sandbox
+        .command()
+        .args(["rename", "zulu", "Alpha display"])
+        .assert()
+        .success();
+
+    let output = sandbox.command().args(["list", "--json"]).output().unwrap();
+    assert!(output.status.success());
+    let rows: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["slug"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["alpha", "zulu"]
+    );
+}
+
+#[test]
+fn human_list_keeps_the_localized_table_kind_labels_and_literal_markup() {
+    let sandbox = Sandbox::new();
+    sandbox.add_command("[blue]Demo[/blue]", "printf ok");
+
+    let english = sandbox.command().arg("list").output().unwrap();
+    assert!(english.status.success());
+    let english = String::from_utf8(english.stdout).unwrap();
+    for text in ["Name", "Kind", "Description", "Command", "—"] {
+        assert!(english.contains(text), "missing {text:?} in:\n{english}");
+    }
+    assert!(english.contains("[blue]Demo[/blue]"));
+
+    let traditional = sandbox
+        .command()
+        .env("SKIT_LANG", "zh-TW")
+        .arg("list")
+        .output()
+        .unwrap();
+    assert!(traditional.status.success());
+    let traditional = String::from_utf8(traditional.stdout).unwrap();
+    for text in ["名稱", "類型", "說明", "指令", "—"] {
+        assert!(
+            traditional.contains(text),
+            "missing {text:?} in:\n{traditional}"
+        );
+    }
+}
+
+#[test]
+fn human_list_marks_a_missing_copy_target_without_reading_full_metadata() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.data.path().join("source.py");
+    fs::write(&source, "print('ok')\n").unwrap();
+    sandbox
+        .command()
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            "--name",
+            "Gone",
+            "--no-input",
+        ])
+        .assert()
+        .success();
+    let payload = sandbox.data.path().join("scripts/gone/script.py");
+    fs::remove_file(&payload).unwrap();
+
+    let output = sandbox.command().arg("list").output().unwrap();
+    assert!(output.status.success());
+    let output = String::from_utf8(output.stdout).unwrap();
+    assert!(output.contains(&format!("⚠ missing: {}", payload.display())));
+}
+
+#[test]
+fn human_list_empty_library_keeps_the_localized_discovery_hint() {
+    let sandbox = Sandbox::new();
+    sandbox
+        .command()
+        .arg("list")
+        .assert()
+        .success()
+        .stdout("No entries yet. Add one with: skit add <path>\n");
+    sandbox
+        .command()
+        .env("SKIT_LANG", "zh-TW")
+        .arg("list")
+        .assert()
+        .success()
+        .stdout("還沒有任何條目。用 skit add <path> 加入一個。\n");
+}
+
+#[test]
 fn show_json_keeps_the_v040_automation_record() {
     let sandbox = Sandbox::new();
     sandbox.add_command("Demo", "printf '%s' {name}");
@@ -95,6 +196,776 @@ fn show_json_keeps_the_v040_automation_record() {
     }
     assert_eq!(record["param_source"], "command");
     assert_eq!(record["fields"][0]["key"], "name");
+    assert_eq!(record["degraded_reason"], "");
+}
+
+#[test]
+fn human_show_keeps_the_v040_discovery_view_for_command_entries() {
+    let sandbox = Sandbox::new();
+    sandbox
+        .command()
+        .args([
+            "add",
+            "--cmd",
+            "printf '%s' {token}",
+            "--name",
+            "Demo",
+            "--description",
+            "[red]literal[/red]",
+        ])
+        .assert()
+        .success();
+    let meta_path = sandbox.data.path().join("scripts/demo/meta.toml");
+    let mut meta = fs::read_to_string(&meta_path).unwrap();
+    meta.push_str(concat!(
+        "\n[[parameters]]\n",
+        "name = \"token\"\n",
+        "delivery = \"placeholder\"\n",
+        "type = \"str\"\n",
+        "default = \"visible-only-in-source\"\n",
+        "required = true\n",
+        "secret = true\n",
+        "env_source = \"API_TOKEN\"\n",
+        "help = \"Authentication token\"\n",
+    ));
+    fs::write(meta_path, meta).unwrap();
+
+    let output = sandbox.command().args(["show", "demo"]).output().unwrap();
+    assert!(output.status.success());
+    let output = String::from_utf8(output.stdout).unwrap();
+    assert!(output.contains("Demo  (Command · reference)"));
+    assert!(output.contains("[red]literal[/red]"));
+    assert!(!output.contains("Source:"));
+    assert!(!output.contains("Missing:"));
+    assert!(output.contains("Command template: printf '%s' {token}"));
+    for text in [
+        "Parameter",
+        "Type",
+        "Required",
+        "Default",
+        "Choices",
+        "Secret",
+        "Help",
+        "token",
+        "•••",
+        "yes ← $API_TOKEN",
+        "Authentication token",
+    ] {
+        assert!(output.contains(text), "missing {text:?} in:\n{output}");
+    }
+    assert!(!output.contains("visible-only-in-source"));
+    assert!(output.contains("Run it: skit run Demo"));
+}
+
+#[test]
+fn human_show_uses_the_missing_marker_and_localized_kind_label() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.data.path().join("[red]gone.py");
+    fs::write(&source, "print('ok')\n").unwrap();
+    sandbox
+        .command()
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            "--name",
+            "Gone",
+            "--reference",
+            "--no-input",
+        ])
+        .assert()
+        .success();
+    fs::remove_file(&source).unwrap();
+
+    let output = sandbox
+        .command()
+        .env("SKIT_LANG", "zh-TW")
+        .args(["show", "gone"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let output = String::from_utf8(output.stdout).unwrap();
+    assert!(output.contains("Gone  (Python · reference)"));
+    assert!(output.contains(&format!("⚠ 遺失:{}", source.display())));
+    assert!(!output.contains("遺失：是"));
+    assert!(output.contains("沒有表單欄位——接在 -- 之後的參數會透傳給腳本。"));
+    assert!(output.contains("執行:skit run Gone"));
+}
+
+#[test]
+fn show_reconciles_live_fields_defaults_and_complete_drift_explanations() {
+    let sandbox = Sandbox::new();
+    let source = sandbox.data.path().join("managed.py");
+    fs::write(
+        &source,
+        concat!(
+            "# /// script\n",
+            "# [tool.skit]\n",
+            "# schema = 1\n",
+            "#\n",
+            "# [[tool.skit.params]]\n",
+            "# name = \"KEEP\"\n",
+            "# kind = \"const\"\n",
+            "# type = \"str\"\n",
+            "# default = \"stored\"\n",
+            "#\n",
+            "# [[tool.skit.params]]\n",
+            "# name = \"GONE\"\n",
+            "# kind = \"const\"\n",
+            "# type = \"str\"\n",
+            "# default = \"gone\"\n",
+            "#\n",
+            "# [[tool.skit.params]]\n",
+            "# name = \"CHANGED\"\n",
+            "# kind = \"const\"\n",
+            "# type = \"str\"\n",
+            "# default = \"old type\"\n",
+            "# ///\n",
+            "KEEP = \"stored\"\n",
+            "GONE = \"gone\"\n",
+            "CHANGED = \"old type\"\n",
+        ),
+    )
+    .unwrap();
+    sandbox
+        .command()
+        .args([
+            "add",
+            source.to_str().unwrap(),
+            "--name",
+            "Managed",
+            "--no-input",
+        ])
+        .assert()
+        .success();
+    let payload = sandbox.data.path().join("scripts/managed/script.py");
+    let changed = fs::read_to_string(&payload)
+        .unwrap()
+        .replace("KEEP = \"stored\"", "KEEP = \"current\"")
+        .replace("GONE = \"gone\"\n", "")
+        .replace("CHANGED = \"old type\"", "CHANGED = 42");
+    fs::write(payload, changed).unwrap();
+
+    let json = sandbox
+        .command()
+        .args(["show", "managed", "--json"])
+        .output()
+        .unwrap();
+    assert!(json.status.success());
+    let record: Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(record["drift"], true);
+    assert_eq!(
+        record["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|field| field["key"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["KEEP", "CHANGED"]
+    );
+    assert_eq!(record["fields"][0]["default"], "current");
+    assert_eq!(record["fields"][1]["default"], "old type");
+
+    let human = sandbox
+        .command()
+        .args(["show", "managed"])
+        .output()
+        .unwrap();
+    assert!(human.status.success());
+    let human = String::from_utf8(human.stdout).unwrap();
+    for line in [
+        "The parameter definitions for Managed have drifted from the script:",
+        "  GONE: injection target no longer exists (dropped from this run's form)",
+        "  CHANGED: type changed from str to int in the source (still injected — double-check the value)",
+        "To refresh the definitions, run: skit params Managed --resync",
+    ] {
+        assert!(
+            human.lines().any(|actual| actual == line),
+            "missing {line:?} in:\n{human}"
+        );
+    }
+}
+
+#[test]
+fn preset_list_json_keeps_the_v040_direct_name_map() {
+    let sandbox = Sandbox::new();
+    sandbox.add_command("Demo", "printf '%s' {name}");
+    fs::create_dir_all(sandbox.state.path().join("values")).unwrap();
+    fs::write(
+        sandbox.state.path().join("values/demo.toml"),
+        "[presets.favorite]\nname = \"Ada\"\n",
+    )
+    .unwrap();
+
+    let output = sandbox
+        .command()
+        .args(["preset", "list", "demo", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let record: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(record, serde_json::json!({"favorite": {"name": "Ada"}}));
+}
+
+#[test]
+fn preset_human_list_keeps_values_order_and_the_empty_discovery_hint() {
+    let sandbox = Sandbox::new();
+    sandbox.add_command("Demo", "printf '%s' {name}");
+    fs::create_dir_all(sandbox.state.path().join("values")).unwrap();
+    fs::write(
+        sandbox.state.path().join("values/demo.toml"),
+        concat!(
+            "[presets.zeta]\n",
+            "city = \"Taipei\"\n",
+            "count = \"2\"\n",
+            "[presets.alpha]\n",
+            "city = \"Tokyo\"\n",
+        ),
+    )
+    .unwrap();
+
+    sandbox
+        .command()
+        .args(["preset", "list", "demo"])
+        .assert()
+        .success()
+        .stdout("  alpha: city=Tokyo\n  zeta: city=Taipei, count=2\n");
+
+    fs::remove_file(sandbox.state.path().join("values/demo.toml")).unwrap();
+    sandbox
+        .command()
+        .args(["preset", "list", "demo"])
+        .assert()
+        .success()
+        .stdout("No presets for Demo yet. Create one with: skit run Demo --save-preset <preset>\n");
+    sandbox
+        .command()
+        .env("SKIT_LANG", "zh-TW")
+        .args(["preset", "list", "demo"])
+        .assert()
+        .success()
+        .stdout("Demo 還沒有參數組合。建立一個：skit run Demo --save-preset <組合名>\n");
+}
+
+#[test]
+fn preset_save_delete_and_unknown_messages_keep_latest_main_context() {
+    let sandbox = Sandbox::new();
+    sandbox.add_command("Demo", "printf '%s' {name}");
+
+    sandbox
+        .command()
+        .args(["preset", "save", "demo", "favorite"])
+        .assert()
+        .success()
+        .stdout("Preset \"favorite\" saved for Demo.\n");
+
+    sandbox
+        .command()
+        .args(["preset", "delete", "demo", "missing"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "Unknown preset \"missing\". Available: favorite",
+        ));
+    sandbox
+        .command()
+        .args(["preset", "delete", "demo", "favorite"])
+        .assert()
+        .success()
+        .stdout("Preset \"favorite\" deleted from Demo.\n");
+}
+
+#[test]
+fn preset_save_uses_complete_prefill_and_from_last_requires_an_honest_snapshot() {
+    let sandbox = Sandbox::new();
+    sandbox.add_command("Demo", "printf '%s' {name}");
+    sandbox
+        .command()
+        .args(["params", "demo", "--default", "name=Ada"])
+        .assert()
+        .success();
+
+    sandbox
+        .command()
+        .args(["preset", "save", "demo", "prefill"])
+        .assert()
+        .success();
+    let presets: Value = serde_json::from_slice(
+        &sandbox
+            .command()
+            .args(["preset", "list", "demo", "--json"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(presets["prefill"]["name"], "Ada");
+
+    let missing = sandbox
+        .command()
+        .args(["preset", "save", "demo", "missing", "--from-last"])
+        .output()
+        .unwrap();
+    assert_eq!(missing.status.code(), Some(1));
+    let presets: Value = serde_json::from_slice(
+        &sandbox
+            .command()
+            .args(["preset", "list", "demo", "--json"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert!(presets.get("missing").is_none());
+
+    sandbox
+        .command()
+        .args(["preset", "delete", "demo", "prefill", "--no-input"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn config_json_keeps_the_v040_direct_key_map_and_final_value() {
+    let sandbox = Sandbox::new();
+    let written = sandbox
+        .command()
+        .args(["config", "form", "plain", "--json"])
+        .output()
+        .unwrap();
+    assert!(written.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&written.stdout).unwrap(),
+        serde_json::json!({"form": "plain"})
+    );
+
+    let read = sandbox
+        .command()
+        .args(["config", "form", "--json"])
+        .output()
+        .unwrap();
+    assert!(read.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&read.stdout).unwrap(),
+        serde_json::json!({"form": "plain"})
+    );
+}
+
+#[test]
+fn config_json_projects_hand_edited_values_without_mutating_the_file() {
+    let sandbox = Sandbox::new();
+    let path = sandbox.config.path().join("config.toml");
+    let source = concat!(
+        "language = \"fr-FR\"\n",
+        "form = \"dialog\"\n",
+        "after_run = \"loop\"\n",
+        "future = 7\n",
+        "js = \"future shape\"\n",
+    );
+    fs::write(&path, source).unwrap();
+
+    let output = sandbox
+        .command()
+        .args(["config", "--json"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let settings: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(settings["lang"], "");
+    assert_eq!(settings["form"], "tui");
+    assert_eq!(settings["after_run"], "exit");
+    assert_eq!(settings["js.runner"], "");
+    assert_eq!(fs::read_to_string(path).unwrap(), source);
+}
+
+#[test]
+fn config_lang_canonicalizes_supported_v040_tags_and_auto_clears() {
+    let sandbox = Sandbox::new();
+    for (input, expected) in [("zh_tw.UTF-8", "zh-TW"), ("EN", "en"), ("en-xa", "en-XA")] {
+        let output = sandbox
+            .command()
+            .args(["config", "lang", input, "--json"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            serde_json::json!({"lang": expected})
+        );
+    }
+
+    let rejected = sandbox
+        .command()
+        .args(["config", "lang", "fr-FR", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(rejected.status.code(), Some(2));
+
+    let cleared = sandbox
+        .command()
+        .args(["config", "lang", "AUTO", "--json"])
+        .output()
+        .unwrap();
+    assert!(cleared.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&cleared.stdout).unwrap(),
+        serde_json::json!({"lang": ""})
+    );
+    let document = fs::read_to_string(sandbox.config.path().join("config.toml"))
+        .unwrap()
+        .parse::<toml::Table>()
+        .unwrap();
+    assert!(!document.contains_key("language"));
+}
+
+#[test]
+fn config_repairs_corrupt_toml_only_after_an_exact_backup() {
+    let sandbox = Sandbox::new();
+    let path = sandbox.config.path().join("config.toml");
+    let backup = sandbox.config.path().join("config.toml.bak");
+    let corrupt = "language = \"zh-TW\"\ninvalid = [使用者資料";
+    fs::write(&path, corrupt).unwrap();
+
+    let read = sandbox
+        .command()
+        .args(["config", "--json"])
+        .output()
+        .unwrap();
+    assert!(read.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&read.stdout).unwrap()["lang"],
+        ""
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), corrupt);
+    assert!(!backup.exists());
+
+    let write = sandbox
+        .command()
+        .args(["config", "editor", "  vim  ", "--json"])
+        .output()
+        .unwrap();
+    assert!(write.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&write.stdout).unwrap(),
+        serde_json::json!({"editor": "vim"})
+    );
+    assert_eq!(fs::read_to_string(backup).unwrap(), corrupt);
+    let stderr = String::from_utf8(write.stderr).unwrap();
+    assert_eq!(
+        stderr.trim(),
+        format!(
+            "skit could not parse {}. skit backed up the file to {} before this change. Recover missing settings from the backup.",
+            path.display(),
+            sandbox.config.path().join("config.toml.bak").display(),
+        )
+    );
+}
+
+#[test]
+fn config_bash_path_validates_the_trimmed_file_and_keeps_usage_exit_two() {
+    let sandbox = Sandbox::new();
+    let config_path = sandbox.config.path().join("config.toml");
+    let bash = sandbox.config.path().join("bash");
+    fs::write(&bash, "").unwrap();
+    fs::write(&config_path, "future = 7\n").unwrap();
+
+    let missing = sandbox.config.path().join("missing");
+    let rejected = sandbox
+        .command()
+        .args([
+            "config",
+            "shell.bash_path",
+            missing.to_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(rejected.status.code(), Some(2));
+    assert_eq!(fs::read_to_string(&config_path).unwrap(), "future = 7\n");
+
+    let padded = format!("  {}  ", bash.display());
+    let accepted = sandbox
+        .command()
+        .args(["config", "shell.bash_path", &padded, "--json"])
+        .output()
+        .unwrap();
+    assert!(accepted.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&accepted.stdout).unwrap(),
+        serde_json::json!({"shell.bash_path": bash.display().to_string()})
+    );
+}
+
+#[test]
+fn management_missing_entries_keep_exit_one_while_run_keeps_127() {
+    let sandbox = Sandbox::new();
+    for arguments in [
+        vec!["show", "missing", "--json"],
+        vec!["describe", "missing", "description"],
+        vec!["rename", "missing", "New name"],
+        vec!["remove", "missing", "--yes"],
+        vec!["edit", "missing", "--no-input"],
+        vec!["params", "missing", "--json"],
+        vec!["deps", "missing", "--json"],
+        vec!["preset", "save", "missing", "demo", "--from-last"],
+        vec!["preset", "list", "missing", "--json"],
+        vec!["preset", "delete", "missing", "demo", "--yes"],
+    ] {
+        let output = sandbox.command().args(&arguments).output().unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let run = sandbox
+        .command()
+        .args(["run", "missing", "--no-input"])
+        .output()
+        .unwrap();
+    assert_eq!(run.status.code(), Some(127));
+}
+
+#[test]
+fn ordinary_management_refusals_keep_v040_exit_codes() {
+    let sandbox = Sandbox::new();
+    let missing_file = sandbox
+        .command()
+        .args(["add", "/definitely/missing/skit-source.py", "--no-input"])
+        .output()
+        .unwrap();
+    assert_eq!(missing_file.status.code(), Some(1));
+
+    let unknown_config = sandbox
+        .command()
+        .args(["config", "unknown-key", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(unknown_config.status.code(), Some(2));
+
+    let duplicate_runner = sandbox
+        .command()
+        .args(["runner", "add", "claude", "claude", "{{prompt}}"])
+        .output()
+        .unwrap();
+    assert_eq!(duplicate_runner.status.code(), Some(1));
+}
+
+#[test]
+fn dry_run_is_read_only_for_legacy_identity_and_runner_is_prompt_only() {
+    let sandbox = Sandbox::new();
+    sandbox.add_command("Demo", "printf '%s' {name}");
+    let metadata = sandbox.data.path().join("scripts/demo/meta.toml");
+    let without_identity = fs::read_to_string(&metadata)
+        .unwrap()
+        .lines()
+        .filter(|line| !line.starts_with("id = "))
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n";
+    fs::write(&metadata, &without_identity).unwrap();
+
+    let preview = sandbox
+        .command()
+        .args([
+            "run",
+            "demo",
+            "--set",
+            "name=Ada",
+            "--dry-run",
+            "--no-input",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        preview.status.success(),
+        "{}",
+        String::from_utf8_lossy(&preview.stderr)
+    );
+    assert_eq!(fs::read_to_string(&metadata).unwrap(), without_identity);
+
+    let runner = sandbox
+        .command()
+        .args([
+            "run",
+            "demo",
+            "--runner",
+            "claude",
+            "--dry-run",
+            "--no-input",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(runner.status.code(), Some(2));
+}
+
+#[test]
+fn runner_list_all_json_keeps_v040_zero_based_repair_rows() {
+    let sandbox = Sandbox::new();
+    let output = sandbox
+        .command()
+        .args(["runner", "list", "--all", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let rows: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(rows[0]["row"], 0);
+}
+
+#[test]
+fn runner_management_keeps_malformed_container_and_reason_contracts() {
+    let sandbox = Sandbox::new();
+    fs::create_dir_all(sandbox.config.path()).unwrap();
+    fs::write(
+        sandbox.config.path().join("config.toml"),
+        "language = \"zh-TW\"\nprompt = \"garbage\"\n",
+    )
+    .unwrap();
+
+    let listed = sandbox
+        .command()
+        .args(["runner", "list", "--all", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        listed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    let rows: Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(rows[0]["row"], Value::Null);
+    assert_eq!(rows[0]["reason"], "prompt-section-not-table");
+    assert_eq!(rows[0]["descriptor"], "prompt");
+
+    let removed = sandbox
+        .command()
+        .args(["runner", "remove", "--row", "container", "--yes"])
+        .output()
+        .unwrap();
+    assert!(
+        removed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&removed.stderr)
+    );
+    let document = fs::read_to_string(sandbox.config.path().join("config.toml")).unwrap();
+    assert!(document.contains("language = \"zh-TW\""), "{document}");
+    assert!(document.contains("runners = []"), "{document}");
+}
+
+#[test]
+fn runner_management_rejects_unsupported_holes_and_valid_raw_row_deletion() {
+    let sandbox = Sandbox::new();
+    let invalid = sandbox
+        .command()
+        .args(["runner", "add", "mine", "agent", "{{other}}", "{{prompt}}"])
+        .output()
+        .unwrap();
+    assert_eq!(invalid.status.code(), Some(2));
+
+    let valid_row = sandbox
+        .command()
+        .args(["runner", "remove", "--row", "0", "--yes"])
+        .output()
+        .unwrap();
+    assert_eq!(valid_row.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&valid_row.stderr).contains("runner remove"),
+        "{}",
+        String::from_utf8_lossy(&valid_row.stderr)
+    );
+}
+
+#[test]
+fn runner_management_keeps_latest_main_duplicate_messages_commands_and_pin_warning() {
+    let sandbox = Sandbox::new();
+    sandbox
+        .command()
+        .args(["runner", "add", "mine", "agent", "{{prompt}}"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Runner mine added:")
+                .and(predicate::str::contains("{{prompt}}")),
+        );
+    sandbox
+        .command()
+        .args(["runner", "add", "mine", "other", "{{prompt}}"])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "already exists — pass --force to replace its command",
+        ));
+    sandbox
+        .command()
+        .args(["runner", "add", "mine", "--force", "other", "{{prompt}}"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Runner mine updated:"));
+    sandbox
+        .command()
+        .args(["runner", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("mine").and(predicate::str::contains("{{prompt}}")));
+
+    sandbox
+        .command()
+        .args([
+            "add", "-", "--prompt", "--name", "Review", "--runner", "mine",
+        ])
+        .write_stdin("Review this.\n")
+        .assert()
+        .success();
+    sandbox
+        .command()
+        .args(["runner", "remove", "mine", "--yes"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("1 prompt pins this runner")
+                .and(predicate::str::contains("Runner mine removed.")),
+        );
+}
+
+#[test]
+fn agent_named_targets_keep_user_project_and_cross_agent_directories() {
+    let sandbox = Sandbox::new();
+    let home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+
+    sandbox
+        .command()
+        .env("HOME", home.path())
+        .current_dir(project.path())
+        .args(["agent", "install", "claude"])
+        .assert()
+        .success();
+    sandbox
+        .command()
+        .env("HOME", home.path())
+        .current_dir(project.path())
+        .args(["agent", "install", "codex", "--project"])
+        .assert()
+        .success();
+    sandbox
+        .command()
+        .env("HOME", home.path())
+        .current_dir(project.path())
+        .args(["agent", "install", "agents"])
+        .assert()
+        .success();
+
+    assert!(home.path().join(".claude/skills/skit/SKILL.md").is_file());
+    assert!(project.path().join(".codex/skills/skit/SKILL.md").is_file());
+    assert!(
+        project
+            .path()
+            .join(".agents/skills/skit/SKILL.md")
+            .is_file()
+    );
+    assert!(!home.path().join(".agents").exists());
 }
 
 #[test]
@@ -334,6 +1205,229 @@ fn show_json_reports_reader_field_sources_and_effective_python_metadata() {
 }
 
 #[test]
+fn show_json_keeps_the_complete_latest_main_argparse_field_contract() {
+    let sandbox = Sandbox::new();
+    let python = sandbox.data.path().join("schema.py");
+    fs::write(
+        &python,
+        concat!(
+            "import argparse\n",
+            "ap = argparse.ArgumentParser()\n",
+            "ap.add_argument('src')\n",
+            "ap.add_argument('--width', type=int, default=800, help='target width')\n",
+            "ap.add_argument('--fmt', choices=['png', 'jpg'], default='png')\n",
+            "ap.add_argument('--force', action='store_true')\n",
+            "ap.parse_args()\n",
+        ),
+    )
+    .unwrap();
+    sandbox
+        .command()
+        .args([
+            "add",
+            python.to_str().unwrap(),
+            "--name",
+            "Schema",
+            "--no-input",
+        ])
+        .assert()
+        .success();
+
+    let output = sandbox
+        .command()
+        .args(["show", "schema", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let record: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(record["param_source"], "argparse");
+    assert_eq!(record["param_origin"], "reader");
+    assert_eq!(record["degraded_reason"], "");
+    let fields = record["fields"].as_array().unwrap();
+    assert_eq!(
+        fields
+            .iter()
+            .map(|field| field["key"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["src", "width", "fmt", "force"]
+    );
+    assert_eq!(fields[0]["required"], true);
+    assert_eq!(fields[0]["default"], Value::Null);
+    assert_eq!(fields[1]["type"], "int");
+    assert_eq!(fields[1]["default"], "800");
+    assert_eq!(fields[1]["help"], "target width");
+    assert_eq!(fields[1]["flag"], "--width");
+    assert_eq!(fields[2]["type"], "choice");
+    assert_eq!(fields[2]["choices"], serde_json::json!(["png", "jpg"]));
+    assert_eq!(fields[3]["type"], "bool");
+    assert_eq!(fields[3]["action"], "store_true");
+    assert_eq!(fields[3]["default"], "false");
+    for field in fields {
+        for key in [
+            "key",
+            "label",
+            "type",
+            "source",
+            "required",
+            "secret",
+            "multiple",
+            "repeat",
+            "degraded",
+            "choices",
+            "default",
+            "help",
+            "flag",
+            "action",
+            "env_source",
+            "delivers_empty",
+        ] {
+            assert!(field.get(key).is_some(), "field is missing {key}: {field}");
+        }
+    }
+}
+
+#[test]
+fn show_reports_a_dynamic_python_cli_surface_without_inventing_fields() {
+    let sandbox = Sandbox::new();
+    let python = sandbox.data.path().join("dynamic.py");
+    fs::write(
+        &python,
+        concat!(
+            "import argparse\n",
+            "ap = argparse.ArgumentParser()\n",
+            "sub = ap.add_subparsers()\n",
+            "child = sub.add_parser('x')\n",
+            "child.add_argument('--value')\n",
+            "ap.parse_args()\n",
+        ),
+    )
+    .unwrap();
+    sandbox
+        .command()
+        .args([
+            "add",
+            python.to_str().unwrap(),
+            "--name",
+            "Dynamic",
+            "--no-input",
+        ])
+        .assert()
+        .success();
+
+    let json = sandbox
+        .command()
+        .args(["show", "dynamic", "--json"])
+        .output()
+        .unwrap();
+    assert!(json.status.success());
+    let record: Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(record["param_source"], "argparse");
+    assert_eq!(record["degraded_reason"], "subparsers");
+    assert_eq!(record["fields"], serde_json::json!([]));
+
+    sandbox
+        .command()
+        .args(["show", "dynamic"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "skit could not model this script's own arguments; pass them after -- instead.\n",
+        ));
+}
+
+#[test]
+fn show_json_keeps_click_multiple_as_a_repeated_flag_contract() {
+    let sandbox = Sandbox::new();
+    let python = sandbox.data.path().join("clicker.py");
+    fs::write(
+        &python,
+        concat!(
+            "import click\n",
+            "@click.command()\n",
+            "@click.option('--tag', multiple=True)\n",
+            "def main(tag):\n",
+            "    pass\n",
+        ),
+    )
+    .unwrap();
+    sandbox
+        .command()
+        .args([
+            "add",
+            python.to_str().unwrap(),
+            "--name",
+            "Clicker",
+            "--no-input",
+        ])
+        .assert()
+        .success();
+
+    let output = sandbox
+        .command()
+        .args(["show", "clicker", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let record: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(record["fields"][0]["key"], "tag");
+    assert_eq!(record["fields"][0]["multiple"], true);
+    assert_eq!(record["fields"][0]["repeat"], true);
+}
+
+#[test]
+fn show_json_distinguishes_shell_empty_fallback_from_an_empty_value() {
+    let sandbox = Sandbox::new();
+    let shell = sandbox.data.path().join("defaults.sh");
+    fs::write(
+        &shell,
+        concat!(
+            "#!/bin/sh\n",
+            "# /// script\n",
+            "# [tool.skit]\n",
+            "# schema = 1\n",
+            "#\n",
+            "# [[tool.skit.params]]\n",
+            "# name = \"FALLBACK_ON_EMPTY\"\n",
+            "# kind = \"envdefault\"\n",
+            "# type = \"str\"\n",
+            "# default = \"first\"\n",
+            "#\n",
+            "# [[tool.skit.params]]\n",
+            "# name = \"EMPTY_IS_VALUE\"\n",
+            "# kind = \"envdefault\"\n",
+            "# type = \"str\"\n",
+            "# default = \"second\"\n",
+            "# ///\n",
+            "printf '%s %s\\n' \"${FALLBACK_ON_EMPTY:-first}\" \"${EMPTY_IS_VALUE-second}\"\n",
+        ),
+    )
+    .unwrap();
+    sandbox
+        .command()
+        .args([
+            "add",
+            shell.to_str().unwrap(),
+            "--name",
+            "Defaults",
+            "--no-input",
+        ])
+        .assert()
+        .success();
+
+    let output = sandbox
+        .command()
+        .args(["show", "defaults", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let record: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(record["fields"][0]["key"], "FALLBACK_ON_EMPTY");
+    assert_eq!(record["fields"][0]["delivers_empty"], false);
+    assert_eq!(record["fields"][1]["key"], "EMPTY_IS_VALUE");
+    assert_eq!(record["fields"][1]["delivers_empty"], true);
+}
+
+#[test]
 fn run_uses_user_configured_prompt_runner_rows() {
     let sandbox = Sandbox::new();
     let prompt = sandbox.data.path().join("review.prompt.md");
@@ -361,7 +1455,13 @@ fn run_uses_user_configured_prompt_runner_rows() {
         ])
         .assert()
         .success()
-        .stdout("Review Rust.");
+        .stdout(
+            predicate::str::contains("→ ")
+                .and(predicate::str::contains(
+                    "<rendered prompt omitted; use --dry-run to inspect it>",
+                ))
+                .and(predicate::str::ends_with("Review Rust.")),
+        );
 }
 
 #[test]
@@ -400,14 +1500,16 @@ fn bare_agent_install_never_creates_an_unselected_third_party_directory() {
         .args(["agent", "install"])
         .assert()
         .code(2)
-        .stderr(predicate::str::contains("select an agent convention"));
+        .stderr(predicate::str::contains(
+            "name a target (claude, codex, agents) or pass --to DIR",
+        ));
     for directory in [".agents", ".claude", ".codex"] {
         assert!(!home.path().join(directory).exists());
     }
 }
 
 #[test]
-fn bare_agent_install_uses_the_only_existing_agent_directory() {
+fn bare_agent_install_refuses_to_guess_even_one_existing_agent_directory() {
     let sandbox = Sandbox::new();
     let home = TempDir::new().unwrap();
     fs::create_dir(home.path().join(".codex")).unwrap();
@@ -416,8 +1518,59 @@ fn bare_agent_install_uses_the_only_existing_agent_directory() {
         .env("HOME", home.path())
         .args(["agent", "install"])
         .assert()
+        .code(2)
+        .stderr(predicate::str::contains("name a target"));
+    assert!(!home.path().join(".codex/skills").exists());
+}
+
+#[test]
+fn agent_install_rejects_mixed_target_syntax_before_writing() {
+    let sandbox = Sandbox::new();
+    let target = sandbox.data.path().join("explicit");
+    sandbox
+        .command()
+        .args([
+            "agent",
+            "install",
+            "claude",
+            "--to",
+            target.to_str().unwrap(),
+        ])
+        .assert()
+        .code(2);
+    sandbox
+        .command()
+        .args([
+            "agent",
+            "install",
+            "--to",
+            target.to_str().unwrap(),
+            "--project",
+        ])
+        .assert()
+        .code(2);
+    assert!(!target.exists());
+}
+
+#[test]
+fn agents_convention_is_project_scoped_without_project_flag() {
+    let sandbox = Sandbox::new();
+    let home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    sandbox
+        .command()
+        .env("HOME", home.path())
+        .current_dir(project.path())
+        .args(["agent", "install", "agents"])
+        .assert()
         .success();
-    assert!(home.path().join(".codex/skills/skit/SKILL.md").is_file());
+    assert!(
+        project
+            .path()
+            .join(".agents/skills/skit/SKILL.md")
+            .is_file()
+    );
+    assert!(!home.path().join(".agents").exists());
 }
 
 #[test]

@@ -1,7 +1,8 @@
 use std::{fs, path::Path, time::UNIX_EPOCH};
 
 use skit_application::{
-    CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, SourcePermissions,
+    CreateEntry, EntryMutationRepository, EntryPayload, EntryRepository, LibraryService,
+    RepositoryError, SourcePermissions,
 };
 use skit_domain::{EntryKind, EntrySettings, StorageMode};
 use skit_store::FileStore;
@@ -229,6 +230,124 @@ fn mutations_refresh_rows_move_keys_and_preserve_unrelated_registry_content() {
 }
 
 #[test]
+fn row_projection_preserves_unknown_fields_on_the_same_entry() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let entry = store
+        .create(request(
+            "Extensible",
+            "python",
+            StorageMode::Copy,
+            "before",
+            "script.py",
+            b"print('ok')\n",
+        ))
+        .unwrap();
+    let mut document = registry(&root);
+    document
+        .get_mut("entries")
+        .and_then(Value::as_table_mut)
+        .and_then(|entries| entries.get_mut("extensible"))
+        .and_then(Value::as_table_mut)
+        .unwrap()
+        .insert(
+            "vendor_projection_note".to_owned(),
+            Value::String("preserve me".to_owned()),
+        );
+    fs::write(
+        root.path().join("registry.toml"),
+        toml::to_string_pretty(&document).unwrap(),
+    )
+    .unwrap();
+
+    store.describe(&entry, "after").unwrap();
+
+    assert_eq!(
+        row(&registry(&root), "extensible")
+            .get("vendor_projection_note")
+            .and_then(Value::as_str),
+        Some("preserve me")
+    );
+}
+
+#[test]
+fn an_unregistered_entry_stays_hidden_until_an_explicit_rebuild() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    store
+        .create(request(
+            "Hidden",
+            "python",
+            StorageMode::Copy,
+            "still on disk",
+            "script.py",
+            b"print('hidden')\n",
+        ))
+        .unwrap();
+    let mut document = registry(&root);
+    document
+        .get_mut("entries")
+        .and_then(Value::as_table_mut)
+        .unwrap()
+        .remove("hidden");
+    fs::write(
+        root.path().join("registry.toml"),
+        toml::to_string_pretty(&document).unwrap(),
+    )
+    .unwrap();
+
+    assert!(store.scan().unwrap().entries.is_empty());
+    assert!(matches!(
+        store.resolve("hidden").unwrap_err(),
+        RepositoryError::NotFound { .. }
+    ));
+    assert!(matches!(
+        store.resolve("Hidden").unwrap_err(),
+        RepositoryError::NotFound { .. }
+    ));
+
+    assert_eq!(store.rebuild_registry().unwrap(), 1);
+    assert_eq!(store.scan().unwrap().entries[0].slug.as_str(), "hidden");
+}
+
+#[test]
+fn a_metadata_mutator_does_not_resurrect_a_missing_registry_row() {
+    let root = TempDir::new().unwrap();
+    let store = FileStore::new(root.path());
+    let held = store
+        .create(request(
+            "Subject",
+            "python",
+            StorageMode::Copy,
+            "before",
+            "script.py",
+            b"print('subject')\n",
+        ))
+        .unwrap();
+    let mut document = registry(&root);
+    document
+        .get_mut("entries")
+        .and_then(Value::as_table_mut)
+        .unwrap()
+        .remove("subject");
+    fs::write(
+        root.path().join("registry.toml"),
+        toml::to_string_pretty(&document).unwrap(),
+    )
+    .unwrap();
+
+    let updated = LibraryService::new(store.clone())
+        .describe(&held, "after")
+        .unwrap();
+
+    assert_eq!(updated.meta.description, "after");
+    let document = registry(&root);
+    assert!(!entries(&document).contains_key("subject"));
+    let metadata = fs::read_to_string(root.path().join("scripts/subject/meta.toml")).unwrap();
+    assert!(metadata.contains("description = \"after\""));
+}
+
+#[test]
 fn legacy_identity_claim_reprojects_the_new_metadata_stamp() {
     let root = TempDir::new().unwrap();
     let directory = root.path().join("scripts/legacy");
@@ -377,8 +496,12 @@ fn registry_write_failures_roll_back_every_entry_mutation() {
     poison_registry(&describe_root);
     assert!(describe_store.describe(&described, "after").is_err());
     assert_eq!(
-        describe_store.resolve("describe").unwrap().meta.description,
-        "before"
+        toml::from_str::<Table>(
+            &fs::read_to_string(describe_root.path().join("scripts/describe/meta.toml")).unwrap()
+        )
+        .unwrap()["description"]
+            .as_str(),
+        Some("before")
     );
 
     let rename_root = TempDir::new().unwrap();
@@ -397,7 +520,14 @@ fn registry_write_failures_roll_back_every_entry_mutation() {
     assert!(rename_store.rename(&renamed, "After Rename").is_err());
     assert!(rename_root.path().join("scripts/rename").is_dir());
     assert!(!rename_root.path().join("scripts/after-rename").exists());
-    assert_eq!(rename_store.resolve("rename").unwrap().meta.name, "Rename");
+    assert_eq!(
+        toml::from_str::<Table>(
+            &fs::read_to_string(rename_root.path().join("scripts/rename/meta.toml")).unwrap()
+        )
+        .unwrap()["name"]
+            .as_str(),
+        Some("Rename")
+    );
 
     let remove_root = TempDir::new().unwrap();
     let remove_store = FileStore::new(remove_root.path());
@@ -413,7 +543,12 @@ fn registry_write_failures_roll_back_every_entry_mutation() {
         .unwrap();
     poison_registry(&remove_root);
     assert!(remove_store.remove(&removed).is_err());
-    assert!(remove_store.resolve("remove").is_ok());
+    assert!(
+        remove_root
+            .path()
+            .join("scripts/remove/meta.toml")
+            .is_file()
+    );
 
     let edit_root = TempDir::new().unwrap();
     let edit_store = FileStore::new(edit_root.path());
@@ -438,7 +573,11 @@ fn registry_write_failures_roll_back_every_entry_mutation() {
         b"base"
     );
     assert_eq!(
-        edit_store.resolve("edit").unwrap().meta.source_hash,
-        edited.meta.source_hash
+        toml::from_str::<Table>(
+            &fs::read_to_string(edit_root.path().join("scripts/edit/meta.toml")).unwrap()
+        )
+        .unwrap()["source_hash"]
+            .as_str(),
+        Some(edited.meta.source_hash.as_str())
     );
 }

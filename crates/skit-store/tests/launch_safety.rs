@@ -41,6 +41,7 @@ fn launch_refuses_an_idless_replacement_with_identical_metadata_but_different_by
     fs::write(directory.join("script.sh"), b"printf OLD").unwrap();
 
     let store = FileStore::new(root.path());
+    store.rebuild_registry().unwrap();
     let held = store.resolve("legacy").unwrap();
     let expected = content_hash(b"printf OLD");
 
@@ -97,6 +98,38 @@ fn launch_refuses_metadata_changed_after_the_form_was_built() {
             .unwrap_err(),
         RepositoryError::StaleEntry { .. }
     ));
+}
+
+#[test]
+fn a_hand_edited_copy_mode_executable_still_uses_its_recorded_binary() {
+    let root = TempDir::new().unwrap();
+    let binary = root.path().join("tool");
+    fs::write(&binary, b"binary").unwrap();
+    let store = FileStore::new(root.path());
+    let entry = store
+        .create(CreateEntry {
+            name: "Binary".to_owned(),
+            kind: EntryKind::parse("exe").unwrap(),
+            mode: StorageMode::Reference,
+            source: binary.display().to_string(),
+            workdir: "invoke".to_owned(),
+            description: String::new(),
+            payload: None,
+            settings: EntrySettings::default(),
+        })
+        .unwrap();
+    let metadata = store.entry_dir_path(&entry.slug).join("meta.toml");
+    let source = fs::read_to_string(&metadata).unwrap();
+    fs::write(
+        &metadata,
+        source.replace("mode = \"reference\"", "mode = \"copy\""),
+    )
+    .unwrap();
+
+    let fresh = store.resolve(entry.slug.as_str()).unwrap();
+    assert_eq!(store.payload_path(&fresh).unwrap(), binary);
+    let prepared = store.prepare_launch(&fresh, None).unwrap();
+    assert_eq!(prepared.payload_path(), Some(binary.as_path()));
 }
 
 #[test]

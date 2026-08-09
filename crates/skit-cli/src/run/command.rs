@@ -11,15 +11,19 @@ use std::{
 use clap::Args;
 use clap_complete::ArgValueCandidates;
 use skit_application::{
-    LibraryService, RepositoryError,
+    LibraryService, RepositoryError, RepositoryOperation,
+    delivery::{Assembly, transparency_messages},
     form_state::{FormStateService, StateWriteError, prefill},
     run_inputs::{RunInputError, assemble_run_inputs},
     tokens::TokenContext,
 };
-use skit_domain::{Entry, EntryId, EntrySettings};
+use skit_domain::{
+    Entry, EntryId, EntrySettings,
+    parameters::{ParamDecl, ParameterDelivery},
+};
 use skit_form::form_params;
 use skit_i18n::{Localize, Message};
-use skit_language::{LanguageError, inject_values, render_prompt_body};
+use skit_language::{LanguageError, inject_values_for_interpreter, render_prompt_body};
 use skit_runtime::{
     DependencyError, LaunchError, LaunchPaths, LaunchWarning, ProgramProbe, PromptRunner,
     SystemDependencyCommandRunner, SystemProbe, UvBootstrapError, build_launch_plan,
@@ -129,6 +133,8 @@ pub(crate) enum RunError {
     StateDirectoryUnavailable,
     #[error("prompt runner {name:?} is not configured")]
     RunnerNotFound { name: String },
+    #[error("--runner applies only to prompt entries, not {kind} entries")]
+    RunnerUnsupported { kind: String },
     #[error("--raw does not apply to {kind} entries because placeholders are part of the artifact")]
     RawUnsupported { kind: String },
     #[error("--raw cannot be combined with --set, --preset, or --save-preset")]
@@ -171,6 +177,9 @@ impl Localize for RunError {
             Self::RunnerNotFound { name } => {
                 Message::new("prompt runner {} is not configured").quoted(name)
             }
+            Self::RunnerUnsupported { kind } => {
+                Message::new("--runner applies only to prompt entries, not {} entries").with(kind)
+            }
             Self::RawUnsupported { kind } => Message::new(
                 "--raw does not apply to {} entries because placeholders are part of the artifact",
             )
@@ -188,11 +197,12 @@ impl Localize for RunError {
 impl RunError {
     pub(crate) const fn exit_code(&self) -> i32 {
         match self {
-            Self::Repository(error) => error.exit_class().code() as i32,
+            Self::Repository(error) => error.exit_class(RepositoryOperation::Launch).code() as i32,
             Self::InvalidSet { .. }
             | Self::UnknownSet { .. }
             | Self::PresetNotFound { .. }
             | Self::PresetWithoutFields
+            | Self::RunnerUnsupported { .. }
             | Self::RawUnsupported { .. }
             | Self::RawConflict => 2,
             Self::Launch(error) => error.exit_code(),
@@ -236,6 +246,11 @@ pub(crate) fn run_with_roots(
     let _plain = args.plain;
     let _no_input = args.no_input;
     let held = service.show(&args.selector)?;
+    if args.runner.is_some() && held.meta.kind.as_str() != "prompt" {
+        return Err(RunError::RunnerUnsupported {
+            kind: held.meta.kind.as_str().to_owned(),
+        });
+    }
     if args.raw && (!args.values.is_empty() || args.preset.is_some() || args.save_preset.is_some())
     {
         return Err(RunError::RawConflict);
@@ -384,7 +399,6 @@ pub(crate) fn run_with_roots(
     }
 
     let prepared = if args.dry_run {
-        let _ = service.claim_identity(&held)?;
         None
     } else {
         Some(data_store.prepare_launch(&held, expected_source_hash.as_deref())?)
@@ -490,11 +504,30 @@ pub(crate) fn run_with_roots(
                 "{}",
                 skit_i18n::format_text(
                     crate::cli::active_locale(),
-                    "Added a newline to keep the Pi prompt in message mode",
+                    "Warning: Pi would interpret the beginning of this prompt as a CLI option, file, or package command. skit prepended one newline and is continuing; the prompt delivered to Pi is one character longer than the rendered text.",
+                    &[],
+                )
+            ),
+            LaunchWarning::AmpOneShot => eprintln!(
+                "{}",
+                skit_i18n::format_text(
+                    crate::cli::active_locale(),
+                    "The built-in amp runner is one-shot: amp -x runs this prompt once and does not open an interactive session.",
                     &[],
                 )
             ),
         }
+    }
+
+    if !args.dry_run && prompt_sends_secret(&entry, &declarations, &assembly) {
+        eprintln!(
+            "{}",
+            skit_i18n::format_text(
+                crate::cli::active_locale(),
+                "Secret-marked values are never saved by skit, but this prompt sends them to the selected agent as plaintext; the agent may log or sync them.",
+                &[],
+            )
+        );
     }
 
     if args.forget_args {
@@ -508,6 +541,9 @@ pub(crate) fn run_with_roots(
         return Ok(0);
     }
 
+    for message in transparency_messages(&assembly, &plan.display) {
+        println!("{}", message.localize(crate::cli::active_locale()));
+    }
     let exit = execute_launch(&plan)?;
     let slug = &entry.slug;
     let fields = &declarations;
@@ -524,6 +560,18 @@ pub(crate) fn run_with_roots(
     let recorded_values = (!args.raw).then_some(&raw_values);
     state.record_run(slug, i64::from(exit), &at, fields, recorded_values)?;
     Ok(exit)
+}
+
+fn prompt_sends_secret(entry: &Entry, declarations: &[ParamDecl], assembly: &Assembly) -> bool {
+    entry.meta.kind.as_str() == "prompt"
+        && declarations.iter().any(|field| {
+            field.secret
+                && field.delivery == ParameterDelivery::Placeholder
+                && assembly
+                    .command_values
+                    .get(&field.name)
+                    .is_some_and(|value| !value.is_empty())
+        })
 }
 
 fn apply_sets(
@@ -574,8 +622,7 @@ fn apply_runtime_defaults(mut entry: Entry, config: &BTreeMap<String, String>) -
     entry
 }
 
-#[cfg(test)]
-fn source_text(
+pub(crate) fn source_text(
     store: &FileStore,
     entry: &Entry,
     settings: &EntrySettings,
@@ -627,7 +674,14 @@ fn stage_injected_source(
         return Ok(None);
     }
     let kind = entry.meta.kind.as_str();
-    let rewritten = inject_values(kind, source, declarations, &assembly.inject_values)?;
+    let interpreter = EntrySettings::from_meta(&entry.meta).interpreter;
+    let rewritten = inject_values_for_interpreter(
+        kind,
+        source,
+        declarations,
+        &assembly.inject_values,
+        (!interpreter.is_empty()).then_some(interpreter.as_str()),
+    )?;
     let entry_dir = store.entry_dir_path(&entry.slug);
     sweep_staged_sources(&entry_dir);
     let original = store.payload_path(entry)?;
@@ -734,7 +788,7 @@ fn configured_runner(config: &FileConfigStore, name: &str) -> Result<PromptRunne
     })
 }
 
-fn token_context() -> TokenContext {
+pub(crate) fn token_context() -> TokenContext {
     let utc = OffsetDateTime::now_utc();
     let local = UtcOffset::current_local_offset().map_or(utc, |offset| utc.to_offset(offset));
     let time = local.time();
@@ -884,6 +938,45 @@ mod tests {
     }
 
     #[test]
+    fn only_a_nonempty_secret_prompt_placeholder_crosses_the_agent_warning_boundary() {
+        let prompt = entry("prompt", "");
+        let command = entry("command", "");
+        let mut field = ParamDecl::new("api_key");
+        field.delivery = ParameterDelivery::Placeholder;
+        field.secret = true;
+        let sent = skit_application::delivery::Assembly {
+            command_values: BTreeMap::from([("api_key".to_owned(), "hunter2".to_owned())]),
+            ..Default::default()
+        };
+
+        assert!(prompt_sends_secret(
+            &prompt,
+            std::slice::from_ref(&field),
+            &sent
+        ));
+        assert!(!prompt_sends_secret(
+            &command,
+            std::slice::from_ref(&field),
+            &sent
+        ));
+
+        field.delivery = ParameterDelivery::Flag;
+        assert!(!prompt_sends_secret(&prompt, &[field.clone()], &sent));
+        field.delivery = ParameterDelivery::Placeholder;
+        field.secret = false;
+        assert!(!prompt_sends_secret(&prompt, &[field.clone()], &sent));
+        field.secret = true;
+        assert!(!prompt_sends_secret(
+            &prompt,
+            &[field],
+            &skit_application::delivery::Assembly {
+                command_values: BTreeMap::from([("api_key".to_owned(), String::new())]),
+                ..Default::default()
+            }
+        ));
+    }
+
+    #[test]
     fn run_error_codes_and_set_parser_cover_each_contract_class() {
         let errors = [
             (
@@ -1015,7 +1108,7 @@ mod tests {
         .unwrap();
         assert!(!stale.exists());
         assert!(live.exists());
-        assert_eq!(fs::read_to_string(&staged.path).unwrap(), "NAME=new\n");
+        assert_eq!(fs::read_to_string(&staged.path).unwrap(), "NAME='new'\n");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;

@@ -1,31 +1,215 @@
-schema = 1
+# The performance contract (docs/design/benchmarks.md — "Budgets").
+#
+# tier = "enforced": `skit-bench check` fails on violation. Use this tier only
+#   for deterministic or ratchet-safe metrics. Every row has provenance context.
+# tier = "target": the aspirational contract. Each run reports it, but it does
+#   not fail CI until a future change deliberately moves the row to enforced.
+# ratchet = true: the bound comes from a measured value plus headroom.
+#   `skit-bench check --propose` refreshes it. Use CI artifacts only. The command
+#   refuses a local run or a dirty tree because the census depends on the platform
+#   and Python version. It also refuses to widen a bound unless you pass
+#   --allow-regression. Propose leaves non-ratchet contract values unchanged.
+# context.pr / context.commit: the source of a refreshed bound. A pull-request
+#   artifact uses the PR number because GitHub's ephemeral merge commit does not
+#   remain available. Other artifacts use the measured commit.
+#
+# Regenerate this file with `skit-bench check results.json --propose`. Keep prose
+# in `note` fields, not in comments below this header.
 
 [[budget]]
-metric = "repository.python_implementation_files"
-max = 0
+metric = "footprint.wheel_bytes"
+max = 20971520
 tier = "enforced"
-note = "The Rust cutover cannot add Python implementation or tooling files."
+profiles = ["pr", "full"]
+note = "The binary wheel must stay below 20 MiB. This replaces the Python wheel's 1 MiB architecture-specific ceiling."
 
-[[budget]]
-metric = "pipeline.skipped_count"
-max = 0
-tier = "enforced"
-note = "The reference pipeline cannot skip a required measurement."
+[budget.context]
+commit = "rust-cutover"
+date = "2026-08-08"
 
 [[budget]]
 metric = "binary.release_bytes"
 max = 20971520
 tier = "enforced"
-note = "The stripped release binary cannot exceed 20 MiB."
+profiles = ["pr", "full"]
+note = "The stripped release binary must stay below 20 MiB."
+
+[budget.context]
+commit = "rust-cutover"
+date = "2026-08-08"
 
 [[budget]]
-metric = "startup.version.mean_ms"
-max = 50
-tier = "target"
-note = "The version command should complete in 50 ms on the reference runner."
+metric = "repository.python_implementation_files"
+max = 0
+tier = "enforced"
+profiles = ["pr", "full"]
+note = "The Rust product cannot add Python implementation or benchmark tooling."
+
+[budget.context]
+commit = "rust-cutover"
+date = "2026-08-08"
 
 [[budget]]
-metric = "startup.list_empty.mean_ms"
+metric = "imports.version.modules"
+max = 165
+tier = "enforced"
+ratchet = true
+headroom = 0.1
+note = "The native binary has no Python import graph. Keep the latest-main identifier and ratchet."
+
+[budget.context]
+python = "3.13"
+pr = "33"
+date = "2026-07-26"
+
+[[budget]]
+metric = "imports.list_json.n0.modules"
+max = 270
+tier = "enforced"
+ratchet = true
+headroom = 0.1
+note = "The native binary has no Python import graph. Keep the empty-library identifier and ratchet."
+
+[budget.context]
+python = "3.13"
+pr = "33"
+date = "2026-07-26"
+
+[[budget]]
+metric = "imports.list_json.n100.modules"
+max = 274
+tier = "enforced"
+ratchet = true
+headroom = 0.1
+note = "The native binary has no Python import graph. Keep the populated-library identifier and ratchet."
+
+[budget.context]
+python = "3.13"
+pr = "33"
+date = "2026-07-26"
+
+[[budget]]
+metric = "imports.list_json.n100.has_tree_sitter"
+max = 0
+tier = "enforced"
+note = "Listing must not initialize a parser grammar."
+
+[budget.context]
+pr = "33"
+date = "2026-07-25"
+
+[[budget]]
+metric = "pipeline.skipped_count"
+max = 0
+tier = "enforced"
+profiles = ["pr"]
+platform = "linux-x86_64"
+ci_only = true
+note = "The PR profile cannot silently lose a measurement on the reference platform."
+
+[budget.context]
+commit = "366d6d4"
+date = "2026-07-20"
+
+[[budget]]
+metric = "pipeline.skipped_count"
+max = 0
+tier = "enforced"
+profiles = ["full"]
+platform = "linux-x86_64"
+ci_only = true
+note = "The full profile cannot silently lose its closure, JavaScript, or syscall measurements."
+
+[budget.context]
+commit = "366d6d4"
+date = "2026-07-20"
+
+[[budget]]
+metric = "startup.version.over_python_ms"
 max = 75
 tier = "target"
-note = "An empty JSON library read should complete in 75 ms on the reference runner."
+note = "skit --version at most 75 ms over a bare Python process."
+
+[[budget]]
+metric = "scale.list_json.per_entry_us"
+max = 250
+tier = "target"
+note = "The JSON-list slope stays below 250 microseconds per entry."
+
+[[budget]]
+metric = "tui.first_idle.n1000.median_ms"
+max = 800
+tier = "target"
+note = "The TUI reaches its first idle state within 800 ms at 1,000 entries."
+
+[[budget]]
+metric = "rss.version.peak_kib"
+max = 65536
+tier = "target"
+note = "The version command uses at most 64 MiB peak RSS."
+
+[[budget]]
+metric = "rss.list_json.n1000.peak_kib"
+max = 65536
+tier = "target"
+note = "JSON listing uses at most 64 MiB peak RSS at 1,000 entries."
+
+[[budget]]
+metric = "tui.rss.n1000.peak_kib"
+max = 98304
+tier = "target"
+note = "The TUI uses at most 96 MiB peak RSS at 1,000 entries."
+
+[[budget]]
+metric = "footprint.closure_bytes"
+max = 67108864
+tier = "target"
+profiles = ["full"]
+note = "The installed dependency closure stays below 64 MiB."
+
+[[budget]]
+metric = "imports.version.has_typer"
+max = 0
+tier = "enforced"
+note = "The version path does not load Typer."
+
+[budget.context]
+pr = "33"
+date = "2026-07-25"
+
+[[budget]]
+metric = "imports.version.has_rich"
+max = 0
+tier = "enforced"
+note = "The version path does not load Rich."
+
+[budget.context]
+pr = "33"
+date = "2026-07-25"
+
+[[budget]]
+metric = "imports.version.has_textual"
+max = 0
+tier = "enforced"
+note = "The version path does not load Textual."
+
+[budget.context]
+pr = "33"
+date = "2026-07-25"
+
+[[budget]]
+metric = "imports.version.has_tree_sitter"
+max = 0
+tier = "enforced"
+note = "The version path does not initialize a parser grammar."
+
+[budget.context]
+pr = "33"
+date = "2026-07-25"
+
+[[budget]]
+metric = "syscalls.list_json.network"
+max = 0
+tier = "target"
+profiles = ["full"]
+note = "Warm read-only paths use no network system calls."

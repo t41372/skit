@@ -35,6 +35,8 @@ pub struct PromptRunner {
 pub enum LaunchWarning {
     /// skit added one newline to keep a Pi prompt in message mode.
     PiPromptProtected,
+    /// The built-in Amp runner executes one prompt and does not open a session.
+    AmpOneShot,
 }
 
 /// Inspect programs and paths without starting a process.
@@ -45,6 +47,10 @@ pub trait ProgramProbe: std::fmt::Debug {
     fn is_file(&self, path: &Path) -> bool;
     /// Return true when `path` is a directory.
     fn is_dir(&self, path: &Path) -> bool;
+    /// Return true when any filesystem object exists at `path`.
+    fn exists(&self, path: &Path) -> bool {
+        self.is_file(path) || self.is_dir(path)
+    }
     /// Return true when `path` can be executed directly.
     fn is_executable(&self, path: &Path) -> bool;
 }
@@ -64,6 +70,10 @@ impl ProgramProbe for SystemProbe {
 
     fn is_dir(&self, path: &Path) -> bool {
         path.is_dir()
+    }
+
+    fn exists(&self, path: &Path) -> bool {
+        path.exists()
     }
 
     fn is_executable(&self, path: &Path) -> bool {
@@ -120,11 +130,13 @@ pub enum LaunchError {
     /// A custom work directory is not absolute.
     #[error("custom working directory must be absolute: {value}")]
     InvalidWorkdir { value: String },
-    /// The command template needs a value that is not available.
-    #[error("command template needs a value for {name}")]
+    /// One or more managed command placeholders do not have values.
+    #[error("Missing parameter values: {name}")]
     MissingTemplateValue { name: String },
-    /// A placeholder is inside a shell quote context that skit does not rewrite.
-    #[error("command template placeholder {name} is inside shell quotes")]
+    /// A placeholder is in double quotes nested inside a backtick substitution.
+    #[error(
+        "Can't safely fill in a value inside double quotes nested in a `…` command substitution — the shell strips one layer of escaping there. Rewrite that part of the template with $(…) instead of backticks."
+    )]
     UnsafeTemplatePlaceholder { name: String },
     /// A prompt needs a selected runner.
     #[error("prompt runner is required")]
@@ -186,11 +198,11 @@ impl Localize for LaunchError {
                 Message::new("custom working directory must be absolute: {}").with(value)
             }
             Self::MissingTemplateValue { name } => {
-                Message::new("command template needs a value for {}").with(name)
+                Message::new("Missing parameter values: {}").with(name)
             }
-            Self::UnsafeTemplatePlaceholder { name } => {
-                Message::new("command template placeholder {} is inside shell quotes").with(name)
-            }
+            Self::UnsafeTemplatePlaceholder { .. } => Message::new(
+                "Can't safely fill in a value inside double quotes nested in a `…` command substitution — the shell strips one layer of escaping there. Rewrite that part of the template with $(…) instead of backticks.",
+            ),
             Self::PromptRunnerRequired => Message::new("prompt runner is required"),
             Self::PromptBodyRequired => Message::new("prompt body is required"),
             Self::InvalidPromptRunner { name } => Message::new(
@@ -295,6 +307,10 @@ impl<P: ProgramProbe> ProgramProbe for PreviewProbe<'_, P> {
         self.local.is_dir(path)
     }
 
+    fn exists(&self, path: &Path) -> bool {
+        self.local.exists(path)
+    }
+
     fn is_executable(&self, path: &Path) -> bool {
         self.local.is_executable(path)
     }
@@ -315,7 +331,7 @@ fn build_launch_plan_inner<P: ProgramProbe>(
             return Err(LaunchError::MissingNeed { name: need.clone() });
         }
     }
-    let cwd = resolve_workdir(entry, paths, probe)?;
+    let cwd = resolve_launch_workdir(entry, paths, probe)?;
     let kind = entry.meta.kind.as_str();
 
     let mut warnings = Vec::new();
@@ -329,7 +345,7 @@ fn build_launch_plan_inner<P: ProgramProbe>(
         "lua" => interpreted_plan(paths, assembly, interpreter(&settings, "lua"), &[], probe)?,
         "r" => r_plan(paths, assembly, &settings, probe)?,
         "js" | "ts" => javascript_plan(paths, assembly, &settings, probe)?,
-        "exe" => direct_plan(paths, assembly, probe)?,
+        "exe" => direct_plan(entry, assembly, probe)?,
         "command" => command_plan(assembly, &settings, probe)?,
         "prompt" => {
             let plan = prompt_plan(
@@ -340,6 +356,9 @@ fn build_launch_plan_inner<P: ProgramProbe>(
                 probe,
             )?;
             warnings.extend(plan.warning);
+            if prompt_runner.is_some_and(is_builtin_amp_runner) {
+                warnings.push(LaunchWarning::AmpOneShot);
+            }
             (plan.program, plan.args, plan.display_args)
         }
         _ => {
@@ -358,6 +377,11 @@ fn build_launch_plan_inner<P: ProgramProbe>(
         display,
         warnings,
     })
+}
+
+fn is_builtin_amp_runner(runner: &PromptRunner) -> bool {
+    runner.name == "amp"
+        && runner.argv == ["amp".to_owned(), "-x".to_owned(), "{{prompt}}".to_owned()]
 }
 
 fn python_plan<P: ProgramProbe>(
@@ -478,15 +502,15 @@ pub fn resolve_javascript_runtime<P: ProgramProbe>(
 }
 
 fn direct_plan<P: ProgramProbe>(
-    paths: &LaunchPaths,
+    entry: &Entry,
     assembly: &Assembly,
     probe: &P,
 ) -> Result<(PathBuf, Vec<String>, Vec<String>), LaunchError> {
-    let path = paths.script.clone();
-    if !probe.is_file(&path) {
+    let path = PathBuf::from(&entry.meta.source);
+    if !probe.exists(&path) {
         return Err(LaunchError::TargetMissing { path });
     }
-    if !probe.is_executable(&path) {
+    if !probe.is_file(&path) || !probe.is_executable(&path) {
         return Err(LaunchError::TargetNotExecutable { path });
     }
     Ok((path, assembly.args.clone(), assembly.masked_args.clone()))
@@ -497,8 +521,25 @@ fn command_plan<P: ProgramProbe>(
     settings: &EntrySettings,
     probe: &P,
 ) -> Result<(PathBuf, Vec<String>, Vec<String>), LaunchError> {
-    let command = render_command_template(&settings.template, &assembly.command_values)?;
-    let masked = render_command_template(&settings.template, &assembly.masked_command_values)?;
+    let missing = settings
+        .params
+        .iter()
+        .filter(|name| !assembly.command_values.contains_key(*name))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        return Err(LaunchError::MissingTemplateValue {
+            name: missing.join(", "),
+        });
+    }
+    let command = append_shell_args(
+        render_command_template(&settings.template, &assembly.command_values)?,
+        &assembly.args,
+    );
+    let masked = append_shell_args(
+        render_command_template(&settings.template, &assembly.masked_command_values)?,
+        &assembly.masked_args,
+    );
     #[cfg(windows)]
     {
         let shell = require_program("cmd.exe", probe)?;
@@ -517,6 +558,20 @@ fn command_plan<P: ProgramProbe>(
             vec!["-c".to_owned(), masked],
         ))
     }
+}
+
+fn append_shell_args(mut command: String, args: &[String]) -> String {
+    if !args.is_empty() {
+        command.push(' ');
+        command.push_str(
+            &args
+                .iter()
+                .map(|value| quote_shell_arg(value))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+    }
+    command
 }
 
 fn prompt_plan<P: ProgramProbe>(
@@ -552,7 +607,7 @@ fn prompt_plan<P: ProgramProbe>(
     let program = require_program(program_token, probe)?;
     let args = filled.into_iter().skip(1).collect::<Vec<_>>();
     let display_body = prompt_display_body.map_or_else(
-        || "<prompt>".to_owned(),
+        || "<rendered prompt omitted; use --dry-run to inspect it>".to_owned(),
         |body| {
             if protected {
                 format!("\n{body}")
@@ -660,77 +715,209 @@ fn prompt_argv_size(argv: &[String], platform: PromptPlatform) -> (usize, usize,
 
 /// Fill a command template with shell-quoted values.
 ///
-/// A placeholder inside existing quotes is refused. This rule is safe and deterministic.
+/// The template is user-authored shell text. skit replaces known `{name}` slots in one pass,
+/// restores template-level double-brace escapes, and leaves unknown slots unchanged. Replacement
+/// text is not scanned again, so braces in a value remain byte-exact.
 pub fn render_command_template(
     template: &str,
     values: &BTreeMap<String, String>,
 ) -> Result<String, LaunchError> {
-    let chars = template.chars().collect::<Vec<_>>();
-    let mut output = String::new();
-    let mut index = 0;
-    let mut quote = None;
-    let mut escaped = false;
+    #[cfg(windows)]
+    {
+        render_windows_command_template(template, values)
+    }
+    #[cfg(not(windows))]
+    {
+        render_posix_command_template(template, values)
+    }
+}
 
-    while index < chars.len() {
-        let character = chars[index];
-        if !cfg!(windows) && escaped {
-            output.push(character);
-            escaped = false;
-            index = index.saturating_add(1);
-            continue;
+#[derive(Clone, Copy, Debug)]
+enum TemplateToken<'a> {
+    OpenBrace,
+    CloseBrace,
+    Placeholder(&'a str),
+}
+
+#[derive(Clone, Copy, Debug)]
+struct TemplateTokenSpan<'a> {
+    start: usize,
+    end: usize,
+    token: TemplateToken<'a>,
+}
+
+fn next_template_token(template: &str, mut index: usize) -> Option<TemplateTokenSpan<'_>> {
+    let bytes = template.as_bytes();
+    while index < bytes.len() {
+        if bytes[index..].starts_with(b"{{") {
+            return Some(TemplateTokenSpan {
+                start: index,
+                end: index.saturating_add(2),
+                token: TemplateToken::OpenBrace,
+            });
         }
-        if !cfg!(windows) && character == '\\' && quote != Some('\'') {
-            output.push(character);
-            escaped = true;
-            index = index.saturating_add(1);
-            continue;
+        if bytes[index..].starts_with(b"}}") {
+            return Some(TemplateTokenSpan {
+                start: index,
+                end: index.saturating_add(2),
+                token: TemplateToken::CloseBrace,
+            });
         }
-        if character == '\'' && !cfg!(windows) && quote != Some('"') {
-            quote = if quote == Some('\'') {
-                None
-            } else {
-                Some('\'')
-            };
-            output.push(character);
-            index = index.saturating_add(1);
-            continue;
-        }
-        if character == '"' && quote != Some('\'') {
-            quote = if quote == Some('"') { None } else { Some('"') };
-            output.push(character);
-            index = index.saturating_add(1);
-            continue;
-        }
-        if character == '{' && chars.get(index + 1) == Some(&'{') {
-            output.push('{');
-            index = index.saturating_add(2);
-            continue;
-        }
-        if character == '}' && chars.get(index + 1) == Some(&'}') {
-            output.push('}');
-            index = index.saturating_add(2);
-            continue;
-        }
-        if character == '{'
-            && let Some(end) = chars[index + 1..].iter().position(|value| *value == '}')
-        {
-            let end = index + 1 + end;
-            let name = chars[index + 1..end].iter().collect::<String>();
-            if valid_placeholder(&name) {
-                if quote.is_some() {
-                    return Err(LaunchError::UnsafeTemplatePlaceholder { name });
-                }
-                let value = values
-                    .get(&name)
-                    .ok_or_else(|| LaunchError::MissingTemplateValue { name: name.clone() })?;
-                output.push_str(&quote_shell_arg(value));
-                index = end.saturating_add(1);
-                continue;
+        if bytes[index] == b'{' && (index == 0 || bytes[index - 1] != b'{') {
+            let name_start = index.saturating_add(1);
+            let mut end = name_start;
+            while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+                end = end.saturating_add(1);
+            }
+            if end < bytes.len()
+                && bytes[end] == b'}'
+                && bytes.get(end.saturating_add(1)) != Some(&b'}')
+                && let Some(name) = template.get(name_start..end)
+                && valid_placeholder(name)
+            {
+                return Some(TemplateTokenSpan {
+                    start: index,
+                    end: end.saturating_add(1),
+                    token: TemplateToken::Placeholder(name),
+                });
             }
         }
-        output.push(character);
-        index = index.saturating_add(1);
+        let character = template[index..]
+            .chars()
+            .next()
+            .expect("index is on a UTF-8 boundary");
+        index = index.saturating_add(character.len_utf8());
     }
+    None
+}
+
+#[cfg(windows)]
+fn render_windows_command_template(
+    template: &str,
+    values: &BTreeMap<String, String>,
+) -> Result<String, LaunchError> {
+    let mut output = String::new();
+    let mut position = 0;
+    while let Some(span) = next_template_token(template, position) {
+        output.push_str(&template[position..span.start]);
+        match span.token {
+            TemplateToken::OpenBrace => output.push('{'),
+            TemplateToken::CloseBrace => output.push('}'),
+            TemplateToken::Placeholder(name) => {
+                if let Some(value) = values.get(name) {
+                    output.push_str(&quote_windows_arg(value));
+                } else {
+                    output.push_str(&template[span.start..span.end]);
+                }
+            }
+        }
+        position = span.end;
+    }
+    output.push_str(&template[position..]);
+    Ok(output)
+}
+
+#[cfg(not(windows))]
+#[derive(Clone, Debug, Default)]
+struct PosixQuoteState {
+    frames: Vec<char>,
+    escape_pending: bool,
+}
+
+#[cfg(not(windows))]
+impl PosixQuoteState {
+    fn advance(&mut self, text: &str) {
+        let chars = text.chars().collect::<Vec<_>>();
+        let mut index = 0;
+        if self.escape_pending {
+            if chars.is_empty() {
+                return;
+            }
+            self.escape_pending = false;
+            index = 1;
+        }
+        while index < chars.len() {
+            let character = chars[index];
+            let top = self.frames.last().copied();
+            if top == Some('\'') {
+                if character == '\'' {
+                    self.frames.pop();
+                }
+            } else if character == '\\' {
+                if index.saturating_add(1) >= chars.len() {
+                    self.escape_pending = true;
+                    return;
+                }
+                index = index.saturating_add(1);
+            } else if character == '$' && chars.get(index.saturating_add(1)) == Some(&'(') {
+                self.frames.push('(');
+                index = index.saturating_add(1);
+            } else if matches!(character, '`' | '"') {
+                if top == Some(character) {
+                    self.frames.pop();
+                } else {
+                    self.frames.push(character);
+                }
+            } else if character == '\'' && top != Some('"') {
+                self.frames.push(character);
+            } else if character == ')' && top == Some('(') {
+                self.frames.pop();
+            }
+            index = index.saturating_add(1);
+        }
+    }
+
+    fn take_pending_escape(&mut self) -> bool {
+        std::mem::take(&mut self.escape_pending)
+    }
+
+    fn quote_value(&self, name: &str, value: &str) -> Result<String, LaunchError> {
+        match self.frames.last().copied() {
+            Some('\'') => Ok(value.replace('\'', "'\\''")),
+            Some('"') => {
+                if self.frames.contains(&'`') {
+                    return Err(LaunchError::UnsafeTemplatePlaceholder {
+                        name: name.to_owned(),
+                    });
+                }
+                let value = value.replace('\\', "\\\\").replace('"', "\\\"");
+                Ok(value.replace('$', "\\$").replace('`', "\\`"))
+            }
+            _ => Ok(quote_posix_arg(value)),
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn render_posix_command_template(
+    template: &str,
+    values: &BTreeMap<String, String>,
+) -> Result<String, LaunchError> {
+    let mut output = String::new();
+    let mut state = PosixQuoteState::default();
+    let mut position = 0;
+    while let Some(span) = next_template_token(template, position) {
+        let chunk = &template[position..span.start];
+        output.push_str(chunk);
+        state.advance(chunk);
+        let pending_escape = state.take_pending_escape();
+        match span.token {
+            TemplateToken::OpenBrace => output.push('{'),
+            TemplateToken::CloseBrace => output.push('}'),
+            TemplateToken::Placeholder(name) => {
+                if let Some(value) = values.get(name) {
+                    if pending_escape {
+                        output.push('\\');
+                    }
+                    output.push_str(&state.quote_value(name, value)?);
+                } else {
+                    output.push_str(&template[span.start..span.end]);
+                }
+            }
+        }
+        position = span.end;
+    }
+    output.push_str(&template[position..]);
     Ok(output)
 }
 
@@ -768,7 +955,11 @@ fn require_program<P: ProgramProbe>(name: &str, probe: &P) -> Result<PathBuf, La
         })
 }
 
-fn resolve_workdir<P: ProgramProbe>(
+/// Resolve the child working directory with the same rules used by launch planning.
+///
+/// Frontends use this projection for path completion. Keeping the resolver public prevents a
+/// form adapter from approximating `origin`, copy fallback, or custom-path validation.
+pub fn resolve_launch_workdir<P: ProgramProbe>(
     entry: &Entry,
     paths: &LaunchPaths,
     probe: &P,
@@ -1075,7 +1266,7 @@ mod private_tests {
             ),
             Err(LaunchError::TargetMissing { .. })
         ));
-        probe.files.push(paths().script);
+        probe.files.push(PathBuf::from("/bin/tool"));
         assert!(matches!(
             build_launch_plan(
                 &executable,
@@ -1105,10 +1296,10 @@ mod private_tests {
             ),
             Err(LaunchError::PromptRunnerRequired)
         ));
-        assert!(matches!(
-            render_command_template("tool {missing}", &BTreeMap::new()),
-            Err(LaunchError::MissingTemplateValue { .. })
-        ));
+        assert_eq!(
+            render_command_template("tool {missing}", &BTreeMap::new()).unwrap(),
+            "tool {missing}"
+        );
         assert_eq!(
             render_command_template(r#"tool \\"x" {{ok}} }}"#, &BTreeMap::new()).unwrap(),
             r#"tool \\"x" {ok} }"#

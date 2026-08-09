@@ -138,6 +138,30 @@ pub fn assemble(
     Ok(output)
 }
 
+/// Build the localized-safe semantic lines that disclose a launch before it starts.
+///
+/// The command is already masked by the runtime planner. Injection rows use the independently
+/// masked display values from [`Assembly`], so a frontend never has to reconstruct secrets from
+/// execution data.
+#[must_use]
+pub fn transparency_messages(assembly: &Assembly, command: &str) -> Vec<Message> {
+    let mut messages = Vec::new();
+    if !assembly.display.is_empty() {
+        let pairs = assembly
+            .display
+            .iter()
+            .map(|(name, value)| format!("{name} = {value}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        messages.push(Message::new("→ inject: {}").with(pairs));
+        messages.push(Message::new(
+            "  (written to a temporary copy, deleted after the run; your original file is untouched)",
+        ));
+    }
+    messages.push(Message::new("→ {}").with(command));
+    messages
+}
+
 fn route_flag(
     declaration: &ParamDecl,
     prepared: Option<&PreparedValue>,

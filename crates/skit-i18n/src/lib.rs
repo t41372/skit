@@ -2,7 +2,10 @@
 
 #![forbid(unsafe_code)]
 
-use std::fmt::{Display, Write as _};
+use std::{
+    borrow::Cow,
+    fmt::{Display, Write as _},
+};
 
 /// One supported presentation locale.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -14,6 +17,30 @@ pub enum Locale {
     ZhCn,
     /// Traditional Chinese.
     ZhTw,
+    /// Stretched English used to expose hard-coded or clipped user-visible text.
+    Pseudo,
+}
+
+impl Locale {
+    /// Return the canonical public tag for this locale.
+    #[must_use]
+    pub const fn tag(self) -> &'static str {
+        match self {
+            Self::En => "en",
+            Self::ZhCn => "zh-CN",
+            Self::ZhTw => "zh-TW",
+            Self::Pseudo => "x-pseudo",
+        }
+    }
+}
+
+/// Return locale tags that the Preferences picker can offer.
+///
+/// The pseudo-locale stays available as an explicit configuration value, but it is a test aid and
+/// is not part of the normal picker.
+#[must_use]
+pub const fn available_locale_tags() -> &'static [&'static str] {
+    &["en", "zh-CN", "zh-TW"]
 }
 
 /// One complete catalog row.
@@ -143,6 +170,12 @@ const CATALOG: &[Translation] = &[
         "依從一開始的索引移除一個格式錯誤的原始列",
     ),
     row!(
+        "Remove one malformed raw row by its zero-based index or `container`",
+        "按从零开始的索引或 `container` 删除一个格式错误的原始行",
+        "依從零開始的索引或 `container` 移除一個格式錯誤的原始列",
+    ),
+    row!("Show version", "显示版本", "顯示版本"),
+    row!(
         "Read or update dependencies and required commands",
         "读取或更新依赖项和所需命令",
         "讀取或更新相依套件與必要命令",
@@ -226,13 +259,33 @@ const CATALOG: &[Translation] = &[
     row!("scan", "扫描", "掃描"),
     row!("lock", "锁定", "鎖定"),
     row!("remove", "删除", "移除"),
+    row!(
+        "{}'s stored copy isn't valid UTF-8, so skit can't rewrite the script's own dependency block — and that block is what uv reads. Edit it in the script itself: skit edit {}",
+        "{} 存储的副本不是合法的 UTF-8，因此 skit 无法改写脚本自己的依赖区块——而 uv 读取的正是该区块。请直接在脚本中修改：skit edit {}",
+        "{} 儲存的副本不是合法的 UTF-8，因此 skit 無法改寫腳本自己的相依套件區塊——而 uv 讀取的正是該區塊。請直接在腳本中修改：skit edit {}",
+    ),
     row!("rollback", "回滚", "復原"),
     row!(
         "rollback at {} failed after {}: {}",
         "在 {} 处回滚失败；原操作错误：{}；回滚错误：{}",
         "在 {} 處復原失敗；原始操作錯誤：{}；復原錯誤：{}",
     ),
+    row!(
+        "{} was removed from the library, but its files couldn't be fully deleted: {} — close any program using them, then delete the folder (or run `skit doctor --rebuild` to restore the entry and retry).",
+        "{} 已从程序库移除，但无法完整删除其文件：{} — 请关闭正在使用这些文件的程序，然后删除该文件夹（或运行 `skit doctor --rebuild` 恢复条目后重试）。",
+        "{} 已從程式庫移除，但無法完整刪除其檔案：{} — 請關閉正在使用這些檔案的程式，然後刪除該資料夾（或執行 `skit doctor --rebuild` 復原項目後重試）。",
+    ),
     row!("backup", "备份", "備份"),
+    row!(
+        "bash path is not a file: {}",
+        "Bash 路径不是文件：{}",
+        "Bash 路徑不是檔案：{}",
+    ),
+    row!(
+        "skit could not parse {}. skit backed up the file to {} before this change. Recover missing settings from the backup.",
+        "skit 无法解析 {}。skit 在更改前将文件备份到 {}。请从备份中恢复缺失的设置。",
+        "skit 無法解析 {}。skit 在變更前將檔案備份到 {}。請從備份中復原缺少的設定。",
+    ),
     row!("commit", "提交", "提交"),
     row!("reuse", "重新使用", "重新使用"),
     row!("initialize", "初始化", "初始化"),
@@ -267,6 +320,21 @@ const CATALOG: &[Translation] = &[
     row!("set permissions for", "设置权限", "設定權限"),
     row!("sync directory", "同步目录", "同步目錄"),
     row!("run", "运行", "執行"),
+    row!(
+        "The built-in amp runner is one-shot: amp -x runs this prompt once and does not open an interactive session.",
+        "内置 amp 执行器为单次运行模式：amp -x 只运行此提示词一次，不会打开交互式会话。",
+        "內建 amp 執行器為單次執行模式：amp -x 只執行此提示詞一次，不會開啟互動工作階段。",
+    ),
+    row!(
+        "Secret-marked values are never saved by skit, but this prompt sends them to the selected agent as plaintext; the agent may log or sync them.",
+        "标记为机密的值不会由 skit 保存，但此提示词会以明文将它们发送给所选 agent；agent 可能记录或同步这些值。",
+        "標記為機密的值不會由 skit 儲存，但此提示詞會以明文將它們傳送給所選 agent；agent 可能記錄或同步這些值。",
+    ),
+    row!(
+        "Warning: Pi would interpret the beginning of this prompt as a CLI option, file, or package command. skit prepended one newline and is continuing; the prompt delivered to Pi is one character longer than the rendered text.",
+        "警告：Pi 会把这个提示词的开头解释为命令行选项、文件或包管理命令。skit 已在前面添加一个换行符并继续运行；传递给 Pi 的提示词比渲染后的文本多一个字符。",
+        "警告：Pi 會把這個提示詞的開頭解讀為命令列選項、檔案或套件管理命令。skit 已在前面加上一個換行字元並繼續執行；傳給 Pi 的提示詞比渲染後的文字多一個字元。",
+    ),
     row!("rename", "重命名", "重新命名"),
     row!("start", "启动", "啟動"),
     row!("test", "测试", "測試"),
@@ -277,6 +345,209 @@ const CATALOG: &[Translation] = &[
     row!("Details", "详细信息", "詳細資料"),
     row!("Quit", "退出", "結束"),
     row!("Reload", "重新加载", "重新載入"),
+    row!("Rerun", "重新运行", "重新執行"),
+    row!("Entry settings", "条目设置", "項目設定"),
+    row!("Edit source", "编辑源文件", "編輯來源"),
+    row!("Add entry", "添加条目", "新增項目"),
+    row!("Detail pane", "详情窗格", "詳細資料窗格"),
+    row!(
+        "The copy is kept by skit; your original file is never modified.",
+        "副本由 skit 保管；你的原始文件永远不会被改动。",
+        "副本由 skit 保管；你的原始檔永遠不會被改動。",
+    ),
+    row!(
+        "Linked to the original: {}",
+        "链接原文件:{}",
+        "連結原檔：{}",
+    ),
+    row!(
+        "(no description — add one in Entry settings)",
+        "（没有说明——可在条目设置中添加）",
+        "（沒有說明——可在條目設定中加入）",
+    ),
+    row!("Health check", "健康检查", "健康檢查"),
+    row!(
+        "Issues (Enter jumps to the entry):",
+        "问题（按回车跳转到条目）：",
+        "問題（按 Enter 跳至項目）：",
+    ),
+    row!("uv: {}", "uv：{}", "uv：{}"),
+    row!("uv: not required", "uv：不需要", "uv：不需要"),
+    row!(
+        "uv: not found. Install it from https://docs.astral.sh/uv/getting-started/installation/",
+        "uv：未找到。请从 https://docs.astral.sh/uv/getting-started/installation/ 安装。",
+        "uv：找不到。請從 https://docs.astral.sh/uv/getting-started/installation/ 安裝。",
+    ),
+    row!(
+        "{} entry registered",
+        "已注册 {} 个条目",
+        "已登錄 {} 個項目"
+    ),
+    row!(
+        "{} entries registered",
+        "已注册 {} 个条目",
+        "已登錄 {} 個項目",
+    ),
+    row!(
+        "Malformed agent (runner) rows in config: {} — fix them in Preferences → Manage agents",
+        "配置中格式错误的代理（运行器）行：{}——请在“偏好设置 → 管理代理”中修复",
+        "組態中格式錯誤的代理（執行器）資料列：{}——請在「偏好設定 → 管理代理」中修復",
+    ),
+    row!("Mirrors: off", "镜像：关闭", "鏡像：關閉"),
+    row!("Mirrors: {}", "镜像：{}", "鏡像：{}"),
+    row!(
+        "Mirrors: off (saved: {})",
+        "镜像：关闭（已保存：{}）",
+        "鏡像：關閉（已儲存：{}）",
+    ),
+    row!(
+        "Library: {} ({} · {})",
+        "程序库：{}（{} 个条目 · {}）",
+        "程式庫：{}（{} 個項目 · {}）",
+    ),
+    row!(
+        "Index rebuilt: {} entry",
+        "索引已重建：{} 个条目",
+        "索引已重建：{} 個項目"
+    ),
+    row!(
+        "Index rebuilt: {} entries",
+        "索引已重建：{} 个条目",
+        "索引已重建：{} 個項目",
+    ),
+    row!("Jump to entry", "跳转到条目", "跳至項目"),
+    row!("Rebuild index", "重建索引", "重建索引"),
+    row!(
+        "New agent (runner)",
+        "新建代理（运行器）",
+        "新增代理（執行器）"
+    ),
+    row!(
+        "Edit agent (runner)",
+        "编辑代理（运行器）",
+        "編輯代理（執行器）"
+    ),
+    row!("Name, e.g. aider", "名称，例如 aider", "名稱，例如 aider"),
+    row!(
+        "Command, e.g. aider --message {{prompt}}",
+        "命令，例如 aider --message {{prompt}}",
+        "命令，例如 aider --message {{prompt}}",
+    ),
+    row!(
+        "{{prompt}} marks where the prompt text goes. Each word becomes one argument — quotes group words, and no shell is involved.",
+        "{{prompt}} 标记提示词文本的位置。每个词会成为一个参数；引号可组合多个词，且不会调用 shell。",
+        "{{prompt}} 標記提示詞文字的位置。每個詞會成為一個引數；引號可組合多個詞，且不會呼叫 shell。",
+    ),
+    row!(
+        "The agents prompt entries run with. Pick one to edit or remove it.",
+        "提示词条目使用这些代理运行。请选择一个代理进行编辑或删除。",
+        "提示詞項目使用這些代理執行。請選擇一個代理來編輯或移除。",
+    ),
+    row!(
+        "No agents configured yet.",
+        "尚未配置代理。",
+        "尚未設定代理。",
+    ),
+    row!(
+        "Remove the malformed prompt runner container?",
+        "删除格式错误的提示词运行器容器？",
+        "移除格式錯誤的提示詞執行器容器？",
+    ),
+    row!(
+        "Remove malformed runner row \"{}\"?",
+        "删除格式错误的运行器行“{}”？",
+        "移除格式錯誤的執行器資料列「{}」？",
+    ),
+    row!(
+        "Remove the agent \"{}\"?",
+        "删除代理“{}”？",
+        "移除代理「{}」？",
+    ),
+    row!(
+        "{} prompt pins this runner and will need another runner before it can run again.",
+        "有 {} 个提示词固定使用此运行器，需要改用其他运行器后才能再次运行。",
+        "有 {} 個提示詞固定使用此執行器，需要改用其他執行器後才能再次執行。",
+    ),
+    row!("Keep", "保留", "保留"),
+    row!(
+        "the launch target is gone from disk",
+        "启动目标已不在磁盘上",
+        "啟動目標已不在磁碟上",
+    ),
+    row!(
+        "form definitions are out of sync (open Entry settings → Resync)",
+        "表单定义不同步（请打开“条目设置 → 重新同步”）",
+        "表單定義不同步（請開啟「項目設定 → 重新同步」）",
+    ),
+    row!(
+        "missing external command(s): {}",
+        "缺少外部命令：{}",
+        "缺少外部命令：{}",
+    ),
+    row!(
+        "a run would refuse to start — {}",
+        "运行将被拒绝启动——{}",
+        "執行將被拒絕啟動——{}",
+    ),
+    row!(
+        "the prompt value is not a table; repair it before runner management",
+        "prompt 值不是表；请先修复再管理运行器",
+        "prompt 值不是表格；請先修復再管理執行器",
+    ),
+    row!(
+        "the prompt.runners value is not a list; repair it before runner management",
+        "prompt.runners 值不是列表；请先修复再管理运行器",
+        "prompt.runners 值不是清單；請先修復再管理執行器",
+    ),
+    row!(
+        "Type the agent's command, e.g. mycli run {{prompt}}",
+        "请输入代理命令，例如 mycli run {{prompt}}",
+        "請輸入代理命令，例如 mycli run {{prompt}}",
+    ),
+    row!(
+        "The command needs the {{prompt}} slot exactly once — that's where the rendered prompt lands.",
+        "命令必须且只能包含一个 {{prompt}} 插槽；渲染后的提示词会放在这里。",
+        "命令必須且只能包含一個 {{prompt}} 插槽；算繪後的提示詞會放在這裡。",
+    ),
+    row!(
+        "{{prompt}} can't be the command itself — the first word must be the program to run.",
+        "{{prompt}} 不能作为命令本身；第一个词必须是要运行的程序。",
+        "{{prompt}} 不能作為命令本身；第一個詞必須是要執行的程式。",
+    ),
+    row!(
+        "Runner commands take only the {{prompt}} slot — single-brace text is literal, and other {{holes}} aren't supported.",
+        "运行器命令只接受 {{prompt}} 插槽；单花括号文本按原样处理，不支持其他 {{holes}}。",
+        "執行器命令只接受 {{prompt}} 插槽；單花括號文字會原樣處理，不支援其他 {{holes}}。",
+    ),
+    row!("A name is required.", "名称为必填项。", "名稱為必填欄位。"),
+    row!(
+        "The command must be a list of text arguments.",
+        "命令必须是文本参数列表。",
+        "命令必須是文字引數清單。",
+    ),
+    row!(
+        "This runner row isn't a table.",
+        "此运行器行不是表。",
+        "此執行器資料列不是表格。",
+    ),
+    row!(
+        "Another row already uses this runner name.",
+        "另一行已使用此运行器名称。",
+        "另一個資料列已使用此執行器名稱。",
+    ),
+    row!(
+        "This runner row is malformed.",
+        "此运行器行格式错误。",
+        "此執行器資料列格式錯誤。",
+    ),
+    row!(
+        "Unbalanced quotes in the command.",
+        "命令中的引号不成对。",
+        "命令中的引號不成對。",
+    ),
+    row!("Help", "帮助", "說明"),
+    row!("Previous field", "上一个字段", "上一個欄位"),
+    row!("Close", "关闭", "關閉"),
     row!(
         "damaged entries hidden",
         "个损坏条目已隐藏",
@@ -289,6 +560,7 @@ const CATALOG: &[Translation] = &[
     composable!("Arguments:", "参数：", "引數："),
     composable!("Print help", "显示帮助", "顯示說明"),
     composable!("Print version", "显示版本", "顯示版本"),
+    row!("Show version.", "显示版本。", "顯示版本。"),
     composable!("error: ", "错误：", "錯誤："),
     composable!("error:", "错误：", "錯誤："),
     composable!("tip: ", "提示：", "提示："),
@@ -428,6 +700,29 @@ const CATALOG: &[Translation] = &[
     ),
     row!("Added: {} ({})", "已添加：{} ({})", "已新增：{} ({})"),
     row!(
+        "Added: {} ({} mode)",
+        "已添加：{}（{} 模式）",
+        "已新增：{}（{} 模式）",
+    ),
+    row!("Added: {}", "已添加：{}", "已新增：{}"),
+    row!("Description: {}", "说明：{}", "說明：{}"),
+    row!("Managed parameters: {}", "受管参数：{}", "受管參數：{}",),
+    row!(
+        "Detected parameters: {} (the run form asks for them; your last values are remembered)",
+        "检测到的参数：{}（运行表单会询问这些参数，并记住你上次输入的值）",
+        "偵測到的參數：{}（執行表單會詢問這些參數，並記住你上次輸入的值）",
+    ),
+    row!(
+        "Secret parameter values are never saved by skit: {}",
+        "skit 永远不会保存机密参数值：{}",
+        "skit 永遠不會儲存機密參數值：{}",
+    ),
+    row!(
+        "When this prompt runs, the selected agent receives those values as plaintext and may log or sync them.",
+        "运行此提示词时，所选代理会以明文接收这些值，并可能记录或同步它们。",
+        "執行此提示詞時，所選代理會以明文接收這些值，並可能記錄或同步它們。",
+    ),
+    row!(
         "Description updated: {} ({})",
         "说明已更新：{} ({})",
         "說明已更新：{} ({})",
@@ -441,9 +736,215 @@ const CATALOG: &[Translation] = &[
     row!("Edited: {} ({})", "已编辑：{} ({})", "已編輯：{} ({})"),
     row!("Set: {}={}", "已设置：{}={}", "已設定：{}={}"),
     row!("Added runner: {}", "已添加运行器：{}", "已新增執行器：{}"),
+    row!(
+        "Runner {} added: {}",
+        "运行器 {} 已添加：{}",
+        "執行器 {} 已新增：{}",
+    ),
+    row!(
+        "Runner {} updated: {}",
+        "运行器 {} 已更新：{}",
+        "執行器 {} 已更新：{}",
+    ),
+    row!(
+        "Runner {} removed.",
+        "运行器 {} 已删除。",
+        "執行器 {} 已移除。",
+    ),
+    row!(
+        "The runner {} already exists — pass --force to replace its command.",
+        "运行器 {} 已存在，请传入 --force 替换其命令。",
+        "執行器 {} 已存在，請傳入 --force 取代其命令。",
+    ),
+    row!(
+        "No agents are configured. Add one with: skit runner add mycli -- mycli run {{prompt}}",
+        "尚未配置 Agent。请运行以下命令添加：skit runner add mycli -- mycli run {{prompt}}",
+        "尚未設定 Agent。請執行以下命令新增：skit runner add mycli -- mycli run {{prompt}}",
+    ),
+    row!(
+        "The built-in amp preset uses amp -x and runs the prompt once; it does not open an interactive session.",
+        "内置 amp 预设使用 amp -x，只运行一次提示词，不会打开交互式会话。",
+        "內建 amp 預設使用 amp -x，只執行一次提示詞，不會開啟互動式工作階段。",
+    ),
+    row!(
+        "Unknown runner: {}. Configured runners: {}",
+        "未知运行器：{}。已配置的运行器：{}",
+        "未知執行器：{}。已設定的執行器：{}",
+    ),
+    row!(
+        "Unknown runner row: {}. Inspect with: skit runner list --all",
+        "未知运行器行：{}。请运行以下命令检查：skit runner list --all",
+        "未知執行器資料列：{}。請執行以下命令檢查：skit runner list --all",
+    ),
+    row!(
+        "Unknown runner row: container. Inspect with: skit runner list --all",
+        "未知运行器行：container。请运行以下命令检查：skit runner list --all",
+        "未知執行器資料列：container。請執行以下命令檢查：skit runner list --all",
+    ),
+    row!(
+        "Runner row {} is valid. Remove the agent by name instead: skit runner remove {}",
+        "运行器行 {} 有效。请改为按名称删除 Agent：skit runner remove {}",
+        "執行器資料列 {} 有效。請改為依名稱移除 Agent：skit runner remove {}",
+    ),
+    row!(
+        "1 prompt pins this runner and will need another runner before it can run again.",
+        "有 1 个提示词固定使用此运行器，需要改用其他运行器后才能再次运行。",
+        "有 1 個提示詞固定使用此執行器，需要改用其他執行器後才能再次執行。",
+    ),
+    row!(
+        "{} prompts pin this runner and will need another runner before they can run again.",
+        "有 {} 个提示词固定使用此运行器，需要改用其他运行器后才能再次运行。",
+        "有 {} 個提示詞固定使用此執行器，需要改用其他執行器後才能再次執行。",
+    ),
+    row!(
+        "Confirmation is required; pass --yes to remove the runner.",
+        "需要确认；请传入 --yes 删除运行器。",
+        "需要確認；請傳入 --yes 移除執行器。",
+    ),
+    row!(
+        "Remove the agent \"{}\"? [y/N]: ",
+        "删除 Agent“{}”？[y/N]：",
+        "移除 Agent「{}」？[y/N]：",
+    ),
+    row!(
+        "Remove runner row {} (\"{}\")? [y/N]: ",
+        "删除运行器行 {}（“{}”）？[y/N]：",
+        "移除執行器資料列 {}（「{}」）？[y/N]：",
+    ),
+    row!(
+        "Remove the malformed prompt runner container? [y/N]: ",
+        "删除格式错误的提示词运行器容器？[y/N]：",
+        "移除格式錯誤的提示詞執行器容器？[y/N]：",
+    ),
+    row!(
+        "The runner row changed before it could be removed; inspect again.",
+        "运行器行在删除前已更改；请重新检查。",
+        "執行器資料列在移除前已變更；請重新檢查。",
+    ),
+    row!(
+        "Malformed runner row {} removed.",
+        "格式错误的运行器行 {} 已删除。",
+        "格式錯誤的執行器資料列 {} 已移除。",
+    ),
+    row!(
+        "Malformed prompt runner container removed.",
+        "格式错误的提示词运行器容器已删除。",
+        "格式錯誤的提示詞執行器容器已移除。",
+    ),
     row!("Removed runner: {}", "已删除运行器：{}", "已移除執行器：{}"),
     row!("Saved preset: {}", "已保存预设：{}", "已儲存預設：{}"),
+    row!(
+        "Preset \"{}\" saved.",
+        "已存成参数组合“{}”。",
+        "已存成參數組合「{}」。",
+    ),
     row!("Deleted preset: {}", "已删除预设：{}", "已刪除預設：{}"),
+    row!(
+        "{} has no form fields, so there's nothing to save.",
+        "{} 没有表单字段，没有东西可存。",
+        "{} 沒有表單欄位，沒有東西可存。",
+    ),
+    row!(
+        "{} has no remembered values yet — run it once first.",
+        "{} 还没有记住的值——先运行一次。",
+        "{} 還沒有記住的值——先執行一次。",
+    ),
+    row!(
+        "Secret values are never stored in presets; skipped: {}",
+        "机密值不会存入参数组合;已跳过:{}",
+        "機密值不會存入參數組合;已略過:{}",
+    ),
+    row!(
+        "Preset \"{}\" saved for {}.",
+        "参数组合“{}”已为 {} 保存。",
+        "參數組合「{}」已為 {} 儲存。",
+    ),
+    row!(
+        "No presets for {} yet. Create one with: skit run {} --save-preset <preset>",
+        "{} 还没有参数组合。创建一个：skit run {} --save-preset <组合名>",
+        "{} 還沒有參數組合。建立一個：skit run {} --save-preset <組合名>",
+    ),
+    row!(
+        "Preset \"{}\" deleted from {}.",
+        "参数组合“{}”已从 {} 删除。",
+        "參數組合「{}」已從 {} 刪除。",
+    ),
+    row!(
+        "Unknown preset \"{}\". Available: {}",
+        "没有名为“{}”的参数组合。现有:{}",
+        "沒有名為「{}」的參數組合。現有:{}",
+    ),
+    row!(
+        "Leave empty to use the script's own default.",
+        "留空＝用脚本自己的默认值。",
+        "留空＝用腳本自己的預設。",
+    ),
+    row!(
+        "Leave empty and the script will ask you in the terminal.",
+        "留空＝运行时脚本自己在终端问你。",
+        "留空＝執行時腳本自己在終端機問你。",
+    ),
+    row!("required", "必填", "必填"),
+    row!("whole number", "整数", "整數"),
+    row!("number", "数字", "數字"),
+    row!("text", "文本", "文字"),
+    row!("on/off", "开/关", "開/關"),
+    row!("path", "路径", "路徑"),
+    row!("a whole number", "一个整数", "一個整數"),
+    row!("a number", "一个数字", "一個數字"),
+    row!("on or off", "开或关", "開或關"),
+    row!("never saved to disk", "永不保存到磁盘", "永不儲存至磁碟"),
+    row!("browse", "浏览", "瀏覽"),
+    row!("insert", "插入", "插入"),
+    row!("New agent…", "新建代理…", "新增代理…"),
+    row!(
+        "none yet — fill the form and press Ctrl+S to save one",
+        "尚无参数组合——填写表单后按 Ctrl+S 保存一个",
+        "尚無參數組合——填寫表單後按 Ctrl+S 儲存一個",
+    ),
+    row!(
+        "This script has subcommands skit can't model — type everything into the extra-arguments field.",
+        "此脚本含有 skit 无法建模的子命令——请在额外参数字段中输入全部内容。",
+        "此指令稿含有 skit 無法建模的子命令——請在額外參數欄位中輸入全部內容。",
+    ),
+    row!(
+        "skit couldn't read this script's argument declarations — type everything into the extra-arguments field.",
+        "skit 无法读取此脚本的参数声明——请在额外参数字段中输入全部内容。",
+        "skit 無法讀取此指令稿的參數宣告——請在額外參數欄位中輸入全部內容。",
+    ),
+    row!(
+        "{} needs {} — you typed {}.",
+        "{} 需要{}——你输入的是 {}。",
+        "{} 需要{}——你輸入的是 {}。",
+    ),
+    row!(
+        "{} must be one of: {}",
+        "{} 必须是以下值之一：{}",
+        "{} 必須是以下值之一：{}",
+    ),
+    row!(
+        "✓ matches {} file(s)",
+        "✓ 匹配 {} 个文件",
+        "✓ 符合 {} 個檔案",
+    ),
+    row!("⚠ matches no files yet", "⚠ 尚未匹配文件", "⚠ 尚未符合檔案"),
+    row!("Extra agent arguments", "额外代理参数", "額外代理參數"),
+    row!("Extra command arguments", "额外命令参数", "額外命令參數"),
+    row!(
+        "Extra arguments (passed to the script as-is)",
+        "额外参数（原样传给脚本）",
+        "額外參數（原樣傳給指令稿）",
+    ),
+    row!(
+        "Leave empty to read it from the environment variable {}.",
+        "留空＝从环境变量 {} 读取。",
+        "留空＝從環境變數 {} 讀取。",
+    ),
+    row!(
+        "Enter to read it from the environment variable {}.",
+        "直接按 Enter 就从环境变量 {} 读取。",
+        "直接按 Enter 就從環境變數 {} 讀取。",
+    ),
     row!(
         "Installed completion: {}",
         "已安装补全脚本：{}",
@@ -453,6 +954,86 @@ const CATALOG: &[Translation] = &[
         "Your draft was kept at {}",
         "草稿已保留在 {}",
         "草稿已保留在 {}",
+    ),
+    row!("# New prompt", "# 新提示词", "# 新提示詞"),
+    row!(
+        "Nothing was written, so nothing was added.",
+        "没有写入任何内容，因此没有添加任何条目。",
+        "未寫入任何內容，因此未新增任何項目。",
+    ),
+    row!(
+        "What would you like to add?",
+        "你想添加什么？",
+        "你想新增什麼？",
+    ),
+    row!(
+        "A file you already have — a script, program, or prompt",
+        "已有文件——脚本、程序或提示词",
+        "已有檔案——指令稿、程式或提示詞",
+    ),
+    row!(
+        "A new script, written in your editor",
+        "在编辑器中编写新脚本",
+        "在編輯器中撰寫新指令稿",
+    ),
+    row!(
+        "A new AI-agent prompt, written in your editor",
+        "在编辑器中编写新的 AI 代理提示词",
+        "在編輯器中撰寫新的 AI 代理提示詞",
+    ),
+    row!(
+        "A command template (e.g. ffmpeg -i {input})",
+        "命令模板（例如 ffmpeg -i {input}）",
+        "指令範本（例如 ffmpeg -i {input}）",
+    ),
+    row!("Which one?", "选择哪一个？", "選擇哪一個？"),
+    row!(
+        "Choose a number from 1 to 4.",
+        "请选择 1 到 4 之间的数字。",
+        "請選擇 1 到 4 之間的數字。",
+    ),
+    row!("Path to the file", "文件路径", "檔案路徑"),
+    row!("Name in skit", "skit 中的名称", "skit 中的名稱"),
+    row!("A name is required.", "名称为必填项。", "名稱為必填欄位。"),
+    row!(
+        "The name {} is already taken — pick another name.",
+        "名称 {} 已被使用——请选择其他名称。",
+        "名稱 {} 已被使用——請選擇其他名稱。",
+    ),
+    row!(
+        "Cancelled — nothing was added.",
+        "已取消——未添加任何条目。",
+        "已取消——未新增任何項目。",
+    ),
+    row!(
+        "{} need a source — pass the path in the same command (skit add PATH …) (nothing was added).",
+        "{} 需要源文件——请在同一命令中传入路径（skit add PATH …）（未添加任何条目）。",
+        "{} 需要來源檔案——請在同一指令中傳入路徑（skit add PATH …）（未新增任何項目）。",
+    ),
+    row!(
+        "{} need a source — pass the path in the same command (skit add PATH …), or pick a lane outright with {} (nothing was added).",
+        "{} 需要源文件——请在同一命令中传入路径（skit add PATH …），或直接用 {} 选择添加方式（未添加任何条目）。",
+        "{} 需要來源檔案——請在同一指令中傳入路徑（skit add PATH …），或直接用 {} 選擇新增方式（未新增任何項目）。",
+    ),
+    row!(
+        "Deleted the draft {}.",
+        "已删除草稿 {}。",
+        "已刪除草稿 {}。",
+    ),
+    row!(
+        "refusing to remove a file outside skit's drafts directory",
+        "拒绝删除 skit 草稿目录以外的文件",
+        "拒絕移除 skit 草稿目錄以外的檔案",
+    ),
+    row!(
+        "skit's drafts path is not an owned directory: {}",
+        "skit 的草稿路径不是其自有目录：{}",
+        "skit 的草稿路徑不是其自有目錄：{}",
+    ),
+    row!(
+        "source changed while the add review was open; review it again",
+        "源文件在添加审核期间发生了变化；请重新审核",
+        "來源檔案在新增檢查期間已變更；請重新檢查",
     ),
     row!("Dependencies: {}", "依赖项：{}", "相依套件：{}"),
     row!(
@@ -515,6 +1096,53 @@ const CATALOG: &[Translation] = &[
         "已安裝 Agent Skill：{}",
     ),
     row!(
+        "Agent directories on this machine:",
+        "此计算机上的 Agent 目录：",
+        "此電腦上的 Agent 目錄：",
+    ),
+    row!("user", "用户", "使用者"),
+    row!("project", "项目", "專案"),
+    row!(
+        "Install where? [1-{}] (1): ",
+        "安装到哪里？[1-{}] (1)：",
+        "要安裝到哪裡？[1-{}] (1)：",
+    ),
+    row!(
+        "Choose a number from 1 to {}.",
+        "请选择 1 到 {} 之间的数字。",
+        "請選擇 1 到 {} 之間的數字。",
+    ),
+    row!(
+        "Write the skill into {}? [Y/n] ",
+        "将 Skill 写入 {}？[Y/n] ",
+        "要將 Skill 寫入 {} 嗎？[Y/n] ",
+    ),
+    row!(
+        "Cancelled — nothing was written.",
+        "已取消，未写入任何内容。",
+        "已取消，未寫入任何內容。",
+    ),
+    row!(
+        "Use a named target (with optional --project) or --to — not both.",
+        "请使用命名目标（可选 --project）或 --to，不能同时使用。",
+        "請使用具名目標（可選 --project）或 --to，不能同時使用。",
+    ),
+    row!(
+        "Unknown target {}. Valid targets: claude, codex, agents.",
+        "未知目标 {}。有效目标：claude、codex、agents。",
+        "未知目標 {}。有效目標：claude、codex、agents。",
+    ),
+    row!(
+        "Nothing installed: name a target (claude, codex, agents) or pass --to DIR.",
+        "未安装任何内容：请指定目标（claude、codex、agents）或传入 --to DIR。",
+        "未安裝任何內容：請指定目標（claude、codex、agents）或傳入 --to DIR。",
+    ),
+    row!(
+        "No agent directories detected (~/.claude, ~/.codex, ./.agents, …). Pass --to DIR to choose one yourself.",
+        "未检测到 Agent 目录（~/.claude、~/.codex、./.agents 等）。请传入 --to DIR 自行选择。",
+        "未偵測到 Agent 目錄（~/.claude、~/.codex、./.agents 等）。請傳入 --to DIR 自行選擇。",
+    ),
+    row!(
         "Remove \"{}\"? [y/N]: ",
         "删除“{}”？[y/N]：",
         "移除「{}」？[y/N]：",
@@ -551,18 +1179,138 @@ const CATALOG: &[Translation] = &[
         "运行完成，退出状态为",
         "執行完成，結束狀態為",
     ),
+    row!(
+        "Run finished with exit status {}",
+        "运行完成，退出状态为 {}",
+        "執行完成，結束狀態為 {}",
+    ),
+    row!("Error: {}", "错误：{}", "錯誤：{}"),
+    row!(
+        "{} hasn't run yet — press Enter to fill the form first.",
+        "{} 尚未运行，请先按 Enter 填写表单。",
+        "{} 尚未執行，請先按 Enter 填寫表單。",
+    ),
+    row!("→ inject: {}", "→ 注入：{}", "→ 注入：{}"),
+    row!(
+        "  (written to a temporary copy, deleted after the run; your original file is untouched)",
+        "  （写入临时副本；运行后删除；原始文件不变）",
+        "  （寫入暫存副本；執行後刪除；原始檔不變）",
+    ),
+    row!("→ {}", "→ {}", "→ {}"),
     row!("warning: {}", "警告：{}", "警告：{}"),
+    row!(
+        "No entries yet. Add one with: skit add <path>",
+        "还没有任何条目。用 skit add <path> 添加一个。",
+        "還沒有任何條目。用 skit add <path> 加入一個。",
+    ),
+    row!("⚠ missing: {}", "⚠ 缺失:{}", "⚠ 遺失:{}"),
+    row!(
+        "Prompt {} isn't valid UTF-8 (invalid byte at offset {}).",
+        "提示词 {} 不是有效的 UTF-8（偏移量 {} 处存在无效字节）。",
+        "提示詞 {} 不是有效的 UTF-8（位移 {} 處有無效位元組）。",
+    ),
     row!("Slug", "短名", "短名"),
-    row!("Kind", "种类", "種類"),
-    row!("Kind: {}", "种类：{}", "種類：{}"),
+    row!("Kind", "类型", "類型"),
+    row!("Kind: {}", "类型：{}", "類型：{}"),
+    row!("Python", "Python", "Python"),
+    row!("Shell", "Shell", "Shell"),
+    row!("fish", "fish", "fish"),
+    row!("JavaScript", "JavaScript", "JavaScript"),
+    row!("TypeScript", "TypeScript", "TypeScript"),
+    row!("PowerShell", "PowerShell", "PowerShell"),
+    row!("Ruby", "Ruby", "Ruby"),
+    row!("Perl", "Perl", "Perl"),
+    row!("Lua", "Lua", "Lua"),
+    row!("R", "R", "R"),
+    row!("Program", "程序", "程式"),
+    row!("Command", "命令", "指令"),
+    row!("Prompt", "提示词", "提示詞"),
     row!("Storage mode", "存储模式", "儲存模式"),
     row!("Storage mode: {}", "存储模式：{}", "儲存模式：{}"),
     row!("Source: {}", "来源：{}", "來源：{}"),
     row!("Work directory: {}", "工作目录：{}", "工作目錄：{}"),
+    row!("Working directory: {}", "工作目录:{}", "工作目錄:{}"),
     row!("Missing: {}", "缺失：{}", "遺失：{}"),
     row!("Drift: {}", "漂移：{}", "偏移：{}"),
     row!("Interpreter: {}", "解释器：{}", "直譯器：{}"),
     row!("Template: {}", "模板：{}", "範本：{}"),
+    row!("Needs: {}", "所需命令：{}", "所需命令：{}"),
+    row!("Command template: {}", "命令模板:{}", "命令模板:{}"),
+    row!("Runner", "运行器", "執行器"),
+    row!("Runner: {}", "执行器:{}", "執行器:{}"),
+    row!("(asks at run time)", "(运行时询问)", "(執行時詢問)"),
+    row!(
+        "Variable insertion: off (the body travels as written)",
+        "变量插入:关闭(正文原样送达)",
+        "變量插入:關閉(內文原樣送達)",
+    ),
+    row!(
+        "skit could not model this script's own arguments; pass them after -- instead.",
+        "skit 无法读懂这个脚本自己的参数声明；请把参数放在 -- 之后直接传入。",
+        "skit 無法讀懂這支腳本自己的參數宣告；請把參數放在 -- 之後直接傳入。",
+    ),
+    row!(
+        "No form fields — arguments after -- go to the selected agent.",
+        "没有表单字段——接在 -- 之后的参数会传给所选 agent。",
+        "沒有表單欄位——接在 -- 之後的參數會傳給所選 agent。",
+    ),
+    row!(
+        "No form fields — arguments after -- are appended to the command.",
+        "没有表单字段——接在 -- 之后的参数会附加到命令末尾。",
+        "沒有表單欄位——接在 -- 之後的參數會附加到指令末尾。",
+    ),
+    row!(
+        "No form fields — arguments after -- pass straight through to the script.",
+        "没有表单字段——接在 -- 之后的参数会透传给脚本。",
+        "沒有表單欄位——接在 -- 之後的參數會透傳給腳本。",
+    ),
+    row!(
+        "Run it: skit run {}",
+        "运行:skit run {}",
+        "執行:skit run {}"
+    ),
+    row!("Parameter", "参数", "參數"),
+    row!("Type", "类型", "型別"),
+    row!("Required", "必填", "必填"),
+    row!("Default", "默认值", "預設值"),
+    row!("Choices", "可选值", "可選值"),
+    row!("Secret", "机密", "機密"),
+    row!("•••", "•••", "•••"),
+    row!(
+        "The parameter definitions for {} have drifted from the script:",
+        "{} 的参数定义与脚本内容已漂移:",
+        "{} 的參數定義與腳本內容已漂移:",
+    ),
+    row!(
+        "{} is no longer read from the environment (its ${...:-default} was removed or overridden by a plain assignment) — your value would be silently ignored. Re-add or resync.",
+        "{} 不再从环境变量读取(其 ${...:-default} 已被删除,或被普通赋值覆盖)——你设置的值会被悄悄忽略。请重新添加或执行 resync。",
+        "{} 不再從環境變數讀取(其 ${...:-default} 已被移除,或被普通賦值覆蓋)——你設定的值會被默默忽略。請重新加入或執行 resync。",
+    ),
+    row!(
+        "{}: injection target no longer exists (dropped from this run's form)",
+        "{}:找不到注入目标(已从本次表单剔除)",
+        "{}:找不到注入目標(已從本次表單剔除)",
+    ),
+    row!(
+        "{}: type changed from {} to {} in the source (still injected — double-check the value)",
+        "{}:源码中的类型已从 {} 变为 {}(仍会注入,请确认值)",
+        "{}:原始碼中的型別已從 {} 變為 {}(仍會注入,請確認值)",
+    ),
+    row!(
+        "{}: its prompt no longer matches a unique input/read call; falling back to position (still injected — double-check this lands on the right question, especially if it's a secret)",
+        "{}:其提示文字已无法对应到唯一的 input/read 调用;改以位置对应(仍会注入——请再次确认其对应到正确的问题,尤其是机密参数)",
+        "{}:其提示文字已無法對應到唯一的 input/read 呼叫;改以位置對應(仍會注入——請再次確認其對應到正確的問題,尤其是機密參數)",
+    ),
+    row!(
+        "To refresh the definitions, run: skit params {} --resync",
+        "若要更新定义,请运行:skit params {} --resync",
+        "若要更新定義,請執行:skit params {} --resync",
+    ),
+    row!(
+        "No longer in the prompt (the value would be ignored): {} — edit the body or update parameters with: skit params {}",
+        "提示词中已不存在(其值会被忽略):{}——编辑正文,或更新参数:skit params {}",
+        "提示詞中已不存在(其值會被忽略):{}——編輯內文,或更新參數:skit params {}",
+    ),
     row!("Prompt runner: {}", "提示词运行器：{}", "提示詞執行器：{}"),
     row!("Interpolation: {}", "插值：{}", "插值：{}"),
     row!("Parameters:", "参数：", "參數："),
@@ -598,12 +1346,75 @@ const CATALOG: &[Translation] = &[
     row!("on", "开启", "開啟"),
     row!("off", "关闭", "關閉"),
     row!("not set", "未设置", "未設定"),
+    row!(" (secret)", " (机密)", " (機密)"),
+    row!("{} ({}) = {}{}", "{}（{}）= {}{}", "{}（{}）= {}{}",),
+    row!(
+        "input() #{}: {}{}",
+        "input() 第 {} 个：{}{}",
+        "input() 第 {} 個：{}{}",
+    ),
+    row!(
+        "⚠ looks like a loop accumulator — probably not a parameter",
+        "⚠ 看起来是循环的累加变量，多半不是参数",
+        "⚠ 看起來是迴圈的累加變數，多半不是參數",
+    ),
+    row!(
+        "Select the values that skit should manage (Space toggles; Enter accepts)",
+        "选择由 skit 管理的值（空格切换；回车确认）",
+        "選擇由 skit 管理的值（空白鍵切換；Enter 確認）",
+    ),
+    row!(
+        "Found {} parameter candidate (constants / input() calls):",
+        "找到 {} 个候选参数（常量 / input() 调用）：",
+        "找到 {} 個候選參數（常數 / input() 呼叫）：",
+    ),
+    row!(
+        "Found {} parameter candidates (constants / input() calls):",
+        "找到 {} 个候选参数（常量 / input() 调用）：",
+        "找到 {} 個候選參數（常數 / input() 呼叫）：",
+    ),
+    row!(
+        "This script reads command-line arguments; the run form has an extra-arguments field for them.",
+        "这个脚本会读取命令行参数；运行表单中有一个额外参数字段可供填写。",
+        "這支腳本會讀取命令列參數；執行表單中有一個額外參數欄位可供填寫。",
+    ),
+    row!(
+        "This script parses its own arguments ({}); skit couldn't model them statically, so the run form offers an extra-arguments field.",
+        "这个脚本会自行解析参数（{}）；skit 无法静态建模这些参数，因此运行表单会提供一个额外参数字段。",
+        "這支腳本會自行解析參數（{}）；skit 無法靜態建立這些參數的模型，因此執行表單會提供一個額外參數欄位。",
+    ),
+    row!(
+        "✓ skit read this script's own arguments ({} field). Running it opens a form — nothing to memorize.",
+        "✓ skit 已读取这个脚本自己的参数（{} 个字段）。运行时会打开表单，无需记忆命令。",
+        "✓ skit 已讀取這支腳本自己的參數（{} 個欄位）。執行時會開啟表單，無需記憶指令。",
+    ),
+    row!(
+        "✓ skit read this script's own arguments ({} fields). Running it opens a form — nothing to memorize.",
+        "✓ skit 已读取这个脚本自己的参数（{} 个字段）。运行时会打开表单，无需记忆命令。",
+        "✓ skit 已讀取這支腳本自己的參數（{} 個欄位）。執行時會開啟表單，無需記憶指令。",
+    ),
+    row!(
+        "💡 {} are written directly inside the code, so skit can't turn them into form fields. To manage one, first give it a name at the top of the script, e.g. OUTPUT = '…' (skit edit {}).",
+        "💡 {} 直接写在代码中，因此 skit 无法将其转换为表单字段。要管理其中一个，请先在脚本顶部为其命名，例如 OUTPUT = '…'（skit edit {}）。",
+        "💡 {} 直接寫在程式碼中，因此 skit 無法將其轉換為表單欄位。若要管理其中一個，請先在腳本頂端為其命名，例如 OUTPUT = '…'（skit edit {}）。",
+    ),
+    row!(
+        "Reference mode never touches the original file, so parameter setup was skipped.",
+        "引用模式绝不会更改原始文件，因此已跳过参数设置。",
+        "參照模式絕不會變更原始檔案，因此已略過參數設定。",
+    ),
+    row!(
+        "The script declares its own dependencies (PEP 723): {}",
+        "脚本声明了自己的依赖项（PEP 723）：{}",
+        "腳本宣告了自己的相依套件（PEP 723）：{}",
+    ),
     row!("Run", "运行", "執行"),
     row!("Run {}", "运行 {}", "執行 {}"),
     row!("Add", "添加", "新增"),
     row!("Edit", "编辑", "編輯"),
     row!("Settings", "设置", "設定"),
     row!("Settings for {}", "{} 的设置", "{} 的設定"),
+    row!("Preset", "预设", "預設"),
     row!("Presets", "预设", "預設"),
     row!("Presets for {}: {}", "{} 的预设：{}", "{} 的預設：{}"),
     row!("Rename", "重命名", "重新命名"),
@@ -1334,6 +2145,11 @@ const CATALOG: &[Translation] = &[
         "无法推断条目类型；请传入 --kind KIND",
         "無法推斷項目類型；請傳入 --kind KIND",
     ),
+    row!(
+        "The piped text's #! names no interpreter skit knows — pass --kind <language> to choose one.",
+        "管道文本的 #! 指定了 skit 不认识的解释器——请传入 --kind <language> 进行选择。",
+        "管線文字的 #! 指定了 skit 不認識的直譯器——請傳入 --kind <language> 進行選擇。",
+    ),
     row!("could not normalize {}", "无法规范化 {}", "無法正規化 {}",),
     row!(
         "could not read {}: {}",
@@ -1669,6 +2485,11 @@ const CATALOG: &[Translation] = &[
         "請先選擇一個項目",
     ),
     row!(
+        "source changed after semantic edit planning",
+        "源文件在语义编辑规划后已更改",
+        "來源在語義編輯規劃後已變更",
+    ),
+    row!(
         "source is not valid {} syntax",
         "源文件不是有效的 {} 语法",
         "來源不是有效的 {} 語法",
@@ -1702,6 +2523,11 @@ const CATALOG: &[Translation] = &[
         "terminal I/O failed: {}",
         "终端输入输出失败：{}",
         "終端輸入輸出失敗：{}",
+    ),
+    row!(
+        "terminal host effects did not settle",
+        "终端宿主操作未能稳定结束",
+        "終端宿主操作未能穩定結束",
     ),
     row!(
         "the Python stored copy is not readable UTF-8",
@@ -1857,6 +2683,11 @@ const CATALOG: &[Translation] = &[
         "請使用 source:unmanage 移除 {} 的來源繫結",
     ),
     row!(
+        "value {} for parameter {} is not a valid {}",
+        "值 {} 对参数 {} 不是有效的 {} 值",
+        "值 {} 對參數 {} 不是有效的 {} 值",
+    ),
+    row!(
         "working directory does not exist: {}",
         "工作目录不存在：{}",
         "工作目錄不存在：{}",
@@ -1882,16 +2713,202 @@ const CATALOG: &[Translation] = &[
         "{} 不是有效的 {} 預設值",
     ),
     row!(
+        "{} is empty, but {} is filled and they are read on the same line — a shell `read` would hand your value to {}. Fill {} in, or clear {}.",
+        "{} 为空，但 {} 已填写，且它们从同一行读取——shell `read` 会把您的值交给 {}。请填写 {}，或清空 {}。",
+        "{} 是空的，但 {} 已填寫，而且它們從同一行讀取——shell `read` 會把您的值交給 {}。請填寫 {}，或清空 {}。",
+    ),
+    row!(
+        "{} can't contain a line break: a shell `read` takes ONE line, so everything after the break would be thrown away.",
+        "{} 不能包含换行符：shell `read` 只读取一行，因此换行符之后的所有内容都会被丢弃。",
+        "{} 不能包含換行符：shell `read` 只讀取一行，因此換行符之後的所有內容都會被丟棄。",
+    ),
+    row!(
+        "{} is read on the same line as other values, so its value can't contain spaces or tabs — the shell would split it across the other fields. Only the LAST value on a `read` line may contain spaces.",
+        "{} 与其他值从同一行读取，因此其值不能包含空格或制表符——shell 会将其拆分到其他字段中。只有 `read` 行中的最后一个值可以包含空格。",
+        "{} 與其他值從同一行讀取，因此其值不能包含空格或定位字元——shell 會將其拆分到其他欄位中。只有 `read` 行中的最後一個值可以包含空格。",
+    ),
+    row!(
+        "{} starts or ends with a space or tab, which a shell `read` strips off the line — the script would receive it trimmed. Remove the surrounding whitespace.",
+        "{} 以空格或制表符开头或结尾，shell `read` 会从该行去除这些字符——脚本收到的值会被裁剪。请删除两端的空白字符。",
+        "{} 以空格或定位字元開頭或結尾，shell `read` 會從該行移除這些字元——程式收到的值會被裁剪。請移除兩端的空白字元。",
+    ),
+    row!(
         "{} is not valid UTF-8",
         "{} 不是有效的 UTF-8",
         "{} 不是有效的 UTF-8",
     ),
     row!("{} is required.", "{} 为必填项。", "{} 為必填欄位。",),
     row!(
+        "{} is on by default, so its flag could only ever turn it on again. Declare the flag that turns it OFF instead (--no-{} and the like), with default false.",
+        "{} 默认已开启，因此它的选项只能再次开启它。请改为声明关闭它的选项（例如 --no-{}），并将默认值设为 false。",
+        "{} 預設已開啟，因此它的選項只能再次開啟它。請改為宣告關閉它的選項（例如 --no-{}），並將預設值設為 false。",
+    ),
+    row!(
         "{} manages its parameter schema in the stored source",
         "{} 在存储的源文件中管理其参数结构",
         "{} 在儲存的來源中管理其參數結構",
     ),
+    row!("Select", "选择", "選擇"),
+    row!("Interface language", "界面语言", "介面語言"),
+    row!(
+        "Automatic (follow the system)",
+        "自动（跟随系统）",
+        "自動（跟隨系統）",
+    ),
+    row!("Currently in effect: {}", "当前生效：{}", "目前生效：{}",),
+    row!("Editor", "编辑器", "編輯器"),
+    row!(
+        "e.g. code --wait (empty = use $VISUAL / $EDITOR)",
+        "例如 code --wait（留空 = 使用 $VISUAL / $EDITOR）",
+        "例如 code --wait（留空 = 使用 $VISUAL / $EDITOR）",
+    ),
+    row!(
+        "Empty means: {} (from $VISUAL / $EDITOR)",
+        "留空表示：{}（来自 $VISUAL / $EDITOR）",
+        "留空表示：{}（來自 $VISUAL / $EDITOR）",
+    ),
+    row!("Interactive form", "交互式表单", "互動式表單"),
+    row!(
+        "Mini form — opens in place, fully clickable",
+        "迷你表单——原地打开，所有控件均可点击",
+        "迷你表單——原地開啟，所有控制項均可點選",
+    ),
+    row!(
+        "Line-by-line prompts — plainest, best over slow terminals",
+        "逐行提示——最朴素，最适合慢速终端",
+        "逐行提示——最單純，最適合慢速終端機",
+    ),
+    row!(
+        "Used by terminal runs: `skit run` parameter prompts and the `skit add` review panel.",
+        "用于终端运行：`skit run` 参数提示和 `skit add` 检查面板。",
+        "用於終端機執行：`skit run` 參數提示與 `skit add` 檢查面板。",
+    ),
+    row!(
+        "After a run (from this menu)",
+        "从此菜单运行后",
+        "從此選單執行後",
+    ),
+    row!(
+        "Quit skit — leave the run's output in the terminal",
+        "退出 skit——在终端中保留运行输出",
+        "結束 skit——在終端機中保留執行輸出",
+    ),
+    row!(
+        "Return to the Library immediately",
+        "立即返回程序库",
+        "立即返回程式庫",
+    ),
+    row!(
+        "Automatic — the first of deno / bun / node found",
+        "自动——使用找到的第一个 deno / bun / node",
+        "自動——使用找到的第一個 deno / bun / node",
+    ),
+    row!(
+        "Runs js/ts entries that don't pin their own runtime.",
+        "运行未固定自身运行时的 js/ts 条目。",
+        "執行未固定自身執行環境的 js/ts 項目。",
+    ),
+    row!(
+        "Shell on Windows",
+        "Windows 上的 Shell",
+        "Windows 上的 Shell"
+    ),
+    row!(
+        "Path to bash.exe (empty = Git Bash / WSL detection)",
+        "bash.exe 路径（留空 = 检测 Git Bash / WSL）",
+        "bash.exe 路徑（留空 = 偵測 Git Bash / WSL）",
+    ),
+    row!(
+        "Shell scripts need an explicit bash here.",
+        "Shell 脚本需要在此明确指定 bash。",
+        "Shell 指令稿需要在此明確指定 bash。",
+    ),
+    row!(
+        "Agents (prompt runners)",
+        "代理（提示词运行器）",
+        "代理（提示詞執行器）"
+    ),
+    row!("No agents configured.", "尚未配置代理。", "尚未設定代理。"),
+    row!(
+        "{} agent configured: {}",
+        "已配置 {} 个代理：{}",
+        "已設定 {} 個代理：{}",
+    ),
+    row!(
+        "{} agents configured: {}",
+        "已配置 {} 个代理：{}",
+        "已設定 {} 個代理：{}",
+    ),
+    row!("Manage agents…", "管理代理…", "管理代理…"),
+    row!(
+        "Teach an AI agent skit…",
+        "教 AI 代理使用 skit…",
+        "教 AI 代理使用 skit…",
+    ),
+    row!(
+        "Teach an AI agent to use skit",
+        "教 AI agent 使用 skit",
+        "教 AI agent 使用 skit",
+    ),
+    row!(
+        "No agent directories detected (~/.claude, ~/.codex, ./.agents, …). Install by hand with: skit agent install --to DIR",
+        "没有检测到 agent 目录（~/.claude、~/.codex、./.agents 等）。可用 skit agent install --to DIR 手动安装。",
+        "沒有偵測到 agent 目錄（~/.claude、~/.codex、./.agents 等）。可用 skit agent install --to DIR 手動安裝。",
+    ),
+    row!(
+        "Installed the skit Agent Skill: {}",
+        "已安装 skit Agent Skill：{}",
+        "已安裝 skit Agent Skill：{}",
+    ),
+    row!(
+        "Download mirrors (mainland-China acceleration)",
+        "下载镜像（中国大陆加速）",
+        "下載鏡像（中國大陸加速）",
+    ),
+    row!(
+        "Each ecosystem is its own choice — mirror vendors differ per axis.",
+        "每个生态系统独立选择——各项的镜像供应商不同。",
+        "每個生態系統獨立選擇——各項的鏡像供應商不同。",
+    ),
+    row!(
+        "Master switch — \"off\" pauses mirrors but keeps the saved URLs.",
+        "总开关——“off”会暂停镜像，但保留已保存的 URL。",
+        "總開關——「off」會暫停鏡像，但保留已儲存的 URL。",
+    ),
+    row!(
+        "PyPI index (Python packages)",
+        "PyPI 索引（Python 软件包）",
+        "PyPI 索引（Python 套件）",
+    ),
+    row!("PyPI index URL", "PyPI 索引 URL", "PyPI 索引 URL"),
+    row!(
+        "GitHub releases (Python builds, the uv binary)",
+        "GitHub 发布包（Python 构建、uv 二进制文件）",
+        "GitHub 發行檔（Python 建置、uv 二進位檔）",
+    ),
+    row!(
+        "github-release mirror base URL",
+        "github-release 镜像基础 URL",
+        "github-release 鏡像基礎 URL",
+    ),
+    row!(
+        "npm registry (JS/TS packages)",
+        "npm 注册表（JS/TS 软件包）",
+        "npm 登錄檔（JS/TS 套件）",
+    ),
+    row!("npm registry URL", "npm 注册表 URL", "npm 登錄檔 URL"),
+    row!("custom", "自定义", "自訂"),
+    row!(
+        "A custom choice needs a URL.",
+        "自定义选项需要 URL。",
+        "自訂選項需要 URL。"
+    ),
+    row!(
+        "The uv binary is downloaded and executed, so the github-release base URL must use https:// (got: {}).",
+        "uv 二进制文件会被下载并执行，因此 github-release 基础 URL 必须使用 https://（当前为：{}）。",
+        "uv 二進位檔會被下載並執行，因此 github-release 基礎 URL 必須使用 https://（目前為：{}）。",
+    ),
+    row!("No such file: {}", "没有此文件：{}", "沒有此檔案：{}"),
     row!(
         "{} needs NAME=VALUE",
         "{}需要 NAME=VALUE",
@@ -1901,6 +2918,190 @@ const CATALOG: &[Translation] = &[
         "{} reads from the environment variable {}, but it isn't set.",
         "{} 从环境变量 {} 读取，但该变量未设置。",
         "{} 從環境變數 {} 讀取，但該變數未設定。",
+    ),
+    row!("Write a script…", "编写脚本…", "編寫指令稿…"),
+    row!("Draft a prompt…", "起草提示词…", "起草提示詞…"),
+    row!("Delete draft…", "删除草稿…", "刪除草稿…"),
+    row!("Continue", "继续", "繼續"),
+    row!(
+        "Keep a copy — skit stores it; your original file is never modified",
+        "保留副本——skit 会存储它；绝不会修改原始文件",
+        "保留副本——skit 會儲存它；絕不會修改原始檔案",
+    ),
+    row!(
+        "Link the original — edits take effect immediately, but skit won't write to the file, so parameter definitions are yours to maintain",
+        "链接原始文件——编辑会立即生效，但 skit 不会写入该文件，因此你需要自行维护参数定义",
+        "連結原始檔案——編輯會立即生效，但 skit 不會寫入該檔案，因此你需要自行維護參數定義",
+    ),
+    row!(
+        "Link the original — edits take effect immediately; skit never writes to the file",
+        "链接原始文件——编辑会立即生效；skit 绝不会写入该文件",
+        "連結原始檔案——編輯會立即生效；skit 絕不會寫入該檔案",
+    ),
+    row!(
+        "Link the original: skit never writes to the file.",
+        "链接原始文件：skit 绝不会写入该文件。",
+        "連結原始檔案：skit 絕不會寫入該檔案。",
+    ),
+    row!(
+        "Link the original: parameter setup is skipped — skit never writes to the file.",
+        "链接原始文件：已跳过参数设置——skit 绝不会写入该文件。",
+        "連結原始檔案：已略過參數設定——skit 絕不會寫入該檔案。",
+    ),
+    row!(
+        "npm dependencies apply to stored copies only, so none are recorded.",
+        "npm 依赖项仅适用于存储的副本，因此不会记录任何依赖项。",
+        "npm 相依套件僅適用於儲存的副本，因此不會記錄任何相依套件。",
+    ),
+    row!(
+        "Tick the ones the run form should ask for:",
+        "勾选运行表单应询问的项目：",
+        "勾選執行表單應詢問的項目：",
+    ),
+    row!(
+        "No {{name}} placeholders detected — the body travels to the agent as written.",
+        "未检测到 {{name}} 占位符——正文会原样发送给代理。",
+        "未偵測到 {{name}} 預留位置——正文會原樣傳送給代理。",
+    ),
+    row!("Choose variables…", "选择变量…", "選擇變數…"),
+    row!(
+        "ask on the run form",
+        "在运行表单中询问",
+        "在執行表單中詢問",
+    ),
+    row!("Edit script", "编辑脚本", "編輯指令稿"),
+    row!("Edit prompt", "编辑提示词", "編輯提示詞"),
+    row!(
+        "Path to a script, executable, or prompt:",
+        "脚本、可执行文件或提示词的路径：",
+        "指令稿、可執行檔或提示詞的路徑：",
+    ),
+    row!("Name for the command", "命令名称", "指令名稱"),
+    row!("Description (optional)", "说明（可选）", "說明（選填）"),
+    row!(
+        "…or resume a kept draft:",
+        "…或继续保留的草稿：",
+        "…或繼續保留的草稿：",
+    ),
+    row!(
+        "…or start from a blank page:",
+        "…或从空白页开始：",
+        "…或從空白頁開始：",
+    ),
+    row!("…and {} more", "…以及另外 {} 个", "…以及另外 {} 個"),
+    row!(
+        "The #! in {} names no interpreter skit knows. What is it?",
+        "{} 中的 #! 指定了 skit 不认识的解释器。它是什么？",
+        "{} 中的 #! 指定了 skit 不認識的直譯器。它是什麼？",
+    ),
+    row!(
+        "What is {}? skit can't tell from the name.",
+        "{} 是什么？skit 无法从名称判断。",
+        "{} 是什麼？skit 無法從名稱判斷。",
+    ),
+    row!(
+        "💡 {} are written directly inside the code, so skit can't turn them into form fields. To manage one, first give it a name at the top of the script, e.g. OUTPUT = '…' (Ctrl+E edits it now).",
+        "💡 {} 直接写在代码中，因此 skit 无法将其转换为表单字段。要管理其中一个，请先在脚本顶部为其命名，例如 OUTPUT = '…'（Ctrl+E 可立即编辑）。",
+        "💡 {} 直接寫在程式碼中，因此 skit 無法將其轉換為表單欄位。若要管理其中一個，請先在指令稿頂端為其命名，例如 OUTPUT = '…'（Ctrl+E 可立即編輯）。",
+    ),
+    row!(
+        "Detected {} placeholders — probably not written for insertion. Tick only the ones you need, or untick the switch above.",
+        "检测到 {} 个占位符——它们可能并非用于插入。请仅勾选需要的项目，或取消勾选上方开关。",
+        "偵測到 {} 個預留位置——它們可能並非用於插入。請僅勾選需要的項目，或取消勾選上方開關。",
+    ),
+    row!(
+        "Choose prompt variables",
+        "选择提示词变量",
+        "選擇提示詞變數"
+    ),
+    row!("type to filter…", "输入以筛选…", "輸入以篩選…"),
+    row!("Select all variables", "选择所有变量", "選擇所有變數"),
+    row!("Done", "完成", "完成"),
+    row!("Toggle", "切换", "切換"),
+    row!(
+        "Your entries will appear here.",
+        "你的条目会显示在此处。",
+        "你的項目會顯示在此處。",
+    ),
+    row!("{}/{} entry", "{}/{} 个条目", "{}/{} 個項目"),
+    row!("{}/{} entries", "{}/{} 个条目", "{}/{} 個項目"),
+    row!("Discard", "放弃更改", "捨棄變更"),
+    row!("Keep editing", "继续编辑", "繼續編輯"),
+    row!(
+        "Discard unsaved changes?",
+        "要放弃未保存的更改吗？",
+        "要捨棄未儲存的變更嗎？",
+    ),
+    row!("Insert a run-time value", "插入运行时值", "插入執行階段值",),
+    row!("Environment variable", "环境变量", "環境變數"),
+    row!(
+        "Insert a file or folder",
+        "插入文件或文件夹",
+        "插入檔案或資料夾",
+    ),
+    row!(
+        "The entry's working directory is missing — starting here instead.",
+        "条目的工作目录不存在——改为从此处开始。",
+        "項目的工作目錄不存在——改為從此處開始。",
+    ),
+    row!(
+        "Runner picked on the run form",
+        "执行器在运行表单上选择",
+        "執行器在執行表單上選擇",
+    ),
+    row!(
+        "{} (no longer configured)",
+        "{}(已不在配置中)",
+        "{}(已不在設定中)",
+    ),
+    row!("Runs with {}", "以 {} 运行", "以 {} 執行"),
+    row!("Parameters  {}", "参数  {}", "參數  {}"),
+    row!("Presets  {}", "参数组合  {}", "參數組合  {}"),
+    row!("Depends on  {}", "依赖  {}", "依賴  {}"),
+    row!("Last run  {} · {}", "上次运行  {} · {}", "上次執行  {} · {}"),
+    row!("just now", "刚刚", "剛剛"),
+    row!("{} min ago", "{} 分钟前", "{} 分鐘前"),
+    row!("{} h ago", "{} 小时前", "{} 小時前"),
+    row!("{} d ago", "{} 天前", "{} 天前"),
+    row!("finished", "完成", "完成"),
+    row!("failed (code {})", "失败（代码 {}）", "失敗（代碼 {}）"),
+    row!("Not run yet", "还没运行过", "還沒執行過"),
+    row!("⚠ missing: {}", "⚠ 缺失:{}", "⚠ 遺失:{}"),
+    row!(
+        "The script changed — skit checks the form against it before every run.",
+        "脚本改过了——每次运行前 skit 会自动核对表单。",
+        "腳本改過了——每次執行前 skit 會自動核對表單。",
+    ),
+    row!(
+        "Press a to add the first one,",
+        "按 a 添加第一个，",
+        "按 a 加入第一個，",
+    ),
+    row!(
+        "or run: skit add <path> in a terminal.",
+        "或在终端运行 skit add <路径>。",
+        "或在終端執行 skit add <路徑>。",
+    ),
+    row!("Back to list", "返回列表", "回到清單"),
+    row!(
+        "Press Ctrl+C again to quit",
+        "再次按 Ctrl+C 退出",
+        "再次按 Ctrl+C 結束",
+    ),
+    row!(
+        "The runner row changed before it could be saved; inspect again.",
+        "运行器行在保存前已更改；请重新检查。",
+        "執行器資料列在儲存前已變更；請重新檢查。",
+    ),
+    row!(
+        "The prompt pins changed before the runner could be removed; inspect again.",
+        "提示词固定项在删除运行器前已更改；请重新检查。",
+        "提示詞固定項在移除執行器前已變更；請重新檢查。",
+    ),
+    row!(
+        "Your original file will not be deleted.",
+        "你的原始文件不会被删除。",
+        "你的原始檔不會被刪除。",
     ),
 ];
 
@@ -2029,7 +3230,9 @@ pub fn detect_locale(value: Option<&str>) -> Locale {
         .replace('_', "-")
         .to_ascii_lowercase();
     // Hong Kong and Macau use Traditional Chinese; Singapore uses Simplified.
-    if normalized.starts_with("zh-tw")
+    if normalized == "x-pseudo" {
+        Locale::Pseudo
+    } else if normalized.starts_with("zh-tw")
         || normalized.starts_with("zh-hk")
         || normalized.starts_with("zh-mo")
         || normalized.starts_with("zh-hant")
@@ -2046,13 +3249,65 @@ pub fn detect_locale(value: Option<&str>) -> Locale {
     }
 }
 
+/// Resolve one locale-precedence candidate.
+///
+/// An absent, empty, or exact POSIX `C` value does not express a language preference. Other
+/// unsupported language families resolve to English and stop the precedence chain.
+#[must_use]
+pub fn requested_locale(value: Option<&str>) -> Option<Locale> {
+    let value = value?;
+    if value.is_empty() || value.eq_ignore_ascii_case("c") {
+        None
+    } else {
+        Some(detect_locale(Some(value)))
+    }
+}
+
+/// Read the platform locale through the maintained operating-system adapter.
+#[must_use]
+pub fn system_locale() -> Locale {
+    sys_locale::get_locales()
+        .find_map(|value| requested_locale(Some(&value)))
+        .unwrap_or_default()
+}
+
 /// Translate one complete source string when it is in the catalog.
 #[must_use]
-pub fn text(locale: Locale, english: &str) -> &str {
-    CATALOG
+pub fn text<'a>(locale: Locale, english: &'a str) -> Cow<'a, str> {
+    let translated = CATALOG
         .iter()
         .find(|row| row.english == english)
-        .map_or(english, |row| localized(locale, row))
+        .map_or(english, |row| localized(locale, row));
+    if locale == Locale::Pseudo {
+        Cow::Owned(pseudoize(translated))
+    } else {
+        Cow::Borrowed(translated)
+    }
+}
+
+/// Return the localized human label for a registered entry kind.
+///
+/// Machine-facing JSON keeps the open-ended raw kind. A kind written by a newer skit also stays
+/// raw because this version cannot name it honestly.
+#[must_use]
+pub fn kind_label<'a>(locale: Locale, kind: &'a str) -> Cow<'a, str> {
+    let english = match kind {
+        "python" => "Python",
+        "shell" => "Shell",
+        "fish" => "fish",
+        "js" => "JavaScript",
+        "ts" => "TypeScript",
+        "powershell" => "PowerShell",
+        "ruby" => "Ruby",
+        "perl" => "Perl",
+        "lua" => "Lua",
+        "r" => "R",
+        "exe" => "Program",
+        "command" => "Command",
+        "prompt" => "Prompt",
+        _ => return Cow::Borrowed(kind),
+    };
+    text(locale, english)
 }
 
 /// Translate one template and insert values without translating user data.
@@ -2083,6 +3338,9 @@ pub fn format_text(locale: Locale, english: &str, values: &[&dyn Display]) -> St
 /// Typed skit messages use [`Message`], which keeps user values out of the translation.
 #[must_use]
 pub fn render(locale: Locale, english: &str) -> String {
+    if locale == Locale::Pseudo {
+        return pseudoize(english);
+    }
     let mut rows = CATALOG
         .iter()
         .filter(|row| row.composable)
@@ -2138,5 +3396,57 @@ const fn localized(locale: Locale, row: &Translation) -> &'static str {
         Locale::En => row.english,
         Locale::ZhCn => row.zh_cn,
         Locale::ZhTw => row.zh_tw,
+        Locale::Pseudo => row.english,
     }
+}
+
+fn pseudoize(source: &str) -> String {
+    let characters = source.chars().collect::<Vec<_>>();
+    let mut output = String::with_capacity(source.len().saturating_add(6));
+    output.push('⟦');
+    let mut index = 0;
+    while index < characters.len() {
+        if characters[index] == '%' {
+            if characters.get(index.saturating_add(1)) == Some(&'(')
+                && let Some(close) = characters[index.saturating_add(2)..]
+                    .iter()
+                    .position(|character| *character == ')')
+                    .map(|offset| index.saturating_add(2).saturating_add(offset))
+                && characters
+                    .get(close.saturating_add(1))
+                    .is_some_and(|specifier| matches!(specifier, 's' | 'd' | 'r'))
+            {
+                for character in &characters[index..=close.saturating_add(1)] {
+                    output.push(*character);
+                }
+                index = close.saturating_add(2);
+                continue;
+            }
+            if characters
+                .get(index.saturating_add(1))
+                .is_some_and(|specifier| "sdrifgeExXoc%".contains(*specifier))
+            {
+                output.push('%');
+                output.push(characters[index.saturating_add(1)]);
+                index = index.saturating_add(2);
+                continue;
+            }
+        }
+        output.push(match characters[index] {
+            'a' => 'à',
+            'e' => 'é',
+            'i' => 'î',
+            'o' => 'ö',
+            'u' => 'û',
+            'A' => 'À',
+            'E' => 'É',
+            'I' => 'Î',
+            'O' => 'Ö',
+            'U' => 'Û',
+            character => character,
+        });
+        index = index.saturating_add(1);
+    }
+    output.push_str("~~⟧");
+    output
 }

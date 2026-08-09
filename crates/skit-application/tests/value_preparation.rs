@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use skit_application::{
     delivery::PreparedValue,
-    value_preparation::{ValuePreparationError, prepare_values},
+    value_preparation::{ValuePreparationError, prepare_values, validate_form_value},
 };
 use skit_domain::parameters::{ParamDecl, ParameterType};
 
@@ -191,6 +191,59 @@ fn token_bearing_values_are_type_checked_after_resolution_not_before() {
             parameter_type: ParameterType::Int,
         }
     );
+}
+
+#[test]
+fn frontends_can_validate_one_raw_form_value_before_resolution() {
+    let mut field = ParamDecl::new("port");
+    field.prompt = "Port".to_owned();
+    field.parameter_type = ParameterType::Int;
+    field.required = true;
+
+    assert_eq!(
+        validate_form_value(&field, "  ").unwrap_err(),
+        ValuePreparationError::Required {
+            name: "port".to_owned(),
+            label: "Port".to_owned(),
+        }
+    );
+    assert_eq!(
+        validate_form_value(&field, "many").unwrap_err(),
+        ValuePreparationError::InvalidType {
+            name: "port".to_owned(),
+            value: "many".to_owned(),
+            parameter_type: ParameterType::Int,
+        }
+    );
+    assert!(validate_form_value(&field, "7").is_ok());
+
+    // Frontends do not expand tokens. The launch pipeline validates their resolved value later.
+    assert!(validate_form_value(&field, "{env:PORT}").is_ok());
+}
+
+#[test]
+fn one_value_validation_keeps_choice_multi_and_degraded_semantics() {
+    let mut choice = ParamDecl::new("mode");
+    choice.parameter_type = ParameterType::Choice;
+    choice.choices = vec!["fast".to_owned(), "safe".to_owned()];
+    assert!(validate_form_value(&choice, "").is_ok());
+    assert!(validate_form_value(&choice, "fast").is_ok());
+    assert!(matches!(
+        validate_form_value(&choice, "FAST"),
+        Err(ValuePreparationError::InvalidChoice { .. })
+    ));
+
+    let mut points = ParamDecl::new("points");
+    points.parameter_type = ParameterType::Int;
+    points.multiple = true;
+    assert!(validate_form_value(&points, "1 '2' -3").is_ok());
+    assert!(matches!(
+        validate_form_value(&points, "1 nope"),
+        Err(ValuePreparationError::InvalidType { value, .. }) if value == "nope"
+    ));
+
+    points.degraded = true;
+    assert!(validate_form_value(&points, "anything at all").is_ok());
 }
 
 #[test]

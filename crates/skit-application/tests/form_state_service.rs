@@ -1,10 +1,14 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use skit_application::form_state::{
-    FormStateRepository, FormStateService, LastRunState, PersistedFormState, StateWriteError,
+    FormStateRepository, FormStateService, LastRunState, PersistedFormState, PresetSnapshotSource,
+    StateWriteError,
 };
 use skit_domain::{
     Slug,
@@ -16,6 +20,39 @@ struct MemoryState {
     states: Mutex<BTreeMap<String, PersistedFormState>>,
 }
 
+#[derive(Debug, Default)]
+struct NarrowReadState {
+    full_loads: AtomicUsize,
+    narrow_loads: AtomicUsize,
+}
+
+impl FormStateRepository for NarrowReadState {
+    fn load(&self, _slug: &Slug) -> PersistedFormState {
+        self.full_loads.fetch_add(1, Ordering::Relaxed);
+        PersistedFormState::default()
+    }
+
+    fn last_run(&self, _slug: &Slug) -> LastRunState {
+        self.narrow_loads.fetch_add(1, Ordering::Relaxed);
+        LastRunState {
+            at: Some("2026-08-08T00:00:00Z".to_owned()),
+            exit: Some(3),
+            values: None,
+        }
+    }
+
+    fn update<T, F>(&self, _slug: &Slug, _update: F) -> Result<T, StateWriteError>
+    where
+        F: FnOnce(&mut PersistedFormState) -> T,
+    {
+        panic!("the read contract must not update state")
+    }
+
+    fn forget(&self, _slug: &Slug) -> Result<(), StateWriteError> {
+        panic!("the read contract must not remove state")
+    }
+}
+
 impl FormStateRepository for MemoryState {
     fn load(&self, slug: &Slug) -> PersistedFormState {
         self.states
@@ -23,6 +60,15 @@ impl FormStateRepository for MemoryState {
             .unwrap()
             .get(slug.as_str())
             .cloned()
+            .unwrap_or_default()
+    }
+
+    fn last_run(&self, slug: &Slug) -> LastRunState {
+        self.states
+            .lock()
+            .unwrap()
+            .get(slug.as_str())
+            .map(|state| state.last_run.clone())
             .unwrap_or_default()
     }
 
@@ -59,6 +105,22 @@ fn declarations() -> Vec<ParamDecl> {
     let mut token = ParamDecl::new("token");
     token.secret = true;
     vec![city, empty, token]
+}
+
+#[test]
+fn last_run_uses_the_narrow_repository_port_without_loading_full_state() {
+    let service = FormStateService::new(NarrowReadState::default());
+
+    assert_eq!(
+        service.last_run(&slug()),
+        LastRunState {
+            at: Some("2026-08-08T00:00:00Z".to_owned()),
+            exit: Some(3),
+            values: None,
+        }
+    );
+    assert_eq!(service.repository().narrow_loads.load(Ordering::Relaxed), 1);
+    assert_eq!(service.repository().full_loads.load(Ordering::Relaxed), 0);
 }
 
 #[test]
@@ -141,6 +203,75 @@ fn presets_pin_exact_public_values_and_delete_reports_presence() {
 }
 
 #[test]
+fn state_backed_presets_distinguish_prefill_legacy_and_missing_run_snapshots() {
+    let repository = MemoryState::default();
+    repository
+        .update(&slug(), |state| {
+            state.values = map(&[("city", "Berlin")]);
+        })
+        .unwrap();
+    let service = FormStateService::new(repository);
+
+    assert!(
+        service
+            .save_preset_from_state(
+                &slug(),
+                "prefill",
+                &declarations(),
+                PresetSnapshotSource::Prefill,
+            )
+            .unwrap()
+    );
+    assert!(
+        service
+            .save_preset_from_state(
+                &slug(),
+                "legacy",
+                &declarations(),
+                PresetSnapshotSource::LastRun,
+            )
+            .unwrap()
+    );
+    assert_eq!(service.load(&slug()).presets["legacy"]["city"], "Berlin");
+
+    service
+        .record_run(&slug(), 0, "2026-08-08T03:00:00Z", &declarations(), None)
+        .unwrap();
+    assert!(
+        !service
+            .save_preset_from_state(
+                &slug(),
+                "raw",
+                &declarations(),
+                PresetSnapshotSource::LastRun,
+            )
+            .unwrap()
+    );
+    assert!(!service.load(&slug()).presets.contains_key("raw"));
+
+    service
+        .record_run(
+            &slug(),
+            0,
+            "2026-08-08T04:00:00Z",
+            &declarations(),
+            Some(&BTreeMap::new()),
+        )
+        .unwrap();
+    assert!(
+        service
+            .save_preset_from_state(
+                &slug(),
+                "empty",
+                &declarations(),
+                PresetSnapshotSource::LastRun,
+            )
+            .unwrap()
+    );
+    assert!(service.load(&slug()).presets["empty"].is_empty());
+}
+
+#[test]
 fn purge_secrets_scrubs_values_presets_and_last_run_in_one_transaction() {
     let repository = MemoryState::default();
     repository
@@ -156,7 +287,7 @@ fn purge_secrets_scrubs_values_presets_and_last_run_in_one_transaction() {
             state.last_run = LastRunState {
                 at: Some("2026-08-08T01:00:00Z".to_owned()),
                 exit: Some(0),
-                values: map(&[("token", "old"), ("city", "Rome")]),
+                values: Some(map(&[("token", "old"), ("city", "Rome")])),
             };
         })
         .unwrap();
@@ -170,12 +301,12 @@ fn purge_secrets_scrubs_values_presets_and_last_run_in_one_transaction() {
     assert_eq!(state.values, map(&[("city", "Berlin")]));
     assert_eq!(state.presets["mixed"], map(&[("city", "Tokyo")]));
     assert!(!state.presets.contains_key("secret-only"));
-    assert_eq!(state.last_run.values, map(&[("city", "Rome")]));
+    assert_eq!(state.last_run.values, Some(map(&[("city", "Rome")])));
     assert_eq!(state.last_run.exit, Some(0));
 }
 
 #[test]
-fn record_run_replaces_stamp_but_none_preserves_the_previous_value_snapshot() {
+fn record_run_without_values_clears_the_previous_snapshot_for_raw_runs() {
     let service = FormStateService::new(MemoryState::default());
     service
         .record_run(
@@ -195,7 +326,7 @@ fn record_run_replaces_stamp_but_none_preserves_the_previous_value_snapshot() {
         LastRunState {
             at: Some("2026-08-08T01:00:00Z".to_owned()),
             exit: Some(7),
-            values: map(&[("city", "Paris"), ("empty", "")]),
+            values: Some(map(&[("city", "Paris"), ("empty", "")])),
         }
     );
 
@@ -207,7 +338,7 @@ fn record_run_replaces_stamp_but_none_preserves_the_previous_value_snapshot() {
         LastRunState {
             at: Some("2026-08-08T02:00:00Z".to_owned()),
             exit: Some(0),
-            values: map(&[("city", "Paris"), ("empty", "")]),
+            values: None,
         }
     );
 }

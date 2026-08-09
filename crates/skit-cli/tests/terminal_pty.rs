@@ -7,6 +7,8 @@ use std::{
 };
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use skit_application::EntryRepository as _;
+use skit_store::FileStore;
 use tempfile::TempDir;
 
 fn write_command_entry(data: &Path, with_parameter: bool) {
@@ -50,6 +52,7 @@ fn write_command_entry(data: &Path, with_parameter: bool) {
         ),
     )
     .unwrap();
+    FileStore::new(data).rebuild_registry().unwrap();
 }
 
 fn write_secret_command_entry(data: &Path) {
@@ -82,6 +85,7 @@ fn write_secret_command_entry(data: &Path) {
         ),
     )
     .unwrap();
+    FileStore::new(data).rebuild_registry().unwrap();
 }
 
 fn write_pinned_prompt_entry(data: &Path) {
@@ -106,6 +110,7 @@ fn write_pinned_prompt_entry(data: &Path) {
         ),
     )
     .unwrap();
+    FileStore::new(data).rebuild_registry().unwrap();
 }
 
 fn run_in_pty(
@@ -136,6 +141,26 @@ fn run_pty(
     input: &[&[u8]],
     answer_cursor_query: bool,
 ) -> (u32, String) {
+    run_pty_configured(
+        args,
+        data,
+        state,
+        config,
+        input,
+        answer_cursor_query,
+        |_| {},
+    )
+}
+
+fn run_pty_configured(
+    args: &[&str],
+    data: &Path,
+    state: &Path,
+    config: &Path,
+    input: &[&[u8]],
+    answer_cursor_query: bool,
+    configure: impl FnOnce(&mut CommandBuilder),
+) -> (u32, String) {
     let pair = native_pty_system()
         .openpty(PtySize {
             rows: 24,
@@ -151,6 +176,7 @@ fn run_pty(
     command.env("SKIT_DATA_DIR", data);
     command.env("SKIT_STATE_DIR", state);
     command.env("SKIT_CONFIG_DIR", config);
+    configure(&mut command);
     let mut child = pair.slave.spawn_command(command).unwrap();
     drop(pair.slave);
 
@@ -177,6 +203,44 @@ fn run_pty(
     drop(writer);
     let output = String::from_utf8_lossy(&drain.join().unwrap()).into_owned();
     (status.exit_code(), output)
+}
+
+#[test]
+fn bare_agent_install_lists_existing_targets_and_writes_only_the_confirmed_choice() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let home = TempDir::new().unwrap();
+    let project = TempDir::new().unwrap();
+    fs::create_dir(home.path().join(".claude")).unwrap();
+    fs::create_dir(project.path().join(".agents")).unwrap();
+
+    let (code, output) = run_pty_configured(
+        &["agent", "install"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[b"2\n", b"y\n"],
+        false,
+        |command| {
+            command.env("HOME", home.path());
+            command.env("USERPROFILE", home.path());
+            command.cwd(project.path());
+        },
+    );
+
+    assert_eq!(code, 0, "{output}");
+    assert!(output.contains("1. claude (user)"), "{output}");
+    assert!(output.contains("2. agents (project)"), "{output}");
+    assert!(output.contains("Write the skill into"), "{output}");
+    assert!(
+        project
+            .path()
+            .join(".agents/skills/skit/SKILL.md")
+            .is_file(),
+        "{output}"
+    );
+    assert!(!home.path().join(".claude/skills").exists());
 }
 
 #[cfg(unix)]
@@ -254,6 +318,66 @@ fn terminal_detection_keeps_automation_flags_noninteractive() {
     assert_eq!(code, 2, "{output}");
 }
 
+#[test]
+fn bare_add_uses_the_typed_workflow_and_returns_the_created_entry() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let source = data.path().join("typed-add.sh");
+    fs::write(&source, b"#!/bin/sh\necho typed\n").unwrap();
+    let path_input = format!("{}", source.display());
+
+    let (code, output) = run_in_pty(
+        &["add"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[path_input.as_bytes(), b"\r", b"\x1b[1;1R", b"\x13"],
+    );
+
+    assert_eq!(code, 0, "{output}");
+    let entry = FileStore::new(data.path()).resolve("typed-add").unwrap();
+    assert_eq!(entry.meta.kind.as_str(), "shell");
+    assert!(output.contains("Added: typed-add"), "{output}");
+}
+
+#[test]
+fn bare_add_plain_menu_and_typed_cancel_keep_the_latest_main_contract() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    fs::write(config.path().join("config.toml"), "form = \"plain\"\n").unwrap();
+    let source = data.path().join("plain-add.sh");
+    fs::write(&source, b"#!/bin/sh\necho plain\n").unwrap();
+    let path_input = format!("{}\n", source.display());
+
+    let (code, output) = run_plain_in_pty(
+        &["add"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[b"1\n", path_input.as_bytes()],
+    );
+    assert_eq!(code, 0, "{output}");
+    assert!(output.contains("What would you like to add?"), "{output}");
+    assert!(output.contains("Which one?"), "{output}");
+    FileStore::new(data.path()).resolve("plain-add").unwrap();
+
+    fs::remove_file(config.path().join("config.toml")).unwrap();
+    let (code, output) = run_in_pty(
+        &["add"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[b"\x1b"],
+    );
+    assert_eq!(code, 130, "{output}");
+    assert!(
+        output.contains("Cancelled — nothing was added."),
+        "{output}"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn one_nonterminal_standard_stream_disables_interactive_forms() {
@@ -293,12 +417,15 @@ fn terminal_browser_runs_host_success_error_and_host_quit_paths() {
 
     let invalid_config = config.path().join("not-a-directory");
     fs::write(&invalid_config, "file").unwrap();
+    // Reads follow version 0.4 and project I/O failures to defaults. The first q
+    // must reach the focused Preferences input. Escape returns to the library,
+    // where the final q exits.
     let (code, output) = run_in_pty(
         &["tui"],
         data.path(),
         state.path(),
         &invalid_config,
-        &[b",", b"\x1b[1;1R", b"q"],
+        &[b",", b"\x1b[1;1R", b"q", b"\x1b", b"q"],
     );
     assert_eq!(code, 0, "{output}");
 
@@ -472,9 +599,199 @@ fn terminal_authoring_and_confirmation_paths_need_no_hidden_cli_knowledge() {
         data.path(),
         state.path(),
         config.path(),
-        &[b"n\n"],
+        &[],
     );
-    assert_eq!(code, 130, "{output}");
+    assert_eq!(code, 0, "{output}");
+}
+
+#[test]
+fn interactive_preset_save_collects_current_values_instead_of_saving_the_prefill_unasked() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    write_command_entry(data.path(), true);
+    let _ = run_plain_in_pty(
+        &["doctor", "--rebuild"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[],
+    );
+
+    let (code, output) = run_plain_in_pty(
+        &["preset", "save", "demo", "favorite"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[b"Grace\n"],
+    );
+    assert_eq!(code, 0, "{output}");
+    let saved = fs::read_to_string(state.path().join("values/demo.toml")).unwrap();
+    assert!(saved.contains("[presets.favorite]"), "{saved}");
+    assert!(saved.contains("name = \"Grace\""), "{saved}");
+}
+
+#[test]
+fn add_onboarding_accepts_clean_defaults_and_leaves_demoted_candidates_unmanaged() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let source = data.path().join("parameters.py");
+    fs::write(
+        &source,
+        "KEEP = 1\nCOUNT = 0\nCOUNT += 1\nprint(KEEP, COUNT)\n",
+    )
+    .unwrap();
+    let source = source.to_string_lossy().into_owned();
+
+    let (code, output) = run_plain_in_pty(
+        &["add", &source, "--name", "Parameters"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[b"\r"],
+    );
+    assert_eq!(code, 0, "{output}");
+    let stored = fs::read_to_string(data.path().join("scripts/parameters/script.py")).unwrap();
+    assert!(stored.contains("name = \"KEEP\""), "{stored}");
+    assert!(!stored.contains("name = \"COUNT\""), "{stored}");
+}
+
+#[test]
+fn add_onboarding_space_toggles_the_focused_checkbox() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let source = data.path().join("toggle.py");
+    fs::write(&source, "VALUE = 1\nprint(VALUE)\n").unwrap();
+    let source = source.to_string_lossy().into_owned();
+
+    let (code, output) = run_plain_in_pty(
+        &["add", &source, "--name", "Toggle"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[b" \r"],
+    );
+    assert_eq!(code, 0, "{output}");
+    assert!(output.contains("Space toggles"), "{output}");
+    let stored = fs::read_to_string(data.path().join("scripts/toggle/script.py")).unwrap();
+    assert!(!stored.contains("[tool.skit]"), "{stored}");
+}
+
+#[test]
+fn an_empty_onboarding_selection_does_not_delete_existing_managed_metadata() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let source = data.path().join("existing.py");
+    let original = concat!(
+        "# /// script\n",
+        "# dependencies = []\n",
+        "# [tool.skit]\n",
+        "# schema = 1\n",
+        "#\n",
+        "# [[tool.skit.params]]\n",
+        "# name = \"VALUE\"\n",
+        "# kind = \"const\"\n",
+        "# type = \"int\"\n",
+        "# default = 1\n",
+        "# ///\n",
+        "VALUE = 1\n",
+        "print(VALUE)\n",
+    );
+    fs::write(&source, original).unwrap();
+    let source = source.to_string_lossy().into_owned();
+
+    let (code, output) = run_plain_in_pty(
+        &["add", &source, "--name", "Existing"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[b" \r"],
+    );
+    assert_eq!(code, 0, "{output}");
+    let stored = fs::read_to_string(data.path().join("scripts/existing/script.py")).unwrap();
+    assert_eq!(stored, original);
+}
+
+#[test]
+fn add_onboarding_distinguishes_modeled_and_dynamic_cli_surfaces() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let modeled = data.path().join("modeled.py");
+    fs::write(
+        &modeled,
+        concat!(
+            "VALUE = 1\n",
+            "import argparse\n",
+            "p = argparse.ArgumentParser()\n",
+            "p.add_argument('--name')\n",
+        ),
+    )
+    .unwrap();
+    let modeled = modeled.to_string_lossy().into_owned();
+
+    let (code, output) = run_plain_in_pty(
+        &["add", &modeled, "--name", "Modeled"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[],
+    );
+    assert_eq!(code, 0, "{output}");
+    assert!(
+        output.contains("skit read this script's own arguments"),
+        "{output}"
+    );
+    let stored = fs::read_to_string(data.path().join("scripts/modeled/script.py")).unwrap();
+    assert!(!stored.contains("[tool.skit]"), "{stored}");
+
+    let dynamic = data.path().join("dynamic.py");
+    fs::write(
+        &dynamic,
+        concat!(
+            "VALUE = 1\n",
+            "import argparse\n",
+            "p = argparse.ArgumentParser()\n",
+            "p.add_subparsers()\n",
+        ),
+    )
+    .unwrap();
+    let dynamic = dynamic.to_string_lossy().into_owned();
+    let (code, output) = run_plain_in_pty(
+        &["add", &dynamic, "--name", "Dynamic"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[b"\r"],
+    );
+    assert_eq!(code, 0, "{output}");
+    let stored = fs::read_to_string(data.path().join("scripts/dynamic/script.py")).unwrap();
+    assert!(stored.contains("name = \"VALUE\""), "{stored}");
+}
+
+#[test]
+fn reference_add_reports_onboarding_but_never_writes_the_original() {
+    let data = TempDir::new().unwrap();
+    let state = TempDir::new().unwrap();
+    let config = TempDir::new().unwrap();
+    let source = data.path().join("reference.py");
+    let original = b"VALUE = 1\n";
+    fs::write(&source, original).unwrap();
+    let source_arg = source.to_string_lossy().into_owned();
+
+    let (code, output) = run_plain_in_pty(
+        &["add", &source_arg, "--name", "Reference", "--ref"],
+        data.path(),
+        state.path(),
+        config.path(),
+        &[],
+    );
+    assert_eq!(code, 0, "{output}");
+    assert!(output.contains("parameter setup was skipped"), "{output}");
+    assert_eq!(fs::read(source).unwrap(), original);
 }
 
 #[test]
@@ -570,7 +887,7 @@ fn terminal_plain_launch_menu_uses_the_same_prefill_and_argument_contract() {
     );
     assert_eq!(code, 0, "{output}");
     assert!(
-        output.contains("Prompt runner choices: local, backup [local]:"),
+        output.contains("Prompt runner choices: backup, local [local]:"),
         "{output}"
     );
 }

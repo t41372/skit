@@ -185,26 +185,18 @@ def main(path: str = typer.Argument(...), mode: str = typer.Option('safe', '-m')
     let fields = cli_params("python", python);
     assert_eq!(
         fields.iter().filter(|field| field.name == "level").count(),
-        1
+        2,
+        "each source declaration keeps a distinct semantic identity"
     );
     assert_eq!(
         fields
             .iter()
-            .find(|field| field.name == "level")
-            .unwrap()
-            .parameter_type,
-        ParameterType::Str
+            .filter(|field| field.name == "level")
+            .map(|field| field.parameter_type)
+            .collect::<Vec<_>>(),
+        [ParameterType::Float, ParameterType::Str]
     );
-    assert!(
-        fields
-            .iter()
-            .any(|field| field.name == "quiet" && field.parameter_type == ParameterType::Bool)
-    );
-    assert!(
-        fields
-            .iter()
-            .any(|field| field.name == "path" && field.flag.is_empty())
-    );
+    assert_eq!(fields.len(), 2, "the first detected framework wins");
 
     let shell = cli_params("shell", "while getopts ':ab:' value; do :; done\n");
     assert_eq!(
@@ -443,26 +435,24 @@ fn analyzer_and_injector_edges_keep_only_actionable_bindings() {
     second.binding = ParameterBinding::Input;
     second.delivery = ParameterDelivery::Inject;
     second.order = 1;
-    assert!(
-        inject_values(
-            "shell",
-            "read -p 'Values: ' FIRST SECOND\n",
-            std::slice::from_ref(&first),
-            &BTreeMap::from([("first".to_owned(), "one".to_owned())]),
-        )
-        .is_err()
-    );
-    assert_eq!(
-        inject_values(
-            "shell",
-            "read -p 'Values: ' FIRST SECOND\n",
-            &[first, second],
-            &BTreeMap::from([
-                ("first".to_owned(), "one".to_owned()),
-                ("second".to_owned(), "two words".to_owned()),
-            ]),
-        )
-        .unwrap(),
-        "FIRST=one; SECOND='two words'\n"
-    );
+    let first_only = inject_values(
+        "shell",
+        "read -p 'Values: ' FIRST SECOND\n",
+        std::slice::from_ref(&first),
+        &BTreeMap::from([("first".to_owned(), "one".to_owned())]),
+    )
+    .unwrap();
+    assert!(first_only.contains("_skit_read 0 'one' 0 'Values: ' -p 'Values: ' FIRST SECOND"));
+
+    let both = inject_values(
+        "shell",
+        "read -p 'Values: ' FIRST SECOND\n",
+        &[first, second],
+        &BTreeMap::from([
+            ("first".to_owned(), "one".to_owned()),
+            ("second".to_owned(), "two words".to_owned()),
+        ]),
+    )
+    .unwrap();
+    assert!(both.contains("_skit_read 0 'one two words' 0 'Values: ' -p 'Values: ' FIRST SECOND"));
 }
