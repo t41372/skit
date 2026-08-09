@@ -36,7 +36,8 @@ fn skit(data: &TempDir, state: &TempDir) -> assert_cmd::Command {
     let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
     command
         .env("SKIT_DATA_DIR", data.path())
-        .env("SKIT_STATE_DIR", state.path());
+        .env("SKIT_STATE_DIR", state.path())
+        .env("SKIT_LANG", "en");
     command
 }
 
