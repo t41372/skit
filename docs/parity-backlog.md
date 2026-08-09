@@ -42,26 +42,53 @@ terminal. Version 0.4 docks a bare `KeysBar` with no border (`src/skit/tui_foote
 visible in every shipped frame under `docs/assets/`). Recovering those two rows would let the run
 form show its argument tail without scrolling, exactly as the oracle's own demo frame does.
 
-## Settings offers editable axes it silently discards
+## The settings screen the user reaches is still the flat form
 
-`crates/skit-cli/src/cli.rs` renders fifteen `FormField::text` axes for every parameter, whatever
-its provenance, and `tui_submit_settings` then drops any declaration whose name the source also
-produces. A user edits `type`, `default`, `choices` or `help` on a parser-owned row, gets a success
-result and no diagnostic, and nothing is written.
+`skit-form::parameter_section` and `skit-ui::SettingsView` now model every shape version 0.4 draws:
+a block-managed `ParamRow` with three editable axes (`src/skit/tui_settings.py:73-138`), a
+hand-declared `DeclParamRow` (`:151-230`), the one-sentence explanation a reader-driven entry gets
+instead of checkboxes (`:612-623`), and the read-only `· name (type)` lines of a reference entry
+(`:597-606`).
 
-Version 0.4 never offers those axes. `self._specs` is the block-managed set alone
-(`src/skit/tui_settings.py:610-611`), and each becomes a `ParamRow` whose name, type and default
-are read-only text beside a keep checkbox — only the form label, the secret flag and the
-environment source are editable (`:73-138`). A hand-declared row is a `DeclParamRow`, where type,
-default, choices, help, flag and required are fields and delivery is read-only header text
-(`:151-230`).
+`crates/skit-cli/src/cli.rs` still composes `tui_settings_form`, so none of it is on screen. The
+composition root has to open `Screen::Settings` instead, which waits on the presets section.
 
-A parameter the script's own reader declares is not a row at all. A CLI-driven entry gets one
-sentence instead, because managing a hardcoded constant would write a block that shadows the
-script's own form (`:612-623`). A reference-mode entry renders read-only `· name (type)` lines and
-nothing editable (`:597-606`).
+Two earlier defects in this entry are fixed and have contract tests. `settings_parameter_fields`
+emits only the controls a row offers, rather than fifteen `FormField::text` axes for every
+parameter. The submit-time filter that dropped any declaration whose name the source also produced
+is gone, and with it both of its races: a concurrent source edit changing which rows survive, and an
+unreadable source silently widening the set that does.
 
-Two aggravating details need their own assertions once the rows carry provenance: the discard set
-is rebuilt from a fresh source read at submit time, so a concurrent edit changes which rows vanish;
-and an unreadable source yields an empty set, so the same edit persists or disappears depending on
-whether the file happened to be readable. The fix is the row model, not a wider filter.
+## The parameter row prints its default differently
+
+Version 0.4 renders the default inside a `ParamRow` label with Python `repr`
+(`src/skit/tui_settings.py:100`), so a string reads `'world'` and a boolean reads `True`.
+`crates/skit-form/src/parameter_section.rs` renders `world` and `true`.
+
+The same label also shows a different value. Version 0.4 resolves it through
+`analysis.effective_default`, which prefers the source's live literal and falls back to the value
+the block cached (`:609-611`). The Rust row reads the block value only, so a script whose constant
+moved after the block was written shows the stale number.
+
+## The resync gives no report before the save
+
+Version 0.4's `Ctrl+R` reads the definitions again immediately, keeps the result in memory, and
+prints either the analyzer warnings or `Everything still matches the script.` above the save
+(`src/skit/tui_settings.py:908-926`, shown at `:637`). A person sees what would change before
+choosing to keep it.
+
+Version 0.5 ticks a control that applies the resync when the save runs, so the report has nowhere to
+appear. Building it needs a host round trip that returns the new declarations and warnings, and a way
+to refresh the rows without discarding edits in the other sections. See `docs/behavior-changes.md`
+for the control that exists today.
+
+## A prompt cannot manage its detected variables from the screen
+
+Version 0.4 lists a prompt's unmanaged `{{name}}` placeholders as tick-to-manage checkboxes under
+the declared rows, caps the inline list at `LIST_PREVIEW_LIMIT`, says how many more there are, and
+offers `Ctrl+O` to open the complete set in a modal (`src/skit/tui_settings.py:687-717`,
+`:1140-1157`, `:1158-1180`). Each ticked candidate becomes a placeholder-delivery declaration that
+is required, and secret when its name says so (`:1123-1139`).
+
+Version 0.5 offers only the add-a-parameter box, and `ParamDecl::new` builds a flag-delivery
+declaration, so a name typed there does not become a prompt placeholder.

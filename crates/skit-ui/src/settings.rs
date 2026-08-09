@@ -1977,6 +1977,46 @@ mod tests {
         assert!(view.is_dirty());
     }
 
+    /// No offer on this screen edits anything until a person ticks it.
+    ///
+    /// `AGENTS.md` calls `--normalize` "the only opt-in semantic edit to a stored script", and
+    /// version 0.4 opens both of its tick-to-act lists unticked (`src/skit/tui_settings.py:629`).
+    /// A default-on box would make a save rewrite a script the user only came to rename.
+    #[test]
+    fn every_tick_to_act_offer_opens_empty_and_a_save_that_touches_none_carries_none() {
+        let view = SettingsView::from_inputs(&SettingsInputs {
+            kind: "shell".to_owned(),
+            managed: vec![declaration("NAME")],
+            candidates: vec!["WIDTH".to_owned()],
+            ..python_inputs()
+        });
+        for key in [MANAGE_KEY, NORMALIZE_KEY] {
+            let field = view.field(key).unwrap_or_else(|| panic!("{key} is absent"));
+            assert_eq!(
+                field.value(),
+                &FieldValue::Explicit(TypedValue::Choices(Vec::new())),
+                "{key} opened already acting"
+            );
+        }
+        assert_eq!(
+            view.field(RESYNC_KEY).expect("no resync control").value(),
+            &FieldValue::boolean(false),
+            "the resync opened already requested"
+        );
+        // Nothing was ticked, so a save of some other axis carries no semantic edit at all.
+        let mut view = view;
+        view.set_value(NAME_KEY, FieldValue::text("Renamed"));
+        let values = view.submitted_values();
+        assert_eq!(
+            values.len(),
+            1,
+            "a rename carried more than a rename: {values:?}"
+        );
+        assert!(!values.contains_key(NORMALIZE_KEY));
+        assert!(!values.contains_key(MANAGE_KEY));
+        assert!(!values.contains_key(RESYNC_KEY));
+    }
+
     /// The normalize offer belongs to the one kind and the one storage mode it can rewrite.
     ///
     /// `--normalize` is skit's only opt-in semantic edit to a stored script, and version 0.4 tells
