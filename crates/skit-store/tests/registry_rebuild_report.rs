@@ -1,6 +1,6 @@
 use std::fs;
 
-use skit_i18n::{Locale, Localize as _};
+use skit_i18n::Locale;
 use skit_store::{FileStore, RegistryRebuildProblem};
 use tempfile::TempDir;
 

@@ -383,6 +383,7 @@ fn library_activity_health_and_complete_detail_match_latest_main() {
                 }),
                 missing_target: Some("/work/prompt.md".to_owned()),
                 drifted: true,
+                original_file_preserved: true,
             },
         ),
     ]);

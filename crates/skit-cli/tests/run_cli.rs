@@ -3,6 +3,21 @@ use std::fs;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
+/// Give each hand-written entry directory its registry membership.
+///
+/// `registry.toml` is the authoritative membership index: `list` and `resolve` read it, and
+/// an unlisted directory needs an explicit `doctor --rebuild`. A row with no stamp cannot be
+/// trusted, so the store re-reads `meta.toml`, which is always the truth. That is exactly
+/// what a fixture wants: the entry belongs to the library, and its metadata stays the single
+/// place the test states the entry's shape.
+fn register(data: &TempDir, slugs: &[&str]) {
+    let index = slugs
+        .iter()
+        .map(|slug| format!("[entries.{slug}]\n"))
+        .collect::<String>();
+    fs::write(data.path().join("registry.toml"), index).unwrap();
+}
+
 fn command_library(template: &str, parameters: &str) -> (TempDir, TempDir) {
     let data = TempDir::new().unwrap();
     let state = TempDir::new().unwrap();
@@ -29,6 +44,7 @@ params = ["name"]
         ),
     )
     .unwrap();
+    register(&data, &["demo"]);
     (data, state)
 }
 
@@ -204,6 +220,7 @@ fn python_uses_an_existing_verified_private_uv_when_path_has_no_uv() {
     let state = TempDir::new().unwrap();
     let entry = data.path().join("scripts/python-demo");
     fs::create_dir_all(&entry).unwrap();
+    register(&data, &["python-demo"]);
     fs::write(entry.join("script.py"), "print('ok')\n").unwrap();
     fs::write(
         entry.join("meta.toml"),
@@ -248,6 +265,7 @@ fn python_dry_run_is_offline_when_no_uv_is_installed() {
     let state = TempDir::new().unwrap();
     let entry = data.path().join("scripts/python-preview");
     fs::create_dir_all(&entry).unwrap();
+    register(&data, &["python-preview"]);
     fs::write(entry.join("script.py"), "print('ok')\n").unwrap();
     fs::write(
         entry.join("meta.toml"),
@@ -284,6 +302,7 @@ fn prompt_dry_run_is_offline_complete_and_masked() {
     let config = TempDir::new().unwrap();
     let entry = data.path().join("scripts/prompt-preview");
     fs::create_dir_all(&entry).unwrap();
+    register(&data, &["prompt-preview"]);
     fs::write(entry.join("prompt.md"), "Token {{API_TOKEN}}\n").unwrap();
     fs::write(
         entry.join("meta.toml"),
@@ -348,6 +367,7 @@ fn dry_run_does_not_materialize_javascript_dependencies() {
     let state = TempDir::new().unwrap();
     let entry = data.path().join("scripts/js-demo");
     fs::create_dir_all(&entry).unwrap();
+    register(&data, &["js-demo"]);
     fs::write(entry.join("script.js"), "console.log('ok')\n").unwrap();
     let runtime = data.path().join("node");
     fs::write(&runtime, "runtime").unwrap();
@@ -433,6 +453,7 @@ fn raw_uses_only_the_explicit_tail_and_keeps_form_memory() {
     let state = TempDir::new().unwrap();
     let entry = data.path().join("scripts/raw-demo");
     fs::create_dir_all(&entry).unwrap();
+    register(&data, &["raw-demo"]);
     fs::write(entry.join("script.sh"), "printf '%s\\n' \"$@\"\n").unwrap();
     fs::write(
         entry.join("meta.toml"),

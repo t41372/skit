@@ -36,6 +36,19 @@ impl Sandbox {
         }
     }
 
+    /// Give each hand-written entry directory its registry membership.
+    ///
+    /// `registry.toml` is the authoritative membership index: `list` and `resolve` read it,
+    /// and an unlisted directory needs an explicit `doctor --rebuild`. A row with no stamp
+    /// cannot be trusted, so the store re-reads `meta.toml`, which stays the single truth.
+    fn register(&self, slugs: &[&str]) {
+        let index = slugs
+            .iter()
+            .map(|slug| format!("[entries.{slug}]\n"))
+            .collect::<String>();
+        fs::write(self.data.path().join("registry.toml"), index).unwrap();
+    }
+
     fn command(&self) -> assert_cmd::Command {
         let mut command = assert_cmd::cargo::cargo_bin_cmd!("skit");
         command
@@ -244,8 +257,17 @@ fn an_empty_prompt_runner_clears_the_pin() {
         .stdout(predicate::str::contains("\"runner\":null"));
 }
 
+/// `show` refuses damaged prompt bytes, but degrades a body that is not there.
+///
+/// The two cases are deliberately different in the pinned Python revision
+/// (`src/skit/cli.py:2485-2490` and `:3768-3781`). `plan_for_entry` stays total for TUI
+/// composition and degrades an unreadable prompt to no fields. `show` is a read contract,
+/// so reporting `fields=[]` for corrupt bytes would be false healthy state: it scans
+/// through the strict UTF-8 boundary first, and both the human and the JSON face refuse
+/// with exit 1 before any output. A missing body is not a decode failure — preflight owns
+/// existence — so it degrades and `missing` reports the truth.
 #[test]
-fn prompt_show_degrades_when_the_stored_source_is_damaged() {
+fn prompt_show_refuses_damaged_bytes_and_degrades_a_missing_body() {
     let sandbox = Sandbox::new();
     let prompt = sandbox.data.path().join("strict.prompt.md");
     fs::write(&prompt, "Review this.\n").unwrap();
@@ -263,18 +285,19 @@ fn prompt_show_degrades_when_the_stored_source_is_damaged() {
     let stored = sandbox.data.path().join("scripts/strict-prompt/prompt.md");
 
     fs::write(&stored, [0xff]).unwrap();
-    sandbox
-        .command()
-        .args(["show", "strict-prompt", "--json"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("\"missing\":false"));
-    sandbox
-        .command()
-        .args(["show", "strict-prompt"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Strict prompt"));
+    for face in [
+        vec!["show", "strict-prompt", "--json"],
+        vec!["show", "strict-prompt"],
+    ] {
+        sandbox
+            .command()
+            .args(face)
+            .assert()
+            .code(1)
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("isn't valid UTF-8"))
+            .stderr(predicate::str::contains("offset 0"));
+    }
 
     fs::remove_file(stored).unwrap();
     sandbox
@@ -288,6 +311,7 @@ fn prompt_show_degrades_when_the_stored_source_is_damaged() {
 fn write_legacy_command(sandbox: &Sandbox, slug: &str, template: &str, required: bool) {
     let entry = sandbox.data.path().join("scripts").join(slug);
     fs::create_dir_all(&entry).unwrap();
+    sandbox.register(&[slug]);
     fs::write(
         entry.join("meta.toml"),
         format!(
@@ -346,6 +370,7 @@ fn invalid_run_inputs_do_not_stamp_a_legacy_identity() {
     let sandbox = Sandbox::new();
     let entry = sandbox.data.path().join("scripts/legacy-prompt");
     fs::create_dir_all(&entry).unwrap();
+    sandbox.register(&["legacy-prompt"]);
     fs::write(entry.join("prompt.md"), "Review this.\n").unwrap();
     fs::write(
         entry.join("meta.toml"),
@@ -407,6 +432,7 @@ fn invalid_javascript_inputs_do_not_install_or_stamp_identity() {
     let sandbox = Sandbox::new();
     let entry = sandbox.data.path().join("scripts/legacy-js");
     fs::create_dir_all(&entry).unwrap();
+    sandbox.register(&["legacy-js"]);
     fs::write(entry.join("script.js"), "console.log('ok');\n").unwrap();
     fs::write(
         entry.join("meta.toml"),
@@ -458,6 +484,7 @@ fn invalid_reference_dependencies_do_not_stamp_identity() {
     fs::write(&source, "console.log('ok');\n").unwrap();
     let entry = sandbox.data.path().join("scripts/legacy-reference");
     fs::create_dir_all(&entry).unwrap();
+    sandbox.register(&["legacy-reference"]);
     fs::write(
         entry.join("meta.toml"),
         format!(

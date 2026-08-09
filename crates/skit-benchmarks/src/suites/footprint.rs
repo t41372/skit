@@ -551,8 +551,13 @@ mod tests {
                 .to_string()
                 .contains("could not read")
         );
+        let walk_failure = walkdir::WalkDir::new(&missing)
+            .into_iter()
+            .next()
+            .expect("a walk of a missing path reports one entry")
+            .expect_err("a walk of a missing path fails");
         assert!(
-            super::walk_error(walkdir::Error::from(std::io::Error::other("failure")))
+            super::walk_error(walk_failure)
                 .to_string()
                 .contains("file tree")
         );

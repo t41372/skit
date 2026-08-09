@@ -31,6 +31,9 @@ interpreter = "python3.14"
         "import argparse\np = argparse.ArgumentParser()\np.add_argument('--output', default='result.txt', choices=['result.txt', 'other.txt'], help='Output file')\np.parse_args()\n",
     )
     .unwrap();
+    // `registry.toml` is the authoritative membership index. A row with no stamp cannot be
+    // trusted, so the store re-reads `meta.toml` above, which stays the single truth.
+    fs::write(root.path().join("registry.toml"), "[entries.hello]\n").unwrap();
     root
 }
 

@@ -562,9 +562,9 @@ mod tests {
 
     #[test]
     fn warm_raw_samples_keep_latest_main_groups_names_and_seconds() {
-        let mut output = output();
+        let mut recorded = output();
         super::record(
-            &mut output,
+            &mut recorded,
             "micro.analyze.python.l20.median_us",
             vec![10.0, 20.0],
             "analyzers",
@@ -573,21 +573,21 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            output.raw["analyzers"]["analyze.python.l20"],
+            recorded.raw["analyzers"]["analyze.python.l20"],
             serde_json::json!([0.00001, 0.00002])
         );
         assert!(
-            !output
+            !recorded
                 .raw
                 .contains_key("micro.analyze.python.l20.median_us")
         );
 
-        output
+        recorded
             .raw
             .insert("broken".to_owned(), serde_json::json!([]));
         assert!(
             super::record(
-                &mut output,
+                &mut recorded,
                 "micro.broken.median_us",
                 vec![1.0],
                 "broken",
@@ -597,7 +597,7 @@ mod tests {
         );
         assert!(
             super::record(
-                &mut output,
+                &mut recorded,
                 "micro.analyze.python.l20.median_us",
                 vec![1.0],
                 "analyzers",

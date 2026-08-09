@@ -3,7 +3,6 @@
 use std::{
     collections::BTreeMap,
     fs,
-    io::Write as _,
     path::{Path, PathBuf},
 };
 
