@@ -3574,10 +3574,7 @@ fn params(
         || !args.env_sources.is_empty()
         || !args.secret.is_empty()
         || !args.no_secret.is_empty();
-    let source_parameter_kind = matches!(
-        kind,
-        "python" | "shell" | "js" | "ts" | "fish" | "powershell"
-    );
+    let source_parameter_kind = source_owned_schema(kind);
     if source_parameter_kind && has_declared_schema_operation {
         // A kind whose schema lives in its own file cannot take a declared-schema flag. Version 0.4
         // names the two flags that do apply and treats it as a failed operation, not a malformed
@@ -5147,6 +5144,21 @@ fn entry_parameters(store: &FileStore, entry: &Entry) -> Vec<ParamDecl> {
         .and_then(|path| fs::read_to_string(path).ok())
         .unwrap_or_default();
     form_params(entry.meta.kind.as_str(), &source, &settings)
+}
+
+/// Report whether a kind keeps its parameter schema inside its own stored source.
+///
+/// Version 0.4 answers this with `params_io`, which only python, shell, fish and the JavaScript
+/// kinds set (`src/skit/langs/registry.py:61`, `:130`, `:156`, `:201`). PowerShell deliberately has
+/// none: its `param()` block is a read-only CLI surface and "injection is out of scope for
+/// PowerShell in v1 — the reader assembles real `-Name value` flags instead" (`:221-238`). A kind
+/// that writes no schema into the user's file keeps its declared riders in entry metadata, so it
+/// must not be classified here.
+const fn source_owned_schema(kind: &str) -> bool {
+    matches!(
+        kind.as_bytes(),
+        b"python" | b"shell" | b"js" | b"ts" | b"fish"
+    )
 }
 
 fn settings_parameters(store: &FileStore, entry: &Entry) -> Vec<ParamDecl> {

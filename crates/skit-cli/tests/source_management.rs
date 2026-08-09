@@ -215,3 +215,59 @@ print('ok')
     );
     assert_eq!(deps["requires_python"], ">=3.12");
 }
+
+/// PowerShell keeps no schema in its own file, so a declared rider is legitimate there.
+///
+/// The refusal above is gated on `params_io`, which version 0.4 sets for python, shell, fish and
+/// the JavaScript kinds only (`src/skit/langs/registry.py:61`, `:130`, `:156`, `:201`). The
+/// PowerShell spec deliberately has neither: its `param()` block is a read-only CLI surface and
+/// "injection is out of scope for PowerShell in v1 — the reader assembles real `-Name value` flags
+/// instead" (`src/skit/langs/registry.py:221-238`). So `has_params_io` is false, the declared
+/// branch applies, and `--add` is accepted.
+#[test]
+fn powershell_takes_declared_riders_because_it_writes_no_schema_into_its_source() {
+    let sandbox = Sandbox::new();
+    let original = sandbox.data.path().join("tool.ps1");
+    fs::write(
+        &original,
+        "param([string]$Name = 'World')\nWrite-Output $Name\n",
+    )
+    .unwrap();
+    sandbox
+        .command()
+        .args(["add", original.to_str().unwrap(), "--name", "Ps"])
+        .assert()
+        .success();
+
+    sandbox
+        .command()
+        .args([
+            "params",
+            "ps",
+            "--add",
+            "API_TOKEN",
+            "--deliver",
+            "API_TOKEN=env",
+        ])
+        .assert()
+        .success();
+
+    let output = sandbox
+        .command()
+        .args(["params", "ps", "--json"])
+        .output()
+        .unwrap();
+    let params: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let declared = params["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|parameter| parameter["name"] == "API_TOKEN");
+    assert!(declared, "the rider did not survive: {params}");
+
+    // The rider lives in entry metadata, never in the user's own script.
+    let meta = fs::read_to_string(sandbox.data.path().join("scripts/ps/meta.toml")).unwrap();
+    assert!(meta.contains("API_TOKEN"), "{meta}");
+    let stored = fs::read_to_string(sandbox.data.path().join("scripts/ps/script.ps1")).unwrap();
+    assert!(!stored.contains("API_TOKEN"), "{stored}");
+}
